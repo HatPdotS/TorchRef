@@ -1,4 +1,4 @@
-from multicopy_refinement.Data import ReflectionData
+from torchref.Data import ReflectionData
 
 
 

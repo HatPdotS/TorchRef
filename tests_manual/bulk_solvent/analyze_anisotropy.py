@@ -12,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import torch
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 
 def U_to_matrix(U_params):
     """Convert 6 anisotropic parameters to 3x3 symmetric matrix."""
@@ -80,7 +80,7 @@ def plot_anisotropy_ellipsoid(U_matrix, title="Anisotropy Ellipsoid", ax=None):
 
 def plot_resolution_dependent_anisotropy(hkl, cell, U_matrix, title="Anisotropic Scaling vs Resolution"):
     """Plot how anisotropic scaling varies with resolution."""
-    from multicopy_refinement.math_torch import get_scattering_vectors
+    from torchref.math_functions.math_torch import get_scattering_vectors
     
     # Get scattering vectors
     s_vectors = get_scattering_vectors(torch.tensor(hkl, dtype=torch.float32), cell)

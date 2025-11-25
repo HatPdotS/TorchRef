@@ -7,7 +7,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from multicopy_refinement.model import Model
+from torchref.model import Model
 
 def check_structure_issues():
     """Check for structural problems causing high bond NLL."""

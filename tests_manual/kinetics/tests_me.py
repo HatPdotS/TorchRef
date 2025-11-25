@@ -1,4 +1,4 @@
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 import torch
 
 

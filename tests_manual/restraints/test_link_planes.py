@@ -7,7 +7,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from multicopy_refinement.restraints_helper import read_link_definitions
+from torchref.restraints_helper import read_link_definitions
 
 def test_link_planes():
     """Check if TRANS link has plane restraints defined."""

@@ -5,7 +5,7 @@ Test smart initialization of rate constants based on observability.
 
 import torch
 import numpy as np
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 print("\n" + "="*70)
 print("SMART INITIALIZATION TEST")

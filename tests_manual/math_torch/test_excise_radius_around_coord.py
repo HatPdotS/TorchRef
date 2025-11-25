@@ -1,5 +1,5 @@
-from multicopy_refinement.math_torch import excise_angstrom_radius_around_coord
-from multicopy_refinement.model_ft import ModelFT
+from torchref.math_functions.math_torch import excise_angstrom_radius_around_coord
+from torchref.model_ft import ModelFT
 
 
 

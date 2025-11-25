@@ -3,8 +3,8 @@ Debug B-factor convention - compare with CCTBX calculated structure factors.
 """
 import torch
 import numpy as np
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.math_torch import vectorized_add_to_map
+from torchref.model_ft import ModelFT
+from torchref.math_functions.math_torch import vectorized_add_to_map
 import gemmi
 
 print("=" * 70)

@@ -1,11 +1,11 @@
 #!/das/work/units/LBR-FEL/p17490/CONDA/cctbx_peter/bin/python -u 
 
-from multicopy_refinement import Data
-from multicopy_refinement import difference_refinement
+from torchref import Data
+from torchref import difference_refinement
 import old.restraints_handler as restraints_handler
-from multicopy_refinement.Model import projected_residue
+from torchref.Model import projected_residue
 import os
-import multicopy_refinement.Model as Model
+import torchref.Model as Model
 
 cif_path = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_data/Merged_restraints_all_opened.cif'
 

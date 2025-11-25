@@ -1,9 +1,9 @@
 #!/das/work/units/LBR-FEL/p17490/CONDA/cctbx_peter/bin/python -u 
 
-import multicopy_refinement.Model as Model
-import multicopy_refinement.refinement as refinement
+import torchref.Model as Model
+import torchref.refinement as refinement
 import old.restraints_handler as restraints_handler
-import multicopy_refinement.Data as Data
+import torchref.Data as Data
 import pandas as pd
 import torch
 import os

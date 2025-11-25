@@ -5,7 +5,7 @@ Check the rate matrix structure.
 
 import torch
 import numpy as np
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 timepoints = torch.logspace(-9,-2,10)  # Just a few points
 

@@ -25,55 +25,23 @@ class LBFGSRefinement(Refinement):
     - Automatically handles step size via line search
     
     Usage:
-        refinement = LBFGSRefinement(mtz_file, pdb_file, 
-                                      target_weights={'xray': 1.0, 'restraints': 1.0, 'adp': 0.3})
-        refinement.run_lbfgs_refinement(macro_cycles=2)
+        from torchref.refinement.loss_weighting import ResolutionDependentWeighting
+        
+        weighter = ResolutionDependentWeighting()
+        refinement = LBFGSRefinement(mtz_file, pdb_file, weighter=weighter)
+        refinement.refine(macro_cycles=2)
     """
-    def grad_norm(self, loss):
-        """Compute gradient norm with proper zeroing and graph cleanup"""
-
-        # Zero gradients
-        for p in self.model.parameters():
-            if p.grad is not None:
-                p.grad.zero_()
-        
-        # Compute gradients
-        loss.backward(retain_graph=True)
-        
-        # Collect gradients from parameters that have them
-        grad_list = [p.grad.flatten().detach() for p in self.model.parameters() if p.grad is not None]
-        
-        # Check if we have any gradients
-        if len(grad_list) == 0:
-            # No parameters with gradients - return default value
-            return 1.0
-        
-        # Concatenate and compute norm
-        vec = torch.cat(grad_list)
-        norm_value = vec.norm().item()
-        
-        # Clean up: delete gradient tensors and clear computation graph
-        del vec
-        del grad_list
-        for p in self.model.parameters():
-            if p.grad is not None:
-                p.grad = None
-        
-        return norm_value
 
     def refine_adp(self):
-        """Refine B-factors (ADP)"""
+        """
+        Refine B-factors (ADP).
+        
+        Args:
+            cycle (int): Current refinement cycle for weighting module
+        """
         self.model.freeze_all()
         self.model.unfreeze('b')
-        
-        # Compute gradient-based weight using refinement.parameters() not model.parameters()
-        loss_xray_ = self.xray_loss()
-        loss_adp_ = self.adp_loss()
-
-        gx = self.grad_norm(loss_xray_)
-        ga = self.grad_norm(loss_adp_)
-        weight_adp = (gx / (ga + 1e-12)) * self.target_weights['adp']
-        self.effective_weights['adp'] = weight_adp
+    
 
         optimizer = torch.optim.LBFGS(
             self.parameters(),
@@ -85,28 +53,23 @@ class LBFGSRefinement(Refinement):
 
         def closure():
             optimizer.zero_grad()
-            loss = self.adp_loss() * self.effective_weights['adp'] + self.xray_loss()
-            loss.backward(retain_graph=True)
+            loss = self.adp_loss() * self.effective_weights['adp'] + self.xray_loss() * self.effective_weights['xray']
+            loss.backward()
             return loss
 
         optimizer.step(closure)
         self.model.unfreeze_all()
 
     def refine_xyz(self):
-        """Refine coordinates (XYZ)"""
+        """
+        Refine coordinates (XYZ).
+        
+        Args:
+            cycle (int): Current refinement cycle for weighting module
+        """
         self.model.freeze_all()
         self.scaler.freeze()
         self.model.unfreeze('xyz')
-
-        # Compute gradient-based weight
-        loss_xray_ = self.xray_loss()
-        loss_geom_ = self.restraints_loss()
-
-        gx = self.grad_norm(loss_xray_)
-        gg = self.grad_norm(loss_geom_)
-
-        weight_restraints = (gx / (gg + 1e-12)) * self.target_weights['restraints']
-        self.effective_weights['restraints'] = weight_restraints
 
         optimizer = torch.optim.LBFGS(
             self.parameters(),
@@ -118,15 +81,218 @@ class LBFGSRefinement(Refinement):
 
         def closure():
             optimizer.zero_grad()
-            loss = self.restraints_loss() * self.effective_weights['restraints'] + self.xray_loss()
-            loss.backward(retain_graph=True)
+            loss = self.restraints_loss() * self.effective_weights['restraints'] + self.xray_loss() * self.effective_weights['xray']
+            loss.backward()
             return loss
 
         optimizer.step(closure)
         self.model.unfreeze_all()
     
+    def regularize_xyz(self,lr=0.1):
+        """
+        Apply regularization to coordinates (XYZ).
+        """
+        self.model.freeze_all()
+        self.scaler.freeze()
+        self.model.unfreeze('xyz')
+
+        optimizer = torch.optim.LBFGS(
+            self.parameters(),
+            lr=lr,
+            max_iter=20,
+            history_size=100,
+            line_search_fn="strong_wolfe"
+        )
+
+        def closure():
+            optimizer.zero_grad()
+            loss = self.restraints_loss()
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
+        self.model.unfreeze_all()
+    
+    def regularize_adp(self,lr=0.1):
+        """
+        Apply regularization to B-factors (ADP).
+        """
+        self.model.freeze_all()
+        self.model.unfreeze('b')
+
+        optimizer = torch.optim.LBFGS(
+            self.parameters(),
+            lr=0.1,
+            max_iter=20,
+            history_size=100,
+            line_search_fn="strong_wolfe"
+        )
+
+        def closure():
+            optimizer.zero_grad()
+            loss = self.adp_loss()
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
+        self.model.unfreeze_all()
+
+    def refine_xyz_adamW(self, lr=1e-3, steps=100):
+        """
+        Refine coordinates (XYZ) using Adam optimizer as an alternative.
+        
+        Args:
+            lr (float): Learning rate for Adam optimizer
+            steps (int): Number of Adam optimization steps
+        """
+        self.model.freeze_all()
+        self.scaler.freeze()
+        self.model.unfreeze('xyz')
+
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=lr
+        )
+
+        for step in range(steps):
+            optimizer.zero_grad()
+            loss = self.restraints_loss() * self.effective_weights['restraints'] + self.xray_loss() * self.effective_weights['xray']
+            loss.backward()
+            if self.verbose > 1 and step % 10 == 0:
+                print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
+            optimizer.step()
+
+        self.model.unfreeze_all()
+    
+    def refine_b_adamW(self, lr=1e-3, steps=100):
+        """
+        Refine B-factors (ADP) using Adam optimizer as an alternative.
+        
+        Args:
+            lr (float): Learning rate for Adam optimizer
+            steps (int): Number of Adam optimization steps
+        """
+        self.model.freeze_all()
+        self.model.unfreeze('b')
+
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=lr
+        )
+
+        for step in range(steps):
+            optimizer.zero_grad()
+            loss = self.adp_loss() * self.effective_weights['adp'] + self.xray_loss() * self.effective_weights['xray']
+            loss.backward()
+            if self.verbose > 1 and step % 10 == 0:
+                print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
+            optimizer.step()
+        self.model.unfreeze_all()
+    
+    def regularize_xyz_adp_to_rfactor_gap(self, lr=1e-1, max_steps=100, target_rfactor_gap=0.05):
+
+        """
+        Apply regularization to both coordinates (XYZ) and B-factors (ADP) using Adam optimizer as an alternative.
+        
+        Args:
+            lr (float): Learning rate for Adam optimizer
+            steps (int): Number of Adam optimization steps
+        """
+        self.model.freeze_all()
+        self.scaler.freeze()
+        self.model.unfreeze('xyz')
+        self.model.unfreeze('b')
+
+        def loss_fn():
+            return (self.restraints_loss() +
+                    self.adp_loss())
+        def closure():
+            optimizer.zero_grad()
+            loss = loss_fn()
+            loss.backward()
+            return loss
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=lr
+        )
+        for step in range(max_steps):
+            optimizer.step(closure)
+            with torch.no_grad():
+                rwork, rfree = self.get_rfactor()
+                rfactor_gap = rfree - rwork
+                if self.verbose > 1:
+                    print(f"Step {step+1}/{max_steps}, Rwork: {rwork:.4f}, Rfree: {rfree:.4f}, Rfactor gap: {rfactor_gap:.4f}")
+                if rfactor_gap <= target_rfactor_gap:
+                    if self.verbose > 0:
+                        print(f"Target R-factor gap of {target_rfactor_gap} reached at step {step+1}. Stopping regularization.")
+                    break
+
+
+    def refine_everything_adamW(self, lr=1e-3, steps=100):
+        """
+        Refine both coordinates (XYZ) and B-factors (ADP) using Adam optimizer as an alternative.
+        
+        Args:
+            lr (float): Learning rate for Adam optimizer
+            steps (int): Number of Adam optimization steps
+        """
+        self.model.freeze_all()
+        self.scaler.unfreeze()
+        self.model.unfreeze('xyz')
+        self.model.unfreeze('b')
+
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=lr
+        )
+
+        for step in range(steps):
+            optimizer.zero_grad()
+            loss = (self.restraints_loss() * self.effective_weights['restraints'] +
+                    self.adp_loss() * self.effective_weights['adp'] +
+                    self.xray_loss() * self.effective_weights['xray'])
+            loss.backward()
+            if self.verbose > 1 and step % 10 == 0:
+                print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
+            optimizer.step()
+
+    def refine_everything_lbfgs(self):
+        
+        """
+        Refine both coordinates (XYZ) and B-factors (ADP) using LBFGS optimizer as an alternative.
+        """
+
+        self.model.freeze_all()
+        self.scaler.unfreeze()
+        self.model.unfreeze_all()
+
+        optimizer = torch.optim.LBFGS(
+            self.parameters(),
+            lr=1.0,
+            max_iter=20,
+            history_size=100,
+            line_search_fn="strong_wolfe"
+        )
+
+        def closure():
+            optimizer.zero_grad()
+            loss = (self.restraints_loss() * self.effective_weights['restraints'] +
+                    self.adp_loss() * self.effective_weights['adp'] +
+                    self.xray_loss() * self.effective_weights['xray'])
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
+        self.model.unfreeze_all()
+
+
     def refine(self, macro_cycles=5):
-        """Run full LBFGS refinement cycle (ADP + XYZ)"""
+        """
+        Run full LBFGS refinement cycle (ADP + XYZ).
+        
+        Args:
+            macro_cycles (int): Number of refinement cycles to perform
+        """
         
         self.scaler.freeze()
         i = 0
@@ -141,38 +307,86 @@ class LBFGSRefinement(Refinement):
         for cycle in range(macro_cycles):
             cycle_dict = {}
             cycle_dict['cycle'] = cycle + 1
+            self.update_effective_weights(cycle=cycle)
+            if self.verbose > 0:
+                print(f"\n{'='*60}")
+                print(f"LBFGS Refinement - Cycle {cycle+1}/{macro_cycles}")
+                print(f"{'='*60}")
+            
             with torch.no_grad():
                 rwork, rfree = self.get_rfactor()
                 cycle_dict['rwork_before_not_scaled'] = rwork
                 cycle_dict['rfree_before_not_scaled'] = rfree
+                
             self.get_scales()
+            
             with torch.no_grad():
                 rwork, rfree = self.get_rfactor()
                 cycle_dict['rwork_before_scaled'] = rwork
                 cycle_dict['rfree_before_scaled'] = rfree
+                if self.verbose > 0:
+                    print(f"After scaling: Rwork={rwork:.4f}, Rfree={rfree:.4f}")
 
+            # XYZ refinement with cycle-aware weighting
             self.refine_xyz()
+            # self.regularize_xyz(lr=0.2)
+            
             with torch.no_grad():
                 cycle_dict['rwork_after_xyz_scaled'], cycle_dict['rfree_after_xyz_scaled'] = self.get_rfactor()
-                cycle_dict['restraints_weight'] = self.effective_weights['restraints']
+                cycle_dict['restraints_weight'] = self.effective_weights.get('restraints', 0.0)
                 cycle_dict['nll_work_after_xyz'], cycle_dict['nll_free_after_xyz'] = self.nll_xray()
                 cycle_dict['nll_bonds'] = self.restraints.nll_bonds().mean().item()
                 cycle_dict['nll_angles'] = self.restraints.nll_angles().mean().item()
                 cycle_dict['nll_torsion'] = self.restraints.nll_torsions().mean().item()
                 cycle_dict['nll_planes'] = self.restraints.nll_planes().mean().item()
                 cycle_dict['nll_vdw'] = self.restraints.nll_vdw().mean().item()
+                if self.verbose > 0:
+                    rwork = cycle_dict['rwork_after_xyz_scaled']
+                    rfree = cycle_dict['rfree_after_xyz_scaled']
+                    print(f"After XYZ: Rwork={rwork:.4f}, Rfree={rfree:.4f}, "
+                          f"restraint_weight={cycle_dict['restraints_weight']:.3f}")
+            if cycle_dict['rwork_after_xyz_scaled'] - cycle_dict['rfree_after_xyz_scaled'] > 0.05:
+                if self.verbose > 0:
+                    print("Large R-factor gap detected after XYZ refinement. Applying additional regularization.")
+                self.regularize_xyz(lr=0.3)
+            with torch.no_grad():
+                rwork, rfree = self.get_rfactor()
+                cycle_dict['rwork_after_xyz_reg_scaled'] = rwork
+                cycle_dict['rfree_after_xyz_reg_scaled'] = rfree
+                if self.verbose > 0:
+                    print(f"After XYZ Regularization: Rwork={rwork:.4f}, Rfree={rfree:.4f}")
 
+            # B-factor refinement with cycle-aware weighting
             self.refine_adp()
+            # self.regularize_adp(lr=0.2)
+            
             with torch.no_grad():
                 cycle_dict['rwork_after_adp_scaled'], cycle_dict['rfree_after_adp_scaled'] = self.get_rfactor()
-                cycle_dict['adp_weight'] = self.effective_weights['adp']
+                cycle_dict['adp_weight'] = self.effective_weights.get('adp', 0.0)
                 cycle_dict['nll_work_after_adp'], cycle_dict['nll_free_after_adp'] = self.nll_xray()
+                if self.verbose > 0:
+                    rwork = cycle_dict['rwork_after_adp_scaled']
+                    rfree = cycle_dict['rfree_after_adp_scaled']
+                    print(f"After ADP: Rwork={rwork:.4f}, Rfree={rfree:.4f}, "
+                          f"adp_weight={cycle_dict['adp_weight']:.3f}")
+                    print(f"Effective weights: {self.effective_weights}")
 
+            if cycle_dict['rwork_after_adp_scaled'] - cycle_dict['rfree_after_adp_scaled'] > 0.05:
+                if self.verbose > 0:
+                    print("Large R-factor gap detected after ADP refinement. Applying additional regularization.")
+                self.regularize_adp(lr=0.3)
+
+            with torch.no_grad():
+                rwork, rfree = self.get_rfactor()
+                cycle_dict['rwork_after_adp_reg_scaled'] = rwork
+                cycle_dict['rfree_after_adp_reg_scaled'] = rfree
+                if self.verbose > 0:
+                    print(f"After ADP Regularization: Rwork={rwork:.4f}, Rfree={rfree:.4f}")
+
+            # Convert tensors to scalars
             for key in cycle_dict:
                 if isinstance(cycle_dict[key], torch.Tensor):
                     cycle_dict[key] = cycle_dict[key].mean().item()
-
-
 
             self.history[master_key].append(cycle_dict)
 

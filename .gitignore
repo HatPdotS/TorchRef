@@ -13,7 +13,11 @@
 ./old/
 ./pytest_cache/
 _temp.mtz
-
+./scientific_testing/
+# Ignore all __pycache__ folders anywhere in the repository
+__pycache__/
+*.pyc
+*.pyo
 # Large binary files
 *.ccp4
 *.png

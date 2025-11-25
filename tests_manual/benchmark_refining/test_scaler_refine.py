@@ -3,8 +3,8 @@
 """Quick test to verify scaler.refine_lbfgs() works correctly"""
 
 import torch
-from multicopy_refinement.base_refinement import Refinement
-from multicopy_refinement.lbfgs_refinement import LBFGSRefinement, LBFGS_scales
+from torchref.base_refinement import Refinement
+from torchref.lbfgs_refinement import LBFGSRefinement, LBFGS_scales
 
 print("="*80)
 print("Testing Scaler.refine_lbfgs() method")

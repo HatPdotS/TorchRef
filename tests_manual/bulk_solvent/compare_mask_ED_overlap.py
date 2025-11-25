@@ -3,8 +3,8 @@
 #SBATCH -c 16
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/bulk_solvent/mask_overlap.out
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.solvent import SolventModel
+from torchref.model_ft import ModelFT
+from torchref.solvent import SolventModel
 
 
 

@@ -8,8 +8,8 @@ disagrees with Phenix for weak/negative reflections.
 import torch
 import reciprocalspaceship as rs
 import numpy as np
-from multicopy_refinement.french_wilson import FrenchWilson, estimate_mean_intensity_by_resolution
-from multicopy_refinement import math_torch
+from torchref.french_wilson import FrenchWilson, estimate_mean_intensity_by_resolution
+from torchref.math_functions import math_torch
 
 # Load data
 mtz = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/scaler/dark.mtz'

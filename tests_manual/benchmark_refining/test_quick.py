@@ -7,7 +7,7 @@
 
 import torch
 import time
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 
 
 def loss_function(refinement):

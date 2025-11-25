@@ -5,7 +5,7 @@ Extreme test: ps to seconds with light-activated mode.
 
 import torch
 import numpy as np
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 print("\n" + "="*70)
 print("EXTREME TEST: ps to SECONDS with light_activated=True")

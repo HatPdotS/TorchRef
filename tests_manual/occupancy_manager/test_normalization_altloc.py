@@ -12,7 +12,7 @@ This test verifies:
 
 import torch
 import torch.nn as nn
-from multicopy_refinement.model import OccupancyTensor, Model
+from torchref.model import OccupancyTensor, Model
 import tempfile
 
 

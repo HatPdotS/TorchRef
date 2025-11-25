@@ -5,8 +5,8 @@ Test script to verify that plane NLL calculation is differentiable.
 
 import torch
 import numpy as np
-from multicopy_refinement.model import Model
-from multicopy_refinement.restraints import Restraints
+from torchref.model import Model
+from torchref.restraints import Restraints
 
 print("=" * 80)
 print("Testing Differentiability of Plane NLL")

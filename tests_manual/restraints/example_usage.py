@@ -5,8 +5,8 @@ This module provides a simple example of how to use the Restraints class
 for crystallographic refinement.
 """
 
-from multicopy_refinement.model import Model
-from multicopy_refinement.restraints import Restraints
+from torchref.model import Model
+from torchref.restraints import Restraints
 import torch
 import numpy as np
 

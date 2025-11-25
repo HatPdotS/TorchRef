@@ -8,7 +8,7 @@ import torch
 import numpy as np
 import reciprocalspaceship as rs
 import matplotlib.pyplot as plt
-from multicopy_refinement.french_wilson import FrenchWilsonModule
+from torchref.french_wilson import FrenchWilsonModule
 import sys
 
 mtz = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/scaler/dark.mtz'

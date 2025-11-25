@@ -6,8 +6,8 @@
 #SBATCH -t 1-00:00:00
 
 import torch
-from multicopy_refinement.base_refinement import Refinement
-from multicopy_refinement.solvent_new import SolventModel
+from torchref.base_refinement import Refinement
+from torchref.solvent_new import SolventModel
 import numpy as np
 from collections import defaultdict
 import pandas as pd

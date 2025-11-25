@@ -5,7 +5,7 @@ Unit tests for the KineticModel module.
 import torch
 import numpy as np
 import pytest
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 
 class TestFlowChartParsing:

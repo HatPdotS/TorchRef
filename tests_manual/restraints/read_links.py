@@ -1,4 +1,4 @@
-from multicopy_refinement.restraints_helper import read_link_definitions
+from torchref.restraints_helper import read_link_definitions
     
 
 link_dict, link_list = read_link_definitions()

@@ -9,8 +9,8 @@ from crystfel_tools.handling.fast_math import calculate_scattering_factor_cctbx
 import reciprocalspaceship as rs
 import gemmi
 from tqdm import tqdm
-from multicopy_refinement.math_torch import fft, ifft, place_on_grid, extract_structure_factor_from_grid
-from multicopy_refinement.model_ft import ModelFT   
+from torchref.math_functions.math_torch import fft, ifft, place_on_grid, extract_structure_factor_from_grid
+from torchref.model_ft import ModelFT   
 pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_FT/quality_testing/dark_no_H.pdb'
 outdir = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_FT/quality_testing'
 

@@ -4,7 +4,7 @@
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.scaler_analytical import AnalyticalScaler
+from torchref.scaler_analytical import AnalyticalScaler
 import inspect
 
 # Check the forward method signature

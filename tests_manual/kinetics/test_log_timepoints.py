@@ -5,7 +5,7 @@ Test with LOGARITHMIC timepoints as mentioned by user.
 
 import torch
 import numpy as np
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 print("\n" + "="*70)
 print("TEST: LOGARITHMIC TIMEPOINTS (BR-LIKE)")

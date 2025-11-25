@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from torchref.math_functions import math_torch
-import gemmi
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Dict, List, TYPE_CHECKING
@@ -38,7 +37,7 @@ class ReflectionData(DebugMixin, nn.Module):
         self.device = torch.device(device)  # Device for all tensors
         
         # Register tensor buffers (will be moved to GPU with .cuda())
-        # Miller indices
+        # Miller indicesx
         self.register_buffer('hkl', None)  # Shape: (N, 3), dtype: int32
         
         # Amplitudes/Intensities
@@ -97,13 +96,19 @@ class ReflectionData(DebugMixin, nn.Module):
         data_dict, cell, spacegroup = reader()
 
         hkl = torch.tensor(data_dict['HKL'], dtype=torch.int32, device=self.device)
+
         self.register_buffer('hkl', hkl)
 
         if cell is not None:
             self.register_buffer('cell', torch.tensor(cell, dtype=torch.float32, device=self.device))
+        else:
+            raise ValueError("Unit cell parameters are required in the data and could not be read.")
+        
         if spacegroup is not None:
             self.spacegroup = spacegroup
+
         self._calculate_resolution()
+
 
         if 'I' in data_dict:    
             self.register_buffer('I', torch.tensor(data_dict['I'], dtype=torch.float32, device=self.device))
@@ -304,7 +309,7 @@ class ReflectionData(DebugMixin, nn.Module):
         sorted_res, sort_indices = torch.sort(self.resolution)
         
         # Create bins with approximately equal number of reflections
-        bin_indices = torch.zeros(n_refl, dtype=torch.int32)
+        bin_indices = torch.zeros(n_refl, dtype=torch.int32, device=self.device)
         reflections_per_bin = n_refl / actual_n_bins
         
         for i, idx in enumerate(sort_indices):
@@ -381,10 +386,13 @@ class ReflectionData(DebugMixin, nn.Module):
     
     def _calculate_resolution(self) -> None:
         """Calculate resolution for each reflection."""
-        if self.hkl is not None and self.cell is not None:
-            s = math_torch.get_scattering_vectors(self.hkl, self.cell)
-            resolution = 1.0 / torch.linalg.norm(s, axis=1)
-            self.register_buffer('resolution', resolution)
+        if self.hkl is None:
+            raise ValueError("Miller indices (hkl) are required to calculate resolution")
+        if self.cell is None:
+            raise ValueError("Unit cell parameters are required to calculate resolution")
+        s = math_torch.get_scattering_vectors(self.hkl, self.cell)
+        resolution = 1.0 / torch.linalg.norm(s, axis=1)
+        self.register_buffer('resolution', resolution)
     
     def get_structure_factors(self, as_complex: bool = False) -> torch.Tensor:
         """
@@ -443,7 +451,7 @@ class ReflectionData(DebugMixin, nn.Module):
             self (for method chaining)
         """
         if self.resolution is None:
-            raise ValueError("No resolution information available")
+            self._calculate_resolution()
         
         mask = torch.ones(len(self.hkl), dtype=torch.bool)
         
@@ -553,7 +561,7 @@ class ReflectionData(DebugMixin, nn.Module):
     def get_max_res(self) -> Optional[float]:
         """Return maximum resolution (lowest d-spacing) in Å."""
         if self.resolution is None:
-            return None
+            self._calculate_resolution()
         return float(self.resolution.min().item())
 
     def __len__(self) -> int:
@@ -733,7 +741,13 @@ class ReflectionData(DebugMixin, nn.Module):
         data_mask = torch.from_numpy(data_mask_np.flatten())
         
         # Find which reference reflections are present in the dataset
-        presence_mask_np = np.isin(hkl_ref_structured, hkl_data_structured)
+        # Use filtered HKL for this operation
+        hkl_filtered, _, _, _ = self()
+        hkl_filtered_np = hkl_filtered.cpu().numpy()
+        hkl_filtered_structured = np.ascontiguousarray(hkl_filtered_np).view(
+            np.dtype((np.void, hkl_filtered_np.dtype.itemsize * hkl_filtered_np.shape[1]))
+        )
+        presence_mask_np = np.isin(hkl_ref_structured, hkl_filtered_structured)
         presence_mask = torch.from_numpy(presence_mask_np.flatten())
 
         # Filter the dataset to only include reflections in the reference
@@ -1025,3 +1039,115 @@ class ReflectionData(DebugMixin, nn.Module):
             print(f"  Reflections: {len(df)}")
             print(f"  Columns: {', '.join(df.columns)}")
 
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        """
+        Returns a dictionary containing the complete state of the ReflectionData.
+        
+        This includes:
+        - All registered buffers (hkl, F, I, rfree_flags, etc.)
+        - Masks (via TensorMasks.state_dict())
+        - Metadata (spacegroup, data sources, outlier params, etc.)
+        
+        Args:
+            destination: Optional dict to populate
+            prefix: Prefix for parameter names
+            keep_vars: Whether to keep variables in computational graph
+            
+        Returns:
+            dict: Complete state dictionary
+        """
+        # Get parent class state_dict (includes all registered buffers)
+        state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        
+        # Add ReflectionData-specific metadata
+        state[prefix + 'spacegroup'] = self.spacegroup
+        state[prefix + 'rfree_source'] = self.rfree_source
+        state[prefix + 'outlier_detection_params'] = self.outlier_detection_params
+        state[prefix + 'amplitude_source'] = self.amplitude_source
+        state[prefix + 'intensity_source'] = self.intensity_source
+        state[prefix + 'phase_source'] = self.phase_source
+        state[prefix + 'verbose'] = self.verbose
+        
+        return state
+
+    def load_state_dict(self, state_dict, strict=True):
+        """
+        Loads the ReflectionData state from a dictionary.
+        
+        Args:
+            state_dict: Dictionary containing reflection data state
+            strict: Whether to strictly enforce that keys match
+        """
+        # Extract ReflectionData-specific metadata
+        self.spacegroup = state_dict.pop('spacegroup', None)
+        self.rfree_source = state_dict.pop('rfree_source', None)
+        self.outlier_detection_params = state_dict.pop('outlier_detection_params', None)
+        self.amplitude_source = state_dict.pop('amplitude_source', None)
+        self.intensity_source = state_dict.pop('intensity_source', None)
+        self.phase_source = state_dict.pop('phase_source', None)
+        self.verbose = state_dict.pop('verbose', 1)
+        
+        # If loading into empty object, register buffers based on state_dict content
+        # We check for 'hkl' to determine size
+        if 'hkl' in state_dict and state_dict['hkl'] is not None:
+            hkl = state_dict['hkl']
+            n_refl = hkl.shape[0]
+            
+            if not hasattr(self, 'hkl') or self.hkl is None:
+                self.register_buffer('hkl', torch.zeros(n_refl, 3, dtype=torch.int32, device=self.device))
+                
+            # Register other buffers if they are in state_dict
+            buffer_names = ['F', 'F_sigma', 'I', 'I_sigma', 'rfree_flags', 'outlier_flags', 'resolution', 'bin_indices', 'n_bins']
+            for name in buffer_names:
+                if name in state_dict and state_dict[name] is not None:
+                    if not hasattr(self, name) or getattr(self, name) is None:
+                        # Use the tensor from state_dict to determine dtype and shape
+                        # But we register a dummy tensor, load_state_dict will overwrite
+                        tensor = state_dict[name]
+                        self.register_buffer(name, torch.zeros_like(tensor, device=self.device))
+            
+            # Register cell
+            if 'cell' in state_dict and state_dict['cell'] is not None:
+                if not hasattr(self, 'cell') or self.cell is None:
+                    self.register_buffer('cell', torch.zeros(6, dtype=torch.float32, device=self.device))
+
+        # Instantiate FrenchWilson if present in state_dict
+        # Check for any key starting with "FrenchWilson."
+        has_french_wilson = any(k.startswith("FrenchWilson.") for k in state_dict.keys())
+        if has_french_wilson and not hasattr(self, 'FrenchWilson'):
+            # We need hkl and cell to instantiate FrenchWilson
+            # They might be in state_dict or already registered
+            if 'hkl' in state_dict and 'cell' in state_dict:
+                hkl = state_dict['hkl'].to(self.device)
+                cell = state_dict['cell'].to(self.device)
+                # We need spacegroup. It was popped above.
+                
+                self.FrenchWilson = FrenchWilson(hkl, cell, self.spacegroup, verbose=self.verbose)
+                self.FrenchWilson.to(self.device)
+        
+        # Load parent class state_dict (buffers including masks)
+        return super().load_state_dict(state_dict, strict=strict)
+
+    def save_state(self, path: str):
+        """
+        Save the complete state of the reflection data to a file.
+        
+        Args:
+            path (str): Path to save the state dictionary to.
+        """
+        torch.save(self.state_dict(), path)
+        if self.verbose > 0:
+            print(f"Saved reflection data state to {path}")
+
+    def load_state(self, path: str, strict: bool = True):
+        """
+        Load the complete state of the reflection data from a file.
+        
+        Args:
+            path (str): Path to load the state dictionary from.
+            strict (bool): Whether to strictly enforce that keys match.
+        """
+        state_dict = torch.load(path, map_location=self.device)
+        self.load_state_dict(state_dict, strict=strict)
+        if self.verbose > 0:
+            print(f"Loaded reflection data state from {path}")

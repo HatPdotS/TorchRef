@@ -4,7 +4,7 @@
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/benchmark_refining/test_A10F.out
 
 from glob import glob
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 
 
 

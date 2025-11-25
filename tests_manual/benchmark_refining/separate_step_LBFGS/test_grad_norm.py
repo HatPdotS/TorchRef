@@ -3,7 +3,7 @@
 Quick test of the grad_norm fix
 """
 import torch
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 
 def grad_norm(loss, params):
 

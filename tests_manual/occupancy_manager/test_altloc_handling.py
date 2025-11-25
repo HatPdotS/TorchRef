@@ -15,7 +15,7 @@ import os
 
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model import Model, OccupancyTensor
+from torchref.model import Model, OccupancyTensor
 
 def create_altloc_pdb():
     """Create a test PDB with alternative conformations."""

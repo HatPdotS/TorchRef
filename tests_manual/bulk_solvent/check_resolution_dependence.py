@@ -11,8 +11,8 @@ sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
 import torch
 import numpy as np
-from multicopy_refinement.base_refinement import Refinement
-from multicopy_refinement.math_torch import get_scattering_vectors
+from torchref.base_refinement import Refinement
+from torchref.math_functions.math_torch import get_scattering_vectors
 
 # Load data
 instance = Refinement(

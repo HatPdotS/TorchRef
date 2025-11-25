@@ -10,8 +10,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from multicopy_refinement.cif_readers import ReflectionCIFReader, ModelCIFReader
-from multicopy_refinement.legacy_format_readers import MTZ, PDB
+from torchref.cif_readers import ReflectionCIFReader, ModelCIFReader
+from torchref.legacy_format_readers import MTZ, PDB
 
 def test_reflection_reader():
     """Test that ReflectionCIFReader returns data compatible with MTZ reader."""

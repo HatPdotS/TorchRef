@@ -6,7 +6,7 @@ Test light-activated mode to prevent re-photoactivation.
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 print("\n" + "="*70)
 print("TEST: LIGHT-ACTIVATED MODE (PREVENT RE-PHOTOACTIVATION)")

@@ -306,7 +306,8 @@ class SolventModel(DebugMixin, nn.Module):
         # The Debye-Waller factor for isotropic displacement
         b_solvent = self.b_solvent
         k_solvent = torch.exp(self.log_k_solvent)
-        b_factor_term = torch.exp(-b_solvent * s_squared)
+        exp = -b_solvent * s_squared
+        b_factor_term = torch.exp(exp.clamp(max=50.0))  # Clamp to avoid overflow
         
         # Phase handling
         if self.optimize_phase and F_protein is not None:
@@ -334,5 +335,6 @@ class SolventModel(DebugMixin, nn.Module):
         
         # Scale by k_solvent and apply B-factor
         f_solvent = k_solvent * phase_adjusted_f_sol * b_factor_term
-        
+
+        assert torch.isfinite(f_solvent).all(), "Non-finite values in solvent structure factors"
         return f_solvent

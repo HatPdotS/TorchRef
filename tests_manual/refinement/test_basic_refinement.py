@@ -3,7 +3,7 @@
 #SBATCH -c 32
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/refinement/test.log
 
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 
 
 pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/refinement/dark.pdb'

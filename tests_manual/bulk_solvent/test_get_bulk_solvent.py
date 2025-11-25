@@ -1,10 +1,10 @@
 #!/das/work/p17/p17490/CONDA/muticopy_refinement/bin/python -u
 
 
-from multicopy_refinement.solvent_new import SolventModel as solvent_new
-from multicopy_refinement.solvent import SolventModel as solvent
+from torchref.solvent_new import SolventModel as solvent_new
+from torchref.solvent import SolventModel as solvent
 
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 
 pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/bulk_solvent/dark.pdb'

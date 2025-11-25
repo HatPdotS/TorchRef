@@ -7,7 +7,7 @@
 
 import torch
 import numpy as np
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 import json
 import os
 from datetime import datetime

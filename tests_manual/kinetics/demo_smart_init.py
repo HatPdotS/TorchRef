@@ -6,7 +6,7 @@ Comprehensive demonstration of smart initialization with visualization.
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 # Test case: A->B->C->D with smart initialization
 print("\n" + "="*70)

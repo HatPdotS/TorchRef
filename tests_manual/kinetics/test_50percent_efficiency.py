@@ -5,7 +5,7 @@ Test that the first transition (photoabsorption) is initialized at 50% efficienc
 
 import torch
 import numpy as np
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 print("\n" + "="*70)
 print("TEST: 50% EFFICIENCY FOR PHOTOABSORPTION")

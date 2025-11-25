@@ -55,10 +55,25 @@ class MapSymmetry(nn.Module):
         # Get symmetry operations
         self.symmetry = Symmetry(space_group,dtype=self.dtype_float,device=self.device)
         self.n_ops = self.symmetry.matrices.shape[0]
+        
+        # Check if grid is compatible for direct indexing
+        compat = self.symmetry.check_grid_compatibility(map_shape)
+        self.can_use_direct_indexing = compat['can_use_direct_indexing']
+        
         if self.verbose > 0:
             print(f"MapSymmetry initialized for {space_group}")
             print(f"  Number of symmetry operations: {self.n_ops}")
             print(f"  Map shape: {self.map_shape}")
+            if self.can_use_direct_indexing:
+                print(f"  ✓ Grid is compatible - using direct indexing (no interpolation)")
+            else:
+                print(f"  ⚠ Grid not optimal for symmetry - using interpolation")
+                if compat['issues']:
+                    for issue in compat['issues']:
+                        print(f"    - {issue}")
+                # Suggest better grid
+                suggested = self.symmetry.suggest_grid_size(map_shape, make_fft_friendly=True)
+                print(f"    Suggested grid: {suggested}")
         
         # Precompute grid coordinates in fractional space
         self._setup_fractional_grid()
@@ -142,6 +157,53 @@ class MapSymmetry(nn.Module):
         
         # Register as buffer (will be moved to GPU with model)
         self.register_buffer('sampling_grids', sampling_grids_stacked)
+        
+        # Also precompute integer index grids for direct indexing when possible
+        if self.can_use_direct_indexing:
+            self._setup_direct_index_grids()
+    
+    def _setup_direct_index_grids(self):
+        """Precompute integer index grids for interpolation-free symmetry expansion.
+        
+        CRITICAL: This must match the grid_sample behavior exactly.
+        With align_corners=True and the grid-edge convention (voxels at i/N):
+        - Fractional coordinate f maps to sampling coordinate s = -1 + 2*N/(N-1) * f
+        - grid_sample maps s back to index: idx = (s + 1) * (N - 1) / 2
+        - Combining: idx = N/(N-1) * f * (N-1) = f * N
+        - So fractional f should map to index round(f * N) % N
+        
+        This ensures exact mapping when f is a grid point (i/N).
+        """
+        nx, ny, nz = self.map_shape
+        grid_flat = self.grid_frac.reshape(-1, 3)
+        
+        index_grids_list = []
+        
+        for i in range(self.n_ops):
+            # Apply symmetry operation: R @ coords + t
+            transformed = torch.matmul(self.symmetry.matrices[i], grid_flat.T).T
+            transformed = transformed + self.symmetry.translations[i]
+            
+            # Wrap to [0, 1) for periodic boundary conditions
+            transformed = transformed - torch.floor(transformed)
+            
+            # Convert fractional coordinates to integer indices
+            # Use round() to get nearest grid point, matching interpolation behavior
+            grid_shape_tensor = torch.tensor([nx, ny, nz], dtype=self.dtype_float, device=self.device)
+            indices = torch.round(transformed * grid_shape_tensor).to(torch.int64)
+            
+            # Wrap indices to ensure they're within bounds (handle periodic boundary)
+            indices[:, 0] = indices[:, 0] % nx
+            indices[:, 1] = indices[:, 1] % ny
+            indices[:, 2] = indices[:, 2] % nz
+            
+            # Reshape to 3D grid
+            index_grid = indices.reshape(nx, ny, nz, 3)
+            index_grids_list.append(index_grid)
+        
+        # Stack all index grids: (n_ops, nx, ny, nz, 3)
+        index_grids_stacked = torch.stack(index_grids_list, dim=0)
+        self.register_buffer('index_grids', index_grids_stacked)
     
     def get_symmetry_mate(self, density_map, operation_index):
         """
@@ -166,6 +228,22 @@ class MapSymmetry(nn.Module):
         if density_map.shape != self.map_shape:
             raise ValueError(f"Map shape {density_map.shape} doesn't match expected {self.map_shape}")
         
+        # Fast path: direct indexing if grid is compatible
+        if self.can_use_direct_indexing and hasattr(self, 'index_grids'):
+            # Use precomputed integer indices - no interpolation needed!
+            index_grid = self.index_grids[operation_index]  # (nx, ny, nz, 3)
+            
+            # Extract values using advanced indexing
+            # This is much faster than grid_sample
+            transformed_map = density_map[
+                index_grid[..., 0],
+                index_grid[..., 1],
+                index_grid[..., 2]
+            ]
+            
+            return transformed_map
+        
+        # Fallback: interpolation-based approach
         # Prepare for grid_sample
         map_5d = density_map.unsqueeze(0).unsqueeze(0)  # (1, 1, nx, ny, nz)
         

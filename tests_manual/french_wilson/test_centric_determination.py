@@ -10,7 +10,7 @@ import torch
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.french_wilson import is_centric_from_hkl, get_centric_acentric_masks
+from torchref.french_wilson import is_centric_from_hkl, get_centric_acentric_masks
 
 
 def test_p1_all_acentric():

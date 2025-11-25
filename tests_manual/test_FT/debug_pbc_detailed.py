@@ -3,7 +3,7 @@ Detailed debugging of PBC coordinate conversion.
 """
 import torch
 import numpy as np
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 print("=" * 70)
 print("DETAILED PBC DEBUGGING")

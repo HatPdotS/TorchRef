@@ -9,7 +9,7 @@ This script tests the specific file mentioned in the request:
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.restraints_helper import read_cif
+from torchref.restraints_helper import read_cif
 
 print("Testing MET.cif parsing")
 print("=" * 70)

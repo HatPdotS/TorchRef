@@ -1,5 +1,5 @@
 import gemmi
-from multicopy_refinement.symmetrie import SYMMETRY_OPERATIONS, SPACEGROUP_NAME_MAPPING
+from torchref.symmetrie import SYMMETRY_OPERATIONS, SPACEGROUP_NAME_MAPPING
 import torch
 
 

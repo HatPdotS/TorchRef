@@ -3,57 +3,57 @@ Try without charge
 Could not find scattering factor for Mg 2 Exception that was raised: 'NoneType' object has no attribute 'a'
 Try without charge
 Parametrization built for 9 unique atom types
-MapSymmetry initialized for P     2 1       
-
+MapSymmetry initialized for P 1 21 1
   Number of symmetry operations: 2
-  Map shape: (223, 277, 251)
+  Map shape: (225, 288, 256)
+  ✓ Grid is compatible - using direct indexing (no interpolation)
 CCTBX map shape: (150, 192, 180)
-MapSymmetry initialized for P     2 1       
-
+MapSymmetry initialized for P 1 21 1
   Number of symmetry operations: 2
   Map shape: (150, 192, 180)
-Saving map to /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/test_FT/quality_testing/me.ccp4
+  ✓ Grid is compatible - using direct indexing (no interpolation)
+Saving map to /das/work/p17/p17490/Peter/Library/torchref/tests_manual/test_FT/quality_testing/me.ccp4
   Map shape: torch.Size([150, 192, 180])
-  Map sum: 1029505.75
+  Map sum: 1029505.94
   Map range: [0.0000, 4.1527]
 Map saved successfully
-Correlation coefficient: 0.9998596964407408
-/var/spool/slurmd/job953060/slurm_script:62: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
+Correlation coefficient: 0.9998597000112471
+/var/spool/slurmd/job34001/slurm_script:115: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
   f_me = np.array(extract_structure_factor_from_grid(ifft(torch.tensor(dtached)), hkl))
-/var/spool/slurmd/job953060/slurm_script:63: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
+/var/spool/slurmd/job34001/slurm_script:116: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
   f_cctbx = np.array(extract_structure_factor_from_grid(ifft(torch.tensor(map_cctbx)), hkl))
-/var/spool/slurmd/job953060/slurm_script:64: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
+/var/spool/slurmd/job34001/slurm_script:117: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
   f_noisy = np.array(extract_structure_factor_from_grid(ifft(torch.tensor(noisy_me)), hkl))
 ====================
-Correlation F-me vs F-cctbx: 0.9999218547125853
-Correlation phase-me vs phase-cctbx: 0.937208629616271
-Correlation phase-weighted-me vs phase-weighted-cctbx: 0.885553686667579
+Correlation F-me vs F-cctbx: 0.9999218581267125
+Correlation phase-me vs phase-cctbx: 0.9404395342241613
+Correlation phase-weighted-me vs phase-weighted-cctbx: 0.5137703832994488
 --------------------
-Correlation F-noisy vs F-cctbx: 0.9999055446091023
-Correlation phase-noisy vs phase-me: 0.6421378108539966
-Correlation phase-weighted-noisy vs phase-weighted-me: 0.5589201326680618
+Correlation F-noisy vs F-cctbx: 0.9999056499746901
+Correlation phase-noisy vs phase-me: 0.6433109781580052
+Correlation phase-weighted-noisy vs phase-weighted-me: 0.520056776668001
 --------------------
-Correlation F-noisy vs F-cctbx: 0.9999055446091023
-Correlation phase-noisy vs phase-cctbx: 0.6396114806916913
-Correlation phase-weighted-noisy vs phase-weighted-cctbx: 0.5213012145536354
+Correlation F-noisy vs F-cctbx: 0.9999056499746901
+Correlation phase-noisy vs phase-cctbx: 0.6393708663490902
+Correlation phase-weighted-noisy vs phase-weighted-cctbx: 0.922760670446355
 --------------------
 ====================
 With normalization:
-/var/spool/slurmd/job953060/slurm_script:102: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
+/var/spool/slurmd/job34001/slurm_script:155: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
   f_me = np.array(extract_structure_factor_from_grid(ifft(torch.tensor(dtached_norm)), hkl))
-/var/spool/slurmd/job953060/slurm_script:103: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
+/var/spool/slurmd/job34001/slurm_script:156: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
   f_cctbx = np.array(extract_structure_factor_from_grid(ifft(torch.tensor(map_cctbx_norm)), hkl))
-/var/spool/slurmd/job953060/slurm_script:104: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
+/var/spool/slurmd/job34001/slurm_script:157: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
   f_noisy = np.array(extract_structure_factor_from_grid(ifft(torch.tensor(noisy_norm)), hkl))
-Correlation F-me vs F-cctbx: 0.9999218546334117
-Correlation phase-me vs phase-cctbx: 0.9372873253629354
-Correlation phase-weighted-me vs phase-weighted-cctbx: 0.8848198803430942
+Correlation F-me vs F-cctbx: 0.9999218580913412
+Correlation phase-me vs phase-cctbx: 0.940584267288924
+Correlation phase-weighted-me vs phase-weighted-cctbx: 0.5243145112635498
 --------------------
-Correlation F-noisy vs F-cctbx: 0.9999055444930594
-Correlation phase-noisy vs phase-me: 0.6423343418458833
-Correlation phase-weighted-noisy vs phase-weighted-me: 0.5640177393991275
+Correlation F-noisy vs F-cctbx: 0.9999056498396075
+Correlation phase-noisy vs phase-me: 0.6432688420654827
+Correlation phase-weighted-noisy vs phase-weighted-me: 0.530918531373227
 --------------------
-Correlation F-noisy vs F-cctbx: 0.9999055444930594
-Correlation phase-noisy vs phase-cctbx: 0.6391880987290758
-Correlation phase-weighted-noisy vs phase-weighted-cctbx: 0.5312344986565877
+Correlation F-noisy vs F-cctbx: 0.9999056498396075
+Correlation phase-noisy vs phase-cctbx: 0.6392332385678736
+Correlation phase-weighted-noisy vs phase-weighted-cctbx: 0.9235233582275076
 --------------------

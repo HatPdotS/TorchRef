@@ -13,7 +13,7 @@ import traceback
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from multicopy_refinement.cif_readers import RestraintCIFReader
+from torchref.cif_readers import RestraintCIFReader
 
 def test_restraint_cif(cif_path):
     """Test a single restraint CIF file and return results"""

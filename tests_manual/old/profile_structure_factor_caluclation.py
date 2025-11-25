@@ -5,10 +5,10 @@
 #SBATCH -p gpu-day
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/profiles/profiling_strcuture_factor_calculaiton.txt
 
-import multicopy_refinement.Model as Model
-import multicopy_refinement.refinement as refinement
+import torchref.Model as Model
+import torchref.refinement as refinement
 import old.restraints_handler as restraints_handler
-import multicopy_refinement.Data as Data
+import torchref.Data as Data
 import pandas as pd
 import torch
 import os

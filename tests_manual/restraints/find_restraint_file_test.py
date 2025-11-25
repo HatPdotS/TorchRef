@@ -1,4 +1,4 @@
-from multicopy_refinement.restraints_helper import find_cif_file_in_library
+from torchref.restraints_helper import find_cif_file_in_library
 from time import time
 
 

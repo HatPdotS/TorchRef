@@ -11,7 +11,7 @@ This test verifies:
 import torch
 import json
 import gemmi
-from multicopy_refinement.symmetrie import Symmetry
+from torchref.symmetrie import Symmetry
 
 def test_json_loading():
     """Test that JSON file loads correctly."""

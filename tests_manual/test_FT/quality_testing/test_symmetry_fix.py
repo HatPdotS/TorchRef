@@ -8,7 +8,7 @@ if symmetry operations place it correctly.
 
 import torch
 import numpy as np
-from multicopy_refinement.map_symmetry import MapSymmetry
+from torchref.map_symmetry import MapSymmetry
 
 def test_symmetry_coordinates():
     """Test that symmetry operations work correctly with the voxel-center convention."""

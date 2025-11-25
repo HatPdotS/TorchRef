@@ -11,7 +11,7 @@ import torch
 import reciprocalspaceship as rs
 
 mtz = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/scaler/dark.mtz'
-from multicopy_refinement.french_wilson import FrenchWilson
+from torchref.french_wilson import FrenchWilson
 
 import torch
 import torch.nn.functional as F

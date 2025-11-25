@@ -3,7 +3,7 @@ Debug missing electron density for specific atoms.
 """
 import torch
 import numpy as np
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 print("=" * 70)
 print("DEBUG: Missing Electron Density")

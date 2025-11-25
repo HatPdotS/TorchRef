@@ -8,7 +8,7 @@
 
 import numpy as np
 import torch
-from multicopy_refinement.lbfgs_refinement import LBFGSRefinement
+from torchref.lbfgs_refinement import LBFGSRefinement
 import json
 import torch
 import os

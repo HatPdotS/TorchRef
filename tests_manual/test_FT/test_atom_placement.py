@@ -1,5 +1,5 @@
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.map_symmetry import MapSymmetry
+from torchref.model_ft import ModelFT
+from torchref.map_symmetry import MapSymmetry
 import torch
 
 

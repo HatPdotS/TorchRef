@@ -1,7 +1,7 @@
-import multicopy_refinement.refinement as refinement
+import torchref.refinement as refinement
 import old.restraints_handler as restraints_handler
-import multicopy_refinement.Model as Model
-import multicopy_refinement.Data as Data
+import torchref.Model as Model
+import torchref.Data as Data
 import pickle
 
 cif_path = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_data/Merged_restraints_all_opened.cif'

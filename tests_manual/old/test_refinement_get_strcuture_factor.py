@@ -1,6 +1,6 @@
-import multicopy_refinement.Model as Model
-import multicopy_refinement.refinement as refinement
-from multicopy_refinement import Data 
+import torchref.Model as Model
+import torchref.refinement as refinement
+from torchref import Data 
 import numpy as np
 import reciprocalspaceship as rs
 import cProfile

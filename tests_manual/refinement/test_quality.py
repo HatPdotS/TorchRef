@@ -3,10 +3,10 @@
 #SBATCH -c 16
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/refinement/initial_corr_2JBV.log
 
-from multicopy_refinement.base_refinement import Refinement
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.scaler import Scaler
+from torchref.base_refinement import Refinement
+from torchref.Data import ReflectionData
+from torchref.model_ft import ModelFT
+from torchref.scaler import Scaler
 
 import torch
 

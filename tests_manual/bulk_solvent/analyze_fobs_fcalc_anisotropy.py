@@ -11,8 +11,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import torch
-from multicopy_refinement.base_refinement import Refinement
-from multicopy_refinement.math_torch import get_scattering_vectors
+from torchref.base_refinement import Refinement
+from torchref.math_functions.math_torch import get_scattering_vectors
 
 def analyze_anisotropic_differences(instance, title="Anisotropic Difference Analysis"):
     """

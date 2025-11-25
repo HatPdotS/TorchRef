@@ -7,9 +7,9 @@ import torch
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.solvent import SolventModel
+from torchref.model_ft import ModelFT
+from torchref.Data import ReflectionData
+from torchref.solvent import SolventModel
 
 # Load data
 pdb_path = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_data/tubulin/dark.pdb'

@@ -1,4 +1,4 @@
-from multicopy_refinement.math_torch import find_relevant_voxels
+from torchref.math_functions.math_torch import find_relevant_voxels
 import torch
 
 

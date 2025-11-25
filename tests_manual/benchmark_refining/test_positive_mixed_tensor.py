@@ -9,7 +9,7 @@ import torch
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.parameter_wrappers import PositiveMixedTensor
+from torchref.parameter_wrappers import PositiveMixedTensor
 
 
 def test_basic_creation():

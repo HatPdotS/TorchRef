@@ -11,8 +11,8 @@ import os
 # Add the parent directory to the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from multicopy_refinement.model import Model
-from multicopy_refinement.restraints import Restraints
+from torchref.model import Model
+from torchref.restraints import Restraints
 
 
 def main():

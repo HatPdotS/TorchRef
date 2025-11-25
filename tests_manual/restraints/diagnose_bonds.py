@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from multicopy_refinement.model import Model
-from multicopy_refinement.restraints import Restraints
+from torchref.model import Model
+from torchref.restraints import Restraints
 
 def diagnose_bonds():
     """Diagnose bond length calculation and NLL issues."""

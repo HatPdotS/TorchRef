@@ -1,4 +1,4 @@
-import multicopy_refinement.Model as Model
+import torchref.Model as Model
 import pandas as pd
 from pdb_tools import write_file
 

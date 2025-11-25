@@ -220,6 +220,18 @@ class MixedTensor(nn.Module):
         )
         return new_mixed
     
+    def copy(self) -> 'MixedTensor':
+        """
+        Create a deep copy of this MixedTensor.
+        
+        This is an alias for clone() to follow common Python conventions.
+        Creates a complete independent copy with all buffers and parameters.
+        
+        Returns:
+            New MixedTensor instance with copied data
+        """
+        return self.clone()
+    
     def clip(self, min_value=None, max_value=None) -> 'MixedTensor':
         """Clip the full tensor values between min_value and max_value."""
         full_tensor = self.forward()
@@ -481,7 +493,7 @@ class PositiveMixedTensor(MixedTensor):
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
         name: Optional[str] = None,
-        epsilon: float = 1e-10
+        epsilon: float = 1e-1
     ):
         """
         Initialize a PositiveMixedTensor.
@@ -622,6 +634,31 @@ class PositiveMixedTensor(MixedTensor):
             new_refinable_log,
             requires_grad=self.refinable_params.requires_grad
         )
+    
+    def copy(self) -> 'PositiveMixedTensor':
+        """
+        Create a deep copy of this PositiveMixedTensor.
+        
+        Creates a complete independent copy with all buffers and parameters,
+        properly handling the log-space reparametrization.
+        
+        Returns:
+            New PositiveMixedTensor instance with copied data
+        """
+        # Get current values in normal space
+        current_normal = self.forward().detach()
+        
+        # Create new instance (will convert to log space internally)
+        new_tensor = PositiveMixedTensor(
+            initial_values=current_normal,
+            refinable_mask=self.refinable_mask.clone(),
+            requires_grad=self.refinable_params.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            name=self._name,
+            epsilon=self.epsilon
+        )
+        return new_tensor
     
     def __repr__(self) -> str:
         name_str = f"'{self.name}', " if self.name is not None else ""
@@ -1431,6 +1468,52 @@ class OccupancyTensor(MixedTensor):
             **kwargs
         )
     
+    def copy(self) -> 'OccupancyTensor':
+        """
+        Create a deep copy of this OccupancyTensor.
+        
+        Creates a complete independent copy with all buffers and parameters,
+        including sharing groups, altloc groups, and collapsed storage structures.
+        
+        Returns:
+            New OccupancyTensor instance with copied data
+        """
+        # Get current occupancy values in normal space (full atom space)
+        current_occ = self.forward().detach()
+        
+        # Reconstruct refinable mask in full space
+        full_refinable_mask = self._expand_values(self.refinable_mask.float()).bool()
+        
+        # Reconstruct altloc groups from the linked_occ buffers
+        altloc_groups = []
+        if hasattr(self, 'linked_occ_sizes'):
+            for n_conf in self.linked_occ_sizes:
+                linked_indices = getattr(self, f'linked_occ_{n_conf}')  # shape (N_groups, n_conf)
+                
+                # For each group of linked conformations
+                for group_collapsed_indices in linked_indices:
+                    # Find all atoms that map to each collapsed index
+                    conf_atom_lists = []
+                    for collapsed_idx in group_collapsed_indices:
+                        atom_indices = (self.expansion_mask == collapsed_idx).nonzero(as_tuple=False).squeeze(-1)
+                        conf_atom_lists.append(atom_indices.tolist())
+                    
+                    altloc_groups.append(tuple(conf_atom_lists))
+        
+        # Create new OccupancyTensor with the same configuration
+        new_tensor = OccupancyTensor(
+            initial_values=current_occ,
+            sharing_groups=self.expansion_mask.clone(),
+            altloc_groups=altloc_groups if altloc_groups else None,
+            refinable_mask=full_refinable_mask,
+            requires_grad=self.refinable_params.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            name=self._name,
+            use_sigmoid=self.use_sigmoid
+        )
+        return new_tensor
+    
     def __repr__(self) -> str:
         name_str = f"'{self.name}', " if self.name is not None else ""
         n_groups = self._collapsed_shape
@@ -1440,3 +1523,43 @@ class OccupancyTensor(MixedTensor):
             f"fixed={self.get_fixed_count()}, collapsed_groups={n_groups}, "
             f"use_sigmoid={self.use_sigmoid})"
         )
+
+class PassThroughTensor(nn.Module):
+    """
+    A simple parameter wrapper that passes the parameter through unchanged.
+    
+    This is useful as a placeholder or for parameters that do not require
+    any special handling.
+    """
+    def __init__(self, 
+                 initial_values: torch.Tensor, 
+                 requires_grad: bool = True,
+                 dtype: Optional[torch.dtype] = None,
+                 device: Optional[torch.device] = None,
+                 name: Optional[str] = None):
+        """
+        Initialize the PassThroughTensor.
+        
+        Args:
+            initial_values: Initial tensor values
+            requires_grad: Whether the parameter requires gradients
+            dtype: Data type of the tensor
+            device: Device to place the tensor on
+            name: Optional name for the parameter
+        """
+        super().__init__(
+            initial_values=initial_values,
+            requires_grad=requires_grad,
+            dtype=dtype,
+            device=device,
+            name=name
+        )
+    
+    def forward(self) -> torch.Tensor:
+        """
+        Return the parameter value unchanged.
+        
+        Returns:
+            The parameter tensor
+        """
+        return self.param

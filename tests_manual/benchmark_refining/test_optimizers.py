@@ -6,7 +6,7 @@
 import torch
 import time
 from tqdm import tqdm
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 
 
 # Shared loss function - ensures all optimizers use the same loss calculation

@@ -2,13 +2,13 @@
 #SBATCH -c 16
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/Data/new_french_wilson.out
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.scaler import Scaler
-from multicopy_refinement.Data import ReflectionData
+from torchref.model_ft import ModelFT
+from torchref.scaler import Scaler
+from torchref.Data import ReflectionData
 import torch
 import matplotlib.pyplot as plt
 import os
-from multicopy_refinement.french_wilson import FrenchWilson
+from torchref.french_wilson import FrenchWilson
 import reciprocalspaceship as rs
 
 data = ReflectionData(verbose=2).load_mtz('/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/scaler/dark.mtz')

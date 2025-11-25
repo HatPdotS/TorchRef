@@ -4109,3 +4109,2228 @@ Outlier detection: 189/25970 (0.73%) outliers found
   Log-ratio statistics: mean=0.022, std=0.485
   Z-score threshold: 4.0
 Outlier detection: 189 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 178/25970 (0.69%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.482
+  Z-score threshold: 4.0
+Outlier detection: 178 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1955, Rfree=0.2428, NLL_work=42.21, NLL_test=96.77
+  Step 2/5: Rwork=0.1959, Rfree=0.2424, NLL_work=41.39, NLL_test=95.45
+  Step 3/5: Rwork=0.1952, Rfree=0.2439, NLL_work=41.15, NLL_test=94.39
+  Step 4/5: Rwork=0.1953, Rfree=0.2444, NLL_work=41.13, NLL_test=94.36
+  Step 5/5: Rwork=0.1953, Rfree=0.2443, NLL_work=41.13, NLL_test=94.35
+Scale refinement complete.
+
+Outlier detection: 183/25970 (0.70%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.472
+  Z-score threshold: 4.0
+Outlier detection: 183 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 195/25970 (0.75%) outliers found
+  Log-ratio statistics: mean=0.011, std=0.473
+  Z-score threshold: 4.0
+Outlier detection: 195 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1901, Rfree=0.2431, NLL_work=39.61, NLL_test=101.40
+  Step 2/5: Rwork=0.1904, Rfree=0.2424, NLL_work=38.69, NLL_test=98.67
+  Step 3/5: Rwork=0.1896, Rfree=0.2445, NLL_work=38.49, NLL_test=98.11
+  Step 4/5: Rwork=0.1897, Rfree=0.2446, NLL_work=38.48, NLL_test=98.22
+  Step 5/5: Rwork=0.1897, Rfree=0.2446, NLL_work=38.48, NLL_test=98.22
+Scale refinement complete.
+
+Outlier detection: 196/25970 (0.75%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.464
+  Z-score threshold: 4.0
+Outlier detection: 196 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 199/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.017, std=0.469
+  Z-score threshold: 4.0
+Outlier detection: 199 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1865, Rfree=0.2421, NLL_work=38.01, NLL_test=100.51
+  Step 2/5: Rwork=0.1871, Rfree=0.2423, NLL_work=37.17, NLL_test=98.72
+  Step 3/5: Rwork=0.1862, Rfree=0.2436, NLL_work=36.87, NLL_test=97.80
+  Step 4/5: Rwork=0.1863, Rfree=0.2438, NLL_work=36.86, NLL_test=97.97
+  Step 5/5: Rwork=0.1863, Rfree=0.2438, NLL_work=36.86, NLL_test=97.97
+Scale refinement complete.
+
+Outlier detection: 201/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.009, std=0.459
+  Z-score threshold: 4.0
+Outlier detection: 201 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 216/25970 (0.83%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.463
+  Z-score threshold: 4.0
+Outlier detection: 216 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1825, Rfree=0.2457, NLL_work=36.23, NLL_test=104.92
+  Step 2/5: Rwork=0.1829, Rfree=0.2454, NLL_work=35.30, NLL_test=101.14
+  Step 3/5: Rwork=0.1823, Rfree=0.2469, NLL_work=35.06, NLL_test=101.29
+  Step 4/5: Rwork=0.1823, Rfree=0.2469, NLL_work=35.05, NLL_test=101.20
+  Step 5/5: Rwork=0.1823, Rfree=0.2470, NLL_work=35.05, NLL_test=101.20
+Scale refinement complete.
+
+Outlier detection: 212/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.006, std=0.453
+  Z-score threshold: 4.0
+Outlier detection: 212 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 204/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.459
+  Z-score threshold: 4.0
+Outlier detection: 204 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1805, Rfree=0.2467, NLL_work=35.38, NLL_test=106.78
+  Step 2/5: Rwork=0.1811, Rfree=0.2467, NLL_work=34.46, NLL_test=104.75
+  Step 3/5: Rwork=0.1805, Rfree=0.2492, NLL_work=34.18, NLL_test=103.40
+  Step 4/5: Rwork=0.1804, Rfree=0.2491, NLL_work=34.17, NLL_test=103.47
+  Step 5/5: Rwork=0.1803, Rfree=0.2490, NLL_work=34.17, NLL_test=103.49
+Scale refinement complete.
+
+Outlier detection: 203/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.004, std=0.451
+  Z-score threshold: 4.0
+Outlier detection: 203 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 207/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.010, std=0.460
+  Z-score threshold: 4.0
+Outlier detection: 207 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1781, Rfree=0.2470, NLL_work=34.18, NLL_test=110.35
+  Step 2/5: Rwork=0.1788, Rfree=0.2480, NLL_work=33.32, NLL_test=108.06
+  Step 3/5: Rwork=0.1777, Rfree=0.2493, NLL_work=32.96, NLL_test=106.82
+  Step 4/5: Rwork=0.1778, Rfree=0.2493, NLL_work=32.94, NLL_test=107.05
+  Step 5/5: Rwork=0.1777, Rfree=0.2493, NLL_work=32.94, NLL_test=107.04
+Scale refinement complete.
+
+Outlier detection: 204/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.002, std=0.449
+  Z-score threshold: 4.0
+Outlier detection: 204 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 212/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.456
+  Z-score threshold: 4.0
+Outlier detection: 212 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1764, Rfree=0.2490, NLL_work=33.37, NLL_test=110.11
+  Step 2/5: Rwork=0.1771, Rfree=0.2496, NLL_work=32.56, NLL_test=108.60
+  Step 3/5: Rwork=0.1762, Rfree=0.2518, NLL_work=32.13, NLL_test=107.71
+  Step 4/5: Rwork=0.1760, Rfree=0.2512, NLL_work=32.09, NLL_test=107.32
+  Step 5/5: Rwork=0.1760, Rfree=0.2511, NLL_work=32.09, NLL_test=107.33
+Scale refinement complete.
+
+Outlier detection: 203/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.001, std=0.445
+  Z-score threshold: 4.0
+Outlier detection: 203 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 222/25970 (0.85%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.455
+  Z-score threshold: 4.0
+Outlier detection: 222 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1751, Rfree=0.2480, NLL_work=32.79, NLL_test=109.23
+  Step 2/5: Rwork=0.1752, Rfree=0.2480, NLL_work=31.79, NLL_test=106.21
+  Step 3/5: Rwork=0.1747, Rfree=0.2500, NLL_work=31.48, NLL_test=106.43
+  Step 4/5: Rwork=0.1746, Rfree=0.2499, NLL_work=31.46, NLL_test=106.36
+  Step 5/5: Rwork=0.1746, Rfree=0.2499, NLL_work=31.46, NLL_test=106.33
+Scale refinement complete.
+
+Outlier detection: 213/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=-0.001, std=0.444
+  Z-score threshold: 4.0
+Outlier detection: 213 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.010, std=0.453
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1740, Rfree=0.2501, NLL_work=32.28, NLL_test=109.31
+  Step 2/5: Rwork=0.1747, Rfree=0.2506, NLL_work=31.39, NLL_test=108.95
+  Step 3/5: Rwork=0.1736, Rfree=0.2516, NLL_work=30.99, NLL_test=106.50
+  Step 4/5: Rwork=0.1736, Rfree=0.2517, NLL_work=30.95, NLL_test=106.64
+  Step 5/5: Rwork=0.1735, Rfree=0.2516, NLL_work=30.95, NLL_test=106.60
+Scale refinement complete.
+
+Outlier detection: 217/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=-0.002, std=0.444
+  Z-score threshold: 4.0
+Outlier detection: 217 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.453
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1733, Rfree=0.2512, NLL_work=32.10, NLL_test=112.33
+  Step 2/5: Rwork=0.1737, Rfree=0.2515, NLL_work=31.09, NLL_test=109.67
+  Step 3/5: Rwork=0.1735, Rfree=0.2527, NLL_work=30.99, NLL_test=109.49
+  Step 4/5: Rwork=0.1729, Rfree=0.2530, NLL_work=30.75, NLL_test=109.53
+  Step 5/5: Rwork=0.1728, Rfree=0.2530, NLL_work=30.75, NLL_test=109.50
+Scale refinement complete.
+
+Outlier detection: 217/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=-0.002, std=0.442
+  Z-score threshold: 4.0
+Outlier detection: 217 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 214/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.451
+  Z-score threshold: 4.0
+Outlier detection: 214 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1731, Rfree=0.2519, NLL_work=31.95, NLL_test=110.61
+  Step 2/5: Rwork=0.1735, Rfree=0.2513, NLL_work=31.24, NLL_test=108.70
+  Step 3/5: Rwork=0.1725, Rfree=0.2530, NLL_work=30.64, NLL_test=109.19
+  Step 4/5: Rwork=0.1724, Rfree=0.2531, NLL_work=30.58, NLL_test=108.73
+  Step 5/5: Rwork=0.1724, Rfree=0.2532, NLL_work=30.57, NLL_test=108.74
+Scale refinement complete.
+
+Outlier detection: 220/25970 (0.85%) outliers found
+  Log-ratio statistics: mean=-0.003, std=0.442
+  Z-score threshold: 4.0
+Outlier detection: 220 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 209/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.011, std=0.452
+  Z-score threshold: 4.0
+Outlier detection: 209 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1725, Rfree=0.2530, NLL_work=31.42, NLL_test=114.51
+  Step 2/5: Rwork=0.1728, Rfree=0.2527, NLL_work=30.63, NLL_test=114.49
+  Step 3/5: Rwork=0.1718, Rfree=0.2541, NLL_work=30.09, NLL_test=113.01
+  Step 4/5: Rwork=0.1717, Rfree=0.2544, NLL_work=30.02, NLL_test=112.67
+  Step 5/5: Rwork=0.1717, Rfree=0.2542, NLL_work=30.02, NLL_test=112.35
+Scale refinement complete.
+
+Outlier detection: 210/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=-0.004, std=0.442
+  Z-score threshold: 4.0
+Outlier detection: 210 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 214/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.010, std=0.450
+  Z-score threshold: 4.0
+Outlier detection: 214 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1711, Rfree=0.2564, NLL_work=30.92, NLL_test=116.62
+  Step 2/5: Rwork=0.1712, Rfree=0.2558, NLL_work=30.16, NLL_test=116.34
+  Step 3/5: Rwork=0.1703, Rfree=0.2571, NLL_work=29.54, NLL_test=114.79
+  Step 4/5: Rwork=0.1704, Rfree=0.2572, NLL_work=29.51, NLL_test=114.69
+  Step 5/5: Rwork=0.1704, Rfree=0.2573, NLL_work=29.51, NLL_test=114.68
+Scale refinement complete.
+
+Outlier detection: 223/25970 (0.86%) outliers found
+  Log-ratio statistics: mean=-0.005, std=0.439
+  Z-score threshold: 4.0
+Outlier detection: 223 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 210/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.449
+  Z-score threshold: 4.0
+Outlier detection: 210 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1701, Rfree=0.2576, NLL_work=30.51, NLL_test=120.41
+  Step 2/5: Rwork=0.1699, Rfree=0.2573, NLL_work=29.69, NLL_test=119.95
+  Step 3/5: Rwork=0.1692, Rfree=0.2586, NLL_work=29.07, NLL_test=118.28
+  Step 4/5: Rwork=0.1693, Rfree=0.2588, NLL_work=29.04, NLL_test=118.16
+  Step 5/5: Rwork=0.1693, Rfree=0.2588, NLL_work=29.04, NLL_test=118.12
+Scale refinement complete.
+
+Outlier detection: 212/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=-0.006, std=0.439
+  Z-score threshold: 4.0
+Outlier detection: 212 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 212/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.009, std=0.449
+  Z-score threshold: 4.0
+Outlier detection: 212 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1694, Rfree=0.2591, NLL_work=30.21, NLL_test=121.24
+  Step 2/5: Rwork=0.1724, Rfree=0.2600, NLL_work=29.92, NLL_test=122.57
+  Step 3/5: Rwork=0.1685, Rfree=0.2600, NLL_work=28.80, NLL_test=119.27
+  Step 4/5: Rwork=0.1685, Rfree=0.2601, NLL_work=28.75, NLL_test=119.02
+  Step 5/5: Rwork=0.1685, Rfree=0.2601, NLL_work=28.75, NLL_test=119.05
+Scale refinement complete.
+
+Outlier detection: 223/25970 (0.86%) outliers found
+  Log-ratio statistics: mean=-0.008, std=0.439
+  Z-score threshold: 4.0
+Outlier detection: 223 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 209/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.449
+  Z-score threshold: 4.0
+Outlier detection: 209 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1689, Rfree=0.2590, NLL_work=30.03, NLL_test=121.41
+  Step 2/5: Rwork=0.1690, Rfree=0.2587, NLL_work=29.08, NLL_test=121.24
+  Step 3/5: Rwork=0.1678, Rfree=0.2598, NLL_work=28.57, NLL_test=119.56
+  Step 4/5: Rwork=0.1679, Rfree=0.2600, NLL_work=28.53, NLL_test=119.41
+  Step 5/5: Rwork=0.1680, Rfree=0.2601, NLL_work=28.53, NLL_test=119.42
+Scale refinement complete.
+
+Outlier detection: 219/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=-0.008, std=0.438
+  Z-score threshold: 4.0
+Outlier detection: 219 reflections flagged as outliers out of 25970.
+found nan F values:  0
+found nan F_sigma values:  0
+Suspicious sigma detection: 37/25970 (0.14%) reflections flagged
+Parametrization built for 4 unique atom types
+MapSymmetry initialized for P   2 1   2 1   2 1      
+  Number of symmetry operations: 4
+  Map shape: (134, 141, 75)
+Initialized Scaler with 20 bins.
+Found 109 link definitions
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Built 400 peptide bond restraints
+Built 1200 peptide angle restraints
+Built 400 peptide plane restraints (4 atoms each)
+  plan-1: 400 planes
+
+Building VDW (non-bonded) restraints...
+  Built 31302 VDW restraints (all contacts)
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 21
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+Bonds: 2940
+  Shape: torch.Size([2940, 2])
+  References: min=1.229Å, max=1.812Å, mean=1.446Å
+  Sigmas: min=0.0100Å, max=0.0200Å, mean=0.0131Å
+
+Angles: 3308
+  Shape: torch.Size([3308, 3])
+  References: min=100.693°, max=134.327°, mean=113.805°
+  Sigmas: min=1.5000°, max=3.0000°, mean=1.9909°
+
+Torsions: 1564
+  Shape: torch.Size([1564, 4])
+  References: min=-60.000°, max=180.000°, mean=36.138°
+  Sigmas: min=0.0100°, max=10.0000°, mean=7.9815°
+  Periods: [1, 2, 3, 6]
+
+PEPTIDE LINK RESTRAINTS:
+--------------------------------------------------------------------------------
+Bonds: 400
+  Shape: torch.Size([400, 2])
+  References: min=1.337Å, max=1.337Å, mean=1.337Å
+  Sigmas: min=0.0110Å, max=0.0110Å, mean=0.0110Å
+
+Angles: 1200
+  Shape: torch.Size([1200, 3])
+  References: min=115.917°, max=123.469°, mean=120.494°
+  Sigmas: min=1.5000°, max=1.7600°, mean=1.5867°
+
+BACKBONE TORSION ANGLES:
+--------------------------------------------------------------------------------
+Phi: 400
+  Definition: C(i) - N(i+1) - CA(i+1) - C(i+1)
+  Period: 3
+
+Psi: 400
+  Definition: N(i) - CA(i) - C(i) - N(i+1)
+  Period: 2
+
+Omega: 400
+  Definition: CA(i) - C(i) - N(i+1) - CA(i+1)
+  References: min=180.00°, max=180.00°, mean=180.00°
+  Sigmas: min=5.0000°, max=5.0000°, mean=5.0000°
+  Period: 0
+
+PLANE RESTRAINTS:
+--------------------------------------------------------------------------------
+3_atoms: 424 planes
+  Shape: torch.Size([424, 3])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+4_atoms: 512 planes
+  Shape: torch.Size([512, 4])
+  Sigmas: min=0.0200Å, max=0.1000Å, mean=0.0825Å
+
+6_atoms: 8 planes
+  Shape: torch.Size([8, 6])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+7_atoms: 16 planes
+  Shape: torch.Size([16, 7])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+8_atoms: 30 planes
+  Shape: torch.Size([30, 8])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+
+VDW (NON-BONDED) RESTRAINTS:
+--------------------------------------------------------------------------------
+Pairs: 31302
+  Min distances: 2.900 - 3.600 Å (mean=3.301 Å)
+  Sigma: 0.200 Å
+  Current violations: 2650 (8.5%)
+  Violation range: 0.000 - 1.558 Å (mean=0.303 Å)
+================================================================================
+Calculating initial scale factors using 20 bins.
+Outlier detection: 99/25970 (0.38%) outliers found
+  Log-ratio statistics: mean=0.019, std=0.707
+  Z-score threshold: 4.0
+Outlier detection: 99 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.3419, Rfree=0.3432, NLL_work=134.27, NLL_test=138.52
+  Step 2/5: Rwork=0.3423, Rfree=0.3440, NLL_work=134.14, NLL_test=138.74
+  Step 3/5: Rwork=0.3418, Rfree=0.3438, NLL_work=133.74, NLL_test=137.81
+  Step 4/5: Rwork=0.3419, Rfree=0.3432, NLL_work=133.67, NLL_test=137.72
+  Step 5/5: Rwork=0.3419, Rfree=0.3433, NLL_work=133.67, NLL_test=137.75
+Scale refinement complete.
+
+Outlier detection: 97/25970 (0.37%) outliers found
+  Log-ratio statistics: mean=0.143, std=0.704
+  Z-score threshold: 4.0
+Outlier detection: 97 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 124/25970 (0.48%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.605
+  Z-score threshold: 4.0
+Outlier detection: 124 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2755, Rfree=0.2767, NLL_work=93.72, NLL_test=110.22
+  Step 2/5: Rwork=0.2758, Rfree=0.2766, NLL_work=93.64, NLL_test=110.41
+  Step 3/5: Rwork=0.2760, Rfree=0.2759, NLL_work=93.10, NLL_test=108.51
+  Step 4/5: Rwork=0.2759, Rfree=0.2759, NLL_work=93.07, NLL_test=108.54
+  Step 5/5: Rwork=0.2759, Rfree=0.2758, NLL_work=93.07, NLL_test=108.51
+Scale refinement complete.
+
+Outlier detection: 120/25970 (0.46%) outliers found
+  Log-ratio statistics: mean=0.091, std=0.600
+  Z-score threshold: 4.0
+Outlier detection: 120 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 166/25970 (0.64%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.535
+  Z-score threshold: 4.0
+Outlier detection: 166 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2263, Rfree=0.2513, NLL_work=58.81, NLL_test=93.97
+  Step 2/5: Rwork=0.2264, Rfree=0.2507, NLL_work=58.58, NLL_test=93.94
+  Step 3/5: Rwork=0.2262, Rfree=0.2508, NLL_work=57.97, NLL_test=92.31
+  Step 4/5: Rwork=0.2262, Rfree=0.2516, NLL_work=57.93, NLL_test=92.13
+  Step 5/5: Rwork=0.2262, Rfree=0.2517, NLL_work=57.93, NLL_test=92.10
+Scale refinement complete.
+
+Outlier detection: 175/25970 (0.67%) outliers found
+  Log-ratio statistics: mean=0.045, std=0.529
+  Z-score threshold: 4.0
+Outlier detection: 175 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 184/25970 (0.71%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.497
+  Z-score threshold: 4.0
+Outlier detection: 184 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2064, Rfree=0.2365, NLL_work=48.08, NLL_test=93.53
+  Step 2/5: Rwork=0.2066, Rfree=0.2375, NLL_work=47.28, NLL_test=91.74
+  Step 3/5: Rwork=0.2060, Rfree=0.2379, NLL_work=47.07, NLL_test=91.47
+  Step 4/5: Rwork=0.2061, Rfree=0.2380, NLL_work=47.06, NLL_test=91.32
+  Step 5/5: Rwork=0.2061, Rfree=0.2380, NLL_work=47.06, NLL_test=91.32
+Scale refinement complete.
+
+Outlier detection: 187/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.026, std=0.489
+  Z-score threshold: 4.0
+Outlier detection: 187 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 180/25970 (0.69%) outliers found
+  Log-ratio statistics: mean=0.019, std=0.485
+  Z-score threshold: 4.0
+Outlier detection: 180 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1989, Rfree=0.2366, NLL_work=44.19, NLL_test=93.51
+  Step 2/5: Rwork=0.1998, Rfree=0.2366, NLL_work=43.64, NLL_test=93.22
+  Step 3/5: Rwork=0.1986, Rfree=0.2375, NLL_work=43.09, NLL_test=91.86
+  Step 4/5: Rwork=0.1986, Rfree=0.2378, NLL_work=43.07, NLL_test=91.71
+  Step 5/5: Rwork=0.1987, Rfree=0.2378, NLL_work=43.07, NLL_test=91.72
+Scale refinement complete.
+
+Outlier detection: 187/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.019, std=0.476
+  Z-score threshold: 4.0
+Outlier detection: 187 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 185/25970 (0.71%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.479
+  Z-score threshold: 4.0
+Outlier detection: 185 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1949, Rfree=0.2364, NLL_work=42.29, NLL_test=96.64
+  Step 2/5: Rwork=0.1955, Rfree=0.2353, NLL_work=41.75, NLL_test=93.81
+  Step 3/5: Rwork=0.1947, Rfree=0.2372, NLL_work=41.25, NLL_test=93.41
+  Step 4/5: Rwork=0.1947, Rfree=0.2372, NLL_work=41.22, NLL_test=93.30
+  Step 5/5: Rwork=0.1947, Rfree=0.2373, NLL_work=41.22, NLL_test=93.30
+Scale refinement complete.
+
+Outlier detection: 194/25970 (0.75%) outliers found
+  Log-ratio statistics: mean=0.017, std=0.468
+  Z-score threshold: 4.0
+Outlier detection: 194 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 187/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.472
+  Z-score threshold: 4.0
+Outlier detection: 187 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1898, Rfree=0.2352, NLL_work=39.51, NLL_test=95.00
+  Step 2/5: Rwork=0.1906, Rfree=0.2353, NLL_work=38.89, NLL_test=93.99
+  Step 3/5: Rwork=0.1894, Rfree=0.2364, NLL_work=38.42, NLL_test=93.29
+  Step 4/5: Rwork=0.1894, Rfree=0.2363, NLL_work=38.40, NLL_test=93.19
+  Step 5/5: Rwork=0.1894, Rfree=0.2363, NLL_work=38.40, NLL_test=93.18
+Scale refinement complete.
+
+Outlier detection: 194/25970 (0.75%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.462
+  Z-score threshold: 4.0
+Outlier detection: 194 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 196/25970 (0.75%) outliers found
+  Log-ratio statistics: mean=0.010, std=0.467
+  Z-score threshold: 4.0
+Outlier detection: 196 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1854, Rfree=0.2390, NLL_work=37.48, NLL_test=99.62
+  Step 2/5: Rwork=0.1865, Rfree=0.2390, NLL_work=36.79, NLL_test=97.84
+  Step 3/5: Rwork=0.1851, Rfree=0.2402, NLL_work=36.37, NLL_test=97.08
+  Step 4/5: Rwork=0.1851, Rfree=0.2400, NLL_work=36.34, NLL_test=96.43
+  Step 5/5: Rwork=0.1851, Rfree=0.2400, NLL_work=36.34, NLL_test=96.43
+Scale refinement complete.
+
+Outlier detection: 202/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.010, std=0.458
+  Z-score threshold: 4.0
+Outlier detection: 202 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 196/25970 (0.75%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.460
+  Z-score threshold: 4.0
+Outlier detection: 196 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1817, Rfree=0.2399, NLL_work=35.80, NLL_test=101.26
+  Step 2/5: Rwork=0.1835, Rfree=0.2406, NLL_work=35.23, NLL_test=97.75
+  Step 3/5: Rwork=0.1813, Rfree=0.2412, NLL_work=34.68, NLL_test=97.38
+  Step 4/5: Rwork=0.1814, Rfree=0.2415, NLL_work=34.66, NLL_test=98.54
+  Step 5/5: Rwork=0.1814, Rfree=0.2415, NLL_work=34.66, NLL_test=98.57
+Scale refinement complete.
+
+Outlier detection: 204/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.005, std=0.450
+  Z-score threshold: 4.0
+Outlier detection: 204 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 204/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.010, std=0.460
+  Z-score threshold: 4.0
+Outlier detection: 204 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1807, Rfree=0.2414, NLL_work=35.28, NLL_test=103.49
+  Step 2/5: Rwork=0.1810, Rfree=0.2404, NLL_work=34.66, NLL_test=102.07
+  Step 3/5: Rwork=0.1801, Rfree=0.2421, NLL_work=34.12, NLL_test=99.76
+  Step 4/5: Rwork=0.1802, Rfree=0.2422, NLL_work=34.10, NLL_test=99.74
+  Step 5/5: Rwork=0.1802, Rfree=0.2422, NLL_work=34.10, NLL_test=99.70
+Scale refinement complete.
+
+Outlier detection: 199/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.005, std=0.449
+  Z-score threshold: 4.0
+Outlier detection: 199 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 198/25970 (0.76%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.459
+  Z-score threshold: 4.0
+Outlier detection: 198 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1805, Rfree=0.2404, NLL_work=35.25, NLL_test=102.06
+  Step 2/5: Rwork=0.1811, Rfree=0.2409, NLL_work=34.49, NLL_test=99.59
+  Step 3/5: Rwork=0.1801, Rfree=0.2421, NLL_work=34.14, NLL_test=99.27
+  Step 4/5: Rwork=0.1800, Rfree=0.2421, NLL_work=34.12, NLL_test=99.23
+  Step 5/5: Rwork=0.1801, Rfree=0.2422, NLL_work=34.12, NLL_test=99.22
+Scale refinement complete.
+
+Outlier detection: 197/25970 (0.76%) outliers found
+  Log-ratio statistics: mean=0.005, std=0.449
+  Z-score threshold: 4.0
+Outlier detection: 197 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 200/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.458
+  Z-score threshold: 4.0
+Outlier detection: 200 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1787, Rfree=0.2429, NLL_work=34.39, NLL_test=104.26
+  Step 2/5: Rwork=0.1794, Rfree=0.2427, NLL_work=33.76, NLL_test=102.55
+  Step 3/5: Rwork=0.1784, Rfree=0.2445, NLL_work=33.24, NLL_test=102.50
+  Step 4/5: Rwork=0.1783, Rfree=0.2444, NLL_work=33.19, NLL_test=102.16
+  Step 5/5: Rwork=0.1783, Rfree=0.2444, NLL_work=33.19, NLL_test=102.17
+Scale refinement complete.
+
+Outlier detection: 202/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.003, std=0.448
+  Z-score threshold: 4.0
+Outlier detection: 202 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 207/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.009, std=0.454
+  Z-score threshold: 4.0
+Outlier detection: 207 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1767, Rfree=0.2433, NLL_work=33.51, NLL_test=104.81
+  Step 2/5: Rwork=0.1774, Rfree=0.2434, NLL_work=32.86, NLL_test=102.39
+  Step 3/5: Rwork=0.1766, Rfree=0.2443, NLL_work=32.35, NLL_test=101.81
+  Step 4/5: Rwork=0.1763, Rfree=0.2445, NLL_work=32.29, NLL_test=102.02
+  Step 5/5: Rwork=0.1763, Rfree=0.2446, NLL_work=32.29, NLL_test=102.10
+Scale refinement complete.
+
+Outlier detection: 207/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.001, std=0.445
+  Z-score threshold: 4.0
+Outlier detection: 207 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 205/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.457
+  Z-score threshold: 4.0
+Outlier detection: 205 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1754, Rfree=0.2451, NLL_work=32.84, NLL_test=105.28
+  Step 2/5: Rwork=0.1763, Rfree=0.2452, NLL_work=32.11, NLL_test=103.75
+  Step 3/5: Rwork=0.1751, Rfree=0.2467, NLL_work=31.63, NLL_test=102.89
+  Step 4/5: Rwork=0.1749, Rfree=0.2465, NLL_work=31.56, NLL_test=103.01
+  Step 5/5: Rwork=0.1749, Rfree=0.2465, NLL_work=31.56, NLL_test=102.96
+Scale refinement complete.
+
+Outlier detection: 206/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.000, std=0.445
+  Z-score threshold: 4.0
+Outlier detection: 206 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 218/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.453
+  Z-score threshold: 4.0
+Outlier detection: 218 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1738, Rfree=0.2461, NLL_work=32.20, NLL_test=109.18
+  Step 2/5: Rwork=0.1743, Rfree=0.2466, NLL_work=31.33, NLL_test=108.56
+  Step 3/5: Rwork=0.1733, Rfree=0.2477, NLL_work=30.96, NLL_test=107.34
+  Step 4/5: Rwork=0.1732, Rfree=0.2478, NLL_work=30.91, NLL_test=106.81
+  Step 5/5: Rwork=0.1732, Rfree=0.2478, NLL_work=30.91, NLL_test=106.83
+Scale refinement complete.
+
+Outlier detection: 225/25970 (0.87%) outliers found
+  Log-ratio statistics: mean=-0.002, std=0.442
+  Z-score threshold: 4.0
+Outlier detection: 225 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 204/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.452
+  Z-score threshold: 4.0
+Outlier detection: 204 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1728, Rfree=0.2492, NLL_work=31.76, NLL_test=111.44
+  Step 2/5: Rwork=0.1729, Rfree=0.2488, NLL_work=31.01, NLL_test=110.85
+  Step 3/5: Rwork=0.1722, Rfree=0.2507, NLL_work=30.46, NLL_test=109.03
+  Step 4/5: Rwork=0.1723, Rfree=0.2506, NLL_work=30.42, NLL_test=108.91
+  Step 5/5: Rwork=0.1722, Rfree=0.2507, NLL_work=30.42, NLL_test=108.95
+Scale refinement complete.
+
+Outlier detection: 217/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=-0.003, std=0.441
+  Z-score threshold: 4.0
+Outlier detection: 217 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 220/25970 (0.85%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.451
+  Z-score threshold: 4.0
+Outlier detection: 220 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1720, Rfree=0.2498, NLL_work=31.61, NLL_test=114.88
+  Step 2/5: Rwork=0.1735, Rfree=0.2516, NLL_work=30.83, NLL_test=112.87
+  Step 3/5: Rwork=0.1714, Rfree=0.2512, NLL_work=30.21, NLL_test=110.17
+  Step 4/5: Rwork=0.1714, Rfree=0.2515, NLL_work=30.18, NLL_test=110.09
+  Step 5/5: Rwork=0.1714, Rfree=0.2515, NLL_work=30.18, NLL_test=110.11
+Scale refinement complete.
+
+Outlier detection: 232/25970 (0.89%) outliers found
+  Log-ratio statistics: mean=-0.004, std=0.439
+  Z-score threshold: 4.0
+Outlier detection: 232 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 219/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.450
+  Z-score threshold: 4.0
+Outlier detection: 219 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1713, Rfree=0.2508, NLL_work=31.12, NLL_test=113.15
+  Step 2/5: Rwork=0.1716, Rfree=0.2510, NLL_work=30.16, NLL_test=111.48
+  Step 3/5: Rwork=0.1708, Rfree=0.2526, NLL_work=29.84, NLL_test=110.43
+  Step 4/5: Rwork=0.1708, Rfree=0.2529, NLL_work=29.83, NLL_test=110.49
+  Step 5/5: Rwork=0.1708, Rfree=0.2530, NLL_work=29.83, NLL_test=110.50
+Scale refinement complete.
+
+Outlier detection: 228/25970 (0.88%) outliers found
+  Log-ratio statistics: mean=-0.004, std=0.439
+  Z-score threshold: 4.0
+Outlier detection: 228 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 225/25970 (0.87%) outliers found
+  Log-ratio statistics: mean=0.020, std=0.449
+  Z-score threshold: 4.0
+Outlier detection: 225 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1707, Rfree=0.2525, NLL_work=31.00, NLL_test=113.66
+  Step 2/5: Rwork=0.1708, Rfree=0.2532, NLL_work=30.05, NLL_test=113.11
+  Step 3/5: Rwork=0.1699, Rfree=0.2537, NLL_work=29.64, NLL_test=112.36
+  Step 4/5: Rwork=0.1700, Rfree=0.2542, NLL_work=29.61, NLL_test=112.18
+  Step 5/5: Rwork=0.1700, Rfree=0.2542, NLL_work=29.61, NLL_test=112.16
+Scale refinement complete.
+
+Outlier detection: 231/25970 (0.89%) outliers found
+  Log-ratio statistics: mean=-0.005, std=0.438
+  Z-score threshold: 4.0
+Outlier detection: 231 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 218/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.009, std=0.449
+  Z-score threshold: 4.0
+Outlier detection: 218 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1703, Rfree=0.2532, NLL_work=30.79, NLL_test=118.32
+  Step 2/5: Rwork=0.1703, Rfree=0.2532, NLL_work=29.72, NLL_test=115.89
+  Step 3/5: Rwork=0.1697, Rfree=0.2550, NLL_work=29.44, NLL_test=115.97
+  Step 4/5: Rwork=0.1697, Rfree=0.2551, NLL_work=29.44, NLL_test=115.93
+  Step 5/5: Rwork=0.1697, Rfree=0.2551, NLL_work=29.44, NLL_test=115.95
+Scale refinement complete.
+
+Outlier detection: 234/25970 (0.90%) outliers found
+  Log-ratio statistics: mean=-0.005, std=0.438
+  Z-score threshold: 4.0
+Outlier detection: 234 reflections flagged as outliers out of 25970.
+found nan F values:  0
+found nan F_sigma values:  0
+Suspicious sigma detection: 37/25970 (0.14%) reflections flagged
+Parametrization built for 4 unique atom types
+MapSymmetry initialized for P   2 1   2 1   2 1      
+  Number of symmetry operations: 4
+  Map shape: (134, 141, 75)
+Initialized Scaler with 20 bins.
+Found 109 link definitions
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Built 400 peptide bond restraints
+Built 1200 peptide angle restraints
+Built 400 peptide plane restraints (4 atoms each)
+  plan-1: 400 planes
+
+Building VDW (non-bonded) restraints...
+  Built 31302 VDW restraints (all contacts)
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 21
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+Bonds: 2940
+  Shape: torch.Size([2940, 2])
+  References: min=1.229Å, max=1.812Å, mean=1.446Å
+  Sigmas: min=0.0100Å, max=0.0200Å, mean=0.0131Å
+
+Angles: 3308
+  Shape: torch.Size([3308, 3])
+  References: min=100.693°, max=134.327°, mean=113.805°
+  Sigmas: min=1.5000°, max=3.0000°, mean=1.9909°
+
+Torsions: 1564
+  Shape: torch.Size([1564, 4])
+  References: min=-60.000°, max=180.000°, mean=36.138°
+  Sigmas: min=0.0100°, max=10.0000°, mean=7.9815°
+  Periods: [1, 2, 3, 6]
+
+PEPTIDE LINK RESTRAINTS:
+--------------------------------------------------------------------------------
+Bonds: 400
+  Shape: torch.Size([400, 2])
+  References: min=1.337Å, max=1.337Å, mean=1.337Å
+  Sigmas: min=0.0110Å, max=0.0110Å, mean=0.0110Å
+
+Angles: 1200
+  Shape: torch.Size([1200, 3])
+  References: min=115.917°, max=123.469°, mean=120.494°
+  Sigmas: min=1.5000°, max=1.7600°, mean=1.5867°
+
+BACKBONE TORSION ANGLES:
+--------------------------------------------------------------------------------
+Phi: 400
+  Definition: C(i) - N(i+1) - CA(i+1) - C(i+1)
+  Period: 3
+
+Psi: 400
+  Definition: N(i) - CA(i) - C(i) - N(i+1)
+  Period: 2
+
+Omega: 400
+  Definition: CA(i) - C(i) - N(i+1) - CA(i+1)
+  References: min=180.00°, max=180.00°, mean=180.00°
+  Sigmas: min=5.0000°, max=5.0000°, mean=5.0000°
+  Period: 0
+
+PLANE RESTRAINTS:
+--------------------------------------------------------------------------------
+3_atoms: 424 planes
+  Shape: torch.Size([424, 3])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+4_atoms: 512 planes
+  Shape: torch.Size([512, 4])
+  Sigmas: min=0.0200Å, max=0.1000Å, mean=0.0825Å
+
+6_atoms: 8 planes
+  Shape: torch.Size([8, 6])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+7_atoms: 16 planes
+  Shape: torch.Size([16, 7])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+8_atoms: 30 planes
+  Shape: torch.Size([30, 8])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+
+VDW (NON-BONDED) RESTRAINTS:
+--------------------------------------------------------------------------------
+Pairs: 31302
+  Min distances: 2.900 - 3.600 Å (mean=3.301 Å)
+  Sigma: 0.200 Å
+  Current violations: 2650 (8.5%)
+  Violation range: 0.000 - 1.558 Å (mean=0.303 Å)
+================================================================================
+Calculating initial scale factors using 20 bins.
+Outlier detection: 99/25970 (0.38%) outliers found
+  Log-ratio statistics: mean=0.017, std=0.707
+  Z-score threshold: 4.0
+Outlier detection: 99 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.3425, Rfree=0.3443, NLL_work=134.32, NLL_test=138.84
+  Step 2/5: Rwork=0.3423, Rfree=0.3435, NLL_work=134.17, NLL_test=138.71
+  Step 3/5: Rwork=0.3422, Rfree=0.3444, NLL_work=133.73, NLL_test=137.89
+  Step 4/5: Rwork=0.3420, Rfree=0.3435, NLL_work=133.67, NLL_test=137.76
+  Step 5/5: Rwork=0.3420, Rfree=0.3434, NLL_work=133.67, NLL_test=137.74
+Scale refinement complete.
+
+Outlier detection: 97/25970 (0.37%) outliers found
+  Log-ratio statistics: mean=0.143, std=0.704
+  Z-score threshold: 4.0
+Outlier detection: 97 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 131/25970 (0.50%) outliers found
+  Log-ratio statistics: mean=0.018, std=0.610
+  Z-score threshold: 4.0
+Outlier detection: 131 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2773, Rfree=0.2795, NLL_work=94.95, NLL_test=114.18
+  Step 2/5: Rwork=0.2775, Rfree=0.2798, NLL_work=94.88, NLL_test=114.28
+  Step 3/5: Rwork=0.2778, Rfree=0.2794, NLL_work=94.38, NLL_test=113.76
+  Step 4/5: Rwork=0.2778, Rfree=0.2793, NLL_work=94.28, NLL_test=112.96
+  Step 5/5: Rwork=0.2778, Rfree=0.2793, NLL_work=94.28, NLL_test=112.93
+Scale refinement complete.
+
+Outlier detection: 136/25970 (0.52%) outliers found
+  Log-ratio statistics: mean=0.093, std=0.607
+  Z-score threshold: 4.0
+Outlier detection: 136 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 156/25970 (0.60%) outliers found
+  Log-ratio statistics: mean=0.017, std=0.544
+  Z-score threshold: 4.0
+Outlier detection: 156 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2362, Rfree=0.2572, NLL_work=64.73, NLL_test=100.75
+  Step 2/5: Rwork=0.2366, Rfree=0.2566, NLL_work=64.31, NLL_test=100.09
+  Step 3/5: Rwork=0.2359, Rfree=0.2569, NLL_work=63.87, NLL_test=98.64
+  Step 4/5: Rwork=0.2358, Rfree=0.2580, NLL_work=63.82, NLL_test=98.61
+  Step 5/5: Rwork=0.2358, Rfree=0.2581, NLL_work=63.82, NLL_test=98.58
+Scale refinement complete.
+
+Outlier detection: 165/25970 (0.64%) outliers found
+  Log-ratio statistics: mean=0.052, std=0.538
+  Z-score threshold: 4.0
+Outlier detection: 165 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 182/25970 (0.70%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.519
+  Z-score threshold: 4.0
+Outlier detection: 182 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2150, Rfree=0.2444, NLL_work=52.61, NLL_test=97.52
+  Step 2/5: Rwork=0.2156, Rfree=0.2451, NLL_work=52.07, NLL_test=96.24
+  Step 3/5: Rwork=0.2149, Rfree=0.2454, NLL_work=51.67, NLL_test=95.94
+  Step 4/5: Rwork=0.2150, Rfree=0.2458, NLL_work=51.64, NLL_test=95.49
+  Step 5/5: Rwork=0.2150, Rfree=0.2458, NLL_work=51.64, NLL_test=95.48
+Scale refinement complete.
+
+Outlier detection: 187/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.035, std=0.511
+  Z-score threshold: 4.0
+Outlier detection: 187 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 190/25970 (0.73%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.492
+  Z-score threshold: 4.0
+Outlier detection: 190 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2026, Rfree=0.2430, NLL_work=46.12, NLL_test=95.21
+  Step 2/5: Rwork=0.2039, Rfree=0.2448, NLL_work=45.57, NLL_test=94.09
+  Step 3/5: Rwork=0.2023, Rfree=0.2443, NLL_work=45.08, NLL_test=93.17
+  Step 4/5: Rwork=0.2024, Rfree=0.2449, NLL_work=45.06, NLL_test=93.20
+  Step 5/5: Rwork=0.2023, Rfree=0.2448, NLL_work=45.06, NLL_test=93.20
+Scale refinement complete.
+
+Outlier detection: 199/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.022, std=0.482
+  Z-score threshold: 4.0
+Outlier detection: 199 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 189/25970 (0.73%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.480
+  Z-score threshold: 4.0
+Outlier detection: 189 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1949, Rfree=0.2370, NLL_work=42.11, NLL_test=94.27
+  Step 2/5: Rwork=0.1956, Rfree=0.2378, NLL_work=41.36, NLL_test=92.95
+  Step 3/5: Rwork=0.1944, Rfree=0.2387, NLL_work=40.98, NLL_test=92.85
+  Step 4/5: Rwork=0.1946, Rfree=0.2389, NLL_work=40.95, NLL_test=92.40
+  Step 5/5: Rwork=0.1946, Rfree=0.2389, NLL_work=40.95, NLL_test=92.39
+Scale refinement complete.
+
+Outlier detection: 192/25970 (0.74%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.469
+  Z-score threshold: 4.0
+Outlier detection: 192 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 182/25970 (0.70%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.470
+  Z-score threshold: 4.0
+Outlier detection: 182 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1876, Rfree=0.2429, NLL_work=38.38, NLL_test=100.00
+  Step 2/5: Rwork=0.1885, Rfree=0.2435, NLL_work=37.67, NLL_test=98.47
+  Step 3/5: Rwork=0.1875, Rfree=0.2440, NLL_work=37.28, NLL_test=96.78
+  Step 4/5: Rwork=0.1872, Rfree=0.2448, NLL_work=37.21, NLL_test=96.54
+  Step 5/5: Rwork=0.1872, Rfree=0.2449, NLL_work=37.21, NLL_test=96.53
+Scale refinement complete.
+
+Outlier detection: 200/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.011, std=0.462
+  Z-score threshold: 4.0
+Outlier detection: 200 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 195/25970 (0.75%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.467
+  Z-score threshold: 4.0
+Outlier detection: 195 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1838, Rfree=0.2413, NLL_work=36.61, NLL_test=104.11
+  Step 2/5: Rwork=0.1843, Rfree=0.2417, NLL_work=35.80, NLL_test=102.56
+  Step 3/5: Rwork=0.1835, Rfree=0.2432, NLL_work=35.47, NLL_test=101.34
+  Step 4/5: Rwork=0.1835, Rfree=0.2433, NLL_work=35.45, NLL_test=101.43
+  Step 5/5: Rwork=0.1835, Rfree=0.2433, NLL_work=35.45, NLL_test=101.40
+Scale refinement complete.
+
+Outlier detection: 200/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.008, std=0.456
+  Z-score threshold: 4.0
+Outlier detection: 200 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 202/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.463
+  Z-score threshold: 4.0
+Outlier detection: 202 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1809, Rfree=0.2448, NLL_work=35.19, NLL_test=102.66
+  Step 2/5: Rwork=0.1816, Rfree=0.2452, NLL_work=34.59, NLL_test=101.96
+  Step 3/5: Rwork=0.1802, Rfree=0.2467, NLL_work=34.05, NLL_test=100.77
+  Step 4/5: Rwork=0.1803, Rfree=0.2468, NLL_work=34.02, NLL_test=100.64
+  Step 5/5: Rwork=0.1803, Rfree=0.2468, NLL_work=34.02, NLL_test=100.60
+Scale refinement complete.
+
+Outlier detection: 201/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.006, std=0.453
+  Z-score threshold: 4.0
+Outlier detection: 201 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 206/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.462
+  Z-score threshold: 4.0
+Outlier detection: 206 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1784, Rfree=0.2456, NLL_work=34.08, NLL_test=105.99
+  Step 2/5: Rwork=0.1785, Rfree=0.2460, NLL_work=33.29, NLL_test=105.18
+  Step 3/5: Rwork=0.1782, Rfree=0.2475, NLL_work=32.89, NLL_test=103.12
+  Step 4/5: Rwork=0.1781, Rfree=0.2480, NLL_work=32.84, NLL_test=103.01
+  Step 5/5: Rwork=0.1781, Rfree=0.2481, NLL_work=32.84, NLL_test=103.04
+Scale refinement complete.
+
+Outlier detection: 216/25970 (0.83%) outliers found
+  Log-ratio statistics: mean=0.003, std=0.450
+  Z-score threshold: 4.0
+Outlier detection: 216 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.460
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1767, Rfree=0.2464, NLL_work=33.51, NLL_test=101.95
+  Step 2/5: Rwork=0.1772, Rfree=0.2460, NLL_work=32.89, NLL_test=101.95
+  Step 3/5: Rwork=0.1762, Rfree=0.2484, NLL_work=32.28, NLL_test=99.12
+  Step 4/5: Rwork=0.1762, Rfree=0.2484, NLL_work=32.23, NLL_test=99.83
+  Step 5/5: Rwork=0.1762, Rfree=0.2485, NLL_work=32.23, NLL_test=99.84
+Scale refinement complete.
+
+Outlier detection: 211/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.002, std=0.450
+  Z-score threshold: 4.0
+Outlier detection: 211 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 217/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.459
+  Z-score threshold: 4.0
+Outlier detection: 217 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1760, Rfree=0.2470, NLL_work=33.20, NLL_test=105.22
+  Step 2/5: Rwork=0.1771, Rfree=0.2474, NLL_work=32.43, NLL_test=105.27
+  Step 3/5: Rwork=0.1754, Rfree=0.2489, NLL_work=31.96, NLL_test=103.03
+  Step 4/5: Rwork=0.1755, Rfree=0.2489, NLL_work=31.92, NLL_test=103.07
+  Step 5/5: Rwork=0.1755, Rfree=0.2490, NLL_work=31.92, NLL_test=103.06
+Scale refinement complete.
+
+Outlier detection: 219/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.002, std=0.450
+  Z-score threshold: 4.0
+Outlier detection: 219 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.458
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1752, Rfree=0.2495, NLL_work=32.82, NLL_test=106.60
+  Step 2/5: Rwork=0.1760, Rfree=0.2497, NLL_work=31.99, NLL_test=105.49
+  Step 3/5: Rwork=0.1747, Rfree=0.2515, NLL_work=31.56, NLL_test=104.39
+  Step 4/5: Rwork=0.1747, Rfree=0.2515, NLL_work=31.54, NLL_test=104.39
+  Step 5/5: Rwork=0.1747, Rfree=0.2515, NLL_work=31.54, NLL_test=104.40
+Scale refinement complete.
+
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.001, std=0.449
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 218/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.011, std=0.455
+  Z-score threshold: 4.0
+Outlier detection: 218 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1728, Rfree=0.2562, NLL_work=31.61, NLL_test=117.60
+  Step 2/5: Rwork=0.1728, Rfree=0.2562, NLL_work=30.75, NLL_test=116.45
+  Step 3/5: Rwork=0.1721, Rfree=0.2577, NLL_work=30.25, NLL_test=115.32
+  Step 4/5: Rwork=0.1721, Rfree=0.2578, NLL_work=30.22, NLL_test=115.48
+  Step 5/5: Rwork=0.1721, Rfree=0.2578, NLL_work=30.22, NLL_test=115.44
+Scale refinement complete.
+
+Outlier detection: 216/25970 (0.83%) outliers found
+  Log-ratio statistics: mean=-0.003, std=0.445
+  Z-score threshold: 4.0
+Outlier detection: 216 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 215/25970 (0.83%) outliers found
+  Log-ratio statistics: mean=0.011, std=0.453
+  Z-score threshold: 4.0
+Outlier detection: 215 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1712, Rfree=0.2570, NLL_work=30.95, NLL_test=120.33
+  Step 2/5: Rwork=0.1712, Rfree=0.2575, NLL_work=30.01, NLL_test=117.81
+  Step 3/5: Rwork=0.1705, Rfree=0.2591, NLL_work=29.62, NLL_test=116.93
+  Step 4/5: Rwork=0.1705, Rfree=0.2592, NLL_work=29.61, NLL_test=117.22
+  Step 5/5: Rwork=0.1705, Rfree=0.2592, NLL_work=29.61, NLL_test=117.22
+Scale refinement complete.
+
+Outlier detection: 215/25970 (0.83%) outliers found
+  Log-ratio statistics: mean=-0.005, std=0.442
+  Z-score threshold: 4.0
+Outlier detection: 215 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 221/25970 (0.85%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.451
+  Z-score threshold: 4.0
+Outlier detection: 221 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1706, Rfree=0.2589, NLL_work=30.79, NLL_test=119.19
+  Step 2/5: Rwork=0.1713, Rfree=0.2594, NLL_work=30.08, NLL_test=119.50
+  Step 3/5: Rwork=0.1699, Rfree=0.2604, NLL_work=29.40, NLL_test=116.87
+  Step 4/5: Rwork=0.1697, Rfree=0.2605, NLL_work=29.35, NLL_test=117.43
+  Step 5/5: Rwork=0.1697, Rfree=0.2605, NLL_work=29.35, NLL_test=117.49
+Scale refinement complete.
+
+Outlier detection: 222/25970 (0.85%) outliers found
+  Log-ratio statistics: mean=-0.005, std=0.440
+  Z-score threshold: 4.0
+Outlier detection: 222 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 217/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.011, std=0.451
+  Z-score threshold: 4.0
+Outlier detection: 217 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1699, Rfree=0.2592, NLL_work=30.46, NLL_test=121.59
+  Step 2/5: Rwork=0.1698, Rfree=0.2590, NLL_work=29.57, NLL_test=120.37
+  Step 3/5: Rwork=0.1691, Rfree=0.2604, NLL_work=29.13, NLL_test=118.85
+  Step 4/5: Rwork=0.1691, Rfree=0.2607, NLL_work=29.11, NLL_test=118.94
+  Step 5/5: Rwork=0.1691, Rfree=0.2607, NLL_work=29.10, NLL_test=118.95
+Scale refinement complete.
+
+Outlier detection: 217/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=-0.006, std=0.439
+  Z-score threshold: 4.0
+Outlier detection: 217 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 212/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.450
+  Z-score threshold: 4.0
+Outlier detection: 212 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1693, Rfree=0.2602, NLL_work=30.28, NLL_test=121.51
+  Step 2/5: Rwork=0.1693, Rfree=0.2595, NLL_work=29.36, NLL_test=122.38
+  Step 3/5: Rwork=0.1686, Rfree=0.2616, NLL_work=28.85, NLL_test=120.01
+  Step 4/5: Rwork=0.1684, Rfree=0.2609, NLL_work=28.81, NLL_test=119.50
+  Step 5/5: Rwork=0.1684, Rfree=0.2609, NLL_work=28.81, NLL_test=119.53
+Scale refinement complete.
+
+Outlier detection: 215/25970 (0.83%) outliers found
+  Log-ratio statistics: mean=-0.006, std=0.441
+  Z-score threshold: 4.0
+Outlier detection: 215 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 224/25970 (0.86%) outliers found
+  Log-ratio statistics: mean=0.009, std=0.447
+  Z-score threshold: 4.0
+Outlier detection: 224 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1683, Rfree=0.2639, NLL_work=29.83, NLL_test=126.56
+  Step 2/5: Rwork=0.1682, Rfree=0.2632, NLL_work=29.04, NLL_test=124.88
+  Step 3/5: Rwork=0.1674, Rfree=0.2648, NLL_work=28.37, NLL_test=124.77
+  Step 4/5: Rwork=0.1673, Rfree=0.2649, NLL_work=28.33, NLL_test=124.40
+  Step 5/5: Rwork=0.1673, Rfree=0.2649, NLL_work=28.33, NLL_test=124.41
+Scale refinement complete.
+
+Outlier detection: 227/25970 (0.87%) outliers found
+  Log-ratio statistics: mean=-0.009, std=0.436
+  Z-score threshold: 4.0
+Outlier detection: 227 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 224/25970 (0.86%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.448
+  Z-score threshold: 4.0
+Outlier detection: 224 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1677, Rfree=0.2638, NLL_work=29.58, NLL_test=125.18
+  Step 2/5: Rwork=0.1678, Rfree=0.2632, NLL_work=28.98, NLL_test=123.85
+  Step 3/5: Rwork=0.1666, Rfree=0.2647, NLL_work=28.12, NLL_test=124.41
+  Step 4/5: Rwork=0.1667, Rfree=0.2648, NLL_work=28.04, NLL_test=123.92
+  Step 5/5: Rwork=0.1666, Rfree=0.2646, NLL_work=28.04, NLL_test=123.76
+Scale refinement complete.
+
+Outlier detection: 222/25970 (0.85%) outliers found
+  Log-ratio statistics: mean=-0.009, std=0.436
+  Z-score threshold: 4.0
+Outlier detection: 222 reflections flagged as outliers out of 25970.
+found nan F values:  0
+found nan F_sigma values:  0
+Suspicious sigma detection: 37/25970 (0.14%) reflections flagged
+Parametrization built for 4 unique atom types
+MapSymmetry initialized for P   2 1   2 1   2 1      
+  Number of symmetry operations: 4
+  Map shape: (134, 141, 75)
+Initialized Scaler with 20 bins.
+Found 109 link definitions
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Built 400 peptide bond restraints
+Built 1200 peptide angle restraints
+Built 400 peptide plane restraints (4 atoms each)
+  plan-1: 400 planes
+
+Building VDW (non-bonded) restraints...
+  Built 31302 VDW restraints (all contacts)
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 21
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+Bonds: 2940
+  Shape: torch.Size([2940, 2])
+  References: min=1.229Å, max=1.812Å, mean=1.446Å
+  Sigmas: min=0.0100Å, max=0.0200Å, mean=0.0131Å
+
+Angles: 3308
+  Shape: torch.Size([3308, 3])
+  References: min=100.693°, max=134.327°, mean=113.805°
+  Sigmas: min=1.5000°, max=3.0000°, mean=1.9909°
+
+Torsions: 1564
+  Shape: torch.Size([1564, 4])
+  References: min=-60.000°, max=180.000°, mean=36.138°
+  Sigmas: min=0.0100°, max=10.0000°, mean=7.9815°
+  Periods: [1, 2, 3, 6]
+
+PEPTIDE LINK RESTRAINTS:
+--------------------------------------------------------------------------------
+Bonds: 400
+  Shape: torch.Size([400, 2])
+  References: min=1.337Å, max=1.337Å, mean=1.337Å
+  Sigmas: min=0.0110Å, max=0.0110Å, mean=0.0110Å
+
+Angles: 1200
+  Shape: torch.Size([1200, 3])
+  References: min=115.917°, max=123.469°, mean=120.494°
+  Sigmas: min=1.5000°, max=1.7600°, mean=1.5867°
+
+BACKBONE TORSION ANGLES:
+--------------------------------------------------------------------------------
+Phi: 400
+  Definition: C(i) - N(i+1) - CA(i+1) - C(i+1)
+  Period: 3
+
+Psi: 400
+  Definition: N(i) - CA(i) - C(i) - N(i+1)
+  Period: 2
+
+Omega: 400
+  Definition: CA(i) - C(i) - N(i+1) - CA(i+1)
+  References: min=180.00°, max=180.00°, mean=180.00°
+  Sigmas: min=5.0000°, max=5.0000°, mean=5.0000°
+  Period: 0
+
+PLANE RESTRAINTS:
+--------------------------------------------------------------------------------
+3_atoms: 424 planes
+  Shape: torch.Size([424, 3])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+4_atoms: 512 planes
+  Shape: torch.Size([512, 4])
+  Sigmas: min=0.0200Å, max=0.1000Å, mean=0.0825Å
+
+6_atoms: 8 planes
+  Shape: torch.Size([8, 6])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+7_atoms: 16 planes
+  Shape: torch.Size([16, 7])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+8_atoms: 30 planes
+  Shape: torch.Size([30, 8])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+
+VDW (NON-BONDED) RESTRAINTS:
+--------------------------------------------------------------------------------
+Pairs: 31302
+  Min distances: 2.900 - 3.600 Å (mean=3.301 Å)
+  Sigma: 0.200 Å
+  Current violations: 2650 (8.5%)
+  Violation range: 0.000 - 1.558 Å (mean=0.303 Å)
+================================================================================
+Calculating initial scale factors using 20 bins.
+Outlier detection: 99/25970 (0.38%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.707
+  Z-score threshold: 4.0
+Outlier detection: 99 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.3418, Rfree=0.3431, NLL_work=134.27, NLL_test=138.49
+  Step 2/5: Rwork=0.3424, Rfree=0.3437, NLL_work=134.19, NLL_test=138.73
+  Step 3/5: Rwork=0.3436, Rfree=0.3463, NLL_work=134.18, NLL_test=138.01
+  Step 4/5: Rwork=0.3419, Rfree=0.3434, NLL_work=133.67, NLL_test=137.76
+  Step 5/5: Rwork=0.3420, Rfree=0.3434, NLL_work=133.67, NLL_test=137.75
+Scale refinement complete.
+
+Outlier detection: 97/25970 (0.37%) outliers found
+  Log-ratio statistics: mean=0.143, std=0.704
+  Z-score threshold: 4.0
+Outlier detection: 97 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 120/25970 (0.46%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.610
+  Z-score threshold: 4.0
+Outlier detection: 120 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2780, Rfree=0.2788, NLL_work=95.56, NLL_test=112.73
+  Step 2/5: Rwork=0.2783, Rfree=0.2792, NLL_work=95.49, NLL_test=112.88
+  Step 3/5: Rwork=0.2787, Rfree=0.2790, NLL_work=94.95, NLL_test=110.77
+  Step 4/5: Rwork=0.2785, Rfree=0.2787, NLL_work=94.92, NLL_test=110.87
+  Step 5/5: Rwork=0.2785, Rfree=0.2787, NLL_work=94.92, NLL_test=110.85
+Scale refinement complete.
+
+Outlier detection: 133/25970 (0.51%) outliers found
+  Log-ratio statistics: mean=0.093, std=0.604
+  Z-score threshold: 4.0
+Outlier detection: 133 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 158/25970 (0.61%) outliers found
+  Log-ratio statistics: mean=0.017, std=0.548
+  Z-score threshold: 4.0
+Outlier detection: 158 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2371, Rfree=0.2554, NLL_work=65.86, NLL_test=99.93
+  Step 2/5: Rwork=0.2375, Rfree=0.2545, NLL_work=65.47, NLL_test=99.36
+  Step 3/5: Rwork=0.2372, Rfree=0.2545, NLL_work=65.13, NLL_test=97.65
+  Step 4/5: Rwork=0.2372, Rfree=0.2558, NLL_work=65.04, NLL_test=97.61
+  Step 5/5: Rwork=0.2372, Rfree=0.2559, NLL_work=65.04, NLL_test=97.60
+Scale refinement complete.
+
+Outlier detection: 166/25970 (0.64%) outliers found
+  Log-ratio statistics: mean=0.053, std=0.541
+  Z-score threshold: 4.0
+Outlier detection: 166 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 192/25970 (0.74%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.513
+  Z-score threshold: 4.0
+Outlier detection: 192 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2115, Rfree=0.2425, NLL_work=50.68, NLL_test=97.35
+  Step 2/5: Rwork=0.2128, Rfree=0.2419, NLL_work=50.18, NLL_test=95.68
+  Step 3/5: Rwork=0.2114, Rfree=0.2438, NLL_work=49.77, NLL_test=95.08
+  Step 4/5: Rwork=0.2114, Rfree=0.2442, NLL_work=49.75, NLL_test=95.31
+  Step 5/5: Rwork=0.2114, Rfree=0.2442, NLL_work=49.75, NLL_test=95.31
+Scale refinement complete.
+
+Outlier detection: 206/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.031, std=0.504
+  Z-score threshold: 4.0
+Outlier detection: 206 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 179/25970 (0.69%) outliers found
+  Log-ratio statistics: mean=0.018, std=0.487
+  Z-score threshold: 4.0
+Outlier detection: 179 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2010, Rfree=0.2423, NLL_work=45.26, NLL_test=97.49
+  Step 2/5: Rwork=0.2011, Rfree=0.2417, NLL_work=44.48, NLL_test=96.08
+  Step 3/5: Rwork=0.2008, Rfree=0.2438, NLL_work=44.27, NLL_test=94.61
+  Step 4/5: Rwork=0.2008, Rfree=0.2438, NLL_work=44.26, NLL_test=94.50
+  Step 5/5: Rwork=0.2008, Rfree=0.2438, NLL_work=44.26, NLL_test=94.51
+Scale refinement complete.
+
+Outlier detection: 187/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.021, std=0.479
+  Z-score threshold: 4.0
+Outlier detection: 187 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 192/25970 (0.74%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.480
+  Z-score threshold: 4.0
+Outlier detection: 192 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1940, Rfree=0.2359, NLL_work=41.54, NLL_test=94.90
+  Step 2/5: Rwork=0.1944, Rfree=0.2353, NLL_work=40.91, NLL_test=92.85
+  Step 3/5: Rwork=0.1939, Rfree=0.2366, NLL_work=40.53, NLL_test=92.03
+  Step 4/5: Rwork=0.1938, Rfree=0.2373, NLL_work=40.49, NLL_test=91.84
+  Step 5/5: Rwork=0.1938, Rfree=0.2373, NLL_work=40.49, NLL_test=91.85
+Scale refinement complete.
+
+Outlier detection: 192/25970 (0.74%) outliers found
+  Log-ratio statistics: mean=0.017, std=0.471
+  Z-score threshold: 4.0
+Outlier detection: 192 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 188/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.474
+  Z-score threshold: 4.0
+Outlier detection: 188 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1900, Rfree=0.2376, NLL_work=39.56, NLL_test=97.77
+  Step 2/5: Rwork=0.1905, Rfree=0.2378, NLL_work=38.68, NLL_test=95.30
+  Step 3/5: Rwork=0.1896, Rfree=0.2390, NLL_work=38.49, NLL_test=94.89
+  Step 4/5: Rwork=0.1896, Rfree=0.2392, NLL_work=38.49, NLL_test=94.87
+  Step 5/5: Rwork=0.1896, Rfree=0.2392, NLL_work=38.49, NLL_test=94.79
+Scale refinement complete.
+
+Outlier detection: 188/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.464
+  Z-score threshold: 4.0
+Outlier detection: 188 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 193/25970 (0.74%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.471
+  Z-score threshold: 4.0
+Outlier detection: 193 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1881, Rfree=0.2383, NLL_work=38.75, NLL_test=99.48
+  Step 2/5: Rwork=0.1897, Rfree=0.2412, NLL_work=38.17, NLL_test=99.09
+  Step 3/5: Rwork=0.1877, Rfree=0.2398, NLL_work=37.69, NLL_test=97.15
+  Step 4/5: Rwork=0.1876, Rfree=0.2399, NLL_work=37.65, NLL_test=96.55
+  Step 5/5: Rwork=0.1876, Rfree=0.2399, NLL_work=37.65, NLL_test=96.55
+Scale refinement complete.
+
+Outlier detection: 201/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.462
+  Z-score threshold: 4.0
+Outlier detection: 201 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 203/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.470
+  Z-score threshold: 4.0
+Outlier detection: 203 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1851, Rfree=0.2416, NLL_work=37.20, NLL_test=99.84
+  Step 2/5: Rwork=0.1866, Rfree=0.2436, NLL_work=36.83, NLL_test=99.27
+  Step 3/5: Rwork=0.1847, Rfree=0.2426, NLL_work=36.20, NLL_test=96.14
+  Step 4/5: Rwork=0.1847, Rfree=0.2431, NLL_work=36.15, NLL_test=96.16
+  Step 5/5: Rwork=0.1847, Rfree=0.2431, NLL_work=36.15, NLL_test=96.09
+Scale refinement complete.
+
+Outlier detection: 203/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.010, std=0.459
+  Z-score threshold: 4.0
+Outlier detection: 203 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 204/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.017, std=0.468
+  Z-score threshold: 4.0
+Outlier detection: 204 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1839, Rfree=0.2412, NLL_work=36.68, NLL_test=101.14
+  Step 2/5: Rwork=0.1848, Rfree=0.2414, NLL_work=36.22, NLL_test=98.76
+  Step 3/5: Rwork=0.1833, Rfree=0.2426, NLL_work=35.69, NLL_test=98.00
+  Step 4/5: Rwork=0.1833, Rfree=0.2427, NLL_work=35.64, NLL_test=97.22
+  Step 5/5: Rwork=0.1834, Rfree=0.2430, NLL_work=35.64, NLL_test=97.12
+Scale refinement complete.
+
+Outlier detection: 211/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.009, std=0.458
+  Z-score threshold: 4.0
+Outlier detection: 211 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 206/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.011, std=0.471
+  Z-score threshold: 4.0
+Outlier detection: 206 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1831, Rfree=0.2408, NLL_work=36.33, NLL_test=100.83
+  Step 2/5: Rwork=0.1832, Rfree=0.2411, NLL_work=35.51, NLL_test=97.92
+  Step 3/5: Rwork=0.1827, Rfree=0.2429, NLL_work=35.30, NLL_test=97.33
+  Step 4/5: Rwork=0.1827, Rfree=0.2428, NLL_work=35.29, NLL_test=97.43
+  Step 5/5: Rwork=0.1828, Rfree=0.2429, NLL_work=35.29, NLL_test=97.41
+Scale refinement complete.
+
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.010, std=0.459
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 212/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.467
+  Z-score threshold: 4.0
+Outlier detection: 212 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1817, Rfree=0.2416, NLL_work=35.72, NLL_test=101.93
+  Step 2/5: Rwork=0.1824, Rfree=0.2424, NLL_work=35.13, NLL_test=100.62
+  Step 3/5: Rwork=0.1814, Rfree=0.2442, NLL_work=34.68, NLL_test=98.96
+  Step 4/5: Rwork=0.1814, Rfree=0.2440, NLL_work=34.67, NLL_test=98.71
+  Step 5/5: Rwork=0.1814, Rfree=0.2440, NLL_work=34.67, NLL_test=98.75
+Scale refinement complete.
+
+Outlier detection: 211/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.008, std=0.458
+  Z-score threshold: 4.0
+Outlier detection: 211 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 214/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.018, std=0.464
+  Z-score threshold: 4.0
+Outlier detection: 214 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1805, Rfree=0.2424, NLL_work=35.19, NLL_test=102.33
+  Step 2/5: Rwork=0.1814, Rfree=0.2431, NLL_work=34.53, NLL_test=99.93
+  Step 3/5: Rwork=0.1801, Rfree=0.2447, NLL_work=34.09, NLL_test=99.45
+  Step 4/5: Rwork=0.1801, Rfree=0.2445, NLL_work=34.08, NLL_test=99.11
+  Step 5/5: Rwork=0.1801, Rfree=0.2445, NLL_work=34.08, NLL_test=99.12
+Scale refinement complete.
+
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.007, std=0.455
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 209/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.460
+  Z-score threshold: 4.0
+Outlier detection: 209 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1787, Rfree=0.2459, NLL_work=34.40, NLL_test=104.78
+  Step 2/5: Rwork=0.1792, Rfree=0.2458, NLL_work=33.94, NLL_test=102.78
+  Step 3/5: Rwork=0.1787, Rfree=0.2469, NLL_work=33.43, NLL_test=102.90
+  Step 4/5: Rwork=0.1784, Rfree=0.2482, NLL_work=33.25, NLL_test=102.40
+  Step 5/5: Rwork=0.1784, Rfree=0.2482, NLL_work=33.24, NLL_test=102.42
+Scale refinement complete.
+
+Outlier detection: 211/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.005, std=0.451
+  Z-score threshold: 4.0
+Outlier detection: 211 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 199/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.461
+  Z-score threshold: 4.0
+Outlier detection: 199 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1780, Rfree=0.2452, NLL_work=34.00, NLL_test=107.05
+  Step 2/5: Rwork=0.1786, Rfree=0.2456, NLL_work=33.24, NLL_test=105.19
+  Step 3/5: Rwork=0.1778, Rfree=0.2481, NLL_work=32.88, NLL_test=104.02
+  Step 4/5: Rwork=0.1776, Rfree=0.2477, NLL_work=32.86, NLL_test=104.27
+  Step 5/5: Rwork=0.1777, Rfree=0.2477, NLL_work=32.86, NLL_test=104.25
+Scale refinement complete.
+
+Outlier detection: 214/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.005, std=0.451
+  Z-score threshold: 4.0
+Outlier detection: 214 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 211/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.458
+  Z-score threshold: 4.0
+Outlier detection: 211 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1755, Rfree=0.2465, NLL_work=33.00, NLL_test=108.69
+  Step 2/5: Rwork=0.1765, Rfree=0.2472, NLL_work=32.40, NLL_test=107.21
+  Step 3/5: Rwork=0.1753, Rfree=0.2487, NLL_work=31.88, NLL_test=106.64
+  Step 4/5: Rwork=0.1752, Rfree=0.2492, NLL_work=31.81, NLL_test=106.68
+  Step 5/5: Rwork=0.1752, Rfree=0.2492, NLL_work=31.81, NLL_test=106.69
+Scale refinement complete.
+
+Outlier detection: 221/25970 (0.85%) outliers found
+  Log-ratio statistics: mean=0.002, std=0.448
+  Z-score threshold: 4.0
+Outlier detection: 221 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 203/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.017, std=0.458
+  Z-score threshold: 4.0
+Outlier detection: 203 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1745, Rfree=0.2489, NLL_work=32.48, NLL_test=112.55
+  Step 2/5: Rwork=0.1751, Rfree=0.2494, NLL_work=31.79, NLL_test=111.87
+  Step 3/5: Rwork=0.1743, Rfree=0.2516, NLL_work=31.35, NLL_test=110.81
+  Step 4/5: Rwork=0.1740, Rfree=0.2514, NLL_work=31.29, NLL_test=110.58
+  Step 5/5: Rwork=0.1740, Rfree=0.2514, NLL_work=31.29, NLL_test=110.64
+Scale refinement complete.
+
+Outlier detection: 221/25970 (0.85%) outliers found
+  Log-ratio statistics: mean=0.001, std=0.448
+  Z-score threshold: 4.0
+Outlier detection: 221 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 209/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.459
+  Z-score threshold: 4.0
+Outlier detection: 209 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1737, Rfree=0.2498, NLL_work=32.13, NLL_test=111.50
+  Step 2/5: Rwork=0.1746, Rfree=0.2502, NLL_work=31.50, NLL_test=111.40
+  Step 3/5: Rwork=0.1733, Rfree=0.2519, NLL_work=30.94, NLL_test=109.52
+  Step 4/5: Rwork=0.1732, Rfree=0.2519, NLL_work=30.91, NLL_test=109.57
+  Step 5/5: Rwork=0.1731, Rfree=0.2519, NLL_work=30.91, NLL_test=109.59
+Scale refinement complete.
+
+Outlier detection: 219/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.000, std=0.447
+  Z-score threshold: 4.0
+Outlier detection: 219 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 216/25970 (0.83%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.458
+  Z-score threshold: 4.0
+Outlier detection: 216 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1727, Rfree=0.2499, NLL_work=31.78, NLL_test=110.01
+  Step 2/5: Rwork=0.1732, Rfree=0.2496, NLL_work=31.04, NLL_test=109.73
+  Step 3/5: Rwork=0.1721, Rfree=0.2521, NLL_work=30.58, NLL_test=108.42
+  Step 4/5: Rwork=0.1721, Rfree=0.2518, NLL_work=30.53, NLL_test=107.90
+  Step 5/5: Rwork=0.1721, Rfree=0.2518, NLL_work=30.53, NLL_test=107.88
+Scale refinement complete.
+
+Outlier detection: 223/25970 (0.86%) outliers found
+  Log-ratio statistics: mean=-0.001, std=0.446
+  Z-score threshold: 4.0
+Outlier detection: 223 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 214/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.009, std=0.456
+  Z-score threshold: 4.0
+Outlier detection: 214 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1720, Rfree=0.2515, NLL_work=31.36, NLL_test=111.66
+  Step 2/5: Rwork=0.1726, Rfree=0.2516, NLL_work=30.92, NLL_test=112.36
+  Step 3/5: Rwork=0.1718, Rfree=0.2532, NLL_work=30.19, NLL_test=109.65
+  Step 4/5: Rwork=0.1714, Rfree=0.2532, NLL_work=30.07, NLL_test=109.77
+  Step 5/5: Rwork=0.1714, Rfree=0.2534, NLL_work=30.07, NLL_test=109.76
+Scale refinement complete.
+
+Outlier detection: 227/25970 (0.87%) outliers found
+  Log-ratio statistics: mean=-0.002, std=0.446
+  Z-score threshold: 4.0
+Outlier detection: 227 reflections flagged as outliers out of 25970.
+found nan F values:  0
+found nan F_sigma values:  0
+Suspicious sigma detection: 37/25970 (0.14%) reflections flagged
+Parametrization built for 4 unique atom types
+MapSymmetry initialized for P   2 1   2 1   2 1      
+  Number of symmetry operations: 4
+  Map shape: (134, 141, 75)
+Initialized Scaler with 20 bins.
+Found 109 link definitions
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 10 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 5 torsions with sigma=0 after filtering, setting to 0.1°
+Warning: Found 6 torsions with sigma=0 after filtering, setting to 0.1°
+Built 400 peptide bond restraints
+Built 1200 peptide angle restraints
+Built 400 peptide plane restraints (4 atoms each)
+  plan-1: 400 planes
+
+Building VDW (non-bonded) restraints...
+  Built 31302 VDW restraints (all contacts)
+================================================================================
+Restraints Summary
+================================================================================
+CIF file: None
+Residue types in dictionary: 21
+
+INTRA-RESIDUE RESTRAINTS:
+--------------------------------------------------------------------------------
+Bonds: 2940
+  Shape: torch.Size([2940, 2])
+  References: min=1.229Å, max=1.812Å, mean=1.446Å
+  Sigmas: min=0.0100Å, max=0.0200Å, mean=0.0131Å
+
+Angles: 3308
+  Shape: torch.Size([3308, 3])
+  References: min=100.693°, max=134.327°, mean=113.805°
+  Sigmas: min=1.5000°, max=3.0000°, mean=1.9909°
+
+Torsions: 1564
+  Shape: torch.Size([1564, 4])
+  References: min=-60.000°, max=180.000°, mean=36.138°
+  Sigmas: min=0.0100°, max=10.0000°, mean=7.9815°
+  Periods: [1, 2, 3, 6]
+
+PEPTIDE LINK RESTRAINTS:
+--------------------------------------------------------------------------------
+Bonds: 400
+  Shape: torch.Size([400, 2])
+  References: min=1.337Å, max=1.337Å, mean=1.337Å
+  Sigmas: min=0.0110Å, max=0.0110Å, mean=0.0110Å
+
+Angles: 1200
+  Shape: torch.Size([1200, 3])
+  References: min=115.917°, max=123.469°, mean=120.494°
+  Sigmas: min=1.5000°, max=1.7600°, mean=1.5867°
+
+BACKBONE TORSION ANGLES:
+--------------------------------------------------------------------------------
+Phi: 400
+  Definition: C(i) - N(i+1) - CA(i+1) - C(i+1)
+  Period: 3
+
+Psi: 400
+  Definition: N(i) - CA(i) - C(i) - N(i+1)
+  Period: 2
+
+Omega: 400
+  Definition: CA(i) - C(i) - N(i+1) - CA(i+1)
+  References: min=180.00°, max=180.00°, mean=180.00°
+  Sigmas: min=5.0000°, max=5.0000°, mean=5.0000°
+  Period: 0
+
+PLANE RESTRAINTS:
+--------------------------------------------------------------------------------
+3_atoms: 424 planes
+  Shape: torch.Size([424, 3])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+4_atoms: 512 planes
+  Shape: torch.Size([512, 4])
+  Sigmas: min=0.0200Å, max=0.1000Å, mean=0.0825Å
+
+6_atoms: 8 planes
+  Shape: torch.Size([8, 6])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+7_atoms: 16 planes
+  Shape: torch.Size([16, 7])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+8_atoms: 30 planes
+  Shape: torch.Size([30, 8])
+  Sigmas: min=0.0200Å, max=0.0200Å, mean=0.0200Å
+
+
+VDW (NON-BONDED) RESTRAINTS:
+--------------------------------------------------------------------------------
+Pairs: 31302
+  Min distances: 2.900 - 3.600 Å (mean=3.301 Å)
+  Sigma: 0.200 Å
+  Current violations: 2650 (8.5%)
+  Violation range: 0.000 - 1.558 Å (mean=0.303 Å)
+================================================================================
+Calculating initial scale factors using 20 bins.
+Outlier detection: 99/25970 (0.38%) outliers found
+  Log-ratio statistics: mean=0.018, std=0.707
+  Z-score threshold: 4.0
+Outlier detection: 99 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.3416, Rfree=0.3426, NLL_work=134.29, NLL_test=138.58
+  Step 2/5: Rwork=0.3421, Rfree=0.3431, NLL_work=134.20, NLL_test=138.62
+  Step 3/5: Rwork=0.3418, Rfree=0.3440, NLL_work=133.70, NLL_test=137.80
+  Step 4/5: Rwork=0.3419, Rfree=0.3433, NLL_work=133.67, NLL_test=137.75
+  Step 5/5: Rwork=0.3419, Rfree=0.3434, NLL_work=133.67, NLL_test=137.74
+Scale refinement complete.
+
+Outlier detection: 96/25970 (0.37%) outliers found
+  Log-ratio statistics: mean=0.143, std=0.704
+  Z-score threshold: 4.0
+Outlier detection: 96 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 128/25970 (0.49%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.614
+  Z-score threshold: 4.0
+Outlier detection: 128 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2793, Rfree=0.2814, NLL_work=96.68, NLL_test=113.03
+  Step 2/5: Rwork=0.2794, Rfree=0.2817, NLL_work=96.62, NLL_test=113.16
+  Step 3/5: Rwork=0.2799, Rfree=0.2815, NLL_work=96.14, NLL_test=111.63
+  Step 4/5: Rwork=0.2796, Rfree=0.2813, NLL_work=96.05, NLL_test=111.58
+  Step 5/5: Rwork=0.2796, Rfree=0.2812, NLL_work=96.05, NLL_test=111.58
+Scale refinement complete.
+
+Outlier detection: 128/25970 (0.49%) outliers found
+  Log-ratio statistics: mean=0.095, std=0.609
+  Z-score threshold: 4.0
+Outlier detection: 128 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 146/25970 (0.56%) outliers found
+  Log-ratio statistics: mean=0.019, std=0.579
+  Z-score threshold: 4.0
+Outlier detection: 146 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2601, Rfree=0.2653, NLL_work=82.12, NLL_test=106.98
+  Step 2/5: Rwork=0.2606, Rfree=0.2651, NLL_work=81.96, NLL_test=107.06
+  Step 3/5: Rwork=0.2607, Rfree=0.2653, NLL_work=81.45, NLL_test=105.17
+  Step 4/5: Rwork=0.2603, Rfree=0.2652, NLL_work=81.42, NLL_test=105.06
+  Step 5/5: Rwork=0.2604, Rfree=0.2652, NLL_work=81.42, NLL_test=105.03
+Scale refinement complete.
+
+Outlier detection: 144/25970 (0.55%) outliers found
+  Log-ratio statistics: mean=0.074, std=0.574
+  Z-score threshold: 4.0
+Outlier detection: 144 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 172/25970 (0.66%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.528
+  Z-score threshold: 4.0
+Outlier detection: 172 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2222, Rfree=0.2501, NLL_work=56.34, NLL_test=95.02
+  Step 2/5: Rwork=0.2226, Rfree=0.2498, NLL_work=55.98, NLL_test=94.71
+  Step 3/5: Rwork=0.2223, Rfree=0.2498, NLL_work=55.55, NLL_test=94.08
+  Step 4/5: Rwork=0.2222, Rfree=0.2509, NLL_work=55.49, NLL_test=93.57
+  Step 5/5: Rwork=0.2222, Rfree=0.2509, NLL_work=55.49, NLL_test=93.73
+Scale refinement complete.
+
+Outlier detection: 183/25970 (0.70%) outliers found
+  Log-ratio statistics: mean=0.042, std=0.521
+  Z-score threshold: 4.0
+Outlier detection: 183 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 180/25970 (0.69%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.502
+  Z-score threshold: 4.0
+Outlier detection: 180 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2087, Rfree=0.2401, NLL_work=49.58, NLL_test=97.52
+  Step 2/5: Rwork=0.2096, Rfree=0.2404, NLL_work=48.79, NLL_test=95.42
+  Step 3/5: Rwork=0.2086, Rfree=0.2415, NLL_work=48.58, NLL_test=95.06
+  Step 4/5: Rwork=0.2086, Rfree=0.2418, NLL_work=48.57, NLL_test=95.07
+  Step 5/5: Rwork=0.2086, Rfree=0.2418, NLL_work=48.57, NLL_test=95.09
+Scale refinement complete.
+
+Outlier detection: 185/25970 (0.71%) outliers found
+  Log-ratio statistics: mean=0.029, std=0.493
+  Z-score threshold: 4.0
+Outlier detection: 185 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 186/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.493
+  Z-score threshold: 4.0
+Outlier detection: 186 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.2006, Rfree=0.2382, NLL_work=45.29, NLL_test=94.75
+  Step 2/5: Rwork=0.2016, Rfree=0.2380, NLL_work=44.54, NLL_test=92.66
+  Step 3/5: Rwork=0.2003, Rfree=0.2393, NLL_work=44.26, NLL_test=92.66
+  Step 4/5: Rwork=0.2003, Rfree=0.2394, NLL_work=44.24, NLL_test=92.81
+  Step 5/5: Rwork=0.2003, Rfree=0.2394, NLL_work=44.24, NLL_test=92.77
+Scale refinement complete.
+
+Outlier detection: 188/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.024, std=0.483
+  Z-score threshold: 4.0
+Outlier detection: 188 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 187/25970 (0.72%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.479
+  Z-score threshold: 4.0
+Outlier detection: 187 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1915, Rfree=0.2393, NLL_work=40.39, NLL_test=98.56
+  Step 2/5: Rwork=0.1920, Rfree=0.2392, NLL_work=39.50, NLL_test=96.81
+  Step 3/5: Rwork=0.1913, Rfree=0.2410, NLL_work=39.30, NLL_test=96.23
+  Step 4/5: Rwork=0.1913, Rfree=0.2411, NLL_work=39.29, NLL_test=96.21
+  Step 5/5: Rwork=0.1913, Rfree=0.2411, NLL_work=39.29, NLL_test=96.21
+Scale refinement complete.
+
+Outlier detection: 195/25970 (0.75%) outliers found
+  Log-ratio statistics: mean=0.015, std=0.467
+  Z-score threshold: 4.0
+Outlier detection: 195 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 199/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.471
+  Z-score threshold: 4.0
+Outlier detection: 199 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1876, Rfree=0.2378, NLL_work=38.66, NLL_test=99.54
+  Step 2/5: Rwork=0.1880, Rfree=0.2374, NLL_work=37.90, NLL_test=97.58
+  Step 3/5: Rwork=0.1872, Rfree=0.2397, NLL_work=37.59, NLL_test=96.95
+  Step 4/5: Rwork=0.1872, Rfree=0.2396, NLL_work=37.58, NLL_test=96.89
+  Step 5/5: Rwork=0.1872, Rfree=0.2396, NLL_work=37.58, NLL_test=96.91
+Scale refinement complete.
+
+Outlier detection: 201/25970 (0.77%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.459
+  Z-score threshold: 4.0
+Outlier detection: 201 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.011, std=0.465
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1835, Rfree=0.2401, NLL_work=36.60, NLL_test=102.14
+  Step 2/5: Rwork=0.1841, Rfree=0.2410, NLL_work=35.86, NLL_test=100.85
+  Step 3/5: Rwork=0.1831, Rfree=0.2411, NLL_work=35.54, NLL_test=99.99
+  Step 4/5: Rwork=0.1831, Rfree=0.2416, NLL_work=35.48, NLL_test=99.58
+  Step 5/5: Rwork=0.1831, Rfree=0.2416, NLL_work=35.48, NLL_test=99.56
+Scale refinement complete.
+
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.008, std=0.456
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 195/25970 (0.75%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.463
+  Z-score threshold: 4.0
+Outlier detection: 195 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1827, Rfree=0.2410, NLL_work=36.36, NLL_test=100.89
+  Step 2/5: Rwork=0.1830, Rfree=0.2411, NLL_work=35.64, NLL_test=98.58
+  Step 3/5: Rwork=0.1824, Rfree=0.2432, NLL_work=35.29, NLL_test=98.04
+  Step 4/5: Rwork=0.1822, Rfree=0.2428, NLL_work=35.23, NLL_test=98.21
+  Step 5/5: Rwork=0.1822, Rfree=0.2428, NLL_work=35.22, NLL_test=98.27
+Scale refinement complete.
+
+Outlier detection: 203/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.008, std=0.454
+  Z-score threshold: 4.0
+Outlier detection: 203 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 209/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.008, std=0.463
+  Z-score threshold: 4.0
+Outlier detection: 209 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1813, Rfree=0.2422, NLL_work=35.63, NLL_test=100.94
+  Step 2/5: Rwork=0.1819, Rfree=0.2422, NLL_work=34.92, NLL_test=100.26
+  Step 3/5: Rwork=0.1808, Rfree=0.2435, NLL_work=34.55, NLL_test=98.15
+  Step 4/5: Rwork=0.1807, Rfree=0.2437, NLL_work=34.48, NLL_test=98.40
+  Step 5/5: Rwork=0.1807, Rfree=0.2437, NLL_work=34.48, NLL_test=98.40
+Scale refinement complete.
+
+Outlier detection: 217/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.007, std=0.453
+  Z-score threshold: 4.0
+Outlier detection: 217 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 204/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.462
+  Z-score threshold: 4.0
+Outlier detection: 204 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1808, Rfree=0.2424, NLL_work=35.43, NLL_test=100.26
+  Step 2/5: Rwork=0.1816, Rfree=0.2427, NLL_work=34.70, NLL_test=98.95
+  Step 3/5: Rwork=0.1803, Rfree=0.2445, NLL_work=34.36, NLL_test=97.82
+  Step 4/5: Rwork=0.1803, Rfree=0.2441, NLL_work=34.32, NLL_test=97.84
+  Step 5/5: Rwork=0.1803, Rfree=0.2441, NLL_work=34.32, NLL_test=97.80
+Scale refinement complete.
+
+Outlier detection: 212/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.007, std=0.453
+  Z-score threshold: 4.0
+Outlier detection: 212 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 204/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.463
+  Z-score threshold: 4.0
+Outlier detection: 204 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1806, Rfree=0.2422, NLL_work=35.40, NLL_test=100.56
+  Step 2/5: Rwork=0.1808, Rfree=0.2425, NLL_work=34.44, NLL_test=97.40
+  Step 3/5: Rwork=0.1802, Rfree=0.2442, NLL_work=34.30, NLL_test=97.73
+  Step 4/5: Rwork=0.1802, Rfree=0.2441, NLL_work=34.29, NLL_test=97.67
+  Step 5/5: Rwork=0.1802, Rfree=0.2441, NLL_work=34.29, NLL_test=97.68
+Scale refinement complete.
+
+Outlier detection: 216/25970 (0.83%) outliers found
+  Log-ratio statistics: mean=0.007, std=0.453
+  Z-score threshold: 4.0
+Outlier detection: 216 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 202/25970 (0.78%) outliers found
+  Log-ratio statistics: mean=0.016, std=0.460
+  Z-score threshold: 4.0
+Outlier detection: 202 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1793, Rfree=0.2428, NLL_work=34.84, NLL_test=101.61
+  Step 2/5: Rwork=0.1802, Rfree=0.2431, NLL_work=34.20, NLL_test=101.72
+  Step 3/5: Rwork=0.1790, Rfree=0.2451, NLL_work=33.77, NLL_test=99.29
+  Step 4/5: Rwork=0.1789, Rfree=0.2447, NLL_work=33.72, NLL_test=99.17
+  Step 5/5: Rwork=0.1789, Rfree=0.2446, NLL_work=33.72, NLL_test=99.16
+Scale refinement complete.
+
+Outlier detection: 210/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.005, std=0.451
+  Z-score threshold: 4.0
+Outlier detection: 210 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 211/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.457
+  Z-score threshold: 4.0
+Outlier detection: 211 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1782, Rfree=0.2434, NLL_work=34.25, NLL_test=103.28
+  Step 2/5: Rwork=0.1786, Rfree=0.2433, NLL_work=33.72, NLL_test=102.19
+  Step 3/5: Rwork=0.1777, Rfree=0.2456, NLL_work=33.18, NLL_test=101.20
+  Step 4/5: Rwork=0.1777, Rfree=0.2453, NLL_work=33.09, NLL_test=100.61
+  Step 5/5: Rwork=0.1777, Rfree=0.2454, NLL_work=33.09, NLL_test=100.58
+Scale refinement complete.
+
+Outlier detection: 210/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.004, std=0.448
+  Z-score threshold: 4.0
+Outlier detection: 210 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 204/25970 (0.79%) outliers found
+  Log-ratio statistics: mean=0.011, std=0.455
+  Z-score threshold: 4.0
+Outlier detection: 204 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1770, Rfree=0.2451, NLL_work=33.70, NLL_test=103.81
+  Step 2/5: Rwork=0.1777, Rfree=0.2455, NLL_work=33.16, NLL_test=102.44
+  Step 3/5: Rwork=0.1766, Rfree=0.2471, NLL_work=32.61, NLL_test=101.57
+  Step 4/5: Rwork=0.1765, Rfree=0.2471, NLL_work=32.56, NLL_test=101.49
+  Step 5/5: Rwork=0.1765, Rfree=0.2470, NLL_work=32.56, NLL_test=101.48
+Scale refinement complete.
+
+Outlier detection: 214/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.002, std=0.447
+  Z-score threshold: 4.0
+Outlier detection: 214 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 208/25970 (0.80%) outliers found
+  Log-ratio statistics: mean=0.014, std=0.454
+  Z-score threshold: 4.0
+Outlier detection: 208 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1757, Rfree=0.2446, NLL_work=33.06, NLL_test=103.04
+  Step 2/5: Rwork=0.1761, Rfree=0.2450, NLL_work=32.31, NLL_test=102.36
+  Step 3/5: Rwork=0.1751, Rfree=0.2465, NLL_work=31.92, NLL_test=100.80
+  Step 4/5: Rwork=0.1751, Rfree=0.2465, NLL_work=31.91, NLL_test=100.67
+  Step 5/5: Rwork=0.1751, Rfree=0.2465, NLL_work=31.91, NLL_test=100.68
+Scale refinement complete.
+
+Outlier detection: 213/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.001, std=0.443
+  Z-score threshold: 4.0
+Outlier detection: 213 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 210/25970 (0.81%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.457
+  Z-score threshold: 4.0
+Outlier detection: 210 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1740, Rfree=0.2471, NLL_work=32.27, NLL_test=108.43
+  Step 2/5: Rwork=0.1748, Rfree=0.2477, NLL_work=31.66, NLL_test=106.54
+  Step 3/5: Rwork=0.1739, Rfree=0.2489, NLL_work=31.16, NLL_test=106.17
+  Step 4/5: Rwork=0.1735, Rfree=0.2490, NLL_work=31.10, NLL_test=105.84
+  Step 5/5: Rwork=0.1736, Rfree=0.2490, NLL_work=31.10, NLL_test=105.87
+Scale refinement complete.
+
+Outlier detection: 216/25970 (0.83%) outliers found
+  Log-ratio statistics: mean=-0.001, std=0.446
+  Z-score threshold: 4.0
+Outlier detection: 216 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 219/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=0.013, std=0.455
+  Z-score threshold: 4.0
+Outlier detection: 219 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1734, Rfree=0.2483, NLL_work=32.11, NLL_test=109.94
+  Step 2/5: Rwork=0.1744, Rfree=0.2485, NLL_work=31.43, NLL_test=108.16
+  Step 3/5: Rwork=0.1727, Rfree=0.2501, NLL_work=30.97, NLL_test=107.27
+  Step 4/5: Rwork=0.1728, Rfree=0.2501, NLL_work=30.94, NLL_test=107.19
+  Step 5/5: Rwork=0.1728, Rfree=0.2501, NLL_work=30.93, NLL_test=107.16
+Scale refinement complete.
+
+Outlier detection: 217/25970 (0.84%) outliers found
+  Log-ratio statistics: mean=-0.001, std=0.444
+  Z-score threshold: 4.0
+Outlier detection: 217 reflections flagged as outliers out of 25970.
+Calculating initial scale factors using 20 bins.
+Outlier detection: 214/25970 (0.82%) outliers found
+  Log-ratio statistics: mean=0.012, std=0.457
+  Z-score threshold: 4.0
+Outlier detection: 214 reflections flagged as outliers out of 25970.
+Refining scales with LBFGS...
+  Step 1/5: Rwork=0.1734, Rfree=0.2488, NLL_work=32.04, NLL_test=109.66
+  Step 2/5: Rwork=0.1738, Rfree=0.2488, NLL_work=31.46, NLL_test=109.41
+  Step 3/5: Rwork=0.1727, Rfree=0.2504, NLL_work=30.89, NLL_test=108.13
+  Step 4/5: Rwork=0.1727, Rfree=0.2502, NLL_work=30.87, NLL_test=107.93
+  Step 5/5: Rwork=0.1727, Rfree=0.2502, NLL_work=30.87, NLL_test=107.93
+Scale refinement complete.
+
+Outlier detection: 220/25970 (0.85%) outliers found
+  Log-ratio statistics: mean=-0.000, std=0.446
+  Z-score threshold: 4.0
+Outlier detection: 220 reflections flagged as outliers out of 25970.
+Traceback (most recent call last):
+  File "/var/spool/slurmd/job11570/slurm_script", line 42, in <module>
+    with open(respath, 'w') as f:
+         ^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/benchmark_refining/jsons_weight_screening_only_0p5/screening_results.json'

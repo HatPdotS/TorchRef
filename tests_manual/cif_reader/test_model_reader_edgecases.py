@@ -12,7 +12,7 @@ import traceback
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from multicopy_refinement.cif_readers import ModelCIFReader
+from torchref.cif_readers import ModelCIFReader
 
 def test_model_cif(cif_path):
     """Test a single model CIF file and return results"""

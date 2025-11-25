@@ -6,8 +6,8 @@ Investigate why bond count is low
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model import Model
-from multicopy_refinement.restraints import Restraints
+from torchref.model import Model
+from torchref.restraints import Restraints
 import pandas as pd
 
 # Load the model
@@ -43,7 +43,7 @@ print("=" * 70)
 cif_path = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_data/elbow.AZO.dark_pdb.001.cif'
 
 # Read the CIF to see what's in it
-from multicopy_refinement.restraints_helper import read_cif
+from torchref.restraints_helper import read_cif
 cif_dict = read_cif(cif_path)
 
 print(f"\nResidues in CIF file: {list(cif_dict.keys())}")

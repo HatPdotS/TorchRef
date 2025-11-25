@@ -1,4 +1,4 @@
-from multicopy_refinement.math_torch import french_wilson_conversion
+from torchref.math_functions.math_torch import french_wilson_conversion
 import reciprocalspaceship as rs
 import torch
 import numpy as np

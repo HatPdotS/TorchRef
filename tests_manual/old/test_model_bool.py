@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from multicopy_refinement.model import Model
+from torchref.model import Model
 
 print("Testing Model.__bool__() method...")
 print("=" * 60)

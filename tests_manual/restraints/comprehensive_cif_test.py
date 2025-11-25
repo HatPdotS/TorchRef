@@ -4,7 +4,7 @@
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.restraints_helper import read_cif
+from torchref.restraints_helper import read_cif
 from pathlib import Path
 
 # Test with a broader set of residues including problem cases

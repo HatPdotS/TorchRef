@@ -1,4 +1,4 @@
-from multicopy_refinement.model import model
+from torchref.model import model
 import pdb_tools
 
 pdb = pdb_tools.load_pdb_as_pd('/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_data/dark.pdb')

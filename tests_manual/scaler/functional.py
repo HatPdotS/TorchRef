@@ -5,9 +5,9 @@
 
 
 
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.scaler import Scaler
+from torchref.Data import ReflectionData
+from torchref.model_ft import ModelFT
+from torchref.scaler import Scaler
 from matplotlib import pyplot as plt
 import torch
 from time import time, sleep

@@ -6,7 +6,7 @@ are correctly identified and their indices are properly stored.
 """
 
 # Import in same way as test_model_new.py
-from multicopy_refinement.model import model
+from torchref.model import model
 import pdb_tools
 import pandas as pd
 import tempfile

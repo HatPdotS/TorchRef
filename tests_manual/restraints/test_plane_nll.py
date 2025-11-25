@@ -5,8 +5,8 @@ Test script for plane restraint NLL calculation.
 
 import torch
 import numpy as np
-from multicopy_refinement.model import Model
-from multicopy_refinement.restraints import Restraints
+from torchref.model import Model
+from torchref.restraints import Restraints
 
 # Load test structure
 model = Model()

@@ -1,6 +1,6 @@
-from multicopy_refinement import Model
+from torchref import Model
 from time import time
-from multicopy_refinement import direct_summation as ds
+from torchref import direct_summation as ds
 import reciprocalspaceship as rs
 import numpy as np
 import matplotlib.pyplot as plt

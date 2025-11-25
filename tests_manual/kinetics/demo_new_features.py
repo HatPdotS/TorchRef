@@ -10,7 +10,7 @@ Demonstration of the updated KineticModel with new features:
 
 import torch
 import numpy as np
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 print("\n" + "="*70)
 print("UPDATED KINETIC MODEL DEMONSTRATION")

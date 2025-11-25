@@ -1,4 +1,4 @@
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 
 

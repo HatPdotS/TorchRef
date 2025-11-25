@@ -7,7 +7,7 @@ map calculation without needing scattering vectors.
 
 import torch
 import numpy as np
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 
 def basic_usage_example():
@@ -98,7 +98,7 @@ def parametrization_example():
     print("EXTENDED PARAMETRIZATION")
     print("="*60)
     
-    import multicopy_refinement.get_scattering_factor_torch as gsf
+    import torchref.get_scattering_factor_torch as gsf
     
     # Method 1: From DataFrame (automatic with load_pdb_from_file)
     mol_ft = ModelFT()
@@ -132,7 +132,7 @@ def comparison_with_base_model():
     print("MODELFT vs BASE MODEL")
     print("="*60)
     
-    from multicopy_refinement.Model import model
+    from torchref.Model import model
     
     # Base Model: Needs scattering vectors
     print("\nBase Model approach:")

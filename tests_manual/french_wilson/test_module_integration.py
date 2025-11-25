@@ -9,7 +9,7 @@ import torch
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.french_wilson import FrenchWilson, french_wilson_auto
+from torchref.french_wilson import FrenchWilson, french_wilson_auto
 
 
 def test_dspacing_calculation():

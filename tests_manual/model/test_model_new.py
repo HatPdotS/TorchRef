@@ -1,4 +1,4 @@
-from multicopy_refinement.model import Model
+from torchref.model import Model
 
 
 test = Model()

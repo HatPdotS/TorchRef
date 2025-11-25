@@ -2,19 +2,19 @@
 #SBATCH -c 16
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/french_wilson/compare_french_wilson_old.out
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.scaler import Scaler
-from multicopy_refinement.Data import ReflectionData
+from torchref.model_ft import ModelFT
+from torchref.scaler import Scaler
+from torchref.Data import ReflectionData
 import torch
 import matplotlib.pyplot as plt
 import os
 import numpy as np
-from multicopy_refinement.math_torch import french_wilson_conversion
+from torchref.math_functions.math_torch import french_wilson_conversion
 import torch
 import reciprocalspaceship as rs
 
 mtz = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/scaler/dark.mtz'
-from multicopy_refinement.french_wilson import FrenchWilson
+from torchref.french_wilson import FrenchWilson
 
 import torch
 import torch.nn.functional as F

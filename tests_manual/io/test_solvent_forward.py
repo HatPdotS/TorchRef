@@ -4,9 +4,9 @@
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/io/test_solvent_forward.log
 
 import torch
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.solvent import SolventModel
+from torchref.model_ft import ModelFT
+from torchref.Data import ReflectionData
+from torchref.solvent import SolventModel
 import numpy as np
 
 print("="*60)

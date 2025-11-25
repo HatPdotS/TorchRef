@@ -5,7 +5,7 @@
 
 import torch
 from tqdm import tqdm
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 
 
 

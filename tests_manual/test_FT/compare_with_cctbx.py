@@ -3,7 +3,7 @@ Compare density maps from ModelFT vs CCTBX using correlation.
 """
 import torch
 import numpy as np
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 import gemmi
 
 print("=" * 80)

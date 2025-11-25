@@ -3,7 +3,7 @@
 Test script for the new ReflectionData class.
 """
 
-from multicopy_refinement.Data import ReflectionData
+from torchref.Data import ReflectionData
 import torch
 
 print("Test: Load MTZ and filter by resolution")

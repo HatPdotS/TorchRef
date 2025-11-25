@@ -3,8 +3,8 @@
 #SBATCH -c 16
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/test_FT/quality_testing/compare_cctbx_map_changed_to_sperical_roi_new_io.log
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.map_symmetry import MapSymmetry
+from torchref.model_ft import ModelFT
+from torchref.map_symmetry import MapSymmetry
 import torch
 import numpy as np
 from crystfel_tools.handling.fast_math import calculate_scattering_factor_cctbx,get_resolution

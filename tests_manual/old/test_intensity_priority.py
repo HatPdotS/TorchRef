@@ -3,7 +3,7 @@
 Test script to demonstrate intensity priority and French-Wilson conversion.
 """
 
-from multicopy_refinement.Data import ReflectionData
+from torchref.Data import ReflectionData
 import reciprocalspaceship as rs
 import numpy as np
 import torch

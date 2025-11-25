@@ -1,5 +1,5 @@
-from multicopy_refinement import Data
-from multicopy_refinement import difference_refinement
+from torchref import Data
+from torchref import difference_refinement
 
 
 
@@ -10,7 +10,7 @@ mtz2 = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_data/Alvra_
 mtz1 = Data.read_mtz(mtz1)
 mtz2 = Data.read_mtz(mtz2)
 
-import multicopy_refinement.Model as Model
+import torchref.Model as Model
 
 
 model = Model.model()

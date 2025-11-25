@@ -18,7 +18,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model import OccupancyTensor
+from torchref.model import OccupancyTensor
 
 def test_basic_creation_no_sharing():
     """Test 1: Basic creation without sharing groups."""

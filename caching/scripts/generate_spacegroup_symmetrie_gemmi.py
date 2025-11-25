@@ -68,7 +68,6 @@ spacegroups_all = [
 
 if __name__ == "__main__":
     ops = dict()
-
     for sg in spacegroups_all:
         ops[sg] = get_gemmi_symmetry_operations(sg)
 

@@ -9,8 +9,8 @@ import numpy as np
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from multicopy_refinement.model import Model
-from multicopy_refinement.restraints import Restraints
+from torchref.model import Model
+from torchref.restraints import Restraints
 
 def test_peptide_plane_restraints():
     """Test that peptide plane restraints are properly built and geometrically accurate."""

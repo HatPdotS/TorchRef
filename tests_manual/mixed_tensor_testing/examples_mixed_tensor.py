@@ -7,7 +7,7 @@ while keeping other parts fixed during optimization.
 
 import torch
 import torch.nn as nn
-from multicopy_refinement.model import MixedTensor
+from torchref.model import MixedTensor
 
 
 def example_basic_usage():

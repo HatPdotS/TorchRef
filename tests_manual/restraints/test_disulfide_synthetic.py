@@ -6,8 +6,8 @@ Test script with synthetic disulfide bond
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model import Model
-from multicopy_refinement.restraints import Restraints
+from torchref.model import Model
+from torchref.restraints import Restraints
 import torch
 import pandas as pd
 import numpy as np

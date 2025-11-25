@@ -6,7 +6,7 @@ import torch
 
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 print("="*80)
 print("Testing ModelFT cpu() and cuda() methods")

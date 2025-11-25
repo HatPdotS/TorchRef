@@ -13,12 +13,12 @@ import sys
 
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.solvent import SolventModel
-from multicopy_refinement.scaler_analytical import AnalyticalScaler
-from multicopy_refinement.scaler import Scaler
-from multicopy_refinement.math_torch import rfactor
+from torchref.model_ft import ModelFT
+from torchref.Data import ReflectionData
+from torchref.solvent import SolventModel
+from torchref.scaler_analytical import AnalyticalScaler
+from torchref.scaler import Scaler
+from torchref.math_functions.math_torch import rfactor
 
 print("="*80)
 print("COMPARING SCALING APPROACHES")
@@ -126,7 +126,7 @@ print("="*80)
 print("Apply simple resolution-dependent k_mask, then binned scaling:")
 
 # Get bins
-from multicopy_refinement.math_torch import get_scattering_vectors
+from torchref.math_functions.math_torch import get_scattering_vectors
 s = get_scattering_vectors(data.hkl, data.cell)
 s_mag = torch.sqrt(torch.sum(s**2, dim=1))
 bins, n_bins = data.get_bins(20)

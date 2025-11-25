@@ -25,6 +25,7 @@ from torchref.model.model import Model
 from torch.special import i0  # modified Bessel function of the first kind
 from torch.nn import Module
 from torchref.utils.debug_utils import DebugMixin
+from torchref.utils.utils import ModuleReference
 
 
 class Restraints(DebugMixin, Module):
@@ -86,7 +87,7 @@ class Restraints(DebugMixin, Module):
             verbose: Verbosity level (0=silent, 1=normal, 2=detailed)
         """
         super().__init__()  
-        self.model = model
+        self.model = ModuleReference(model)
         self.cif_path = cif_path
         self.verbose = verbose  
         self.unique_residues = model.pdb.resname.unique()
@@ -186,7 +187,7 @@ class Restraints(DebugMixin, Module):
             # so that the exclusion set can be properly constructed
             self._build_vdw_restraints(
                 cutoff=5.0,               # Check atoms within 5 Å
-                sigma=0.2,                # Strictness of enforcement
+                sigma=0.05,                # Strictness of enforcement
                 inter_residue_only=False, # Include both inter- and intra-residue contacts
                 use_spatial_hash=True     # Use O(N) spatial hashing algorithm
             )
@@ -515,7 +516,15 @@ class Restraints(DebugMixin, Module):
             if np.any(sigmas == 0):
                 if self.verbose > 4:
                     print(f"Warning: Found {(sigmas == 0).sum()} torsions with sigma=0 after filtering, setting to 0.1°")
-                sigmas[sigmas == 0] = 0.01
+                flagged = sigmas == 0
+                idx1 = idx1[~flagged]
+                idx2 = idx2[~flagged]
+                idx3 = idx3[~flagged]
+                idx4 = idx4[~flagged]
+                references = references[~flagged]
+                periods = periods[~flagged]
+                sigmas = sigmas[~flagged]
+                # sigmas[sigmas == 0] = 0.01
             
             # Skip if no valid torsions remain
             if len(idx1) == 0:
@@ -1228,8 +1237,8 @@ class Restraints(DebugMixin, Module):
         # Compute pairwise distances between all SG atoms
         distances = torch.cdist(sg_coords, sg_coords)
         
-        # Find pairs closer than 2.0 Å (but not the same atom)
-        threshold = 2.0
+        # Find pairs closer than 4.0 Å (but not the same atom)
+        threshold = 4.0
         close_pairs = torch.where((distances < threshold) & (distances > 0.1))
         
         # Filter out pairs from the same residue and only keep i < j
@@ -1311,11 +1320,11 @@ class Restraints(DebugMixin, Module):
                     
                     # Get atom indices based on which residue they belong to
                     res1 = res1_atoms if comp1 == '1' else res2_atoms
-                    res2_mid = res1_atoms if comp2 == '1' else res2_atoms
+                    res2 = res1_atoms if comp2 == '1' else res2_atoms
                     res3 = res1_atoms if comp3 == '1' else res2_atoms
                     
                     idx1 = get_atom_index(res1, atom1_name)
-                    idx2 = get_atom_index(res2_mid, atom2_name)
+                    idx2 = get_atom_index(res2, atom2_name)
                     idx3 = get_atom_index(res3, atom3_name)
                     
                     if idx1 is not None and idx2 is not None and idx3 is not None:
@@ -2051,13 +2060,16 @@ class Restraints(DebugMixin, Module):
 
     def bond_lengths(self,idx):
         """Compute current bond lengths from atomic coordinates."""
-
         if idx is None:
             return torch.tensor([], device=self.model.xyz().device)
         xyz = self.model.xyz()
         pos1 = xyz[idx[:, 0], :]
         pos2 = xyz[idx[:, 1], :]
         return torch.linalg.norm(pos2 - pos1, dim=-1)
+    
+    def copy(self):
+        """Create a deep copy of the Restraints object."""
+        return copy.deepcopy(self)
     
     def nll_bonds(self):
         """
@@ -2328,7 +2340,7 @@ class Restraints(DebugMixin, Module):
         
         Note on periodicity:
         - Period indicates n-fold rotational symmetry (e.g., period=6 for benzene)
-        - We handle this by finding the minimum angular distance considering symmetry
+        - We handle this by finding the minimum angular distance considering periodicity
         - For period=n, angles differing by 360°/n are equivalent
         
         This is the true NLL where exp(-NLL) = probability density.
@@ -2697,7 +2709,7 @@ class Restraints(DebugMixin, Module):
             
             dist = distances[global_idx].item()
             min_dist = min_distances[global_idx].item()
-            viol = violations[global_idx].item()
+            viol = violations[global_idx].item();
             
             print(f"{atom1_str:<22} {atom2_str:<22} {dist:9.3f} {min_dist:9.3f} {viol:11.3f}")
 
@@ -2765,3 +2777,169 @@ class Restraints(DebugMixin, Module):
 
         return total_nll
 
+
+    def sum_loss_restraints(self):
+        """
+        Compute the sum of negative log-likelihood for a specific restraint type.
+        
+        Args:
+            restraint_type: 'bond', 'angle', 'torsion', 'omega', 'plane', or 'vdw'
+        """
+
+        nll_bonds = torch.sum(self.nll_bonds())
+        nll_angles = torch.sum(self.nll_angles())
+        nll_torsions = torch.sum(self.nll_torsions())
+        nll_omega = torch.sum(self.nll_omega())
+        nll_planes = torch.sum(self.nll_planes())
+        nll_vdw = torch.sum(self.nll_vdw())
+        
+        total_nll = (nll_bonds +
+                     nll_angles +
+                     nll_torsions +
+                     nll_omega +
+                     nll_planes +
+                     nll_vdw)
+        
+
+        return total_nll
+
+    def loss_sum_exp(self,weights=None):
+
+        default_values = {
+            'bond': 1.0,
+            'angle': 1.0,
+            'torsion': 1.0,
+            'omega': 1.0,
+            'plane': 1.0,
+            'vdw': 1.0  # VDW starts with lower weight - can increase during refinement
+        }
+
+        if weights:
+            default_values.update(weights)  
+        nll_bonds_single_values = self.nll_bonds()
+        nll_bonds = torch.logsumexp(nll_bonds_single_values, dim=0) / len(nll_bonds_single_values)
+        if self.verbose > 2: print(f"Mean NLL Bonds wo weights: {nll_bonds.item():.4f}")
+        nll_angles_single_values = self.nll_angles()
+        nll_angles = torch.logsumexp(nll_angles_single_values, dim=0) / len(nll_angles_single_values)
+        if self.verbose > 2: print(f"Mean NLL Angles wo weights: {nll_angles.item():.4f}")
+        nll_torsions_single_values = self.nll_torsions()
+        if torch.any(torch.isnan(nll_torsions_single_values)):
+            print(torch.sum(torch.isnan(nll_torsions_single_values)))
+            raise ValueError("NaN values found in torsion NLL computation.")
+        nll_torsions = torch.logsumexp(nll_torsions_single_values, dim=0) / len(nll_torsions_single_values)
+        if self.verbose > 2: print(f"Mean NLL Torsions wo weights: {nll_torsions.item():.4f}")
+        nll_omega_single_values = self.nll_omega()
+        nll_omega = torch.logsumexp(nll_omega_single_values, dim=0) / len(nll_omega_single_values)
+        if self.verbose > 2: print(f"Mean NLL Omega wo weights: {nll_omega.item():.4f}")
+        nll_planes_single_values = self.nll_planes()
+        nll_planes = torch.logsumexp(nll_planes_single_values, dim=0) / len(nll_planes_single_values)
+        if self.verbose > 2: print(f"Mean NLL Planes wo weights: {nll_planes.item():.4f}")
+                
+        # Add VDW restraints
+        nll_vdw_values = self.nll_vdw()
+        if len(nll_vdw_values) > 0:
+            nll_vdw = torch.logsumexp(nll_vdw_values, dim=0) / len(nll_vdw_values)
+            if self.verbose > 2: print(f"Mean NLL VDW wo weights: {nll_vdw.item():.4f}")
+        else:
+            nll_vdw = torch.tensor(0.0, device=self.model.xyz().device, requires_grad=True)
+            if self.verbose > 2: print(f"Mean NLL VDW wo weights: 0.0000 (no restraints)")
+        
+        total_nll = (nll_bonds * default_values['bond'] +
+                     nll_angles * default_values['angle'] +
+                     nll_torsions * default_values['torsion'] +
+                     nll_omega * default_values['omega'] +
+                     nll_planes * default_values['plane'] +
+                     nll_vdw * default_values['vdw']) / (
+                         default_values['bond'] + 
+                         default_values['angle'] + 
+                         default_values['torsion'] + 
+                         default_values['omega'] + 
+                         default_values['plane'] +
+                         default_values['vdw'])
+        
+        return total_nll
+
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        """
+        Returns a dictionary containing the complete state of the Restraints.
+        
+        This includes:
+        - All registered buffers (via parent class)
+        - Restraints dictionary structure with all indices, references, sigmas
+        - CIF dictionary and metadata
+        
+        Note: Model reference is NOT saved (managed separately)
+        
+        Args:
+            destination: Optional dict to populate
+            prefix: Prefix for parameter names
+            keep_vars: Whether to keep variables in computational graph
+            
+        Returns:
+            dict: Complete state dictionary
+        """
+        # Get parent class state_dict (includes all registered buffers)
+        state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        
+        # Add Restraints-specific state
+        state[prefix + 'cif_path'] = self.cif_path
+        state[prefix + 'verbose'] = self.verbose
+        state[prefix + 'unique_residues'] = self.unique_residues
+        state[prefix + 'restraints'] = self.restraints  # Full restraints dict structure
+        
+        # Save CIF dictionary (contains restraint definitions)
+        if hasattr(self, 'cif_dict'):
+            state[prefix + 'cif_dict'] = self.cif_dict
+        
+        return state
+
+    def load_state_dict(self, state_dict, strict=True):
+        """
+        Loads the Restraints state from a dictionary.
+        
+        Note: This assumes model is already set via __init__ or assignment
+        
+        Args:
+            state_dict: Dictionary containing restraints state
+            strict: Whether to strictly enforce that keys match
+        """
+        # Extract Restraints-specific state
+        self.cif_path = state_dict.pop('cif_path', None)
+        self.verbose = state_dict.pop('verbose', 1)
+        self.unique_residues = state_dict.pop('unique_residues', [])
+        self.restraints = state_dict.pop('restraints', {'bond': {}, 'angle': {}, 'torsion': {}, 'plane': {}})
+        
+        # Restore CIF dictionary if it was saved
+        if 'cif_dict' in state_dict:
+            self.cif_dict = state_dict.pop('cif_dict')
+        
+        # Load parent class state_dict (buffers)
+        return super().load_state_dict(state_dict, strict=strict)
+
+    def save_state(self, path: str):
+        """
+        Save the complete state of the restraints to a file.
+        
+        Args:
+            path (str): Path to save the state dictionary to.
+        """
+        torch.save(self.state_dict(), path)
+        if self.verbose > 0:
+            print(f"Saved restraints state to {path}")
+
+    def load_state(self, path: str, strict: bool = True):
+        """
+        Load the complete state of the restraints from a file.
+        
+        Args:
+            path (str): Path to load the state dictionary from.
+            strict (bool): Whether to strictly enforce that keys match.
+        """
+        device = 'cpu'
+        if hasattr(self, 'model') and hasattr(self.model, 'device'):
+            device = self.model.device
+            
+        state_dict = torch.load(path, map_location=device, weights_only=False)
+        self.load_state_dict(state_dict, strict=strict)
+        if self.verbose > 0:
+            print(f"Loaded restraints state from {path}")

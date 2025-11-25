@@ -4,7 +4,7 @@ Test script for R-free flag handling in ReflectionData class.
 """
 
 import torch
-from multicopy_refinement.Data import ReflectionData
+from torchref.Data import ReflectionData
 
 
 print("="*80)

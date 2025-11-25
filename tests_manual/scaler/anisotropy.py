@@ -3,10 +3,10 @@
 #SBATCH -c 32
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/scaler/anisotropy_test.out
 
-from multicopy_refinement.scaler import Scaler
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.math_torch import rfactor
+from torchref.scaler import Scaler
+from torchref.model_ft import ModelFT
+from torchref.Data import ReflectionData
+from torchref.math_functions.math_torch import rfactor
 import torch
 
 pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/refinement/dark.pdb'

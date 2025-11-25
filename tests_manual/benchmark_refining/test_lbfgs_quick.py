@@ -12,7 +12,7 @@ def test_imports():
     """Test that imports work"""
     print("Testing imports...")
     try:
-        from multicopy_refinement.lbfgs_refinement import LBFGSRefinement, LBFGS_scales
+        from torchref.lbfgs_refinement import LBFGSRefinement, LBFGS_scales
         print("  ✓ Imports successful")
         return True
     except Exception as e:
@@ -24,7 +24,7 @@ def test_basic_refinement():
     """Test basic LBFGS refinement"""
     print("\nTesting basic LBFGS refinement...")
     try:
-        from multicopy_refinement.lbfgs_refinement import LBFGSRefinement
+        from torchref.lbfgs_refinement import LBFGSRefinement
         
         mtz = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/1A0F/1A0F.mtz'
         pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/1A0F/1A0F_shaken.pdb'
@@ -71,7 +71,7 @@ def test_target_refinement():
     """Test individual target refinement"""
     print("\nTesting individual target refinement...")
     try:
-        from multicopy_refinement.lbfgs_refinement import LBFGSRefinement
+        from torchref.lbfgs_refinement import LBFGSRefinement
         
         mtz = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/1A0F/1A0F.mtz'
         pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/1A0F/1A0F_shaken.pdb'
@@ -100,8 +100,8 @@ def test_scales_refinement():
     """Test scale refinement"""
     print("\nTesting scale refinement...")
     try:
-        from multicopy_refinement.lbfgs_refinement import LBFGSRefinement, LBFGS_scales
-        from multicopy_refinement.base_refinement import Refinement
+        from torchref.lbfgs_refinement import LBFGSRefinement, LBFGS_scales
+        from torchref.base_refinement import Refinement
         
         mtz = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/1A0F/1A0F.mtz'
         pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/1A0F/1A0F_shaken.pdb'
@@ -131,7 +131,7 @@ def test_get_summary():
     """Test refinement summary"""
     print("\nTesting refinement summary...")
     try:
-        from multicopy_refinement.lbfgs_refinement import LBFGSRefinement
+        from torchref.lbfgs_refinement import LBFGSRefinement
         
         mtz = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/1A0F/1A0F.mtz'
         pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/1A0F/1A0F_shaken.pdb'

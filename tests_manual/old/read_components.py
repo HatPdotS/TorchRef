@@ -1,4 +1,4 @@
-from multicopy_refinement import restraints_helper
+from torchref import restraints_helper
 
 
 

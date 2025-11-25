@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
 import torch
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 
 # Load test data
 pdb_path = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/refinement/dark.pdb'

@@ -1,7 +1,6 @@
 import torch
 from torchref.math_functions import math_numpy as math_np
 import numpy as np
-import torchref.symmetrie.symmetrie as sym
 import hashlib
 
 def cartesian_to_fractional_torch(cart_coords, unit_cell):
@@ -39,7 +38,7 @@ def get_real_grid(cell,max_res=0.8,gridsize=None,device='cpu'):
     return xyz_real_grid
 
 def find_grid_size(cell: torch.Tensor, max_res: float):
-    return torch.floor(cell[:3] / max_res * 3).to(torch.int32)
+    return torch.floor(cell[:3] / max_res * 2.3).to(torch.int32)
 
 def rotate_coords_torch(coords,phi,rho):
     phi = phi * np.pi / 180
@@ -185,8 +184,6 @@ def smallest_diff(diff: torch.Tensor,inv_frac_matrix: torch.Tensor,frac_matrix: 
     translation = torch.round(diff_frac)
     diff = diff - torch.matmul(frac_matrix,translation).T
     return torch.sum(diff ** 2,axis=-1).reshape(diff_shape[:-1])
-
-
 
 def smallest_diff_aniso(diff: torch.Tensor,inv_frac_matrix: torch.Tensor,frac_matrix: torch.Tensor):
     diff_shape = diff.shape
@@ -1038,8 +1035,23 @@ def nll_xray(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tenso
     sigma_save = torch.clamp(sigma_F_obs, min=eps)
     nll = 0.5 * (diff**2) / (sigma_save**2) + torch.log(sigma_save) + 0.5 * log_2pi
 
-    # Sum over all Rfree reflections
     return nll.mean()
+
+
+def nll_xray_sum(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tensor) -> torch.Tensor:
+    # Compute amplitude of calculated structure factors
+    F_calc_amp = torch.abs(F_calc)
+
+    # Compute residual
+    diff = F_obs - F_calc_amp
+    # Avoid division by zero by setting a minimum sigma
+    eps = torch.median(sigma_F_obs) * 1e-1
+    # Compute Gaussian NLL: 0.5*(x-μ)²/σ² + log(σ) + 0.5*log(2π)
+    log_2pi = torch.log(torch.tensor(2.0 * torch.pi))
+    sigma_save = torch.clamp(sigma_F_obs, min=eps)
+    nll = 0.5 * (diff**2) / (sigma_save**2) + torch.log(sigma_save) + 0.5 * log_2pi
+
+    return nll.sum()
 
 def log_loss(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tensor) -> torch.Tensor:
     # Compute amplitude of calculated structure factors
@@ -1162,9 +1174,11 @@ def deterministic_tensor_digest(t: torch.Tensor, n_chunks: int = 16) -> torch.Te
     Compute a deterministic digest vector for tensor `t` directly on GPU.
 
     - Deterministic across devices and runs
-    - Sensitive to all tensor values and order
-    - Efficiently vectorized (no Python loop)
+    - Sensitive to all tensor values and order  
+    - Fully vectorized with no Python loops
     - Suitable for large GPU tensors
+    
+    Uses a simple mean/std approach per chunk which is fully deterministic.
     """
     # Flatten and cast to a stable type
     flat = t.detach().reshape(-1)
@@ -1177,16 +1191,24 @@ def deterministic_tensor_digest(t: torch.Tensor, n_chunks: int = 16) -> torch.Te
         flat = torch.nn.functional.pad(flat, (0, n_chunks - n))
         n = n_chunks
 
-    # Split indices into chunks (vectorized approach)
-    chunk_size = (n + n_chunks - 1) // n_chunks  # ceil division
-    idx = torch.arange(n, device=flat.device)
-    chunk_ids = torch.clamp(idx // chunk_size, max=n_chunks - 1)
-
-    # Compute per-chunk sums with scatter_add (fully GPU, no loop)
-    w = 0.61803398875 * (1 + chunk_ids).float()  # deterministic weighting
-    weighted = flat * w
-    digest = torch.zeros(n_chunks, device=flat.device, dtype=flat.dtype)
-    digest.scatter_add_(0, chunk_ids, weighted)
+    # Reshape into chunks directly (pad if needed)
+    chunk_size = (n + n_chunks - 1) // n_chunks
+    padded_size = chunk_size * n_chunks
+    
+    if n < padded_size:
+        flat = torch.nn.functional.pad(flat, (0, padded_size - n))
+    
+    # Reshape to (n_chunks, chunk_size) and compute stats per chunk
+    chunks = flat[:chunk_size * n_chunks].reshape(n_chunks, chunk_size)
+    
+    # Create digest from mean and std of each chunk (both are deterministic)
+    # Interleave for better sensitivity
+    digest_mean = chunks.mean(dim=1)
+    digest_std = chunks.std(dim=1)
+    
+    # Combine into single digest vector (alternate mean/std would double size)
+    # Instead, use weighted combination
+    digest = digest_mean + 0.61803398875 * digest_std
 
     return digest
 

@@ -15,7 +15,7 @@ print("✓ At long times: P(A) = 0.5 (baseline), P(C) = 0.5 (reactive)")
 print("✓ All reaction efficiencies at 100%")
 print("✓ Physical model: 50% photoexcitation, with proper normalization")
 print("="*70 + "\n")yplot as plt
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 print("\n" + "="*70)
 print("TEST: 50% BASELINE FOR GROUND STATE (UNREACTIVE FRACTION)")

@@ -4,7 +4,7 @@
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/validation_on_different_samples/Br/shake_coords/refine_shaken_gpu.out
 #SBATCH --gres=gpu:1
 
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 from time import time
 
 

@@ -1,23 +1,76 @@
-#!/das/work/p17/p17490/CONDA/muticopy_refinement/bin/python -u 
+#!/das/work/p17/p17490/CONDA/torchref/bin/python -u 
 
 #SBATCH -c 16
-#SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/test_FT/quality_testing/compare_cctbx_map_multiplicative_new_io.log
+#SBATCH -o /das/work/p17/p17490/Peter/Library/torchref/tests_manual/test_FT/quality_testing/compare_cctbx_map_multiplicative_new_io.log
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.map_symmetry import MapSymmetry
+from torchref.model.model_ft import ModelFT
+from torchref.symmetrie.map_symmetry import MapSymmetry
 import torch
 import numpy as np
-from crystfel_tools.handling.fast_math import calculate_scattering_factor_cctbx,get_resolution
 import reciprocalspaceship as rs
 import gemmi
-from multicopy_refinement.math_torch import ifft, extract_structure_factor_from_grid
+from torchref.math_functions.math_torch import ifft, extract_structure_factor_from_grid
 
-pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/test_FT/quality_testing/dark_no_H.pdb'
-outdir = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/test_FT/quality_testing'
+pdb = '/das/work/p17/p17490/Peter/Library/torchref/tests_manual/test_FT/quality_testing/dark_no_H.pdb'
+outdir = '/das/work/p17/p17490/Peter/Library/torchref/tests_manual/test_FT/quality_testing'
 
 
 M = ModelFT()   
 M.load_pdb(pdb)
+
+def calculate_scattering_factor_cctbx(pdb_file,hkls = None,d_min=2.0):
+    from iotbx import pdb
+    pdb_input = pdb.input(file_name=pdb_file)
+    xray_structure = pdb_input.xray_structure_simple()
+    f_calc = xray_structure.structure_factors(d_min=d_min).f_calc()
+    idx = np.array(f_calc.indices())
+    f_calc = np.array(f_calc.data())
+    if hkls is not None:
+        hkls = np.array(hkls,dtype=int)
+        hkls = set([tuple(hkl) for hkl in hkls])
+        f_calc_new = []
+        idx_new = []
+        for hkl,val in zip(idx,f_calc):
+            if tuple(hkl) in hkls:
+                f_calc_new.append(val)
+                idx_new.append(hkl)
+        f_calc = np.array(f_calc_new)
+        idx = np.array(idx_new)
+    return f_calc, idx
+
+def reciprocal_basis_matrix(unit_cell):
+    # Extract unit cell parameters
+    a, b, c, alpha, beta, gamma = unit_cell
+    alpha, beta, gamma = np.radians([alpha, beta, gamma])
+    # Compute real-space basis vectors
+    cos_alpha, cos_beta, cos_gamma = np.cos(alpha), np.cos(beta), np.cos(gamma)
+    sin_gamma = np.sin(gamma)
+    volume = np.sqrt(1 - cos_alpha**2 - cos_beta**2 - cos_gamma**2 + 2 * cos_alpha * cos_beta * cos_gamma)
+    a_vec = np.array([a, 0, 0])
+    b_vec = np.array([b * cos_gamma, b * sin_gamma, 0])
+    c_vec = np.array([
+        c * cos_beta,
+        c * (cos_alpha - cos_beta * cos_gamma) / sin_gamma,
+        c * volume / sin_gamma
+    ])
+    # Compute reciprocal basis vectors
+    volume_real = np.dot(a_vec, np.cross(b_vec, c_vec))
+    a_star = np.cross(b_vec, c_vec) / volume_real
+    b_star = np.cross(c_vec, a_vec) / volume_real
+    c_star = np.cross(a_vec, b_vec) / volume_real
+    # Assemble reciprocal basis matrix
+    return np.array([a_star, b_star, c_star])
+
+def get_scattering_vectors(hkl, unit_cell):
+    recB = reciprocal_basis_matrix(unit_cell)
+    hkl = np.array(hkl)  # Ensure hkl is a numpy array
+    s = np.dot(hkl,recB)
+    return s
+
+
+def get_resolution(hkl, unit_cell):
+    s = get_scattering_vectors(hkl, unit_cell)
+    return 1 / np.sum(s**2, axis=1)**0.5
 
 def wrap_phases(phases):
     """Wrap phases to [-π, π] accounting for periodicity"""

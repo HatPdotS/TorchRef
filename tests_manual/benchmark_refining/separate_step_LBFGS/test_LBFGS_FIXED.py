@@ -6,7 +6,7 @@
 #SBATCH -t 1-00:00:00 
 import torch
 from tqdm import tqdm
-from multicopy_refinement.base_refinement import Refinement
+from torchref.base_refinement import Refinement
 import numpy as np
 
 

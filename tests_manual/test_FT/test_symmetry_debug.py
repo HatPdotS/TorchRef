@@ -3,8 +3,8 @@ Debug symmetry operations by saving individual symmetry mates for visual inspect
 """
 import torch
 import numpy as np
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.map_symmetry import MapSymmetry
+from torchref.model_ft import ModelFT
+from torchref.map_symmetry import MapSymmetry
 
 print("=" * 60)
 print("SYMMETRY DEBUG TEST")

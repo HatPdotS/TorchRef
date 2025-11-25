@@ -545,6 +545,25 @@ class TensorDict(nn.Module):
     def __repr__(self):
         return f"TensorDict({{"+", ".join(f'{k}: {getattr(self, f"_buf_{k}")}' for k in self._keys)+"}})"
     
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        """
+        Override to dynamically register buffers during loading.
+        """
+        # Identify keys that belong to this module
+        local_keys = [k for k in state_dict.keys() if k.startswith(prefix + "_buf_")]
+        
+        for key in local_keys:
+            # Extract the original key name (remove prefix and _buf_)
+            buffer_name = key[len(prefix):] # e.g. "_buf_flagged_initial"
+            original_key = buffer_name[5:]  # remove "_buf_"
+            
+            if not hasattr(self, buffer_name):
+                # Register the buffer dynamically
+                tensor = state_dict[key]
+                self.register_buffer(buffer_name, torch.zeros_like(tensor))
+                self._keys.append(original_key)
+                
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
 
 class TensorMasks(TensorDict):
@@ -690,3 +709,255 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
         print(f"  Final atoms: {len(pdb)}")
     
     return pdb
+
+
+def _parse_with_parentheses(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
+    """
+    Helper function to handle parentheses in selection strings.
+    Recursively evaluates innermost parentheses first.
+    """
+    import re
+    
+    # Find innermost parentheses
+    while True:
+        match = re.search(r'\(([^()]+)\)', selection_string)
+        if not match:
+            break
+        
+        # Evaluate the innermost parenthesized expression
+        inner = match.group(1)
+        inner_mask = _parse_without_parentheses(inner, pdb_df)
+        
+        # Replace with a placeholder that we'll substitute back
+        # Use a unique placeholder that won't appear in normal selection
+        placeholder = f"__MASK_{id(inner_mask)}__"
+        selection_string = selection_string[:match.start()] + placeholder + selection_string[match.end():]
+        
+        # Store the mask result in a temporary global dict
+        # (not ideal but works for this recursive evaluation)
+        if not hasattr(_parse_with_parentheses, '_mask_cache'):
+            _parse_with_parentheses._mask_cache = {}
+        _parse_with_parentheses._mask_cache[placeholder] = inner_mask
+    
+    # Now parse the expression without parentheses, substituting cached masks
+    return _parse_without_parentheses(selection_string, pdb_df)
+
+
+def _parse_without_parentheses(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
+    """
+    Parse selection string without parentheses.
+    Handles logical operators and basic keywords.
+    """
+    import re
+    
+    selection_string = selection_string.strip()
+    
+    if not selection_string:
+        raise ValueError("Selection string cannot be empty")
+    
+    # Check if this is a cached mask placeholder
+    if selection_string.startswith('__MASK_') and selection_string.endswith('__'):
+        if hasattr(_parse_with_parentheses, '_mask_cache'):
+            return _parse_with_parentheses._mask_cache.get(selection_string, 
+                                                           torch.ones(len(pdb_df), dtype=torch.bool))
+        return torch.ones(len(pdb_df), dtype=torch.bool)
+    
+    # Handle "all" keyword
+    if selection_string.lower() == "all":
+        return torch.ones(len(pdb_df), dtype=torch.bool)
+    
+    # Parse logical operators (or, and, not) with proper precedence
+    # Priority: not > and > or
+    
+    # First, handle "or" (lowest precedence)
+    if ' or ' in selection_string.lower():
+        parts = re.split(r'\s+or\s+', selection_string, flags=re.IGNORECASE)
+        masks = [_parse_without_parentheses(part.strip(), pdb_df) for part in parts]
+        result = masks[0]
+        for mask in masks[1:]:
+            result = result | mask
+        return result
+    
+    # Then, handle "and"
+    if ' and ' in selection_string.lower():
+        parts = re.split(r'\s+and\s+', selection_string, flags=re.IGNORECASE)
+        masks = [_parse_without_parentheses(part.strip(), pdb_df) for part in parts]
+        result = masks[0]
+        for mask in masks[1:]:
+            result = result & mask
+        return result
+    
+    # Then, handle "not"
+    if selection_string.lower().startswith('not '):
+        inner_selection = selection_string[4:].strip()
+        return ~_parse_without_parentheses(inner_selection, pdb_df)
+    
+    # Now handle individual selection keywords
+    parts = selection_string.split(None, 1)
+    if len(parts) < 2:
+        raise ValueError(f"Invalid selection syntax: '{selection_string}'")
+    
+    keyword, value = parts[0].lower(), parts[1]
+    
+    # Initialize mask as all False
+    mask = torch.zeros(len(pdb_df), dtype=torch.bool)
+    
+    if keyword == 'chain':
+        # Select by chain ID
+        chain_id = value.strip()
+        selected = pdb_df['chainid'] == chain_id
+        mask = torch.tensor(selected.values, dtype=torch.bool)
+    
+    elif keyword == 'resseq':
+        # Select by residue sequence number or range
+        if ':' in value:
+            # Range selection
+            start, end = value.split(':')
+            start, end = int(start.strip()), int(end.strip())
+            selected = (pdb_df['resseq'] >= start) & (pdb_df['resseq'] <= end)
+        else:
+            # Single residue
+            resseq_num = int(value.strip())
+            selected = pdb_df['resseq'] == resseq_num
+        mask = torch.tensor(selected.values, dtype=torch.bool)
+    
+    elif keyword == 'resname':
+        # Select by residue name
+        resname = value.strip().upper()
+        selected = pdb_df['resname'].str.upper() == resname
+        mask = torch.tensor(selected.values, dtype=torch.bool)
+    
+    elif keyword == 'name':
+        # Select by atom name
+        atom_name = value.strip().upper()
+        selected = pdb_df['name'].str.upper() == atom_name
+        mask = torch.tensor(selected.values, dtype=torch.bool)
+    
+    elif keyword == 'element':
+        # Select by element
+        element = value.strip().capitalize()
+        selected = pdb_df['element'].str.capitalize() == element
+        mask = torch.tensor(selected.values, dtype=torch.bool)
+    
+    elif keyword == 'altloc':
+        # Select by alternate location
+        altloc = value.strip()
+        selected = pdb_df['altloc'] == altloc
+        mask = torch.tensor(selected.values, dtype=torch.bool)
+    
+    else:
+        raise ValueError(f"Unknown selection keyword: '{keyword}'")
+    
+    return mask
+
+
+def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
+    """
+    Parse Phenix-style atom selection syntax and return a boolean mask.
+    
+    Supports common Phenix selection keywords:
+    - chain <id>: Select atoms by chain ID (e.g., "chain A")
+    - resseq <num>: Select atoms by residue sequence number (e.g., "resseq 10")
+    - resseq <start>:<end>: Select residue range (e.g., "resseq 10:20")
+    - resname <name>: Select atoms by residue name (e.g., "resname ALA")
+    - name <atom>: Select atoms by atom name (e.g., "name CA")
+    - element <elem>: Select atoms by element (e.g., "element C")
+    - altloc <id>: Select atoms by alternate location (e.g., "altloc A")
+    - all: Select all atoms
+    - not <selection>: Negate selection
+    - <sel1> and <sel2>: Intersection of selections
+    - <sel1> or <sel2>: Union of selections
+    - Parentheses for grouping: (selection)
+    
+    Examples:
+        >>> # Select chain A
+        >>> mask = parse_phenix_selection("chain A", pdb_df)
+        >>> 
+        >>> # Select residues 10-20 in chain A
+        >>> mask = parse_phenix_selection("chain A and resseq 10:20", pdb_df)
+        >>> 
+        >>> # Select all CA atoms
+        >>> mask = parse_phenix_selection("name CA", pdb_df)
+        >>> 
+        >>> # Select backbone atoms
+        >>> mask = parse_phenix_selection("name CA or name C or name N or name O", pdb_df)
+        >>> 
+        >>> # Select everything except water
+        >>> mask = parse_phenix_selection("not resname HOH", pdb_df)
+        >>> 
+        >>> # Use parentheses for grouping
+        >>> mask = parse_phenix_selection("chain A and (name CA or name CB)", pdb_df)
+    
+    Args:
+        selection_string: Phenix-style selection string
+        pdb_df: DataFrame containing atomic data with columns:
+               'chainid', 'resseq', 'resname', 'name', 'element', 'altloc'
+    
+    Returns:
+        torch.Tensor: Boolean tensor of shape (n_atoms,) where True indicates selected atoms
+    
+    Raises:
+        ValueError: If selection syntax is invalid
+    """
+    # Clear any cached masks from previous calls
+    if hasattr(_parse_with_parentheses, '_mask_cache'):
+        _parse_with_parentheses._mask_cache.clear()
+    
+    # Check if there are parentheses
+    if '(' in selection_string:
+        return _parse_with_parentheses(selection_string, pdb_df)
+    else:
+        return _parse_without_parentheses(selection_string, pdb_df)
+
+
+def create_selection_mask(selection_string: str, pdb_df: pd.DataFrame, 
+                         current_mask: Optional[torch.Tensor] = None,
+                         mode: str = 'set') -> torch.Tensor:
+    """
+    Create or modify a refinable mask based on a Phenix-style selection.
+    
+    This function allows you to update refinable masks by selecting specific atoms
+    using Phenix-style syntax. You can either replace the current mask, add to it,
+    or remove from it.
+    
+    Args:
+        selection_string: Phenix-style selection string
+        pdb_df: DataFrame containing atomic data
+        current_mask: Current refinable mask (optional). If None, starts with all False
+        mode: How to combine with current mask:
+              - 'set': Replace mask with selection (default)
+              - 'add': Add selection to current mask (OR operation)
+              - 'remove': Remove selection from current mask (AND NOT operation)
+    
+    Returns:
+        torch.Tensor: Updated boolean mask of shape (n_atoms,)
+    
+    Examples:
+        >>> # Create new mask selecting chain A
+        >>> mask = create_selection_mask("chain A", pdb_df, mode='set')
+        >>> 
+        >>> # Add residues 10-20 to existing mask
+        >>> mask = create_selection_mask("resseq 10:20", pdb_df, current_mask=mask, mode='add')
+        >>> 
+        >>> # Remove water from mask
+        >>> mask = create_selection_mask("resname HOH", pdb_df, current_mask=mask, mode='remove')
+    
+    Raises:
+        ValueError: If mode is not one of 'set', 'add', 'remove'
+    """
+    # Parse the selection
+    selection_mask = parse_phenix_selection(selection_string, pdb_df)
+    
+    # Initialize current mask if not provided
+    if current_mask is None:
+        current_mask = torch.zeros(len(pdb_df), dtype=torch.bool)
+    
+    # Apply mode
+    if mode == 'set':
+        return selection_mask
+    elif mode == 'add':
+        return current_mask | selection_mask
+    elif mode == 'remove':
+        return current_mask & ~selection_mask
+    else:
+        raise ValueError(f"Invalid mode: '{mode}'. Must be 'set', 'add', or 'remove'")

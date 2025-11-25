@@ -5,7 +5,7 @@ Test to reproduce the large timepoint issue.
 
 import torch
 import numpy as np
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 print("\n" + "="*70)
 print("TEST: LARGE LOGARITHMIC TIMEPOINTS (ps to ms regime)")

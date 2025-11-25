@@ -5,12 +5,12 @@
 
 
 
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.scaler import Scaler
+from torchref.Data import ReflectionData
+from torchref.model_ft import ModelFT
+from torchref.scaler import Scaler
 from matplotlib import pyplot as plt
 import torch
-from multicopy_refinement.solvent import SolventModel
+from torchref.solvent import SolventModel
 
 def rfactor(fobs, fcalc):
     fobs_amp = torch.abs(fobs)

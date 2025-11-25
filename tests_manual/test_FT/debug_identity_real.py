@@ -2,8 +2,8 @@
 Debug identity operation on the actual tubulin map.
 """
 import torch
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.map_symmetry import MapSymmetry
+from torchref.model_ft import ModelFT
+from torchref.map_symmetry import MapSymmetry
 
 print("=" * 70)
 print("DEBUG: Identity Operation on Real Map")

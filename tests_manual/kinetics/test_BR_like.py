@@ -6,7 +6,7 @@ Bacteriorhodopsin-like test with realistic kinetics.
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 print("\n" + "="*70)
 print("BACTERIORHODOPSIN-LIKE KINETICS TEST")

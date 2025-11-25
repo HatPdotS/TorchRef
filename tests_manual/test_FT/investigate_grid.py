@@ -3,7 +3,7 @@ Investigate the real_space_grid structure to understand PBC issues.
 """
 import torch
 import numpy as np
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 M = ModelFT()   
 M.load_pdb_from_file('/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_FT/dark.pdb')

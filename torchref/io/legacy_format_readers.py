@@ -321,11 +321,12 @@ def load_pdb_as_pd(file,skipheader= 0,skipfooter = 1):
     pdb[['serial','resseq']] = pdb[['serial','resseq']].astype(int)
     pdb[['x','y','z','occupancy','tempfactor']] = pdb[['x','y','z','occupancy','tempfactor']].astype(float)
     pdb[['altloc','icode']] = pdb[['altloc','icode']].fillna('')
-    pdb['charge'] = pdb['charge'].astype(str).str.strip('+').astype(float).fillna(0).astype(int)
+    pdb['charge'] = pdb['charge'].astype(str).str.strip('+').str.replace('1-', '-1').str.replace('2-', '-2').astype(float).fillna(0).astype(int)
     # Format element type: strip whitespace and capitalize only first letter
     pdb['element'] = pdb['element'].astype(str).str.strip().str.capitalize()
     pdb['index'] = np.arange(pdb.shape[0]).astype(int)
-    cell,spacegroup,z = read_crystallographic_info(file)
+    try: cell,spacegroup,z = read_crystallographic_info(file) 
+    except: cell,spacegroup,z = None,None,None
     pdb.attrs['cell'] = cell
     pdb.attrs['spacegroup'] = spacegroup
     pdb.attrs['z'] = z
@@ -342,10 +343,9 @@ def read_crystallographic_info(file):
                 alpha = line[33:40]
                 beta = line[40:47]
                 gamma = line[47:54]
-                spacegroup = line[55:68]
+                spacegroup = line[55:68].strip()
                 z = line[68:].strip()
                 cell = [float(a),float(b),float(c),float(alpha),float(beta),float(gamma)]
-                spacegroup = ' '.join(spacegroup)
                 return cell,spacegroup,z
     return None,None,None
 

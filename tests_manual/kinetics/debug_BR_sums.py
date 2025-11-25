@@ -5,7 +5,7 @@ Debug the BR-like kinetics to see what's wrong.
 
 import torch
 import numpy as np
-from multicopy_refinement.kinetics import KineticModel
+from torchref.kinetics import KineticModel
 
 timepoints = torch.logspace(-9,-2,10000) 
 

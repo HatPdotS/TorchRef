@@ -1,4 +1,4 @@
-from multicopy_refinement.model import model
+from torchref.model import model
 
 # Load the test PDB
 test = model()

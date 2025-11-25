@@ -4,7 +4,7 @@ Verify the density at atom center matches theory.
 import numpy as np
 import torch
 import gemmi
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 print("=" * 70)
 print("VERIFY DENSITY AT ATOM CENTER")

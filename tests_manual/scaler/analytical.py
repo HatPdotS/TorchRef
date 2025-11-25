@@ -270,10 +270,10 @@ def get_rfactor(Fobs: torch.Tensor, Fcalc: torch.Tensor) -> float:
     R = (numerator / denominator).item()
     return R
 
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.solvent import SolventModel
-from multicopy_refinement.math_torch import get_scattering_vectors
+from torchref.Data import ReflectionData
+from torchref.model_ft import ModelFT
+from torchref.solvent import SolventModel
+from torchref.math_functions.math_torch import get_scattering_vectors
 
 pdbin = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/scaler/dark.pdb'
 mtzin = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/scaler/dark.mtz'

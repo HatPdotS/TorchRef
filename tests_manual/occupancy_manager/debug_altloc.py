@@ -8,7 +8,7 @@ import os
 
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model import Model
+from torchref.model import Model
 
 def create_altloc_pdb():
     pdb_content = """CRYST1   50.000   50.000   50.000  90.00  90.00  90.00 P 1           1

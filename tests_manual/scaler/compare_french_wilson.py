@@ -2,14 +2,14 @@
 #SBATCH -c 16
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/scaler/compare_french_wilson.out
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.scaler import Scaler
-from multicopy_refinement.Data import ReflectionData
+from torchref.model_ft import ModelFT
+from torchref.scaler import Scaler
+from torchref.Data import ReflectionData
 import torch
 import matplotlib.pyplot as plt
 import os
 import numpy as np
-from multicopy_refinement.math_torch import french_wilson_conversion
+from torchref.math_functions.math_torch import french_wilson_conversion
 import torch
 import reciprocalspaceship as rs
 

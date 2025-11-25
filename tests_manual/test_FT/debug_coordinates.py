@@ -3,7 +3,7 @@ Simple test to understand coordinate systems and the missing density issue.
 """
 import torch
 import numpy as np
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 print("=" * 70)
 print("COORDINATE SYSTEM DEBUG")

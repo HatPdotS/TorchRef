@@ -3,14 +3,14 @@
 #SBATCH -c 16
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/test_FT/quality_testing/compare_cctbx_map_multiplicative_new_cif.log
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.map_symmetry import MapSymmetry
+from torchref.model_ft import ModelFT
+from torchref.map_symmetry import MapSymmetry
 import torch
 import numpy as np
 from crystfel_tools.handling.fast_math import calculate_scattering_factor_cctbx,get_resolution
 import reciprocalspaceship as rs
 import gemmi
-from multicopy_refinement.math_torch import ifft, extract_structure_factor_from_grid
+from torchref.math_functions.math_torch import ifft, extract_structure_factor_from_grid
 
 pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/7CWW/7CWW.cif'
 outdir = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests_manual/test_FT/quality_testing'

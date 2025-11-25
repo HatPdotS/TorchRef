@@ -6,7 +6,7 @@ Analyze how many peptide bonds are missing from restraints
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model import Model
+from torchref.model import Model
 
 # Load the model
 model = Model()

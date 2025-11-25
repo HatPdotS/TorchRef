@@ -11,7 +11,7 @@ import torch
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.parameter_wrappers import OccupancyTensor
+from torchref.parameter_wrappers import OccupancyTensor
 
 def test_basic_freeze_unfreeze():
     """Test basic freeze/unfreeze without sharing groups"""

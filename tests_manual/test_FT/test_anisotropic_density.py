@@ -5,12 +5,12 @@ Verifies that vectorized_add_to_map_aniso works correctly.
 
 import torch
 import numpy as np
-from multicopy_refinement.math_torch import (
+from torchref.math_torch import (
     vectorized_add_to_map, 
     vectorized_add_to_map_aniso,
     find_relevant_voxels
 )
-import multicopy_refinement.math_numpy as mnp
+import torchref.math_numpy as mnp
 
 def test_isotropic_limit():
     """

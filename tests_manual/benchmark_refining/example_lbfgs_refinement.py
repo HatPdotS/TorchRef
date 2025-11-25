@@ -11,8 +11,8 @@ converges much faster than traditional Adam-based refinement.
 """
 
 import torch
-from multicopy_refinement.lbfgs_refinement import LBFGSRefinement, LBFGS_scales
-from multicopy_refinement.base_refinement import Refinement
+from torchref.lbfgs_refinement import LBFGSRefinement, LBFGS_scales
+from torchref.base_refinement import Refinement
 
 
 def example_basic_lbfgs():

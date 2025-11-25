@@ -22,8 +22,6 @@ def write_file(df,fname,template= None):
         try: 
             cell = df.attrs['cell']
             spacegroup = df.attrs['spacegroup']
-            if spacegroup[1] != ' ':
-                spacegroup = spacegroup[:1] + ' ' + spacegroup[1:].replace(' ','')
             cell_abc = cell[:3]
             cell_angles = cell[3:]
             z = df.attrs['z']
@@ -140,8 +138,34 @@ def write_mtz(df, cell, spacegroup, fname):
     else:
         raise ValueError(f"Spacegroup must be str or gemmi.SpaceGroup, got {type(spacegroup)}")
     
+    structure_factor_cols = ['Fobs', '2FOFCWT', 'FOFCWT','F-model']
+    intensity_cols = ['I-obs']
+    sigma_cols = ['SIGF-obs','SIGI-obs']
+    phase_cols = ['PH2FOFCWT','PHFOFCWT','PH-model']
+    flags = ['R-free-flags']
+
+    # Assign correct MTZ data types for each column type
+    for col in structure_factor_cols:
+        if col in mtz_rs.columns:
+            mtz_rs[col] = mtz_rs[col].astype('F')
+    
+    for col in intensity_cols:
+        if col in mtz_rs.columns:
+            mtz_rs[col] = mtz_rs[col].astype('J')
+    
+    for col in sigma_cols:
+        if col in mtz_rs.columns:
+            mtz_rs[col] = mtz_rs[col].astype('Q')
+    
+    for col in phase_cols:
+        if col in mtz_rs.columns:
+            mtz_rs[col] = mtz_rs[col].astype('P')
+    
+    for col in flags:
+        if col in mtz_rs.columns:
+            mtz_rs[col] = mtz_rs[col].astype('I')
+    mtz_rs = mtz_rs.infer_mtz_dtypes()
     mtz_rs.cell = gemmi.UnitCell(*cell)
     mtz_rs.spacegroup = spacegroup
-    mtz_rs = mtz_rs.infer_mtz_dtypes()
     mtz_rs.write_mtz(fname)
     return 1

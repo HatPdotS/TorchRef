@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
 import torch
-from multicopy_refinement.model_ft import ModelFT
+from torchref.model_ft import ModelFT
 
 def test_modelft_basic():
     """Test basic ModelFT functionality with new architecture."""

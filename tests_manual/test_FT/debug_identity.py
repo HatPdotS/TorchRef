@@ -4,7 +4,7 @@ Debug why identity operation doesn't return identical map.
 import torch
 import torch.nn.functional as F
 import numpy as np
-from multicopy_refinement.map_symmetry import MapSymmetry
+from torchref.map_symmetry import MapSymmetry
 
 # Simple test case
 print("=" * 70)

@@ -1,4 +1,4 @@
-from multicopy_refinement import direct_summation as ds
+from torchref import direct_summation as ds
 from pdb_tools import load_pdb_as_pd
 import reciprocalspaceship as rs
 import numpy as np

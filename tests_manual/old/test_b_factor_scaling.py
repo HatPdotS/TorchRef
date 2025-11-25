@@ -1,6 +1,6 @@
 import pdb_tools 
 import pandas as pd
-import multicopy_refinement.direct_summation as ds
+import torchref.direct_summation as ds
 from crystfel_tools.handling.fast_math import calculate_scattering_factor_cctbx,get_resolution
 import numpy as np
 from matplotlib import pyplot as plt    

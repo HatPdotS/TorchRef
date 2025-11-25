@@ -16,7 +16,7 @@ import tempfile
 
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model import Model, OccupancyTensor
+from torchref.model import Model, OccupancyTensor
 
 def create_test_pdb():
     """Create a minimal test PDB file."""

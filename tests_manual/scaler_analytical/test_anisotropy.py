@@ -1,3 +1,4 @@
+
 #!/das/work/p17/p17490/CONDA/muticopy_refinement/bin/python
 """
 Test if analytical scaler + anisotropy fitting reaches R~0.17
@@ -8,11 +9,11 @@ import sys
 
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.solvent import SolventModel
-from multicopy_refinement.scaler_analytical import AnalyticalScaler
-from multicopy_refinement.math_torch import rfactor
+from torchref.model_ft import ModelFT
+from torchref.Data import ReflectionData
+from torchref.solvent import SolventModel
+from torchref.scaler_analytical import AnalyticalScaler
+from torchref.math_functions.math_torch import rfactor
 
 # Load data
 pdb_path = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_data/tubulin/dark.pdb'

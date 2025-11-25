@@ -15,7 +15,7 @@ def test_basic_functionality():
     print("="*60)
     
     try:
-        from multicopy_refinement.kinetics import KineticModel
+        from torchref.kinetics import KineticModel
         
         # Create simple model with new comma syntax
         t = torch.linspace(0, 5, 50)
@@ -54,7 +54,7 @@ def test_flow_chart_parsing():
     print("="*60)
     
     try:
-        from multicopy_refinement.kinetics import KineticModel
+        from torchref.kinetics import KineticModel
         
         test_cases = [
             ("A->B,B->C", 3, 2),
@@ -93,7 +93,7 @@ def test_gradients():
     print("="*60)
     
     try:
-        from multicopy_refinement.kinetics import KineticModel
+        from torchref.kinetics import KineticModel
         
         model = KineticModel(
             flow_chart="A->B",
@@ -133,7 +133,7 @@ def test_parameter_access():
     print("="*60)
     
     try:
-        from multicopy_refinement.kinetics import KineticModel
+        from torchref.kinetics import KineticModel
         
         model = KineticModel(
             flow_chart="A->B,B->C",
@@ -190,7 +190,7 @@ def test_instrument_function():
     print("="*60)
     
     try:
-        from multicopy_refinement.kinetics import KineticModel
+        from torchref.kinetics import KineticModel
         import os
         
         t = torch.linspace(-2, 5, 100)

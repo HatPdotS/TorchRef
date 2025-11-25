@@ -4,8 +4,8 @@
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/bulk_solvent/test_cctbx_bulk_solvent.out
 #SBATCH --mem=300G
 from mmtbx.bulk_solvent import bulk_solvent_and_scaling
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.solvent import SolventModel
+from torchref.model_ft import ModelFT
+from torchref.solvent import SolventModel
 
 import iotbx.pdb
 import numpy as np
@@ -68,7 +68,7 @@ def test_for_pdb_file(pdb_file,prefix='',dilation_radius=1.3):
 
     cell = xray_structure.unit_cell().parameters()
 
-    from multicopy_refinement.utils import save_map
+    from torchref.utils import save_map
 
 
     save_map(np_mask, cell, f'/das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/bulk_solvent/{prefix}bulk_mmtbx_solvent_mask.ccp4')

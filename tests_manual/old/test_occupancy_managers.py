@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
 import torch
-from multicopy_refinement.Model import uniform_occupancy_manager, per_atom_occupancy_manager
+from torchref.Model import uniform_occupancy_manager, per_atom_occupancy_manager
 
 print("Testing Occupancy Managers")
 print("=" * 60)

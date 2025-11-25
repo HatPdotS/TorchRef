@@ -8,7 +8,7 @@ import torch
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.french_wilson import FrenchWilsonModule
+from torchref.french_wilson import FrenchWilsonModule
 
 
 def demo_verbosity_levels():

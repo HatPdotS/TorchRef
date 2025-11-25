@@ -86,7 +86,7 @@ class DebugMixin:
                     dtype_str = str(tensor.dtype).replace('torch.', '')
                     shape_str = 'x'.join(map(str, tensor.shape)) if tensor.shape else 'scalar'
                     mem_mb = tensor.element_size() * tensor.numel() / (1024 * 1024)
-                    
+
                     # Get value info for small tensors
                     value_info = ""
                     if tensor.numel() <= 5:
@@ -309,7 +309,6 @@ class DebugMixin:
         )
         
         return obj.__class__.__name__ in debuggable_types
-
 
 def print_module_summary(module, title: str = None, file=sys.stderr):
     """

@@ -3,8 +3,8 @@ Comprehensive test of periodic boundary conditions and density placement.
 """
 import torch
 import numpy as np
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.math_torch import find_relevant_voxels
+from torchref.model_ft import ModelFT
+from torchref.math_functions.math_torch import find_relevant_voxels
 
 print("=" * 70)
 print("COMPREHENSIVE PBC AND DENSITY PLACEMENT TEST")

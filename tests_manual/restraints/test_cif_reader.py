@@ -4,7 +4,7 @@
 import sys
 sys.path.insert(0, '/das/work/p17/p17490/Peter/Library/multicopy_refinement')
 
-from multicopy_refinement.restraints_helper import read_cif
+from torchref.restraints_helper import read_cif
 
 # Test with MET.cif
 cif_path = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/external_monomer_library/m/MET.cif'

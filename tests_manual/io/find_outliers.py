@@ -4,9 +4,9 @@
 #SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/io/test.log
 
 import torch
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.Data import ReflectionData
-from multicopy_refinement.scaler import Scaler
+from torchref.model_ft import ModelFT
+from torchref.Data import ReflectionData
+from torchref.scaler import Scaler
 from matplotlib import pyplot as plt
 import numpy as np
 

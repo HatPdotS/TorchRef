@@ -1,6 +1,6 @@
-from multicopy_refinement.model_ft import ModelFT
-from multicopy_refinement.scaler import Scaler
-from multicopy_refinement.Data import ReflectionData
+from torchref.model_ft import ModelFT
+from torchref.scaler import Scaler
+from torchref.Data import ReflectionData
 import torch
 import matplotlib.pyplot as plt
 import os

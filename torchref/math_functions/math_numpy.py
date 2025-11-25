@@ -38,6 +38,14 @@ def get_fractional_matrix(unit_cell):
     ])   
     return B
 
+def get_res_for_dataset(ds):
+    cell = ds.cell
+    cell_np = np.array([cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma])
+    hkl = ds.reset_index().loc[:, ['H', 'K', 'L']].values.astype(np.float64)
+    s = get_scattering_vectors(hkl, cell_np)
+    res = 1.0 / np.sqrt(np.sum(s**2, axis=1))
+    return res
+
 def cartesian_to_fractional(cart_coords, unit_cell):
     B_inv = get_inv_fractional_matrix(unit_cell)
     fractional_vector = np.dot(cart_coords,B_inv.T)

@@ -5,7 +5,7 @@ Test script for automatic R-free flag generation.
 
 import torch
 import reciprocalspaceship as rs
-from multicopy_refinement.Data import ReflectionData
+from torchref.Data import ReflectionData
 
 
 print("="*80)
