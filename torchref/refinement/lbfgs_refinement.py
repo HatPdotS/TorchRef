@@ -28,9 +28,27 @@ class LBFGSRefinement(Refinement):
         from torchref.refinement.loss_weighting import ResolutionDependentWeighting
         
         weighter = ResolutionDependentWeighting()
-        refinement = LBFGSRefinement(mtz_file, pdb_file, weighter=weighter)
+        refinement = LBFGSRefinement(mtz_file, pdb_file, weighter=weighter, target_mode='ml')
         refinement.refine(macro_cycles=2)
     """
+
+    def __init__(self, *args, target_mode: str = 'gaussian', **kwargs):
+        """
+        Initialize LBFGS refinement.
+        
+        Args:
+            target_mode: X-ray target mode ('gaussian', 'ls', or 'ml')
+            *args, **kwargs: Passed to parent Refinement class
+        """
+        super().__init__(*args, **kwargs)
+        
+        # Set the X-ray target mode (uses the new target system from base class)
+        self.set_xray_target_mode(target_mode)
+        self.target_mode = target_mode
+
+    def xray_loss(self):
+        """Compute X-ray loss using the instantiated target."""
+        return self.xray_loss_work()
 
     def refine_adp(self):
         """
@@ -343,12 +361,14 @@ class LBFGSRefinement(Refinement):
                 if self.verbose > 0:
                     rwork = cycle_dict['rwork_after_xyz_scaled']
                     rfree = cycle_dict['rfree_after_xyz_scaled']
+                    rw = cycle_dict['restraints_weight']
+                    if isinstance(rw, torch.Tensor): rw = rw.item()
                     print(f"After XYZ: Rwork={rwork:.4f}, Rfree={rfree:.4f}, "
-                          f"restraint_weight={cycle_dict['restraints_weight']:.3f}")
+                          f"restraint_weight={rw:.3f}")
             if cycle_dict['rwork_after_xyz_scaled'] - cycle_dict['rfree_after_xyz_scaled'] > 0.05:
                 if self.verbose > 0:
                     print("Large R-factor gap detected after XYZ refinement. Applying additional regularization.")
-                self.regularize_xyz(lr=0.3)
+                self.regularize_xyz(lr=0.6)
             with torch.no_grad():
                 rwork, rfree = self.get_rfactor()
                 cycle_dict['rwork_after_xyz_reg_scaled'] = rwork
@@ -367,14 +387,16 @@ class LBFGSRefinement(Refinement):
                 if self.verbose > 0:
                     rwork = cycle_dict['rwork_after_adp_scaled']
                     rfree = cycle_dict['rfree_after_adp_scaled']
+                    aw = cycle_dict['adp_weight']
+                    if isinstance(aw, torch.Tensor): aw = aw.item()
                     print(f"After ADP: Rwork={rwork:.4f}, Rfree={rfree:.4f}, "
-                          f"adp_weight={cycle_dict['adp_weight']:.3f}")
+                          f"adp_weight={aw:.3f}")
                     print(f"Effective weights: {self.effective_weights}")
 
             if cycle_dict['rwork_after_adp_scaled'] - cycle_dict['rfree_after_adp_scaled'] > 0.05:
                 if self.verbose > 0:
                     print("Large R-factor gap detected after ADP refinement. Applying additional regularization.")
-                self.regularize_adp(lr=0.3)
+                self.regularize_adp(lr=0.6)
 
             with torch.no_grad():
                 rwork, rfree = self.get_rfactor()

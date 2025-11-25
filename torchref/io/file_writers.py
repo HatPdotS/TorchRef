@@ -164,6 +164,7 @@ def write_mtz(df, cell, spacegroup, fname):
     for col in flags:
         if col in mtz_rs.columns:
             mtz_rs[col] = mtz_rs[col].astype('I')
+            
     mtz_rs = mtz_rs.infer_mtz_dtypes()
     mtz_rs.cell = gemmi.UnitCell(*cell)
     mtz_rs.spacegroup = spacegroup

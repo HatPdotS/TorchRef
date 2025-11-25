@@ -1795,6 +1795,50 @@ class Restraints(DebugMixin, Module):
         self._move_to_device(torch.device('cpu'))
         return self
     
+    def vdw_violations(self, threshold: float = 0.0):
+        """
+        Compute VDW (steric clash) violations.
+        
+        A violation occurs when the actual distance is less than the minimum
+        allowed distance (sum of VDW radii).
+        
+        Args:
+            threshold: Additional tolerance in Angstroms (default: 0.0)
+                      Distances < (min_distance - threshold) are violations.
+        
+        Returns:
+            Tuple of (violations, n_violations):
+            - violations: Tensor of violation amounts (min_dist - actual_dist) for violated pairs
+            - n_violations: Number of violations (int)
+        """
+        if 'vdw' not in self.restraints:
+            return torch.tensor([]), 0
+        
+        vdw_data = self.restraints['vdw']
+        indices = vdw_data.get('indices')
+        
+        if indices is None or len(indices) == 0:
+            return torch.tensor([]), 0
+        
+        min_distances = vdw_data['min_distances']
+        
+        # Get current atomic positions
+        xyz = self.model.xyz()
+        pos1 = xyz[indices[:, 0]]
+        pos2 = xyz[indices[:, 1]]
+        
+        # Compute actual distances
+        actual_distances = torch.norm(pos2 - pos1, dim=-1)
+        
+        # Violations: where actual distance is less than minimum allowed
+        violation_mask = actual_distances < (min_distances - threshold)
+        violation_amounts = min_distances - actual_distances
+        
+        violations = violation_amounts[violation_mask]
+        n_violations = violation_mask.sum().item()
+        
+        return violations, n_violations
+
     def __repr__(self):
         """String representation of the Restraints object."""
         # Helper function to get count from hierarchical structure
@@ -2069,7 +2113,30 @@ class Restraints(DebugMixin, Module):
     
     def copy(self):
         """Create a deep copy of the Restraints object."""
+        import copy
         return copy.deepcopy(self)
+    
+    def bond_deviations(self):
+        """
+        Compute bond length deviations and sigmas.
+        
+        Returns:
+            Tuple of (deviations, sigmas) tensors in Angstroms
+            - deviations: calculated - expected bond lengths
+            - sigmas: standard deviations from CIF library
+        """
+        if 'all' not in self.restraints['bond']:
+            self.cat_dict()
+
+        idx = self.restraints['bond']['all']['indices']
+        references = self.restraints['bond']['all']['references']
+        sigmas = self.restraints['bond']['all']['sigmas']
+
+        # Get current bond lengths
+        bond_lengths = self.bond_lengths(idx)
+        deviations = bond_lengths - references
+        
+        return deviations, sigmas
     
     def nll_bonds(self):
         """
@@ -2083,24 +2150,9 @@ class Restraints(DebugMixin, Module):
         Returns:
             nll_bonds: Tensor of shape (n_bonds,) with negative log-likelihood values
         """
-        
-        if not 'all' in self.restraints['bond']:
-            self.cat_dict()
-
-        idx = self.restraints['bond']['all']['indices']
-        bond_references = self.restraints['bond']['all']['references']
-        sigmas = self.restraints['bond']['all']['sigmas']
-
-
-        # Get current bond lengths
-        bond_lengths = self.bond_lengths(idx)
-        
-        # Compute full NLL for Gaussian distribution
-        diffs = bond_lengths - bond_references
-        log_2pi = torch.log(torch.tensor(2.0 * torch.pi, device=sigmas.device))
-        nll_bonds = 0.5 * (diffs / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
-        
-        return nll_bonds
+        from torchref.refinement.targets import gaussian_nll
+        deviations, sigmas = self.bond_deviations()
+        return gaussian_nll(deviations, sigmas)
 
     def angles(self, idx):
         """
@@ -2133,6 +2185,27 @@ class Restraints(DebugMixin, Module):
         
         return angles_deg
     
+    def angle_deviations(self):
+        """
+        Compute angle deviations and sigmas.
+        
+        Returns:
+            Tuple of (deviations, sigmas) tensors in radians
+            - deviations: calculated - expected angles in radians
+            - sigmas: standard deviations in radians
+        """
+        if 'all' not in self.restraints['angle']:
+            self.cat_dict()
+        
+        idx = self.restraints['angle']['all']['indices']
+        references_rad = self.restraints['angle']['all']['references'] * (torch.pi / 180.0)
+        sigmas_rad = self.restraints['angle']['all']['sigmas'] * (torch.pi / 180.0)
+
+        calculated_rad = self.angles(idx) * (torch.pi / 180.0)
+        deviations = calculated_rad - references_rad
+        
+        return deviations, sigmas_rad
+    
     def nll_angles(self):
         """
         Compute negative log-likelihood for angle restraints.
@@ -2145,21 +2218,9 @@ class Restraints(DebugMixin, Module):
         Returns:
             nll_angles: Tensor of shape (n_angles,) with negative log-likelihood values
         """
-        if not 'all' in self.restraints['angle']:
-            self.cat_dict()
-        # Get current angles
-        idx = self.restraints['angle']['all']['indices']
-        references = self.restraints['angle']['all']['references'].deg2rad()
-        sigmas = self.restraints['angle']['all']['sigmas'].deg2rad()
-
-        all_deviations = self.angles(idx).deg2rad()
-    
-        # Compute full NLL for Gaussian distribution
-        diffs = all_deviations - references
-        log_2pi = torch.log(torch.tensor(2.0 * torch.pi, device=sigmas.device))
-        nll_angles = 0.5 * (diffs / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
-        
-        return nll_angles
+        from torchref.refinement.targets import gaussian_nll
+        deviations, sigmas = self.angle_deviations()
+        return gaussian_nll(deviations, sigmas)
     
     def cat_dict(self):
         self.restraints['bond']['all'] = {
@@ -2328,6 +2389,31 @@ class Restraints(DebugMixin, Module):
             # Convert back to degrees
             return torch.rad2deg(diff_wrapped_rad)
     
+    def torsion_deviations_with_sigmas(self):
+        """
+        Compute torsion deviations (wrapped for periodicity) and sigmas.
+        
+        Returns:
+            Tuple of (deviations_rad, sigmas_deg)
+            - deviations_rad: wrapped deviations in radians
+            - sigmas_deg: standard deviations in degrees (for von Mises NLL)
+        """
+        if 'all' not in self.restraints['torsion']:
+            self.cat_dict()
+            
+        idx = self.restraints['torsion']['all']['indices']
+        expected = self.restraints['torsion']['all']['references']
+        sigmas_deg = self.restraints['torsion']['all']['sigmas']
+        periods = self.restraints['torsion']['all']['periods']
+        
+        calculated = self.torsions(idx)
+        
+        # Wrap for periodicity
+        diff_rad = (calculated - expected) * (torch.pi / 180.0)
+        deviations_rad = self._wrap_torsion_periodicity(diff_rad, periods)
+        
+        return deviations_rad, sigmas_deg
+    
     def nll_torsions(self):
         """
         Compute negative log-likelihood for torsion angle restraints.
@@ -2348,598 +2434,150 @@ class Restraints(DebugMixin, Module):
         Returns:
             nll: Tensor of shape (n_torsions,) with negative log-likelihood values
         """
-        if not 'all' in self.restraints['torsion']:
-            self.cat_dict()
-        idx = self.restraints['torsion']['all']['indices']
-        expectation = self.restraints['torsion']['all']['references']
-        sigmas = self.restraints['torsion']['all']['sigmas']
-        periods = self.restraints['torsion']['all']['periods']
-    
-        torsion_angle = self.torsions(idx)
-
-        # Calculate angular difference
-        diff = torsion_angle - expectation
-        diff_rad = diff * torch.pi / 180.0
-        
-        # Use the helper function to find minimum deviation considering periodicity
-        diff_wrapped_best = self._wrap_torsion_periodicity(diff_rad, periods)
-
-        # Compute full NLL for von Mises distribution with numerical stability
-        sigmas_rad = sigmas * torch.pi / 180.0
-        kappa = torch.clamp(1.0 / (sigmas_rad**2), min=1e-3, max=1e4)
-        
-        # Compute log(I_0(kappa)) using stable approximation
-        log_i0_kappa = torch.zeros_like(kappa)
-        small_kappa_mask = kappa < 50.0
-        large_kappa_mask = ~small_kappa_mask
-        
-        if small_kappa_mask.any():
-            log_i0_kappa[small_kappa_mask] = torch.log(i0(kappa[small_kappa_mask]))
-        
-        if large_kappa_mask.any():
-            kappa_large = kappa[large_kappa_mask]
-            log_i0_kappa[large_kappa_mask] = kappa_large - 0.5 * torch.log(2.0 * torch.pi * kappa_large)
-        
-        log_2pi = torch.log(torch.tensor(2.0 * torch.pi, device=sigmas.device))
-        
-        # Full von Mises NLL: -κ*cos(diff) + log(I_0(κ)) + log(2π)
-        nll = -kappa * torch.cos(diff_wrapped_best) + log_i0_kappa + log_2pi
-        
-        return nll
-
-    def nll_omega(self, eps_kappa=1e-3):
-            """
-            Compute negative log-likelihood for omega torsion angle restraints.
-            
-            Uses mixture model for cis/trans conformations:
-            - Trans (180°): 97% probability (93% for pre-proline)
-            - Cis (0°): 3% probability (7% for pre-proline)
-            
-            NLL = -log(P_trans * P_vonMises(θ|180°,κ) + P_cis * P_vonMises(θ|0°,κ))
-            
-            This is the true NLL where exp(-NLL) = probability density.
-
-            Returns:
-                nll_omega: Tensor of shape (n_omega,) with negative log-likelihood
-            """
-            if not 'omega' in self.restraints['torsion']:
-                if self.verbose > 0:
-                    print("No omega restraints found.")
-                return torch.tensor([], device=self.model.xyz().device)
-
-            
-            idx = self.restraints['torsion']['omega']['indices']
-            sigmas = self.restraints['torsion']['omega']['sigmas'].deg2rad()
-            is_proline = self.restraints['torsion']['omega'].get('is_proline', None)
-            if is_proline is None:
-                is_proline = torch.zeros(len(idx), dtype=torch.bool, device=idx.device)
-
-            # Get current omega angles
-            omega_angles = self.torsions(idx).deg2rad()
-            
-            mu_trans = torch.pi  # 180 degrees
-            mu_cis = torch.tensor(0.0, dtype=torch.float32, device=omega_angles.device)  # 0 degrees
-            kappa = torch.clamp(1.0 / (sigmas ** 2), min=eps_kappa, max=1e6)
-            
-            # Get periods (should be 1 for omega, but use helper function for consistency)
-            periods = self.restraints['torsion']['omega'].get('periods', 
-                                                              torch.ones(len(idx), dtype=torch.long, device=idx.device))
-            
-            # Compute angular differences using helper function
-            diff_trans_rad = omega_angles - mu_trans
-            diff_cis_rad = omega_angles - mu_cis
-            diff_trans = self._wrap_torsion_periodicity(diff_trans_rad, periods)
-            diff_cis = self._wrap_torsion_periodicity(diff_cis_rad, periods)
-
-            # Compute log(I_0(kappa)) with numerical stability
-            log_i0_kappa = torch.zeros_like(kappa)
-            small_kappa_mask = kappa < 50.0
-            large_kappa_mask = ~small_kappa_mask
-            
-            if small_kappa_mask.any():
-                log_i0_kappa[small_kappa_mask] = torch.log(i0(kappa[small_kappa_mask]))
-            
-            if large_kappa_mask.any():
-                kappa_large = kappa[large_kappa_mask]
-                log_i0_kappa[large_kappa_mask] = kappa_large - 0.5 * torch.log(2.0 * torch.pi * kappa_large)
-            
-            log_2pi = torch.log(torch.tensor(2.0 * torch.pi, device=sigmas.device))
-            
-            # von Mises log-probability for each component
-            # log P_vonMises = κ*cos(diff) - log(I_0(κ)) - log(2π)
-            logp_trans = kappa * torch.cos(diff_trans) - log_i0_kappa - log_2pi
-            logp_cis   = kappa * torch.cos(diff_cis) - log_i0_kappa - log_2pi
-            
-            # Mixture probabilities
-            prob_cis = torch.zeros_like(logp_cis)
-            prob_cis[:] = 0.03
-            prob_cis[is_proline] = 0.07
-            prob_trans = 1.0 - prob_cis
-            
-            # Mixture log-probability: log(P_trans * P_trans + P_cis * P_cis)
-            log_prob_trans = torch.log(prob_trans)
-            log_prob_cis = torch.log(prob_cis)
-            
-            log_mixture_trans = log_prob_trans + logp_trans
-            log_mixture_cis = log_prob_cis + logp_cis
-            
-            # NLL = -log P(data)
-            total_log_prob = torch.logaddexp(log_mixture_trans, log_mixture_cis)
-            nll_omega = -total_log_prob
-            
-            return nll_omega
+        from torchref.refinement.targets import von_mises_nll
+        deviations_rad, sigmas_deg = self.torsion_deviations_with_sigmas()
+        return von_mises_nll(deviations_rad, sigmas_deg)
 
     def nll_planes(self):
         """
         Compute negative log-likelihood for plane restraints.
         
-        For each plane:
-        1. Fit the best plane to the atomic coordinates using SVD
-        2. Compute perpendicular distances of each atom from the fitted plane
-        3. Calculate NLL using Gaussian distribution for each atom's deviation
-        
-        The plane is defined by its normal vector n and a point on the plane.
-        Distance from point p to plane: d = |n · (p - p0)|
-        
-        For Gaussian distribution: NLL = 0.5 * (d / σ)^2 + log(σ) + 0.5 * log(2π)
+        For each plane, computes the RMSD of atom deviations from the best-fit plane.
+        Uses Gaussian NLL: NLL = 0.5 * (deviation / σ)² + log(σ) + 0.5 * log(2π)
         
         Returns:
-            nll_planes: Tensor of shape (total_plane_atoms,) with NLL for each atom
+            nll: Tensor of shape (n_planes,) with negative log-likelihood values
         """
-        if len(self.restraints.get('plane', {})) == 0:
-            if self.verbose > 1:
-                print("No plane restraints found.")
-            return torch.tensor([], device=self.model.xyz().device)
+        from torchref.refinement.targets import gaussian_nll
         
         xyz = self.model.xyz()
-        all_deviations = []
-        all_sigmas = []
+        device = xyz.device
         
-        # Process each atom count group
-        for atom_count_key in self.restraints['plane'].keys():
-            plane_data = self.restraints['plane'][atom_count_key]
-            indices = plane_data['indices']  # Shape: (n_planes, n_atoms)
-            sigmas = plane_data['sigmas']    # Shape: (n_planes, n_atoms)
-            
-            if indices.shape[0] == 0:
-                continue
-            
-            # Get coordinates for all planes: (n_planes, n_atoms, 3)
-            plane_coords = xyz[indices]
-            
-            # Compute plane center (centroid) for each plane
-            center = plane_coords.mean(dim=1, keepdim=True)  # (n_planes, 1, 3)
-            
-            # Center the coordinates
-            centered = plane_coords - center  # (n_planes, n_atoms, 3)
-            
-            # Fit plane using SVD
-            # For each plane, we want to find the normal vector n such that
-            # the sum of squared distances to the plane is minimized
-            # This is the eigenvector corresponding to the smallest eigenvalue
-            
-            # Reshape for batch SVD: (n_planes, n_atoms, 3)
-            # SVD gives us U, S, V where centered = U @ S @ V^T
-            # The last column of V (or V^T row) is the normal to the best-fit plane
-            
-            try:
-                # Compute SVD for each plane
-                U, S, Vt = torch.linalg.svd(centered, full_matrices=False)
-                # Vt has shape (n_planes, 3, 3) for full_matrices=False
-                # The last row of Vt (or last column of V) is the normal vector
-                normals = Vt[:, -1, :]  # Shape: (n_planes, 3)
+        all_nlls = []
+        
+        if 'plane' in self.restraints:
+            for key, plane_data in self.restraints['plane'].items():
+                indices = plane_data.get('indices')
+                sigmas = plane_data.get('sigmas')
                 
-            except RuntimeError as e:
-                # Handle SVD failures (e.g., for degenerate planes)
-                if self.verbose > 0:
-                    print(f"Warning: SVD failed for some planes in {atom_count_key}: {e}")
-                # Fall back to cross product for triangular planes or skip
-                continue
-            
-            # Compute distances from each atom to its plane
-            # Distance = |n · (p - p0)| where p0 is the center
-            # Since we already centered, distance = |n · centered_p|
-            
-            # normals: (n_planes, 3)
-            # centered: (n_planes, n_atoms, 3)
-            # We want dot product for each atom: (n_planes, n_atoms)
-            
-            # Expand normals for broadcasting: (n_planes, 1, 3)
-            normals_expanded = normals.unsqueeze(1)
-            
-            # Compute dot products: (n_planes, n_atoms)
-            distances = torch.abs(torch.sum(centered * normals_expanded, dim=2))
-            
-            # Collect deviations and sigmas
-            all_deviations.append(distances.flatten())
-            all_sigmas.append(sigmas.flatten())
+                if indices is None or len(indices) == 0:
+                    continue
+                
+                # indices shape: (n_planes, n_atoms_per_plane)
+                # sigmas shape: (n_planes, n_atoms_per_plane)
+                n_planes, n_atoms = indices.shape
+                
+                for i in range(n_planes):
+                    plane_indices = indices[i]
+                    plane_sigmas = sigmas[i]
+                    
+                    # Get positions of atoms in this plane
+                    positions = xyz[plane_indices]  # (n_atoms, 3)
+                    
+                    # Compute centroid
+                    centroid = positions.mean(dim=0)
+                    centered = positions - centroid
+                    
+                    # SVD to find best-fit plane normal
+                    # The plane normal is the singular vector with smallest singular value
+                    U, S, Vh = torch.linalg.svd(centered)
+                    normal = Vh[-1]  # Normal to best-fit plane
+                    
+                    # Compute deviations from plane (distance to plane)
+                    deviations = torch.abs(centered @ normal)
+                    
+                    # Compute NLL for each atom
+                    nll = gaussian_nll(deviations, plane_sigmas)
+                    all_nlls.append(nll)
         
-        if len(all_deviations) == 0:
-            if self.verbose > 1:
-                print("No valid plane restraints to compute NLL.")
-            return torch.tensor([], device=xyz.device)
-        
-        # Concatenate all deviations and sigmas
-        deviations = torch.cat(all_deviations)
-        sigmas_flat = torch.cat(all_sigmas)
-        
-        # Compute NLL for Gaussian distribution
-        log_2pi = torch.log(torch.tensor(2.0 * torch.pi, device=sigmas_flat.device))
-        nll = 0.5 * (deviations / sigmas_flat) ** 2 + torch.log(sigmas_flat) + 0.5 * log_2pi
-        
-        return nll
+        if all_nlls:
+            return torch.cat(all_nlls)
+        return torch.tensor([0.0], device=device)
 
     def nll_vdw(self):
         """
         Compute negative log-likelihood for VDW (non-bonded) restraints.
         
-        Uses asymmetric Gaussian: only penalizes when atoms are too close.
-        When d >= d_min: no penalty
-        When d < d_min: Gaussian penalty proportional to violation
+        Uses a soft-repulsive potential based on distance violations.
+        NLL = 0.5 * (max(0, min_dist - actual_dist) / σ)² + log(σ) + 0.5 * log(2π)
         
-        NLL = 0.5 * ((d_min - d) / σ)^2 + log(σ) + 0.5 * log(2π)  if d < d_min
-            = 0                                                     if d >= d_min
-        
-        This is appropriate for repulsive interactions - we only want to push atoms
-        apart when they get too close, not pull them together.
+        Only violations (distances shorter than minimum) contribute to the loss.
         
         Returns:
-            Tensor of shape (n_vdw_pairs,) with NLL for each contact.
-            Returns empty tensor if no VDW restraints are defined.
+            nll: Tensor of shape (n_pairs,) with negative log-likelihood values
         """
-        if 'vdw' not in self.restraints or len(self.restraints['vdw']['indices']) == 0:
-            return torch.tensor([], device=self.model.xyz().device)
+        from torchref.refinement.targets import gaussian_nll
         
-        indices = self.restraints['vdw']['indices']
-        min_distances = self.restraints['vdw']['min_distances']
-        sigmas = self.restraints['vdw']['sigmas']
-        
-        # Get current distances - fully vectorized
         xyz = self.model.xyz()
-        pos1 = xyz[indices[:, 0]]  # (N_pairs, 3)
-        pos2 = xyz[indices[:, 1]]  # (N_pairs, 3)
-        distances = torch.linalg.norm(pos2 - pos1, dim=-1)  # (N_pairs,)
+        device = xyz.device
         
-        # Compute violations: how much closer than minimum distance
-        # torch.clamp ensures violation = 0 when d >= d_min
-        violations = torch.clamp(min_distances - distances, min=0.0)
+        if 'vdw' not in self.restraints:
+            return torch.tensor([0.0], device=device)
         
-        # Gaussian NLL only for violations (non-zero when d < d_min)
-        log_2pi = torch.log(torch.tensor(2.0 * torch.pi, device=sigmas.device))
-        nll = torch.where(
-            violations > 0,
-            0.5 * (violations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi,
-            torch.zeros_like(violations)
-        )
+        vdw_data = self.restraints['vdw']
+        indices = vdw_data.get('indices')
         
-        return nll
-    
-    def vdw_distances(self):
-        """
-        Compute current distances for all VDW restraint pairs.
+        if indices is None or len(indices) == 0:
+            return torch.tensor([0.0], device=device)
         
-        Returns:
-            Tensor of shape (n_vdw_pairs,) with current distances in Angstroms.
-            Returns empty tensor if no VDW restraints are defined.
-        """
-        if 'vdw' not in self.restraints or len(self.restraints['vdw']['indices']) == 0:
-            return torch.tensor([], device=self.model.xyz().device)
+        min_distances = vdw_data['min_distances']
+        sigmas = vdw_data['sigmas']
         
-        indices = self.restraints['vdw']['indices']
-        xyz = self.model.xyz()
+        # Get current positions
         pos1 = xyz[indices[:, 0]]
         pos2 = xyz[indices[:, 1]]
-        distances = torch.linalg.norm(pos2 - pos1, dim=-1)
         
-        return distances
-    
-    def vdw_violations(self):
+        # Compute actual distances
+        actual_distances = torch.norm(pos2 - pos1, dim=-1)
+        
+        # Violations: where actual distance is less than minimum
+        # Deviation = max(0, min_dist - actual_dist)
+        deviations = torch.clamp(min_distances - actual_distances, min=0.0)
+        
+        # Compute NLL (only non-zero for violations)
+        nll = gaussian_nll(deviations, sigmas)
+        
+        return nll
+
+    def adp_b_differences(self):
         """
-        Get VDW violations (distances shorter than minimum allowed).
+        Compute B-factor differences between bonded atoms.
         
         Returns:
-            Tuple of (violation_amounts, n_violations) where:
-            - violation_amounts: Tensor of violation magnitudes (d_min - d) for violated contacts
-            - n_violations: Integer count of violations
+            Tensor of B-factor differences (B_i - B_j) for all bonds
         """
-        if 'vdw' not in self.restraints or len(self.restraints['vdw']['indices']) == 0:
-            return torch.tensor([], device=self.model.xyz().device), 0
+        b_factors = self.model.b()
         
-        min_distances = self.restraints['vdw']['min_distances']
-        distances = self.vdw_distances()
+        diffs_list = []
+        if 'bond' in self.restraints:
+            for origin, restraint_group in self.restraints['bond'].items():
+                if origin == 'all':
+                    continue
+                indices = restraint_group.get('indices')
+                if indices is not None and len(indices) > 0:
+                    b1 = b_factors[indices[:, 0]]
+                    b2 = b_factors[indices[:, 1]]
+                    diffs_list.append(b1 - b2)
         
-        # Compute violations
-        violations = min_distances - distances
-        
-        # Only return actual violations (where d < d_min)
-        violation_mask = violations > 0
-        violation_amounts = violations[violation_mask]
-        
-        return violation_amounts, int(violation_mask.sum().item())
-    
-    def print_vdw_violations(self, threshold=0.0):
-        """
-        Print detailed information about VDW violations.
-        
-        Args:
-            threshold: Only print violations larger than this (Angstroms). Default 0.0.
-        """
-        if 'vdw' not in self.restraints or len(self.restraints['vdw']['indices']) == 0:
-            print("No VDW restraints defined.")
-            return
-        
-        indices = self.restraints['vdw']['indices']
-        min_distances = self.restraints['vdw']['min_distances']
-        distances = self.vdw_distances()
-        
-        violations = min_distances - distances
-        violation_mask = violations > threshold
-        
-        n_violations = int(violation_mask.sum().item())
-        
-        if n_violations == 0:
-            print(f"No VDW violations > {threshold:.3f} Å")
-            return
-        
-        print(f"\nVDW Violations (> {threshold:.3f} Å): {n_violations} / {len(indices)} pairs ({100*n_violations/len(indices):.1f}%)")
-        print("=" * 90)
-        
-        pdb = self.model.pdb
-        
-        # Get violations sorted by severity
-        violation_indices = torch.where(violation_mask)[0]
-        violation_amounts = violations[violation_indices]
-        sorted_idx = torch.argsort(violation_amounts, descending=True)
-        
-        # Print top violations
-        n_print = min(20, len(sorted_idx))
-        print(f"Top {n_print} violations:")
-        print(f"{'Atom 1':<22} {'Atom 2':<22} {'Distance':>9} {'Min Dist':>9} {'Violation':>11}")
-        print("-" * 90)
-        
-        for idx in sorted_idx[:n_print]:
-            global_idx = violation_indices[idx]
-            i1, i2 = indices[global_idx][0].item(), indices[global_idx][1].item()
-            
-            atom1 = pdb.iloc[i1]
-            atom2 = pdb.iloc[i2]
-            
-            atom1_str = f"{atom1['name']:<4} {atom1['resname']:<3}{atom1['resseq']:>4}{atom1['chainid']}"
-            atom2_str = f"{atom2['name']:<4} {atom2['resname']:<3}{atom2['resseq']:>4}{atom2['chainid']}"
-            
-            dist = distances[global_idx].item()
-            min_dist = min_distances[global_idx].item()
-            viol = violations[global_idx].item();
-            
-            print(f"{atom1_str:<22} {atom2_str:<22} {dist:9.3f} {min_dist:9.3f} {viol:11.3f}")
+        if diffs_list:
+            return torch.cat(diffs_list, dim=0)
+        return torch.tensor([], device=b_factors.device)
 
-    def loss(self,weights=None):
+    def adp_similarity_loss(self, sigma: float = 2.0):
         """
-        Compute total negative log-likelihood loss from all restraints.
+        Compute ADP similarity loss (SIMU in Phenix/SHELX).
+        
+        This restrains the B-factors of bonded atoms to be similar.
+        Loss = Σ ((B_i - B_j) / sigma)^2
         
         Args:
-            weights: Optional dictionary of weights for each restraint type.
-                    Keys: 'bond', 'angle', 'torsion', 'omega', 'plane', 'vdw'
-                    Default weights are all 1.0, except VDW which defaults to 0.5
+            sigma: Target standard deviation for B-factor differences (default: 2.0 A^2)
         
         Returns:
-            total_nll: Scalar tensor with weighted average negative log-likelihood
+            torch.Tensor: Mean similarity loss
         """
-
-        default_values = {
-            'bond': 1.0,
-            'angle': 1.0,
-            'torsion': 1.0,
-            'omega': 1.0,
-            'plane': 1.0,
-            'vdw': 1.0  # VDW starts with lower weight - can increase during refinement
-        }
-    
-        if weights:
-            default_values.update(weights)  
-
-        nll_bonds = torch.mean(self.nll_bonds())
-        if self.verbose > 2: print(f"Mean NLL Bonds wo weights: {nll_bonds.item():.4f}")
-        nll_angles = torch.mean(self.nll_angles())
-        if self.verbose > 2: print(f"Mean NLL Angles wo weights: {nll_angles.item():.4f}")
-        nll_torsions = self.nll_torsions()
-        if torch.any(torch.isnan(nll_torsions)):
-            print(torch.sum(torch.isnan(nll_torsions)))
-            raise ValueError("NaN values found in torsion NLL computation.")
-        nll_torsions = torch.mean(nll_torsions)
-        if self.verbose > 2: print(f"Mean NLL Torsions wo weights: {nll_torsions.item():.4f}")
-        nll_omega = torch.mean(self.nll_omega())
-        if self.verbose > 2: print(f"Mean NLL Omega wo weights: {nll_omega.item():.4f}")
-        nll_planes = torch.mean(self.nll_planes())
-        if self.verbose > 2: print(f"Mean NLL Planes wo weights: {nll_planes.item():.4f}")
-        
-        # Add VDW restraints
-        nll_vdw_values = self.nll_vdw()
-        if len(nll_vdw_values) > 0:
-            nll_vdw = torch.mean(nll_vdw_values)
-            if self.verbose > 2: print(f"Mean NLL VDW wo weights: {nll_vdw.item():.4f}")
-        else:
-            nll_vdw = torch.tensor(0.0, device=self.model.xyz().device, requires_grad=True)
-            if self.verbose > 2: print(f"Mean NLL VDW wo weights: 0.0000 (no restraints)")
-
-        total_nll = (nll_bonds * default_values['bond'] +
-                     nll_angles * default_values['angle'] +
-                     nll_torsions * default_values['torsion'] +
-                     nll_omega * default_values['omega'] +
-                     nll_planes * default_values['plane'] +
-                     nll_vdw * default_values['vdw']) / (
-                         default_values['bond'] + 
-                         default_values['angle'] + 
-                         default_values['torsion'] + 
-                         default_values['omega'] + 
-                         default_values['plane'] +
-                         default_values['vdw'])
-
-        return total_nll
-
-
-    def sum_loss_restraints(self):
-        """
-        Compute the sum of negative log-likelihood for a specific restraint type.
-        
-        Args:
-            restraint_type: 'bond', 'angle', 'torsion', 'omega', 'plane', or 'vdw'
-        """
-
-        nll_bonds = torch.sum(self.nll_bonds())
-        nll_angles = torch.sum(self.nll_angles())
-        nll_torsions = torch.sum(self.nll_torsions())
-        nll_omega = torch.sum(self.nll_omega())
-        nll_planes = torch.sum(self.nll_planes())
-        nll_vdw = torch.sum(self.nll_vdw())
-        
-        total_nll = (nll_bonds +
-                     nll_angles +
-                     nll_torsions +
-                     nll_omega +
-                     nll_planes +
-                     nll_vdw)
-        
-
-        return total_nll
-
-    def loss_sum_exp(self,weights=None):
-
-        default_values = {
-            'bond': 1.0,
-            'angle': 1.0,
-            'torsion': 1.0,
-            'omega': 1.0,
-            'plane': 1.0,
-            'vdw': 1.0  # VDW starts with lower weight - can increase during refinement
-        }
-
-        if weights:
-            default_values.update(weights)  
-        nll_bonds_single_values = self.nll_bonds()
-        nll_bonds = torch.logsumexp(nll_bonds_single_values, dim=0) / len(nll_bonds_single_values)
-        if self.verbose > 2: print(f"Mean NLL Bonds wo weights: {nll_bonds.item():.4f}")
-        nll_angles_single_values = self.nll_angles()
-        nll_angles = torch.logsumexp(nll_angles_single_values, dim=0) / len(nll_angles_single_values)
-        if self.verbose > 2: print(f"Mean NLL Angles wo weights: {nll_angles.item():.4f}")
-        nll_torsions_single_values = self.nll_torsions()
-        if torch.any(torch.isnan(nll_torsions_single_values)):
-            print(torch.sum(torch.isnan(nll_torsions_single_values)))
-            raise ValueError("NaN values found in torsion NLL computation.")
-        nll_torsions = torch.logsumexp(nll_torsions_single_values, dim=0) / len(nll_torsions_single_values)
-        if self.verbose > 2: print(f"Mean NLL Torsions wo weights: {nll_torsions.item():.4f}")
-        nll_omega_single_values = self.nll_omega()
-        nll_omega = torch.logsumexp(nll_omega_single_values, dim=0) / len(nll_omega_single_values)
-        if self.verbose > 2: print(f"Mean NLL Omega wo weights: {nll_omega.item():.4f}")
-        nll_planes_single_values = self.nll_planes()
-        nll_planes = torch.logsumexp(nll_planes_single_values, dim=0) / len(nll_planes_single_values)
-        if self.verbose > 2: print(f"Mean NLL Planes wo weights: {nll_planes.item():.4f}")
-                
-        # Add VDW restraints
-        nll_vdw_values = self.nll_vdw()
-        if len(nll_vdw_values) > 0:
-            nll_vdw = torch.logsumexp(nll_vdw_values, dim=0) / len(nll_vdw_values)
-            if self.verbose > 2: print(f"Mean NLL VDW wo weights: {nll_vdw.item():.4f}")
-        else:
-            nll_vdw = torch.tensor(0.0, device=self.model.xyz().device, requires_grad=True)
-            if self.verbose > 2: print(f"Mean NLL VDW wo weights: 0.0000 (no restraints)")
-        
-        total_nll = (nll_bonds * default_values['bond'] +
-                     nll_angles * default_values['angle'] +
-                     nll_torsions * default_values['torsion'] +
-                     nll_omega * default_values['omega'] +
-                     nll_planes * default_values['plane'] +
-                     nll_vdw * default_values['vdw']) / (
-                         default_values['bond'] + 
-                         default_values['angle'] + 
-                         default_values['torsion'] + 
-                         default_values['omega'] + 
-                         default_values['plane'] +
-                         default_values['vdw'])
-        
-        return total_nll
-
-    def state_dict(self, destination=None, prefix='', keep_vars=False):
-        """
-        Returns a dictionary containing the complete state of the Restraints.
-        
-        This includes:
-        - All registered buffers (via parent class)
-        - Restraints dictionary structure with all indices, references, sigmas
-        - CIF dictionary and metadata
-        
-        Note: Model reference is NOT saved (managed separately)
-        
-        Args:
-            destination: Optional dict to populate
-            prefix: Prefix for parameter names
-            keep_vars: Whether to keep variables in computational graph
-            
-        Returns:
-            dict: Complete state dictionary
-        """
-        # Get parent class state_dict (includes all registered buffers)
-        state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
-        
-        # Add Restraints-specific state
-        state[prefix + 'cif_path'] = self.cif_path
-        state[prefix + 'verbose'] = self.verbose
-        state[prefix + 'unique_residues'] = self.unique_residues
-        state[prefix + 'restraints'] = self.restraints  # Full restraints dict structure
-        
-        # Save CIF dictionary (contains restraint definitions)
-        if hasattr(self, 'cif_dict'):
-            state[prefix + 'cif_dict'] = self.cif_dict
-        
-        return state
-
-    def load_state_dict(self, state_dict, strict=True):
-        """
-        Loads the Restraints state from a dictionary.
-        
-        Note: This assumes model is already set via __init__ or assignment
-        
-        Args:
-            state_dict: Dictionary containing restraints state
-            strict: Whether to strictly enforce that keys match
-        """
-        # Extract Restraints-specific state
-        self.cif_path = state_dict.pop('cif_path', None)
-        self.verbose = state_dict.pop('verbose', 1)
-        self.unique_residues = state_dict.pop('unique_residues', [])
-        self.restraints = state_dict.pop('restraints', {'bond': {}, 'angle': {}, 'torsion': {}, 'plane': {}})
-        
-        # Restore CIF dictionary if it was saved
-        if 'cif_dict' in state_dict:
-            self.cif_dict = state_dict.pop('cif_dict')
-        
-        # Load parent class state_dict (buffers)
-        return super().load_state_dict(state_dict, strict=strict)
-
-    def save_state(self, path: str):
-        """
-        Save the complete state of the restraints to a file.
-        
-        Args:
-            path (str): Path to save the state dictionary to.
-        """
-        torch.save(self.state_dict(), path)
-        if self.verbose > 0:
-            print(f"Saved restraints state to {path}")
-
-    def load_state(self, path: str, strict: bool = True):
-        """
-        Load the complete state of the restraints from a file.
-        
-        Args:
-            path (str): Path to load the state dictionary from.
-            strict (bool): Whether to strictly enforce that keys match.
-        """
-        device = 'cpu'
-        if hasattr(self, 'model') and hasattr(self.model, 'device'):
-            device = self.model.device
-            
-        state_dict = torch.load(path, map_location=device, weights_only=False)
-        self.load_state_dict(state_dict, strict=strict)
-        if self.verbose > 0:
-            print(f"Loaded restraints state from {path}")
+        from torchref.refinement.targets import adp_similarity_nll
+        b_diffs = self.adp_b_differences()
+        if len(b_diffs) == 0:
+            return torch.tensor(0.0, device=self.model.xyz().device)
+        return adp_similarity_nll(b_diffs, sigma).mean()

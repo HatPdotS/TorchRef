@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 
 
 from torchref.io.Data import ReflectionData
@@ -6,10 +6,27 @@ from torchref.model.model_ft import ModelFT
 from torch.nn import Module as nnModule
 from torch.nn.modules.module import _IncompatibleKeys
 import torch
-from  torchref.restraints.restraints import Restraints
-from torchref.math_functions.math_torch import nll_xray, nll_xray_sum
+from torchref.restraints.restraints import Restraints
 from torchref.scaling.scaler import Scaler
 from torchref.utils.debug_utils import DebugMixin
+
+# Target system imports
+from torchref.refinement.targets import (
+    Target,
+    GaussianXrayTarget,
+    LeastSquaresXrayTarget,
+    MaximumLikelihoodXrayTarget,
+    BondTarget,
+    AngleTarget,
+    TorsionTarget,
+    TotalGeometryTarget,
+    ADPSimilarityTarget,
+    ADPEntropyTarget,
+    CompositeTarget,
+    create_xray_target,
+    create_geometry_target,
+    create_default_targets,
+)
 
 class Refinement(DebugMixin, nnModule):
     def __init__(self, data_file:str = None, pdb:str = None,  cif = None, verbose: int = 1, max_res: float = None, device: torch.device = torch.device('cpu'), 
@@ -85,27 +102,55 @@ class Refinement(DebugMixin, nnModule):
                 if self.verbose > 0:
                     print(f"Using loss weighting module: {type(self.weighter).__name__}")
             
+            # Initialize target functions (instantiated once, evaluated each iteration)
+            self._init_targets()
+            
             # Initialize weights
             self.update_effective_weights(phase='all', cycle=0)
         except Exception as e:
             self.debug_on_error(e)
             raise e
     
+    def _init_targets(self, xray_mode: str = 'ml'):
+        """
+        Initialize target functions.
+        
+        Args:
+            xray_mode: X-ray target mode ('gaussian', 'ls', 'ml')
+        """
+        # X-ray targets
+        self.xray_target_work = create_xray_target(self, xray_mode, use_work_set=True, verbose=self.verbose)
+        self.xray_target_test = create_xray_target(self, xray_mode, use_work_set=False, verbose=self.verbose)
+        
+        # Geometry targets
+        self.bond_target = BondTarget(self, verbose=self.verbose)
+        self.angle_target = AngleTarget(self, verbose=self.verbose)
+        self.torsion_target = TorsionTarget(self, verbose=self.verbose)
+        self.geometry_target = TotalGeometryTarget(self, verbose=self.verbose)
+        
+        # ADP targets
+        self.adp_similarity_target = ADPSimilarityTarget(self, sigma=2.0, verbose=self.verbose)
+        self.adp_entropy_target = ADPEntropyTarget(self, verbose=self.verbose)
+        
+        if self.verbose > 0:
+            print(f"Initialized targets with xray_mode='{xray_mode}'")
+    
+    def set_xray_target_mode(self, mode: str):
+        """
+        Change the X-ray target mode.
+        
+        Args:
+            mode: 'gaussian', 'ls', or 'ml'
+        """
+        self.xray_target_work = create_xray_target(self, mode, use_work_set=True, verbose=self.verbose)
+        self.xray_target_test = create_xray_target(self, mode, use_work_set=False, verbose=self.verbose)
+        if self.verbose > 0:
+            print(f"Changed X-ray target mode to '{mode}'")
+
     @property
     def data(self):
         """Expose reflection_data as 'data' for weighting module compatibility."""
         return self.reflection_data
-
-    def nll_xray_sum(self):
-        """
-        Compute total X-ray negative log-likelihood for all reflections.
-        
-        Returns:
-            torch.Tensor: Total NLL summed over all reflections
-        """
-        hkl, F_obs, sigma_F_obs, _ = self.reflection_data()
-        F_calc = self.get_F_calc_scaled(hkl, recalc=True)
-        return nll_xray_sum(F_obs, F_calc, sigma_F_obs)
 
     def setup_grad_weighting(self):
         """
@@ -125,25 +170,25 @@ class Refinement(DebugMixin, nnModule):
         recompute_gradnorms_every: int = 5
     ):
         """
-        Set up smart hybrid weighting that combines gradient norm balancing with NLL-aware modulation.
+        Set up smart hybrid weighting that combines gradient norm balancing with ML target-aware modulation.
         
         This is the RECOMMENDED weighting strategy as it provides:
         - Balanced gradients across loss terms (via gradient norms)
-        - Physical correctness (via NLL values)
+        - Physical correctness (via ML target values)
         - Avoids over-restraining structures that are already geometrically good
         
         The weighting strategy:
         1. Computes gradient norms to balance optimization landscape
-        2. Modulates weights based on NLL values to respect physical meaning
-        3. High geometry NLL → increase restraint weight
-        4. Low geometry NLL → reduce restraint weight (avoid over-restraining)
+        2. Modulates weights based on ML target values to respect physical meaning
+        3. High geometry loss → increase restraint weight
+        4. Low geometry loss → reduce restraint weight (avoid over-restraining)
         
         Args:
             base_restraint: Base restraint weight (default: 1.0)
             base_adp: Base ADP weight (default: 1.0)
-            nll_modulation_strength: How strongly NLL values modulate weights (0-1)
+            nll_modulation_strength: How strongly ML target values modulate weights (0-1)
                                     0 = pure gradient norm balancing
-                                    1 = strong NLL influence
+                                    1 = strong ML target influence
                                     default: 0.5 (balanced)
             recompute_gradnorms_every: Recompute gradient norms every N cycles (default: 5)
         
@@ -157,13 +202,13 @@ class Refinement(DebugMixin, nnModule):
             >>> # Now refine with smart weighting
             >>> refinement.refine(n_cycles=100)
         """
-        from torchref.refinement.loss_weighting import create_hybrid_gradnorm_nll_weighting
+        from torchref.refinement.loss_weighting import create_hybrid_gradnorm_ML_weighting
         
         # Initialize scaler first (needed for gradient computation)
         self.get_scales()
         
         # Create hybrid weighting
-        self.weighter = create_hybrid_gradnorm_nll_weighting(
+        self.weighter = create_hybrid_gradnorm_ML_weighting(
             refinement=self,
             base_restraint=base_restraint,
             base_adp=base_adp,
@@ -173,9 +218,9 @@ class Refinement(DebugMixin, nnModule):
         )
         
         if self.verbose > 0:
-            print(f"Using HybridGradNormNLLWeighting for smart loss weighting")
+            print(f"Using HybridGradNormMLWeighting for smart loss weighting")
             print(f"  Base weights: restraints={base_restraint}, adp={base_adp}")
-            print(f"  NLL modulation strength: {nll_modulation_strength}")
+            print(f"  ML target modulation strength: {nll_modulation_strength}")
             print(f"  Recompute gradient norms every {recompute_gradnorms_every} cycles")
 
     def get_scales(self):
@@ -228,41 +273,75 @@ class Refinement(DebugMixin, nnModule):
 
     def nll_xray(self):
         """
-        Compute X-ray negative log-likelihood for Rfree test set only.
-        
-        Assumes Gaussian distribution: P(F_obs | F_calc, σ) ∝ exp(-0.5*(F_obs - |F_calc|)²/σ²)
-        NLL = 0.5*(F_obs - |F_calc|)²/σ² + log(σ) + 0.5*log(2π)
+        Compute X-ray negative log-likelihood for work and test sets.
         
         Returns:
-            torch.Tensor: Total NLL summed over Rwork reflections (1 is work, 0 is test)
+            Tuple of (work_nll, test_nll) torch.Tensors
         """
-        hkl, F_obs, sigma_F_obs, rfree_mask = self.reflection_data()
-        Fcalc_all = self.get_F_calc_scaled(hkl, recalc=True)
+        return self.xray_target_work(), self.xray_target_test()
 
+    # =========================================================================
+    # Target-based Loss Methods (new pattern - instantiate once, evaluate each iteration)
+    # =========================================================================
+    
+    def xray_loss_work(self) -> torch.Tensor:
+        """Compute X-ray loss on work set using instantiated target."""
+        return self.xray_target_work()
+    
+    def xray_loss_test(self) -> torch.Tensor:
+        """Compute X-ray loss on test set using instantiated target."""
+        return self.xray_target_test()
+    
+    def bond_loss(self) -> torch.Tensor:
+        """Compute bond length NLL using instantiated target."""
+        return self.bond_target()
+    
+    def angle_loss(self) -> torch.Tensor:
+        """Compute angle NLL using instantiated target."""
+        return self.angle_target()
+    
+    def torsion_loss(self) -> torch.Tensor:
+        """Compute torsion angle NLL using instantiated target."""
+        return self.torsion_target()
+    
+    def geometry_loss(self) -> torch.Tensor:
+        """Compute total geometry NLL using instantiated target."""
+        return self.geometry_target()
+    
+    def adp_simu_loss(self, sigma: float = 2.0) -> torch.Tensor:
+        """
+        Compute ADP similarity loss (SIMU restraint).
         
-        # Filter to only Rfree reflections (test set)
-        F_obs_work = F_obs[rfree_mask]
-        sigma_F_obs_work = sigma_F_obs[rfree_mask]
-        F_calc = Fcalc_all[rfree_mask]
-
-        F_obs_test = F_obs[~rfree_mask]
-        sigma_F_obs_test = sigma_F_obs[~rfree_mask]
-        F_calc_test = Fcalc_all[~rfree_mask]
-
-        return nll_xray(F_obs_work, F_calc, sigma_F_obs_work), nll_xray(F_obs_test, F_calc_test, sigma_F_obs_test)
+        Args:
+            sigma: Target sigma for B-factor differences (default: 2.0 Å²)
+        """
+        self.adp_similarity_target.sigma = sigma
+        return self.adp_similarity_target()
+    
+    def adp_entropy_loss(self) -> torch.Tensor:
+        """Compute ADP entropy loss using instantiated target."""
+        return self.adp_entropy_target()
 
     def loss(self):
-        xray_work, xray_test = self.nll_xray()
-        restraints = self.restraints.loss()
+        """
+        Compute total loss using instantiated targets.
+        
+        Returns:
+            Tuple of (total_loss, xray_work, restraints, xray_test)
+        """
+        xray_work = self.xray_loss_work()
+        xray_test = self.xray_loss_test()
+        restraints = self.geometry_loss()
         total_loss = self.effective_weights['xray'] * xray_work + self.effective_weights['restraints'] * restraints
         return total_loss, xray_work, restraints, xray_test
 
     def xray_loss(self):
-        xray_work, _ = self.nll_xray()
-        return xray_work
+        """Compute X-ray loss on work set."""
+        return self.xray_loss_work()
 
     def restraints_loss(self):
-        return self.restraints.loss()
+        """Compute total geometry restraints loss."""
+        return self.geometry_loss()
     
     def update_effective_weights(self, phase='all', cycle=0,recompute=False):
         """
@@ -547,3 +626,5 @@ class Refinement(DebugMixin, nnModule):
         self.load_state_dict(state_dict, strict=strict)
         if self.verbose > 0:
             print(f"Loaded refinement state from {path}")
+    
+

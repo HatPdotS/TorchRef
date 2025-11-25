@@ -724,7 +724,7 @@ class ReflectionData(DebugMixin, nn.Module):
         # Convert to numpy for efficient isin-based lookup
         # We'll use structured arrays to compare HKL triplets as single entities
         hkl_ref_np = hkl_ref.cpu().numpy()
-        hkl_data_np = self.hkl.cpu().numpy()
+        hkl_data_np = self.hkl.cpu().numpy();
         
         # Create structured arrays to treat each (h,k,l) triplet as a single comparable unit
         # This allows numpy to efficiently check membership
@@ -738,17 +738,17 @@ class ReflectionData(DebugMixin, nn.Module):
         # Find which data reflections are present in the reference
         # np.isin is highly optimized and uses hash-based lookup internally
         data_mask_np = np.isin(hkl_data_structured, hkl_ref_structured)
-        data_mask = torch.from_numpy(data_mask_np.flatten())
+        data_mask = torch.from_numpy(data_mask_np.flatten());
         
         # Find which reference reflections are present in the dataset
         # Use filtered HKL for this operation
         hkl_filtered, _, _, _ = self()
-        hkl_filtered_np = hkl_filtered.cpu().numpy()
+        hkl_filtered_np = hkl_filtered.cpu().numpy();
         hkl_filtered_structured = np.ascontiguousarray(hkl_filtered_np).view(
             np.dtype((np.void, hkl_filtered_np.dtype.itemsize * hkl_filtered_np.shape[1]))
         )
         presence_mask_np = np.isin(hkl_ref_structured, hkl_filtered_structured)
-        presence_mask = torch.from_numpy(presence_mask_np.flatten())
+        presence_mask = torch.from_numpy(presence_mask_np.flatten());
 
         # Filter the dataset to only include reflections in the reference
         self.masks['hkl_validation'] = data_mask.to(self.device)
@@ -1151,3 +1151,27 @@ class ReflectionData(DebugMixin, nn.Module):
         self.load_state_dict(state_dict, strict=strict)
         if self.verbose > 0:
             print(f"Loaded reflection data state from {path}")
+    
+    @property
+    def centric(self):
+        """
+        Get boolean mask for centric reflections (filtered by current masks).
+        Calculates it if not already present.
+        
+        Returns centric flags filtered by the same mask used in forward().
+        """
+        if self.hkl is None:
+            return None
+            
+        # Check if we already have it cached (could be stored in a buffer if we want persistence)
+        if not hasattr(self, '_centric_flags') or self._centric_flags is None:
+            from torchref.math_functions.french_wilson import is_centric_from_hkl
+            
+            # Ensure we have spacegroup
+            sg = self.spacegroup if self.spacegroup else "P1"
+            
+            self._centric_flags = is_centric_from_hkl(self.hkl, sg)
+        
+        # Apply current masks to return filtered centric flags
+        to_mask = self.masks()
+        return self._centric_flags[to_mask]
