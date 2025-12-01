@@ -12,21 +12,35 @@ from torchref.utils.utils import TensorDict
 from torchref.utils.debug_utils import DebugMixin
 
 class SolventModel(DebugMixin, nn.Module):
-    def __init__(self, model,radius=1.1, k_solvent=1.1, b_solvent=50.0, erosion_radius=0.9, 
-                 transition=None, optimize_phase=True, initial_phase_offset=0.0, verbose=1,float_type=torch.float32,device=torch.device('cpu')):
+    """
+    SolventModel to compute solvent contribution to structure factors using Phenix-like approach.
+    
+    Supports two initialization patterns:
+    
+    1. Empty initialization (for state_dict loading):
+        >>> solvent = SolventModel()  # Creates empty shell
+        >>> solvent.load_state_dict(torch.load('solvent.pt'))
+    
+    2. Full initialization with model:
+        >>> solvent = SolventModel(model, k_solvent=0.35, b_solvent=46.0)
+    """
+    
+    def __init__(self, model=None, radius=1.1, k_solvent=1.1, b_solvent=50.0, erosion_radius=0.9, 
+                 transition=None, optimize_phase=True, initial_phase_offset=0.0, verbose=1, 
+                 float_type=torch.float32, device=torch.device('cpu')):
         """
-        SolventModel to compute solvent contribution to structure factors using Phenix-like approach.
+        Initialize SolventModel.
+        
+        If model is provided, fully initializes the solvent model.
+        If not provided (empty init), creates a shell ready for load_state_dict().
 
         Args:
-            model (ModelFT): The atomic model used for structure factor calculations.
-            solvent_radius (float): Probe radius in Angstroms for dilation (default: 1.1 Å, water radius).
-                This is added to atomic VdW radii to create the accessible surface.
+            model (ModelFT): The atomic model used for structure factor calculations (optional for empty init)
+            radius (float): Probe radius in Angstroms for dilation (default: 1.1 Å, water radius)
             k_solvent (float): Solvent scattering scale factor
             b_solvent (float): Solvent B-factor
-            erosion_radius (float): Radius in Angstroms for erosion step (default: 0.9 Å).
-                This smooths the protein-solvent boundary by eroding the accessible surface.
-                Typical values: 0.7-1.1 Å. Should be ≤ solvent_radius for best results.
-            transition (float): Gaussian smoothing sigma for mask edges (default: solvent_radius/4 in voxels)
+            erosion_radius (float): Radius in Angstroms for erosion step (default: 0.9 Å)
+            transition (float): Gaussian smoothing sigma for mask edges (default: radius/4 in voxels)
             optimize_phase (bool): Whether to optimize phase offset parameter (default: True)
             initial_phase_offset (float): Initial phase offset in radians (default: 0.0)
             verbose (int): Verbosity level
@@ -34,12 +48,32 @@ class SolventModel(DebugMixin, nn.Module):
         super(SolventModel, self).__init__()
         self.device = device
         self.verbose = verbose
+        self.float_type = float_type
+        self.solvent_radius = radius
+        self.erosion_radius = erosion_radius
+        self.optimize_phase = optimize_phase
+        self._cache = TensorDict()
+        
+        # Empty initialization
+        if model is None:
+            self.model = None
+            self.max_radius_angstrom = None
+            self.transition = transition
+            # Register parameters with default values (will be overwritten by load_state_dict)
+            self.log_k_solvent = nn.Parameter(torch.log(torch.tensor(k_solvent, dtype=self.float_type, device=self.device)))
+            self.b_solvent = nn.Parameter(torch.tensor(b_solvent, dtype=self.float_type, device=self.device))
+            if self.optimize_phase:
+                self.phase_offset = nn.Parameter(torch.tensor(initial_phase_offset, dtype=self.float_type, device=self.device))
+            else:
+                self.register_buffer("phase_offset", torch.tensor(0.0, dtype=self.float_type, device=self.device))
+            return
+        
+        # Full initialization with model
         self.model = model
         self.model.get_vdw_radii()  # Ensure VdW radii are available
         assert self.model, 'Model is not initialized'
         if model.real_space_grid == None:
             model.setup_grid()
-        self.float_type = float_type
         
         # Phenix-style parameters
         self.solvent_radius = radius  # For dilation (accessible surface)
@@ -338,3 +372,5 @@ class SolventModel(DebugMixin, nn.Module):
 
         assert torch.isfinite(f_solvent).all(), "Non-finite values in solvent structure factors"
         return f_solvent
+
+    

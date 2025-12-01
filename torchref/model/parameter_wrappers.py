@@ -15,6 +15,16 @@ class MixedTensor(nn.Module):
     both fixed and refinable components separately. The full tensor is reconstructed
     on-the-fly when accessed.
     
+    Supports two initialization patterns:
+    
+    1. Empty initialization (for state_dict loading):
+        >>> mixed = MixedTensor()  # Creates empty shell
+        >>> mixed.load_state_dict(torch.load('mixed.pt'))
+    
+    2. Full initialization with values:
+        >>> initial_values = torch.randn(100)
+        >>> mixed = MixedTensor(initial_values, requires_grad=True)
+    
     Example:
         >>> # Create a tensor with 100 elements, where only indices 20-30 are refinable
         >>> mask = torch.zeros(100, dtype=torch.bool)
@@ -31,7 +41,7 @@ class MixedTensor(nn.Module):
     
     def __init__(
         self, 
-        initial_values: torch.Tensor, 
+        initial_values: torch.Tensor = None, 
         refinable_mask: Optional[torch.Tensor] = None,
         requires_grad: bool = True,
         dtype: Optional[torch.dtype] = None,
@@ -41,8 +51,11 @@ class MixedTensor(nn.Module):
         """
         Initialize a MixedTensor.
         
+        If initial_values is provided, fully initializes the tensor.
+        If not provided (empty init), creates a shell ready for load_state_dict().
+        
         Args:
-            initial_values: Initial tensor values for all elements
+            initial_values: Initial tensor values for all elements (optional for empty init)
             refinable_mask: Boolean mask indicating which elements can be refined.
                           If None, all elements are refinable.
             requires_grad: Whether refinable parameters should have gradients
@@ -54,6 +67,15 @@ class MixedTensor(nn.Module):
         
         # Store the name
         self._name = name
+        
+        # Empty initialization
+        if initial_values is None:
+            self.register_buffer('refinable_mask', None)
+            self.register_buffer('fixed_mask', None)
+            self.register_buffer('fixed_values', None)
+            self.register_buffer('_shape', None)
+            self.refinable_params = nn.Parameter(torch.empty(0), requires_grad=requires_grad)
+            return
         
         if dtype is None:
             dtype = initial_values.dtype
@@ -467,6 +489,16 @@ class PositiveMixedTensor(MixedTensor):
         - Gradient flow is smooth and well-behaved
         - No need for manual clamping or constraints
     
+    Supports two initialization patterns:
+    
+    1. Empty initialization (for state_dict loading):
+        >>> b = PositiveMixedTensor()  # Creates empty shell
+        >>> b.load_state_dict(torch.load('b_factors.pt'))
+    
+    2. Full initialization with values:
+        >>> initial_b = torch.tensor([20.0, 30.0, 15.0])
+        >>> b = PositiveMixedTensor(initial_b)
+    
     Example:
         >>> # Create positive-only B-factors
         >>> initial_b = torch.tensor([20.0, 30.0, 15.0])  # Positive B-factors
@@ -487,7 +519,7 @@ class PositiveMixedTensor(MixedTensor):
     
     def __init__(
         self,
-        initial_values: torch.Tensor,
+        initial_values: torch.Tensor = None,
         refinable_mask: Optional[torch.Tensor] = None,
         requires_grad: bool = True,
         dtype: Optional[torch.dtype] = None,
@@ -498,20 +530,30 @@ class PositiveMixedTensor(MixedTensor):
         """
         Initialize a PositiveMixedTensor.
         
+        If initial_values is provided, fully initializes the tensor.
+        If not provided (empty init), creates a shell ready for load_state_dict().
+        
         Args:
-            initial_values: Initial tensor values in NORMAL space (must be positive)
+            initial_values: Initial tensor values in NORMAL space (optional for empty init)
             refinable_mask: Boolean mask indicating which elements can be refined
             requires_grad: Whether refinable parameters should have gradients
             dtype: Data type for the tensor (default: same as initial_values)
             device: Device for the tensor (default: same as initial_values)
             name: Optional name for this parameter
-            epsilon: Small value to add before taking log to avoid log(0) (default: 1e-10)
+            epsilon: Small value to add before taking log to avoid log(0) (default: 1e-1)
         
         Raises:
             ValueError: If any initial values are not positive
         """
-        """Clip initial values to be positive"""
-
+        # Store epsilon
+        self.epsilon = epsilon
+        
+        # Empty initialization
+        if initial_values is None:
+            super().__init__(None, refinable_mask, requires_grad, dtype, device, name)
+            return
+        
+        # Full initialization - clip initial values to be positive
         initial_values = torch.clamp(initial_values, min=epsilon)
         
         # Store epsilon as buffer (not parameter)
@@ -713,6 +755,20 @@ class OccupancyTensor(MixedTensor):
     - More stable gradients than placeholder approach
     - Handles arbitrary N-way splits (not just 2-way)
     
+    Supports two initialization patterns:
+    
+    1. Empty initialization (for state_dict loading):
+        >>> occ = OccupancyTensor()  # Creates empty shell
+        >>> occ.load_state_dict(torch.load('occupancy.pt'))
+    
+    2. Full initialization with values:
+        >>> sharing_groups = torch.tensor([0, 0, 1, 1, 2, 2])
+        >>> occ = OccupancyTensor(
+        ...     initial_values=torch.tensor([1.0, 1.0, 0.7, 0.7, 0.3, 0.3]),
+        ...     sharing_groups=sharing_groups,
+        ...     altloc_groups=[([2, 3], [4, 5])],  # indices 1 and 2 are altlocs
+        ... )
+    
     Example:
         >>> # Create occupancy with sharing groups as an index tensor
         >>> # Atoms 0,1 share (index 0), atoms 2,3 share (index 1), atoms 4,5 share (index 2)
@@ -729,7 +785,7 @@ class OccupancyTensor(MixedTensor):
     
     def __init__(
         self,
-        initial_values: torch.Tensor,
+        initial_values: torch.Tensor = None,
         sharing_groups: Optional[torch.Tensor] = None,
         altloc_groups: Optional[list] = None,
         refinable_mask: Optional[torch.Tensor] = None,
@@ -742,8 +798,11 @@ class OccupancyTensor(MixedTensor):
         """
         Initialize an OccupancyTensor with collapsed storage and altloc support.
         
+        If initial_values is provided, fully initializes the tensor.
+        If not provided (empty init), creates a shell ready for load_state_dict().
+        
         Args:
-            initial_values: Initial occupancy values for ALL atoms (should be in [0, 1])
+            initial_values: Initial occupancy values for ALL atoms (should be in [0, 1]) (optional for empty init)
             sharing_groups: Tensor of shape (n_atoms,) where each value is the collapsed index
                           for that atom. If None, each atom has independent occupancy.
                           Example: tensor([0, 0, 0, 1, 1, 2]) means atoms 0,1,2 share one occupancy,
@@ -766,12 +825,26 @@ class OccupancyTensor(MixedTensor):
         """
         # Store configuration
         self.use_sigmoid = use_sigmoid
-        self._full_shape = initial_values.shape[0]
         
         # Initialize Module first (required before register_buffer)
         nn.Module.__init__(self)
         
         self._name = name or 'occupancy'
+        
+        # Empty initialization
+        if initial_values is None:
+            self._full_shape = 0
+            self._collapsed_shape = 0
+            self.register_buffer('refinable_mask', None)
+            self.register_buffer('fixed_mask', None)
+            self.register_buffer('fixed_values', None)
+            self.register_buffer('_shape', None)
+            self.register_buffer('expansion_mask', None)
+            self.refinable_params = nn.Parameter(torch.empty(0), requires_grad=requires_grad)
+            return
+        
+        # Full initialization
+        self._full_shape = initial_values.shape[0]
         
         if dtype is None:
             dtype = initial_values.dtype

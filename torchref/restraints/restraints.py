@@ -37,6 +37,15 @@ class Restraints(DebugMixin, Module):
     for bond lengths, angles, torsion angles, and planes with their expected values
     and uncertainties (sigma values).
     
+    Supports two initialization patterns:
+    
+    1. Empty initialization (for state_dict loading):
+        >>> restraints = Restraints()  # Creates empty shell
+        >>> restraints.load_state_dict(torch.load('restraints.pt'))
+    
+    2. Full initialization with model:
+        >>> restraints = Restraints(model, cif_path='restraints.cif')
+    
     The restraints are organized in a hierarchical dictionary structure:
         restraints[restraint_type][origin][property]
     
@@ -77,19 +86,32 @@ class Restraints(DebugMixin, Module):
         >>> bond_indices_inter = restraints.bond_indices_inter  # peptide bonds
     """
     
-    def __init__(self, model: Model, cif_path = None, verbose: int = 1):
+    def __init__(self, model: Model = None, cif_path=None, verbose: int = 1):
         """
         Initialize the Restraints handler.
         
+        If model is provided, fully initializes the restraints.
+        If not provided (empty init), creates a shell ready for load_state_dict().
+        
         Args:
-            model: Model instance containing the atomic structure
-            cif_path: Path to the CIF restraints dictionary file
+            model: Model instance containing the atomic structure (optional for empty init)
+            cif_path: Path to the CIF restraints dictionary file (optional)
             verbose: Verbosity level (0=silent, 1=normal, 2=detailed)
         """
         super().__init__()  
-        self.model = ModuleReference(model)
         self.cif_path = cif_path
-        self.verbose = verbose  
+        self.verbose = verbose
+        
+        # Empty initialization
+        if model is None:
+            self.model = None
+            self.cif_dict = {}
+            self.unique_residues = []
+            self.restraints = {}
+            return
+        
+        # Full initialization with model
+        self.model = ModuleReference(model)
         self.unique_residues = model.pdb.resname.unique()
         # Check unique residue have more than one atom
         self.unique_residues = [residue for residue in self.unique_residues if self.model.pdb.loc[self.model.pdb['resname'] == residue,'name'].nunique() > 1]
@@ -177,6 +199,7 @@ class Restraints(DebugMixin, Module):
             self._build_angle_restraints()
             self._build_torsion_restraints()
             self._build_plane_restraints()
+            self._build_chiral_restraints()
             
             # Build inter-residue restraints (peptide bonds, disulfide bonds, etc.)
             self._build_peptide_bond_restraints()
@@ -749,6 +772,142 @@ class Restraints(DebugMixin, Module):
                 
                 if self.verbose > 1:
                     print(f"Built {len(atom_indices_list)} plane restraints with {atom_count} atoms")
+    
+    def _build_chiral_restraints(self, ideal_volume: float = 2.5, sigma: float = 0.2):
+        """
+        Build chiral volume restraints for the entire structure.
+        
+        Chiral centers are always exactly 4 atoms: 1 center + 3 neighbors forming
+        a tetrahedron. The chiral volume is computed as:
+        
+            V = v1 · (v2 × v3)
+        
+        where vi = position of neighbor i - position of center.
+        
+        The sign of the volume determines the handedness (R vs S configuration).
+        For L-amino acids, the Cα chiral volume should be positive (with standard
+        atom ordering: N, C, CB).
+        
+        Args:
+            ideal_volume: Target absolute chiral volume in Å³ (default: 2.5)
+            sigma: Standard deviation for restraint (default: 0.2 Å³)
+        
+        Stores:
+            restraints['chiral']['indices']: (N, 4) tensor [center, atom1, atom2, atom3]
+            restraints['chiral']['ideal_volumes']: (N,) tensor of signed ideal volumes
+            restraints['chiral']['sigmas']: (N,) tensor of sigma values
+        """
+        chiral_indices = []  # List of [center, atom1, atom2, atom3]
+        chiral_volumes = []  # Signed ideal volumes
+        chiral_sigmas = []
+        
+        pdb = self.model.pdb
+        
+        # Iterate through all chains
+        for chain_id in pdb['chainid'].unique():
+            chain = pdb[pdb['chainid'] == chain_id]
+            
+            # Iterate through all residues in the chain
+            for resseq in chain['resseq'].unique():
+                residue = pdb[(pdb['resseq'] == resseq) & (pdb['chainid'] == chain_id)]
+                
+                # Get residue name
+                resname = residue['resname'].values[0]
+                
+                # Check if restraints exist for this residue type
+                if resname not in self.cif_dict:
+                    continue
+                
+                cif_residue = self.cif_dict[resname]
+                
+                # Use standardized key 'chirals'
+                if 'chirals' not in cif_residue:
+                    continue
+                
+                cif_chirals = cif_residue['chirals']
+                if cif_chirals.empty:
+                    continue
+                
+                # Handle alternate conformations
+                has_altloc = any(~residue['altloc'].isin(['', ' ']))
+                residue_variants = list(self.expand_altloc(residue)) if has_altloc else [residue]
+                
+                for residue_alt in residue_variants:
+                    atom_names = residue_alt['name'].values
+                    
+                    # Create a mapping from atom names to indices
+                    residue_indexed = residue_alt.set_index('name')
+                    
+                    # Check for duplicate atom names
+                    if residue_indexed.index.has_duplicates:
+                        if self.verbose > 2:
+                            print(f"WARNING: Skipping chiral restraints for residue "
+                                  f"{resname} {chain_id} {resseq} (duplicate atom names)")
+                        continue
+                    
+                    # Process each chiral center
+                    for _, chiral_row in cif_chirals.iterrows():
+                        center = chiral_row['atom_centre']
+                        atom1 = chiral_row['atom1']
+                        atom2 = chiral_row['atom2']
+                        atom3 = chiral_row['atom3']
+                        volume_sign = chiral_row['volume_sign']
+                        
+                        # Check all atoms are present
+                        if not all(a in atom_names for a in [center, atom1, atom2, atom3]):
+                            continue
+                        
+                        # Get atom indices
+                        try:
+                            idx_center = residue_indexed.loc[center, 'index']
+                            idx1 = residue_indexed.loc[atom1, 'index']
+                            idx2 = residue_indexed.loc[atom2, 'index']
+                            idx3 = residue_indexed.loc[atom3, 'index']
+                        except KeyError:
+                            continue
+                        
+                        # Determine signed ideal volume based on chirality
+                        if volume_sign == 'positive':
+                            signed_volume = ideal_volume
+                        elif volume_sign == 'negative':
+                            signed_volume = -ideal_volume
+                        elif volume_sign in ['both', 'either']:
+                            # Achiral or racemic - skip restraint or use 0
+                            # For 'both', we don't restrain the sign
+                            signed_volume = 0.0  # Will use absolute value comparison
+                        else:
+                            # Unknown sign, skip
+                            if self.verbose > 2:
+                                print(f"WARNING: Unknown chiral sign '{volume_sign}' "
+                                      f"for {resname} {chain_id} {resseq}")
+                            continue
+                        
+                        chiral_indices.append([idx_center, idx1, idx2, idx3])
+                        chiral_volumes.append(signed_volume)
+                        chiral_sigmas.append(sigma)
+        
+        # Convert to tensors and store
+        if len(chiral_indices) > 0:
+            self.restraints['chiral'] = {
+                'indices': torch.tensor(chiral_indices, dtype=torch.long),
+                'ideal_volumes': torch.tensor(chiral_volumes, dtype=torch.float32),
+                'sigmas': torch.tensor(chiral_sigmas, dtype=torch.float32)
+            }
+            
+            if self.verbose > 0:
+                n_positive = sum(1 for v in chiral_volumes if v > 0)
+                n_negative = sum(1 for v in chiral_volumes if v < 0)
+                n_both = sum(1 for v in chiral_volumes if v == 0)
+                print(f"  Built {len(chiral_indices)} chiral restraints "
+                      f"(+: {n_positive}, -: {n_negative}, both: {n_both})")
+        else:
+            self.restraints['chiral'] = {
+                'indices': torch.tensor([], dtype=torch.long).reshape(0, 4),
+                'ideal_volumes': torch.tensor([], dtype=torch.float32),
+                'sigmas': torch.tensor([], dtype=torch.float32)
+            }
+            if self.verbose > 0:
+                print("  No chiral restraints were built")
     
     def _build_peptide_bond_restraints(self):
         """
@@ -1364,9 +1523,9 @@ class Restraints(DebugMixin, Module):
                         torsion_idx4_list.append(idx4)
                         torsion_ref_list.append(float(torsion_row['value']))
                         torsion_sigma_list.append(float(torsion_row['sigma']))
-                        # Get period if available, default to 0
-                        period = int(torsion_row['periodicity']) if 'periodicity' in torsion_row and pd.notna(torsion_row['periodicity']) else 0
-                        torsion_period_list.append(period)
+                        # Disulfide CB-SG-SG-CB torsion can be +90° or -90° (both valid)
+                        # Use period=2 so both conformations are equivalent
+                        torsion_period_list.append(2)
         
         # Append to existing inter-residue restraints
         # Bonds

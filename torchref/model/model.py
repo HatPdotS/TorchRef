@@ -17,14 +17,59 @@ from torchref.utils.debug_utils import DebugMixin
 import gemmi
 
 class Model(DebugMixin, nn.Module):
-    def __init__(self,dtype_float=torch.float32,verbose=1,device=torch.device('cpu'), strip_H: bool =True):
+    """
+    Base model class for atomic structure models using PyTorch.
+    
+    Supports two initialization patterns:
+    
+    1. Empty initialization (for state_dict loading):
+        >>> model = Model()  # Creates empty shell
+        >>> model.load_state_dict(torch.load('model.pt'))
+    
+    2. File-based initialization:
+        >>> model = Model()
+        >>> model.load_pdb('structure.pdb')  # or load_cif()
+    
+    The empty initialization creates a shell with configuration only.
+    Submodules (xyz, b, u, occupancy) are created during load() or load_state_dict().
+    """
+    
+    def __init__(self, dtype_float=torch.float32, verbose=1, device=torch.device('cpu'), strip_H: bool = True):
+        """
+        Initialize Model.
+        
+        Creates an empty model shell ready for:
+        - File loading via load_pdb() / load_cif()
+        - State restoration via load_state_dict()
+        
+        Args:
+            dtype_float: Data type for floating point tensors (default: torch.float32)
+            verbose: Verbosity level for logging (default: 1)
+            device: Computation device (default: cpu)
+            strip_H: Whether to strip hydrogen atoms when loading (default: True)
+        """
         super().__init__()
-        self.altloc_pairs = []
-        self.verbose = verbose
-        self.initialized = False
+        # Configuration
         self.dtype_float = dtype_float
+        self.verbose = verbose
         self.device = device
         self.strip_H = strip_H
+        
+        # State tracking
+        self.initialized = False
+        self.altloc_pairs = []
+        
+        # These will be set during load() or load_state_dict()
+        self.pdb = None
+        self.spacegroup = None
+        self.spacegroup_gemmi = None
+        self.spacegroup_function = None
+        
+        # Submodules (created during load or load_state_dict)
+        self.xyz = None
+        self.b = None
+        self.u = None
+        self.occupancy = None
     
     def __bool__(self):
         """Return the initialization status when used in boolean context."""
@@ -928,129 +973,6 @@ class Model(DebugMixin, nn.Module):
         
         return state
 
-    def load_state_dict(self, state_dict, strict=True):
-        """
-        Loads the Model state from a dictionary.
-        
-        Args:
-            state_dict: Dictionary containing model state
-            strict: Whether to strictly enforce that keys match
-        """
-        # Extract model-specific state
-        self.pdb = state_dict.pop('pdb', None)
-        self.spacegroup = state_dict.pop('spacegroup', None)
-        self.initialized = state_dict.pop('initialized', False)
-        self.dtype_float = state_dict.pop('dtype_float', torch.float32)
-        self.device = state_dict.pop('device', torch.device('cpu'))
-        self.strip_H = state_dict.pop('strip_H', True)
-        self.altloc_pairs = state_dict.pop('altloc_pairs', [])
-        
-        # Reconstruct spacegroup_gemmi and spacegroup_function if spacegroup exists
-        if self.spacegroup is not None:
-            import gemmi
-            self.spacegroup_gemmi = gemmi.SpaceGroup(self.spacegroup.replace('  ', ' '))
-            self.spacegroup_function = sym.Symmetry(self.spacegroup)
-        
-        # If PDB is present, ensure submodules and buffers are instantiated
-        if self.pdb is not None:
-            # Instantiate MixedTensors if they don't exist
-            # We use the PDB data to initialize them with correct shapes
-            # We also try to retrieve the refinable_mask from state_dict to ensure parameter shapes match
-            
-            if not hasattr(self, 'xyz') or self.xyz is None:
-                mask = state_dict.get('xyz.refinable_mask')
-                self.xyz = MixedTensor(torch.tensor(self.pdb[['x', 'y', 'z']].values, dtype=self.dtype_float), refinable_mask=mask, name='xyz')
-            
-            if not hasattr(self, 'b') or self.b is None:
-                mask = state_dict.get('b.refinable_mask')
-                self.b = PositiveMixedTensor(torch.tensor(self.pdb['tempfactor'].values, dtype=self.dtype_float), refinable_mask=mask, name='b_factor')
-                
-            if not hasattr(self, 'u') or self.u is None:
-                mask = state_dict.get('u.refinable_mask')
-                self.u = MixedTensor(torch.tensor(self.pdb[['u11', 'u22', 'u33', 'u12', 'u13', 'u23']].values, dtype=self.dtype_float), refinable_mask=mask, name='aniso_U')
-                
-            if not hasattr(self, 'occupancy') or self.occupancy is None:
-                initial_occ = torch.tensor(self.pdb['occupancy'].values, dtype=self.dtype_float)
-                sharing_groups, altloc_groups, refinable_mask = self._create_occupancy_groups(self.pdb, initial_occ)
-                
-                # Override mask if present in state_dict
-                # Note: saved mask is COLLAPSED, but constructor expects FULL mask
-                saved_mask = state_dict.get('occupancy.refinable_mask')
-                if saved_mask is not None:
-                    # Expand the collapsed mask using sharing_groups
-                    # sharing_groups maps atom_idx -> collapsed_idx
-                    # So full_mask[atom_idx] = collapsed_mask[sharing_groups[atom_idx]]
-                    if saved_mask.device != sharing_groups.device:
-                        saved_mask = saved_mask.to(sharing_groups.device)
-                    refinable_mask = saved_mask[sharing_groups]
-                    
-                self.occupancy = OccupancyTensor(
-                    initial_values=initial_occ,
-                    sharing_groups=sharing_groups,
-                    altloc_groups=altloc_groups,
-                    refinable_mask=refinable_mask,
-                    dtype=self.dtype_float,
-                    device=self.device,
-                    name='occupancy'
-                )
-            
-            # Register buffers that might be missing if __init__ didn't do it
-            # We register them with dummy values (or values from PDB), 
-            # load_state_dict will overwrite them with saved values
-            
-            if not hasattr(self, 'aniso_flag'):
-                self.register_buffer('aniso_flag', torch.tensor(self.pdb['anisou_flag'].values, dtype=torch.bool))
-            
-            # For cell-dependent buffers, we need cell. 
-            # If cell is in state_dict, we can't easily access it yet.
-            # But we can register buffers with None or dummy tensors if we know the shape?
-            # Actually, register_buffer(name, tensor) requires a tensor.
-            # If we don't register them, load_state_dict might fail for these keys.
-            # However, Model.load() registers them.
-            # If we are loading into an uninitialized model, we should try to register them.
-            
-            # We can try to extract cell from state_dict if possible, or just use dummy
-            # But state_dict keys might have prefixes.
-            # Since we are in load_state_dict, the keys passed to us match our parameters.
-            
-            # Let's try to register them if they are missing.
-            # We need 'cell' to compute them properly, but load_state_dict will overwrite.
-            # So we just need to register them so they exist.
-            
-            if not hasattr(self, 'cell'):
-                # Try to find cell in state_dict
-                cell_key = 'cell'
-                if cell_key in state_dict:
-                    self.register_buffer('cell', state_dict[cell_key].clone())
-                else:
-                    # Fallback or maybe it's not in state_dict?
-                    pass
-            
-            if hasattr(self, 'cell') and self.cell is not None:
-                if not hasattr(self, 'inv_fractional_matrix'):
-                    self.register_buffer('inv_fractional_matrix', torch.tensor(mnp.get_inv_fractional_matrix(self.cell), dtype=self.dtype_float))
-                if not hasattr(self, 'fractional_matrix'):
-                    self.register_buffer('fractional_matrix', torch.tensor(mnp.get_fractional_matrix(self.cell), dtype=self.dtype_float))
-                if not hasattr(self, 'recB'):
-                    self.register_buffer('recB', math_torch.reciprocal_basis_matrix(self.cell).to(dtype=self.dtype_float).to(self.device))
-            
-            # Register mask buffers
-            if not hasattr(self, 'xyz_mask'):
-                self.register_buffer("xyz_mask", torch.ones(len(self.pdb), dtype=torch.bool, device=self.device))
-            if not hasattr(self, 'b_mask'):
-                self.register_buffer("b_mask", torch.ones(len(self.pdb), dtype=torch.bool, device=self.device))
-            if not hasattr(self, 'u_mask'):
-                self.register_buffer("u_mask", torch.ones(len(self.pdb), dtype=torch.bool, device=self.device))
-            if not hasattr(self, 'occupancy_mask'):
-                self.register_buffer("occupancy_mask", torch.ones(len(self.pdb), dtype=torch.bool, device=self.device))
-                
-            # Register vdw_radii
-            if not hasattr(self, 'vdw_radii'):
-                self.get_vdw_radii()
-
-        # Load parent class state_dict (buffers and parameters)
-        return super().load_state_dict(state_dict, strict=strict)
-
     def save_state(self, path: str):
         """
         Save the complete state of the model to a file.
@@ -1071,6 +993,121 @@ class Model(DebugMixin, nn.Module):
             strict (bool): Whether to strictly enforce that keys match.
         """
         state_dict = torch.load(path, map_location=self.device, weights_only=False)
-        self.load_state_dict(state_dict, strict=strict)
+        loaded = type(self).create_from_state_dict(state_dict, device=self.device, verbose=self.verbose)
+        # Copy loaded state to self
+        self.__dict__.update(loaded.__dict__)
         if self.verbose > 0:
             print(f"Loaded model state from {path}")
+    
+    @classmethod
+    def create_from_state_dict(cls, state_dict: dict, device: torch.device = torch.device('cpu'), 
+                               verbose: int = 1, dtype_float: torch.dtype = torch.float32) -> 'Model':
+        """
+        Create a fully initialized Model from a state dictionary.
+        
+        This is the recommended way to restore a Model from a saved state.
+        It creates an instance with properly initialized submodules, then loads the state.
+        
+        Args:
+            state_dict: State dictionary from torch.save(model.state_dict(), ...)
+            device: Device to place tensors on
+            verbose: Verbosity level
+            dtype_float: Float dtype for tensors
+            
+        Returns:
+            Model: Fully initialized instance with restored state
+        """
+        # Extract metadata (non-tensor data that we handle specially)
+        pdb = state_dict.pop('pdb', None)
+        spacegroup = state_dict.pop('spacegroup', None)
+        initialized = state_dict.pop('initialized', False)
+        saved_dtype = state_dict.pop('dtype_float', dtype_float)
+        saved_device = state_dict.pop('device', device)
+        strip_H = state_dict.pop('strip_H', True)
+        altloc_pairs = state_dict.pop('altloc_pairs', [])
+        
+        # Create instance
+        instance = cls(dtype_float=saved_dtype, verbose=verbose, device=device, strip_H=strip_H)
+        
+        # Set metadata
+        instance.pdb = pdb
+        instance.spacegroup = spacegroup
+        instance.initialized = initialized
+        instance.altloc_pairs = altloc_pairs
+        
+        # Setup spacegroup objects if spacegroup exists
+        if spacegroup is not None:
+            import gemmi
+            instance.spacegroup_gemmi = gemmi.SpaceGroup(spacegroup.replace('  ', ' '))
+            instance.spacegroup_function = sym.Symmetry(spacegroup)
+        
+        # If PDB exists, create the parameter wrappers with correct shapes
+        if pdb is not None:
+            n_atoms = len(pdb)
+            
+            # Create MixedTensors with initial values from PDB (will be overwritten by load_state_dict)
+            # Get refinable masks from state_dict if available
+            xyz_mask = state_dict.get('xyz.refinable_mask')
+            b_mask = state_dict.get('b.refinable_mask')
+            u_mask = state_dict.get('u.refinable_mask')
+            
+            instance.xyz = MixedTensor(
+                torch.tensor(pdb[['x', 'y', 'z']].values, dtype=saved_dtype),
+                refinable_mask=xyz_mask, name='xyz'
+            )
+            instance.b = PositiveMixedTensor(
+                torch.tensor(pdb['tempfactor'].values, dtype=saved_dtype),
+                refinable_mask=b_mask, name='b_factor'
+            )
+            instance.u = MixedTensor(
+                torch.tensor(pdb[['u11', 'u22', 'u33', 'u12', 'u13', 'u23']].values, dtype=saved_dtype),
+                refinable_mask=u_mask, name='aniso_U'
+            )
+            
+            # Create OccupancyTensor
+            initial_occ = torch.tensor(pdb['occupancy'].values, dtype=saved_dtype)
+            sharing_groups, altloc_groups, refinable_mask = instance._create_occupancy_groups(pdb, initial_occ)
+            
+            # Override mask if present in state_dict
+            saved_occ_mask = state_dict.get('occupancy.refinable_mask')
+            if saved_occ_mask is not None:
+                if saved_occ_mask.device != sharing_groups.device:
+                    saved_occ_mask = saved_occ_mask.to(sharing_groups.device)
+                refinable_mask = saved_occ_mask[sharing_groups]
+            
+            instance.occupancy = OccupancyTensor(
+                initial_values=initial_occ,
+                sharing_groups=sharing_groups,
+                altloc_groups=altloc_groups,
+                refinable_mask=refinable_mask,
+                dtype=saved_dtype,
+                device=device,
+                name='occupancy'
+            )
+            
+            # Register buffers that are needed
+            if 'cell' in state_dict:
+                instance.register_buffer('cell', torch.zeros_like(state_dict['cell'], device=device))
+            if 'aniso_flag' not in instance._buffers or instance.aniso_flag is None:
+                instance.register_buffer('aniso_flag', torch.tensor(pdb['anisou_flag'].values, dtype=torch.bool))
+            
+            # Register mask buffers
+            instance.register_buffer("xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device))
+            instance.register_buffer("b_mask", torch.ones(n_atoms, dtype=torch.bool, device=device))
+            instance.register_buffer("u_mask", torch.ones(n_atoms, dtype=torch.bool, device=device))
+            instance.register_buffer("occupancy_mask", torch.ones(n_atoms, dtype=torch.bool, device=device))
+            
+            # Register other buffers based on state_dict
+            buffer_names = ['inv_fractional_matrix', 'fractional_matrix', 'recB', 'vdw_radii']
+            for name in buffer_names:
+                if name in state_dict and state_dict[name] is not None:
+                    instance.register_buffer(name, torch.zeros_like(state_dict[name], device=device))
+        
+        # Now use PyTorch's default load_state_dict
+        instance.load_state_dict(state_dict, strict=False)
+        
+        if verbose > 0:
+            n_atoms = len(instance.pdb) if instance.pdb is not None else 0
+            print(f"Created Model from state_dict: {n_atoms} atoms")
+        
+        return instance

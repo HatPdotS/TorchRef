@@ -61,6 +61,12 @@ class ReflectionData(DebugMixin, nn.Module):
         self.spacegroup: Optional[str] = None
         self.register_buffer('resolution', None)  # Resolution per reflection, shape: (N,)
         
+        # Wilson B-factors (estimated from data)
+        self.wilson_b: Optional[float] = None  # Overall Wilson B-factor in Å²
+        self.wilson_b_structure: Optional[float] = None  # Structure B-factor (high-res) in Å²
+        self.wilson_b_solvent: Optional[float] = None  # Solvent B-factor (low-res) in Å²
+        self.wilson_k_sol: Optional[float] = None  # Relative solvent contribution
+        
         # Data source tracking
         self.amplitude_source: Optional[str] = None
         self.intensity_source: Optional[str] = None
@@ -149,6 +155,7 @@ class ReflectionData(DebugMixin, nn.Module):
 
         self.sanitize_F()
         self.flag_suspicious_sigma()
+        self._calculate_wilson_b()
         return self
 
     def load_mtz(self, path: str) -> 'ReflectionData':
@@ -393,6 +400,254 @@ class ReflectionData(DebugMixin, nn.Module):
         s = math_torch.get_scattering_vectors(self.hkl, self.cell)
         resolution = 1.0 / torch.linalg.norm(s, axis=1)
         self.register_buffer('resolution', resolution)
+    
+    def _calculate_wilson_b(self, n_bins: int = 30) -> None:
+        """
+        Calculate Wilson B-factors from structure factor amplitudes.
+        
+        Fits a two-component model separating structure and solvent contributions:
+        <F²> ∝ A_struct * exp(-2*B_struct*s²) + A_sol * exp(-2*B_sol*s²)
+        
+        The fitting proceeds in three stages:
+        1. Estimate B_structure from high-resolution data (d < 3.5 Å) where solvent is negligible
+        2. Estimate B_solvent from low-resolution data (d > 6 Å) where solvent dominates  
+        3. Refine both together with two-exponential fit across all data
+        
+        Args:
+            n_bins: Number of resolution bins for averaging (default: 30)
+        
+        Sets:
+            self.wilson_b: Overall Wilson B-factor (weighted average) in Å²
+            self.wilson_b_structure: Structure B-factor from high-res in Å²
+            self.wilson_b_solvent: Solvent B-factor from low-res in Å²
+            self.wilson_k_sol: Relative solvent contribution (0-1)
+        """
+        if self.F is None or self.resolution is None:
+            return
+        
+        # Get valid reflections
+        F = self.F
+        d = self.resolution
+        valid = torch.isfinite(F) & (F > 0) & torch.isfinite(d)
+        
+        if valid.sum() < 100:
+            if self.verbose > 0:
+                print(f"  Wilson B: insufficient data ({valid.sum()} reflections), skipping")
+            return
+        
+        F_valid = F[valid]
+        d_valid = d[valid]
+        
+        # Calculate s² = 1/(4d²)
+        s_sq = 1.0 / (4.0 * d_valid**2)
+        F_sq = F_valid**2
+        
+        # Bin the data for noise reduction
+        s_sq_min, s_sq_max = s_sq.min(), s_sq.max()
+        bin_edges = torch.linspace(s_sq_min, s_sq_max, n_bins + 1, device=self.device)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        bin_idx = torch.bucketize(s_sq, bin_edges[1:-1])
+        
+        # Calculate mean F² per bin
+        bin_sums = torch.zeros(n_bins, device=self.device, dtype=F_sq.dtype)
+        bin_counts = torch.zeros(n_bins, device=self.device, dtype=F_sq.dtype)
+        bin_sums.scatter_add_(0, bin_idx, F_sq)
+        bin_counts.scatter_add_(0, bin_idx, torch.ones_like(F_sq))
+        
+        valid_bins = bin_counts > 5
+        if valid_bins.sum() < 5:
+            if self.verbose > 0:
+                print(f"  Wilson B: insufficient bins ({valid_bins.sum()}), skipping")
+            return
+        
+        mean_F_sq = bin_sums[valid_bins] / bin_counts[valid_bins]
+        s_sq_bins = bin_centers[valid_bins]
+        
+        # Convert s² back to d-spacing for resolution-based selection
+        d_bins = 1.0 / (2.0 * torch.sqrt(s_sq_bins))
+        
+        # Stage 1: Fit high-resolution region (d < 3.5 Å) for structure B
+        high_res_mask = d_bins < 3.5
+        B_struct = self._fit_single_wilson(s_sq_bins, mean_F_sq, high_res_mask, "high-res")
+        
+        # Stage 2: Fit low-resolution region (d > 6 Å) for solvent B
+        low_res_mask = d_bins > 6.0
+        B_sol = self._fit_single_wilson(s_sq_bins, mean_F_sq, low_res_mask, "low-res")
+        
+        # Stage 3: Two-component fit across all data
+        B_struct_final, B_sol_final, k_sol = self._fit_two_component_wilson(
+            s_sq_bins, mean_F_sq, B_struct, B_sol
+        )
+        
+        # Store results
+        self.wilson_b_structure = B_struct_final
+        self.wilson_b_solvent = B_sol_final
+        self.wilson_k_sol = k_sol
+        
+        # Overall Wilson B is the structure B (what people usually mean by "Wilson B")
+        self.wilson_b = B_struct_final
+        
+        if self.verbose > 0:
+            print(f"  Wilson B-factor (structure): {B_struct_final:.1f} Å²")
+            print(f"  Wilson B-factor (solvent):   {B_sol_final:.1f} Å²")
+            print(f"  Solvent fraction (k_sol):    {k_sol:.3f}")
+    
+    def _fit_single_wilson(
+        self, 
+        s_sq: torch.Tensor, 
+        mean_F_sq: torch.Tensor, 
+        mask: torch.Tensor,
+        label: str
+    ) -> float:
+        """
+        Fit single-exponential Wilson plot to selected resolution range.
+        
+        Args:
+            s_sq: s² values for bins
+            mean_F_sq: Mean F² values for bins  
+            mask: Boolean mask selecting which bins to use
+            label: Label for error messages
+            
+        Returns:
+            B-factor from fit (Å²)
+        """
+        if mask.sum() < 3:
+            # Not enough data, return reasonable default
+            if self.verbose > 1:
+                print(f"    Wilson {label}: insufficient bins ({mask.sum()}), using default")
+            return 50.0 if "struct" in label else 200.0
+        
+        x = s_sq[mask]
+        y = torch.log(mean_F_sq[mask])
+        
+        # Linear regression: ln(F²) = const - 2B*s²
+        x_mean = x.mean()
+        y_mean = y.mean()
+        
+        numerator = ((x - x_mean) * (y - y_mean)).sum()
+        denominator = ((x - x_mean)**2).sum()
+        
+        if denominator < 1e-12:
+            return 50.0 if "struct" in label else 200.0
+        
+        slope = numerator / denominator
+        B = -slope.item() / 2.0
+        
+        # Sanity bounds
+        B = max(0.0, min(B, 300.0))
+        
+        return B
+    
+    def _fit_two_component_wilson(
+        self,
+        s_sq: torch.Tensor,
+        mean_F_sq: torch.Tensor,
+        B_struct_init: float,
+        B_sol_init: float,
+        n_iter: int = 50
+    ) -> Tuple[float, float, float]:
+        """
+        Fit two-component Wilson model using iterative refinement.
+        
+        Model: F² = A_struct * exp(-2*B_struct*s²) + A_sol * exp(-2*B_sol*s²)
+        
+        We parameterize as:
+            F² = A * [(1-k)*exp(-2*B_struct*s²) + k*exp(-2*B_sol*s²)]
+        
+        where k is the relative solvent contribution at s²=0.
+        
+        Args:
+            s_sq: s² values for bins
+            mean_F_sq: Mean F² values for bins
+            B_struct_init: Initial structure B-factor
+            B_sol_init: Initial solvent B-factor
+            n_iter: Number of refinement iterations
+            
+        Returns:
+            Tuple of (B_struct, B_sol, k_sol)
+        """
+        # Normalize F² for numerical stability
+        F_sq_max = mean_F_sq.max()
+        y = mean_F_sq / F_sq_max
+        x = s_sq
+        
+        # Initialize parameters
+        B_struct = torch.tensor(B_struct_init, device=self.device, dtype=x.dtype)
+        B_sol = torch.tensor(B_sol_init, device=self.device, dtype=x.dtype)
+        
+        # Estimate initial k from ratio of low-res to high-res decay
+        # At low resolution, solvent contributes more
+        d_from_s = 1.0 / (2.0 * torch.sqrt(x))
+        low_res_val = y[d_from_s > 5.0].mean() if (d_from_s > 5.0).any() else y[0]
+        high_res_val = y[d_from_s < 3.0].mean() if (d_from_s < 3.0).any() else y[-1]
+        
+        # k estimates solvent fraction - if low res is much higher than expected
+        # from structure alone, there's solvent contribution
+        struct_decay = torch.exp(-2 * B_struct * x)
+        expected_low = struct_decay[d_from_s > 5.0].mean() if (d_from_s > 5.0).any() else struct_decay[0]
+        
+        if expected_low > 1e-6 and low_res_val > expected_low:
+            k_init = min(0.5, (low_res_val - expected_low).item() / low_res_val.item())
+        else:
+            k_init = 0.1
+        
+        k = torch.tensor(max(0.01, min(0.5, k_init)), device=self.device, dtype=x.dtype)
+        
+        # Simple gradient descent refinement
+        lr = 0.1
+        
+        for _ in range(n_iter):
+            # Compute model
+            struct_term = (1 - k) * torch.exp(-2 * B_struct * x)
+            sol_term = k * torch.exp(-2 * B_sol * x)
+            model = struct_term + sol_term
+            
+            # Compute scale factor analytically
+            A = (y * model).sum() / (model * model).sum()
+            model_scaled = A * model
+            
+            # Compute gradients (simplified, using finite differences for robustness)
+            eps = 0.1
+            
+            # B_struct gradient
+            model_plus = A * ((1 - k) * torch.exp(-2 * (B_struct + eps) * x) + sol_term)
+            model_minus = A * ((1 - k) * torch.exp(-2 * (B_struct - eps) * x) + sol_term)
+            loss_plus = ((y - model_plus)**2).sum()
+            loss_minus = ((y - model_minus)**2).sum()
+            grad_B_struct = (loss_plus - loss_minus) / (2 * eps)
+            
+            # B_sol gradient  
+            model_plus = A * (struct_term + k * torch.exp(-2 * (B_sol + eps) * x))
+            model_minus = A * (struct_term + k * torch.exp(-2 * (B_sol - eps) * x))
+            loss_plus = ((y - model_plus)**2).sum()
+            loss_minus = ((y - model_minus)**2).sum()
+            grad_B_sol = (loss_plus - loss_minus) / (2 * eps)
+            
+            # k gradient
+            eps_k = 0.01
+            k_plus = min(0.9, k + eps_k)
+            k_minus = max(0.01, k - eps_k)
+            model_plus = A * ((1 - k_plus) * torch.exp(-2 * B_struct * x) + k_plus * torch.exp(-2 * B_sol * x))
+            model_minus = A * ((1 - k_minus) * torch.exp(-2 * B_struct * x) + k_minus * torch.exp(-2 * B_sol * x))
+            loss_plus = ((y - model_plus)**2).sum()
+            loss_minus = ((y - model_minus)**2).sum()
+            grad_k = (loss_plus - loss_minus) / (2 * eps_k)
+            
+            # Update parameters
+            B_struct = B_struct - lr * grad_B_struct
+            B_sol = B_sol - lr * grad_B_sol
+            k = k - lr * 0.1 * grad_k  # Slower learning rate for k
+            
+            # Enforce constraints
+            B_struct = torch.clamp(B_struct, 1.0, 200.0)
+            B_sol = torch.clamp(B_sol, 50.0, 500.0)
+            k = torch.clamp(k, 0.01, 0.9)
+            
+            # Ensure B_sol > B_struct (solvent is more disordered)
+            if B_sol < B_struct + 20:
+                B_sol = B_struct + 20
+        
+        return B_struct.item(), B_sol.item(), k.item()
     
     def get_structure_factors(self, as_complex: bool = False) -> torch.Tensor:
         """
@@ -1066,67 +1321,13 @@ class ReflectionData(DebugMixin, nn.Module):
         state[prefix + 'amplitude_source'] = self.amplitude_source
         state[prefix + 'intensity_source'] = self.intensity_source
         state[prefix + 'phase_source'] = self.phase_source
+        state[prefix + 'wilson_b'] = self.wilson_b
+        state[prefix + 'wilson_b_structure'] = self.wilson_b_structure
+        state[prefix + 'wilson_b_solvent'] = self.wilson_b_solvent
+        state[prefix + 'wilson_k_sol'] = self.wilson_k_sol
         state[prefix + 'verbose'] = self.verbose
         
         return state
-
-    def load_state_dict(self, state_dict, strict=True):
-        """
-        Loads the ReflectionData state from a dictionary.
-        
-        Args:
-            state_dict: Dictionary containing reflection data state
-            strict: Whether to strictly enforce that keys match
-        """
-        # Extract ReflectionData-specific metadata
-        self.spacegroup = state_dict.pop('spacegroup', None)
-        self.rfree_source = state_dict.pop('rfree_source', None)
-        self.outlier_detection_params = state_dict.pop('outlier_detection_params', None)
-        self.amplitude_source = state_dict.pop('amplitude_source', None)
-        self.intensity_source = state_dict.pop('intensity_source', None)
-        self.phase_source = state_dict.pop('phase_source', None)
-        self.verbose = state_dict.pop('verbose', 1)
-        
-        # If loading into empty object, register buffers based on state_dict content
-        # We check for 'hkl' to determine size
-        if 'hkl' in state_dict and state_dict['hkl'] is not None:
-            hkl = state_dict['hkl']
-            n_refl = hkl.shape[0]
-            
-            if not hasattr(self, 'hkl') or self.hkl is None:
-                self.register_buffer('hkl', torch.zeros(n_refl, 3, dtype=torch.int32, device=self.device))
-                
-            # Register other buffers if they are in state_dict
-            buffer_names = ['F', 'F_sigma', 'I', 'I_sigma', 'rfree_flags', 'outlier_flags', 'resolution', 'bin_indices', 'n_bins']
-            for name in buffer_names:
-                if name in state_dict and state_dict[name] is not None:
-                    if not hasattr(self, name) or getattr(self, name) is None:
-                        # Use the tensor from state_dict to determine dtype and shape
-                        # But we register a dummy tensor, load_state_dict will overwrite
-                        tensor = state_dict[name]
-                        self.register_buffer(name, torch.zeros_like(tensor, device=self.device))
-            
-            # Register cell
-            if 'cell' in state_dict and state_dict['cell'] is not None:
-                if not hasattr(self, 'cell') or self.cell is None:
-                    self.register_buffer('cell', torch.zeros(6, dtype=torch.float32, device=self.device))
-
-        # Instantiate FrenchWilson if present in state_dict
-        # Check for any key starting with "FrenchWilson."
-        has_french_wilson = any(k.startswith("FrenchWilson.") for k in state_dict.keys())
-        if has_french_wilson and not hasattr(self, 'FrenchWilson'):
-            # We need hkl and cell to instantiate FrenchWilson
-            # They might be in state_dict or already registered
-            if 'hkl' in state_dict and 'cell' in state_dict:
-                hkl = state_dict['hkl'].to(self.device)
-                cell = state_dict['cell'].to(self.device)
-                # We need spacegroup. It was popped above.
-                
-                self.FrenchWilson = FrenchWilson(hkl, cell, self.spacegroup, verbose=self.verbose)
-                self.FrenchWilson.to(self.device)
-        
-        # Load parent class state_dict (buffers including masks)
-        return super().load_state_dict(state_dict, strict=strict)
 
     def save_state(self, path: str):
         """
@@ -1151,6 +1352,79 @@ class ReflectionData(DebugMixin, nn.Module):
         self.load_state_dict(state_dict, strict=strict)
         if self.verbose > 0:
             print(f"Loaded reflection data state from {path}")
+    
+    @classmethod
+    def create_from_state_dict(cls, state_dict: dict, device: str = 'cpu', verbose: int = 1) -> 'ReflectionData':
+        """
+        Create a fully initialized ReflectionData from a state dictionary.
+        
+        This is the recommended way to restore ReflectionData from a saved state.
+        It creates an instance with properly sized buffers, then loads the state.
+        
+        Args:
+            state_dict: State dictionary from torch.save(reflection_data.state_dict(), ...)
+            device: Device to place tensors on ('cpu' or 'cuda')
+            verbose: Verbosity level
+            
+        Returns:
+            ReflectionData: Fully initialized instance with restored state
+        """
+        # Extract metadata (these are not tensors, need special handling)
+        spacegroup = state_dict.pop('spacegroup', None)
+        rfree_source = state_dict.pop('rfree_source', None)
+        outlier_detection_params = state_dict.pop('outlier_detection_params', None)
+        amplitude_source = state_dict.pop('amplitude_source', None)
+        intensity_source = state_dict.pop('intensity_source', None)
+        phase_source = state_dict.pop('phase_source', None)
+        wilson_b = state_dict.pop('wilson_b', None)
+        wilson_b_structure = state_dict.pop('wilson_b_structure', None)
+        wilson_b_solvent = state_dict.pop('wilson_b_solvent', None)
+        wilson_k_sol = state_dict.pop('wilson_k_sol', None)
+        saved_verbose = state_dict.pop('verbose', verbose)
+        
+        # Create instance
+        instance = cls(verbose=saved_verbose, device=device)
+        
+        # Set metadata
+        instance.spacegroup = spacegroup
+        instance.rfree_source = rfree_source
+        instance.outlier_detection_params = outlier_detection_params
+        instance.amplitude_source = amplitude_source
+        instance.intensity_source = intensity_source
+        instance.phase_source = phase_source
+        instance.wilson_b = wilson_b
+        instance.wilson_b_structure = wilson_b_structure
+        instance.wilson_b_solvent = wilson_b_solvent
+        instance.wilson_k_sol = wilson_k_sol
+        
+        # Register buffers with correct shapes before loading
+        if 'hkl' in state_dict and state_dict['hkl'] is not None:
+            hkl = state_dict['hkl']
+            instance.register_buffer('hkl', torch.zeros_like(hkl, device=device))
+        
+        buffer_names = ['F', 'F_sigma', 'I', 'I_sigma', 'rfree_flags', 'outlier_flags', 
+                       'resolution', 'bin_indices', 'n_bins', 'cell']
+        for name in buffer_names:
+            if name in state_dict and state_dict[name] is not None:
+                tensor = state_dict[name]
+                instance.register_buffer(name, torch.zeros_like(tensor, device=device))
+        
+        # Create FrenchWilson if present
+        has_french_wilson = any(k.startswith('FrenchWilson.') for k in state_dict.keys())
+        if has_french_wilson and 'hkl' in state_dict and 'cell' in state_dict:
+            hkl = state_dict['hkl'].to(device)
+            cell = state_dict['cell'].to(device)
+            instance.FrenchWilson = FrenchWilson(hkl, cell, spacegroup, verbose=saved_verbose)
+            instance.FrenchWilson.to(device)
+        
+        # Now use PyTorch's default load_state_dict
+        instance.load_state_dict(state_dict, strict=False)
+        
+        if verbose > 0:
+            n_refl = instance.hkl.shape[0] if instance.hkl is not None else 0
+            print(f"Created ReflectionData from state_dict: {n_refl} reflections")
+        
+        return instance
     
     @property
     def centric(self):

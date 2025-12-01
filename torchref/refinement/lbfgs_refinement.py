@@ -4,9 +4,15 @@ LBFGS-based refinement framework for crystallographic structure refinement.
 This module provides an LBFGS optimizer-based refinement approach which has been
 shown to converge much faster than first-order optimizers (Adam, SGD, etc.).
 LBFGS typically reaches near-convergence in just 1-2 macro cycles.
+
+Weight optimization follows the Phenix approach:
+- Screen multiple weights on a log scale
+- Run complete LBFGS optimization for each weight
+- Select best weight based on Rfree while respecting gap constraints
 """
 
 import torch
+import numpy as np
 from typing import Optional, Dict, List, Tuple
 from torchref.refinement.base_refinement import Refinement
 
@@ -32,12 +38,12 @@ class LBFGSRefinement(Refinement):
         refinement.refine(macro_cycles=2)
     """
 
-    def __init__(self, *args, target_mode: str = 'gaussian', **kwargs):
+    def __init__(self, *args, target_mode: str = 'ml', **kwargs):
         """
         Initialize LBFGS refinement.
         
         Args:
-            target_mode: X-ray target mode ('gaussian', 'ls', or 'ml')
+            target_mode: X-ray target mode ('gaussian', 'ls', or 'ml'). Default: 'ml'
             *args, **kwargs: Passed to parent Refinement class
         """
         super().__init__(*args, **kwargs)
@@ -106,30 +112,462 @@ class LBFGSRefinement(Refinement):
         optimizer.step(closure)
         self.model.unfreeze_all()
     
-    def regularize_xyz(self,lr=0.1):
+    def _run_xyz_with_weight(self, restraint_weight: float, max_iter: int = 20) -> Dict:
         """
-        Apply regularization to coordinates (XYZ).
+        Run XYZ refinement with a fixed restraint weight and return metrics.
+        
+        This is used internally for weight screening. Saves and restores model state.
+        
+        Args:
+            restraint_weight: Weight for restraints relative to X-ray target
+            max_iter: Maximum LBFGS iterations
+            
+        Returns:
+            Dict with rwork, rfree, rmsd_bonds, rmsd_angles, etc.
         """
-        self.model.freeze_all()
-        self.scaler.freeze()
-        self.model.unfreeze('xyz')
+        with torch.no_grad():
+            rwork_start, rfree_start = self.get_rfactor()
+
 
         optimizer = torch.optim.LBFGS(
-            self.parameters(),
-            lr=lr,
-            max_iter=20,
+            self.model.parameters(),
+            lr=1.0,
+            max_iter=max_iter,
             history_size=100,
             line_search_fn="strong_wolfe"
         )
-
+        
         def closure():
             optimizer.zero_grad()
-            loss = self.restraints_loss()
+            loss = self.restraints_loss() * restraint_weight + self.xray_loss()
             loss.backward()
             return loss
-
+        
         optimizer.step(closure)
+        
+        # Collect metrics
+        with torch.no_grad():
+            rwork, rfree = self.get_rfactor()
+            xray_target = self.xray_loss().item()
+            restraints_target = self.restraints_loss().item()
+            # Compute RMSD for bonds and angles from deviations
+            bond_devs, _ = self.restraints.bond_deviations()
+            rmsd_bonds = torch.sqrt((bond_devs ** 2).mean()).item()
+            angle_devs, _ = self.restraints.angle_deviations()
+            rmsd_angles = torch.sqrt((angle_devs ** 2).mean()).item()
+        
+        result = {
+            'weight': restraint_weight,
+            'rwork': rwork,
+            'rfree': rfree,
+            'rwork_start': rwork_start,
+            'rfree_start': rfree_start,
+            'gap': rfree - rwork,
+            'xray_target': xray_target,
+            'restraints_target': restraints_target,
+            'rmsd_bonds': rmsd_bonds,
+            'rmsd_angles': rmsd_angles,
+        }
+        
+        # NOTE: Do NOT call unfreeze_all() here - the calling screening function
+        # manages freeze/unfreeze state and will restore it after all trials
+        
+        return result
+    
+    def _run_adp_with_weight(self, adp_weight: float, max_iter: int = 20) -> Dict:
+        """
+        Run ADP refinement with a fixed ADP weight and return metrics.
+        
+        This is used internally for weight screening. Saves and restores model state.
+        
+        Args:
+            adp_weight: Weight for ADP restraints relative to X-ray target
+            max_iter: Maximum LBFGS iterations
+            
+        Returns:
+            Dict with rwork, rfree, mean_b, etc.
+        """
+        with torch.no_grad():
+            rwork_start, rfree_start = self.get_rfactor()
+
+        optimizer = torch.optim.LBFGS(
+            self.model.parameters(),
+            lr=1.0,
+            max_iter=max_iter,
+            history_size=100,
+            line_search_fn="strong_wolfe"
+        )
+        
+        def closure():
+            optimizer.zero_grad()
+            loss = self.adp_loss() * adp_weight + self.xray_loss()
+            loss.backward()
+            return loss
+        
+        optimizer.step(closure)
+        
+        # Collect metrics
+        with torch.no_grad():
+            rwork, rfree = self.get_rfactor()
+            xray_target = self.xray_loss().item()
+            adp_target = self.adp_loss().item()
+            b_factors = self.model.b()
+            mean_b = b_factors.mean().item()
+            # Compute <Bi-Bj> - average B-factor difference for bonded atoms
+            bi_bj = self._compute_mean_bi_bj()
+        
+        result = {
+            'weight': adp_weight,
+            'rwork': rwork,
+            'rfree': rfree,
+            'gap': rfree - rwork,
+            'xray_target': xray_target,
+            'adp_target': adp_target,
+            'mean_b': mean_b,
+            'bi_bj': bi_bj,
+            'rwork_start': rwork_start,
+            'rfree_start': rfree_start,
+        }
+        
+        # NOTE: Do NOT call unfreeze_all() here - the calling screening function
+        # manages freeze/unfreeze state and will restore it after all trials
+        
+        return result
+    
+    def _compute_mean_bi_bj(self) -> float:
+        """Compute mean |Bi - Bj| for bonded atom pairs."""
+        b = self.model.b()
+        
+        # Make sure 'all' indices are available
+        if 'all' not in self.restraints.restraints['bond']:
+            self.restraints.cat_dict()
+        
+        bonds = self.restraints.restraints['bond']['all']['indices']
+        if bonds is None or len(bonds) == 0:
+            return 0.0
+        bi = b[bonds[:, 0]]
+        bj = b[bonds[:, 1]]
+        return torch.abs(bi - bj).mean().item()
+    
+    def screen_xyz_weights(
+        self,
+        weights: Optional[List[float]] = None,
+        n_weights: int = 10,
+        min_weight: float = 0.1,
+        max_weight: float = 10.0,
+        max_gap: float = 0.06,
+        max_iter: int = 20,
+    ) -> Tuple[float, List[Dict]]:
+        """
+        Screen XYZ refinement weights (Phenix-style approach).
+        
+        For each weight, runs a complete LBFGS optimization and records metrics.
+        Selects the best weight based on lowest Rfree while respecting gap constraint.
+        
+        Args:
+            weights: Explicit list of weights to try. If None, generates log-spaced weights.
+            n_weights: Number of weights to screen (if weights is None)
+            min_weight: Minimum weight value (if weights is None)
+            max_weight: Maximum weight value (if weights is None)
+            max_gap: Maximum allowed Rfree-Rwork gap
+            max_iter: Maximum LBFGS iterations per weight trial
+            
+        Returns:
+            Tuple of (best_weight, results_list)
+        """
+        from copy import deepcopy
+        if weights is None:
+            weights = np.logspace(np.log10(min_weight), np.log10(max_weight), n_weights).tolist()
+
+        self.scaler.freeze()
+        self.model.freeze_all()
+        self.model.unfreeze('xyz')
+        print(self.model.parameters())
+        
+        # Deep copy initial state - critical for proper restoration
+        model_initial = deepcopy(self.model.xyz.state_dict())
+        
+        results = []
+        
+        # Get starting metrics (before refinement)
+        with torch.no_grad():
+            rwork_start, rfree_start = self.get_rfactor()
+        
+        if self.verbose > 0:
+            print(f"\n{'='*80}")
+            print(f"XYZ Weight Screening (Phenix-style)")
+            print(f"{'='*80}")
+            print(f"{'WEIGHT':>10} {'Rwork':>8} {'Rfree':>8} {'Gap':>8} {'RMSD_b':>8} {'RMSD_a':>8} {'X-ray':>10} {'Restr':>10}")
+            print(f"{'start':>10} {rwork_start*100:>7.2f}% {rfree_start*100:>7.2f}% {(rfree_start-rwork_start)*100:>7.2f}%")
+        
+        for weight in weights:
+            result = self._run_xyz_with_weight(weight, max_iter=max_iter)
+            # Deep copy the state dict with tensor cloning
+            result['state_dict'] = deepcopy(self.model.xyz.state_dict())
+            results.append(result)
+            
+            # Restore initial state for next trial
+            self.model.xyz.load_state_dict(model_initial)
+            
+            if self.verbose > 0:
+                print(f"{weight:>10.3f} {result['rwork']*100:>7.2f}% {result['rfree']*100:>7.2f}% "
+                      f"{result['gap']*100:>7.2f}% {result['rmsd_bonds']:>8.4f} {result['rmsd_angles']:>8.2f} "
+                      f"{result['xray_target']:>10.4f} {result['restraints_target']:>10.4f} {result['rwork_start']*100:>7.2f}% {result['rfree_start']*100:>7.2f}%")
+        
+        # Multi-metric weight selection
+        best = self._select_best_xyz_weight(results, max_gap, rwork_start, rfree_start)
+        
+        best_weight = best['weight']
+
+        self.model.xyz.load_state_dict(best['state_dict'])
+        
+        if self.verbose > 0:
+            print(f"\nBest XYZ weight: {best_weight:.3f}")
+            print(f"  Rwork={best['rwork']*100:.2f}%, Rfree={best['rfree']*100:.2f}%, Gap={best['gap']*100:.2f}%")
+            print(f"  Selection score: {best.get('score', 'N/A')}")
+
         self.model.unfreeze_all()
+        self.scaler.unfreeze()
+        
+        return best_weight, results
+    
+    def _select_best_xyz_weight(self, results: List[Dict], max_gap: float, 
+                                 rwork_start: float, rfree_start: float) -> Dict:
+        """
+        Select best XYZ weight using multi-metric ranking.
+        
+        Scoring criteria (in priority order):
+        1. Rfree must improve from starting value
+        2. Gap should be reasonable (penalize large gaps)
+        3. Lower Rfree is better
+        4. Reasonable geometry (RMSD bonds/angles)
+        
+        Args:
+            results: List of result dicts from weight screening
+            max_gap: Maximum desired gap (soft constraint)
+            rwork_start: Starting Rwork before refinement
+            rfree_start: Starting Rfree before refinement
+            
+        Returns:
+            Best result dict with 'score' field added
+        """
+        # Compute normalized scores for each metric
+        rfree_values = [r['rfree'] for r in results]
+        gap_values = [r['gap'] for r in results]
+        rmsd_bonds = [r['rmsd_bonds'] for r in results]
+        
+        rfree_min, rfree_max = min(rfree_values), max(rfree_values)
+        gap_min, gap_max = min(gap_values), max(gap_values)
+        rmsd_min, rmsd_max = min(rmsd_bonds), max(rmsd_bonds)
+        
+        for r in results:
+            # Normalize each metric to [0, 1] where lower is better
+            if rfree_max > rfree_min:
+                rfree_norm = (r['rfree'] - rfree_min) / (rfree_max - rfree_min)
+            else:
+                rfree_norm = 0.0
+                
+            if gap_max > gap_min:
+                gap_norm = (r['gap'] - gap_min) / (gap_max - gap_min)
+            else:
+                gap_norm = 0.0
+                
+            if rmsd_max > rmsd_min:
+                rmsd_norm = (r['rmsd_bonds'] - rmsd_min) / (rmsd_max - rmsd_min)
+            else:
+                rmsd_norm = 0.0
+            
+            # Penalty if Rfree didn't improve
+            rfree_improvement_penalty = 0.0 if r['rfree'] < rfree_start else 0.5
+            
+            # Penalty for excessive gap (soft constraint)
+            gap_penalty = max(0, (r['gap'] - max_gap) / max_gap) if r['gap'] > max_gap else 0.0
+            
+            # Composite score: weighted sum (lower is better)
+            # Prioritize: Rfree (40%), Gap (35%), Geometry (15%), Improvement (10%)
+            r['score'] = (
+                0.40 * rfree_norm +
+                0.35 * gap_norm +
+                0.15 * rmsd_norm +
+                0.10 * rfree_improvement_penalty +
+                0.50 * gap_penalty  # Strong penalty for excessive gap
+            )
+        
+        # Print ranking if verbose
+        if self.verbose > 1:
+            print("\nWeight ranking (top 5):")
+            sorted_results = sorted(results, key=lambda x: x['score'])
+            for i, r in enumerate(sorted_results[:5]):
+                print(f"  {i+1}. w={r['weight']:.3f}: Rfree={r['rfree']*100:.2f}%, "
+                      f"Gap={r['gap']*100:.2f}%, Score={r['score']:.4f}")
+        
+        # Return best (lowest score)
+        return min(results, key=lambda x: x['score'])
+    
+    def screen_adp_weights(
+        self,
+        weights: Optional[List[float]] = None,
+        n_weights: int = 20,
+        min_weight: float = 1,
+        max_weight: float = 100.0,
+        max_gap: float = 0.06,
+        max_bi_bj: float = 10.0,
+        max_iter: int = 20,
+    ) -> Tuple[float, List[Dict]]:
+        """
+        Screen ADP refinement weights (Phenix-style approach).
+        
+        For each weight, runs a complete LBFGS optimization and records metrics.
+        Selects the best weight based on lowest Rfree while respecting constraints.
+        
+        Args:
+            weights: Explicit list of weights to try. If None, generates log-spaced weights.
+            n_weights: Number of weights to screen (if weights is None)
+            min_weight: Minimum weight value (if weights is None)
+            max_weight: Maximum weight value (if weights is None)
+            max_gap: Maximum allowed Rfree-Rwork gap
+            max_bi_bj: Maximum allowed mean |Bi-Bj| for bonded atoms
+            max_iter: Maximum LBFGS iterations per weight trial
+            
+        Returns:
+            Tuple of (best_weight, results_list)
+        """
+        from copy import deepcopy
+
+        if weights is None:
+            weights = np.logspace(np.log10(min_weight), np.log10(max_weight), n_weights).tolist()
+        self.scaler.freeze()
+        self.model.freeze_all()
+        self.model.unfreeze('b')
+        print(self.model.parameters())
+        # Deep copy initial state - critical for proper restoration
+        b_initial = deepcopy(self.model.b.state_dict())
+        
+        results = []
+        
+        # Get starting metrics
+        with torch.no_grad():
+            rwork_start, rfree_start = self.get_rfactor()
+            mean_b_start = self.model.b().mean().item()
+            bi_bj_start = self._compute_mean_bi_bj()
+        
+        if self.verbose > 0:
+            print(f"\n{'='*80}")
+            print(f"ADP Weight Screening (Phenix-style)")
+            print(f"{'='*80}")
+            print(f"{'WEIGHT':>10} {'Rwork':>8} {'Rfree':>8} {'Gap':>8} {'<Bi-Bj>':>8} {'<B>':>8} {'X-ray':>10} {'ADP':>10}")
+            print(f"{'start':>10} {rwork_start*100:>7.2f}% {rfree_start*100:>7.2f}% {(rfree_start-rwork_start)*100:>7.2f}% "
+                  f"{bi_bj_start:>8.2f} {mean_b_start:>8.1f}")
+        
+        for weight in weights:
+            result = self._run_adp_with_weight(weight, max_iter=max_iter)
+            # Deep copy the state dict with tensor cloning
+            result['state_dict'] = deepcopy(self.model.b.state_dict())
+            results.append(result)
+            
+            # Restore initial state for next trial
+            self.model.b.load_state_dict(b_initial)
+            
+            if self.verbose > 0:
+                print(f"{weight:>10.3f} {result['rwork']*100:>7.2f}% {result['rfree']*100:>7.2f}% "
+                      f"{result['gap']*100:>7.2f}% {result['bi_bj']:>8.2f} {result['mean_b']:>8.1f} "
+                      f"{result['xray_target']:>10.4f} {result['adp_target']:>10.4f} {result['rwork_start']*100:>7.2f}% {result['rfree_start']*100:>7.2f}%")
+        
+        # Multi-metric weight selection
+        best = self._select_best_adp_weight(results, max_gap, max_bi_bj, rwork_start, rfree_start)
+        
+        best_weight = best['weight']
+        
+        if self.verbose > 0:
+            print(f"\nBest ADP weight: {best_weight:.3f}")
+            print(f"  Rwork={best['rwork']*100:.2f}%, Rfree={best['rfree']*100:.2f}%, "
+                  f"Gap={best['gap']*100:.2f}%, <Bi-Bj>={best['bi_bj']:.2f}")
+            print(f"  Selection score: {best.get('score', 'N/A')}")
+        
+        self.model.b.load_state_dict(best['state_dict'])
+        self.model.unfreeze_all()
+        self.scaler.unfreeze()  
+        return best_weight, results
+    
+    def _select_best_adp_weight(self, results: List[Dict], max_gap: float, max_bi_bj: float,
+                                 rwork_start: float, rfree_start: float) -> Dict:
+        """
+        Select best ADP weight using multi-metric ranking.
+        
+        Scoring criteria:
+        1. Rfree must improve from starting value
+        2. Gap should be reasonable (penalize large gaps)
+        3. <Bi-Bj> should be reasonable (penalize too large or too small)
+        4. Lower Rfree is better
+        
+        Args:
+            results: List of result dicts from weight screening
+            max_gap: Maximum desired gap (soft constraint)
+            max_bi_bj: Maximum desired <Bi-Bj> (soft constraint)
+            rwork_start: Starting Rwork before refinement
+            rfree_start: Starting Rfree before refinement
+            
+        Returns:
+            Best result dict with 'score' field added
+        """
+        # Compute normalized scores for each metric
+        rfree_values = [r['rfree'] for r in results]
+        gap_values = [r['gap'] for r in results]
+        bi_bj_values = [r['bi_bj'] for r in results]
+        
+        rfree_min, rfree_max = min(rfree_values), max(rfree_values)
+        gap_min, gap_max = min(gap_values), max(gap_values)
+        bi_bj_min, bi_bj_max = min(bi_bj_values), max(bi_bj_values)
+        
+        # Ideal <Bi-Bj> is around 2-4 Å² (similar to Phenix target)
+        ideal_bi_bj = 3.0
+        
+        for r in results:
+            # Normalize each metric to [0, 1] where lower is better
+            if rfree_max > rfree_min:
+                rfree_norm = (r['rfree'] - rfree_min) / (rfree_max - rfree_min)
+            else:
+                rfree_norm = 0.0
+                
+            if gap_max > gap_min:
+                gap_norm = (r['gap'] - gap_min) / (gap_max - gap_min)
+            else:
+                gap_norm = 0.0
+            
+            # <Bi-Bj> score: penalize deviation from ideal
+            bi_bj_deviation = abs(r['bi_bj'] - ideal_bi_bj) / max(max_bi_bj, 1.0)
+            bi_bj_norm = min(bi_bj_deviation, 1.0)
+            
+            # Penalty if Rfree didn't improve
+            rfree_improvement_penalty = 0.0 if r['rfree'] < rfree_start else 0.5
+            
+            # Penalty for excessive gap
+            gap_penalty = max(0, (r['gap'] - max_gap) / max_gap) if r['gap'] > max_gap else 0.0
+            
+            # Penalty for excessive <Bi-Bj>
+            bi_bj_penalty = max(0, (r['bi_bj'] - max_bi_bj) / max_bi_bj) if r['bi_bj'] > max_bi_bj else 0.0
+            
+            # Composite score: weighted sum (lower is better)
+            # Prioritize: Rfree (30%), Gap (30%), Bi-Bj (20%), Improvement (10%), Penalties (10%)
+            r['score'] = (
+                0.30 * rfree_norm +
+                0.30 * gap_norm +
+                0.20 * bi_bj_norm +
+                0.10 * rfree_improvement_penalty +
+                0.50 * gap_penalty +
+                0.30 * bi_bj_penalty
+            )
+        
+        # Print ranking if verbose
+        if self.verbose > 1:
+            print("\nWeight ranking (top 5):")
+            sorted_results = sorted(results, key=lambda x: x['score'])
+            for i, r in enumerate(sorted_results[:5]):
+                print(f"  {i+1}. w={r['weight']:.3f}: Rfree={r['rfree']*100:.2f}%, "
+                      f"Gap={r['gap']*100:.2f}%, <Bi-Bj>={r['bi_bj']:.2f}, Score={r['score']:.4f}")
+        
+        # Return best (lowest score)
+        return min(results, key=lambda x: x['score'])
     
     def regularize_adp(self,lr=0.1):
         """
@@ -245,7 +683,6 @@ class LBFGSRefinement(Refinement):
                         print(f"Target R-factor gap of {target_rfactor_gap} reached at step {step+1}. Stopping regularization.")
                     break
 
-
     def refine_everything_adamW(self, lr=1e-3, steps=100):
         """
         Refine both coordinates (XYZ) and B-factors (ADP) using Adam optimizer as an alternative.
@@ -303,13 +740,15 @@ class LBFGSRefinement(Refinement):
         optimizer.step(closure)
         self.model.unfreeze_all()
 
-
     def refine(self, macro_cycles=5):
         """
         Run full LBFGS refinement cycle (ADP + XYZ).
         
         Args:
             macro_cycles (int): Number of refinement cycles to perform
+            
+        Returns:
+            History dictionary with all metrics per cycle (hierarchical structure)
         """
         
         self.scaler.freeze()
@@ -323,93 +762,243 @@ class LBFGSRefinement(Refinement):
 
         self.history[master_key] = []
         for cycle in range(macro_cycles):
-            cycle_dict = {}
-            cycle_dict['cycle'] = cycle + 1
+            # Hierarchical cycle dict structure
+            cycle_dict = {
+                'cycle': cycle + 1,
+                'before_scaling': {},
+                'after_scaling': {},
+                'xyz': {
+                    'before': {},
+                    'after': {},
+                    'weight': None
+                },
+                'adp': {
+                    'before': {},
+                    'after': {},
+                    'weight': None
+                }
+            }
             self.update_effective_weights(cycle=cycle)
+            
             if self.verbose > 0:
                 print(f"\n{'='*60}")
                 print(f"LBFGS Refinement - Cycle {cycle+1}/{macro_cycles}")
                 print(f"{'='*60}")
             
+            # Collect metrics before scaling
             with torch.no_grad():
-                rwork, rfree = self.get_rfactor()
-                cycle_dict['rwork_before_not_scaled'] = rwork
-                cycle_dict['rfree_before_not_scaled'] = rfree
+                before_scaling = self.collect_metrics()
+                cycle_dict['before_scaling'] = before_scaling
                 
             self.get_scales()
             
+            # Collect metrics after scaling
             with torch.no_grad():
-                rwork, rfree = self.get_rfactor()
-                cycle_dict['rwork_before_scaled'] = rwork
-                cycle_dict['rfree_before_scaled'] = rfree
+                after_scaling = self.collect_metrics()
+                cycle_dict['after_scaling'] = after_scaling
                 if self.verbose > 0:
-                    print(f"After scaling: Rwork={rwork:.4f}, Rfree={rfree:.4f}")
+                    print(f"After scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}")
 
+            # Store metrics before XYZ
+            with torch.no_grad():
+                before_xyz = self.collect_metrics()
+                cycle_dict['xyz']['before'] = before_xyz
+                cycle_dict['xyz']['weight'] = self.effective_weights.get('restraints', 0.0)
+            
             # XYZ refinement with cycle-aware weighting
             self.refine_xyz()
-            # self.regularize_xyz(lr=0.2)
             
+            # Collect metrics after XYZ
             with torch.no_grad():
-                cycle_dict['rwork_after_xyz_scaled'], cycle_dict['rfree_after_xyz_scaled'] = self.get_rfactor()
-                cycle_dict['restraints_weight'] = self.effective_weights.get('restraints', 0.0)
-                cycle_dict['nll_work_after_xyz'], cycle_dict['nll_free_after_xyz'] = self.nll_xray()
-                cycle_dict['nll_bonds'] = self.restraints.nll_bonds().mean().item()
-                cycle_dict['nll_angles'] = self.restraints.nll_angles().mean().item()
-                cycle_dict['nll_torsion'] = self.restraints.nll_torsions().mean().item()
-                cycle_dict['nll_planes'] = self.restraints.nll_planes().mean().item()
-                cycle_dict['nll_vdw'] = self.restraints.nll_vdw().mean().item()
+                after_xyz = self.collect_metrics()
+                cycle_dict['xyz']['after'] = after_xyz
                 if self.verbose > 0:
-                    rwork = cycle_dict['rwork_after_xyz_scaled']
-                    rfree = cycle_dict['rfree_after_xyz_scaled']
-                    rw = cycle_dict['restraints_weight']
-                    if isinstance(rw, torch.Tensor): rw = rw.item()
-                    print(f"After XYZ: Rwork={rwork:.4f}, Rfree={rfree:.4f}, "
-                          f"restraint_weight={rw:.3f}")
-            if cycle_dict['rwork_after_xyz_scaled'] - cycle_dict['rfree_after_xyz_scaled'] > 0.05:
-                if self.verbose > 0:
-                    print("Large R-factor gap detected after XYZ refinement. Applying additional regularization.")
-                self.regularize_xyz(lr=0.6)
-            with torch.no_grad():
-                rwork, rfree = self.get_rfactor()
-                cycle_dict['rwork_after_xyz_reg_scaled'] = rwork
-                cycle_dict['rfree_after_xyz_reg_scaled'] = rfree
-                if self.verbose > 0:
-                    print(f"After XYZ Regularization: Rwork={rwork:.4f}, Rfree={rfree:.4f}")
+                    rw = self.effective_weights.get('restraints', 0.0)
+                    self.log_xyz_comparison(before_xyz, after_xyz, weight=rw)
 
+            # Store metrics before ADP
+            with torch.no_grad():
+                before_adp = self.collect_metrics()
+                cycle_dict['adp']['before'] = before_adp
+                cycle_dict['adp']['weight'] = self.effective_weights.get('adp', 0.0)
+            
             # B-factor refinement with cycle-aware weighting
             self.refine_adp()
-            # self.regularize_adp(lr=0.2)
             
+            # Collect metrics after ADP (final for this cycle)
             with torch.no_grad():
-                cycle_dict['rwork_after_adp_scaled'], cycle_dict['rfree_after_adp_scaled'] = self.get_rfactor()
-                cycle_dict['adp_weight'] = self.effective_weights.get('adp', 0.0)
-                cycle_dict['nll_work_after_adp'], cycle_dict['nll_free_after_adp'] = self.nll_xray()
+                after_adp = self.collect_metrics()
+                cycle_dict['adp']['after'] = after_adp
                 if self.verbose > 0:
-                    rwork = cycle_dict['rwork_after_adp_scaled']
-                    rfree = cycle_dict['rfree_after_adp_scaled']
-                    aw = cycle_dict['adp_weight']
-                    if isinstance(aw, torch.Tensor): aw = aw.item()
-                    print(f"After ADP: Rwork={rwork:.4f}, Rfree={rfree:.4f}, "
-                          f"adp_weight={aw:.3f}")
-                    print(f"Effective weights: {self.effective_weights}")
-
-            if cycle_dict['rwork_after_adp_scaled'] - cycle_dict['rfree_after_adp_scaled'] > 0.05:
-                if self.verbose > 0:
-                    print("Large R-factor gap detected after ADP refinement. Applying additional regularization.")
-                self.regularize_adp(lr=0.6)
-
-            with torch.no_grad():
-                rwork, rfree = self.get_rfactor()
-                cycle_dict['rwork_after_adp_reg_scaled'] = rwork
-                cycle_dict['rfree_after_adp_reg_scaled'] = rfree
-                if self.verbose > 0:
-                    print(f"After ADP Regularization: Rwork={rwork:.4f}, Rfree={rfree:.4f}")
-
-            # Convert tensors to scalars
-            for key in cycle_dict:
-                if isinstance(cycle_dict[key], torch.Tensor):
-                    cycle_dict[key] = cycle_dict[key].mean().item()
+                    aw = self.effective_weights.get('adp', 0.0)
+                    self.log_adp_comparison(before_adp, after_adp, weight=aw)
 
             self.history[master_key].append(cycle_dict)
 
+        return self.history
+
+    def refine_screened(
+        self,
+        macro_cycles: int = 5,
+        xyz_weights: Optional[List[float]] = None,
+        adp_weights: Optional[List[float]] = None,
+        n_xyz_weights: int = 20,
+        n_adp_weights: int = 20,
+        xyz_min_weight: float = 1,
+        xyz_max_weight: float = 100.0,
+        adp_min_weight: float = 1,
+        adp_max_weight: float = 100.0,
+        max_gap: float = 0.06,
+        max_bi_bj: float = 10.0,
+        max_iter: int = 20,
+    ):
+        """
+        Run full LBFGS refinement with Phenix-style weight screening.
+        
+        This approach screens multiple weights for each refinement step,
+        selects the best weight based on Rfree (respecting gap constraints),
+        and applies the refinement with that weight.
+        
+        This is fundamentally different from GradNorm-based adaptive weighting:
+        - GradNorm: Adjusts weights dynamically during optimization
+        - Screening: Runs multiple complete optimizations with fixed weights
+        
+        Args:
+            macro_cycles: Number of refinement macro cycles
+            xyz_weights: Explicit XYZ weight list (or auto-generate)
+            adp_weights: Explicit ADP weight list (or auto-generate)
+            n_xyz_weights: Number of XYZ weights to screen
+            n_adp_weights: Number of ADP weights to screen
+            xyz_min_weight: Minimum XYZ weight
+            xyz_max_weight: Maximum XYZ weight
+            adp_min_weight: Minimum ADP weight
+            adp_max_weight: Maximum ADP weight
+            max_gap: Maximum allowed Rfree-Rwork gap
+            max_bi_bj: Maximum allowed mean |Bi-Bj|
+            max_iter: Maximum LBFGS iterations per weight trial
+            
+        Returns:
+            History dictionary with refinement metrics (hierarchical structure)
+        """
+        self.scaler.freeze()
+        
+        # Find unique history key
+        i = 0
+        while True:
+            i += 1
+            master_key = f'refinement_screened_{i}'
+            if master_key not in self.history:
+                break
+        
+        self.history[master_key] = []
+        
+        for cycle in range(macro_cycles):
+            # Hierarchical cycle dict structure
+            cycle_dict = {
+                'cycle': cycle + 1,
+                'before_scaling': {},
+                'after_scaling': {},
+                'xyz': {
+                    'before': {},
+                    'after': {},
+                    'weight': None,
+                    'weight_screens': None
+                },
+                'adp': {
+                    'before': {},
+                    'after': {},
+                    'weight': None,
+                    'weight_screens': None
+                }
+            }
+            
+            if self.verbose > 0:
+                print(f"\n{'='*80}")
+                print(f"LBFGS Refinement with Weight Screening - Cycle {cycle+1}/{macro_cycles}")
+                print(f"{'='*80}")
+            
+            # Collect metrics before scaling
+            with torch.no_grad():
+                before_scaling = self.collect_metrics()
+                cycle_dict['before_scaling'] = before_scaling
+            
+            # Scaling
+            self.get_scales()
+            
+            # Collect metrics after scaling
+            with torch.no_grad():
+                after_scaling = self.collect_metrics()
+                cycle_dict['after_scaling'] = after_scaling
+                if self.verbose > 0:
+                    print(f"\nAfter scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}")
+            
+            # Store metrics before XYZ
+            with torch.no_grad():
+                before_xyz = self.collect_metrics()
+                cycle_dict['xyz']['before'] = before_xyz
+            
+            # XYZ refinement with weight screening
+            best_xyz_weight, xyz_screens = self.screen_xyz_weights(
+                weights=xyz_weights,
+                n_weights=n_xyz_weights,
+                min_weight=xyz_min_weight,
+                max_weight=xyz_max_weight,
+                max_gap=max_gap,
+                max_iter=max_iter,
+            )
+            cycle_dict['xyz']['weight_screens'] = xyz_screens
+            cycle_dict['xyz']['weight'] = best_xyz_weight
+
+            xyz_min_weight = best_xyz_weight / 10
+            xyz_max_weight = best_xyz_weight * 10
+            
+            # Collect metrics after XYZ
+            with torch.no_grad():
+                after_xyz = self.collect_metrics()
+                cycle_dict['xyz']['after'] = after_xyz
+                if self.verbose > 0:
+                    self.log_xyz_comparison(before_xyz, after_xyz, weight=best_xyz_weight)
+            
+            # Store metrics before ADP
+            with torch.no_grad():
+                before_adp = self.collect_metrics()
+                cycle_dict['adp']['before'] = before_adp
+            
+            # ADP refinement with weight screening
+            best_adp_weight, adp_screens = self.screen_adp_weights(
+                weights=adp_weights,
+                n_weights=n_adp_weights,
+                min_weight=adp_min_weight,
+                max_weight=adp_max_weight,
+                max_gap=max_gap,
+                max_bi_bj=max_bi_bj,
+                max_iter=max_iter,
+            )
+            cycle_dict['adp']['weight_screens'] = adp_screens
+            cycle_dict['adp']['weight'] = best_adp_weight
+
+            adp_min_weight = best_adp_weight / 10
+            adp_max_weight = best_adp_weight * 10
+            
+            # Collect final metrics after ADP
+            with torch.no_grad():
+                after_adp = self.collect_metrics()
+                cycle_dict['adp']['after'] = after_adp
+                if self.verbose > 0:
+                    self.log_adp_comparison(before_adp, after_adp, weight=best_adp_weight)
+            
+            # Summary
+            if self.verbose > 0:
+                print(f"\n--- Cycle {cycle+1} Summary ---")
+                print(f"  Best XYZ weight: {best_xyz_weight:.3f}")
+                print(f"  Best ADP weight: {best_adp_weight:.3f}")
+                print(f"  Final: Rwork={after_adp['rwork']:.4f}, Rfree={after_adp['rfree']:.4f}, "
+                      f"Gap={after_adp['rfree_gap']:.4f}")
+                print(f"  Bond RMSD: {after_adp.get('geom_bond_rmsd', 0):.4f} Å, "
+                      f"Angle RMSD: {after_adp.get('geom_angle_rmsd', 0):.2f}°")
+                print(f"  <B>: {after_adp.get('adp_mean_b', 0):.1f} Å², "
+                      f"<Bi-Bj>: {after_adp.get('adp_mean_bi_bj', 0):.2f} Å²")
+            
+            self.history[master_key].append(cycle_dict)
+        
         return self.history

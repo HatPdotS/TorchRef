@@ -21,37 +21,89 @@ from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import ModuleReference
 
 class Scaler(DebugMixin, nn.Module):
-    def __init__(self, model, data: ReflectionData, nbins: int = 20, verbose: int = 1,device=torch.device('cpu')):
+    """
+    Scaler class to apply scaling and corrections to calculated structure factors.
+    
+    Supports two initialization patterns:
+    
+    1. Empty initialization (for state_dict loading):
+        >>> scaler = Scaler()  # Creates empty shell
+        >>> scaler.load_state_dict(torch.load('scaler.pt'))
+    
+    2. Full initialization with model and data:
+        >>> scaler = Scaler(model, reflection_data, nbins=20)
+        >>> scaler.initialize()
+    """
+    
+    def __init__(self, model=None, data: ReflectionData = None, nbins: int = 20, verbose: int = 1, device=torch.device('cpu')):
         """
-        Scaler class to apply scaling and corrections to calculated structure factors.
-        self.device = fcalc.device
+        Initialize Scaler.
+        
+        If model and data are provided, fully initializes the scaler.
+        If not provided (empty init), creates a shell ready for load_state_dict().
+        
         Args:
-            fcalc (torch.Tensor): Calculated structure factors.
-            fobs (torch.Tensor): Observed structure factors.
-            hkl (torch.Tensor): Miller indices corresponding to the structure factors.
+            model: Model object for structure factor calculation (optional for empty init)
+            data: ReflectionData object with observed data (optional for empty init)
+            nbins: Number of resolution bins (default: 20)
+            verbose: Verbosity level (default: 1)
+            device: Computation device (default: cpu)
         """
         super(Scaler, self).__init__()
         self.device = device
+        self.verbose = verbose
+        self.nbins = nbins
+        self.frozen = False
+        
+        # Empty initialization - just set up configuration
+        if model is None or data is None:
+            self._model = None
+            self._data = None
+            self.cell = None
+            self.register_buffer('s', None)
+            self.register_buffer('bins', None)
+            return
+        
+        # Full initialization with model and data
         self.to(self.device)
         # Wrap model in ModuleReference to prevent registration as submodule
         self._model = ModuleReference(model)
         self._data = ModuleReference(data)
 
-        self.nbins = nbins
-        self.verbose = verbose
         self.cell = data.cell
         # Don't store hkl directly - always access it from data to avoid device mismatch
-        # self.hkl will be a property that accesses data.hkl
-        self.register_buffer('s',get_scattering_vectors(data.hkl, self.cell))
+        self.register_buffer('s', get_scattering_vectors(data.hkl, self.cell))
         bins, self.nbins = self._data.get_bins(self.nbins)
         self.register_buffer('bins', bins)
         if self.verbose > 0:
             print(f"Initialized Scaler with {self.nbins} bins.")
-        self.frozen = False
+    
+    def set_model_and_data(self, model, data: ReflectionData):
+        """
+        Set model and data references after empty initialization.
+        
+        This is useful when loading from state_dict and then needing
+        to reconnect to model/data objects.
+        
+        Args:
+            model: Model object for structure factor calculation
+            data: ReflectionData object with observed data
+        """
+        self._model = ModuleReference(model)
+        self._data = ModuleReference(data)
+        # Use data.cell for calculations
+        if data.cell is not None:
+            self.cell = data.cell
+        if self.s is None and data.hkl is not None and data.cell is not None:
+            self.register_buffer('s', get_scattering_vectors(data.hkl, data.cell))
+        if self.bins is None and data.hkl is not None:
+            bins, self.nbins = self._data.get_bins(self.nbins)
+            self.register_buffer('bins', bins)
 
     def initialize(self):
         self.calc_initial_scale()
         self.setup_solvent()
+        # self.setup_binwise_solvent_scale()
         self.setup_anisotropy_correction()
 
     @property
@@ -142,6 +194,30 @@ class Scaler(DebugMixin, nn.Module):
     def setup_solvent(self):
         self.solvent = SolventModel(self._model, device=self.device, radius=1.1, k_solvent=0.35, b_solvent=46.0, verbose=self.verbose)
         self.solvent.update_solvent()
+        
+    def setup_binwise_solvent_scale(self):
+        """
+        Setup bin-wise solvent scaling (Phenix-style kmask per bin).
+        
+        This allows finer control over solvent contribution per resolution bin,
+        which is more flexible than a single global B_sol parameter.
+        """
+        # Initialize k_mask per bin - starts at 0.35 for low res, decreases to 0 for high res
+        # Phenix typically shows kmask ranging from ~0.35 at low res to 0 at high res
+        # Initialize with a smooth decrease
+        mean_res = self._data.mean_res_per_bin()
+        
+        # Initialize with exponential decay: k_mask = k_sol * exp(-B * s^2)
+        # Use B=46 as starting point (Phenix-like)
+        s_per_bin = 1.0 / (2.0 * mean_res + 1e-6)  # sin(theta)/lambda
+        initial_kmask = 0.35 * torch.exp(-46.0 * s_per_bin**2)
+        
+        # Set high-res bins to 0 (where kmask < 0.05)
+        initial_kmask = torch.where(initial_kmask < 0.05, 
+                                    torch.zeros_like(initial_kmask), 
+                                    initial_kmask)
+        
+        self.log_kmask = nn.Parameter(torch.log(initial_kmask.clamp(min=1e-6) + 1e-6).to(self.device))
 
     def fit_all_scales(self):
         hkl, fobs, sigma, rfree = self._data()
@@ -244,28 +320,97 @@ class Scaler(DebugMixin, nn.Module):
         mean_calc_intensity = mean_calc_intensity / (counts + 1e-6)
         return mean_obs_intensity, mean_calc_intensity, self._data.mean_res_per_bin()
 
-    def screen_solvent_params(self,steps=15):
+    def screen_solvent_params(self, steps=15, use_low_res_weighting=True, low_res_cutoff=5.0,
+                               fit_on_low_res_only=True, low_res_limit=3.5):
+        """
+        Screen solvent parameters (k_sol, B_sol) using grid search.
+        
+        The bulk solvent contributes primarily at low resolution. Fitting on low-resolution
+        reflections only (fit_on_low_res_only=True) prevents high-resolution reflections
+        from dominating the optimization and pushing B_sol too low.
+        
+        Args:
+            steps: Number of grid points for each parameter
+            use_low_res_weighting: If True, weight low-resolution reflections more heavily
+                                   since solvent primarily contributes at low resolution
+            low_res_cutoff: Resolution cutoff for weighting (Angstroms) - only used if use_low_res_weighting=True
+            fit_on_low_res_only: If True, fit using only low-resolution reflections 
+            low_res_limit: Resolution limit for low-res only fitting (Angstroms)
+        """
         hkl, fobs, sigma, rfree = self._data()
         fobs = fobs.to(torch.float32).detach()
         fcalc = self._model(hkl).detach()
+        
+        # Calculate resolution for weighting/filtering
+        s = torch.norm(get_scattering_vectors(hkl, self.cell), dim=1)
+        resolution = 1.0 / (s + 1e-6)  # in Angstroms
+        
+        # Create mask for low-resolution reflections
+        if fit_on_low_res_only:
+            low_res_mask = (resolution > low_res_limit) & rfree
+            n_low_res = low_res_mask.sum().item()
+            if self.verbose > 1:
+                print(f"Solvent screening using {n_low_res} low-res reflections (>{low_res_limit}Å)")
+            
+            if n_low_res < 100:
+                print(f"Warning: Only {n_low_res} low-res reflections, using all reflections instead")
+                fit_on_low_res_only = False
+        
+        if not fit_on_low_res_only:
+            low_res_mask = rfree  # Use all work reflections
+        
+        # Create weights for low-resolution preference (within the selected reflections)
+        if use_low_res_weighting:
+            # Smooth weighting: higher weight for low resolution
+            weights = torch.exp(-s * low_res_cutoff).detach()
+            weights = weights / weights[low_res_mask].sum()  # Normalize over selected reflections
+            if self.verbose > 1:
+                low_res_frac = (resolution > low_res_cutoff).float().mean()
+                print(f"Low-resolution weighting: {low_res_frac*100:.1f}% reflections above {low_res_cutoff}Å")
+        else:
+            weights = torch.ones_like(fobs)
+            weights = weights / weights[low_res_mask].sum()
+        
         best_log_k_solvent = self.solvent.log_k_solvent.clone()
         best_b_solvent = self.solvent.b_solvent.clone()
         best_loss = float('inf')
-        ksol_start, ksol_end = torch.log(torch.tensor(0.1, device=self.device)), torch.log(torch.tensor(1.4, device=self.device))
+        
+        # Grid search ranges - k_sol from 0.1 to 0.6, B_sol from 30 to 100
+        # Phenix typically finds k_sol ~0.35, B_sol ~46
+        ksol_start = torch.log(torch.tensor(0.1, device=self.device))
+        ksol_end = torch.log(torch.tensor(0.6, device=self.device))
+        
         for log_k_solvent in torch.linspace(ksol_start, ksol_end, steps=steps, device=self.device):
-            for b_solvent in torch.linspace(20.0, 120.0, steps=steps, device=self.device):
+            for b_solvent in torch.linspace(30.0, 100.0, steps=steps, device=self.device):
                 self.solvent.log_k_solvent.data = log_k_solvent.to(dtype=self.solvent.log_k_solvent.dtype)
                 self.solvent.b_solvent.data = b_solvent.to(dtype=self.solvent.b_solvent.dtype)
+                
                 scaled_fcalc = self.forward(fcalc)
-                nll_loss = nll_xray(fobs[rfree], scaled_fcalc[rfree], sigma[rfree])
+                
+                # Compute loss only on selected reflections
+                diff = fobs[low_res_mask] - torch.abs(scaled_fcalc[low_res_mask])
+                eps = torch.median(sigma[low_res_mask]) * 1e-1
+                sigma_safe = torch.clamp(sigma[low_res_mask], min=eps)
+                nll_per_refl = 0.5 * (diff**2) / (sigma_safe**2)
+                
+                if use_low_res_weighting:
+                    # Weighted mean: emphasize lower resolution within the selection
+                    nll_loss = (nll_per_refl * weights[low_res_mask]).sum()
+                else:
+                    nll_loss = nll_per_refl.mean()
+                
                 if nll_loss.item() < best_loss:
                     best_loss = nll_loss.item()
                     best_log_k_solvent = log_k_solvent.clone()
                     best_b_solvent = b_solvent.clone()
+        
         self.solvent.log_k_solvent.data = best_log_k_solvent.to(dtype=self.solvent.log_k_solvent.dtype)
         self.solvent.b_solvent.data = best_b_solvent.to(dtype=self.solvent.b_solvent.dtype)
+        
         if self.verbose > 0:
-            print(f"Optimal solvent parameters found: log_k_solvent={best_log_k_solvent.item()}, b_solvent={best_b_solvent.item()}, NLL Loss={best_loss:.4f}")
+            k_sol = torch.exp(best_log_k_solvent).item()
+            print(f"Optimal solvent parameters found: k_sol={k_sol:.4f}, B_sol={best_b_solvent.item():.1f}, "
+                  f"NLL Loss={best_loss:.4f}")
 
     def refine_lbfgs(self,
                      nsteps: int = 3,
@@ -299,8 +444,6 @@ class Scaler(DebugMixin, nn.Module):
         was_frozen = self.frozen
         if was_frozen:
             self.unfreeze()
-
-        self.screen_solvent_params(steps=14)
         
         # Create LBFGS optimizer for scaler parameters only
         optimizer = torch.optim.LBFGS(
@@ -313,7 +456,7 @@ class Scaler(DebugMixin, nn.Module):
         def closure():
             optimizer.zero_grad()
             fcalc_scaled = self.forward(fcalc)
-            loss = nll_xray(fobs[rfree], fcalc_scaled[rfree], sigma[rfree])
+            loss = nll_xray(fobs, fcalc_scaled, sigma)
             
             # Handle non-finite loss gracefully for LBFGS line search
             if not torch.all(torch.isfinite(loss)):
@@ -383,6 +526,7 @@ class Scaler(DebugMixin, nn.Module):
                 for name, param in self.named_parameters():
                     if param.requires_grad:
                         print(f"  {name}: {param.data}")
+                
         
         return metrics
 
@@ -421,8 +565,23 @@ class Scaler(DebugMixin, nn.Module):
             aniso_correction = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
 
         if hasattr(self, 'solvent'):
-            f_sol = self.solvent(self.hkl)
-            f_sol = f_sol[mask]
+            # Check if using bin-wise kmask (Phenix-style) or global k_sol/B_sol
+            if hasattr(self, 'log_kmask'):
+                # Bin-wise scaling: get raw F_mask and apply per-bin kmask
+                f_mask = self.solvent.get_rec_solvent(self.hkl)
+                f_mask = f_mask[mask]
+                
+                # Apply bin-wise kmask (like Phenix kmask)
+                kmask = torch.exp(self.log_kmask)
+                # Clamp kmask to non-negative values
+                kmask = torch.clamp(kmask, min=0.0, max=1.0)
+                # Expand to per-reflection using bin indices
+                kmask_per_refl = kmask[self.bins[mask]]
+                f_sol = kmask_per_refl * f_mask
+            else:
+                # Original: global k_sol and B_sol applied in solvent model
+                f_sol = self.solvent(self.hkl)
+                f_sol = f_sol[mask]
         else:
             f_sol = torch.tensor(0.0, device=self.device, dtype=fcalc.dtype)
 
