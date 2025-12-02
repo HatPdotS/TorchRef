@@ -9,30 +9,39 @@ import pandas as pd
 class ModuleReference:
     """
     A wrapper class to hold references to PyTorch modules without registering them.
-    
+
     When you assign a nn.Module to an attribute of another nn.Module, PyTorch
     automatically registers it as a submodule, which adds its parameters to the
     parent's parameter tree. This wrapper prevents that automatic registration.
-    
+
     This is useful when you want to:
+
     - Hold references to modules without including their parameters
     - Avoid circular dependencies in the module tree
     - Reference external modules that should be managed separately
-    
-    Example:
-        >>> model = MyModel()
-        >>> scaler = Scaler()
-        >>> scaler._model = ModuleReference(model)  # Won't register as submodule
-        >>> # Access the module via .module property
-        >>> output = scaler._model.module(input_data)
+
+    Attributes
+    ----------
+    _wrapped_module : torch.nn.Module
+        The wrapped PyTorch module.
+
+    Examples
+    --------
+    >>> model = MyModel()
+    >>> scaler = Scaler()
+    >>> scaler._model = ModuleReference(model)  # Won't register as submodule
+    >>> # Access the module via .module property
+    >>> output = scaler._model.module(input_data)
     """
     
     def __init__(self, module):
         """
         Wrap a module to prevent automatic registration.
-        
-        Args:
-            module: The PyTorch module to wrap
+
+        Parameters
+        ----------
+        module : torch.nn.Module
+            The PyTorch module to wrap.
         """
         # Store in __dict__ directly to avoid any attribute interception
         object.__setattr__(self, '_wrapped_module', module)
@@ -55,20 +64,28 @@ class ModuleReference:
 
 
 class CIFReader:
-
     """
     A dictionary-like reader for CIF/mmCIF files.
-    
+
     Loops are stored as pandas DataFrames.
     Other data is stored in a hierarchical dictionary structure.
+
+    Attributes
+    ----------
+    data : dict
+        Dictionary storing parsed CIF data.
+    filepath : pathlib.Path or None
+        Path to the loaded CIF file.
     """
     
     def __init__(self, filepath: Optional[str] = None):
         """
         Initialize CIF reader.
-        
-        Args:
-            filepath: Optional path to CIF file to load immediately
+
+        Parameters
+        ----------
+        filepath : str, optional
+            Path to CIF file to load immediately.
         """
         self.data = {}
         self.filepath = None
@@ -79,9 +96,11 @@ class CIFReader:
     def load(self, filepath: str):
         """
         Load and parse a CIF file.
-        
-        Args:
-            filepath: Path to CIF file
+
+        Parameters
+        ----------
+        filepath : str
+            Path to CIF file.
         """
         self.filepath = Path(filepath)
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
@@ -92,9 +111,11 @@ class CIFReader:
     def _parse(self, content: str):
         """
         Parse CIF file content.
-        
-        Args:
-            content: String content of CIF file
+
+        Parameters
+        ----------
+        content : str
+            String content of CIF file.
         """
         lines = content.split('\n')
         i = 0
@@ -127,13 +148,18 @@ class CIFReader:
     def _parse_loop(self, lines: List[str], start_idx: int) -> int:
         """
         Parse a loop structure into a pandas DataFrame.
-        
-        Args:
-            lines: All lines of the file
-            start_idx: Starting line index (after 'loop_')
-        
-        Returns:
-            Index of the next line to process
+
+        Parameters
+        ----------
+        lines : list of str
+            All lines of the file.
+        start_idx : int
+            Starting line index (after 'loop_').
+
+        Returns
+        -------
+        int
+            Index of the next line to process.
         """
         # Collect column names
         columns = []
@@ -223,13 +249,18 @@ class CIFReader:
     def _parse_keyvalue(self, lines: List[str], start_idx: int) -> int:
         """
         Parse a single key-value pair.
-        
-        Args:
-            lines: All lines of the file
-            start_idx: Starting line index
-        
-        Returns:
-            Index of the next line to process
+
+        Parameters
+        ----------
+        lines : list of str
+            All lines of the file.
+        start_idx : int
+            Starting line index.
+
+        Returns
+        -------
+        int
+            Index of the next line to process.
         """
         line = lines[start_idx].strip()
         
@@ -266,12 +297,16 @@ class CIFReader:
     def _tokenize_line(self, line: str) -> List[str]:
         """
         Tokenize a data line, handling quoted strings.
-        
-        Args:
-            line: Line to tokenize
-        
-        Returns:
-            List of tokens
+
+        Parameters
+        ----------
+        line : str
+            Line to tokenize.
+
+        Returns
+        -------
+        list of str
+            List of tokens.
         """
         tokens = []
         current_token = []
@@ -317,12 +352,16 @@ class CIFReader:
     def _extract_category(self, key: str) -> str:
         """
         Extract category from a CIF key (e.g., '_atom_site.id' -> 'atom_site').
-        
-        Args:
-            key: CIF key
-        
-        Returns:
-            Category name
+
+        Parameters
+        ----------
+        key : str
+            CIF key.
+
+        Returns
+        -------
+        str
+            Category name.
         """
         if key.startswith('_'):
             key = key[1:]
@@ -335,10 +374,13 @@ class CIFReader:
     def _store_keyvalue(self, key: str, value: str):
         """
         Store a key-value pair in the hierarchical dictionary.
-        
-        Args:
-            key: CIF key (e.g., '_entry.id')
-            value: Value to store
+
+        Parameters
+        ----------
+        key : str
+            CIF key (e.g., '_entry.id').
+        value : str
+            Value to store.
         """
         # Extract category and attribute
         if key.startswith('_'):
@@ -358,9 +400,11 @@ class CIFReader:
     def write(self, filepath: str):
         """
         Write the CIF data back to a file.
-        
-        Args:
-            filepath: Output file path
+
+        Parameters
+        ----------
+        filepath : str
+            Output file path.
         """
         with open(filepath, 'w') as f:
             f.write('data_structure\n')
@@ -467,11 +511,20 @@ class CIFReader:
 def save_map(array, cell, filename):
     """
     Save a 3D map to a CCP4 file.
-    Parameters:
-    - array: 3D numpy array or torch tensor representing the map.
-    - cell: Unit cell parameters as a list, tuple, numpy array, or gemmi
-      UnitCell object.
-    - filename: Output CCP4 file name.
+
+    Parameters
+    ----------
+    array : numpy.ndarray or torch.Tensor
+        3D array representing the map.
+    cell : list, tuple, numpy.ndarray, torch.Tensor, or gemmi.UnitCell
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    filename : str
+        Output CCP4 file name.
+
+    Returns
+    -------
+    bool
+        True if save was successful.
     """
 
     if isinstance(array, torch.Tensor):
@@ -577,10 +630,23 @@ class TensorMasks(TensorDict):
         self._cache = TensorDict()
         self.updated = True
 
-    def __setitem__(self, key: str, tensor: torch.Tensor):
-        if tensor.dtype != torch.bool:
+    def __setitem__(self, key: str, tensor: Optional[torch.Tensor] = None):
+
+        if tensor is not None and tensor.dtype != torch.bool:
             raise ValueError("All masks must be of boolean dtype.")
         super().__setitem__(key, tensor)
+        self.updated = True
+    
+    def load_state_dict(self, state_dict, prefix=''):
+        """
+        Create masks from a state_dict, ensuring boolean dtype.
+        """
+        for key in state_dict.keys():
+            if key.startswith(prefix + "_buf_"):
+                buffer_name = key[len(prefix):]  # e.g. "_buf_flagged_initial"
+                original_key = buffer_name[5:]   # remove "_buf_"
+                self[original_key] = state_dict[key].to(torch.bool)
+
         self.updated = True
     
     def forward(self):
@@ -597,9 +663,13 @@ class TensorMasks(TensorDict):
     def get_combined_mask(self) -> torch.Tensor:
         """
         Combine all masks using logical AND.
+
         Caches the result for efficiency.
-        Returns:
-            torch.Tensor: Combined boolean mask.
+
+        Returns
+        -------
+        torch.Tensor
+            Combined boolean mask.
         """
 
         combined_mask = torch.ones_like(self[self._keys[0]], dtype=torch.bool)
@@ -616,25 +686,33 @@ class TensorMasks(TensorDict):
 def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
     """
     Sanitize a PDB DataFrame to ensure unique atom identifiers.
-    
+
     This function fixes common issues in PDB/CIF files:
+
     1. HETATM records (especially waters) with duplicate resseq values (e.g., all 0)
     2. Residue names longer than 3 characters (truncates to 3)
     3. Ensures unique (chainid, resseq, name, altloc) combinations
-    
-    Args:
-        pdb: DataFrame with PDB data (must have columns: ATOM, chainid, resseq, name, altloc, resname, serial)
-        verbose: Verbosity level (0=silent, 1=info, 2=debug)
-        
-    Returns:
-        Sanitized DataFrame with unique atom identifiers
-        
-    Example:
-        >>> from torchref.model import Model
-        >>> from torchref.utils import sanitize_pdb_dataframe
-        >>> model = Model()
-        >>> model.load_cif('structure.cif')
-        >>> model.pdb = sanitize_pdb_dataframe(model.pdb, verbose=1)
+
+    Parameters
+    ----------
+    pdb : pandas.DataFrame
+        DataFrame with PDB data (must have columns: ATOM, chainid, resseq,
+        name, altloc, resname, serial).
+    verbose : int, default 0
+        Verbosity level (0=silent, 1=info, 2=debug).
+
+    Returns
+    -------
+    pandas.DataFrame
+        Sanitized DataFrame with unique atom identifiers.
+
+    Examples
+    --------
+    >>> from torchref.model import Model
+    >>> from torchref.utils import sanitize_pdb_dataframe
+    >>> model = Model()
+    >>> model.load_cif('structure.cif')
+    >>> model.pdb = sanitize_pdb_dataframe(model.pdb, verbose=1)
     """
     pdb = pdb.copy()
     
@@ -854,8 +932,9 @@ def _parse_without_parentheses(selection_string: str, pdb_df: pd.DataFrame) -> t
 def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
     """
     Parse Phenix-style atom selection syntax and return a boolean mask.
-    
+
     Supports common Phenix selection keywords:
+
     - chain <id>: Select atoms by chain ID (e.g., "chain A")
     - resseq <num>: Select atoms by residue sequence number (e.g., "resseq 10")
     - resseq <start>:<end>: Select residue range (e.g., "resseq 10:20")
@@ -868,36 +947,44 @@ def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch
     - <sel1> and <sel2>: Intersection of selections
     - <sel1> or <sel2>: Union of selections
     - Parentheses for grouping: (selection)
-    
-    Examples:
-        >>> # Select chain A
-        >>> mask = parse_phenix_selection("chain A", pdb_df)
-        >>> 
-        >>> # Select residues 10-20 in chain A
-        >>> mask = parse_phenix_selection("chain A and resseq 10:20", pdb_df)
-        >>> 
-        >>> # Select all CA atoms
-        >>> mask = parse_phenix_selection("name CA", pdb_df)
-        >>> 
-        >>> # Select backbone atoms
-        >>> mask = parse_phenix_selection("name CA or name C or name N or name O", pdb_df)
-        >>> 
-        >>> # Select everything except water
-        >>> mask = parse_phenix_selection("not resname HOH", pdb_df)
-        >>> 
-        >>> # Use parentheses for grouping
-        >>> mask = parse_phenix_selection("chain A and (name CA or name CB)", pdb_df)
-    
-    Args:
-        selection_string: Phenix-style selection string
-        pdb_df: DataFrame containing atomic data with columns:
-               'chainid', 'resseq', 'resname', 'name', 'element', 'altloc'
-    
-    Returns:
-        torch.Tensor: Boolean tensor of shape (n_atoms,) where True indicates selected atoms
-    
-    Raises:
-        ValueError: If selection syntax is invalid
+
+    Parameters
+    ----------
+    selection_string : str
+        Phenix-style selection string.
+    pdb_df : pandas.DataFrame
+        DataFrame containing atomic data with columns:
+        'chainid', 'resseq', 'resname', 'name', 'element', 'altloc'.
+
+    Returns
+    -------
+    torch.Tensor
+        Boolean tensor of shape (n_atoms,) where True indicates selected atoms.
+
+    Raises
+    ------
+    ValueError
+        If selection syntax is invalid.
+
+    Examples
+    --------
+    >>> # Select chain A
+    >>> mask = parse_phenix_selection("chain A", pdb_df)
+    >>>
+    >>> # Select residues 10-20 in chain A
+    >>> mask = parse_phenix_selection("chain A and resseq 10:20", pdb_df)
+    >>>
+    >>> # Select all CA atoms
+    >>> mask = parse_phenix_selection("name CA", pdb_df)
+    >>>
+    >>> # Select backbone atoms
+    >>> mask = parse_phenix_selection("name CA or name C or name N or name O", pdb_df)
+    >>>
+    >>> # Select everything except water
+    >>> mask = parse_phenix_selection("not resname HOH", pdb_df)
+    >>>
+    >>> # Use parentheses for grouping
+    >>> mask = parse_phenix_selection("chain A and (name CA or name CB)", pdb_df)
     """
     # Clear any cached masks from previous calls
     if hasattr(_parse_with_parentheses, '_mask_cache'):
@@ -915,35 +1002,46 @@ def create_selection_mask(selection_string: str, pdb_df: pd.DataFrame,
                          mode: str = 'set') -> torch.Tensor:
     """
     Create or modify a refinable mask based on a Phenix-style selection.
-    
+
     This function allows you to update refinable masks by selecting specific atoms
     using Phenix-style syntax. You can either replace the current mask, add to it,
     or remove from it.
-    
-    Args:
-        selection_string: Phenix-style selection string
-        pdb_df: DataFrame containing atomic data
-        current_mask: Current refinable mask (optional). If None, starts with all False
-        mode: How to combine with current mask:
-              - 'set': Replace mask with selection (default)
-              - 'add': Add selection to current mask (OR operation)
-              - 'remove': Remove selection from current mask (AND NOT operation)
-    
-    Returns:
-        torch.Tensor: Updated boolean mask of shape (n_atoms,)
-    
-    Examples:
-        >>> # Create new mask selecting chain A
-        >>> mask = create_selection_mask("chain A", pdb_df, mode='set')
-        >>> 
-        >>> # Add residues 10-20 to existing mask
-        >>> mask = create_selection_mask("resseq 10:20", pdb_df, current_mask=mask, mode='add')
-        >>> 
-        >>> # Remove water from mask
-        >>> mask = create_selection_mask("resname HOH", pdb_df, current_mask=mask, mode='remove')
-    
-    Raises:
-        ValueError: If mode is not one of 'set', 'add', 'remove'
+
+    Parameters
+    ----------
+    selection_string : str
+        Phenix-style selection string.
+    pdb_df : pandas.DataFrame
+        DataFrame containing atomic data.
+    current_mask : torch.Tensor, optional
+        Current refinable mask. If None, starts with all False.
+    mode : str, default 'set'
+        How to combine with current mask:
+
+        - 'set': Replace mask with selection (default)
+        - 'add': Add selection to current mask (OR operation)
+        - 'remove': Remove selection from current mask (AND NOT operation)
+
+    Returns
+    -------
+    torch.Tensor
+        Updated boolean mask of shape (n_atoms,).
+
+    Raises
+    ------
+    ValueError
+        If mode is not one of 'set', 'add', 'remove'.
+
+    Examples
+    --------
+    >>> # Create new mask selecting chain A
+    >>> mask = create_selection_mask("chain A", pdb_df, mode='set')
+    >>>
+    >>> # Add residues 10-20 to existing mask
+    >>> mask = create_selection_mask("resseq 10:20", pdb_df, current_mask=mask, mode='add')
+    >>>
+    >>> # Remove water from mask
+    >>> mask = create_selection_mask("resname HOH", pdb_df, current_mask=mask, mode='remove')
     """
     # Parse the selection
     selection_mask = parse_phenix_selection(selection_string, pdb_df)

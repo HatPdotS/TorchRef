@@ -18,30 +18,30 @@ from torchref.symmetrie.symmetrie import Symmetry
 def MapSymmetry(space_group, map_shape, cell_params, dtype_float=torch.float32, verbose=1, device=torch.device('cpu')):
     """
     Factory function to create the appropriate MapSymmetry implementation.
-    
+
     This function checks if the grid size is compatible with direct indexing
     (no interpolation needed). If compatible, returns MapSymmetryDirect for
     maximum performance. Otherwise, returns MapSymmetryInterpolation as fallback.
-    
-    Parameters:
-    -----------
+
+    Parameters
+    ----------
     space_group : str
-        Space group name (e.g., 'P1', 'P21', 'P-1', etc.)
+        Space group name (e.g., 'P1', 'P21', 'P-1', etc.).
     map_shape : tuple of int
-        Shape of the density map (nx, ny, nz)
+        Shape of the density map (nx, ny, nz).
     cell_params : array-like, shape (6,)
-        Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees
+        Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
     dtype_float : torch.dtype, default torch.float32
-        Floating point precision to use
+        Floating point precision to use.
     verbose : int, default 1
-        Verbosity level (0=silent, 1=info, 2=debug)
+        Verbosity level (0=silent, 1=info, 2=debug).
     device : torch.device, default torch.device('cpu')
-        Device to use for computation
-    
-    Returns:
-    --------
+        Device to use for computation.
+
+    Returns
+    -------
     MapSymmetryDirect or MapSymmetryInterpolation
-        The appropriate implementation based on grid compatibility
+        The appropriate implementation based on grid compatibility.
     """
     # Check grid compatibility
     symmetry = Symmetry(space_group, dtype=dtype_float, device=device)
@@ -71,21 +71,37 @@ def MapSymmetry(space_group, map_shape, cell_params, dtype_float=torch.float32, 
 class MapSymmetryDirect(nn.Module):
     """
     Fast direct-indexing implementation of crystallographic symmetry operations.
-    
+
     This class uses precomputed integer index grids for symmetry operations,
     avoiding interpolation entirely. This is only possible when the grid size
     is compatible with the symmetry operations.
-    
+
     NOTE: Do not instantiate this class directly. Use the MapSymmetry() factory
     function instead, which will automatically select the appropriate implementation.
-    
+
     This class handles space group symmetry by:
+
     1. Taking a density map calculated for the asymmetric unit
     2. Applying rotation and translation operations in fractional coordinates
     3. Using direct integer indexing (no interpolation needed)
     4. Summing all symmetry-related maps
-    
-    Example:
+
+    Attributes
+    ----------
+    space_group : str
+        Space group name.
+    map_shape : tuple of int
+        Shape of the density map (nx, ny, nz).
+    cell_params : numpy.ndarray
+        Unit cell parameters.
+    symmetry : Symmetry
+        Symmetry operations handler.
+    n_ops : int
+        Number of symmetry operations.
+    can_use_direct_indexing : bool
+        Whether direct indexing is possible.
+
+    Examples
     --------
     >>> map_sym = MapSymmetry(space_group='P21', map_shape=(64, 64, 64), cell_params=cell)
     >>> asymmetric_map = model.build_density_map()
@@ -95,15 +111,21 @@ class MapSymmetryDirect(nn.Module):
     def __init__(self, space_group, map_shape, cell_params,dtype_float=torch.float32, verbose=1,device=torch.device('cpu')):
         """
         Initialize map symmetry operator.
-        
-        Parameters:
-        -----------
+
+        Parameters
+        ----------
         space_group : str
-            Space group name (e.g., 'P1', 'P21', 'P-1', etc.)
+            Space group name (e.g., 'P1', 'P21', 'P-1', etc.).
         map_shape : tuple of int
-            Shape of the density map (nx, ny, nz)
+            Shape of the density map (nx, ny, nz).
         cell_params : array-like, shape (6,)
-            Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees
+            Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
+        dtype_float : torch.dtype, default torch.float32
+            Floating point precision to use.
+        verbose : int, default 1
+            Verbosity level.
+        device : torch.device, default torch.device('cpu')
+            Device to use for computation.
         """
         super().__init__()
         self.dtype_float=dtype_float
@@ -207,18 +229,18 @@ class MapSymmetryDirect(nn.Module):
     def get_symmetry_mate(self, density_map, operation_index):
         """
         Apply a single symmetry operation to get one symmetry mate using direct indexing.
-        
-        Parameters:
-        -----------
+
+        Parameters
+        ----------
         density_map : torch.Tensor, shape (nx, ny, nz)
-            Electron density map (typically from asymmetric unit)
+            Electron density map (typically from asymmetric unit).
         operation_index : int
-            Index of the symmetry operation to apply (0 to n_ops-1)
-        
-        Returns:
-        --------
-        transformed_map : torch.Tensor, shape (nx, ny, nz)
-            Density map after applying the symmetry operation
+            Index of the symmetry operation to apply (0 to n_ops-1).
+
+        Returns
+        -------
+        torch.Tensor, shape (nx, ny, nz)
+            Density map after applying the symmetry operation.
         """
         if operation_index < 0 or operation_index >= self.n_ops:
             raise ValueError(f"Operation index {operation_index} out of range [0, {self.n_ops-1}]")
@@ -243,16 +265,16 @@ class MapSymmetryDirect(nn.Module):
     def get_all_symmetry_mates(self, density_map):
         """
         Get all symmetry mates as a list.
-        
-        Parameters:
-        -----------
+
+        Parameters
+        ----------
         density_map : torch.Tensor, shape (nx, ny, nz)
-            Electron density map (typically from asymmetric unit)
-        
-        Returns:
-        --------
-        mates : list of torch.Tensor
-            List of symmetry-related maps, one for each operation
+            Electron density map (typically from asymmetric unit).
+
+        Returns
+        -------
+        list of torch.Tensor
+            List of symmetry-related maps, one for each operation.
         """
         mates = []
         for i in range(self.n_ops):
@@ -262,23 +284,24 @@ class MapSymmetryDirect(nn.Module):
     def forward(self, density_map, apply_symmetry=True, combine_mode='sum'):
         """
         Apply symmetry operations to density map.
-        
-        Parameters:
-        -----------
+
+        Parameters
+        ----------
         density_map : torch.Tensor, shape (nx, ny, nz)
-            Electron density map (typically from asymmetric unit)
+            Electron density map (typically from asymmetric unit).
         apply_symmetry : bool, default True
             If True, apply all symmetry operations and combine them.
-            If False, return input map unchanged (useful for P1 or debugging)
+            If False, return input map unchanged (useful for P1 or debugging).
         combine_mode : str, default 'sum'
             How to combine symmetry mates:
+
             - 'sum': Sum all symmetry mates (for electron density)
             - 'max': Take maximum across symmetry mates (for masks/boolean data)
-        
-        Returns:
-        --------
-        symmetric_map : torch.Tensor, shape (nx, ny, nz)
-            Symmetry-expanded density map (combined symmetry mates)
+
+        Returns
+        -------
+        torch.Tensor, shape (nx, ny, nz)
+            Symmetry-expanded density map (combined symmetry mates).
         """
         if not apply_symmetry or self.n_ops == 1:
             # No symmetry or P1
@@ -323,14 +346,16 @@ class MapSymmetryDirect(nn.Module):
     def get_symmetry_info(self):
         """
         Get information about symmetry operations.
-        
-        Returns:
-        --------
-        dict with keys:
-            - space_group: str
-            - n_operations: int
-            - matrices: torch.Tensor (n_ops, 3, 3)
-            - translations: torch.Tensor (n_ops, 3)
+
+        Returns
+        -------
+        dict
+            Dictionary with the following keys:
+
+            - 'space_group' : str
+            - 'n_operations' : int
+            - 'matrices' : torch.Tensor, shape (n_ops, 3, 3)
+            - 'translations' : torch.Tensor, shape (n_ops, 3)
         """
         return {
             'space_group': self.space_group,

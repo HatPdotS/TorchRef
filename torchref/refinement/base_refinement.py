@@ -21,35 +21,81 @@ from torchref.refinement.targets import (
 class Refinement(DebugMixin, nnModule):
     """
     Refinement class to handle the overall crystallographic refinement process.
-    
+
     Supports two initialization patterns:
-    
+
     1. Empty initialization (for state_dict loading):
         >>> refinement = Refinement()  # Creates empty shell with submodules
         >>> refinement.load_state_dict(torch.load('refinement.pt'))
-    
+
     2. Full initialization with file paths:
         >>> refinement = Refinement(data_file='data.mtz', pdb='model.pdb')
+
+    Parameters
+    ----------
+    data_file : str, optional
+        Path to MTZ or CIF file containing reflection data.
+    pdb : str, optional
+        Path to PDB or CIF file containing initial model.
+    cif : str, optional
+        Path to CIF file for restraints.
+    verbose : int, optional
+        Verbosity level. Default is 1.
+    max_res : float, optional
+        Maximum resolution for reflections.
+    device : torch.device, optional
+        Computation device. Default is cpu.
+    weighter : LossWeightingModule, optional
+        Loss weighting module. Creates default if None.
+    nbins : int, optional
+        Number of resolution bins. Default is 10.
+
+    Attributes
+    ----------
+    device : torch.device
+        Computation device.
+    verbose : int
+        Verbosity level.
+    reflection_data : ReflectionData
+        Reflection data container.
+    model : ModelFT
+        Structure factor model.
+    scaler : Scaler
+        Scale factor calculator.
+    restraints : Restraints
+        Geometry restraints.
+    weighter : LossWeightingModule
+        Loss weighting module.
     """
-    
+
     def __init__(self, data_file: str = None, pdb: str = None, cif=None, verbose: int = 1, 
                  max_res: float = None, device: torch.device = torch.device('cpu'), 
                  weighter: 'LossWeightingModule' = None, nbins: int = 10):
         """
         Initialize Refinement.
-        
+
         If data_file and pdb are provided, fully initializes the refinement.
-        If not provided (empty init), creates a shell with empty submodules ready for load_state_dict().
-        
-        Args:
-            data_file: Path to MTZ or CIF file containing reflection data (optional for empty init)
-            pdb: Path to PDB or CIF file containing initial model (optional for empty init)
-            cif: Path to CIF file for restraints (optional)
-            verbose: Verbosity level (default: 1)
-            max_res: Maximum resolution for reflections (optional)
-            device: Computation device (default: cpu)
-            weighter: Loss weighting module (optional, creates default if None)
-            nbins: Number of resolution bins (default: 10)
+        If not provided (empty init), creates a shell with empty submodules
+        ready for load_state_dict().
+
+        Parameters
+        ----------
+        data_file : str, optional
+            Path to MTZ or CIF file containing reflection data.
+        pdb : str, optional
+            Path to PDB or CIF file containing initial model.
+        cif : str, optional
+            Path to CIF file for restraints.
+        verbose : int, optional
+            Verbosity level. Default is 1.
+        max_res : float, optional
+            Maximum resolution for reflections.
+        device : torch.device, optional
+            Computation device. Default is cpu.
+        weighter : LossWeightingModule, optional
+            Loss weighting module. Creates default if None.
+        nbins : int, optional
+            Number of resolution bins. Default is 10.
         """
         super().__init__()
         self.device = device
@@ -129,9 +175,12 @@ class Refinement(DebugMixin, nnModule):
     def _init_targets(self, xray_mode: str = 'ml'):
         """
         Initialize target functions.
-        
-        Args:
-            xray_mode: X-ray target mode ('gaussian', 'ls', 'ml')
+
+        Parameters
+        ----------
+        xray_mode : str, optional
+            X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
+            Default is 'ml'.
         """
         # X-ray targets
         self.xray_target_work = create_xray_target(self, xray_mode, use_work_set=True, verbose=self.verbose)
@@ -160,9 +209,11 @@ class Refinement(DebugMixin, nnModule):
     def set_xray_target_mode(self, mode: str):
         """
         Change the X-ray target mode.
-        
-        Args:
-            mode: 'gaussian', 'ls', or 'ml'
+
+        Parameters
+        ----------
+        mode : str
+            X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
         """
         self.xray_target_work = create_xray_target(self, mode, use_work_set=True, verbose=self.verbose)
         self.xray_target_test = create_xray_target(self, mode, use_work_set=False, verbose=self.verbose)
@@ -171,12 +222,22 @@ class Refinement(DebugMixin, nnModule):
 
     @property
     def data(self):
-        """Expose reflection_data as 'data' for weighting module compatibility."""
+        """
+        Expose reflection_data as 'data' for weighting module compatibility.
+
+        Returns
+        -------
+        ReflectionData
+            The reflection data container.
+        """
         return self.reflection_data
 
     def setup_grad_weighting(self):
         """
         Setup gradient-informed weighting module.
+
+        Creates a GradientInformedWeighting instance and assigns it to
+        the weighter attribute.
         """
         from torchref.refinement.loss_weighting import GradientInformedWeighting
         self.get_scales()
@@ -193,40 +254,47 @@ class Refinement(DebugMixin, nnModule):
         target_rfree_gap: float = 0.04
     ):
         """
-        Set up smart hybrid weighting that combines gradient norm balancing with ML target-aware modulation
-        and Rfree-based overfitting prevention.
-        
+        Set up smart hybrid weighting combining gradient norm balancing with ML modulation.
+
         This is the RECOMMENDED weighting strategy as it provides:
+
         - Balanced gradients across loss terms (via gradient norms)
         - Physical correctness (via ML target values)
-        - Overfitting prevention (via Rfree gap monitoring, boosts BOTH restraints AND ADP)
+        - Overfitting prevention (via Rfree gap monitoring)
         - Stable refinement that converges without oscillation
-        
+
         The weighting strategy:
+
         1. Computes gradient norms to balance optimization landscape
         2. Modulates weights based on ML target values to respect physical meaning
-        3. Monitors Rfree gap and increases BOTH restraints AND ADP weights if overfitting is detected
+        3. Monitors Rfree gap and increases BOTH restraints AND ADP weights if overfitting
         4. Uses smooth transitions to avoid weight oscillations
-        
-        Args:
-            base_restraint: Base restraint weight (default: 1.5 for stability)
-            base_adp: Base ADP weight (default: 1.5 - higher because ADP can overfit significantly)
-            nll_modulation_strength: How strongly ML target values modulate weights (0-1)
-                                    0 = pure gradient norm balancing
-                                    1 = strong ML target influence
-                                    default: 0.3 (conservative)
-            recompute_gradnorms_every: Recompute gradient norms every N cycles (default: 5)
-            target_rfree_gap: Target Rfree-Rwork gap (default: 0.05, ~5%)
-        
-        Example:
-            >>> refinement = Refinement(data_file="data.mtz", pdb="model.pdb")
-            >>> refinement.set_up_smart_weighting(
-            ...     base_restraint=1.5,
-            ...     base_adp=1.5,  # Higher to prevent ADP overfitting
-            ...     nll_modulation_strength=0.3
-            ... )
-            >>> # Now refine with smart weighting
-            >>> refinement.refine(n_cycles=10)
+
+        Parameters
+        ----------
+        base_restraint : float, optional
+            Base restraint weight. Default is 8.0 for stability.
+        base_adp : float, optional
+            Base ADP weight. Default is 3.0 (higher because ADP can overfit
+            significantly).
+        nll_modulation_strength : float, optional
+            How strongly ML target values modulate weights (0-1).
+            0 = pure gradient norm balancing, 1 = strong ML target influence.
+            Default is 0.5.
+        recompute_gradnorms_every : int, optional
+            Recompute gradient norms every N cycles. Default is 5.
+        target_rfree_gap : float, optional
+            Target Rfree-Rwork gap. Default is 0.04 (~4%).
+
+        Examples
+        --------
+        >>> refinement = Refinement(data_file="data.mtz", pdb="model.pdb")
+        >>> refinement.set_up_smart_weighting(
+        ...     base_restraint=1.5,
+        ...     base_adp=1.5,
+        ...     nll_modulation_strength=0.3
+        ... )
+        >>> refinement.refine(n_cycles=10)
         """
         from torchref.refinement.loss_weighting import create_hybrid_gradnorm_ML_weighting
         
@@ -269,6 +337,17 @@ class Refinement(DebugMixin, nnModule):
         Uses the default Module.parameters() to gather parameters, then removes
         duplicates while preserving order to avoid passing the same tensor
         multiple times to the optimizer.
+
+        Parameters
+        ----------
+        recurse : bool, optional
+            If True, yields parameters of this module and all submodules.
+            Default is True.
+
+        Returns
+        -------
+        list
+            List of unique parameter tensors.
         """
         params = list[Any](super().parameters(recurse))
         seen = set()
@@ -291,12 +370,19 @@ class Refinement(DebugMixin, nnModule):
         return fcalc_scaled
 
     def adp_loss(self):
-        """Compute total ADP loss using TotalADPTarget.
-        
+        """
+        Compute total ADP loss using TotalADPTarget.
+
         This combines:
+
         - Bond-based similarity (SIMU-like)
         - Spread control (tighter than KL)
         - Bounds penalty
+
+        Returns
+        -------
+        torch.Tensor
+            Total ADP loss value.
         """
         return self.adp_target()
 
@@ -309,9 +395,11 @@ class Refinement(DebugMixin, nnModule):
     def nll_xray(self):
         """
         Compute X-ray negative log-likelihood for work and test sets.
-        
-        Returns:
-            Tuple of (work_nll, test_nll) torch.Tensors
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            Tuple of (work_nll, test_nll) tensors.
         """
         return self.xray_target_work(), self.xray_target_test()
 
@@ -320,35 +408,79 @@ class Refinement(DebugMixin, nnModule):
     # =========================================================================
     
     def xray_loss_work(self) -> torch.Tensor:
-        """Compute X-ray loss on work set using instantiated target."""
+        """
+        Compute X-ray loss on work set using instantiated target.
+
+        Returns
+        -------
+        torch.Tensor
+            X-ray loss on work set.
+        """
         return self.xray_target_work()
     
     def xray_loss_test(self) -> torch.Tensor:
-        """Compute X-ray loss on test set using instantiated target."""
+        """
+        Compute X-ray loss on test set using instantiated target.
+
+        Returns
+        -------
+        torch.Tensor
+            X-ray loss on test set.
+        """
         return self.xray_target_test()
     
     def bond_loss(self) -> torch.Tensor:
-        """Compute bond length NLL via geometry_target."""
+        """
+        Compute bond length NLL via geometry_target.
+
+        Returns
+        -------
+        torch.Tensor
+            Bond length NLL loss.
+        """
         return self.geometry_target.get_component_losses()['bond']
     
     def angle_loss(self) -> torch.Tensor:
-        """Compute angle NLL via geometry_target."""
+        """
+        Compute angle NLL via geometry_target.
+
+        Returns
+        -------
+        torch.Tensor
+            Angle NLL loss.
+        """
         return self.geometry_target.get_component_losses()['angle']
     
     def torsion_loss(self) -> torch.Tensor:
-        """Compute torsion angle NLL via geometry_target."""
+        """
+        Compute torsion angle NLL via geometry_target.
+
+        Returns
+        -------
+        torch.Tensor
+            Torsion angle NLL loss.
+        """
         return self.geometry_target.get_component_losses()['torsion']
     
     def geometry_loss(self) -> torch.Tensor:
-        """Compute total geometry NLL using TotalGeometryTarget."""
+        """
+        Compute total geometry NLL using TotalGeometryTarget.
+
+        Returns
+        -------
+        torch.Tensor
+            Total geometry NLL loss.
+        """
         return self.geometry_target()
 
     def loss(self):
         """
         Compute total loss using instantiated targets.
-        
-        Returns:
-            Tuple of (total_loss, xray_work, restraints, xray_test)
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            Tuple of (total_loss, xray_work, restraints, xray_test).
         """
         xray_work = self.xray_loss_work()
         xray_test = self.xray_loss_test()
@@ -357,27 +489,44 @@ class Refinement(DebugMixin, nnModule):
         return total_loss, xray_work, restraints, xray_test
 
     def xray_loss(self):
-        """Compute X-ray loss on work set."""
+        """
+        Compute X-ray loss on work set.
+
+        Returns
+        -------
+        torch.Tensor
+            X-ray loss on work set.
+        """
         return self.xray_loss_work()
 
     def restraints_loss(self):
-        """Compute total geometry restraints loss."""
+        """
+        Compute total geometry restraints loss.
+
+        Returns
+        -------
+        torch.Tensor
+            Total geometry restraints loss.
+        """
         return self.geometry_loss()
     
     def collect_metrics(self) -> Dict[str, float]:
         """
         Collect all metrics from targets into a single flat dictionary.
-        
+
         This is the standard method for gathering refinement metrics for logging.
         Merges metrics from:
+
         - R-factors (rwork, rfree, gap)
         - X-ray targets (nll_work, nll_test)
         - Geometry targets (via get_metrics())
         - ADP targets (via get_metrics())
         - Current weights
-        
-        Returns:
-            Dict with all metrics as Python floats (not tensors)
+
+        Returns
+        -------
+        dict
+            Dictionary with all metrics as Python floats (not tensors).
         """
         metrics = {}
         
@@ -416,11 +565,15 @@ class Refinement(DebugMixin, nnModule):
                            weight: float = None):
         """
         Log XYZ refinement comparison showing geometry metrics before/after.
-        
-        Args:
-            before: Metrics dict from collect_metrics() before XYZ refinement
-            after: Metrics dict from collect_metrics() after XYZ refinement
-            weight: Restraint weight used (optional)
+
+        Parameters
+        ----------
+        before : dict
+            Metrics dict from collect_metrics() before XYZ refinement.
+        after : dict
+            Metrics dict from collect_metrics() after XYZ refinement.
+        weight : float, optional
+            Restraint weight used.
         """
         print(f"\n{'─'*70}")
         print(f"  XYZ Refinement Summary")
@@ -488,11 +641,15 @@ class Refinement(DebugMixin, nnModule):
                            weight: float = None):
         """
         Log ADP refinement comparison showing B-factor metrics before/after.
-        
-        Args:
-            before: Metrics dict from collect_metrics() before ADP refinement
-            after: Metrics dict from collect_metrics() after ADP refinement
-            weight: ADP weight used (optional)
+
+        Parameters
+        ----------
+        before : dict
+            Metrics dict from collect_metrics() before ADP refinement.
+        after : dict
+            Metrics dict from collect_metrics() after ADP refinement.
+        weight : float, optional
+            ADP weight used.
         """
         print(f"\n{'─'*70}")
         print(f"  ADP Refinement Summary")
@@ -556,10 +713,15 @@ class Refinement(DebugMixin, nnModule):
     def update_effective_weights(self, phase='all', cycle=0,recompute=False):
         """
         Update effective weights using the weighting module.
-        
-        Args:
-            phase (str): Refinement phase - 'xyz', 'b', or 'all'
-            cycle (int): Current refinement cycle number
+
+        Parameters
+        ----------
+        phase : str, optional
+            Refinement phase - 'xyz', 'b', or 'all'. Default is 'all'.
+        cycle : int, optional
+            Current refinement cycle number. Default is 0.
+        recompute : bool, optional
+            Whether to recompute weights. Default is False.
         """
         self.effective_weights = self.weighter(refinement_obj=self,phase=phase, cycle=cycle, recompute=recompute)
         if self.verbose > 2:
@@ -572,11 +734,15 @@ class Refinement(DebugMixin, nnModule):
     def run_refinement(self, macro_cycles=5, n_steps=10, lr=[1e-2,5e-4,1e-3, 5e-4, 1e-4]):
         """
         Run refinement cycles.
-        
-        Args:
-            macro_cycles (int): Number of macro cycles
-            n_steps (int): Steps per learning rate
-            lr (list): Learning rate schedule
+
+        Parameters
+        ----------
+        macro_cycles : int, optional
+            Number of macro cycles. Default is 5.
+        n_steps : int, optional
+            Steps per learning rate. Default is 10.
+        lr : list of float, optional
+            Learning rate schedule. Default is [1e-2, 5e-4, 1e-3, 5e-4, 1e-4].
         """
         for cycle in range(macro_cycles):
             self.scaler.unfreeze()
@@ -670,9 +836,11 @@ class Refinement(DebugMixin, nnModule):
     def save_state(self, path: str):
         """
         Save the complete state of the refinement to a file.
-        
-        Args:
-            path (str): Path to save the state dictionary to.
+
+        Parameters
+        ----------
+        path : str
+            Path to save the state dictionary to.
         """
         torch.save(self.state_dict(), path)
         if self.verbose > 0:
@@ -681,10 +849,13 @@ class Refinement(DebugMixin, nnModule):
     def load_state(self, path: str, strict: bool = True):
         """
         Load the complete state of the refinement from a file.
-        
-        Args:
-            path (str): Path to load the state dictionary from.
-            strict (bool): Whether to strictly enforce that keys match.
+
+        Parameters
+        ----------
+        path : str
+            Path to load the state dictionary from.
+        strict : bool, optional
+            Whether to strictly enforce that keys match. Default is True.
         """
         state_dict = torch.load(path, map_location=self.device, weights_only=False)
         self.load_state_dict(state_dict, strict=strict)
@@ -696,31 +867,38 @@ class Refinement(DebugMixin, nnModule):
                                verbose: int = 1) -> 'Refinement':
         """
         Create a fully initialized Refinement from a state dictionary.
-        
+
         This is the recommended way to restore a Refinement from a saved state.
         It creates the proper submodules using their respective create_from_state_dict
         methods, then calls PyTorch's default load_state_dict.
-        
-        Args:
-            state_dict: State dictionary from torch.save(refinement.state_dict(), ...)
-                       or from loading a checkpoint file
-            device: Device to place tensors on
-            verbose: Verbosity level
-            
-        Returns:
-            Refinement: Fully initialized instance with restored state
-            
-        Example:
-            >>> # Save
-            >>> torch.save(refinement.state_dict(), 'refinement.pt')
-            >>> 
-            >>> # Load  
-            >>> state = torch.load('refinement.pt')
-            >>> refinement = Refinement.create_from_state_dict(state)
-            >>> 
-            >>> # Continue refinement
-            >>> rwork, rfree = refinement.get_rfactor()
-            >>> print(f"Restored at R-work={rwork:.4f}, R-free={rfree:.4f}")
+
+        Parameters
+        ----------
+        state_dict : dict
+            State dictionary from torch.save(refinement.state_dict(), ...)
+            or from loading a checkpoint file.
+        device : torch.device, optional
+            Device to place tensors on. Default is cpu.
+        verbose : int, optional
+            Verbosity level. Default is 1.
+
+        Returns
+        -------
+        Refinement
+            Fully initialized instance with restored state.
+
+        Examples
+        --------
+        >>> # Save
+        >>> torch.save(refinement.state_dict(), 'refinement.pt')
+        >>>
+        >>> # Load
+        >>> state = torch.load('refinement.pt')
+        >>> refinement = Refinement.create_from_state_dict(state)
+        >>>
+        >>> # Continue refinement
+        >>> rwork, rfree = refinement.get_rfactor()
+        >>> print(f"Restored at R-work={rwork:.4f}, R-free={rfree:.4f}")
         """
         # Helper to extract submodule state from flattened state_dict
         def extract_submodule_state(state_dict: dict, prefix: str) -> dict:

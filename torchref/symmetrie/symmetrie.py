@@ -33,22 +33,23 @@ class Symmetry(DebugMixin, nn.Module):
     def _resolve_space_group_name(self, space_group):
         """
         Resolve space group name to canonical identifier using the name mapping.
+
         Uses space-removed canonicalization for flexible matching.
-        
-        Parameters:
-        -----------
+
+        Parameters
+        ----------
         space_group : str
-            Input space group name (with any common variations/aliases)
-            
-        Returns:
-        --------
-        str
-            Canonical space group identifier used in SYMMETRY_OPERATIONS
-            
-        Raises:
+            Input space group name (with any common variations/aliases).
+
+        Returns
         -------
+        str
+            Canonical space group identifier used in SYMMETRY_OPERATIONS.
+
+        Raises
+        ------
         ValueError
-            If space group name is not recognized
+            If space group name is not recognized.
         """
         # First try direct lookup
         if space_group in SPACEGROUP_NAME_MAPPING:
@@ -78,21 +79,21 @@ class Symmetry(DebugMixin, nn.Module):
     def _get_ops(self, canonical_space_group):
         """
         Get symmetry operations for the canonical space group name.
-        
-        Parameters:
-        -----------
+
+        Parameters
+        ----------
         canonical_space_group : str
-            Canonical space group identifier
-            
-        Returns:
-        --------
-        tuple
-            (rotation_matrices, translation_vectors) as torch tensors
-            
-        Raises:
+            Canonical space group identifier.
+
+        Returns
         -------
+        tuple
+            (rotation_matrices, translation_vectors) as torch tensors.
+
+        Raises
+        ------
         ValueError
-            If canonical space group is not implemented
+            If canonical space group is not implemented.
         """
         if canonical_space_group in SYMMETRY_OPERATIONS:
             matrices, translations = SYMMETRY_OPERATIONS[canonical_space_group]
@@ -107,14 +108,16 @@ class Symmetry(DebugMixin, nn.Module):
         """
         Apply symmetry operations to fractional coordinates.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         fractional_coords : torch.Tensor
-            Input tensor of shape (N, 3) representing fractional coordinates
-        Returns:
-        --------
+            Input tensor of shape (N, 3) representing fractional coordinates.
+
+        Returns
+        -------
         torch.Tensor
-            Transformed coordinates of shape (3, N, ops) where ops is the number of symmetry operations
+            Transformed coordinates of shape (3, N, ops) where ops is the
+            number of symmetry operations.
         """
         coords = fractional_coords.reshape(3, -1).to(self.matrices.device)  # (3, N)
         coords = coords.unsqueeze(0)  # (1, 3, N)
@@ -128,19 +131,20 @@ class Symmetry(DebugMixin, nn.Module):
     def get_grid_requirements(self):
         """
         Analyze symmetry operations to determine grid size requirements.
-        
+
         Examines all rotation matrices and translations to determine which
         grid dimensions must satisfy divisibility constraints for exact
         integer indexing (interpolation-free symmetry expansion).
-        
-        Returns:
-        --------
-        dict : {'nx_mod': int, 'ny_mod': int, 'nz_mod': int}
+
+        Returns
+        -------
+        dict
+            {'nx_mod': int, 'ny_mod': int, 'nz_mod': int}
             Required divisibility for each axis.
             For example: {'nx_mod': 1, 'ny_mod': 2, 'nz_mod': 1}
             means ny must be divisible by 2.
-        
-        Example:
+
+        Examples
         --------
         >>> sym = Symmetry('P21')
         >>> req = sym.get_grid_requirements()
@@ -183,25 +187,27 @@ class Symmetry(DebugMixin, nn.Module):
     def check_grid_compatibility(self, grid_shape):
         """
         Check if a grid size is compatible with the symmetry operations.
-        
-        Parameters:
-        -----------
+
+        Parameters
+        ----------
         grid_shape : tuple of int
-            (nx, ny, nz) grid dimensions
-        
-        Returns:
-        --------
-        dict with keys:
-            'compatible': bool
-                True if grid satisfies all symmetry requirements
-            'can_use_direct_indexing': bool
-                True if interpolation-free expansion is possible
-            'issues': list of str
-                Descriptions of incompatibilities (empty if compatible)
-            'requirements': dict
-                Required divisibility from get_grid_requirements()
-        
-        Example:
+            (nx, ny, nz) grid dimensions.
+
+        Returns
+        -------
+        dict
+            Dictionary with the following keys:
+
+            - 'compatible' : bool
+                True if grid satisfies all symmetry requirements.
+            - 'can_use_direct_indexing' : bool
+                True if interpolation-free expansion is possible.
+            - 'issues' : list of str
+                Descriptions of incompatibilities (empty if compatible).
+            - 'requirements' : dict
+                Required divisibility from get_grid_requirements().
+
+        Examples
         --------
         >>> sym = Symmetry('P21')
         >>> result = sym.check_grid_compatibility((131, 163, 148))
@@ -243,24 +249,25 @@ class Symmetry(DebugMixin, nn.Module):
     def suggest_grid_size(self, min_grid_shape, make_fft_friendly=True):
         """
         Suggest an optimal grid size that satisfies symmetry requirements.
-        
+
         Given a minimum grid size, finds the nearest larger size that:
+
         1. Satisfies symmetry requirements (divisibility constraints)
         2. Optionally, is FFT-friendly (factors of 2, 3, 5 only)
-        
-        Parameters:
-        -----------
+
+        Parameters
+        ----------
         min_grid_shape : tuple of int
-            Minimum (nx, ny, nz) grid dimensions
+            Minimum (nx, ny, nz) grid dimensions.
         make_fft_friendly : bool, default True
-            If True, ensures result has only factors of 2, 3, 5
-        
-        Returns:
-        --------
-        tuple of int : (nx, ny, nz)
-            Suggested grid dimensions
-        
-        Example:
+            If True, ensures result has only factors of 2, 3, 5.
+
+        Returns
+        -------
+        tuple of int
+            Suggested grid dimensions (nx, ny, nz).
+
+        Examples
         --------
         >>> sym = Symmetry('P21')
         >>> suggested = sym.suggest_grid_size((131, 163, 148))

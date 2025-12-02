@@ -17,19 +17,61 @@ if TYPE_CHECKING:
 
 class ReflectionData(DebugMixin, nn.Module):
     """
-    Class for handling crystallographic reflection data.
-    
-    Initialized empty and populated via loader methods.
-    All data arrays are stored as PyTorch tensors.
+    Container for crystallographic reflection data.
+
+    This class handles loading, processing, and accessing reflection data
+    including Miller indices, structure factor amplitudes, intensities,
+    and R-free flags. All data is stored as PyTorch tensors for GPU
+    acceleration.
+
+    Parameters
+    ----------
+    verbose : int, optional
+        Verbosity level for logging (0=silent, 1=normal, 2=debug). Default is 1.
+    device : str, optional
+        Device to store tensors on ('cpu', 'cuda', 'cuda:0', etc.). Default is 'cpu'.
+
+    Attributes
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (N, 3), dtype int32.
+    F : torch.Tensor
+        Structure factor amplitudes of shape (N,), dtype float32.
+    F_sigma : torch.Tensor
+        Amplitude uncertainties of shape (N,), dtype float32.
+    I : torch.Tensor
+        Intensities of shape (N,), dtype float32.
+    I_sigma : torch.Tensor
+        Intensity uncertainties of shape (N,), dtype float32.
+    rfree_flags : torch.Tensor
+        R-free test set flags of shape (N,), dtype bool.
+    cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    spacegroup : str
+        Space group symbol.
+    resolution : torch.Tensor
+        Resolution per reflection in Ångströms of shape (N,).
+    wilson_b : float
+        Overall Wilson B-factor in Ų.
+
+    Examples
+    --------
+    >>> data = ReflectionData(verbose=1, device='cuda')
+    >>> data.load_mtz('data.mtz')
+    >>> print(f"Loaded {len(data.hkl)} reflections")
+    >>> print(f"Resolution range: {data.resolution.min():.2f} - {data.resolution.max():.2f} Å")
     """
-    
+
     def __init__(self, verbose: int = 1, device: str = 'cpu'):
         """
         Initialize empty ReflectionData object.
-        
-        Args:
-            verbose: Verbosity level for logging
-            device: Device to store tensors on ('cpu' or 'cuda' or 'cuda:0', etc.)
+
+        Parameters
+        ----------
+        verbose : int, optional
+            Verbosity level for logging (0=silent, 1=normal, 2=debug). Default is 1.
+        device : str, optional
+            Device to store tensors on ('cpu', 'cuda', 'cuda:0', etc.). Default is 'cpu'.
         """
         super().__init__()
         
@@ -73,7 +115,19 @@ class ReflectionData(DebugMixin, nn.Module):
         self.phase_source: Optional[str] = None
 
     def cuda(self, device=None):
-        """Move ReflectionData to CUDA, including masks child module."""
+        """
+        Move ReflectionData to CUDA device.
+
+        Parameters
+        ----------
+        device : torch.device or int, optional
+            Target CUDA device. If None, uses default CUDA device.
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
+        """
         super().cuda(device)
         self.device = torch.device('cuda') if device is None else torch.device(device)
         # Explicitly move masks since it's a child module
@@ -84,7 +138,14 @@ class ReflectionData(DebugMixin, nn.Module):
         return self
     
     def cpu(self):
-        """Move ReflectionData to CPU, including masks child module."""
+        """
+        Move ReflectionData to CPU.
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
+        """
         super().cpu()
         self.device = torch.device('cpu')
         # Explicitly move masks since it's a child module
@@ -95,9 +156,25 @@ class ReflectionData(DebugMixin, nn.Module):
         return self
     
     def load(self, reader):
-        '''
+        """
         Load reflection data using a data reader.
-        '''
+
+        Parameters
+        ----------
+        reader : callable
+            Data reader object that returns (data_dict, cell, spacegroup) when called.
+            Can be MTZ, ReflectionCIFReader, or other compatible reader.
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
+
+        Raises
+        ------
+        ValueError
+            If unit cell parameters are missing or no amplitude/intensity data found.
+        """
 
         data_dict, cell, spacegroup = reader()
 
@@ -160,30 +237,37 @@ class ReflectionData(DebugMixin, nn.Module):
 
     def load_mtz(self, path: str) -> 'ReflectionData':
         """
-        Load reflection data from MTZ file using reciprocalspaceship.
-        
-        Args:
-            path: Path to MTZ file
-            expand_to_p1: Whether to expand to P1 (all symmetry-related reflections)
-            
-        Returns:
-            self (for method chaining)
+        Load reflection data from MTZ file.
+
+        Parameters
+        ----------
+        path : str
+            Path to MTZ file.
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
         """
         reader = legacy_format_readers.MTZ(verbose=self.verbose).read(path)
         return self.load(reader)
 
     def load_cif(self, path: str, data_block: Optional[str] = None) -> 'ReflectionData':
         """
-        Load reflection data from CIF file using ReflectionCIFReader.
-        
-        Args:
-            path: Path to CIF file
-            data_block: Optional specific data block name to read (e.g., 'r1vlmsf').
-                       If None, reads the first data block. Useful for files with
-                       multiple datasets.
-            
-        Returns:
-            self (for method chaining)
+        Load reflection data from CIF file.
+
+        Parameters
+        ----------
+        path : str
+            Path to CIF file.
+        data_block : str, optional
+            Specific data block name to read (e.g., 'r1vlmsf'). If None, reads
+            the first data block. Useful for multi-dataset CIF files.
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
         """
         self.reader = cif_readers.ReflectionCIFReader(path, verbose=self.verbose, data_block=data_block)
         return self.load(self.reader)
@@ -191,22 +275,27 @@ class ReflectionData(DebugMixin, nn.Module):
     @staticmethod
     def list_cif_data_blocks(path: str) -> List[str]:
         """
-        List all data blocks available in a CIF file without loading the data.
-        
-        Useful for multi-dataset CIF files to see which blocks are available
+        List all data blocks available in a CIF file without loading data.
+
+        Useful for multi-dataset CIF files to inspect available blocks
         before loading a specific one.
-        
-        Args:
-            path: Path to CIF file
-            
-        Returns:
-            List of data block names
-            
-        Example:
-            >>> blocks = ReflectionData.list_cif_data_blocks('1VLM-sf.cif')
-            >>> print(blocks)
-            ['r1vlmsf', 'r1vlmAsf', 'r1vlmBsf', ...]
-            >>> data = ReflectionData().load_cif('1VLM-sf.cif', data_block=blocks[1])
+
+        Parameters
+        ----------
+        path : str
+            Path to CIF file.
+
+        Returns
+        -------
+        list of str
+            Names of all data blocks in the CIF file.
+
+        Examples
+        --------
+        >>> blocks = ReflectionData.list_cif_data_blocks('1VLM-sf.cif')
+        >>> print(blocks)
+        ['r1vlmsf', 'r1vlmAsf', 'r1vlmBsf', ...]
+        >>> data = ReflectionData().load_cif('1VLM-sf.cif', data_block=blocks[1])
         """
         reader = cif_readers.CIFReader(path)
         return reader.available_blocks
@@ -214,22 +303,34 @@ class ReflectionData(DebugMixin, nn.Module):
     def _generate_rfree_flags(self, free_fraction: float = 0.02, n_bins: int = 20, 
                              min_per_bin: int = 100, seed: Optional[int] = None) -> None:
         """
-        Generate R-free flags with proper resolution binning.
-        
-        This ensures that free reflections are evenly distributed across resolution shells,
-        which is critical for unbiased validation.
-        
-        Args:
-            free_fraction: Fraction of reflections to mark as free (default: 0.02 = 2%)
-            n_bins: Target number of resolution bins (default: 20)
-            min_per_bin: Minimum number of reflections per resolution bin (default: 100)
-            seed: Random seed for reproducibility (default: None)
-            
-        The algorithm:
+        Generate R-free flags with resolution-stratified sampling.
+
+        Ensures free reflections are evenly distributed across resolution
+        shells for unbiased cross-validation.
+
+        Parameters
+        ----------
+        free_fraction : float, optional
+            Fraction of reflections to mark as free (0.02 = 2%). Default is 0.02.
+        n_bins : int, optional
+            Target number of resolution bins. Default is 20.
+        min_per_bin : int, optional
+            Minimum reflections per resolution bin. Default is 100.
+        seed : int, optional
+            Random seed for reproducibility. Default is None.
+
+        Notes
+        -----
+        Algorithm:
         1. Bin reflections by resolution
-        2. Ensure bins have at least min_per_bin reflections or 1% of data
-        3. Randomly select free_fraction of reflections from each bin
+        2. Ensure bins have at least min_per_bin reflections
+        3. Randomly select free_fraction from each bin
         4. This ensures even distribution across all resolution ranges
+
+        Raises
+        ------
+        ValueError
+            If resolution information is not available.
         """
         if self.resolution is None:
             raise ValueError("Resolution information required to generate R-free flags")
@@ -292,16 +393,21 @@ class ReflectionData(DebugMixin, nn.Module):
     
     def get_bins(self, n_bins: int = 20, min_per_bin: int = 100) -> Tuple[torch.Tensor, int]:
         """
-        Create resolution bins with target number of bins.
-        
-        Args:
-            n_bins: Target number of resolution bins (default: 20)
-            min_per_bin: Minimum reflections per bin (default: 100)
-            
-        Returns:
-            Tuple of (bin_indices, n_bins) where:
-                - bin_indices: Tensor of shape (N,) with bin index for each reflection
-                - n_bins: Actual number of bins created (may be less than target if dataset is small)
+        Create resolution bins with approximately equal reflection counts.
+
+        Parameters
+        ----------
+        n_bins : int, optional
+            Target number of resolution bins. Default is 20.
+        min_per_bin : int, optional
+            Minimum reflections per bin. Default is 100.
+
+        Returns
+        -------
+        bin_indices : torch.Tensor
+            Tensor of shape (N,) with bin index for each reflection.
+        n_bins : int
+            Actual number of bins created (may be less than target for small datasets).
         """
         n_refl = len(self.resolution)
         
@@ -343,9 +449,16 @@ class ReflectionData(DebugMixin, nn.Module):
     def mean_res_per_bin(self) -> torch.Tensor:
         """
         Calculate mean resolution for each bin.
-        
-        Returns:
-            List of mean resolutions per bin
+
+        Returns
+        -------
+        torch.Tensor
+            Mean resolution for each bin in Ångströms.
+
+        Raises
+        ------
+        ValueError
+            If bins have not been created yet.
         """
         if not hasattr(self, 'bin_indices') or not hasattr(self, 'resolution'):
             raise ValueError("Bins have not been created yet")
@@ -362,21 +475,27 @@ class ReflectionData(DebugMixin, nn.Module):
                                min_per_bin: int = 100, seed: Optional[int] = None, 
                                force: bool = False) -> None:
         """
-        Regenerate R-free flags (public interface).
-        
-        Args:
-            free_fraction: Fraction of reflections to mark as free (default: 0.02 = 2%)
-            n_bins: Target number of resolution bins (default: 20)
-            min_per_bin: Minimum reflections per resolution bin (default: 100)
-            seed: Random seed for reproducibility (default: None)
-            force: If True, regenerate even if flags already exist (default: False)
-            
-        Example:
-            # Generate 2% free reflections with 20 bins and reproducible seed
-            data.regenerate_rfree_flags(free_fraction=0.02, n_bins=20, seed=42)
-            
-            # Generate 5% free with 10 bins
-            data.regenerate_rfree_flags(free_fraction=0.05, n_bins=10, force=True)
+        Regenerate R-free flags with resolution-stratified sampling.
+
+        Parameters
+        ----------
+        free_fraction : float, optional
+            Fraction of reflections to mark as free. Default is 0.02 (2%).
+        n_bins : int, optional
+            Target number of resolution bins. Default is 20.
+        min_per_bin : int, optional
+            Minimum reflections per resolution bin. Default is 100.
+        seed : int, optional
+            Random seed for reproducibility. Default is None.
+        force : bool, optional
+            If True, regenerate even if flags already exist. Default is False.
+
+        Examples
+        --------
+        >>> # Generate 2% free reflections with reproducible seed
+        >>> data.regenerate_rfree_flags(free_fraction=0.02, n_bins=20, seed=42)
+        >>> # Generate 5% free with 10 bins, overwriting existing
+        >>> data.regenerate_rfree_flags(free_fraction=0.05, n_bins=10, force=True)
         """
         if self.rfree_flags is not None and not force:
             print("⚠️  WARNING: R-free flags already exist!")
@@ -392,7 +511,16 @@ class ReflectionData(DebugMixin, nn.Module):
                                    min_per_bin=min_per_bin, seed=seed)
     
     def _calculate_resolution(self) -> None:
-        """Calculate resolution for each reflection."""
+        """
+        Calculate resolution for each reflection from Miller indices.
+
+        Sets the `resolution` buffer with d-spacing values in Ångströms.
+
+        Raises
+        ------
+        ValueError
+            If Miller indices or unit cell parameters are missing.
+        """
         if self.hkl is None:
             raise ValueError("Miller indices (hkl) are required to calculate resolution")
         if self.cell is None:
@@ -548,23 +676,35 @@ class ReflectionData(DebugMixin, nn.Module):
     ) -> Tuple[float, float, float]:
         """
         Fit two-component Wilson model using iterative refinement.
-        
+
         Model: F² = A_struct * exp(-2*B_struct*s²) + A_sol * exp(-2*B_sol*s²)
-        
-        We parameterize as:
+
+        Parameterized as:
             F² = A * [(1-k)*exp(-2*B_struct*s²) + k*exp(-2*B_sol*s²)]
-        
+
         where k is the relative solvent contribution at s²=0.
-        
-        Args:
-            s_sq: s² values for bins
-            mean_F_sq: Mean F² values for bins
-            B_struct_init: Initial structure B-factor
-            B_sol_init: Initial solvent B-factor
-            n_iter: Number of refinement iterations
-            
-        Returns:
-            Tuple of (B_struct, B_sol, k_sol)
+
+        Parameters
+        ----------
+        s_sq : torch.Tensor
+            s² values for bins.
+        mean_F_sq : torch.Tensor
+            Mean F² values for bins.
+        B_struct_init : float
+            Initial structure B-factor.
+        B_sol_init : float
+            Initial solvent B-factor.
+        n_iter : int, optional
+            Number of refinement iterations. Default is 50.
+
+        Returns
+        -------
+        B_struct : float
+            Refined structure B-factor.
+        B_sol : float
+            Refined solvent B-factor.
+        k_sol : float
+            Relative solvent contribution.
         """
         # Normalize F² for numerical stability
         F_sq_max = mean_F_sq.max()
@@ -652,12 +792,21 @@ class ReflectionData(DebugMixin, nn.Module):
     def get_structure_factors(self, as_complex: bool = False) -> torch.Tensor:
         """
         Get structure factors, optionally as complex numbers.
-        
-        Args:
-            as_complex: If True and phases available, return F*exp(i*phi)
-            
-        Returns:
-            Tensor of amplitudes or complex structure factors
+
+        Parameters
+        ----------
+        as_complex : bool, optional
+            If True and phases available, return F*exp(i*phi). Default is False.
+
+        Returns
+        -------
+        torch.Tensor
+            Structure factor amplitudes or complex structure factors.
+
+        Raises
+        ------
+        ValueError
+            If no amplitude data is loaded.
         """
         if self.F is None:
             raise ValueError("No amplitude data loaded")
@@ -670,16 +819,24 @@ class ReflectionData(DebugMixin, nn.Module):
     def get_structure_factors_with_sigma(self) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Get structure factor amplitudes and their uncertainties.
-        
-        Returns:
-            Tuple of (F, F_sigma) where:
-                - F: Structure factor amplitudes, shape (N,)
-                - F_sigma: Uncertainties (None if not available), shape (N,)
-        
-        Example:
-            F, sigma_F = data.get_structure_factors_with_sigma()
-            if sigma_F is not None:
-                weighted_residual = (F_obs - F_calc) / sigma_F
+
+        Returns
+        -------
+        F : torch.Tensor
+            Structure factor amplitudes of shape (N,).
+        F_sigma : torch.Tensor or None
+            Uncertainties of shape (N,), or None if not available.
+
+        Raises
+        ------
+        ValueError
+            If no amplitude data is loaded.
+
+        Examples
+        --------
+        >>> F, sigma_F = data.get_structure_factors_with_sigma()
+        >>> if sigma_F is not None:
+        ...     weighted_residual = (F_obs - F_calc) / sigma_F
         """
         if self.F is None:
             raise ValueError("No amplitude data loaded")
@@ -687,7 +844,19 @@ class ReflectionData(DebugMixin, nn.Module):
         return self.F, self.F_sigma
     
     def get_hkl(self):
-        """Return Miller indices as a tensor of shape (N, 3)."""
+        """
+        Return Miller indices for valid reflections.
+
+        Returns
+        -------
+        torch.Tensor
+            Miller indices of shape (N, 3), dtype int32.
+
+        Raises
+        ------
+        ValueError
+            If no Miller indices are loaded.
+        """
         if self.hkl is None:
             raise ValueError("No Miller indices loaded")
         return self.hkl[self.masks()]
@@ -696,14 +865,20 @@ class ReflectionData(DebugMixin, nn.Module):
                             d_max: Optional[float] = None) -> 'ReflectionData':
         """
         Filter reflections by resolution range.
-        adds a boolean mask to self.masks for the specified resolution range.
 
-        Args:
-            d_min: Minimum resolution (highest resolution, e.g., 1.5 Å)
-            d_max: Maximum resolution (lowest resolution, e.g., 50.0 Å)
-            
-        Returns:
-            self (for method chaining)
+        Adds a boolean mask to self.masks for the specified resolution range.
+
+        Parameters
+        ----------
+        d_min : float, optional
+            Minimum resolution / high resolution cutoff (e.g., 1.5 Å).
+        d_max : float, optional
+            Maximum resolution / low resolution cutoff (e.g., 50.0 Å).
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
         """
         if self.resolution is None:
             self._calculate_resolution()
@@ -723,51 +898,63 @@ class ReflectionData(DebugMixin, nn.Module):
         return self
     
     def get_mask(self):
-        return self.masks()
+        """
+        Return combined mask from all active filters.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean mask combining all filter conditions.
+        """
     
     def cut_res(self, highres: Optional[float] = None, 
                 lowres: Optional[float] = None) -> 'ReflectionData':
         """
-        Filter reflections by resolution range (alias for filter_by_resolution).
-        
-        This method uses the more intuitive naming where:
-        - res_min is the minimum resolution (high resolution limit, small d-spacing)
-        - res_max is the maximum resolution (low resolution limit, large d-spacing)
-        
-        Args:
-            res_min: Minimum resolution / high resolution cutoff (e.g., 1.5 Å)
-                    Keeps reflections with d >= res_min
-            res_max: Maximum resolution / low resolution cutoff (e.g., 50.0 Å)
-                    Keeps reflections with d <= res_max
-            
-        Returns:
-            New ReflectionData object with filtered data
-            
-        Example:
-            # Keep reflections between 50 Å and 1.5 Å
-            filtered = data.cut_res(res_min=1.5, res_max=50.0)
-            
-            # Keep only high-resolution data (< 2 Å)
-            high_res = data.cut_res(res_min=1.0, res_max=2.0)
+        Filter reflections by resolution range.
+
+        Alias for filter_by_resolution with more intuitive naming.
+
+        Parameters
+        ----------
+        highres : float, optional
+            High resolution cutoff (small d-spacing, e.g., 1.5 Å).
+            Keeps reflections with d >= highres.
+        lowres : float, optional
+            Low resolution cutoff (large d-spacing, e.g., 50.0 Å).
+            Keeps reflections with d <= lowres.
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
+
+        Examples
+        --------
+        >>> # Keep reflections between 50 Å and 1.5 Å
+        >>> filtered = data.cut_res(highres=1.5, lowres=50.0)
+        >>> # Keep only high-resolution data (< 2 Å)
+        >>> high_res = data.cut_res(highres=1.0, lowres=2.0)
         """
         return self.filter_by_resolution(d_min=highres, d_max=lowres)
     
     def get_rfree_masks(self) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Get boolean masks for work and test (free) sets.
-        
-        Returns:
-            Tuple of (work_mask, test_mask) where:
-                - work_mask: Boolean tensor for work set (flag != 0)
-                - test_mask: Boolean tensor for test/free set (flag == 0)
-                - Both are None if no R-free flags are available
-        
-        Example:
-            work_mask, test_mask = data.get_rfree_masks()
-            if work_mask is not None:
-                F_work = data.F[work_mask]
-                F_test = data.F[test_mask]
-                # Calculate R-factors separately
+
+        Returns
+        -------
+        work_mask : torch.Tensor or None
+            Boolean tensor for work set (flag != 0).
+        test_mask : torch.Tensor or None
+            Boolean tensor for test/free set (flag == 0).
+            Both are None if no R-free flags are available.
+
+        Examples
+        --------
+        >>> work_mask, test_mask = data.get_rfree_masks()
+        >>> if work_mask is not None:
+        ...     F_work = data.F[work_mask]
+        ...     F_test = data.F[test_mask]
         """
         if self.rfree_flags is None:
             return None, None
@@ -780,9 +967,17 @@ class ReflectionData(DebugMixin, nn.Module):
     def get_work_set(self) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Get structure factors for the work set (R-free flag != 0).
-        
-        Returns:
-            Tuple of (F_work, sigma_work) or full dataset if no R-free flags
+
+        Returns
+        -------
+        F_work : torch.Tensor
+            Structure factors for work set.
+        sigma_work : torch.Tensor or None
+            Uncertainties for work set, or None if not available.
+
+        Notes
+        -----
+        Returns full dataset with warning if no R-free flags available.
         """
         if self.rfree_flags is None:
             print("WARNING: No R-free flags available, returning full dataset")
@@ -797,12 +992,18 @@ class ReflectionData(DebugMixin, nn.Module):
     def get_test_set(self) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Get structure factors for the test set (R-free flag == 0).
-        
-        Returns:
-            Tuple of (F_test, sigma_test)
-        
-        Raises:
-            ValueError if no R-free flags are available
+
+        Returns
+        -------
+        F_test : torch.Tensor
+            Structure factors for test/free set.
+        sigma_test : torch.Tensor or None
+            Uncertainties for test set, or None if not available.
+
+        Raises
+        ------
+        ValueError
+            If no R-free flags are available.
         """
         if self.rfree_flags is None:
             raise ValueError("No R-free flags available in dataset")
@@ -814,17 +1015,38 @@ class ReflectionData(DebugMixin, nn.Module):
         return F_test, sigma_test
 
     def get_max_res(self) -> Optional[float]:
-        """Return maximum resolution (lowest d-spacing) in Å."""
+        """
+        Return maximum resolution (lowest d-spacing).
+
+        Returns
+        -------
+        float
+            Maximum resolution in Ångströms.
+        """
         if self.resolution is None:
             self._calculate_resolution()
         return float(self.resolution.min().item())
 
     def __len__(self) -> int:
-        """Return number of reflections."""
+        """
+        Return number of reflections.
+
+        Returns
+        -------
+        int
+            Number of reflections in the dataset.
+        """
         return len(self.hkl) if self.hkl is not None else 0
     
     def __repr__(self) -> str:
-        """String representation."""
+        """
+        Return string representation.
+
+        Returns
+        -------
+        str
+            Summary of reflection data including count, sources, and resolution.
+        """
         if self.hkl is None:
             return "ReflectionData(empty)"
         
@@ -841,18 +1063,23 @@ class ReflectionData(DebugMixin, nn.Module):
 
     def forward(self, mask:bool=True)-> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
+        Return core reflection data with optional masking.
 
-        Return core reflection data: (hkl, F, F_sigma, rfree_flags).
+        Parameters
+        ----------
+        mask : bool, optional
+            If True, apply current masks to output. Default is True.
 
-        Returns:
-
-            Tuple of (hkl, F, F_sigma, rfree_flags)
-
-        hkl: Tensor of shape (N, 3)
-        F: Tensor of shape (N,)
-        F_sigma: Tensor of shape (N,) or None 
-        rfree_flags: Tensor of shape (N,) or None (1 is work, 0 is free)
-
+        Returns
+        -------
+        hkl : torch.Tensor
+            Miller indices of shape (N, 3).
+        F : torch.Tensor
+            Structure factor amplitudes of shape (N,).
+        F_sigma : torch.Tensor or None
+            Uncertainties of shape (N,) or None.
+        rfree_flags : torch.Tensor or None
+            R-free flags of shape (N,) or None. 1=work, 0=free.
         """
         hkl, F, F_sigma, rfree_flags = self.hkl, self.F, self.F_sigma, self.rfree_flags
         if mask:
@@ -866,7 +1093,21 @@ class ReflectionData(DebugMixin, nn.Module):
         return hkl, F, F_sigma, rfree_flags
     
     def __select__(self,mask:torch.Tensor, op=None)-> 'ReflectionData':
-        """Select reflections based on a boolean mask."""
+        """
+        Select reflections based on a boolean mask.
+
+        Parameters
+        ----------
+        mask : torch.Tensor
+            Boolean mask of shape (N,) for selection.
+        op : str, optional
+            Operation name for tracking purposes.
+
+        Returns
+        -------
+        ReflectionData
+            New ReflectionData object with selected reflections.
+        """
         # Create new instance with same device
         selected = ReflectionData(verbose=self.verbose, device=self.device)
         
@@ -904,8 +1145,14 @@ class ReflectionData(DebugMixin, nn.Module):
     def unpack(self):
         """
         Unpack to the original source data.
+
         Traverses the source chain to the original data and validates HKL.
-        Marks reflections not present in the original data in self.flagged
+        Marks reflections not present in the original data in self.flagged.
+
+        Returns
+        -------
+        ReflectionData
+            Original source ReflectionData object.
         """
         current_hkl = self.hkl
         while self.source is not None:
@@ -915,7 +1162,12 @@ class ReflectionData(DebugMixin, nn.Module):
         return self        
 
     def sanitize_F(self):
-        """Cut NA values from F and F_sigma."""
+        """
+        Remove invalid values from structure factors.
+
+        Adds a mask to filter out NaN, Inf, and non-positive values
+        from F and F_sigma.
+        """
         mask = torch.zeros(len(self.F), dtype=torch.bool, device=self.device)
         if self.F is not None:
             if self.verbose > 0: print('found nan F values: ', torch.isnan(self.F).sum().item())
@@ -938,26 +1190,28 @@ class ReflectionData(DebugMixin, nn.Module):
     def validate_hkl(self, hkl_ref: torch.Tensor) -> Tuple['ReflectionData', torch.Tensor]:
         """
         Validate and filter reflections against a reference HKL set.
-        
-        This method filters the current dataset to only include reflections that are 
-        present in the reference HKL tensor, and returns a boolean mask indicating 
-        which reference reflections are present in this dataset.
-        
-        Args:
-            hkl_ref: Reference Miller indices tensor of shape (N, 3) with dtype int32
-            
-        Returns:
-            Tuple of (filtered_data, presence_mask) where:
-                - filtered_data: New ReflectionData object containing only reflections 
-                  that are present in hkl_ref
-                - presence_mask: Boolean tensor of shape (N,) indicating which reflections 
-                  from hkl_ref are present in this dataset (True = present, False = absent)
-        
-        Example:
-            # Filter data to match reference HKL list
-            filtered_data, present_in_data = data.validate_hkl(reference_hkl)
-            print(f"Kept {len(filtered_data)} reflections out of {len(data)}")
-            print(f"{present_in_data.sum()} reference reflections found in dataset")
+
+        Filters the current dataset to only include reflections present
+        in the reference HKL tensor.
+
+        Parameters
+        ----------
+        hkl_ref : torch.Tensor
+            Reference Miller indices tensor of shape (N, 3), dtype int32.
+
+        Returns
+        -------
+        filtered_data : ReflectionData
+            New ReflectionData object containing only matching reflections.
+        presence_mask : torch.Tensor
+            Boolean tensor of shape (N,) indicating which reference reflections
+            are present in this dataset (True = present, False = absent).
+
+        Examples
+        --------
+        >>> filtered_data, present_in_data = data.validate_hkl(reference_hkl)
+        >>> print(f"Kept {len(filtered_data)} reflections out of {len(data)}")
+        >>> print(f"{present_in_data.sum()} reference reflections found")
         """
         if self.hkl is None:
             raise ValueError("No Miller indices loaded in ReflectionData")
@@ -1020,17 +1274,23 @@ class ReflectionData(DebugMixin, nn.Module):
     def find_outliers(self, model: ModelFT, scaler, z_threshold: float = 4.0) -> torch.Tensor:
         """
         Identify outlier reflections based on log-ratio distribution.
-        
+
         Uses the fact that log(F_obs) - log(F_calc) should be normally distributed.
         Outliers are reflections where |log_ratio - mean| > z_threshold * std_dev.
-        
-        Args:
-            model: ModelFT object to compute structure factors
-            scaler: Scaler object to scale calculated structure factors  
-            z_threshold: Z-score threshold to classify outliers (default: 4.0)
-            
-        Returns:
-            torch.Tensor: Boolean mask where True indicates outliers
+
+        Parameters
+        ----------
+        model : ModelFT
+            ModelFT object to compute structure factors.
+        scaler : Scaler
+            Scaler object to scale calculated structure factors.
+        z_threshold : float, optional
+            Z-score threshold to classify outliers. Default is 4.0.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean mask where True indicates outliers.
         """
         hkl, F_obs, _, _ = self.forward(mask=False)
         log_ratio = self.get_log_ratio(model, scaler)
@@ -1071,6 +1331,21 @@ class ReflectionData(DebugMixin, nn.Module):
         if self.verbose > 0: print(f"Outlier detection: {outlier_mask.sum().item()} reflections flagged as outliers out of {len(outlier_mask)}.")
     
     def get_log_ratio(self, model: ModelFT, scaler) -> torch.Tensor:
+        """
+        Compute log-ratio between observed and calculated structure factors.
+
+        Parameters
+        ----------
+        model : ModelFT
+            ModelFT object to compute structure factors.
+        scaler : Scaler
+            Scaler object to scale calculated structure factors.
+
+        Returns
+        -------
+        torch.Tensor
+            Log-ratio values: log(F_obs) - log(F_calc).
+        """
         # Get observed and calculated structure factors
         eps = 1e-6
         hkl, F_obs, _ , _ = self.forward(mask=False)
@@ -1084,7 +1359,19 @@ class ReflectionData(DebugMixin, nn.Module):
         return log_ratio
 
     def get_outlier_statistics(self) -> Dict:
-        """Get statistics about flagged outliers."""
+        """
+        Get statistics about flagged outliers.
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - n_outliers : int
+            - n_total : int
+            - fraction_outliers : float
+            - detection_params : dict or None
+            - outlier_resolution_stats : dict (if resolution available)
+        """
         if self.outlier_flags is None:
             return {'n_outliers': 0, 'n_total': 0, 'fraction_outliers': 0.0}
         
@@ -1114,8 +1401,13 @@ class ReflectionData(DebugMixin, nn.Module):
     def unpack_one(self):
         """
         Unpack one level of source.
-        Does not recurse fully.
-        Also does not flag. 
+
+        Does not recurse fully and does not flag.
+
+        Returns
+        -------
+        ReflectionData
+            Parent source or self if no source.
         """
         if self.source is not None:
             return self.source
@@ -1124,20 +1416,28 @@ class ReflectionData(DebugMixin, nn.Module):
     def get_lognormal_sigma(self, F: Optional[torch.Tensor] = None, 
                            sigma_F: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Convert Gaussian parameters (F, sigma_F) to lognormal sigma parameter.
-        
+        Convert Gaussian parameters to lognormal sigma parameter.
+
         For a lognormal distribution, if X ~ LogNormal(μ, σ²), then:
         - E[X] = exp(μ + σ²/2)
         - Var(X) = exp(2μ + σ²)(exp(σ²) - 1)
-        
-        Given observed F (mean) and sigma_F (standard deviation), we can solve for σ.
-        
-        Args:
-            F: Structure factor amplitudes (uses self.F if None)
-            sigma_F: Standard deviations (uses self.F_sigma if None)
-            
-        Returns:
-            torch.Tensor: Sigma parameter for lognormal distribution
+
+        Parameters
+        ----------
+        F : torch.Tensor, optional
+            Structure factor amplitudes. Uses self.F if None.
+        sigma_F : torch.Tensor, optional
+            Standard deviations. Uses self.F_sigma if None.
+
+        Returns
+        -------
+        torch.Tensor
+            Sigma parameter for lognormal distribution.
+
+        Raises
+        ------
+        ValueError
+            If F and sigma_F are not provided and not available in self.
         """
         if F is None:
             F = self.F
@@ -1150,11 +1450,17 @@ class ReflectionData(DebugMixin, nn.Module):
         return gaussian_to_lognormal_sigma(F, sigma_F)
 
     def flag_suspicious_sigma(self, z_threshold: float = 5.0) -> None:
-        '''
-        Sigma values from a detector should follow a pretty tight log normal distribution.
-        The distribution might not be super pretty but the outlier scoring should be robust.
-        All values with z_threshold sigma away from the mean of log(sigma) are flagged as suspicious.
-        '''
+        """
+        Flag sigma values that deviate significantly from expected distribution.
+
+        Sigma values from a detector should follow a log-normal distribution.
+        Values with z-scores beyond threshold are flagged as suspicious.
+
+        Parameters
+        ----------
+        z_threshold : float, optional
+            Z-score threshold for flagging outliers. Default is 5.0.
+        """
         sigmas = self.F_sigma
         log_sigmas = torch.log(sigmas)
         flagged_initial = torch.isnan(log_sigmas) | torch.isinf(log_sigmas)
@@ -1170,7 +1476,11 @@ class ReflectionData(DebugMixin, nn.Module):
         self.masks['flagged_sigma'] = ~flagged
 
     def dump(self):
-        """Dump all reflection data to console for debugging."""
+        """
+        Dump all reflection data to console for debugging.
+
+        Prints type, shape, and device information for all attributes.
+        """
         print("ReflectionData dump:")
         for key in self.__dict__:
             value = self.__dict__[key]
@@ -1182,33 +1492,41 @@ class ReflectionData(DebugMixin, nn.Module):
     def write_mtz(self, fname: str, fcalc: Optional[torch.Tensor] = None, 
                   model_ft: Optional[ModelFT] = None, fill_to_resolution: bool = True) -> None:
         """
-        Write reflection data to MTZ file with optional calculated structure factors and map coefficients.
-        
-        Args:
-            fname: Output MTZ filename
-            fcalc: Optional complex calculated structure factors (shape: [N])
-                   If provided, will compute phases and map coefficients (2mFo-DFc, mFo-DFc)
-            model_ft: Optional ModelFT object to compute fcalc if not provided
-            fill_to_resolution: If True and fcalc provided, fill map coefficients to resolution limit
-                               (default: True). This ensures complete maps for visualization.
-        
-        The MTZ file will contain canonical column names for maximum compatibility:
+        Write reflection data to MTZ file with optional map coefficients.
+
+        Parameters
+        ----------
+        fname : str
+            Output MTZ filename.
+        fcalc : torch.Tensor, optional
+            Complex calculated structure factors of shape (N,).
+            If provided, computes phases and map coefficients.
+        model_ft : ModelFT, optional
+            ModelFT object to compute fcalc if not provided.
+        fill_to_resolution : bool, optional
+            If True and fcalc provided, fill map coefficients to resolution
+            limit. Default is True.
+
+        Notes
+        -----
+        The MTZ file will contain canonical column names:
             - FP, SIGFP: Observed amplitudes and uncertainties
             - I, SIGI: Observed intensities and uncertainties (if available)
             - FreeR_flag: R-free test set flags
             - FWT, PHWT: 2mFo-DFc map coefficients (if fcalc provided)
             - DELFWT, PHDELWT: mFo-DFc map coefficients (if fcalc provided)
-        
-        Map coefficients are computed using:
+
+        Map coefficients are computed as:
             - 2mFo-DFc: 2*Fo - Fc (filled to resolution limit)
             - mFo-DFc: Fo - Fc
-        
-        Example:
-            >>> data = ReflectionData().load_mtz('observed.mtz')
-            >>> model = Model().load_pdb('model.pdb')
-            >>> model_ft = ModelFT(model, data.cell, data.spacegroup)
-            >>> fcalc = model_ft.forward(data.hkl)
-            >>> data.write_mtz('output.mtz', fcalc=fcalc)
+
+        Examples
+        --------
+        >>> data = ReflectionData().load_mtz('observed.mtz')
+        >>> model = Model().load_pdb('model.pdb')
+        >>> model_ft = ModelFT(model, data.cell, data.spacegroup)
+        >>> fcalc = model_ft.forward(data.hkl)
+        >>> data.write_mtz('output.mtz', fcalc=fcalc)
         """
         from torchref.io import file_writers
         
@@ -1296,20 +1614,23 @@ class ReflectionData(DebugMixin, nn.Module):
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         """
-        Returns a dictionary containing the complete state of the ReflectionData.
-        
-        This includes:
-        - All registered buffers (hkl, F, I, rfree_flags, etc.)
-        - Masks (via TensorMasks.state_dict())
-        - Metadata (spacegroup, data sources, outlier params, etc.)
-        
-        Args:
-            destination: Optional dict to populate
-            prefix: Prefix for parameter names
-            keep_vars: Whether to keep variables in computational graph
-            
-        Returns:
-            dict: Complete state dictionary
+        Return dictionary containing complete state of ReflectionData.
+
+        Includes all registered buffers, masks, and metadata.
+
+        Parameters
+        ----------
+        destination : dict, optional
+            Optional dict to populate.
+        prefix : str, optional
+            Prefix for parameter names.
+        keep_vars : bool, optional
+            Whether to keep variables in computational graph.
+
+        Returns
+        -------
+        dict
+            Complete state dictionary.
         """
         # Get parent class state_dict (includes all registered buffers)
         state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
@@ -1331,10 +1652,12 @@ class ReflectionData(DebugMixin, nn.Module):
 
     def save_state(self, path: str):
         """
-        Save the complete state of the reflection data to a file.
-        
-        Args:
-            path (str): Path to save the state dictionary to.
+        Save complete state of reflection data to file.
+
+        Parameters
+        ----------
+        path : str
+            Path to save the state dictionary to.
         """
         torch.save(self.state_dict(), path)
         if self.verbose > 0:
@@ -1342,11 +1665,14 @@ class ReflectionData(DebugMixin, nn.Module):
 
     def load_state(self, path: str, strict: bool = True):
         """
-        Load the complete state of the reflection data from a file.
-        
-        Args:
-            path (str): Path to load the state dictionary from.
-            strict (bool): Whether to strictly enforce that keys match.
+        Load complete state of reflection data from file.
+
+        Parameters
+        ----------
+        path : str
+            Path to load the state dictionary from.
+        strict : bool, optional
+            Whether to strictly enforce that keys match. Default is True.
         """
         state_dict = torch.load(path, map_location=self.device)
         self.load_state_dict(state_dict, strict=strict)

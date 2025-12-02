@@ -7,8 +7,18 @@ from torchref.io import cif_readers
 def validate_restraint_data(residue_data, cif_path):
     """
     Validate that the CIF file contains actual restraint parameters.
-    
-    Raises ValueError if the file doesn't contain proper restraint data.
+
+    Parameters
+    ----------
+    residue_data : dict
+        Dictionary of residue restraint data from CIF file.
+    cif_path : str or Path
+        Path to the CIF file being validated.
+
+    Raises
+    ------
+    ValueError
+        If the file doesn't contain proper restraint data.
     """
     if not residue_data:
         raise ValueError(f"CIF file {cif_path} contains no compound definitions")
@@ -50,24 +60,29 @@ def validate_restraint_data(residue_data, cif_path):
 def read_cif(cif_path):
     """
     Read restraint CIF file using the new RestraintCIFReader.
-    
-    Returns dictionary with standardized keys for compatibility with restraints.py:
-    {
-        'comp_id': {
-            'bond': DataFrame with bond restraints (standardized columns),
-            'angle': DataFrame with angle restraints (standardized columns),
-            'torsion': DataFrame with torsion restraints (standardized columns),
-            'plane': DataFrame with planarity restraints (standardized columns),
-            'chiral': DataFrame with chirality definitions (standardized columns),
-            'atom': DataFrame with atom definitions (standardized columns)
-        }
-    }
-    
-    Args:
-        cif_path: Path to restraint CIF file
-    
-    Returns:
-        Dictionary mapping compound IDs to restraint data with standardized keys
+
+    Returns dictionary with standardized keys for compatibility with restraints.py.
+
+    Parameters
+    ----------
+    cif_path : str or Path
+        Path to restraint CIF file.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping compound IDs to restraint data with standardized keys::
+
+            {
+                'comp_id': {
+                    'bond': DataFrame with bond restraints,
+                    'angle': DataFrame with angle restraints,
+                    'torsion': DataFrame with torsion restraints,
+                    'plane': DataFrame with planarity restraints,
+                    'chiral': DataFrame with chirality definitions,
+                    'atom': DataFrame with atom definitions
+                }
+            }
     """
     # Use the new RestraintCIFReader
     reader = cif_readers.RestraintCIFReader(cif_path)
@@ -83,7 +98,18 @@ def read_cif(cif_path):
 def split_respecting_quotes(line):
     """
     Split a line by whitespace, but preserve quoted strings intact.
+
     Handles both single and double quotes.
+
+    Parameters
+    ----------
+    line : str
+        Input line to split.
+
+    Returns
+    -------
+    list of str
+        List of tokens split by whitespace, with quoted strings preserved.
     """
     line_new = ''
     in_quotes = False
@@ -106,16 +132,20 @@ def split_respecting_quotes(line):
 def find_cif_file_in_library(resname):
     """
     Find a CIF file in the external monomer library based on residue name.
-    
+
     The library is organized by first character (e.g., 'ALA' -> 'a/ALA.cif').
     This function works regardless of the current working directory by
     calculating the path relative to this script's location.
-    
-    Args:
-        resname: Residue name (e.g., 'ALA', 'GLY', 'ATP')
-    
-    Returns:
-        Path object pointing to the CIF file, or None if not found
+
+    Parameters
+    ----------
+    resname : str
+        Residue name (e.g., 'ALA', 'GLY', 'ATP').
+
+    Returns
+    -------
+    Path or None
+        Path object pointing to the CIF file, or None if not found.
     """
     # Get the directory containing this script
     script_dir = Path(__file__).parent.parent
@@ -141,14 +171,23 @@ def find_cif_file_in_library(resname):
 
 def read_link_definitions():
     """
-    Read link definitions from mon_lib_list.cif
-    
-    Returns a dictionary where keys are link IDs (e.g., 'TRANS', 'CIS')
-    and values are dictionaries containing:
-    - 'info': Basic link information
-    - 'bonds': DataFrame of inter-residue bonds
-    - 'angles': DataFrame of inter-residue angles
-    - 'torsions': DataFrame of inter-residue torsions
+    Read link definitions from mon_lib_list.cif.
+
+    Returns
+    -------
+    tuple
+        A tuple of (link_dict, link_list) where:
+
+        - link_dict : dict
+            Dictionary where keys are link IDs (e.g., 'TRANS', 'CIS')
+            and values are dictionaries containing:
+
+            - 'bonds': DataFrame of inter-residue bonds
+            - 'angles': DataFrame of inter-residue angles
+            - 'torsions': DataFrame of inter-residue torsions
+
+        - link_list : DataFrame
+            DataFrame containing the list of all link definitions.
     """
     link_file_path = Path(__file__).parent.parent.parent / "external_monomer_library" / 'list' / "mon_lib_list.cif"
     with open(link_file_path) as f:
@@ -256,13 +295,26 @@ def read_link_definitions():
 def _standardize_link_columns(df, section_type):
     """
     Standardize column names in link definitions to match restraint CIF format.
-    
+
     Converts from _chem_link format to standardized format:
+
     - atom_id_1/2/3/4 -> atom1/2/3/4
     - value_dist -> value
     - value_dist_esd -> sigma
     - value_angle -> value
     - value_angle_esd -> sigma
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame with link restraint data.
+    section_type : str
+        Type of restraint section ('bonds', 'angles', 'torsions', 'planes').
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with standardized column names.
     """
     if df.empty:
         return df
@@ -303,7 +355,22 @@ def _standardize_link_columns(df, section_type):
     return df
 
 
-def build_restraints_bondlength(cif,pdb):
+def build_restraints_bondlength(cif, pdb):
+    """
+    Build bond length restraints from CIF dictionary and PDB DataFrame.
+
+    Parameters
+    ----------
+    cif : dict
+        CIF dictionary containing bond restraint definitions.
+    pdb : pandas.DataFrame
+        PDB DataFrame with atomic coordinates.
+
+    Returns
+    -------
+    list
+        List containing [column1, column2, references, sigmas] tensors.
+    """
     columns1 = []
     columns2 = []
     references = []
@@ -336,7 +403,22 @@ def build_restraints_bondlength(cif,pdb):
     sigmas = torch.tensor(np.concatenate(sigmas,dtype=float))
     return [column1,column2,references,sigmas]
 
-def build_restraints_angles(cif,pdb):
+def build_restraints_angles(cif, pdb):
+    """
+    Build angle restraints from CIF dictionary and PDB DataFrame.
+
+    Parameters
+    ----------
+    cif : dict
+        CIF dictionary containing angle restraint definitions.
+    pdb : pandas.DataFrame
+        PDB DataFrame with atomic coordinates.
+
+    Returns
+    -------
+    list
+        List containing [column1, column2, column3, references, sigmas] tensors.
+    """
     columns1 = []
     columns2 = []
     columns3 = []
@@ -373,7 +455,22 @@ def build_restraints_angles(cif,pdb):
     sigmas = torch.tensor(np.concatenate(sigmas,dtype=float))
     return [column1,column2,column3,references,sigmas]
 
-def build_restraints_torsion(cif,pdb):
+def build_restraints_torsion(cif, pdb):
+    """
+    Build torsion angle restraints from CIF dictionary and PDB DataFrame.
+
+    Parameters
+    ----------
+    cif : dict
+        CIF dictionary containing torsion restraint definitions.
+    pdb : pandas.DataFrame
+        PDB DataFrame with atomic coordinates.
+
+    Returns
+    -------
+    list
+        List containing [column1, column2, column3, column4, references, sigmas] tensors.
+    """
     columns1 = []
     columns2 = []
     columns3 = []
@@ -414,7 +511,22 @@ def build_restraints_torsion(cif,pdb):
     sigmas = torch.tensor(np.concatenate(sigmas,dtype=float))
     return [column1,column2,column3,column4,references,sigmas]
 
-def build_restraints_planes(cif,pdb):
+def build_restraints_planes(cif, pdb):
+    """
+    Build planarity restraints from CIF dictionary and PDB DataFrame.
+
+    Parameters
+    ----------
+    cif : dict
+        CIF dictionary containing plane restraint definitions.
+    pdb : pandas.DataFrame
+        PDB DataFrame with atomic coordinates.
+
+    Returns
+    -------
+    list
+        List containing [column1, plane_numbers, sigmas] tensors.
+    """
     columns1 = []
     planenrs = []
     references = []
@@ -448,7 +560,23 @@ def build_restraints_planes(cif,pdb):
     sigmas = torch.tensor(np.concatenate(sigmas,dtype=float))
     return [column1,planenrs,sigmas]
 
-def build_restraints(cif,pdb):
+def build_restraints(cif, pdb):
+    """
+    Build all restraints from CIF dictionary and PDB DataFrame.
+
+    Parameters
+    ----------
+    cif : dict
+        CIF dictionary containing restraint definitions.
+    pdb : pandas.DataFrame
+        PDB DataFrame with atomic coordinates.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys 'bondlength', 'angles', 'torsion', 'planes'
+        containing the respective restraint data.
+    """
     bondlength = build_restraints_bondlength(cif,pdb)
     angles = build_restraints_angles(cif,pdb)
     torsion = build_restraints_torsion(cif,pdb)
@@ -460,7 +588,22 @@ def build_restraints(cif,pdb):
     restraints['planes'] = planes
     return restraints
 
-def calculate_restraints_bondlength(xyz,restraints_bondlength):
+def calculate_restraints_bondlength(xyz, restraints_bondlength):
+    """
+    Calculate bond length restraint energy.
+
+    Parameters
+    ----------
+    xyz : torch.Tensor
+        Atomic coordinates tensor of shape (N, 3).
+    restraints_bondlength : list
+        List containing [column1, column2, reference, sigma] tensors.
+
+    Returns
+    -------
+    torch.Tensor
+        Total bond length restraint energy.
+    """
     column1 = restraints_bondlength[0]
     column2 = restraints_bondlength[1]
     reference = restraints_bondlength[2]
@@ -468,7 +611,22 @@ def calculate_restraints_bondlength(xyz,restraints_bondlength):
     distances = torch.sum((xyz[column1] - xyz[column2])**2, axis = 1) ** 0.5
     return torch.sum(torch.exp((torch.abs(distances - reference)/sigma)**2))
 
-def calculate_restraints_angles(xyz,restraints_angles):
+def calculate_restraints_angles(xyz, restraints_angles):
+    """
+    Calculate angle restraint energy.
+
+    Parameters
+    ----------
+    xyz : torch.Tensor
+        Atomic coordinates tensor of shape (N, 3).
+    restraints_angles : list
+        List containing [column1, column2, column3, reference, sigma] tensors.
+
+    Returns
+    -------
+    torch.Tensor
+        Total angle restraint energy.
+    """
     column1 = restraints_angles[0]
     column2 = restraints_angles[1]
     column3 = restraints_angles[2]
@@ -481,7 +639,22 @@ def calculate_restraints_angles(xyz,restraints_angles):
     angle = torch.arccos(torch.sum(v1*v2,axis=1)) * 180 / np.pi
     return torch.sum(torch.exp(torch.abs((angle - reference))/sigma))
 
-def calculate_restraints_torsion(xyz,restraints_torsion):
+def calculate_restraints_torsion(xyz, restraints_torsion):
+    """
+    Calculate torsion angle restraint energy.
+
+    Parameters
+    ----------
+    xyz : torch.Tensor
+        Atomic coordinates tensor of shape (N, 3).
+    restraints_torsion : list
+        List containing [column1, column2, column3, column4, reference, sigma] tensors.
+
+    Returns
+    -------
+    torch.Tensor
+        Total torsion angle restraint energy.
+    """
     column1 = restraints_torsion[0]
     column2 = restraints_torsion[1]
     column3 = restraints_torsion[2]
@@ -500,13 +673,43 @@ def calculate_restraints_torsion(xyz,restraints_torsion):
     dif = torch.min(torch.vstack((torch.abs(dif),torch.abs(dif+180),torch.abs(dif-180),torch.abs(dif-360),torch.abs(dif+360))),axis=0)[0]
     return torch.sum(torch.exp(torch.abs(dif)/sigma))
 
-def calculate_restraints_all(xyz,restraints):
+def calculate_restraints_all(xyz, restraints):
+    """
+    Calculate total restraint energy for all restraint types.
+
+    Parameters
+    ----------
+    xyz : torch.Tensor
+        Atomic coordinates tensor of shape (N, 3).
+    restraints : dict
+        Dictionary containing 'bondlength', 'angles', and 'torsion' restraints.
+
+    Returns
+    -------
+    torch.Tensor
+        Total restraint energy (sum of bondlength, angles, and torsion energies).
+    """
     bondlength = calculate_restraints_bondlength(xyz,restraints['bondlength'])
     angles = calculate_restraints_angles(xyz,restraints['angles'])
     torsion = calculate_restraints_torsion(xyz,restraints['torsion'])
     return bondlength + angles + torsion
     
-def read_for_component(lines,comp_id):
+def read_for_component(lines, comp_id):
+    """
+    Read CIF data for a specific component/compound ID.
+
+    Parameters
+    ----------
+    lines : list of str
+        Lines from CIF file.
+    comp_id : str
+        Component ID to search for.
+
+    Returns
+    -------
+    dict or None
+        Dictionary of DataFrames for different data types, or None if not found.
+    """
     lines = iter(lines)
     for line in lines:
         # Handle both formats: 
@@ -592,6 +795,19 @@ def read_for_component(lines,comp_id):
             return dfs
 
 def read_comp_list(lines):
+    """
+    Read the compound list from CIF file lines.
+
+    Parameters
+    ----------
+    lines : list of str
+        Lines from CIF file.
+
+    Returns
+    -------
+    pandas.DataFrame or None
+        DataFrame with compound list data, or None if not found.
+    """
     lines = iter(lines)
     for line in lines:
         if line.strip() == 'data_comp_list':

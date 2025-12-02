@@ -1,23 +1,63 @@
-'''
-A small collection of writer functions
-'''
+"""
+File writers for crystallographic data.
+
+This module provides functions for writing crystallographic data to various
+file formats including PDB, CCP4 maps, and MTZ files.
+
+Functions
+---------
+write_pdb_line
+    Write a single ATOM/HETATM record to a PDB file.
+write_file
+    Write a DataFrame to a PDB file.
+write_ccp4
+    Write electron density map to a CCP4 file.
+write_mtz
+    Write reflection data to an MTZ file.
+"""
+
 import numpy as np
 import torch
+from typing import Union, List, Optional
+import pandas as pd
 
-def write_pdb_line(f,row):
+
+def write_pdb_line(f, row) -> None:
+    """
+    Write a single ATOM/HETATM line to a PDB file.
+
+    Parameters
+    ----------
+    f : file object
+        Open file handle for writing.
+    row : tuple or list
+        Row containing: ATOM/HETATM, serial, name, altloc, resname, chainid,
+        resseq, icode, x, y, z, occupancy, tempfactor, element, charge.
+    """
     f.write(f'{row[0]:<{7}}{int(row[1]):<{6}}{str(row[2]):<{3}}{str(row[3]):>{1}}{str(row[4]):>{3}}{str(row[5]):>{2}}{int(row[6]):>{4}}{str(row[7]):>{4}}{round(row[8],3):>{8}}{round(row[9],3):>{8}}{round(row[10],3):>{8}}{row[11]:>{6}}{round(row[12],2):>{6}}{str(row[13]):>{12}}{str(row[14]):>{2}}\n')
 
 
-def write_file(df,fname,template= None):
-    '''
-    
-    Write a DataFrame to a PDB file
-    Args:
-        df (pd.DataFrame): DataFrame containing atom data
-        fname (str): Output PDB filename
-        template (str): Optional PDB template file to copy header from
+def write_file(df, fname, template=None):
+    """
+    Write a DataFrame to a PDB file.
 
-    '''
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing atom data with columns: ATOM, serial, name,
+        altloc, resname, chainid, resseq, icode, x, y, z, occupancy,
+        tempfactor, element, charge.
+    fname : str
+        Output PDB filename.
+    template : str, optional
+        PDB template file to copy header from.
+
+    Notes
+    -----
+    If the DataFrame has 'cell' and 'spacegroup' attributes, a CRYST1
+    record will be written. Anisotropic B-factors will be written if
+    'anisou_flag' column is True.
+    """
     with open(fname,'w') as n:
         try: 
             cell = df.attrs['cell']
@@ -69,13 +109,23 @@ def write_file(df,fname,template= None):
 
 
 def write_ccp4(data, cell, fname):
-    '''
-    Write a 3D numpy array or torch tensor to a CCP4 file using gemmi
-    Args:
-        data (np.ndarray or torch.Tensor): 3D array of map data
-        cell (list or torch.Tensor): Unit cell parameters [a, b, c, alpha, beta, gamma]
-        fname (str): Output CCP4 filename
-    '''
+    """
+    Write a 3D numpy array or torch tensor to a CCP4 file.
+
+    Parameters
+    ----------
+    data : numpy.ndarray or torch.Tensor
+        3D array of map data.
+    cell : list, numpy.ndarray, or torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
+    fname : str
+        Output CCP4 filename.
+
+    Returns
+    -------
+    int
+        Returns 1 on success.
+    """
     import gemmi
     if isinstance(data, torch.Tensor):
         np_map = data.detach().cpu().numpy().astype(np.float32)
@@ -99,15 +149,35 @@ def write_ccp4(data, cell, fname):
 
 
 def write_mtz(df, cell, spacegroup, fname):
-    '''
-    Write a DataFrame to an MTZ file using reciprocalspaceship
-    
-    Args:
-        df (pd.DataFrame): DataFrame containing reflection data
-        cell (list): Unit cell parameters [a, b, c, alpha, beta, gamma]
-        spacegroup (str or gemmi.SpaceGroup): Spacegroup symbol, number, or gemmi SpaceGroup object
-        fname (str): Output MTZ filename
-    '''
+    """
+    Write a DataFrame to an MTZ file.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing reflection data. Expected columns include
+        H, K, L (Miller indices) and data columns like Fobs, I-obs, etc.
+    cell : list, numpy.ndarray, or torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
+    spacegroup : str or gemmi.SpaceGroup
+        Space group symbol (e.g., 'P 21 21 21'), number, or gemmi SpaceGroup object.
+    fname : str
+        Output MTZ filename.
+
+    Returns
+    -------
+    int
+        Returns 1 on success.
+
+    Notes
+    -----
+    Columns are automatically assigned appropriate MTZ data types:
+    - Structure factors (Fobs, 2FOFCWT, etc.): MTZDtype 'F'
+    - Intensities (I-obs): MTZDtype 'J'
+    - Sigmas (SIGF-obs, SIGI-obs): MTZDtype 'Q'
+    - Phases (PH2FOFCWT, etc.): MTZDtype 'P'
+    - Flags (R-free-flags): MTZDtype 'I'
+    """
 
     import reciprocalspaceship as rs
     import gemmi

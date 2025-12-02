@@ -14,15 +14,38 @@ from torchref.utils.debug_utils import DebugMixin
 class SolventModel(DebugMixin, nn.Module):
     """
     SolventModel to compute solvent contribution to structure factors using Phenix-like approach.
-    
+
     Supports two initialization patterns:
-    
+
     1. Empty initialization (for state_dict loading):
         >>> solvent = SolventModel()  # Creates empty shell
         >>> solvent.load_state_dict(torch.load('solvent.pt'))
-    
+
     2. Full initialization with model:
         >>> solvent = SolventModel(model, k_solvent=0.35, b_solvent=46.0)
+
+    Attributes
+    ----------
+    model : ModelFT or None
+        The atomic model for structure factor calculations.
+    device : torch.device
+        Device for tensor operations.
+    verbose : int
+        Verbosity level.
+    float_type : torch.dtype
+        Floating point data type.
+    solvent_radius : float
+        Probe radius in Angstroms for dilation.
+    erosion_radius : float
+        Radius in Angstroms for erosion step.
+    optimize_phase : bool
+        Whether to optimize phase offset parameter.
+    log_k_solvent : torch.nn.Parameter
+        Log of solvent scattering scale factor.
+    b_solvent : torch.nn.Parameter
+        Solvent B-factor.
+    phase_offset : torch.nn.Parameter or buffer
+        Phase offset in radians.
     """
     
     def __init__(self, model=None, radius=1.1, k_solvent=1.1, b_solvent=50.0, erosion_radius=0.9, 
@@ -30,20 +53,34 @@ class SolventModel(DebugMixin, nn.Module):
                  float_type=torch.float32, device=torch.device('cpu')):
         """
         Initialize SolventModel.
-        
+
         If model is provided, fully initializes the solvent model.
         If not provided (empty init), creates a shell ready for load_state_dict().
 
-        Args:
-            model (ModelFT): The atomic model used for structure factor calculations (optional for empty init)
-            radius (float): Probe radius in Angstroms for dilation (default: 1.1 Å, water radius)
-            k_solvent (float): Solvent scattering scale factor
-            b_solvent (float): Solvent B-factor
-            erosion_radius (float): Radius in Angstroms for erosion step (default: 0.9 Å)
-            transition (float): Gaussian smoothing sigma for mask edges (default: radius/4 in voxels)
-            optimize_phase (bool): Whether to optimize phase offset parameter (default: True)
-            initial_phase_offset (float): Initial phase offset in radians (default: 0.0)
-            verbose (int): Verbosity level
+        Parameters
+        ----------
+        model : ModelFT, optional
+            The atomic model used for structure factor calculations (optional for empty init).
+        radius : float, default 1.1
+            Probe radius in Angstroms for dilation (water radius).
+        k_solvent : float, default 1.1
+            Solvent scattering scale factor.
+        b_solvent : float, default 50.0
+            Solvent B-factor.
+        erosion_radius : float, default 0.9
+            Radius in Angstroms for erosion step.
+        transition : float, optional
+            Gaussian smoothing sigma for mask edges (default: radius/4 in voxels).
+        optimize_phase : bool, default True
+            Whether to optimize phase offset parameter.
+        initial_phase_offset : float, default 0.0
+            Initial phase offset in radians.
+        verbose : int, default 1
+            Verbosity level.
+        float_type : torch.dtype, default torch.float32
+            Floating point data type.
+        device : torch.device, default torch.device('cpu')
+            Device for tensor operations.
         """
         super(SolventModel, self).__init__()
         self.device = device
@@ -129,22 +166,26 @@ class SolventModel(DebugMixin, nn.Module):
     def get_solvent_mask(self):
         """
         Generate solvent mask following Phenix approach with three-step process.
+
         FULLY VECTORIZED - no loops over atoms or voxels.
-        
+
         Step 1: Create three-valued mask (dilation) - VECTORIZED
             - 0: Inside atomic VdW radii (protein core)
             - -1: Between VdW and VdW+solvent_radius (accessible surface boundary)
             - 1: Beyond VdW+solvent_radius (bulk solvent)
-        
+
         Step 2: Apply symmetry to complete mask with all symmetry mates
-        
+
         Step 3: Erosion - smooth boundary using 3D convolution - VECTORIZED
-            - For each boundary point (-1), check if any neighbor within 
+            - For each boundary point (-1), check if any neighbor within
               shrink_truncation_radius is solvent (1)
             - If yes: point becomes solvent (1)
             - If no: point becomes protein (0)
-        Returns:
-            solvent_mask: Boolean mask where True = solvent
+
+        Returns
+        -------
+        torch.Tensor
+            Solvent mask (boolean) where True = solvent.
         """
         if self.verbose > 1:
             print("\n=== Phenix-Style Bulk Solvent Mask Calculation (VECTORIZED) ===")
@@ -280,14 +321,19 @@ class SolventModel(DebugMixin, nn.Module):
     def get_rec_solvent(self, hkl):
         """
         Compute solvent structure factors.
-        
+
         Uses the standard crystallographic approach: compute SFs from the solvent mask.
         The mask represents regions where bulk solvent scattering occurs.
-        
-        Args:
-            hkl: Miller indices
-            F_obs: Observed structure factor amplitudes (optional, for future difference-map approach)
-            F_calc: Calculated structure factors from protein (optional, for future difference-map approach)
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex solvent structure factors.
         """
 
         assert hasattr(self, 'mask_smoothed'), 'Smoothed solvent mask not computed. Call smooth_solvent_mask() first.'
@@ -297,10 +343,12 @@ class SolventModel(DebugMixin, nn.Module):
     def forward(self, hkl, update_fsol=False, F_protein=None):
         """
         Compute solvent contribution to structure factors at given HKL.
-        
-        This method is differentiable with respect to k_solvent, b_solvent, and phase_offset parameters.
-        
+
+        This method is differentiable with respect to k_solvent, b_solvent,
+        and phase_offset parameters.
+
         The solvent model:
+
         1. Takes the binary solvent mask
         2. Smooths it with Gaussian filter (σ=1.5 voxels) to create soft edges
         3. Computes structure factors via FFT
@@ -308,13 +356,20 @@ class SolventModel(DebugMixin, nn.Module):
         5. If optimize_phase=True and F_protein provided: blends mask phases with protein phases
            phase_offset controls the blend: 0=use mask phases, ±π=use protein phases
         6. Scales by k_solvent
-        
-        Args:
-            hkl: Miller indices, shape (N, 3)
-            F_protein: Protein structure factors (optional), used for phase blending
-            
-        Returns:
-            torch.Tensor: Complex solvent structure factors, shape (N,)
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices, shape (N, 3).
+        update_fsol : bool, default False
+            Whether to update solvent structure factors.
+        F_protein : torch.Tensor, optional
+            Protein structure factors, used for phase blending.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex solvent structure factors, shape (N,).
         """
         
         if not update_fsol:

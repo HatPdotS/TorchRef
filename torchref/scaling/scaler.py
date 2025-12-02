@@ -23,31 +23,61 @@ from torchref.utils.utils import ModuleReference
 class Scaler(DebugMixin, nn.Module):
     """
     Scaler class to apply scaling and corrections to calculated structure factors.
-    
+
     Supports two initialization patterns:
-    
-    1. Empty initialization (for state_dict loading):
+
+    1. Empty initialization (for state_dict loading)::
+
         >>> scaler = Scaler()  # Creates empty shell
         >>> scaler.load_state_dict(torch.load('scaler.pt'))
-    
-    2. Full initialization with model and data:
+
+    2. Full initialization with model and data::
+
         >>> scaler = Scaler(model, reflection_data, nbins=20)
         >>> scaler.initialize()
+
+    Parameters
+    ----------
+    model : Model, optional
+        Model object for structure factor calculation.
+    data : ReflectionData, optional
+        ReflectionData object with observed data.
+    nbins : int, default 20
+        Number of resolution bins.
+    verbose : int, default 1
+        Verbosity level.
+    device : torch.device, default torch.device('cpu')
+        Computation device.
+
+    Attributes
+    ----------
+    device : torch.device
+        Current computation device.
+    nbins : int
+        Number of resolution bins.
+    frozen : bool
+        Whether the scaler parameters are frozen.
     """
     
     def __init__(self, model=None, data: ReflectionData = None, nbins: int = 20, verbose: int = 1, device=torch.device('cpu')):
         """
         Initialize Scaler.
-        
+
         If model and data are provided, fully initializes the scaler.
         If not provided (empty init), creates a shell ready for load_state_dict().
-        
-        Args:
-            model: Model object for structure factor calculation (optional for empty init)
-            data: ReflectionData object with observed data (optional for empty init)
-            nbins: Number of resolution bins (default: 20)
-            verbose: Verbosity level (default: 1)
-            device: Computation device (default: cpu)
+
+        Parameters
+        ----------
+        model : Model, optional
+            Model object for structure factor calculation.
+        data : ReflectionData, optional
+            ReflectionData object with observed data.
+        nbins : int, default 20
+            Number of resolution bins.
+        verbose : int, default 1
+            Verbosity level.
+        device : torch.device, default torch.device('cpu')
+            Computation device.
         """
         super(Scaler, self).__init__()
         self.device = device
@@ -81,13 +111,16 @@ class Scaler(DebugMixin, nn.Module):
     def set_model_and_data(self, model, data: ReflectionData):
         """
         Set model and data references after empty initialization.
-        
+
         This is useful when loading from state_dict and then needing
         to reconnect to model/data objects.
-        
-        Args:
-            model: Model object for structure factor calculation
-            data: ReflectionData object with observed data
+
+        Parameters
+        ----------
+        model : Model
+            Model object for structure factor calculation.
+        data : ReflectionData
+            ReflectionData object with observed data.
         """
         self._model = ModuleReference(model)
         self._data = ModuleReference(data)
@@ -119,7 +152,13 @@ class Scaler(DebugMixin, nn.Module):
     def calc_initial_scale(self):
         """
         Calculate the initial scale factor based on the ratio of observed to calculated structure factors.
+
         Excludes reflections with negative intensities to avoid bias from French-Wilson conversion.
+
+        Returns
+        -------
+        torch.nn.Parameter
+            The log scale parameter for each resolution bin.
         """
         hkl, fobs, sigma, rfree = self._data(mask=False)
         fcalc = self._model(hkl)
@@ -198,7 +237,7 @@ class Scaler(DebugMixin, nn.Module):
     def setup_binwise_solvent_scale(self):
         """
         Setup bin-wise solvent scaling (Phenix-style kmask per bin).
-        
+
         This allows finer control over solvent contribution per resolution bin,
         which is more flexible than a single global B_sol parameter.
         """
@@ -241,8 +280,10 @@ class Scaler(DebugMixin, nn.Module):
         """
         Move the Scaler module to GPU.
 
-        Args:
-            device (torch.device, optional): The target device. If None, uses the default CUDA device.
+        Parameters
+        ----------
+        device : torch.device, optional
+            The target device. If None, uses the default CUDA device.
         """
         super().cuda(device)
         if hasattr(self, 'solvent'):
@@ -266,10 +307,10 @@ class Scaler(DebugMixin, nn.Module):
         """
         Calculate the R-factor between observed and calculated structure factors.
 
-        Args:
-            fcalc (torch.Tensor): Calculated structure factors.
-        Returns:
-            float: R-factor value.
+        Returns
+        -------
+        tuple
+            R-work and R-free values.
         """
         hkl, fobs, _, rfree = self._data()
         fcalc = self._model(hkl)
@@ -280,11 +321,19 @@ class Scaler(DebugMixin, nn.Module):
         """
         Calculate the bin-wise R-factor between observed and calculated structure factors.
 
-        Args:
-            fcalc (torch.Tensor): Calculated structure factors.
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Calculated structure factors. If None, computed from model.
 
-        Returns:
-            tuple: Mean resolution per bin, R work per bin, R free per bin.
+        Returns
+        -------
+        mean_res_per_bin : torch.Tensor
+            Mean resolution per bin.
+        rwork_per_bin : torch.Tensor
+            R-work per bin.
+        rfree_per_bin : torch.Tensor
+            R-free per bin.
         """
         hkl, fobs, _, rfree = self._data()
         if fcalc is None:
@@ -324,18 +373,25 @@ class Scaler(DebugMixin, nn.Module):
                                fit_on_low_res_only=True, low_res_limit=3.5):
         """
         Screen solvent parameters (k_sol, B_sol) using grid search.
-        
+
         The bulk solvent contributes primarily at low resolution. Fitting on low-resolution
         reflections only (fit_on_low_res_only=True) prevents high-resolution reflections
         from dominating the optimization and pushing B_sol too low.
-        
-        Args:
-            steps: Number of grid points for each parameter
-            use_low_res_weighting: If True, weight low-resolution reflections more heavily
-                                   since solvent primarily contributes at low resolution
-            low_res_cutoff: Resolution cutoff for weighting (Angstroms) - only used if use_low_res_weighting=True
-            fit_on_low_res_only: If True, fit using only low-resolution reflections 
-            low_res_limit: Resolution limit for low-res only fitting (Angstroms)
+
+        Parameters
+        ----------
+        steps : int, default 15
+            Number of grid points for each parameter.
+        use_low_res_weighting : bool, default True
+            If True, weight low-resolution reflections more heavily
+            since solvent primarily contributes at low resolution.
+        low_res_cutoff : float, default 5.0
+            Resolution cutoff for weighting in Angstroms. Only used if
+            use_low_res_weighting=True.
+        fit_on_low_res_only : bool, default True
+            If True, fit using only low-resolution reflections.
+        low_res_limit : float, default 3.5
+            Resolution limit for low-res only fitting in Angstroms.
         """
         hkl, fobs, sigma, rfree = self._data()
         fobs = fobs.to(torch.float32).detach()
@@ -420,25 +476,35 @@ class Scaler(DebugMixin, nn.Module):
                      verbose: bool = True):
         """
         Refine scale parameters using LBFGS optimizer.
-        
+
         This method optimizes the anisotropic scaling and B-factor parameters
         that relate calculated structure factors to observed structure factors.
         Uses the L-BFGS quasi-Newton optimization method for fast convergence.
-        
-        Args:
-            nsteps: Number of LBFGS steps
-            lr: Learning rate (typically 1.0 for LBFGS)
-            max_iter: Maximum iterations per line search
-            history_size: Number of previous gradients to store for Hessian approximation
-            verbose: Print progress information
-            
-        Returns:
-            Dictionary with refinement metrics including steps, xray_work, xray_test, rwork, rfree
-            
-        Example:
-            >>> scaler.unfreeze()
-            >>> metrics = scaler.refine_lbfgs(nsteps=5, verbose=True)
-            >>> scaler.freeze()
+
+        Parameters
+        ----------
+        nsteps : int, default 3
+            Number of LBFGS steps.
+        lr : float, default 1.0
+            Learning rate (typically 1.0 for LBFGS).
+        max_iter : int, default 200
+            Maximum iterations per line search.
+        history_size : int, default 10
+            Number of previous gradients to store for Hessian approximation.
+        verbose : bool, default True
+            Print progress information.
+
+        Returns
+        -------
+        dict
+            Dictionary with refinement metrics including steps, xray_work,
+            xray_test, rwork, rfree.
+
+        Examples
+        --------
+        >>> scaler.unfreeze()
+        >>> metrics = scaler.refine_lbfgs(nsteps=5, verbose=True)
+        >>> scaler.freeze()
         """
         # Ensure scaler is unfrozen
         was_frozen = self.frozen
@@ -539,12 +605,18 @@ class Scaler(DebugMixin, nn.Module):
         """
         Forward pass for the Scaler module.
 
-        Args:
-            fcalc (torch.Tensor): Calculated structure factors. Expected shape (N,), an additional dimension ofr batch is possible.
-            use_mask (bool): Whether to apply the data mask.
+        Parameters
+        ----------
+        fcalc : torch.Tensor
+            Calculated structure factors. Expected shape (N,), an additional
+            dimension for batch is possible.
+        use_mask : bool, default True
+            Whether to apply the data mask.
 
-        Returns:
-            torch.Tensor: Scaled structure factors.
+        Returns
+        -------
+        torch.Tensor
+            Scaled structure factors.
         """
         batched = True
 
@@ -605,22 +677,29 @@ class Scaler(DebugMixin, nn.Module):
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         """
-        Returns a dictionary containing the complete state of the Scaler.
-        
+        Return a dictionary containing the complete state of the Scaler.
+
         This includes:
+
         - All registered buffers and parameters (via parent class)
         - Scaler-specific metadata (nbins, frozen state, etc.)
         - Solvent model state (if initialized)
-        
-        Note: Model and data references are NOT saved (managed separately)
-        
-        Args:
-            destination: Optional dict to populate
-            prefix: Prefix for parameter names
-            keep_vars: Whether to keep variables in computational graph
-            
-        Returns:
-            dict: Complete state dictionary
+
+        Note: Model and data references are NOT saved (managed separately).
+
+        Parameters
+        ----------
+        destination : dict, optional
+            Optional dict to populate.
+        prefix : str, default ''
+            Prefix for parameter names.
+        keep_vars : bool, default False
+            Whether to keep variables in computational graph.
+
+        Returns
+        -------
+        dict
+            Complete state dictionary.
         """
         # Get parent class state_dict (includes all registered buffers and parameters)
         state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
@@ -638,13 +717,16 @@ class Scaler(DebugMixin, nn.Module):
 
     def load_state_dict(self, state_dict, strict=True):
         """
-        Loads the Scaler state from a dictionary.
-        
-        Note: This assumes model and data are already set via __init__ or assignment
-        
-        Args:
-            state_dict: Dictionary containing scaler state
-            strict: Whether to strictly enforce that keys match
+        Load the Scaler state from a dictionary.
+
+        Note: This assumes model and data are already set via __init__ or assignment.
+
+        Parameters
+        ----------
+        state_dict : dict
+            Dictionary containing scaler state.
+        strict : bool, default True
+            Whether to strictly enforce that keys match.
         """
         # Extract Scaler-specific metadata
         self.nbins = state_dict.pop('nbins', 20)
@@ -690,9 +772,11 @@ class Scaler(DebugMixin, nn.Module):
     def save_state(self, path: str):
         """
         Save the complete state of the scaler to a file.
-        
-        Args:
-            path (str): Path to save the state dictionary to.
+
+        Parameters
+        ----------
+        path : str
+            Path to save the state dictionary to.
         """
         torch.save(self.state_dict(), path)
         if self.verbose > 0:
@@ -701,10 +785,13 @@ class Scaler(DebugMixin, nn.Module):
     def load_state(self, path: str, strict: bool = True):
         """
         Load the complete state of the scaler from a file.
-        
-        Args:
-            path (str): Path to load the state dictionary from.
-            strict (bool): Whether to strictly enforce that keys match.
+
+        Parameters
+        ----------
+        path : str
+            Path to load the state dictionary from.
+        strict : bool, default True
+            Whether to strictly enforce that keys match.
         """
         state_dict = torch.load(path, map_location=self.device, weights_only=False)
         self.load_state_dict(state_dict, strict=strict)

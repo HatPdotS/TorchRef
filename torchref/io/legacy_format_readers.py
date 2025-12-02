@@ -1,17 +1,59 @@
+"""
+Legacy format readers for crystallographic data files.
 
-'''
-A collection of legacy format readers
-'''
+This module provides readers for traditional crystallographic file formats
+(MTZ, PDB) using specialized libraries (reciprocalspaceship, pandas).
+
+Classes
+-------
+MTZ
+    Reader for MTZ files containing structure factor data.
+PDB
+    Reader for PDB files containing atomic coordinate data.
+
+Functions
+---------
+find_header_length_pdb_file
+    Find the number of header lines in a PDB file.
+load_pdb_as_pd
+    Load a PDB file into a pandas DataFrame.
+read_crystallographic_info
+    Extract unit cell and space group from PDB file.
+"""
 
 import pandas as pd
 import numpy as np
 import reciprocalspaceship as rs
-from typing import Optional
+from typing import Optional, Tuple, List
+
 
 class MTZ:
-    '''
-    A class for reading MTZ files
-    '''
+    """
+    Reader for MTZ files containing crystallographic structure factor data.
+
+    This class reads MTZ files using reciprocalspaceship and extracts:
+    - Miller indices (h, k, l)
+    - Structure factor amplitudes or intensities
+    - Associated uncertainties (sigma values)
+    - R-free test set flags
+
+    Attributes
+    ----------
+    verbose : int
+        Verbosity level for logging (0=silent, 1=normal, 2=debug).
+    data : dict
+        Dictionary containing extracted data arrays.
+    cell : np.ndarray
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    spacegroup : str
+        Space group symbol.
+
+    Examples
+    --------
+    >>> mtz = MTZ(verbose=1).read('data.mtz')
+    >>> data_dict, cell, spacegroup = mtz()
+    >>> print(f"Found {len(data_dict['HKL'])} reflections")
+    """
     AMPLITUDE_PRIORITY = [
         'F-obs', 'FOBS', 'FP', 'F',  # Direct observations
         'F-obs-filtered', 'FOBS-filtered',  # Filtered observations
@@ -35,13 +77,31 @@ class MTZ:
         'test', 'TEST', 'free', 'Free',  # Generic names
     ]
 
-    def __init__(self, verbose=0):
+    def __init__(self, verbose: int = 0):
+        """
+        Initialize MTZ reader.
+
+        Parameters
+        ----------
+        verbose : int, optional
+            Verbosity level (0=silent, 1=normal, 2=debug). Default is 0.
+        """
         self.verbose = verbose
     
-    def read(self, filepath: str):
-        '''
-        Read an MTZ file and extract data
-        '''
+    def read(self, filepath: str) -> 'MTZ':
+        """
+        Read an MTZ file and extract reflection data.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to the MTZ file.
+
+        Returns
+        -------
+        MTZ
+            Self, for method chaining.
+        """
         self.data = dict()
         if self.verbose > 1:
             print(f"Reading MTZ file: {filepath}")
@@ -55,16 +115,28 @@ class MTZ:
         self._extract_rfree_flags()
         return self
     
-    def __call__(self):
-        '''
-        raises ValueError if data is not read
+    def __call__(self) -> Tuple[dict, np.ndarray, str]:
+        """
+        Return extracted data in a standardized format.
 
+        Returns
+        -------
+        data : dict
+            Dictionary with extracted data arrays:
+            - 'HKL': Miller indices, shape (N, 3)
+            - 'F', 'SIGF': Amplitudes and sigmas (if available)
+            - 'I', 'SIGI': Intensities and sigmas (if available)
+            - 'R-free-flags': R-free test set flags (if available)
+        cell : np.ndarray
+            Unit cell parameters [a, b, c, alpha, beta, gamma].
+        spacegroup : str
+            Space group symbol.
 
-        returns:
-            data: dict with extracted data arrays, consistently named
-            cell: np.ndarray with cell parameters
-            spacegroup: str with spacegroup symbol
-        '''
+        Raises
+        ------
+        ValueError
+            If data has not been read yet.
+        """
         try:
             return self.data, self.cell, self.spacegroup
         except Exception as e:
@@ -74,10 +146,21 @@ class MTZ:
     def _extract_amplitudes_and_intensities(self) -> None:
         """
         Extract amplitude and intensity data with priority ordering.
-        
-        Prioritizes based on column priority lists, with intensities preferred over
-        amplitudes when both are present at similar priority levels (observations).
-        Automatically converts intensities to amplitudes using French-Wilson.
+
+        Prioritizes based on column priority lists, with intensities preferred
+        over amplitudes when both are present at similar priority levels.
+        Automatically identifies associated sigma columns.
+
+        Sets
+        ----
+        self.data['I'] : np.ndarray
+            Intensity values (if available).
+        self.data['SIGI'] : np.ndarray
+            Intensity uncertainties (if available).
+        self.data['F'] : np.ndarray
+            Amplitude values (if available).
+        self.data['SIGF'] : np.ndarray
+            Amplitude uncertainties (if available).
         """
         available_cols = set(self.mtz_data.columns)
         
@@ -130,12 +213,20 @@ class MTZ:
     def _extract_rfree_flags(self) -> None:
         """
         Extract R-free flags from the dataset.
-        
-        R-free flags typically use the convention:
+
+        R-free flags use the convention:
         - 0 = test set (free reflections, not used in refinement)
         - 1+ = work set (used in refinement)
-        
-        Some programs may use different conventions, but we standardize to this.
+
+        Some programs may use inverted conventions, which are automatically
+        detected and corrected.
+
+        Sets
+        ----
+        self.data['R-free-flags'] : np.ndarray
+            Boolean array where True indicates work set reflections.
+        self.data['R-free-source'] : str
+            Name of the source column.
         """
 
         dataset = self.mtz_data
@@ -209,17 +300,24 @@ class MTZ:
                         return None, None
         return None, None
         
-    def _find_sigma_column(self, dataset: rs.DataSet, data_col: str, is_intensity: bool) -> Optional[str]:
+    def _find_sigma_column(self, dataset: rs.DataSet, data_col: str, 
+                           is_intensity: bool) -> Optional[str]:
         """
         Find the sigma (uncertainty) column corresponding to a data column.
-        
-        Args:
-            dataset: reciprocalspaceship dataset
-            data_col: Name of the data column (e.g., 'IOBS', 'F-obs')
-            is_intensity: Whether the data column is intensity (True) or amplitude (False)
-            
-        Returns:
-            Name of sigma column if found, None otherwise
+
+        Parameters
+        ----------
+        dataset : rs.DataSet
+            Reciprocalspaceship dataset.
+        data_col : str
+            Name of the data column (e.g., 'IOBS', 'F-obs').
+        is_intensity : bool
+            Whether the data column is intensity (True) or amplitude (False).
+
+        Returns
+        -------
+        str or None
+            Name of sigma column if found, None otherwise.
         """
         available_cols = set(dataset.columns)
         
@@ -266,7 +364,29 @@ class MTZ:
         
         return None
 
-def find_header_length_pdb_file(file,max_header_length=100000):
+def find_header_length_pdb_file(file: str, max_header_length: int = 100000) -> int:
+    """
+    Find the number of header lines in a PDB file.
+
+    Scans the file line by line until an ATOM or HETATM record is found.
+
+    Parameters
+    ----------
+    file : str
+        Path to the PDB file.
+    max_header_length : int, optional
+        Maximum number of header lines to scan. Default is 100000.
+
+    Returns
+    -------
+    int
+        Number of header lines before the first ATOM/HETATM record.
+
+    Raises
+    ------
+    ValueError
+        If header length exceeds max_header_length.
+    """
     skipheader = 0
     with open(file,'r') as f:
         for line in f:
@@ -277,7 +397,30 @@ def find_header_length_pdb_file(file,max_header_length=100000):
                 raise ValueError('Header length is too long, check file')
     return skipheader
 
-def load_pdb_as_pd(file,skipheader= 0,skipfooter = 1):
+def load_pdb_as_pd(file: str, skipheader: int = 0, skipfooter: int = 1) -> pd.DataFrame:
+    """
+    Load a PDB file into a pandas DataFrame.
+
+    Parses ATOM, HETATM, and ANISOU records from a PDB file and returns
+    a structured DataFrame with all atomic properties.
+
+    Parameters
+    ----------
+    file : str
+        Path to the PDB file.
+    skipheader : int, optional
+        Number of header lines to skip. If 0, automatically detected.
+    skipfooter : int, optional
+        Number of footer lines to skip. Default is 1.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns: ATOM, serial, name, altloc, resname, chainid,
+        resseq, icode, x, y, z, occupancy, tempfactor, element, charge,
+        anisou_flag, u11, u22, u33, u12, u13, u23, index.
+        DataFrame attributes include 'cell', 'spacegroup', and 'z'.
+    """
     if skipheader == 0:
         skipheader = find_header_length_pdb_file(file)
     colspecs = [(0, 6), (6, 11), (12, 16), (16, 17), (17, 20), (21, 22), (22, 26),
@@ -333,7 +476,26 @@ def load_pdb_as_pd(file,skipheader= 0,skipfooter = 1):
 
     return pdb
 
-def read_crystallographic_info(file):
+def read_crystallographic_info(file: str) -> Tuple[Optional[List[float]], Optional[str], Optional[str]]:
+    """
+    Extract crystallographic information from a PDB file.
+
+    Reads the CRYST1 record to obtain unit cell parameters and space group.
+
+    Parameters
+    ----------
+    file : str
+        Path to the PDB file.
+
+    Returns
+    -------
+    cell : list of float or None
+        Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
+    spacegroup : str or None
+        Space group symbol.
+    z : str or None
+        Number of molecules per unit cell.
+    """
     with open(file,'r') as f:
         for line in f:
             if 'CRYST1' in line:
@@ -350,27 +512,78 @@ def read_crystallographic_info(file):
     return None,None,None
 
 class PDB:
-    '''
-    A class for reading PDB files
-    '''
-    def __init__(self, verbose=0):
+    """
+    Reader for PDB files containing atomic coordinate data.
+
+    This class reads PDB files and extracts atomic coordinates, properties,
+    and crystallographic metadata.
+
+    Attributes
+    ----------
+    verbose : int
+        Verbosity level for logging.
+    dataframe : pd.DataFrame
+        DataFrame containing atomic data.
+    cell : list or None
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    spacegroup : str or None
+        Space group symbol.
+
+    Examples
+    --------
+    >>> pdb = PDB(verbose=1).read('structure.pdb')
+    >>> df, cell, spacegroup = pdb()
+    >>> print(f"Loaded {len(df)} atoms")
+    """
+
+    def __init__(self, verbose: int = 0):
+        """
+        Initialize PDB reader.
+
+        Parameters
+        ----------
+        verbose : int, optional
+            Verbosity level (0=silent, 1=normal, 2=debug). Default is 0.
+        """
         self.verbose = verbose
     
-    def read(self, filepath):
+    def read(self, filepath: str) -> 'PDB':
+        """
+        Read a PDB file and extract atomic data.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to the PDB file.
+
+        Returns
+        -------
+        PDB
+            Self, for method chaining.
+        """
         self.dataframe = load_pdb_as_pd(filepath)
         self.cell, self.spacegroup, self.z = read_crystallographic_info(filepath)
         return self
 
-    def __call__(self) -> tuple[pd.DataFrame, np.ndarray, str]:
-        '''
-        Get the PDB data, cell parameters, and spacegroup
-        raises ValueError if data is not read
+    def __call__(self) -> Tuple[pd.DataFrame, Optional[np.ndarray], Optional[str]]:
+        """
+        Return extracted data in a standardized format.
 
-        returns:
-            dataframe: pd.DataFrame with PDB data
-            cell: np.ndarray with cell parameters
-            spacegroup: str with spacegroup symbol
-        '''
+        Returns
+        -------
+        dataframe : pd.DataFrame
+            DataFrame with atomic data including coordinates, B-factors,
+            occupancies, and anisotropic U parameters.
+        cell : np.ndarray or None
+            Unit cell parameters [a, b, c, alpha, beta, gamma].
+        spacegroup : str or None
+            Space group symbol.
+
+        Raises
+        ------
+        ValueError
+            If data has not been read yet.
+        """
         try:
             return self.dataframe, self.cell, self.spacegroup
         except Exception as e:

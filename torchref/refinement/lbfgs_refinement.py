@@ -19,32 +19,53 @@ from torchref.refinement.base_refinement import Refinement
 
 class LBFGSRefinement(Refinement):
     """
-    LBFGS-based refinement subclass that uses the L-BFGS optimizer for fast convergence.
-    
-    L-BFGS (Limited-memory BFGS) is a quasi-Newton optimization method that approximates
-    the Hessian matrix, leading to much faster convergence than first-order methods.
-    
+    LBFGS-based refinement subclass using the L-BFGS optimizer for fast convergence.
+
+    L-BFGS (Limited-memory BFGS) is a quasi-Newton optimization method that
+    approximates the Hessian matrix, leading to much faster convergence than
+    first-order methods.
+
     Key advantages:
+
     - Converges in 1-2 macro cycles (vs 5+ for Adam)
     - Better final R-factors
     - More stable convergence
     - Automatically handles step size via line search
-    
-    Usage:
-        from torchref.refinement.loss_weighting import ResolutionDependentWeighting
-        
-        weighter = ResolutionDependentWeighting()
-        refinement = LBFGSRefinement(mtz_file, pdb_file, weighter=weighter, target_mode='ml')
-        refinement.refine(macro_cycles=2)
+
+    Parameters
+    ----------
+    target_mode : str, optional
+        X-ray target mode ('gaussian', 'ls', or 'ml'). Default is 'ml'.
+    *args
+        Passed to parent Refinement class.
+    **kwargs
+        Passed to parent Refinement class.
+
+    Attributes
+    ----------
+    target_mode : str
+        Current X-ray target mode.
+
+    Examples
+    --------
+    >>> from torchref.refinement.loss_weighting import ResolutionDependentWeighting
+    >>> weighter = ResolutionDependentWeighting()
+    >>> refinement = LBFGSRefinement(mtz_file, pdb_file, weighter=weighter, target_mode='ml')
+    >>> refinement.refine(macro_cycles=2)
     """
 
     def __init__(self, *args, target_mode: str = 'ml', **kwargs):
         """
         Initialize LBFGS refinement.
-        
-        Args:
-            target_mode: X-ray target mode ('gaussian', 'ls', or 'ml'). Default: 'ml'
-            *args, **kwargs: Passed to parent Refinement class
+
+        Parameters
+        ----------
+        target_mode : str, optional
+            X-ray target mode ('gaussian', 'ls', or 'ml'). Default is 'ml'.
+        *args
+            Passed to parent Refinement class.
+        **kwargs
+            Passed to parent Refinement class.
         """
         super().__init__(*args, **kwargs)
         
@@ -53,15 +74,22 @@ class LBFGSRefinement(Refinement):
         self.target_mode = target_mode
 
     def xray_loss(self):
-        """Compute X-ray loss using the instantiated target."""
+        """
+        Compute X-ray loss using the instantiated target.
+
+        Returns
+        -------
+        torch.Tensor
+            X-ray loss on work set.
+        """
         return self.xray_loss_work()
 
     def refine_adp(self):
         """
-        Refine B-factors (ADP).
-        
-        Args:
-            cycle (int): Current refinement cycle for weighting module
+        Refine B-factors (ADP) using LBFGS optimizer.
+
+        Freezes all parameters except B-factors and runs LBFGS optimization
+        with a combined ADP and X-ray loss.
         """
         self.model.freeze_all()
         self.model.unfreeze('b')
@@ -86,10 +114,10 @@ class LBFGSRefinement(Refinement):
 
     def refine_xyz(self):
         """
-        Refine coordinates (XYZ).
-        
-        Args:
-            cycle (int): Current refinement cycle for weighting module
+        Refine coordinates (XYZ) using LBFGS optimizer.
+
+        Freezes all parameters except coordinates and runs LBFGS optimization
+        with a combined restraints and X-ray loss.
         """
         self.model.freeze_all()
         self.scaler.freeze()
@@ -115,15 +143,20 @@ class LBFGSRefinement(Refinement):
     def _run_xyz_with_weight(self, restraint_weight: float, max_iter: int = 20) -> Dict:
         """
         Run XYZ refinement with a fixed restraint weight and return metrics.
-        
+
         This is used internally for weight screening. Saves and restores model state.
-        
-        Args:
-            restraint_weight: Weight for restraints relative to X-ray target
-            max_iter: Maximum LBFGS iterations
-            
-        Returns:
-            Dict with rwork, rfree, rmsd_bonds, rmsd_angles, etc.
+
+        Parameters
+        ----------
+        restraint_weight : float
+            Weight for restraints relative to X-ray target.
+        max_iter : int, optional
+            Maximum LBFGS iterations. Default is 20.
+
+        Returns
+        -------
+        dict
+            Dictionary with rwork, rfree, rmsd_bonds, rmsd_angles, etc.
         """
         with torch.no_grad():
             rwork_start, rfree_start = self.get_rfactor()
@@ -177,15 +210,20 @@ class LBFGSRefinement(Refinement):
     def _run_adp_with_weight(self, adp_weight: float, max_iter: int = 20) -> Dict:
         """
         Run ADP refinement with a fixed ADP weight and return metrics.
-        
+
         This is used internally for weight screening. Saves and restores model state.
-        
-        Args:
-            adp_weight: Weight for ADP restraints relative to X-ray target
-            max_iter: Maximum LBFGS iterations
-            
-        Returns:
-            Dict with rwork, rfree, mean_b, etc.
+
+        Parameters
+        ----------
+        adp_weight : float
+            Weight for ADP restraints relative to X-ray target.
+        max_iter : int, optional
+            Maximum LBFGS iterations. Default is 20.
+
+        Returns
+        -------
+        dict
+            Dictionary with rwork, rfree, mean_b, etc.
         """
         with torch.no_grad():
             rwork_start, rfree_start = self.get_rfactor()
@@ -235,7 +273,14 @@ class LBFGSRefinement(Refinement):
         return result
     
     def _compute_mean_bi_bj(self) -> float:
-        """Compute mean |Bi - Bj| for bonded atom pairs."""
+        """
+        Compute mean |Bi - Bj| for bonded atom pairs.
+
+        Returns
+        -------
+        float
+            Mean absolute B-factor difference for bonded atoms.
+        """
         b = self.model.b()
         
         # Make sure 'all' indices are available
@@ -260,20 +305,29 @@ class LBFGSRefinement(Refinement):
     ) -> Tuple[float, List[Dict]]:
         """
         Screen XYZ refinement weights (Phenix-style approach).
-        
+
         For each weight, runs a complete LBFGS optimization and records metrics.
         Selects the best weight based on lowest Rfree while respecting gap constraint.
-        
-        Args:
-            weights: Explicit list of weights to try. If None, generates log-spaced weights.
-            n_weights: Number of weights to screen (if weights is None)
-            min_weight: Minimum weight value (if weights is None)
-            max_weight: Maximum weight value (if weights is None)
-            max_gap: Maximum allowed Rfree-Rwork gap
-            max_iter: Maximum LBFGS iterations per weight trial
-            
-        Returns:
-            Tuple of (best_weight, results_list)
+
+        Parameters
+        ----------
+        weights : list of float, optional
+            Explicit list of weights to try. If None, generates log-spaced weights.
+        n_weights : int, optional
+            Number of weights to screen (if weights is None). Default is 10.
+        min_weight : float, optional
+            Minimum weight value (if weights is None). Default is 0.1.
+        max_weight : float, optional
+            Maximum weight value (if weights is None). Default is 10.0.
+        max_gap : float, optional
+            Maximum allowed Rfree-Rwork gap. Default is 0.06.
+        max_iter : int, optional
+            Maximum LBFGS iterations per weight trial. Default is 20.
+
+        Returns
+        -------
+        tuple
+            Tuple of (best_weight, results_list).
         """
         from copy import deepcopy
         if weights is None:
@@ -335,21 +389,29 @@ class LBFGSRefinement(Refinement):
                                  rwork_start: float, rfree_start: float) -> Dict:
         """
         Select best XYZ weight using multi-metric ranking.
-        
+
         Scoring criteria (in priority order):
+
         1. Rfree must improve from starting value
         2. Gap should be reasonable (penalize large gaps)
         3. Lower Rfree is better
         4. Reasonable geometry (RMSD bonds/angles)
-        
-        Args:
-            results: List of result dicts from weight screening
-            max_gap: Maximum desired gap (soft constraint)
-            rwork_start: Starting Rwork before refinement
-            rfree_start: Starting Rfree before refinement
-            
-        Returns:
-            Best result dict with 'score' field added
+
+        Parameters
+        ----------
+        results : list of dict
+            List of result dicts from weight screening.
+        max_gap : float
+            Maximum desired gap (soft constraint).
+        rwork_start : float
+            Starting Rwork before refinement.
+        rfree_start : float
+            Starting Rfree before refinement.
+
+        Returns
+        -------
+        dict
+            Best result dict with 'score' field added.
         """
         # Compute normalized scores for each metric
         rfree_values = [r['rfree'] for r in results]
@@ -416,21 +478,31 @@ class LBFGSRefinement(Refinement):
     ) -> Tuple[float, List[Dict]]:
         """
         Screen ADP refinement weights (Phenix-style approach).
-        
+
         For each weight, runs a complete LBFGS optimization and records metrics.
         Selects the best weight based on lowest Rfree while respecting constraints.
-        
-        Args:
-            weights: Explicit list of weights to try. If None, generates log-spaced weights.
-            n_weights: Number of weights to screen (if weights is None)
-            min_weight: Minimum weight value (if weights is None)
-            max_weight: Maximum weight value (if weights is None)
-            max_gap: Maximum allowed Rfree-Rwork gap
-            max_bi_bj: Maximum allowed mean |Bi-Bj| for bonded atoms
-            max_iter: Maximum LBFGS iterations per weight trial
-            
-        Returns:
-            Tuple of (best_weight, results_list)
+
+        Parameters
+        ----------
+        weights : list of float, optional
+            Explicit list of weights to try. If None, generates log-spaced weights.
+        n_weights : int, optional
+            Number of weights to screen (if weights is None). Default is 20.
+        min_weight : float, optional
+            Minimum weight value (if weights is None). Default is 1.
+        max_weight : float, optional
+            Maximum weight value (if weights is None). Default is 100.0.
+        max_gap : float, optional
+            Maximum allowed Rfree-Rwork gap. Default is 0.06.
+        max_bi_bj : float, optional
+            Maximum allowed mean |Bi-Bj| for bonded atoms. Default is 10.0.
+        max_iter : int, optional
+            Maximum LBFGS iterations per weight trial. Default is 20.
+
+        Returns
+        -------
+        tuple
+            Tuple of (best_weight, results_list).
         """
         from copy import deepcopy
 
@@ -493,22 +565,31 @@ class LBFGSRefinement(Refinement):
                                  rwork_start: float, rfree_start: float) -> Dict:
         """
         Select best ADP weight using multi-metric ranking.
-        
+
         Scoring criteria:
+
         1. Rfree must improve from starting value
         2. Gap should be reasonable (penalize large gaps)
         3. <Bi-Bj> should be reasonable (penalize too large or too small)
         4. Lower Rfree is better
-        
-        Args:
-            results: List of result dicts from weight screening
-            max_gap: Maximum desired gap (soft constraint)
-            max_bi_bj: Maximum desired <Bi-Bj> (soft constraint)
-            rwork_start: Starting Rwork before refinement
-            rfree_start: Starting Rfree before refinement
-            
-        Returns:
-            Best result dict with 'score' field added
+
+        Parameters
+        ----------
+        results : list of dict
+            List of result dicts from weight screening.
+        max_gap : float
+            Maximum desired gap (soft constraint).
+        max_bi_bj : float
+            Maximum desired <Bi-Bj> (soft constraint).
+        rwork_start : float
+            Starting Rwork before refinement.
+        rfree_start : float
+            Starting Rfree before refinement.
+
+        Returns
+        -------
+        dict
+            Best result dict with 'score' field added.
         """
         # Compute normalized scores for each metric
         rfree_values = [r['rfree'] for r in results]
@@ -571,7 +652,12 @@ class LBFGSRefinement(Refinement):
     
     def regularize_adp(self,lr=0.1):
         """
-        Apply regularization to B-factors (ADP).
+        Apply regularization to B-factors (ADP) using LBFGS optimizer.
+
+        Parameters
+        ----------
+        lr : float, optional
+            Learning rate for LBFGS optimizer. Default is 0.1.
         """
         self.model.freeze_all()
         self.model.unfreeze('b')
@@ -595,11 +681,14 @@ class LBFGSRefinement(Refinement):
 
     def refine_xyz_adamW(self, lr=1e-3, steps=100):
         """
-        Refine coordinates (XYZ) using Adam optimizer as an alternative.
-        
-        Args:
-            lr (float): Learning rate for Adam optimizer
-            steps (int): Number of Adam optimization steps
+        Refine coordinates (XYZ) using AdamW optimizer as an alternative.
+
+        Parameters
+        ----------
+        lr : float, optional
+            Learning rate for AdamW optimizer. Default is 1e-3.
+        steps : int, optional
+            Number of AdamW optimization steps. Default is 100.
         """
         self.model.freeze_all()
         self.scaler.freeze()
@@ -622,11 +711,14 @@ class LBFGSRefinement(Refinement):
     
     def refine_b_adamW(self, lr=1e-3, steps=100):
         """
-        Refine B-factors (ADP) using Adam optimizer as an alternative.
-        
-        Args:
-            lr (float): Learning rate for Adam optimizer
-            steps (int): Number of Adam optimization steps
+        Refine B-factors (ADP) using AdamW optimizer as an alternative.
+
+        Parameters
+        ----------
+        lr : float, optional
+            Learning rate for AdamW optimizer. Default is 1e-3.
+        steps : int, optional
+            Number of AdamW optimization steps. Default is 100.
         """
         self.model.freeze_all()
         self.model.unfreeze('b')
@@ -646,13 +738,19 @@ class LBFGSRefinement(Refinement):
         self.model.unfreeze_all()
     
     def regularize_xyz_adp_to_rfactor_gap(self, lr=1e-1, max_steps=100, target_rfactor_gap=0.05):
-
         """
-        Apply regularization to both coordinates (XYZ) and B-factors (ADP) using Adam optimizer as an alternative.
-        
-        Args:
-            lr (float): Learning rate for Adam optimizer
-            steps (int): Number of Adam optimization steps
+        Apply regularization to coordinates (XYZ) and B-factors (ADP) until target gap.
+
+        Uses AdamW optimizer and stops when the Rfree-Rwork gap reaches the target.
+
+        Parameters
+        ----------
+        lr : float, optional
+            Learning rate for AdamW optimizer. Default is 0.1.
+        max_steps : int, optional
+            Maximum number of optimization steps. Default is 100.
+        target_rfactor_gap : float, optional
+            Target Rfree-Rwork gap to achieve. Default is 0.05.
         """
         self.model.freeze_all()
         self.scaler.freeze()
@@ -685,11 +783,14 @@ class LBFGSRefinement(Refinement):
 
     def refine_everything_adamW(self, lr=1e-3, steps=100):
         """
-        Refine both coordinates (XYZ) and B-factors (ADP) using Adam optimizer as an alternative.
-        
-        Args:
-            lr (float): Learning rate for Adam optimizer
-            steps (int): Number of Adam optimization steps
+        Refine both coordinates (XYZ) and B-factors (ADP) using AdamW optimizer.
+
+        Parameters
+        ----------
+        lr : float, optional
+            Learning rate for AdamW optimizer. Default is 1e-3.
+        steps : int, optional
+            Number of AdamW optimization steps. Default is 100.
         """
         self.model.freeze_all()
         self.scaler.unfreeze()
@@ -712,9 +813,11 @@ class LBFGSRefinement(Refinement):
             optimizer.step()
 
     def refine_everything_lbfgs(self):
-        
         """
-        Refine both coordinates (XYZ) and B-factors (ADP) using LBFGS optimizer as an alternative.
+        Refine both coordinates (XYZ) and B-factors (ADP) using LBFGS optimizer.
+
+        Jointly optimizes all parameters with the combined restraints, ADP,
+        and X-ray loss.
         """
 
         self.model.freeze_all()
@@ -743,12 +846,16 @@ class LBFGSRefinement(Refinement):
     def refine(self, macro_cycles=5):
         """
         Run full LBFGS refinement cycle (ADP + XYZ).
-        
-        Args:
-            macro_cycles (int): Number of refinement cycles to perform
-            
-        Returns:
-            History dictionary with all metrics per cycle (hierarchical structure)
+
+        Parameters
+        ----------
+        macro_cycles : int, optional
+            Number of refinement cycles to perform. Default is 5.
+
+        Returns
+        -------
+        dict
+            History dictionary with all metrics per cycle (hierarchical structure).
         """
         
         self.scaler.freeze()
@@ -854,31 +961,47 @@ class LBFGSRefinement(Refinement):
     ):
         """
         Run full LBFGS refinement with Phenix-style weight screening.
-        
+
         This approach screens multiple weights for each refinement step,
         selects the best weight based on Rfree (respecting gap constraints),
         and applies the refinement with that weight.
-        
+
         This is fundamentally different from GradNorm-based adaptive weighting:
+
         - GradNorm: Adjusts weights dynamically during optimization
         - Screening: Runs multiple complete optimizations with fixed weights
-        
-        Args:
-            macro_cycles: Number of refinement macro cycles
-            xyz_weights: Explicit XYZ weight list (or auto-generate)
-            adp_weights: Explicit ADP weight list (or auto-generate)
-            n_xyz_weights: Number of XYZ weights to screen
-            n_adp_weights: Number of ADP weights to screen
-            xyz_min_weight: Minimum XYZ weight
-            xyz_max_weight: Maximum XYZ weight
-            adp_min_weight: Minimum ADP weight
-            adp_max_weight: Maximum ADP weight
-            max_gap: Maximum allowed Rfree-Rwork gap
-            max_bi_bj: Maximum allowed mean |Bi-Bj|
-            max_iter: Maximum LBFGS iterations per weight trial
-            
-        Returns:
-            History dictionary with refinement metrics (hierarchical structure)
+
+        Parameters
+        ----------
+        macro_cycles : int, optional
+            Number of refinement macro cycles. Default is 5.
+        xyz_weights : list of float, optional
+            Explicit XYZ weight list (or auto-generate).
+        adp_weights : list of float, optional
+            Explicit ADP weight list (or auto-generate).
+        n_xyz_weights : int, optional
+            Number of XYZ weights to screen. Default is 20.
+        n_adp_weights : int, optional
+            Number of ADP weights to screen. Default is 20.
+        xyz_min_weight : float, optional
+            Minimum XYZ weight. Default is 1.
+        xyz_max_weight : float, optional
+            Maximum XYZ weight. Default is 100.0.
+        adp_min_weight : float, optional
+            Minimum ADP weight. Default is 1.
+        adp_max_weight : float, optional
+            Maximum ADP weight. Default is 100.0.
+        max_gap : float, optional
+            Maximum allowed Rfree-Rwork gap. Default is 0.06.
+        max_bi_bj : float, optional
+            Maximum allowed mean |Bi-Bj|. Default is 10.0.
+        max_iter : int, optional
+            Maximum LBFGS iterations per weight trial. Default is 20.
+
+        Returns
+        -------
+        dict
+            History dictionary with refinement metrics (hierarchical structure).
         """
         self.scaler.freeze()
         

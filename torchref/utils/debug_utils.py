@@ -15,9 +15,10 @@ import pandas as pd
 class DebugMixin:
     """
     Mixin class that adds debugging capabilities to modules.
-    
+
     When an error occurs, call print_debug_summary() to get a comprehensive
     overview of the module's state including:
+
     - All attributes and their types
     - Tensor shapes, dtypes, and devices
     - DataFrame/array shapes
@@ -27,10 +28,13 @@ class DebugMixin:
     def print_debug_summary(self, title: str = None, file=sys.stderr):
         """
         Print a comprehensive debug summary of this module's state.
-        
-        Args:
-            title: Optional title for the summary
-            file: File to write output to (default: stderr)
+
+        Parameters
+        ----------
+        title : str, optional
+            Title for the summary.
+        file : file-like, default sys.stderr
+            File to write output to.
         """
         if title is None:
             title = f"{self.__class__.__name__} Debug Summary"
@@ -191,11 +195,15 @@ class DebugMixin:
     def debug_on_error(self, error: Exception, context: str = "", recursive: bool = True):
         """
         Print debug summary when an error occurs, recursively printing submodules.
-        
-        Args:
-            error: The exception that was caught
-            context: Additional context string to print
-            recursive: If True, recursively print debug info for all submodules
+
+        Parameters
+        ----------
+        error : Exception
+            The exception that was caught.
+        context : str, default ""
+            Additional context string to print.
+        recursive : bool, default True
+            If True, recursively print debug info for all submodules.
         """
         print("\n" + "!" * 80, file=sys.stderr)
         print(f"  ERROR OCCURRED: {type(error).__name__}", file=sys.stderr)
@@ -223,11 +231,15 @@ class DebugMixin:
     def _print_recursive_debug_summaries(self, file=sys.stderr, visited=None, indent_level=0):
         """
         Recursively print debug summaries for all submodules.
-        
-        Args:
-            file: File to write output to
-            visited: Set of already visited module ids (to avoid infinite recursion)
-            indent_level: Current indentation level for nested modules
+
+        Parameters
+        ----------
+        file : file-like, default sys.stderr
+            File to write output to.
+        visited : set, optional
+            Set of already visited module ids (to avoid infinite recursion).
+        indent_level : int, default 0
+            Current indentation level for nested modules.
         """
         if visited is None:
             visited = set()
@@ -283,12 +295,16 @@ class DebugMixin:
     def _is_debuggable(self, obj):
         """
         Check if an object should be included in recursive debugging.
-        
-        Args:
-            obj: Object to check
-            
-        Returns:
-            True if object should be debugged recursively
+
+        Parameters
+        ----------
+        obj : any
+            Object to check.
+
+        Returns
+        -------
+        bool
+            True if object should be debugged recursively.
         """
         # Include torch modules
         if isinstance(obj, torch.nn.Module):
@@ -312,12 +328,19 @@ class DebugMixin:
 
 def print_module_summary(module, title: str = None, file=sys.stderr):
     """
-    Standalone function to print debug summary for any module.
-    
-    Args:
-        module: The module to inspect
-        title: Optional title for the summary
-        file: File to write output to (default: stderr)
+    Print debug summary for any module.
+
+    Standalone function to print debug information for modules that
+    may or may not have the DebugMixin.
+
+    Parameters
+    ----------
+    module : object
+        The module to inspect.
+    title : str, optional
+        Title for the summary.
+    file : file-like, default sys.stderr
+        File to write output to.
     """
     if hasattr(module, 'print_debug_summary'):
         module.print_debug_summary(title=title, file=file)

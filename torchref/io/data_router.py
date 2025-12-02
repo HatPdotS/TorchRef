@@ -36,16 +36,35 @@ class DataRouterError(Exception):
 class DataRouter:
     """
     Automatic file type detection and reader selection.
-    
+
     This class examines a file and automatically selects the appropriate
     reader based on file extension and content.
-    
-    Attributes:
-        filepath: Path to the file to read
-        verbose: Verbosity level for logging
-        data_type: Type of data detected ('reflections', 'structure', 'restraints', or None)
-        file_format: File format detected ('mtz', 'pdb', 'cif', or None)
-        reader: The appropriate reader instance (or None if not yet created)
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Path to the file to read.
+    verbose : int, default 1
+        Verbosity level (0=quiet, 1=normal, 2+=debug).
+
+    Attributes
+    ----------
+    filepath : Path
+        Path to the file to read.
+    verbose : int
+        Verbosity level for logging.
+    data_type : str or None
+        Type of data detected ('reflections', 'structure', 'restraints', or None).
+    file_format : str or None
+        File format detected ('mtz', 'pdb', 'cif', or None).
+    reader : object or None
+        The appropriate reader instance (or None if not yet created).
+
+    Examples
+    --------
+    >>> router = DataRouter("structure.cif")
+    >>> reader = router.get_reader()
+    >>> print(router.data_type)  # 'structure'
     """
     
     # Supported file extensions
@@ -56,10 +75,13 @@ class DataRouter:
     def __init__(self, filepath: Union[str, Path], verbose: int = 1):
         """
         Initialize the DataRouter.
-        
-        Args:
-            filepath: Path to the data file
-            verbose: Verbosity level (0=quiet, 1=normal, 2+=debug)
+
+        Parameters
+        ----------
+        filepath : str or Path
+            Path to the data file.
+        verbose : int, default 1
+            Verbosity level (0=quiet, 1=normal, 2+=debug).
         """
         self.filepath = Path(filepath)
         self.verbose = verbose
@@ -176,13 +198,17 @@ class DataRouter:
     def get_reader(self) -> Any:
         """
         Get the appropriate reader for this file.
-        
-        Returns:
+
+        Returns
+        -------
+        object
             Reader instance (ReflectionCIFReader, ModelCIFReader, RestraintCIFReader,
-            MTZ, or PDB depending on file type)
-        
-        Raises:
-            DataRouterError: If file type is not supported or cannot be determined
+            MTZ, or PDB depending on file type).
+
+        Raises
+        ------
+        DataRouterError
+            If file type is not supported or cannot be determined.
         """
         if self.reader is not None:
             return self.reader
@@ -232,14 +258,16 @@ class DataRouter:
     def get_data(self) -> Tuple[Any, ...]:
         """
         Get the data from the file using the appropriate reader.
-        
-        Returns:
+
+        This is a convenience method that calls get_reader() and then
+        invokes the reader to get the data.
+
+        Returns
+        -------
+        tuple
             For reflections: (data_dict, cell, spacegroup)
             For structure: (dataframe, residues, spacegroup)
             For restraints: Restraint data (format depends on reader)
-        
-        This is a convenience method that calls get_reader() and then
-        invokes the reader to get the data.
         """
         reader = self.get_reader()
         return reader()
@@ -248,20 +276,26 @@ class DataRouter:
     def route(cls, filepath: Union[str, Path], verbose: int = 1) -> Tuple[Any, str]:
         """
         Factory method to quickly route a file to the appropriate reader.
-        
-        Args:
-            filepath: Path to the data file
-            verbose: Verbosity level
-        
-        Returns:
+
+        Parameters
+        ----------
+        filepath : str or Path
+            Path to the data file.
+        verbose : int, default 1
+            Verbosity level.
+
+        Returns
+        -------
+        tuple
             Tuple of (reader, data_type) where:
-                - reader: The appropriate reader instance
-                - data_type: String indicating the type ('reflections', 'structure', 'restraints')
-        
-        Example:
-            reader, data_type = DataRouter.route("7JI4-sf.cif")
-            if data_type == 'reflections':
-                data_dict, cell, spacegroup = reader()
+            - reader: The appropriate reader instance
+            - data_type: String indicating the type ('reflections', 'structure', 'restraints')
+
+        Examples
+        --------
+        >>> reader, data_type = DataRouter.route("7JI4-sf.cif")
+        >>> if data_type == 'reflections':
+        ...     data_dict, cell, spacegroup = reader()
         """
         router = cls(filepath, verbose=verbose)
         reader = router.get_reader()

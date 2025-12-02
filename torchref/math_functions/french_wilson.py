@@ -136,14 +136,20 @@ C_ZF_SD = torch.tensor([
 def interpolate_table(h: torch.Tensor, table: torch.Tensor, h_min: float = -4.0) -> torch.Tensor:
     """
     Interpolate values from French-Wilson lookup table.
-    
-    Args:
-        h: Normalized parameter (tensor of any shape)
-        table: Lookup table tensor (1D)
-        h_min: Minimum h value (default -4.0)
-    
-    Returns:
-        Interpolated values (same shape as h)
+
+    Parameters
+    ----------
+    h : torch.Tensor
+        Normalized parameter (tensor of any shape).
+    table : torch.Tensor
+        Lookup table tensor (1D).
+    h_min : float, optional
+        Minimum h value. Default is -4.0.
+
+    Returns
+    -------
+    torch.Tensor
+        Interpolated values (same shape as h).
     """
     # Map h to table index: point = 10.0 * (h - h_min)
     # For h_min = -4.0, this gives point = 10.0 * (h + 4.0)
@@ -171,18 +177,28 @@ def french_wilson_acentric(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     French-Wilson conversion for acentric reflections.
-    
-    Args:
-        I: Measured intensities (any shape)
-        sigma_I: Standard deviations of intensities (same shape as I)
-        mean_intensity: Mean intensity for each reflection's resolution bin (same shape as I)
-        h_min: Minimum h value for rejection (default -4.0)
-        i_sig_min: Minimum I/sigma_I for rejection (default -3.7 = h_min + 0.3)
-    
-    Returns:
-        F: Structure factor amplitudes (same shape as I)
-        sigma_F: Standard deviations of F (same shape as I)
-        valid_mask: Boolean mask indicating valid (not rejected) reflections
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Measured intensities (any shape).
+    sigma_I : torch.Tensor
+        Standard deviations of intensities (same shape as I).
+    mean_intensity : torch.Tensor
+        Mean intensity for each reflection's resolution bin (same shape as I).
+    h_min : float, optional
+        Minimum h value for rejection. Default is -4.0.
+    i_sig_min : float, optional
+        Minimum I/sigma_I for rejection. Default is -3.7 (h_min + 0.3).
+
+    Returns
+    -------
+    F : torch.Tensor
+        Structure factor amplitudes (same shape as I).
+    sigma_F : torch.Tensor
+        Standard deviations of F (same shape as I).
+    valid_mask : torch.Tensor
+        Boolean mask indicating valid (not rejected) reflections.
     """
     device = I.device
     dtype = I.dtype
@@ -245,18 +261,28 @@ def french_wilson_centric(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     French-Wilson conversion for centric reflections.
-    
-    Args:
-        I: Measured intensities (any shape)
-        sigma_I: Standard deviations of intensities (same shape as I)
-        mean_intensity: Mean intensity for each reflection's resolution bin (same shape as I)
-        h_min: Minimum h value for rejection (default -4.0)
-        i_sig_min: Minimum I/sigma_I for rejection (default -3.7 = h_min + 0.3)
-    
-    Returns:
-        F: Structure factor amplitudes (same shape as I)
-        sigma_F: Standard deviations of F (same shape as I)
-        valid_mask: Boolean mask indicating valid (not rejected) reflections
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Measured intensities (any shape).
+    sigma_I : torch.Tensor
+        Standard deviations of intensities (same shape as I).
+    mean_intensity : torch.Tensor
+        Mean intensity for each reflection's resolution bin (same shape as I).
+    h_min : float, optional
+        Minimum h value for rejection. Default is -4.0.
+    i_sig_min : float, optional
+        Minimum I/sigma_I for rejection. Default is -3.7 (h_min + 0.3).
+
+    Returns
+    -------
+    F : torch.Tensor
+        Structure factor amplitudes (same shape as I).
+    sigma_F : torch.Tensor
+        Standard deviations of F (same shape as I).
+    valid_mask : torch.Tensor
+        Boolean mask indicating valid (not rejected) reflections.
     """
     device = I.device
     dtype = I.dtype
@@ -331,30 +357,39 @@ def french_wilson(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     French-Wilson conversion from intensities to structure factors.
-    
+
     Automatically handles both centric and acentric reflections.
-    
-    Args:
-        I: Measured intensities, shape (...,)
-        sigma_I: Standard deviations of intensities, shape (...,)
-        mean_intensity: Mean intensity for each reflection's resolution bin, shape (...,)
-        is_centric: Boolean mask indicating centric reflections, shape (...,)
-                    If None, assumes all reflections are acentric.
-        h_min: Minimum h value for rejection (default -4.0)
-    
-    Returns:
-        F: Structure factor amplitudes, shape (...,)
-        sigma_F: Standard deviations of F, shape (...,)
-        valid_mask: Boolean mask indicating valid (not rejected) reflections, shape (...,)
-    
-    Example:
-        >>> I = torch.tensor([100.0, 5.0, -15.0, 200.0])
-        >>> sigma_I = torch.tensor([10.0, 10.0, 10.0, 15.0])
-        >>> mean_I = torch.tensor([80.0, 80.0, 80.0, 150.0])
-        >>> F, sigma_F, valid = french_wilson(I, sigma_I, mean_I)
-        >>> print(f"F = {F}")
-        >>> print(f"sigma_F = {sigma_F}")
-        >>> print(f"Valid: {valid}")
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Measured intensities of shape (...).
+    sigma_I : torch.Tensor
+        Standard deviations of intensities of shape (...).
+    mean_intensity : torch.Tensor
+        Mean intensity for each reflection's resolution bin of shape (...).
+    is_centric : torch.Tensor, optional
+        Boolean mask indicating centric reflections of shape (...).
+        If None, assumes all reflections are acentric.
+    h_min : float, optional
+        Minimum h value for rejection. Default is -4.0.
+
+    Returns
+    -------
+    F : torch.Tensor
+        Structure factor amplitudes of shape (...).
+    sigma_F : torch.Tensor
+        Standard deviations of F of shape (...).
+    valid_mask : torch.Tensor
+        Boolean mask indicating valid (not rejected) reflections of shape (...).
+
+    Examples
+    --------
+    >>> I = torch.tensor([100.0, 5.0, -15.0, 200.0])
+    >>> sigma_I = torch.tensor([10.0, 10.0, 10.0, 15.0])
+    >>> mean_I = torch.tensor([80.0, 80.0, 80.0, 150.0])
+    >>> F, sigma_F, valid = french_wilson(I, sigma_I, mean_I)
+    >>> print(f"F = {F}")
     """
     i_sig_min = h_min + 0.3
     
@@ -405,17 +440,22 @@ def is_centric_from_hkl(
 ) -> torch.Tensor:
     """
     Determine if reflections are centric based on Miller indices and space group.
-    
-    Uses the Symmetry class to get actual symmetry operations and checks if
-    reflections are invariant under inversion through the origin (Friedel mates).
-    A reflection is centric if -h,-k,-l is symmetry equivalent to h,k,l.
-    
-    Args:
-        hkl: Miller indices, shape (..., 3)
-        space_group: Space group symbol (default "P1")
-    
-    Returns:
-        is_centric: Boolean mask, shape (...,), True for centric reflections
+
+    Uses symmetry operations to check if reflections are invariant under
+    inversion through the origin (Friedel mates). A reflection is centric
+    if -h,-k,-l is symmetry equivalent to h,k,l.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (..., 3).
+    space_group : str, optional
+        Space group symbol. Default is "P1".
+
+    Returns
+    -------
+    torch.Tensor
+        Boolean mask of shape (...), True for centric reflections.
     """
     original_shape = hkl.shape[:-1]
     hkl_flat = hkl.reshape(-1, 3)
@@ -462,18 +502,22 @@ def get_centric_acentric_masks(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Get both centric and acentric masks for reflections.
-    
-    This is a convenience function that returns both masks explicitly.
-    Uses the Symmetry class to determine centricity based on actual
-    symmetry operations.
-    
-    Args:
-        hkl: Miller indices, shape (..., 3)
-        space_group: Space group symbol (default "P1")
-    
-    Returns:
-        centric_mask: Boolean mask, shape (...,), True for centric reflections
-        acentric_mask: Boolean mask, shape (...,), True for acentric reflections
+
+    Convenience function that returns both masks explicitly.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (..., 3).
+    space_group : str, optional
+        Space group symbol. Default is "P1".
+
+    Returns
+    -------
+    centric_mask : torch.Tensor
+        Boolean mask of shape (...), True for centric reflections.
+    acentric_mask : torch.Tensor
+        Boolean mask of shape (...), True for acentric reflections.
     """
     centric_mask = is_centric_from_hkl(hkl, space_group)
     acentric_mask = ~centric_mask
@@ -488,17 +532,25 @@ def estimate_mean_intensity_by_resolution(
 ) -> torch.Tensor:
     """
     Estimate mean intensity for each reflection based on resolution binning.
-    
-    Uses linear interpolation between bin centers for smooth mean intensity estimates.
-    
-    Args:
-        I: Measured intensities, shape (n_reflections,)
-        d_spacings: Resolution (d-spacing) for each reflection, shape (n_reflections,)
-        n_bins: Number of resolution bins (default 60)
-        min_per_bin: Minimum reflections per bin (default 40)
-    
-    Returns:
-        mean_intensity: Estimated mean intensity for each reflection, shape (n_reflections,)
+
+    Uses linear interpolation between bin centers for smooth mean intensity
+    estimates.
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Measured intensities of shape (n_reflections,).
+    d_spacings : torch.Tensor
+        Resolution (d-spacing) for each reflection of shape (n_reflections,).
+    n_bins : int, optional
+        Number of resolution bins. Default is 60.
+    min_per_bin : int, optional
+        Minimum reflections per bin. Default is 40.
+
+    Returns
+    -------
+    torch.Tensor
+        Estimated mean intensity for each reflection of shape (n_reflections,).
     """
     n_reflections = len(I)
     
@@ -594,37 +646,48 @@ def french_wilson_auto(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Automatic French-Wilson conversion with binning and centric determination.
-    
+
     This function automatically:
     1. Bins reflections by resolution
     2. Calculates mean intensity per bin
     3. Determines centric vs acentric from Miller indices
     4. Applies appropriate French-Wilson conversion
-    
-    Args:
-        I: Measured intensities, shape (n_reflections,)
-        sigma_I: Standard deviations of intensities, shape (n_reflections,)
-        hkl: Miller indices, shape (n_reflections, 3)
-        d_spacings: Resolution (d-spacing) for each reflection, shape (n_reflections,)
-        space_group: Space group symbol (default "P1")
-        n_bins: Number of resolution bins (default 60)
-        min_per_bin: Minimum reflections per bin (default 40)
-        h_min: Minimum h value for rejection (default -4.0)
-    
-    Returns:
-        F: Structure factor amplitudes, shape (n_reflections,)
-        sigma_F: Standard deviations of F, shape (n_reflections,)
-        valid_mask: Boolean mask indicating valid (not rejected) reflections
-    
-    Example:
-        >>> # HKL indices for 4 reflections
-        >>> hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-        >>> I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-        >>> sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-        >>> d_spacings = torch.tensor([2.5, 3.0, 2.8, 2.0])
-        >>> 
-        >>> F, sigma_F, valid = french_wilson_auto(I, sigma_I, hkl, d_spacings, "P212121")
-        >>> print(f"F = {F}")
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Measured intensities of shape (n_reflections,).
+    sigma_I : torch.Tensor
+        Standard deviations of intensities of shape (n_reflections,).
+    hkl : torch.Tensor
+        Miller indices of shape (n_reflections, 3).
+    d_spacings : torch.Tensor
+        Resolution (d-spacing) for each reflection of shape (n_reflections,).
+    space_group : str, optional
+        Space group symbol. Default is "P1".
+    n_bins : int, optional
+        Number of resolution bins. Default is 60.
+    min_per_bin : int, optional
+        Minimum reflections per bin. Default is 40.
+    h_min : float, optional
+        Minimum h value for rejection. Default is -4.0.
+
+    Returns
+    -------
+    F : torch.Tensor
+        Structure factor amplitudes of shape (n_reflections,).
+    sigma_F : torch.Tensor
+        Standard deviations of F of shape (n_reflections,).
+    valid_mask : torch.Tensor
+        Boolean mask indicating valid (not rejected) reflections.
+
+    Examples
+    --------
+    >>> hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
+    >>> I = torch.tensor([100.0, 50.0, 30.0, 200.0])
+    >>> sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
+    >>> d_spacings = torch.tensor([2.5, 3.0, 2.8, 2.0])
+    >>> F, sigma_F, valid = french_wilson_auto(I, sigma_I, hkl, d_spacings, "P212121")
     """
     # Step 1: Estimate mean intensity by resolution
     mean_intensity = estimate_mean_intensity_by_resolution(
@@ -645,28 +708,44 @@ def french_wilson_auto(
 class FrenchWilson(nn.Module):
     """
     PyTorch module for French-Wilson conversion from intensities to structure factors.
-    
-    This module pre-computes all necessary metadata (d-spacings, centric flags, resolution bins)
-    during initialization, so the forward pass only needs I and sigma_I as inputs.
-    
-    Args:
-        hkl: Miller indices, shape (n_reflections, 3), integer tensor
-        unit_cell: Unit cell parameters [a, b, c, alpha, beta, gamma] in Angstroms and degrees
-        space_group: Space group symbol (e.g., 'P21', 'P212121')
-        n_bins: Number of resolution bins for mean intensity estimation (default 60)
-        min_per_bin: Minimum reflections per bin (default 40)
-        h_min: Minimum h value for rejection (default -4.0)
-        verbose: Verbosity level (default 1). 0 = silent, 1 = basic info, 2 = detailed info
-    
-    Example:
-        >>> hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-        >>> unit_cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
-        >>> fw_module = FrenchWilsonModule(hkl, unit_cell, 'P212121')
-        >>> 
-        >>> I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-        >>> sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-        >>> F, sigma_F = fw_module(I, sigma_I)
-        >>> print(f"F = {F}")
+
+    Pre-computes all necessary metadata (d-spacings, centric flags, resolution bins)
+    during initialization, so forward pass only needs I and sigma_I.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (n_reflections, 3), integer tensor.
+    unit_cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
+    space_group : str, optional
+        Space group symbol (e.g., 'P21', 'P212121'). Default is "P1".
+    n_bins : int, optional
+        Number of resolution bins for mean intensity estimation. Default is 60.
+    min_per_bin : int, optional
+        Minimum reflections per bin. Default is 40.
+    h_min : float, optional
+        Minimum h value for rejection. Default is -4.0.
+    verbose : int, optional
+        Verbosity level (0=silent, 1=basic, 2=detailed). Default is 1.
+
+    Attributes
+    ----------
+    hkl : torch.Tensor
+        Miller indices.
+    d_spacings : torch.Tensor
+        Resolution for each reflection in Å.
+    is_centric : torch.Tensor
+        Boolean mask for centric reflections.
+
+    Examples
+    --------
+    >>> hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
+    >>> unit_cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
+    >>> fw_module = FrenchWilson(hkl, unit_cell, 'P212121')
+    >>> I = torch.tensor([100.0, 50.0, 30.0, 200.0])
+    >>> sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
+    >>> F, sigma_F = fw_module(I, sigma_I)
     """
     
     def __init__(

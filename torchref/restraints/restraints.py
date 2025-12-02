@@ -31,72 +31,96 @@ from torchref.utils.utils import ModuleReference
 class Restraints(DebugMixin, Module):
     """
     Restraints handler for crystallographic model refinement.
-    
-    This class parses CIF restraints dictionaries and builds efficient tensor 
+
+    This class parses CIF restraints dictionaries and builds efficient tensor
     representations for the entire molecular structure. It stores restraints
     for bond lengths, angles, torsion angles, and planes with their expected values
     and uncertainties (sigma values).
-    
+
     Supports two initialization patterns:
-    
-    1. Empty initialization (for state_dict loading):
+
+    1. Empty initialization (for state_dict loading)::
+
         >>> restraints = Restraints()  # Creates empty shell
         >>> restraints.load_state_dict(torch.load('restraints.pt'))
-    
-    2. Full initialization with model:
+
+    2. Full initialization with model::
+
         >>> restraints = Restraints(model, cif_path='restraints.cif')
-    
+
     The restraints are organized in a hierarchical dictionary structure:
-        restraints[restraint_type][origin][property]
-    
+    ``restraints[restraint_type][origin][property]``
+
     Where:
-        - restraint_type: 'bond', 'angle', 'torsion', 'plane'
-        - origin: 
-            - For bonds/angles/torsions: 'intra' (intra-residue), 'peptide', 'disulfide', 'phi', 'psi', 'omega'
-            - For planes: '3_atoms', '4_atoms', ..., '10_atoms' (grouped by atom count, minimum 3)
-        - property: 'indices', 'references', 'sigmas', 'periods' (for torsions only)
-    
-    For backward compatibility, the old flat attribute names are preserved as properties.
-    
-    Attributes:
-        model: Reference to the Model instance
-        cif_path: Path to the CIF restraints dictionary file
-        cif_dict: Parsed CIF dictionary with restraints for each residue type
-        restraints: Hierarchical dictionary containing all restraints
-        
-    Example:
-        >>> from torchref.model import Model
-        >>> from torchref.restraints import Restraints
-        >>> 
-        >>> # Load model
-        >>> model = Model()
-        >>> model.load_pdb_from_file('structure.pdb')
-        >>> 
-        >>> # Create restraints
-        >>> restraints = Restraints(model)
-        >>> 
-        >>> # Access via hierarchical structure (new way)
-        >>> bond_indices = restraints.restraints['bond']['intra']['indices']
-        >>> angle_refs = restraints.restraints['angle']['peptide']['references']
-        >>> torsion_periods = restraints.restraints['torsion']['intra']['periods']
-        >>> plane_4atom_indices = restraints.restraints['plane']['4_atoms']['indices']
-        >>> 
-        >>> # Or use backward-compatible properties (old way)
-        >>> bond_indices = restraints.bond_indices  # intra-residue bonds
-        >>> bond_indices_inter = restraints.bond_indices_inter  # peptide bonds
+
+    - restraint_type: 'bond', 'angle', 'torsion', 'plane'
+    - origin:
+
+      - For bonds/angles/torsions: 'intra', 'peptide', 'disulfide', 'phi', 'psi', 'omega'
+      - For planes: '3_atoms', '4_atoms', ..., '10_atoms' (grouped by atom count)
+
+    - property: 'indices', 'references', 'sigmas', 'periods' (for torsions only)
+
+    Parameters
+    ----------
+    model : Model, optional
+        Model instance containing the atomic structure. If None, creates empty shell.
+    cif_path : str or list of str, optional
+        Path to the CIF restraints dictionary file(s).
+    verbose : int, default 1
+        Verbosity level (0=silent, 1=normal, 2=detailed).
+
+    Attributes
+    ----------
+    model : ModuleReference
+        Reference to the Model instance.
+    cif_path : str or list
+        Path to the CIF restraints dictionary file.
+    cif_dict : dict
+        Parsed CIF dictionary with restraints for each residue type.
+    restraints : dict
+        Hierarchical dictionary containing all restraints.
+    unique_residues : list
+        List of unique residue names in the model.
+
+    Examples
+    --------
+    >>> from torchref.model import Model
+    >>> from torchref.restraints import Restraints
+    >>>
+    >>> # Load model
+    >>> model = Model()
+    >>> model.load_pdb_from_file('structure.pdb')
+    >>>
+    >>> # Create restraints
+    >>> restraints = Restraints(model)
+    >>>
+    >>> # Access via hierarchical structure (new way)
+    >>> bond_indices = restraints.restraints['bond']['intra']['indices']
+    >>> angle_refs = restraints.restraints['angle']['peptide']['references']
+    >>> torsion_periods = restraints.restraints['torsion']['intra']['periods']
+    >>> plane_4atom_indices = restraints.restraints['plane']['4_atoms']['indices']
+    >>>
+    >>> # Or use backward-compatible properties (old way)
+    >>> bond_indices = restraints.bond_indices  # intra-residue bonds
+    >>> bond_indices_inter = restraints.bond_indices_inter  # peptide bonds
     """
     
     def __init__(self, model: Model = None, cif_path=None, verbose: int = 1):
         """
         Initialize the Restraints handler.
-        
+
         If model is provided, fully initializes the restraints.
         If not provided (empty init), creates a shell ready for load_state_dict().
-        
-        Args:
-            model: Model instance containing the atomic structure (optional for empty init)
-            cif_path: Path to the CIF restraints dictionary file (optional)
-            verbose: Verbosity level (0=silent, 1=normal, 2=detailed)
+
+        Parameters
+        ----------
+        model : Model, optional
+            Model instance containing the atomic structure.
+        cif_path : str or list of str, optional
+            Path to the CIF restraints dictionary file(s).
+        verbose : int, default 1
+            Verbosity level (0=silent, 1=normal, 2=detailed).
         """
         super().__init__()  
         self.cif_path = cif_path
@@ -188,7 +212,7 @@ class Restraints(DebugMixin, Module):
     def build_restraints(self):
         """
         Build all restraints for the entire structure.
-        
+
         This method iterates through all residues in the model and builds
         restraints for bond lengths, angles, torsions, and planes. The results are
         stored as tensors on the same device as the model coordinates.
@@ -227,9 +251,19 @@ class Restraints(DebugMixin, Module):
     def expand_altloc(self, residue):
         """
         Expand residue with alternative conformations into separate conformations.
+
         Yields one DataFrame per altloc (with common atoms included in each).
-        
         Normalizes altloc values: treats both '' and ' ' as no altloc.
+
+        Parameters
+        ----------
+        residue : pandas.DataFrame
+            DataFrame containing residue atoms with altloc column.
+
+        Yields
+        ------
+        pandas.DataFrame
+            DataFrame for each alternative conformation with common atoms included.
         """
         # Normalize altloc values: treat both '' and ' ' as no altloc
         residue = residue.copy()
@@ -254,7 +288,7 @@ class Restraints(DebugMixin, Module):
     def _build_bond_restraints(self):
         """
         Build bond length restraints for the entire structure.
-        
+
         Iterates through all chains and residues, matching atoms with the
         restraints defined in the CIF dictionary. Only includes bonds where
         both atoms are present in the residue.
@@ -421,7 +455,7 @@ class Restraints(DebugMixin, Module):
             angle_sigma_list.append(sigmas)
         """
         Build angle restraints for the entire structure.
-        
+
         Iterates through all chains and residues, matching atom triplets with
         the restraints defined in the CIF dictionary. Only includes angles where
         all three atoms are present in the residue.
@@ -563,7 +597,7 @@ class Restraints(DebugMixin, Module):
             torsion_period_list.append(periods)
         """
         Build torsion angle restraints for the entire structure.
-        
+
         Iterates through all chains and residues, matching atom quartets with
         the restraints defined in the CIF dictionary. Only includes torsions where
         all four atoms are present in the residue.
@@ -648,14 +682,15 @@ class Restraints(DebugMixin, Module):
     def _build_plane_restraints(self):
         """
         Build plane restraints for the entire structure.
-        
-        Planes have variable atom counts (minimum 3 atoms required, typically 3-10 atoms). 
+
+        Planes have variable atom counts (minimum 3 atoms required, typically 3-10 atoms).
         This method groups planes by their atom count and stores them in separate dictionaries:
         restraints['plane']['3_atoms'], restraints['plane']['4_atoms'], etc.
-        
+
         Planes with fewer than 3 atoms are skipped as they are mathematically invalid.
-        
+
         Each plane is stored with:
+
         - indices: (N, max_atoms) tensor of atom indices (padded with -1 for unused slots)
         - sigmas: (N, max_atoms) tensor of sigma values
         - atom_counts: (N,) tensor indicating how many atoms each plane actually has
@@ -776,26 +811,32 @@ class Restraints(DebugMixin, Module):
     def _build_chiral_restraints(self, ideal_volume: float = 2.5, sigma: float = 0.2):
         """
         Build chiral volume restraints for the entire structure.
-        
+
         Chiral centers are always exactly 4 atoms: 1 center + 3 neighbors forming
         a tetrahedron. The chiral volume is computed as:
-        
+
             V = v1 · (v2 × v3)
-        
+
         where vi = position of neighbor i - position of center.
-        
+
         The sign of the volume determines the handedness (R vs S configuration).
         For L-amino acids, the Cα chiral volume should be positive (with standard
         atom ordering: N, C, CB).
-        
-        Args:
-            ideal_volume: Target absolute chiral volume in Å³ (default: 2.5)
-            sigma: Standard deviation for restraint (default: 0.2 Å³)
-        
-        Stores:
-            restraints['chiral']['indices']: (N, 4) tensor [center, atom1, atom2, atom3]
-            restraints['chiral']['ideal_volumes']: (N,) tensor of signed ideal volumes
-            restraints['chiral']['sigmas']: (N,) tensor of sigma values
+
+        Parameters
+        ----------
+        ideal_volume : float, default 2.5
+            Target absolute chiral volume in Å³.
+        sigma : float, default 0.2
+            Standard deviation for restraint in Å³.
+
+        Notes
+        -----
+        Stores the following in restraints['chiral']:
+
+        - 'indices': (N, 4) tensor [center, atom1, atom2, atom3]
+        - 'ideal_volumes': (N,) tensor of signed ideal volumes
+        - 'sigmas': (N,) tensor of sigma values
         """
         chiral_indices = []  # List of [center, atom1, atom2, atom3]
         chiral_volumes = []  # Signed ideal volumes
@@ -912,12 +953,13 @@ class Restraints(DebugMixin, Module):
     def _build_peptide_bond_restraints(self):
         """
         Build peptide bond restraints between consecutive residues.
-        
+
         This method iterates through all chains and identifies consecutive residues
         (resseq and resseq+1). For each consecutive pair, it adds TRANS peptide
         bond, angle, and torsion restraints.
-        
+
         The restraints are stored separately from intra-residue restraints in:
+
         - bond_indices_inter, angle_indices_inter, torsion_indices_inter
         - bond_references_inter, angle_references_inter, torsion_references_inter
         - bond_sigmas_inter, angle_sigmas_inter, torsion_sigmas_inter
@@ -1329,12 +1371,13 @@ class Restraints(DebugMixin, Module):
     def _build_disulfide_bond_restraints(self):
         """
         Build disulfide bond restraints between cysteine residues.
-        
+
         This method identifies disulfide bonds by:
+
         1. Finding all cysteine residues (or residues with SG atoms)
         2. Computing distances between all pairs of SG atoms
         3. Creating disulfide restraints for SG-SG pairs closer than 2.0 Å
-        
+
         The restraints are appended to the existing inter-residue restraints.
         This includes bonds, angles (CB-SG-SG), and torsions (CB-SG-SG-CB).
         """
@@ -1647,16 +1690,19 @@ class Restraints(DebugMixin, Module):
     def _build_exclusion_set(self):
         """
         Build set of atom pairs to exclude from VDW calculations.
-        
+
         Excludes:
+
         - 1-2 interactions: directly bonded atoms (from all bond types)
         - 1-3 interactions: atoms separated by 2 bonds (from all angle types)
         - 1-4 interactions: atoms separated by 3 bonds (from all torsion types)
-        
+
         These are excluded because they're already handled by bond, angle, and torsion restraints.
-        
-        Returns:
-            Set of tuples (i, j) where i < j, representing excluded atom pairs
+
+        Returns
+        -------
+        set
+            Set of tuples (i, j) where i < j, representing excluded atom pairs.
         """
         exclusions = set()
         
@@ -1695,21 +1741,27 @@ class Restraints(DebugMixin, Module):
     def _find_nearby_pairs_spatial_hash(self, xyz, cutoff=6.0):
         """
         Find all atom pairs within cutoff distance using spatial hashing.
-        
+
         This is the key optimization for large systems. Complexity is O(N) instead of O(N²).
-        
+
         Algorithm:
+
         1. Divide 3D space into cubic cells of size ~cutoff
         2. Assign each atom to a cell based on its coordinates
         3. For each atom, only check atoms in same cell and 26 neighboring cells
         4. This reduces the search space dramatically for sparse systems
-        
-        Args:
-            xyz: Atom coordinates (N, 3) tensor
-            cutoff: Maximum distance to consider (Angstroms)
-        
-        Returns:
-            Tensor of shape (M, 2) containing indices of nearby pairs (i, j) where i < j
+
+        Parameters
+        ----------
+        xyz : torch.Tensor
+            Atom coordinates tensor of shape (N, 3).
+        cutoff : float, default 6.0
+            Maximum distance to consider in Angstroms.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (M, 2) containing indices of nearby pairs (i, j) where i < j.
         """
         device = xyz.device
         n_atoms = xyz.shape[0]
@@ -1795,26 +1847,31 @@ class Restraints(DebugMixin, Module):
     ):
         """
         Build van der Waals (non-bonded contact) restraints.
-        
+
         This prevents atoms from getting too close together (clashing) by penalizing
         distances shorter than the sum of van der Waals radii.
-        
+
         Algorithm:
+
         1. Build exclusion set from bonded atoms (1-2, 1-3, 1-4 interactions)
         2. Find nearby atom pairs within cutoff distance using spatial hashing
         3. Filter out excluded pairs and optionally intra-residue pairs
         4. Store minimum distances (sum of VDW radii) and sigmas
-        
-        Args:
-            cutoff: Maximum distance to check for contacts (Å). Default 5.0
-                   Larger values are more complete but slower.
-            sigma: Standard deviation for Gaussian repulsion (Å). Default 0.2
-                   Smaller values = stricter enforcement.
-            inter_residue_only: If True, only check contacts between different residues.
-                               Intra-residue geometry is already constrained by bonds/angles/torsions.
-                               This significantly speeds up the calculation. Default True.
-            use_spatial_hash: If True, use spatial hashing (O(N)). Default True.
-                            If False, use simple all-pairs check (O(N²), slow for large systems).
+
+        Parameters
+        ----------
+        cutoff : float, default 5.0
+            Maximum distance to check for contacts in Å. Larger values are more
+            complete but slower.
+        sigma : float, default 0.2
+            Standard deviation for Gaussian repulsion in Å. Smaller values mean
+            stricter enforcement.
+        inter_residue_only : bool, default True
+            If True, only check contacts between different residues. Intra-residue
+            geometry is already constrained by bonds/angles/torsions.
+        use_spatial_hash : bool, default True
+            If True, use spatial hashing O(N). If False, use simple all-pairs
+            check O(N²), which is slow for large systems.
         """
         if self.verbose > 0:
             print("\nBuilding VDW (non-bonded) restraints...")
@@ -1910,9 +1967,11 @@ class Restraints(DebugMixin, Module):
     def _move_to_device(self, device):
         """
         Move all restraint tensors to the specified device.
-        
-        Args:
-            device: PyTorch device (cpu, cuda, etc.)
+
+        Parameters
+        ----------
+        device : torch.device
+            PyTorch device (cpu, cuda, etc.).
         """
         # Iterate through hierarchical restraints structure
         for restraint_type in ['bond', 'angle', 'torsion', 'plane']:
@@ -1933,12 +1992,16 @@ class Restraints(DebugMixin, Module):
     def cuda(self, device: Optional[int] = None):
         """
         Move all restraint tensors to CUDA device.
-        
-        Args:
-            device: CUDA device index (default: None for current device)
-            
-        Returns:
-            self for chaining
+
+        Parameters
+        ----------
+        device : int, optional
+            CUDA device index. If None, uses current device.
+
+        Returns
+        -------
+        Restraints
+            Self for method chaining.
         """
         cuda_device = torch.device('cuda' if device is None else f'cuda:{device}')
         self._move_to_device(cuda_device)
@@ -1947,9 +2010,11 @@ class Restraints(DebugMixin, Module):
     def cpu(self):
         """
         Move all restraint tensors to CPU.
-        
-        Returns:
-            self for chaining
+
+        Returns
+        -------
+        Restraints
+            Self for method chaining.
         """
         self._move_to_device(torch.device('cpu'))
         return self
@@ -1957,18 +2022,22 @@ class Restraints(DebugMixin, Module):
     def vdw_violations(self, threshold: float = 0.0):
         """
         Compute VDW (steric clash) violations.
-        
+
         A violation occurs when the actual distance is less than the minimum
         allowed distance (sum of VDW radii).
-        
-        Args:
-            threshold: Additional tolerance in Angstroms (default: 0.0)
-                      Distances < (min_distance - threshold) are violations.
-        
-        Returns:
-            Tuple of (violations, n_violations):
-            - violations: Tensor of violation amounts (min_dist - actual_dist) for violated pairs
-            - n_violations: Number of violations (int)
+
+        Parameters
+        ----------
+        threshold : float, default 0.0
+            Additional tolerance in Angstroms. Distances < (min_distance - threshold)
+            are counted as violations.
+
+        Returns
+        -------
+        violations : torch.Tensor
+            Tensor of violation amounts (min_dist - actual_dist) for violated pairs.
+        n_violations : int
+            Number of violations.
         """
         if 'vdw' not in self.restraints:
             return torch.tensor([]), 0
@@ -1999,7 +2068,14 @@ class Restraints(DebugMixin, Module):
         return violations, n_violations
 
     def __repr__(self):
-        """String representation of the Restraints object."""
+        """
+        Return string representation of the Restraints object.
+
+        Returns
+        -------
+        str
+            Detailed string representation showing restraint counts.
+        """
         # Helper function to get count from hierarchical structure
         def get_count(rtype, origin):
             indices = self.restraints.get(rtype, {}).get(origin, {}).get('indices')
@@ -2060,7 +2136,12 @@ class Restraints(DebugMixin, Module):
                 f")")
     
     def summary(self):
-        """Print a detailed summary of all restraints."""
+        """
+        Print a detailed summary of all restraints.
+
+        Displays counts and statistics for all restraint types including
+        bonds, angles, torsions, planes, and VDW contacts.
+        """
         print("=" * 80)
         print("Restraints Summary")
         print("=" * 80)
@@ -2214,13 +2295,19 @@ class Restraints(DebugMixin, Module):
     
     def _get_all_indices(self, restraint_type, keys_to_merge = None):
         """
-        Helper to gather all indices of a given restraint type across all origins.
-        
-        Args:
-            restraint_type: 'bond', 'angle', or 'torsion'
-            
-        Returns:
-            Concatenated tensor of all indices, or None if none exist
+        Gather all indices of a given restraint type across all origins.
+
+        Parameters
+        ----------
+        restraint_type : str
+            Type of restraint ('bond', 'angle', or 'torsion').
+        keys_to_merge : list of str, optional
+            Specific origins to include. If None, includes all origins.
+
+        Returns
+        -------
+        torch.Tensor or None
+            Concatenated tensor of all indices, or None if none exist.
         """
         indices_list = []
         for origin, data in self.restraints.get(restraint_type, {}).items():
@@ -2238,14 +2325,21 @@ class Restraints(DebugMixin, Module):
     
     def _get_all_property(self, restraint_type, property_name, keys_to_merge = None):
         """
-        Helper to gather all values of a given property across all origins.
-        
-        Args:
-            restraint_type: 'bond', 'angle', or 'torsion'
-            property_name: 'references', 'sigmas', or 'periods'
-            
-        Returns:
-            Concatenated tensor of all property values, or None if none exist
+        Gather all values of a given property across all origins.
+
+        Parameters
+        ----------
+        restraint_type : str
+            Type of restraint ('bond', 'angle', or 'torsion').
+        property_name : str
+            Property to gather ('references', 'sigmas', or 'periods').
+        keys_to_merge : list of str, optional
+            Specific origins to include. If None, includes all origins.
+
+        Returns
+        -------
+        torch.Tensor or None
+            Concatenated tensor of all property values, or None if none exist.
         """
         values_list = []
         for origin, data in self.restraints.get(restraint_type, {}).items():
@@ -2261,8 +2355,20 @@ class Restraints(DebugMixin, Module):
         
         return torch.cat(values_list, dim=0)
 
-    def bond_lengths(self,idx):
-        """Compute current bond lengths from atomic coordinates."""
+    def bond_lengths(self, idx):
+        """
+        Compute current bond lengths from atomic coordinates.
+
+        Parameters
+        ----------
+        idx : torch.Tensor
+            Bond indices tensor of shape (N, 2).
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of bond lengths of shape (N,).
+        """
         if idx is None:
             return torch.tensor([], device=self.model.xyz().device)
         xyz = self.model.xyz()
@@ -2271,18 +2377,27 @@ class Restraints(DebugMixin, Module):
         return torch.linalg.norm(pos2 - pos1, dim=-1)
     
     def copy(self):
-        """Create a deep copy of the Restraints object."""
+        """
+        Create a deep copy of the Restraints object.
+
+        Returns
+        -------
+        Restraints
+            A deep copy of this Restraints instance.
+        """
         import copy
         return copy.deepcopy(self)
     
     def bond_deviations(self):
         """
         Compute bond length deviations and sigmas.
-        
-        Returns:
-            Tuple of (deviations, sigmas) tensors in Angstroms
-            - deviations: calculated - expected bond lengths
-            - sigmas: standard deviations from CIF library
+
+        Returns
+        -------
+        deviations : torch.Tensor
+            Calculated minus expected bond lengths in Angstroms.
+        sigmas : torch.Tensor
+            Standard deviations from CIF library in Angstroms.
         """
         if 'all' not in self.restraints['bond']:
             self.cat_dict()
@@ -2300,14 +2415,16 @@ class Restraints(DebugMixin, Module):
     def nll_bonds(self):
         """
         Compute negative log-likelihood for bond length restraints.
-        
+
         For Gaussian distribution: NLL = -log(P(x|μ,σ))
         NLL = 0.5 * ((x - μ) / σ)^2 + log(σ) + 0.5 * log(2π)
-        
+
         This is the true NLL where exp(-NLL) = probability density.
-        
-        Returns:
-            nll_bonds: Tensor of shape (n_bonds,) with negative log-likelihood values
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_bonds,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import gaussian_nll
         deviations, sigmas = self.bond_deviations()
@@ -2315,10 +2432,17 @@ class Restraints(DebugMixin, Module):
 
     def angles(self, idx):
         """
-        Compute current angle values for all angle restraints (intra + inter residue).
-        
-        Returns:
-            angles: Tensor of shape (n_angles,) with current angle values in degrees
+        Compute current angle values for all angle restraints.
+
+        Parameters
+        ----------
+        idx : torch.Tensor
+            Angle indices tensor of shape (N, 3).
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_angles,) with current angle values in degrees.
         """
         xyz = self.model.xyz()
         pos1 = xyz[idx[:, 0], :]
@@ -2347,11 +2471,13 @@ class Restraints(DebugMixin, Module):
     def angle_deviations(self):
         """
         Compute angle deviations and sigmas.
-        
-        Returns:
-            Tuple of (deviations, sigmas) tensors in radians
-            - deviations: calculated - expected angles in radians
-            - sigmas: standard deviations in radians
+
+        Returns
+        -------
+        deviations : torch.Tensor
+            Calculated minus expected angles in radians.
+        sigmas : torch.Tensor
+            Standard deviations in radians.
         """
         if 'all' not in self.restraints['angle']:
             self.cat_dict()
@@ -2368,20 +2494,28 @@ class Restraints(DebugMixin, Module):
     def nll_angles(self):
         """
         Compute negative log-likelihood for angle restraints.
-        
+
         For Gaussian distribution: NLL = -log(P(x|μ,σ))
         NLL = 0.5 * ((x - μ) / σ)^2 + log(σ) + 0.5 * log(2π)
-        
+
         This is the true NLL where exp(-NLL) = probability density.
-        
-        Returns:
-            nll_angles: Tensor of shape (n_angles,) with negative log-likelihood values
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_angles,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import gaussian_nll
         deviations, sigmas = self.angle_deviations()
         return gaussian_nll(deviations, sigmas)
     
     def cat_dict(self):
+        """
+        Concatenate all restraint dictionaries into 'all' keys.
+
+        Creates restraints['bond']['all'], restraints['angle']['all'],
+        and restraints['torsion']['all'] by concatenating all origins.
+        """
         self.restraints['bond']['all'] = {
             'indices': self._get_all_indices('bond'),
             'references': self._get_all_property('bond', 'references'),
@@ -2399,12 +2533,19 @@ class Restraints(DebugMixin, Module):
             'periods': self._get_all_property('torsion', 'periods',['intra','disulfide'])
         }
 
-    def torsions(self,idx):
+    def torsions(self, idx):
         """
-        Compute current torsion angle values for all torsion restraints (intra + inter residue).
-        
-        Returns:
-            torsions: Tensor of shape (n_torsions,) with current torsion values in degrees
+        Compute current torsion angle values for all torsion restraints.
+
+        Parameters
+        ----------
+        idx : torch.Tensor
+            Torsion indices tensor of shape (N, 4).
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_torsions,) with current torsion values in degrees.
         """
         xyz = self.model.xyz()
 
@@ -2443,23 +2584,29 @@ class Restraints(DebugMixin, Module):
     def _wrap_torsion_periodicity(self, diff_rad, periods):
         """
         Find minimum angular deviation considering n-fold rotational symmetry.
-        
+
         For period=n, angles differing by 360°/n are equivalent. This function
         finds the equivalent angle with the smallest absolute deviation.
-        
-        Args:
-            diff_rad: Tensor of angular deviations in radians (any shape)
-            periods: Tensor of periodicity values (same shape as diff_rad)
-                    Period=0 or 1 means no symmetry (simple wrapping)
-                    Period=n means n-fold rotational symmetry
-        
-        Returns:
-            Tensor of minimum wrapped deviations in radians (same shape as input)
-            Values are wrapped to [-pi, pi] and account for rotational symmetry
-        
-        Example:
-            For period=6 (e.g., benzene), angles of 10°, 70°, 130°, 190°, 250°, 310°
-            are all equivalent. The function returns the one closest to 0°.
+
+        Parameters
+        ----------
+        diff_rad : torch.Tensor
+            Tensor of angular deviations in radians (any shape).
+        periods : torch.Tensor
+            Tensor of periodicity values (same shape as diff_rad).
+            Period=0 or 1 means no symmetry (simple wrapping).
+            Period=n means n-fold rotational symmetry.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of minimum wrapped deviations in radians (same shape as input).
+            Values are wrapped to [-π, π] and account for rotational symmetry.
+
+        Examples
+        --------
+        For period=6 (e.g., benzene), angles of 10°, 70°, 130°, 190°, 250°, 310°
+        are all equivalent. The function returns the one closest to 0°.
         """
         # Clamp periods to minimum of 1 to avoid division by zero
         periods_safe = torch.clamp(periods, min=1)
@@ -2515,19 +2662,24 @@ class Restraints(DebugMixin, Module):
     def torsion_deviations(self, wrapped=True):
         """
         Compute deviations between calculated and expected torsion angles.
-        
-        Args:
-            wrapped: If True (default), wrap deviations accounting for periodicity.
-                    If False, return raw deviations (calculated - expected).
-        
-        Returns:
-            deviations: Tensor of shape (n_torsions,) with deviations in degrees.
-                       For wrapped=True, deviations are in range appropriate for the period.
-        
-        Note:
-            Expected values from CIF library are discrete (typically -60°, 0°, 60°, 90°, 180°)
-            while calculated values from structure are continuous. This is correct!
-            Use wrapped=True for meaningful comparison and visualization.
+
+        Parameters
+        ----------
+        wrapped : bool, default True
+            If True, wrap deviations accounting for periodicity.
+            If False, return raw deviations (calculated - expected).
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_torsions,) with deviations in degrees.
+            For wrapped=True, deviations are in range appropriate for the period.
+
+        Notes
+        -----
+        Expected values from CIF library are discrete (typically -60°, 0°, 60°, 90°, 180°)
+        while calculated values from structure are continuous. This is correct!
+        Use wrapped=True for meaningful comparison and visualization.
         """
         if not 'all' in self.restraints['torsion']:
             self.cat_dict()
@@ -2551,11 +2703,13 @@ class Restraints(DebugMixin, Module):
     def torsion_deviations_with_sigmas(self):
         """
         Compute torsion deviations (wrapped for periodicity) and sigmas.
-        
-        Returns:
-            Tuple of (deviations_rad, sigmas_deg)
-            - deviations_rad: wrapped deviations in radians
-            - sigmas_deg: standard deviations in degrees (for von Mises NLL)
+
+        Returns
+        -------
+        deviations_rad : torch.Tensor
+            Wrapped deviations in radians.
+        sigmas_deg : torch.Tensor
+            Standard deviations in degrees (for von Mises NLL).
         """
         if 'all' not in self.restraints['torsion']:
             self.cat_dict()
@@ -2576,22 +2730,25 @@ class Restraints(DebugMixin, Module):
     def nll_torsions(self):
         """
         Compute negative log-likelihood for torsion angle restraints.
-        
+
         For von Mises distribution: NLL = -log(P(θ|μ,κ))
         NLL = -κ*cos(θ-μ) + log(I₀(κ)) + log(2π)
-        
+
         where κ = 1/σ² is the concentration parameter and I₀ is the modified
         Bessel function of the first kind.
-        
-        Note on periodicity:
-        - Period indicates n-fold rotational symmetry (e.g., period=6 for benzene)
-        - We handle this by finding the minimum angular distance considering periodicity
-        - For period=n, angles differing by 360°/n are equivalent
-        
+
+        Notes
+        -----
+        Period indicates n-fold rotational symmetry (e.g., period=6 for benzene).
+        We handle this by finding the minimum angular distance considering periodicity.
+        For period=n, angles differing by 360°/n are equivalent.
+
         This is the true NLL where exp(-NLL) = probability density.
-        
-        Returns:
-            nll: Tensor of shape (n_torsions,) with negative log-likelihood values
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_torsions,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import von_mises_nll
         deviations_rad, sigmas_deg = self.torsion_deviations_with_sigmas()
@@ -2600,12 +2757,14 @@ class Restraints(DebugMixin, Module):
     def nll_planes(self):
         """
         Compute negative log-likelihood for plane restraints.
-        
+
         For each plane, computes the RMSD of atom deviations from the best-fit plane.
         Uses Gaussian NLL: NLL = 0.5 * (deviation / σ)² + log(σ) + 0.5 * log(2π)
-        
-        Returns:
-            nll: Tensor of shape (n_planes,) with negative log-likelihood values
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_planes,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import gaussian_nll
         
@@ -2656,14 +2815,16 @@ class Restraints(DebugMixin, Module):
     def nll_vdw(self):
         """
         Compute negative log-likelihood for VDW (non-bonded) restraints.
-        
+
         Uses a soft-repulsive potential based on distance violations.
         NLL = 0.5 * (max(0, min_dist - actual_dist) / σ)² + log(σ) + 0.5 * log(2π)
-        
+
         Only violations (distances shorter than minimum) contribute to the loss.
-        
-        Returns:
-            nll: Tensor of shape (n_pairs,) with negative log-likelihood values
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_pairs,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import gaussian_nll
         
@@ -2701,9 +2862,11 @@ class Restraints(DebugMixin, Module):
     def adp_b_differences(self):
         """
         Compute B-factor differences between bonded atoms.
-        
-        Returns:
-            Tensor of B-factor differences (B_i - B_j) for all bonds
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of B-factor differences (B_i - B_j) for all bonds.
         """
         b_factors = self.model.b()
         
@@ -2725,15 +2888,19 @@ class Restraints(DebugMixin, Module):
     def adp_similarity_loss(self, sigma: float = 2.0):
         """
         Compute ADP similarity loss (SIMU in Phenix/SHELX).
-        
+
         This restrains the B-factors of bonded atoms to be similar.
         Loss = Σ ((B_i - B_j) / sigma)^2
-        
-        Args:
-            sigma: Target standard deviation for B-factor differences (default: 2.0 A^2)
-        
-        Returns:
-            torch.Tensor: Mean similarity loss
+
+        Parameters
+        ----------
+        sigma : float, default 2.0
+            Target standard deviation for B-factor differences in Å².
+
+        Returns
+        -------
+        torch.Tensor
+            Mean similarity loss.
         """
         from torchref.refinement.targets import adp_similarity_nll
         b_diffs = self.adp_b_differences()

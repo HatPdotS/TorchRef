@@ -19,34 +19,72 @@ import gemmi
 class Model(DebugMixin, nn.Module):
     """
     Base model class for atomic structure models using PyTorch.
-    
-    Supports two initialization patterns:
-    
-    1. Empty initialization (for state_dict loading):
-        >>> model = Model()  # Creates empty shell
-        >>> model.load_state_dict(torch.load('model.pt'))
-    
-    2. File-based initialization:
-        >>> model = Model()
-        >>> model.load_pdb('structure.pdb')  # or load_cif()
-    
-    The empty initialization creates a shell with configuration only.
-    Submodules (xyz, b, u, occupancy) are created during load() or load_state_dict().
+
+    This class provides the foundation for managing atomic structure data
+    including coordinates, B-factors, anisotropic displacement parameters,
+    and occupancies. It supports both empty initialization for state_dict
+    loading and file-based initialization from PDB/CIF files.
+
+    Parameters
+    ----------
+    dtype_float : torch.dtype, optional
+        Data type for floating point tensors. Default is torch.float32.
+    verbose : int, optional
+        Verbosity level for logging. Default is 1.
+    device : torch.device, optional
+        Computation device. Default is torch.device('cpu').
+    strip_H : bool, optional
+        Whether to strip hydrogen atoms when loading. Default is True.
+
+    Attributes
+    ----------
+    xyz : MixedTensor
+        Atomic coordinates tensor with shape (n_atoms, 3).
+    b : PositiveMixedTensor
+        Isotropic B-factors tensor with shape (n_atoms,).
+    u : MixedTensor
+        Anisotropic displacement parameters with shape (n_atoms, 6).
+    occupancy : OccupancyTensor
+        Atomic occupancies with values in [0, 1].
+    pdb : pandas.DataFrame
+        DataFrame containing atomic model data.
+    cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    spacegroup : str
+        Space group symbol in Hermann-Mauguin notation.
+    initialized : bool
+        Whether the model has been initialized with data.
+
+    Examples
+    --------
+    Empty initialization for state_dict loading:
+
+    >>> model = Model()
+    >>> model.load_state_dict(torch.load('model.pt'))
+
+    File-based initialization:
+
+    >>> model = Model()
+    >>> model.load_pdb('structure.pdb')
     """
     
     def __init__(self, dtype_float=torch.float32, verbose=1, device=torch.device('cpu'), strip_H: bool = True):
         """
-        Initialize Model.
-        
-        Creates an empty model shell ready for:
-        - File loading via load_pdb() / load_cif()
-        - State restoration via load_state_dict()
-        
-        Args:
-            dtype_float: Data type for floating point tensors (default: torch.float32)
-            verbose: Verbosity level for logging (default: 1)
-            device: Computation device (default: cpu)
-            strip_H: Whether to strip hydrogen atoms when loading (default: True)
+        Initialize an empty Model shell.
+
+        Creates a model shell ready for file loading via load_pdb()/load_cif()
+        or state restoration via load_state_dict().
+
+        Parameters
+        ----------
+        dtype_float : torch.dtype, optional
+            Data type for floating point tensors. Default is torch.float32.
+        verbose : int, optional
+            Verbosity level for logging. Default is 1.
+        device : torch.device, optional
+            Computation device. Default is torch.device('cpu').
+        strip_H : bool, optional
+            Whether to strip hydrogen atoms when loading. Default is True.
         """
         super().__init__()
         # Configuration
@@ -117,24 +155,37 @@ class Model(DebugMixin, nn.Module):
         self.initialized = True
         return self
 
-    def load_pdb(self,file):
-        '''
+    def load_pdb(self, file):
+        """
         Load atomic model from PDB file.
-        '''
+
+        Parameters
+        ----------
+        file : str
+            Path to PDB file.
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
+        """
         reader = legacy_format_readers.PDB(verbose=self.verbose).read(file)   
         return self.load(reader)
     
     def load_cif(self, file):
         """
         Load atomic model from mmCIF file.
-        
-        Args:
-            file: Path to CIF/mmCIF file
-            
-        Returns:
-            self (for method chaining)
+
+        Parameters
+        ----------
+        file : str
+            Path to CIF/mmCIF file.
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
         """
-        
         if self.verbose > 0:
             print(f"Loading CIF file: {file}")
         
@@ -146,23 +197,32 @@ class Model(DebugMixin, nn.Module):
     def _create_occupancy_groups(self, pdb_df, initial_occ):
         """
         Create sharing groups and altloc groups for occupancy.
-        
+
+        This method identifies atoms that should share occupancy values and
+        groups alternative conformations for proper constraint handling.
+
         Logic:
         1. First identify alternative conformations (multiple altlocs per residue)
         2. For altloc groups: ALL atoms in each conformation share one collapsed index
         3. For non-altloc residues: group by similar occupancy (within 0.01 tolerance)
         4. Only refine occupancies that differ from 1.0
-        
-        Args:
-            pdb_df: PDB DataFrame
-            initial_occ: Tensor of initial occupancy values
-        
-        Returns:
-            tuple: (sharing_groups_tensor, altloc_groups, refinable_mask)
-                sharing_groups_tensor: Tensor of shape (n_atoms,) where each value is the
-                                      collapsed index for that atom
-                altloc_groups: List of tuples of atom index lists for alternative conformations
-                refinable_mask: Boolean tensor indicating which atoms should be refined
+
+        Parameters
+        ----------
+        pdb_df : pandas.DataFrame
+            PDB DataFrame with atom information.
+        initial_occ : torch.Tensor
+            Tensor of initial occupancy values with shape (n_atoms,).
+
+        Returns
+        -------
+        sharing_groups_tensor : torch.Tensor
+            Tensor of shape (n_atoms,) where each value is the collapsed index
+            for that atom.
+        altloc_groups : list of tuple
+            List of tuples of atom index lists for alternative conformations.
+        refinable_mask : torch.Tensor
+            Boolean tensor indicating which atoms should be refined.
         """
         n_atoms = len(initial_occ)
         altloc_groups = []
@@ -279,13 +339,14 @@ class Model(DebugMixin, nn.Module):
     
     def get_vdw_radii(self):
         """
-        Get van der Waals radii for all atoms in the model based on their elements.
+        Get van der Waals radii for all atoms based on their elements.
+
         Caches the result in self.vdw_radii for future calls.
-        
-        Returns:
-        --------
-        self.vdw_radii : torch.Tensor (n_atoms,)
-            Van der Waals radii for each atom
+
+        Returns
+        -------
+        torch.Tensor
+            Van der Waals radii for each atom with shape (n_atoms,).
         """
         import os
         import pandas as pd
@@ -329,21 +390,21 @@ class Model(DebugMixin, nn.Module):
     
     def copy(self):
         """
-        Create a deep copy of the Model with all its parameters, buffers, and submodules.
-        
-        This method uses PyTorch's state_dict mechanism to efficiently copy all:
-        - Registered buffers (cell, fractional matrices, aniso_flag, etc.)
-        - Module parameters (xyz, b, u, occupancy via their .copy() methods)
-        - PDB DataFrame and metadata
-        - Spacegroup and symmetry information
-        
-        Returns:
-            Model: A new Model instance with copied data
-            
-        Example:
-            >>> model = Model().load_pdb('structure.pdb')
-            >>> model_copy = model.copy()
-            >>> # model_copy is independent, changes won't affect model
+        Create a deep copy of the Model.
+
+        Creates a complete independent copy including all registered buffers,
+        module parameters, PDB DataFrame, and spacegroup information.
+
+        Returns
+        -------
+        Model
+            A new Model instance with copied data.
+
+        Examples
+        --------
+        >>> model = Model().load_pdb('structure.pdb')
+        >>> model_copy = model.copy()
+        >>> # model_copy is independent, changes won't affect model
         """
         if not self.initialized:
             raise RuntimeError("Cannot copy an uninitialized Model. Load data first.")
@@ -450,40 +511,40 @@ class Model(DebugMixin, nn.Module):
                                    mode: str = 'set', freeze: bool = True):
         """
         Update the refinable mask for a parameter using Phenix-style selection syntax.
-        
-        This method updates the internal mask buffer (xyz_mask, b_mask, u_mask, or 
+
+        This method updates the internal mask buffer (xyz_mask, b_mask, u_mask, or
         occupancy_mask) based on the selection. The updated mask is NOT automatically
         applied to the parameter tensors - use apply_mask_to_parameter() to apply it.
-        
-        Args:
-            selection_string: Phenix-style selection string (see parse_phenix_selection docs)
-            target: Parameter to update ('xyz', 'b', 'u', or 'occupancy')
-            mode: How to combine with current mask:
-                  - 'set': Replace mask with selection (default)
-                  - 'add': Add selection to current mask
-                  - 'remove': Remove selection from current mask
-            freeze: If True (default), selected atoms will be frozen (mask=False).
-                   If False, selected atoms will be unfrozen (mask=True).
-        
-        Examples:
-            >>> # Freeze chain A coordinates
-            >>> model.update_mask_from_selection("chain A", "xyz", mode='set', freeze=True)
-            >>> model.apply_mask_to_parameter("xyz")
-            >>> 
-            >>> # Freeze residues 10-20
-            >>> model.update_mask_from_selection("resseq 10:20", "xyz", freeze=True)
-            >>> model.apply_mask_to_parameter("xyz")
-            >>> 
-            >>> # Unfreeze backbone atoms
-            >>> model.update_mask_from_selection("name CA or name C or name N", "xyz", freeze=False)
-            >>> model.apply_mask_to_parameter("xyz")
-            >>> 
-            >>> # Freeze B-factors for waters, add to existing frozen atoms
-            >>> model.update_mask_from_selection("resname HOH", "b", mode='add', freeze=True)
-            >>> model.apply_mask_to_parameter("b")
-        
-        Raises:
-            ValueError: If target is not recognized or selection syntax is invalid
+
+        Parameters
+        ----------
+        selection_string : str
+            Phenix-style selection string (see parse_phenix_selection docs).
+        target : str
+            Parameter to update: 'xyz', 'b', 'u', or 'occupancy'.
+        mode : str, optional
+            How to combine with current mask:
+            - 'set': Replace mask with selection (default)
+            - 'add': Add selection to current mask
+            - 'remove': Remove selection from current mask
+        freeze : bool, optional
+            If True (default), selected atoms will be frozen (mask=False).
+            If False, selected atoms will be unfrozen (mask=True).
+
+        Raises
+        ------
+        ValueError
+            If target is not recognized or selection syntax is invalid.
+
+        Examples
+        --------
+        >>> # Freeze chain A coordinates
+        >>> model.update_mask_from_selection("chain A", "xyz", mode='set', freeze=True)
+        >>> model.apply_mask_to_parameter("xyz")
+
+        >>> # Unfreeze backbone atoms
+        >>> model.update_mask_from_selection("name CA or name C or name N", "xyz", freeze=False)
+        >>> model.apply_mask_to_parameter("xyz")
         """
         from torchref.utils.utils import create_selection_mask
         
@@ -528,26 +589,24 @@ class Model(DebugMixin, nn.Module):
     def apply_mask_to_parameter(self, target: str):
         """
         Apply the current mask buffer to the parameter tensor.
-        
-        This method takes the current state of the mask buffer (xyz_mask, b_mask, etc.)
+
+        Takes the current state of the mask buffer (xyz_mask, b_mask, etc.)
         and applies it to the corresponding parameter tensor's refinable mask.
-        
-        Args:
-            target: Parameter to update ('xyz', 'b', 'u', or 'occupancy')
-        
-        Examples:
-            >>> # After updating xyz_mask with selections, apply it
-            >>> model.update_mask_from_selection("chain A", "xyz", freeze=True)
-            >>> model.apply_mask_to_parameter("xyz")
-            >>> 
-            >>> # Apply all masks after multiple updates
-            >>> model.update_mask_from_selection("resname HOH", "b", freeze=True)
-            >>> model.update_mask_from_selection("resname HOH", "occupancy", freeze=True)
-            >>> model.apply_mask_to_parameter("b")
-            >>> model.apply_mask_to_parameter("occupancy")
-        
-        Raises:
-            ValueError: If target is not recognized
+
+        Parameters
+        ----------
+        target : str
+            Parameter to update: 'xyz', 'b', 'u', or 'occupancy'.
+
+        Raises
+        ------
+        ValueError
+            If target is not recognized.
+
+        Examples
+        --------
+        >>> model.update_mask_from_selection("chain A", "xyz", freeze=True)
+        >>> model.apply_mask_to_parameter("xyz")
         """
         if target == 'xyz':
             self.xyz.update_refinable_mask(self.xyz_mask)
@@ -567,26 +626,27 @@ class Model(DebugMixin, nn.Module):
     def freeze_selection(self, selection_string: str, targets: Union[str, list] = 'all'):
         """
         Freeze atoms matching a Phenix-style selection for specified parameters.
-        
-        This is a convenience method that combines update_mask_from_selection() and
+
+        Convenience method that combines update_mask_from_selection() and
         apply_mask_to_parameter() into a single call.
-        
-        Args:
-            selection_string: Phenix-style selection string
-            targets: Parameter(s) to freeze. Can be:
-                    - 'all': Freeze xyz, b, u, and occupancy (default)
-                    - str: Single parameter ('xyz', 'b', 'u', 'occupancy')
-                    - list: List of parameters ['xyz', 'b']
-        
-        Examples:
-            >>> # Freeze all parameters for chain A
-            >>> model.freeze_selection("chain A", targets='all')
-            >>> 
-            >>> # Freeze only coordinates for residues 10-20
-            >>> model.freeze_selection("resseq 10:20", targets='xyz')
-            >>> 
-            >>> # Freeze coordinates and B-factors for waters
-            >>> model.freeze_selection("resname HOH", targets=['xyz', 'b'])
+
+        Parameters
+        ----------
+        selection_string : str
+            Phenix-style selection string.
+        targets : str or list of str, optional
+            Parameter(s) to freeze. Can be:
+            - 'all': Freeze xyz, b, u, and occupancy (default)
+            - str: Single parameter ('xyz', 'b', 'u', 'occupancy')
+            - list: List of parameters, e.g., ['xyz', 'b']
+
+        Examples
+        --------
+        >>> # Freeze all parameters for chain A
+        >>> model.freeze_selection("chain A", targets='all')
+
+        >>> # Freeze only coordinates for residues 10-20
+        >>> model.freeze_selection("resseq 10:20", targets='xyz')
         """
         # Handle 'all' target
         if targets == 'all':
@@ -602,26 +662,27 @@ class Model(DebugMixin, nn.Module):
     def unfreeze_selection(self, selection_string: str, targets: Union[str, list] = 'all'):
         """
         Unfreeze atoms matching a Phenix-style selection for specified parameters.
-        
-        This is a convenience method that combines update_mask_from_selection() and
+
+        Convenience method that combines update_mask_from_selection() and
         apply_mask_to_parameter() into a single call.
-        
-        Args:
-            selection_string: Phenix-style selection string
-            targets: Parameter(s) to unfreeze. Can be:
-                    - 'all': Unfreeze xyz, b, u, and occupancy (default)
-                    - str: Single parameter ('xyz', 'b', 'u', 'occupancy')
-                    - list: List of parameters ['xyz', 'b']
-        
-        Examples:
-            >>> # Unfreeze all parameters for chain A
-            >>> model.unfreeze_selection("chain A", targets='all')
-            >>> 
-            >>> # Unfreeze only coordinates for backbone atoms
-            >>> model.unfreeze_selection("name CA or name C or name N", targets='xyz')
-            >>> 
-            >>> # Unfreeze B-factors for non-water residues
-            >>> model.unfreeze_selection("not resname HOH", targets='b')
+
+        Parameters
+        ----------
+        selection_string : str
+            Phenix-style selection string.
+        targets : str or list of str, optional
+            Parameter(s) to unfreeze. Can be:
+            - 'all': Unfreeze xyz, b, u, and occupancy (default)
+            - str: Single parameter ('xyz', 'b', 'u', 'occupancy')
+            - list: List of parameters, e.g., ['xyz', 'b']
+
+        Examples
+        --------
+        >>> # Unfreeze all parameters for chain A
+        >>> model.unfreeze_selection("chain A", targets='all')
+
+        >>> # Unfreeze only coordinates for backbone atoms
+        >>> model.unfreeze_selection("name CA or name C or name N", targets='xyz')
         """
         # Handle 'all' target
         if targets == 'all':
@@ -670,23 +731,25 @@ class Model(DebugMixin, nn.Module):
     def register_alternative_conformations(self):
         """
         Identify and register all alternative conformation groups in the structure.
-        
+
         For each residue that has alternative conformations (altloc A, B, C, etc.),
         this method identifies all atoms belonging to each conformation and stores
         their indices as tensors in a tuple.
-        
+
         The result is stored in self.altloc_pairs as a list of tuples, where each
-        tuple contains tensors of atom indices for each alternative conformation
-        of a residue.
-        
-        Example:
-            For a residue with conformations A and B:
-            - Conformation A has atoms at indices [100, 101, 102, ...]
-            - Conformation B has atoms at indices [110, 111, 112, ...]
-            Result: [(tensor([100, 101, 102, ...]), tensor([110, 111, 112, ...])), ...]
-            
-            For a residue with conformations A, B, C:
-            [(tensor([200, 201, ...]), tensor([210, 211, ...]), tensor([220, 221, ...])), ...]
+        tuple contains tensors of atom indices for each alternative conformation.
+
+        Examples
+        --------
+        For a residue with conformations A and B:
+
+        >>> # Conformation A has atoms at indices [100, 101, 102, ...]
+        >>> # Conformation B has atoms at indices [110, 111, 112, ...]
+        >>> # Result: [(tensor([100, 101, 102, ...]), tensor([110, 111, 112, ...])), ...]
+
+        For a residue with conformations A, B, C:
+
+        >>> # Result: [(tensor([200, 201, ...]), tensor([210, 211, ...]), tensor([220, 221, ...])), ...]
         """
         # Initialize the list to store alternative conformation groups
         self.altloc_pairs = []
@@ -723,13 +786,14 @@ class Model(DebugMixin, nn.Module):
     def shake_coords(self, stddev: float):
         """
         Apply random Gaussian noise to atomic coordinates.
-        
-        This method perturbs the atomic coordinates by adding Gaussian noise
-        with a specified standard deviation. The noise is applied to all atoms
-        in the model.
-        
-        Args:
-            stddev: Standard deviation of the Gaussian noise to be added (in Å).
+
+        Perturbs the atomic coordinates by adding Gaussian noise with a
+        specified standard deviation. The noise is applied to all atoms.
+
+        Parameters
+        ----------
+        stddev : float
+            Standard deviation of the Gaussian noise to be added, in Angstroms.
         """
         xyz = self.xyz().detach()
         new_xyz = xyz + torch.normal(mean=0.0, std=stddev, size=xyz.shape)
@@ -738,13 +802,14 @@ class Model(DebugMixin, nn.Module):
     def shake_b_factors(self, stddev: float):
         """
         Apply random Gaussian noise to B-factors (temperature factors).
-        
-        This method perturbs the B-factors by adding Gaussian noise
-        with a specified standard deviation. The noise is applied to all atoms
-        in the model.
-        
-        Args:
-            stddev: Standard deviation of the Gaussian noise to be added (in 1/Å**2).
+
+        Perturbs the B-factors by adding Gaussian noise with a specified
+        standard deviation. The noise is applied to all atoms.
+
+        Parameters
+        ----------
+        stddev : float
+            Standard deviation of the Gaussian noise to be added, in 1/Angstrom^2.
         """
         b_factors = self.b().detach()
         new_b = b_factors + torch.normal(mean=0.0, std=stddev, size=b_factors.shape)
@@ -753,12 +818,14 @@ class Model(DebugMixin, nn.Module):
     def adp_loss(self):
         """
         Compute the ADP (B-factor) regularization loss.
-        
-        This loss encourages B-factors to have similar values across the structure,
-        helping to prevent overfitting during refinement.
-        
-        Returns:
-            torch.Tensor: Scalar tensor representing the ADP loss.
+
+        This loss encourages B-factors to have similar values across the
+        structure, helping to prevent overfitting during refinement.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar tensor representing the ADP loss.
         """
         b_current = self.b()
         b_mean = torch.mean(b_current)
@@ -767,43 +834,45 @@ class Model(DebugMixin, nn.Module):
     
     def adp_nll_loss(self, target_log_std: float = 0.2):
         """
-        Compute the negative log-likelihood (NLL) of ADPs assuming a Gaussian distribution in log-space.
-        
-        This regularization penalizes B-factors that deviate from a target distribution with
-        a FIXED standard deviation (hyperparameter), avoiding circular dependency on the 
-        current distribution's statistics.
-        
-        The NLL for a Gaussian distribution in log-space is:
-            NLL = 0.5 * mean[(log_b - μ)² / σ² + log(2πσ²)]
-        
-        Where:
-            - μ (mu) = mean of log-space B-factors (computed from current data)
-            - σ (sigma) = FIXED target standard deviation (hyperparameter, not computed)
-        
-        Args:
-            target_log_std: Target standard deviation in log-space (default: 0.2)
-                           - 0.1 = very tight (B-factors within ~10% of mean)
-                           - 0.2 = moderate spread (B-factors within ~20% of mean) [RECOMMENDED]
-                           - 0.3 = looser spread (B-factors within ~30% of mean)
-        
-        Returns:
-            torch.Tensor: Scalar tensor representing the NLL. Lower values indicate
-                         the distribution is closer to the target Gaussian with fixed σ.
-        
-        Example:
-            >>> # During refinement
-            >>> structure_factor_loss = compute_structure_factor_loss()
-            >>> geometry_loss = compute_geometry_loss()
-            >>> nll_reg = model.adp_nll_loss(target_log_std=0.2)
-            >>> 
-            >>> # Combined loss with NLL penalty
-            >>> total_loss = structure_factor_loss + 0.1 * geometry_loss + 0.01 * nll_reg
-            >>> total_loss.backward()
-        
-        Note:
-            - Uses FIXED σ (no circular dependency on current distribution)
-            - Penalizes deviations from mean with strength controlled by target_log_std
-            - Smaller target_log_std = stronger regularization (tighter distribution)
+        Compute negative log-likelihood of ADPs assuming Gaussian distribution in log-space.
+
+        This regularization penalizes B-factors that deviate from a target distribution
+        with a FIXED standard deviation (hyperparameter), avoiding circular dependency
+        on the current distribution's statistics.
+
+        The NLL for a Gaussian distribution in log-space is::
+
+            NLL = 0.5 * mean[(log_b - mu)^2 / sigma^2 + log(2*pi*sigma^2)]
+
+        Where mu is the mean of log-space B-factors (computed from current data) and
+        sigma is the FIXED target standard deviation (hyperparameter).
+
+        Parameters
+        ----------
+        target_log_std : float, optional
+            Target standard deviation in log-space. Default is 0.2.
+            - 0.1 = very tight (B-factors within ~10% of mean)
+            - 0.2 = moderate spread (B-factors within ~20% of mean) [RECOMMENDED]
+            - 0.3 = looser spread (B-factors within ~30% of mean)
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar tensor representing the NLL. Lower values indicate the distribution
+            is closer to the target Gaussian with fixed sigma.
+
+        Examples
+        --------
+        >>> # During refinement
+        >>> structure_factor_loss = compute_structure_factor_loss()
+        >>> nll_reg = model.adp_nll_loss(target_log_std=0.2)
+        >>> total_loss = structure_factor_loss + 0.01 * nll_reg
+        >>> total_loss.backward()
+
+        Notes
+        -----
+        Uses FIXED sigma (no circular dependency on current distribution).
+        Smaller target_log_std = stronger regularization (tighter distribution).
         """
         # Access the internal log-space values directly from the PositiveMixedTensor
         # The parent MixedTensor.forward() returns log-space values before exp()
@@ -831,35 +900,33 @@ class Model(DebugMixin, nn.Module):
     
     def adp_nll_loss_per_atom(self, target_log_std: float = 0.2):
         """
-        Compute per-atom negative log-likelihood (NLL) for B-factors in log-space.
-        
-        This returns the NLL contribution for each individual atom, useful for:
-        - Identifying atoms with unusual B-factors (outliers)
-        - Applying atom-specific regularization weights
-        - Diagnostic analysis of B-factor distribution
-        
-        The per-atom NLL is:
-            NLL_i = 0.5 * [(log_b_i - μ)² / σ² + log(2πσ²)]
-        
-        Args:
-            target_log_std: Fixed target standard deviation in log-space (default: 0.2)
-        
-        Returns:
-            torch.Tensor: Tensor of shape (n_atoms,) with per-atom NLL values.
-                         Higher values indicate atoms farther from the mean.
-        
-        Example:
-            >>> # Get per-atom NLL
-            >>> atom_nll = model.adp_nll_loss_per_atom(target_log_std=0.2)
-            >>> 
-            >>> # Identify outlier atoms (high NLL)
-            >>> threshold = atom_nll.mean() + 2 * atom_nll.std()
-            >>> outliers = atom_nll > threshold
-            >>> print(f"Found {outliers.sum()} outlier atoms")
-            >>> print(model.pdb[outliers.cpu().numpy()])
-            >>> 
-            >>> # Use in loss with per-atom weighting
-            >>> weighted_nll = torch.mean(weights * atom_nll)
+        Compute per-atom negative log-likelihood for B-factors in log-space.
+
+        Returns the NLL contribution for each individual atom, useful for
+        identifying outliers or applying atom-specific regularization weights.
+
+        The per-atom NLL is::
+
+            NLL_i = 0.5 * [(log_b_i - mu)^2 / sigma^2 + log(2*pi*sigma^2)]
+
+        Parameters
+        ----------
+        target_log_std : float, optional
+            Fixed target standard deviation in log-space. Default is 0.2.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_atoms,) with per-atom NLL values.
+            Higher values indicate atoms farther from the mean.
+
+        Examples
+        --------
+        >>> # Get per-atom NLL
+        >>> atom_nll = model.adp_nll_loss_per_atom(target_log_std=0.2)
+        >>> # Identify outlier atoms (high NLL)
+        >>> threshold = atom_nll.mean() + 2 * atom_nll.std()
+        >>> outliers = atom_nll > threshold
         """
         # Access the internal log-space values
         log_b = super(PositiveMixedTensor, self.b).forward()
@@ -883,44 +950,39 @@ class Model(DebugMixin, nn.Module):
     def adp_kl_divergence_loss(self, target_log_std: float = 0.2):
         """
         Compute KL divergence between log B-factor distribution and target Gaussian.
-        
-        This measures how different the current log B-factor distribution is from
-        a target Gaussian distribution with:
-        - Mean: Current mean of log B-factors (detached, adapts to data)
-        - Std: Fixed target standard deviation (regularization strength)
-        
-        KL divergence formula for two Gaussians:
-            KL(q || p) = log(σ_p/σ_q) + (σ_q² + (μ_q - μ_p)²) / (2σ_p²) - 0.5
-        
-        Where:
-            q = actual distribution: N(μ_data, σ_data)
-            p = target distribution: N(μ_data, σ_target)
-        
-        Since both distributions share the same mean (μ_data), the formula simplifies to:
-            KL(q || p) = log(σ_target/σ_data) + σ_data² / (2σ_target²) - 0.5
-        
-        Args:
-            target_log_std: Target standard deviation in log-space (default: 0.2)
-                           Controls how tightly B-factors should cluster
-        
-        Returns:
-            torch.Tensor: Scalar KL divergence value (always ≥ 0)
-                         0 means distributions match perfectly
-                         Higher values mean more deviation from target
-        
-        Example:
-            >>> # Use in loss function
-            >>> loss = xray_loss + w_restraints * restraints_loss + w_adp * model.adp_kl_divergence_loss(0.2)
-            >>> 
-            >>> # Monitor during refinement
-            >>> kl_div = model.adp_kl_divergence_loss(0.2)
-            >>> print(f"ADP KL divergence: {kl_div.item():.4f}")
-        
-        Notes:
-            - Lower target_log_std = stronger regularization (tighter distribution)
-            - Mean is detached so it adapts to the natural scale of the data
-            - This is conceptually similar to NLL but explicitly measures distributional difference
+
+        Measures how different the current log B-factor distribution is from a
+        target Gaussian distribution with the current mean of log B-factors and
+        a fixed target standard deviation.
+
+        KL divergence formula for two Gaussians with same mean::
+
+            KL(q || p) = log(sigma_target/sigma_data) + sigma_data^2 / (2*sigma_target^2) - 0.5
+
+        Parameters
+        ----------
+        target_log_std : float, optional
+            Target standard deviation in log-space. Default is 0.2.
+            Controls how tightly B-factors should cluster.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar KL divergence value (always >= 0).
+            0 means distributions match perfectly.
+            Higher values mean more deviation from target.
+
+        Examples
+        --------
+        >>> # Use in loss function
+        >>> loss = xray_loss + w_adp * model.adp_kl_divergence_loss(0.2)
+
+        Notes
+        -----
+        Lower target_log_std = stronger regularization (tighter distribution).
+        Mean is detached so it adapts to the natural scale of the data.
         """
+
         # Access the internal log-space values
         log_b = super(PositiveMixedTensor, self.b).forward()
         
@@ -943,21 +1005,24 @@ class Model(DebugMixin, nn.Module):
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         """
-        Returns a dictionary containing the complete state of the Model.
-        
-        This includes:
-        - All registered buffers (via parent class state_dict)
-        - Model parameters (xyz, b, u, occupancy)
-        - PDB DataFrame
-        - Metadata (spacegroup, device, dtype, etc.)
-        
-        Args:
-            destination: Optional dict to populate
-            prefix: Prefix for parameter names
-            keep_vars: Whether to keep variables in computational graph
-            
-        Returns:
-            dict: Complete state dictionary
+        Return a dictionary containing the complete state of the Model.
+
+        Includes all registered buffers, model parameters (xyz, b, u, occupancy),
+        PDB DataFrame, and metadata (spacegroup, device, dtype, etc.).
+
+        Parameters
+        ----------
+        destination : dict, optional
+            Optional dict to populate with state.
+        prefix : str, optional
+            Prefix for parameter names. Default is ''.
+        keep_vars : bool, optional
+            Whether to keep variables in computational graph. Default is False.
+
+        Returns
+        -------
+        dict
+            Complete state dictionary.
         """
         # Get parent class state_dict (includes all registered buffers)
         state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
@@ -976,9 +1041,11 @@ class Model(DebugMixin, nn.Module):
     def save_state(self, path: str):
         """
         Save the complete state of the model to a file.
-        
-        Args:
-            path (str): Path to save the state dictionary to.
+
+        Parameters
+        ----------
+        path : str
+            Path to save the state dictionary to.
         """
         torch.save(self.state_dict(), path)
         if self.verbose > 0:
@@ -987,10 +1054,13 @@ class Model(DebugMixin, nn.Module):
     def load_state(self, path: str, strict: bool = True):
         """
         Load the complete state of the model from a file.
-        
-        Args:
-            path (str): Path to load the state dictionary from.
-            strict (bool): Whether to strictly enforce that keys match.
+
+        Parameters
+        ----------
+        path : str
+            Path to load the state dictionary from.
+        strict : bool, optional
+            Whether to strictly enforce that keys match. Default is True.
         """
         state_dict = torch.load(path, map_location=self.device, weights_only=False)
         loaded = type(self).create_from_state_dict(state_dict, device=self.device, verbose=self.verbose)
@@ -1004,18 +1074,25 @@ class Model(DebugMixin, nn.Module):
                                verbose: int = 1, dtype_float: torch.dtype = torch.float32) -> 'Model':
         """
         Create a fully initialized Model from a state dictionary.
-        
+
         This is the recommended way to restore a Model from a saved state.
-        It creates an instance with properly initialized submodules, then loads the state.
-        
-        Args:
-            state_dict: State dictionary from torch.save(model.state_dict(), ...)
-            device: Device to place tensors on
-            verbose: Verbosity level
-            dtype_float: Float dtype for tensors
-            
-        Returns:
-            Model: Fully initialized instance with restored state
+        Creates an instance with properly initialized submodules, then loads the state.
+
+        Parameters
+        ----------
+        state_dict : dict
+            State dictionary from torch.save(model.state_dict(), ...).
+        device : torch.device, optional
+            Device to place tensors on. Default is torch.device('cpu').
+        verbose : int, optional
+            Verbosity level. Default is 1.
+        dtype_float : torch.dtype, optional
+            Float dtype for tensors. Default is torch.float32.
+
+        Returns
+        -------
+        Model
+            Fully initialized instance with restored state.
         """
         # Extract metadata (non-tensor data that we handle specially)
         pdb = state_dict.pop('pdb', None)
@@ -1104,6 +1181,7 @@ class Model(DebugMixin, nn.Module):
                     instance.register_buffer(name, torch.zeros_like(state_dict[name], device=device))
         
         # Now use PyTorch's default load_state_dict
+        state_dict = {k: v for k, v in state_dict.items() if k.shape[0] > 0}
         instance.load_state_dict(state_dict, strict=False)
         
         if verbose > 0:

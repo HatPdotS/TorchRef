@@ -12,39 +12,74 @@ from torchref.utils.utils import TensorDict
 
 class ModelFT(Model):
     """
-    ModelFT is a purpose-built subclass of Model for Fourier Transform (FT) based 
-    electron density map calculations and structure factor refinement.
-    
-    Key features:
-    - Uses ITC92 parametrization for electron density calculations
-    - Builds electron density maps in real space
-    - Computes structure factors via FFT
-    - No residue-level caching - uses direct atom access via get_iso/get_aniso
-    
-    Supports two initialization patterns:
-    
-    1. Empty initialization (for state_dict loading):
-        >>> model = ModelFT()  # Creates empty shell
-        >>> model.load_state_dict(torch.load('model.pt'))
-    
-    2. File-based initialization:
-        >>> model = ModelFT(max_res=1.5)
-        >>> model.load_pdb('structure.pdb')
+    Model subclass for Fourier Transform-based electron density and structure factor calculations.
+
+    ModelFT extends the base Model class with capabilities for computing electron
+    density maps in real space and structure factors via FFT. Uses ITC92
+    parametrization for electron density calculations.
+
+    Parameters
+    ----------
+    max_res : float, optional
+        Maximum resolution for grid spacing in Angstroms. Default is 1.0.
+    radius_angstrom : float, optional
+        Radius in Angstroms for density calculation around each atom. Default is 4.0.
+    gridsize : tuple of int, optional
+        Explicit grid size (nx, ny, nz). If None, computed from cell and max_res.
+    *args
+        Additional positional arguments passed to parent Model class.
+    **kwargs
+        Additional keyword arguments passed to parent Model class.
+
+    Attributes
+    ----------
+    max_res : float
+        Maximum resolution for grid spacing.
+    radius_angstrom : float
+        Radius for density calculation.
+    gridsize : torch.Tensor
+        Grid dimensions (nx, ny, nz).
+    real_space_grid : torch.Tensor
+        Real-space coordinate grid with shape (nx, ny, nz, 3).
+    map : torch.Tensor or None
+        Computed electron density map.
+    parametrization : dict
+        ITC92 parametrization dictionary {element: (A, B, C)}.
+    map_symmetry : MapSymmetry
+        Symmetry operator for map calculations.
+
+    Examples
+    --------
+    Empty initialization for state_dict loading:
+
+    >>> model = ModelFT()
+    >>> model.load_state_dict(torch.load('model.pt'))
+
+    File-based initialization:
+
+    >>> model = ModelFT(max_res=1.5)
+    >>> model.load_pdb('structure.pdb')
     """
 
     def __init__(self, *args, max_res=1.0, radius_angstrom=4.0, gridsize: Optional[Tuple[int, int, int]] = None, **kwargs):
         """
-        Initialize ModelFT.
-        
-        Creates an empty model shell ready for:
-        - File loading via load_pdb() / load_cif()
-        - State restoration via load_state_dict()
-        
-        Args:
-            max_res: Maximum resolution for grid spacing in Å (default: 1.0)
-            radius_angstrom: Radius in Å for density calculation (default: 4.0)
-            gridsize: Optional explicit grid size tuple (nx, ny, nz)
-            *args, **kwargs: Passed to parent Model class
+        Initialize an empty ModelFT shell.
+
+        Creates a model shell ready for file loading via load_pdb()/load_cif()
+        or state restoration via load_state_dict().
+
+        Parameters
+        ----------
+        max_res : float, optional
+            Maximum resolution for grid spacing in Angstroms. Default is 1.0.
+        radius_angstrom : float, optional
+            Radius in Angstroms for density calculation. Default is 4.0.
+        gridsize : tuple of int, optional
+            Explicit grid size tuple (nx, ny, nz). If None, computed automatically.
+        *args
+            Passed to parent Model class.
+        **kwargs
+            Passed to parent Model class.
         """
         super().__init__(*args, **kwargs)
         
@@ -71,6 +106,16 @@ class ModelFT(Model):
     def load_pdb(self, filename):
         """
         Load a PDB file and initialize the model with FT-specific setup.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the PDB file.
+
+        Returns
+        -------
+        ModelFT
+            Self, for method chaining.
         """
         super().load_pdb(filename)
         self._build_parametrization()
@@ -80,6 +125,16 @@ class ModelFT(Model):
     def load_cif(self, filename):
         """
         Load a CIF file and initialize the model with FT-specific setup.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the CIF/mmCIF file.
+
+        Returns
+        -------
+        ModelFT
+            Self, for method chaining.
         """
         super().load_cif(filename)
         self._build_parametrization()
@@ -103,7 +158,10 @@ class ModelFT(Model):
     def _build_parametrization(self):
         """
         Build ITC92 parametrization for all atoms in the model.
-        Stores the parametrization dictionary: {element: (A, B, C)}
+
+        Creates and stores the parametrization dictionary mapping element types
+        to their ITC92 scattering factor parameters (A, B, C). Registers the
+        A and B parameter tensors as buffers.
         """
         if self.verbose > 1: print("Building ITC92 parametrization...")
 
@@ -119,19 +177,19 @@ class ModelFT(Model):
     def get_iso(self):
         """
         Get isotropic atoms with their ITC92 parameters.
-        
-        Returns:
-        --------
-        xyz : torch.Tensor (n_atoms, 3)
-            Atomic coordinates
-        b : torch.Tensor (n_atoms,)
-            B-factors
-        occupancy : torch.Tensor (n_atoms,)
-            Occupancies
-        A : torch.Tensor (n_atoms, 5)
-            ITC92 A parameters (amplitudes)
-        B : torch.Tensor (n_atoms, 5)
-            ITC92 B parameters (widths)
+
+        Returns
+        -------
+        xyz : torch.Tensor
+            Atomic coordinates with shape (n_atoms, 3).
+        b : torch.Tensor
+            B-factors with shape (n_atoms,).
+        occupancy : torch.Tensor
+            Occupancies with shape (n_atoms,).
+        A : torch.Tensor
+            ITC92 A parameters (amplitudes) with shape (n_atoms, 5).
+        B : torch.Tensor
+            ITC92 B parameters (widths) with shape (n_atoms, 5).
         """
         # Get base isotropic data
         xyz, b, occupancy = super().get_iso()
@@ -146,19 +204,19 @@ class ModelFT(Model):
     def get_aniso(self):
         """
         Get anisotropic atoms with their ITC92 parameters.
-        
-        Returns:
-        --------
-        xyz : torch.Tensor (n_atoms, 3)
-            Atomic coordinates
-        u : torch.Tensor (n_atoms, 6)
-            Anisotropic U parameters
-        occupancy : torch.Tensor (n_atoms,)
-            Occupancies
-        A : torch.Tensor (n_atoms, 5)
-            ITC92 A parameters (amplitudes)
-        B : torch.Tensor (n_atoms, 5)
-            ITC92 B parameters (widths)
+
+        Returns
+        -------
+        xyz : torch.Tensor
+            Atomic coordinates with shape (n_atoms, 3).
+        u : torch.Tensor
+            Anisotropic U parameters with shape (n_atoms, 6).
+        occupancy : torch.Tensor
+            Occupancies with shape (n_atoms,).
+        A : torch.Tensor
+            ITC92 A parameters (amplitudes) with shape (n_atoms, 5).
+        B : torch.Tensor
+            ITC92 B parameters (widths) with shape (n_atoms, 5).
         """
         # Get base anisotropic data
         xyz, u, occupancy = super().get_aniso()
@@ -174,13 +232,14 @@ class ModelFT(Model):
     def setup_grid(self, max_res=None, gridsize=None):
         """
         Setup real-space grid for electron density calculation.
-        
-        Parameters:
-        -----------
-        max_res : float
-            Maximum resolution for grid spacing (in Angstroms)
-        gridsize : tuple, optional
-            Explicit grid size (nx, ny, nz)
+
+        Parameters
+        ----------
+        max_res : float, optional
+            Maximum resolution for grid spacing in Angstroms.
+            If None, uses self.max_res.
+        gridsize : tuple of int, optional
+            Explicit grid size (nx, ny, nz). If None, computed automatically.
         """
         if max_res is not None:
             self.max_res = max_res
@@ -208,7 +267,17 @@ class ModelFT(Model):
 
     def get_radius(self, min_radius_Angstrom: float = 4.0):
         """
-        Get the radius (in voxels) used for density calculation around each atom.
+        Get the radius in voxels used for density calculation around each atom.
+
+        Parameters
+        ----------
+        min_radius_Angstrom : float, optional
+            Minimum radius in Angstroms. Default is 4.0.
+
+        Returns
+        -------
+        int
+            Radius in voxels.
         """
         if not hasattr(self, 'real_space_grid') or self.real_space_grid is None:
             self.setup_grid(
@@ -222,20 +291,23 @@ class ModelFT(Model):
     def build_complete_map(self, radius=None, apply_symmetry=True):
         """
         Build electron density map from all atoms.
-        Uses get_iso() and get_aniso() to get atom data.
-        
-        Parameters:
-        -----------
-        radius : int or None
-            Radius (in voxels) around each atom to compute density.
+
+        Uses get_iso() and get_aniso() to get atom data and constructs
+        the complete electron density map.
+
+        Parameters
+        ----------
+        radius : int, optional
+            Radius in voxels around each atom to compute density.
             If None, uses self.radius.
-        apply_symmetry : bool, default True
-            If True and space group is not P1, apply symmetry operations to the map
-        
-        Returns:
-        --------
-        map : torch.Tensor
-            Electron density map (with symmetry applied if requested)
+        apply_symmetry : bool, optional
+            If True and space group is not P1, apply symmetry operations
+            to the map. Default is True.
+
+        Returns
+        -------
+        torch.Tensor
+            Electron density map with symmetry applied if requested.
         """
         self.map = self.build_initial_map(apply_symmetry=apply_symmetry)
 
@@ -303,11 +375,16 @@ class ModelFT(Model):
     def save_map(self, filename):
         """
         Save the electron density map to a CCP4 format file.
-        
-        Parameters:
-        -----------
+
+        Parameters
+        ----------
         filename : str
-            Output filename for the map
+            Output filename for the map.
+
+        Raises
+        ------
+        ValueError
+            If no map has been computed yet.
         """
         if self.map is None:
             raise ValueError("No map to save. Call build_density_map() first.")
@@ -347,13 +424,19 @@ class ModelFT(Model):
     def rebuild_map(self, radius=None):
         """
         Rebuild the density map from scratch.
+
         Convenience method that clears and rebuilds everything.
-        
-        Parameters:
-        -----------
-        radius : int or None
-            Radius (in voxels) around each atom.
-            If None, uses self.radius. If specified, overrides self.radius.
+
+        Parameters
+        ----------
+        radius : int, optional
+            Radius in voxels around each atom. If None, uses self.radius.
+            If specified, overrides self.radius.
+
+        Returns
+        -------
+        torch.Tensor
+            Rebuilt electron density map.
         """
         if self.verbose > 1: print("Rebuilding density map from scratch...")
         return self.build_density_map(radius=radius)
@@ -384,19 +467,20 @@ class ModelFT(Model):
     def get_structure_factor(self, hkl: torch.Tensor, recalc=True) -> torch.Tensor:
         """
         Get structure factors for given hkl reflections.
+
         Uses caching to avoid recomputation if parameters haven't changed.
-        
-        Parameters:
-        -----------
-        hkl : torch.Tensor (n_reflections, 3)
-            Miller indices
-        recalc : bool
-            If True, forces recalculation even if cached
-            
-        Returns:
-        --------
-        sf : torch.Tensor (n_reflections,)
-            Complex structure factors
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices with shape (n_reflections, 3).
+        recalc : bool, optional
+            If True, forces recalculation even if cached. Default is True.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex structure factors with shape (n_reflections,).
         """
         # Compute current parameter hash
         params = (*self.parameters(),hkl)
@@ -425,16 +509,18 @@ class ModelFT(Model):
     def forward(self, hkl, recalc=True) -> torch.Tensor:
         """
         Forward pass to compute structure factors for given hkl.
-        
-        Parameters:
-        -----------
-        hkl : torch.Tensor (n_reflections, 3)
-            Miller indices
-            
-        Returns:
-        --------
-        F_calc : torch.Tensor (n_reflections,)
-            Calculated complex structure factors
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices with shape (n_reflections, 3).
+        recalc : bool, optional
+            If True, forces recalculation. Default is True.
+
+        Returns
+        -------
+        torch.Tensor
+            Calculated complex structure factors with shape (n_reflections,).
         """
         f = self.get_structure_factor(hkl,recalc=recalc)
         if self.verbose > 2:
@@ -444,23 +530,23 @@ class ModelFT(Model):
     
     def copy(self):
         """
-        Create a deep copy of the ModelFT with all parameters, buffers, and FT-specific data.
-        
-        This method creates a complete independent copy including:
-        - All Model base class data (via parent copy logic)
-        - FT-specific buffers (gridsize, real_space_grid, voxel_size, A, B)
-        - ITC92 parametrization dictionary
-        - Map symmetry operator
-        - Scalar attributes (max_res, radius_angstrom, map)
-        - Cache (reset to empty)
-        
-        Returns:
-            ModelFT: A new ModelFT instance with copied data
-            
-        Example:
-            >>> model = ModelFT().load_pdb('structure.pdb')
-            >>> model_copy = model.copy()
-            >>> # model_copy is independent, changes won't affect model
+        Create a deep copy of the ModelFT.
+
+        Creates a complete independent copy including all Model base class data,
+        FT-specific buffers (gridsize, real_space_grid, voxel_size, A, B),
+        ITC92 parametrization, map symmetry operator, and scalar attributes.
+        Cache is reset to empty.
+
+        Returns
+        -------
+        ModelFT
+            A new ModelFT instance with copied data.
+
+        Examples
+        --------
+        >>> model = ModelFT().load_pdb('structure.pdb')
+        >>> model_copy = model.copy()
+        >>> # model_copy is independent, changes won't affect model
         """
         if not self.initialized:
             raise RuntimeError("Cannot copy an uninitialized ModelFT. Load data first.")
@@ -539,20 +625,24 @@ class ModelFT(Model):
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         """
-        Returns a dictionary containing the complete state of the ModelFT.
-        
-        Extends parent Model.state_dict() with FT-specific parameters:
-        - max_res, radius_angstrom
-        - gridsize
-        - parametrization (ITC92 coefficients)
-        
-        Args:
-            destination: Optional dict to populate
-            prefix: Prefix for parameter names
-            keep_vars: Whether to keep variables in computational graph
-            
-        Returns:
-            dict: Complete state dictionary
+        Return a dictionary containing the complete state of the ModelFT.
+
+        Extends parent Model.state_dict() with FT-specific parameters including
+        max_res, radius_angstrom, and gridsize.
+
+        Parameters
+        ----------
+        destination : dict, optional
+            Optional dict to populate.
+        prefix : str, optional
+            Prefix for parameter names. Default is ''.
+        keep_vars : bool, optional
+            Whether to keep variables in computational graph. Default is False.
+
+        Returns
+        -------
+        dict
+            Complete state dictionary.
         """
         # Get parent Model state_dict
         state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
@@ -572,18 +662,25 @@ class ModelFT(Model):
                                verbose: int = 1, dtype_float: torch.dtype = torch.float32) -> 'ModelFT':
         """
         Create a fully initialized ModelFT from a state dictionary.
-        
+
         This is the recommended way to restore a ModelFT from a saved state.
-        It creates an instance with properly initialized submodules, then loads the state.
-        
-        Args:
-            state_dict: State dictionary from torch.save(model.state_dict(), ...)
-            device: Device to place tensors on
-            verbose: Verbosity level
-            dtype_float: Float dtype for tensors
-            
-        Returns:
-            ModelFT: Fully initialized instance with restored state
+        Creates an instance with properly initialized submodules, then loads the state.
+
+        Parameters
+        ----------
+        state_dict : dict
+            State dictionary from torch.save(model.state_dict(), ...).
+        device : torch.device, optional
+            Device to place tensors on. Default is torch.device('cpu').
+        verbose : int, optional
+            Verbosity level. Default is 1.
+        dtype_float : torch.dtype, optional
+            Float dtype for tensors. Default is torch.float32.
+
+        Returns
+        -------
+        ModelFT
+            Fully initialized instance with restored state.
         """
         # Extract ModelFT-specific metadata
         max_res = state_dict.pop('max_res', 1.0)
@@ -714,6 +811,7 @@ class ModelFT(Model):
                 )
         
         # Now use PyTorch's default load_state_dict
+        state_dict = {k: v for k, v in state_dict.items() if v.shape[0] > 0}
         instance.load_state_dict(state_dict, strict=False)
         
         # Rebuild parametrization dict from A and B buffers

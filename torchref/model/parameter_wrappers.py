@@ -8,35 +8,53 @@ from typing import Optional, Union
 
 class MixedTensor(nn.Module):
     """
-    A wrapper class to handle tensors where part of the tensor should be fixed 
-    and another part should be optimized during refinement.
-    
-    This class stores a mask indicating which elements can be refined, and maintains
-    both fixed and refinable components separately. The full tensor is reconstructed
-    on-the-fly when accessed.
-    
-    Supports two initialization patterns:
-    
-    1. Empty initialization (for state_dict loading):
-        >>> mixed = MixedTensor()  # Creates empty shell
-        >>> mixed.load_state_dict(torch.load('mixed.pt'))
-    
-    2. Full initialization with values:
-        >>> initial_values = torch.randn(100)
-        >>> mixed = MixedTensor(initial_values, requires_grad=True)
-    
-    Example:
-        >>> # Create a tensor with 100 elements, where only indices 20-30 are refinable
-        >>> mask = torch.zeros(100, dtype=torch.bool)
-        >>> mask[20:30] = True
-        >>> initial_values = torch.randn(100)
-        >>> mixed = MixedTensor(initial_values, refinable_mask=mask, requires_grad=True)
-        >>> 
-        >>> # Use it in optimization
-        >>> optimizer = torch.optim.Adam([mixed.refinable_params], lr=0.01)
-        >>> loss = (mixed() - target).pow(2).sum()
-        >>> loss.backward()
-        >>> optimizer.step()
+    A wrapper class for tensors with mixed fixed and refinable elements.
+
+    Stores a mask indicating which elements can be refined and maintains
+    both fixed and refinable components separately. The full tensor is
+    reconstructed on-the-fly when accessed.
+
+    Parameters
+    ----------
+    initial_values : torch.Tensor, optional
+        Initial tensor values for all elements. Optional for empty init.
+    refinable_mask : torch.Tensor, optional
+        Boolean mask indicating which elements can be refined.
+        If None, all elements are refinable.
+    requires_grad : bool, optional
+        Whether refinable parameters should have gradients. Default is True.
+    dtype : torch.dtype, optional
+        Data type for the tensor. Default is same as initial_values.
+    device : torch.device, optional
+        Device for the tensor. Default is same as initial_values.
+    name : str, optional
+        Optional name for this parameter (useful for debugging/logging).
+
+    Attributes
+    ----------
+    refinable_mask : torch.Tensor
+        Boolean mask indicating refinable elements.
+    fixed_mask : torch.Tensor
+        Boolean mask indicating fixed elements (inverse of refinable_mask).
+    fixed_values : torch.Tensor
+        Buffer containing fixed values.
+    refinable_params : nn.Parameter
+        Parameter containing refinable values.
+
+    Examples
+    --------
+    Empty initialization for state_dict loading:
+
+    >>> mixed = MixedTensor()
+    >>> mixed.load_state_dict(torch.load('mixed.pt'))
+
+    Full initialization with values:
+
+    >>> mask = torch.zeros(100, dtype=torch.bool)
+    >>> mask[20:30] = True
+    >>> initial_values = torch.randn(100)
+    >>> mixed = MixedTensor(initial_values, refinable_mask=mask, requires_grad=True)
+    >>> optimizer = torch.optim.Adam([mixed.refinable_params], lr=0.01)
     """
     
     def __init__(
@@ -50,18 +68,25 @@ class MixedTensor(nn.Module):
     ):
         """
         Initialize a MixedTensor.
-        
+
         If initial_values is provided, fully initializes the tensor.
         If not provided (empty init), creates a shell ready for load_state_dict().
-        
-        Args:
-            initial_values: Initial tensor values for all elements (optional for empty init)
-            refinable_mask: Boolean mask indicating which elements can be refined.
-                          If None, all elements are refinable.
-            requires_grad: Whether refinable parameters should have gradients
-            dtype: Data type for the tensor (default: same as initial_values)
-            device: Device for the tensor (default: same as initial_values)
-            name: Optional name for this parameter (useful for debugging/logging)
+
+        Parameters
+        ----------
+        initial_values : torch.Tensor, optional
+            Initial tensor values for all elements. Optional for empty init.
+        refinable_mask : torch.Tensor, optional
+            Boolean mask indicating which elements can be refined.
+            If None, all elements are refinable.
+        requires_grad : bool, optional
+            Whether refinable parameters should have gradients. Default is True.
+        dtype : torch.dtype, optional
+            Data type for the tensor. Default is same as initial_values.
+        device : torch.device, optional
+            Device for the tensor. Default is same as initial_values.
+        name : str, optional
+            Optional name for this parameter (useful for debugging/logging).
         """
         super().__init__()
         
@@ -131,13 +156,15 @@ class MixedTensor(nn.Module):
     
     def forward(self) -> torch.Tensor:
         """
-        Reconstruct and return the full tensor by combining fixed and refinable parts.
-        
-        For multi-dimensional tensors (e.g., xyz with shape [N, 3]), the mask
-        broadcasts correctly: refinable_mask with shape [N] selects rows.
-        
-        Returns:
-            Full tensor with fixed values in non-refinable positions and 
+        Reconstruct and return the full tensor.
+
+        Combines fixed and refinable parts. For multi-dimensional tensors
+        (e.g., xyz with shape [N, 3]), the mask broadcasts correctly.
+
+        Returns
+        -------
+        torch.Tensor
+            Full tensor with fixed values in non-refinable positions and
             current refinable parameter values in refinable positions.
         """
         # Start with fixed values
@@ -181,9 +208,16 @@ class MixedTensor(nn.Module):
     def update_fixed_values(self, new_values: torch.Tensor):
         """
         Update the fixed values (does not affect refinable parameters).
-        
-        Args:
-            new_values: New tensor values. Only fixed positions will be updated.
+
+        Parameters
+        ----------
+        new_values : torch.Tensor
+            New tensor values. Only fixed positions will be updated.
+
+        Raises
+        ------
+        ValueError
+            If new_values shape doesn't match tensor shape.
         """
         if new_values.shape != self.shape:
             raise ValueError(
@@ -194,12 +228,18 @@ class MixedTensor(nn.Module):
     
     def update_refinable_mask(self, new_mask: torch.Tensor, reset_refinable: bool = False):
         """
-        Update which elements are refinable. This is an advanced operation.
-        
-        Args:
-            new_mask: New boolean mask indicating refinable elements
-            reset_refinable: If True, reset refinable parameters to current fixed values.
-                           If False, keep existing refinable parameter values where possible.
+        Update which elements are refinable.
+
+        This is an advanced operation that modifies the refinable/fixed split.
+
+        Parameters
+        ----------
+        new_mask : torch.Tensor
+            New boolean mask indicating refinable elements.
+        reset_refinable : bool, optional
+            If True, reset refinable parameters to current fixed values.
+            If False, keep existing refinable parameter values where possible.
+            Default is False.
         """
         if new_mask.shape[0] != self.shape[0]:
             raise ValueError(
@@ -245,12 +285,14 @@ class MixedTensor(nn.Module):
     def copy(self) -> 'MixedTensor':
         """
         Create a deep copy of this MixedTensor.
-        
-        This is an alias for clone() to follow common Python conventions.
+
         Creates a complete independent copy with all buffers and parameters.
-        
-        Returns:
-            New MixedTensor instance with copied data
+        Alias for clone().
+
+        Returns
+        -------
+        MixedTensor
+            New MixedTensor instance with copied data.
         """
         return self.clone()
     
@@ -285,20 +327,23 @@ class MixedTensor(nn.Module):
     def refine(self, selection: Union[slice, torch.Tensor, tuple], reset_values: bool = False):
         """
         Make a selection of the tensor refinable.
-        
-        Args:
-            selection: Boolean mask, slice, or index selection indicating which 
-                      elements should become refinable. Can be:
-                      - Boolean tensor of same shape as the full tensor
-                      - Slice object (e.g., slice(10, 20))
-                      - Tuple of indices for multidimensional tensors
-                      - Integer indices
-            reset_values: If True, reset the selected elements to their current 
-                         fixed values before making them refinable.
-        
-        Example:
-            >>> mixed.make_refinable(slice(10, 20))  # Make elements 10-19 refinable
-            >>> mixed.make_refinable(mask)  # Make elements where mask is True refinable
+
+        Parameters
+        ----------
+        selection : slice, torch.Tensor, or tuple
+            Selection indicating which elements should become refinable. Can be:
+            - Boolean tensor of same shape as the full tensor
+            - Slice object (e.g., slice(10, 20))
+            - Tuple of indices for multidimensional tensors
+            - Integer indices
+        reset_values : bool, optional
+            If True, reset the selected elements to their current fixed values
+            before making them refinable. Default is False.
+
+        Examples
+        --------
+        >>> mixed.refine(slice(10, 20))  # Make elements 10-19 refinable
+        >>> mixed.refine(mask)  # Make elements where mask is True refinable
         """
         # Get current full tensor
         current_full = self.forward().detach()
@@ -353,21 +398,23 @@ class MixedTensor(nn.Module):
     def fix(self, selection: Union[slice, torch.Tensor, tuple], freeze_at_current: bool = True):
         """
         Make a selection of the tensor fixed (non-refinable).
-        
-        Args:
-            selection: Boolean mask, slice, or index selection indicating which 
-                      elements should become fixed. Can be:
-                      - Boolean tensor of same shape as the full tensor
-                      - Slice object (e.g., slice(10, 20))
-                      - Tuple of indices for multidimensional tensors
-                      - Integer indices
-            freeze_at_current: If True (default), freeze the selected elements at 
-                             their current values. If False, they revert to the 
-                             original fixed values.
-        
-        Example:
-            >>> mixed.make_fixed(slice(10, 20))  # Fix elements 10-19
-            >>> mixed.make_fixed(mask)  # Fix elements where mask is True
+
+        Parameters
+        ----------
+        selection : slice, torch.Tensor, or tuple
+            Selection indicating which elements should become fixed. Can be:
+            - Boolean tensor of same shape as the full tensor
+            - Slice object (e.g., slice(10, 20))
+            - Tuple of indices for multidimensional tensors
+            - Integer indices
+        freeze_at_current : bool, optional
+            If True (default), freeze the selected elements at their current values.
+            If False, they revert to the original fixed values.
+
+        Examples
+        --------
+        >>> mixed.fix(slice(10, 20))  # Fix elements 10-19
+        >>> mixed.fix(mask)  # Fix elements where mask is True
         """
         # Get current full tensor
         current_full = self.forward().detach()
@@ -474,47 +521,49 @@ class MixedTensor(nn.Module):
 
 class PositiveMixedTensor(MixedTensor):
     """
-    A MixedTensor subclass that ensures all values are positive by parametrizing in log space.
-    
-    This class is useful for parameters that must be strictly positive (e.g., B-factors,
-    scale factors, sigma values). Values are stored as logarithms internally and 
-    converted to normal space via exp() when accessed.
-    
-    Reparametrization:
+    A MixedTensor subclass ensuring all values are positive via log-space parametrization.
+
+    Useful for parameters that must be strictly positive (e.g., B-factors,
+    scale factors, sigma values). Values are stored as logarithms internally
+    and converted to normal space via exp() when accessed.
+
+    Reparametrization::
+
         internal_value = log(desired_value)
         output_value = exp(internal_value)
-    
-    This ensures:
-        - output_value > 0 always (never negative or zero)
-        - Gradient flow is smooth and well-behaved
-        - No need for manual clamping or constraints
-    
-    Supports two initialization patterns:
-    
-    1. Empty initialization (for state_dict loading):
-        >>> b = PositiveMixedTensor()  # Creates empty shell
-        >>> b.load_state_dict(torch.load('b_factors.pt'))
-    
-    2. Full initialization with values:
-        >>> initial_b = torch.tensor([20.0, 30.0, 15.0])
-        >>> b = PositiveMixedTensor(initial_b)
-    
-    Example:
-        >>> # Create positive-only B-factors
-        >>> initial_b = torch.tensor([20.0, 30.0, 15.0])  # Positive B-factors
-        >>> b = PositiveMixedTensor(initial_b)
-        >>> 
-        >>> # Values are automatically in normal space when accessed
-        >>> output = b()  # Returns exp(log_b) = positive values
-        >>> 
-        >>> # Optimization works in log space
-        >>> optimizer = torch.optim.Adam([b.refinable_params], lr=0.01)
-        >>> loss = (b() - target_b).pow(2).sum()
-        >>> loss.backward()
-        >>> optimizer.step()
-        >>> 
-        >>> # Values remain positive after optimization
-        >>> assert (b() > 0).all()
+
+    This ensures output_value > 0 always, with smooth gradient flow.
+
+    Parameters
+    ----------
+    initial_values : torch.Tensor, optional
+        Initial tensor values in NORMAL space. Optional for empty init.
+    refinable_mask : torch.Tensor, optional
+        Boolean mask indicating which elements can be refined.
+    requires_grad : bool, optional
+        Whether refinable parameters should have gradients. Default is True.
+    dtype : torch.dtype, optional
+        Data type for the tensor.
+    device : torch.device, optional
+        Device for the tensor.
+    name : str, optional
+        Optional name for this parameter.
+    epsilon : float, optional
+        Small value to add before taking log to avoid log(0). Default is 1e-1.
+
+    Examples
+    --------
+    Empty initialization for state_dict loading:
+
+    >>> b = PositiveMixedTensor()
+    >>> b.load_state_dict(torch.load('b_factors.pt'))
+
+    Full initialization with values:
+
+    >>> initial_b = torch.tensor([20.0, 30.0, 15.0])
+    >>> b = PositiveMixedTensor(initial_b)
+    >>> output = b()  # Returns exp(log_b) = positive values
+    >>> assert (b() > 0).all()
     """
     
     def __init__(
@@ -529,21 +578,31 @@ class PositiveMixedTensor(MixedTensor):
     ):
         """
         Initialize a PositiveMixedTensor.
-        
+
         If initial_values is provided, fully initializes the tensor.
         If not provided (empty init), creates a shell ready for load_state_dict().
-        
-        Args:
-            initial_values: Initial tensor values in NORMAL space (optional for empty init)
-            refinable_mask: Boolean mask indicating which elements can be refined
-            requires_grad: Whether refinable parameters should have gradients
-            dtype: Data type for the tensor (default: same as initial_values)
-            device: Device for the tensor (default: same as initial_values)
-            name: Optional name for this parameter
-            epsilon: Small value to add before taking log to avoid log(0) (default: 1e-1)
-        
-        Raises:
-            ValueError: If any initial values are not positive
+
+        Parameters
+        ----------
+        initial_values : torch.Tensor, optional
+            Initial tensor values in NORMAL space. Optional for empty init.
+        refinable_mask : torch.Tensor, optional
+            Boolean mask indicating which elements can be refined.
+        requires_grad : bool, optional
+            Whether refinable parameters should have gradients. Default is True.
+        dtype : torch.dtype, optional
+            Data type for the tensor.
+        device : torch.device, optional
+            Device for the tensor.
+        name : str, optional
+            Optional name for this parameter.
+        epsilon : float, optional
+            Small value to add before taking log to avoid log(0). Default is 1e-1.
+
+        Raises
+        ------
+        ValueError
+            If any initial values are not positive.
         """
         # Store epsilon
         self.epsilon = epsilon
@@ -574,10 +633,14 @@ class PositiveMixedTensor(MixedTensor):
     
     def forward(self) -> torch.Tensor:
         """
-        Return the full tensor in NORMAL space (exponential of log-space values).
-        
-        Returns:
-            Tensor with positive values
+        Return the full tensor in NORMAL space.
+
+        Applies exponential transformation to the log-space values.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor with positive values.
         """
         # Get log-space values from parent
         log_values = super().forward()
@@ -587,11 +650,16 @@ class PositiveMixedTensor(MixedTensor):
     
     def fix(self, mask: torch.Tensor, freeze_at_current: bool = True):
         """
-        Fix (freeze) specific elements, converting current normal-space values to log space.
-        
-        Args:
-            mask: Boolean mask indicating which elements to fix
-            freeze_at_current: If True, freeze at current values
+        Fix (freeze) specific elements.
+
+        Converts current normal-space values to log space for storage.
+
+        Parameters
+        ----------
+        mask : torch.Tensor
+            Boolean mask indicating which elements to fix.
+        freeze_at_current : bool, optional
+            If True, freeze at current values. Default is True.
         """
         if freeze_at_current:
             # Get current log-space values WITHOUT creating computation graph
@@ -610,10 +678,14 @@ class PositiveMixedTensor(MixedTensor):
     
     def refine(self, mask: torch.Tensor):
         """
-        Make specific elements refinable, preserving their current log-space values.
-        
-        Args:
-            mask: Boolean mask indicating which elements to make refinable
+        Make specific elements refinable.
+
+        Preserves current log-space values.
+
+        Parameters
+        ----------
+        mask : torch.Tensor
+            Boolean mask indicating which elements to make refinable.
         """
         # Get current log-space values WITHOUT creating computation graph
         with torch.no_grad():
@@ -632,23 +704,31 @@ class PositiveMixedTensor(MixedTensor):
     def get_log_values(self) -> torch.Tensor:
         """
         Return the internal log-space representation.
-        
-        This is useful for debugging or when you need direct access to the
-        parametrization space.
-        
-        Returns:
-            Tensor with log-space values
+
+        Useful for debugging or when direct access to the parametrization space
+        is needed.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor with log-space values.
         """
         return super().forward()
     
     def update_refinable_mask(self, new_mask: torch.Tensor, reset_refinable: bool = False):
         """
-        Update which elements are refinable, properly handling log-space conversion.
-        
-        Args:
-            new_mask: New boolean mask indicating refinable elements
-            reset_refinable: If True, reset refinable parameters to current fixed values.
-                           If False, keep existing refinable parameter values where possible.
+        Update which elements are refinable.
+
+        Properly handles log-space conversion.
+
+        Parameters
+        ----------
+        new_mask : torch.Tensor
+            New boolean mask indicating refinable elements.
+        reset_refinable : bool, optional
+            If True, reset refinable parameters to current fixed values.
+            If False, keep existing refinable parameter values where possible.
+            Default is False.
         """
         if new_mask.shape[0] != self.shape[0]:
             raise ValueError(
@@ -680,12 +760,13 @@ class PositiveMixedTensor(MixedTensor):
     def copy(self) -> 'PositiveMixedTensor':
         """
         Create a deep copy of this PositiveMixedTensor.
-        
-        Creates a complete independent copy with all buffers and parameters,
-        properly handling the log-space reparametrization.
-        
-        Returns:
-            New PositiveMixedTensor instance with copied data
+
+        Properly handles the log-space reparametrization.
+
+        Returns
+        -------
+        PositiveMixedTensor
+            New PositiveMixedTensor instance with copied data.
         """
         # Get current values in normal space
         current_normal = self.forward().detach()
@@ -729,58 +810,62 @@ class PositiveMixedTensor(MixedTensor):
 class OccupancyTensor(MixedTensor):
     """
     A specialized MixedTensor for handling occupancy parameters in crystallographic refinement.
-    
-    This class handles the specific constraints and requirements for occupancy:
-    1. Values are bounded between 0 and 1 using sigmoid reparameterization
-    2. Atoms can share occupancies (e.g., all atoms in a residue)
-    3. Alternative conformations automatically sum to 1.0 via normalization
-    4. Supports per-atom, per-residue, or custom grouping schemes
-    5. Memory-efficient: stores only one parameter per sharing group
-    6. Static (fixed) occupancies that never change during refinement
-    7. Fully vectorized collapse/expand operations using scatter_add and indexing
-    
-    The internal representation:
-    - Stores COLLAPSED logit values (one per unique group, plus one per ungrouped atom)
-    - Uses an index tensor (expansion_mask) to map atoms to collapsed indices
-    - Collapse: scatter_add to sum values by collapsed index (O(n))
-    - Expand: direct indexing collapsed_values[expansion_mask] (O(n))
-    - Transforms to [0,1] occupancies via sigmoid function during forward pass
-    
-    Alternative Conformation Handling (New Normalization Approach):
-    - Altloc groups are represented as tensors of shape (N_groups, M_conformations)
-    - Grouped by number of conformations: linked_occ_2, linked_occ_3, etc.
-    - During forward(), all members are passed through sigmoid, then normalized:
-      occupancy_i = sigmoid(logit_i) / sum_j(sigmoid(logit_j))
-    - This enforces sum-to-1 constraint while keeping all parameters refinable
-    - More stable gradients than placeholder approach
-    - Handles arbitrary N-way splits (not just 2-way)
-    
-    Supports two initialization patterns:
-    
-    1. Empty initialization (for state_dict loading):
-        >>> occ = OccupancyTensor()  # Creates empty shell
-        >>> occ.load_state_dict(torch.load('occupancy.pt'))
-    
-    2. Full initialization with values:
-        >>> sharing_groups = torch.tensor([0, 0, 1, 1, 2, 2])
-        >>> occ = OccupancyTensor(
-        ...     initial_values=torch.tensor([1.0, 1.0, 0.7, 0.7, 0.3, 0.3]),
-        ...     sharing_groups=sharing_groups,
-        ...     altloc_groups=[([2, 3], [4, 5])],  # indices 1 and 2 are altlocs
-        ... )
-    
-    Example:
-        >>> # Create occupancy with sharing groups as an index tensor
-        >>> # Atoms 0,1 share (index 0), atoms 2,3 share (index 1), atoms 4,5 share (index 2)
-        >>> sharing_groups = torch.tensor([0, 0, 1, 1, 2, 2])
-        >>> occ = OccupancyTensor(
-        ...     initial_values=torch.tensor([1.0, 1.0, 0.7, 0.7, 0.3, 0.3]),
-        ...     sharing_groups=sharing_groups,
-        ...     altloc_groups=[([2, 3], [4, 5])],  # indices 1 and 2 are altlocs
-        ... )
-        >>> # All parameters refinable, normalization ensures sum-to-1
-        >>> result = occ()  # Atoms 2-3 and 4-5 will sum to 1.0
-        >>> # Stored as linked_occ_2 = tensor([[1, 2]]) - 2-way split
+
+    Handles specific constraints and requirements for occupancy including value bounds
+    [0, 1] via sigmoid reparameterization, atom sharing, and alternative conformation
+    sum-to-1 constraints.
+
+    Features:
+    - Values bounded between 0 and 1 using sigmoid reparameterization
+    - Atoms can share occupancies (e.g., all atoms in a residue)
+    - Alternative conformations automatically sum to 1.0 via normalization
+    - Memory-efficient collapsed storage (one parameter per sharing group)
+    - Fully vectorized collapse/expand operations
+
+    Parameters
+    ----------
+    initial_values : torch.Tensor, optional
+        Initial occupancy values for ALL atoms (should be in [0, 1]).
+        Optional for empty init.
+    sharing_groups : torch.Tensor, optional
+        Tensor of shape (n_atoms,) where each value is the collapsed index
+        for that atom. If None, each atom has independent occupancy.
+    altloc_groups : list of tuple, optional
+        List of tuples of atom index lists representing alternative
+        conformations. Each tuple contains the atom indices for each
+        conformation.
+    refinable_mask : torch.Tensor, optional
+        Boolean mask for which ATOMS can be refined (in full tensor space).
+    requires_grad : bool, optional
+        Whether refinable parameters should have gradients. Default is True.
+    dtype : torch.dtype, optional
+        Data type for the tensor.
+    device : torch.device, optional
+        Device for the tensor.
+    name : str, optional
+        Optional name for this parameter.
+    use_sigmoid : bool, optional
+        If True, use sigmoid parameterization to bound values to [0,1].
+        Default is True.
+
+    Attributes
+    ----------
+    expansion_mask : torch.Tensor
+        Maps atoms to collapsed indices.
+    linked_occ_sizes : list
+        List of altloc group sizes present.
+    collapse_counts : torch.Tensor
+        Count of atoms per collapsed index.
+
+    Examples
+    --------
+    >>> sharing_groups = torch.tensor([0, 0, 1, 1, 2, 2])
+    >>> occ = OccupancyTensor(
+    ...     initial_values=torch.tensor([1.0, 1.0, 0.7, 0.7, 0.3, 0.3]),
+    ...     sharing_groups=sharing_groups,
+    ...     altloc_groups=[([2, 3], [4, 5])],
+    ... )
+    >>> result = occ()  # Atoms 2-3 and 4-5 will sum to 1.0
     """
     
     def __init__(
@@ -797,31 +882,38 @@ class OccupancyTensor(MixedTensor):
     ):
         """
         Initialize an OccupancyTensor with collapsed storage and altloc support.
-        
+
         If initial_values is provided, fully initializes the tensor.
         If not provided (empty init), creates a shell ready for load_state_dict().
-        
-        Args:
-            initial_values: Initial occupancy values for ALL atoms (should be in [0, 1]) (optional for empty init)
-            sharing_groups: Tensor of shape (n_atoms,) where each value is the collapsed index
-                          for that atom. If None, each atom has independent occupancy.
-                          Example: tensor([0, 0, 0, 1, 1, 2]) means atoms 0,1,2 share one occupancy,
-                          atoms 3,4 share another, and atom 5 is independent.
-            altloc_groups: List of tuples of atom index lists representing alternative
-                          conformations. Each tuple contains the atom indices for each
-                          conformation. Example: [([10,11], [12,13]), ([20,21], [22,23])]
-                          means atoms 10,11 (conf A) and 12,13 (conf B) are altlocs,
-                          and atoms 20,21 (conf C) and 22,23 (conf D) are altlocs.
-                          These automatically sum to 1.0.
-            refinable_mask: Boolean mask for which ATOMS can be refined (in full tensor space).
-                          Applied after sharing groups. If any atom in a group is refinable,
-                          the entire group becomes refinable. Altloc placeholders are never
-                          directly refinable (computed from other altlocs).
-            requires_grad: Whether refinable parameters should have gradients
-            dtype: Data type for the tensor
-            device: Device for the tensor
-            name: Optional name for this parameter
-            use_sigmoid: If True, use sigmoid parameterization to bound values to [0,1].
+
+        Parameters
+        ----------
+        initial_values : torch.Tensor, optional
+            Initial occupancy values for ALL atoms (should be in [0, 1]).
+            Optional for empty init.
+        sharing_groups : torch.Tensor, optional
+            Tensor of shape (n_atoms,) where each value is the collapsed index
+            for that atom. If None, each atom has independent occupancy.
+            Example: tensor([0, 0, 0, 1, 1, 2]) means atoms 0,1,2 share one
+            occupancy, atoms 3,4 share another, and atom 5 is independent.
+        altloc_groups : list of tuple, optional
+            List of tuples of atom index lists representing alternative
+            conformations. Example: [([10,11], [12,13])] means atoms 10,11
+            (conf A) and 12,13 (conf B) are altlocs that sum to 1.0.
+        refinable_mask : torch.Tensor, optional
+            Boolean mask for which ATOMS can be refined (in full tensor space).
+            If any atom in a group is refinable, the entire group becomes refinable.
+        requires_grad : bool, optional
+            Whether refinable parameters should have gradients. Default is True.
+        dtype : torch.dtype, optional
+            Data type for the tensor.
+        device : torch.device, optional
+            Device for the tensor.
+        name : str, optional
+            Optional name for this parameter.
+        use_sigmoid : bool, optional
+            If True, use sigmoid parameterization to bound values to [0,1].
+            Default is True.
         """
         # Store configuration
         self.use_sigmoid = use_sigmoid
@@ -908,22 +1000,21 @@ class OccupancyTensor(MixedTensor):
         device: torch.device
     ):
         """
-        Setup sharing groups, altlocs, and create expansion mask for memory-efficient storage.
-        
-        Now uses a simple index tensor approach:
-        - sharing_groups is a tensor of shape (n_atoms,) mapping each atom to its collapsed index
-        - Collapse: scatter_add to sum values by collapsed index
-        - Expand: direct indexing collapsed_values[sharing_groups]
-        
-        For altlocs, we create tensors of shape (N_pairs, M_conformations) where each row
-        contains the collapsed indices for conformations that must sum to 1.0.
-        These are stored grouped by number of conformations (2-way, 3-way, etc.).
-        
-        Args:
-            initial_values: Initial occupancy values for all atoms
-            sharing_groups: Tensor of shape (n_atoms,) giving collapsed index for each atom
-            altloc_groups: List of tuples of atom index lists for alternative conformations
-            device: Device to place tensors on
+        Setup sharing groups, altlocs, and create expansion mask.
+
+        Creates the index tensor for efficient collapse/expand operations and
+        processes altloc groups into tensors grouped by number of conformations.
+
+        Parameters
+        ----------
+        initial_values : torch.Tensor
+            Initial occupancy values for all atoms.
+        sharing_groups : torch.Tensor or None
+            Tensor of shape (n_atoms,) giving collapsed index for each atom.
+        altloc_groups : list or None
+            List of tuples of atom index lists for alternative conformations.
+        device : torch.device
+            Device to place tensors on.
         """
         n_atoms = initial_values.shape[0]
         
@@ -998,14 +1089,16 @@ class OccupancyTensor(MixedTensor):
     def _collapse_values_vectorized(self, full_values: torch.Tensor) -> torch.Tensor:
         """
         Collapse full tensor to collapsed storage using vectorized scatter_add.
-        
-        Uses the expansion_mask directly for O(n) collapse operation.
-        
-        Args:
-            full_values: Tensor in full space (one value per atom)
-        
-        Returns:
-            Tensor in collapsed space (one value per group + ungrouped atoms)
+
+        Parameters
+        ----------
+        full_values : torch.Tensor
+            Tensor in full space (one value per atom).
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor in collapsed space (one value per group + ungrouped atoms).
         """
         # Sum values at each collapsed index using scatter_add
         collapsed_sum = torch.zeros(
@@ -1023,14 +1116,18 @@ class OccupancyTensor(MixedTensor):
     def _collapse_mask_vectorized(self, full_mask: torch.Tensor) -> torch.Tensor:
         """
         Collapse boolean mask to collapsed storage using vectorized operations.
-        
+
         If ANY atom in a collapsed position is refinable, the position is refinable.
-        
-        Args:
-            full_mask: Boolean mask in full space
-        
-        Returns:
-            Boolean mask in collapsed space
+
+        Parameters
+        ----------
+        full_mask : torch.Tensor
+            Boolean mask in full space.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean mask in collapsed space.
         """
         # Use scatter_add with float tensors, then check if any > 0
         collapsed_sum = torch.zeros(
@@ -1062,25 +1159,30 @@ class OccupancyTensor(MixedTensor):
     def _expand_values(self, collapsed_values: torch.Tensor) -> torch.Tensor:
         """
         Expand collapsed storage to full tensor using expansion mask.
-        
-        Args:
-            collapsed_values: Tensor in collapsed space
-        
-        Returns:
-            Tensor in full space (one value per atom)
+
+        Parameters
+        ----------
+        collapsed_values : torch.Tensor
+            Tensor in collapsed space.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor in full space (one value per atom).
         """
         return collapsed_values[self.expansion_mask]
     
     def forward(self) -> torch.Tensor:
         """
-        Reconstruct full occupancy tensor with sigmoid transformation and altloc constraints.
-        
-        For alternative conformations, we apply sigmoid then normalize within each group
-        to enforce the sum-to-1 constraint. This is done separately for each group size
-        (2-way, 3-way, etc.) for efficiency.
-        
-        Returns:
-            Full occupancy tensor with values in [0, 1] (shape: [n_atoms])
+        Reconstruct full occupancy tensor with sigmoid and altloc constraints.
+
+        For alternative conformations, applies sigmoid then normalizes within
+        each group to enforce sum-to-1 constraint.
+
+        Returns
+        -------
+        torch.Tensor
+            Full occupancy tensor with values in [0, 1] and shape (n_atoms,).
         """
         # Get collapsed logit values (combining fixed and refinable)
         result = self.fixed_values.clone()
@@ -1135,13 +1237,18 @@ class OccupancyTensor(MixedTensor):
     def clamp(self, min_value: float = 0.0, max_value: float = 1.0) -> 'OccupancyTensor':
         """
         Clamp occupancy values to specified range and return a new OccupancyTensor.
-        
-        Args:
-            min_value: Minimum occupancy value (default: 0.0)
-            max_value: Maximum occupancy value (default: 1.0)
-        
-        Returns:
-            New OccupancyTensor with clamped values
+
+        Parameters
+        ----------
+        min_value : float, optional
+            Minimum occupancy value. Default is 0.0.
+        max_value : float, optional
+            Maximum occupancy value. Default is 1.0.
+
+        Returns
+        -------
+        OccupancyTensor
+            New OccupancyTensor with clamped values.
         """
         # Get current occupancy values in full space
         current_occ = self.forward().detach()
@@ -1169,10 +1276,18 @@ class OccupancyTensor(MixedTensor):
     def set_group_occupancy(self, group_idx: int, value: float):
         """
         Set the occupancy for all atoms in a specific collapsed group.
-        
-        Args:
-            group_idx: Collapsed index of the group
-            value: Occupancy value to set (must be in [0, 1])
+
+        Parameters
+        ----------
+        group_idx : int
+            Collapsed index of the group.
+        value : float
+            Occupancy value to set (must be in [0, 1]).
+
+        Raises
+        ------
+        ValueError
+            If group_idx is out of range or value is not in [0, 1].
         """
         if group_idx < 0 or group_idx >= self._collapsed_shape:
             raise ValueError(f"Invalid group index {group_idx}")
@@ -1204,12 +1319,21 @@ class OccupancyTensor(MixedTensor):
     def get_group_occupancy(self, group_idx: int) -> float:
         """
         Get the current occupancy value for a collapsed group.
-        
-        Args:
-            group_idx: Collapsed index of the group
-        
-        Returns:
-            Current occupancy value for the group
+
+        Parameters
+        ----------
+        group_idx : int
+            Collapsed index of the group.
+
+        Returns
+        -------
+        float
+            Current occupancy value for the group.
+
+        Raises
+        ------
+        ValueError
+            If group_idx is out of range.
         """
         if group_idx < 0 or group_idx >= self._collapsed_shape:
             raise ValueError(f"Invalid group index {group_idx}")
@@ -1224,28 +1348,31 @@ class OccupancyTensor(MixedTensor):
     def freeze(self, mask: Optional[torch.Tensor] = None):
         """
         Freeze occupancy parameters, making them non-refinable.
-        
-        IMPORTANT: The mask is supplied in UNCOMPRESSED (full atom) form but freezing
-        operates on the COMPRESSED data structure. This method handles the conversion.
-        
-        Args:
-            mask: Optional boolean mask in FULL (uncompressed) atom space indicating which
-                  atoms to freeze. If None, freeze all parameters.
-                  Shape must be (n_atoms,) where n_atoms is the full number of atoms.
-                  
-        Behavior:
-            - If ANY atom in a sharing group is frozen, the ENTIRE group is frozen
-            - This is because all atoms in a group share the same compressed parameter
-            - The mask is collapsed using the same logic as initial mask setup
-        
-        Example:
-            >>> # Freeze atoms 0-10 (in full atom space)
-            >>> freeze_mask = torch.zeros(n_atoms, dtype=torch.bool)
-            >>> freeze_mask[0:11] = True
-            >>> occ.freeze(freeze_mask)
-            >>> 
-            >>> # Freeze all atoms
-            >>> occ.freeze()
+
+        The mask is supplied in UNCOMPRESSED (full atom) form but freezing
+        operates on the COMPRESSED data structure. This method handles the
+        conversion.
+
+        Parameters
+        ----------
+        mask : torch.Tensor, optional
+            Boolean mask in FULL (uncompressed) atom space indicating which
+            atoms to freeze. If None, freeze all parameters.
+            Shape must be (n_atoms,).
+
+        Notes
+        -----
+        If ANY atom in a sharing group is frozen, the ENTIRE group is frozen
+        because all atoms in a group share the same compressed parameter.
+
+        Examples
+        --------
+        >>> # Freeze atoms 0-10 (in full atom space)
+        >>> freeze_mask = torch.zeros(n_atoms, dtype=torch.bool)
+        >>> freeze_mask[0:11] = True
+        >>> occ.freeze(freeze_mask)
+        >>> # Freeze all atoms
+        >>> occ.freeze()
         """
         if mask is None:
             # Freeze all - set refinable_mask to all False
@@ -1294,28 +1421,31 @@ class OccupancyTensor(MixedTensor):
     def unfreeze(self, mask: Optional[torch.Tensor] = None):
         """
         Unfreeze occupancy parameters, making them refinable.
-        
-        IMPORTANT: The mask is supplied in UNCOMPRESSED (full atom) form but unfreezing
-        operates on the COMPRESSED data structure. This method handles the conversion.
-        
-        Args:
-            mask: Optional boolean mask in FULL (uncompressed) atom space indicating which
-                  atoms to unfreeze. If None, unfreeze all parameters.
-                  Shape must be (n_atoms,) where n_atoms is the full number of atoms.
-                  
-        Behavior:
-            - If ANY atom in a sharing group is unfrozen, the ENTIRE group becomes refinable
-            - This is because all atoms in a group share the same compressed parameter
-            - The mask is collapsed using the same logic as initial mask setup
-        
-        Example:
-            >>> # Unfreeze atoms 100-200 (in full atom space)
-            >>> unfreeze_mask = torch.zeros(n_atoms, dtype=torch.bool)
-            >>> unfreeze_mask[100:201] = True
-            >>> occ.unfreeze(unfreeze_mask)
-            >>> 
-            >>> # Unfreeze all atoms
-            >>> occ.unfreeze()
+
+        The mask is supplied in UNCOMPRESSED (full atom) form but unfreezing
+        operates on the COMPRESSED data structure. This method handles the
+        conversion.
+
+        Parameters
+        ----------
+        mask : torch.Tensor, optional
+            Boolean mask in FULL (uncompressed) atom space indicating which
+            atoms to unfreeze. If None, unfreeze all parameters.
+            Shape must be (n_atoms,).
+
+        Notes
+        -----
+        If ANY atom in a sharing group is unfrozen, the ENTIRE group becomes
+        refinable because all atoms in a group share the same compressed parameter.
+
+        Examples
+        --------
+        >>> # Unfreeze atoms 100-200 (in full atom space)
+        >>> unfreeze_mask = torch.zeros(n_atoms, dtype=torch.bool)
+        >>> unfreeze_mask[100:201] = True
+        >>> occ.unfreeze(unfreeze_mask)
+        >>> # Unfreeze all atoms
+        >>> occ.unfreeze()
         """
         if mask is None:
             # Unfreeze all - set refinable_mask to all True
@@ -1380,9 +1510,11 @@ class OccupancyTensor(MixedTensor):
     
     def get_refinable_atoms(self) -> torch.Tensor:
         """
-        Get a boolean mask in FULL atom space indicating which atoms are refinable.
-        
-        Returns:
+        Get a boolean mask in FULL atom space indicating refinable atoms.
+
+        Returns
+        -------
+        torch.Tensor
             Boolean tensor of shape (n_atoms,) where True indicates the atom's
             occupancy is refinable (though it shares with others in its group).
         """
@@ -1390,9 +1522,11 @@ class OccupancyTensor(MixedTensor):
     
     def get_frozen_atoms(self) -> torch.Tensor:
         """
-        Get a boolean mask in FULL atom space indicating which atoms are frozen.
-        
-        Returns:
+        Get a boolean mask in FULL atom space indicating frozen atoms.
+
+        Returns
+        -------
+        torch.Tensor
             Boolean tensor of shape (n_atoms,) where True indicates the atom's
             occupancy is frozen.
         """
@@ -1401,53 +1535,61 @@ class OccupancyTensor(MixedTensor):
     def get_refinable_count(self) -> int:
         """
         Get the number of refinable parameters in COMPRESSED space.
-        
-        Note: This is the number of refinable groups, not atoms.
+
+        This is the number of refinable groups, not atoms.
         Use get_refinable_atoms().sum() to get the number of refinable atoms.
-        
-        Returns:
-            Number of refinable compressed parameters
+
+        Returns
+        -------
+        int
+            Number of refinable compressed parameters.
         """
         return self.refinable_mask.sum().item()
     
     def get_fixed_count(self) -> int:
         """
         Get the number of fixed parameters in COMPRESSED space.
-        
-        Note: This is the number of fixed groups, not atoms.
+
+        This is the number of fixed groups, not atoms.
         Use get_frozen_atoms().sum() to get the number of frozen atoms.
-        
-        Returns:
-            Number of fixed compressed parameters
+
+        Returns
+        -------
+        int
+            Number of fixed compressed parameters.
         """
         return self.fixed_mask.sum().item()
     
     def update_refinable_mask(self, new_mask: torch.Tensor, in_compressed_space: bool = False):
         """
         Directly update the refinable mask with a new mask.
-        
-        This method allows more direct control over which parameters are refinable,
-        compared to freeze/unfreeze which modify the existing state. This is useful
-        when you want to set a specific refinement pattern from scratch.
-        
-        Args:
-            new_mask: Boolean tensor indicating which parameters should be refinable.
-                     If in_compressed_space=False (default): shape (n_atoms,) in full atom space
-                     If in_compressed_space=True: shape (n_groups,) in compressed space
-            in_compressed_space: If True, new_mask is in compressed space.
-                                If False (default), new_mask is in full atom space and will be collapsed.
-        
-        Example (full atom space):
-            >>> # Refine only first 100 atoms
-            >>> atom_mask = torch.zeros(n_atoms, dtype=torch.bool)
-            >>> atom_mask[:100] = True
-            >>> occ.update_refinable_mask(atom_mask, in_compressed_space=False)
-        
-        Example (compressed space):
-            >>> # Refine only even-indexed groups
-            >>> group_mask = torch.zeros(n_groups, dtype=torch.bool)
-            >>> group_mask[::2] = True
-            >>> occ.update_refinable_mask(group_mask, in_compressed_space=True)
+
+        Allows more direct control over which parameters are refinable,
+        compared to freeze/unfreeze which modify the existing state.
+
+        Parameters
+        ----------
+        new_mask : torch.Tensor
+            Boolean tensor indicating which parameters should be refinable.
+            If in_compressed_space=False: shape (n_atoms,) in full atom space.
+            If in_compressed_space=True: shape (n_groups,) in compressed space.
+        in_compressed_space : bool, optional
+            If True, new_mask is in compressed space.
+            If False (default), new_mask is in full atom space and will be collapsed.
+
+        Examples
+        --------
+        Full atom space:
+
+        >>> atom_mask = torch.zeros(n_atoms, dtype=torch.bool)
+        >>> atom_mask[:100] = True
+        >>> occ.update_refinable_mask(atom_mask, in_compressed_space=False)
+
+        Compressed space:
+
+        >>> group_mask = torch.zeros(n_groups, dtype=torch.bool)
+        >>> group_mask[::2] = True
+        >>> occ.update_refinable_mask(group_mask, in_compressed_space=True)
         """
         # Validate and convert mask
         if not in_compressed_space:
@@ -1501,18 +1643,25 @@ class OccupancyTensor(MixedTensor):
                            refinable_mask: Optional[torch.Tensor] = None,
                            **kwargs) -> 'OccupancyTensor':
         """
-        Create an OccupancyTensor where all atoms in each residue share the same occupancy.
-        
-        This is a common use case where all atoms in a residue should have the same occupancy.
-        
-        Args:
-            initial_values: Initial occupancy values for all atoms
-            pdb_dataframe: Pandas DataFrame with PDB data (must have 'resname', 'resseq', 'chainid')
-            refinable_mask: Optional mask for refinable atoms
-            **kwargs: Additional arguments passed to OccupancyTensor constructor
-        
-        Returns:
-            OccupancyTensor with residue-based sharing groups
+        Create an OccupancyTensor where all atoms in each residue share occupancy.
+
+        Common use case where all atoms in a residue should have the same occupancy.
+
+        Parameters
+        ----------
+        initial_values : torch.Tensor
+            Initial occupancy values for all atoms.
+        pdb_dataframe : pandas.DataFrame
+            DataFrame with PDB data (must have 'resname', 'resseq', 'chainid').
+        refinable_mask : torch.Tensor, optional
+            Mask for refinable atoms.
+        **kwargs
+            Additional arguments passed to OccupancyTensor constructor.
+
+        Returns
+        -------
+        OccupancyTensor
+            OccupancyTensor with residue-based sharing groups.
         """
         # Group atoms by residue
         grouped = pdb_dataframe.groupby(['resname', 'resseq', 'chainid', 'altloc'])
@@ -1544,12 +1693,14 @@ class OccupancyTensor(MixedTensor):
     def copy(self) -> 'OccupancyTensor':
         """
         Create a deep copy of this OccupancyTensor.
-        
+
         Creates a complete independent copy with all buffers and parameters,
         including sharing groups, altloc groups, and collapsed storage structures.
-        
-        Returns:
-            New OccupancyTensor instance with copied data
+
+        Returns
+        -------
+        OccupancyTensor
+            New OccupancyTensor instance with copied data.
         """
         # Get current occupancy values in normal space (full atom space)
         current_occ = self.forward().detach()
@@ -1600,9 +1751,22 @@ class OccupancyTensor(MixedTensor):
 class PassThroughTensor(nn.Module):
     """
     A simple parameter wrapper that passes the parameter through unchanged.
-    
-    This is useful as a placeholder or for parameters that do not require
-    any special handling.
+
+    Useful as a placeholder or for parameters that do not require any
+    special handling.
+
+    Parameters
+    ----------
+    initial_values : torch.Tensor
+        Initial tensor values.
+    requires_grad : bool, optional
+        Whether the parameter requires gradients. Default is True.
+    dtype : torch.dtype, optional
+        Data type of the tensor.
+    device : torch.device, optional
+        Device to place the tensor on.
+    name : str, optional
+        Optional name for the parameter.
     """
     def __init__(self, 
                  initial_values: torch.Tensor, 
@@ -1612,13 +1776,19 @@ class PassThroughTensor(nn.Module):
                  name: Optional[str] = None):
         """
         Initialize the PassThroughTensor.
-        
-        Args:
-            initial_values: Initial tensor values
-            requires_grad: Whether the parameter requires gradients
-            dtype: Data type of the tensor
-            device: Device to place the tensor on
-            name: Optional name for the parameter
+
+        Parameters
+        ----------
+        initial_values : torch.Tensor
+            Initial tensor values.
+        requires_grad : bool, optional
+            Whether the parameter requires gradients. Default is True.
+        dtype : torch.dtype, optional
+            Data type of the tensor.
+        device : torch.device, optional
+            Device to place the tensor on.
+        name : str, optional
+            Optional name for the parameter.
         """
         super().__init__(
             initial_values=initial_values,
@@ -1631,8 +1801,10 @@ class PassThroughTensor(nn.Module):
     def forward(self) -> torch.Tensor:
         """
         Return the parameter value unchanged.
-        
-        Returns:
-            The parameter tensor
+
+        Returns
+        -------
+        torch.Tensor
+            The parameter tensor.
         """
         return self.param

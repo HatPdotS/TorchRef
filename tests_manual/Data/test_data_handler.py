@@ -1,4 +1,4 @@
-from torchref.Data import ReflectionData
+from torchref.io.Data import ReflectionData
 
 
 

@@ -4,18 +4,67 @@ import numpy as np
 import hashlib
 
 def cartesian_to_fractional_torch(cart_coords, unit_cell):
+    """
+    Convert Cartesian coordinates to fractional coordinates.
+
+    Parameters
+    ----------
+    cart_coords : torch.Tensor
+        Cartesian coordinates of shape (N, 3).
+    unit_cell : array-like
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+
+    Returns
+    -------
+    torch.Tensor
+        Fractional coordinates of shape (N, 3).
+    """
     B_inv = math_np.get_inv_fractional_matrix(unit_cell)
     B_inv = torch.tensor(B_inv)
     fractional_vector = torch.einsum('ik,kj->ij',cart_coords,B_inv.T)
     return fractional_vector
 
 def fractional_to_cartesian_torch(fractional_coords, unit_cell):
+    """
+    Convert fractional coordinates to Cartesian coordinates.
+
+    Parameters
+    ----------
+    fractional_coords : torch.Tensor
+        Fractional coordinates of shape (N, 3).
+    unit_cell : array-like
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+
+    Returns
+    -------
+    torch.Tensor
+        Cartesian coordinates of shape (N, 3).
+    """
     B = math_np.get_fractional_matrix(unit_cell)
     B = torch.tensor(B,dtype=fractional_coords.dtype,device=fractional_coords.device)
     cart_coords = torch.einsum('ik,kj->ij',fractional_coords,B.T)
     return cart_coords
 
 def get_real_grid(cell,max_res=0.8,gridsize=None,device='cpu'):
+    """
+    Generate a real space grid for electron density calculations.
+
+    Parameters
+    ----------
+    cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    max_res : float, optional
+        Maximum resolution for automatic grid sizing. Default is 0.8.
+    gridsize : torch.Tensor or array-like, optional
+        Explicit grid dimensions [nx, ny, nz]. If None, calculated from max_res.
+    device : str, optional
+        Device for tensor placement. Default is 'cpu'.
+
+    Returns
+    -------
+    torch.Tensor
+        Real space grid of shape (nx, ny, nz, 3) containing Cartesian coordinates.
+    """
     if isinstance(gridsize, torch.Tensor):
         nsteps = gridsize.to(torch.int32).to(device)
     elif gridsize is not None:
@@ -38,9 +87,41 @@ def get_real_grid(cell,max_res=0.8,gridsize=None,device='cpu'):
     return xyz_real_grid
 
 def find_grid_size(cell: torch.Tensor, max_res: float):
+    """
+    Calculate grid size based on unit cell and resolution.
+
+    Parameters
+    ----------
+    cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    max_res : float
+        Maximum resolution in Angstroms.
+
+    Returns
+    -------
+    torch.Tensor
+        Grid dimensions [nx, ny, nz] as int32.
+    """
     return torch.floor(cell[:3] / max_res * 2.3).to(torch.int32)
 
 def rotate_coords_torch(coords,phi,rho):
+    """
+    Rotate coordinates using phi and rho angles.
+
+    Parameters
+    ----------
+    coords : torch.Tensor
+        Coordinates of shape (N, 3) to rotate.
+    phi : float
+        Rotation angle phi in degrees.
+    rho : float
+        Rotation angle rho in degrees.
+
+    Returns
+    -------
+    torch.Tensor
+        Rotated coordinates of shape (N, 3).
+    """
     phi = phi * np.pi / 180
     rho = rho * np.pi / 180
     rot_matrix = torch.tensor([[torch.cos(phi),-torch.sin(phi),0],
@@ -49,11 +130,43 @@ def rotate_coords_torch(coords,phi,rho):
     return torch.einsum('ij,kj->ki',rot_matrix,coords)
 
 def get_rfactor_torch(fobs,fcalc):
+    """
+    Calculate R-factor between observed and calculated structure factors.
+
+    Parameters
+    ----------
+    fobs : torch.Tensor
+        Observed structure factors.
+    fcalc : torch.Tensor
+        Calculated structure factors.
+
+    Returns
+    -------
+    torch.Tensor
+        R-factor value.
+    """
     fobs = torch.abs(fobs)
     fcalc = torch.abs(fcalc)
     return torch.sum(torch.abs(fobs - fcalc)) / torch.sum(fobs)
 
 def calc_outliers(fobs,fcalc,z):
+    """
+    Identify outlier reflections based on deviation from expected values.
+
+    Parameters
+    ----------
+    fobs : torch.Tensor
+        Observed structure factors.
+    fcalc : torch.Tensor
+        Calculated structure factors.
+    z : float
+        Number of standard deviations for outlier threshold.
+
+    Returns
+    -------
+    torch.Tensor
+        Boolean mask where True indicates outlier reflections.
+    """
     fobs = torch.abs(fobs)
     fcalc = torch.abs(fcalc)
     diff = torch.abs(fobs - fcalc) / fobs
@@ -62,7 +175,21 @@ def calc_outliers(fobs,fcalc,z):
     return outliers
 
 def apply_transformation(points, transformation_matrix):
-    """Apply 4x4 transformation matrix to 3D points"""
+    """
+    Apply a 4x4 transformation matrix to 3D points.
+
+    Parameters
+    ----------
+    points : torch.Tensor
+        3D points of shape (N, 3).
+    transformation_matrix : torch.Tensor
+        Transformation matrix of shape (3, 4) or (4, 4).
+
+    Returns
+    -------
+    torch.Tensor
+        Transformed 3D points of shape (N, 3).
+    """
     # Convert to homogeneous coordinates
     homo_points = torch.hstack((points, torch.ones((points.shape[0], 1),device=points.device)))
     last_row = torch.tensor([0,0,0,1],device=points.device)
@@ -73,9 +200,49 @@ def apply_transformation(points, transformation_matrix):
     return transformed[:, :3]
 
 def core_deformation(core_correction,s):
+    """
+    Apply core deformation correction to scattering.
+
+    Parameters
+    ----------
+    core_correction : float or torch.Tensor
+        Core correction factor.
+    s : torch.Tensor
+        Scattering vector magnitudes.
+
+    Returns
+    -------
+    torch.Tensor
+        Core deformation correction factors.
+    """
     return 1.0 - core_correction * torch.exp(-s*s/0.5)
 
 def aniso_structure_factor_torched(hkl,s_vector,fractional_coords,occ,scattering_factors,U,space_group):
+    """
+    Calculate anisotropic structure factors using PyTorch.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (N_reflections, 3).
+    s_vector : torch.Tensor
+        Scattering vectors of shape (N_reflections, 3).
+    fractional_coords : torch.Tensor
+        Fractional coordinates of shape (N_atoms, 3).
+    occ : torch.Tensor
+        Occupancies of shape (N_atoms,).
+    scattering_factors : torch.Tensor
+        Atomic scattering factors of shape (N_reflections, N_atoms).
+    U : torch.Tensor
+        Anisotropic displacement parameters of shape (N_atoms, 6).
+    space_group : callable
+        Space group symmetry operator function.
+
+    Returns
+    -------
+    torch.Tensor
+        Complex structure factors of shape (N_reflections,).
+    """
     fractional_coords = space_group(fractional_coords.T)
     fractional_shape = fractional_coords.shape
     fractional_coords = fractional_coords.reshape(3,-1)
@@ -94,6 +261,31 @@ def aniso_structure_factor_torched(hkl,s_vector,fractional_coords,occ,scattering
     return torch.sum(terms * sin_cos, axis=(1))
 
 def iso_structure_factor_torched(hkl,s,fractional_coords,occ,scattering_factors,tempfactor,space_group):
+    """
+    Calculate isotropic structure factors using PyTorch.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (N_reflections, 3).
+    s : torch.Tensor
+        Scattering vector magnitudes of shape (N_reflections,).
+    fractional_coords : torch.Tensor
+        Fractional coordinates of shape (N_atoms, 3).
+    occ : torch.Tensor
+        Occupancies of shape (N_atoms,).
+    scattering_factors : torch.Tensor
+        Atomic scattering factors of shape (N_reflections, N_atoms).
+    tempfactor : torch.Tensor
+        Isotropic temperature factors (B-factors) of shape (N_atoms,).
+    space_group : callable
+        Space group symmetry operator function.
+
+    Returns
+    -------
+    torch.Tensor
+        Complex structure factors of shape (N_reflections,).
+    """
     fractional_coords = space_group(fractional_coords.T)
     fractional_shape = fractional_coords.shape
     fractional_coords = fractional_coords.reshape(3,-1)
@@ -108,6 +300,25 @@ def iso_structure_factor_torched(hkl,s,fractional_coords,occ,scattering_factors,
     return torch.sum(terms * sin_cos, axis=(1))
 
 def superpose_vectors_robust_torch(ref_coords, mov_coords, weights=None, max_iterations=10):
+    """
+    Perform weighted superposition of two coordinate sets using SVD.
+
+    Parameters
+    ----------
+    ref_coords : torch.Tensor
+        Reference coordinates of shape (N, 3).
+    mov_coords : torch.Tensor
+        Mobile coordinates of shape (N, 3) to be superposed onto reference.
+    weights : torch.Tensor, optional
+        Weights for each atom of shape (N, 1). Default is uniform weights.
+    max_iterations : int, optional
+        Maximum number of iterations for refinement. Default is 10.
+
+    Returns
+    -------
+    torch.Tensor
+        4x4 transformation matrix (shape (3, 4) returned).
+    """
     if weights is None:
         weights = torch.ones((ref_coords.shape[0],1), device=ref_coords.device)
     weights = weights / torch.sum(weights)
@@ -169,6 +380,23 @@ def superpose_vectors_robust_torch(ref_coords, mov_coords, weights=None, max_ite
         return best_matrix
     
 def align_torch(xyz1,xyz2,idx_to_move=None):
+    """
+    Align two coordinate sets using superposition.
+
+    Parameters
+    ----------
+    xyz1 : torch.Tensor
+        Target coordinates of shape (N, 3).
+    xyz2 : torch.Tensor
+        Coordinates to be aligned of shape (N, 3).
+    idx_to_move : torch.Tensor, optional
+        Indices of atoms to use for alignment. If None, uses all atoms.
+
+    Returns
+    -------
+    torch.Tensor
+        Aligned coordinates of shape (N, 3).
+    """
     if idx_to_move is not None:
         transformation_matrix1 = superpose_vectors_robust_torch(xyz1[idx_to_move],xyz2[idx_to_move])
     else:
@@ -178,6 +406,23 @@ def align_torch(xyz1,xyz2,idx_to_move=None):
     return xyz_moved
 
 def smallest_diff(diff: torch.Tensor,inv_frac_matrix: torch.Tensor,frac_matrix: torch.Tensor):
+    """
+    Compute minimum image squared distances with periodic boundary conditions.
+
+    Parameters
+    ----------
+    diff : torch.Tensor
+        Difference vectors of shape (..., 3).
+    inv_frac_matrix : torch.Tensor
+        Inverse fractionalization matrix of shape (3, 3).
+    frac_matrix : torch.Tensor
+        Fractionalization matrix of shape (3, 3).
+
+    Returns
+    -------
+    torch.Tensor
+        Squared distances with shape (...).
+    """
     diff_shape = diff.shape
     diff = diff.reshape(-1,3)
     diff_frac = torch.matmul(inv_frac_matrix,diff.T)
@@ -186,6 +431,23 @@ def smallest_diff(diff: torch.Tensor,inv_frac_matrix: torch.Tensor,frac_matrix: 
     return torch.sum(diff ** 2,axis=-1).reshape(diff_shape[:-1])
 
 def smallest_diff_aniso(diff: torch.Tensor,inv_frac_matrix: torch.Tensor,frac_matrix: torch.Tensor):
+    """
+    Compute minimum image difference vectors for anisotropic calculations.
+
+    Parameters
+    ----------
+    diff : torch.Tensor
+        Difference vectors of shape (..., 3).
+    inv_frac_matrix : torch.Tensor
+        Inverse fractionalization matrix of shape (3, 3).
+    frac_matrix : torch.Tensor
+        Fractionalization matrix of shape (3, 3).
+
+    Returns
+    -------
+    torch.Tensor
+        Absolute difference vectors with shape (..., 3).
+    """
     diff_shape = diff.shape
     diff = diff.reshape(-1,3)
     diff_frac = torch.matmul(inv_frac_matrix,diff.T)
@@ -194,6 +456,23 @@ def smallest_diff_aniso(diff: torch.Tensor,inv_frac_matrix: torch.Tensor,frac_ma
     return torch.abs(diff).reshape(diff_shape)
 
 def get_alignement_matrix(xyz1,xyz2,idx_to_move=None):
+    """
+    Get the alignment transformation matrix between two coordinate sets.
+
+    Parameters
+    ----------
+    xyz1 : torch.Tensor
+        Target coordinates of shape (N, 3).
+    xyz2 : torch.Tensor
+        Coordinates to be aligned of shape (N, 3).
+    idx_to_move : torch.Tensor, optional
+        Indices of atoms to use for alignment. If None, uses all atoms.
+
+    Returns
+    -------
+    torch.Tensor
+        Transformation matrix of shape (3, 4).
+    """
     if idx_to_move is not None:
         transformation_matrix = superpose_vectors_robust_torch(xyz1[idx_to_move],xyz2[idx_to_move])
     else:
@@ -201,6 +480,21 @@ def get_alignement_matrix(xyz1,xyz2,idx_to_move=None):
     return transformation_matrix
 
 def anharmonic_correction(hkl,c):
+    """
+    Apply anharmonic (third-order) correction to structure factors.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (N_reflections, 3).
+    c : tuple or list
+        Ten anharmonic coefficients (C111, C222, C333, C112, C122, C113, C133, C223, C233, C123).
+
+    Returns
+    -------
+    torch.Tensor
+        Complex anharmonic correction factors of shape (N_reflections,).
+    """
     h1, h2, h3 = hkl[:, 0], hkl[:, 1], hkl[:, 2]
     # These third-order terms specifically address toroidal features
     C111, C222, C333, C112, C122, C113, C133, C223, C233, C123 = c
@@ -220,6 +514,33 @@ def anharmonic_correction(hkl,c):
     return torch.exp(third_order)
 
 def aniso_structure_factor_torched_no_complex(hkl,s_vector,fractional_coords,occ,scattering_factors,U,space_group):
+    """
+    Calculate anisotropic structure factors without complex numbers.
+
+    Returns real and imaginary parts as separate rows.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (N_reflections, 3).
+    s_vector : torch.Tensor
+        Scattering vectors of shape (N_reflections, 3).
+    fractional_coords : torch.Tensor
+        Fractional coordinates of shape (N_atoms, 3).
+    occ : torch.Tensor
+        Occupancies of shape (N_atoms,).
+    scattering_factors : torch.Tensor
+        Atomic scattering factors of shape (N_reflections, N_atoms).
+    U : torch.Tensor
+        Anisotropic displacement parameters of shape (N_atoms, 6).
+    space_group : callable
+        Space group symmetry operator function.
+
+    Returns
+    -------
+    torch.Tensor
+        Structure factors as [real, imag] of shape (2, N_reflections).
+    """
     fractional_coords = space_group(fractional_coords.T)
     fractional_shape = fractional_coords.shape
     fractional_coords = fractional_coords.reshape(3,-1)
@@ -239,6 +560,33 @@ def aniso_structure_factor_torched_no_complex(hkl,s_vector,fractional_coords,occ
     return torch.vstack((real,complex))
 
 def iso_structure_factor_torched_no_complex(hkl,s,fractional_coords,occ,scattering_factors,tempfactor,space_group):
+    """
+    Calculate isotropic structure factors without complex numbers.
+
+    Returns real and imaginary parts as separate rows.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (N_reflections, 3).
+    s : torch.Tensor
+        Scattering vector magnitudes of shape (N_reflections,).
+    fractional_coords : torch.Tensor
+        Fractional coordinates of shape (N_atoms, 3).
+    occ : torch.Tensor
+        Occupancies of shape (N_atoms,).
+    scattering_factors : torch.Tensor
+        Atomic scattering factors of shape (N_reflections, N_atoms).
+    tempfactor : torch.Tensor
+        Isotropic temperature factors (B-factors) of shape (N_atoms,).
+    space_group : callable
+        Space group symmetry operator function.
+
+    Returns
+    -------
+    torch.Tensor
+        Structure factors as [real, imag] of shape (2, N_reflections).
+    """
     fractional_coords = space_group(fractional_coords.T)
     fractional_shape = fractional_coords.shape
     fractional_coords = fractional_coords.reshape(3,-1)
@@ -254,6 +602,23 @@ def iso_structure_factor_torched_no_complex(hkl,s,fractional_coords,occ,scatteri
     return torch.vstack((real,complex))
 
 def anharmonic_correction_no_complex(hkl,c):
+    """
+    Apply anharmonic (third-order) correction without complex numbers.
+
+    Returns real and imaginary parts as separate rows.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (N_reflections, 3).
+    c : tuple or list
+        Ten anharmonic coefficients (C111, C222, C333, C112, C122, C113, C133, C223, C233, C123).
+
+    Returns
+    -------
+    torch.Tensor
+        Correction factors as [cos, sin] of shape (2, N_reflections).
+    """
     h1, h2, h3 = hkl[:, 0], hkl[:, 1], hkl[:, 2]
     # These third-order terms specifically address toroidal features
     C111, C222, C333, C112, C122, C113, C133, C223, C233, C123 = c
@@ -273,26 +638,44 @@ def anharmonic_correction_no_complex(hkl,c):
     return torch.vstack((torch.cos(third_order), torch.sin(third_order)))
 
 def multiplication_quasi_complex_tensor(a,b):
+    """
+    Multiply two quasi-complex tensors represented as [real, imag] rows.
+
+    Parameters
+    ----------
+    a : torch.Tensor
+        First quasi-complex tensor of shape (2, N).
+    b : torch.Tensor
+        Second quasi-complex tensor of shape (2, N).
+
+    Returns
+    -------
+    torch.Tensor
+        Product as [real, imag] of shape (2, N).
+    """
     real_part = a[0] * b[0] - a[1] * b[1]
     imag_part = a[0] * b[1] + a[1] * b[0]
     return torch.vstack((real_part, imag_part))
 
 def french_wilson_conversion(Iobs, sigma_I=None):
     """
-    Convert intensities to structure factor amplitudes using French-Wilson method
-    Also converts standard deviations
-    
-    Parameters:
-    -----------
+    Convert intensities to structure factor amplitudes using French-Wilson method.
+
+    Also converts standard deviations.
+
+    Parameters
+    ----------
     Iobs : torch.Tensor
-        Observed intensity values
+        Observed intensity values.
     sigma_I : torch.Tensor, optional
-        Estimated standard deviations of intensities
-        
-    Returns:
-    --------
-    tuple (torch.Tensor, torch.Tensor)
-        Structure factor amplitudes and their standard deviations
+        Estimated standard deviations of intensities.
+
+    Returns
+    -------
+    F : torch.Tensor
+        Structure factor amplitudes.
+    sigma_F : torch.Tensor
+        Standard deviations of structure factor amplitudes.
     """
     # If no sigmas provided, estimate them
     if sigma_I is None:
@@ -384,6 +767,19 @@ def french_wilson_conversion(Iobs, sigma_I=None):
     return F, sigma_F
 
 def reciprocal_basis_matrix(unit_cell: torch.Tensor):
+    """
+    Compute the reciprocal space basis matrix from unit cell parameters.
+
+    Parameters
+    ----------
+    unit_cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+
+    Returns
+    -------
+    torch.Tensor
+        Reciprocal basis matrix of shape (3, 3) with a*, b*, c* as rows.
+    """
     # Extract unit cell parameters
 
     angles_rad =  torch.deg2rad(unit_cell[3:])
@@ -408,12 +804,46 @@ def reciprocal_basis_matrix(unit_cell: torch.Tensor):
     return torch.stack([a_star, b_star, c_star])
 
 def get_scattering_vectors(hkl: torch.Tensor, unit_cell: torch.Tensor, recB=None):
+    """
+    Calculate scattering vectors from Miller indices.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (N, 3).
+    unit_cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    recB : torch.Tensor, optional
+        Pre-computed reciprocal basis matrix of shape (3, 3).
+
+    Returns
+    -------
+    torch.Tensor
+        Scattering vectors of shape (N, 3).
+    """
     if recB is None:
         recB = reciprocal_basis_matrix(unit_cell)
     s = torch.matmul(hkl.to(unit_cell.dtype),recB)
     return s
 
 def get_d_spacing(hkl: torch.Tensor, unit_cell: torch.Tensor, recB=None):
+    """
+    Calculate d-spacing from Miller indices.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices of shape (N, 3).
+    unit_cell : torch.Tensor
+        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    recB : torch.Tensor, optional
+        Pre-computed reciprocal basis matrix of shape (3, 3).
+
+    Returns
+    -------
+    torch.Tensor
+        D-spacing values of shape (N,) in Angstroms.
+    """
     s = get_scattering_vectors(hkl,unit_cell,recB)
     d_spacing = 1.0 / torch.linalg.norm(s,axis=1)
     return d_spacing
@@ -421,35 +851,38 @@ def get_d_spacing(hkl: torch.Tensor, unit_cell: torch.Tensor, recB=None):
 
 def find_relevant_voxels(real_space_grid, xyz, radius_angstrom=4, inv_frac_matrix=None):
     """
-    Vectorized function to identify the surrounding voxels of atoms in a real space grid.
-    
-    Parameters:
-    -----------
-    real_space_grid : torch.Tensor, shape (nx, ny, nz, 3)
-        Real space grid containing xyz coordinates at each grid point
-    xyz : torch.Tensor, shape (N, 3) or (3,)
-        Atom coordinates in real space (Cartesian coordinates)
-    radius : int
-        Half-size of the box (in voxels) around each atom.
-        The box will have size (2*radius+1)³
-    inv_frac_matrix : torch.Tensor, shape (3, 3), optional
-        Matrix to convert Cartesian to fractional coordinates.
+    Identify surrounding voxels of atoms in a real space grid.
+
+    This is a vectorized function that finds all voxels within a spherical
+    radius around each atom position.
+
+    Parameters
+    ----------
+    real_space_grid : torch.Tensor
+        Real space grid containing xyz coordinates at each grid point,
+        of shape (nx, ny, nz, 3).
+    xyz : torch.Tensor
+        Atom coordinates in real space (Cartesian coordinates),
+        of shape (N, 3) or (3,).
+    radius_angstrom : float, optional
+        Radius around each atom in Angstroms. Default is 4.
+    inv_frac_matrix : torch.Tensor, optional
+        Matrix to convert Cartesian to fractional coordinates of shape (3, 3).
         Required for proper handling of non-orthogonal cells.
-    
-    Returns:
-    --------
-    tuple of:
-        surrounding_coords : torch.Tensor, shape (N, R³, 3)
-            Coordinates of surrounding voxels for each atom, where R = 2*radius+1
-            Returns the real-space coordinates from the grid for each voxel
-        voxel_indices_wrapped : torch.Tensor, shape (N, R³, 3)
-            Wrapped voxel indices
-    
-    Note:
+
+    Returns
+    -------
+    surrounding_coords : torch.Tensor
+        Coordinates of surrounding voxels for each atom of shape (N, R, 3),
+        where R is the number of voxels within the radius.
+    voxel_indices_wrapped : torch.Tensor
+        Wrapped voxel indices of shape (N, R, 3).
+
+    Notes
     -----
-    Atom coordinates are NOT wrapped here - periodic boundary conditions are handled
-    in smallest_diff() which finds the minimum image distance. We only wrap voxel indices
-    to ensure they're valid array indices.
+    Atom coordinates are NOT wrapped here - periodic boundary conditions are
+    handled in smallest_diff() which finds the minimum image distance. We only
+    wrap voxel indices to ensure they're valid array indices.
     """
     # Ensure xyz is 2D (N, 3)
     if xyz.ndim == 1:
@@ -487,32 +920,27 @@ def find_relevant_voxels(real_space_grid, xyz, radius_angstrom=4, inv_frac_matri
 
 def excise_angstrom_radius_around_coord(real_space_grid, start_indices, radius_angstrom=4.0):
     """
-    Vectorized function to identify the surrounding voxels of atoms in a real space grid.
-    
-    Parameters:
-    -----------
-    real_space_grid : torch.Tensor, shape (nx, ny, nz, 3)
-        Real space grid containing xyz coordinates at each grid point
-    xyz : torch.Tensor, shape (N, 3) or (3,)
-        Atom coordinates in real space (Cartesian coordinates)
-    radius : int
-        Half-size of the box (in voxels) around each atom.
-        The box will have size (2*radius+1)³
-    inv_frac_matrix : torch.Tensor, shape (3, 3), optional
-        Matrix to convert Cartesian to fractional coordinates.
-        Required for proper handling of non-orthogonal cells.
-    
-    Returns:
-    --------
-    tuple of:
-        voxel_indices_wrapped : torch.Tensor, shape (N, R³, 3)
-            Wrapped voxel indices
-    
-    Note:
+    Identify voxel indices within an Angstrom radius around specified grid positions.
+
+    Parameters
+    ----------
+    real_space_grid : torch.Tensor
+        Real space grid of shape (nx, ny, nz, 3) containing xyz coordinates.
+    start_indices : torch.Tensor
+        Starting grid indices of shape (N, 3) or (3,).
+    radius_angstrom : float, optional
+        Radius in Angstroms. Default is 4.0.
+
+    Returns
+    -------
+    torch.Tensor
+        Wrapped voxel indices of shape (N, R, 3), where R is the number of
+        voxels within the radius.
+
+    Notes
     -----
-    Atom coordinates are NOT wrapped here - periodic boundary conditions are handled
-    in smallest_diff() which finds the minimum image distance. We only wrap voxel indices
-    to ensure they're valid array indices.
+    Periodic boundary conditions are handled by wrapping the indices to
+    ensure they're valid array indices.
     """
     # Ensure xyz is 2D (N, 3)
     if start_indices.ndim == 1:
@@ -540,29 +968,35 @@ def excise_angstrom_radius_around_coord(real_space_grid, start_indices, radius_a
 def vectorized_add_to_map(surrounding_coords, voxel_indices, map, xyz, b, inv_frac_matrix, frac_matrix, A, B,occ):
     """
     Add atoms to density map using ITC92 Gaussian parameterization.
-    
-    Parameters:
-    -----------
-    surrounding_coords : torch.Tensor, shape (N_atoms, N_voxels, 3)
-        Coordinates of voxels around each atom
-    voxel_indices : torch.Tensor, shape (N_atoms, N_voxels, 3)
-        Indices of voxels in the map
-    map : torch.Tensor, shape (nx, ny, nz)
-        Electron density map
-    xyz : torch.Tensor, shape (N_atoms, 3)
-        Atom positions
-    b : torch.Tensor, shape (N_atoms,)
-        B-factors (thermal parameters) in Å²
-    A : torch.Tensor, shape (N_atoms, 5)
-        ITC92 amplitude coefficients for each atom
-    B : torch.Tensor, shape (N_atoms, 5)
-        ITC92 width coefficients (b parameters) in Å² for each atom
-    inv_frac_matrix : torch.Tensor, shape (3, 3)
-        Inverse fractionalization matrix
-    frac_matrix : torch.Tensor, shape (3, 3)
-        Fractionalization matrix
-    occ: torch.Tensor, shape (N_atoms,)
-        Occupancies for each atom
+
+    Parameters
+    ----------
+    surrounding_coords : torch.Tensor
+        Coordinates of voxels around each atom of shape (N_atoms, N_voxels, 3).
+    voxel_indices : torch.Tensor
+        Indices of voxels in the map of shape (N_atoms, N_voxels, 3).
+    map : torch.Tensor
+        Electron density map of shape (nx, ny, nz).
+    xyz : torch.Tensor
+        Atom positions of shape (N_atoms, 3).
+    b : torch.Tensor
+        B-factors (thermal parameters) in Angstroms squared of shape (N_atoms,).
+    inv_frac_matrix : torch.Tensor
+        Inverse fractionalization matrix of shape (3, 3).
+    frac_matrix : torch.Tensor
+        Fractionalization matrix of shape (3, 3).
+    A : torch.Tensor
+        ITC92 amplitude coefficients for each atom of shape (N_atoms, 5).
+    B : torch.Tensor
+        ITC92 width coefficients (b parameters) in Angstroms squared
+        for each atom of shape (N_atoms, 5).
+    occ : torch.Tensor
+        Occupancies for each atom of shape (N_atoms,).
+
+    Returns
+    -------
+    torch.Tensor
+        Updated electron density map.
     """
     # Calculate squared distances with periodic boundary conditions
     # diff_coords shape: (N_atoms, N_voxels)
@@ -594,44 +1028,45 @@ def vectorized_add_to_map(surrounding_coords, voxel_indices, map, xyz, b, inv_fr
 
 def vectorized_add_to_map_aniso(surrounding_coords, voxel_indices, map, xyz, U, inv_frac_matrix, frac_matrix, A, B, occ):
     """
-    Add anisotropic atoms to density map using ITC92 Gaussian parameterization with anisotropic displacement.
-    
+    Add anisotropic atoms to density map using ITC92 Gaussian parameterization.
+
     For anisotropic atoms, the Gaussian is:
-    ρ(r) = Σᵢ Aᵢ * exp(-2π² * Δr^T * (U + Uᵢ) * Δr)
-    
+    rho(r) = sum_i A_i * exp(-2*pi^2 * dr^T * (U + U_i) * dr)
+
     where:
-    - U is the atomic displacement parameter tensor (6 components: u11, u22, u33, u12, u13, u23)
-    - Uᵢ is the ITC92 Gaussian width tensor derived from Bᵢ parameter
-    - Δr is the distance vector from atom center
-    
-    Parameters:
-    -----------
-    surrounding_coords : torch.Tensor, shape (N_atoms, N_voxels, 3)
-        Coordinates of voxels around each atom
-    voxel_indices : torch.Tensor, shape (N_atoms, N_voxels, 3)
-        Indices of voxels in the map
-    map : torch.Tensor, shape (nx, ny, nz)
-        Electron density map
-    xyz : torch.Tensor, shape (N_atoms, 3)
-        Atom positions in Cartesian coordinates
-    U : torch.Tensor, shape (N_atoms, 6)
-        Anisotropic displacement parameters in Å² (u11, u22, u33, u12, u13, u23)
-        Note: These are already in Cartesian space from PDB
-    inv_frac_matrix : torch.Tensor, shape (3, 3)
-        Inverse fractionalization matrix
-    frac_matrix : torch.Tensor, shape (3, 3)
-        Fractionalization matrix
-    A : torch.Tensor, shape (N_atoms, 4)
-        ITC92 amplitude coefficients for each atom
-    B : torch.Tensor, shape (N_atoms, 4)
-        ITC92 width coefficients (b parameters) in Å² for each atom
-    occ : torch.Tensor, shape (N_atoms,)
-        Occupancies for each atom
-        
-    Returns:
-    --------
+    - U is the atomic displacement parameter tensor (6 components)
+    - U_i is the ITC92 Gaussian width tensor derived from B_i parameter
+    - dr is the distance vector from atom center
+
+    Parameters
+    ----------
+    surrounding_coords : torch.Tensor
+        Coordinates of voxels around each atom of shape (N_atoms, N_voxels, 3).
+    voxel_indices : torch.Tensor
+        Indices of voxels in the map of shape (N_atoms, N_voxels, 3).
     map : torch.Tensor
-        Updated electron density map
+        Electron density map of shape (nx, ny, nz).
+    xyz : torch.Tensor
+        Atom positions in Cartesian coordinates of shape (N_atoms, 3).
+    U : torch.Tensor
+        Anisotropic displacement parameters in Angstroms squared
+        (u11, u22, u33, u12, u13, u23) of shape (N_atoms, 6).
+    inv_frac_matrix : torch.Tensor
+        Inverse fractionalization matrix of shape (3, 3).
+    frac_matrix : torch.Tensor
+        Fractionalization matrix of shape (3, 3).
+    A : torch.Tensor
+        ITC92 amplitude coefficients for each atom of shape (N_atoms, 4).
+    B : torch.Tensor
+        ITC92 width coefficients (b parameters) in Angstroms squared
+        for each atom of shape (N_atoms, 4).
+    occ : torch.Tensor
+        Occupancies for each atom of shape (N_atoms,).
+
+    Returns
+    -------
+    torch.Tensor
+        Updated electron density map.
     """
     # Calculate distance vectors with periodic boundary conditions
     # diff_coords shape: (N_atoms, N_voxels, 3)
@@ -738,6 +1173,23 @@ def vectorized_add_to_map_aniso(surrounding_coords, voxel_indices, map, xyz, U, 
     return map
 
 def scatter_add_nd_super_slow(source, index, map):
+    """
+    Non-vectorized n-dimensional scatter add operation (slow reference implementation).
+
+    Parameters
+    ----------
+    source : torch.Tensor
+        Values to add to the map of shape (N,).
+    index : torch.Tensor
+        Indices where values should be added of shape (N, ndim).
+    map : torch.Tensor
+        N-dimensional tensor to add values into.
+
+    Returns
+    -------
+    torch.Tensor
+        Modified map with values added.
+    """
     for i in range(source.shape[0]):
         idx = tuple(index[i].tolist())
         map[idx] += source[i]
@@ -746,20 +1198,20 @@ def scatter_add_nd_super_slow(source, index, map):
 def scatter_add_nd(source, index, map):
     """
     Vectorized n-dimensional scatter add operation.
-    
-    Parameters:
-    -----------
-    source : torch.Tensor, shape (N,)
-        Values to add to the map
-    index : torch.Tensor, shape (N, ndim)
-        Indices where values should be added
-    map : torch.Tensor, shape (d1, d2, ..., dn)
-        N-dimensional tensor to add values into
-        
-    Returns:
-    --------
+
+    Parameters
+    ----------
+    source : torch.Tensor
+        Values to add to the map of shape (N,).
+    index : torch.Tensor
+        Indices where values should be added of shape (N, ndim).
     map : torch.Tensor
-        Modified map with values added
+        N-dimensional tensor of shape (d1, d2, ..., dn) to add values into.
+
+    Returns
+    -------
+    torch.Tensor
+        Modified map with values added.
     """
     map_shape = torch.tensor(map.shape, device=index.device, dtype=torch.int64)
     
@@ -784,13 +1236,26 @@ def scatter_add_nd(source, index, map):
 
 def place_on_grid(hkls, structure_factor, grid_size, enforce_hermitian: bool = True) -> torch.Tensor:
     """
+    Place structure factors on a reciprocal-space grid.
+
     Vectorized placement of batched structure factors on reciprocal-space grid.
-    
-    Args:
-        enforce_hermitian: Whether to enforce Hermitian symmetry
-        
-    Returns:
-        Complex tensor grid of structure factors
+
+    Parameters
+    ----------
+    hkls : torch.Tensor
+        Miller indices of shape (N, 3).
+    structure_factor : torch.Tensor
+        Structure factors of shape (N,) or (B, N) for batched input.
+    grid_size : tuple or torch.Tensor
+        Grid dimensions (Nx, Ny, Nz).
+    enforce_hermitian : bool, optional
+        Whether to enforce Hermitian symmetry. Default is True.
+
+    Returns
+    -------
+    torch.Tensor
+        Complex tensor grid of structure factors of shape (Nx, Ny, Nz)
+        or (B, Nx, Ny, Nz) for batched input.
     """
     batch_mode = True
     if structure_factor.ndim == 1:
@@ -830,12 +1295,16 @@ def place_on_grid(hkls, structure_factor, grid_size, enforce_hermitian: bool = T
 def fft(reciprocal_grid) -> torch.Tensor:
     """
     Perform FFT to obtain real space electron density.
-    
-    Returns:
-        Real-valued tensor of electron density
-        
-    Raises:
-        ValueError: If grid not initialized
+
+    Parameters
+    ----------
+    reciprocal_grid : torch.Tensor
+        Reciprocal space grid of shape (Nx, Ny, Nz) or (B, Nx, Ny, Nz).
+
+    Returns
+    -------
+    torch.Tensor
+        Real-valued tensor of electron density with same shape as input.
     """
     if reciprocal_grid.ndim == 4:
         rs = torch.fft.ifftn(reciprocal_grid, dim=(1, 2, 3)).real
@@ -850,12 +1319,16 @@ def fft(reciprocal_grid) -> torch.Tensor:
 def ifft(real_space_map) -> torch.Tensor:
     """
     Perform inverse FFT to obtain reciprocal space structure factors.
-    
-    Returns:
-        Complex-valued tensor of structure factors
-        
-    Raises:
-        ValueError: If grid not initialized
+
+    Parameters
+    ----------
+    real_space_map : torch.Tensor
+        Real space electron density map of shape (Nx, Ny, Nz) or (B, Nx, Ny, Nz).
+
+    Returns
+    -------
+    torch.Tensor
+        Complex-valued tensor of structure factors with same shape as input.
     """
     if real_space_map.ndim == 4:
         rg = torch.roll(real_space_map, shifts=(-1, -1, -1), dims=(1, 2, 3))
@@ -870,14 +1343,18 @@ def ifft(real_space_map) -> torch.Tensor:
 def extract_structure_factor_from_grid(reciprocal_grid, hkls) -> torch.Tensor:
     """
     Extract structure factors from reciprocal space grid at given Miller indices.
-    
-    Args:
-        reciprocal_grid: Complex tensor of shape (Nx, Ny, Nz) or (B, Nx, Ny, Nz)
-        hkls: Tensor of Miller indices of shape (N, 3)
 
-    Returns:
-        Tensor of structure factors of shape (N,) or (B, N,)
+    Parameters
+    ----------
+    reciprocal_grid : torch.Tensor
+        Complex tensor of shape (Nx, Ny, Nz) or (B, Nx, Ny, Nz).
+    hkls : torch.Tensor
+        Miller indices of shape (N, 3).
 
+    Returns
+    -------
+    torch.Tensor
+        Structure factors of shape (N,) or (B, N) for batched input.
     """
     device = reciprocal_grid.device
     dtype = reciprocal_grid.dtype
@@ -914,24 +1391,28 @@ def extract_structure_factor_from_grid(reciprocal_grid, hkls) -> torch.Tensor:
 def add_to_solvent_mask(surrounding_coords, voxel_indices, mask, xyz, radius, inv_frac_matrix, frac_matrix):
     """
     Create solvent mask by placing spheres around atom positions.
-    
-    Parameters:
-    -----------
-    surrounding_coords : torch.Tensor, shape (N_atoms, N_voxels, 3)
-        Coordinates of voxels around each atom
-    voxel_indices : torch.Tensor, shape (N_atoms, N_voxels, 3)
-        Indices of voxels in the map
-    mask : torch.Tensor, shape (nx, ny, nz)
-        Solvent mask to be updated
-    xyz : torch.Tensor, shape (N_atoms, 3)
-        Atom positions
-    radius : float
-        Radius of the sphere around each atom in Å
-        
-    Returns:
-    --------
+
+    Parameters
+    ----------
+    surrounding_coords : torch.Tensor
+        Coordinates of voxels around each atom of shape (N_atoms, N_voxels, 3).
+    voxel_indices : torch.Tensor
+        Indices of voxels in the map of shape (N_atoms, N_voxels, 3).
     mask : torch.Tensor
-        Updated solvent mask
+        Solvent mask to be updated of shape (nx, ny, nz).
+    xyz : torch.Tensor
+        Atom positions of shape (N_atoms, 3).
+    radius : float
+        Radius of the sphere around each atom in Angstroms.
+    inv_frac_matrix : torch.Tensor
+        Inverse fractionalization matrix of shape (3, 3).
+    frac_matrix : torch.Tensor
+        Fractionalization matrix of shape (3, 3).
+
+    Returns
+    -------
+    torch.Tensor
+        Updated solvent mask as boolean tensor.
     """
     mask = mask.to(dtype=torch.int32)
     # Calculate squared distances with periodic boundary conditions
@@ -956,42 +1437,44 @@ def add_to_phenix_mask(surrounding_coords, voxel_indices, xyz, vdw_radii, solven
                         inv_frac_matrix, frac_matrix, grid_shape, device):
     """
     Create Phenix-style three-valued mask by placing spheres around atom positions.
-    
+
     This is a vectorized implementation that processes all atoms and voxels at once.
     Creates two binary masks:
     - protein_mask: 1 where inside VdW radius (protein core)
     - boundary_mask: 1 where between VdW and VdW+solvent_radius (accessible surface)
-    
+
     Final three-valued mask:
     - 0: protein_mask == 1 (protein core)
     - -1: boundary_mask == 1 and protein_mask == 0 (accessible surface)
     - 1: both masks == 0 (bulk solvent)
-    
-    Parameters:
-    -----------
-    surrounding_coords : torch.Tensor, shape (N_atoms, N_voxels, 3)
-        Fractional coordinates of voxels around each atom
-    voxel_indices : torch.Tensor, shape (N_atoms, N_voxels, 3)
-        Grid indices of voxels in the map
-    xyz : torch.Tensor, shape (N_atoms, 3)
-        Atom positions in fractional coordinates
-    vdw_radii : torch.Tensor, shape (N_atoms,)
-        VdW radius for each atom in Angstroms
+
+    Parameters
+    ----------
+    surrounding_coords : torch.Tensor
+        Fractional coordinates of voxels around each atom of shape (N_atoms, N_voxels, 3).
+    voxel_indices : torch.Tensor
+        Grid indices of voxels in the map of shape (N_atoms, N_voxels, 3).
+    xyz : torch.Tensor
+        Atom positions in fractional coordinates of shape (N_atoms, 3).
+    vdw_radii : torch.Tensor
+        VdW radius for each atom in Angstroms of shape (N_atoms,).
     solvent_radius : float
-        Probe radius in Angstroms (added to VdW to get accessible surface)
+        Probe radius in Angstroms (added to VdW to get accessible surface).
     inv_frac_matrix : torch.Tensor
-        Inverse fractional matrix for distance calculations
+        Inverse fractional matrix for distance calculations of shape (3, 3).
     frac_matrix : torch.Tensor
-        Fractional matrix for distance calculations
+        Fractional matrix for distance calculations of shape (3, 3).
     grid_shape : tuple
-        Shape of the output mask (nx, ny, nz)
+        Shape of the output mask (nx, ny, nz).
     device : torch.device
-        Device for tensor operations
-        
-    Returns:
-    --------
-    mask : torch.Tensor, dtype=torch.int8, shape grid_shape
-        Three-valued mask {-1, 0, 1}
+        Device for tensor operations.
+
+    Returns
+    -------
+    protein_mask : torch.Tensor
+        Boolean mask for protein core of shape grid_shape.
+    boundary_mask : torch.Tensor
+        Boolean mask for accessible surface of shape grid_shape.
     """
     # Calculate distances for all atom-voxel pairs
     diff = (surrounding_coords - xyz.unsqueeze(1))
@@ -1023,6 +1506,23 @@ def add_to_phenix_mask(surrounding_coords, voxel_indices, xyz, vdw_radii, solven
     return protein_mask, boundary_mask
 
 def nll_xray(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tensor) -> torch.Tensor:
+    """
+    Compute X-ray negative log-likelihood assuming Gaussian distribution.
+
+    Parameters
+    ----------
+    F_obs : torch.Tensor
+        Observed structure factor amplitudes.
+    F_calc : torch.Tensor
+        Calculated structure factors (complex).
+    sigma_F_obs : torch.Tensor
+        Standard deviations of observed amplitudes.
+
+    Returns
+    -------
+    torch.Tensor
+        Mean negative log-likelihood.
+    """
     # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
 
@@ -1039,6 +1539,23 @@ def nll_xray(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tenso
 
 
 def nll_xray_sum(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tensor) -> torch.Tensor:
+    """
+    Compute summed X-ray negative log-likelihood assuming Gaussian distribution.
+
+    Parameters
+    ----------
+    F_obs : torch.Tensor
+        Observed structure factor amplitudes.
+    F_calc : torch.Tensor
+        Calculated structure factors (complex).
+    sigma_F_obs : torch.Tensor
+        Standard deviations of observed amplitudes.
+
+    Returns
+    -------
+    torch.Tensor
+        Sum of negative log-likelihood values.
+    """
     # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
 
@@ -1054,6 +1571,23 @@ def nll_xray_sum(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.T
     return nll.sum()
 
 def log_loss(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tensor) -> torch.Tensor:
+    """
+    Compute log-space loss between observed and calculated structure factors.
+
+    Parameters
+    ----------
+    F_obs : torch.Tensor
+        Observed structure factor amplitudes.
+    F_calc : torch.Tensor
+        Calculated structure factors (complex).
+    sigma_F_obs : torch.Tensor
+        Standard deviations of observed amplitudes (unused).
+
+    Returns
+    -------
+    torch.Tensor
+        Mean absolute difference in log space.
+    """
     # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
 
@@ -1063,7 +1597,19 @@ def log_loss(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tenso
 
 def estimate_sigma_I(I):
     """
-    Estimate standard deviation of intensities, separating positive and negative values.
+    Estimate standard deviation of intensities.
+
+    Separates positive and negative values for robust estimation.
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Intensity values.
+
+    Returns
+    -------
+    torch.Tensor
+        Estimated standard deviations.
     """
     if torch.any(I < 0):
         neg_I_sig = torch.mean(I[I < 0] ** 2) ** 0.5
@@ -1075,6 +1621,16 @@ def estimate_sigma_I(I):
 def estimate_sigma_F(F):
     """
     Estimate standard deviation of structure factor amplitudes.
+
+    Parameters
+    ----------
+    F : torch.Tensor
+        Structure factor amplitudes.
+
+    Returns
+    -------
+    torch.Tensor
+        Estimated standard deviations.
     """
     sigma = F * 0.05 + torch.mean(F) * 0.01
     return sigma
@@ -1083,24 +1639,30 @@ def nll_xray_lognormal(F_obs: torch.Tensor, F_calc: torch.Tensor,
                        sigma_F_obs: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
     """
     Compute X-ray negative log-likelihood assuming lognormal distribution.
-    
-    This is a more realistic model for structure factor amplitudes, which must be positive.
-    
-    For a lognormal distribution LogNormal(μ, σ²), the NLL is:
-    NLL = 0.5*(log(x) - μ)²/σ² + log(x) + log(σ) + 0.5*log(2π)
-    
-    Where μ and σ are derived from F_obs and sigma_F_obs using:
-    - σ = √(log(1 + (sigma_F/F)²))
-    - μ = log(F) - σ²/2
-    
-    Args:
-        F_obs: Observed structure factor amplitudes
-        F_calc: Calculated structure factors (complex)
-        sigma_F_obs: Standard deviations of observed amplitudes
-        eps: Small value to avoid numerical issues
-        
-    Returns:
-        torch.Tensor: Mean negative log-likelihood
+
+    This is a more realistic model for structure factor amplitudes, which must
+    be positive. For a lognormal distribution LogNormal(mu, sigma^2), the NLL is:
+    NLL = 0.5*(log(x) - mu)^2/sigma^2 + log(x) + log(sigma) + 0.5*log(2*pi)
+
+    Where mu and sigma are derived from F_obs and sigma_F_obs using:
+    - sigma = sqrt(log(1 + (sigma_F/F)^2))
+    - mu = log(F) - sigma^2/2
+
+    Parameters
+    ----------
+    F_obs : torch.Tensor
+        Observed structure factor amplitudes.
+    F_calc : torch.Tensor
+        Calculated structure factors (complex).
+    sigma_F_obs : torch.Tensor
+        Standard deviations of observed amplitudes.
+    eps : float, optional
+        Small value to avoid numerical issues. Default is 1e-10.
+
+    Returns
+    -------
+    torch.Tensor
+        Mean negative log-likelihood.
     """
     # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
@@ -1135,17 +1697,17 @@ def nll_xray_lognormal(F_obs: torch.Tensor, F_calc: torch.Tensor,
 def U_to_matrix(U: torch.Tensor) -> torch.Tensor:
     """
     Convert anisotropic displacement parameters from 6-component vector to 3x3 matrix.
-    
-    Parameters:
-    -----------
-    U : torch.Tensor, shape (..., 6)
-        Anisotropic displacement parameters in the order:
-        [u11, u22, u33, u12, u13, u23]
-        
-    Returns:
-    --------
-    U_matrix : torch.Tensor, shape (..., 3, 3)
-        Anisotropic displacement parameter matrices.
+
+    Parameters
+    ----------
+    U : torch.Tensor
+        Anisotropic displacement parameters in the order
+        [u11, u22, u33, u12, u13, u23] of shape (..., 6).
+
+    Returns
+    -------
+    torch.Tensor
+        Anisotropic displacement parameter matrices of shape (..., 3, 3).
     """
     u11 = U[..., 0]
     u22 = U[..., 1]
@@ -1171,14 +1733,24 @@ def U_to_matrix(U: torch.Tensor) -> torch.Tensor:
 
 def deterministic_tensor_digest(t: torch.Tensor, n_chunks: int = 16) -> torch.Tensor:
     """
-    Compute a deterministic digest vector for tensor `t` directly on GPU.
+    Compute a deterministic digest vector for tensor directly on GPU.
 
-    - Deterministic across devices and runs
-    - Sensitive to all tensor values and order  
-    - Fully vectorized with no Python loops
-    - Suitable for large GPU tensors
-    
-    Uses a simple mean/std approach per chunk which is fully deterministic.
+    This function is deterministic across devices and runs, sensitive to all
+    tensor values and order, fully vectorized with no Python loops, and suitable
+    for large GPU tensors. Uses a simple mean/std approach per chunk which is
+    fully deterministic.
+
+    Parameters
+    ----------
+    t : torch.Tensor
+        Input tensor to compute digest for.
+    n_chunks : int, optional
+        Number of chunks to divide the tensor into. Default is 16.
+
+    Returns
+    -------
+    torch.Tensor
+        Digest vector of length n_chunks.
     """
     # Flatten and cast to a stable type
     flat = t.detach().reshape(-1)
@@ -1213,6 +1785,19 @@ def deterministic_tensor_digest(t: torch.Tensor, n_chunks: int = 16) -> torch.Te
     return digest
 
 def hash_tensors(tensors) -> str:
+    """
+    Compute a hash of multiple tensors for caching purposes.
+
+    Parameters
+    ----------
+    tensors : list of torch.Tensor or None
+        List of tensors to hash. None values are handled.
+
+    Returns
+    -------
+    str
+        SHA-1 hash of the tensor contents.
+    """
     h = hashlib.sha1()
     for t in tensors:
         if t is None:
@@ -1228,18 +1813,18 @@ def hash_tensors(tensors) -> str:
 def rfactor(F_obs: torch.Tensor, F_calc: torch.Tensor) -> float:
     """
     Calculate R-factor between observed and calculated structure factors.
-    
-    Parameters:
-    -----------
-    F_obs : torch.Tensor, shape (N,)
-        Observed structure factor amplitudes
-    F_calc : torch.Tensor, shape (N,)
-        Calculated structure factor amplitudes
-        
-    Returns:
-    --------
-    r_factor : float
-        R-factor value
+
+    Parameters
+    ----------
+    F_obs : torch.Tensor
+        Observed structure factor amplitudes of shape (N,).
+    F_calc : torch.Tensor
+        Calculated structure factor amplitudes of shape (N,).
+
+    Returns
+    -------
+    float
+        R-factor value.
     """
     numerator = torch.sum(torch.abs(F_obs - F_calc))
     denominator = torch.sum(torch.abs(F_obs))
@@ -1250,23 +1835,21 @@ def get_rfactors(F_obs: torch.Tensor, F_calc: torch.Tensor, rfree: torch.Tensor)
     """
     Get R-factors for working and test sets.
 
-    Parameters:
-    -----------
-    F_obs : torch.Tensor, shape (N,)
-        Observed structure factor amplitudes
-    F_calc : torch.Tensor, shape (N,)
-        Calculated structure factor amplitudes
-    rfree : torch.Tensor, shape (N,)
-        Boolean mask indicating R-free reflections (1 is Working set, 0 is Test set)
+    Parameters
+    ----------
+    F_obs : torch.Tensor
+        Observed structure factor amplitudes of shape (N,).
+    F_calc : torch.Tensor
+        Calculated structure factor amplitudes of shape (N,).
+    rfree : torch.Tensor
+        Boolean mask indicating R-free reflections of shape (N,).
+        1 is Working set, 0 is Test set.
 
-    Returns:
-    --------
-    r_factors : tuple
-        (r_work, r_test) where
-        r_work : float
-            R-factor for working set
-        r_test : float
-            R-factor for test set
+    Returns
+    -------
+    tuple
+        (r_work, r_test) where r_work is the R-factor for the working set
+        and r_test is the R-factor for the test set.
     """
     rfree = rfree.to(torch.bool)
     r_work = rfactor(F_obs[rfree], F_calc[rfree])
@@ -1277,18 +1860,23 @@ def bin_wise_rfactors(F_obs: torch.Tensor, F_calc: torch.Tensor, rfree: torch.Te
     """
     Calculate bin-wise R-factors between observed and calculated structure factors.
 
-    Args:
-        F_obs (torch.Tensor): Observed structure factors.
-        F_calc (torch.Tensor): Calculated structure factors.
-        rfree (torch.Tensor): R-free mask.
-        bins (torch.Tensor): Bin indices for each reflection.
+    Parameters
+    ----------
+    F_obs : torch.Tensor
+        Observed structure factors.
+    F_calc : torch.Tensor
+        Calculated structure factors.
+    rfree : torch.Tensor
+        R-free mask.
+    bins : torch.Tensor
+        Bin indices for each reflection.
 
-    Returns:
-        tuple: (r_work_bins, r_test_bins) where
-            r_work_bins : torch.Tensor
-                R-factors for working set (per bin)
-            r_test_bins : torch.Tensor
-                R-factors for test set (per bin)
+    Returns
+    -------
+    r_work_bins : torch.Tensor
+        R-factors for working set (per bin).
+    r_test_bins : torch.Tensor
+        R-factors for test set (per bin).
     """
     r_work_bins = []
     r_test_bins = []
@@ -1303,67 +1891,48 @@ def bin_wise_rfactors(F_obs: torch.Tensor, F_calc: torch.Tensor, rfree: torch.Te
 def find_solvent_voids(mask, periodic=True):
     """
     Identify void regions in a 3D boolean tensor using connected component analysis.
-    
+
     A void is defined as a connected region of False values (solvent). With periodic
     boundary conditions, voids can wrap around the edges of the array (like in a
     crystallographic unit cell). Without periodic boundaries, only enclosed voids
     are detected.
-    
-    Parameters:
-    -----------
-    mask : torch.Tensor or numpy.ndarray, shape (nx, ny, nz)
-        Boolean tensor where True indicates solid regions (e.g., protein) and 
-        False indicates empty regions (e.g., solvent). Can be either PyTorch tensor
-        or NumPy array.
-    
-    periodic : bool, optional (default=True)
+
+    Parameters
+    ----------
+    mask : torch.Tensor or numpy.ndarray
+        Boolean tensor of shape (nx, ny, nz) where True indicates solid regions
+        (e.g., protein) and False indicates empty regions (e.g., solvent).
+        Can be either PyTorch tensor or NumPy array.
+    periodic : bool, optional
         If True, apply periodic boundary conditions (voids can wrap around edges).
         If False, only detect voids that are completely enclosed and don't touch
-        the boundaries.
-        
-    Returns:
+        the boundaries. Default is True.
+
+    Returns
+    -------
+    dict
+        Dictionary where keys are int volumes (number of voxels) of each void in
+        the original array, and values are boolean masks (torch.Tensor or
+        numpy.ndarray) of same shape as input with True only for that specific
+        void region. Returns an empty dict if no voids are found.
+
+    Examples
     --------
-    voids_dict : dict
-        Dictionary where:
-        - keys: int, volume (number of voxels) of each void in the original array
-        - values: torch.Tensor or numpy.ndarray, boolean mask of same shape as input
-                  with True only for that specific void region
-        
-        Returns an empty dict if no voids are found.
-        
-    Examples:
-    ---------
     >>> import torch
     >>> # Create a simple 5x5x5 grid with a void in the center
     >>> mask = torch.ones(5, 5, 5, dtype=torch.bool)
     >>> mask[2, 2, 2] = False  # Single void voxel
-    >>> voids = identify_voids(mask)
+    >>> voids = find_solvent_voids(mask)
     >>> print(voids)
     {1: tensor([[[False, False, ...]], dtype=torch.bool)}
-    
-    >>> # Multiple voids
-    >>> mask = torch.ones(10, 10, 10, dtype=torch.bool)
-    >>> mask[2:4, 2:4, 2:4] = False  # First void
-    >>> mask[6:8, 6:8, 6:8] = False  # Second void
-    >>> voids = identify_voids(mask)
-    >>> print(f"Found {len(voids)} voids with volumes: {list(voids.keys())}")
-    Found 2 voids with volumes: [8, 8]
-    
-    >>> # Void wrapping around periodic boundaries
-    >>> mask = torch.ones(10, 10, 10, dtype=torch.bool)
-    >>> mask[0:2, 5, 5] = False  # Near x=0
-    >>> mask[8:10, 5, 5] = False  # Near x=max (wraps to connect with x=0)
-    >>> voids = identify_voids(mask, periodic=True)
-    >>> print(f"Found {len(voids)} void (wraps around)")
-    Found 1 void (wraps around)
-    
-    Notes:
-    ------
-    - Uses scipy.ndimage.label for connected component analysis
-    - Connectivity is 26-connected (face, edge, and corner neighbors)
-    - With periodic=True, the array is padded by wrapping to detect cross-boundary voids
-    - Performance is O(n) where n is the total number of voxels
-    - With periodic boundaries, large percolating voids are still detected
+
+    Notes
+    -----
+    - Uses scipy.ndimage.label for connected component analysis.
+    - Connectivity is 26-connected (face, edge, and corner neighbors).
+    - With periodic=True, the array is padded by wrapping to detect cross-boundary voids.
+    - Performance is O(n) where n is the total number of voxels.
+    - With periodic boundaries, large percolating voids are still detected.
     """
     from scipy import ndimage
     
@@ -1523,33 +2092,34 @@ def gaussian_to_lognormal_sigma(F: torch.Tensor, sigma_F: torch.Tensor,
                                 eps: float = 1e-10) -> torch.Tensor:
     """
     Approximate the sigma parameter of a lognormal distribution from Gaussian statistics.
-    
-    If we assume F comes from a lognormal distribution X ~ LogNormal(μ, σ²), then:
-    - Mean: E[X] ≈ F
-    - Std:  √Var[X] ≈ sigma_F
-    
+
+    If we assume F comes from a lognormal distribution X ~ LogNormal(mu, sigma^2), then:
+    - Mean: E[X] = F
+    - Std: sqrt(Var[X]) = sigma_F
+
     For lognormal distribution:
-    - E[X] = exp(μ + σ²/2)
-    - Var(X) = exp(2μ + σ²)(exp(σ²) - 1)
-    
+    - E[X] = exp(mu + sigma^2/2)
+    - Var(X) = exp(2*mu + sigma^2)(exp(sigma^2) - 1)
+
     We can derive:
-    - CV² = Var[X]/E[X]² = exp(σ²) - 1
-    - σ = √(log(1 + CV²))
-    
+    - CV^2 = Var[X]/E[X]^2 = exp(sigma^2) - 1
+    - sigma = sqrt(log(1 + CV^2))
+
     where CV = sigma_F/F is the coefficient of variation.
-    
-    Args:
-        F: Structure factor amplitudes (mean of the distribution)
-        sigma_F: Standard deviations
-        eps: Small value to avoid division by zero
-        
-    Returns:
-        torch.Tensor: Sigma parameter for lognormal distribution
-        
-    References:
-        - Lognormal distribution: https://en.wikipedia.org/wiki/Log-normal_distribution
-        - This approximation assumes F and sigma_F represent the mean and std of 
-          the lognormal distribution (not of the underlying normal distribution)
+
+    Parameters
+    ----------
+    F : torch.Tensor
+        Structure factor amplitudes (mean of the distribution).
+    sigma_F : torch.Tensor
+        Standard deviations.
+    eps : float, optional
+        Small value to avoid division by zero. Default is 1e-10.
+
+    Returns
+    -------
+    torch.Tensor
+        Sigma parameter for lognormal distribution.
     """
     # Avoid division by zero
     F_safe = torch.clamp(F, min=eps)
@@ -1572,20 +2142,26 @@ def gaussian_to_lognormal_mu(F: torch.Tensor, sigma_lognormal: torch.Tensor,
                              eps: float = 1e-10) -> torch.Tensor:
     """
     Calculate the mu parameter of a lognormal distribution given F and sigma.
-    
-    For lognormal distribution X ~ LogNormal(μ, σ²):
-    - E[X] = exp(μ + σ²/2)
-    
-    Solving for μ:
-    - μ = log(E[X]) - σ²/2
-    
-    Args:
-        F: Structure factor amplitudes (mean of the distribution)
-        sigma_lognormal: Sigma parameter from lognormal distribution
-        eps: Small value to avoid log of zero
-        
-    Returns:
-        torch.Tensor: Mu parameter for lognormal distribution
+
+    For lognormal distribution X ~ LogNormal(mu, sigma^2):
+    - E[X] = exp(mu + sigma^2/2)
+
+    Solving for mu:
+    - mu = log(E[X]) - sigma^2/2
+
+    Parameters
+    ----------
+    F : torch.Tensor
+        Structure factor amplitudes (mean of the distribution).
+    sigma_lognormal : torch.Tensor
+        Sigma parameter from lognormal distribution.
+    eps : float, optional
+        Small value to avoid log of zero. Default is 1e-10.
+
+    Returns
+    -------
+    torch.Tensor
+        Mu parameter for lognormal distribution.
     """
     F_safe = torch.clamp(F, min=eps)
     mu_lognormal = torch.log(F_safe) - 0.5 * sigma_lognormal ** 2
