@@ -189,17 +189,10 @@ class Refinement(DebugMixin, nnModule):
         # Total geometry target (handles bond, angle, torsion internally)
         self.geometry_target = TotalGeometryTarget(self, verbose=self.verbose)
         
-        # Total ADP target (handles lognormal, locality, bounds internally)
-        # Weights tuned to match Phenix-like B-factor behavior:
-        #   - Phenix σ(log B) ≈ 0.25, Mean |Bi-Bj| ≈ 3.8 Å²
-        #   - Intermediate values between too-tight and too-loose
         self.adp_target = TotalADPTarget(
             self,
+            weights={'locality': 1.0},  # Override locality from default 0.5 to 1.0
             target_log_sigma=0.25,  # Target σ for log(B) - match Phenix
-            w_lognormal=1.0,        # Weight for log-normal population control
-            w_bounds=0.0,           # Weight for bounds penalty (disabled)
-            w_locality=1.0,         # Weight for locality (intermediate)
-            locality_scale=8.0,     # Scale for locality loss (intermediate)
             verbose=self.verbose
         )
         

@@ -760,6 +760,7 @@ class LBFGSRefinement(Refinement):
         def loss_fn():
             return (self.restraints_loss() +
                     self.adp_loss())
+        
         def closure():
             optimizer.zero_grad()
             loss = loss_fn()

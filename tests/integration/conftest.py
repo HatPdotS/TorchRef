@@ -102,9 +102,15 @@ def all_test_structures(test_files_dir):
 
 @pytest.fixture(scope="session")
 def monomer_library_path():
-    """Get path to the monomer library."""
-    # Assuming it's in the repo root
-    lib_path = Path(__file__).parent.parent.parent.parent / "external_monomer_library"
+    """Get path to the monomer library as a string.
+    
+    Returns
+    -------
+    str
+        Absolute path to the external_monomer_library directory.
+    """
+    # Path: conftest.py -> integration -> tests -> torchref (repo root)
+    lib_path = Path(__file__).parent.parent.parent / "external_monomer_library"
     if not lib_path.exists():
         pytest.skip("Monomer library not found")
-    return lib_path
+    return str(lib_path)
