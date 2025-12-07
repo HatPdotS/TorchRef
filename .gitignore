@@ -21,3 +21,4 @@ __pycache__/
 # Large binary files
 *.ccp4
 *.png
+make_flow_chart/

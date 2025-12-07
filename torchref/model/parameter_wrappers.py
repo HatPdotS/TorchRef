@@ -182,6 +182,210 @@ class MixedTensor(nn.Module):
         """Allow instance to be called like a function."""
         return self.forward()
     
+    def __getitem__(self, key) -> torch.Tensor:
+        """
+        Get values at specified indices/mask from the full tensor.
+
+        Parameters
+        ----------
+        key : int, slice, torch.Tensor, or tuple
+            Index specification. Can be:
+            - int: Single element
+            - slice: Range of elements (e.g., 5:10, :, ::2)
+            - torch.Tensor: Boolean mask or integer indices
+            - tuple: Multi-dimensional indexing
+
+        Returns
+        -------
+        torch.Tensor
+            Selected values from the full tensor.
+
+        Examples
+        --------
+        >>> model.b[5]           # Get B-factor for atom 5
+        >>> model.b[5:10]        # Get B-factors for atoms 5-9
+        >>> model.b[mask]        # Get B-factors where mask is True
+        >>> model.xyz[:, 0]      # Get all x-coordinates
+        
+        Notes
+        -----
+        Subclasses may override _get_values() to customize value retrieval.
+        """
+        return self._get_values(key)
+    
+    def _get_values(self, key) -> torch.Tensor:
+        """
+        Internal method to get values. Override in subclasses for custom behavior.
+
+        Parameters
+        ----------
+        key : indexing key
+            Index specification.
+
+        Returns
+        -------
+        torch.Tensor
+            Selected values from the full tensor.
+        """
+        return self.forward()[key]
+    
+    def __setitem__(self, key, value) -> None:
+        """
+        Set values at specified indices/mask.
+
+        This method updates both fixed_values and refinable_params at the
+        specified positions. Supports various indexing styles including
+        slices, boolean masks, and integer indices.
+
+        Parameters
+        ----------
+        key : int, slice, torch.Tensor, or tuple
+            Index specification. Can be:
+            - int: Single element
+            - slice: Range of elements (e.g., 5:10, :, ::2)
+            - torch.Tensor: Boolean mask or integer indices
+            - tuple: Multi-dimensional indexing
+        value : torch.Tensor, float, or int
+            Values to assign. Can be:
+            - Scalar: Broadcast to all selected positions
+            - Tensor: Must match the shape of selected region
+
+        Examples
+        --------
+        >>> model.b[:] = 30.0           # Set all B-factors to 30
+        >>> model.b[5:10] = 25.0        # Set B-factors 5-9 to 25
+        >>> model.b[mask] = new_values  # Set B-factors where mask is True
+        >>> model.xyz[mask] = new_coords  # Set coordinates for masked atoms
+        >>> model.xyz[:, 0] += 1.0      # Shift all x-coordinates (read-modify-write)
+
+        Notes
+        -----
+        This method modifies the tensor in-place. The refinable_params
+        parameter is replaced with a new Parameter containing the updated
+        values, which may affect optimizer state.
+        
+        Subclasses may override _set_values() to customize value handling
+        (e.g., PositiveMixedTensor converts to log-space).
+        """
+        # Convert value to tensor if needed
+        if not isinstance(value, torch.Tensor):
+            value = torch.tensor(value, dtype=self.dtype, device=self.device)
+        else:
+            value = value.to(dtype=self.dtype, device=self.device)
+        
+        # Delegate to _set_values (can be overridden by subclasses)
+        self._set_values(key, value)
+    
+    def _set_values(self, key, value: torch.Tensor) -> None:
+        """
+        Internal method to set values. Override in subclasses for custom behavior.
+
+        Parameters
+        ----------
+        key : indexing key
+            Index specification (already validated).
+        value : torch.Tensor
+            Values to assign (already converted to tensor with correct dtype/device).
+        """
+        # Get current full tensor
+        current_full = self.forward().detach()
+        
+        # Apply the assignment
+        current_full[key] = value
+        
+        # Update fixed_values buffer with the new full tensor
+        self.fixed_values = current_full.clone()
+        
+        # Re-extract refinable parameters (only those in refinable_mask)
+        if self.refinable_mask.any():
+            new_refinable = current_full[self.refinable_mask].clone()
+            self.refinable_params = nn.Parameter(
+                new_refinable,
+                requires_grad=self.refinable_params.requires_grad
+            )
+
+    def set(self, values: torch.Tensor, mask: torch.Tensor) -> None:
+        """
+        Set values at positions specified by a boolean mask.
+
+        Updates both fixed_values and refinable_params at the positions
+        specified by the mask. This is useful for applying coordinate shifts,
+        B-factor corrections, or any other updates to specific atoms.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            New values to assign. Shape must match:
+            - For 1D tensors: (n_selected,) where n_selected = mask.sum()
+            - For 2D tensors (e.g., xyz): (n_selected, d) where d is the 
+              second dimension size (e.g., 3 for coordinates)
+        mask : torch.Tensor
+            Boolean mask of shape (n_atoms,) indicating which elements to update.
+            True positions will receive the new values.
+
+        Raises
+        ------
+        ValueError
+            If mask shape doesn't match tensor's first dimension, or if
+            values shape doesn't match the number of selected elements.
+
+        Examples
+        --------
+        >>> # Update coordinates for selected atoms
+        >>> mask = model.get_selection_mask("chain A")
+        >>> new_coords = original_coords[mask] + shift
+        >>> model.xyz.set(new_coords, mask)
+        
+        >>> # Update B-factors for specific residues
+        >>> mask = model.get_selection_mask("resseq 10:20")
+        >>> new_b = torch.ones(mask.sum()) * 30.0
+        >>> model.b.set(new_b, mask)
+
+        Notes
+        -----
+        This method modifies the tensor in-place. The refinable_params
+        parameter is replaced with a new Parameter containing the updated
+        values, which may affect optimizer state.
+        """
+        # Validate mask shape
+        if mask.shape[0] != self.shape[0]:
+            raise ValueError(
+                f"Mask shape {mask.shape} must match tensor's first dimension {self.shape[0]}"
+            )
+        
+        if mask.ndim != 1:
+            raise ValueError(f"Mask must be 1D, got shape {mask.shape}")
+        
+        # Move mask to correct device
+        mask = mask.to(device=self.device, dtype=torch.bool)
+        
+        # Validate values shape
+        n_selected = mask.sum().item()
+        expected_shape = (n_selected,) if len(self.shape) == 1 else (n_selected, self.shape[1])
+        
+        if values.shape != expected_shape:
+            raise ValueError(
+                f"Values shape {values.shape} doesn't match expected shape {expected_shape} "
+                f"for {n_selected} selected elements"
+            )
+        
+        # Get current full tensor
+        current_full = self.forward().detach()
+        
+        # Update the full tensor at masked positions
+        current_full[mask] = values.to(dtype=self.dtype, device=self.device)
+        
+        # Update fixed_values buffer with the new full tensor
+        self.fixed_values = current_full.clone()
+        
+        # Re-extract refinable parameters (only those in refinable_mask)
+        if self.refinable_mask.any():
+            new_refinable = current_full[self.refinable_mask].clone()
+            self.refinable_params = nn.Parameter(
+                new_refinable,
+                requires_grad=self.refinable_params.requires_grad
+            )
+
     @property
     def shape(self):
         """Return the shape of the full tensor."""
@@ -648,6 +852,49 @@ class PositiveMixedTensor(MixedTensor):
         # Convert to normal space via exp
         return torch.exp(log_values)
     
+    def _set_values(self, key, value: torch.Tensor) -> None:
+        """
+        Internal method to set values with log-space conversion.
+
+        Values are provided in NORMAL space (positive values) and
+        automatically converted to log-space for internal storage.
+
+        Parameters
+        ----------
+        key : indexing key
+            Index specification (already validated).
+        value : torch.Tensor
+            Values to assign in NORMAL space. Must be positive.
+
+        Raises
+        ------
+        ValueError
+            If any values are not positive.
+        """
+        # Ensure values are positive
+        if (value <= 0).any():
+            raise ValueError("All values must be positive for PositiveMixedTensor")
+        
+        # Get current full tensor in NORMAL space
+        current_normal = self.forward().detach()
+        
+        # Update in normal space first
+        current_normal[key] = value
+        
+        # Convert entire tensor to log space
+        current_log = torch.log(current_normal.clamp(min=self.epsilon))
+        
+        # Update fixed_values buffer with the new log values
+        self.fixed_values = current_log.clone()
+        
+        # Re-extract refinable parameters (in log space)
+        if self.refinable_mask.any():
+            new_refinable = current_log[self.refinable_mask].clone()
+            self.refinable_params = nn.Parameter(
+                new_refinable,
+                requires_grad=self.refinable_params.requires_grad
+            )
+    
     def fix(self, mask: torch.Tensor, freeze_at_current: bool = True):
         """
         Fix (freeze) specific elements.
@@ -700,6 +947,88 @@ class PositiveMixedTensor(MixedTensor):
         
         # Call parent's refine method
         super().refine(mask)
+    
+    def set(self, values: torch.Tensor, mask: torch.Tensor) -> None:
+        """
+        Set values at positions specified by a boolean mask.
+
+        Values are provided in NORMAL space (e.g., actual B-factors) and
+        automatically converted to log-space for internal storage.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            New values to assign in NORMAL space (positive values).
+            Shape must be (n_selected,) where n_selected = mask.sum().
+        mask : torch.Tensor
+            Boolean mask of shape (n_atoms,) indicating which elements to update.
+            True positions will receive the new values.
+
+        Raises
+        ------
+        ValueError
+            If mask shape doesn't match tensor's first dimension, if
+            values shape doesn't match the number of selected elements,
+            or if any values are not positive.
+
+        Examples
+        --------
+        >>> # Update B-factors for selected atoms
+        >>> mask = model.get_selection_mask("name CA")
+        >>> new_b = torch.ones(mask.sum()) * 30.0  # Set CA B-factors to 30
+        >>> model.b.set(new_b, mask)
+
+        Notes
+        -----
+        This method modifies the tensor in-place. Values are automatically
+        converted to log-space internally to maintain the positivity constraint.
+        """
+        # Validate mask shape
+        if mask.shape[0] != self.shape[0]:
+            raise ValueError(
+                f"Mask shape {mask.shape} must match tensor's first dimension {self.shape[0]}"
+            )
+        
+        if mask.ndim != 1:
+            raise ValueError(f"Mask must be 1D, got shape {mask.shape}")
+        
+        # Move mask to correct device
+        mask = mask.to(device=self.device, dtype=torch.bool)
+        
+        # Validate values shape
+        n_selected = mask.sum().item()
+        expected_shape = (n_selected,)
+        
+        if values.shape != expected_shape:
+            raise ValueError(
+                f"Values shape {values.shape} doesn't match expected shape {expected_shape} "
+                f"for {n_selected} selected elements"
+            )
+        
+        # Ensure values are positive
+        values = values.to(dtype=self.dtype, device=self.device)
+        if (values <= 0).any():
+            raise ValueError("All values must be positive for PositiveMixedTensor")
+        
+        # Convert values to log space
+        log_values = torch.log(values.clamp(min=self.epsilon))
+        
+        # Get current full tensor in LOG space
+        current_log = super().forward().detach()
+        
+        # Update the log tensor at masked positions
+        current_log[mask] = log_values
+        
+        # Update fixed_values buffer with the new log values
+        self.fixed_values = current_log.clone()
+        
+        # Re-extract refinable parameters (in log space)
+        if self.refinable_mask.any():
+            new_refinable = current_log[self.refinable_mask].clone()
+            self.refinable_params = nn.Parameter(
+                new_refinable,
+                requires_grad=self.refinable_params.requires_grad
+            )
     
     def get_log_values(self) -> torch.Tensor:
         """
@@ -1223,6 +1552,63 @@ class OccupancyTensor(MixedTensor):
         full_occs = self._expand_values(collapsed_occs)
         
         return full_occs
+    
+    def _set_values(self, key, value: torch.Tensor) -> None:
+        """
+        Internal method to set occupancy values with sigmoid reparameterization.
+
+        Values are provided in NORMAL space (occupancies in [0, 1]) and
+        automatically converted to logit-space for internal storage.
+
+        Parameters
+        ----------
+        key : indexing key
+            Index specification (in full atom space).
+        value : torch.Tensor
+            Occupancy values to assign. Must be in [0, 1].
+
+        Raises
+        ------
+        ValueError
+            If any values are not in [0, 1].
+        
+        Notes
+        -----
+        This operates in FULL atom space. Values are collapsed to internal
+        storage using the sharing groups. For atoms that share occupancies,
+        the value is averaged across the group.
+        """
+        # Validate values are in valid range
+        if self.use_sigmoid:
+            if (value < 0).any() or (value > 1).any():
+                raise ValueError("Occupancy values must be in range [0, 1]")
+        
+        # Get current full occupancies
+        current_full = self.forward().detach()
+        
+        # Update in full space
+        current_full[key] = value
+        
+        # Convert to logit space
+        if self.use_sigmoid:
+            clamped_values = torch.clamp(current_full, min=1e-6, max=1-1e-6)
+            logit_values = torch.logit(clamped_values)
+        else:
+            logit_values = current_full.clone()
+        
+        # Collapse to internal storage
+        collapsed_logits = self._collapse_values_vectorized(logit_values)
+        
+        # Update fixed_values buffer
+        self.fixed_values = collapsed_logits.clone()
+        
+        # Re-extract refinable parameters
+        if self.refinable_mask.any():
+            new_refinable = collapsed_logits[self.refinable_mask].clone()
+            self.refinable_params = nn.Parameter(
+                new_refinable,
+                requires_grad=self.refinable_params.requires_grad
+            )
     
     @property
     def shape(self):

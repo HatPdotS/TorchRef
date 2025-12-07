@@ -223,12 +223,13 @@ class ReflectionData(DebugMixin, nn.Module):
             flagged = rfree < 0 
             rfree = rfree.clip(min=0, max=1).to(torch.bool)
             self.register_buffer('rfree_flags', rfree)
+            self.masks['flagged_initial'] = ~flagged
         else:
             flagged = torch.zeros(len(self.hkl), dtype=torch.bool, device=self.device)
+            self.masks['flagged_initial'] = ~flagged
             self._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
             
 
-        self.masks['flagged_initial'] = ~flagged
 
         self.sanitize_F()
         self.flag_suspicious_sigma()
@@ -410,25 +411,44 @@ class ReflectionData(DebugMixin, nn.Module):
             Actual number of bins created (may be less than target for small datasets).
         """
         n_refl = len(self.resolution)
+        valid_mask = self.masks()
+        total_valid = valid_mask.sum().item()
         
         # Calculate how many bins we can actually create given min_per_bin constraint
-        max_possible_bins = max(1, n_refl // min_per_bin)
+        max_possible_bins = max(1, total_valid // min_per_bin)
         actual_n_bins = min(n_bins, max_possible_bins)
         
         if actual_n_bins < n_bins and self.verbose > 0:
             print(f"  Note: Adjusted bins from {n_bins} to {actual_n_bins} (min {min_per_bin} refl/bin)")
         
         # Sort reflections by resolution
-        sorted_res, sort_indices = torch.sort(self.resolution)
+        _, sort_indices = torch.sort(self.resolution)
         
-        # Create bins with approximately equal number of reflections
+        # Create bins with approximately equal number of VALID reflections
         bin_indices = torch.zeros(n_refl, dtype=torch.int32, device=self.device)
-        reflections_per_bin = n_refl / actual_n_bins
+        reflections_per_bin = total_valid // actual_n_bins
         
-        for i, idx in enumerate(sort_indices):
-            # Assign to bin based on position in sorted list
-            bin_idx = min(int(i / reflections_per_bin), actual_n_bins - 1)
-            bin_indices[idx] = bin_idx
+        # Get the valid mask in sorted order
+        valid_mask_sorted = valid_mask[sort_indices]
+        
+        # Cumulative sum of valid reflections in sorted order
+        cumsum_valid = torch.cumsum(valid_mask_sorted.to(torch.int32), dim=0)
+        
+        # Create bin edges based on cumulative count of valid reflections
+        # Each bin should contain approximately reflections_per_bin valid reflections
+        bin_edges = [0]
+        for bin_idx in range(1, actual_n_bins):
+            target_count = bin_idx * reflections_per_bin
+            # Find first index where cumsum >= target_count
+            edge_candidates = torch.where(cumsum_valid >= target_count)[0]
+            if len(edge_candidates) > 0:
+                bin_edges.append(edge_candidates[0].item())
+        bin_edges.append(n_refl)
+        
+        # Assign bin indices to sorted reflections, then map back to original order
+        for bin_idx in range(len(bin_edges) - 1):
+            start, end = bin_edges[bin_idx], bin_edges[bin_idx + 1]
+            bin_indices[sort_indices[start:end]] = bin_idx
 
         if self.verbose > 1:
             # Print bin statistics
@@ -436,10 +456,10 @@ class ReflectionData(DebugMixin, nn.Module):
             for bin_idx in range(min(actual_n_bins, 20)):  # Show all bins (up to 20)
                 bin_mask = bin_indices == bin_idx
                 if bin_mask.sum() > 0:
+                    valid_reflexes = bin_mask & valid_mask
                     bin_res = self.resolution[bin_mask]
-                    print(f"    Bin {bin_idx:2d}: {bin_mask.sum():6d} refl, "
+                    print(f"    Bin {bin_idx:2d}: {valid_reflexes.sum():6d} valid refl, "
                         f"resolution {bin_res.min():.2f}-{bin_res.max():.2f} Å")
-        
             if actual_n_bins > 20:
                 print(f"    ... ({actual_n_bins - 20} more bins)")
         self.register_buffer('bin_indices', bin_indices)
@@ -1412,42 +1432,6 @@ class ReflectionData(DebugMixin, nn.Module):
         if self.source is not None:
             return self.source
         return self
-    
-    def get_lognormal_sigma(self, F: Optional[torch.Tensor] = None, 
-                           sigma_F: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Convert Gaussian parameters to lognormal sigma parameter.
-
-        For a lognormal distribution, if X ~ LogNormal(μ, σ²), then:
-        - E[X] = exp(μ + σ²/2)
-        - Var(X) = exp(2μ + σ²)(exp(σ²) - 1)
-
-        Parameters
-        ----------
-        F : torch.Tensor, optional
-            Structure factor amplitudes. Uses self.F if None.
-        sigma_F : torch.Tensor, optional
-            Standard deviations. Uses self.F_sigma if None.
-
-        Returns
-        -------
-        torch.Tensor
-            Sigma parameter for lognormal distribution.
-
-        Raises
-        ------
-        ValueError
-            If F and sigma_F are not provided and not available in self.
-        """
-        if F is None:
-            F = self.F
-        if sigma_F is None:
-            sigma_F = self.F_sigma
-            
-        if F is None or sigma_F is None:
-            raise ValueError("F and sigma_F must be provided or available in self")
-            
-        return gaussian_to_lognormal_sigma(F, sigma_F)
 
     def flag_suspicious_sigma(self, z_threshold: float = 5.0) -> None:
         """
@@ -1490,7 +1474,7 @@ class ReflectionData(DebugMixin, nn.Module):
                 print(f"  {key}: type={type(value)}, value={value}")
 
     def write_mtz(self, fname: str, fcalc: Optional[torch.Tensor] = None, 
-                  model_ft: Optional[ModelFT] = None, fill_to_resolution: bool = True) -> None:
+                  model_ft: Optional[ModelFT] = None) -> None:
         """
         Write reflection data to MTZ file with optional map coefficients.
 
@@ -1559,7 +1543,7 @@ class ReflectionData(DebugMixin, nn.Module):
         # Compute fcalc if model_ft is provided but fcalc is not
         if fcalc is None and model_ft is not None:
             fcalc = model_ft.forward(self.hkl)
-        
+        mask = self.masks().detach().cpu().numpy()
         # Add map coefficients if fcalc is provided
         if fcalc is not None:
             # Ensure fcalc is complex
@@ -1577,10 +1561,12 @@ class ReflectionData(DebugMixin, nn.Module):
             # Compute map coefficients
             # 2mFo-DFc: Use observed amplitudes with calculated phases
             two_mfo_dfc_amp = 2.0 * F_obs - F_calc_amp
+            two_mfo_dfc_amp[~mask] = 0.0  # Zero out reflections outside mask
             two_mfo_dfc_phase = phases
             
             # mFo-DFc: Difference map
             mfo_dfc_complex = F_obs * np.exp(1j * np.deg2rad(phases)) - fcalc_np
+            mfo_dfc_complex[~mask] = 0.0  # Zero out reflections outside mask
             mfo_dfc_amp = np.abs(mfo_dfc_complex)
             mfo_dfc_phase = np.angle(mfo_dfc_complex, deg=True)
             

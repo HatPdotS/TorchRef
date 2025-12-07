@@ -24,7 +24,7 @@ class Model(DebugMixin, nn.Module):
     including coordinates, B-factors, anisotropic displacement parameters,
     and occupancies. It supports both empty initialization for state_dict
     loading and file-based initialization from PDB/CIF files.
-
+    
     Parameters
     ----------
     dtype_float : torch.dtype, optional
@@ -1189,3 +1189,216 @@ class Model(DebugMixin, nn.Module):
             print(f"Created Model from state_dict: {n_atoms} atoms")
         
         return instance
+
+    def get_selection_mask(self, selection: str) -> torch.Tensor:
+        """
+        Return a boolean mask for atoms matching a Phenix-style selection.
+
+        This is a convenience method that wraps parse_phenix_selection() to
+        return a mask that can be used directly with MixedTensor.set() or
+        other operations requiring atom selection.
+
+        Parameters
+        ----------
+        selection : str
+            Phenix-style selection string. Supports:
+            - chain <id>: Select by chain (e.g., "chain A")
+            - resseq <num>: Select by residue number (e.g., "resseq 10")
+            - resseq <start>:<end>: Select residue range (e.g., "resseq 10:20")
+            - resname <name>: Select by residue name (e.g., "resname ALA")
+            - name <atom>: Select by atom name (e.g., "name CA")
+            - element <elem>: Select by element (e.g., "element C")
+            - altloc <id>: Select by alternate location (e.g., "altloc A")
+            - all: Select all atoms
+            - not <selection>: Negate selection
+            - <sel1> and <sel2>: Intersection
+            - <sel1> or <sel2>: Union
+            - Parentheses for grouping
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean tensor of shape (n_atoms,) where True indicates selected atoms.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been initialized.
+        ValueError
+            If selection syntax is invalid.
+
+        Examples
+        --------
+        >>> model = Model().load_pdb('structure.pdb')
+        >>> # Get mask for chain A
+        >>> mask = model.get_selection_mask("chain A")
+        >>> # Use mask to update coordinates
+        >>> new_coords = model.xyz()[mask] + translation
+        >>> model.xyz.set(new_coords, mask)
+        >>> # Get mask for backbone atoms
+        >>> backbone_mask = model.get_selection_mask("name CA or name C or name N or name O")
+        >>> # Complex selection with parentheses
+        >>> mask = model.get_selection_mask("chain A and (resname ALA or resname GLY)")
+        """
+        from torchref.utils.utils import parse_phenix_selection
+        
+        if not self.initialized:
+            raise RuntimeError("Cannot get selection mask from an uninitialized Model. Load data first.")
+        
+        return parse_phenix_selection(selection, self.pdb)
+    
+    def select(self, selection: str) -> 'Model':
+        """
+        Return a new Model containing only atoms matching the Phenix-style selection.
+
+        Creates an independent copy of the model containing only the selected atoms.
+        All tensor data (coordinates, B-factors, occupancies, etc.) and metadata
+        are properly subsetted.
+
+        Parameters
+        ----------
+        selection : str
+            Phenix-style selection string. Supports:
+            - chain <id>: Select by chain (e.g., "chain A")
+            - resseq <num>: Select by residue number (e.g., "resseq 10")
+            - resseq <start>:<end>: Select residue range (e.g., "resseq 10:20")
+            - resname <name>: Select by residue name (e.g., "resname ALA")
+            - name <atom>: Select by atom name (e.g., "name CA")
+            - element <elem>: Select by element (e.g., "element C")
+            - altloc <id>: Select by alternate location (e.g., "altloc A")
+            - all: Select all atoms
+            - not <selection>: Negate selection
+            - <sel1> and <sel2>: Intersection
+            - <sel1> or <sel2>: Union
+            - Parentheses for grouping
+
+        Returns
+        -------
+        Model
+            New instance of the same class containing only selected atoms.
+            If called on a subclass, returns an instance of that subclass.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been initialized.
+        ValueError
+            If selection syntax is invalid or no atoms are selected.
+
+        Examples
+        --------
+        >>> model = Model().load_pdb('structure.pdb')
+        >>> # Select chain A
+        >>> chain_a = model.select("chain A")
+        >>> # Select backbone atoms
+        >>> backbone = model.select("name CA or name C or name N or name O")
+        >>> # Select residues 10-50 of chain B
+        >>> region = model.select("chain B and resseq 10:50")
+        >>> # Select all except water
+        >>> no_water = model.select("not resname HOH")
+        >>> # Complex selection with parentheses
+        >>> complex_sel = model.select("chain A and (resname ALA or resname GLY)")
+        
+        Notes
+        -----
+        This method preserves the class type, so subclasses will return
+        instances of themselves, not the base Model class.
+        """
+        from torchref.utils.utils import parse_phenix_selection
+        
+        if not self.initialized:
+            raise RuntimeError("Cannot select from an uninitialized Model. Load data first.")
+        
+        # Parse selection and get boolean mask
+        selection_mask = parse_phenix_selection(selection, self.pdb)
+        
+        # Check that at least one atom is selected
+        n_selected = selection_mask.sum().item()
+        if n_selected == 0:
+            raise ValueError(f"Selection '{selection}' matched no atoms.")
+        
+        # Get indices of selected atoms
+        selected_indices = torch.where(selection_mask)[0]
+        
+        # Create new instance of the SAME class (preserves subclass type)
+        # Use type(self) to ensure subclasses return their own type
+        selected_model = type(self)(
+            dtype_float=self.dtype_float,
+            verbose=self.verbose,
+            device=self.device,
+            strip_H=self.strip_H
+        )
+        
+        # Subset PDB DataFrame and reset index
+        # Convert to numpy for indexing, then back to tensor indices
+        mask_np = selection_mask.cpu().numpy()
+        selected_model.pdb = self.pdb.loc[mask_np].copy()
+        selected_model.pdb = selected_model.pdb.reset_index(drop=True)
+        selected_model.pdb['index'] = selected_model.pdb.index.to_numpy(dtype=int)
+        
+        # Copy scalar attributes
+        selected_model.spacegroup = self.spacegroup
+        selected_model.spacegroup_gemmi = self.spacegroup_gemmi
+        selected_model.spacegroup_function = sym.Symmetry(self.spacegroup) if self.spacegroup else None
+        
+        # Copy cell and matrices (these are same for all atoms)
+        if self.cell is not None:
+            selected_model.register_buffer('cell', self.cell.clone())
+        if hasattr(self, 'inv_fractional_matrix') and self.inv_fractional_matrix is not None:
+            selected_model.register_buffer('inv_fractional_matrix', self.inv_fractional_matrix.clone())
+        if hasattr(self, 'fractional_matrix') and self.fractional_matrix is not None:
+            selected_model.register_buffer('fractional_matrix', self.fractional_matrix.clone())
+        if hasattr(self, 'recB') and self.recB is not None:
+            selected_model.register_buffer('recB', self.recB.clone())
+        
+        # Subset per-atom buffers
+        if hasattr(self, 'aniso_flag') and self.aniso_flag is not None:
+            selected_model.register_buffer('aniso_flag', self.aniso_flag[selection_mask].clone())
+        
+        # Create new MixedTensors with selected atoms
+        selected_model.xyz = MixedTensor(
+            self.xyz()[selection_mask].clone().detach(),
+            refinable_mask=self.xyz.refinable_mask[selection_mask] if self.xyz.refinable_mask is not None else None,
+            name='xyz'
+        )
+        
+        selected_model.b = PositiveMixedTensor(
+            self.b()[selection_mask].clone().detach(),
+            refinable_mask=self.b.refinable_mask[selection_mask] if self.b.refinable_mask is not None else None,
+            name='b_factor'
+        )
+        
+        selected_model.u = MixedTensor(
+            self.u()[selection_mask].clone().detach(),
+            refinable_mask=self.u.refinable_mask[selection_mask] if self.u.refinable_mask is not None else None,
+            name='aniso_U'
+        )
+        
+        # Handle occupancy (needs special handling due to sharing groups)
+        initial_occ = self.occupancy()[selection_mask].clone().detach()
+        sharing_groups, altloc_groups, refinable_mask = selected_model._create_occupancy_groups(
+            selected_model.pdb, initial_occ
+        )
+        selected_model.occupancy = OccupancyTensor(
+            initial_values=initial_occ,
+            sharing_groups=sharing_groups,
+            altloc_groups=altloc_groups,
+            refinable_mask=refinable_mask,
+            dtype=self.dtype_float,
+            device=self.device,
+            name='occupancy'
+        )
+        
+        # Set default masks for the selected model
+        selected_model.set_default_masks()
+        
+        # Register alternative conformations for the selected subset
+        selected_model.register_alternative_conformations()
+        
+        # Mark as initialized
+        selected_model.initialized = True
+        
+        if self.verbose > 0:
+            print(f"Selected {n_selected}/{len(self.pdb)} atoms with '{selection}'")
+
+        return selected_model

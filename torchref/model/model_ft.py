@@ -122,6 +122,12 @@ class ModelFT(Model):
         self.setup_grid()
         return self
 
+    def select(self,selection):
+        selection = super().select(selection)
+        selection._build_parametrization()
+        selection.setup_grid()
+        return selection
+
     def load_cif(self, filename):
         """
         Load a CIF file and initialize the model with FT-specific setup.

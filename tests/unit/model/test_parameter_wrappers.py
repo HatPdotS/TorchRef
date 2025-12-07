@@ -136,6 +136,112 @@ class TestMixedTensorDeviceHandling:
         assert result.device.type == 'cuda'
 
 
+class TestMixedTensorSet:
+    """Tests for MixedTensor.set() method."""
+
+    @pytest.mark.unit
+    def test_set_1d_tensor_basic(self):
+        """Test set() on 1D tensor with basic mask."""
+        from torchref.model.parameter_wrappers import MixedTensor
+        
+        t = MixedTensor(torch.arange(10, dtype=torch.float32), name='test')
+        mask = torch.tensor([False, False, True, True, True, False, False, False, False, False])
+        new_values = torch.tensor([100.0, 200.0, 300.0])
+        
+        t.set(new_values, mask)
+        result = t()
+        
+        assert result[2] == 100.0
+        assert result[3] == 200.0
+        assert result[4] == 300.0
+        # Unchanged values
+        assert result[0] == 0.0
+        assert result[1] == 1.0
+
+    @pytest.mark.unit
+    def test_set_2d_tensor_xyz(self, random_coordinates):
+        """Test set() on 2D tensor (xyz-like coordinates)."""
+        from torchref.model.parameter_wrappers import MixedTensor
+        
+        xyz = MixedTensor(torch.randn(5, 3), name='xyz')
+        mask = torch.tensor([True, False, True, False, False])
+        new_coords = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        
+        xyz.set(new_coords, mask)
+        result = xyz()
+        
+        assert torch.allclose(result[0], torch.tensor([1.0, 2.0, 3.0]))
+        assert torch.allclose(result[2], torch.tensor([4.0, 5.0, 6.0]))
+
+    @pytest.mark.unit
+    def test_set_updates_refinable_params(self):
+        """Test that set() correctly updates refinable_params."""
+        from torchref.model.parameter_wrappers import MixedTensor
+        
+        refinable_mask = torch.tensor([True, True, False, False, False])
+        t = MixedTensor(torch.arange(5, dtype=torch.float32), refinable_mask=refinable_mask, name='test')
+        
+        # Original refinable params should be [0, 1]
+        assert t.refinable_params[0].item() == 0.0
+        assert t.refinable_params[1].item() == 1.0
+        
+        # Update the first (refinable) element
+        mask = torch.tensor([True, False, False, False, False])
+        t.set(torch.tensor([99.0]), mask)
+        
+        # After set(), refinable_params should reflect the update
+        assert t.refinable_params[0].item() == 99.0
+        assert t.refinable_params[1].item() == 1.0
+
+    @pytest.mark.unit
+    def test_set_wrong_mask_shape_raises(self):
+        """Test that set() raises ValueError for wrong mask shape."""
+        from torchref.model.parameter_wrappers import MixedTensor
+        
+        t = MixedTensor(torch.arange(10, dtype=torch.float32), name='test')
+        
+        with pytest.raises(ValueError, match="Mask shape"):
+            wrong_mask = torch.tensor([True, False, True])  # Wrong size
+            t.set(torch.tensor([1.0, 2.0]), wrong_mask)
+
+    @pytest.mark.unit
+    def test_set_wrong_values_shape_raises(self):
+        """Test that set() raises ValueError for wrong values shape."""
+        from torchref.model.parameter_wrappers import MixedTensor
+        
+        t = MixedTensor(torch.arange(10, dtype=torch.float32), name='test')
+        mask = torch.tensor([True, True, False, False, False, False, False, False, False, False])
+        
+        with pytest.raises(ValueError, match="Values shape"):
+            wrong_values = torch.tensor([1.0, 2.0, 3.0])  # 3 values for 2 selected
+            t.set(wrong_values, mask)
+
+    @pytest.mark.unit
+    def test_set_2d_mask_raises(self):
+        """Test that set() raises ValueError for 2D mask."""
+        from torchref.model.parameter_wrappers import MixedTensor
+        
+        t = MixedTensor(torch.arange(10, dtype=torch.float32), name='test')
+        
+        with pytest.raises(ValueError, match="Mask"):
+            wrong_mask = torch.tensor([[True, False]])  # 2D mask
+            t.set(torch.tensor([1.0]), wrong_mask)
+
+    @pytest.mark.unit
+    def test_set_preserves_requires_grad(self):
+        """Test that set() preserves the requires_grad attribute."""
+        from torchref.model.parameter_wrappers import MixedTensor
+        
+        t = MixedTensor(torch.arange(5, dtype=torch.float32), requires_grad=True, name='test')
+        assert t.refinable_params.requires_grad is True
+        
+        mask = torch.tensor([True, False, False, False, False])
+        t.set(torch.tensor([99.0]), mask)
+        
+        # requires_grad should still be True after set()
+        assert t.refinable_params.requires_grad is True
+
+
 class TestOccupancyTensor:
     """Tests for OccupancyTensor (constrained occupancy handling)."""
 
@@ -179,3 +285,54 @@ class TestPositiveMixedTensor:
         result = pos_tensor()
         
         assert torch.all(result > 0)
+
+    @pytest.mark.unit
+    def test_positive_mixed_tensor_set_basic(self):
+        """Test set() on PositiveMixedTensor."""
+        from torchref.model.parameter_wrappers import PositiveMixedTensor
+        
+        # Initial B-factors
+        initial_b = torch.tensor([20.0, 25.0, 30.0, 35.0, 40.0])
+        t = PositiveMixedTensor(initial_b, name='b_factors')
+        
+        # Set first two B-factors to 50.0
+        mask = torch.tensor([True, True, False, False, False])
+        new_values = torch.tensor([50.0, 50.0])
+        t.set(new_values, mask)
+        
+        result = t()
+        # Check that values are close (not exact due to log-space transformation)
+        assert torch.allclose(result[:2], torch.tensor([50.0, 50.0]), rtol=0.01)
+        # Other values should be unchanged (approximately)
+        assert result[2] > 25.0 and result[2] < 35.0
+
+    @pytest.mark.unit
+    def test_positive_mixed_tensor_set_non_positive_raises(self):
+        """Test that set() raises ValueError for non-positive values."""
+        from torchref.model.parameter_wrappers import PositiveMixedTensor
+        
+        t = PositiveMixedTensor(torch.tensor([20.0, 25.0, 30.0]), name='b_factors')
+        
+        with pytest.raises(ValueError, match="positive"):
+            mask = torch.tensor([True, False, False])
+            t.set(torch.tensor([0.0]), mask)  # Zero is not positive
+
+    @pytest.mark.unit
+    def test_positive_mixed_tensor_set_updates_refinable_params(self):
+        """Test that set() correctly updates refinable_params in PositiveMixedTensor."""
+        from torchref.model.parameter_wrappers import PositiveMixedTensor
+        
+        refinable_mask = torch.tensor([True, True, False, False, False])
+        t = PositiveMixedTensor(
+            torch.tensor([20.0, 25.0, 30.0, 35.0, 40.0]),
+            refinable_mask=refinable_mask, 
+            name='b_factors'
+        )
+        
+        # Update the first (refinable) element
+        mask = torch.tensor([True, False, False, False, False])
+        t.set(torch.tensor([100.0]), mask)
+        
+        # After set(), output should be close to 100.0
+        result = t()
+        assert torch.allclose(result[0], torch.tensor(100.0), rtol=0.01)

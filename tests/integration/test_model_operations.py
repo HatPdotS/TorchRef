@@ -337,3 +337,134 @@ class TestModelGradients:
         
         assert xyz.grad is not None
         assert xyz.grad.shape == xyz.shape
+
+
+class TestModelGetSelectionMask:
+    """Tests for Model.get_selection_mask() method."""
+
+    @pytest.mark.integration
+    def test_get_selection_mask_chain(self, sample_cif_file):
+        """Test selection mask for chain selection."""
+        from torchref.model.model import Model
+        
+        model = Model(verbose=0)
+        model.load_cif(str(sample_cif_file))
+        
+        chains = model.pdb['chainid'].unique()
+        if len(chains) > 0:
+            chain_id = chains[0]
+            mask = model.get_selection_mask(f"chain {chain_id}")
+            
+            assert mask.dtype == torch.bool
+            assert mask.shape[0] == len(model.pdb)
+            expected_count = (model.pdb['chainid'] == chain_id).sum()
+            assert mask.sum().item() == expected_count
+
+    @pytest.mark.integration
+    def test_get_selection_mask_resseq_range(self, sample_cif_file):
+        """Test selection mask for residue range selection."""
+        from torchref.model.model import Model
+        
+        model = Model(verbose=0)
+        model.load_cif(str(sample_cif_file))
+        
+        mask = model.get_selection_mask("resseq 1:10")
+        
+        assert mask.dtype == torch.bool
+        assert mask.shape[0] == len(model.pdb)
+        # At least one atom should be selected
+        assert mask.sum().item() > 0
+
+    @pytest.mark.integration
+    def test_get_selection_mask_atom_name(self, sample_cif_file):
+        """Test selection mask for atom name selection."""
+        from torchref.model.model import Model
+        
+        model = Model(verbose=0)
+        model.load_cif(str(sample_cif_file))
+        
+        mask = model.get_selection_mask("name CA")
+        
+        assert mask.dtype == torch.bool
+        assert mask.shape[0] == len(model.pdb)
+        expected_count = (model.pdb['name'].str.upper() == 'CA').sum()
+        assert mask.sum().item() == expected_count
+
+    @pytest.mark.integration
+    def test_get_selection_mask_complex_selection(self, sample_cif_file):
+        """Test selection mask with complex selection syntax."""
+        from torchref.model.model import Model
+        
+        model = Model(verbose=0)
+        model.load_cif(str(sample_cif_file))
+        
+        # Backbone atoms in residues 1-10
+        mask = model.get_selection_mask("resseq 1:10 and (name CA or name C or name N or name O)")
+        
+        assert mask.dtype == torch.bool
+        assert mask.shape[0] == len(model.pdb)
+        # Should select some atoms
+        assert mask.sum().item() > 0
+
+    @pytest.mark.integration
+    def test_get_selection_mask_invalid_syntax_raises(self, sample_cif_file):
+        """Test that invalid selection syntax raises ValueError."""
+        from torchref.model.model import Model
+        
+        model = Model(verbose=0)
+        model.load_cif(str(sample_cif_file))
+        
+        with pytest.raises(ValueError):
+            model.get_selection_mask("invalid_keyword xyz")
+
+
+class TestModelSetWithSelection:
+    """Tests for using MixedTensor.set() with Model.get_selection_mask()."""
+
+    @pytest.mark.integration
+    def test_set_xyz_with_selection(self, sample_cif_file):
+        """Test setting coordinates using a selection mask."""
+        from torchref.model.model import Model
+        
+        model = Model(verbose=0)
+        model.load_cif(str(sample_cif_file))
+        
+        # Get mask for first 5 residues
+        mask = model.get_selection_mask("resseq 1:5")
+        n_selected = mask.sum().item()
+        
+        if n_selected > 0:
+            # Store original coords
+            original_coords = model.xyz()[mask].clone()
+            
+            # Create new coords with a shift
+            shift = torch.tensor([1.0, 0.0, 0.0])
+            new_coords = original_coords + shift
+            
+            # Set the new coordinates
+            model.xyz.set(new_coords, mask)
+            
+            # Verify the update
+            updated_coords = model.xyz()[mask]
+            assert torch.allclose(updated_coords, original_coords + shift)
+
+    @pytest.mark.integration
+    def test_set_b_factors_with_selection(self, sample_cif_file):
+        """Test setting B-factors using a selection mask."""
+        from torchref.model.model import Model
+        
+        model = Model(verbose=0)
+        model.load_cif(str(sample_cif_file))
+        
+        # Get mask for CA atoms
+        mask = model.get_selection_mask("name CA")
+        n_selected = mask.sum().item()
+        
+        if n_selected > 0:
+            # Set all CA B-factors to 30.0
+            new_b = torch.ones(n_selected) * 30.0
+            model.b.set(new_b, mask)
+            
+            # Verify the update
+            updated_b = model.b()[mask]
+            assert torch.allclose(updated_b, torch.ones(n_selected) * 30.0)

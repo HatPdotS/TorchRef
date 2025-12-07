@@ -30,17 +30,20 @@ torchref-refine = "torchref.cli.refine:main"
 torchref-refine-screened = "torchref.cli.refine_screened:main"
 
 [project.optional-dependencies]
-crystallography = [
-    "cctbx>=2021.1",
-    "iotbx>=2021.1",
-]
+
 dev = [
     "pytest>=6.0.0",
     "pytest-cov>=2.12.0",
     "black>=21.5b2",
     "isort>=5.9.0",
-    "flake8>=3.9.0",
-    "cctbx"
+    "iotbx>=2021.1",
+    "flake8>=3.9.0"
+]
+
+docs = [
+    "sphinx>=4.0.0",
+    "sphinx-rtd-theme>=1.0.0",
+    "numpydoc>=1.1.0",
 ]
 
 [tool.setuptools]

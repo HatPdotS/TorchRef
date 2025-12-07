@@ -1,10 +1,8 @@
-from typing import Any, Optional, Dict
-
+from typing import Any, Dict
 
 from torchref.io.Data import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torch.nn import Module as nnModule
-from torch.nn.modules.module import _IncompatibleKeys
 import torch
 from torchref.restraints.restraints import Restraints
 from torchref.scaling.scaler import Scaler
@@ -316,9 +314,9 @@ class Refinement(DebugMixin, nnModule):
         if not hasattr(self, 'scaler'):
             self.setup_scaler()
         self.scaler.initialize()
-        self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=4.0)
+        self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
         self.scaler.refine_lbfgs()
-        self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=4.0)
+        self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
 
     def setup_scaler(self):
         self.scaler = Scaler(self.model, self.reflection_data, nbins=self.nbins, verbose=self.verbose, device=self.device)

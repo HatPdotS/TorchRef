@@ -197,6 +197,7 @@ class Restraints(DebugMixin, Module):
         # origin: 'intra', 'peptide', 'disulfide', 'phi', 'psi', 'omega', etc.
         # property: 'indices', 'references', 'sigmas', 'periods' (for torsions)
         # For planes: origin is atom count like '3_atoms', '4_atoms', etc.
+        
         self.restraints = {
             'bond': {},
             'angle': {},

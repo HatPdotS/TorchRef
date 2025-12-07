@@ -266,6 +266,8 @@ class SolventModel(DebugMixin, nn.Module):
                 n_solvent_voxels = torch.sum(self.solvent_mask).item()
                 total_voxels = self.solvent_mask.numel()
                 print(f"Total solvent voxels: {n_solvent_voxels} / {total_voxels} ({100.0 * n_solvent_voxels / total_voxels:.2f}%)")
+        
+        assert torch.isfinite(self.solvent_mask.float()).all(), "Non-finite values in solvent mask"
         return self.solvent_mask
 
     def update_solvent(self):
@@ -316,6 +318,8 @@ class SolventModel(DebugMixin, nn.Module):
         mask_smoothed = mask_smoothed.squeeze(0).squeeze(0)
 
         self.register_buffer("mask_smoothed", mask_smoothed)
+
+        assert torch.isfinite(self.mask_smoothed).all(), "Non-finite values in solvent mask"
         return self.mask_smoothed
 
     def get_rec_solvent(self, hkl):
@@ -337,8 +341,9 @@ class SolventModel(DebugMixin, nn.Module):
         """
 
         assert hasattr(self, 'mask_smoothed'), 'Smoothed solvent mask not computed. Call smooth_solvent_mask() first.'
-
-        return extract_structure_factor_from_grid(ifft(self.mask_smoothed), hkl).detach()
+        fsol = extract_structure_factor_from_grid(ifft(self.mask_smoothed), hkl).detach()
+        assert torch.isfinite(fsol).all(), "Non-finite values in solvent structure factors"
+        return fsol
 
     def forward(self, hkl, update_fsol=False, F_protein=None):
         """
@@ -400,10 +405,6 @@ class SolventModel(DebugMixin, nn.Module):
         
         # Phase handling
         if self.optimize_phase and F_protein is not None:
-            # Blend between mask phases and protein phases
-            # phase_offset = 0: use mask phases entirely
-            # phase_offset = π: invert relative to protein (Babinet's principle)
-            # This allows the optimizer to find the best phase relationship
             f_mask_amp = torch.abs(f_sol)
             mask_phases = torch.angle(f_sol)
             protein_phases = torch.angle(F_protein)

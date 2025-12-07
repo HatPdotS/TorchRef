@@ -1446,7 +1446,7 @@ class RestraintCIFReader:
         """
         compounds = []
         
-        # Check for comp_list
+        # Check for comp_list (monomer library format)
         if 'comp_list' in self.cif.data:
             df = self.cif.data['comp_list']
             if 'id' in df.columns:
@@ -1454,7 +1454,15 @@ class RestraintCIFReader:
             elif '_chem_comp.id' in df.columns:
                 compounds = df['_chem_comp.id'].tolist()
         
-        # If no comp_list, look for single compound definition
+        # Check for chem_comp (eLBOW/phenix format)
+        if not compounds and 'chem_comp' in self.cif.data:
+            df = self.cif.data['chem_comp']
+            if '_chem_comp.id' in df.columns and len(df) > 0:
+                compounds = df['_chem_comp.id'].tolist()
+            elif 'id' in df.columns and len(df) > 0:
+                compounds = df['id'].tolist()
+        
+        # If no comp_list/chem_comp, look for single compound definition
         if not compounds:
             for key in self.cif.data.keys():
                 if key.startswith('comp_') and key != 'comp_list':
@@ -1736,7 +1744,18 @@ class RestraintCIFReader:
             return df
         
         # Try different possible column names for compound ID
-        id_cols = ['comp_id', '_chem_comp.id', 'id']
+        # Include all naming conventions: monomer library, eLBOW/phenix, short forms
+        id_cols = [
+            'comp_id', 
+            '_chem_comp.id', 
+            '_chem_comp_bond.comp_id',
+            '_chem_comp_angle.comp_id', 
+            '_chem_comp_tor.comp_id',
+            '_chem_comp_atom.comp_id',
+            '_chem_comp_plane_atom.comp_id',
+            '_chem_comp_chir.comp_id',
+            'id'
+        ]
         
         for col in id_cols:
             if col in df.columns:

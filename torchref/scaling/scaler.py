@@ -516,13 +516,24 @@ class Scaler(DebugMixin, nn.Module):
             self.parameters(),
             lr=lr,
             max_iter=max_iter,
-            history_size=history_size
+            history_size=history_size,
+            line_search_fn='strong_wolfe'
+
         )
         
         def closure():
             optimizer.zero_grad()
-            fcalc_scaled = self.forward(fcalc)
-            loss = nll_xray(fobs, fcalc_scaled, sigma)
+            try: fcalc_scaled = self.forward(fcalc)
+            except RuntimeError as e:
+                if self.verbose > 0:
+                    import warnings
+                    warnings.warn("Non-finite loss encountered during scale optimization. "
+                                "LBFGS line search will reject this step and try a smaller step size.",
+                                RuntimeWarning)
+                return torch.tensor(1e10, device=loss.device, dtype=loss.dtype, requires_grad=True)
+            
+            U_penalty = torch.sum(self.U ** 2)
+            loss = nll_xray(fobs, fcalc_scaled, sigma) + U_penalty
             
             # Handle non-finite loss gracefully for LBFGS line search
             if not torch.all(torch.isfinite(loss)):

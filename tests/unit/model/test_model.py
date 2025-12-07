@@ -101,3 +101,17 @@ class TestModelDeviceHandling:
         model = Model(device=gpu_device)
         
         assert model.device.type == 'cuda'
+
+
+class TestModelGetSelectionMask:
+    """Tests for Model.get_selection_mask() method."""
+
+    @pytest.mark.unit
+    def test_get_selection_mask_uninitialized_raises(self):
+        """Test that get_selection_mask() raises RuntimeError on uninitialized model."""
+        from torchref.model.model import Model
+        
+        model = Model()
+        
+        with pytest.raises(RuntimeError, match="uninitialized"):
+            model.get_selection_mask("chain A")
