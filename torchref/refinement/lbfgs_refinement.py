@@ -105,7 +105,7 @@ class LBFGSRefinement(Refinement):
 
         def closure():
             optimizer.zero_grad()
-            loss = self.adp_loss() * self.effective_weights['adp'] + self.xray_loss() * self.effective_weights['xray']
+            loss = self.component_weighting.total_loss()
             loss.backward()
             return loss
 
@@ -133,7 +133,7 @@ class LBFGSRefinement(Refinement):
 
         def closure():
             optimizer.zero_grad()
-            loss = self.restraints_loss() * self.effective_weights['restraints'] + self.xray_loss() * self.effective_weights['xray']
+            loss = self.component_weighting.total_loss()
             loss.backward()
             return loss
 
@@ -172,7 +172,7 @@ class LBFGSRefinement(Refinement):
         
         def closure():
             optimizer.zero_grad()
-            loss = self.restraints_loss() * restraint_weight + self.xray_loss()
+            loss = self.component_weighting.total_loss()
             loss.backward()
             return loss
         
@@ -238,7 +238,7 @@ class LBFGSRefinement(Refinement):
         
         def closure():
             optimizer.zero_grad()
-            loss = self.adp_loss() * adp_weight + self.xray_loss()
+            loss = self.component_weighting.total_loss()
             loss.backward()
             return loss
         
@@ -672,7 +672,7 @@ class LBFGSRefinement(Refinement):
 
         def closure():
             optimizer.zero_grad()
-            loss = self.adp_loss()
+            loss = self.component_weighting.total_loss()
             loss.backward()
             return loss
 
@@ -763,9 +763,10 @@ class LBFGSRefinement(Refinement):
         
         def closure():
             optimizer.zero_grad()
-            loss = loss_fn()
+            loss = self.component_weighting.total_loss()
             loss.backward()
             return loss
+        
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=lr
@@ -835,9 +836,7 @@ class LBFGSRefinement(Refinement):
 
         def closure():
             optimizer.zero_grad()
-            loss = (self.restraints_loss() * self.effective_weights['restraints'] +
-                    self.adp_loss() * self.effective_weights['adp'] +
-                    self.xray_loss() * self.effective_weights['xray'])
+            loss = self.component_weighting.total_loss()
             loss.backward()
             return loss
 
@@ -886,7 +885,8 @@ class LBFGSRefinement(Refinement):
                     'weight': None
                 }
             }
-            self.update_effective_weights(cycle=cycle)
+            # self.update_effective_weights(cycle=cycle)
+            self.component_weighting.update_weights()
             
             if self.verbose > 0:
                 print(f"\n{'='*60}")

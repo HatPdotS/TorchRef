@@ -10,11 +10,11 @@ from torchref.utils.debug_utils import DebugMixin
 
 # Target system imports
 from torchref.refinement.targets import (
-    Target,
-    TotalGeometryTarget,
-    TotalADPTarget,
-    create_xray_target,
+    Target,create_xray_target
 )
+from torchref.refinement.combined_targets import (
+    TotalGeometryTarget,
+    TotalADPTarget,)
 
 class Refinement(DebugMixin, nnModule):
     """
@@ -167,7 +167,8 @@ class Refinement(DebugMixin, nnModule):
             # Initialize weights
             self.update_effective_weights(phase='all', cycle=0)
         except Exception as e:
-            self.debug_on_error(e)
+            if self.verbose > 1:
+                self.debug_on_error(e)
             raise e
     
     def _init_targets(self, xray_mode: str = 'ml'):
@@ -189,11 +190,11 @@ class Refinement(DebugMixin, nnModule):
         
         self.adp_target = TotalADPTarget(
             self,
-            weights={'locality': 1.0},  # Override locality from default 0.5 to 1.0
-            target_log_sigma=0.25,  # Target σ for log(B) - match Phenix
             verbose=self.verbose
         )
         
+        self.setup_component_weighting()
+
         if self.verbose > 0:
             print(f"Initialized targets with xray_mode='{xray_mode}'")
     
@@ -393,10 +394,6 @@ class Refinement(DebugMixin, nnModule):
             Tuple of (work_nll, test_nll) tensors.
         """
         return self.xray_target_work(), self.xray_target_test()
-
-    # =========================================================================
-    # Target-based Loss Methods (new pattern - instantiate once, evaluate each iteration)
-    # =========================================================================
     
     def xray_loss_work(self) -> torch.Tensor:
         """
@@ -429,7 +426,7 @@ class Refinement(DebugMixin, nnModule):
         torch.Tensor
             Bond length NLL loss.
         """
-        return self.geometry_target.get_component_losses()['bond']
+        return self.geometry_target.target_losses()['bond_target']
     
     def angle_loss(self) -> torch.Tensor:
         """
@@ -440,7 +437,7 @@ class Refinement(DebugMixin, nnModule):
         torch.Tensor
             Angle NLL loss.
         """
-        return self.geometry_target.get_component_losses()['angle']
+        return self.geometry_target.target_losses()['angle_target']
     
     def torsion_loss(self) -> torch.Tensor:
         """
@@ -451,7 +448,7 @@ class Refinement(DebugMixin, nnModule):
         torch.Tensor
             Torsion angle NLL loss.
         """
-        return self.geometry_target.get_component_losses()['torsion']
+        return self.geometry_target.target_losses()['torsion_target']
     
     def geometry_loss(self) -> torch.Tensor:
         """
@@ -478,6 +475,10 @@ class Refinement(DebugMixin, nnModule):
         restraints = self.geometry_loss()
         total_loss = self.effective_weights['xray'] * xray_work + self.effective_weights['restraints'] * restraints
         return total_loss, xray_work, restraints, xray_test
+
+    def setup_component_weighting(self):
+        from torchref.refinement.component_weighting import ComponentWeighting
+        self.component_weighting = ComponentWeighting(self)
 
     def xray_loss(self):
         """
@@ -604,24 +605,25 @@ class Refinement(DebugMixin, nnModule):
         
         print()
         
-        # Geometry metrics
-        geom_keys = [
-            ('geom_bond_rmsd', 'Bond RMSD (Å)', '12.4f'),
-            ('geom_bond_rms_z', 'Bond RMS-Z', '12.3f'),
-            ('geom_bond_loss', 'Bond loss', '12.4f'),
-            ('geom_angle_rmsd', 'Angle RMSD (°)', '12.2f'),
-            ('geom_angle_rms_z', 'Angle RMS-Z', '12.3f'),
-            ('geom_angle_loss', 'Angle loss', '12.4f'),
-            ('geom_torsion_rmsd', 'Torsion RMSD (°)', '12.2f'),
-            ('geom_torsion_loss', 'Torsion loss', '12.4f'),
-            ('geom_plane_rmsd', 'Planarity RMSD (Å)', '12.4f'),
-            ('geom_chiral_rmsd', 'Chirality RMSD (Å³)', '12.3f'),
-            ('geom_vdw_n_clashes', 'VDW clashes', '12.0f'),
-            ('geom_total_loss', 'Geometry total loss', '12.4f'),
-        ]
+        # Geometry metrics - dynamically extract from before/after dicts
+        geom_keys = [k for k in set(before.keys()) | set(after.keys()) if k.startswith('geom_')]
+        # Sort keys for consistent output: total_loss first, then by target name
+        geom_keys_sorted = sorted(geom_keys, key=lambda k: (
+            0 if 'total_loss' in k else 1,
+            k
+        ))
         
-        for key, label, fmt in geom_keys:
+        for key in geom_keys_sorted:
             if key in before or key in after:
+                # Generate readable label from key
+                label = key.replace('geom_', '').replace('_target', '').replace('_', ' ').title()
+                # Use appropriate format based on key content
+                if 'loss' in key or 'rms_z' in key or 'rms_delta' in key:
+                    fmt = '12.4f'
+                elif 'n_' in key or key.endswith('_n'):
+                    fmt = '12.0f'
+                else:
+                    fmt = '12.4f'
                 b_val = before.get(key, 0)
                 a_val = after.get(key, 0)
                 print(format_row(label, b_val, a_val, fmt))
@@ -679,22 +681,27 @@ class Refinement(DebugMixin, nnModule):
         
         print()
         
-        # ADP metrics
-        adp_keys = [
-            ('adp_mean_b', '<B> (Å²)', '12.1f'),
-            ('adp_sigma_log', 'σ_log(B)', '12.4f'),
-            ('adp_target_sigma_log', 'Target σ_log', '12.4f'),
-            ('adp_lognormal_loss', 'Lognormal loss', '12.4f'),
-            ('adp_locality_loss', 'Locality loss', '12.4f'),
-            ('adp_locality_rms_dev', 'Locality RMS(Bi-Bj)', '12.2f'),
-            ('adp_mean_bi_bj', '<|Bi-Bj|> (Å²)', '12.2f'),
-            ('adp_hirshfeld_rms_dz', 'Hirshfeld RMS-ΔZ', '12.3f'),
-            ('adp_bounds_loss', 'Bounds loss', '12.4f'),
-            ('adp_total_loss', 'ADP total loss', '12.4f'),
-        ]
+        # ADP metrics - dynamically extract from before/after dicts
+        adp_keys = [k for k in set(before.keys()) | set(after.keys()) if k.startswith('adp_')]
+        # Sort keys for consistent output: total_loss first, then by target name
+        adp_keys_sorted = sorted(adp_keys, key=lambda k: (
+            0 if 'total_loss' in k else 1,
+            k
+        ))
         
-        for key, label, fmt in adp_keys:
+        for key in adp_keys_sorted:
             if key in before or key in after:
+                # Generate readable label from key
+                label = key.replace('adp_', '').replace('_target', '').replace('_', ' ').title()
+                # Use appropriate format based on key content
+                if 'loss' in key:
+                    fmt = '12.4f'
+                elif 'mean_b' in key or 'rms' in key:
+                    fmt = '12.2f'
+                elif 'sigma' in key:
+                    fmt = '12.4f'
+                else:
+                    fmt = '12.4f'
                 b_val = before.get(key, 0)
                 a_val = after.get(key, 0)
                 print(format_row(label, b_val, a_val, fmt))
