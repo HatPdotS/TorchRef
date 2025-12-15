@@ -7,6 +7,9 @@ import torch
 from torchref.restraints.restraints import Restraints
 from torchref.scaling.scaler import Scaler
 from torchref.utils.debug_utils import DebugMixin
+from torchref.utils.stats import (
+    format_stats_table
+)
 
 # Target system imports
 from torchref.refinement.targets import (
@@ -67,8 +70,7 @@ class Refinement(DebugMixin, nnModule):
     """
 
     def __init__(self, data_file: str = None, pdb: str = None, cif=None, verbose: int = 1, 
-                 max_res: float = None, device: torch.device = torch.device('cpu'), 
-                 weighter: 'LossWeightingModule' = None, nbins: int = 10):
+                 max_res: float = None, device: torch.device = torch.device('cpu'), nbins: int = 10, manual_weights: Dict[str, float] = None, component_weights: Dict[str, float] = None,):
         """
         Initialize Refinement.
 
@@ -149,23 +151,12 @@ class Refinement(DebugMixin, nnModule):
             self.scaler = Scaler(self.model, self.reflection_data, verbose=self.verbose, device=self.device, nbins=self.nbins)
             self.restraints = Restraints(self.model, cif, self.verbose)
             
-            # Loss weighting module
-            if weighter is None:
-                # Create default weighter
-                from torchref.refinement.loss_weighting import ResolutionDependentWeighting
-                self.weighter = ResolutionDependentWeighting()
-                if self.verbose > 0:
-                    print("No weighter provided, using default ResolutionDependentWeighting")
-            else:
-                self.weighter = weighter
-                if self.verbose > 0:
-                    print(f"Using loss weighting module: {type(self.weighter).__name__}")
+            self.manual_weights = manual_weights if manual_weights is not None else {}
+            self.component_weights = component_weights if component_weights is not None else {}
             
             # Initialize target functions (instantiated once, evaluated each iteration)
             self._init_targets()
             
-            # Initialize weights
-            self.update_effective_weights(phase='all', cycle=0)
         except Exception as e:
             if self.verbose > 1:
                 self.debug_on_error(e)
@@ -425,6 +416,7 @@ class Refinement(DebugMixin, nnModule):
         -------
         torch.Tensor
             Bond length NLL loss.
+            
         """
         return self.geometry_target.target_losses()['bond_target']
     
@@ -463,22 +455,19 @@ class Refinement(DebugMixin, nnModule):
 
     def loss(self):
         """
-        Compute total loss using instantiated targets.
+        Compute total loss using component_weighting.
 
         Returns
         -------
-        tuple of torch.Tensor
-            Tuple of (total_loss, xray_work, restraints, xray_test).
+        torch.Tensor
+            Total weighted loss.
         """
-        xray_work = self.xray_loss_work()
-        xray_test = self.xray_loss_test()
-        restraints = self.geometry_loss()
-        total_loss = self.effective_weights['xray'] * xray_work + self.effective_weights['restraints'] * restraints
-        return total_loss, xray_work, restraints, xray_test
+        return self.component_weighting.total_loss()
 
     def setup_component_weighting(self):
         from torchref.refinement.component_weighting import ComponentWeighting
-        self.component_weighting = ComponentWeighting(self)
+        self.get_scales()
+        self.component_weighting = ComponentWeighting(self, weights=self.manual_weights, component_weights=self.component_weights)
 
     def xray_loss(self):
         """
@@ -502,61 +491,205 @@ class Refinement(DebugMixin, nnModule):
         """
         return self.geometry_loss()
     
-    def collect_metrics(self) -> Dict[str, float]:
+    def collect_metrics(self) -> Dict[str, Any]:
         """
-        Collect all metrics from targets into a single flat dictionary.
+        Collect all metrics from component_weighting.stats().
 
         This is the standard method for gathering refinement metrics for logging.
-        Merges metrics from:
-
-        - R-factors (rwork, rfree, gap)
-        - X-ray targets (nll_work, nll_test)
-        - Geometry targets (via get_metrics())
-        - ADP targets (via get_metrics())
-        - Current weights
+        Uses the centralized component_weighting module for all statistics.
+        Returns full unfiltered stats - filtering is done at display time.
 
         Returns
         -------
         dict
-            Dictionary with all metrics as Python floats (not tensors).
+            Dictionary with all metrics (unfiltered, with StatEntry objects).
         """
         metrics = {}
         
         with torch.no_grad():
-            # R-factors
+            # R-factors (always essential)
             rwork, rfree = self.get_rfactor()
             metrics['rwork'] = rwork if isinstance(rwork, float) else rwork.item() if hasattr(rwork, 'item') else float(rwork)
             metrics['rfree'] = rfree if isinstance(rfree, float) else rfree.item() if hasattr(rfree, 'item') else float(rfree)
             metrics['rfree_gap'] = metrics['rfree'] - metrics['rwork']
             
-            # X-ray NLL
-            nll_work = self.xray_loss_work()
-            nll_test = self.xray_loss_test()
-            metrics['nll_xray_work'] = nll_work.item() if torch.is_tensor(nll_work) else nll_work
-            metrics['nll_xray_test'] = nll_test.item() if torch.is_tensor(nll_test) else nll_test
-            
-            # Geometry metrics (if target exists)
-            if hasattr(self, 'geometry_target') and self.geometry_target is not None:
-                geom_metrics = self.geometry_target.get_metrics()
-                metrics.update(geom_metrics)
-            
-            # ADP metrics (if target exists)
-            if hasattr(self, 'adp_target') and self.adp_target is not None:
-                adp_metrics = self.adp_target.get_metrics()
-                metrics.update(adp_metrics)
-            
-            # Current weights
-            if hasattr(self, 'effective_weights') and self.effective_weights:
-                for key, val in self.effective_weights.items():
-                    weight_val = val.item() if torch.is_tensor(val) else val
-                    metrics[f'weight_{key}'] = weight_val
+            # Get all stats from component_weighting (unfiltered)
+            if hasattr(self, 'component_weighting') and self.component_weighting is not None:
+                metrics['component_weighting'] = self.component_weighting.stats()
+
+            if hasattr(self, 'geometry_target'):
+                metrics['geometry'] = self.geometry_target.stats()
+            if hasattr(self, 'adp_target'):
+                metrics['adp'] = self.adp_target.stats()
         
         return metrics
     
-    def log_xyz_comparison(self, before: Dict[str, float], after: Dict[str, float], 
-                           weight: float = None):
+    def log_refinement(self, phase: str, before: Dict[str, Any], after: Dict[str, Any]):
         """
-        Log XYZ refinement comparison showing geometry metrics before/after.
+        Log refinement comparison showing metrics before/after.
+
+        Uses the refinement's verbosity level to determine detail level.
+        Filters the full stats dict based on verbosity at display time.
+
+        Parameters
+        ----------
+        phase : str
+            Refinement phase name ('XYZ', 'ADP', 'scaling', etc.).
+        before : dict
+            Metrics dict from collect_metrics() before refinement.
+        after : dict
+            Metrics dict from collect_metrics() after refinement.
+        """
+        if self.verbose < 1:
+            return
+        
+        from torchref.utils.stats import filter_stats, StatEntry
+        
+        # Filter stats based on verbosity level for display
+        before_filtered = filter_stats(before, self.verbose)
+        after_filtered = filter_stats(after, self.verbose)
+        
+        # Get weights from after stats
+        weights = after_filtered.get('component_weighting', {}).get('weights', {})
+        
+        # Get overfitting weight from after stats (need to look in unfiltered to find it)
+        overfitting_weight = 0.0
+        after_cw = after.get('component_weighting', {})
+        if 'overfitting_weighting' in after_cw:
+            ow_stats = after_cw['overfitting_weighting']
+            if isinstance(ow_stats, dict):
+                ow_val = ow_stats.get('overfitting_weight')
+                if isinstance(ow_val, StatEntry):
+                    overfitting_weight = ow_val.value
+                elif ow_val is not None:
+                    overfitting_weight = ow_val
+        
+        # Get X-ray scale weight from after stats
+        xray_scale_weight = 1.0
+        if 'xray_scale_weighting' in after_cw:
+            xsw_stats = after_cw['xray_scale_weighting']
+            if isinstance(xsw_stats, dict):
+                xsw_val = xsw_stats.get('xray_weight')
+                if isinstance(xsw_val, StatEntry):
+                    xray_scale_weight = xsw_val.value
+                elif xsw_val is not None:
+                    xray_scale_weight = xsw_val
+        
+        print(f"\n{'─'*80}")
+        print(f"  {phase} Refinement Summary")
+        print(f"  X-ray scale weight: {xray_scale_weight:.4f}", end="")
+        if overfitting_weight > 0:
+            print(f"  |  Overfitting penalty: {overfitting_weight:.3f}", end="")
+        print()  # End the line
+        print(f"{'─'*80}")
+        
+        # Header with weight column
+        print(f"\n  {'Metric':<30} {'Before':>12} {'After':>12} {'Change':>12} {'Weight':>10}")
+        print(f"  {'-'*76}")
+        
+        def format_row(label, b_val, a_val, weight=None, fmt='12.4f'):
+            delta = a_val - b_val
+            weight_str = f"{weight:>10.4f}" if weight is not None else f"{'':>10}"
+            return f"  {label:<30} {b_val:>{fmt}} {a_val:>{fmt}} {delta:>+{fmt}} {weight_str}"
+        
+        # R-factor metrics (always included)
+        for key, label in [('rwork', 'Rwork'), ('rfree', 'Rfree'), ('rfree_gap', 'Rfree-Rwork gap')]:
+            b_val = before_filtered.get(key, 0)
+            a_val = after_filtered.get(key, 0)
+            print(format_row(label, b_val, a_val))
+        
+        # X-ray NLL with weight
+        print()
+        before_xray = before_filtered.get('component_weighting', {}).get('xray', {})
+        after_xray = after_filtered.get('component_weighting', {}).get('xray', {})
+        xray_weight = weights.get('xray')
+        for key, label in [('work_nll', 'X-ray NLL (work)'), ('test_nll', 'X-ray NLL (test)')]:
+            b_val = before_xray.get(key, 0)
+            a_val = after_xray.get(key, 0)
+            # Only show weight on first X-ray row
+            w = xray_weight if key == 'work_nll' else None
+            print(format_row(label, b_val, a_val, w))
+        
+        # Geometry loss with weight (verbosity >= 1)
+        if self.verbose >= 1:
+            geom_weight = weights.get('geometry')
+            before_geom = before_filtered.get('geometry', {})
+            after_geom = after_filtered.get('geometry', {})
+            # Get total geometry loss if available
+            b_geom_total = 0.0
+            a_geom_total = 0.0
+            for target_name, target_stats in after_geom.items():
+                if isinstance(target_stats, dict):
+                    a_geom_total += target_stats.get('loss', 0)
+                    b_stats = before_geom.get(target_name, {})
+                    if isinstance(b_stats, dict):
+                        b_geom_total += b_stats.get('loss', 0)
+            if a_geom_total > 0 or b_geom_total > 0:
+                print(format_row('Geometry (total)', b_geom_total, a_geom_total, geom_weight))
+            
+            # ADP loss with weight
+            adp_weight = weights.get('adp')
+            before_adp = before_filtered.get('adp', {})
+            after_adp = after_filtered.get('adp', {})
+            # Get total ADP loss if available
+            b_adp_total = 0.0
+            a_adp_total = 0.0
+            for target_name, target_stats in after_adp.items():
+                if isinstance(target_stats, dict):
+                    a_adp_total += target_stats.get('loss', 0)
+                    b_stats = before_adp.get(target_name, {})
+                    if isinstance(b_stats, dict):
+                        b_adp_total += b_stats.get('loss', 0)
+            if a_adp_total > 0 or b_adp_total > 0:
+                print(format_row('ADP (total)', b_adp_total, a_adp_total, adp_weight))
+        
+        # Detailed component losses (verbosity >= 2)
+        if self.verbose >= 2:
+            # Geometry targets breakdown
+            before_geom = before_filtered.get('geometry', {})
+            after_geom = after_filtered.get('geometry', {})
+            if after_geom:
+                print(f"\n  Geometry breakdown:")
+                for target_name, target_stats in after_geom.items():
+                    if isinstance(target_stats, dict):
+                        loss = target_stats.get('loss', 0)
+                        b_loss = before_geom.get(target_name, {}).get('loss', 0) if isinstance(before_geom.get(target_name), dict) else 0
+                        label = '    ' + target_name.replace('_target', '').replace('_', ' ').title()
+                        print(format_row(label, b_loss, loss))
+                        
+                        # Detailed stats at verbosity >= 3
+                        if self.verbose >= 3:
+                            for stat_key, stat_val in target_stats.items():
+                                if stat_key != 'loss' and isinstance(stat_val, (int, float)):
+                                    b_stat = before_geom.get(target_name, {}).get(stat_key, 0) if isinstance(before_geom.get(target_name), dict) else 0
+                                    print(format_row(f"      {stat_key}", b_stat, stat_val))
+            
+            # ADP targets breakdown
+            before_adp = before_filtered.get('adp', {})
+            after_adp = after_filtered.get('adp', {})
+            if after_adp:
+                print(f"\n  ADP breakdown:")
+                for target_name, target_stats in after_adp.items():
+                    if isinstance(target_stats, dict):
+                        loss = target_stats.get('loss', 0)
+                        b_loss = before_adp.get(target_name, {}).get('loss', 0) if isinstance(before_adp.get(target_name), dict) else 0
+                        label = '    ' + target_name.replace('_target', '').replace('_', ' ').title()
+                        print(format_row(label, b_loss, loss))
+                        
+                        # Detailed stats at verbosity >= 3
+                        if self.verbose >= 3:
+                            for stat_key, stat_val in target_stats.items():
+                                if stat_key != 'loss' and isinstance(stat_val, (int, float)):
+                                    b_stat = before_adp.get(target_name, {}).get(stat_key, 0) if isinstance(before_adp.get(target_name), dict) else 0
+                                    print(format_row(f"      {stat_key}", b_stat, stat_val))
+        
+        print(f"{'─'*80}\n")
+    
+    def log_xyz_comparison(self, before: Dict[str, float], after: Dict[str, float], weight: float = None):
+        """
+        Log XYZ refinement comparison.
+
+        Deprecated: Use log_refinement() instead.
 
         Parameters
         ----------
@@ -565,75 +698,15 @@ class Refinement(DebugMixin, nnModule):
         after : dict
             Metrics dict from collect_metrics() after XYZ refinement.
         weight : float, optional
-            Restraint weight used.
+            Restraint weight (ignored, for backwards compatibility).
         """
-        print(f"\n{'─'*70}")
-        print(f"  XYZ Refinement Summary")
-        if weight is not None:
-            print(f"  Restraint weight: {weight:.3f}")
-        print(f"{'─'*70}")
-        
-        # R-factors
-        print(f"\n  {'Metric':<25} {'Before':>12} {'After':>12} {'Change':>12}")
-        print(f"  {'-'*61}")
-        
-        def format_row(label, b_val, a_val, fmt):
-            delta = a_val - b_val
-            # Use +/- sign format for change column
-            return f"  {label:<25} {b_val:>{fmt}} {a_val:>{fmt}} {delta:>+{fmt}}"
-        
-        # R-factor metrics
-        for key, label, fmt in [
-            ('rwork', 'Rwork', '12.4f'),
-            ('rfree', 'Rfree', '12.4f'),
-            ('rfree_gap', 'Rfree-Rwork gap', '12.4f'),
-        ]:
-            b_val = before.get(key, 0)
-            a_val = after.get(key, 0)
-            print(format_row(label, b_val, a_val, fmt))
-        
-        print()
-        
-        # X-ray loss
-        for key, label, fmt in [
-            ('nll_xray_work', 'X-ray NLL (work)', '12.4f'),
-            ('nll_xray_test', 'X-ray NLL (test)', '12.4f'),
-        ]:
-            b_val = before.get(key, 0)
-            a_val = after.get(key, 0)
-            print(format_row(label, b_val, a_val, fmt))
-        
-        print()
-        
-        # Geometry metrics - dynamically extract from before/after dicts
-        geom_keys = [k for k in set(before.keys()) | set(after.keys()) if k.startswith('geom_')]
-        # Sort keys for consistent output: total_loss first, then by target name
-        geom_keys_sorted = sorted(geom_keys, key=lambda k: (
-            0 if 'total_loss' in k else 1,
-            k
-        ))
-        
-        for key in geom_keys_sorted:
-            if key in before or key in after:
-                # Generate readable label from key
-                label = key.replace('geom_', '').replace('_target', '').replace('_', ' ').title()
-                # Use appropriate format based on key content
-                if 'loss' in key or 'rms_z' in key or 'rms_delta' in key:
-                    fmt = '12.4f'
-                elif 'n_' in key or key.endswith('_n'):
-                    fmt = '12.0f'
-                else:
-                    fmt = '12.4f'
-                b_val = before.get(key, 0)
-                a_val = after.get(key, 0)
-                print(format_row(label, b_val, a_val, fmt))
-        
-        print(f"{'─'*70}\n")
+        self.log_refinement('XYZ', before, after)
     
-    def log_adp_comparison(self, before: Dict[str, float], after: Dict[str, float],
-                           weight: float = None):
+    def log_adp_comparison(self, before: Dict[str, float], after: Dict[str, float], weight: float = None):
         """
-        Log ADP refinement comparison showing B-factor metrics before/after.
+        Log ADP refinement comparison.
+
+        Deprecated: Use log_refinement() instead.
 
         Parameters
         ----------
@@ -642,88 +715,10 @@ class Refinement(DebugMixin, nnModule):
         after : dict
             Metrics dict from collect_metrics() after ADP refinement.
         weight : float, optional
-            ADP weight used.
+            ADP weight (ignored, for backwards compatibility).
         """
-        print(f"\n{'─'*70}")
-        print(f"  ADP Refinement Summary")
-        if weight is not None:
-            print(f"  ADP weight: {weight:.3f}")
-        print(f"{'─'*70}")
-        
-        print(f"\n  {'Metric':<25} {'Before':>12} {'After':>12} {'Change':>12}")
-        print(f"  {'-'*61}")
-        
-        def format_row(label, b_val, a_val, fmt):
-            delta = a_val - b_val
-            # Use +/- sign format for change column
-            return f"  {label:<25} {b_val:>{fmt}} {a_val:>{fmt}} {delta:>+{fmt}}"
-        
-        # R-factor metrics
-        for key, label, fmt in [
-            ('rwork', 'Rwork', '12.4f'),
-            ('rfree', 'Rfree', '12.4f'),
-            ('rfree_gap', 'Rfree-Rwork gap', '12.4f'),
-        ]:
-            b_val = before.get(key, 0)
-            a_val = after.get(key, 0)
-            print(format_row(label, b_val, a_val, fmt))
-        
-        print()
-        
-        # X-ray loss
-        for key, label, fmt in [
-            ('nll_xray_work', 'X-ray NLL (work)', '12.4f'),
-            ('nll_xray_test', 'X-ray NLL (test)', '12.4f'),
-        ]:
-            b_val = before.get(key, 0)
-            a_val = after.get(key, 0)
-            print(format_row(label, b_val, a_val, fmt))
-        
-        print()
-        
-        # ADP metrics - dynamically extract from before/after dicts
-        adp_keys = [k for k in set(before.keys()) | set(after.keys()) if k.startswith('adp_')]
-        # Sort keys for consistent output: total_loss first, then by target name
-        adp_keys_sorted = sorted(adp_keys, key=lambda k: (
-            0 if 'total_loss' in k else 1,
-            k
-        ))
-        
-        for key in adp_keys_sorted:
-            if key in before or key in after:
-                # Generate readable label from key
-                label = key.replace('adp_', '').replace('_target', '').replace('_', ' ').title()
-                # Use appropriate format based on key content
-                if 'loss' in key:
-                    fmt = '12.4f'
-                elif 'mean_b' in key or 'rms' in key:
-                    fmt = '12.2f'
-                elif 'sigma' in key:
-                    fmt = '12.4f'
-                else:
-                    fmt = '12.4f'
-                b_val = before.get(key, 0)
-                a_val = after.get(key, 0)
-                print(format_row(label, b_val, a_val, fmt))
-        
-        print(f"{'─'*70}\n")
+        self.log_refinement('ADP', before, after)
     
-    def update_effective_weights(self, phase='all', cycle=0,recompute=False):
-        """
-        Update effective weights using the weighting module.
-
-        Parameters
-        ----------
-        phase : str, optional
-            Refinement phase - 'xyz', 'b', or 'all'. Default is 'all'.
-        cycle : int, optional
-            Current refinement cycle number. Default is 0.
-        recompute : bool, optional
-            Whether to recompute weights. Default is False.
-        """
-        self.effective_weights = self.weighter(refinement_obj=self,phase=phase, cycle=cycle, recompute=recompute)
-        if self.verbose > 2:
-            print(f"Updated weights via {type(self.weighter).__name__}: {self.effective_weights}")
 
     def setup_optimizer(self, **kwargs):
         from torch.optim import Adam
@@ -748,7 +743,7 @@ class Refinement(DebugMixin, nnModule):
             self.scaler.freeze()
             
             # Update weights for this cycle
-            self.update_effective_weights(phase='all', cycle=cycle)
+            self.component_weighting.update_weights()
             
             self.setup_optimizer(lr=lr[0])
             if self.verbose > 0:
@@ -758,25 +753,24 @@ class Refinement(DebugMixin, nnModule):
                     param_group['lr'] = _lr
                 for step in range(n_steps):
                     self.optimizer.zero_grad()
-                    total_loss, xray_work, restraints, xray_test = self.loss()
-                    adp_loss = self.model.adp_loss()
-                    total_loss = total_loss + adp_loss * self.effective_weights.get('adp', 0.0)
+                    total_loss = self.component_weighting.total_loss()
                     if torch.isnan(total_loss):
                         raise ValueError("NaN encountered in total loss during refinement.")
                     total_loss.backward()
                     self.optimizer.step()
                     if self.verbose > 2:
-                        print(f"  Step {step+1}/{n_steps}, Total Loss: {total_loss.item():.4f}, XRay Work NLL: {xray_work.item():.4f}, Restraints Loss: {restraints.item():.4f}, XRay Test NLL: {xray_test.item():.4f}")
+                        print(f"  Step {step+1}/{n_steps}, Total Loss: {total_loss.item():.4f}")
                 
                 # Update weights after each learning rate step
-                self.update_effective_weights(phase='all', cycle=cycle)
+                self.component_weighting.update_weights()
                 
                 if self.verbose > 1:
-                    print(f"  Ran for {_lr}, Total Loss: {total_loss.item():.4f}, XRay Work NLL: {xray_work.item():.4f}, Restraints Loss: {restraints.item():.4f}, XRay Test NLL: {xray_test.item():.4f}")
+                    print(f"  Ran for {_lr}, Total Loss: {total_loss.item():.4f}")
             if self.verbose > 0:
                 rwork, rfree = self.get_rfactor()
-                print(f'Nll work: {xray_work.item():.4f}, Nll test: {xray_test.item():.4f}, Nll: Restraints: {restraints.item():.4f}')
-                print('Weights:', self.effective_weights)
+                stats = self.component_weighting.stats()
+                print(f'X-ray work NLL: {stats["xray"]["work_nll"]:.4f}, X-ray test NLL: {stats["xray"]["test_nll"]:.4f}')
+                print(f'Current weights: {stats["weights"]}')
                 print(f"  R-work: {rwork:.4f}, R-free: {rfree:.4f}")
 
     def cuda(self):

@@ -1511,11 +1511,11 @@ def nll_xray(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tenso
 
     Parameters
     ----------
-    F_obs : torch.Tensor
+    F_obs : torch.Tensor or MaskedTensor
         Observed structure factor amplitudes.
     F_calc : torch.Tensor
         Calculated structure factors (complex).
-    sigma_F_obs : torch.Tensor
+    sigma_F_obs : torch.Tensor or MaskedTensor
         Standard deviations of observed amplitudes.
 
     Returns
@@ -1523,13 +1523,26 @@ def nll_xray(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tenso
     torch.Tensor
         Mean negative log-likelihood.
     """
+    # Handle MaskedTensor inputs: extract valid data to avoid complex dtype issues in autograd
+    # MaskedTensor doesn't support complex numbers, so we must work with regular tensors
+    if hasattr(F_obs, 'get_mask'):
+        mask = F_obs.get_mask()
+        F_obs = F_obs.get_data()[mask]
+        F_calc = F_calc[mask]
+        sigma_F_obs = sigma_F_obs.get_data()[mask] if hasattr(sigma_F_obs, 'get_mask') else sigma_F_obs[mask]
+    elif hasattr(sigma_F_obs, 'get_mask'):
+        mask = sigma_F_obs.get_mask()
+        F_obs = F_obs[mask]
+        F_calc = F_calc[mask]
+        sigma_F_obs = sigma_F_obs.get_data()[mask]
+    
     # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
 
     # Compute residual
     diff = F_obs - F_calc_amp
     # Avoid division by zero by setting a minimum sigma
-    eps = torch.median(sigma_F_obs) * 1e-1
+    eps = torch.median(sigma_F_obs).item() * 1e-1
     # Compute Gaussian NLL: 0.5*(x-μ)²/σ² + log(σ) + 0.5*log(2π)
     log_2pi = torch.log(torch.tensor(2.0 * torch.pi))
     sigma_save = torch.clamp(sigma_F_obs, min=eps)
@@ -1544,11 +1557,11 @@ def nll_xray_sum(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.T
 
     Parameters
     ----------
-    F_obs : torch.Tensor
+    F_obs : torch.Tensor or MaskedTensor
         Observed structure factor amplitudes.
     F_calc : torch.Tensor
         Calculated structure factors (complex).
-    sigma_F_obs : torch.Tensor
+    sigma_F_obs : torch.Tensor or MaskedTensor
         Standard deviations of observed amplitudes.
 
     Returns
@@ -1556,13 +1569,25 @@ def nll_xray_sum(F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.T
     torch.Tensor
         Sum of negative log-likelihood values.
     """
+    # Handle MaskedTensor inputs: extract valid data to avoid complex dtype issues in autograd
+    if hasattr(F_obs, 'get_mask'):
+        mask = F_obs.get_mask()
+        F_obs = F_obs.get_data()[mask]
+        F_calc = F_calc[mask]
+        sigma_F_obs = sigma_F_obs.get_data()[mask] if hasattr(sigma_F_obs, 'get_mask') else sigma_F_obs[mask]
+    elif hasattr(sigma_F_obs, 'get_mask'):
+        mask = sigma_F_obs.get_mask()
+        F_obs = F_obs[mask]
+        F_calc = F_calc[mask]
+        sigma_F_obs = sigma_F_obs.get_data()[mask]
+    
     # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
 
     # Compute residual
     diff = F_obs - F_calc_amp
     # Avoid division by zero by setting a minimum sigma
-    eps = torch.median(sigma_F_obs) * 1e-1
+    eps = torch.median(sigma_F_obs).item() * 1e-1
     # Compute Gaussian NLL: 0.5*(x-μ)²/σ² + log(σ) + 0.5*log(2π)
     log_2pi = torch.log(torch.tensor(2.0 * torch.pi))
     sigma_save = torch.clamp(sigma_F_obs, min=eps)

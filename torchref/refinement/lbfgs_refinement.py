@@ -701,7 +701,7 @@ class LBFGSRefinement(Refinement):
 
         for step in range(steps):
             optimizer.zero_grad()
-            loss = self.restraints_loss() * self.effective_weights['restraints'] + self.xray_loss() * self.effective_weights['xray']
+            loss = self.component_weighting.total_loss()
             loss.backward()
             if self.verbose > 1 and step % 10 == 0:
                 print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
@@ -730,7 +730,7 @@ class LBFGSRefinement(Refinement):
 
         for step in range(steps):
             optimizer.zero_grad()
-            loss = self.adp_loss() * self.effective_weights['adp'] + self.xray_loss() * self.effective_weights['xray']
+            loss = self.component_weighting.total_loss()
             loss.backward()
             if self.verbose > 1 and step % 10 == 0:
                 print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
@@ -806,26 +806,19 @@ class LBFGSRefinement(Refinement):
 
         for step in range(steps):
             optimizer.zero_grad()
-            loss = (self.restraints_loss() * self.effective_weights['restraints'] +
-                    self.adp_loss() * self.effective_weights['adp'] +
-                    self.xray_loss() * self.effective_weights['xray'])
+            loss = self.component_weighting.total_loss()
             loss.backward()
             if self.verbose > 1 and step % 10 == 0:
                 print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
             optimizer.step()
 
-    def refine_everything_lbfgs(self):
+    def _refine_everything_lbfgs_single_cycle(self,nsteps=1):
         """
         Refine both coordinates (XYZ) and B-factors (ADP) using LBFGS optimizer.
 
         Jointly optimizes all parameters with the combined restraints, ADP,
         and X-ray loss.
         """
-
-        self.model.freeze_all()
-        self.scaler.unfreeze()
-        self.model.unfreeze_all()
-
         optimizer = torch.optim.LBFGS(
             self.parameters(),
             lr=1.0,
@@ -839,8 +832,10 @@ class LBFGSRefinement(Refinement):
             loss = self.component_weighting.total_loss()
             loss.backward()
             return loss
+        
+        for i in range(nsteps):
+            optimizer.step(closure)
 
-        optimizer.step(closure)
         self.model.unfreeze_all()
 
     def refine(self, macro_cycles=5):
@@ -877,15 +872,14 @@ class LBFGSRefinement(Refinement):
                 'xyz': {
                     'before': {},
                     'after': {},
-                    'weight': None
+                    'weights': {}
                 },
                 'adp': {
                     'before': {},
                     'after': {},
-                    'weight': None
+                    'weights': {}
                 }
             }
-            # self.update_effective_weights(cycle=cycle)
             self.component_weighting.update_weights()
             
             if self.verbose > 0:
@@ -911,7 +905,7 @@ class LBFGSRefinement(Refinement):
             with torch.no_grad():
                 before_xyz = self.collect_metrics()
                 cycle_dict['xyz']['before'] = before_xyz
-                cycle_dict['xyz']['weight'] = self.effective_weights.get('restraints', 0.0)
+                cycle_dict['xyz']['weights'] = self.component_weighting.weights.copy()
             
             # XYZ refinement with cycle-aware weighting
             self.refine_xyz()
@@ -921,14 +915,13 @@ class LBFGSRefinement(Refinement):
                 after_xyz = self.collect_metrics()
                 cycle_dict['xyz']['after'] = after_xyz
                 if self.verbose > 0:
-                    rw = self.effective_weights.get('restraints', 0.0)
-                    self.log_xyz_comparison(before_xyz, after_xyz, weight=rw)
+                    self.log_xyz_comparison(before_xyz, after_xyz)
 
             # Store metrics before ADP
             with torch.no_grad():
                 before_adp = self.collect_metrics()
                 cycle_dict['adp']['before'] = before_adp
-                cycle_dict['adp']['weight'] = self.effective_weights.get('adp', 0.0)
+                cycle_dict['adp']['weights'] = self.component_weighting.weights.copy()
             
             # B-factor refinement with cycle-aware weighting
             self.refine_adp()
@@ -938,8 +931,73 @@ class LBFGSRefinement(Refinement):
                 after_adp = self.collect_metrics()
                 cycle_dict['adp']['after'] = after_adp
                 if self.verbose > 0:
-                    aw = self.effective_weights.get('adp', 0.0)
-                    self.log_adp_comparison(before_adp, after_adp, weight=aw)
+                    self.log_adp_comparison(before_adp, after_adp)
+
+            self.history[master_key].append(cycle_dict)
+
+        return self.history
+
+    def refine_everything(self, macro_cycles=5):
+        """
+        Run full LBFGS refinement cycle (ADP + XYZ) without weight screening.
+
+        Parameters
+        ----------
+        macro_cycles : int, optional
+            Number of refinement cycles to perform. Default is 5.
+
+        Returns
+        -------
+        dict
+            History dictionary with all metrics per cycle (hierarchical structure).
+        """
+        self.scaler.unfreeze()
+        self.model.unfreeze_all()
+        i = 0
+
+        while True:
+            i += 1
+            master_key = f'refinement_everything_{i}'
+            if not master_key in self.history:
+                break
+
+        self.history[master_key] = []
+        self.history['initial'] = self.collect_metrics()
+        for cycle in range(macro_cycles):
+            # Hierarchical cycle dict structure
+            cycle_dict = {
+                'cycle': cycle + 1,
+                'before_scaling': {},
+                'after_scaling': {},
+                'after_refinement': {}
+            }
+            if self.verbose > 0:
+                print(f"\n{'='*60}")
+                print(f"LBFGS Refinement Everything - Cycle {cycle+1}/{macro_cycles}")
+                print(f"{'='*60}")
+                
+            self.component_weighting.update_weights()
+                
+            self.get_scales()
+            
+            # Collect metrics after scaling
+            with torch.no_grad():
+                after_scaling = self.collect_metrics()
+                cycle_dict['after_scaling'] = after_scaling
+                if self.verbose > 0:
+                    print(f"After scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}")
+
+            # Full refinement
+            self._refine_everything_lbfgs_single_cycle()
+            
+            # Collect metrics after refinement
+            with torch.no_grad():
+                after_refinement = self.collect_metrics()
+                cycle_dict['after_refinement'] = after_refinement
+                if self.verbose > 0:
+                    print(f"After refinement: Rwork={after_refinement['rwork']:.4f}, Rfree={after_refinement['rfree']:.4f}")
+                self.log_xyz_comparison(after_scaling, after_refinement)
+                self.log_adp_comparison(after_scaling, after_refinement)
 
             self.history[master_key].append(cycle_dict)
 

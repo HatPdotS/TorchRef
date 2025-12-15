@@ -445,8 +445,14 @@ class Scaler(DebugMixin, nn.Module):
                 
                 # Compute loss only on selected reflections
                 diff = fobs[low_res_mask] - torch.abs(scaled_fcalc[low_res_mask])
-                eps = torch.median(sigma[low_res_mask]) * 1e-1
-                sigma_safe = torch.clamp(sigma[low_res_mask], min=eps)
+                # Handle MaskedTensor: extract valid data for median calculation
+                sigma_subset = sigma[low_res_mask]
+                if hasattr(sigma_subset, 'get_mask'):
+                    sigma_data = sigma_subset.get_data()[sigma_subset.get_mask()]
+                    eps = torch.median(sigma_data).item() * 1e-1
+                else:
+                    eps = torch.median(sigma_subset).item() * 1e-1
+                sigma_safe = torch.clamp(sigma_subset, min=eps)
                 nll_per_refl = 0.5 * (diff**2) / (sigma_safe**2)
                 
                 if use_low_res_weighting:
@@ -620,14 +626,15 @@ class Scaler(DebugMixin, nn.Module):
         ----------
         fcalc : torch.Tensor
             Calculated structure factors. Expected shape (N,), an additional
-            dimension for batch is possible.
+            dimension for batch is possible. N should match the full HKL size.
         use_mask : bool, default True
-            Whether to apply the data mask.
+            Deprecated parameter, kept for backward compatibility. When using
+            MaskedTensors, masking is handled in loss functions, not here.
 
         Returns
         -------
         torch.Tensor
-            Scaled structure factors.
+            Scaled structure factors of same shape as input.
         """
         batched = True
 
@@ -635,15 +642,23 @@ class Scaler(DebugMixin, nn.Module):
             fcalc = fcalc.unsqueeze(0)  # Add batch dimension if missing
             batched = False
 
-        if use_mask:
-            mask = self._data.masks().to(torch.bool)
-
+        # Determine if we should mask internally or work with full arrays
+        # When fcalc matches full HKL size, work with full arrays (MaskedTensor mode)
+        # When fcalc is already filtered, apply mask to internal arrays
+        n_full = len(self.bins)
+        n_fcalc = fcalc.shape[1]
+        
+        if n_fcalc == n_full:
+            # Full-size mode (MaskedTensor): don't apply mask to internal arrays
+            apply_internal_mask = False
         else:
-            mask = torch.ones(fcalc.shape[1], dtype=torch.bool, device=self.device)
+            # Filtered mode: apply mask to internal arrays to match fcalc size
+            apply_internal_mask = True
+            mask = self._data.masks().to(torch.bool)
 
         if hasattr(self, 'U'):
             anisotropy_factors = self.anisotropy_correction()
-            aniso_correction = anisotropy_factors[mask]
+            aniso_correction = anisotropy_factors[mask] if apply_internal_mask else anisotropy_factors
         else:
             aniso_correction = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
 
@@ -652,30 +667,32 @@ class Scaler(DebugMixin, nn.Module):
             if hasattr(self, 'log_kmask'):
                 # Bin-wise scaling: get raw F_mask and apply per-bin kmask
                 f_mask = self.solvent.get_rec_solvent(self.hkl)
-                f_mask = f_mask[mask]
+                f_mask = f_mask[mask] if apply_internal_mask else f_mask
                 
                 # Apply bin-wise kmask (like Phenix kmask)
                 kmask = torch.exp(self.log_kmask)
                 # Clamp kmask to non-negative values
                 kmask = torch.clamp(kmask, min=0.0, max=1.0)
                 # Expand to per-reflection using bin indices
-                kmask_per_refl = kmask[self.bins[mask]]
+                bins_to_use = self.bins[mask] if apply_internal_mask else self.bins
+                kmask_per_refl = kmask[bins_to_use]
                 f_sol = kmask_per_refl * f_mask
             else:
                 # Original: global k_sol and B_sol applied in solvent model
                 f_sol = self.solvent(self.hkl)
-                f_sol = f_sol[mask]
+                f_sol = f_sol[mask] if apply_internal_mask else f_sol
         else:
             f_sol = torch.tensor(0.0, device=self.device, dtype=fcalc.dtype)
 
         if hasattr(self, 'log_scale'):
-            K_overall = torch.exp(self.log_scale[self.bins[mask]])
+            bins_to_use = self.bins[mask] if apply_internal_mask else self.bins
+            K_overall = torch.exp(self.log_scale[bins_to_use])
         else:
             K_overall = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
         
         if hasattr(self, 'bin_wise_bfactor'):
             bfactor_factors = self.bin_wise_bfactor_correction()
-            b_overall = bfactor_factors[mask]
+            b_overall = bfactor_factors[mask] if apply_internal_mask else bfactor_factors
         else:
             b_overall = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
         

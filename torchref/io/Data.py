@@ -1,9 +1,10 @@
 import pandas as pd
 import numpy as np
+import warnings
 from torchref.math_functions import math_torch
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Dict, List, TYPE_CHECKING
+from typing import Optional, Tuple, Dict, List, Union, TYPE_CHECKING
 import reciprocalspaceship as rs
 from torchref.model.model_ft import ModelFT
 from torchref.utils.utils import TensorMasks
@@ -11,9 +12,17 @@ from torchref.io import legacy_format_readers, cif_readers
 from torchref.utils.debug_utils import DebugMixin
 from torchref.math_functions.french_wilson import FrenchWilson
 
+# Suppress PyTorch MaskedTensor prototype warnings globally
+# MaskedTensor is stable enough for our use case (aggregations, element-wise ops)
+warnings.filterwarnings(
+    'ignore', 
+    message='.*MaskedTensors is in prototype stage.*',
+    category=UserWarning
+)
 
 if TYPE_CHECKING:
     from torchref.model import Model
+    from torch.masked import MaskedTensor
 
 class ReflectionData(DebugMixin, nn.Module):
     """
@@ -1081,35 +1090,129 @@ class ReflectionData(DebugMixin, nn.Module):
         
         return ", ".join(parts) + ")"
 
-    def forward(self, mask:bool=True)-> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def forward(
+        self, 
+        mask: bool = True
+    ) -> Tuple[
+        torch.Tensor, 
+        'MaskedTensor', 
+        Optional['MaskedTensor'], 
+        Optional[torch.Tensor]
+    ]:
         """
-        Return core reflection data with optional masking.
+        Return core reflection data with MaskedTensors for F and sigma.
+
+        F and F_sigma are returned as MaskedTensors which keep all reflections
+        but mark invalid ones as masked. Aggregation operations (sum, mean, etc.)
+        automatically skip masked values. HKL and rfree_flags remain regular tensors.
 
         Parameters
         ----------
         mask : bool, optional
-            If True, apply current masks to output. Default is True.
+            If True, apply current masks to F and sigma. Default is True.
 
         Returns
         -------
         hkl : torch.Tensor
-            Miller indices of shape (N, 3).
-        F : torch.Tensor
-            Structure factor amplitudes of shape (N,).
-        F_sigma : torch.Tensor or None
-            Uncertainties of shape (N,) or None.
+            Miller indices of shape (N, 3). Full size, unfiltered.
+        F : MaskedTensor
+            Structure factor amplitudes of shape (N,) with invalid reflections masked.
+        F_sigma : MaskedTensor or None
+            Uncertainties of shape (N,) with invalid reflections masked, or None.
         rfree_flags : torch.Tensor or None
-            R-free flags of shape (N,) or None. 1=work, 0=free.
+            R-free flags of shape (N,) or None. Full size, unfiltered. 1=work, 0=free.
+
+        Notes
+        -----
+        MaskedTensors:
+
+        - Are PyTorch tensors with an associated boolean mask
+        - Aggregations (sum, mean, etc.) skip masked values automatically
+        - Element-wise operations preserve the mask
+        - Use .get_data() and .get_mask() to access underlying data
+        - Use .to_tensor(fill_value) to convert back to regular tensor
+        - Note: MaskedTensor is in prototype stage in PyTorch
+
+        Loss functions and targets extract valid data from MaskedTensors before
+        computation to work correctly with complex F_calc values.
+
+        Examples
+        --------
+        >>> hkl, F, sigma, rfree = data()
+        >>> print(F.shape)  # Full shape
+        >>> print(F.sum())  # Only sums valid (unmasked) values
+        >>> 
+        >>> # Access underlying data
+        >>> valid_mask = F.get_mask()
+        >>> F_values = F.get_data()[valid_mask]
         """
+        from torch.masked import MaskedTensor
+        
         hkl, F, F_sigma, rfree_flags = self.hkl, self.F, self.F_sigma, self.rfree_flags
+        
         if mask:
             to_mask = self.masks()
-            hkl, F = hkl[to_mask], F[to_mask]
+            F = MaskedTensor(F, to_mask)
             if F_sigma is not None:
-                F_sigma = F_sigma[to_mask]
-            if rfree_flags is not None:
-                rfree_flags = rfree_flags[to_mask]
-            rfree_flags = rfree_flags.to(torch.bool)
+                F_sigma = MaskedTensor(F_sigma, to_mask)
+        
+        return hkl, F, F_sigma, rfree_flags
+
+    def get_valid_mask(self) -> torch.Tensor:
+        """
+        Return the combined validity mask for all reflections.
+
+        This is the mask used to filter reflections in forward(). True indicates
+        a valid (included) reflection, False indicates an excluded one.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean mask of shape (N,) where N is the total number of reflections.
+            True = valid/included, False = invalid/excluded.
+
+        Examples
+        --------
+        >>> mask = data.get_valid_mask()
+        >>> print(f"{mask.sum()} of {len(mask)} reflections are valid")
+        """
+        return self.masks()
+
+    def forward_indexed(self) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Return reflection data as indexed (filtered) tensors.
+
+        This method filters out invalid reflections and returns smaller tensors
+        containing only valid data. Useful for operations that don't support
+        MaskedTensors or for writing output files.
+
+        Returns
+        -------
+        hkl : torch.Tensor
+            Miller indices of shape (M, 3) where M is number of valid reflections.
+        F : torch.Tensor
+            Structure factor amplitudes of shape (M,).
+        F_sigma : torch.Tensor or None
+            Uncertainties of shape (M,) or None.
+        rfree_flags : torch.Tensor or None
+            R-free flags of shape (M,) or None.
+
+        See Also
+        --------
+        forward : Main method returning MaskedTensors.
+
+        Examples
+        --------
+        >>> hkl, F, sigma, rfree = data.forward_indexed()
+        >>> F_np = F.cpu().numpy()  # Safe for writing to files
+        """
+        to_mask = self.masks()
+        
+        hkl = self.hkl[to_mask]
+        F = self.F[to_mask]
+        F_sigma = self.F_sigma[to_mask] if self.F_sigma is not None else None
+        rfree_flags = self.rfree_flags[to_mask].to(torch.bool) if self.rfree_flags is not None else None
+        
         return hkl, F, F_sigma, rfree_flags
     
     def __select__(self,mask:torch.Tensor, op=None)-> 'ReflectionData':
@@ -1161,25 +1264,7 @@ class ReflectionData(DebugMixin, nn.Module):
         selected.dataset = self.dataset.iloc[mask.cpu().numpy()].copy() if self.dataset is not None else None
         self.last_op = op
         return selected
-
-    def unpack(self):
-        """
-        Unpack to the original source data.
-
-        Traverses the source chain to the original data and validates HKL.
-        Marks reflections not present in the original data in self.flagged.
-
-        Returns
-        -------
-        ReflectionData
-            Original source ReflectionData object.
-        """
-        current_hkl = self.hkl
-        while self.source is not None:
-            self = self.source
-        _, valid_hkl = self.validate_hkl(current_hkl)
-        self.flagged = ~valid_hkl
-        return self        
+    
 
     def sanitize_F(self):
         """
@@ -1207,31 +1292,47 @@ class ReflectionData(DebugMixin, nn.Module):
             else:
                 print(f"{key}: None")
     
-    def validate_hkl(self, hkl_ref: torch.Tensor) -> Tuple['ReflectionData', torch.Tensor]:
+    def validate_hkl(self, hkl_ref: torch.Tensor) -> 'ReflectionData':
         """
-        Validate and filter reflections against a reference HKL set.
+        Expand dataset to match a reference HKL set.
 
-        Filters the current dataset to only include reflections present
-        in the reference HKL tensor.
+        Reorders and expands the current dataset to match the reference HKL set.
+        Reflections present in the reference but missing from this dataset are
+        filled with placeholder values and masked out. This ensures all datasets
+        aligned to the same reference have identical shapes and can be processed
+        together without data loss from intersection operations.
 
         Parameters
         ----------
         hkl_ref : torch.Tensor
             Reference Miller indices tensor of shape (N, 3), dtype int32.
+            This defines the canonical HKL ordering for all aligned datasets.
 
         Returns
         -------
-        filtered_data : ReflectionData
-            New ReflectionData object containing only matching reflections.
-        presence_mask : torch.Tensor
-            Boolean tensor of shape (N,) indicating which reference reflections
-            are present in this dataset (True = present, False = absent).
+        ReflectionData
+            Self, modified in-place with expanded arrays matching hkl_ref.
+
+        Notes
+        -----
+        After calling this method:
+        - self.hkl will equal hkl_ref exactly
+        - All data arrays (F, F_sigma, rfree_flags, etc.) are reordered/expanded
+        - Missing reflections are filled with 0 (or appropriate defaults)
+        - A mask 'hkl_present' is added marking which reflections have real data
+        - forward() will return MaskedTensors that skip missing reflections
+
+        This approach avoids the problem where intersecting many datasets with
+        different outliers/missing reflections causes exponential data loss.
 
         Examples
         --------
-        >>> filtered_data, present_in_data = data.validate_hkl(reference_hkl)
-        >>> print(f"Kept {len(filtered_data)} reflections out of {len(data)}")
-        >>> print(f"{present_in_data.sum()} reference reflections found")
+        >>> # Align multiple datasets to a common HKL set
+        >>> reference_hkl = data1.hkl.clone()
+        >>> data1.validate_hkl(reference_hkl)
+        >>> data2.validate_hkl(reference_hkl)
+        >>> # Now data1 and data2 have identical shapes
+        >>> assert data1.hkl.shape == data2.hkl.shape
         """
         if self.hkl is None:
             raise ValueError("No Miller indices loaded in ReflectionData")
@@ -1245,51 +1346,105 @@ class ReflectionData(DebugMixin, nn.Module):
         # Ensure hkl_ref is 2D and int32
         if hkl_ref.dim() == 1:
             hkl_ref = hkl_ref.unsqueeze(0)
-        hkl_ref = hkl_ref.to(dtype=torch.int32)
+        hkl_ref = hkl_ref.to(dtype=torch.int32, device=self.device)
         
         n_ref = len(hkl_ref)
         n_data = len(self.hkl)
         
-        # Convert to numpy for efficient isin-based lookup
-        # We'll use structured arrays to compare HKL triplets as single entities
+        # Build lookup from data HKL to index
+        # Use a dictionary with tuple keys for fast lookup
+        hkl_data_np = self.hkl.cpu().numpy()
+        data_hkl_to_idx = {tuple(hkl): idx for idx, hkl in enumerate(hkl_data_np)}
+        
+        # For each reference HKL, find the corresponding data index (or -1 if missing)
         hkl_ref_np = hkl_ref.cpu().numpy()
-        hkl_data_np = self.hkl.cpu().numpy();
+        ref_to_data_idx = np.array([
+            data_hkl_to_idx.get(tuple(hkl), -1) for hkl in hkl_ref_np
+        ], dtype=np.int64)
         
-        # Create structured arrays to treat each (h,k,l) triplet as a single comparable unit
-        # This allows numpy to efficiently check membership
-        hkl_ref_structured = np.ascontiguousarray(hkl_ref_np).view(
-            np.dtype((np.void, hkl_ref_np.dtype.itemsize * hkl_ref_np.shape[1]))
-        )
-        hkl_data_structured = np.ascontiguousarray(hkl_data_np).view(
-            np.dtype((np.void, hkl_data_np.dtype.itemsize * hkl_data_np.shape[1]))
-        )
+        # Create presence mask: True where data exists
+        presence_mask = torch.from_numpy(ref_to_data_idx >= 0).to(device=self.device)
+        valid_indices = torch.from_numpy(ref_to_data_idx).to(device=self.device)
         
-        # Find which data reflections are present in the reference
-        # np.isin is highly optimized and uses hash-based lookup internally
-        data_mask_np = np.isin(hkl_data_structured, hkl_ref_structured)
-        data_mask = torch.from_numpy(data_mask_np.flatten());
+        # Helper to expand a tensor to reference size
+        def expand_tensor(tensor, fill_value=0.0):
+            if tensor is None:
+                return None
+            expanded = torch.full((n_ref,) + tensor.shape[1:], fill_value, 
+                                  dtype=tensor.dtype, device=self.device)
+            # Copy existing data to correct positions
+            mask = valid_indices >= 0
+            expanded[mask] = tensor[valid_indices[mask]]
+            return expanded
         
-        # Find which reference reflections are present in the dataset
-        # Use filtered HKL for this operation
-        hkl_filtered, _, _, _ = self()
-        hkl_filtered_np = hkl_filtered.cpu().numpy();
-        hkl_filtered_structured = np.ascontiguousarray(hkl_filtered_np).view(
-            np.dtype((np.void, hkl_filtered_np.dtype.itemsize * hkl_filtered_np.shape[1]))
-        )
-        presence_mask_np = np.isin(hkl_ref_structured, hkl_filtered_structured)
-        presence_mask = torch.from_numpy(presence_mask_np.flatten());
-
-        # Filter the dataset to only include reflections in the reference
-        self.masks['hkl_validation'] = data_mask.to(self.device)
+        # Expand all data arrays
+        old_F = self.F
+        old_F_sigma = self.F_sigma
+        old_I = self.I
+        old_I_sigma = getattr(self, 'I_sigma', None)
+        old_rfree = self.rfree_flags
+        old_resolution = self.resolution
+        old_phase = getattr(self, 'phase', None)
+        old_fom = getattr(self, 'fom', None)
+        
+        # Replace HKL with reference
+        self.register_buffer('hkl', hkl_ref)
+        
+        # Expand data tensors
+        self.register_buffer('F', expand_tensor(old_F, fill_value=0.0))
+        self.register_buffer('F_sigma', expand_tensor(old_F_sigma, fill_value=1.0))
+        
+        if old_I is not None:
+            self.register_buffer('I', expand_tensor(old_I, fill_value=0.0))
+        if old_I_sigma is not None:
+            self.register_buffer('I_sigma', expand_tensor(old_I_sigma, fill_value=1.0))
+        
+        # For rfree, default missing to work set (1)
+        if old_rfree is not None:
+            rfree_expanded = torch.ones(n_ref, dtype=old_rfree.dtype, device=self.device)
+            mask = valid_indices >= 0
+            rfree_expanded[mask] = old_rfree[valid_indices[mask]]
+            self.register_buffer('rfree_flags', rfree_expanded)
+        
+        # Recalculate resolution for new HKL set
+        self._calculate_resolution()
+        
+        # Expand phase and fom if present
+        if old_phase is not None:
+            self.register_buffer('phase', expand_tensor(old_phase, fill_value=0.0))
+        if old_fom is not None:
+            self.register_buffer('fom', expand_tensor(old_fom, fill_value=0.0))
+        
+        # Transfer existing masks to new indexing
+        old_masks = dict(self.masks.items())
+        # Clear existing masks by removing each key
+        for name in list(self.masks.keys()):
+            delattr(self.masks, f"_buf_{name}")
+        self.masks._keys.clear()
+        self.masks.updated = True
+        
+        for name, old_mask in old_masks.items():
+            if old_mask is not None and len(old_mask) == n_data:
+                # Expand mask: missing reflections are masked out (False)
+                new_mask = torch.zeros(n_ref, dtype=torch.bool, device=self.device)
+                mask = valid_indices >= 0
+                new_mask[mask] = old_mask[valid_indices[mask]]
+                self.masks[name] = new_mask
+        
+        # Add presence mask - this is the key mask that marks real vs placeholder data
+        self.masks['hkl_present'] = presence_mask
+        
+        n_present = presence_mask.sum().item()
+        n_missing = n_ref - n_present
         
         if self.verbose > 0:
-            print(f"HKL validation:")
-            print(f"  Dataset reflections: {n_data}")
-            print(f"  Reference reflections: {n_ref}")
-            print(f"  Kept in dataset: {data_mask.sum().item()} ({100*data_mask.sum().item()/n_data:.1f}%)")
-            print(f"  Found in dataset: {presence_mask.sum().item()} ({100*presence_mask.sum().item()/n_ref:.1f}%)")
+            print(f"HKL validation (expand mode):")
+            print(f"  Original dataset: {n_data} reflections")
+            print(f"  Reference set: {n_ref} reflections")
+            print(f"  Present in data: {n_present} ({100*n_present/n_ref:.1f}%)")
+            print(f"  Missing (masked): {n_missing} ({100*n_missing/n_ref:.1f}%)")
         
-        return self, presence_mask
+        return self
     
     def find_outliers(self, model: ModelFT, scaler, z_threshold: float = 4.0) -> torch.Tensor:
         """
@@ -1741,10 +1896,17 @@ class ReflectionData(DebugMixin, nn.Module):
     @property
     def centric(self):
         """
-        Get boolean mask for centric reflections (filtered by current masks).
-        Calculates it if not already present.
+        Get boolean mask for centric reflections (full size, unfiltered).
         
-        Returns centric flags filtered by the same mask used in forward().
+        Calculates it if not already present. Returns unfiltered centric flags
+        matching the full HKL array size, consistent with how forward() returns
+        full-size arrays when using MaskedTensors.
+        
+        Returns
+        -------
+        torch.Tensor or None
+            Boolean tensor of shape (N,) where N is total reflections.
+            True indicates centric reflection, False indicates acentric.
         """
         if self.hkl is None:
             return None
@@ -1758,6 +1920,5 @@ class ReflectionData(DebugMixin, nn.Module):
             
             self._centric_flags = is_centric_from_hkl(self.hkl, sg)
         
-        # Apply current masks to return filtered centric flags
-        to_mask = self.masks()
-        return self._centric_flags[to_mask]
+        # Return full-size centric flags (no filtering)
+        return self._centric_flags

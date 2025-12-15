@@ -28,6 +28,7 @@ dependencies = [
 [project.scripts]
 torchref-refine = "torchref.cli.refine:main"
 torchref-refine-screened = "torchref.cli.refine_screened:main"
+torchref-refine-everything = "torchref.cli.refine_everything:main"
 
 [project.optional-dependencies]
 
