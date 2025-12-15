@@ -1383,7 +1383,6 @@ class ReflectionData(DebugMixin, nn.Module):
         old_I = self.I
         old_I_sigma = getattr(self, 'I_sigma', None)
         old_rfree = self.rfree_flags
-        old_resolution = self.resolution
         old_phase = getattr(self, 'phase', None)
         old_fom = getattr(self, 'fom', None)
         

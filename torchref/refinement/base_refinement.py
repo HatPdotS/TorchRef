@@ -4,7 +4,7 @@ from torchref.io.Data import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torch.nn import Module as nnModule
 import torch
-from torchref.restraints.restraints import Restraints
+from torchref.restraints.restraints_new import RestraintsNew as Restraints
 from torchref.scaling.scaler import Scaler
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.stats import (
