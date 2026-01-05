@@ -38,7 +38,7 @@ from torch import nn
 from typing import Dict, List, Optional, Any
 import numpy as np
 
-from torchref.refinement.component_weighting import (
+from torchref.refinement.weighting.component_weighting import (
     WeightingScheme,
     ComponentWeighting,
     XrayScaleWeighting,

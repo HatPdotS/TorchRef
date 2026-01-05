@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Union, Any, Tuple
+from typing import Dict, List, Optional, Union, Any, Tuple, TYPE_CHECKING
 import torch
 from torch import nn
 from torch.nn.functional import softplus
@@ -9,29 +9,63 @@ from torchref.utils.stats import (
     VERBOSITY_ESSENTIAL, VERBOSITY_STANDARD, VERBOSITY_DETAILED, VERBOSITY_DEBUG
 )
 
+if TYPE_CHECKING:
+    from torchref.refinement.loss_state import LossState
+
 
 class WeightingScheme(nn.Module, ABC):
     """
     Abstract base class for weighting schemes.
-    
+
     All tunable parameters should be registered as buffers using register_buffer()
     so they can be accessed/modified via state_dict notation, e.g.:
         refinement.component_weighting.schemes.0.target_gap
+
+    LossState Integration:
+        Weighting schemes can add their weights to a LossState:
+        >>> state = scheme.apply_to_state(state)  # Adds weights to state
     """
     name = 'base_weighting_scheme'
 
     def __init__(self, refinement):
         super().__init__()
         self.refinement = ModuleReference(refinement)
-    
-    def stats(self) -> Dict[str, StatEntry]:
+
+    def stats(self, state: 'LossState' = None) -> Dict[str, StatEntry]:
         """
         Return statistics for reporting.
-        
+
+        Parameters
+        ----------
+        state : LossState, optional
+            If provided, pull data from LossState instead of self.refinement.
+
         Returns dict with StatEntry values containing verbosity levels.
         Use filter_stats() to filter by verbosity.
         """
         return {}
+
+    def apply_to_state(self, state: 'LossState') -> 'LossState':
+        """
+        Compute weights and set them in the LossState.
+
+        Parameters
+        ----------
+        state : LossState
+            Loss state to update with weights.
+
+        Returns
+        -------
+        LossState
+            State with this scheme's weights set.
+        """
+        weights = self.forward()
+        for name, weight in weights.items():
+            weight_val = weight.item() if isinstance(weight, torch.Tensor) else weight
+            # Multiply with existing weight if present
+            current = state.get_weight(name, default=1.0)
+            state.set_weight(name, current * weight_val)
+        return state
 
 class TargetOffsetWeighting(WeightingScheme):
     """
@@ -68,15 +102,35 @@ class TargetOffsetWeighting(WeightingScheme):
                 
         return weights
 
-    def stats(self):
+    def stats(self, state: 'LossState' = None) -> Dict[str, StatEntry]:
+        """
+        Get target offset weighting statistics.
+
+        Parameters
+        ----------
+        state : LossState, optional
+            If provided, pull weights from LossState instead of computing.
+        """
         stats = {}
-        if hasattr(self.refinement, 'geometry_target'):
-            for name, target in self.refinement.geometry_target.targets().items():
-                stats[f'{name}_weight'] = stat(self.get_weight(target).item(), VERBOSITY_STANDARD)
-        if hasattr(self.refinement, 'adp_target'):
-            for name, target in self.refinement.adp_target.targets().items():
-                stats[f'{name}_weight'] = stat(self.get_weight(target).item(), VERBOSITY_STANDARD)
+
+        if state is not None:
+            # Pull weights from state
+            for name, weight in state.weights.items():
+                if isinstance(weight, torch.Tensor):
+                    stats[f'{name}_weight'] = stat(weight.item(), VERBOSITY_STANDARD)
+                else:
+                    stats[f'{name}_weight'] = stat(weight, VERBOSITY_STANDARD)
+        else:
+            # Compute weights from targets
+            if hasattr(self.refinement, 'geometry_target'):
+                for name, target in self.refinement.geometry_target.targets().items():
+                    stats[f'{name}_weight'] = stat(self.get_weight(target).item(), VERBOSITY_STANDARD)
+            if hasattr(self.refinement, 'adp_target'):
+                for name, target in self.refinement.adp_target.targets().items():
+                    stats[f'{name}_weight'] = stat(self.get_weight(target).item(), VERBOSITY_STANDARD)
+
         return stats
+
 
 class OverfittingWeighting(WeightingScheme):
     """
@@ -113,11 +167,27 @@ class OverfittingWeighting(WeightingScheme):
         self.weight_reg = self.smoothing * self.weight_reg + (1 - self.smoothing) * target_weight
             
         # Apply to all regularization terms (geom and adp)
-        return {'geom': self.weight_reg.detach(), 'adp': self.weight_reg.detach()}
+        return {'geometry': self.weight_reg.detach(), 'adp': self.weight_reg.detach()}
 
-    def stats(self):
-        train_nll = self.refinement.xray_target_work().detach().item()
-        test_nll = self.refinement.xray_target_test().detach().item()
+    def stats(self, state: 'LossState' = None) -> Dict[str, StatEntry]:
+        """
+        Get overfitting weighting statistics.
+
+        Parameters
+        ----------
+        state : LossState, optional
+            If provided, pull losses from LossState instead of computing.
+        """
+        if state is not None:
+            # Pull train/test NLL from state's cached losses
+            train_loss = state.get_loss('xray/work') or state.get_loss('xray_work')
+            test_loss = state.get_loss('xray/test') or state.get_loss('xray_test')
+            train_nll = train_loss.detach().item() if train_loss is not None else 0.0
+            test_nll = test_loss.detach().item() if test_loss is not None else 0.0
+        else:
+            train_nll = self.refinement.xray_target_work().detach().item()
+            test_nll = self.refinement.xray_target_test().detach().item()
+
         return {
             'overfitting_weight': stat(self.weight_reg.item(), VERBOSITY_ESSENTIAL),
             'target_gap': stat(self.target_gap.item(), VERBOSITY_DEBUG),
@@ -126,6 +196,7 @@ class OverfittingWeighting(WeightingScheme):
             'train_nll': stat(train_nll, VERBOSITY_STANDARD),
             'test_nll': stat(test_nll, VERBOSITY_STANDARD),
         }
+
 
 class ManualWeighting(WeightingScheme):
     name = 'manual_weighting'
@@ -203,18 +274,33 @@ class XrayScaleWeighting(WeightingScheme):
         
         return {'xray': self.xray_weight.detach()}
     
-    def stats(self):
+    def stats(self, state: 'LossState' = None) -> Dict[str, StatEntry]:
+        """
+        Get X-ray scale weighting statistics.
+
+        Parameters
+        ----------
+        state : LossState, optional
+            If provided, pull xray loss from LossState.
+        """
+        if state is not None:
+            xray_loss = state.get_loss('xray/work') or state.get_loss('xray_work')
+            raw_xray = xray_loss.detach().item() if xray_loss is not None else 0.0
+        else:
+            raw_xray = self._raw_xray_loss if self._raw_xray_loss is not None else 0.0
+
         return {
             'xray_weight': stat(self.xray_weight.item(), VERBOSITY_ESSENTIAL),
-            'raw_xray_loss': stat(self._raw_xray_loss if self._raw_xray_loss is not None else 0.0, VERBOSITY_STANDARD),
+            'raw_xray_loss': stat(raw_xray, VERBOSITY_STANDARD),
             'effective_xray_loss': stat(
-                (self._raw_xray_loss * self.xray_weight.item()) if (self._raw_xray_loss and self.xray_weight is not None) else 0.0,
+                (raw_xray * self.xray_weight.item()) if (raw_xray and self.xray_weight is not None) else 0.0,
                 VERBOSITY_STANDARD
             ),
             'target_scale': stat(self.target_scale.item(), VERBOSITY_DEBUG),
             'min_weight': stat(self.min_weight.item(), VERBOSITY_DEBUG),
             'max_weight': stat(self.max_weight.item(), VERBOSITY_DEBUG),
         }
+
 
 class ComponentWeighting(nn.Module):
     """
@@ -328,7 +414,7 @@ class ComponentWeighting(nn.Module):
         """
         # Initialize weights for all known components to 1.0
         self.weights = {}
-        
+
         for scheme in self.schemes.values():
             scheme_weights = scheme()
             for k, v in scheme_weights.items():
@@ -338,6 +424,47 @@ class ComponentWeighting(nn.Module):
                     self.weights[k] = v
 
         return self.weights
+
+    def apply_to_state(self, state: 'LossState') -> 'LossState':
+        """
+        Apply all weighting schemes to the LossState.
+
+        This method enables the new LossState pipeline pattern where
+        all schemes are applied in sequence to add/multiply weights
+        in the state.
+
+        Parameters
+        ----------
+        state : LossState
+            Current loss state with computed losses.
+
+        Returns
+        -------
+        LossState
+            State with all weights added.
+        """
+        for scheme in self.schemes.values():
+            state = scheme.apply_to_state(state)
+        return state
+
+    def total_loss_from_state(self, state: 'LossState') -> torch.Tensor:
+        """
+        Compute total weighted loss from a LossState.
+
+        This is the LossState-based equivalent of total_loss().
+        Calls aggregate() which evaluates targets and applies weights.
+
+        Parameters
+        ----------
+        state : LossState
+            LossState with targets and weights registered.
+
+        Returns
+        -------
+        torch.Tensor
+            Total weighted loss.
+        """
+        return state.aggregate()
 
 
     def total_loss(self):
@@ -362,37 +489,47 @@ class ComponentWeighting(nn.Module):
                     
         return total
 
-    def stats(self):
+    def stats(self, state: 'LossState' = None) -> Dict[str, Any]:
         """
         Return statistics for reporting.
-        
+
+        Parameters
+        ----------
+        state : LossState, optional
+            If provided, pull data from LossState instead of self.refinement.
+
         Returns full stats dictionary with StatEntry values. Use filter_stats()
         at the caller level to filter by verbosity when needed.
-            
+
         Returns
         -------
         dict
             Stats dictionary with StatEntry objects containing verbosity metadata.
         """
         stats = {}
-        
+
         # Collect stats from schemes
         for name, scheme in self.schemes.items():
-            scheme_stats = scheme.stats()
+            scheme_stats = scheme.stats(state)
             if scheme_stats:
                 stats[name] = scheme_stats
-            
-        # Add current weights (essential for monitoring)
-        stats['weights'] = {
-            k: stat(v.item() if isinstance(v, torch.Tensor) else v, VERBOSITY_STANDARD) 
-            for k, v in self.weights.items()
-        }
 
-        # Add target stats
+        # Add current weights (from state if available, else from self.weights)
+        if state is not None:
+            stats['weights'] = {
+                k: stat(v if isinstance(v, (int, float)) else v, VERBOSITY_STANDARD)
+                for k, v in state.weights.items()
+            }
+        else:
+            stats['weights'] = {
+                k: stat(v.item() if isinstance(v, torch.Tensor) else v, VERBOSITY_STANDARD)
+                for k, v in self.weights.items()
+            }
+
+        # Add target stats from refinement (state doesn't store target stats)
         if hasattr(self.refinement, 'geometry_target'):
             geom_stats = self.refinement.geometry_target.stats()
             if geom_stats:
-                # Wrap raw values with VERBOSITY_DETAILED if not already StatEntry
                 stats['geom_target'] = {
                     k: v if isinstance(v, StatEntry) else stat(v, VERBOSITY_DETAILED)
                     for k, v in geom_stats.items()
@@ -406,9 +543,18 @@ class ComponentWeighting(nn.Module):
                 }
 
         # Add xray stats (essential)
+        if state is not None:
+            work_loss = state.get_loss('xray/work') or state.get_loss('xray_work')
+            test_loss = state.get_loss('xray/test') or state.get_loss('xray_test')
+            work_nll = work_loss.item() if work_loss is not None else 0.0
+            test_nll = test_loss.item() if test_loss is not None else 0.0
+        else:
+            work_nll = self.refinement.xray_target_work().item()
+            test_nll = self.refinement.xray_target_test().item()
+
         stats['xray'] = {
-            'work_nll': stat(self.refinement.xray_target_work().item(), VERBOSITY_ESSENTIAL),
-            'test_nll': stat(self.refinement.xray_target_test().item(), VERBOSITY_ESSENTIAL),
+            'work_nll': stat(work_nll, VERBOSITY_ESSENTIAL),
+            'test_nll': stat(test_nll, VERBOSITY_ESSENTIAL),
         }
 
         return stats

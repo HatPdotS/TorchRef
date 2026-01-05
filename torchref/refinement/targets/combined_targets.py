@@ -1,7 +1,16 @@
+'''
+
+Combined targets for refinement (e.g., geometry + ADP).
+
+Integrate multiple component targets into a single combined target
+using nn.ModuleDict for clean organization and easy access.
+
+Integrate into lossState via add_to_state'''
+
 import torch
 from torch import nn
 from typing import TYPE_CHECKING, Optional, Dict
-from torchref.refinement import targets
+from torchref.refinement.targets import targets
 from torchref.utils.stats import (
     StatEntry, stat, filter_stats,
     VERBOSITY_ESSENTIAL, VERBOSITY_STANDARD, VERBOSITY_DETAILED, VERBOSITY_DEBUG
@@ -12,6 +21,7 @@ if TYPE_CHECKING:
 
 
 class CombinedTargets(targets.Target):
+
     """
     Base class for combined targets (e.g., geometry + ADP).
 
@@ -158,6 +168,11 @@ class CombinedTargets(targets.Target):
             Dictionary mapping target names to their loss tensors.
         """
         return self.target_losses()
+    
+    def add_to_state(self, state):
+        for name, target in self._targets.items():
+            target.add_to_state(state)
+        return state
 
 
 class TotalGeometryTarget(CombinedTargets, targets.GeometryTarget):
@@ -220,8 +235,6 @@ class TotalGeometryTarget(CombinedTargets, targets.GeometryTarget):
             'chiral': targets.ChiralTarget(self.refinement, self.verbose),
             'nonbonded': targets.NonBondedTarget(self.refinement, verbose=self.verbose),
         }
-    
-
     
     def get_metrics(self, verbosity: int = VERBOSITY_DETAILED) -> Dict[str, float]:
         """

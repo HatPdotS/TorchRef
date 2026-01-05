@@ -670,9 +670,9 @@ class Scaler(DebugMixin, nn.Module):
                 f_mask = f_mask[mask] if apply_internal_mask else f_mask
                 
                 # Apply bin-wise kmask (like Phenix kmask)
-                kmask = torch.exp(self.log_kmask)
-                # Clamp kmask to non-negative values
-                kmask = torch.clamp(kmask, min=0.0, max=1.0)
+                kmask = torch.exp(self.log_kmask.clamp(min=-10.0, max=10.0))
+                # Clamp kmask to reasonable values
+                kmask = torch.clamp(kmask, min=0.0, max=10.0)
                 # Expand to per-reflection using bin indices
                 bins_to_use = self.bins[mask] if apply_internal_mask else self.bins
                 kmask_per_refl = kmask[bins_to_use]
@@ -686,7 +686,7 @@ class Scaler(DebugMixin, nn.Module):
 
         if hasattr(self, 'log_scale'):
             bins_to_use = self.bins[mask] if apply_internal_mask else self.bins
-            K_overall = torch.exp(self.log_scale[bins_to_use])
+            K_overall = torch.exp(self.log_scale[bins_to_use].clamp(min=-10.0, max=10.0))
         else:
             K_overall = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
         

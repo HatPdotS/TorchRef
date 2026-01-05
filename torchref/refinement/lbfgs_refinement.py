@@ -15,6 +15,7 @@ import torch
 import numpy as np
 from typing import Optional, Dict, List, Tuple
 from torchref.refinement.base_refinement import Refinement
+from torchref.refinement.loss_state import LossState
 
 
 class LBFGSRefinement(Refinement):
@@ -84,33 +85,148 @@ class LBFGSRefinement(Refinement):
         """
         return self.xray_loss_work()
 
-    def refine_adp(self):
-        """
-        Refine B-factors (ADP) using LBFGS optimizer.
+    # =========================================================================
+    # Core Optimizer Functions
+    # =========================================================================
 
-        Freezes all parameters except B-factors and runs LBFGS optimization
-        with a combined ADP and X-ray loss.
+    def _optimize_lbfgs(
+        self,
+        state: LossState,
+        params=None,
+        lr: float = 1.0,
+        max_iter: int = 20,
+        nsteps: int = 1,
+    ) -> LossState:
         """
-        self.model.freeze_all()
-        self.model.unfreeze('b')
-    
+        Run LBFGS optimization on a LossState.
+
+        Logs initial state, runs optimization, logs final state.
+
+        Parameters
+        ----------
+        state : LossState
+            Configured loss state with targets and weights.
+        params : iterable, optional
+            Parameters to optimize. Defaults to self.parameters().
+        lr : float, optional
+            Learning rate. Default is 1.0.
+        max_iter : int, optional
+            Maximum iterations per LBFGS step. Default is 20.
+        nsteps : int, optional
+            Number of LBFGS steps. Default is 1.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
+        """
+        if params is None:
+            params = self.parameters()
+
+        # Log initial state
+        state.aggregate(log_values=True)
 
         optimizer = torch.optim.LBFGS(
-            self.parameters(),
-            lr=1.0,
-            max_iter=20,
+            params,
+            lr=lr,
+            max_iter=max_iter,
             history_size=100,
             line_search_fn="strong_wolfe"
         )
 
         def closure():
             optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
+            loss = state.aggregate()
             loss.backward()
             return loss
 
-        optimizer.step(closure)
+        for _ in range(nsteps):
+            optimizer.step(closure)
+
+        # Log final state
+        state.new_entry()
+        state.aggregate(log_values=True)
+
+        return state
+
+    def _optimize_adamw(
+        self,
+        state: LossState,
+        params=None,
+        lr: float = 1e-3,
+        steps: int = 100,
+    ) -> LossState:
+        """
+        Run AdamW optimization on a LossState.
+
+        Logs initial state, runs optimization, logs final state.
+
+        Parameters
+        ----------
+        state : LossState
+            Configured loss state with targets and weights.
+        params : iterable, optional
+            Parameters to optimize. Defaults to self.parameters().
+        lr : float, optional
+            Learning rate. Default is 1e-3.
+        steps : int, optional
+            Number of optimization steps. Default is 100.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
+        """
+        if params is None:
+            params = self.parameters()
+
+        # Log initial state
+        state.aggregate(log_values=True)
+
+        optimizer = torch.optim.AdamW(
+            params,
+            lr=lr
+        )
+
+        for step in range(steps):
+            optimizer.zero_grad()
+            loss = state.aggregate()
+            loss.backward()
+            if self.verbose > 1 and step % 10 == 0:
+                print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
+            optimizer.step()
+
+        # Log final state
+        state.new_entry()
+        state.aggregate(log_values=True)
+
+        return state
+
+    # =========================================================================
+    # Refinement Methods
+    # =========================================================================
+
+    def refine_adp(self):
+        """
+        Refine B-factors (ADP) using LBFGS optimizer.
+
+        Freezes all parameters except B-factors and runs LBFGS optimization
+        with a combined ADP and X-ray loss.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
+        """
+        self.model.freeze_all()
+        self.model.unfreeze('b')
+
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+        self._optimize_lbfgs(state)
+
         self.model.unfreeze_all()
+        return state
 
     def refine_xyz(self):
         """
@@ -118,27 +234,22 @@ class LBFGSRefinement(Refinement):
 
         Freezes all parameters except coordinates and runs LBFGS optimization
         with a combined restraints and X-ray loss.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
         """
         self.model.freeze_all()
         self.scaler.freeze()
         self.model.unfreeze('xyz')
 
-        optimizer = torch.optim.LBFGS(
-            self.parameters(),
-            lr=1.0,
-            max_iter=20,
-            history_size=100,
-            line_search_fn="strong_wolfe"
-        )
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+        self._optimize_lbfgs(state)
 
-        def closure():
-            optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
-            loss.backward()
-            return loss
-
-        optimizer.step(closure)
         self.model.unfreeze_all()
+        return state
     
     def _run_xyz_with_weight(self, restraint_weight: float, max_iter: int = 20) -> Dict:
         """
@@ -156,40 +267,26 @@ class LBFGSRefinement(Refinement):
         Returns
         -------
         dict
-            Dictionary with rwork, rfree, rmsd_bonds, rmsd_angles, etc.
+            Dictionary with rwork, rfree, rmsd_bonds, rmsd_angles, state, etc.
         """
         with torch.no_grad():
             rwork_start, rfree_start = self.get_rfactor()
 
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+        self._optimize_lbfgs(state, params=self.model.parameters(), max_iter=max_iter)
 
-        optimizer = torch.optim.LBFGS(
-            self.model.parameters(),
-            lr=1.0,
-            max_iter=max_iter,
-            history_size=100,
-            line_search_fn="strong_wolfe"
-        )
-        
-        def closure():
-            optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
-            loss.backward()
-            return loss
-        
-        optimizer.step(closure)
-        
         # Collect metrics
         with torch.no_grad():
             rwork, rfree = self.get_rfactor()
             xray_target = self.xray_loss().item()
             restraints_target = self.restraints_loss().item()
-            # Compute RMSD for bonds and angles from deviations
             bond_devs, _ = self.restraints.bond_deviations()
             rmsd_bonds = torch.sqrt((bond_devs ** 2).mean()).item()
             angle_devs, _ = self.restraints.angle_deviations()
             rmsd_angles = torch.sqrt((angle_devs ** 2).mean()).item()
-        
-        result = {
+
+        return {
             'weight': restraint_weight,
             'rwork': rwork,
             'rfree': rfree,
@@ -200,13 +297,9 @@ class LBFGSRefinement(Refinement):
             'restraints_target': restraints_target,
             'rmsd_bonds': rmsd_bonds,
             'rmsd_angles': rmsd_angles,
+            'state': state,
         }
-        
-        # NOTE: Do NOT call unfreeze_all() here - the calling screening function
-        # manages freeze/unfreeze state and will restore it after all trials
-        
-        return result
-    
+
     def _run_adp_with_weight(self, adp_weight: float, max_iter: int = 20) -> Dict:
         """
         Run ADP refinement with a fixed ADP weight and return metrics.
@@ -223,27 +316,15 @@ class LBFGSRefinement(Refinement):
         Returns
         -------
         dict
-            Dictionary with rwork, rfree, mean_b, etc.
+            Dictionary with rwork, rfree, mean_b, state, etc.
         """
         with torch.no_grad():
             rwork_start, rfree_start = self.get_rfactor()
 
-        optimizer = torch.optim.LBFGS(
-            self.model.parameters(),
-            lr=1.0,
-            max_iter=max_iter,
-            history_size=100,
-            line_search_fn="strong_wolfe"
-        )
-        
-        def closure():
-            optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
-            loss.backward()
-            return loss
-        
-        optimizer.step(closure)
-        
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+        self._optimize_lbfgs(state, params=self.model.parameters(), max_iter=max_iter)
+
         # Collect metrics
         with torch.no_grad():
             rwork, rfree = self.get_rfactor()
@@ -251,10 +332,9 @@ class LBFGSRefinement(Refinement):
             adp_target = self.adp_loss().item()
             b_factors = self.model.b()
             mean_b = b_factors.mean().item()
-            # Compute <Bi-Bj> - average B-factor difference for bonded atoms
             bi_bj = self._compute_mean_bi_bj()
-        
-        result = {
+
+        return {
             'weight': adp_weight,
             'rwork': rwork,
             'rfree': rfree,
@@ -265,13 +345,9 @@ class LBFGSRefinement(Refinement):
             'bi_bj': bi_bj,
             'rwork_start': rwork_start,
             'rfree_start': rfree_start,
+            'state': state,
         }
-        
-        # NOTE: Do NOT call unfreeze_all() here - the calling screening function
-        # manages freeze/unfreeze state and will restore it after all trials
-        
-        return result
-    
+
     def _compute_mean_bi_bj(self) -> float:
         """
         Compute mean |Bi - Bj| for bonded atom pairs.
@@ -650,7 +726,7 @@ class LBFGSRefinement(Refinement):
         # Return best (lowest score)
         return min(results, key=lambda x: x['score'])
     
-    def regularize_adp(self,lr=0.1):
+    def regularize_adp(self, lr=0.1):
         """
         Apply regularization to B-factors (ADP) using LBFGS optimizer.
 
@@ -658,26 +734,21 @@ class LBFGSRefinement(Refinement):
         ----------
         lr : float, optional
             Learning rate for LBFGS optimizer. Default is 0.1.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
         """
         self.model.freeze_all()
         self.model.unfreeze('b')
 
-        optimizer = torch.optim.LBFGS(
-            self.parameters(),
-            lr=0.1,
-            max_iter=20,
-            history_size=100,
-            line_search_fn="strong_wolfe"
-        )
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+        self._optimize_lbfgs(state, lr=lr)
 
-        def closure():
-            optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
-            loss.backward()
-            return loss
-
-        optimizer.step(closure)
         self.model.unfreeze_all()
+        return state
 
     def refine_xyz_adamW(self, lr=1e-3, steps=100):
         """
@@ -689,26 +760,23 @@ class LBFGSRefinement(Refinement):
             Learning rate for AdamW optimizer. Default is 1e-3.
         steps : int, optional
             Number of AdamW optimization steps. Default is 100.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
         """
         self.model.freeze_all()
         self.scaler.freeze()
         self.model.unfreeze('xyz')
 
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=lr
-        )
-
-        for step in range(steps):
-            optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
-            loss.backward()
-            if self.verbose > 1 and step % 10 == 0:
-                print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
-            optimizer.step()
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+        self._optimize_adamw(state, lr=lr, steps=steps)
 
         self.model.unfreeze_all()
-    
+        return state
+
     def refine_b_adamW(self, lr=1e-3, steps=100):
         """
         Refine B-factors (ADP) using AdamW optimizer as an alternative.
@@ -719,29 +787,28 @@ class LBFGSRefinement(Refinement):
             Learning rate for AdamW optimizer. Default is 1e-3.
         steps : int, optional
             Number of AdamW optimization steps. Default is 100.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
         """
         self.model.freeze_all()
         self.model.unfreeze('b')
 
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=lr
-        )
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+        self._optimize_adamw(state, lr=lr, steps=steps)
 
-        for step in range(steps):
-            optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
-            loss.backward()
-            if self.verbose > 1 and step % 10 == 0:
-                print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
-            optimizer.step()
         self.model.unfreeze_all()
-    
+        return state
+
     def regularize_xyz_adp_to_rfactor_gap(self, lr=1e-1, max_steps=100, target_rfactor_gap=0.05):
         """
         Apply regularization to coordinates (XYZ) and B-factors (ADP) until target gap.
 
         Uses AdamW optimizer and stops when the Rfree-Rwork gap reaches the target.
+        Note: This method has custom early stopping logic and cannot use _optimize_adamw.
 
         Parameters
         ----------
@@ -751,26 +818,31 @@ class LBFGSRefinement(Refinement):
             Maximum number of optimization steps. Default is 100.
         target_rfactor_gap : float, optional
             Target Rfree-Rwork gap to achieve. Default is 0.05.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
         """
         self.model.freeze_all()
         self.scaler.freeze()
         self.model.unfreeze('xyz')
         self.model.unfreeze('b')
 
-        def loss_fn():
-            return (self.restraints_loss() +
-                    self.adp_loss())
-        
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+
+        # Log initial state
+        state.aggregate(log_values=True)
+
+        optimizer = torch.optim.AdamW(self.parameters(), lr=lr)
+
         def closure():
             optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
+            loss = state.aggregate()
             loss.backward()
             return loss
-        
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=lr
-        )
+
         for step in range(max_steps):
             optimizer.step(closure)
             with torch.no_grad():
@@ -783,6 +855,13 @@ class LBFGSRefinement(Refinement):
                         print(f"Target R-factor gap of {target_rfactor_gap} reached at step {step+1}. Stopping regularization.")
                     break
 
+        # Log final state
+        state.new_entry()
+        state.aggregate(log_values=True)
+
+        self.model.unfreeze_all()
+        return state
+
     def refine_everything_adamW(self, lr=1e-3, steps=100):
         """
         Refine both coordinates (XYZ) and B-factors (ADP) using AdamW optimizer.
@@ -793,50 +872,256 @@ class LBFGSRefinement(Refinement):
             Learning rate for AdamW optimizer. Default is 1e-3.
         steps : int, optional
             Number of AdamW optimization steps. Default is 100.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
         """
         self.model.freeze_all()
         self.scaler.unfreeze()
         self.model.unfreeze('xyz')
         self.model.unfreeze('b')
 
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=lr
-        )
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+        self._optimize_adamw(state, lr=lr, steps=steps)
 
-        for step in range(steps):
-            optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
-            loss.backward()
-            if self.verbose > 1 and step % 10 == 0:
-                print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
-            optimizer.step()
+        self.model.unfreeze_all()
+        return state
 
-    def _refine_everything_lbfgs_single_cycle(self,nsteps=1):
+    def _refine_everything_lbfgs_single_cycle(self, nsteps=1):
         """
         Refine both coordinates (XYZ) and B-factors (ADP) using LBFGS optimizer.
 
         Jointly optimizes all parameters with the combined restraints, ADP,
         and X-ray loss.
-        """
-        optimizer = torch.optim.LBFGS(
-            self.parameters(),
-            lr=1.0,
-            max_iter=20,
-            history_size=100,
-            line_search_fn="strong_wolfe"
-        )
 
-        def closure():
-            optimizer.zero_grad()
-            loss = self.component_weighting.total_loss()
-            loss.backward()
-            return loss
-        
-        for i in range(nsteps):
-            optimizer.step(closure)
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
+        """
+        self.scaler.refine_lbfgs()
+        state = self.create_loss_state()
+        self._optimize_lbfgs(state, nsteps=nsteps)
 
         self.model.unfreeze_all()
+        return state
+
+    # =========================================================================
+    # Training Loop for Policy Learning
+    # =========================================================================
+
+    def run_training_trajectory(
+        self,
+        policy_weighting,
+        n_steps: int = 10,
+        pdb_id: str = "",
+        structure_path: str = "",
+        sf_path: str = "",
+        seed: Optional[int] = None,
+        policy_version: Optional[str] = None,
+    ):
+        """
+        Run a training trajectory with policy-guided refinement.
+
+        This method runs a sequence of refinement steps using a policy
+        to select component weights. It records state-action-reward tuples
+        for training the policy with AWR or similar algorithms.
+
+        Parameters
+        ----------
+        policy_weighting : PolicyComponentWeighting
+            Policy weighting scheme (should be in training mode with sampling).
+        n_steps : int, optional
+            Number of refinement steps in the trajectory (default: 10).
+        pdb_id : str, optional
+            PDB identifier for recording.
+        structure_path : str, optional
+            Path to structure file for recording.
+        sf_path : str, optional
+            Path to structure factors file for recording.
+        seed : int, optional
+            Random seed for reproducibility.
+        policy_version : str, optional
+            Version identifier of the policy being used.
+
+        Returns
+        -------
+        TrajectoryData
+            Complete trajectory with state-action-reward tuples.
+
+        Example
+        -------
+        >>> from torchref.refinement.weighting import PolicyComponentWeighting
+        >>>
+        >>> # Create policy in training mode (sampling enabled)
+        >>> policy = PolicyComponentWeighting(
+        ...     refinement, policy_path='policy.pt',
+        ...     sample=True, temperature=1.0
+        ... )
+        >>>
+        >>> # Run trajectory
+        >>> trajectory = refinement.run_training_trajectory(
+        ...     policy, n_steps=10, pdb_id='3GR5'
+        ... )
+        >>>
+        >>> # Save trajectory for training
+        >>> import json
+        >>> from torchref.refinement.weighting import trajectory_to_dict
+        >>> with open('trajectory.json', 'w') as f:
+        ...     json.dump(trajectory_to_dict(trajectory), f)
+        """
+        import time
+        start_time = time.time()
+
+        # Set random seed if provided
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+
+        # Start recording
+        policy_weighting.start_recording(
+            pdb_id=pdb_id,
+            structure_path=structure_path,
+            sf_path=sf_path,
+            seed=seed,
+            policy_version=policy_version,
+        )
+
+        try:
+            # Initial scaling
+            self.scaler.refine_lbfgs()
+
+            for step in range(n_steps):
+                if self.verbose > 1:
+                    print(f"Step {step + 1}/{n_steps}")
+
+                # Create LossState and apply policy weights
+                state = self.create_loss_state()
+
+                # Evaluate once to populate loss cache (needed for feature extraction)
+                with torch.no_grad():
+                    state.aggregate()
+
+                # Apply policy weights (this also records the step)
+                policy_weighting.apply_to_state(state)
+
+                # Run LBFGS optimization with policy weights
+                self._optimize_lbfgs(state, nsteps=1)
+
+                # Increment step counter
+                policy_weighting.increment_step()
+
+            # Stop recording and get trajectory
+            trajectory = policy_weighting.stop_recording()
+            trajectory.total_time = time.time() - start_time
+            trajectory.success = True
+
+        except Exception as e:
+            # Record failure
+            trajectory = policy_weighting.stop_recording()
+            if trajectory is not None:
+                trajectory.success = False
+                trajectory.error_message = str(e)
+                trajectory.total_time = time.time() - start_time
+            raise
+
+        return trajectory
+
+    def run_training_trajectory_joint(
+        self,
+        policy_weighting,
+        n_steps: int = 10,
+        pdb_id: str = "",
+        structure_path: str = "",
+        sf_path: str = "",
+        seed: Optional[int] = None,
+        policy_version: Optional[str] = None,
+    ):
+        """
+        Run a training trajectory with joint XYZ+ADP refinement.
+
+        Similar to run_training_trajectory but refines both XYZ and ADP
+        together in each step, which may be more efficient.
+
+        Parameters
+        ----------
+        policy_weighting : PolicyComponentWeighting
+            Policy weighting scheme (should be in training mode).
+        n_steps : int, optional
+            Number of refinement steps (default: 10).
+        pdb_id, structure_path, sf_path : str, optional
+            Identifiers for trajectory recording.
+        seed : int, optional
+            Random seed for reproducibility.
+        policy_version : str, optional
+            Policy version identifier.
+
+        Returns
+        -------
+        TrajectoryData
+            Complete trajectory with state-action-reward tuples.
+        """
+        import time
+        start_time = time.time()
+
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+
+        policy_weighting.start_recording(
+            pdb_id=pdb_id,
+            structure_path=structure_path,
+            sf_path=sf_path,
+            seed=seed,
+            policy_version=policy_version,
+        )
+
+        try:
+            # Initial scaling
+            self.scaler.refine_lbfgs()
+
+            # Unfreeze all parameters for joint refinement
+            self.model.unfreeze('xyz')
+            self.model.unfreeze('b')
+
+            for step in range(n_steps):
+                if self.verbose > 1:
+                    print(f"Step {step + 1}/{n_steps}")
+
+                # Create LossState and evaluate to populate cache
+                state = self.create_loss_state()
+                with torch.no_grad():
+                    state.aggregate()
+
+                # Apply policy weights (records the step)
+                policy_weighting.apply_to_state(state)
+
+                # Run LBFGS optimization
+                self._optimize_lbfgs(state, nsteps=1)
+
+                # Increment step counter
+                policy_weighting.increment_step()
+
+            # Freeze everything back
+            self.model.freeze_all()
+
+            trajectory = policy_weighting.stop_recording()
+            trajectory.total_time = time.time() - start_time
+            trajectory.success = True
+
+        except Exception as e:
+            self.model.freeze_all()
+            trajectory = policy_weighting.stop_recording()
+            if trajectory is not None:
+                trajectory.success = False
+                trajectory.error_message = str(e)
+                trajectory.total_time = time.time() - start_time
+            raise
+
+        return trajectory
 
     def refine(self, macro_cycles=5):
         """

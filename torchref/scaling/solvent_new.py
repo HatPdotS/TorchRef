@@ -399,9 +399,9 @@ class SolventModel(DebugMixin, nn.Module):
         # Apply B-factor damping: exp(-B * s²)
         # The Debye-Waller factor for isotropic displacement
         b_solvent = self.b_solvent
-        k_solvent = torch.exp(self.log_k_solvent)
-        exp = -b_solvent * s_squared
-        b_factor_term = torch.exp(exp.clamp(max=50.0))  # Clamp to avoid overflow
+        k_solvent = torch.exp(self.log_k_solvent.clamp(min=-10.0, max=10.0))
+        exp = -b_solvent.clamp(min=-500.0, max=500.0) * s_squared
+        b_factor_term = torch.exp(exp.clamp(min=-10.0, max=10.0))  # Clamp to avoid overflow
         
         # Phase handling
         if self.optimize_phase and F_protein is not None:

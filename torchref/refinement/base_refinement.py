@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from torchref.io.Data import ReflectionData
 from torchref.model.model_ft import ModelFT
@@ -12,12 +12,15 @@ from torchref.utils.stats import (
 )
 
 # Target system imports
-from torchref.refinement.targets import (
-    Target,create_xray_target
+from torchref.refinement.targets.targets import (
+    Target, create_xray_target
 )
-from torchref.refinement.combined_targets import (
+from torchref.refinement.targets.combined_targets import (
     TotalGeometryTarget,
-    TotalADPTarget,)
+    TotalADPTarget,
+)
+from torchref.refinement.loss_state import LossState, create_loss_state
+from torchref.refinement.aggregator import LossAggregator
 
 class Refinement(DebugMixin, nnModule):
     """
@@ -175,15 +178,18 @@ class Refinement(DebugMixin, nnModule):
         # X-ray targets
         self.xray_target_work = create_xray_target(self, xray_mode, use_work_set=True, verbose=self.verbose)
         self.xray_target_test = create_xray_target(self, xray_mode, use_work_set=False, verbose=self.verbose)
-        
+
         # Total geometry target (handles bond, angle, torsion internally)
         self.geometry_target = TotalGeometryTarget(self, verbose=self.verbose)
-        
+
         self.adp_target = TotalADPTarget(
             self,
             verbose=self.verbose
         )
-        
+
+        # LossAggregator for new LossState pipeline
+        self.aggregator = LossAggregator()
+
         self.setup_component_weighting()
 
         if self.verbose > 0:
@@ -214,93 +220,6 @@ class Refinement(DebugMixin, nnModule):
             The reflection data container.
         """
         return self.reflection_data
-
-    def setup_grad_weighting(self):
-        """
-        Setup gradient-informed weighting module.
-
-        Creates a GradientInformedWeighting instance and assigns it to
-        the weighter attribute.
-        """
-        from torchref.refinement.loss_weighting import GradientInformedWeighting
-        self.get_scales()
-        self.weighter = GradientInformedWeighting(self,target_weights=self.effective_weights)
-        if self.verbose > 0:
-            print("Using GradientInformedWeighting for loss weighting")
-
-    def set_up_smart_weighting(
-        self,
-        base_restraint: float = 8.0,  # Good default - conservative
-        base_adp: float = 3.0,  # Increased - ADP can overfit significantly
-        nll_modulation_strength: float = 0.5,
-        recompute_gradnorms_every: int = 5,
-        target_rfree_gap: float = 0.04
-    ):
-        """
-        Set up smart hybrid weighting combining gradient norm balancing with ML modulation.
-
-        This is the RECOMMENDED weighting strategy as it provides:
-
-        - Balanced gradients across loss terms (via gradient norms)
-        - Physical correctness (via ML target values)
-        - Overfitting prevention (via Rfree gap monitoring)
-        - Stable refinement that converges without oscillation
-
-        The weighting strategy:
-
-        1. Computes gradient norms to balance optimization landscape
-        2. Modulates weights based on ML target values to respect physical meaning
-        3. Monitors Rfree gap and increases BOTH restraints AND ADP weights if overfitting
-        4. Uses smooth transitions to avoid weight oscillations
-
-        Parameters
-        ----------
-        base_restraint : float, optional
-            Base restraint weight. Default is 8.0 for stability.
-        base_adp : float, optional
-            Base ADP weight. Default is 3.0 (higher because ADP can overfit
-            significantly).
-        nll_modulation_strength : float, optional
-            How strongly ML target values modulate weights (0-1).
-            0 = pure gradient norm balancing, 1 = strong ML target influence.
-            Default is 0.5.
-        recompute_gradnorms_every : int, optional
-            Recompute gradient norms every N cycles. Default is 5.
-        target_rfree_gap : float, optional
-            Target Rfree-Rwork gap. Default is 0.04 (~4%).
-
-        Examples
-        --------
-        >>> refinement = Refinement(data_file="data.mtz", pdb="model.pdb")
-        >>> refinement.set_up_smart_weighting(
-        ...     base_restraint=1.5,
-        ...     base_adp=1.5,
-        ...     nll_modulation_strength=0.3
-        ... )
-        >>> refinement.refine(n_cycles=10)
-        """
-        from torchref.refinement.loss_weighting import create_hybrid_gradnorm_ML_weighting
-        
-        # Initialize scaler first (needed for gradient computation)
-        self.get_scales()
-        
-        # Create hybrid weighting
-        self.weighter = create_hybrid_gradnorm_ML_weighting(
-            refinement=self,
-            base_restraint=base_restraint,
-            base_adp=base_adp,
-            nll_modulation_strength=nll_modulation_strength,
-            recompute_gradnorms_every=recompute_gradnorms_every,
-            target_rfree_gap=target_rfree_gap,
-            verbose=self.verbose
-        )
-        
-        if self.verbose > 0:
-            print(f"Using HybridGradNormMLWeighting for smart loss weighting")
-            print(f"  Base weights: restraints={base_restraint}, adp={base_adp}")
-            print(f"  ML target modulation strength: {nll_modulation_strength}")
-            print(f"  Target Rfree gap: {target_rfree_gap}")
-            print(f"  Recompute gradient norms every {recompute_gradnorms_every} cycles")
 
     def get_scales(self):
         if not hasattr(self, 'scaler'):
@@ -465,9 +384,130 @@ class Refinement(DebugMixin, nnModule):
         return self.component_weighting.total_loss()
 
     def setup_component_weighting(self):
-        from torchref.refinement.component_weighting import ComponentWeighting
+        from torchref.refinement.weighting.component_weighting import ComponentWeighting
         self.get_scales()
         self.component_weighting = ComponentWeighting(self, weights=self.manual_weights, component_weights=self.component_weights)
+
+    def create_loss_state(self) -> LossState:
+        """
+        Create a configured LossState for optimization.
+
+        Sets up a LossState with all targets registered as callables with
+        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'). Weights are
+        applied from component_weighting.
+
+        Usage:
+            state = refinement.create_loss_state()
+
+            # Log initial state
+            state.aggregate(log_values=True)
+
+            # In LBFGS closure:
+            def closure():
+                optimizer.zero_grad()
+                loss = state.aggregate()
+                loss.backward()
+                return loss
+
+            optimizer.step(closure)
+
+            # Log final state
+            state.new_entry()
+            state.aggregate(log_values=True)
+
+        Returns
+        -------
+        LossState
+            Configured LossState with targets and weights.
+        """
+        state = LossState(device=self.device)
+
+        # Register X-ray target
+        state.register_target('xray/work', lambda: self.xray_target_work())
+
+        # Register geometry targets with hierarchy
+        for name, target in self.geometry_target.items():
+            state.register_target(f'geometry/{name}', lambda t=target: t())
+
+        # Register ADP targets with hierarchy
+        for name, target in self.adp_target.items():
+            state.register_target(f'adp/{name}', lambda t=target: t())
+
+        # Get weights from component_weighting and apply
+        self.component_weighting.update_weights()
+        for name, weight in self.component_weighting.weights.items():
+            weight_val = weight.item() if isinstance(weight, torch.Tensor) else weight
+            state.set_weight(name, weight_val)
+
+        return state
+
+    def build_loss_state(self) -> LossState:
+        """
+        Build a fresh LossState for the current forward pass.
+
+        This creates a LossState populated with reflection data and references
+        to the model and restraints for lazy computation.
+
+        Returns
+        -------
+        LossState
+            Fresh LossState ready for the pipeline.
+        """
+
+        return create_loss_state(
+            device=self.device
+        )
+
+    def compute_loss_state(self) -> LossState:
+        """
+        Build LossState and compute all losses using the new pipeline.
+
+        This method:
+        1. Creates a fresh LossState
+        2. Applies all targets to add losses
+        3. Applies all weighting schemes to add weights
+
+        Returns
+        -------
+        LossState
+            Complete LossState with losses and weights populated.
+        """
+        # Build initial state
+        state = self.build_loss_state()
+
+        # Apply X-ray targets
+        state = self.xray_target_work.add_to_state(state)
+        nll_test = self.xray_target_test().detach()
+        state = state.add_metric('xray_test_nll', nll_test)
+
+
+        state = self.geometry_target.add_to_state(state)
+        state = self.adp_target.add_to_state(state)
+
+
+        state = self.component_weighting.apply_to_state(state)
+
+        return state
+
+    def loss_from_state(self, state: Optional[LossState] = None) -> torch.Tensor:
+        """
+        Compute total weighted loss using the LossState pipeline.
+
+        This is an alternative to loss() that uses the new architecture.
+
+        Parameters
+        ----------
+        state : LossState, optional
+            Pre-computed LossState. If None, builds a new one.
+
+        Returns
+        -------
+        torch.Tensor
+            Total weighted loss.
+        """
+        if state is None:
+            state = self.compute_loss_state()
+        return self.aggregator(state)
 
     def xray_loss(self):
         """

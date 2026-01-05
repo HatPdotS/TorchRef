@@ -9,18 +9,23 @@ Design Pattern:
 - Target classes hold a reference to the refinement object
 - __call__() computes and returns the loss
 - This avoids repeated instantiation and allows stateful targets
+- NEW: Targets can also work with LossState for the new pipeline
 
 Target Types:
 - X-ray targets: Least Squares, Maximum Likelihood, Gaussian NLL
 - Geometry restraint targets: Bonds, Angles, Torsions
 - ADP restraint targets: Similarity (SIMU), Rigid Bond (DELU)
+
+LossState Integration:
+- Targets can optionally receive a LossState and add their loss to it
+- This enables a clean pipeline without circular references
 """
 
 import torch
 from torch import nn
 from torch.special import i0
 import numpy as np
-from typing import Optional, Tuple, Dict, TYPE_CHECKING
+from typing import Optional, Tuple, Dict, TYPE_CHECKING, Union
 from torchref.utils.utils import ModuleReference
 from torchref.utils.stats import (
     StatEntry, stat, filter_stats,
@@ -29,6 +34,7 @@ from torchref.utils.stats import (
 
 if TYPE_CHECKING:
     from torchref.refinement.base_refinement import Refinement
+    from torchref.refinement.loss_state import LossState
 
 
 # =============================================================================
@@ -54,6 +60,10 @@ class Target(nn.Module):
     2. Full initialization with refinement:
         >>> target = Target(refinement)
 
+    LossState Integration:
+        Targets can work with LossState for the new pipeline:
+        >>> state = target.apply_to_state(state)  # Adds loss to state
+
     Parameters
     ----------
     refinement : Refinement, optional
@@ -63,6 +73,8 @@ class Target(nn.Module):
 
     Attributes
     ----------
+    name : str
+        Unique name for this target (used as loss key in LossState).
     _refinement : ModuleReference
         Reference to the refinement object.
     verbose : int
@@ -72,6 +84,10 @@ class Target(nn.Module):
     _sigma : torch.Tensor (buffer)
         Sigma parameter for weighting. Subclasses should override defaults.
     """
+
+    # Class attribute: unique name for this target type
+    # Subclasses should override this
+    name: str = 'base_target'
 
     def __init__(self, refinement: 'Refinement' = None, verbose: int = 0,
                  target_value: float = 0.0, sigma: float = 0.5):
@@ -170,10 +186,32 @@ class Target(nn.Module):
     def forward(self) -> torch.Tensor:
         """Compute and return the loss. Override in subclasses."""
         raise NotImplementedError
-    
+
     def __call__(self) -> torch.Tensor:
         """Compute the loss."""
         return self.forward()
+
+    def add_to_state(self, state: 'LossState') -> 'LossState':
+        """
+        Compute loss and add it to the LossState.
+
+        This method enables the new LossState pipeline pattern where targets
+        receive a state object, compute their loss, add it to the state,
+        and return the state for chaining.
+
+        Parameters
+        ----------
+        state : LossState
+            Current loss state with computed data.
+
+        Returns
+        -------
+        LossState
+            State with this target's loss added.
+        """
+        loss = self.forward()
+        state.add_loss(self.name, loss)
+        return state
 
 
 # =============================================================================
@@ -202,6 +240,8 @@ class XrayTarget(Target):
         Whether to use work set or test set.
     """
 
+    name: str = 'xray'  # Will be overridden based on work/test set
+
     def __init__(self, refinement: 'Refinement' = None, use_work_set: bool = True, verbose: int = 0):
         """
         Initialize X-ray target.
@@ -217,6 +257,8 @@ class XrayTarget(Target):
         """
         super().__init__(refinement, verbose)
         self.use_work_set = use_work_set
+        # Set name based on work/test set
+        self.name = 'xray_work' if use_work_set else 'xray_test'
     
     def get_data(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -392,10 +434,12 @@ class GeometryTarget(Target):
 class BondTarget(GeometryTarget):
     """
     Bond length restraint target (Gaussian NLL).
-    
+
     NLL = 0.5 * ((d - d₀) / σ)² + log(σ) + 0.5 * log(2π)
     """
-    
+
+    name: str = 'geometry/bond'
+
     def __init__(self, refinement: 'Refinement' = None, verbose: int = 0):
         super().__init__(refinement, verbose, target_value=-2.0, sigma=1.0)
     
@@ -430,10 +474,12 @@ class BondTarget(GeometryTarget):
 class AngleTarget(GeometryTarget):
     """
     Angle restraint target (Gaussian NLL).
-    
+
     NLL = 0.5 * ((θ - θ₀) / σ)² + log(σ) + 0.5 * log(2π)
     """
-    
+
+    name: str = 'geometry/angle'
+
     def __init__(self, refinement: 'Refinement' = None, verbose: int = 0):
         super().__init__(refinement, verbose, target_value=-2.0, sigma=0.5)
     
@@ -471,11 +517,13 @@ class AngleTarget(GeometryTarget):
 class TorsionTarget(GeometryTarget):
     """
     Torsion angle restraint target (von Mises NLL).
-    
+
     NLL = -κ*cos(φ - φ₀) + log(I₀(κ)) + log(2π)
     where κ = 1/σ²
     """
-    
+
+    name: str = 'geometry/torsion'
+
     def __init__(self, refinement: 'Refinement' = None, verbose: int = 0):
         super().__init__(refinement, verbose, target_value=1.0, sigma=0.3)
     
@@ -530,23 +578,25 @@ class TorsionTarget(GeometryTarget):
 class PlanarityTarget(GeometryTarget):
     """
     Planarity restraint target (Gaussian NLL).
-    
+
     For each planar group (e.g., aromatic rings, peptide planes), computes the
     distance of each atom from the best-fit plane determined by SVD.
-    
+
     The best-fit plane is found by:
     1. Computing the centroid of the atoms
     2. Centering the coordinates
     3. Finding the eigenvector with smallest eigenvalue via SVD
     4. This eigenvector is the plane normal
-    
+
     NLL = 0.5 * (d_i / σ_i)² + log(σ_i) + 0.5 * log(2π)
-    
+
     where d_i is the distance of atom i from the best-fit plane.
-    
+
     Reference: cctbx/geometry_restraints/planarity.h
     """
-    
+
+    name: str = 'geometry/planarity'
+
     def __init__(self, refinement: 'Refinement' = None, verbose: int = 0):
         super().__init__(refinement, verbose, target_value=-2.0, sigma=0.2)
     
@@ -652,24 +702,26 @@ class PlanarityTarget(GeometryTarget):
 class ChiralTarget(GeometryTarget):
     """
     Chiral volume restraint target.
-    
+
     Restrains the signed volume of tetrahedral chiral centers to maintain
     correct stereochemistry (R vs S configuration, L vs D amino acids).
-    
+
     The chiral volume is computed as:
         V = v1 · (v2 × v3)
-    
+
     where vi = position of neighbor i - position of center.
-    
+
     For standard protein Cα atoms with ordering (N, C, CB):
     - L-amino acids: positive volume (~+2.5 Å³)
     - D-amino acids: negative volume (~-2.5 Å³)
-    
+
     The loss function penalizes deviations from the ideal signed volume:
         NLL = 0.5 * ((V - V_ideal) / σ)² + log(σ) + 0.5 * log(2π)
-    
+
     For achiral centers (volume_sign='both'), we restrain the absolute volume.
     """
+
+    name: str = 'geometry/chiral'
 
     def __init__(self, refinement: 'Refinement' = None, verbose: int = 0):
         super().__init__(refinement, verbose, target_value=-2.0, sigma=0.2)
@@ -886,7 +938,9 @@ class NonBondedTarget(GeometryTarget):
         Verbosity level. Default is 0.
     """
 
-    def __init__(self, refinement: 'Refinement' = None, 
+    name: str = 'geometry/nonbonded'
+
+    def __init__(self, refinement: 'Refinement' = None,
                  mode: str = 'prolsq',
                  c_rep: float = 16.0,
                  r_exp: float = 4.0,
@@ -1089,14 +1143,16 @@ class ADPTarget(Target):
 class ADPSimilarityTarget(ADPTarget):
     """
     ADP Similarity restraint (SIMU in Phenix/SHELX).
-    
+
     Restrains B-factors of bonded atoms to be similar.
     NLL = 0.5 * ((B_i - B_j) / σ)² + log(σ) + 0.5 * log(2π)
-    
+
     Tunable parameters (as buffers):
     - _simu_sigma: float, sigma for B-factor differences (default 2.0 Å²)
     """
-    
+
+    name: str = 'adp/simu'
+
     def __init__(self, refinement: 'Refinement', simu_sigma: float = 2.0, verbose: int = 0):
         super().__init__(refinement, verbose, target_value=4.0, sigma=1.2)
         # Register simu-specific sigma as buffer (separate from base sigma)
@@ -1189,8 +1245,10 @@ class RigidBondTarget(ADPTarget):
     verbose : int, optional
         Verbosity level. Default is 0.
     """
-    
-    def __init__(self, refinement: 'Refinement', sigma: float = 0.004, 
+
+    name: str = 'adp/delu'
+
+    def __init__(self, refinement: 'Refinement', sigma: float = 0.004,
                  use_aniso: bool = True, verbose: int = 0):
         super().__init__(refinement, verbose)
         self.sigma = sigma
@@ -1408,12 +1466,15 @@ class RigidBondTarget(ADPTarget):
             'mean_z': stat(delta_z_stats['mean_z'], VERBOSITY_DEBUG),
         }
 
+
 class ADPEntropyTarget(ADPTarget):
     """
     ADP Entropy regularization target.
-    
+
     Uses the model's existing adp_kl_divergence_loss or similar.
     """
+
+    name: str = 'adp/KL'
 
     def __init__(self, refinement: 'Refinement' = None, verbose: int = 0):
         super().__init__(refinement, verbose, target_value=0.5, sigma=0.5)
@@ -1470,7 +1531,7 @@ class ADPLocalityTarget(ADPTarget):
     - _k_neighbors: int, number of nearest neighbors
     - _correlation_length: float, distance scale for weight decay (Å)
     - _scale: float, scaling factor for loss magnitude
-    
+
     Parameters
     ----------
     refinement : Refinement
@@ -1486,6 +1547,8 @@ class ADPLocalityTarget(ADPTarget):
     verbose : int, optional
         Verbosity level. Default is 0.
     """
+
+    name: str = 'adp/locality'
 
     def __init__(
         self,

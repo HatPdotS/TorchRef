@@ -169,7 +169,6 @@ Examples:
     # Import here to avoid slow startup for --help
     try:
         from torchref.refinement.lbfgs_refinement import LBFGSRefinement
-        from torchref.refinement.loss_weighting import ResolutionDependentWeighting, HybridGradNormMLWeighting
     except ImportError as e:
         print(f"Error: Failed to import torchref modules: {e}", file=sys.stderr)
         print("Please ensure torchref is properly installed.", file=sys.stderr)
@@ -219,20 +218,6 @@ Examples:
         print("Refinement initialized successfully.\n")
         sys.stdout.flush()
 
-    if args.verbose > 0:
-        print("Setting up Hybrid weighting...")
-        sys.stdout.flush()
-    
-    # weighter = HybridGradNormMLWeighting(
-    #     target_weights=weights, refinement=refinement, verbose=args.verbose
-    # )
-
-    # refinement.weighter = weighter
-
-
-        
-
-    
     # Run refinement
     try:
         if args.verbose > 0:
