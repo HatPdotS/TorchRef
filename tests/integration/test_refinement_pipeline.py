@@ -16,7 +16,7 @@ class TestRefinementSetup:
     def test_setup_refinement_components(self, sample_structure_pair):
         """Test setting up all refinement components."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         from torchref.symmetrie.symmetrie import Symmetry
         
@@ -64,7 +64,7 @@ class TestStructureFactorCalculation:
     def test_fcalc_calculation(self, sample_structure_pair):
         """Test calculating structure factors from a model."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         # Load
         model = Model()
@@ -113,7 +113,7 @@ class TestGradientFlow:
     def test_refinement_step(self, sample_structure_pair):
         """Test a single refinement step with real data."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         # Load
         model = Model()
@@ -135,7 +135,7 @@ class TestDeviceConsistency:
     def test_all_components_same_device(self, sample_structure_pair, cpu_device):
         """Test that all components can be moved to the same device."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.symmetrie.symmetrie import Symmetry
         
         # Load
@@ -157,7 +157,7 @@ class TestDeviceConsistency:
     def test_gpu_refinement_setup(self, sample_structure_pair, gpu_device):
         """Test refinement setup on GPU."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         model = Model(device=gpu_device)
         model.load_cif(sample_structure_pair["model"])

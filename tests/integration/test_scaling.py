@@ -27,7 +27,7 @@ class TestScalerInitialization:
     def test_scaler_with_model_and_data(self, sample_structure_pair):
         """Test creating a scaler with model and data."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -52,7 +52,7 @@ class TestScalerOperations:
     def test_scaler_freeze_unfreeze(self, sample_structure_pair):
         """Test freezing and unfreezing the scaler."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -75,7 +75,7 @@ class TestScalerOperations:
     def test_scaler_set_model_and_data(self, sample_structure_pair):
         """Test setting model and data after empty init."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         # Create empty scaler
@@ -102,7 +102,7 @@ class TestScalerAnisotropy:
     def test_setup_anisotropy_correction(self, sample_structure_pair):
         """Test setting up anisotropy correction parameters."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -121,7 +121,7 @@ class TestScalerAnisotropy:
     def test_anisotropy_correction_computation(self, sample_structure_pair):
         """Test computing anisotropy correction."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -147,7 +147,7 @@ class TestScalerBuffers:
     def test_scaler_has_scattering_vectors(self, sample_structure_pair):
         """Test that scaler computes scattering vectors."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -167,7 +167,7 @@ class TestScalerBuffers:
     def test_scaler_has_bins(self, sample_structure_pair):
         """Test that scaler has resolution bins."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -192,7 +192,7 @@ class TestScalerDeviceHandling:
     def test_scaler_default_device(self, sample_structure_pair):
         """Test that scaler defaults to CPU."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()

@@ -16,7 +16,7 @@ class TestScatteringVectors:
     def test_get_scattering_vectors(self, sample_structure_pair):
         """Test computing scattering vectors from HKL and cell."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.math_functions.math_torch import get_scattering_vectors
         
         model = Model()
@@ -163,7 +163,7 @@ class TestResolutionCalculations:
     @pytest.mark.integration
     def test_get_resolution_from_hkl(self, sample_structure_pair):
         """Test calculating resolution from HKL indices and cell."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -185,7 +185,7 @@ class TestFrenchWilson:
     @pytest.mark.integration
     def test_french_wilson_application(self, sample_mtz_file):
         """Test French-Wilson conversion is applied during MTZ loading."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))

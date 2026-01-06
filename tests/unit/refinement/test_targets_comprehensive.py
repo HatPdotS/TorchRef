@@ -324,8 +324,8 @@ class TestTotalGeometryTarget:
 
     def test_total_geometry_target_initialization(self):
         """Test TotalGeometryTarget initialization."""
-        from torchref.refinement.combined_targets import TotalGeometryTarget
-        
+        from torchref.refinement.targets import TotalGeometryTarget
+
         target = TotalGeometryTarget()
         assert target._refinement is None
 

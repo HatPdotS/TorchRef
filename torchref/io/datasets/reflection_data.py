@@ -1,3 +1,11 @@
+"""
+Reflection data container for crystallographic datasets.
+
+This module provides the ReflectionData class for handling single-crystal
+reflection data including Miller indices, structure factor amplitudes,
+intensities, and R-free flags.
+"""
+
 import pandas as pd
 import numpy as np
 import warnings
@@ -6,11 +14,13 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Dict, List, Union, TYPE_CHECKING
 import reciprocalspaceship as rs
-from torchref.model.model_ft import ModelFT
 from torchref.utils.utils import TensorMasks
-from torchref.io import legacy_format_readers, cif_readers
+from torchref.io import mtz, cif
 from torchref.utils.debug_utils import DebugMixin
 from torchref.math_functions.french_wilson import FrenchWilson
+
+if TYPE_CHECKING:
+    from torchref.model.model_ft import ModelFT
 
 # Suppress PyTorch MaskedTensor prototype warnings globally
 # MaskedTensor is stable enough for our use case (aggregations, element-wise ops)
@@ -259,7 +269,7 @@ class ReflectionData(DebugMixin, nn.Module):
         ReflectionData
             Self, for method chaining.
         """
-        reader = legacy_format_readers.MTZ(verbose=self.verbose).read(path)
+        reader = mtz.MTZReader(verbose=self.verbose).read(path)
         return self.load(reader)
 
     def load_cif(self, path: str, data_block: Optional[str] = None) -> 'ReflectionData':
@@ -279,7 +289,7 @@ class ReflectionData(DebugMixin, nn.Module):
         ReflectionData
             Self, for method chaining.
         """
-        self.reader = cif_readers.ReflectionCIFReader(path, verbose=self.verbose, data_block=data_block)
+        self.reader = cif.ReflectionCIFReader(path, verbose=self.verbose, data_block=data_block)
         return self.load(self.reader)
     
     @staticmethod
@@ -307,8 +317,7 @@ class ReflectionData(DebugMixin, nn.Module):
         ['r1vlmsf', 'r1vlmAsf', 'r1vlmBsf', ...]
         >>> data = ReflectionData().load_cif('1VLM-sf.cif', data_block=blocks[1])
         """
-        reader = cif_readers.CIFReader(path)
-        return reader.available_blocks
+        return cif.list_data_blocks(path)
     
     def _generate_rfree_flags(self, free_fraction: float = 0.02, n_bins: int = 20, 
                              min_per_bin: int = 100, seed: Optional[int] = None) -> None:
@@ -1445,7 +1454,7 @@ class ReflectionData(DebugMixin, nn.Module):
         
         return self
     
-    def find_outliers(self, model: ModelFT, scaler, z_threshold: float = 4.0) -> torch.Tensor:
+    def find_outliers(self, model: "ModelFT", scaler, z_threshold: float = 4.0) -> torch.Tensor:
         """
         Identify outlier reflections based on log-ratio distribution.
 
@@ -1504,7 +1513,7 @@ class ReflectionData(DebugMixin, nn.Module):
         self.masks['outliers'] = ~outlier_mask
         if self.verbose > 0: print(f"Outlier detection: {outlier_mask.sum().item()} reflections flagged as outliers out of {len(outlier_mask)}.")
     
-    def get_log_ratio(self, model: ModelFT, scaler) -> torch.Tensor:
+    def get_log_ratio(self, model: "ModelFT", scaler) -> torch.Tensor:
         """
         Compute log-ratio between observed and calculated structure factors.
 
@@ -1627,8 +1636,8 @@ class ReflectionData(DebugMixin, nn.Module):
             else:
                 print(f"  {key}: type={type(value)}, value={value}")
 
-    def write_mtz(self, fname: str, fcalc: Optional[torch.Tensor] = None, 
-                  model_ft: Optional[ModelFT] = None) -> None:
+    def write_mtz(self, fname: str, fcalc: Optional[torch.Tensor] = None,
+                  model_ft: Optional["ModelFT"] = None) -> None:
         """
         Write reflection data to MTZ file with optional map coefficients.
 

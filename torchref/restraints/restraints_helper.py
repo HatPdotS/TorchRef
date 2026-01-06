@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 import numpy as np
 from pathlib import Path
-from torchref.io import cif_readers
+from torchref.io import cif
 
 def validate_restraint_data(residue_data, cif_path):
     """
@@ -85,7 +85,7 @@ def read_cif(cif_path):
             }
     """
     # Use the new RestraintCIFReader
-    reader = cif_readers.RestraintCIFReader(cif_path)
+    reader = cif.RestraintCIFReader(cif_path)
     
     # Get all restraints
     all_restraints = reader.get_all_restraints()

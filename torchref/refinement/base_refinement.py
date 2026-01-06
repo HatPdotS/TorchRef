@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-from torchref.io.Data import ReflectionData
+from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torch.nn import Module as nnModule
 import torch

@@ -16,7 +16,7 @@ class TestScalerCreationFunctional:
     def test_scaler_full_initialization(self, sample_structure_pair):
         """Test full scaler initialization with model and data."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -39,7 +39,7 @@ class TestScalerCreationFunctional:
     def test_scaler_with_different_nbins(self, sample_structure_pair):
         """Test scaler with different bin counts."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -63,7 +63,7 @@ class TestScatteringVectorsFunctional:
     def test_scattering_vectors_shape(self, sample_structure_pair):
         """Test scattering vectors have correct shape."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -82,7 +82,7 @@ class TestScatteringVectorsFunctional:
     def test_scattering_vectors_magnitude(self, sample_structure_pair):
         """Test scattering vector magnitudes are reasonable."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -110,7 +110,7 @@ class TestAnisotropyCorrectionFunctional:
     def test_anisotropy_setup_and_compute(self, sample_structure_pair):
         """Test setting up and computing anisotropy correction."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -138,7 +138,7 @@ class TestAnisotropyCorrectionFunctional:
     def test_anisotropy_correction_near_unity(self, sample_structure_pair):
         """Test anisotropy correction starts near unity with small U."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -165,7 +165,7 @@ class TestBinwiseBfactorFunctional:
     def test_setup_binwise_bfactor(self, sample_structure_pair):
         """Test setting up bin-wise B-factor parameters."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -186,7 +186,7 @@ class TestBinwiseBfactorFunctional:
     def test_binwise_bfactor_correction(self, sample_structure_pair):
         """Test computing bin-wise B-factor correction."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -217,7 +217,7 @@ class TestScalerStateDictFunctional:
     def test_save_and_load_state_dict(self, sample_structure_pair, tmp_path):
         """Test saving and loading scaler state."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -257,7 +257,7 @@ class TestScalerHKLPropertyFunctional:
     def test_hkl_property(self, sample_structure_pair):
         """Test that HKL property returns correct indices."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -282,7 +282,7 @@ class TestScalerDeviceOperationsFunctional:
     def test_scaler_cpu_operation(self, sample_structure_pair):
         """Test scaler works on CPU."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -302,7 +302,7 @@ class TestScalerDeviceOperationsFunctional:
     def test_scaler_cpu_method(self, sample_structure_pair):
         """Test scaler.cpu() method."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -327,7 +327,7 @@ class TestScalerUMatrixFunctional:
     def test_u_to_matrix_conversion(self, sample_structure_pair):
         """Test conversion from U parameters to 3x3 matrix."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         from torchref.math_functions.math_torch import U_to_matrix
         
@@ -356,7 +356,7 @@ class TestScalerGradientsFunctional:
     def test_anisotropy_gradients(self, sample_structure_pair):
         """Test gradients flow through anisotropy correction."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -381,7 +381,7 @@ class TestScalerGradientsFunctional:
     def test_binwise_bfactor_gradients(self, sample_structure_pair):
         """Test gradients flow through bin-wise B-factor correction."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()

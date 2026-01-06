@@ -16,7 +16,7 @@ class TestXrayTargetsFunctional:
     def test_gaussian_nll_with_real_data(self, sample_structure_pair):
         """Test Gaussian NLL calculation with real reflection data."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.math_functions.math_torch import nll_xray
         
         model = Model()
@@ -44,7 +44,7 @@ class TestXrayTargetsFunctional:
     def test_least_squares_with_real_data(self, sample_structure_pair):
         """Test least squares calculation with real data."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -75,7 +75,7 @@ class TestRfactorCalculationsFunctional:
     def test_rfactor_with_real_data(self, sample_structure_pair):
         """Test R-factor calculation with real reflection data."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.math_functions.math_torch import get_rfactors
         
         model = Model()
@@ -111,7 +111,7 @@ class TestRfactorCalculationsFunctional:
     def test_bin_wise_rfactors(self, sample_structure_pair):
         """Test bin-wise R-factor calculation."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.math_functions.math_torch import bin_wise_rfactors
         
         model = Model()
@@ -249,7 +249,7 @@ class TestStructureFactorCalculationFunctional:
     def test_fcalc_shape_matches_data(self, sample_structure_pair):
         """Test that calculated structure factors have correct shape."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.symmetrie.symmetrie import Symmetry
         
         model = Model()
@@ -273,7 +273,7 @@ class TestScalingWithRealData:
     def test_scaler_initialization_with_real_data(self, sample_structure_pair):
         """Test scaler initialization with real model and data."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -295,7 +295,7 @@ class TestScalingWithRealData:
     def test_anisotropy_correction_values(self, sample_structure_pair):
         """Test that anisotropy correction produces reasonable values."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
         
         model = Model()
@@ -324,7 +324,7 @@ class TestMathFunctionsFunctional:
     @pytest.mark.integration
     def test_scattering_vectors_from_real_data(self, sample_structure_pair):
         """Test scattering vector calculation with real HKL and cell."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.math_functions.math_torch import get_scattering_vectors
         
         data = ReflectionData()
@@ -448,7 +448,7 @@ class TestNLLFunctionsFunctional:
     @pytest.mark.integration
     def test_nll_xray_with_identical_data(self, sample_structure_pair):
         """Test NLL is minimal when Fobs equals Fcalc."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.math_functions.math_torch import nll_xray
         
         data = ReflectionData()
@@ -472,7 +472,7 @@ class TestNLLFunctionsFunctional:
     @pytest.mark.integration
     def test_nll_xray_increases_with_error(self, sample_structure_pair):
         """Test NLL increases as Fcalc differs from Fobs."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.math_functions.math_torch import nll_xray
         
         data = ReflectionData()
@@ -503,7 +503,7 @@ class TestNLLFunctionsFunctional:
     @pytest.mark.integration
     def test_nll_xray_lognormal(self, sample_structure_pair):
         """Test lognormal NLL calculation."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.math_functions.math_torch import nll_xray_lognormal
         
         data = ReflectionData()
@@ -529,7 +529,7 @@ class TestRiceDistributionFunctional:
     @pytest.mark.integration
     def test_rice_nll_acentric(self, sample_structure_pair):
         """Test Rice NLL for acentric reflections."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torch.special import i0
         
         data = ReflectionData()
@@ -567,7 +567,7 @@ class TestWeightingSchemesFunctional:
     @pytest.mark.integration
     def test_sigma_weighting(self, sample_structure_pair):
         """Test sigma-based weighting for least squares."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -601,7 +601,7 @@ class TestWeightingSchemesFunctional:
     @pytest.mark.integration
     def test_resolution_weighting(self, sample_structure_pair):
         """Test resolution-based weighting."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.math_functions.math_torch import get_scattering_vectors
         
         data = ReflectionData()
@@ -722,7 +722,7 @@ class TestCombinedLossFunctional:
     def test_xray_plus_geometry_loss(self, sample_structure_pair, external_monomer_library):
         """Test combining X-ray and geometry losses."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         from torchref.restraints.restraints import Restraints
         from torchref.math_functions.math_torch import nll_xray
         

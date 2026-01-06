@@ -1,42 +1,82 @@
 """
-I/O module for reading crystallographic data files.
+I/O module for crystallographic data files.
 
-This module provides readers for various crystallographic file formats:
-- MTZ files (structure factors)
-- PDB files (structure models)
-- CIF/mmCIF files (structure factors, models, or restraints)
+This module provides:
+- Dataset classes for handling reflection data
+- Format-specific readers and writers (MTZ, PDB, CIF)
+- Automatic format detection via DataRouter
 
-The DataRouter class automatically detects file types and selects
-the appropriate reader.
+High-level API
+--------------
+>>> from torchref.io import ReflectionData, DatasetCollection
+>>> from torchref.io import mtz, pdb, cif
+
+>>> # Load single dataset
+>>> data = ReflectionData(verbose=1)
+>>> data.load_mtz('structure.mtz')
+
+>>> # Multi-dataset
+>>> collection = DatasetCollection()
+>>> collection.add_dataset('native', native_data)
+>>> collection.add_dataset('derivative', derivative_data)
+
+>>> # Direct format access
+>>> reader = mtz.read('data.mtz')
+>>> data_dict, cell, spacegroup = reader()
 """
 
-from .cif_readers import (
+# Dataset classes (primary API)
+from .datasets import (
+    CrystalDataset,
+    ReflectionData,
+    DatasetCollection,
+)
+
+# Format modules
+from . import mtz
+from . import pdb
+from . import cif
+
+# Reader classes (from format modules)
+from .mtz import MTZReader
+from .pdb import PDBReader
+from .cif import (
     CIFReader,
     ReflectionCIFReader,
     ModelCIFReader,
     RestraintCIFReader,
 )
 
-from .legacy_format_readers import (
-    MTZ,
-    PDB,
-)
-
+# Data router
 from .data_router import (
     DataRouter,
     DataRouterError,
 )
 
+# Legacy aliases for backwards compatibility
+MTZ = MTZReader
+PDB = PDBReader
+
 __all__ = [
-    # CIF readers
+    # Primary API - Datasets
+    'CrystalDataset',
+    'ReflectionData',
+    'DatasetCollection',
+    # Format modules
+    'mtz',
+    'pdb',
+    'cif',
+    # Reader classes
+    'MTZReader',
+    'PDBReader',
     'CIFReader',
     'ReflectionCIFReader',
     'ModelCIFReader',
     'RestraintCIFReader',
-    # Legacy readers
-    'MTZ',
-    'PDB',
     # Router
     'DataRouter',
     'DataRouterError',
+    # Legacy aliases
+    'MTZ',
+    'PDB',
 ]

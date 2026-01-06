@@ -14,7 +14,7 @@ Currently implements:
 
 import torch
 import torch.nn as nn
-from torchref.io.Data import ReflectionData
+from torchref.io import ReflectionData
 from torchref.math_functions.math_torch import get_scattering_vectors, U_to_matrix, nll_xray, get_rfactors, bin_wise_rfactors, nll_xray_lognormal
 from torchref.scaling.solvent_new import SolventModel
 from torchref.utils.debug_utils import DebugMixin

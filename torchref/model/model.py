@@ -6,13 +6,12 @@ A base model class for atomic structure models using PyTorch.
 import torch
 import torch.nn as nn
 from typing import Optional, Union
-from torchref.io import file_writers
+from torchref.io import pdb, cif
 from torchref.utils.utils import sanitize_pdb_dataframe
 import torchref.symmetrie.symmetrie as sym
 import torchref.math_functions.math_numpy as mnp
 from torchref.math_functions import math_torch
 from torchref.model.parameter_wrappers import MixedTensor, OccupancyTensor, PositiveMixedTensor
-from torchref.io import cif_readers, legacy_format_readers
 from torchref.utils.debug_utils import DebugMixin
 import gemmi
 
@@ -169,7 +168,7 @@ class Model(DebugMixin, nn.Module):
         Model
             Self, for method chaining.
         """
-        reader = legacy_format_readers.PDB(verbose=self.verbose).read(file)   
+        reader = pdb.PDBReader(verbose=self.verbose).read(file)   
         return self.load(reader)
     
     def load_cif(self, file):
@@ -190,7 +189,7 @@ class Model(DebugMixin, nn.Module):
             print(f"Loading CIF file: {file}")
         
         # Read CIF file
-        cif_reader = cif_readers.ModelCIFReader(file)
+        cif_reader = cif.ModelCIFReader(file)
 
         return self.load(cif_reader)
     
@@ -456,7 +455,7 @@ class Model(DebugMixin, nn.Module):
         self.update_pdb()
         self.pdb = sanitize_pdb_dataframe(self.pdb)
         self.pdb.attrs['spacegroup'] = self.spacegroup_gemmi.hm
-        file_writers.write_file(self.pdb, filename)
+        pdb.write(self.pdb, filename)
 
     def get_iso(self):
         xyz = self.xyz()[~self.aniso_flag]

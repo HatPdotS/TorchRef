@@ -83,7 +83,7 @@ def all_structure_pairs(cif_dir, mtz_dir):
 def all_test_structures(all_structure_pairs):
     """Return all loaded model/data pairs for comprehensive testing."""
     from torchref.model.model import Model
-    from torchref.io.Data import ReflectionData
+    from torchref.io import ReflectionData
     
     structures = []
     for pair in all_structure_pairs:
@@ -128,7 +128,7 @@ def loaded_model(sample_cif_file):
 @pytest.fixture
 def loaded_reflection_data(sample_mtz_file):
     """Fixture providing fully loaded ReflectionData from a real MTZ file."""
-    from torchref.io.Data import ReflectionData
+    from torchref.io import ReflectionData
     
     data = ReflectionData()
     data.load_mtz(str(sample_mtz_file))
@@ -139,7 +139,7 @@ def loaded_reflection_data(sample_mtz_file):
 def model_and_data(sample_structure_pair):
     """Fixture providing matching model and reflection data."""
     from torchref.model.model import Model
-    from torchref.io.Data import ReflectionData
+    from torchref.io import ReflectionData
     
     model = Model()
     model.load_cif(str(sample_structure_pair["model"]))

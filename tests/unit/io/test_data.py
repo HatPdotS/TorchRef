@@ -17,7 +17,7 @@ class TestReflectionDataInitialization:
     @pytest.mark.unit
     def test_reflection_data_empty_init(self):
         """Test ReflectionData can be initialized empty."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         
@@ -28,7 +28,7 @@ class TestReflectionDataInitialization:
     @pytest.mark.unit
     def test_reflection_data_is_nn_module(self):
         """ReflectionData should be a nn.Module."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         
@@ -37,7 +37,7 @@ class TestReflectionDataInitialization:
     @pytest.mark.unit
     def test_reflection_data_default_device(self):
         """Test default device is CPU."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         
@@ -46,7 +46,7 @@ class TestReflectionDataInitialization:
     @pytest.mark.unit
     def test_reflection_data_custom_device(self):
         """Test custom device specification."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData(device='cpu')
         
@@ -55,7 +55,7 @@ class TestReflectionDataInitialization:
     @pytest.mark.unit
     def test_reflection_data_verbose(self):
         """Test verbosity setting."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData(verbose=2)
         
@@ -68,7 +68,7 @@ class TestReflectionDataDeviceMovement:
     @pytest.mark.unit
     def test_reflection_data_cpu(self):
         """Test explicit CPU movement."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data = data.cpu()
@@ -79,7 +79,7 @@ class TestReflectionDataDeviceMovement:
     @pytest.mark.gpu
     def test_reflection_data_cuda(self, gpu_device):
         """Test CUDA movement."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data = data.cuda()
@@ -93,7 +93,7 @@ class TestReflectionDataAttributes:
     @pytest.mark.unit
     def test_has_device_attribute(self):
         """Test device attribute is accessible."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         
@@ -102,7 +102,7 @@ class TestReflectionDataAttributes:
     @pytest.mark.unit
     def test_has_spacegroup_attribute(self):
         """Test spacegroup attribute is accessible."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         
@@ -111,7 +111,7 @@ class TestReflectionDataAttributes:
     @pytest.mark.unit
     def test_has_verbose_attribute(self):
         """Test verbose attribute is accessible."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         
@@ -124,7 +124,7 @@ class TestReflectionDataProperties:
     @pytest.mark.unit
     def test_wilson_b_default_none(self):
         """Wilson B should be None initially."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         
@@ -133,7 +133,7 @@ class TestReflectionDataProperties:
     @pytest.mark.unit
     def test_spacegroup_default_none(self):
         """Space group should be None initially."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         
@@ -142,7 +142,7 @@ class TestReflectionDataProperties:
     @pytest.mark.unit
     def test_amplitude_source_default_none(self):
         """Amplitude source should be None initially."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         
@@ -155,7 +155,7 @@ class TestMockReflectionData:
     @pytest.mark.unit
     def test_set_mock_hkl(self, mock_hkl_indices):
         """Test setting mock HKL indices."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         hkl = mock_hkl_indices(n_reflections=100)
@@ -170,7 +170,7 @@ class TestMockReflectionData:
     @pytest.mark.unit
     def test_set_mock_amplitudes(self, mock_fobs, mock_sigfobs):
         """Test setting mock structure factor amplitudes."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         F = mock_fobs(n_reflections=100)

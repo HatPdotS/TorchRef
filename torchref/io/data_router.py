@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Tuple, Optional, Union, Any
 import gemmi
 
-from torchref.io import cif_readers, legacy_format_readers
+from torchref.io import cif, mtz, pdb
 
 
 class DataRouterError(Exception):
@@ -216,11 +216,11 @@ class DataRouter:
         # Create the appropriate reader based on data type and format
         if self.data_type == 'reflections':
             if self.file_format == 'mtz':
-                self.reader = legacy_format_readers.MTZ(verbose=self.verbose)
+                self.reader = mtz.MTZReader(verbose=self.verbose)
                 self.reader.read(str(self.filepath))
             elif self.file_format == 'cif':
-                self.reader = cif_readers.ReflectionCIFReader(
-                    str(self.filepath), 
+                self.reader = cif.ReflectionCIFReader(
+                    str(self.filepath),
                     verbose=self.verbose
                 )
             else:
@@ -228,10 +228,10 @@ class DataRouter:
         
         elif self.data_type == 'structure':
             if self.file_format == 'pdb':
-                self.reader = legacy_format_readers.PDB(verbose=self.verbose)
+                self.reader = pdb.PDBReader(verbose=self.verbose)
                 self.reader.read(str(self.filepath))
             elif self.file_format == 'cif':
-                self.reader = cif_readers.ModelCIFReader(
+                self.reader = cif.ModelCIFReader(
                     str(self.filepath),
                     verbose=self.verbose
                 )
@@ -240,7 +240,7 @@ class DataRouter:
         
         elif self.data_type == 'restraints':
             if self.file_format == 'cif':
-                self.reader = cif_readers.RestraintCIFReader(
+                self.reader = cif.RestraintCIFReader(
                     str(self.filepath),
                     verbose=self.verbose
                 )

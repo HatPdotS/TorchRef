@@ -15,7 +15,7 @@ class TestMTZLoading:
     @pytest.mark.integration
     def test_load_mtz_file(self, sample_mtz_file):
         """Test loading a real MTZ file."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -28,7 +28,7 @@ class TestMTZLoading:
     @pytest.mark.integration
     def test_mtz_reflection_counts(self, sample_mtz_file):
         """Test that MTZ has consistent reflection counts."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -43,7 +43,7 @@ class TestMTZLoading:
     @pytest.mark.integration
     def test_mtz_hkl_indices(self, sample_mtz_file):
         """Test HKL indices are valid integers."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -58,7 +58,7 @@ class TestMTZLoading:
     @pytest.mark.integration
     def test_mtz_cell_parameters(self, sample_mtz_file):
         """Test that MTZ has valid cell parameters."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -70,7 +70,7 @@ class TestMTZLoading:
     @pytest.mark.integration
     def test_mtz_spacegroup(self, sample_mtz_file):
         """Test that MTZ has a valid spacegroup."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -81,7 +81,7 @@ class TestMTZLoading:
     @pytest.mark.integration
     def test_mtz_sigma_values(self, sample_mtz_file):
         """Test that sigma values are loaded."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -96,7 +96,7 @@ class TestMTZLoading:
     @pytest.mark.integration
     def test_mtz_rfree_flags(self, sample_mtz_file):
         """Test that R-free flags are loaded or generated."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -112,7 +112,7 @@ class TestSFCIFLoading:
     @pytest.mark.integration
     def test_load_sf_cif(self, sample_structure_factor_cif):
         """Test loading a structure factor CIF file."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_cif(str(sample_structure_factor_cif))
@@ -126,7 +126,7 @@ class TestReflectionDataProperties:
     @pytest.mark.integration
     def test_resolution_calculation(self, sample_mtz_file):
         """Test resolution can be calculated from loaded data."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -139,7 +139,7 @@ class TestReflectionDataProperties:
     @pytest.mark.integration
     def test_wilson_b_factor(self, sample_mtz_file):
         """Test Wilson B-factor is calculated."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -151,7 +151,7 @@ class TestReflectionDataProperties:
     @pytest.mark.integration
     def test_data_device_movement(self, sample_mtz_file, cpu_device):
         """Test moving reflection data to different devices."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -173,7 +173,7 @@ class TestMatchingDataPairs:
     def test_load_structure_pair(self, sample_structure_pair):
         """Test loading matching model and reflection data."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -190,7 +190,7 @@ class TestMatchingDataPairs:
     def test_cell_consistency(self, sample_structure_pair):
         """Test that model and data have consistent cell parameters."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))

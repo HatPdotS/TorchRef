@@ -69,7 +69,7 @@ class TestMTZReadingFunctional:
     @pytest.mark.integration
     def test_load_multiple_mtz_files(self, mtz_dir):
         """Test loading multiple MTZ files successfully."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         mtz_files = list(mtz_dir.glob("*.mtz"))
         assert len(mtz_files) > 0, "No MTZ files found in test directory"
@@ -88,7 +88,7 @@ class TestMTZReadingFunctional:
     @pytest.mark.integration
     def test_mtz_data_properties(self, sample_mtz_file):
         """Test that MTZ data properties are correctly loaded."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -108,7 +108,7 @@ class TestMTZReadingFunctional:
     @pytest.mark.integration
     def test_mtz_resolution_range(self, sample_mtz_file):
         """Test that resolution range is computed correctly."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -133,7 +133,7 @@ class TestSFCIFReadingFunctional:
     @pytest.mark.integration
     def test_load_sf_cif(self, cif_sf_dir):
         """Test loading structure factor CIF files."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         sf_files = list(cif_sf_dir.glob("*.cif"))
         if not sf_files:
@@ -159,7 +159,7 @@ class TestDataConsistencyFunctional:
     def test_cell_parameters_match(self, sample_structure_pair):
         """Test that cell parameters match between model and reflections."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -184,7 +184,7 @@ class TestDataConsistencyFunctional:
     def test_spacegroup_consistency(self, sample_structure_pair):
         """Test that spacegroup is consistent."""
         from torchref.model.model import Model
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -202,7 +202,7 @@ class TestDataBinningFunctional:
     @pytest.mark.integration
     def test_get_bins(self, sample_mtz_file):
         """Test resolution binning of reflection data."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -218,7 +218,7 @@ class TestDataBinningFunctional:
     @pytest.mark.integration
     def test_mean_res_per_bin(self, sample_mtz_file):
         """Test mean resolution per bin calculation."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -244,7 +244,7 @@ class TestFrenchWilsonFunctional:
     @pytest.mark.integration
     def test_french_wilson_applied(self, sample_mtz_file):
         """Test that French-Wilson conversion is applied."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -263,7 +263,7 @@ class TestRfreeHandlingFunctional:
     @pytest.mark.integration
     def test_rfree_flags_loaded(self, sample_mtz_file):
         """Test that R-free flags are loaded or generated."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -278,7 +278,7 @@ class TestRfreeHandlingFunctional:
     @pytest.mark.integration
     def test_rfree_fraction(self, sample_mtz_file):
         """Test R-free set fraction is reasonable."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
@@ -298,7 +298,7 @@ class TestMaskHandlingFunctional:
     @pytest.mark.integration
     def test_masks_method(self, sample_mtz_file):
         """Test masks() method returns valid mask."""
-        from torchref.io.Data import ReflectionData
+        from torchref.io import ReflectionData
         
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
