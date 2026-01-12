@@ -27,7 +27,7 @@ def detect_available_cpus(max_if_not_slurm=4) -> int:
     # 5. Fallback to os.cpu_count() but cap it sensibly
     return min(os.cpu_count() or 1, 4)
 
-def configure_threading(num_threads: int = None, pin_threads=True) -> int:
+def configure_threading(num_threads: int = None, pin_threads=False) -> int:
     """Configure all threading libraries. Call BEFORE importing torch/numpy."""
     
     if num_threads is None:
@@ -38,8 +38,6 @@ def configure_threading(num_threads: int = None, pin_threads=True) -> int:
     os.environ["OMP_NUM_THREADS"] = n
     os.environ["MKL_NUM_THREADS"] = n
     os.environ["OPENBLAS_NUM_THREADS"] = n
-    os.environ["NUMEXPR_NUM_THREADS"] = n
-    os.environ["VECLIB_MAXIMUM_THREADS"] = n
 
     if pin_threads:    
         # Optional: enable thread pinning

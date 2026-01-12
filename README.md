@@ -10,17 +10,19 @@ TorchRef is a modern crystallographic refinement package built entirely on PyTor
 
 ## Key Features
 
-- **🔥 Native PyTorch Integration**: Built on PyTorch's `nn.Module` architecture, TorchRef integrates naturally with the PyTorch ecosystem, including machine learning models, optimizers, and GPU acceleration.
+- **Native PyTorch Integration**: Built on PyTorch's `nn.Module` architecture, TorchRef integrates naturally with the PyTorch ecosystem, including machine learning models, optimizers, and GPU acceleration.
 
-- **📈 Automatic Differentiation**: Dynamic computational graphs eliminate the need for manually implemented gradient calculations. Define new refinement targets directly—PyTorch handles the derivatives automatically.
+- **Automatic Differentiation**: Dynamic computational graphs eliminate the need for manually implemented gradient calculations. Define new refinement targets directly—PyTorch handles the derivatives automatically.
 
-- **🧩 Modular Architecture**: Following PyTorch's module pattern, components are easily composable and extensible. Add custom targets, restraints, or optimizers without modifying core code.
+- **Modular Architecture**: Following PyTorch's module pattern, components are easily composable and extensible. Add custom targets, restraints, or optimizers without modifying core code.
 
-- **⚡ GPU Acceleration**: Leverage CUDA for structure factor calculations, scaling, and optimization—achieving significant speedups for large structures.
+- **GPU Acceleration**: Leverage CUDA for structure factor calculations, scaling, and optimization—achieving significant speedups for large structures.
 
-- **🔬 FFT-based Structure Factors**: Efficient structure factor calculation using Fast Fourier Transform (FFT) methods, enabling rapid F_calc computation even for large unit cells.
+- **FFT-based Structure Factors**: Efficient structure factor calculation using Fast Fourier Transform (FFT) methods, enabling rapid F_calc computation even for large unit cells.
 
-- **💾 State Management**: Full `state_dict` support enables saving and loading complete refinement states, including model parameters, scaler settings, and restraints.
+- **Patterson-based Alignment**: Align predicted structures (e.g., AlphaFold models) to experimental diffraction data using Patterson map vector matching.
+
+- **State Management**: Full `state_dict` support enables saving and loading complete refinement states, including model parameters, scaler settings, and restraints.
 
 ## Installation
 
@@ -50,12 +52,20 @@ pip install -e ".[dev]"
 ### Basic Refinement
 
 ```python
-from torchref.refinement.base_refinement import Refinement
+import torch
+from torchref import Refinement, ReflectionData, Model
 
-# Initialize refinement with data and model
+# Load data and model
+data = ReflectionData(verbose=1)
+data.load_mtz("reflections.mtz")
+
+model = Model()
+model.load_pdb("structure.pdb")
+
+# Initialize refinement
 refinement = Refinement(
-    data_file="reflections.mtz",
-    pdb="structure.pdb",
+    data=data,
+    model=model,
     device=torch.device("cuda")  # Use GPU
 )
 
@@ -71,24 +81,45 @@ refinement.model.write_pdb("refined.pdb")
 One of TorchRef's key strengths is the ease of defining custom refinement targets. Thanks to PyTorch's automatic differentiation, you simply define the forward computation:
 
 ```python
-from torchref.refinement.targets import Target
 import torch
+from torchref.refinement.targets import Target
 
 class CustomTarget(Target):
     """Custom refinement target with automatic gradient computation."""
-    
+
     def __init__(self, refinement, weight=1.0):
         super().__init__(refinement)
         self.weight = weight
-    
+
     def forward(self):
         # Define your target function - gradients computed automatically!
         F_calc = self.refinement.model.get_F_calc()
-        F_obs = self.data.F
-        
+        F_obs = self.refinement.data.F
+
         # Custom loss computation
         loss = torch.mean((F_calc - F_obs) ** 2)
         return self.weight * loss
+```
+
+### Patterson-based Structure Alignment
+
+Align predicted structures (e.g., from AlphaFold) to experimental diffraction data:
+
+```python
+from torchref import ReflectionData, PattersonAligner
+from torchref.model import Model
+
+# Load experimental data and predicted model
+data = ReflectionData().load_mtz("experimental.mtz")
+model = Model().load_pdb("alphafold_prediction.pdb")
+
+# Align using Patterson map matching
+aligner = PattersonAligner(data, model)
+aligned_model, result = aligner.align(model)
+
+# Save aligned structure
+aligned_model.write_pdb("aligned.pdb")
+print(f"Alignment score: {result.score:.3f}")
 ```
 
 ### Integration with Machine Learning
@@ -98,7 +129,7 @@ TorchRef's PyTorch foundation enables seamless integration with neural networks:
 ```python
 import torch
 import torch.nn as nn
-from torchref.refinement.base_refinement import Refinement
+from torchref import Refinement
 
 # Combine crystallographic refinement with a neural network
 class HybridModel(nn.Module):
@@ -110,14 +141,14 @@ class HybridModel(nn.Module):
             nn.ReLU(),
             nn.Linear(64, 3)  # Coordinate corrections
         )
-    
+
     def forward(self, features):
         # Neural network predictions
         corrections = self.neural_prior(features)
-        
+
         # Apply to crystallographic model
         self.refinement.model.xyz.data += corrections
-        
+
         # Compute crystallographic loss
         return self.refinement.compute_loss()
 ```
@@ -126,10 +157,10 @@ class HybridModel(nn.Module):
 
 ```python
 import torch
-from torchref.refinement.base_refinement import Refinement
+from torchref import Refinement
 
 # Save complete refinement state
-refinement = Refinement(data_file="data.mtz", pdb="model.pdb")
+refinement = Refinement(data=data, model=model)
 torch.save(refinement.state_dict(), "checkpoint.pt")
 
 # Load state into new refinement object
@@ -143,31 +174,49 @@ TorchRef follows PyTorch's module architecture:
 
 ```
 torchref/
-├── io/                    # File I/O (MTZ, PDB, CIF)
-│   ├── Data.py           # ReflectionData container
-│   ├── cif_readers.py    # CIF/mmCIF parsing
-│   └── file_writers.py   # Output writers
-├── model/                 # Atomic structure models
-│   ├── model.py          # Base Model class (nn.Module)
-│   ├── model_ft.py       # Fourier Transform model
+├── io/                        # File I/O (MTZ, PDB, CIF)
+│   ├── datasets/              # Dataset container classes
+│   │   └── reflection_data.py # ReflectionData, DatasetCollection
+│   ├── mtz.py                 # MTZ format reader
+│   ├── pdb.py                 # PDB format reader
+│   ├── cif.py                 # CIF/mmCIF readers
+│   └── data_router.py         # Automatic format detection
+├── model/                     # Atomic structure models
+│   ├── model.py               # Base Model class (nn.Module)
+│   ├── model_ft.py            # FFT-based structure factor model
 │   └── parameter_wrappers.py  # MixedTensor, OccupancyTensor
-├── refinement/            # Refinement framework
-│   ├── base_refinement.py    # Core Refinement class
-│   ├── targets.py        # Loss functions (LS, ML, etc.)
-│   ├── optimizers.py     # Custom optimizers
-│   └── loss_weighting.py # Adaptive loss balancing
-├── restraints/            # Geometry restraints
-│   └── restraints.py     # Bonds, angles, torsions, planes
-├── scaling/               # Structure factor scaling
-│   ├── scaler.py         # Overall/anisotropic scaling
-│   └── solvent_new.py    # Bulk solvent model
-├── symmetrie/             # Crystallographic symmetry
-│   └── symmetrie.py      # Space group operations
-├── math_functions/        # Mathematical utilities
-│   ├── math_torch.py     # PyTorch implementations
-│   └── french_wilson.py  # French-Wilson conversion
-└── cli/                   # Command-line interface
-    └── refine.py         # CLI entry point
+├── refinement/                # Refinement framework
+│   ├── base_refinement.py     # Core Refinement class
+│   ├── lbfgs_refinement.py    # LBFGS optimizer variant
+│   ├── targets/               # Loss functions
+│   │   ├── targets.py         # XrayTarget, GeometryTarget, ADPTarget
+│   │   └── combined_targets.py# TotalGeometryTarget, TotalADPTarget
+│   └── weighting/             # Loss weighting schemes
+│       ├── component_weighting.py  # Manual, adaptive weighting
+│       └── policy_weighting.py     # ML-based policy weighting
+├── restraints/                # Geometry restraints
+│   ├── restraints_new.py      # Main Restraints class
+│   └── builders.py            # Bond, angle, torsion builders
+├── scaling/                   # Structure factor scaling
+│   ├── scaler.py              # Overall/anisotropic scaling
+│   └── solvent_new.py         # Bulk solvent model
+├── symmetrie/                 # Crystallographic symmetry
+│   ├── spacegroup.py          # SpaceGroup wrapper (gemmi)
+│   ├── symmetrie.py           # Coordinate transformations
+│   ├── map_symmetry.py        # Real space map symmetry
+│   └── reciprocal_symmetry.py # Reciprocal space symmetry
+├── alignment/                 # Structure alignment
+│   ├── align.py               # PattersonAligner
+│   └── sampling.py            # VectorSampler for Patterson peaks
+├── math_functions/            # Mathematical utilities
+│   ├── math_torch.py          # PyTorch implementations
+│   ├── math_numpy.py          # NumPy implementations
+│   └── french_wilson.py       # French-Wilson conversion
+├── utils/                     # General utilities
+│   ├── utils.py               # TensorMasks, selection parsing
+│   └── debug_utils.py         # DebugMixin
+└── cli/                       # Command-line interface
+    └── refine.py              # CLI entry points
 ```
 
 ## Why PyTorch for Crystallography?
@@ -195,10 +244,17 @@ def compute_loss(params):
 Structure factor calculations parallelize naturally on GPUs:
 
 ```python
+import torch
+from torchref import Refinement, ReflectionData, Model
+
+# Load data and model
+data = ReflectionData().load_mtz("data.mtz")
+model = Model().load_pdb("model.pdb")
+
 # Move everything to GPU
 refinement = Refinement(
-    data_file="data.mtz",
-    pdb="model.pdb", 
+    data=data,
+    model=model,
     device=torch.device("cuda")
 )
 # All computations now run on GPU
@@ -228,12 +284,11 @@ torchref-refine --data reflections.mtz --model structure.pdb \
 
 ## Documentation
 
-Comprehensive documentation is available in the `documentation/` directory:
+Comprehensive documentation is available:
 
-- [Package Overview](documentation/README.md)
-- [Model Documentation](documentation/torchref/model/)
-- [Refinement Guide](documentation/torchref/refinement/)
-- [API Reference](documentation/torchref/)
+- **`documentation/`** - Detailed markdown guides
+- **`example_notebooks/`** - Jupyter notebooks with interactive examples
+  - [`basic_usage.ipynb`](example_notebooks/basic_usage.ipynb) - Getting started tutorial
 
 ## Examples
 
@@ -241,7 +296,8 @@ See the `examples/` directory for detailed usage examples:
 
 - [`state_dict_example.py`](examples/state_dict_example.py) - Saving and loading refinement state
 - [`selection_freezing_examples.py`](examples/selection_freezing_examples.py) - Parameter selection and freezing
-- [`adp_entropy_regularization_example.py`](examples/adp_entropy_regularization_example.py) - ADP regularization
+- [`adp_entropy_regularization_example.py`](examples/adp_entropy_regularization_example.py) - ADP entropy regularization
+- [`entropy_quick_start.py`](examples/entropy_quick_start.py) - Quick start for entropy-based refinement
 
 ## Testing
 
@@ -255,6 +311,7 @@ pytest tests/ --cov=torchref
 # Run specific test categories
 pytest tests/unit/           # Fast unit tests
 pytest tests/integration/    # Integration tests
+pytest tests/functional/     # Full workflow tests
 ```
 
 ## Contributing

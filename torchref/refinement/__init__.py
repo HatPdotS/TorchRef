@@ -1,0 +1,50 @@
+"""
+Refinement module for crystallographic structure refinement.
+
+This module provides the core refinement framework including:
+- Refinement classes for running optimization
+- Target (loss) functions for X-ray, geometry, and ADP restraints
+- Weighting schemes for balancing loss components
+- Loss aggregation and state tracking
+
+Example
+-------
+>>> from torchref.refinement import Refinement, LBFGSRefinement
+>>> from torchref.refinement import targets, weighting
+>>>
+>>> # Basic refinement
+>>> refinement = Refinement(
+...     data_file='reflections.mtz',
+...     pdb='structure.pdb',
+...     device='cuda'
+... )
+>>> refinement.run_refinement(macro_cycles=10)
+>>>
+>>> # Access targets and weighting schemes
+>>> from torchref.refinement.targets import XrayTarget, BondTarget
+>>> from torchref.refinement.weighting import ComponentWeighting
+"""
+
+from .base_refinement import Refinement
+from .lbfgs_refinement import LBFGSRefinement
+from .aggregator import LossAggregator
+from .loss_state import LossState
+from .optimizers import AdamWithAdaptiveNoise
+
+# Submodules
+from . import targets
+from . import weighting
+
+__all__ = [
+    # Main refinement classes
+    'Refinement',
+    'LBFGSRefinement',
+    # Loss handling
+    'LossAggregator',
+    'LossState',
+    # Optimizers
+    'AdamWithAdaptiveNoise',
+    # Submodules
+    'targets',
+    'weighting',
+]

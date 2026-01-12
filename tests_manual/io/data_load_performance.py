@@ -11,9 +11,5 @@ for i in range(10):
     D = ReflectionData().load_mtz(mtz)
 
 
-
-# View results sorted by cumulative time
-
-
 tend = time()
 print(f"Data load time: {tend - tstart:.2f} seconds")
