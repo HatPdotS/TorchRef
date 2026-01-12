@@ -1,5 +1,4 @@
 """
-
 4 CIF readers for different data types in crystallographic refinement.
 
 This module provides 4 main classes:
@@ -8,12 +7,15 @@ This module provides 4 main classes:
 - ModelCIFReader: For reading atomic coordinate data (model structures)
 - RestraintCIFReader: For reading chemical restraint dictionaries
 
-Specialized classes are typesave and should handle most edge cases in CIF files.
+Space groups are returned as gemmi.SpaceGroup objects for consistency
+throughout torchref.
 
+Specialized classes are typesave and should handle most edge cases in CIF files.
 """
 
 import pandas as pd
 import numpy as np
+import gemmi
 from typing import Dict, List, Optional, Tuple, Any, Union
 from pathlib import Path
 
@@ -691,7 +693,7 @@ class ReflectionCIFReader:
             self.__init__(filepath, verbose=self.verbose)
         return self
     
-    def __call__(self) -> Tuple[Dict[str, np.ndarray], np.ndarray, str]:
+    def __call__(self) -> Tuple[Dict[str, np.ndarray], np.ndarray, gemmi.SpaceGroup]:
         """
         Get data in legacy MTZ-compatible format.
 
@@ -705,8 +707,8 @@ class ReflectionCIFReader:
             - 'R-free-flags': R-free test set flags (if available)
         cell : numpy.ndarray
             Cell parameters [a, b, c, alpha, beta, gamma].
-        spacegroup : str
-            Space group symbol.
+        spacegroup : gemmi.SpaceGroup
+            Space group object.
         """
         try:
             return self.data, self.cell, self.spacegroup
@@ -1024,21 +1026,32 @@ class ReflectionCIFReader:
         except Exception:
             return None
     
-    def get_space_group(self) -> str:
+    def get_space_group(self) -> gemmi.SpaceGroup:
         """
-        Extract space group name.
-        
-        Returns:
-            Space group name, or 'P 1' if not found
+        Extract space group.
+
+        Returns
+        -------
+        gemmi.SpaceGroup
+            Space group object. Returns P1 if not found.
         """
+        sg_name = 'P 1'
         if 'symmetry' in self.cif_reader:
             sym_data = self.cif_reader['symmetry']
-            return self._get_value(sym_data, [
+            sg_name = self._get_value(sym_data, [
                 '_symmetry.space_group_name_H-M',
                 'space_group_name_H-M',
                 '_space_group.name_H-M_alt'
             ], 'P 1')
-        return 'P 1'
+
+        try:
+            return gemmi.SpaceGroup(sg_name)
+        except Exception:
+            # Try with spaces removed
+            try:
+                return gemmi.SpaceGroup(sg_name.replace(' ', ''))
+            except Exception:
+                return gemmi.SpaceGroup('P 1')
     
     def _get_value(self, data, possible_keys: List[str], default: Any = None) -> Any:
         """Get value from DataFrame or dict, trying multiple keys."""
@@ -1142,7 +1155,7 @@ class ModelCIFReader:
             self.__init__(filepath, verbose=self.verbose)
         return self
     
-    def __call__(self) -> Tuple[pd.DataFrame, List[float], str]:
+    def __call__(self) -> Tuple[pd.DataFrame, List[float], gemmi.SpaceGroup]:
         """
         Get data in legacy PDB-compatible format.
 
@@ -1154,8 +1167,8 @@ class ModelCIFReader:
             anisou_flag, u11, u22, u33, u12, u13, u23.
         cell : list
             Cell parameters [a, b, c, alpha, beta, gamma].
-        spacegroup : str
-            Space group symbol.
+        spacegroup : gemmi.SpaceGroup
+            Space group object.
         """
         try:
             return self.dataframe, self.cell, self.spacegroup
@@ -1315,16 +1328,31 @@ class ModelCIFReader:
         except Exception:
             return None
     
-    def get_space_group(self) -> str:
-        """Extract space group name."""
+    def get_space_group(self) -> gemmi.SpaceGroup:
+        """
+        Extract space group.
+
+        Returns
+        -------
+        gemmi.SpaceGroup
+            Space group object. Returns P1 if not found.
+        """
+        sg_name = 'P 1'
         if 'symmetry' in self.cif.data:
             sym_data = self.cif.data['symmetry']
-            return self._get_first_value(sym_data, [
+            sg_name = self._get_first_value(sym_data, [
                 '_symmetry.space_group_name_H-M',
                 'space_group_name_H-M',
                 '_space_group.name_H-M_alt'
             ], 'P 1')
-        return 'P 1'
+
+        try:
+            return gemmi.SpaceGroup(sg_name)
+        except Exception:
+            try:
+                return gemmi.SpaceGroup(sg_name.replace(' ', ''))
+            except Exception:
+                return gemmi.SpaceGroup('P 1')
     
     def _get_first_value(self, data, possible_keys: List[str], default: Any = None) -> Any:
         """Get value from DataFrame or dict, trying multiple keys."""

@@ -26,13 +26,14 @@ class TestReflectionDataInitialization:
         assert data.F_sigma is None
 
     @pytest.mark.unit
-    def test_reflection_data_is_nn_module(self):
-        """ReflectionData should be a nn.Module."""
+    def test_reflection_data_is_dataclass(self):
+        """ReflectionData should be a dataclass."""
         from torchref.io import ReflectionData
-        
+        from dataclasses import is_dataclass
+
         data = ReflectionData()
-        
-        assert isinstance(data, nn.Module)
+
+        assert is_dataclass(data)
 
     @pytest.mark.unit
     def test_reflection_data_default_device(self):
@@ -156,13 +157,13 @@ class TestMockReflectionData:
     def test_set_mock_hkl(self, mock_hkl_indices):
         """Test setting mock HKL indices."""
         from torchref.io import ReflectionData
-        
+
         data = ReflectionData()
         hkl = mock_hkl_indices(n_reflections=100)
-        
-        # Manually set buffer (normally done by loader)
-        data.register_buffer('hkl', hkl.to(torch.int32))
-        
+
+        # Set hkl directly (dataclass attribute)
+        data.hkl = hkl.to(torch.int32)
+
         assert data.hkl is not None
         assert data.hkl.shape[0] == hkl.shape[0]
         assert data.hkl.shape[1] == 3
@@ -171,14 +172,15 @@ class TestMockReflectionData:
     def test_set_mock_amplitudes(self, mock_fobs, mock_sigfobs):
         """Test setting mock structure factor amplitudes."""
         from torchref.io import ReflectionData
-        
+
         data = ReflectionData()
         F = mock_fobs(n_reflections=100)
         sigma = mock_sigfobs(n_reflections=100)
-        
-        data.register_buffer('F', F)
-        data.register_buffer('F_sigma', sigma)
-        
+
+        # Set directly (dataclass attributes)
+        data.F = F
+        data.F_sigma = sigma
+
         assert data.F is not None
         assert data.F_sigma is not None
         assert torch.all(data.F > 0)

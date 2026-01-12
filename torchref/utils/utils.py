@@ -553,6 +553,7 @@ def save_map(array, cell, filename):
 import torch
 import torch.nn as nn
 
+
 class TensorDict(nn.Module):
     """
     A dictionary-like container for PyTorch tensors that:
@@ -596,91 +597,130 @@ class TensorDict(nn.Module):
         return len(self._keys)
 
     def __repr__(self):
-        return f"TensorDict({{"+", ".join(f'{k}: {getattr(self, f"_buf_{k}")}' for k in self._keys)+"}})"
-    
+        return f"TensorDict({{" + ", ".join(f'{k}: {getattr(self, f"_buf_{k}")}' for k in self._keys) + "}})"
+
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
-        """
-        Override to dynamically register buffers during loading.
-        """
-        # Identify keys that belong to this module
+        """Override to dynamically register buffers during loading."""
         local_keys = [k for k in state_dict.keys() if k.startswith(prefix + "_buf_")]
-        
+
         for key in local_keys:
-            # Extract the original key name (remove prefix and _buf_)
-            buffer_name = key[len(prefix):] # e.g. "_buf_flagged_initial"
+            buffer_name = key[len(prefix):]
             original_key = buffer_name[5:]  # remove "_buf_"
-            
+
             if not hasattr(self, buffer_name):
-                # Register the buffer dynamically
                 tensor = state_dict[key]
                 self.register_buffer(buffer_name, torch.zeros_like(tensor))
                 self._keys.append(original_key)
-                
+
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
 
-class TensorMasks(TensorDict):
+class TensorMasks(dict):
     """
-    A specialized TensorDict for managing boolean masks.
-    Ensures all tensors are of boolean dtype.
+    A dictionary for managing boolean mask tensors with device support.
+
+    This is a lightweight dict subclass that:
+    - Ensures all tensors are boolean dtype
+    - Supports device movement via to(), cuda(), cpu()
+    - Provides combined mask via __call__()
+
+    Parameters
+    ----------
+    data : dict, optional
+        Initial mask data.
+    device : str or torch.device, optional
+        Device for tensors. Default is 'cpu'.
+
+    Examples
+    --------
+    >>> masks = TensorMasks(device='cuda')
+    >>> masks['valid'] = torch.ones(100, dtype=torch.bool)
+    >>> masks['rfree'] = rfree_flags > 0
+    >>> combined = masks()  # Get combined mask (AND of all)
+    >>> masks.cpu()  # Move all to CPU
     """
 
-    def __init__(self):
+    def __init__(self, data=None, device='cpu'):
         super().__init__()
-        self._cache = TensorDict()
-        self.updated = True
+        self.device = torch.device(device)
+        self._cache = None
+        self._updated = True
 
-    def __setitem__(self, key: str, tensor: Optional[torch.Tensor] = None):
+        # Initialize with provided data
+        if data:
+            for k, v in data.items():
+                self[k] = v
 
-        if tensor is not None and tensor.dtype != torch.bool:
-            raise ValueError("All masks must be of boolean dtype.")
+    def __setitem__(self, key: str, tensor: torch.Tensor):
+        """Set mask tensor, ensuring boolean dtype and correct device."""
+        if tensor is not None:
+            if tensor.dtype != torch.bool:
+                raise ValueError(f"Mask '{key}' must be boolean dtype, got {tensor.dtype}")
+            tensor = tensor.to(self.device)
         super().__setitem__(key, tensor)
-        self.updated = True
-    
-    def load_state_dict(self, state_dict, prefix=''):
-        """
-        Create masks from a state_dict, ensuring boolean dtype.
-        """
-        for key in state_dict.keys():
-            if key.startswith(prefix + "_buf_"):
-                buffer_name = key[len(prefix):]  # e.g. "_buf_flagged_initial"
-                original_key = buffer_name[5:]   # remove "_buf_"
-                self[original_key] = state_dict[key].to(torch.bool)
+        self._updated = True
 
-        self.updated = True
-    
-    def forward(self):
+    def to(self, device) -> 'TensorMasks':
         """
-        Return the current masks.
-        """
-        
-        if self.updated:
-            combined_mask = self.get_combined_mask()
-            self._cache['combined'] = combined_mask
-            self.updated = False
-        return self._cache['combined']
+        Move all mask tensors to device.
 
-    def get_combined_mask(self) -> torch.Tensor:
-        """
-        Combine all masks using logical AND.
+        Parameters
+        ----------
+        device : str or torch.device
+            Target device.
 
-        Caches the result for efficiency.
+        Returns
+        -------
+        TensorMasks
+            Self, for method chaining.
+        """
+        self.device = torch.device(device)
+        for k in list(self.keys()):
+            if self[k] is not None:
+                super().__setitem__(k, self[k].to(self.device))
+        self._updated = True
+        return self
+
+    def cuda(self, device=None) -> 'TensorMasks':
+        """Move all masks to CUDA device."""
+        return self.to(device or 'cuda')
+
+    def cpu(self) -> 'TensorMasks':
+        """Move all masks to CPU."""
+        return self.to('cpu')
+
+    def __call__(self) -> torch.Tensor:
+        """
+        Return combined mask (AND of all masks).
 
         Returns
         -------
         torch.Tensor
-            Combined boolean mask.
+            Combined boolean mask, or None if no masks.
         """
+        if not self:
+            return None
 
-        combined_mask = torch.ones_like(self[self._keys[0]], dtype=torch.bool)
-        try:
-            for key in self._keys:
-                combined_mask &= self[key]
-        except Exception as e:
-            for key in self._keys:
-                print(f"'{key}': {self[key].shape}, {self[key].dtype}, {self[key].device}")
-            print(f"Error combining masks: {e}")
-        return combined_mask.to(torch.bool)
+        if self._updated or self._cache is None:
+            self._cache = self._get_combined_mask()
+            self._updated = False
+
+        return self._cache
+
+    def _get_combined_mask(self) -> torch.Tensor:
+        """Compute combined mask using logical AND."""
+        masks = [v for v in self.values() if v is not None]
+        if not masks:
+            return None
+
+        combined = masks[0].clone()
+        for m in masks[1:]:
+            combined &= m
+        return combined
+
+    def __repr__(self):
+        mask_info = ", ".join(f"'{k}': shape={v.shape}" for k, v in self.items() if v is not None)
+        return f"TensorMasks({{{mask_info}}}, device={self.device})"
 
 
 def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:

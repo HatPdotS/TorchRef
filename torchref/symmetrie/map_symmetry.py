@@ -7,15 +7,18 @@ which is much faster than applying symmetry to individual atoms.
 This module uses a factory pattern: calling MapSymmetry() will automatically
 return either MapSymmetryDirect (fast, no interpolation) or MapSymmetryInterpolation
 (fallback with interpolation) depending on grid compatibility.
+
+Space groups can be specified as strings, integers (1-230), or gemmi.SpaceGroup objects.
 """
 
 import torch
 import torch.nn as nn
 import numpy as np
 from torchref.symmetrie.symmetrie import Symmetry
+from torchref.symmetrie.spacegroup import SpaceGroup, SpaceGroupLike
 
 
-def MapSymmetry(space_group, map_shape, cell_params, dtype_float=torch.float32, verbose=1, device=torch.device('cpu')):
+def MapSymmetry(space_group: SpaceGroupLike, map_shape, cell_params, dtype_float=torch.float32, verbose=1, device=torch.device('cpu')):
     """
     Factory function to create the appropriate MapSymmetry implementation.
 
@@ -25,8 +28,8 @@ def MapSymmetry(space_group, map_shape, cell_params, dtype_float=torch.float32, 
 
     Parameters
     ----------
-    space_group : str
-        Space group name (e.g., 'P1', 'P21', 'P-1', etc.).
+    space_group : str, int, or gemmi.SpaceGroup
+        Space group specification (e.g., 'P21', 4, gemmi.SpaceGroup('P 21')).
     map_shape : tuple of int
         Shape of the density map (nx, ny, nz).
     cell_params : array-like, shape (6,)

@@ -9,6 +9,7 @@ from torchref.symmetrie.map_symmetry import MapSymmetry
 import torchref.symmetrie.symmetrie as sym
 from typing import Optional, Tuple
 from torchref.utils.utils import TensorDict
+from torchref.symmetrie import Symmetry, SpaceGroup, SpaceGroupLike
 
 class ModelFT(Model):
     """
@@ -269,7 +270,6 @@ class ModelFT(Model):
         if self.verbose > 2: 
             print(f"Grid shape: {self.real_space_grid.shape[:-1]}")
             print(f"Voxel size: {self.voxel_size}")
-
 
     def get_radius(self, min_radius_Angstrom: float = 4.0):
         """
@@ -573,11 +573,12 @@ class ModelFT(Model):
         
         # Copy scalar attributes from Model
         model_copy.spacegroup = self.spacegroup
-        model_copy.spacegroup_gemmi = self.spacegroup_gemmi
         model_copy.initialized = True
         
-        # Copy spacegroup function
-        model_copy.spacegroup_function = sym.Symmetry(self.spacegroup)
+        # Copy scalar attributes
+        model_copy.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
+        model_copy.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
+        model_copy.initialized = True
         
         # Copy all registered buffers using PyTorch's _buffers dict
         for buffer_name, buffer_value in self._buffers.items():

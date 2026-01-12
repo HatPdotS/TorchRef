@@ -328,13 +328,15 @@ class ESPolicyTrainer:
         self.update(gen_result)
         return gen_result
 
-    def save_checkpoint(self, path: str):
+    def save_checkpoint(self, path: str, state_dim: int = 31, hidden_dim: int = 256):
         """Save training checkpoint."""
         checkpoint = {
             'policy_state_dict': self.policy.state_dict(),
             'config': self.config.__dict__,
             'generation': self.generation,
             'n_params': self.n_params,
+            'state_dim': state_dim,
+            'hidden_dim': hidden_dim,
             'history': [
                 {
                     'generation': h.generation,
@@ -355,8 +357,20 @@ class ESPolicyTrainer:
         # Config and history are informational
 
 
-def create_policy_network(state_dim: int = 21, hidden_dim: int = 256) -> nn.Module:
-    """Create the standard policy network architecture."""
+def create_policy_network(state_dim: int = 31, hidden_dim: int = 256) -> nn.Module:
+    """Create the standard policy network architecture.
+
+    Uses 31-dimensional state vector matching meta_weighting_4 format:
+    - Progress (2): progress, improvement_rate
+    - R-factors (4): rwork, rfree, gap, delta_rfree
+    - Static features (7): resolution_min, inv_resolution, log_n_atoms,
+      log_n_hkl, data_to_param_ratio, log_wilson_b, b_cv
+    - X-ray losses (3): work, test, work/test ratio
+    - Geometry losses (7): total, bond, angle, torsion, planarity, chiral, nonbonded
+    - Geometry RMSD (2): bond_rmsd, angle_rmsd
+    - ADP losses (4): total, simu, locality, KL
+    - B-factor stats (2): mean_b/wilson_b, b_std/wilson_b
+    """
 
     class PolicyNetwork(nn.Module):
         def __init__(self):
@@ -381,15 +395,17 @@ def create_policy_network(state_dim: int = 21, hidden_dim: int = 256) -> nn.Modu
     return PolicyNetwork()
 
 
-def initialize_policy_sensibly() -> nn.Module:
+def initialize_policy_sensibly(state_dim: int = 31, hidden_dim: int = 256) -> nn.Module:
     """
     Initialize policy with sensible default weights.
+
+    Uses 31-dimensional state vector matching meta_weighting_4 format.
 
     Based on correlation analysis:
     - Higher xray weight is better
     - Lower torsion/KL weights are better
     """
-    policy = create_policy_network()
+    policy = create_policy_network(state_dim=state_dim, hidden_dim=hidden_dim)
 
     # The output layer maps tanh output ([-1, 1]) to log-weights ([-3, 3])
     # Initialize bias to produce reasonable default weights:

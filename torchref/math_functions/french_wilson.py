@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchref.math_functions import math_torch
-from torchref.symmetrie.symmetrie import Symmetry
+from torchref.symmetrie import Symmetry, SpaceGroupLike
 
 
 # Acentric lookup tables from French-Wilson supplement (1978)
@@ -436,7 +436,7 @@ def french_wilson(
 
 def is_centric_from_hkl(
     hkl: torch.Tensor,
-    space_group: str = "P1"
+    space_group: SpaceGroupLike = "P1"
 ) -> torch.Tensor:
     """
     Determine if reflections are centric based on Miller indices and space group.
@@ -449,8 +449,8 @@ def is_centric_from_hkl(
     ----------
     hkl : torch.Tensor
         Miller indices of shape (..., 3).
-    space_group : str, optional
-        Space group symbol. Default is "P1".
+    space_group : str, int, or gemmi.SpaceGroup, optional
+        Space group specification. Default is "P1".
 
     Returns
     -------
@@ -498,7 +498,7 @@ def is_centric_from_hkl(
 
 def get_centric_acentric_masks(
     hkl: torch.Tensor,
-    space_group: str = "P1"
+    space_group: SpaceGroupLike = "P1"
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Get both centric and acentric masks for reflections.
@@ -509,8 +509,8 @@ def get_centric_acentric_masks(
     ----------
     hkl : torch.Tensor
         Miller indices of shape (..., 3).
-    space_group : str, optional
-        Space group symbol. Default is "P1".
+    space_group : str, int, or gemmi.SpaceGroup, optional
+        Space group specification. Default is "P1".
 
     Returns
     -------
@@ -639,7 +639,7 @@ def french_wilson_auto(
     sigma_I: torch.Tensor,
     hkl: torch.Tensor,
     d_spacings: torch.Tensor,
-    space_group: str = "P1",
+    space_group: SpaceGroupLike = "P1",
     n_bins: int = 60,
     min_per_bin: int = 40,
     h_min: float = -4.0
@@ -663,8 +663,8 @@ def french_wilson_auto(
         Miller indices of shape (n_reflections, 3).
     d_spacings : torch.Tensor
         Resolution (d-spacing) for each reflection of shape (n_reflections,).
-    space_group : str, optional
-        Space group symbol. Default is "P1".
+    space_group : str, int, or gemmi.SpaceGroup, optional
+        Space group specification. Default is "P1".
     n_bins : int, optional
         Number of resolution bins. Default is 60.
     min_per_bin : int, optional
@@ -718,8 +718,8 @@ class FrenchWilson(nn.Module):
         Miller indices of shape (n_reflections, 3), integer tensor.
     unit_cell : torch.Tensor
         Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
-    space_group : str, optional
-        Space group symbol (e.g., 'P21', 'P212121'). Default is "P1".
+    space_group : str, int, or gemmi.SpaceGroup, optional
+        Space group specification (e.g., 'P21', 4, gemmi.SpaceGroup('P 21')). Default is "P1".
     n_bins : int, optional
         Number of resolution bins for mean intensity estimation. Default is 60.
     min_per_bin : int, optional
@@ -752,7 +752,7 @@ class FrenchWilson(nn.Module):
         self,
         hkl: torch.Tensor,
         unit_cell: torch.Tensor,
-        space_group: str = "P1",
+        space_group: SpaceGroupLike = "P1",
         n_bins: int = 60,
         min_per_bin: int = 40,
         h_min: float = -4.0,

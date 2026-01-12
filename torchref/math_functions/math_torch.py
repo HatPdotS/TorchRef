@@ -3,7 +3,7 @@ from torchref.math_functions import math_numpy as math_np
 import numpy as np
 import hashlib
 
-def cartesian_to_fractional_torch(cart_coords, unit_cell):
+def cartesian_to_fractional_torch(cart_coords, unit_cell, B_inv=None):
     """
     Convert Cartesian coordinates to fractional coordinates.
 
@@ -13,18 +13,21 @@ def cartesian_to_fractional_torch(cart_coords, unit_cell):
         Cartesian coordinates of shape (N, 3).
     unit_cell : array-like
         Unit cell parameters [a, b, c, alpha, beta, gamma].
+    B_inv: torch.Tensor, optional
+        Inverse fractionalization matrix. If None, it will be calculated from unit_cell.
 
     Returns
     -------
     torch.Tensor
         Fractional coordinates of shape (N, 3).
     """
-    B_inv = math_np.get_inv_fractional_matrix(unit_cell)
-    B_inv = torch.tensor(B_inv)
+    if B_inv is None:
+        B_inv = math_np.get_inv_fractional_matrix(unit_cell)
+        B_inv = torch.tensor(B_inv, dtype=cart_coords.dtype, device=cart_coords.device)
     fractional_vector = torch.einsum('ik,kj->ij',cart_coords,B_inv.T)
     return fractional_vector
 
-def fractional_to_cartesian_torch(fractional_coords, unit_cell):
+def fractional_to_cartesian_torch(fractional_coords, unit_cell, B=None):
     """
     Convert fractional coordinates to Cartesian coordinates.
 
@@ -34,14 +37,17 @@ def fractional_to_cartesian_torch(fractional_coords, unit_cell):
         Fractional coordinates of shape (N, 3).
     unit_cell : array-like
         Unit cell parameters [a, b, c, alpha, beta, gamma].
+    B: torch.Tensor, optional
+        Fractionalization matrix. If None, it will be calculated from unit_cell.
 
     Returns
     -------
     torch.Tensor
         Cartesian coordinates of shape (N, 3).
     """
-    B = math_np.get_fractional_matrix(unit_cell)
-    B = torch.tensor(B,dtype=fractional_coords.dtype,device=fractional_coords.device)
+    if B is None:
+        B = math_np.get_fractional_matrix(unit_cell)
+        B = torch.tensor(B,dtype=fractional_coords.dtype,device=fractional_coords.device)
     cart_coords = torch.einsum('ik,kj->ij',fractional_coords,B.T)
     return cart_coords
 
@@ -2191,3 +2197,289 @@ def gaussian_to_lognormal_mu(F: torch.Tensor, sigma_lognormal: torch.Tensor,
     F_safe = torch.clamp(F, min=eps)
     mu_lognormal = torch.log(F_safe) - 0.5 * sigma_lognormal ** 2
     return mu_lognormal
+
+
+# =============================================================================
+# Rotation Utilities (for Patterson alignment)
+# =============================================================================
+
+def axis_angle_to_rotation_matrix(axis_angle: torch.Tensor) -> torch.Tensor:
+    """
+    Convert axis-angle representation to 3x3 rotation matrix.
+
+    Uses Rodrigues' formula. Supports batched input and gradients.
+
+    Parameters
+    ----------
+    axis_angle : torch.Tensor
+        Axis-angle representation with shape (3,) or (N, 3).
+        Direction is rotation axis, magnitude is angle in radians.
+
+    Returns
+    -------
+    torch.Tensor
+        Rotation matrix with shape (3, 3) or (N, 3, 3).
+    """
+    if axis_angle.dim() == 1:
+        axis_angle = axis_angle.unsqueeze(0)
+        squeeze = True
+    else:
+        squeeze = False
+
+    angle = torch.norm(axis_angle, dim=-1, keepdim=True)
+    # Handle zero rotation case
+    axis = torch.where(
+        angle > 1e-10,
+        axis_angle / angle,
+        torch.tensor([0., 0., 1.], device=axis_angle.device, dtype=axis_angle.dtype).expand_as(axis_angle)
+    )
+
+    # Rodrigues' formula: R = I + sin(θ)K + (1-cos(θ))K²
+    # where K is the skew-symmetric matrix of the axis
+    K = torch.zeros(axis_angle.shape[0], 3, 3, device=axis_angle.device, dtype=axis_angle.dtype)
+    K[:, 0, 1] = -axis[:, 2]
+    K[:, 0, 2] = axis[:, 1]
+    K[:, 1, 0] = axis[:, 2]
+    K[:, 1, 2] = -axis[:, 0]
+    K[:, 2, 0] = -axis[:, 1]
+    K[:, 2, 1] = axis[:, 0]
+
+    I = torch.eye(3, device=axis_angle.device, dtype=axis_angle.dtype).unsqueeze(0)
+    angle = angle.unsqueeze(-1)
+
+    R = I + torch.sin(angle) * K + (1 - torch.cos(angle)) * torch.bmm(K, K)
+
+    if squeeze:
+        R = R.squeeze(0)
+
+    return R
+
+
+def rotation_matrix_to_axis_angle(R: torch.Tensor) -> torch.Tensor:
+    """
+    Convert 3x3 rotation matrix to axis-angle representation.
+
+    Parameters
+    ----------
+    R : torch.Tensor
+        Rotation matrix with shape (3, 3) or (N, 3, 3).
+
+    Returns
+    -------
+    torch.Tensor
+        Axis-angle representation with shape (3,) or (N, 3).
+    """
+    if R.dim() == 2:
+        R = R.unsqueeze(0)
+        squeeze = True
+    else:
+        squeeze = False
+
+    # Compute angle from trace: trace(R) = 1 + 2*cos(θ)
+    trace = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
+    angle = torch.acos(torch.clamp((trace - 1) / 2, -1 + 1e-7, 1 - 1e-7))
+
+    # Compute axis from skew-symmetric part: (R - R^T) / (2*sin(θ))
+    axis = torch.stack([
+        R[:, 2, 1] - R[:, 1, 2],
+        R[:, 0, 2] - R[:, 2, 0],
+        R[:, 1, 0] - R[:, 0, 1]
+    ], dim=-1)
+
+    # Normalize axis (handle small angles)
+    axis_norm = torch.norm(axis, dim=-1, keepdim=True)
+    axis = torch.where(
+        axis_norm > 1e-10,
+        axis / axis_norm,
+        torch.tensor([0., 0., 1.], device=R.device, dtype=R.dtype).expand_as(axis)
+    )
+
+    # Scale by angle
+    result = axis * angle.unsqueeze(-1)
+
+    if squeeze:
+        result = result.squeeze(0)
+
+    return result
+
+
+def quaternion_to_rotation_matrix(q: torch.Tensor) -> torch.Tensor:
+    """
+    Convert quaternion to rotation matrix.
+
+    Parameters
+    ----------
+    q : torch.Tensor
+        Quaternion with shape (4,) or (N, 4). Format: [w, x, y, z].
+
+    Returns
+    -------
+    torch.Tensor
+        Rotation matrix with shape (3, 3) or (N, 3, 3).
+    """
+    if q.dim() == 1:
+        q = q.unsqueeze(0)
+        squeeze = True
+    else:
+        squeeze = False
+
+    # Normalize quaternion
+    q = q / torch.norm(q, dim=-1, keepdim=True)
+
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+
+    R = torch.zeros(q.shape[0], 3, 3, device=q.device, dtype=q.dtype)
+
+    R[:, 0, 0] = 1 - 2 * (y**2 + z**2)
+    R[:, 0, 1] = 2 * (x*y - z*w)
+    R[:, 0, 2] = 2 * (x*z + y*w)
+    R[:, 1, 0] = 2 * (x*y + z*w)
+    R[:, 1, 1] = 1 - 2 * (x**2 + z**2)
+    R[:, 1, 2] = 2 * (y*z - x*w)
+    R[:, 2, 0] = 2 * (x*z - y*w)
+    R[:, 2, 1] = 2 * (y*z + x*w)
+    R[:, 2, 2] = 1 - 2 * (x**2 + y**2)
+
+    if squeeze:
+        R = R.squeeze(0)
+
+    return R
+
+
+def random_rotation_uniform(n: int = 1, device: str = 'cpu', dtype: torch.dtype = torch.float64) -> torch.Tensor:
+    """
+    Generate uniform random rotations over SO(3).
+
+    Uses Shoemake's quaternion-based uniform sampling.
+
+    Parameters
+    ----------
+    n : int, optional
+        Number of rotations to generate. Default is 1.
+    device : str, optional
+        Device for output tensor. Default is 'cpu'.
+    dtype : torch.dtype, optional
+        Data type for output tensor. Default is torch.float64.
+
+    Returns
+    -------
+    torch.Tensor
+        Rotation matrices with shape (n, 3, 3) or (3, 3) if n=1.
+    """
+    # Sample uniform random numbers
+    u = torch.rand(n, 3, device=device, dtype=dtype)
+
+    # Convert to quaternion using Shoemake's method
+    q = torch.zeros(n, 4, device=device, dtype=dtype)
+    q[:, 0] = torch.sqrt(1 - u[:, 0]) * torch.sin(2 * np.pi * u[:, 1])
+    q[:, 1] = torch.sqrt(1 - u[:, 0]) * torch.cos(2 * np.pi * u[:, 1])
+    q[:, 2] = torch.sqrt(u[:, 0]) * torch.sin(2 * np.pi * u[:, 2])
+    q[:, 3] = torch.sqrt(u[:, 0]) * torch.cos(2 * np.pi * u[:, 2])
+
+    # Convert quaternion to rotation matrix
+    R = quaternion_to_rotation_matrix(q)
+
+    if n == 1:
+        R = R.squeeze(0)
+
+    return R
+
+
+# =============================================================================
+# Trilinear Interpolation (for Patterson alignment)
+# =============================================================================
+
+def trilinear_interpolate(
+    grid: torch.Tensor,
+    points: torch.Tensor,
+    mode: str = 'wrap'
+) -> torch.Tensor:
+    """
+    Trilinear interpolation on a 3D grid.
+
+    Pure torch implementation for GPU acceleration and gradient flow.
+    Replaces scipy.ndimage.map_coordinates for torch tensors.
+
+    Parameters
+    ----------
+    grid : torch.Tensor
+        3D grid of values with shape (nx, ny, nz).
+    points : torch.Tensor
+        Coordinates to sample with shape (n_points, 3).
+        Should be in fractional coordinates [0, 1) for 'wrap' mode.
+    mode : str, optional
+        Boundary mode: 'wrap' for periodic, 'clamp' for edge clamping.
+        Default is 'wrap'.
+
+    Returns
+    -------
+    torch.Tensor
+        Interpolated values with shape (n_points,).
+
+    Notes
+    -----
+    Supports automatic differentiation for gradient-based optimization.
+    """
+    nx, ny, nz = grid.shape
+    device = grid.device
+    dtype = grid.dtype
+
+    # Handle periodic wrapping
+    if mode == 'wrap':
+        points = points % 1.0  # Wrap to [0, 1)
+    elif mode == 'clamp':
+        points = torch.clamp(points, 0.0, 1.0 - 1e-6)
+
+    # Scale to grid coordinates
+    px = points[:, 0] * nx
+    py = points[:, 1] * ny
+    pz = points[:, 2] * nz
+
+    # Floor indices
+    x0 = px.long()
+    y0 = py.long()
+    z0 = pz.long()
+
+    # Ceiling indices (with wrapping for periodic mode)
+    if mode == 'wrap':
+        x1 = (x0 + 1) % nx
+        y1 = (y0 + 1) % ny
+        z1 = (z0 + 1) % nz
+        x0 = x0 % nx
+        y0 = y0 % ny
+        z0 = z0 % nz
+    else:
+        x1 = torch.clamp(x0 + 1, 0, nx - 1)
+        y1 = torch.clamp(y0 + 1, 0, ny - 1)
+        z1 = torch.clamp(z0 + 1, 0, nz - 1)
+        x0 = torch.clamp(x0, 0, nx - 1)
+        y0 = torch.clamp(y0, 0, ny - 1)
+        z0 = torch.clamp(z0, 0, nz - 1)
+
+    # Fractional parts (weights)
+    xd = (px - px.floor()).to(dtype)
+    yd = (py - py.floor()).to(dtype)
+    zd = (pz - pz.floor()).to(dtype)
+
+    # Get corner values (8 corners of each voxel)
+    c000 = grid[x0, y0, z0]
+    c001 = grid[x0, y0, z1]
+    c010 = grid[x0, y1, z0]
+    c011 = grid[x0, y1, z1]
+    c100 = grid[x1, y0, z0]
+    c101 = grid[x1, y0, z1]
+    c110 = grid[x1, y1, z0]
+    c111 = grid[x1, y1, z1]
+
+    # Trilinear interpolation
+    c00 = c000 * (1 - xd) + c100 * xd
+    c01 = c001 * (1 - xd) + c101 * xd
+    c10 = c010 * (1 - xd) + c110 * xd
+    c11 = c011 * (1 - xd) + c111 * xd
+
+    c0 = c00 * (1 - yd) + c10 * yd
+    c1 = c01 * (1 - yd) + c11 * yd
+
+    result = c0 * (1 - zd) + c1 * zd
+
+    return result

@@ -5,6 +5,9 @@ This module provides functions for reading and writing MTZ files containing
 crystallographic reflection data (structure factor amplitudes, intensities,
 R-free flags, etc.).
 
+Space groups are returned as gemmi.SpaceGroup objects for consistency
+throughout torchref.
+
 Functions
 ---------
 read
@@ -24,6 +27,7 @@ Examples
 >>> # Reading
 >>> reader = mtz.read('data.mtz', verbose=1)
 >>> data_dict, cell, spacegroup = reader()
+>>> print(spacegroup.short_name())  # gemmi.SpaceGroup object
 >>>
 >>> # Writing
 >>> mtz.write(df, cell, spacegroup, 'output.mtz')
@@ -32,6 +36,7 @@ Examples
 import numpy as np
 import pandas as pd
 import torch
+import gemmi
 from typing import Tuple, Dict, Optional, Union
 import reciprocalspaceship as rs
 
@@ -54,14 +59,14 @@ class MTZReader:
         Dictionary containing extracted data arrays.
     cell : np.ndarray
         Unit cell parameters [a, b, c, alpha, beta, gamma].
-    spacegroup : str
-        Space group symbol.
+    spacegroup : gemmi.SpaceGroup
+        Space group object.
 
     Examples
     --------
     >>> reader = mtz.read('data.mtz', verbose=1)
     >>> data_dict, cell, spacegroup = reader()
-    >>> print(f"Found {len(data_dict['HKL'])} reflections")
+    >>> print(f"Found {len(data_dict['HKL'])} reflections in {spacegroup.short_name()}")
     """
 
     AMPLITUDE_PRIORITY = [
@@ -127,14 +132,15 @@ class MTZReader:
         ])
         hkl = self.mtz_data.reset_index()[['H', 'K', 'L']].to_numpy().astype(np.int32)
         self.data['HKL'] = hkl
-        self.spacegroup = self.mtz_data.spacegroup.short_name()
+        # Store as gemmi.SpaceGroup object
+        self.spacegroup = self.mtz_data.spacegroup
 
         self._extract_amplitudes_and_intensities()
         self._extract_rfree_flags()
 
         return self
 
-    def __call__(self) -> Tuple[dict, np.ndarray, str]:
+    def __call__(self) -> Tuple[dict, np.ndarray, gemmi.SpaceGroup]:
         """
         Return extracted data in a standardized format.
 
@@ -144,8 +150,8 @@ class MTZReader:
             Dictionary with extracted data arrays.
         cell : np.ndarray
             Unit cell parameters [a, b, c, alpha, beta, gamma].
-        spacegroup : str
-            Space group symbol.
+        spacegroup : gemmi.SpaceGroup
+            Space group object.
         """
         if self.data is None:
             raise ValueError("No data loaded. Call read() first.")

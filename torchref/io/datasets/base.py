@@ -1,196 +1,316 @@
 """
-Base classes for crystallographic datasets.
+Base dataclass for crystallographic datasets.
 
-This module defines the abstract base class for all crystallographic datasets,
-providing common functionality for device management, masking, and metadata.
+This module defines the CrystalDataset dataclass that provides:
+- All possible tensor fields for crystallographic data (optional)
+- Device management (to, cuda, cpu)
+- Serialization (save, load)
+
+Space groups are stored as gemmi.SpaceGroup objects for consistency
+and direct access to symmetry operations.
 """
 
-from abc import ABC, abstractmethod
-from typing import Optional, Tuple, TYPE_CHECKING
+from dataclasses import dataclass, field, fields
+from typing import Optional, Dict, Any, TYPE_CHECKING, Union
 import torch
-import torch.nn as nn
-
-from torchref.utils.utils import TensorMasks
-from torchref.utils.debug_utils import DebugMixin
+import gemmi
 
 if TYPE_CHECKING:
-    from torch.masked import MaskedTensor
+    from torchref.utils.utils import TensorMasks
 
 
-class CrystalDataset(DebugMixin, nn.Module, ABC):
+@dataclass
+class CrystalDataset:
     """
-    Abstract base class for crystallographic datasets.
+    Base dataclass for crystallographic datasets.
 
-    Provides common functionality shared across all dataset types:
-    - Device management (cuda/cpu movement)
-    - Masking system via TensorMasks
-    - Unit cell and space group handling
-    - Resolution calculation
+    Defines all possible tensor fields (optional) and handles device management
+    and serialization. Subclasses add domain-specific methods.
 
-    Subclasses must implement:
-    - forward(): Return dataset tensors
-    - __len__(): Return number of reflections
-    - _calculate_resolution(): Compute resolution from cell and HKL
+    This lightweight design enables scaling to 1000s of datasets without
+    the overhead of torch.nn.Module.
 
     Parameters
     ----------
-    verbose : int, optional
-        Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
-    device : str, optional
-        Device for tensors ('cpu', 'cuda', etc.). Default is 'cpu'.
-
-    Attributes
-    ----------
     device : torch.device
-        Current device for all tensors.
-    masks : TensorMasks
-        Dictionary-like container for boolean masks.
-    cell : torch.Tensor
-        Unit cell parameters [a, b, c, alpha, beta, gamma].
-    spacegroup : str
-        Space group symbol.
-    resolution : torch.Tensor
-        Resolution per reflection in Angstroms.
+        Device for tensors ('cpu', 'cuda', etc.). Default is 'cpu'.
+    verbose : int
+        Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
+
+    Examples
+    --------
+    >>> data = CrystalDataset(device='cuda')
+    >>> data.hkl = torch.tensor([[1, 0, 0], [0, 1, 0]])
+    >>> data.cpu()  # Move all tensors to CPU
+    >>> data.save('data.pt')  # Serialize to file
     """
 
-    def __init__(self, verbose: int = 1, device: str = 'cpu'):
+    # === Core reflection tensors ===
+    hkl: Optional[torch.Tensor] = None              # Miller indices (N, 3), int32
+    F: Optional[torch.Tensor] = None                # Structure factor amplitudes (N,)
+    F_sigma: Optional[torch.Tensor] = None          # Amplitude uncertainties (N,)
+    I: Optional[torch.Tensor] = None                # Intensities (N,)
+    I_sigma: Optional[torch.Tensor] = None          # Intensity uncertainties (N,)
+    rfree_flags: Optional[torch.Tensor] = None      # R-free test set flags (N,), int32
+    resolution: Optional[torch.Tensor] = None       # Resolution per reflection (N,)
+    bin_indices: Optional[torch.Tensor] = None      # Resolution bin assignments (N,), int32
+    outlier_flags: Optional[torch.Tensor] = None    # Outlier flags (N,), bool
+    phase: Optional[torch.Tensor] = None            # Phases in radians (N,)
+    fom: Optional[torch.Tensor] = None              # Figure of merit (N,)
+
+    # === Unit cell and symmetry ===
+    cell: Optional[torch.Tensor] = None             # [a, b, c, alpha, beta, gamma]
+    spacegroup: Optional[gemmi.SpaceGroup] = None   # Space group (gemmi object)
+
+    # === Metadata ===
+    device: torch.device = field(default_factory=lambda: torch.device('cpu'))
+    verbose: int = 1
+
+    # === Source tracking ===
+    rfree_source: Optional[str] = None
+    amplitude_source: Optional[str] = None
+    intensity_source: Optional[str] = None
+    phase_source: Optional[str] = None
+
+    # === Wilson B-factors ===
+    wilson_b: Optional[float] = None
+    wilson_b_structure: Optional[float] = None
+    wilson_b_solvent: Optional[float] = None
+    wilson_k_sol: Optional[float] = None
+
+    # === Outlier detection parameters ===
+    outlier_detection_params: Optional[Dict[str, Any]] = None
+
+    # === Masks (initialized in __post_init__) ===
+    # Note: masks is not a dataclass field to avoid serialization issues
+    # It's initialized in __post_init__ and handled specially
+
+    def __post_init__(self):
+        """Initialize non-field attributes after dataclass init."""
+        # Ensure device is a torch.device object
+        if isinstance(self.device, str):
+            object.__setattr__(self, 'device', torch.device(self.device))
+        # Import here to avoid circular imports
+        from torchref.utils.utils import TensorMasks
+        # Initialize masks as TensorMasks (dict subclass)
+        if not hasattr(self, 'masks') or self.masks is None:
+            self.masks = TensorMasks(device=self.device)
+
+    # ========== DEVICE MANAGEMENT ==========
+
+    def _tensor_fields(self):
         """
-        Initialize base dataset.
+        Yield (name, tensor) for all tensor attributes.
+
+        Yields
+        ------
+        Tuple[str, torch.Tensor]
+            Field name and tensor value for each tensor field.
+        """
+        for f in fields(self):
+            val = getattr(self, f.name)
+            if isinstance(val, torch.Tensor):
+                yield f.name, val
+
+    def to(self, device) -> 'CrystalDataset':
+        """
+        Move all tensors to the specified device.
 
         Parameters
         ----------
-        verbose : int, optional
-            Verbosity level. Default is 1.
-        device : str, optional
-            Device for tensors. Default is 'cpu'.
-        """
-        super().__init__()
-
-        self.verbose: int = verbose
-        self.device = torch.device(device)
-
-        # Masking system for filtering reflections
-        self.masks = TensorMasks()
-
-        # Unit cell and symmetry
-        self.register_buffer('_cell', None)
-        self._spacegroup: Optional[str] = None
-
-        # Resolution
-        self.register_buffer('_resolution', None)
-
-    @property
-    def cell(self) -> Optional[torch.Tensor]:
-        """Unit cell parameters [a, b, c, alpha, beta, gamma]."""
-        return self._cell
-
-    @cell.setter
-    def cell(self, value: torch.Tensor):
-        """Set unit cell and recalculate resolution."""
-        if value is not None:
-            value = value.to(self.device)
-        self.register_buffer('_cell', value)
-        self._calculate_resolution()
-
-    @property
-    def spacegroup(self) -> Optional[str]:
-        """Space group symbol."""
-        return self._spacegroup
-
-    @spacegroup.setter
-    def spacegroup(self, value: str):
-        """Set space group."""
-        self._spacegroup = value
-
-    @property
-    def resolution(self) -> Optional[torch.Tensor]:
-        """Resolution per reflection in Angstroms."""
-        return self._resolution
-
-    def cuda(self, device=None):
-        """
-        Move dataset to CUDA device.
-
-        Parameters
-        ----------
-        device : torch.device or int, optional
-            Target CUDA device. If None, uses default.
+        device : str or torch.device
+            Target device ('cpu', 'cuda', 'cuda:0', etc.)
 
         Returns
         -------
         CrystalDataset
             Self, for method chaining.
         """
-        super().cuda(device)
-        self.device = torch.device('cuda') if device is None else torch.device(device)
-        if hasattr(self, 'masks'):
-            self.masks.cuda(device)
+        self.device = torch.device(device)
+        for name, tensor in self._tensor_fields():
+            setattr(self, name, tensor.to(self.device))
+        if hasattr(self, 'masks') and self.masks is not None:
+            self.masks.to(self.device)
         if self.verbose > 1:
             print(f"{self.__class__.__name__} moved to device: {self.device}")
         return self
 
-    def cpu(self):
+    def cuda(self, device=None) -> 'CrystalDataset':
         """
-        Move dataset to CPU.
+        Move all tensors to CUDA device.
+
+        Parameters
+        ----------
+        device : str or torch.device, optional
+            Target CUDA device. If None, uses default CUDA device.
 
         Returns
         -------
         CrystalDataset
             Self, for method chaining.
         """
-        super().cpu()
-        self.device = torch.device('cpu')
-        if hasattr(self, 'masks'):
-            self.masks.cpu()
-        if self.verbose > 1:
-            print(f"{self.__class__.__name__} moved to cpu")
-        return self
+        return self.to(device or 'cuda')
 
-    def get_valid_mask(self) -> torch.Tensor:
+    def cpu(self) -> 'CrystalDataset':
         """
-        Get combined validity mask from all registered masks.
+        Move all tensors to CPU.
 
         Returns
         -------
-        torch.Tensor
-            Boolean mask where True indicates valid reflections.
+        CrystalDataset
+            Self, for method chaining.
         """
-        return self.masks()
+        return self.to('cpu')
 
-    @abstractmethod
-    def _calculate_resolution(self) -> None:
-        """
-        Calculate resolution from cell parameters and HKL indices.
+    # ========== SERIALIZATION ==========
 
-        Must be implemented by subclasses to compute resolution
-        based on their specific HKL storage.
+    def _get_state(self) -> Dict[str, Any]:
         """
-        pass
+        Get serializable state dictionary.
 
-    @abstractmethod
-    def forward(self, mask: bool = True) -> Tuple:
+        Returns
+        -------
+        Dict[str, Any]
+            State dictionary with all tensor and metadata fields.
         """
-        Return dataset tensors.
+        from torchref.utils.utils import TensorMasks
+        state = {}
+        for f in fields(self):
+            val = getattr(self, f.name)
+            if isinstance(val, torch.Tensor):
+                state[f.name] = val.cpu()
+            elif f.name == 'device':
+                # Store device as string
+                state[f.name] = str(val)
+            elif f.name == 'spacegroup' and val is not None:
+                # Store spacegroup as string for serialization
+                state[f.name] = val.xhm()  # Extended Hermann-Mauguin
+            else:
+                state[f.name] = val
+        # Handle masks specially
+        if hasattr(self, 'masks') and self.masks is not None:
+            state['masks'] = {k: v.cpu() for k, v in self.masks.items()}
+        return state
+
+    @classmethod
+    def _from_state(cls, state: Dict[str, Any], device: str = 'cpu') -> 'CrystalDataset':
+        """
+        Reconstruct from state dictionary.
 
         Parameters
         ----------
-        mask : bool, optional
-            Whether to apply masking. Default is True.
+        state : Dict[str, Any]
+            State dictionary from _get_state().
+        device : str
+            Device to load tensors onto.
 
         Returns
         -------
-        Tuple
-            Dataset tensors (implementation-specific).
+        CrystalDataset
+            Reconstructed dataset.
         """
-        pass
+        from torchref.utils.utils import TensorMasks
 
-    @abstractmethod
+        # Extract masks before creating object
+        masks_state = state.pop('masks', {})
+
+        # Convert device string back to torch.device
+        if 'device' in state:
+            state['device'] = torch.device(state['device'])
+
+        # Convert spacegroup string back to gemmi.SpaceGroup
+        if 'spacegroup' in state and state['spacegroup'] is not None:
+            if isinstance(state['spacegroup'], str):
+                state['spacegroup'] = gemmi.SpaceGroup(state['spacegroup'])
+
+        # Create object with remaining state
+        obj = cls(**state)
+
+        # Restore masks
+        if masks_state:
+            obj.masks = TensorMasks(data=masks_state, device=device)
+
+        return obj.to(device)
+
+    def save_state(self, path: str) -> None:
+        """
+        Save dataset state to file.
+
+        Parameters
+        ----------
+        path : str
+            Output file path.
+
+        Examples
+        --------
+        >>> data.save_state('reflection_data.pt')
+        """
+        state = self._get_state()
+        state['__class__'] = self.__class__.__name__
+        torch.save(state, path)
+        if self.verbose > 0:
+            print(f"Saved {self.__class__.__name__} to {path}")
+
+    @classmethod
+    def load_state(cls, path: str, device: str = 'cpu') -> 'CrystalDataset':
+        """
+        Load dataset state from file.
+
+        Parameters
+        ----------
+        path : str
+            Input file path.
+        device : str
+            Device to load tensors onto.
+
+        Returns
+        -------
+        CrystalDataset
+            Loaded dataset.
+
+        Examples
+        --------
+        >>> data = ReflectionData.load_state('reflection_data.pt', device='cuda')
+        """
+        state = torch.load(path, map_location='cpu')
+        # Remove class marker if present
+        state.pop('__class__', None)
+        obj = cls._from_state(state, device)
+        if obj.verbose > 0:
+            print(f"Loaded {cls.__name__} from {path}")
+        return obj
+
+    # ========== UTILITY METHODS ==========
+
     def __len__(self) -> int:
         """Return number of reflections in dataset."""
-        pass
+        if self.hkl is not None:
+            return len(self.hkl)
+        return 0
 
     def __repr__(self) -> str:
         """String representation of dataset."""
         n_refl = len(self)
-        sg = self.spacegroup or "unknown"
+        sg = self.spacegroup.short_name() if self.spacegroup else "unknown"
         return f"{self.__class__.__name__}(n_reflections={n_refl}, spacegroup='{sg}', device={self.device})"
+
+    @property
+    def spacegroup_name(self) -> Optional[str]:
+        """Get space group name as string (short form, e.g., 'P212121')."""
+        if self.spacegroup is None:
+            return None
+        return self.spacegroup.short_name()
+
+    @property
+    def spacegroup_hm(self) -> Optional[str]:
+        """Get space group Hermann-Mauguin name with spaces (e.g., 'P 21 21 21')."""
+        if self.spacegroup is None:
+            return None
+        return self.spacegroup.hm
+
+    @property
+    def spacegroup_number(self) -> Optional[int]:
+        """Get space group number (1-230)."""
+        if self.spacegroup is None:
+            return None
+        return self.spacegroup.number

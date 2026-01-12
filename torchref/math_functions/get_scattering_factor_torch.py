@@ -96,8 +96,6 @@ def get_parameterization_extended(df):
     """
     import gemmi
     
-
-    
     # Get unique element/charge combinations
     if 'charge' in df.columns:
         charge_elements = list(df.groupby(['element', 'charge']).groups.keys())

@@ -51,20 +51,26 @@ LOSS_STATE_TO_COMPONENT = {v: k for k, v in COMPONENT_TO_LOSS_STATE.items()}
 
 @dataclass
 class StepState:
-    """State representation at a single refinement step for trajectory recording."""
+    """State representation at a single refinement step for trajectory recording.
+
+    Matches the 31-feature format used in meta_weighting_4.
+    """
     step: int
+    progress: float  # step / n_steps (normalized)
+    improvement_rate: float  # (initial_rfree - rfree) / initial_rfree
     rwork: float
     rfree: float
-    rfree_gap: float
-    delta_rwork: float
+    rfree_gap: float  # rfree - rwork (overfitting indicator)
     delta_rfree: float
     xray_loss: float
     xray_loss_test: float
+    xray_work_test_ratio: float  # xray_work / xray_test
     geometry_loss: float
     adp_loss: float
     bond_rmsd: float
     angle_rmsd: float
-    mean_b: float
+    mean_b_normalized: float  # mean_b / wilson_b
+    b_std_normalized: float  # b_std / wilson_b
     component_losses: Dict[str, float] = field(default_factory=dict)
     component_weights: Dict[str, float] = field(default_factory=dict)
 
@@ -158,12 +164,14 @@ class PolicyComponentWeighting(WeightingScheme):
         policy_path: Optional[str] = None,
         sample: bool = False,
         temperature: float = 1.0,
+        n_steps: int = 10,
     ):
         super().__init__(refinement)
 
         # Sampling parameters
         self.sample = sample
         self.temperature = temperature
+        self.n_steps = n_steps
 
         # Load or create policy network
         self.policy = self._create_policy_network()
@@ -174,8 +182,8 @@ class PolicyComponentWeighting(WeightingScheme):
 
         # State tracking
         self.current_step = 0
-        self.prev_rwork = None
         self.prev_rfree = None
+        self.initial_rfree = None
 
         # Last predictions (for trajectory recording)
         self.last_log_weights: Dict[str, float] = {}
@@ -190,6 +198,9 @@ class PolicyComponentWeighting(WeightingScheme):
         self.predicted_weights = self.last_weights
         self.predicted_uncertainties = {}
 
+        # Compute static features (computed once at initialization)
+        self._compute_static_features()
+
         if refinement.verbose > 0:
             param_count = sum(p.numel() for p in self.policy.parameters())
             print(f"PolicyComponentWeighting initialized")
@@ -197,12 +208,18 @@ class PolicyComponentWeighting(WeightingScheme):
             print(f"  Parameters: {param_count:,}")
             print(f"  Sample mode: {sample}")
             print(f"  Temperature: {temperature}")
+            print(f"  N steps: {n_steps}")
+            print(f"  Static features: resolution={self.static_features['resolution_min']:.2f}Å, "
+                  f"n_atoms={int(np.exp(self.static_features['log_n_atoms']))}, "
+                  f"wilson_b={self.static_features['wilson_b']:.1f}")
 
     def _create_policy_network(self) -> nn.Module:
-        """Create the policy network architecture."""
-        # Simple MLP matching the meta_weigthing_2 architecture
+        """Create the policy network architecture.
+
+        Uses 31-dimensional state vector matching meta_weighting_4 format.
+        """
         class PolicyNetwork(nn.Module):
-            def __init__(self, state_dim=25, hidden_dim=256):
+            def __init__(self, state_dim=31, hidden_dim=256):
                 super().__init__()
                 self.input_norm = nn.LayerNorm(state_dim)
                 self.fc1 = nn.Linear(state_dim, hidden_dim)
@@ -226,6 +243,44 @@ class PolicyComponentWeighting(WeightingScheme):
 
         return PolicyNetwork()
 
+    def _compute_static_features(self):
+        """Compute static features from structure/data (computed once at init).
+
+        Static features (7 total):
+        - resolution_min: Best resolution in Angstroms
+        - inv_resolution: 1/resolution (higher = better data)
+        - log_n_atoms: Log of number of atoms (structure size)
+        - log_n_hkl: Log of number of reflections
+        - data_to_param_ratio: n_hkl / n_atoms
+        - log_wilson_b: Log of Wilson B-factor (data quality)
+        - b_cv: Coefficient of variation of B-factors
+        - wilson_b: Wilson B (kept for normalization)
+        """
+        ref = self.refinement
+
+        with torch.no_grad():
+            # Structure properties
+            n_atoms = len(ref.model.pdb)
+            n_hkl = ref.reflection_data.hkl.shape[0]
+            resolution_min = float(ref.reflection_data.resolution.min())
+            wilson_b = float(ref.reflection_data.wilson_b)
+
+            # Initial B-factor statistics
+            b_factors = ref.model.b()
+            b_mean = float(b_factors.mean())
+            b_std = float(b_factors.std())
+
+        self.static_features = {
+            'resolution_min': resolution_min,
+            'inv_resolution': 1.0 / resolution_min,
+            'log_n_atoms': np.log(n_atoms),
+            'log_n_hkl': np.log(n_hkl),
+            'data_to_param_ratio': n_hkl / n_atoms,
+            'log_wilson_b': np.log(wilson_b),
+            'b_cv': b_std / (b_mean + 1e-6),  # Coefficient of variation
+            'wilson_b': wilson_b,  # Keep for B-factor normalization
+        }
+
     def _load_policy(self, checkpoint_path: str):
         """Load policy weights from checkpoint."""
         checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
@@ -247,10 +302,15 @@ class PolicyComponentWeighting(WeightingScheme):
     def reset_trajectory(self, pdb_id: str = "", structure_path: str = "", sf_path: str = ""):
         """Reset for a new trajectory and optionally start recording."""
         self.current_step = 0
-        self.prev_rwork = None
         self.prev_rfree = None
+        self.initial_rfree = None
         self.last_log_weights = {}
         self.last_weights = {}
+
+        # Capture initial R-free for improvement_rate calculation
+        with torch.no_grad():
+            _, rfree = self.refinement.get_rfactor()
+            self.initial_rfree = float(rfree)
 
     def start_recording(self, pdb_id: str, structure_path: str, sf_path: str,
                        seed: Optional[int] = None, policy_version: Optional[str] = None):
@@ -293,7 +353,7 @@ class PolicyComponentWeighting(WeightingScheme):
 
     def extract_state_features(self, state: 'LossState' = None) -> Tuple[torch.Tensor, StepState]:
         """
-        Extract state features from current refinement state.
+        Extract 31-dimensional state features from current refinement state.
 
         Parameters
         ----------
@@ -302,34 +362,42 @@ class PolicyComponentWeighting(WeightingScheme):
 
         Returns
         -------
-        features : torch.Tensor, shape (25,)
+        features : torch.Tensor, shape (31,)
             State feature vector for policy input
         step_state : StepState
             State object for trajectory recording
 
-        Features extracted (25 total):
-        - step index (1)
-        - R-work, R-free, R-free gap (3)
-        - Delta R-work, delta R-free (2)
-        - X-ray loss work + test (2)
-        - Geometry loss, ADP loss (2)
-        - Geometry metrics: bond RMSD, angle RMSD, mean B (3)
-        - Component losses: 9 per-component losses (9)
-        - Padding (3)
+        Features extracted (31 total):
+        - Progress metrics (2): progress, improvement_rate
+        - R-factors (4): rwork, rfree, gap, delta_rfree
+        - Static structure/data features (7): resolution, inv_resolution, log_n_atoms,
+          log_n_hkl, data_to_param_ratio, log_wilson_b, b_cv
+        - X-ray losses (3): work, test, work/test ratio
+        - Geometry losses (7): total, bond, angle, torsion, planarity, chiral, nonbonded
+        - Geometry RMSD (2): bond_rmsd, angle_rmsd
+        - ADP losses (4): total, simu, locality, KL
+        - B-factor stats (2): mean_b/wilson_b, b_std/wilson_b
         """
         ref = self.refinement
 
         # Get current R-factors
         with torch.no_grad():
             rwork, rfree = ref.get_rfactor()
+        rwork = float(rwork)
+        rfree = float(rfree)
         rfree_gap = rfree - rwork
 
-        # Compute deltas from previous step (0 for first step)
-        if self.prev_rwork is not None:
-            delta_rwork = rwork - self.prev_rwork
+        # Progress metrics
+        progress = self.current_step / self.n_steps
+        if self.initial_rfree is not None and self.initial_rfree > 1e-6:
+            improvement_rate = (self.initial_rfree - rfree) / self.initial_rfree
+        else:
+            improvement_rate = 0.0
+
+        # Compute delta from previous step (0 for first step)
+        if self.prev_rfree is not None:
             delta_rfree = rfree - self.prev_rfree
         else:
-            delta_rwork = 0.0
             delta_rfree = 0.0
 
         # Get losses - prefer from LossState if available
@@ -373,6 +441,9 @@ class PolicyComponentWeighting(WeightingScheme):
         with torch.no_grad():
             xray_loss_test = ref.xray_target_test().item() if hasattr(ref, 'xray_target_test') else xray_loss_work
 
+        # X-ray work/test ratio
+        xray_work_test_ratio = xray_loss_work / (xray_loss_test + 1e-6)
+
         # Geometry metrics
         with torch.no_grad():
             if hasattr(ref, 'restraints') and hasattr(ref.restraints, 'bond_deviations'):
@@ -387,58 +458,89 @@ class PolicyComponentWeighting(WeightingScheme):
             else:
                 angle_rmsd = 0.0
 
-            mean_b = ref.model.b().mean().item()
+            # B-factor statistics (dynamic)
+            b_factors = ref.model.b()
+            mean_b = float(b_factors.mean())
+            b_std = float(b_factors.std())
 
-        # Build feature tensor (25 features)
+        # Normalize B-factor stats by Wilson B
+        wilson_b = self.static_features['wilson_b']
+        mean_b_normalized = mean_b / wilson_b
+        b_std_normalized = b_std / wilson_b
+
+        # Build 31-feature tensor matching meta_weighting_4/worker.py
         features = torch.tensor([
-            self.current_step,
-            rwork,
-            rfree,
-            rfree_gap,
-            delta_rwork,
-            delta_rfree,
-            xray_loss_work,
-            xray_loss_test,
-            geom_loss_total,
-            adp_loss_total,
-            bond_rmsd,
-            angle_rmsd,
-            mean_b,
-            component_losses.get('bond', 0.0),
-            component_losses.get('angle', 0.0),
-            component_losses.get('torsion', 0.0),
-            component_losses.get('planarity', 0.0),
-            component_losses.get('chiral', 0.0),
-            component_losses.get('nonbonded', 0.0),
-            component_losses.get('simu', 0.0),
-            component_losses.get('locality', 0.0),
-            component_losses.get('KL', 0.0),
-            0.0,  # padding
-            0.0,  # padding
-            0.0,  # padding
+            # Progress (2)
+            progress,                                           # 0: normalized progress
+            improvement_rate,                                   # 1: relative improvement
+
+            # R-factors (4)
+            rwork,                                              # 2
+            rfree,                                              # 3
+            rfree_gap,                                          # 4: gap (overfitting indicator)
+            delta_rfree,                                        # 5: recent change
+
+            # Structure/Data properties (7) - STATIC
+            self.static_features['resolution_min'],             # 6: best resolution (Å)
+            self.static_features['inv_resolution'],             # 7: inverted (higher = better data)
+            self.static_features['log_n_atoms'],                # 8: structure size (log-scaled)
+            self.static_features['log_n_hkl'],                  # 9: number of reflections (log-scaled)
+            self.static_features['data_to_param_ratio'],        # 10: data-to-parameter ratio
+            self.static_features['log_wilson_b'],               # 11: data quality (log-scaled)
+            self.static_features['b_cv'],                       # 12: disorder coefficient of variation
+
+            # X-ray losses (3) - RAW
+            xray_loss_work,                                     # 13
+            xray_loss_test,                                     # 14
+            xray_work_test_ratio,                               # 15: work/test ratio
+
+            # Geometry losses (7) - RAW
+            geom_loss_total,                                    # 16
+            component_losses.get('bond', 0.0),                  # 17
+            component_losses.get('angle', 0.0),                 # 18
+            component_losses.get('torsion', 0.0),               # 19
+            component_losses.get('planarity', 0.0),             # 20
+            component_losses.get('chiral', 0.0),                # 21
+            component_losses.get('nonbonded', 0.0),             # 22
+
+            # Geometry RMSD (2)
+            bond_rmsd,                                          # 23
+            angle_rmsd,                                         # 24
+
+            # ADP losses (4) - RAW
+            adp_loss_total,                                     # 25
+            component_losses.get('simu', 0.0),                  # 26
+            component_losses.get('locality', 0.0),              # 27
+            component_losses.get('KL', 0.0),                    # 28
+
+            # B-factor stats (2) - normalized by Wilson B
+            mean_b_normalized,                                  # 29: normalized mean B
+            b_std_normalized,                                   # 30: normalized B spread
         ], dtype=torch.float32, device=ref.device)
 
         # Create StepState for recording
         step_state = StepState(
             step=self.current_step,
-            rwork=float(rwork),
-            rfree=float(rfree),
-            rfree_gap=float(rfree_gap),
-            delta_rwork=float(delta_rwork),
-            delta_rfree=float(delta_rfree),
-            xray_loss=float(xray_loss_work),
-            xray_loss_test=float(xray_loss_test),
-            geometry_loss=float(geom_loss_total),
-            adp_loss=float(adp_loss_total),
-            bond_rmsd=float(bond_rmsd),
-            angle_rmsd=float(angle_rmsd),
-            mean_b=float(mean_b),
+            progress=progress,
+            improvement_rate=improvement_rate,
+            rwork=rwork,
+            rfree=rfree,
+            rfree_gap=rfree_gap,
+            delta_rfree=delta_rfree,
+            xray_loss=xray_loss_work,
+            xray_loss_test=xray_loss_test,
+            xray_work_test_ratio=xray_work_test_ratio,
+            geometry_loss=geom_loss_total,
+            adp_loss=adp_loss_total,
+            bond_rmsd=bond_rmsd,
+            angle_rmsd=angle_rmsd,
+            mean_b_normalized=mean_b_normalized,
+            b_std_normalized=b_std_normalized,
             component_losses=component_losses.copy(),
             component_weights={},  # Will be filled by forward()
         )
 
-        # Update previous R-factors for delta computation
-        self.prev_rwork = rwork
+        # Update previous R-free for delta computation
         self.prev_rfree = rfree
 
         return features, step_state

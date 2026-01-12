@@ -836,7 +836,6 @@ class Refinement(DebugMixin, nnModule):
     def update_outliers(self, z_threshold=4.0):
         with torch.no_grad():
             self.reflection_data = self.reflection_data.update_outliers(self.model, self.scaler, z_threshold=z_threshold)
-            self.register_buffer('hkl', self.reflection_data.get_hkl())
             self.setup_scaler()
 
     def plot_fcalc_vs_fobs(self,outpath='fcalc_vs_fobs.png'):
@@ -955,8 +954,9 @@ class Refinement(DebugMixin, nnModule):
         
         # Create submodules using their factory methods
         # These properly set up structure before loading values
-        reflection_data = ReflectionData.create_from_state_dict(
-            reflection_data_state, device=device, verbose=verbose
+        # ReflectionData is now a dataclass with _from_state() method
+        reflection_data = ReflectionData._from_state(
+            reflection_data_state, device=str(device)
         )
         
         model = ModelFT.create_from_state_dict(

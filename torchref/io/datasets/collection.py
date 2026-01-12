@@ -6,13 +6,15 @@ related ReflectionData objects, useful for joint refinement, MAD phasing,
 and time-series crystallography.
 """
 
-from typing import Dict, List, Iterator, Tuple, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Iterator, Tuple, Optional, Any
 import torch
 
 from .base import CrystalDataset
 from .reflection_data import ReflectionData
 
 
+@dataclass
 class DatasetCollection(CrystalDataset):
     """
     Container for multiple related crystal datasets.
@@ -54,25 +56,14 @@ class DatasetCollection(CrystalDataset):
     >>> native_F = collection['native'].F
     """
 
-    def __init__(self, verbose: int = 1, device: str = 'cpu'):
-        """
-        Initialize empty dataset collection.
-
-        Parameters
-        ----------
-        verbose : int, optional
-            Verbosity level. Default is 1.
-        device : str, optional
-            Device for tensors. Default is 'cpu'.
-        """
-        super().__init__(verbose=verbose, device=device)
-
-        self._datasets: Dict[str, ReflectionData] = {}
-        self._dataset_order: List[str] = []
-        self._reference_dataset: Optional[str] = None
-
-        # Common HKL set (union of all datasets)
-        self.register_buffer('_common_hkl', None)
+    # Collection-specific fields (not inherited from CrystalDataset)
+    _datasets: Dict[str, ReflectionData] = field(default_factory=dict, repr=False)
+    _dataset_order: List[str] = field(default_factory=list, repr=False)
+    _reference_dataset: Optional[str] = field(default=None, repr=False)
+    _common_hkl: Optional[torch.Tensor] = field(default=None, repr=False)
+    _cell: Optional[torch.Tensor] = field(default=None, repr=False)
+    _spacegroup: Optional[str] = field(default=None, repr=False)
+    _resolution: Optional[torch.Tensor] = field(default=None, repr=False)
 
     def add_dataset(
         self,
@@ -116,9 +107,9 @@ class DatasetCollection(CrystalDataset):
         # First dataset or explicit reference becomes the reference
         if len(self._datasets) == 0 or set_as_reference:
             self._reference_dataset = name
-            self.register_buffer('_common_hkl', dataset.hkl.clone())
+            self._common_hkl = dataset.hkl.clone()
             if dataset.cell is not None:
-                self.register_buffer('_cell', dataset.cell.clone())
+                self._cell = dataset.cell.clone()
             self._spacegroup = dataset.spacegroup
 
         # Validate HKL against reference
@@ -145,6 +136,11 @@ class DatasetCollection(CrystalDataset):
         """Common HKL set for all datasets."""
         return self._common_hkl
 
+    @hkl.setter
+    def hkl(self, value: Optional[torch.Tensor]) -> None:
+        """Set common HKL (redirects to _common_hkl)."""
+        self._common_hkl = value
+
     @property
     def datasets(self) -> Dict[str, ReflectionData]:
         """Access all datasets as a dictionary."""
@@ -159,6 +155,16 @@ class DatasetCollection(CrystalDataset):
     def reference_dataset(self) -> Optional[str]:
         """Name of the reference dataset."""
         return self._reference_dataset
+
+    @property
+    def spacegroup(self) -> Optional[str]:
+        """Space group of the reference dataset."""
+        return self._spacegroup
+
+    @spacegroup.setter
+    def spacegroup(self, value: Optional[str]) -> None:
+        """Set space group (redirects to _spacegroup)."""
+        self._spacegroup = value
 
     def __getitem__(self, name: str) -> ReflectionData:
         """
@@ -210,9 +216,9 @@ class DatasetCollection(CrystalDataset):
 
         s = math_torch.get_scattering_vectors(self._common_hkl, self._cell)
         resolution = 1.0 / torch.linalg.norm(s, axis=1)
-        self.register_buffer('_resolution', resolution)
+        self._resolution = resolution
 
-    def forward(self, mask: bool = True) -> Dict[str, Tuple]:
+    def __call__(self, mask: bool = True) -> Dict[str, Tuple]:
         """
         Return all datasets' data.
 
@@ -226,21 +232,22 @@ class DatasetCollection(CrystalDataset):
         dict
             Dictionary mapping name to (hkl, F, F_sigma, rfree) tuples.
         """
-        return {name: ds.forward(mask=mask) for name, ds in self}
+        return {name: ds(mask=mask) for name, ds in self}
 
-    def cuda(self, device=None):
+    def to(self, device) -> 'DatasetCollection':
+        """Move collection and all datasets to device."""
+        super().to(device)
+        for ds in self._datasets.values():
+            ds.to(device)
+        return self
+
+    def cuda(self, device=None) -> 'DatasetCollection':
         """Move collection and all datasets to CUDA device."""
-        super().cuda(device)
-        for ds in self._datasets.values():
-            ds.cuda(device)
-        return self
+        return self.to(device or 'cuda')
 
-    def cpu(self):
+    def cpu(self) -> 'DatasetCollection':
         """Move collection and all datasets to CPU."""
-        super().cpu()
-        for ds in self._datasets.values():
-            ds.cpu()
-        return self
+        return self.to('cpu')
 
     def keys(self) -> List[str]:
         """Return list of dataset names."""

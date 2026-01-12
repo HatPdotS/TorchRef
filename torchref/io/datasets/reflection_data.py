@@ -9,13 +9,14 @@ intensities, and R-free flags.
 import pandas as pd
 import numpy as np
 import warnings
+from dataclasses import dataclass, field
 from torchref.math_functions import math_torch
 import torch
-import torch.nn as nn
-from typing import Optional, Tuple, Dict, List, Union, TYPE_CHECKING
+from typing import Optional, Tuple, Dict, List, Union, Any, TYPE_CHECKING
 import reciprocalspaceship as rs
 from torchref.utils.utils import TensorMasks
 from torchref.io import mtz, cif
+from torchref.io.datasets.base import CrystalDataset
 from torchref.utils.debug_utils import DebugMixin
 from torchref.math_functions.french_wilson import FrenchWilson
 
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 # Suppress PyTorch MaskedTensor prototype warnings globally
 # MaskedTensor is stable enough for our use case (aggregations, element-wise ops)
 warnings.filterwarnings(
-    'ignore', 
+    'ignore',
     message='.*MaskedTensors is in prototype stage.*',
     category=UserWarning
 )
@@ -34,7 +35,9 @@ if TYPE_CHECKING:
     from torchref.model import Model
     from torch.masked import MaskedTensor
 
-class ReflectionData(DebugMixin, nn.Module):
+
+@dataclass
+class ReflectionData(CrystalDataset, DebugMixin):
     """
     Container for crystallographic reflection data.
 
@@ -81,99 +84,31 @@ class ReflectionData(DebugMixin, nn.Module):
     >>> print(f"Resolution range: {data.resolution.min():.2f} - {data.resolution.max():.2f} Å")
     """
 
-    def __init__(self, verbose: int = 1, device: str = 'cpu'):
-        """
-        Initialize empty ReflectionData object.
+    # Additional fields specific to ReflectionData (beyond CrystalDataset)
+    # Note: Most fields are inherited from CrystalDataset dataclass
 
-        Parameters
-        ----------
-        verbose : int, optional
-            Verbosity level for logging (0=silent, 1=normal, 2=debug). Default is 1.
-        device : str, optional
-            Device to store tensors on ('cpu', 'cuda', 'cuda:0', etc.). Default is 'cpu'.
-        """
-        super().__init__()
-        
-        self.verbose: int = verbose  # Verbosity level for logging
-        self.device = torch.device(device)  # Device for all tensors
-        
-        # Register tensor buffers (will be moved to GPU with .cuda())
-        # Miller indicesx
-        self.register_buffer('hkl', None)  # Shape: (N, 3), dtype: int32
-        
-        # Amplitudes/Intensities
-        self.register_buffer('F', None)  # Structure factor amplitudes, shape: (N,)
-        self.register_buffer('F_sigma', None)  # Uncertainties, shape: (N,)
-        self.register_buffer('I', None)  # Intensities, shape: (N,)
-        self.register_buffer('I_sigma', None)  # Uncertainties, shape: (N,)
+    # Cached properties (not serialized)
+    _centric: Optional[torch.Tensor] = field(default=None, repr=False)
+    _n_bins: Optional[int] = field(default=None, repr=False)
+    _FrenchWilson: Optional[FrenchWilson] = field(default=None, repr=False)
 
-        self.masks = TensorMasks()  # Dictionary of boolean masks for filtering reflections 1 is included 0 is excluded
-        
-        # R-free flags
-        self.register_buffer('rfree_flags', None)  # R-free test set flags, shape: (N,), dtype: int32
-        self.rfree_source: Optional[str] = None  # Name of the R-free column
-        
-        # Outlier flags
-        self.register_buffer('outlier_flags', None)  # Outlier flags, shape: (N,), dtype: bool
-        self.outlier_detection_params: Optional[Dict] = None  # Parameters used for outlier detection
-        
-        # Metadata
-        self.register_buffer('cell', None)  # Unit cell parameters [a,b,c,alpha,beta,gamma]
-        self.spacegroup: Optional[str] = None
-        self.register_buffer('resolution', None)  # Resolution per reflection, shape: (N,)
-        
-        # Wilson B-factors (estimated from data)
-        self.wilson_b: Optional[float] = None  # Overall Wilson B-factor in Å²
-        self.wilson_b_structure: Optional[float] = None  # Structure B-factor (high-res) in Å²
-        self.wilson_b_solvent: Optional[float] = None  # Solvent B-factor (low-res) in Å²
-        self.wilson_k_sol: Optional[float] = None  # Relative solvent contribution
-        
-        # Data source tracking
-        self.amplitude_source: Optional[str] = None
-        self.intensity_source: Optional[str] = None
-        self.phase_source: Optional[str] = None
+    # Dynamic fields used by various methods
+    source: Optional['ReflectionData'] = field(default=None, repr=False)
+    dataset: Optional[pd.DataFrame] = field(default=None, repr=False)
+    last_op: Optional[str] = field(default=None, repr=False)
+    reader: Optional[Any] = field(default=None, repr=False)
 
-    def cuda(self, device=None):
+    def __post_init__(self):
         """
-        Move ReflectionData to CUDA device.
+        Initialize non-dataclass attributes after dataclass init.
 
-        Parameters
-        ----------
-        device : torch.device or int, optional
-            Target CUDA device. If None, uses default CUDA device.
+        This is called automatically after the dataclass __init__.
+        """
+        # Call parent __post_init__ to initialize masks
+        super().__post_init__()
 
-        Returns
-        -------
-        ReflectionData
-            Self, for method chaining.
-        """
-        super().cuda(device)
-        self.device = torch.device('cuda') if device is None else torch.device(device)
-        # Explicitly move masks since it's a child module
-        if hasattr(self, 'masks'):
-            self.masks.cuda(device)
-        if self.verbose > 1:
-            print(f"ReflectionData moved to device: {self.device}")
-        return self
-    
-    def cpu(self):
-        """
-        Move ReflectionData to CPU.
+    # Note: cuda() and cpu() methods are inherited from CrystalDataset
 
-        Returns
-        -------
-        ReflectionData
-            Self, for method chaining.
-        """
-        super().cpu()
-        self.device = torch.device('cpu')
-        # Explicitly move masks since it's a child module
-        if hasattr(self, 'masks'):
-            self.masks.cpu()
-        if self.verbose > 1:
-            print(f"ReflectionData moved to cpu")
-        return self
-    
     def load(self, reader):
         """
         Load reflection data using a data reader.
@@ -199,10 +134,10 @@ class ReflectionData(DebugMixin, nn.Module):
 
         hkl = torch.tensor(data_dict['HKL'], dtype=torch.int32, device=self.device)
 
-        self.register_buffer('hkl', hkl)
+        self.hkl = hkl
 
         if cell is not None:
-            self.register_buffer('cell', torch.tensor(cell, dtype=torch.float32, device=self.device))
+            self.cell = torch.tensor(cell, dtype=torch.float32, device=self.device)
         else:
             raise ValueError("Unit cell parameters are required in the data and could not be read.")
         
@@ -212,26 +147,26 @@ class ReflectionData(DebugMixin, nn.Module):
         self._calculate_resolution()
 
 
-        if 'I' in data_dict:    
-            self.register_buffer('I', torch.tensor(data_dict['I'], dtype=torch.float32, device=self.device))
+        if 'I' in data_dict:
+            self.I = torch.tensor(data_dict['I'], dtype=torch.float32, device=self.device)
             if 'SIGI' in data_dict:
-                self.register_buffer('I_sigma', torch.tensor(data_dict['SIGI'], dtype=torch.float32, device=self.device))
+                self.I_sigma = torch.tensor(data_dict['SIGI'], dtype=torch.float32, device=self.device)
             self.intensity_source = data_dict.get('I_col', 'Unknown')
-            self.FrenchWilson = FrenchWilson(self.hkl, self.cell, self.spacegroup, verbose=self.verbose)
-            F, F_sigma = self.FrenchWilson(self.I, self.I_sigma)
-            self.register_buffer('F', F)
-            self.register_buffer('F_sigma', F_sigma)
+            self._FrenchWilson = FrenchWilson(self.hkl, self.cell, self.spacegroup, verbose=self.verbose)
+            F, F_sigma = self._FrenchWilson(self.I, self.I_sigma)
+            self.F = F
+            self.F_sigma = F_sigma
         elif 'F' in data_dict:
-            self.register_buffer('F', torch.tensor(data_dict['F'], dtype=torch.float32, device=self.device))
+            self.F = torch.tensor(data_dict['F'], dtype=torch.float32, device=self.device)
             if 'SIGF' in data_dict:
                 if data_dict['SIGF'] is not None:
-                     self.register_buffer('F_sigma', torch.tensor(data_dict['SIGF'], dtype=torch.float32, device=self.device))
+                    self.F_sigma = torch.tensor(data_dict['SIGF'], dtype=torch.float32, device=self.device)
                 else:
                     sigF = math_torch.estimate_sigma_F(self.F)
-                    self.register_buffer('F_sigma', sigF)
+                    self.F_sigma = sigF
             else:
                 sigF = math_torch.estimate_sigma_F(self.F)
-                self.register_buffer('F_sigma', sigF)
+                self.F_sigma = sigF
             self.amplitude_source = data_dict.get('F_col', 'Unknown')
 
         else:
@@ -239,20 +174,19 @@ class ReflectionData(DebugMixin, nn.Module):
 
         if 'R-free-flags' in data_dict:
             rfree = torch.tensor(data_dict['R-free-flags'], device=self.device)
-            flagged = rfree < 0 
+            flagged = rfree < 0
             rfree = rfree.clip(min=0, max=1).to(torch.bool)
-            self.register_buffer('rfree_flags', rfree)
+            self.rfree_flags = rfree
             self.masks['flagged_initial'] = ~flagged
         else:
             flagged = torch.zeros(len(self.hkl), dtype=torch.bool, device=self.device)
             self.masks['flagged_initial'] = ~flagged
             self._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
-            
-
 
         self.sanitize_F()
+
         self.flag_suspicious_sigma()
-        self._calculate_wilson_b()
+
         return self
 
     def load_mtz(self, path: str) -> 'ReflectionData':
@@ -398,9 +332,9 @@ class ReflectionData(DebugMixin, nn.Module):
             flags[free_indices] = 0
             total_free += n_free_in_bin
         
-        # Move to correct device and register
+        # Move to correct device and assign
         flags_tensor = flags.to(dtype=torch.int32, device=self.device)
-        self.register_buffer('rfree_flags', flags_tensor)
+        self.rfree_flags = flags_tensor
         self.rfree_source = "Generated (resolution-binned)"
         
         n_free = (flags == 0).sum().item()
@@ -480,8 +414,8 @@ class ReflectionData(DebugMixin, nn.Module):
                         f"resolution {bin_res.min():.2f}-{bin_res.max():.2f} Å")
             if actual_n_bins > 20:
                 print(f"    ... ({actual_n_bins - 20} more bins)")
-        self.register_buffer('bin_indices', bin_indices)
-        self.register_buffer('n_bins', torch.tensor(actual_n_bins, dtype=torch.int32))
+        self.bin_indices = bin_indices
+        self._n_bins = actual_n_bins
         return bin_indices, actual_n_bins
     
     def mean_res_per_bin(self) -> torch.Tensor:
@@ -498,16 +432,70 @@ class ReflectionData(DebugMixin, nn.Module):
         ValueError
             If bins have not been created yet.
         """
-        if not hasattr(self, 'bin_indices') or not hasattr(self, 'resolution'):
+        if self.bin_indices is None or self.resolution is None:
             raise ValueError("Bins have not been created yet")
-        
-        mean_resolutions = torch.zeros(self.n_bins, dtype=torch.float32, device=self.device)
-        count_per_bin = torch.zeros(self.n_bins, dtype=torch.int32, device=self.device)
+
+        mean_resolutions = torch.zeros(self._n_bins, dtype=torch.float32, device=self.device)
+        count_per_bin = torch.zeros(self._n_bins, dtype=torch.int32, device=self.device)
         mask = self.masks()
         mean_resolutions = torch.scatter_add(mean_resolutions, 0, self.bin_indices[mask].to(torch.int64), self.resolution[mask])
         count_per_bin = torch.scatter_add(count_per_bin, 0, self.bin_indices[mask].to(torch.int64), torch.ones_like(self.resolution[mask], dtype=torch.int32))
         mean_resolutions = mean_resolutions / count_per_bin.clamp(min=1).float()
         return mean_resolutions
+    
+    def mean_F_per_bin(self) -> torch.Tensor:
+        """
+        Calculate mean structure factor amplitude per resolution bin.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean F per bin of shape (n_bins,).
+
+        Raises
+        ------
+        ValueError
+            If bins have not been created yet.
+        """
+        if self.bin_indices is None:
+            self.get_bins()
+        if self.F is None:
+            raise ValueError("No amplitude data loaded")
+
+        mean_F = torch.zeros(self._n_bins, dtype=torch.float32, device=self.device)
+        count_per_bin = torch.zeros(self._n_bins, dtype=torch.int32, device=self.device)
+        mask = self.masks()
+        mean_F = torch.scatter_add(mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask])
+        count_per_bin = torch.scatter_add(count_per_bin, 0, self.bin_indices[mask].to(torch.int64), torch.ones_like(self.F[mask], dtype=torch.int32))
+        mean_F = mean_F / count_per_bin.clamp(min=1).float()
+        return mean_F
+    
+    def mean_sigma_per_bin(self) -> Optional[torch.Tensor]:
+        """
+        Calculate mean structure factor uncertainty per resolution bin.
+
+        Returns
+        -------
+        torch.Tensor or None
+            Mean sigma_F per bin of shape (n_bins,), or None if no uncertainties.
+
+        Raises
+        ------
+        ValueError
+            If bins have not been created yet.
+        """
+        if self.bin_indices is None:
+            self.get_bins()
+        if self.F is None:
+            raise ValueError("No amplitude data loaded")
+
+        mean_sigma = torch.zeros(self._n_bins, dtype=torch.float32, device=self.device)
+        count_per_bin = torch.zeros(self._n_bins, dtype=torch.int32, device=self.device)
+        mask = self.masks()
+        mean_sigma = torch.scatter_add(mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask])
+        count_per_bin = torch.scatter_add(count_per_bin, 0, self.bin_indices[mask].to(torch.int64), torch.ones_like(self.F_sigma[mask], dtype=torch.int32))
+        mean_sigma = mean_sigma / count_per_bin.clamp(min=1).float()
+        return mean_sigma
 
     def regenerate_rfree_flags(self, free_fraction: float = 0.02, n_bins: int = 20,
                                min_per_bin: int = 100, seed: Optional[int] = None, 
@@ -565,7 +553,7 @@ class ReflectionData(DebugMixin, nn.Module):
             raise ValueError("Unit cell parameters are required to calculate resolution")
         s = math_torch.get_scattering_vectors(self.hkl, self.cell)
         resolution = 1.0 / torch.linalg.norm(s, axis=1)
-        self.register_buffer('resolution', resolution)
+        self.resolution = resolution
     
     def _calculate_wilson_b(self, n_bins: int = 30) -> None:
         """
@@ -1026,7 +1014,7 @@ class ReflectionData(DebugMixin, nn.Module):
         sigma_work = self.F_sigma[work_mask] if self.F_sigma is not None else None
         
         return F_work, sigma_work
-    
+        
     def get_test_set(self) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Get structure factors for the test set (R-free flag == 0).
@@ -1099,15 +1087,66 @@ class ReflectionData(DebugMixin, nn.Module):
         
         return ", ".join(parts) + ")"
 
-    def forward(
-        self, 
-        mask: bool = True
-    ) -> Tuple[
-        torch.Tensor, 
-        'MaskedTensor', 
-        Optional['MaskedTensor'], 
-        Optional[torch.Tensor]
-    ]:
+
+
+    def get_valid_mask(self) -> torch.Tensor:
+        """
+        Return the combined validity mask for all reflections.
+
+        This is the mask used to filter reflections in forward(). True indicates
+        a valid (included) reflection, False indicates an excluded one.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean mask of shape (N,) where N is the total number of reflections.
+            True = valid/included, False = invalid/excluded.
+
+        Examples
+        --------
+        >>> mask = data.get_valid_mask()
+        >>> print(f"{mask.sum()} of {len(mask)} reflections are valid")
+        """
+        return self.masks()
+
+    def data_indexed(self) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Return reflection data as indexed (filtered) tensors.
+
+        This method filters out invalid reflections and returns smaller tensors
+        containing only valid data. Useful for operations that don't support
+        MaskedTensors or for writing output files.
+
+        Returns
+        -------
+        hkl : torch.Tensor
+            Miller indices of shape (M, 3) where M is number of valid reflections.
+        F : torch.Tensor
+            Structure factor amplitudes of shape (M,).
+        F_sigma : torch.Tensor or None
+            Uncertainties of shape (M,) or None.
+        rfree_flags : torch.Tensor or None
+            R-free flags of shape (M,) or None.
+
+        See Also
+        --------
+        forward : Main method returning MaskedTensors.
+
+        Examples
+        --------
+        >>> hkl, F, sigma, rfree = data.forward_indexed()
+        >>> F_np = F.cpu().numpy()  # Safe for writing to files
+        """
+        to_mask = self.masks()
+        
+        hkl = self.hkl[to_mask]
+        F = self.F[to_mask]
+        F_sigma = self.F_sigma[to_mask] if self.F_sigma is not None else None
+        rfree_flags = self.rfree_flags[to_mask].to(torch.bool) if self.rfree_flags is not None else None
+        
+        return hkl, F, F_sigma, rfree_flags
+
+    def __call__(self, mask: bool = True) -> Tuple[torch.Tensor,'MaskedTensor','MaskedTensor',torch.Tensor]:
         """
         Return core reflection data with MaskedTensors for F and sigma.
 
@@ -1150,81 +1189,58 @@ class ReflectionData(DebugMixin, nn.Module):
         >>> hkl, F, sigma, rfree = data()
         >>> print(F.shape)  # Full shape
         >>> print(F.sum())  # Only sums valid (unmasked) values
-        >>> 
+        >>>
         >>> # Access underlying data
         >>> valid_mask = F.get_mask()
         >>> F_values = F.get_data()[valid_mask]
         """
         from torch.masked import MaskedTensor
-        
+
         hkl, F, F_sigma, rfree_flags = self.hkl, self.F, self.F_sigma, self.rfree_flags
-        
+
         if mask:
             to_mask = self.masks()
             F = MaskedTensor(F, to_mask)
             if F_sigma is not None:
                 F_sigma = MaskedTensor(F_sigma, to_mask)
-        
+
         return hkl, F, F_sigma, rfree_flags
 
-    def get_valid_mask(self) -> torch.Tensor:
-        """
-        Return the combined validity mask for all reflections.
-
-        This is the mask used to filter reflections in forward(). True indicates
-        a valid (included) reflection, False indicates an excluded one.
-
-        Returns
-        -------
-        torch.Tensor
-            Boolean mask of shape (N,) where N is the total number of reflections.
-            True = valid/included, False = invalid/excluded.
-
-        Examples
-        --------
-        >>> mask = data.get_valid_mask()
-        >>> print(f"{mask.sum()} of {len(mask)} reflections are valid")
-        """
-        return self.masks()
-
-    def forward_indexed(self) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """
-        Return reflection data as indexed (filtered) tensors.
-
-        This method filters out invalid reflections and returns smaller tensors
-        containing only valid data. Useful for operations that don't support
-        MaskedTensors or for writing output files.
-
-        Returns
-        -------
-        hkl : torch.Tensor
-            Miller indices of shape (M, 3) where M is number of valid reflections.
-        F : torch.Tensor
-            Structure factor amplitudes of shape (M,).
-        F_sigma : torch.Tensor or None
-            Uncertainties of shape (M,) or None.
-        rfree_flags : torch.Tensor or None
-            R-free flags of shape (M,) or None.
-
-        See Also
-        --------
-        forward : Main method returning MaskedTensors.
-
-        Examples
-        --------
-        >>> hkl, F, sigma, rfree = data.forward_indexed()
-        >>> F_np = F.cpu().numpy()  # Safe for writing to files
-        """
-        to_mask = self.masks()
+    def data_fill_masked(self,mode = 'mean') -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        '''
+        Return data tensors with missing or flagged reflections filled with.
         
-        hkl = self.hkl[to_mask]
-        F = self.F[to_mask]
-        F_sigma = self.F_sigma[to_mask] if self.F_sigma is not None else None
-        rfree_flags = self.rfree_flags[to_mask].to(torch.bool) if self.rfree_flags is not None else None
-        
-        return hkl, F, F_sigma, rfree_flags
-    
-    def __select__(self,mask:torch.Tensor, op=None)-> 'ReflectionData':
+        args:
+            mode: str, optional
+                'mean' : fill missing/flagged with mean of present data
+                'zero' : fill missing/flagged with zero
+        '''
+        hkl, F, F_sigma, rfree = self()
+
+        if mode == 'mean':
+            mean_F = self.mean_F_per_bin()
+            mean_F_sigma = self.mean_sigma_per_bin()
+            F_data = F.get_data().clone()
+            F_sigma_data = F_sigma.get_data().clone()
+            mask = F.get_mask()
+            F_data[~mask] = mean_F[self.bin_indices[~mask]]
+            F_sigma_data[~mask] = mean_F_sigma[self.bin_indices[~mask]]
+            rfree[~mask] = True # set missing to work set
+            return hkl, F_data, F_sigma_data, rfree
+
+        elif mode == 'zero':
+            mask = F.get_mask()
+            F_data = F.get_data().clone()
+            F_sigma_data = F_sigma.get_data().clone()
+            F_data[~mask] = 0.0
+            F_sigma_data[~mask] = 0.0
+            rfree[~mask] = True # set missing to work set
+            return hkl, F_data, F_sigma_data, rfree
+
+        else:
+            raise ValueError(f"Unknown fill mode: {mode}")
+
+    def __select__(self, mask: torch.Tensor, op=None) -> 'ReflectionData':
         """
         Select reflections based on a boolean mask.
 
@@ -1242,27 +1258,27 @@ class ReflectionData(DebugMixin, nn.Module):
         """
         # Create new instance with same device
         selected = ReflectionData(verbose=self.verbose, device=self.device)
-        
-        # Register buffers for the selected data
+
+        # Copy tensor fields with selection
         if self.hkl is not None:
-            selected.register_buffer('hkl', self.hkl[mask])
+            selected.hkl = self.hkl[mask]
         if self.I is not None:
-            selected.register_buffer('I', self.I[mask])
+            selected.I = self.I[mask]
         if self.F is not None:
-            selected.register_buffer('F', self.F[mask])
+            selected.F = self.F[mask]
         if self.F_sigma is not None:
-            selected.register_buffer('F_sigma', self.F_sigma[mask])
-        if self.phase is not None:
-            selected.register_buffer('phase', self.phase[mask])
-        if self.fom is not None:
-            selected.register_buffer('fom', self.fom[mask])
+            selected.F_sigma = self.F_sigma[mask]
+        if hasattr(self, 'phase') and self.phase is not None:
+            selected.phase = self.phase[mask]
+        if hasattr(self, 'fom') and self.fom is not None:
+            selected.fom = self.fom[mask]
         if self.rfree_flags is not None:
-            selected.register_buffer('rfree_flags', self.rfree_flags[mask])
+            selected.rfree_flags = self.rfree_flags[mask]
         if self.cell is not None:
-            selected.register_buffer('cell', self.cell.clone())
+            selected.cell = self.cell.clone()
         if self.resolution is not None:
-            selected.register_buffer('resolution', self.resolution[mask])
-        
+            selected.resolution = self.resolution[mask]
+
         selected.spacegroup = self.spacegroup
         selected.amplitude_source = self.amplitude_source
         selected.intensity_source = self.intensity_source
@@ -1270,11 +1286,10 @@ class ReflectionData(DebugMixin, nn.Module):
         selected.rfree_source = self.rfree_source
         selected.verbose = self.verbose
         selected.source = self
-        selected.dataset = self.dataset.iloc[mask.cpu().numpy()].copy() if self.dataset is not None else None
+        selected.dataset = self.dataset.iloc[mask.cpu().numpy()].copy() if hasattr(self, 'dataset') and self.dataset is not None else None
         self.last_op = op
         return selected
     
-
     def sanitize_F(self):
         """
         Remove invalid values from structure factors.
@@ -1396,40 +1411,38 @@ class ReflectionData(DebugMixin, nn.Module):
         old_fom = getattr(self, 'fom', None)
         
         # Replace HKL with reference
-        self.register_buffer('hkl', hkl_ref)
-        
+        self.hkl = hkl_ref
+
         # Expand data tensors
-        self.register_buffer('F', expand_tensor(old_F, fill_value=0.0))
-        self.register_buffer('F_sigma', expand_tensor(old_F_sigma, fill_value=1.0))
-        
+        self.F = expand_tensor(old_F, fill_value=0.0)
+        self.F_sigma = expand_tensor(old_F_sigma, fill_value=1.0)
+
         if old_I is not None:
-            self.register_buffer('I', expand_tensor(old_I, fill_value=0.0))
+            self.I = expand_tensor(old_I, fill_value=0.0)
         if old_I_sigma is not None:
-            self.register_buffer('I_sigma', expand_tensor(old_I_sigma, fill_value=1.0))
-        
+            self.I_sigma = expand_tensor(old_I_sigma, fill_value=1.0)
+
         # For rfree, default missing to work set (1)
         if old_rfree is not None:
             rfree_expanded = torch.ones(n_ref, dtype=old_rfree.dtype, device=self.device)
             mask = valid_indices >= 0
             rfree_expanded[mask] = old_rfree[valid_indices[mask]]
-            self.register_buffer('rfree_flags', rfree_expanded)
-        
+            self.rfree_flags = rfree_expanded
+
         # Recalculate resolution for new HKL set
         self._calculate_resolution()
-        
+
         # Expand phase and fom if present
         if old_phase is not None:
-            self.register_buffer('phase', expand_tensor(old_phase, fill_value=0.0))
+            self.phase = expand_tensor(old_phase, fill_value=0.0)
         if old_fom is not None:
-            self.register_buffer('fom', expand_tensor(old_fom, fill_value=0.0))
-        
+            self.fom = expand_tensor(old_fom, fill_value=0.0)
+
         # Transfer existing masks to new indexing
         old_masks = dict(self.masks.items())
-        # Clear existing masks by removing each key
-        for name in list(self.masks.keys()):
-            delattr(self.masks, f"_buf_{name}")
-        self.masks._keys.clear()
-        self.masks.updated = True
+        # Clear existing masks
+        self.masks.clear()
+        self.masks._updated = True
         
         for name, old_mask in old_masks.items():
             if old_mask is not None and len(old_mask) == n_data:
@@ -1475,7 +1488,7 @@ class ReflectionData(DebugMixin, nn.Module):
         torch.Tensor
             Boolean mask where True indicates outliers.
         """
-        hkl, F_obs, _, _ = self.forward(mask=False)
+        hkl, F_obs, _, _ = self(mask=False)
         log_ratio = self.get_log_ratio(model, scaler)
         eps = 1e-10
         
@@ -1531,7 +1544,7 @@ class ReflectionData(DebugMixin, nn.Module):
         """
         # Get observed and calculated structure factors
         eps = 1e-6
-        hkl, F_obs, _ , _ = self.forward(mask=False)
+        hkl, F_obs, _, _ = self(mask=False)
         F_calc_complex = model.forward(hkl)  # Complex structure factors
         F_calc_scaled = torch.abs(scaler(F_calc_complex,use_mask=False))  # Scaled amplitudes
         # Avoid log of zero by adding small epsilon
@@ -1760,146 +1773,6 @@ class ReflectionData(DebugMixin, nn.Module):
             print(f"✓ Wrote MTZ file: {fname}")
             print(f"  Reflections: {len(df)}")
             print(f"  Columns: {', '.join(df.columns)}")
-
-    def state_dict(self, destination=None, prefix='', keep_vars=False):
-        """
-        Return dictionary containing complete state of ReflectionData.
-
-        Includes all registered buffers, masks, and metadata.
-
-        Parameters
-        ----------
-        destination : dict, optional
-            Optional dict to populate.
-        prefix : str, optional
-            Prefix for parameter names.
-        keep_vars : bool, optional
-            Whether to keep variables in computational graph.
-
-        Returns
-        -------
-        dict
-            Complete state dictionary.
-        """
-        # Get parent class state_dict (includes all registered buffers)
-        state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
-        
-        # Add ReflectionData-specific metadata
-        state[prefix + 'spacegroup'] = self.spacegroup
-        state[prefix + 'rfree_source'] = self.rfree_source
-        state[prefix + 'outlier_detection_params'] = self.outlier_detection_params
-        state[prefix + 'amplitude_source'] = self.amplitude_source
-        state[prefix + 'intensity_source'] = self.intensity_source
-        state[prefix + 'phase_source'] = self.phase_source
-        state[prefix + 'wilson_b'] = self.wilson_b
-        state[prefix + 'wilson_b_structure'] = self.wilson_b_structure
-        state[prefix + 'wilson_b_solvent'] = self.wilson_b_solvent
-        state[prefix + 'wilson_k_sol'] = self.wilson_k_sol
-        state[prefix + 'verbose'] = self.verbose
-        
-        return state
-
-    def save_state(self, path: str):
-        """
-        Save complete state of reflection data to file.
-
-        Parameters
-        ----------
-        path : str
-            Path to save the state dictionary to.
-        """
-        torch.save(self.state_dict(), path)
-        if self.verbose > 0:
-            print(f"Saved reflection data state to {path}")
-
-    def load_state(self, path: str, strict: bool = True):
-        """
-        Load complete state of reflection data from file.
-
-        Parameters
-        ----------
-        path : str
-            Path to load the state dictionary from.
-        strict : bool, optional
-            Whether to strictly enforce that keys match. Default is True.
-        """
-        state_dict = torch.load(path, map_location=self.device)
-        self.load_state_dict(state_dict, strict=strict)
-        if self.verbose > 0:
-            print(f"Loaded reflection data state from {path}")
-    
-    @classmethod
-    def create_from_state_dict(cls, state_dict: dict, device: str = 'cpu', verbose: int = 1) -> 'ReflectionData':
-        """
-        Create a fully initialized ReflectionData from a state dictionary.
-        
-        This is the recommended way to restore ReflectionData from a saved state.
-        It creates an instance with properly sized buffers, then loads the state.
-        
-        Args:
-            state_dict: State dictionary from torch.save(reflection_data.state_dict(), ...)
-            device: Device to place tensors on ('cpu' or 'cuda')
-            verbose: Verbosity level
-            
-        Returns:
-            ReflectionData: Fully initialized instance with restored state
-        """
-        # Extract metadata (these are not tensors, need special handling)
-        spacegroup = state_dict.pop('spacegroup', None)
-        rfree_source = state_dict.pop('rfree_source', None)
-        outlier_detection_params = state_dict.pop('outlier_detection_params', None)
-        amplitude_source = state_dict.pop('amplitude_source', None)
-        intensity_source = state_dict.pop('intensity_source', None)
-        phase_source = state_dict.pop('phase_source', None)
-        wilson_b = state_dict.pop('wilson_b', None)
-        wilson_b_structure = state_dict.pop('wilson_b_structure', None)
-        wilson_b_solvent = state_dict.pop('wilson_b_solvent', None)
-        wilson_k_sol = state_dict.pop('wilson_k_sol', None)
-        saved_verbose = state_dict.pop('verbose', verbose)
-        
-        # Create instance
-        instance = cls(verbose=saved_verbose, device=device)
-        
-        # Set metadata
-        instance.spacegroup = spacegroup
-        instance.rfree_source = rfree_source
-        instance.outlier_detection_params = outlier_detection_params
-        instance.amplitude_source = amplitude_source
-        instance.intensity_source = intensity_source
-        instance.phase_source = phase_source
-        instance.wilson_b = wilson_b
-        instance.wilson_b_structure = wilson_b_structure
-        instance.wilson_b_solvent = wilson_b_solvent
-        instance.wilson_k_sol = wilson_k_sol
-        
-        # Register buffers with correct shapes before loading
-        if 'hkl' in state_dict and state_dict['hkl'] is not None:
-            hkl = state_dict['hkl']
-            instance.register_buffer('hkl', torch.zeros_like(hkl, device=device))
-        
-        buffer_names = ['F', 'F_sigma', 'I', 'I_sigma', 'rfree_flags', 'outlier_flags', 
-                       'resolution', 'bin_indices', 'n_bins', 'cell']
-        for name in buffer_names:
-            if name in state_dict and state_dict[name] is not None:
-                tensor = state_dict[name]
-                instance.register_buffer(name, torch.zeros_like(tensor, device=device))
-        
-        # Create FrenchWilson if present
-        has_french_wilson = any(k.startswith('FrenchWilson.') for k in state_dict.keys())
-        if has_french_wilson and 'hkl' in state_dict and 'cell' in state_dict:
-            hkl = state_dict['hkl'].to(device)
-            cell = state_dict['cell'].to(device)
-            instance.FrenchWilson = FrenchWilson(hkl, cell, spacegroup, verbose=saved_verbose)
-            instance.FrenchWilson.to(device)
-        
-        # Now use PyTorch's default load_state_dict
-        instance.load_state_dict(state_dict, strict=False)
-        
-        if verbose > 0:
-            n_refl = instance.hkl.shape[0] if instance.hkl is not None else 0
-            print(f"Created ReflectionData from state_dict: {n_refl} reflections")
-        
-        return instance
     
     @property
     def centric(self):
@@ -1930,3 +1803,515 @@ class ReflectionData(DebugMixin, nn.Module):
         
         # Return full-size centric flags (no filtering)
         return self._centric_flags
+
+    def calc_patterson(self, grid_size: Optional[Tuple[int, int, int]] = None) -> torch.Tensor:
+        """
+        Calculate Patterson map of the dataset.
+
+        The Patterson function P(u,v,w) = Σ|F(hkl)|² exp(-2πi(hu+kv+lw))
+        is computed via inverse FFT of F². Data is expanded to P1 symmetry
+        using only observed reflections (no filling of missing data).
+
+        Parameters
+        ----------
+        grid_size : tuple of int, optional
+            Grid dimensions (Nx, Ny, Nz). If None, automatically determined
+            from unit cell and resolution.
+
+        Returns
+        -------
+        torch.Tensor
+            Real-valued Patterson map of shape (Nx, Ny, Nz).
+            Origin is at grid position [0, 0, 0].
+        """
+        from torchref.math_functions.math_torch import (
+            place_on_grid,
+            find_grid_size)
+
+        # Expand to P1 symmetry (don't fill missing reflections - use only observed data)
+        data = self.expand_to_p1()
+
+        max_res = data.resolution.min() * 2
+
+        if grid_size is None:
+            grid_size = find_grid_size(data.cell, max_res)
+
+        # Use data_indexed to get only valid (observed) reflections
+        hkl, F, _, _ = data.data_indexed()
+
+        F_2 = F**2
+
+        # Place F² on reciprocal grid (don't enforce Hermitian since we have P1 expansion)
+        grid = place_on_grid(hkl, F_2, grid_size, enforce_hermitian=False)
+
+        patterson = torch.fft.ifftn(grid, dim=(0, 1, 2), norm="forward").real
+
+        return patterson
+
+    def possible_hkl(self) -> torch.Tensor:
+        """
+        Generate all possible HKL indices within the resolution limit.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (M, 3) containing all possible Miller indices
+            within the resolution limit defined by self.resolution.
+        """
+        from torchref.math_functions.reciprocal_space import generate_possible_hkl
+
+        if self.cell is None or self.resolution is None:
+            raise ValueError("Cell and resolution must be defined to generate possible HKL")
+
+        max_res = self.resolution.min().item()
+        possible_hkl = generate_possible_hkl(self.cell, max_res, device=self.device)
+
+        return possible_hkl
+
+    def remap(
+        self,
+        new_hkl: torch.Tensor,
+        index_mapping: torch.Tensor,
+        phase_shifts: Optional[torch.Tensor] = None,
+        spacegroup = None,
+        op_name: str = "remap"
+    ) -> 'ReflectionData':
+        """
+        Create new ReflectionData with remapped HKL set and data.
+
+        This is the core method for index-based transformations of reflection
+        data. It handles remapping all tensor fields based on an index mapping,
+        with support for missing reflections (indicated by -1 in index_mapping).
+
+        Parameters
+        ----------
+        new_hkl : torch.Tensor, shape (M, 3)
+            New Miller indices.
+        index_mapping : torch.Tensor, shape (M,), dtype int64
+            Maps new indices to original: ``new[i] = old[index_mapping[i]]``
+            Values of -1 indicate missing reflections (filled with defaults).
+        phase_shifts : torch.Tensor, optional, shape (M,)
+            Phase offsets to apply (e.g., from symmetry translations).
+        spacegroup : str, int, gemmi.SpaceGroup, or None
+            New spacegroup. If None, keeps original.
+        op_name : str
+            Operation name for provenance tracking.
+
+        Returns
+        -------
+        ReflectionData
+            New object with remapped data. Missing reflections get:
+            - 0.0 for F, I, phase, fom
+            - 1.0 for F_sigma, I_sigma (conservative uncertainty)
+            - True for masks['missing']
+        """
+        from torchref.symmetrie.spacegroup import SpaceGroup
+
+        # Helper function for remapping tensors with missing handling
+        def _remap_tensor(tensor, fill_value):
+            if tensor is None:
+                return None
+            valid_mask = index_mapping >= 0
+            result = torch.full(
+                (len(new_hkl),) + tensor.shape[1:],
+                fill_value,
+                dtype=tensor.dtype,
+                device=self.device
+            )
+            result[valid_mask] = tensor[index_mapping[valid_mask]]
+            return result
+
+        # Create new ReflectionData
+        remapped = ReflectionData(verbose=self.verbose, device=self.device)
+
+        # Set new HKL
+        remapped.hkl = new_hkl.to(device=self.device)
+
+        # Remap amplitude and intensity fields
+        remapped.F = _remap_tensor(self.F, fill_value=0.0)
+        remapped.F_sigma = _remap_tensor(self.F_sigma, fill_value=1.0)
+        remapped.I = _remap_tensor(self.I, fill_value=0.0)
+        remapped.I_sigma = _remap_tensor(self.I_sigma, fill_value=1.0)
+        remapped.fom = _remap_tensor(self.fom, fill_value=0.0)
+
+        # Carry forward prior mask if available
+        prior_mask = self.masks()
+        if prior_mask is not None:
+            remapped.masks['prior_flagged'] = _remap_tensor(prior_mask.to(torch.int32), fill_value=0).to(torch.bool)
+
+        # Handle rfree_flags (True = include in Rfree for missing)
+        if self.rfree_flags is not None:
+            remapped.rfree_flags = _remap_tensor(
+                self.rfree_flags.to(torch.int32), fill_value=1
+            ).to(torch.bool)
+
+        # Handle phases with optional shifts
+        if self.phase is not None:
+            remapped.phase = _remap_tensor(self.phase, fill_value=0.0)
+            if phase_shifts is not None:
+                remapped.phase = remapped.phase + phase_shifts.to(device=self.device)
+        elif phase_shifts is not None:
+            # Store phase shifts even if no original phases
+            remapped._expansion_phase_shifts = phase_shifts.to(device=self.device)
+
+        # Clone cell
+        remapped.cell = self.cell.clone() if self.cell is not None else None
+
+        # Set spacegroup
+        if spacegroup is not None:
+            remapped.spacegroup = SpaceGroup(spacegroup)
+        else:
+            remapped.spacegroup = self.spacegroup
+
+        # Recalculate resolution
+        if remapped.cell is not None and remapped.hkl is not None:
+            remapped._calculate_resolution()
+
+        # Invalidate dependent fields
+        remapped.bin_indices = None
+
+        # Copy metadata sources
+        remapped.amplitude_source = self.amplitude_source
+        remapped.intensity_source = self.intensity_source
+        remapped.phase_source = self.phase_source
+        remapped.rfree_source = self.rfree_source
+
+        # Track provenance
+        remapped.source = self
+        remapped.last_op = op_name
+
+        # Add missing mask
+        missing_mask = index_mapping < 0
+        if missing_mask.any():
+            remapped.masks['missing'] = ~missing_mask.to(device=self.device)
+
+        return remapped
+
+    def fill(self, d_min: Optional[float] = None) -> 'ReflectionData':
+        """
+        Fill missing reflections within resolution limit.
+
+        Generates all possible reflections for the current spacegroup within
+        the resolution limit, identifies which are missing, and creates a
+        complete dataset. Missing reflections are filled with default values.
+
+        Parameters
+        ----------
+        d_min : float, optional
+            High resolution limit in Angstroms. If None, uses the minimum
+            resolution from the current dataset.
+            
+        Returns
+        -------
+        ReflectionData
+            New ReflectionData with complete set of reflections.
+            Missing reflections have:
+            - F, I, phase, fom = 0.0
+            - F_sigma, I_sigma = 1.0
+            - masks['missing'] = True
+
+        Examples
+        --------
+        >>> data = ReflectionData().load_mtz('data.mtz')
+        >>> data_filled = data.fill(d_min=2.0)
+        >>> print(f"Original: {len(data)}, Filled: {len(data_filled)}")
+        """
+        from torchref.symmetrie.reciprocal_symmetry import complete_hkl
+
+        if self.hkl is None:
+            raise ValueError("ReflectionData has no Miller indices loaded")
+        if self.cell is None:
+            raise ValueError("ReflectionData has no unit cell defined")
+
+        # Use current resolution limit if not specified
+        if d_min is None:
+            if self.resolution is None:
+                raise ValueError("Resolution not available - specify d_min")
+            d_min = self.resolution.min().item()
+
+        # Get complete HKL set with index mapping
+        filled_hkl, indices, missing = complete_hkl(
+            self.hkl,
+            self.cell,
+            self.spacegroup or 'P1',
+            d_min,
+            device=self.device
+        )
+
+        # Use remap to create the new dataset
+        remapped = self.remap(
+            new_hkl=filled_hkl,
+            index_mapping=indices,
+            spacegroup=self.spacegroup,  # Keep same spacegroup
+            op_name=f"fill(d_min={d_min:.2f})"
+        )
+
+        return remapped
+
+    def expand_to_p1(
+        self,
+        include_friedel: bool = True,
+        remove_absences: bool = True
+    ) -> 'ReflectionData':
+        """
+        Expand reflection data from asymmetric unit to P1.
+
+        Applies all symmetry operations from the current space group to generate
+        all symmetry-equivalent reflections. Returns a NEW ReflectionData object
+        with expanded reflections; does not modify self.
+
+        Parameters
+        ----------
+        include_friedel : bool, default True
+            Include Friedel mates (-h, -k, -l). For normal (non-anomalous)
+            scattering, Friedel pairs have identical amplitudes.
+        remove_absences : bool, default True
+            Remove systematically absent reflections from output.
+
+        Returns
+        -------
+        ReflectionData
+            New ReflectionData object with:
+            - All symmetry-equivalent reflections
+            - spacegroup set to P1
+            - Expanded tensor fields (F, F_sigma, I, I_sigma, phase, fom, rfree_flags)
+            - Recalculated resolution values
+            - Provenance tracking via source and last_op attributes
+
+        Notes
+        -----
+        The expansion handles tensor fields as follows:
+
+        - hkl: Symmetry operations applied, Friedel mates added, duplicates removed
+        - F, F_sigma, I, I_sigma, fom, rfree_flags: Indexed from original
+        - phase: Indexed + phase shift from translation component
+        - resolution: Recalculated from expanded hkl + cell
+        - bin_indices: Cleared (invalidated by expansion)
+
+        Examples
+        --------
+        >>> # Load data in original space group
+        >>> data = ReflectionData().load_mtz('data.mtz')
+        >>> print(f"Original: {len(data)} reflections, {data.spacegroup}")
+
+        >>> # Expand to P1
+        >>> data_p1 = data.expand_to_p1()
+        >>> print(f"Expanded: {len(data_p1)} reflections, {data_p1.spacegroup}")
+
+        >>> # Without Friedel mates (for anomalous data)
+        >>> data_p1_anom = data.expand_to_p1(include_friedel=False)
+        """
+        from torchref.symmetrie.reciprocal_symmetry import expand_hkl
+
+        if self.hkl is None:
+            raise ValueError("ReflectionData has no Miller indices loaded")
+
+        # Get expanded HKL set with index mapping and phase shifts
+        hkl_p1, indices, phase_shifts = expand_hkl(
+            self.hkl,
+            self.spacegroup or 'P1',
+            include_friedel=include_friedel,
+            remove_absences=remove_absences,
+            device=self.device
+        )
+
+        # Use remap to create the new dataset
+        return self.remap(
+            new_hkl=hkl_p1,
+            index_mapping=indices,
+            phase_shifts=phase_shifts,
+            spacegroup='P1',
+            op_name=f"expand_to_p1(include_friedel={include_friedel})"
+        )
+
+    def reduce_to_spacegroup(
+        self,
+        spacegroup,
+        include_friedel: bool = True,
+        aggregation: str = 'mean'
+    ) -> 'ReflectionData':
+        """
+        Reduce P1 reflection data to asymmetric unit of a target spacegroup.
+
+        This is the inverse of expand_to_p1(). Takes reflection data in P1 and
+        merges symmetry-equivalent reflections into single ASU reflections using
+        the specified aggregation function.
+
+        Parameters
+        ----------
+        spacegroup : str, int, or gemmi.SpaceGroup
+            Target space group specification.
+        include_friedel : bool, default True
+            If True, also merge Friedel mates when reducing.
+        aggregation : str, default 'mean'
+            Aggregation function for merging equivalent reflections:
+            - 'mean': Average values (default, good for amplitudes)
+            - 'sum': Sum values
+            - 'first': Take first valid value (no averaging)
+
+        Returns
+        -------
+        ReflectionData
+            New ReflectionData with merged reflections in the target spacegroup.
+
+        Notes
+        -----
+        Field handling during reduction:
+
+        - F, I: Aggregated using specified function
+        - F_sigma, I_sigma: Propagated as sqrt(sum(sigma^2) / n) for 'mean'
+        - phase: Aggregated via complex averaging (handles phase wrapping)
+        - fom: Weighted by amplitude during phase averaging
+        - rfree_flags: OR operation (True if any equivalent is True)
+
+        Examples
+        --------
+        >>> # Expand to P1 for calculations, then reduce back
+        >>> data_p1 = data.expand_to_p1()
+        >>> # ... modify F_p1 ...
+        >>> data_merged = data_p1.reduce_to_spacegroup('P21')
+
+        >>> # Reduce with sum instead of mean
+        >>> data_summed = data_p1.reduce_to_spacegroup('P21', aggregation='sum')
+        """
+        from torchref.symmetrie.reciprocal_symmetry import reduce_hkl
+        from torchref.symmetrie.spacegroup import SpaceGroup
+
+        if self.hkl is None:
+            raise ValueError("ReflectionData has no Miller indices loaded")
+
+        # Get reduction mapping
+        hkl_asu, reduction_indices, phase_shifts = reduce_hkl(
+            self.hkl,
+            spacegroup,
+            include_friedel=include_friedel,
+            device=self.device
+        )
+
+        n_asu = len(hkl_asu)
+        n_equiv = reduction_indices.shape[1]
+        valid_mask = reduction_indices >= 0  # (n_asu, n_equiv)
+        count_valid = valid_mask.sum(dim=1).clamp(min=1).float()  # (n_asu,)
+
+        # Helper function for aggregating 1D tensors
+        def _aggregate_tensor(tensor, agg_func='mean', fill_value=0.0):
+            if tensor is None:
+                return None
+
+            # Gather values: (n_asu, n_equiv)
+            # Use clamp(min=0) to avoid indexing errors, then mask invalid
+            gathered = tensor[reduction_indices.clamp(min=0)]
+            gathered = torch.where(valid_mask, gathered, torch.zeros_like(gathered))
+
+            if agg_func == 'mean':
+                return gathered.sum(dim=1) / count_valid
+            elif agg_func == 'sum':
+                return gathered.sum(dim=1)
+            elif agg_func == 'first':
+                # Take first valid value
+                first_valid_idx = valid_mask.to(torch.int).argmax(dim=1)
+                return gathered[torch.arange(n_asu, device=self.device), first_valid_idx]
+            else:
+                raise ValueError(f"Unknown aggregation: {agg_func}")
+
+        def _aggregate_sigma(tensor, agg_func='mean'):
+            """Propagate uncertainty correctly for averaging."""
+            if tensor is None:
+                return None
+
+            # Gather values
+            gathered = tensor[reduction_indices.clamp(min=0)]
+            gathered = torch.where(valid_mask, gathered, torch.zeros_like(gathered))
+
+            if agg_func == 'mean':
+                # For averaging: sigma_mean = sqrt(sum(sigma^2)) / n
+                variance_sum = (gathered ** 2).sum(dim=1)
+                return torch.sqrt(variance_sum) / count_valid
+            elif agg_func == 'sum':
+                # For summing: sigma_sum = sqrt(sum(sigma^2))
+                variance_sum = (gathered ** 2).sum(dim=1)
+                return torch.sqrt(variance_sum)
+            elif agg_func == 'first':
+                first_valid_idx = valid_mask.to(torch.int).argmax(dim=1)
+                return gathered[torch.arange(n_asu, device=self.device), first_valid_idx]
+            else:
+                raise ValueError(f"Unknown aggregation: {agg_func}")
+
+        # Create new ReflectionData
+        reduced = ReflectionData(verbose=self.verbose, device=self.device)
+
+        # Set HKL
+        reduced.hkl = hkl_asu.to(device=self.device)
+
+        # Aggregate amplitude and intensity fields
+        reduced.F = _aggregate_tensor(self.F, aggregation)
+        reduced.F_sigma = _aggregate_sigma(self.F_sigma, aggregation)
+        reduced.I = _aggregate_tensor(self.I, aggregation)
+        reduced.I_sigma = _aggregate_sigma(self.I_sigma, aggregation)
+
+        # Handle phases via complex averaging
+        if self.phase is not None:
+            # Gather phases and apply phase shifts for proper averaging
+            phases_gathered = self.phase[reduction_indices.clamp(min=0)]
+            phases_gathered = phases_gathered + phase_shifts
+            phases_gathered = torch.where(
+                valid_mask, phases_gathered, torch.zeros_like(phases_gathered)
+            )
+
+            # Get weights (amplitudes or FOM)
+            if self.fom is not None:
+                weights = self.fom[reduction_indices.clamp(min=0)]
+            elif self.F is not None:
+                weights = self.F[reduction_indices.clamp(min=0)]
+            else:
+                weights = torch.ones_like(phases_gathered)
+            weights = torch.where(valid_mask, weights, torch.zeros_like(weights))
+
+            # Complex averaging: mean of F*exp(i*phi) then extract angle
+            complex_sf = weights * torch.exp(1j * phases_gathered)
+            complex_mean = complex_sf.sum(dim=1) / count_valid
+            reduced.phase = torch.angle(complex_mean).float()
+
+            # FOM as magnitude of normalized mean complex vector
+            if self.fom is not None:
+                norm_weights = weights / weights.sum(dim=1, keepdim=True).clamp(min=1e-10)
+                unit_vectors = torch.exp(1j * phases_gathered)
+                mean_vector = (norm_weights * unit_vectors).sum(dim=1)
+                reduced.fom = torch.abs(mean_vector).float()
+        else:
+            reduced.phase = None
+            reduced.fom = _aggregate_tensor(self.fom, aggregation) if self.fom is not None else None
+
+        # Handle rfree_flags: OR operation (free if any equivalent is free)
+        if self.rfree_flags is not None:
+            rfree_gathered = self.rfree_flags[reduction_indices.clamp(min=0)].to(torch.int32)
+            rfree_gathered = torch.where(
+                valid_mask, rfree_gathered, torch.ones_like(rfree_gathered)  # Default to work set
+            )
+            # 0 = free, non-zero = work. Take min to get free if any is free.
+            reduced.rfree_flags = (rfree_gathered.min(dim=1).values != 0)
+
+        # Clone cell
+        reduced.cell = self.cell.clone() if self.cell is not None else None
+
+        # Set spacegroup
+        reduced.spacegroup = SpaceGroup(spacegroup)
+
+        # Recalculate resolution
+        if reduced.cell is not None and reduced.hkl is not None:
+            reduced._calculate_resolution()
+
+        # Invalidate dependent fields
+        reduced.bin_indices = None
+
+        # Copy metadata sources
+        reduced.amplitude_source = self.amplitude_source
+        reduced.intensity_source = self.intensity_source
+        reduced.phase_source = self.phase_source
+        reduced.rfree_source = self.rfree_source
+
+        # Track provenance
+        reduced.source = self
+        reduced.last_op = f"reduce_to_spacegroup({spacegroup}, aggregation={aggregation})"
+
+        return reduced

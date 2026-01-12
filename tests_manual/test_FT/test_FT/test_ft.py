@@ -1,25 +1,45 @@
-#!/das/work/p17/p17490/CONDA/muticopy_refinement/bin/python
+#!/das/work/p17/p17490/CONDA/torchref/bin/python
 
 #SBATCH -c 16 
-#SBATCH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/test_FT/test_FT/test_ft.out
+#SBATCH -o /das/work/p17/p17490/Peter/Library/torchref/tests_manual/test_FT/test_FT/test_ft.out
 
 import torch
 import numpy as np
-from crystfel_tools.handling.fast_math import calculate_scattering_factor_cctbx
 import reciprocalspaceship as rs
 import gemmi
 from tqdm import tqdm
 from torchref.math_functions.math_torch import fft, ifft, place_on_grid, extract_structure_factor_from_grid
-from torchref.model_ft import ModelFT   
-pdb = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_FT/quality_testing/dark_no_H.pdb'
-outdir = '/das/work/p17/p17490/Peter/Library/multicopy_refinement/test_FT/quality_testing'
+from torchref.model.model_ft import ModelFT   
+
+pdb = '/das/work/p17/p17490/Peter/Library/torchref/tests_manual/test_FT/quality_testing/dark_no_H.pdb'
+outdir = '/das/work/p17/p17490/Peter/Library/torchref/tests_manual/test_FT/quality_testing'
 
 
 
 M = ModelFT()   
-M.load_pdb_from_file(pdb)
+M.load_pdb(pdb)
 
 from matplotlib import pyplot as plt
+
+def calculate_scattering_factor_cctbx(pdb_file,hkls = None,d_min=2.0):
+    from iotbx import pdb
+    pdb_input = pdb.input(file_name=pdb_file)
+    xray_structure = pdb_input.xray_structure_simple()
+    f_calc = xray_structure.structure_factors(d_min=d_min).f_calc()
+    idx = np.array(f_calc.indices())
+    f_calc = np.array(f_calc.data())
+    if hkls is not None:
+        hkls = np.array(hkls,dtype=int)
+        hkls = set([tuple(hkl) for hkl in hkls])
+        f_calc_new = []
+        idx_new = []
+        for hkl,val in zip(idx,f_calc):
+            if tuple(hkl) in hkls:
+                f_calc_new.append(val)
+                idx_new.append(hkl)
+        f_calc = np.array(f_calc_new)
+        idx = np.array(idx_new)
+    return f_calc, idx
 
 def calculate_map_for_pdb(pdb):
     F,hkl = calculate_scattering_factor_cctbx(pdb,d_min=1.5)
@@ -82,9 +102,19 @@ normalized_map = (map - torch.mean(map)) / torch.std(map)
 assert torch.allclose(torch.abs(original_sf), torch.abs(extracted_sf), rtol=1e-3, atol=1e-3)
 assert torch.allclose(torch.angle(original_sf), torch.angle(extracted_sf), rtol=1e-3, atol=1e-3)
 assert torch.allclose(normalized_fft_map, normalized_map, rtol=1e-3, atol=1e-3)
+
 M.setup_grid(gridsize=map.shape)
+
 structure_factor_homemade = M.get_structure_factor(HKL)
-map_torch = M.build_density_map()
+map_torch = M.build_complete_map()
+
+rec_grid = ifft(map_torch)
+SF = extract_structure_factor_from_grid(rec_grid, HKL)
+rec_grid_newly_assembled = place_on_grid(HKL, SF, rec_grid.shape, enforce_hermitian=True)
+SF_second_pass = extract_structure_factor_from_grid(rec_grid_newly_assembled, HKL)
+
+assert torch.allclose(SF, SF_second_pass, rtol=1e-3, atol=1e-3), 'extract and place_on_grid consistency check failed'
+
 
 print('Map correlation', torch.corrcoef(torch.stack([torch.flatten(map_torch), torch.flatten(map)]))[0, 1])
 print('Amplitude correlation',torch.corrcoef(torch.stack([torch.abs(original_sf), torch.abs(structure_factor_homemade)]))[0, 1])

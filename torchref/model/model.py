@@ -1,19 +1,22 @@
 
 '''
 A base model class for atomic structure models using PyTorch.
+
+Space groups are stored as gemmi.SpaceGroup objects for consistency
+and direct access to symmetry operations.
 '''
 
 import torch
 import torch.nn as nn
+import gemmi
 from typing import Optional, Union
 from torchref.io import pdb, cif
 from torchref.utils.utils import sanitize_pdb_dataframe
-import torchref.symmetrie.symmetrie as sym
+from torchref.symmetrie import Symmetry, SpaceGroup, SpaceGroupLike
 import torchref.math_functions.math_numpy as mnp
 from torchref.math_functions import math_torch
 from torchref.model.parameter_wrappers import MixedTensor, OccupancyTensor, PositiveMixedTensor
 from torchref.utils.debug_utils import DebugMixin
-import gemmi
 
 class Model(DebugMixin, nn.Module):
     """
@@ -49,8 +52,10 @@ class Model(DebugMixin, nn.Module):
         DataFrame containing atomic model data.
     cell : torch.Tensor
         Unit cell parameters [a, b, c, alpha, beta, gamma].
-    spacegroup : str
-        Space group symbol in Hermann-Mauguin notation.
+    spacegroup : gemmi.SpaceGroup
+        Space group object.
+    symmetry : Symmetry
+        Symmetry operations handler for this space group.
     initialized : bool
         Whether the model has been initialized with data.
 
@@ -95,12 +100,11 @@ class Model(DebugMixin, nn.Module):
         # State tracking
         self.initialized = False
         self.altloc_pairs = []
-        
+
         # These will be set during load() or load_state_dict()
         self.pdb = None
-        self.spacegroup = None
-        self.spacegroup_gemmi = None
-        self.spacegroup_function = None
+        self.spacegroup: Optional[gemmi.SpaceGroup] = None  # Canonical space group
+        self.symmetry: Optional[Symmetry] = None  # Symmetry operations handler
         
         # Submodules (created during load or load_state_dict)
         self.xyz = None
@@ -113,16 +117,17 @@ class Model(DebugMixin, nn.Module):
         return self.initialized
     
     def load(self, reader):
-        self.pdb, cell, self.spacegroup = reader()
-        
+        self.pdb, cell, spacegroup = reader()
+
         self.pdb = self.pdb.loc[self.pdb['element'] != 'H'].reset_index(drop=True) if self.strip_H else self.pdb
         self.pdb.dropna(subset=['x', 'y', 'z', 'tempfactor', 'occupancy'], inplace=True)
         self.pdb['index'] = self.pdb.index.to_numpy(dtype=int)
-        
-        self.register_buffer('cell',torch.tensor(cell,requires_grad=False,dtype=self.dtype_float,device=self.device))
-        self.spacegroup_gemmi = gemmi.SpaceGroup(self.spacegroup.replace('  ',' '))
-        self.spacegroup = self.spacegroup_gemmi.hm
-        self.spacegroup_function = sym.Symmetry(self.spacegroup)
+
+        self.register_buffer('cell', torch.tensor(cell, requires_grad=False, dtype=self.dtype_float, device=self.device))
+
+        # Store space group as gemmi.SpaceGroup (reader now returns gemmi.SpaceGroup directly)
+        self.spacegroup = SpaceGroup(spacegroup)
+        self.symmetry = Symmetry(self.spacegroup)
 
 
         # Register buffers for various matrices
@@ -418,14 +423,11 @@ class Model(DebugMixin, nn.Module):
         
         # Deep copy the PDB DataFrame
         model_copy.pdb = self.pdb.copy(deep=True)
-        
+
         # Copy scalar attributes
-        model_copy.spacegroup = self.spacegroup
-        model_copy.spacegroup_gemmi = self.spacegroup_gemmi
+        model_copy.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
+        model_copy.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
         model_copy.initialized = True
-        
-        # Copy spacegroup function
-        model_copy.spacegroup_function = sym.Symmetry(self.spacegroup)
         
         # Copy all registered buffers using PyTorch's _buffers dict
         for buffer_name, buffer_value in self._buffers.items():
@@ -454,7 +456,7 @@ class Model(DebugMixin, nn.Module):
     def write_pdb(self, filename):
         self.update_pdb()
         self.pdb = sanitize_pdb_dataframe(self.pdb)
-        self.pdb.attrs['spacegroup'] = self.spacegroup_gemmi.hm
+        self.pdb.attrs['spacegroup'] = self.spacegroup.hm if self.spacegroup else 'P 1'
         pdb.write(self.pdb, filename)
 
     def get_iso(self):
@@ -1027,8 +1029,9 @@ class Model(DebugMixin, nn.Module):
         state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
         
         # Add model-specific state
-        state[prefix + 'pdb'] = self.pdb.copy() if hasattr(self, 'pdb') else None
-        state[prefix + 'spacegroup'] = self.spacegroup if hasattr(self, 'spacegroup') else None
+        state[prefix + 'pdb'] = self.pdb.copy() if hasattr(self, 'pdb') and self.pdb is not None else None
+        # Store spacegroup as string for serialization (gemmi.SpaceGroup is not picklable)
+        state[prefix + 'spacegroup'] = self.spacegroup.xhm() if self.spacegroup else None
         state[prefix + 'initialized'] = self.initialized
         state[prefix + 'dtype_float'] = self.dtype_float
         state[prefix + 'device'] = self.device
@@ -1107,15 +1110,16 @@ class Model(DebugMixin, nn.Module):
         
         # Set metadata
         instance.pdb = pdb
-        instance.spacegroup = spacegroup
         instance.initialized = initialized
         instance.altloc_pairs = altloc_pairs
-        
-        # Setup spacegroup objects if spacegroup exists
+
+        # Setup spacegroup (convert from string if needed)
         if spacegroup is not None:
-            import gemmi
-            instance.spacegroup_gemmi = gemmi.SpaceGroup(spacegroup.replace('  ', ' '))
-            instance.spacegroup_function = sym.Symmetry(spacegroup)
+            instance.spacegroup = SpaceGroup(spacegroup)
+            instance.symmetry = Symmetry(instance.spacegroup)
+        else:
+            instance.spacegroup = None
+            instance.symmetry = None
         
         # If PDB exists, create the parameter wrappers with correct shapes
         if pdb is not None:
@@ -1336,9 +1340,8 @@ class Model(DebugMixin, nn.Module):
         selected_model.pdb['index'] = selected_model.pdb.index.to_numpy(dtype=int)
         
         # Copy scalar attributes
-        selected_model.spacegroup = self.spacegroup
-        selected_model.spacegroup_gemmi = self.spacegroup_gemmi
-        selected_model.spacegroup_function = sym.Symmetry(self.spacegroup) if self.spacegroup else None
+        selected_model.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
+        selected_model.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
         
         # Copy cell and matrices (these are same for all atoms)
         if self.cell is not None:
@@ -1401,3 +1404,25 @@ class Model(DebugMixin, nn.Module):
             print(f"Selected {n_selected}/{len(self.pdb)} atoms with '{selection}'")
 
         return selected_model
+
+    def xyz_fractional(self) -> torch.Tensor:
+        """
+        Return atomic coordinates in fractional space.
+
+        Converts Cartesian coordinates to fractional coordinates
+        using the inverse fractional matrix.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (n_atoms, 3) with fractional coordinates.
+        """
+        if not self.initialized:
+            raise RuntimeError("Model must be initialized to compute fractional coordinates.")
+        
+        # Get Cartesian coordinates
+        cartesian_coords = self.xyz()
+        
+        fractional_coords = math_torch.cartesian_to_fractional_torch(cartesian_coords,self.cell, self.inv_fractional_matrix)
+        
+        return fractional_coords
