@@ -6,8 +6,7 @@ This module provides classes for building and managing geometry restraints
 
 Classes
 -------
-Restraints
-    Main restraints handler for crystallographic model refinement.
+
 RestraintsNew
     Refactored restraints handler using builder pattern (faster, more testable).
 ResidueIterator
@@ -34,8 +33,7 @@ InterResiduePlaneBuilder
     Builder for inter-residue plane restraints.
 """
 
-from torchref.restraints.restraints import Restraints
-from torchref.restraints.restraints_new import RestraintsNew
+from torchref.restraints.restraints_new import RestraintsNew as Restraints
 from torchref.restraints.builders import (
     ResidueIterator,
     RestraintBuilder,
@@ -49,6 +47,19 @@ from torchref.restraints.builders import (
     InterResidueTorsionBuilder,
     InterResiduePlaneBuilder,
 )
+
+from torchref import ROOT_TORCHREF
+from pathlib import Path
+import os
+
+if not os.path.exists(os.path.join(ROOT_TORCHREF,'external_monomer_library')):
+    import warnings
+    warnings.warn("External monomer library not found in torchref package root. ", ResourceWarning)
+    MONOMER_LIB_PATH = None
+else:
+    MONOMER_LIB_PATH = Path(os.path.join(ROOT_TORCHREF,'external_monomer_library'))
+
+
 
 __all__ = [
     'Restraints',
@@ -64,4 +75,5 @@ __all__ = [
     'InterResidueAngleBuilder',
     'InterResidueTorsionBuilder',
     'InterResiduePlaneBuilder',
+    'MONOMER_LIB_PATH'
 ]

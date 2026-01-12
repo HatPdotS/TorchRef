@@ -9,7 +9,7 @@ from torchref.symmetrie.map_symmetry import MapSymmetry
 import torchref.symmetrie.symmetrie as sym
 from typing import Optional, Tuple
 from torchref.utils.utils import TensorDict
-from torchref.symmetrie import Symmetry, SpaceGroup, SpaceGroupLike
+from torchref.symmetrie import Symmetry
 
 class ModelFT(Model):
     """

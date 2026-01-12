@@ -147,24 +147,24 @@ def find_cif_file_in_library(resname):
     Path or None
         Path object pointing to the CIF file, or None if not found.
     """
-    # Get the directory containing this script
-    script_dir = Path(__file__).parent.parent
+    from torchref.restraints import MONOMER_LIB_PATH
+
     
-    # Go up one level to the repo root, then into external_monomer_library
-    library_root = script_dir.parent / "external_monomer_library"
-    
+    if MONOMER_LIB_PATH is None:
+        raise RuntimeError("MONOMER_LIB_PATH is not set. External monomer library not found.")
+        
     # The library organizes files by first character (lowercase)
     first_char = resname[0].lower()
     
     # Construct the expected path
-    cif_file = library_root / first_char / f"{resname}.cif"
+    cif_file = MONOMER_LIB_PATH / first_char / f"{resname}.cif"
     
     # Check if file exists
     if cif_file.exists():
         return cif_file
     else:
         # Try uppercase version as fallback
-        cif_file_upper = library_root / first_char / f"{resname.upper()}.cif"
+        cif_file_upper = MONOMER_LIB_PATH / first_char / f"{resname.upper()}.cif"
         if cif_file_upper.exists():
             return cif_file_upper
         return None

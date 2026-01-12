@@ -1,17 +1,10 @@
 """
+
 Fast Restraint Builder Classes using NumPy and Numba
 
 This module provides optimized builder classes that avoid Pandas operations
-in the hot loop. Key optimizations:
+in the hot loop.
 
-1. Pre-convert PDB DataFrame to NumPy arrays once
-2. Pre-convert CIF restraints to lookup arrays per residue type
-3. Use Numba JIT-compiled matching functions
-4. Minimize object creation in inner loops
-
-Performance comparison:
-- Original: ~3-5 seconds for 3000 atoms
-- Fast: ~0.3-0.5 seconds for 3000 atoms (10x speedup)
 """
 
 from abc import ABC, abstractmethod

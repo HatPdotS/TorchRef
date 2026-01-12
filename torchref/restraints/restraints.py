@@ -1,4 +1,11 @@
 """
+
+DEPRECATION WARNING:
+
+The `Restraints` class in `torchref.restraints.restraints` is deprecated and will be removed
+"""
+
+"""
 Restraints Class for Crystallographic Model Refinement
 
 This module provides a comprehensive restraints handler for crystallographic models.
@@ -27,6 +34,13 @@ from torch.nn import Module
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import ModuleReference
 
+import warnings
+
+warnings.warn(
+    "The `Restraints` class in `torchref.restraints.restraints` is deprecated and will be removed in future versions. "
+    "Please use `RestraintsNew` from `torchref.restraints.restraints_new` instead.",
+    DeprecationWarning
+)
 
 class Restraints(DebugMixin, Module):
     """

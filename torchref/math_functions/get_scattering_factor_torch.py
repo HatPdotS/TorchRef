@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import torch
 
 def get_scattering_factors_unique(atoms, s):

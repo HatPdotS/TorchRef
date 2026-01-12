@@ -132,12 +132,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         data_dict, cell, spacegroup = reader()
 
-        hkl = torch.tensor(data_dict['HKL'], dtype=torch.int32, device=self.device)
+        hkl = torch.tensor(data_dict['HKL'], dtype=torch.int32, device=self.device, requires_grad=False)
 
         self.hkl = hkl
 
         if cell is not None:
-            self.cell = torch.tensor(cell, dtype=torch.float32, device=self.device)
+            self.cell = torch.tensor(cell, dtype=torch.float32, device=self.device, requires_grad=False)
         else:
             raise ValueError("Unit cell parameters are required in the data and could not be read.")
         
@@ -148,19 +148,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
 
         if 'I' in data_dict:
-            self.I = torch.tensor(data_dict['I'], dtype=torch.float32, device=self.device)
+            self.I = torch.tensor(data_dict['I'], dtype=torch.float32, device=self.device, requires_grad=False)
             if 'SIGI' in data_dict:
-                self.I_sigma = torch.tensor(data_dict['SIGI'], dtype=torch.float32, device=self.device)
+                self.I_sigma = torch.tensor(data_dict['SIGI'], dtype=torch.float32, device=self.device, requires_grad=False)
             self.intensity_source = data_dict.get('I_col', 'Unknown')
             self._FrenchWilson = FrenchWilson(self.hkl, self.cell, self.spacegroup, verbose=self.verbose)
             F, F_sigma = self._FrenchWilson(self.I, self.I_sigma)
             self.F = F
             self.F_sigma = F_sigma
         elif 'F' in data_dict:
-            self.F = torch.tensor(data_dict['F'], dtype=torch.float32, device=self.device)
+            self.F = torch.tensor(data_dict['F'], dtype=torch.float32, device=self.device, requires_grad=False)
             if 'SIGF' in data_dict:
                 if data_dict['SIGF'] is not None:
-                    self.F_sigma = torch.tensor(data_dict['SIGF'], dtype=torch.float32, device=self.device)
+                    self.F_sigma = torch.tensor(data_dict['SIGF'], dtype=torch.float32, device=self.device, requires_grad=False)
                 else:
                     sigF = math_torch.estimate_sigma_F(self.F)
                     self.F_sigma = sigF
@@ -173,13 +173,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             raise ValueError("No amplitude or intensity data found in MTZ file")
 
         if 'R-free-flags' in data_dict:
-            rfree = torch.tensor(data_dict['R-free-flags'], device=self.device)
+            rfree = torch.tensor(data_dict['R-free-flags'], device=self.device, requires_grad=False)
             flagged = rfree < 0
             rfree = rfree.clip(min=0, max=1).to(torch.bool)
             self.rfree_flags = rfree
             self.masks['flagged_initial'] = ~flagged
         else:
-            flagged = torch.zeros(len(self.hkl), dtype=torch.bool, device=self.device)
+            flagged = torch.zeros(len(self.hkl), dtype=torch.bool, device=self.device, requires_grad=False)
             self.masks['flagged_initial'] = ~flagged
             self._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
 
@@ -306,7 +306,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         print(f"  Created {actual_n_bins} resolution bins")
         
         # Initialize all flags as work set (1)
-        flags = torch.ones(n_refl, dtype=torch.int32)
+        flags = torch.ones(n_refl, dtype=torch.int32, requires_grad=False)
         
         # Sample free reflections from each bin
         total_free = 0

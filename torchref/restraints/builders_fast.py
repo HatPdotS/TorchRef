@@ -21,11 +21,6 @@ Usage:
     from torchref.restraints.builders_fast import build_all_restraints
     restraints = build_all_restraints(pdb, cif_dict, device)
 
-Performance: ~10x faster than original implementation by:
-1. Pre-converting PDB DataFrame to NumPy arrays once
-2. Pre-converting CIF restraints to NumPy arrays per residue type
-3. Using Numba JIT-compiled matching functions
-4. Avoiding DataFrame operations in inner loops
 """
 
 from abc import ABC, abstractmethod
