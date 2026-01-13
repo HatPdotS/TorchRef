@@ -45,7 +45,7 @@ utils
     General utilities and debugging tools.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 import os
@@ -81,6 +81,8 @@ ROOT_TORCHREF = Path(__file__).parent.parent.resolve()
 
 # Package path for referencing internal files
 PATH_TORCHREF = Path(__file__).parent.resolve()
+
+PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 
 # =============================================================================
 # Convenience imports for common classes

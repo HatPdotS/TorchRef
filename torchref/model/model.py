@@ -412,14 +412,14 @@ class Model(DebugMixin, nn.Module):
             Van der Waals radii for each atom with shape (n_atoms,).
         """
         import os
-
+        from torchref import PATH_TORCHREF_DATA
         import pandas as pd
 
         if hasattr(self, "vdw_radii"):
             return self.vdw_radii
         elements = self.pdb.loc[:, "element"]
         path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            PATH_TORCHREF_DATA,
             "caching/files/atomic_vdw_radii.csv",
         )
         vdw_df = pd.read_csv(path, comment="#")

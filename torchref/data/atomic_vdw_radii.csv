@@ -1,0 +1,120 @@
+# Van der Waals Radii for Crystallographic Calculations
+# Source: Phenix 1.20-4459 (cctbx/eltbx/van_der_waals_radii.py)
+# 
+# References:
+# 1. Bondi, J.Phys.Chem., 68, 441, 1964 - for most elements
+# 2. Fokine et al, J. Appl. Cryst. (2003). 36, 352-355 - for protein atoms (C, N, O, S, P)
+#
+# NOTE: vdW radii vary for the same element depending on chemical context
+# This table provides default values suitable for general crystallographic work
+# For more context-specific radii, see chem_data/mon_lib/ener_lib.cif in Phenix
+#
+# Usage: For bulk solvent mask calculations, the actual radius used is:
+#        R_mask = R_vdW + R_solvent_probe
+#        where R_solvent_probe is typically 1.1 Å
+#
+element,Atomic_Number,vdW_Radius_Angstrom,Notes
+H,1,1.20,Hydrogen (also applies to D=Deuterium)
+D,1,1.20,Deuterium (same as H)
+He,2,1.40,Helium
+Li,3,1.82,Lithium
+Be,4,0.63,Beryllium
+B,5,1.75,Boron
+C,6,1.775,Carbon - protein value from Fokine et al (Wikipedia: 1.7)
+N,7,1.50,Nitrogen - protein value from Fokine et al (Wikipedia: 1.55)
+O,8,1.45,Oxygen - protein value from Fokine et al (Wikipedia: 1.52)
+F,9,1.47,Fluorine
+Ne,10,1.54,Neon
+Na,11,2.27,Sodium
+Mg,12,1.73,Magnesium
+Al,13,1.50,Aluminum
+Si,14,2.10,Silicon
+P,15,1.90,Phosphorus
+S,16,1.80,Sulfur (Wikipedia: 1.8)
+Cl,17,1.75,Chlorine
+Ar,18,1.88,Argon
+K,19,2.75,Potassium
+Ca,20,1.95,Calcium
+Sc,21,1.32,Scandium
+Ti,22,1.95,Titanium
+V,23,1.06,Vanadium
+Cr,24,1.13,Chromium
+Mn,25,1.19,Manganese
+Fe,26,1.26,Iron
+Co,27,1.13,Cobalt
+Ni,28,1.63,Nickel
+Cu,29,1.40,Copper
+Zn,30,1.39,Zinc
+Ga,31,1.87,Gallium
+Ge,32,1.48,Germanium
+As,33,0.83,Arsenic
+Se,34,1.90,Selenium
+Br,35,1.85,Bromine
+Kr,36,2.02,Krypton
+Rb,37,2.65,Rubidium
+Sr,38,2.02,Strontium
+Y,39,1.61,Yttrium
+Zr,40,1.42,Zirconium
+Nb,41,1.33,Niobium
+Mo,42,1.75,Molybdenum
+Tc,43,2.00,Technetium
+Ru,44,1.20,Ruthenium
+Rh,45,1.22,Rhodium
+Pd,46,1.63,Palladium
+Ag,47,1.72,Silver
+Cd,48,1.58,Cadmium
+In,49,1.93,Indium
+Sn,50,2.17,Tin
+Sb,51,1.12,Antimony
+Te,52,1.26,Tellurium
+I,53,1.98,Iodine
+Xe,54,2.16,Xenon
+Cs,55,3.01,Cesium
+Ba,56,2.41,Barium
+La,57,1.83,Lanthanum
+Ce,58,1.86,Cerium
+Pr,59,1.62,Praseodymium
+Nd,60,1.79,Neodymium
+Pm,61,1.76,Promethium
+Sm,62,1.74,Samarium
+Eu,63,1.96,Europium
+Gd,64,1.69,Gadolinium
+Tb,65,1.66,Terbium
+Dy,66,1.63,Dysprosium
+Ho,67,1.61,Holmium
+Er,68,1.59,Erbium
+Tm,69,1.57,Thulium
+Yb,70,1.54,Ytterbium
+Lu,71,1.53,Lutetium
+Hf,72,1.40,Hafnium
+Ta,73,1.22,Tantalum
+W,74,1.26,Tungsten
+Re,75,1.30,Rhenium
+Os,76,1.58,Osmium
+Ir,77,1.22,Iridium
+Pt,78,1.72,Platinum
+Au,79,1.66,Gold
+Hg,80,1.55,Mercury
+Tl,81,1.96,Thallium
+Pb,82,2.02,Lead
+Bi,83,1.73,Bismuth
+Po,84,1.21,Polonium
+At,85,1.12,Astatine
+Rn,86,2.30,Radon
+Fr,87,3.24,Francium
+Ra,88,2.57,Radium
+Ac,89,2.12,Actinium
+Th,90,1.84,Thorium
+Pa,91,1.60,Protactinium
+U,92,1.75,Uranium
+Np,93,1.71,Neptunium
+Pu,94,1.67,Plutonium
+Am,95,1.66,Americium
+Cm,96,1.65,Curium
+Bk,97,1.64,Berkelium
+Cf,98,1.63,Californium
+Es,99,1.62,Einsteinium
+Fm,100,1.61,Fermium
+Md,101,1.60,Mendelevium
+No,102,1.59,Nobelium
+Lr,103,1.58,Lawrencium
