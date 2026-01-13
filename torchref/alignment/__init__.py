@@ -18,18 +18,17 @@ Example
 >>> aligned_model.write_pdb('aligned.pdb')
 """
 
-from .align import PattersonAligner, AlignmentResult
+from .align import AlignmentResult, PattersonAligner
 from .sampling import VectorSampler
-
 
 __all__ = [
     # Main API
-    'PattersonAligner',
-    'AlignmentResult',
+    "PattersonAligner",
+    "AlignmentResult",
     # Lower-level utilities (for advanced users)
-    'VectorSampler',
-    'params_to_matrix',
-    'matrix_to_params',
-    'random_rotation_params',
-    'random_rotation_matrix',
+    "VectorSampler",
+    "params_to_matrix",
+    "matrix_to_params",
+    "random_rotation_params",
+    "random_rotation_matrix",
 ]

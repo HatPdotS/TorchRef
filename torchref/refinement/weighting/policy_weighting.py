@@ -11,15 +11,19 @@ Supports both:
 Integrates with LossState for hierarchical weight management.
 """
 
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
-from pathlib import Path
 
 from torchref.refinement.weighting.component_weighting import WeightingScheme
-from torchref.utils.stats import stat, VERBOSITY_ESSENTIAL, VERBOSITY_STANDARD, VERBOSITY_DEBUG
+from torchref.utils.stats import (
+    VERBOSITY_DEBUG,
+    VERBOSITY_STANDARD,
+    stat,
+)
 
 if TYPE_CHECKING:
     from torchref.refinement.loss_state import LossState
@@ -27,22 +31,30 @@ if TYPE_CHECKING:
 
 # Component names (must match policy network output order)
 COMPONENTS = [
-    'xray', 'bond', 'angle', 'torsion', 'planarity',
-    'chiral', 'nonbonded', 'simu', 'locality', 'KL'
+    "xray",
+    "bond",
+    "angle",
+    "torsion",
+    "planarity",
+    "chiral",
+    "nonbonded",
+    "simu",
+    "locality",
+    "KL",
 ]
 
 # Mapping from policy component names to LossState hierarchical names
 COMPONENT_TO_LOSS_STATE = {
-    'xray': 'xray',
-    'bond': 'geometry/bond',
-    'angle': 'geometry/angle',
-    'torsion': 'geometry/torsion',
-    'planarity': 'geometry/planarity',
-    'chiral': 'geometry/chiral',
-    'nonbonded': 'geometry/nonbonded',
-    'simu': 'adp/simu',
-    'locality': 'adp/locality',
-    'KL': 'adp/KL',
+    "xray": "xray",
+    "bond": "geometry/bond",
+    "angle": "geometry/angle",
+    "torsion": "geometry/torsion",
+    "planarity": "geometry/planarity",
+    "chiral": "geometry/chiral",
+    "nonbonded": "geometry/nonbonded",
+    "simu": "adp/simu",
+    "locality": "adp/locality",
+    "KL": "adp/KL",
 }
 
 # Reverse mapping
@@ -55,6 +67,7 @@ class StepState:
 
     Matches the 31-feature format used in meta_weighting_4.
     """
+
     step: int
     progress: float  # step / n_steps (normalized)
     improvement_rate: float  # (initial_rfree - rfree) / initial_rfree
@@ -78,15 +91,17 @@ class StepState:
 @dataclass
 class StepRecord:
     """Record for a single refinement step (state-action-reward tuple)."""
+
     state: StepState
     log_weights: Dict[str, float]  # Actions in log-space
-    weights: Dict[str, float]       # Effective weights used
-    reward: float                   # Per-step reward (-delta_rfree)
+    weights: Dict[str, float]  # Effective weights used
+    reward: float  # Per-step reward (-delta_rfree)
 
 
 @dataclass
 class TrajectoryData:
     """Complete trajectory data for training."""
+
     pdb_id: str
     structure_path: str
     sf_path: str
@@ -156,7 +171,7 @@ class PolicyComponentWeighting(WeightingScheme):
     >>> loss = state.aggregate()
     """
 
-    name = 'policy_weighting'
+    name = "policy_weighting"
 
     def __init__(
         self,
@@ -203,21 +218,24 @@ class PolicyComponentWeighting(WeightingScheme):
 
         if refinement.verbose > 0:
             param_count = sum(p.numel() for p in self.policy.parameters())
-            print(f"PolicyComponentWeighting initialized")
+            print("PolicyComponentWeighting initialized")
             print(f"  Policy: {policy_path or 'random initialization'}")
             print(f"  Parameters: {param_count:,}")
             print(f"  Sample mode: {sample}")
             print(f"  Temperature: {temperature}")
             print(f"  N steps: {n_steps}")
-            print(f"  Static features: resolution={self.static_features['resolution_min']:.2f}Å, "
-                  f"n_atoms={int(np.exp(self.static_features['log_n_atoms']))}, "
-                  f"wilson_b={self.static_features['wilson_b']:.1f}")
+            print(
+                f"  Static features: resolution={self.static_features['resolution_min']:.2f}Å, "
+                f"n_atoms={int(np.exp(self.static_features['log_n_atoms']))}, "
+                f"wilson_b={self.static_features['wilson_b']:.1f}"
+            )
 
     def _create_policy_network(self) -> nn.Module:
         """Create the policy network architecture.
 
         Uses 31-dimensional state vector matching meta_weighting_4 format.
         """
+
         class PolicyNetwork(nn.Module):
             def __init__(self, state_dim=31, hidden_dim=256):
                 super().__init__()
@@ -271,21 +289,21 @@ class PolicyComponentWeighting(WeightingScheme):
             b_std = float(b_factors.std())
 
         self.static_features = {
-            'resolution_min': resolution_min,
-            'inv_resolution': 1.0 / resolution_min,
-            'log_n_atoms': np.log(n_atoms),
-            'log_n_hkl': np.log(n_hkl),
-            'data_to_param_ratio': n_hkl / n_atoms,
-            'log_wilson_b': np.log(wilson_b),
-            'b_cv': b_std / (b_mean + 1e-6),  # Coefficient of variation
-            'wilson_b': wilson_b,  # Keep for B-factor normalization
+            "resolution_min": resolution_min,
+            "inv_resolution": 1.0 / resolution_min,
+            "log_n_atoms": np.log(n_atoms),
+            "log_n_hkl": np.log(n_hkl),
+            "data_to_param_ratio": n_hkl / n_atoms,
+            "log_wilson_b": np.log(wilson_b),
+            "b_cv": b_std / (b_mean + 1e-6),  # Coefficient of variation
+            "wilson_b": wilson_b,  # Keep for B-factor normalization
         }
 
     def _load_policy(self, checkpoint_path: str):
         """Load policy weights from checkpoint."""
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-        if 'policy_state_dict' in checkpoint:
-            self.policy.load_state_dict(checkpoint['policy_state_dict'])
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        if "policy_state_dict" in checkpoint:
+            self.policy.load_state_dict(checkpoint["policy_state_dict"])
         else:
             self.policy.load_state_dict(checkpoint)
         self.policy.eval()
@@ -299,7 +317,9 @@ class PolicyComponentWeighting(WeightingScheme):
         """Enable evaluation mode (deterministic predictions)."""
         self.sample = False
 
-    def reset_trajectory(self, pdb_id: str = "", structure_path: str = "", sf_path: str = ""):
+    def reset_trajectory(
+        self, pdb_id: str = "", structure_path: str = "", sf_path: str = ""
+    ):
         """Reset for a new trajectory and optionally start recording."""
         self.current_step = 0
         self.prev_rfree = None
@@ -312,8 +332,14 @@ class PolicyComponentWeighting(WeightingScheme):
             _, rfree = self.refinement.get_rfactor()
             self.initial_rfree = float(rfree)
 
-    def start_recording(self, pdb_id: str, structure_path: str, sf_path: str,
-                       seed: Optional[int] = None, policy_version: Optional[str] = None):
+    def start_recording(
+        self,
+        pdb_id: str,
+        structure_path: str,
+        sf_path: str,
+        seed: Optional[int] = None,
+        policy_version: Optional[str] = None,
+    ):
         """Start recording a new trajectory."""
         self.reset_trajectory()
         self.trajectory = TrajectoryData(
@@ -351,7 +377,9 @@ class PolicyComponentWeighting(WeightingScheme):
         """Increment the step counter after a refinement step."""
         self.current_step += 1
 
-    def extract_state_features(self, state: 'LossState' = None) -> Tuple[torch.Tensor, StepState]:
+    def extract_state_features(
+        self, state: "LossState" = None
+    ) -> Tuple[torch.Tensor, StepState]:
         """
         Extract 31-dimensional state features from current refinement state.
 
@@ -404,8 +432,10 @@ class PolicyComponentWeighting(WeightingScheme):
         component_losses = {}
         if state is not None and state._losses:
             # Extract from LossState cache
-            xray_loss_work = state.get_loss('xray/work')
-            xray_loss_work = xray_loss_work.item() if xray_loss_work is not None else 0.0
+            xray_loss_work = state.get_loss("xray/work")
+            xray_loss_work = (
+                xray_loss_work.item() if xray_loss_work is not None else 0.0
+            )
 
             # Component losses
             for comp in COMPONENTS[1:]:  # Skip 'xray'
@@ -413,15 +443,31 @@ class PolicyComponentWeighting(WeightingScheme):
                 loss = state.get_loss(loss_state_name)
                 component_losses[comp] = loss.item() if loss is not None else 0.0
 
-            geom_loss_total = sum(component_losses.get(c, 0.0) for c in ['bond', 'angle', 'torsion', 'planarity', 'chiral', 'nonbonded'])
-            adp_loss_total = sum(component_losses.get(c, 0.0) for c in ['simu', 'locality', 'KL'])
+            geom_loss_total = sum(
+                component_losses.get(c, 0.0)
+                for c in [
+                    "bond",
+                    "angle",
+                    "torsion",
+                    "planarity",
+                    "chiral",
+                    "nonbonded",
+                ]
+            )
+            adp_loss_total = sum(
+                component_losses.get(c, 0.0) for c in ["simu", "locality", "KL"]
+            )
         else:
             # Compute fresh
             with torch.no_grad():
-                xray_loss_work = ref.xray_target_work().item() if hasattr(ref, 'xray_target_work') else 0.0
+                xray_loss_work = (
+                    ref.xray_target_work().item()
+                    if hasattr(ref, "xray_target_work")
+                    else 0.0
+                )
 
                 # Try to get component losses
-                if hasattr(ref, 'geometry_target'):
+                if hasattr(ref, "geometry_target"):
                     geom_losses = ref.geometry_target.target_losses()
                     for name, loss in geom_losses.items():
                         component_losses[name] = loss.item()
@@ -429,7 +475,7 @@ class PolicyComponentWeighting(WeightingScheme):
                 else:
                     geom_loss_total = 0.0
 
-                if hasattr(ref, 'adp_target'):
+                if hasattr(ref, "adp_target"):
                     adp_losses = ref.adp_target.target_losses()
                     for name, loss in adp_losses.items():
                         component_losses[name] = loss.item()
@@ -439,22 +485,30 @@ class PolicyComponentWeighting(WeightingScheme):
 
         # X-ray test loss
         with torch.no_grad():
-            xray_loss_test = ref.xray_target_test().item() if hasattr(ref, 'xray_target_test') else xray_loss_work
+            xray_loss_test = (
+                ref.xray_target_test().item()
+                if hasattr(ref, "xray_target_test")
+                else xray_loss_work
+            )
 
         # X-ray work/test ratio
         xray_work_test_ratio = xray_loss_work / (xray_loss_test + 1e-6)
 
         # Geometry metrics
         with torch.no_grad():
-            if hasattr(ref, 'restraints') and hasattr(ref.restraints, 'bond_deviations'):
+            if hasattr(ref, "restraints") and hasattr(
+                ref.restraints, "bond_deviations"
+            ):
                 bond_devs, _ = ref.restraints.bond_deviations()
-                bond_rmsd = torch.sqrt((bond_devs ** 2).mean()).item()
+                bond_rmsd = torch.sqrt((bond_devs**2).mean()).item()
             else:
                 bond_rmsd = 0.0
 
-            if hasattr(ref, 'restraints') and hasattr(ref.restraints, 'angle_deviations'):
+            if hasattr(ref, "restraints") and hasattr(
+                ref.restraints, "angle_deviations"
+            ):
                 angle_devs, _ = ref.restraints.angle_deviations()
-                angle_rmsd = torch.sqrt((angle_devs ** 2).mean()).item()
+                angle_rmsd = torch.sqrt((angle_devs**2).mean()).item()
             else:
                 angle_rmsd = 0.0
 
@@ -464,59 +518,62 @@ class PolicyComponentWeighting(WeightingScheme):
             b_std = float(b_factors.std())
 
         # Normalize B-factor stats by Wilson B
-        wilson_b = self.static_features['wilson_b']
+        wilson_b = self.static_features["wilson_b"]
         mean_b_normalized = mean_b / wilson_b
         b_std_normalized = b_std / wilson_b
 
         # Build 31-feature tensor matching meta_weighting_4/worker.py
-        features = torch.tensor([
-            # Progress (2)
-            progress,                                           # 0: normalized progress
-            improvement_rate,                                   # 1: relative improvement
-
-            # R-factors (4)
-            rwork,                                              # 2
-            rfree,                                              # 3
-            rfree_gap,                                          # 4: gap (overfitting indicator)
-            delta_rfree,                                        # 5: recent change
-
-            # Structure/Data properties (7) - STATIC
-            self.static_features['resolution_min'],             # 6: best resolution (Å)
-            self.static_features['inv_resolution'],             # 7: inverted (higher = better data)
-            self.static_features['log_n_atoms'],                # 8: structure size (log-scaled)
-            self.static_features['log_n_hkl'],                  # 9: number of reflections (log-scaled)
-            self.static_features['data_to_param_ratio'],        # 10: data-to-parameter ratio
-            self.static_features['log_wilson_b'],               # 11: data quality (log-scaled)
-            self.static_features['b_cv'],                       # 12: disorder coefficient of variation
-
-            # X-ray losses (3) - RAW
-            xray_loss_work,                                     # 13
-            xray_loss_test,                                     # 14
-            xray_work_test_ratio,                               # 15: work/test ratio
-
-            # Geometry losses (7) - RAW
-            geom_loss_total,                                    # 16
-            component_losses.get('bond', 0.0),                  # 17
-            component_losses.get('angle', 0.0),                 # 18
-            component_losses.get('torsion', 0.0),               # 19
-            component_losses.get('planarity', 0.0),             # 20
-            component_losses.get('chiral', 0.0),                # 21
-            component_losses.get('nonbonded', 0.0),             # 22
-
-            # Geometry RMSD (2)
-            bond_rmsd,                                          # 23
-            angle_rmsd,                                         # 24
-
-            # ADP losses (4) - RAW
-            adp_loss_total,                                     # 25
-            component_losses.get('simu', 0.0),                  # 26
-            component_losses.get('locality', 0.0),              # 27
-            component_losses.get('KL', 0.0),                    # 28
-
-            # B-factor stats (2) - normalized by Wilson B
-            mean_b_normalized,                                  # 29: normalized mean B
-            b_std_normalized,                                   # 30: normalized B spread
-        ], dtype=torch.float32, device=ref.device)
+        features = torch.tensor(
+            [
+                # Progress (2)
+                progress,  # 0: normalized progress
+                improvement_rate,  # 1: relative improvement
+                # R-factors (4)
+                rwork,  # 2
+                rfree,  # 3
+                rfree_gap,  # 4: gap (overfitting indicator)
+                delta_rfree,  # 5: recent change
+                # Structure/Data properties (7) - STATIC
+                self.static_features["resolution_min"],  # 6: best resolution (Å)
+                self.static_features[
+                    "inv_resolution"
+                ],  # 7: inverted (higher = better data)
+                self.static_features["log_n_atoms"],  # 8: structure size (log-scaled)
+                self.static_features[
+                    "log_n_hkl"
+                ],  # 9: number of reflections (log-scaled)
+                self.static_features[
+                    "data_to_param_ratio"
+                ],  # 10: data-to-parameter ratio
+                self.static_features["log_wilson_b"],  # 11: data quality (log-scaled)
+                self.static_features["b_cv"],  # 12: disorder coefficient of variation
+                # X-ray losses (3) - RAW
+                xray_loss_work,  # 13
+                xray_loss_test,  # 14
+                xray_work_test_ratio,  # 15: work/test ratio
+                # Geometry losses (7) - RAW
+                geom_loss_total,  # 16
+                component_losses.get("bond", 0.0),  # 17
+                component_losses.get("angle", 0.0),  # 18
+                component_losses.get("torsion", 0.0),  # 19
+                component_losses.get("planarity", 0.0),  # 20
+                component_losses.get("chiral", 0.0),  # 21
+                component_losses.get("nonbonded", 0.0),  # 22
+                # Geometry RMSD (2)
+                bond_rmsd,  # 23
+                angle_rmsd,  # 24
+                # ADP losses (4) - RAW
+                adp_loss_total,  # 25
+                component_losses.get("simu", 0.0),  # 26
+                component_losses.get("locality", 0.0),  # 27
+                component_losses.get("KL", 0.0),  # 28
+                # B-factor stats (2) - normalized by Wilson B
+                mean_b_normalized,  # 29: normalized mean B
+                b_std_normalized,  # 30: normalized B spread
+            ],
+            dtype=torch.float32,
+            device=ref.device,
+        )
 
         # Create StepState for recording
         step_state = StepState(
@@ -545,7 +602,7 @@ class PolicyComponentWeighting(WeightingScheme):
 
         return features, step_state
 
-    def forward(self, state: 'LossState' = None) -> Dict[str, float]:
+    def forward(self, state: "LossState" = None) -> Dict[str, float]:
         """
         Predict component weights from current refinement state.
 
@@ -572,12 +629,10 @@ class PolicyComponentWeighting(WeightingScheme):
 
         # Store log-weights for trajectory recording
         self.last_log_weights = {
-            comp: log_weights[i].item()
-            for i, comp in enumerate(COMPONENTS)
+            comp: log_weights[i].item() for i, comp in enumerate(COMPONENTS)
         }
         self.last_log_sigmas = {
-            comp: log_sigmas[i].item()
-            for i, comp in enumerate(COMPONENTS)
+            comp: log_sigmas[i].item() for i, comp in enumerate(COMPONENTS)
         }
 
         # Sample or use mean
@@ -595,8 +650,7 @@ class PolicyComponentWeighting(WeightingScheme):
 
         # Build output dictionaries
         self.last_weights = {
-            comp: weights_tensor[i].item()
-            for i, comp in enumerate(COMPONENTS)
+            comp: weights_tensor[i].item() for i, comp in enumerate(COMPONENTS)
         }
 
         # Return with LossState naming convention
@@ -610,7 +664,9 @@ class PolicyComponentWeighting(WeightingScheme):
 
         # Record step if trajectory recording is enabled
         if self._recording and self.trajectory is not None:
-            reward = -step_state.delta_rfree  # Negative delta = improvement = positive reward
+            reward = (
+                -step_state.delta_rfree
+            )  # Negative delta = improvement = positive reward
             reward = max(-0.05, min(0.05, reward))  # Clip to [-0.05, 0.05]
 
             step_record = StepRecord(
@@ -624,13 +680,12 @@ class PolicyComponentWeighting(WeightingScheme):
         # For backward compatibility
         self.predicted_weights = self.last_weights
         self.predicted_uncertainties = {
-            comp: np.exp(self.last_log_sigmas[comp])
-            for comp in COMPONENTS
+            comp: np.exp(self.last_log_sigmas[comp]) for comp in COMPONENTS
         }
 
         return weights
 
-    def apply_to_state(self, state: 'LossState') -> 'LossState':
+    def apply_to_state(self, state: "LossState") -> "LossState":
         """
         Apply policy-predicted weights to a LossState.
 
@@ -658,7 +713,7 @@ class PolicyComponentWeighting(WeightingScheme):
             state.set_weight(name, weight)
         return state
 
-    def stats(self, state: 'LossState' = None) -> Dict[str, Any]:
+    def stats(self, state: "LossState" = None) -> Dict[str, Any]:
         """
         Return statistics for reporting.
 
@@ -672,17 +727,19 @@ class PolicyComponentWeighting(WeightingScheme):
         # Predicted weights
         if self.last_weights:
             for comp, weight in self.last_weights.items():
-                stats_dict[f'policy_weight_{comp}'] = stat(weight, VERBOSITY_STANDARD)
+                stats_dict[f"policy_weight_{comp}"] = stat(weight, VERBOSITY_STANDARD)
 
         # Predicted log-sigmas (uncertainties)
         if self.last_log_sigmas:
             for comp, log_sigma in self.last_log_sigmas.items():
-                stats_dict[f'policy_sigma_{comp}'] = stat(np.exp(log_sigma), VERBOSITY_DEBUG)
+                stats_dict[f"policy_sigma_{comp}"] = stat(
+                    np.exp(log_sigma), VERBOSITY_DEBUG
+                )
 
         # Sampling parameters
-        stats_dict['sample_mode'] = stat(self.sample, VERBOSITY_DEBUG)
-        stats_dict['temperature'] = stat(self.temperature, VERBOSITY_DEBUG)
-        stats_dict['current_step'] = stat(self.current_step, VERBOSITY_DEBUG)
+        stats_dict["sample_mode"] = stat(self.sample, VERBOSITY_DEBUG)
+        stats_dict["temperature"] = stat(self.temperature, VERBOSITY_DEBUG)
+        stats_dict["current_step"] = stat(self.current_step, VERBOSITY_DEBUG)
 
         return stats_dict
 
@@ -690,37 +747,37 @@ class PolicyComponentWeighting(WeightingScheme):
 def trajectory_to_dict(trajectory: TrajectoryData) -> Dict[str, Any]:
     """Convert TrajectoryData to a JSON-serializable dictionary."""
     return {
-        'pdb_id': trajectory.pdb_id,
-        'structure_path': trajectory.structure_path,
-        'sf_path': trajectory.sf_path,
-        'initial_rfree': trajectory.initial_rfree,
-        'final_rfree': trajectory.final_rfree,
-        'initial_rwork': trajectory.initial_rwork,
-        'final_rwork': trajectory.final_rwork,
-        'total_time': trajectory.total_time,
-        'random_seed': trajectory.random_seed,
-        'policy_version': trajectory.policy_version,
-        'success': trajectory.success,
-        'error_message': trajectory.error_message,
-        'steps': [
+        "pdb_id": trajectory.pdb_id,
+        "structure_path": trajectory.structure_path,
+        "sf_path": trajectory.sf_path,
+        "initial_rfree": trajectory.initial_rfree,
+        "final_rfree": trajectory.final_rfree,
+        "initial_rwork": trajectory.initial_rwork,
+        "final_rwork": trajectory.final_rwork,
+        "total_time": trajectory.total_time,
+        "random_seed": trajectory.random_seed,
+        "policy_version": trajectory.policy_version,
+        "success": trajectory.success,
+        "error_message": trajectory.error_message,
+        "steps": [
             {
-                'state': asdict(step.state),
-                'log_weights': step.log_weights,
-                'weights': step.weights,
-                'reward': step.reward,
+                "state": asdict(step.state),
+                "log_weights": step.log_weights,
+                "weights": step.weights,
+                "reward": step.reward,
             }
             for step in trajectory.steps
-        ]
+        ],
     }
 
 
 __all__ = [
-    'PolicyComponentWeighting',
-    'StepState',
-    'StepRecord',
-    'TrajectoryData',
-    'trajectory_to_dict',
-    'COMPONENTS',
-    'COMPONENT_TO_LOSS_STATE',
-    'LOSS_STATE_TO_COMPONENT',
+    "PolicyComponentWeighting",
+    "StepState",
+    "StepRecord",
+    "TrajectoryData",
+    "trajectory_to_dict",
+    "COMPONENTS",
+    "COMPONENT_TO_LOSS_STATE",
+    "LOSS_STATE_TO_COMPONENT",
 ]

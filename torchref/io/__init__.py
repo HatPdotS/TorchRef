@@ -25,25 +25,12 @@ High-level API
 >>> data_dict, cell, spacegroup = reader()
 """
 
-# Dataset classes (primary API)
-from .datasets import (
-    CrystalDataset,
-    ReflectionData,
-    DatasetCollection,
-)
-
 # Format modules
-from . import mtz
-from . import pdb
-from . import cif
-
-# Reader classes (from format modules)
-from .mtz import MTZReader
-from .pdb import PDBReader
+from . import cif, mtz, pdb
 from .cif import (
     CIFReader,
-    ReflectionCIFReader,
     ModelCIFReader,
+    ReflectionCIFReader,
     RestraintCIFReader,
 )
 
@@ -53,30 +40,41 @@ from .data_router import (
     DataRouterError,
 )
 
+# Dataset classes (primary API)
+from .datasets import (
+    CrystalDataset,
+    DatasetCollection,
+    ReflectionData,
+)
+
+# Reader classes (from format modules)
+from .mtz import MTZReader
+from .pdb import PDBReader
+
 # Legacy aliases for backwards compatibility
 MTZ = MTZReader
 PDB = PDBReader
 
 __all__ = [
     # Primary API - Datasets
-    'CrystalDataset',
-    'ReflectionData',
-    'DatasetCollection',
+    "CrystalDataset",
+    "ReflectionData",
+    "DatasetCollection",
     # Format modules
-    'mtz',
-    'pdb',
-    'cif',
+    "mtz",
+    "pdb",
+    "cif",
     # Reader classes
-    'MTZReader',
-    'PDBReader',
-    'CIFReader',
-    'ReflectionCIFReader',
-    'ModelCIFReader',
-    'RestraintCIFReader',
+    "MTZReader",
+    "PDBReader",
+    "CIFReader",
+    "ReflectionCIFReader",
+    "ModelCIFReader",
+    "RestraintCIFReader",
     # Router
-    'DataRouter',
-    'DataRouterError',
+    "DataRouter",
+    "DataRouterError",
     # Legacy aliases
-    'MTZ',
-    'PDB',
+    "MTZ",
+    "PDB",
 ]

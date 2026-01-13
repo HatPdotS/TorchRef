@@ -10,9 +10,10 @@ Design Pattern:
 - Returns the total weighted loss for backpropagation
 """
 
+from typing import TYPE_CHECKING, Dict
+
 import torch
 from torch import nn
-from typing import Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from torchref.refinement.loss_state import LossState
@@ -59,7 +60,7 @@ class LossAggregator(nn.Module):
         super().__init__()
         self.default_weight = default_weight
 
-    def forward(self, state: 'LossState') -> torch.Tensor:
+    def forward(self, state: "LossState") -> torch.Tensor:
         """
         Compute total weighted loss from a LossState.
 
@@ -81,7 +82,7 @@ class LossAggregator(nn.Module):
 
         return total
 
-    def aggregate(self, state: 'LossState') -> torch.Tensor:
+    def aggregate(self, state: "LossState") -> torch.Tensor:
         """
         Alias for forward() - compute total weighted loss.
 
@@ -97,7 +98,7 @@ class LossAggregator(nn.Module):
         """
         return self.forward(state)
 
-    def aggregate_with_breakdown(self, state: 'LossState') -> Dict[str, torch.Tensor]:
+    def aggregate_with_breakdown(self, state: "LossState") -> Dict[str, torch.Tensor]:
         """
         Compute total loss and return breakdown of weighted components.
 
@@ -130,11 +131,11 @@ class LossAggregator(nn.Module):
             total = total + weighted_loss
 
         return {
-            'total': total,
-            'components': components,
-            'raw_losses': raw_losses,
-            'weights': weights_used
+            "total": total,
+            "components": components,
+            "raw_losses": raw_losses,
+            "weights": weights_used,
         }
 
 
-__all__ = ['LossAggregator']
+__all__ = ["LossAggregator"]

@@ -39,5 +39,10 @@ def gradnorm(loss: torch.Tensor, parameters: iter) -> float:
     >>> print(f"Gradient norm: {grad_norm:.4f}")
     """
     loss.backward(retain_graph=True)
-    grad_norm = (torch.mean(torch.cat([p.grad.view(-1) for p in parameters if p.grad is not None]) ** 2) ** 0.5)
+    grad_norm = (
+        torch.mean(
+            torch.cat([p.grad.view(-1) for p in parameters if p.grad is not None]) ** 2
+        )
+        ** 0.5
+    )
     return grad_norm

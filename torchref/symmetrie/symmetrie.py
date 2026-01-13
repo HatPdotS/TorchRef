@@ -5,11 +5,16 @@ This module provides the Symmetry class for handling space group symmetry
 operations on fractional coordinates.
 """
 
+import gemmi
 import torch
 import torch.nn as nn
-import gemmi
+
+from torchref.symmetrie.spacegroup import (
+    SpaceGroup,
+    SpaceGroupLike,
+    get_operations_as_tensors,
+)
 from torchref.utils.debug_utils import DebugMixin
-from torchref.symmetrie.spacegroup import SpaceGroup, SpaceGroupLike, get_operations_as_tensors
 
 
 class Symmetry(DebugMixin, nn.Module):
@@ -55,7 +60,7 @@ class Symmetry(DebugMixin, nn.Module):
         self,
         space_group: SpaceGroupLike,
         dtype: torch.dtype = torch.float64,
-        device: torch.device = torch.device('cpu')
+        device: torch.device = torch.device("cpu"),
     ):
         super(Symmetry, self).__init__()
         self.device = device
@@ -69,8 +74,8 @@ class Symmetry(DebugMixin, nn.Module):
             self.spacegroup, dtype=dtype, device=device
         )
 
-        self.register_buffer('matrices', matrices)
-        self.register_buffer('translations', translations)
+        self.register_buffer("matrices", matrices)
+        self.register_buffer("translations", translations)
         self.n_ops = matrices.shape[0]
 
     @property
@@ -103,9 +108,15 @@ class Symmetry(DebugMixin, nn.Module):
             Transformed coordinates of shape (3, N, ops) where ops is the
             number of symmetry operations.
         """
-        coords = fractional_coords.reshape(3, -1).to(self.matrices.device).to(self.matrices.dtype)  # (3, N)
+        coords = (
+            fractional_coords.reshape(3, -1)
+            .to(self.matrices.device)
+            .to(self.matrices.dtype)
+        )  # (3, N)
         coords = coords.unsqueeze(0)  # (1, 3, N)
-        transformed = torch.matmul(self.matrices, coords) + self.translations.unsqueeze(2)
+        transformed = torch.matmul(self.matrices, coords) + self.translations.unsqueeze(
+            2
+        )
         # transformed: (ops, 3, N)
         return transformed.permute(1, 2, 0)  # (3, N, ops)
 
@@ -153,7 +164,9 @@ class Symmetry(DebugMixin, nn.Module):
 
                 # Convert to fraction and get denominator
                 # The grid size must be divisible by this denominator
-                frac = Fraction(t).limit_denominator(12)  # Limit to denominators up to 12
+                frac = Fraction(t).limit_denominator(
+                    12
+                )  # Limit to denominators up to 12
                 denom = frac.denominator
 
                 if axis_idx == 0:
@@ -163,11 +176,7 @@ class Symmetry(DebugMixin, nn.Module):
                 else:
                     nz_lcm = math.lcm(nz_lcm, denom)
 
-        return {
-            'nx_mod': nx_lcm,
-            'ny_mod': ny_lcm,
-            'nz_mod': nz_lcm
-        }
+        return {"nx_mod": nx_lcm, "ny_mod": ny_lcm, "nz_mod": nz_lcm}
 
     def check_grid_compatibility(self, grid_shape: tuple) -> dict:
         """
@@ -205,19 +214,19 @@ class Symmetry(DebugMixin, nn.Module):
         issues = []
         sg_name = self.spacegroup.short_name()
 
-        if nx % requirements['nx_mod'] != 0:
+        if nx % requirements["nx_mod"] != 0:
             issues.append(
                 f"nx={nx} not divisible by {requirements['nx_mod']} "
                 f"(required for {sg_name})"
             )
 
-        if ny % requirements['ny_mod'] != 0:
+        if ny % requirements["ny_mod"] != 0:
             issues.append(
                 f"ny={ny} not divisible by {requirements['ny_mod']} "
                 f"(required for {sg_name})"
             )
 
-        if nz % requirements['nz_mod'] != 0:
+        if nz % requirements["nz_mod"] != 0:
             issues.append(
                 f"nz={nz} not divisible by {requirements['nz_mod']} "
                 f"(required for {sg_name})"
@@ -226,13 +235,15 @@ class Symmetry(DebugMixin, nn.Module):
         compatible = len(issues) == 0
 
         return {
-            'compatible': compatible,
-            'can_use_direct_indexing': compatible,
-            'issues': issues,
-            'requirements': requirements
+            "compatible": compatible,
+            "can_use_direct_indexing": compatible,
+            "issues": issues,
+            "requirements": requirements,
         }
 
-    def suggest_grid_size(self, min_grid_shape: tuple, make_fft_friendly: bool = True) -> tuple:
+    def suggest_grid_size(
+        self, min_grid_shape: tuple, make_fft_friendly: bool = True
+    ) -> tuple:
         """
         Suggest an optimal grid size that satisfies symmetry requirements.
 
@@ -279,9 +290,9 @@ class Symmetry(DebugMixin, nn.Module):
 
         nx_min, ny_min, nz_min = min_grid_shape
 
-        nx = find_next_valid(nx_min, requirements['nx_mod'])
-        ny = find_next_valid(ny_min, requirements['ny_mod'])
-        nz = find_next_valid(nz_min, requirements['nz_mod'])
+        nx = find_next_valid(nx_min, requirements["nx_mod"])
+        ny = find_next_valid(ny_min, requirements["ny_mod"])
+        nz = find_next_valid(nz_min, requirements["nz_mod"])
 
         return (nx, ny, nz)
 
@@ -302,8 +313,10 @@ class Symmetry(DebugMixin, nn.Module):
         return n == 1
 
     def __repr__(self) -> str:
-        return (f'Symmetry(spacegroup={self.spacegroup.short_name()}, '
-                f'number={self.spacegroup.number}, n_ops={self.n_ops})')
+        return (
+            f"Symmetry(spacegroup={self.spacegroup.short_name()}, "
+            f"number={self.spacegroup.number}, n_ops={self.n_ops})"
+        )
 
     def __hash__(self) -> int:
         """Hash based on space group number."""

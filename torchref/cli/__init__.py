@@ -2,4 +2,4 @@
 Command-line interface for torchref.
 """
 
-__all__ = ['refine']
+__all__ = ["refine"]

@@ -16,7 +16,7 @@ Two-level sampling for stable yet diverse trajectories:
 
 1. **Trajectory-level base weights**: Sampled once at initialization with larger
    sigma (trajectory_sigma). These define the "character" of the trajectory.
-   
+
 2. **Step-level perturbations**: Small perturbations applied at each step with
    smaller sigma (step_sigma). These add local variation while keeping the
    trajectory coherent.
@@ -33,73 +33,76 @@ References
 - design_choices.md in meta_weighting_2/
 """
 
+from typing import Any, Dict
+
+import numpy as np
 import torch
 from torch import nn
-from typing import Dict, List, Optional, Any
-import numpy as np
 
 from torchref.refinement.weighting.component_weighting import (
-    WeightingScheme,
     ComponentWeighting,
+    WeightingScheme,
     XrayScaleWeighting,
 )
-from torchref.utils.utils import ModuleReference
 from torchref.utils.stats import (
-    StatEntry, stat,
-    VERBOSITY_ESSENTIAL, VERBOSITY_STANDARD, VERBOSITY_DETAILED, VERBOSITY_DEBUG
+    VERBOSITY_DETAILED,
+    VERBOSITY_ESSENTIAL,
+    VERBOSITY_STANDARD,
+    StatEntry,
+    stat,
 )
-
+from torchref.utils.utils import ModuleReference
 
 # Default log-space weights (these are the log of the actual weights)
 # weight = exp(log_weight)
 DEFAULT_LOG_WEIGHTS = {
-    'xray': 0.0,
+    "xray": 0.0,
     # Geometry components
-    'bond': 0.0,       
-    'angle': 0.0,       
-    'torsion': 0.0,     
-    'planarity': 0.0,   
-    'chiral': 0.0,      
-    'nonbonded': 0.0,  
+    "bond": 0.0,
+    "angle": 0.0,
+    "torsion": 0.0,
+    "planarity": 0.0,
+    "chiral": 0.0,
+    "nonbonded": 0.0,
     # ADP components
-    'simu': 0.0,        
-    'locality': 0.0,    
-    'KL': 0.0,         
+    "simu": 0.0,
+    "locality": 0.0,
+    "KL": 0.0,
 }
 
 # Default trajectory-level sigmas (larger - defines trajectory character)
 # Increased for more diverse exploration
 DEFAULT_TRAJECTORY_SIGMAS = {
-    'xray': 1.5,
-    'bond': 1.5,
-    'angle': 1.5,
-    'torsion': 1.5,
-    'planarity': 1.5,
-    'chiral': 1.5,
-    'nonbonded': 1.5,
-    'simu': 1.5,
-    'locality': 1.5,
-    'KL': 1.5,
+    "xray": 1.5,
+    "bond": 1.5,
+    "angle": 1.5,
+    "torsion": 1.5,
+    "planarity": 1.5,
+    "chiral": 1.5,
+    "nonbonded": 1.5,
+    "simu": 1.5,
+    "locality": 1.5,
+    "KL": 1.5,
 }
 
 # Default step-level sigmas (smaller - local perturbations)
 # Increased for more variation within trajectories
 DEFAULT_STEP_SIGMAS = {
-    'xray': 0.3,
-    'bond': 0.3,
-    'angle': 0.3,
-    'torsion': 0.3,
-    'planarity': 0.3,
-    'chiral': 0.3,
-    'nonbonded': 0.3,
-    'simu': 0.3,
-    'locality': 0.3,
-    'KL': 0.3,
+    "xray": 0.3,
+    "bond": 0.3,
+    "angle": 0.3,
+    "torsion": 0.3,
+    "planarity": 0.3,
+    "chiral": 0.3,
+    "nonbonded": 0.3,
+    "simu": 0.3,
+    "locality": 0.3,
+    "KL": 0.3,
 }
 
 # Bounds for log-weights to prevent extreme values
-LOG_WEIGHT_MIN = -3.0   
-LOG_WEIGHT_MAX = 3.0    
+LOG_WEIGHT_MIN = -3.0
+LOG_WEIGHT_MAX = 3.0
 
 
 class RandomWeightingScheme(WeightingScheme):
@@ -141,7 +144,7 @@ class RandomWeightingScheme(WeightingScheme):
         Number of times step perturbations have been applied.
     """
 
-    name = 'random_weighting'
+    name = "random_weighting"
 
     def __init__(
         self,
@@ -166,18 +169,18 @@ class RandomWeightingScheme(WeightingScheme):
 
         # Register buffers for base weights (trajectory-level, sampled once)
         for name, default in self.default_log_weights.items():
-            self.register_buffer(f'base_log_weight_{name}', torch.tensor(default))
-            self.register_buffer(f'log_weight_{name}', torch.tensor(default))
+            self.register_buffer(f"base_log_weight_{name}", torch.tensor(default))
+            self.register_buffer(f"log_weight_{name}", torch.tensor(default))
 
         # Track sampling
-        self.register_buffer('_sample_count', torch.tensor(0, dtype=torch.long))
-        self.register_buffer('_trajectory_initialized', torch.tensor(False))
+        self.register_buffer("_sample_count", torch.tensor(0, dtype=torch.long))
+        self.register_buffer("_trajectory_initialized", torch.tensor(False))
 
         # Initialize base weights and current weights
         self.base_log_weights = {}
         self.current_log_weights = {}
         self.current_weights = {}
-        
+
         # Sample trajectory base weights
         self._sample_base_weights()
         self._update_weight_tensors()
@@ -186,19 +189,19 @@ class RandomWeightingScheme(WeightingScheme):
         """Sample trajectory-level base weights (called once at init)."""
         for name, default_log in self.default_log_weights.items():
             sigma = self.trajectory_sigmas.get(name, 0.8)
-            
+
             # Sample base weight in log-space
             base_log_weight = self.rng.normal(default_log, sigma)
-            
+
             # Clip to bounds
             base_log_weight = np.clip(base_log_weight, LOG_WEIGHT_MIN, LOG_WEIGHT_MAX)
-            
+
             # Update buffer
-            getattr(self, f'base_log_weight_{name}').fill_(base_log_weight)
-            getattr(self, f'log_weight_{name}').fill_(base_log_weight)
-            
+            getattr(self, f"base_log_weight_{name}").fill_(base_log_weight)
+            getattr(self, f"log_weight_{name}").fill_(base_log_weight)
+
             self.base_log_weights[name] = float(base_log_weight)
-        
+
         self._trajectory_initialized.fill_(True)
 
     def _update_weight_tensors(self):
@@ -207,7 +210,7 @@ class RandomWeightingScheme(WeightingScheme):
         self.current_weights = {}
 
         for name in self.default_log_weights.keys():
-            log_w = getattr(self, f'log_weight_{name}')
+            log_w = getattr(self, f"log_weight_{name}")
             self.current_log_weights[name] = float(log_w.item())
             self.current_weights[name] = float(torch.exp(log_w).item())
 
@@ -223,18 +226,18 @@ class RandomWeightingScheme(WeightingScheme):
         for name in self.default_log_weights.keys():
             base_log = self.base_log_weights[name]
             step_sigma = self.step_sigmas.get(name, 0.1)
-            
+
             # Sample small perturbation
             perturbation = self.rng.normal(0.0, step_sigma)
-            
+
             # Apply perturbation to base weight
             log_weight = base_log + perturbation
-            
+
             # Clip to bounds
             log_weight = np.clip(log_weight, LOG_WEIGHT_MIN, LOG_WEIGHT_MAX)
-            
+
             # Update buffer
-            getattr(self, f'log_weight_{name}').fill_(log_weight)
+            getattr(self, f"log_weight_{name}").fill_(log_weight)
 
         self._sample_count.add_(1)
         self._update_weight_tensors()
@@ -334,16 +337,16 @@ class RandomWeightingScheme(WeightingScheme):
             Statistics dictionary with StatEntry objects.
         """
         stats = {
-            'sample_count': stat(self.sample_count, VERBOSITY_STANDARD),
+            "sample_count": stat(self.sample_count, VERBOSITY_STANDARD),
         }
 
         # Add current weights and base weights
         for name, weight in self.current_weights.items():
-            stats[f'weight_{name}'] = stat(weight, VERBOSITY_STANDARD)
-            stats[f'log_weight_{name}'] = stat(
+            stats[f"weight_{name}"] = stat(weight, VERBOSITY_STANDARD)
+            stats[f"log_weight_{name}"] = stat(
                 self.current_log_weights[name], VERBOSITY_DETAILED
             )
-            stats[f'base_log_weight_{name}'] = stat(
+            stats[f"base_log_weight_{name}"] = stat(
                 self.base_log_weights.get(name, 0.0), VERBOSITY_DETAILED
             )
 
@@ -407,8 +410,8 @@ class RandomComponentWeighting(ComponentWeighting):
 
         # Build schemes dict with only xray_scale and random
         schemes_dict = {
-            'xray_scale': XrayScaleWeighting(refinement),
-            'random': RandomWeightingScheme(
+            "xray_scale": XrayScaleWeighting(refinement),
+            "random": RandomWeightingScheme(
                 refinement,
                 default_log_weights=default_log_weights,
                 trajectory_sigmas=trajectory_sigmas,
@@ -426,7 +429,7 @@ class RandomComponentWeighting(ComponentWeighting):
     @property
     def random_scheme(self) -> RandomWeightingScheme:
         """Get the random weighting scheme."""
-        return self.schemes['random']
+        return self.schemes["random"]
 
     def resample_trajectory(self) -> Dict[str, float]:
         """
@@ -536,47 +539,51 @@ class RandomComponentWeighting(ComponentWeighting):
                 stats[name] = scheme_stats
 
         # Add current combined weights
-        stats['weights'] = {
+        stats["weights"] = {
             k: stat(v.item() if isinstance(v, torch.Tensor) else v, VERBOSITY_STANDARD)
             for k, v in self.weights.items()
         }
 
         # Add sampled log-weights (the "actions")
-        stats['sampled_log_weights'] = {
+        stats["sampled_log_weights"] = {
             k: stat(v, VERBOSITY_STANDARD)
             for k, v in self.get_sampled_log_weights().items()
         }
 
         # Add target stats
-        if hasattr(self.refinement, 'geometry_target'):
+        if hasattr(self.refinement, "geometry_target"):
             geom_stats = self.refinement.geometry_target.stats()
             if geom_stats:
-                stats['geom_target'] = {
+                stats["geom_target"] = {
                     k: v if isinstance(v, StatEntry) else stat(v, VERBOSITY_DETAILED)
                     for k, v in geom_stats.items()
                 }
 
-        if hasattr(self.refinement, 'adp_target'):
+        if hasattr(self.refinement, "adp_target"):
             adp_stats = self.refinement.adp_target.stats()
             if adp_stats:
-                stats['adp_target'] = {
+                stats["adp_target"] = {
                     k: v if isinstance(v, StatEntry) else stat(v, VERBOSITY_DETAILED)
                     for k, v in adp_stats.items()
                 }
 
         # Add xray stats
-        stats['xray'] = {
-            'work_nll': stat(self.refinement.xray_target_work().item(), VERBOSITY_ESSENTIAL),
-            'test_nll': stat(self.refinement.xray_target_test().item(), VERBOSITY_ESSENTIAL),
+        stats["xray"] = {
+            "work_nll": stat(
+                self.refinement.xray_target_work().item(), VERBOSITY_ESSENTIAL
+            ),
+            "test_nll": stat(
+                self.refinement.xray_target_test().item(), VERBOSITY_ESSENTIAL
+            ),
         }
 
         return stats
 
 
 __all__ = [
-    'RandomWeightingScheme',
-    'RandomComponentWeighting',
-    'DEFAULT_LOG_WEIGHTS',
-    'DEFAULT_TRAJECTORY_SIGMAS',
-    'DEFAULT_STEP_SIGMAS',
+    "RandomWeightingScheme",
+    "RandomComponentWeighting",
+    "DEFAULT_LOG_WEIGHTS",
+    "DEFAULT_TRAJECTORY_SIGMAS",
+    "DEFAULT_STEP_SIGMAS",
 ]

@@ -11,8 +11,9 @@ The Symmetry class itself now handles all grid analysis based on actual loaded
 symmetry operations, which is more robust and maintainable.
 """
 
-import torch
 import numpy as np
+import torch
+
 from torchref.symmetrie.symmetrie import Symmetry
 
 
@@ -60,27 +61,27 @@ def find_fft_friendly_size(n: int, divisibility: int = 1) -> int:
     """
     # Start from n and search upward
     candidate = n
-    
+
     # Make sure it satisfies divisibility
     if candidate % divisibility != 0:
         candidate = ((candidate // divisibility) + 1) * divisibility
-    
+
     # Now find nearest FFT-friendly size
     while not is_fft_friendly(candidate):
         candidate += divisibility
-    
+
     return candidate
 
 
 def is_fft_friendly(n: int) -> bool:
     """
     Check if a number has only factors of 2, 3, and 5.
-    
+
     These are optimal for radix-2,3,5 FFT algorithms.
     """
     if n <= 0:
         return False
-    
+
     # Remove all factors of 2, 3, 5
     while n % 2 == 0:
         n //= 2
@@ -88,7 +89,7 @@ def is_fft_friendly(n: int) -> bool:
         n //= 3
     while n % 5 == 0:
         n //= 5
-    
+
     # If we're left with 1, the number is FFT-friendly
     return n == 1
 
@@ -119,18 +120,18 @@ def calculate_optimal_grid_size(cell_params, max_res: float, space_group: str) -
     """
     if isinstance(cell_params, torch.Tensor):
         cell_params = cell_params.cpu().numpy()
-    
+
     a, b, c = cell_params[:3]
-    
+
     # Shannon-Nyquist: sample at 3x the maximum frequency
     nx_min = int(np.floor(a / max_res * 3))
     ny_min = int(np.floor(b / max_res * 3))
     nz_min = int(np.floor(c / max_res * 3))
-    
+
     # Use Symmetry class to suggest optimal size
     sym = Symmetry(space_group)
     nx, ny, nz = sym.suggest_grid_size((nx_min, ny_min, nz_min), make_fft_friendly=True)
-    
+
     return (nx, ny, nz)
 
 
@@ -160,15 +161,13 @@ def check_grid_compatibility(grid_shape: tuple, space_group: str) -> dict:
     """
     sym = Symmetry(space_group)
     result = sym.check_grid_compatibility(grid_shape)
-    
+
     # Add FFT-friendly check
     nx, ny, nz = grid_shape
-    result['is_fft_friendly'] = (
-        is_fft_friendly(nx) and 
-        is_fft_friendly(ny) and 
-        is_fft_friendly(nz)
+    result["is_fft_friendly"] = (
+        is_fft_friendly(nx) and is_fft_friendly(ny) and is_fft_friendly(nz)
     )
-    
+
     return result
 
 

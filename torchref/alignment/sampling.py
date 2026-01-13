@@ -5,8 +5,10 @@ Supports weighted sampling to prioritize informative pairs
 (heavy atoms, close distances).
 """
 
+from typing import Optional
+
 import torch
-from typing import Optional 
+
 
 class VectorSampler:
     """
@@ -41,12 +43,7 @@ class VectorSampler:
         Random number generator.
     """
 
-    def __init__(
-        self,
-        model,
-        weighting: str = 'Z2',
-        seed: int = None
-    ):
+    def __init__(self, model, weighting: str = "Z2", seed: int = None):
         """
         Initialize the VectorSampler.
 
@@ -63,7 +60,11 @@ class VectorSampler:
         self.model = model
         self.n_atoms = len(model.pdb)
         self.weighting = weighting
-        self.rng = torch.Generator().manual_seed(seed) if seed is not None else torch.Generator()
+        self.rng = (
+            torch.Generator().manual_seed(seed)
+            if seed is not None
+            else torch.Generator()
+        )
         self.weights = self._compute_weights()
 
     def _compute_weights(
@@ -81,17 +82,23 @@ class VectorSampler:
 
         elements = self.model.pdb.element.values
 
-        Zs = torch.tensor([PERIODIC_TABLE[el]['number'] for el in elements], dtype=torch.float32, device=self.model.device)
+        Zs = torch.tensor(
+            [PERIODIC_TABLE[el]["number"] for el in elements],
+            dtype=torch.float32,
+            device=self.model.device,
+        )
 
-        if self.weighting == 'Z2':
-            weights = Zs ** 2
+        if self.weighting == "Z2":
+            weights = Zs**2
         else:  # uniform
             weights = torch.ones_like(Zs)
 
         weights = weights / weights.sum()  # Normalize to probabilities
         return weights
 
-    def sample(self, n_vectors: int, weights: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def sample(
+        self, n_vectors: int, weights: Optional[torch.Tensor] = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Sample atom pairs according to weighting scheme.
 
@@ -122,7 +129,9 @@ class VectorSampler:
         attempt = 0
         while same_mask.any() and attempt < max_attempts:
             n_resample = same_mask.sum().item()
-            idx2[same_mask] = torch.multinomial(w, n_resample, replacement=True, generator=self.rng)
+            idx2[same_mask] = torch.multinomial(
+                w, n_resample, replacement=True, generator=self.rng
+            )
             same_mask = idx1 == idx2
             attempt += 1
 

@@ -25,26 +25,24 @@ Example
 >>> from torchref.refinement.weighting import ComponentWeighting
 """
 
+# Submodules
+from . import targets, weighting
+from .aggregator import LossAggregator
 from .base_refinement import Refinement
 from .lbfgs_refinement import LBFGSRefinement
-from .aggregator import LossAggregator
 from .loss_state import LossState
 from .optimizers import AdamWithAdaptiveNoise
 
-# Submodules
-from . import targets
-from . import weighting
-
 __all__ = [
     # Main refinement classes
-    'Refinement',
-    'LBFGSRefinement',
+    "Refinement",
+    "LBFGSRefinement",
     # Loss handling
-    'LossAggregator',
-    'LossState',
+    "LossAggregator",
+    "LossState",
     # Optimizers
-    'AdamWithAdaptiveNoise',
+    "AdamWithAdaptiveNoise",
     # Submodules
-    'targets',
-    'weighting',
+    "targets",
+    "weighting",
 ]

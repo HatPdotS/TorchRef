@@ -12,29 +12,30 @@ Key improvements:
 - Separated builder classes for easier testing and maintenance
 """
 
-import torch
+from typing import Optional
+
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional
+import torch
 from torch.nn import Module
 
-from torchref.restraints.restraints_helper import (
-    read_cif,
-    find_cif_file_in_library,
-    read_link_definitions
-)
-from torchref.restraints.builders_fast import (
-    BondRestraintBuilder,
-    AngleRestraintBuilder,
-    TorsionRestraintBuilder,
-    PlaneRestraintBuilder,
-    ChiralRestraintBuilder,
-    InterResidueBondBuilder,
-    InterResidueAngleBuilder,
-    InterResidueTorsionBuilder,
-    InterResiduePlaneBuilder,
-)
 from torchref.model.model import Model
+from torchref.restraints.builders_fast import (
+    AngleRestraintBuilder,
+    BondRestraintBuilder,
+    ChiralRestraintBuilder,
+    InterResidueAngleBuilder,
+    InterResidueBondBuilder,
+    InterResiduePlaneBuilder,
+    InterResidueTorsionBuilder,
+    PlaneRestraintBuilder,
+    TorsionRestraintBuilder,
+)
+from torchref.restraints.restraints_helper import (
+    find_cif_file_in_library,
+    read_cif,
+    read_link_definitions,
+)
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import ModuleReference
 
@@ -84,8 +85,12 @@ class RestraintsNew(DebugMixin, Module):
         self.model = ModuleReference(model)
         self.unique_residues = model.pdb.resname.unique()
         self.unique_residues = [
-            residue for residue in self.unique_residues
-            if self.model.pdb.loc[self.model.pdb['resname'] == residue, 'name'].nunique() > 1
+            residue
+            for residue in self.unique_residues
+            if self.model.pdb.loc[
+                self.model.pdb["resname"] == residue, "name"
+            ].nunique()
+            > 1
         ]
 
         # Parse CIF files
@@ -99,12 +104,7 @@ class RestraintsNew(DebugMixin, Module):
             print(f"Loaded {len(self.link_dict)} link types")
 
         # Initialize hierarchical restraints dictionary
-        self.restraints = {
-            'bond': {},
-            'angle': {},
-            'torsion': {},
-            'plane': {}
-        }
+        self.restraints = {"bond": {}, "angle": {}, "torsion": {}, "plane": {}}
 
         # Build restraints using the new builder pattern
         self.build_restraints()
@@ -140,8 +140,12 @@ class RestraintsNew(DebugMixin, Module):
             self.cif_dict = {}
 
         # Load missing residues from monomer library
-        self.missing_residues = [res for res in self.unique_residues if res not in self.cif_dict]
-        additional_files = [find_cif_file_in_library(res) for res in self.missing_residues]
+        self.missing_residues = [
+            res for res in self.unique_residues if res not in self.cif_dict
+        ]
+        additional_files = [
+            find_cif_file_in_library(res) for res in self.missing_residues
+        ]
 
         for cif_file in additional_files:
             if cif_file is not None:
@@ -152,14 +156,18 @@ class RestraintsNew(DebugMixin, Module):
                     self.cif_dict.update(additional_cif_dict)
                 except Exception as e:
                     print("Error reading CIF file:", e)
-                    print('This residue will have no restraints applied.')
+                    print("This residue will have no restraints applied.")
 
-        self.missing_residues = [res for res in self.unique_residues if res not in self.cif_dict]
+        self.missing_residues = [
+            res for res in self.unique_residues if res not in self.cif_dict
+        ]
 
         if len(self.missing_residues) > 1:
             if self.verbose > 0:
-                print(f"Warning: The following residues are missing from the CIF dictionary "
-                      f"and will have no restraints applied: {self.missing_residues}")
+                print(
+                    f"Warning: The following residues are missing from the CIF dictionary "
+                    f"and will have no restraints applied: {self.missing_residues}"
+                )
 
     def expand_altloc(self, residue):
         """
@@ -168,20 +176,22 @@ class RestraintsNew(DebugMixin, Module):
         Yields one DataFrame per altloc (with common atoms included in each).
         """
         residue = residue.copy()
-        residue.loc[residue['altloc'].isin(['', ' ']), 'altloc'] = ' '
+        residue.loc[residue["altloc"].isin(["", " "]), "altloc"] = " "
 
-        alt_conf = residue['altloc'].unique()
-        if ' ' in alt_conf:
-            residue_no_alt = residue.loc[residue['altloc'] == ' ']
+        alt_conf = residue["altloc"].unique()
+        if " " in alt_conf:
+            residue_no_alt = residue.loc[residue["altloc"] == " "]
             for alt in alt_conf:
-                if alt == ' ':
+                if alt == " ":
                     continue
-                residue_alt = residue.loc[residue['altloc'] == alt]
-                residue_combined = pd.concat([residue_no_alt, residue_alt], ignore_index=True)
+                residue_alt = residue.loc[residue["altloc"] == alt]
+                residue_combined = pd.concat(
+                    [residue_no_alt, residue_alt], ignore_index=True
+                )
                 yield residue_combined
         else:
             for alt_loc in alt_conf:
-                residue_alt = residue.loc[residue['altloc'] == alt_loc]
+                residue_alt = residue.loc[residue["altloc"] == alt_loc]
                 yield residue_alt
 
     def build_restraints(self):
@@ -197,37 +207,37 @@ class RestraintsNew(DebugMixin, Module):
 
             # Build intra-residue restraints using fast builders
             # Each builder.build() handles all residues internally - no looping needed!
-            
+
             bond_result = BondRestraintBuilder(verbose=self.verbose).build(
                 pdb, self.cif_dict, device
             )
             if bond_result:
-                self.restraints['bond']['intra'] = bond_result
+                self.restraints["bond"]["intra"] = bond_result
 
             angle_result = AngleRestraintBuilder(verbose=self.verbose).build(
                 pdb, self.cif_dict, device
             )
             if angle_result:
-                self.restraints['angle']['intra'] = angle_result
+                self.restraints["angle"]["intra"] = angle_result
 
             torsion_result = TorsionRestraintBuilder(verbose=self.verbose).build(
                 pdb, self.cif_dict, device
             )
             if torsion_result:
-                self.restraints['torsion']['intra'] = torsion_result
+                self.restraints["torsion"]["intra"] = torsion_result
 
             plane_result = PlaneRestraintBuilder(verbose=self.verbose).build(
                 pdb, self.cif_dict, device
             )
             if plane_result:
                 for key, data in plane_result.items():
-                    self.restraints['plane'][key] = data
+                    self.restraints["plane"][key] = data
 
             chiral_result = ChiralRestraintBuilder(verbose=self.verbose).build(
                 pdb, self.cif_dict, device
             )
             if chiral_result:
-                self.restraints['chiral'] = chiral_result
+                self.restraints["chiral"] = chiral_result
 
             # Build inter-residue restraints
             self._build_peptide_restraints(device)
@@ -235,10 +245,7 @@ class RestraintsNew(DebugMixin, Module):
 
             # Build VDW restraints
             self._build_vdw_restraints(
-                cutoff=5.0,
-                sigma=0.05,
-                inter_residue_only=False,
-                use_spatial_hash=True
+                cutoff=5.0, sigma=0.05, inter_residue_only=False, use_spatial_hash=True
             )
 
         except Exception as e:
@@ -247,103 +254,116 @@ class RestraintsNew(DebugMixin, Module):
 
     def _build_peptide_restraints(self, device: torch.device):
         """Build peptide bond restraints using fast inter-residue builders."""
-        if 'TRANS' not in self.link_dict:
+        if "TRANS" not in self.link_dict:
             if self.verbose > 0:
-                print("Warning: TRANS link not found in link dictionary, skipping peptide bonds")
+                print(
+                    "Warning: TRANS link not found in link dictionary, skipping peptide bonds"
+                )
             return
 
-        trans_link = self.link_dict['TRANS']
+        trans_link = self.link_dict["TRANS"]
         pdb = self.model.pdb
 
         # Build peptide bonds using fast builder
         bond_result = InterResidueBondBuilder(verbose=self.verbose).build(
-            pdb, trans_link, device, filter_atom_type='ATOM'
+            pdb, trans_link, device, filter_atom_type="ATOM"
         )
         if bond_result:
-            self.restraints['bond']['peptide'] = bond_result
+            self.restraints["bond"]["peptide"] = bond_result
             if self.verbose > 0:
-                print(f"Built {bond_result['indices'].shape[0]} peptide bond restraints")
+                print(
+                    f"Built {bond_result['indices'].shape[0]} peptide bond restraints"
+                )
 
         # Build peptide angles
         angle_result = InterResidueAngleBuilder(verbose=self.verbose).build(
-            pdb, trans_link, device, filter_atom_type='ATOM'
+            pdb, trans_link, device, filter_atom_type="ATOM"
         )
         if angle_result:
-            self.restraints['angle']['peptide'] = angle_result
+            self.restraints["angle"]["peptide"] = angle_result
             if self.verbose > 0:
-                print(f"Built {angle_result['indices'].shape[0]} peptide angle restraints")
+                print(
+                    f"Built {angle_result['indices'].shape[0]} peptide angle restraints"
+                )
 
         # Build backbone torsions (phi, psi, omega)
         torsion_result = InterResidueTorsionBuilder(verbose=self.verbose).build(
-            pdb, trans_link, device, filter_atom_type='ATOM'
+            pdb, trans_link, device, filter_atom_type="ATOM"
         )
         if torsion_result:
-            if 'phi' in torsion_result:
-                self.restraints['torsion']['phi'] = torsion_result['phi']
-            if 'psi' in torsion_result:
-                self.restraints['torsion']['psi'] = torsion_result['psi']
-            if 'omega' in torsion_result:
-                self.restraints['torsion']['omega'] = torsion_result['omega']
+            if "phi" in torsion_result:
+                self.restraints["torsion"]["phi"] = torsion_result["phi"]
+            if "psi" in torsion_result:
+                self.restraints["torsion"]["psi"] = torsion_result["psi"]
+            if "omega" in torsion_result:
+                self.restraints["torsion"]["omega"] = torsion_result["omega"]
 
         # Build peptide planes
         plane_result = InterResiduePlaneBuilder(verbose=self.verbose).build(
-            pdb, trans_link, device, filter_atom_type='ATOM'
+            pdb, trans_link, device, filter_atom_type="ATOM"
         )
         if plane_result:
             n_planes = 0
             for key, data in plane_result.items():
-                n_planes += data['indices'].shape[0]
-                if key in self.restraints['plane']:
+                n_planes += data["indices"].shape[0]
+                if key in self.restraints["plane"]:
                     # Append to existing planes of same atom count
-                    existing = self.restraints['plane'][key]
-                    self.restraints['plane'][key] = {
-                        'indices': torch.cat([existing['indices'], data['indices']], dim=0),
-                        'sigmas': torch.cat([existing['sigmas'], data['sigmas']], dim=0)
+                    existing = self.restraints["plane"][key]
+                    self.restraints["plane"][key] = {
+                        "indices": torch.cat(
+                            [existing["indices"], data["indices"]], dim=0
+                        ),
+                        "sigmas": torch.cat(
+                            [existing["sigmas"], data["sigmas"]], dim=0
+                        ),
                     }
                 else:
-                    self.restraints['plane'][key] = data
+                    self.restraints["plane"][key] = data
             if self.verbose > 0:
                 print(f"Built {n_planes} peptide plane restraints")
 
     def _build_disulfide_restraints(self, device: torch.device):
         """Build disulfide bond restraints."""
-        if 'disulf' not in self.link_dict:
+        if "disulf" not in self.link_dict:
             if self.verbose > 1:
-                print("Warning: disulf link not found in link dictionary, skipping disulfide bonds")
+                print(
+                    "Warning: disulf link not found in link dictionary, skipping disulfide bonds"
+                )
             return
 
-        disulf_link = self.link_dict['disulf']
-        disulf_bonds = disulf_link.get('bonds')
-        disulf_angles = disulf_link.get('angles')
-        disulf_torsions = disulf_link.get('torsions')
+        disulf_link = self.link_dict["disulf"]
+        disulf_bonds = disulf_link.get("bonds")
+        disulf_angles = disulf_link.get("angles")
+        disulf_torsions = disulf_link.get("torsions")
 
         if disulf_bonds is None:
             return
 
         # Get SG-SG bond parameters
         sg_sg_bond = disulf_bonds[
-            (disulf_bonds['atom1'] == 'SG') &
-            (disulf_bonds['atom2'] == 'SG')
+            (disulf_bonds["atom1"] == "SG") & (disulf_bonds["atom2"] == "SG")
         ]
 
         if len(sg_sg_bond) == 0:
             return
 
-        bond_length = float(sg_sg_bond['value'].values[0])
-        bond_sigma = float(sg_sg_bond['sigma'].values[0])
+        bond_length = float(sg_sg_bond["value"].values[0])
+        bond_sigma = float(sg_sg_bond["sigma"].values[0])
 
         # Find all SG atoms
         pdb = self.model.pdb
-        sg_atoms = pdb[(pdb['name'] == 'SG') & (pdb['ATOM'] == 'ATOM')]
+        sg_atoms = pdb[(pdb["name"] == "SG") & (pdb["ATOM"] == "ATOM")]
 
         if len(sg_atoms) == 0:
             return
 
         # Get coordinates and find close pairs
         xyz = self.model.xyz()
-        sg_indices = sg_atoms['index'].values
+        sg_indices = sg_atoms["index"].values
         sg_coords = xyz[sg_indices]
-        sg_residues = (sg_atoms['chainid'].astype(str) + '_' + sg_atoms['resseq'].astype(str)).values
+        sg_residues = (
+            sg_atoms["chainid"].astype(str) + "_" + sg_atoms["resseq"].astype(str)
+        ).values
 
         distances = torch.cdist(sg_coords, sg_coords)
         threshold = 4.0
@@ -368,65 +388,81 @@ class RestraintsNew(DebugMixin, Module):
             sg2_idx = int(sg_indices[j_local])
 
             # Add bond
-            bond_builder.process_disulfide_bond(sg1_idx, sg2_idx, bond_length, bond_sigma)
+            bond_builder.process_disulfide_bond(
+                sg1_idx, sg2_idx, bond_length, bond_sigma
+            )
 
             # Get residues for angle/torsion restraints
-            residue1 = pdb[pdb['index'] == sg1_idx].iloc[0]
-            residue2 = pdb[pdb['index'] == sg2_idx].iloc[0]
+            residue1 = pdb[pdb["index"] == sg1_idx].iloc[0]
+            residue2 = pdb[pdb["index"] == sg2_idx].iloc[0]
 
-            res1_atoms = pdb[(pdb['chainid'] == residue1['chainid']) &
-                            (pdb['resseq'] == residue1['resseq'])]
-            res2_atoms = pdb[(pdb['chainid'] == residue2['chainid']) &
-                            (pdb['resseq'] == residue2['resseq'])]
+            res1_atoms = pdb[
+                (pdb["chainid"] == residue1["chainid"])
+                & (pdb["resseq"] == residue1["resseq"])
+            ]
+            res2_atoms = pdb[
+                (pdb["chainid"] == residue2["chainid"])
+                & (pdb["resseq"] == residue2["resseq"])
+            ]
 
             if disulf_angles is not None:
-                angle_builder.process_disulfide_angles(res1_atoms, res2_atoms, disulf_angles)
+                angle_builder.process_disulfide_angles(
+                    res1_atoms, res2_atoms, disulf_angles
+                )
 
             if disulf_torsions is not None:
-                torsion_builder.process_disulfide_torsions(res1_atoms, res2_atoms, disulf_torsions)
+                torsion_builder.process_disulfide_torsions(
+                    res1_atoms, res2_atoms, disulf_torsions
+                )
 
         # Finalize
         bond_result = bond_builder.finalize(device)
         if bond_result:
-            self.restraints['bond']['disulfide'] = bond_result
+            self.restraints["bond"]["disulfide"] = bond_result
             if self.verbose > 0:
-                print(f"Built {bond_result['indices'].shape[0]} disulfide bond restraints")
+                print(
+                    f"Built {bond_result['indices'].shape[0]} disulfide bond restraints"
+                )
 
         angle_result = angle_builder.finalize(device)
         if angle_result:
-            self.restraints['angle']['disulfide'] = angle_result
+            self.restraints["angle"]["disulfide"] = angle_result
             if self.verbose > 0:
-                print(f"Built {angle_result['indices'].shape[0]} disulfide angle restraints")
+                print(
+                    f"Built {angle_result['indices'].shape[0]} disulfide angle restraints"
+                )
 
         torsion_result = torsion_builder.finalize_disulfide(device)
         if torsion_result:
-            self.restraints['torsion']['disulfide'] = torsion_result
+            self.restraints["torsion"]["disulfide"] = torsion_result
             if self.verbose > 0:
-                print(f"Built {torsion_result['indices'].shape[0]} disulfide torsion restraints")
+                print(
+                    f"Built {torsion_result['indices'].shape[0]} disulfide torsion restraints"
+                )
 
     def _build_exclusion_set(self):
         """Build set of atom pairs to exclude from VDW calculations."""
         exclusions = set()
 
         # 1-2: Direct bonds
-        for origin in self.restraints.get('bond', {}).keys():
-            indices = self.restraints['bond'][origin].get('indices')
+        for origin in self.restraints.get("bond", {}).keys():
+            indices = self.restraints["bond"][origin].get("indices")
             if indices is not None and len(indices) > 0:
                 idx_np = indices.cpu().numpy()
                 for i1, i2 in idx_np:
                     exclusions.add((int(min(i1, i2)), int(max(i1, i2))))
 
         # 1-3: Angles
-        for origin in self.restraints.get('angle', {}).keys():
-            indices = self.restraints['angle'][origin].get('indices')
+        for origin in self.restraints.get("angle", {}).keys():
+            indices = self.restraints["angle"][origin].get("indices")
             if indices is not None and len(indices) > 0:
                 idx_np = indices.cpu().numpy()
                 for i1, i2, i3 in idx_np:
                     exclusions.add((int(min(i1, i3)), int(max(i1, i3))))
 
         # 1-4: Torsions
-        for origin in self.restraints.get('torsion', {}).keys():
-            indices = self.restraints['torsion'][origin].get('indices')
+        for origin in self.restraints.get("torsion", {}).keys():
+            indices = self.restraints["torsion"][origin].get("indices")
             if indices is not None and len(indices) > 0:
                 idx_np = indices.cpu().numpy()
                 for i1, i2, i3, i4 in idx_np:
@@ -437,18 +473,18 @@ class RestraintsNew(DebugMixin, Module):
     def _find_nearby_pairs_spatial_hash(self, xyz, cutoff=6.0):
         """
         Find all atom pairs within cutoff distance.
-        
+
         Uses torch.cdist for vectorized distance computation, which is
         faster than spatial hashing for typical protein structures where
         atoms are densely packed.
-        
+
         Parameters
         ----------
         xyz : torch.Tensor
             Atom coordinates of shape (N, 3).
         cutoff : float
             Distance cutoff in Angstroms.
-            
+
         Returns
         -------
         torch.Tensor
@@ -462,15 +498,17 @@ class RestraintsNew(DebugMixin, Module):
 
         # Use cdist for vectorized distance computation
         dist_matrix = torch.cdist(xyz, xyz)
-        
+
         # Find close pairs (upper triangle only to avoid duplicates)
         mask = (dist_matrix < cutoff) & (dist_matrix > 0)
         mask = torch.triu(mask, diagonal=1)
-        
+
         pairs = torch.stack(torch.where(mask), dim=1)
         return pairs
 
-    def _build_vdw_restraints(self, cutoff=5.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True):
+    def _build_vdw_restraints(
+        self, cutoff=5.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True
+    ):
         """Build van der Waals (non-bonded contact) restraints."""
         if self.verbose > 0:
             print("\nBuilding VDW (non-bonded) restraints...")
@@ -487,19 +525,25 @@ class RestraintsNew(DebugMixin, Module):
         else:
             n_atoms = xyz.shape[0]
             pairs_list = []
-            cutoff_sq = cutoff ** 2
+            cutoff_sq = cutoff**2
             for i in range(n_atoms):
                 for j in range(i + 1, n_atoms):
                     dist_sq = ((xyz[i] - xyz[j]) ** 2).sum()
                     if dist_sq < cutoff_sq:
                         pairs_list.append([i, j])
-            nearby_pairs = torch.tensor(pairs_list, dtype=torch.long, device=device) if pairs_list else torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
+            nearby_pairs = (
+                torch.tensor(pairs_list, dtype=torch.long, device=device)
+                if pairs_list
+                else torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
+            )
 
         if len(nearby_pairs) == 0:
-            self.restraints['vdw'] = {
-                'indices': torch.tensor([], dtype=torch.long, device=device).reshape(0, 2),
-                'min_distances': torch.tensor([], dtype=torch.float32, device=device),
-                'sigmas': torch.tensor([], dtype=torch.float32, device=device)
+            self.restraints["vdw"] = {
+                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(
+                    0, 2
+                ),
+                "min_distances": torch.tensor([], dtype=torch.float32, device=device),
+                "sigmas": torch.tensor([], dtype=torch.float32, device=device),
             }
             return
 
@@ -507,50 +551,57 @@ class RestraintsNew(DebugMixin, Module):
         pairs_np = nearby_pairs.cpu().numpy()
         i1_arr = pairs_np[:, 0]
         i2_arr = pairs_np[:, 1]
-        
+
         # Create exclusion mask efficiently using numpy
         # Convert exclusion set to array for vectorized lookup
         if exclusions:
             exclusion_arr = np.array(list(exclusions), dtype=np.int64)
             # Create a hash for fast lookup
-            max_idx = max(pdb['index'].max() + 1, i1_arr.max() + 1, i2_arr.max() + 1)
+            max_idx = max(pdb["index"].max() + 1, i1_arr.max() + 1, i2_arr.max() + 1)
             pair_hash = i1_arr * max_idx + i2_arr
             excl_hash = exclusion_arr[:, 0] * max_idx + exclusion_arr[:, 1]
             exclusion_mask = np.isin(pair_hash, excl_hash)
         else:
             exclusion_mask = np.zeros(len(pairs_np), dtype=bool)
-        
+
         # Inter-residue mask
         if inter_residue_only:
-            chainid_array = pdb['chainid'].values
-            resseq_array = pdb['resseq'].values
-            same_residue = ((chainid_array[i1_arr] == chainid_array[i2_arr]) & 
-                           (resseq_array[i1_arr] == resseq_array[i2_arr]))
+            chainid_array = pdb["chainid"].values
+            resseq_array = pdb["resseq"].values
+            same_residue = (chainid_array[i1_arr] == chainid_array[i2_arr]) & (
+                resseq_array[i1_arr] == resseq_array[i2_arr]
+            )
         else:
             same_residue = np.zeros(len(pairs_np), dtype=bool)
-        
+
         # Combined mask: keep pairs that are not excluded and not same-residue
         keep_mask = ~exclusion_mask & ~same_residue
-        
+
         # Filter pairs
         filtered_pairs = pairs_np[keep_mask]
-        
+
         if len(filtered_pairs) == 0:
-            self.restraints['vdw'] = {
-                'indices': torch.tensor([], dtype=torch.long, device=device).reshape(0, 2),
-                'min_distances': torch.tensor([], dtype=torch.float32, device=device),
-                'sigmas': torch.tensor([], dtype=torch.float32, device=device)
+            self.restraints["vdw"] = {
+                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(
+                    0, 2
+                ),
+                "min_distances": torch.tensor([], dtype=torch.float32, device=device),
+                "sigmas": torch.tensor([], dtype=torch.float32, device=device),
             }
             return
-        
+
         # Compute min distances vectorized
         vdw_np = vdw_radii.cpu().numpy()
         min_distances = vdw_np[filtered_pairs[:, 0]] + vdw_np[filtered_pairs[:, 1]]
-        
-        self.restraints['vdw'] = {
-            'indices': torch.tensor(filtered_pairs, dtype=torch.long, device=device),
-            'min_distances': torch.tensor(min_distances, dtype=torch.float32, device=device),
-            'sigmas': torch.full((len(filtered_pairs),), sigma, dtype=torch.float32, device=device)
+
+        self.restraints["vdw"] = {
+            "indices": torch.tensor(filtered_pairs, dtype=torch.long, device=device),
+            "min_distances": torch.tensor(
+                min_distances, dtype=torch.float32, device=device
+            ),
+            "sigmas": torch.full(
+                (len(filtered_pairs),), sigma, dtype=torch.float32, device=device
+            ),
         }
 
         if self.verbose > 0:
@@ -559,33 +610,35 @@ class RestraintsNew(DebugMixin, Module):
 
     def _move_to_device(self, device):
         """Move all restraint tensors to the specified device."""
-        for restraint_type in ['bond', 'angle', 'torsion', 'plane']:
+        for restraint_type in ["bond", "angle", "torsion", "plane"]:
             if restraint_type in self.restraints:
                 for origin, properties in self.restraints[restraint_type].items():
                     if isinstance(properties, dict):
                         for prop_name, tensor in properties.items():
                             if tensor is not None and isinstance(tensor, torch.Tensor):
-                                self.restraints[restraint_type][origin][prop_name] = tensor.to(device)
+                                self.restraints[restraint_type][origin][prop_name] = (
+                                    tensor.to(device)
+                                )
 
-        if 'vdw' in self.restraints:
-            for prop_name, tensor in self.restraints['vdw'].items():
+        if "vdw" in self.restraints:
+            for prop_name, tensor in self.restraints["vdw"].items():
                 if tensor is not None and isinstance(tensor, torch.Tensor):
-                    self.restraints['vdw'][prop_name] = tensor.to(device)
+                    self.restraints["vdw"][prop_name] = tensor.to(device)
 
-        if 'chiral' in self.restraints:
-            for prop_name, tensor in self.restraints['chiral'].items():
+        if "chiral" in self.restraints:
+            for prop_name, tensor in self.restraints["chiral"].items():
                 if tensor is not None and isinstance(tensor, torch.Tensor):
-                    self.restraints['chiral'][prop_name] = tensor.to(device)
+                    self.restraints["chiral"][prop_name] = tensor.to(device)
 
     def cuda(self, device: Optional[int] = None):
         """Move all restraint tensors to CUDA device."""
-        cuda_device = torch.device('cuda' if device is None else f'cuda:{device}')
+        cuda_device = torch.device("cuda" if device is None else f"cuda:{device}")
         self._move_to_device(cuda_device)
         return self
 
     def cpu(self):
         """Move all restraint tensors to CPU."""
-        self._move_to_device(torch.device('cpu'))
+        self._move_to_device(torch.device("cpu"))
         return self
 
     def summary(self):
@@ -598,7 +651,7 @@ class RestraintsNew(DebugMixin, Module):
         print()
 
         def get_count(rtype, origin):
-            indices = self.restraints.get(rtype, {}).get(origin, {}).get('indices')
+            indices = self.restraints.get(rtype, {}).get(origin, {}).get("indices")
             return 0 if indices is None else indices.shape[0]
 
         print("INTRA-RESIDUE RESTRAINTS:")
@@ -609,14 +662,14 @@ class RestraintsNew(DebugMixin, Module):
 
         # Count planes
         n_planes = 0
-        for key in self.restraints.get('plane', {}).keys():
-            n_planes += get_count('plane', key)
+        for key in self.restraints.get("plane", {}).keys():
+            n_planes += get_count("plane", key)
         print(f"  Planes: {n_planes}")
 
         # Chiral
         chiral_count = 0
-        if 'chiral' in self.restraints:
-            indices = self.restraints['chiral'].get('indices')
+        if "chiral" in self.restraints:
+            indices = self.restraints["chiral"].get("indices")
             chiral_count = 0 if indices is None else indices.shape[0]
         print(f"  Chirals: {chiral_count}")
 
@@ -640,8 +693,8 @@ class RestraintsNew(DebugMixin, Module):
         print("VDW RESTRAINTS:")
         print("-" * 80)
         vdw_count = 0
-        if 'vdw' in self.restraints:
-            indices = self.restraints['vdw'].get('indices')
+        if "vdw" in self.restraints:
+            indices = self.restraints["vdw"].get("indices")
             vdw_count = 0 if indices is None else indices.shape[0]
         print(f"  Non-bonded contacts: {vdw_count}")
 
@@ -649,19 +702,22 @@ class RestraintsNew(DebugMixin, Module):
 
     def __repr__(self):
         """Return string representation."""
+
         def get_count(rtype, origin):
-            indices = self.restraints.get(rtype, {}).get(origin, {}).get('indices')
+            indices = self.restraints.get(rtype, {}).get(origin, {}).get("indices")
             return 0 if indices is None else indices.shape[0]
 
-        n_bonds = get_count('bond', 'intra')
-        n_angles = get_count('angle', 'intra')
-        n_torsions = get_count('torsion', 'intra')
-        n_bonds_peptide = get_count('bond', 'peptide')
+        n_bonds = get_count("bond", "intra")
+        n_angles = get_count("angle", "intra")
+        n_torsions = get_count("torsion", "intra")
+        n_bonds_peptide = get_count("bond", "peptide")
 
-        return (f"RestraintsNew(bonds={n_bonds}, angles={n_angles}, "
-                f"torsions={n_torsions}, peptide_bonds={n_bonds_peptide})")
-    
-    def _get_all_indices(self, restraint_type, keys_to_merge = None):
+        return (
+            f"RestraintsNew(bonds={n_bonds}, angles={n_angles}, "
+            f"torsions={n_torsions}, peptide_bonds={n_bonds_peptide})"
+        )
+
+    def _get_all_indices(self, restraint_type, keys_to_merge=None):
         """
         Gather all indices of a given restraint type across all origins.
 
@@ -679,19 +735,19 @@ class RestraintsNew(DebugMixin, Module):
         """
         indices_list = []
         for origin, data in self.restraints.get(restraint_type, {}).items():
-            indices = data.get('indices')
+            indices = data.get("indices")
             if indices is not None:
                 if keys_to_merge is None:
                     indices_list.append(indices)
                 elif origin in keys_to_merge:
                     indices_list.append(indices)
-        
+
         if not indices_list:
             return None
-        
+
         return torch.cat(indices_list, dim=0)
-    
-    def _get_all_property(self, restraint_type, property_name, keys_to_merge = None):
+
+    def _get_all_property(self, restraint_type, property_name, keys_to_merge=None):
         """
         Gather all values of a given property across all origins.
 
@@ -717,10 +773,10 @@ class RestraintsNew(DebugMixin, Module):
                     values_list.append(values)
                 elif origin in keys_to_merge:
                     values_list.append(values)
-        
+
         if not values_list:
             return None
-        
+
         return torch.cat(values_list, dim=0)
 
     def bond_lengths(self, idx):
@@ -743,7 +799,7 @@ class RestraintsNew(DebugMixin, Module):
         pos1 = xyz[idx[:, 0], :]
         pos2 = xyz[idx[:, 1], :]
         return torch.linalg.norm(pos2 - pos1, dim=-1)
-    
+
     def copy(self):
         """
         Create a deep copy of the Restraints object.
@@ -754,8 +810,9 @@ class RestraintsNew(DebugMixin, Module):
             A deep copy of this Restraints instance.
         """
         import copy
+
         return copy.deepcopy(self)
-    
+
     def bond_deviations(self):
         """
         Compute bond length deviations and sigmas.
@@ -767,19 +824,19 @@ class RestraintsNew(DebugMixin, Module):
         sigmas : torch.Tensor
             Standard deviations from CIF library in Angstroms.
         """
-        if 'all' not in self.restraints['bond']:
+        if "all" not in self.restraints["bond"]:
             self.cat_dict()
 
-        idx = self.restraints['bond']['all']['indices']
-        references = self.restraints['bond']['all']['references']
-        sigmas = self.restraints['bond']['all']['sigmas']
+        idx = self.restraints["bond"]["all"]["indices"]
+        references = self.restraints["bond"]["all"]["references"]
+        sigmas = self.restraints["bond"]["all"]["sigmas"]
 
         # Get current bond lengths
         bond_lengths = self.bond_lengths(idx)
         deviations = bond_lengths - references
-        
+
         return deviations, sigmas
-    
+
     def nll_bonds(self):
         """
         Compute negative log-likelihood for bond length restraints.
@@ -795,6 +852,7 @@ class RestraintsNew(DebugMixin, Module):
             Tensor of shape (n_bonds,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import gaussian_nll
+
         deviations, sigmas = self.bond_deviations()
         return gaussian_nll(deviations, sigmas)
 
@@ -816,26 +874,26 @@ class RestraintsNew(DebugMixin, Module):
         pos1 = xyz[idx[:, 0], :]
         pos2 = xyz[idx[:, 1], :]
         pos3 = xyz[idx[:, 2], :]
-        
+
         # Compute vectors
         v1 = pos1 - pos2  # Vector from atom2 to atom1
         v2 = pos3 - pos2  # Vector from atom2 to atom3
-        
+
         # Compute angle using dot product
         # cos(θ) = (v1 · v2) / (|v1| * |v2|)
         dot_product = torch.sum(v1 * v2, dim=-1)
         norm1 = torch.linalg.norm(v1, dim=-1)
         norm2 = torch.linalg.norm(v2, dim=-1)
-        
+
         # Clamp to avoid numerical issues with arccos
         cos_angle = torch.clamp(dot_product / (norm1 * norm2), -1.0, 1.0)
-        
+
         # Return angle in degrees
         angles_rad = torch.acos(cos_angle)
         angles_deg = torch.rad2deg(angles_rad)
-        
+
         return angles_deg
-    
+
     def angle_deviations(self):
         """
         Compute angle deviations and sigmas.
@@ -847,18 +905,20 @@ class RestraintsNew(DebugMixin, Module):
         sigmas : torch.Tensor
             Standard deviations in radians.
         """
-        if 'all' not in self.restraints['angle']:
+        if "all" not in self.restraints["angle"]:
             self.cat_dict()
-        
-        idx = self.restraints['angle']['all']['indices']
-        references_rad = self.restraints['angle']['all']['references'] * (torch.pi / 180.0)
-        sigmas_rad = self.restraints['angle']['all']['sigmas'] * (torch.pi / 180.0)
+
+        idx = self.restraints["angle"]["all"]["indices"]
+        references_rad = self.restraints["angle"]["all"]["references"] * (
+            torch.pi / 180.0
+        )
+        sigmas_rad = self.restraints["angle"]["all"]["sigmas"] * (torch.pi / 180.0)
 
         calculated_rad = self.angles(idx) * (torch.pi / 180.0)
         deviations = calculated_rad - references_rad
-        
+
         return deviations, sigmas_rad
-    
+
     def nll_angles(self):
         """
         Compute negative log-likelihood for angle restraints.
@@ -874,9 +934,10 @@ class RestraintsNew(DebugMixin, Module):
             Tensor of shape (n_angles,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import gaussian_nll
+
         deviations, sigmas = self.angle_deviations()
         return gaussian_nll(deviations, sigmas)
-    
+
     def cat_dict(self):
         """
         Concatenate all restraint dictionaries into 'all' keys.
@@ -884,21 +945,27 @@ class RestraintsNew(DebugMixin, Module):
         Creates restraints['bond']['all'], restraints['angle']['all'],
         and restraints['torsion']['all'] by concatenating all origins.
         """
-        self.restraints['bond']['all'] = {
-            'indices': self._get_all_indices('bond'),
-            'references': self._get_all_property('bond', 'references'),
-            'sigmas': self._get_all_property('bond', 'sigmas')
+        self.restraints["bond"]["all"] = {
+            "indices": self._get_all_indices("bond"),
+            "references": self._get_all_property("bond", "references"),
+            "sigmas": self._get_all_property("bond", "sigmas"),
         }
-        self.restraints['angle']['all'] = {
-            'indices': self._get_all_indices('angle'),
-            'references': self._get_all_property('angle', 'references'),
-            'sigmas': self._get_all_property('angle', 'sigmas')
+        self.restraints["angle"]["all"] = {
+            "indices": self._get_all_indices("angle"),
+            "references": self._get_all_property("angle", "references"),
+            "sigmas": self._get_all_property("angle", "sigmas"),
         }
-        self.restraints['torsion']['all'] = {
-            'indices': self._get_all_indices('torsion',['intra','disulfide']),
-            'references': self._get_all_property('torsion', 'references',['intra','disulfide']),
-            'sigmas': self._get_all_property('torsion', 'sigmas',['intra','disulfide']),
-            'periods': self._get_all_property('torsion', 'periods',['intra','disulfide'])
+        self.restraints["torsion"]["all"] = {
+            "indices": self._get_all_indices("torsion", ["intra", "disulfide"]),
+            "references": self._get_all_property(
+                "torsion", "references", ["intra", "disulfide"]
+            ),
+            "sigmas": self._get_all_property(
+                "torsion", "sigmas", ["intra", "disulfide"]
+            ),
+            "periods": self._get_all_property(
+                "torsion", "periods", ["intra", "disulfide"]
+            ),
         }
 
     def torsions(self, idx):
@@ -921,34 +988,34 @@ class RestraintsNew(DebugMixin, Module):
         pos2 = xyz[idx[:, 1], :]
         pos3 = xyz[idx[:, 2], :]
         pos4 = xyz[idx[:, 3], :]
-        
+
         # Compute torsion angles using vector math
         b1 = pos2 - pos1
         b2 = pos3 - pos2
         b3 = pos4 - pos3
-        
+
         # Normalize b2 for projection
         b2_norm = torch.linalg.norm(b2, dim=-1, keepdim=True)
         b2_unit = b2 / b2_norm
-        
+
         # Compute normals to planes
         n1 = torch.cross(b1, b2, dim=-1)
         n2 = torch.cross(b2, b3, dim=-1)
-        
+
         # Normalize normals
         n1_unit = n1 / torch.linalg.norm(n1, dim=-1, keepdim=True)
         n2_unit = n2 / torch.linalg.norm(n2, dim=-1, keepdim=True)
-        
+
         # Compute angle between normals
         m1 = torch.cross(n1_unit, b2_unit, dim=-1)
-        
+
         x = torch.sum(n1_unit * n2_unit, dim=-1)
         y = torch.sum(m1 * n2_unit, dim=-1)
-        
+
         torsions_rad = torch.atan2(y, x)
         torsions_deg = torch.rad2deg(torsions_rad)
         return torsions_deg
-    
+
     def _wrap_torsion_periodicity(self, diff_rad, periods):
         """
         Find minimum angular deviation considering n-fold rotational symmetry.
@@ -979,54 +1046,62 @@ class RestraintsNew(DebugMixin, Module):
         # Clamp periods to minimum of 1 to avoid division by zero
         periods_safe = torch.clamp(periods, min=1)
         max_period = periods_safe.max().item()
-        
+
         if max_period > 1:
             # Vectorized approach: generate all equivalent angles
             device = diff_rad.device
             original_shape = diff_rad.shape
-            
+
             # Flatten input for processing
             diff_rad_flat = diff_rad.flatten()
             periods_flat = periods_safe.flatten()
             n_angles = len(diff_rad_flat)
-            
+
             # Create offset matrix: k * (2π / period) for k in [0, 1, ..., period-1]
             # Shape: (n_angles, max_period)
-            k_range = torch.arange(max_period, device=device).unsqueeze(0)  # (1, max_period)
+            k_range = torch.arange(max_period, device=device).unsqueeze(
+                0
+            )  # (1, max_period)
             periods_expanded = periods_flat.unsqueeze(1).float()  # (n_angles, 1)
-            
+
             # Offsets for each angle: k * 2π/period
-            offsets = k_range * (2.0 * torch.pi / periods_expanded)  # (n_angles, max_period)
-            
+            offsets = k_range * (
+                2.0 * torch.pi / periods_expanded
+            )  # (n_angles, max_period)
+
             # Apply offsets to differences: (n_angles, max_period)
             diff_rad_expanded = diff_rad_flat.unsqueeze(1)  # (n_angles, 1)
             equiv_diffs = diff_rad_expanded - offsets  # (n_angles, max_period)
-            
+
             # Wrap all equivalent angles to [-pi, pi]
-            equiv_diffs_wrapped = torch.atan2(torch.sin(equiv_diffs), torch.cos(equiv_diffs))
-            
+            equiv_diffs_wrapped = torch.atan2(
+                torch.sin(equiv_diffs), torch.cos(equiv_diffs)
+            )
+
             # Mask out invalid offsets (where k >= period for each angle)
             valid_mask = k_range < periods_expanded  # (n_angles, max_period)
-            
+
             # Set invalid positions to large value so they won't be selected
             equiv_diffs_wrapped_masked = torch.where(
                 valid_mask,
                 torch.abs(equiv_diffs_wrapped),
-                torch.tensor(float('inf'), device=device)
+                torch.tensor(float("inf"), device=device),
             )
-            
+
             # Find minimum absolute difference for each angle
             min_indices = torch.argmin(equiv_diffs_wrapped_masked, dim=1)  # (n_angles,)
-            
+
             # Gather the best wrapped difference for each angle
-            diff_wrapped_best = equiv_diffs_wrapped[torch.arange(n_angles, device=device), min_indices]
-            
+            diff_wrapped_best = equiv_diffs_wrapped[
+                torch.arange(n_angles, device=device), min_indices
+            ]
+
             # Reshape back to original shape
             return diff_wrapped_best.reshape(original_shape)
         else:
             # All periods are 0 or 1, simple wrapping
             return torch.atan2(torch.sin(diff_rad), torch.cos(diff_rad))
-    
+
     def torsion_deviations(self, wrapped=True):
         """
         Compute deviations between calculated and expected torsion angles.
@@ -1049,14 +1124,14 @@ class RestraintsNew(DebugMixin, Module):
         while calculated values from structure are continuous. This is correct!
         Use wrapped=True for meaningful comparison and visualization.
         """
-        if not 'all' in self.restraints['torsion']:
+        if "all" not in self.restraints["torsion"]:
             self.cat_dict()
-            
-        idx = self.restraints['torsion']['all']['indices']
-        expected = self.restraints['torsion']['all']['references']
-        periods = self.restraints['torsion']['all']['periods']
+
+        idx = self.restraints["torsion"]["all"]["indices"]
+        expected = self.restraints["torsion"]["all"]["references"]
+        periods = self.restraints["torsion"]["all"]["periods"]
         calculated = self.torsions(idx)
-        
+
         if not wrapped:
             # Simple difference
             return calculated - expected
@@ -1064,10 +1139,10 @@ class RestraintsNew(DebugMixin, Module):
             # Use the helper function for periodicity handling
             diff_rad = (calculated - expected) * torch.pi / 180.0
             diff_wrapped_rad = self._wrap_torsion_periodicity(diff_rad, periods)
-            
+
             # Convert back to degrees
             return torch.rad2deg(diff_wrapped_rad)
-    
+
     def torsion_deviations_with_sigmas(self):
         """
         Compute torsion deviations (wrapped for periodicity) and sigmas.
@@ -1079,22 +1154,22 @@ class RestraintsNew(DebugMixin, Module):
         sigmas_deg : torch.Tensor
             Standard deviations in degrees (for von Mises NLL).
         """
-        if 'all' not in self.restraints['torsion']:
+        if "all" not in self.restraints["torsion"]:
             self.cat_dict()
-            
-        idx = self.restraints['torsion']['all']['indices']
-        expected = self.restraints['torsion']['all']['references']
-        sigmas_deg = self.restraints['torsion']['all']['sigmas']
-        periods = self.restraints['torsion']['all']['periods']
-        
+
+        idx = self.restraints["torsion"]["all"]["indices"]
+        expected = self.restraints["torsion"]["all"]["references"]
+        sigmas_deg = self.restraints["torsion"]["all"]["sigmas"]
+        periods = self.restraints["torsion"]["all"]["periods"]
+
         calculated = self.torsions(idx)
-        
+
         # Wrap for periodicity
         diff_rad = (calculated - expected) * (torch.pi / 180.0)
         deviations_rad = self._wrap_torsion_periodicity(diff_rad, periods)
-        
+
         return deviations_rad, sigmas_deg
-    
+
     def nll_torsions(self):
         """
         Compute negative log-likelihood for torsion angle restraints.
@@ -1119,6 +1194,7 @@ class RestraintsNew(DebugMixin, Module):
             Tensor of shape (n_torsions,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import von_mises_nll
+
         deviations_rad, sigmas_deg = self.torsion_deviations_with_sigmas()
         return von_mises_nll(deviations_rad, sigmas_deg)
 
@@ -1135,47 +1211,47 @@ class RestraintsNew(DebugMixin, Module):
             Tensor of shape (n_planes,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import gaussian_nll
-        
+
         xyz = self.model.xyz()
         device = xyz.device
-        
+
         all_nlls = []
-        
-        if 'plane' in self.restraints:
-            for key, plane_data in self.restraints['plane'].items():
-                indices = plane_data.get('indices')
-                sigmas = plane_data.get('sigmas')
-                
+
+        if "plane" in self.restraints:
+            for key, plane_data in self.restraints["plane"].items():
+                indices = plane_data.get("indices")
+                sigmas = plane_data.get("sigmas")
+
                 if indices is None or len(indices) == 0:
                     continue
-                
+
                 # indices shape: (n_planes, n_atoms_per_plane)
                 # sigmas shape: (n_planes, n_atoms_per_plane)
                 n_planes, n_atoms = indices.shape
-                
+
                 for i in range(n_planes):
                     plane_indices = indices[i]
                     plane_sigmas = sigmas[i]
-                    
+
                     # Get positions of atoms in this plane
                     positions = xyz[plane_indices]  # (n_atoms, 3)
-                    
+
                     # Compute centroid
                     centroid = positions.mean(dim=0)
                     centered = positions - centroid
-                    
+
                     # SVD to find best-fit plane normal
                     # The plane normal is the singular vector with smallest singular value
                     U, S, Vh = torch.linalg.svd(centered)
                     normal = Vh[-1]  # Normal to best-fit plane
-                    
+
                     # Compute deviations from plane (distance to plane)
                     deviations = torch.abs(centered @ normal)
-                    
+
                     # Compute NLL for each atom
                     nll = gaussian_nll(deviations, plane_sigmas)
                     all_nlls.append(nll)
-        
+
         if all_nlls:
             return torch.cat(all_nlls)
         return torch.tensor([0.0], device=device)
@@ -1195,36 +1271,36 @@ class RestraintsNew(DebugMixin, Module):
             Tensor of shape (n_pairs,) with negative log-likelihood values.
         """
         from torchref.refinement.targets import gaussian_nll
-        
+
         xyz = self.model.xyz()
         device = xyz.device
-        
-        if 'vdw' not in self.restraints:
+
+        if "vdw" not in self.restraints:
             return torch.tensor([0.0], device=device)
-        
-        vdw_data = self.restraints['vdw']
-        indices = vdw_data.get('indices')
-        
+
+        vdw_data = self.restraints["vdw"]
+        indices = vdw_data.get("indices")
+
         if indices is None or len(indices) == 0:
             return torch.tensor([0.0], device=device)
-        
-        min_distances = vdw_data['min_distances']
-        sigmas = vdw_data['sigmas']
-        
+
+        min_distances = vdw_data["min_distances"]
+        sigmas = vdw_data["sigmas"]
+
         # Get current positions
         pos1 = xyz[indices[:, 0]]
         pos2 = xyz[indices[:, 1]]
-        
+
         # Compute actual distances
         actual_distances = torch.norm(pos2 - pos1, dim=-1)
-        
+
         # Violations: where actual distance is less than minimum
         # Deviation = max(0, min_dist - actual_dist)
         deviations = torch.clamp(min_distances - actual_distances, min=0.0)
-        
+
         # Compute NLL (only non-zero for violations)
         nll = gaussian_nll(deviations, sigmas)
-        
+
         return nll
 
     def adp_b_differences(self):
@@ -1237,18 +1313,18 @@ class RestraintsNew(DebugMixin, Module):
             Tensor of B-factor differences (B_i - B_j) for all bonds.
         """
         b_factors = self.model.b()
-        
+
         diffs_list = []
-        if 'bond' in self.restraints:
-            for origin, restraint_group in self.restraints['bond'].items():
-                if origin == 'all':
+        if "bond" in self.restraints:
+            for origin, restraint_group in self.restraints["bond"].items():
+                if origin == "all":
                     continue
-                indices = restraint_group.get('indices')
+                indices = restraint_group.get("indices")
                 if indices is not None and len(indices) > 0:
                     b1 = b_factors[indices[:, 0]]
                     b2 = b_factors[indices[:, 1]]
                     diffs_list.append(b1 - b2)
-        
+
         if diffs_list:
             return torch.cat(diffs_list, dim=0)
         return torch.tensor([], device=b_factors.device)
@@ -1271,6 +1347,7 @@ class RestraintsNew(DebugMixin, Module):
             Mean similarity loss.
         """
         from torchref.refinement.targets import adp_similarity_nll
+
         b_diffs = self.adp_b_differences()
         if len(b_diffs) == 0:
             return torch.tensor(0.0, device=self.model.xyz().device)

@@ -18,19 +18,26 @@ Main interfaces:
 Space groups can be specified as strings, integers (1-230), or gemmi.SpaceGroup objects.
 """
 
+from typing import TYPE_CHECKING, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from typing import TYPE_CHECKING, Optional, Tuple, Union
-from torchref.symmetrie.symmetrie import Symmetry
+
 from torchref.symmetrie.spacegroup import SpaceGroup, SpaceGroupLike
+from torchref.symmetrie.symmetrie import Symmetry
 
 if TYPE_CHECKING:
     from torchref.io.datasets.reflection_data import ReflectionData
 
 
-def ReciprocalSymmetry(space_group: SpaceGroupLike, grid_shape, dtype_float=torch.float32,
-                       verbose=1, device=torch.device('cpu')):
+def ReciprocalSymmetry(
+    space_group: SpaceGroupLike,
+    grid_shape,
+    dtype_float=torch.float32,
+    verbose=1,
+    device=torch.device("cpu"),
+):
     """
     Factory function to create the appropriate ReciprocalSymmetry implementation.
 
@@ -53,9 +60,7 @@ def ReciprocalSymmetry(space_group: SpaceGroupLike, grid_shape, dtype_float=torc
     ReciprocalSymmetryGrid
         Implementation for reciprocal space grid symmetry operations.
     """
-    return ReciprocalSymmetryGrid(
-        space_group, grid_shape, dtype_float, verbose, device
-    )
+    return ReciprocalSymmetryGrid(space_group, grid_shape, dtype_float, verbose, device)
 
 
 class ReciprocalSymmetryGrid(nn.Module):
@@ -92,8 +97,14 @@ class ReciprocalSymmetryGrid(nn.Module):
     >>> F_avg = recip_sym.symmetry_average(F_full)  # Average symmetry-related reflections
     """
 
-    def __init__(self, space_group, grid_shape, dtype_float=torch.float32,
-                 verbose=1, device=torch.device('cpu')):
+    def __init__(
+        self,
+        space_group,
+        grid_shape,
+        dtype_float=torch.float32,
+        verbose=1,
+        device=torch.device("cpu"),
+    ):
         """
         Initialize reciprocal space symmetry operator.
 
@@ -160,7 +171,7 @@ class ReciprocalSymmetryGrid(nn.Module):
         # Real space: r' = R @ r + t
         # Reciprocal space: h' = R^T @ h (translations cause phase shifts, not index changes)
         recip_matrices = self.symmetry.matrices.transpose(-2, -1).contiguous()
-        self.register_buffer('reciprocal_matrices', recip_matrices)
+        self.register_buffer("reciprocal_matrices", recip_matrices)
 
     def _setup_hkl_grid(self):
         """
@@ -181,14 +192,14 @@ class ReciprocalSymmetryGrid(nn.Module):
         l = l.to(dtype=torch.int64, device=self.device)
 
         # Create 3D grid of Miller indices
-        grid_h, grid_k, grid_l = torch.meshgrid(h, k, l, indexing='ij')
+        grid_h, grid_k, grid_l = torch.meshgrid(h, k, l, indexing="ij")
         hkl_grid = torch.stack([grid_h, grid_k, grid_l], dim=-1)
 
-        self.register_buffer('hkl_grid', hkl_grid)
+        self.register_buffer("hkl_grid", hkl_grid)
 
         # Also store as float for matrix operations
         hkl_grid_float = hkl_grid.to(dtype=self.dtype_float)
-        self.register_buffer('hkl_grid_float', hkl_grid_float)
+        self.register_buffer("hkl_grid_float", hkl_grid_float)
 
     def _setup_symmetry_index_grids(self):
         """
@@ -230,11 +241,11 @@ class ReciprocalSymmetryGrid(nn.Module):
 
         # Stack all grids: (n_ops, nh, nk, nl, 3)
         index_grids = torch.stack(index_grids_list, dim=0)
-        self.register_buffer('index_grids', index_grids)
+        self.register_buffer("index_grids", index_grids)
 
         # Stack phase shifts: (n_ops, nh, nk, nl)
         phase_shifts = torch.stack(phase_shift_grids_list, dim=0)
-        self.register_buffer('phase_shifts', phase_shifts)
+        self.register_buffer("phase_shifts", phase_shifts)
 
     def _setup_systematic_absences(self):
         """
@@ -272,7 +283,7 @@ class ReciprocalSymmetryGrid(nn.Module):
             absent_mask = (same_reflection & non_zero_phase).reshape(self.grid_shape)
             absences = absences | absent_mask
 
-        self.register_buffer('systematic_absences', absences)
+        self.register_buffer("systematic_absences", absences)
 
     def _setup_centric_reflections(self):
         """
@@ -299,7 +310,7 @@ class ReciprocalSymmetryGrid(nn.Module):
             centric_mask = maps_to_minus_h.reshape(self.grid_shape)
             centric = centric | centric_mask
 
-        self.register_buffer('centric_mask', centric)
+        self.register_buffer("centric_mask", centric)
 
     def apply_to_indices(self, hkl, operation_index=None):
         """
@@ -382,20 +393,20 @@ class ReciprocalSymmetryGrid(nn.Module):
             Includes phase shift from translation component.
         """
         if operation_index < 0 or operation_index >= self.n_ops:
-            raise ValueError(f"Operation index {operation_index} out of range [0, {self.n_ops-1}]")
+            raise ValueError(
+                f"Operation index {operation_index} out of range [0, {self.n_ops-1}]"
+            )
 
         if F_grid.shape != self.grid_shape:
-            raise ValueError(f"Grid shape {F_grid.shape} doesn't match expected {self.grid_shape}")
+            raise ValueError(
+                f"Grid shape {F_grid.shape} doesn't match expected {self.grid_shape}"
+            )
 
         # Get precomputed index grid for this operation
         idx_grid = self.index_grids[operation_index]  # (nh, nk, nl, 3)
 
         # Gather structure factors from transformed positions
-        F_transformed = F_grid[
-            idx_grid[..., 0],
-            idx_grid[..., 1],
-            idx_grid[..., 2]
-        ]
+        F_transformed = F_grid[idx_grid[..., 0], idx_grid[..., 1], idx_grid[..., 2]]
 
         # Apply phase shift from translation: F(h') = F(h) * exp(2πi h·t)
         phase = self.phase_shifts[operation_index]
@@ -479,9 +490,9 @@ class ReciprocalSymmetryGrid(nn.Module):
 
             # Only fill in positions that are zero (not yet set)
             if F_full.is_complex():
-                mask = (F_full.abs() < 1e-10)
+                mask = F_full.abs() < 1e-10
             else:
-                mask = (F_full.abs() < 1e-10)
+                mask = F_full.abs() < 1e-10
 
             F_full = torch.where(mask, F_mate, F_full)
 
@@ -595,7 +606,7 @@ class ReciprocalSymmetryGrid(nn.Module):
 
         return epsilon
 
-    def forward(self, F_grid, mode='average'):
+    def forward(self, F_grid, mode="average"):
         """
         Apply symmetry to structure factor grid.
 
@@ -614,30 +625,32 @@ class ReciprocalSymmetryGrid(nn.Module):
         torch.Tensor, shape (nh, nk, nl)
             Processed structure factor grid.
         """
-        if mode == 'average':
+        if mode == "average":
             return self.symmetry_average(F_grid)
-        elif mode == 'expand':
+        elif mode == "expand":
             return self.expand_to_p1(F_grid)
-        elif mode == 'sum':
+        elif mode == "sum":
             mates = self.get_all_symmetry_mates(F_grid)
             return torch.stack(mates, dim=0).sum(dim=0)
         else:
-            raise ValueError(f"Unknown mode: {mode}. Use 'average', 'expand', or 'sum'.")
+            raise ValueError(
+                f"Unknown mode: {mode}. Use 'average', 'expand', or 'sum'."
+            )
 
-    def __call__(self, F_grid, mode='average'):
+    def __call__(self, F_grid, mode="average"):
         """Make the class callable."""
         return self.forward(F_grid, mode=mode)
 
     def cuda(self):
         """Move to GPU."""
         super().cuda()
-        self.device = torch.device('cuda')
+        self.device = torch.device("cuda")
         return self
 
     def cpu(self):
         """Move to CPU."""
         super().cpu()
-        self.device = torch.device('cpu')
+        self.device = torch.device("cpu")
         return self
 
     def to(self, device):
@@ -656,30 +669,33 @@ class ReciprocalSymmetryGrid(nn.Module):
             Dictionary with symmetry information.
         """
         return {
-            'space_group': self.space_group,
-            'n_operations': self.n_ops,
-            'reciprocal_matrices': self.reciprocal_matrices,
-            'translations': self.symmetry.translations,
-            'n_systematic_absences': self.systematic_absences.sum().item(),
-            'n_centric': self.centric_mask.sum().item(),
-            'grid_shape': self.grid_shape
+            "space_group": self.space_group,
+            "n_operations": self.n_ops,
+            "reciprocal_matrices": self.reciprocal_matrices,
+            "translations": self.symmetry.translations,
+            "n_systematic_absences": self.systematic_absences.sum().item(),
+            "n_centric": self.centric_mask.sum().item(),
+            "grid_shape": self.grid_shape,
         }
 
     def __repr__(self):
-        return (f"ReciprocalSymmetryGrid(space_group='{self.space_group}', "
-                f"n_ops={self.n_ops}, grid_shape={self.grid_shape})")
+        return (
+            f"ReciprocalSymmetryGrid(space_group='{self.space_group}', "
+            f"n_ops={self.n_ops}, grid_shape={self.grid_shape})"
+        )
 
 
 # =============================================================================
 # Standalone functions for symmetry expansion
 # =============================================================================
 
+
 def expand_hkl(
     hkl: torch.Tensor,
     spacegroup: SpaceGroupLike,
     include_friedel: bool = True,
     remove_absences: bool = True,
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Expand Miller indices under crystallographic symmetry.
@@ -749,7 +765,9 @@ def expand_hkl(
 
     for i in range(n_ops):
         # h' = h @ R^T
-        hkl_transformed = torch.round(torch.matmul(hkl_float, recip_matrices[i].T)).to(torch.int32)
+        hkl_transformed = torch.round(torch.matmul(hkl_float, recip_matrices[i].T)).to(
+            torch.int32
+        )
         # Phase shift from translation: 2π × h·t
         phase_shift = 2.0 * np.pi * torch.matmul(hkl_float, translations[i])
 
@@ -787,8 +805,7 @@ def expand_hkl(
 
     # Build output tensors
     expanded_hkl = torch.tensor(
-        [list(k) for k in unique_dict.keys()],
-        dtype=torch.int32, device=device
+        [list(k) for k in unique_dict.keys()], dtype=torch.int32, device=device
     )
     phase_shifts = torch.tensor(unique_phases, dtype=torch.float32, device=device)
     orig_idx_tensor = torch.tensor(orig_indices, dtype=torch.int64, device=device)
@@ -815,7 +832,7 @@ def complete_hkl(
     cell: torch.Tensor,
     spacegroup: SpaceGroupLike,
     d_min: float,
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Complete a set of Miller indices by identifying missing reflections.
@@ -914,11 +931,11 @@ def complete_hkl(
 
 
 def expand_reflections(
-    reflection_data: 'ReflectionData',
+    reflection_data: "ReflectionData",
     include_friedel: bool = True,
     remove_absences: bool = True,
-    verbose: int = 1
-) -> 'ReflectionData':
+    verbose: int = 1,
+) -> "ReflectionData":
     """
     Expand reflection data from asymmetric unit to P1 using symmetry operations.
 
@@ -964,7 +981,7 @@ def expand_reflections(
     if reflection_data.hkl is None:
         raise ValueError("ReflectionData has no Miller indices loaded")
 
-    space_group = reflection_data.spacegroup or 'P1'
+    space_group = reflection_data.spacegroup or "P1"
     device = reflection_data.device
     n_orig = len(reflection_data.hkl)
 
@@ -980,7 +997,7 @@ def expand_reflections(
         space_group,
         include_friedel=include_friedel,
         remove_absences=remove_absences,
-        device=device
+        device=device,
     )
 
     if verbose > 0:
@@ -991,8 +1008,10 @@ def expand_reflections(
 
     # Copy and expand data fields using orig_idx_tensor
     expanded.hkl = hkl_expanded
-    expanded.cell = reflection_data.cell.clone() if reflection_data.cell is not None else None
-    expanded.spacegroup = SpaceGroup('P1')  # Now in P1 since symmetry is expanded
+    expanded.cell = (
+        reflection_data.cell.clone() if reflection_data.cell is not None else None
+    )
+    expanded.spacegroup = SpaceGroup("P1")  # Now in P1 since symmetry is expanded
 
     # Expand amplitude data
     if reflection_data.F is not None:
@@ -1004,18 +1023,18 @@ def expand_reflections(
     if reflection_data.I is not None:
         expanded.I = reflection_data.I[orig_idx_tensor]
 
-    if hasattr(reflection_data, 'I_sigma') and reflection_data.I_sigma is not None:
+    if hasattr(reflection_data, "I_sigma") and reflection_data.I_sigma is not None:
         expanded.I_sigma = reflection_data.I_sigma[orig_idx_tensor]
 
     # Handle phases - apply phase shift from translation
-    if hasattr(reflection_data, 'phase') and reflection_data.phase is not None:
+    if hasattr(reflection_data, "phase") and reflection_data.phase is not None:
         expanded.phase = reflection_data.phase[orig_idx_tensor] + phase_shifts
     else:
         # Store phase shifts for potential later use
         expanded._expansion_phase_shifts = phase_shifts
 
     # Figure of merit - expand from original
-    if hasattr(reflection_data, 'fom') and reflection_data.fom is not None:
+    if hasattr(reflection_data, "fom") and reflection_data.fom is not None:
         expanded.fom = reflection_data.fom[orig_idx_tensor]
 
     # R-free flags - expand from original
@@ -1046,7 +1065,7 @@ def _check_systematic_absences(
     hkl: torch.Tensor,
     matrices: torch.Tensor,
     translations: torch.Tensor,
-    device: torch.device
+    device: torch.device,
 ) -> torch.Tensor:
     """
     Check which reflections are systematically absent.
@@ -1106,7 +1125,7 @@ def reduce_hkl(
     hkl_p1: torch.Tensor,
     spacegroup: SpaceGroupLike,
     include_friedel: bool = True,
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Reduce P1 Miller indices to asymmetric unit of a target spacegroup.
@@ -1197,7 +1216,9 @@ def reduce_hkl(
 
         for i in range(n_ops):
             # h' = h @ R^T
-            hkl_trans = torch.round(torch.matmul(hkl_single, recip_matrices[i].T)).to(torch.int32)
+            hkl_trans = torch.round(torch.matmul(hkl_single, recip_matrices[i].T)).to(
+                torch.int32
+            )
             equivalents.append(hkl_trans)
 
             if include_friedel:
@@ -1216,7 +1237,9 @@ def reduce_hkl(
 
     # Map each P1 reflection to its canonical ASU representative
     p1_to_asu = {}  # maps P1 index to canonical ASU tuple
-    asu_reflections = {}  # maps canonical ASU tuple to list of (P1_idx, phase_shift, equiv_idx)
+    asu_reflections = (
+        {}
+    )  # maps canonical ASU tuple to list of (P1_idx, phase_shift, equiv_idx)
 
     for p1_idx, hkl_single in enumerate(hkl_float):
         canonical = get_canonical_hkl(hkl_single)
@@ -1235,13 +1258,17 @@ def reduce_hkl(
             phase_shift = 2.0 * np.pi * torch.matmul(hkl_single, t)
 
             if tuple(hkl_trans.cpu().numpy()) == canonical:
-                asu_reflections[canonical].append((p1_idx, phase_shift.item(), equiv_idx))
+                asu_reflections[canonical].append(
+                    (p1_idx, phase_shift.item(), equiv_idx)
+                )
                 break
 
             if include_friedel:
                 if tuple((-hkl_trans).cpu().numpy()) == canonical:
                     # Friedel mate: phase is negated
-                    asu_reflections[canonical].append((p1_idx, -phase_shift.item(), equiv_idx + n_ops))
+                    asu_reflections[canonical].append(
+                        (p1_idx, -phase_shift.item(), equiv_idx + n_ops)
+                    )
                     break
 
     # Build output tensors
@@ -1249,7 +1276,9 @@ def reduce_hkl(
     n_asu = len(asu_list)
 
     hkl_asu = torch.tensor(asu_list, dtype=torch.int32, device=device)
-    reduction_indices = torch.full((n_asu, n_equiv), -1, dtype=torch.int64, device=device)
+    reduction_indices = torch.full(
+        (n_asu, n_equiv), -1, dtype=torch.int64, device=device
+    )
     phase_shifts = torch.zeros((n_asu, n_equiv), dtype=torch.float32, device=device)
 
     # Fill in the indices and phase shifts
@@ -1264,9 +1293,9 @@ def reduce_hkl(
 def expand_reciprocal_grid(
     F_grid: torch.Tensor,
     space_group: str,
-    mode: str = 'average',
+    mode: str = "average",
     include_friedel: bool = True,
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
 ) -> torch.Tensor:
     """
     Expand or symmetrize a reciprocal space grid using crystallographic symmetry.
@@ -1322,7 +1351,7 @@ def expand_reciprocal_grid(
         grid_shape=grid_shape,
         dtype_float=dtype,
         verbose=0,
-        device=device
+        device=device,
     )
 
     # Apply symmetry operation

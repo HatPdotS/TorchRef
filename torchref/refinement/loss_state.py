@@ -19,9 +19,10 @@ Example:
     total = state.aggregate()  # Evaluates targets, applies hierarchical weights
 """
 
-from dataclasses import dataclass, field
-from typing import Callable, Dict, Any, Optional, List
 from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional
+
 import torch
 
 
@@ -42,7 +43,8 @@ class LossState:
     history : List[Dict]
         Log of computed values per aggregation call.
     """
-    device: torch.device = field(default_factory=lambda: torch.device('cpu'))
+
+    device: torch.device = field(default_factory=lambda: torch.device("cpu"))
 
     # Targets as callables - only evaluated on aggregate()
     targets: Dict[str, Callable] = field(default_factory=dict)
@@ -60,7 +62,7 @@ class LossState:
     # Target Registration
     # =========================================================================
 
-    def register_target(self, name: str, target: Callable) -> 'LossState':
+    def register_target(self, name: str, target: Callable) -> "LossState":
         """
         Register a target function.
 
@@ -79,7 +81,7 @@ class LossState:
         self.targets[name] = target
         return self
 
-    def register_targets(self, targets: Dict[str, Callable]) -> 'LossState':
+    def register_targets(self, targets: Dict[str, Callable]) -> "LossState":
         """Register multiple targets."""
         for name, target in targets.items():
             self.register_target(name, target)
@@ -89,7 +91,7 @@ class LossState:
     # Weight Management
     # =========================================================================
 
-    def set_weight(self, name: str, weight: float) -> 'LossState':
+    def set_weight(self, name: str, weight: float) -> "LossState":
         """
         Set a weight value.
 
@@ -108,7 +110,7 @@ class LossState:
         self.weights[name] = weight
         return self
 
-    def set_weights(self, weights: Dict[str, float]) -> 'LossState':
+    def set_weights(self, weights: Dict[str, float]) -> "LossState":
         """Set multiple weights."""
         for name, weight in weights.items():
             self.set_weight(name, weight)
@@ -135,11 +137,11 @@ class LossState:
         float
             Product of all hierarchical weights.
         """
-        parts = name.split('/')
+        parts = name.split("/")
         effective = 1.0
 
         # Apply weights at each level
-        path = ''
+        path = ""
         for part in parts:
             path = f"{path}/{part}" if path else part
             effective *= self.weights.get(path, 1.0)
@@ -219,12 +221,12 @@ class LossState:
 
             # Log
             if log_values:
-                self.log(f'loss/{name}', loss)
-                self.log(f'weight/{name}', weight)
-                self.log(f'weighted/{name}', weighted_loss)
+                self.log(f"loss/{name}", loss)
+                self.log(f"weight/{name}", weight)
+                self.log(f"weighted/{name}", weighted_loss)
 
         if log_values:
-            self.log('total', total)
+            self.log("total", total)
 
         return total
 
@@ -260,16 +262,20 @@ class LossState:
         breakdown = defaultdict(dict)
 
         for name, loss in self._losses.items():
-            parts = name.split('/')
-            group = parts[0] if len(parts) > 1 else 'root'
-            component = '/'.join(parts[1:]) if len(parts) > 1 else parts[0]
+            parts = name.split("/")
+            group = parts[0] if len(parts) > 1 else "root"
+            component = "/".join(parts[1:]) if len(parts) > 1 else parts[0]
 
             weight = self.get_effective_weight(name)
 
             breakdown[group][component] = {
-                'loss': loss.item() if isinstance(loss, torch.Tensor) else loss,
-                'weight': weight,
-                'weighted': (weight * loss).item() if isinstance(loss, torch.Tensor) else weight * loss
+                "loss": loss.item() if isinstance(loss, torch.Tensor) else loss,
+                "weight": weight,
+                "weighted": (
+                    (weight * loss).item()
+                    if isinstance(loss, torch.Tensor)
+                    else weight * loss
+                ),
             }
 
         return dict(breakdown)
@@ -286,10 +292,14 @@ class LossState:
         totals = defaultdict(float)
 
         for name, loss in self._losses.items():
-            parts = name.split('/')
+            parts = name.split("/")
             group = parts[0]
             weight = self.get_effective_weight(name)
-            weighted = (weight * loss).item() if isinstance(loss, torch.Tensor) else weight * loss
+            weighted = (
+                (weight * loss).item()
+                if isinstance(loss, torch.Tensor)
+                else weight * loss
+            )
             totals[group] += weighted
 
         return dict(totals)
@@ -298,12 +308,12 @@ class LossState:
     # Utility
     # =========================================================================
 
-    def clear(self) -> 'LossState':
+    def clear(self) -> "LossState":
         """Clear cached losses (not targets or weights)."""
         self._losses.clear()
         return self
 
-    def clear_history(self) -> 'LossState':
+    def clear_history(self) -> "LossState":
         """Clear history log."""
         self.history.clear()
         return self
@@ -347,4 +357,4 @@ def create_loss_state(
     return state
 
 
-__all__ = ['LossState', 'create_loss_state']
+__all__ = ["LossState", "create_loss_state"]

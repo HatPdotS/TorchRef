@@ -6,18 +6,18 @@ reciprocal space, including generating all possible HKL indices within
 a resolution limit.
 """
 
+from typing import Optional
+
 import torch
-from typing import Optional, Tuple
+
 from torchref.math_functions.math_torch import (
-    reciprocal_basis_matrix,
     get_d_spacing,
+    reciprocal_basis_matrix,
 )
 
 
 def generate_possible_hkl(
-    cell: torch.Tensor,
-    d_min: float,
-    device: Optional[torch.device] = None
+    cell: torch.Tensor, d_min: float, device: Optional[torch.device] = None
 ) -> torch.Tensor:
     """
     Generate all possible Miller indices within a resolution limit.
@@ -73,7 +73,7 @@ def generate_possible_hkl(
     l_range = torch.arange(-l_max, l_max + 1, device=device, dtype=torch.int32)
 
     # Create meshgrid of all combinations
-    hh, kk, ll = torch.meshgrid(h_range, k_range, l_range, indexing='ij')
+    hh, kk, ll = torch.meshgrid(h_range, k_range, l_range, indexing="ij")
     hkl_all = torch.stack([hh.flatten(), kk.flatten(), ll.flatten()], dim=1)
 
     # Remove (0, 0, 0) - not a valid reflection
@@ -89,9 +89,7 @@ def generate_possible_hkl(
 
 
 def compute_d_spacing_batch(
-    hkl: torch.Tensor,
-    cell: torch.Tensor,
-    recB: Optional[torch.Tensor] = None
+    hkl: torch.Tensor, cell: torch.Tensor, recB: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     """
     Compute d-spacing for a batch of Miller indices.

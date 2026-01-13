@@ -4,22 +4,22 @@ Main Patterson alignment class for TorchRef.
 Aligns predicted structures to observed diffraction data via Patterson matching.
 """
 
-from typing import Optional, Tuple
 from dataclasses import dataclass
-import torch
-import numpy as np
+from typing import Optional, Tuple
 
-from torchref.model.model import Model
+import numpy as np
+import torch
+
 from torchref.io.datasets.reflection_data import ReflectionData
-from torchref.symmetrie.symmetrie import Symmetry
 from torchref.math_functions.math_torch import (
     axis_angle_to_rotation_matrix,
-    rotation_matrix_to_axis_angle,
-    random_rotation_uniform,
     cartesian_to_fractional_torch,
     fractional_to_cartesian_torch,
+    random_rotation_uniform,
+    rotation_matrix_to_axis_angle,
     trilinear_interpolate,
 )
+from torchref.model.model import Model
 
 from .sampling import VectorSampler
 
@@ -42,6 +42,7 @@ class AlignmentResult:
     converged : bool
         Whether optimization converged.
     """
+
     rotation: torch.Tensor
     translation: torch.Tensor
     score: float
@@ -139,13 +140,15 @@ class PattersonAligner:
         data: ReflectionData,
         model: Model,
         n_vectors: int = 10000,
-        weighting: str = 'Z2',
-        verbose: int = 1
+        weighting: str = "Z2",
+        verbose: int = 1,
     ):
         # Store references
         self.data = data
         self.verbose = verbose
-        self.device = torch.device(data.device) if isinstance(data.device, str) else data.device
+        self.device = (
+            torch.device(data.device) if isinstance(data.device, str) else data.device
+        )
         self.n_vectors = n_vectors
         self.weighting = weighting
 
@@ -163,8 +166,9 @@ class PattersonAligner:
         # Normalize to zero mean and unit variance for stable optimization
         self.patterson_mean = patterson_raw.mean()
         self.patterson_std = patterson_raw.std()
-        self.patterson = (patterson_raw - self.patterson_mean) / (self.patterson_std + 1e-8)
-
+        self.patterson = (patterson_raw - self.patterson_mean) / (
+            self.patterson_std + 1e-8
+        )
 
     def interpolate_patterson(self, fractional_vectors: torch.Tensor) -> torch.Tensor:
         """
@@ -185,17 +189,16 @@ class PattersonAligner:
             Interpolated Patterson values with shape (n_vectors,).
         """
         # Ensure vectors are on the same device as Patterson map
-        vecs = fractional_vectors.to(device=self.patterson.device, dtype=self.patterson.dtype)
+        vecs = fractional_vectors.to(
+            device=self.patterson.device, dtype=self.patterson.dtype
+        )
 
         # Use trilinear_interpolate with periodic wrapping
         # This function handles wrapping to [0, 1) internally
-        return trilinear_interpolate(self.patterson, vecs, mode='wrap')
+        return trilinear_interpolate(self.patterson, vecs, mode="wrap")
 
     def evaluate_vectors_on_coords(
-        self,
-        idx1: torch.Tensor,
-        idx2: torch.Tensor,
-        xyz_fractional: torch.Tensor
+        self, idx1: torch.Tensor, idx2: torch.Tensor, xyz_fractional: torch.Tensor
     ) -> torch.Tensor:
         """
         Evaluate Patterson score for atom pair vectors on fractional coordinates.
@@ -233,7 +236,7 @@ class PattersonAligner:
         rotation: torch.Tensor,
         translation: torch.Tensor,
         idx1: torch.Tensor,
-        idx2: torch.Tensor
+        idx2: torch.Tensor,
     ) -> torch.Tensor:
         """
         Score a rotation and translation by Patterson vector matching.
@@ -275,7 +278,7 @@ class PattersonAligner:
         R_init: torch.Tensor,
         t_init_frac: torch.Tensor,
         max_iter: int = 100,
-        lr: float = 0.1
+        lr: float = 0.1,
     ) -> Tuple[torch.Tensor, torch.Tensor, float, bool]:
         """
         Run single optimization from given starting point.
@@ -310,21 +313,25 @@ class PattersonAligner:
         dtype = xyz_cartesian.dtype
 
         # Convert rotation to axis-angle parameterization
-        rot_params = rotation_matrix_to_axis_angle(R_init).to(dtype=dtype, device=device)
+        rot_params = rotation_matrix_to_axis_angle(R_init).to(
+            dtype=dtype, device=device
+        )
         rot_params = rot_params.clone().requires_grad_(True)
 
         # Translation parameters in FRACTIONAL space for better optimization
         # Patterson is periodic in fractional coords, so [0,1) is the natural search space
-        trans_frac_params = t_init_frac.clone().to(dtype=dtype, device=device).requires_grad_(True)
+        trans_frac_params = (
+            t_init_frac.clone().to(dtype=dtype, device=device).requires_grad_(True)
+        )
 
         optimizer = torch.optim.LBFGS(
             [rot_params, trans_frac_params],
             max_iter=max_iter,
             lr=lr,
-            line_search_fn='strong_wolfe',
+            line_search_fn="strong_wolfe",
             tolerance_grad=1e-7,
             tolerance_change=1e-9,
-            history_size=20
+            history_size=20,
         )
 
         final_score = 0.0
@@ -345,9 +352,7 @@ class PattersonAligner:
             ).squeeze(0)
 
             # Compute score (we want to maximize, so negate for minimization)
-            score = self.score_transformation(
-                xyz_cartesian, R, trans_cart, idx1, idx2
-            )
+            score = self.score_transformation(xyz_cartesian, R, trans_cart, idx1, idx2)
 
             loss = -score
             loss.backward()
@@ -380,7 +385,7 @@ class PattersonAligner:
         n_starts: int = 10,
         n_vectors: Optional[int] = None,
         max_iter: int = 50,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
     ) -> Tuple[Model, AlignmentResult]:
         """
         Align a model to the diffraction data via Patterson matching.
@@ -416,7 +421,7 @@ class PattersonAligner:
 
         # Use model without waters for alignment scoring
         # (VectorSampler also excludes waters internally)
-        model_no_water = model.select('not resname HOH')
+        model_no_water = model.select("not resname HOH")
 
         # Get coordinates from model without waters
         xyz_cartesian = model_no_water.xyz().detach().clone()
@@ -432,7 +437,7 @@ class PattersonAligner:
         xyz_centered = xyz_cartesian - centroid
 
         # Best result tracking
-        best_score = float('-inf')
+        best_score = float("-inf")
         best_R = torch.eye(3, device=device, dtype=dtype)
         best_t = torch.zeros(3, device=device, dtype=dtype)
         best_converged = False
@@ -459,7 +464,9 @@ class PattersonAligner:
 
             if self.verbose > 1:
                 status = "converged" if converged else "not converged"
-                print(f"  Start {start_idx + 1}/{n_starts}: score={score:.4f} ({status})")
+                print(
+                    f"  Start {start_idx + 1}/{n_starts}: score={score:.4f} ({status})"
+                )
 
             if score > best_score:
                 best_score = score
@@ -477,7 +484,7 @@ class PattersonAligner:
             translation=best_t.detach(),
             score=best_score,
             n_starts=n_starts,
-            converged=best_converged
+            converged=best_converged,
         )
 
         # Apply transformation to the FULL model (including waters)
@@ -494,7 +501,7 @@ class PattersonAligner:
         self,
         angular_step: float = 10.0,
         device: Optional[str] = None,
-        dtype: Optional[torch.dtype] = None
+        dtype: Optional[torch.dtype] = None,
     ) -> torch.Tensor:
         """
         Generate a uniform grid of rotations on SO(3).
@@ -543,11 +550,13 @@ class PattersonAligner:
                     cb, sb = np.cos(beta), np.sin(beta)
                     cg, sg = np.cos(gamma), np.sin(gamma)
 
-                    R = np.array([
-                        [ca*cb*cg - sa*sg, -ca*cb*sg - sa*cg, ca*sb],
-                        [sa*cb*cg + ca*sg, -sa*cb*sg + ca*cg, sa*sb],
-                        [-sb*cg, sb*sg, cb]
-                    ])
+                    R = np.array(
+                        [
+                            [ca * cb * cg - sa * sg, -ca * cb * sg - sa * cg, ca * sb],
+                            [sa * cb * cg + ca * sg, -sa * cb * sg + ca * cg, sa * sb],
+                            [-sb * cg, sb * sg, cb],
+                        ]
+                    )
                     rotations.append(R)
 
         rotations = np.stack(rotations, axis=0)
@@ -558,7 +567,7 @@ class PattersonAligner:
         xyz_cartesian: torch.Tensor,
         rotations: torch.Tensor,
         idx1: torch.Tensor,
-        idx2: torch.Tensor
+        idx2: torch.Tensor,
     ) -> torch.Tensor:
         """
         Score multiple rotations efficiently (no gradient computation).
@@ -578,7 +587,9 @@ class PattersonAligner:
             Scores for each rotation (M,).
         """
         n_rotations = rotations.shape[0]
-        scores = torch.zeros(n_rotations, device=xyz_cartesian.device, dtype=xyz_cartesian.dtype)
+        scores = torch.zeros(
+            n_rotations, device=xyz_cartesian.device, dtype=xyz_cartesian.dtype
+        )
 
         with torch.no_grad():
             for i in range(n_rotations):
@@ -597,7 +608,7 @@ class PattersonAligner:
         n_refine: int = 5,
         n_vectors: Optional[int] = None,
         max_iter: int = 100,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
     ) -> Tuple[Model, AlignmentResult]:
         """
         Align a model using systematic rotation grid search.
@@ -635,7 +646,7 @@ class PattersonAligner:
             n_vectors = self.n_vectors
 
         # Use model without waters for alignment scoring
-        model_no_water = model.select('not resname HOH')
+        model_no_water = model.select("not resname HOH")
         xyz_cartesian = model_no_water.xyz().detach().clone()
         device = xyz_cartesian.device
         dtype = xyz_cartesian.dtype
@@ -647,7 +658,9 @@ class PattersonAligner:
         # Generate rotation grid
         if self.verbose > 0:
             print(f"Generating rotation grid with {angular_step}° step...")
-        rotations = self.generate_rotation_grid(angular_step, device=str(device), dtype=dtype)
+        rotations = self.generate_rotation_grid(
+            angular_step, device=str(device), dtype=dtype
+        )
         n_rotations = rotations.shape[0]
         if self.verbose > 0:
             print(f"  Generated {n_rotations} rotations")
@@ -672,7 +685,7 @@ class PattersonAligner:
         centroid = xyz_cartesian.mean(dim=0)
         xyz_centered = xyz_cartesian - centroid
 
-        best_score = float('-inf')
+        best_score = float("-inf")
         best_R = torch.eye(3, device=device, dtype=dtype)
         best_t = torch.zeros(3, device=device, dtype=dtype)
         best_converged = False
@@ -686,7 +699,9 @@ class PattersonAligner:
             )
 
             if self.verbose > 1:
-                print(f"  Refined {i+1}/{n_refine}: coarse={top_scores[i]:.4f} -> refined={score:.4f}")
+                print(
+                    f"  Refined {i+1}/{n_refine}: coarse={top_scores[i]:.4f} -> refined={score:.4f}"
+                )
 
             if score > best_score:
                 best_score = score
@@ -703,7 +718,7 @@ class PattersonAligner:
             translation=best_t.detach(),
             score=best_score,
             n_starts=n_refine,
-            converged=best_converged
+            converged=best_converged,
         )
 
         # Apply transformation to full model
@@ -732,6 +747,4 @@ def clashscore(xyz_fractional, symm):
         Clashscore (number of clashes per 1000 atoms).
     """
 
-    
-    
     pass

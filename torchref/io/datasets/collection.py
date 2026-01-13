@@ -7,7 +7,8 @@ and time-series crystallography.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Iterator, Tuple, Optional, Any
+from typing import Dict, Iterator, List, Optional, Tuple
+
 import torch
 
 from .base import CrystalDataset
@@ -66,11 +67,8 @@ class DatasetCollection(CrystalDataset):
     _resolution: Optional[torch.Tensor] = field(default=None, repr=False)
 
     def add_dataset(
-        self,
-        name: str,
-        dataset: ReflectionData,
-        set_as_reference: bool = False
-    ) -> 'DatasetCollection':
+        self, name: str, dataset: ReflectionData, set_as_reference: bool = False
+    ) -> "DatasetCollection":
         """
         Add a dataset to the collection.
 
@@ -118,7 +116,7 @@ class DatasetCollection(CrystalDataset):
 
         # Move dataset to same device as collection
         if dataset.device != self.device:
-            if self.device.type == 'cuda':
+            if self.device.type == "cuda":
                 dataset.cuda(self.device)
             else:
                 dataset.cpu()
@@ -234,20 +232,20 @@ class DatasetCollection(CrystalDataset):
         """
         return {name: ds(mask=mask) for name, ds in self}
 
-    def to(self, device) -> 'DatasetCollection':
+    def to(self, device) -> "DatasetCollection":
         """Move collection and all datasets to device."""
         super().to(device)
         for ds in self._datasets.values():
             ds.to(device)
         return self
 
-    def cuda(self, device=None) -> 'DatasetCollection':
+    def cuda(self, device=None) -> "DatasetCollection":
         """Move collection and all datasets to CUDA device."""
-        return self.to(device or 'cuda')
+        return self.to(device or "cuda")
 
-    def cpu(self) -> 'DatasetCollection':
+    def cpu(self) -> "DatasetCollection":
         """Move collection and all datasets to CPU."""
-        return self.to('cpu')
+        return self.to("cpu")
 
     def keys(self) -> List[str]:
         """Return list of dataset names."""
@@ -270,9 +268,9 @@ class DatasetCollection(CrystalDataset):
         n_datasets = self.n_datasets
         n_refl = len(self)
         sg = self.spacegroup or "unknown"
-        names = ', '.join(self._dataset_order[:3])
+        names = ", ".join(self._dataset_order[:3])
         if n_datasets > 3:
-            names += f', ... ({n_datasets} total)'
+            names += f", ... ({n_datasets} total)"
         return (
             f"DatasetCollection(datasets=[{names}], "
             f"n_reflections={n_refl}, spacegroup='{sg}', device={self.device})"

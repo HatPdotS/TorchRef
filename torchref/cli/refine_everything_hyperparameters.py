@@ -17,15 +17,24 @@ Options:
 
 import argparse
 import json
-import sys
 import os
+import sys
 from pathlib import Path
+
 import torch
 
 # Force unbuffered output for batch systems like SLURM
-sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
-sys.stderr.reconfigure(line_buffering=True) if hasattr(sys.stderr, 'reconfigure') else None
-os.environ['PYTHONUNBUFFERED'] = '1'
+(
+    sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stdout, "reconfigure")
+    else None
+)
+(
+    sys.stderr.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure")
+    else None
+)
+os.environ["PYTHONUNBUFFERED"] = "1"
 
 # Import stats module early to patch json with StatEntry encoder
 import torchref.utils.stats  # noqa: F401
@@ -33,7 +42,7 @@ import torchref.utils.stats  # noqa: F401
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Run LBFGS refinement with Optuna-optimized hyperparameters',
+        description="Run LBFGS refinement with Optuna-optimized hyperparameters",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -45,76 +54,82 @@ Examples:
 
   # Skip hyperparameters (equivalent to static weighting)
   torchref-refine-hyper -s model.pdb -f reflections.mtz -o output/ --hyperparameters none
-        """
+        """,
     )
 
     # Mandatory arguments
     parser.add_argument(
-        '-s', '--structure',
+        "-s",
+        "--structure",
         required=True,
         type=str,
-        help='Input structure file (PDB or CIF format)'
+        help="Input structure file (PDB or CIF format)",
     )
 
     parser.add_argument(
-        '-f', '--structure-factors',
+        "-f",
+        "--structure-factors",
         required=True,
         type=str,
-        help='Input structure factors file (MTZ or CIF format)'
+        help="Input structure factors file (MTZ or CIF format)",
     )
 
     parser.add_argument(
-        '-o', '--outdir',
+        "-o",
+        "--outdir",
         required=True,
         type=str,
-        help='Output directory for refined structure and results'
+        help="Output directory for refined structure and results",
     )
 
     # Optional arguments
     parser.add_argument(
-        '-n', '--n-cycles',
+        "-n",
+        "--n-cycles",
         type=int,
         default=5,
-        help='Number of refinement macro cycles (default: 5)'
+        help="Number of refinement macro cycles (default: 5)",
     )
 
     parser.add_argument(
-        '-c', '--cif-restraints',
+        "-c",
+        "--cif-restraints",
         type=str,
         default=None,
-        help='CIF restraints dictionary (auto-detected if not provided)'
+        help="CIF restraints dictionary (auto-detected if not provided)",
     )
 
     parser.add_argument(
-        '--max-res',
+        "--max-res",
         type=float,
         default=None,
-        help='Maximum resolution cutoff in Angstroms (optional)'
+        help="Maximum resolution cutoff in Angstroms (optional)",
     )
 
     parser.add_argument(
-        '--device',
+        "--device",
         type=str,
-        default='cpu',
-        choices=['cpu', 'cuda'],
-        help='Computation device (default: cpu)'
+        default="cpu",
+        choices=["cpu", "cuda"],
+        help="Computation device (default: cpu)",
     )
 
     parser.add_argument(
-        '--hyperparameters',
+        "--hyperparameters",
         type=str,
-        default='default',
+        default="default",
         help='Path to hyperparameters JSON file, or "default" to use optimized defaults, '
-             'or "none" to skip. The JSON file can be edited to customize refinement behavior. '
-             '(default: "default" uses Optuna-optimized hyperparameters)'
+        'or "none" to skip. The JSON file can be edited to customize refinement behavior. '
+        '(default: "default" uses Optuna-optimized hyperparameters)',
     )
 
     parser.add_argument(
-        '-v', '--verbose',
+        "-v",
+        "--verbose",
         type=int,
         default=1,
         choices=[0, 1, 2],
-        help='Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)'
+        help="Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)",
     )
 
     args = parser.parse_args()
@@ -148,7 +163,7 @@ Examples:
         print("=" * 80)
         print("TorchRef LBFGS Refinement - HYPERPARAMETER-TUNED")
         print("=" * 80)
-        print(f"Weighting scheme: ComponentWeighting with optimized hyperparameters")
+        print("Weighting scheme: ComponentWeighting with optimized hyperparameters")
         print(f"Hyperparameters:  {args.hyperparameters}")
         print(f"Structure:        {structure_path}")
         print(f"Structure factors: {sf_path}")
@@ -163,9 +178,12 @@ Examples:
 
     # Setup device
     device = torch.device(args.device)
-    if args.device == 'cuda' and not torch.cuda.is_available():
-        print("Warning: CUDA requested but not available, falling back to CPU", file=sys.stderr)
-        device = torch.device('cpu')
+    if args.device == "cuda" and not torch.cuda.is_available():
+        print(
+            "Warning: CUDA requested but not available, falling back to CPU",
+            file=sys.stderr,
+        )
+        device = torch.device("cpu")
 
     if args.verbose > 0:
         print("Initializing refinement...")
@@ -189,21 +207,27 @@ Examples:
     hyperparams_source = None
     n_hyperparams = 0
 
-    if args.hyperparameters.lower() != 'none':
+    if args.hyperparameters.lower() != "none":
         try:
-            from torchref.utils.utils import dict_to_state_dict
             import importlib.resources
 
-            if args.hyperparameters.lower() == 'default':
+            from torchref.utils.utils import dict_to_state_dict
+
+            if args.hyperparameters.lower() == "default":
                 # Load default hyperparameters from package data
                 try:
                     # Python 3.9+
-                    with importlib.resources.files('torchref.data').joinpath('default_hyperparameters.json').open() as f:
+                    with importlib.resources.files("torchref.data").joinpath(
+                        "default_hyperparameters.json"
+                    ).open() as f:
                         hyperparams_raw = json.load(f)
                 except (AttributeError, TypeError):
                     # Fallback for older Python
                     import pkg_resources
-                    hyperparams_path = pkg_resources.resource_filename('torchref', 'data/default_hyperparameters.json')
+
+                    hyperparams_path = pkg_resources.resource_filename(
+                        "torchref", "data/default_hyperparameters.json"
+                    )
                     with open(hyperparams_path) as f:
                         hyperparams_raw = json.load(f)
 
@@ -215,7 +239,10 @@ Examples:
                 # Load from user-specified file
                 hyperparams_path = Path(args.hyperparameters)
                 if not hyperparams_path.exists():
-                    print(f"Error: Hyperparameters file not found: {hyperparams_path}", file=sys.stderr)
+                    print(
+                        f"Error: Hyperparameters file not found: {hyperparams_path}",
+                        file=sys.stderr,
+                    )
                     sys.exit(1)
 
                 with open(hyperparams_path) as f:
@@ -239,6 +266,7 @@ Examples:
             print(f"Warning: Could not load hyperparameters: {e}", file=sys.stderr)
             if args.verbose > 1:
                 import traceback
+
                 traceback.print_exc()
     else:
         if args.verbose > 0:
@@ -293,7 +321,7 @@ Examples:
         "input_files": {
             "structure": str(structure_path),
             "structure_factors": str(sf_path),
-            "cif_restraints": args.cif_restraints
+            "cif_restraints": args.cif_restraints,
         },
         "parameters": {
             "n_cycles": args.n_cycles,
@@ -302,8 +330,8 @@ Examples:
             "hyperparameters_source": hyperparams_source,
             "n_hyperparameters": n_hyperparams,
         },
-        "history": refinement.history if hasattr(refinement, 'history') else {},
-        "final_statistics": {}
+        "history": refinement.history if hasattr(refinement, "history") else {},
+        "final_statistics": {},
     }
 
     # Add final R-factors if available
@@ -316,8 +344,12 @@ Examples:
         work_mask = rfree
         test_mask = ~rfree
 
-        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(fobs[work_mask])
-        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(fobs[test_mask])
+        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(
+            fobs[work_mask]
+        )
+        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(
+            fobs[test_mask]
+        )
 
         history_data["final_statistics"] = {
             "R_work": float(r_work.item()),
@@ -325,13 +357,13 @@ Examples:
             "NLL_work": float(work_nll.item()),
             "NLL_test": float(test_nll.item()),
             "n_reflections_work": int(work_mask.sum().item()),
-            "n_reflections_test": int(test_mask.sum().item())
+            "n_reflections_test": int(test_mask.sum().item()),
         }
     except Exception as e:
         if args.verbose > 1:
             print(f"  Warning: Could not compute final statistics: {e}")
 
-    with open(output_json, 'w') as f:
+    with open(output_json, "w") as f:
         json.dump(history_data, f, indent=2)
 
     if args.verbose > 0:
@@ -346,8 +378,12 @@ Examples:
 
         if "final_statistics" in history_data and history_data["final_statistics"]:
             stats = history_data["final_statistics"]
-            print(f"R-work:  {stats['R_work']:.4f} ({stats['n_reflections_work']} reflections)")
-            print(f"R-free:  {stats['R_free']:.4f} ({stats['n_reflections_test']} reflections)")
+            print(
+                f"R-work:  {stats['R_work']:.4f} ({stats['n_reflections_work']} reflections)"
+            )
+            print(
+                f"R-free:  {stats['R_free']:.4f} ({stats['n_reflections_test']} reflections)"
+            )
             print(f"NLL work: {stats['NLL_work']:.2f}")
             print(f"NLL test: {stats['NLL_test']:.2f}")
 
@@ -363,5 +399,5 @@ Examples:
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

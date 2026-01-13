@@ -1,11 +1,10 @@
-import torch
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
 import gemmi
 import numpy as np
-from typing import Optional, List, Dict, Any, Union
-from pathlib import Path
 import pandas as pd
-
-
+import torch
 
 
 class ModuleReference:
@@ -35,7 +34,7 @@ class ModuleReference:
     >>> # Access the module via .module property
     >>> output = scaler._model.module(input_data)
     """
-    
+
     def __init__(self, module):
         """
         Wrap a module to prevent automatic registration.
@@ -46,21 +45,21 @@ class ModuleReference:
             The PyTorch module to wrap.
         """
         # Store in __dict__ directly to avoid any attribute interception
-        object.__setattr__(self, '_wrapped_module', module)
-    
+        object.__setattr__(self, "_wrapped_module", module)
+
     @property
     def module(self):
         """Access the wrapped module."""
-        return object.__getattribute__(self, '_wrapped_module')
-    
+        return object.__getattribute__(self, "_wrapped_module")
+
     def __getattr__(self, name):
         """Forward attribute access to the wrapped module."""
         return getattr(self.module, name)
-    
+
     def __call__(self, *args, **kwargs):
         """Forward calls to the wrapped module."""
         return self.module(*args, **kwargs)
-    
+
     def __repr__(self):
         return f"ModuleReference({self.module.__class__.__name__})"
 
@@ -79,7 +78,7 @@ class CIFReader:
     filepath : pathlib.Path or None
         Path to the loaded CIF file.
     """
-    
+
     def __init__(self, filepath: Optional[str] = None):
         """
         Initialize CIF reader.
@@ -91,10 +90,10 @@ class CIFReader:
         """
         self.data = {}
         self.filepath = None
-        
+
         if filepath:
             self.load(filepath)
-    
+
     def load(self, filepath: str):
         """
         Load and parse a CIF file.
@@ -105,11 +104,11 @@ class CIFReader:
             Path to CIF file.
         """
         self.filepath = Path(filepath)
-        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
-        
+
         self._parse(content)
-    
+
     def _parse(self, content: str):
         """
         Parse CIF file content.
@@ -119,34 +118,34 @@ class CIFReader:
         content : str
             String content of CIF file.
         """
-        lines = content.split('\n')
+        lines = content.split("\n")
         i = 0
-        
+
         while i < len(lines):
             line = lines[i].strip()
-            
+
             # Skip empty lines and comments
-            if not line or line.startswith('#'):
+            if not line or line.startswith("#"):
                 i += 1
                 continue
-            
+
             # Check for data block (usually just one in mmCIF)
-            if line.startswith('data_'):
+            if line.startswith("data_"):
                 i += 1
                 continue
-            
+
             # Check for loop
-            if line.startswith('loop_'):
+            if line.startswith("loop_"):
                 i = self._parse_loop(lines, i + 1)
                 continue
-            
+
             # Parse single key-value pairs
-            if line.startswith('_'):
+            if line.startswith("_"):
                 i = self._parse_keyvalue(lines, i)
                 continue
-            
+
             i += 1
-    
+
     def _parse_loop(self, lines: List[str], start_idx: int) -> int:
         """
         Parse a loop structure into a pandas DataFrame.
@@ -166,53 +165,57 @@ class CIFReader:
         # Collect column names
         columns = []
         i = start_idx
-        
+
         while i < len(lines):
             line = lines[i].strip()
-            if not line or line.startswith('#'):
+            if not line or line.startswith("#"):
                 i += 1
                 continue
-            
-            if line.startswith('_'):
+
+            if line.startswith("_"):
                 columns.append(line)
                 i += 1
             else:
                 break
-        
+
         if not columns:
             return i
-        
+
         # Collect data rows
         data_rows = []
         current_row = []
         in_multiline = False
         multiline_value = []
-        
+
         while i < len(lines):
             line = lines[i]
             stripped = line.strip()
-            
+
             # Check if we've reached the end of the loop
-            if not in_multiline and (not stripped or stripped.startswith('_') or 
-                                    stripped.startswith('loop_') or stripped.startswith('data_')):
+            if not in_multiline and (
+                not stripped
+                or stripped.startswith("_")
+                or stripped.startswith("loop_")
+                or stripped.startswith("data_")
+            ):
                 if current_row:
                     data_rows.append(current_row)
                 break
-            
+
             # Handle multiline strings (starting with semicolon)
-            if not in_multiline and line.startswith(';'):
+            if not in_multiline and line.startswith(";"):
                 in_multiline = True
                 multiline_value = [line[1:]]  # Remove leading semicolon
                 i += 1
                 continue
-            
+
             if in_multiline:
-                if line.startswith(';'):
+                if line.startswith(";"):
                     # End of multiline string
                     in_multiline = False
-                    current_row.append('\n'.join(multiline_value))
+                    current_row.append("\n".join(multiline_value))
                     multiline_value = []
-                    
+
                     # Check if row is complete
                     if len(current_row) == len(columns):
                         data_rows.append(current_row)
@@ -221,33 +224,33 @@ class CIFReader:
                     multiline_value.append(line)
                 i += 1
                 continue
-            
+
             # Parse regular data line
-            if stripped and not stripped.startswith('#'):
+            if stripped and not stripped.startswith("#"):
                 tokens = self._tokenize_line(stripped)
                 for token in tokens:
                     current_row.append(token)
-                    
+
                     # Check if row is complete
                     if len(current_row) == len(columns):
                         data_rows.append(current_row)
                         current_row = []
-            
+
             i += 1
-        
+
         # Create DataFrame
         if data_rows:
             df = pd.DataFrame(data_rows, columns=columns)
-            
+
             # Store in hierarchical dictionary based on category
             # Extract category from first column name (e.g., _atom_site.id -> atom_site)
             if columns:
                 category = self._extract_category(columns[0])
                 if category:
                     self.data[category] = df
-        
+
         return i
-    
+
     def _parse_keyvalue(self, lines: List[str], start_idx: int) -> int:
         """
         Parse a single key-value pair.
@@ -265,23 +268,23 @@ class CIFReader:
             Index of the next line to process.
         """
         line = lines[start_idx].strip()
-        
+
         # Handle multiline values
-        if start_idx + 1 < len(lines) and lines[start_idx + 1].startswith(';'):
+        if start_idx + 1 < len(lines) and lines[start_idx + 1].startswith(";"):
             key = line
             value_lines = []
             i = start_idx + 2
-            
+
             while i < len(lines):
-                if lines[i].startswith(';'):
+                if lines[i].startswith(";"):
                     break
                 value_lines.append(lines[i])
                 i += 1
-            
-            value = '\n'.join(value_lines)
+
+            value = "\n".join(value_lines)
             self._store_keyvalue(key, value)
             return i + 1
-        
+
         # Handle single line key-value
         parts = line.split(None, 1)
         if len(parts) == 2:
@@ -291,11 +294,11 @@ class CIFReader:
                 value = value[1:-1]
             elif value.startswith('"') and value.endswith('"'):
                 value = value[1:-1]
-            
+
             self._store_keyvalue(key, value)
-        
+
         return start_idx + 1
-    
+
     def _tokenize_line(self, line: str) -> List[str]:
         """
         Tokenize a data line, handling quoted strings.
@@ -314,43 +317,43 @@ class CIFReader:
         current_token = []
         in_quotes = False
         quote_char = None
-        
+
         i = 0
         while i < len(line):
             char = line[i]
-            
+
             # Handle quotes
             if char in ('"', "'") and not in_quotes:
                 in_quotes = True
                 quote_char = char
                 i += 1
                 continue
-            
+
             if char == quote_char and in_quotes:
                 in_quotes = False
                 quote_char = None
                 if current_token:
-                    tokens.append(''.join(current_token))
+                    tokens.append("".join(current_token))
                     current_token = []
                 i += 1
                 continue
-            
+
             # Handle whitespace outside quotes
             if char.isspace() and not in_quotes:
                 if current_token:
-                    tokens.append(''.join(current_token))
+                    tokens.append("".join(current_token))
                     current_token = []
                 i += 1
                 continue
-            
+
             current_token.append(char)
             i += 1
-        
+
         if current_token:
-            tokens.append(''.join(current_token))
-        
+            tokens.append("".join(current_token))
+
         return tokens
-    
+
     def _extract_category(self, key: str) -> str:
         """
         Extract category from a CIF key (e.g., '_atom_site.id' -> 'atom_site').
@@ -365,14 +368,14 @@ class CIFReader:
         str
             Category name.
         """
-        if key.startswith('_'):
+        if key.startswith("_"):
             key = key[1:]
-        
-        if '.' in key:
-            return key.split('.')[0]
-        
+
+        if "." in key:
+            return key.split(".")[0]
+
         return key
-    
+
     def _store_keyvalue(self, key: str, value: str):
         """
         Store a key-value pair in the hierarchical dictionary.
@@ -385,20 +388,20 @@ class CIFReader:
             Value to store.
         """
         # Extract category and attribute
-        if key.startswith('_'):
+        if key.startswith("_"):
             key = key[1:]
-        
-        if '.' in key:
-            category, attribute = key.split('.', 1)
-            
+
+        if "." in key:
+            category, attribute = key.split(".", 1)
+
             if category not in self.data:
                 self.data[category] = {}
-            
+
             if isinstance(self.data[category], dict):
                 self.data[category][attribute] = value
         else:
             self.data[key] = value
-    
+
     def write(self, filepath: str):
         """
         Write the CIF data back to a file.
@@ -408,94 +411,96 @@ class CIFReader:
         filepath : str
             Output file path.
         """
-        with open(filepath, 'w') as f:
-            f.write('data_structure\n')
-            f.write('#\n')
-            
+        with open(filepath, "w") as f:
+            f.write("data_structure\n")
+            f.write("#\n")
+
             # Write single key-value pairs first
             for category, content in sorted(self.data.items()):
                 if isinstance(content, dict):
                     for key, value in sorted(content.items()):
                         # Handle multiline values
-                        if '\n' in str(value):
-                            f.write(f'_{category}.{key}\n')
-                            f.write(';\n')
+                        if "\n" in str(value):
+                            f.write(f"_{category}.{key}\n")
+                            f.write(";\n")
                             f.write(str(value))
-                            f.write('\n;\n')
+                            f.write("\n;\n")
                         else:
                             # Quote values with spaces
-                            if ' ' in str(value):
+                            if " " in str(value):
                                 f.write(f"_{category}.{key} '{value}'\n")
                             else:
-                                f.write(f'_{category}.{key} {value}\n')
-                    f.write('#\n')
-            
+                                f.write(f"_{category}.{key} {value}\n")
+                    f.write("#\n")
+
             # Write loops (DataFrames)
             for category, content in sorted(self.data.items()):
                 if isinstance(content, pd.DataFrame):
-                    f.write('loop_\n')
-                    
+                    f.write("loop_\n")
+
                     # Write column names
                     for col in content.columns:
-                        f.write(f'{col}\n')
-                    
+                        f.write(f"{col}\n")
+
                     # Write data rows
                     for _, row in content.iterrows():
                         row_values = []
                         for val in row:
                             val_str = str(val)
                             # Quote values with spaces or special characters
-                            if ' ' in val_str or any(c in val_str for c in ['"', "'"]):
+                            if " " in val_str or any(c in val_str for c in ['"', "'"]):
                                 row_values.append(f"'{val_str}'")
                             else:
                                 row_values.append(val_str)
-                        f.write(' '.join(row_values) + '\n')
-                    
-                    f.write('#\n')
-    
+                        f.write(" ".join(row_values) + "\n")
+
+                    f.write("#\n")
+
     # Dictionary-like interface
     def __getitem__(self, key: str) -> Union[pd.DataFrame, Dict, Any]:
         """Get item by key."""
         return self.data[key]
-    
+
     def __setitem__(self, key: str, value: Union[pd.DataFrame, Dict, Any]):
         """Set item by key."""
         self.data[key] = value
-    
+
     def __contains__(self, key: str) -> bool:
         """Check if key exists."""
         return key in self.data
-    
+
     def __len__(self) -> int:
         """Return number of top-level categories."""
         return len(self.data)
-    
+
     def keys(self):
         """Return dictionary keys."""
         return self.data.keys()
-    
+
     def values(self):
         """Return dictionary values."""
         return self.data.values()
-    
+
     def items(self):
         """Return dictionary items."""
         return self.data.items()
-    
+
     def get(self, key: str, default=None):
         """Get item with default value."""
         return self.data.get(key, default)
-    
+
     def __repr__(self) -> str:
         """String representation."""
         categories = list(self.keys())
         loops = [k for k, v in self.items() if isinstance(v, pd.DataFrame)]
         dicts = [k for k, v in self.items() if isinstance(v, dict)]
-        
-        return (f"CIFReader(categories={len(categories)}, "
-                f"loops={len(loops)}, "
-                f"key-value_groups={len(dicts)})")
-    
+
+        return (
+            f"CIFReader(categories={len(categories)}, "
+            f"loops={len(loops)}, "
+            f"key-value_groups={len(dicts)})"
+        )
+
     def summary(self):
         """Print a summary of the CIF contents."""
         print(f"CIF File: {self.filepath}")
@@ -504,11 +509,12 @@ class CIFReader:
         for key, value in sorted(self.items()):
             if isinstance(value, pd.DataFrame):
                 print(f"  {key}: {len(value)} rows × {len(value.columns)} columns")
-        
+
         print("\nKey-Value Groups (Dictionaries):")
         for key, value in sorted(self.items()):
             if isinstance(value, dict):
                 print(f"  {key}: {len(value)} items")
+
 
 def save_map(array, cell, filename):
     """
@@ -544,15 +550,17 @@ def save_map(array, cell, filename):
     elif isinstance(cell, torch.Tensor):
         cell = cell.tolist()
     map_ccp = gemmi.Ccp4Map()
-    map_ccp.grid = gemmi.FloatGrid(np_map, gemmi.UnitCell(*cell), gemmi.SpaceGroup('P1'))
+    map_ccp.grid = gemmi.FloatGrid(
+        np_map, gemmi.UnitCell(*cell), gemmi.SpaceGroup("P1")
+    )
     map_ccp.setup(0.0)
     map_ccp.update_ccp4_header()
     map_ccp.write_ccp4_map(filename)
-    print(f"Map saved successfully")
+    print("Map saved successfully")
 
     return True
 
-import torch
+
 import torch.nn as nn
 
 
@@ -563,6 +571,7 @@ class TensorDict(nn.Module):
     - Automatically moves with the module
     - Registers tensors as buffers so they are included in state_dict
     """
+
     def __init__(self):
         super().__init__()
         self._keys = []
@@ -599,14 +608,27 @@ class TensorDict(nn.Module):
         return len(self._keys)
 
     def __repr__(self):
-        return f"TensorDict({{" + ", ".join(f'{k}: {getattr(self, f"_buf_{k}")}' for k in self._keys) + "}})"
+        return (
+            "TensorDict({"
+            + ", ".join(f'{k}: {getattr(self, f"_buf_{k}")}' for k in self._keys)
+            + "}})"
+        )
 
-    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
         """Override to dynamically register buffers during loading."""
         local_keys = [k for k in state_dict.keys() if k.startswith(prefix + "_buf_")]
 
         for key in local_keys:
-            buffer_name = key[len(prefix):]
+            buffer_name = key[len(prefix) :]
             original_key = buffer_name[5:]  # remove "_buf_"
 
             if not hasattr(self, buffer_name):
@@ -614,7 +636,15 @@ class TensorDict(nn.Module):
                 self.register_buffer(buffer_name, torch.zeros_like(tensor))
                 self._keys.append(original_key)
 
-        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
 
 class TensorMasks(dict):
@@ -642,7 +672,7 @@ class TensorMasks(dict):
     >>> masks.cpu()  # Move all to CPU
     """
 
-    def __init__(self, data=None, device='cpu'):
+    def __init__(self, data=None, device="cpu"):
         super().__init__()
         self.device = torch.device(device)
         self._cache = None
@@ -657,12 +687,14 @@ class TensorMasks(dict):
         """Set mask tensor, ensuring boolean dtype and correct device."""
         if tensor is not None:
             if tensor.dtype != torch.bool:
-                raise ValueError(f"Mask '{key}' must be boolean dtype, got {tensor.dtype}")
+                raise ValueError(
+                    f"Mask '{key}' must be boolean dtype, got {tensor.dtype}"
+                )
             tensor = tensor.to(self.device)
         super().__setitem__(key, tensor)
         self._updated = True
 
-    def to(self, device) -> 'TensorMasks':
+    def to(self, device) -> "TensorMasks":
         """
         Move all mask tensors to device.
 
@@ -683,13 +715,13 @@ class TensorMasks(dict):
         self._updated = True
         return self
 
-    def cuda(self, device=None) -> 'TensorMasks':
+    def cuda(self, device=None) -> "TensorMasks":
         """Move all masks to CUDA device."""
-        return self.to(device or 'cuda')
+        return self.to(device or "cuda")
 
-    def cpu(self) -> 'TensorMasks':
+    def cpu(self) -> "TensorMasks":
         """Move all masks to CPU."""
-        return self.to('cpu')
+        return self.to("cpu")
 
     def __call__(self) -> torch.Tensor:
         """
@@ -721,7 +753,9 @@ class TensorMasks(dict):
         return combined
 
     def __repr__(self):
-        mask_info = ", ".join(f"'{k}': shape={v.shape}" for k, v in self.items() if v is not None)
+        mask_info = ", ".join(
+            f"'{k}': shape={v.shape}" for k, v in self.items() if v is not None
+        )
         return f"TensorMasks({{{mask_info}}}, device={self.device})"
 
 
@@ -757,217 +791,254 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
     >>> model.pdb = sanitize_pdb_dataframe(model.pdb, verbose=1)
     """
     pdb = pdb.copy()
-    
+
     if verbose > 0:
         print("Sanitizing PDB DataFrame...")
         print(f"  Initial atoms: {len(pdb)}")
-    
+
     # 1. Standardize residue names to max 3 characters
-    long_resnames = pdb['resname'].str.len() > 3
+    long_resnames = pdb["resname"].str.len() > 3
     if long_resnames.any():
         n_long = long_resnames.sum()
         if verbose > 0:
-            unique_long = pdb.loc[long_resnames, 'resname'].unique()
-            print(f"  Truncating {n_long} atoms with resname > 3 chars: {unique_long[:5]}")
-        pdb.loc[long_resnames, 'resname'] = pdb.loc[long_resnames, 'resname'].str[:3]
-    
+            unique_long = pdb.loc[long_resnames, "resname"].unique()
+            print(
+                f"  Truncating {n_long} atoms with resname > 3 chars: {unique_long[:5]}"
+            )
+        pdb.loc[long_resnames, "resname"] = pdb.loc[long_resnames, "resname"].str[:3]
+
     # 2. Fix duplicate atom identifiers by reassigning resseq
     # Check for duplicates
-    dup_mask = pdb.duplicated(subset=['chainid', 'resseq', 'name', 'altloc'], keep=False)
-    
+    dup_mask = pdb.duplicated(
+        subset=["chainid", "resseq", "name", "altloc"], keep=False
+    )
+
     if dup_mask.any():
         n_dup = dup_mask.sum()
         if verbose > 0:
             print(f"  Found {n_dup} atoms with duplicate identifiers")
-        
+
         # Group by (chainid, resname, ATOM) to handle each group separately
         # This ensures we only renumber within the same molecule type and chain
-        for (chainid, resname, atom_type), group in pdb.groupby(['chainid', 'resname', 'ATOM']):
+        for (chainid, resname, atom_type), group in pdb.groupby(
+            ["chainid", "resname", "ATOM"]
+        ):
             group_indices = group.index
-            
+
             # Check if this group has duplicates
-            group_dup_mask = group.duplicated(subset=['chainid', 'resseq', 'name', 'altloc'], keep=False)
-            
+            group_dup_mask = group.duplicated(
+                subset=["chainid", "resseq", "name", "altloc"], keep=False
+            )
+
             if group_dup_mask.any():
                 # Find the maximum resseq in this chain to start numbering from there
-                chain_data = pdb[pdb['chainid'] == chainid]
-                max_resseq = chain_data['resseq'].max()
-                
+                chain_data = pdb[pdb["chainid"] == chainid]
+                max_resseq = chain_data["resseq"].max()
+
                 # Start numbering from max_resseq + 1
-                new_resseq_start = max_resseq + 1 if pd.notna(max_resseq) and max_resseq > 0 else 1
-                
+                new_resseq_start = (
+                    max_resseq + 1 if pd.notna(max_resseq) and max_resseq > 0 else 1
+                )
+
                 # Assign new sequential resseq values to all atoms in this group
                 # Group by (serial) to keep atoms of the same residue together
-                unique_serials = group['serial'].unique()
+                unique_serials = group["serial"].unique()
                 residue_counter = new_resseq_start
-                
+
                 for serial in unique_serials:
-                    serial_mask = pdb['serial'] == serial
-                    pdb.loc[serial_mask, 'resseq'] = residue_counter
+                    serial_mask = pdb["serial"] == serial
+                    pdb.loc[serial_mask, "resseq"] = residue_counter
                     residue_counter += 1
-                
+
                 if verbose > 1:
                     n_fixed = len(unique_serials)
-                    print(f"    Fixed {n_fixed} {resname} residues in chain {chainid} (resseq {new_resseq_start}-{residue_counter-1})")
-        
+                    print(
+                        f"    Fixed {n_fixed} {resname} residues in chain {chainid} (resseq {new_resseq_start}-{residue_counter-1})"
+                    )
+
         # Verify duplicates are fixed
-        final_dup_mask = pdb.duplicated(subset=['chainid', 'resseq', 'name', 'altloc'], keep=False)
+        final_dup_mask = pdb.duplicated(
+            subset=["chainid", "resseq", "name", "altloc"], keep=False
+        )
         if final_dup_mask.any():
             remaining_dups = final_dup_mask.sum()
             if verbose > 0:
-                print(f"  WARNING: Still have {remaining_dups} duplicate identifiers after sanitization")
-                dups = pdb[final_dup_mask].sort_values(['chainid', 'resseq', 'name'])
-                print(dups[['ATOM', 'serial', 'name', 'resname', 'chainid', 'resseq', 'altloc']].head(10))
+                print(
+                    f"  WARNING: Still have {remaining_dups} duplicate identifiers after sanitization"
+                )
+                dups = pdb[final_dup_mask].sort_values(["chainid", "resseq", "name"])
+                print(
+                    dups[
+                        [
+                            "ATOM",
+                            "serial",
+                            "name",
+                            "resname",
+                            "chainid",
+                            "resseq",
+                            "altloc",
+                        ]
+                    ].head(10)
+                )
         else:
             if verbose > 0:
-                print(f"  ✓ All duplicate identifiers resolved")
+                print("  ✓ All duplicate identifiers resolved")
     else:
         if verbose > 0:
-            print(f"  ✓ No duplicate atom identifiers found")
-    
+            print("  ✓ No duplicate atom identifiers found")
+
     if verbose > 0:
         print(f"  Final atoms: {len(pdb)}")
-    
+
     return pdb
 
 
-def _parse_with_parentheses(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
+def _parse_with_parentheses(
+    selection_string: str, pdb_df: pd.DataFrame
+) -> torch.Tensor:
     """
     Helper function to handle parentheses in selection strings.
     Recursively evaluates innermost parentheses first.
     """
     import re
-    
+
     # Find innermost parentheses
     while True:
-        match = re.search(r'\(([^()]+)\)', selection_string)
+        match = re.search(r"\(([^()]+)\)", selection_string)
         if not match:
             break
-        
+
         # Evaluate the innermost parenthesized expression
         inner = match.group(1)
         inner_mask = _parse_without_parentheses(inner, pdb_df)
-        
+
         # Replace with a placeholder that we'll substitute back
         # Use a unique placeholder that won't appear in normal selection
         placeholder = f"__MASK_{id(inner_mask)}__"
-        selection_string = selection_string[:match.start()] + placeholder + selection_string[match.end():]
-        
+        selection_string = (
+            selection_string[: match.start()]
+            + placeholder
+            + selection_string[match.end() :]
+        )
+
         # Store the mask result in a temporary global dict
         # (not ideal but works for this recursive evaluation)
-        if not hasattr(_parse_with_parentheses, '_mask_cache'):
+        if not hasattr(_parse_with_parentheses, "_mask_cache"):
             _parse_with_parentheses._mask_cache = {}
         _parse_with_parentheses._mask_cache[placeholder] = inner_mask
-    
+
     # Now parse the expression without parentheses, substituting cached masks
     return _parse_without_parentheses(selection_string, pdb_df)
 
 
-def _parse_without_parentheses(selection_string: str, pdb_df: pd.DataFrame) -> torch.Tensor:
+def _parse_without_parentheses(
+    selection_string: str, pdb_df: pd.DataFrame
+) -> torch.Tensor:
     """
     Parse selection string without parentheses.
     Handles logical operators and basic keywords.
     """
     import re
-    
+
     selection_string = selection_string.strip()
-    
+
     if not selection_string:
         raise ValueError("Selection string cannot be empty")
-    
+
     # Check if this is a cached mask placeholder
-    if selection_string.startswith('__MASK_') and selection_string.endswith('__'):
-        if hasattr(_parse_with_parentheses, '_mask_cache'):
-            return _parse_with_parentheses._mask_cache.get(selection_string, 
-                                                           torch.ones(len(pdb_df), dtype=torch.bool))
+    if selection_string.startswith("__MASK_") and selection_string.endswith("__"):
+        if hasattr(_parse_with_parentheses, "_mask_cache"):
+            return _parse_with_parentheses._mask_cache.get(
+                selection_string, torch.ones(len(pdb_df), dtype=torch.bool)
+            )
         return torch.ones(len(pdb_df), dtype=torch.bool)
-    
+
     # Handle "all" keyword
     if selection_string.lower() == "all":
         return torch.ones(len(pdb_df), dtype=torch.bool)
-    
+
     # Parse logical operators (or, and, not) with proper precedence
     # Priority: not > and > or
-    
+
     # First, handle "or" (lowest precedence)
-    if ' or ' in selection_string.lower():
-        parts = re.split(r'\s+or\s+', selection_string, flags=re.IGNORECASE)
+    if " or " in selection_string.lower():
+        parts = re.split(r"\s+or\s+", selection_string, flags=re.IGNORECASE)
         masks = [_parse_without_parentheses(part.strip(), pdb_df) for part in parts]
         result = masks[0]
         for mask in masks[1:]:
             result = result | mask
         return result
-    
+
     # Then, handle "and"
-    if ' and ' in selection_string.lower():
-        parts = re.split(r'\s+and\s+', selection_string, flags=re.IGNORECASE)
+    if " and " in selection_string.lower():
+        parts = re.split(r"\s+and\s+", selection_string, flags=re.IGNORECASE)
         masks = [_parse_without_parentheses(part.strip(), pdb_df) for part in parts]
         result = masks[0]
         for mask in masks[1:]:
             result = result & mask
         return result
-    
+
     # Then, handle "not"
-    if selection_string.lower().startswith('not '):
+    if selection_string.lower().startswith("not "):
         inner_selection = selection_string[4:].strip()
         return ~_parse_without_parentheses(inner_selection, pdb_df)
-    
+
     # Now handle individual selection keywords
     parts = selection_string.split(None, 1)
     if len(parts) < 2:
         raise ValueError(f"Invalid selection syntax: '{selection_string}'")
-    
+
     keyword, value = parts[0].lower(), parts[1]
-    
+
     # Initialize mask as all False
     mask = torch.zeros(len(pdb_df), dtype=torch.bool)
-    
-    if keyword == 'chain':
+
+    if keyword == "chain":
         # Select by chain ID
         chain_id = value.strip()
-        selected = pdb_df['chainid'] == chain_id
+        selected = pdb_df["chainid"] == chain_id
         mask = torch.tensor(selected.values, dtype=torch.bool)
-    
-    elif keyword == 'resseq':
+
+    elif keyword == "resseq":
         # Select by residue sequence number or range
-        if ':' in value:
+        if ":" in value:
             # Range selection
-            start, end = value.split(':')
+            start, end = value.split(":")
             start, end = int(start.strip()), int(end.strip())
-            selected = (pdb_df['resseq'] >= start) & (pdb_df['resseq'] <= end)
+            selected = (pdb_df["resseq"] >= start) & (pdb_df["resseq"] <= end)
         else:
             # Single residue
             resseq_num = int(value.strip())
-            selected = pdb_df['resseq'] == resseq_num
+            selected = pdb_df["resseq"] == resseq_num
         mask = torch.tensor(selected.values, dtype=torch.bool)
-    
-    elif keyword == 'resname':
+
+    elif keyword == "resname":
         # Select by residue name
         resname = value.strip().upper()
-        selected = pdb_df['resname'].str.upper() == resname
+        selected = pdb_df["resname"].str.upper() == resname
         mask = torch.tensor(selected.values, dtype=torch.bool)
-    
-    elif keyword == 'name':
+
+    elif keyword == "name":
         # Select by atom name
         atom_name = value.strip().upper()
-        selected = pdb_df['name'].str.upper() == atom_name
+        selected = pdb_df["name"].str.upper() == atom_name
         mask = torch.tensor(selected.values, dtype=torch.bool)
-    
-    elif keyword == 'element':
+
+    elif keyword == "element":
         # Select by element
         element = value.strip().capitalize()
-        selected = pdb_df['element'].str.capitalize() == element
+        selected = pdb_df["element"].str.capitalize() == element
         mask = torch.tensor(selected.values, dtype=torch.bool)
-    
-    elif keyword == 'altloc':
+
+    elif keyword == "altloc":
         # Select by alternate location
         altloc = value.strip()
-        selected = pdb_df['altloc'] == altloc
+        selected = pdb_df["altloc"] == altloc
         mask = torch.tensor(selected.values, dtype=torch.bool)
-    
+
     else:
         raise ValueError(f"Unknown selection keyword: '{keyword}'")
-    
+
     return mask
 
 
@@ -1029,19 +1100,22 @@ def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch
     >>> mask = parse_phenix_selection("chain A and (name CA or name CB)", pdb_df)
     """
     # Clear any cached masks from previous calls
-    if hasattr(_parse_with_parentheses, '_mask_cache'):
+    if hasattr(_parse_with_parentheses, "_mask_cache"):
         _parse_with_parentheses._mask_cache.clear()
-    
+
     # Check if there are parentheses
-    if '(' in selection_string:
+    if "(" in selection_string:
         return _parse_with_parentheses(selection_string, pdb_df)
     else:
         return _parse_without_parentheses(selection_string, pdb_df)
 
 
-def create_selection_mask(selection_string: str, pdb_df: pd.DataFrame, 
-                         current_mask: Optional[torch.Tensor] = None,
-                         mode: str = 'set') -> torch.Tensor:
+def create_selection_mask(
+    selection_string: str,
+    pdb_df: pd.DataFrame,
+    current_mask: Optional[torch.Tensor] = None,
+    mode: str = "set",
+) -> torch.Tensor:
     """
     Create or modify a refinable mask based on a Phenix-style selection.
 
@@ -1087,17 +1161,17 @@ def create_selection_mask(selection_string: str, pdb_df: pd.DataFrame,
     """
     # Parse the selection
     selection_mask = parse_phenix_selection(selection_string, pdb_df)
-    
+
     # Initialize current mask if not provided
     if current_mask is None:
         current_mask = torch.zeros(len(pdb_df), dtype=torch.bool)
-    
+
     # Apply mode
-    if mode == 'set':
+    if mode == "set":
         return selection_mask
-    elif mode == 'add':
+    elif mode == "add":
         return current_mask | selection_mask
-    elif mode == 'remove':
+    elif mode == "remove":
         return current_mask & ~selection_mask
     else:
         raise ValueError(f"Invalid mode: '{mode}'. Must be 'set', 'add', or 'remove'")

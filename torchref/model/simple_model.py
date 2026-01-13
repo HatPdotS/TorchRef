@@ -7,24 +7,24 @@ needing to load from PDB/CIF files. Supports varying unit cells and space
 groups per forward call.
 """
 
+from typing import List, Optional, Tuple
+
+import gemmi
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, List
-import gemmi
-
-from torchref.math_functions.math_torch import (
-    find_relevant_voxels,
-    vectorized_add_to_map,
-    ifft,
-    extract_structure_factor_from_grid,
-    get_real_grid,
-    find_grid_size
-)
 
 import torchref.math_functions.get_scattering_factor_torch as gsf
-from torchref.symmetrie.map_symmetry import MapSymmetry
-import torchref.symmetrie.symmetrie as sym
 import torchref.math_functions.math_numpy as mnp
+import torchref.symmetrie.symmetrie as sym
+from torchref.math_functions.math_torch import (
+    extract_structure_factor_from_grid,
+    find_grid_size,
+    find_relevant_voxels,
+    get_real_grid,
+    ifft,
+    vectorized_add_to_map,
+)
+from torchref.symmetrie.map_symmetry import MapSymmetry
 
 
 class SimpleModel(nn.Module):
@@ -66,8 +66,8 @@ class SimpleModel(nn.Module):
         max_res: float = 1.0,
         radius_angstrom: float = 4.0,
         dtype_float: torch.dtype = torch.float32,
-        device: torch.device = torch.device('cpu'),
-        verbose: int = 0
+        device: torch.device = torch.device("cpu"),
+        verbose: int = 0,
     ):
         super().__init__()
 
@@ -89,8 +89,7 @@ class SimpleModel(nn.Module):
         self._current_gridsize = None
 
     def _get_scattering_params(
-        self,
-        atom_types: List[str]
+        self, atom_types: List[str]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Get ITC92 scattering parameters for a list of atom types.
@@ -114,7 +113,7 @@ class SimpleModel(nn.Module):
                 params = gsf.get_parametrization_atom(0, elem)  # charge=0
                 self._scattering_cache[elem] = (
                     params[0].to(device=self.device, dtype=self.dtype_float),
-                    params[1].to(device=self.device, dtype=self.dtype_float)
+                    params[1].to(device=self.device, dtype=self.dtype_float),
                 )
 
         # Build A and B tensors for all atoms
@@ -130,20 +129,17 @@ class SimpleModel(nn.Module):
     def _get_symmetry_function(self, spacegroup: str) -> sym.Symmetry:
         """Get or create symmetry function for spacegroup."""
         if spacegroup not in self._symmetry_cache:
-            sg_gemmi = gemmi.SpaceGroup(spacegroup.replace('  ', ' '))
+            sg_gemmi = gemmi.SpaceGroup(spacegroup.replace("  ", " "))
             sg_hm = sg_gemmi.hm
             self._symmetry_cache[spacegroup] = {
-                'function': sym.Symmetry(sg_hm),
-                'hm': sg_hm,
-                'map_symmetry': {}  # grid_shape -> MapSymmetry
+                "function": sym.Symmetry(sg_hm),
+                "hm": sg_hm,
+                "map_symmetry": {},  # grid_shape -> MapSymmetry
             }
-        return self._symmetry_cache[spacegroup]['function']
+        return self._symmetry_cache[spacegroup]["function"]
 
     def _get_map_symmetry(
-        self,
-        spacegroup: str,
-        grid_shape: Tuple[int, ...],
-        cell: torch.Tensor
+        self, spacegroup: str, grid_shape: Tuple[int, ...], cell: torch.Tensor
     ) -> Optional[MapSymmetry]:
         """Get or create MapSymmetry for given spacegroup and grid shape."""
         sg_cache = self._symmetry_cache.get(spacegroup)
@@ -153,20 +149,18 @@ class SimpleModel(nn.Module):
 
         # Check if we have cached MapSymmetry for this grid shape
         shape_key = tuple(grid_shape)
-        if shape_key not in sg_cache['map_symmetry']:
-            sg_cache['map_symmetry'][shape_key] = MapSymmetry(
-                space_group=sg_cache['hm'],
+        if shape_key not in sg_cache["map_symmetry"]:
+            sg_cache["map_symmetry"][shape_key] = MapSymmetry(
+                space_group=sg_cache["hm"],
                 map_shape=grid_shape,
                 cell_params=cell,
                 verbose=self.verbose,
-                device=self.device
+                device=self.device,
             )
-        return sg_cache['map_symmetry'][shape_key]
+        return sg_cache["map_symmetry"][shape_key]
 
     def _compute_grid(
-        self,
-        cell: torch.Tensor,
-        spacegroup: str
+        self, cell: torch.Tensor, spacegroup: str
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute grid and transformation matrices for given cell and spacegroup.
@@ -188,12 +182,12 @@ class SimpleModel(nn.Module):
         inv_frac_matrix = torch.tensor(
             mnp.get_inv_fractional_matrix(cell_np),
             dtype=self.dtype_float,
-            device=self.device
+            device=self.device,
         )
         frac_matrix = torch.tensor(
             mnp.get_fractional_matrix(cell_np),
             dtype=self.dtype_float,
-            device=self.device
+            device=self.device,
         )
 
         # Compute grid size
@@ -203,7 +197,9 @@ class SimpleModel(nn.Module):
         # Optimize grid size based on symmetry
         sym_func = self._get_symmetry_function(spacegroup)
         gridsize_optimized = sym_func.suggest_grid_size(gridsize_tuple)
-        gridsize = torch.tensor(gridsize_optimized, dtype=torch.int32, device=self.device)
+        gridsize = torch.tensor(
+            gridsize_optimized, dtype=torch.int32, device=self.device
+        )
 
         # Compute real-space grid
         real_space_grid = get_real_grid(cell, gridsize=gridsize, device=self.device)
@@ -224,7 +220,7 @@ class SimpleModel(nn.Module):
         inv_frac_matrix: torch.Tensor,
         frac_matrix: torch.Tensor,
         map_symmetry: Optional[MapSymmetry] = None,
-        apply_symmetry: bool = True
+        apply_symmetry: bool = True,
     ) -> torch.Tensor:
         """
         Build electron density map from tensor inputs.
@@ -259,9 +255,7 @@ class SimpleModel(nn.Module):
         """
         # Initialize empty map
         density_map = torch.zeros(
-            real_space_grid.shape[:-1],
-            dtype=self.dtype_float,
-            device=self.device
+            real_space_grid.shape[:-1], dtype=self.dtype_float, device=self.device
         )
 
         # Find relevant voxels for each atom
@@ -269,7 +263,7 @@ class SimpleModel(nn.Module):
             real_space_grid,
             xyz,
             radius_angstrom=self.radius_angstrom,
-            inv_frac_matrix=inv_frac_matrix
+            inv_frac_matrix=inv_frac_matrix,
         )
 
         # Add atom densities to map
@@ -283,7 +277,7 @@ class SimpleModel(nn.Module):
             frac_matrix,
             A,
             B_scatter,
-            occ
+            occ,
         )
 
         # Apply symmetry if requested
@@ -301,7 +295,7 @@ class SimpleModel(nn.Module):
         cell: torch.Tensor,
         spacegroup: str,
         hkl: torch.Tensor,
-        apply_symmetry: bool = True
+        apply_symmetry: bool = True,
     ) -> torch.Tensor:
         """
         Compute structure factors from atomic parameters.
@@ -355,16 +349,27 @@ class SimpleModel(nn.Module):
 
         # Get map symmetry operator
         grid_shape = tuple(real_space_grid.shape[:-1])
-        map_symmetry = self._get_map_symmetry(spacegroup, grid_shape, cell) if apply_symmetry else None
+        map_symmetry = (
+            self._get_map_symmetry(spacegroup, grid_shape, cell)
+            if apply_symmetry
+            else None
+        )
 
         # Get scattering parameters
         A, B_scatter = self._get_scattering_params(atom_types)
 
         # Build density map
         density_map = self._build_map(
-            xyz, B, occ, A, B_scatter,
-            real_space_grid, inv_frac_matrix, frac_matrix,
-            map_symmetry, apply_symmetry
+            xyz,
+            B,
+            occ,
+            A,
+            B_scatter,
+            real_space_grid,
+            inv_frac_matrix,
+            frac_matrix,
+            map_symmetry,
+            apply_symmetry,
         )
 
         # Compute structure factors via FFT
@@ -372,7 +377,9 @@ class SimpleModel(nn.Module):
         sf = extract_structure_factor_from_grid(reciprocal_space_grid, hkl)
 
         if self.verbose > 2:
-            assert torch.all(torch.isfinite(sf)), "Non-finite structure factors computed."
+            assert torch.all(
+                torch.isfinite(sf)
+            ), "Non-finite structure factors computed."
 
         return sf
 
@@ -384,7 +391,7 @@ class SimpleModel(nn.Module):
         atom_types: List[str],
         cell: torch.Tensor,
         spacegroup: str,
-        apply_symmetry: bool = True
+        apply_symmetry: bool = True,
     ) -> torch.Tensor:
         """
         Compute only the electron density map without structure factors.
@@ -423,18 +430,29 @@ class SimpleModel(nn.Module):
 
         # Get map symmetry
         grid_shape = tuple(real_space_grid.shape[:-1])
-        map_symmetry = self._get_map_symmetry(spacegroup, grid_shape, cell) if apply_symmetry else None
+        map_symmetry = (
+            self._get_map_symmetry(spacegroup, grid_shape, cell)
+            if apply_symmetry
+            else None
+        )
 
         # Get scattering parameters
         A, B_scatter = self._get_scattering_params(atom_types)
 
         # Build and return map
         return self._build_map(
-            xyz, B, occ, A, B_scatter,
-            real_space_grid, inv_frac_matrix, frac_matrix,
-            map_symmetry, apply_symmetry
+            xyz,
+            B,
+            occ,
+            A,
+            B_scatter,
+            real_space_grid,
+            inv_frac_matrix,
+            frac_matrix,
+            map_symmetry,
+            apply_symmetry,
         )
-    
+
     def clear_cache(self):
         """Clear cached scattering parameters and symmetry operations."""
         self._scattering_cache = {}
@@ -442,7 +460,7 @@ class SimpleModel(nn.Module):
 
     def cuda(self, device=None):
         """Move model to GPU."""
-        self.device = torch.device('cuda' if device is None else device)
+        self.device = torch.device("cuda" if device is None else device)
         # Re-cache scattering parameters on new device
         new_cache = {}
         for elem, (A, B) in self._scattering_cache.items():
@@ -454,7 +472,7 @@ class SimpleModel(nn.Module):
 
     def cpu(self):
         """Move model to CPU."""
-        self.device = torch.device('cpu')
+        self.device = torch.device("cpu")
         # Re-cache scattering parameters on CPU
         new_cache = {}
         for elem, (A, B) in self._scattering_cache.items():

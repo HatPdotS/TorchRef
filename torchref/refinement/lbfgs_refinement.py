@@ -11,9 +11,11 @@ Weight optimization follows the Phenix approach:
 - Select best weight based on Rfree while respecting gap constraints
 """
 
-import torch
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
-from typing import Optional, Dict, List, Tuple
+import torch
+
 from torchref.refinement.base_refinement import Refinement
 from torchref.refinement.loss_state import LossState
 
@@ -55,7 +57,7 @@ class LBFGSRefinement(Refinement):
     >>> refinement.refine(macro_cycles=2)
     """
 
-    def __init__(self, *args, target_mode: str = 'ml', **kwargs):
+    def __init__(self, *args, target_mode: str = "ml", **kwargs):
         """
         Initialize LBFGS refinement.
 
@@ -69,7 +71,7 @@ class LBFGSRefinement(Refinement):
             Passed to parent Refinement class.
         """
         super().__init__(*args, **kwargs)
-        
+
         # Set the X-ray target mode (uses the new target system from base class)
         self.set_xray_target_mode(target_mode)
         self.target_mode = target_mode
@@ -131,7 +133,7 @@ class LBFGSRefinement(Refinement):
             lr=lr,
             max_iter=max_iter,
             history_size=100,
-            line_search_fn="strong_wolfe"
+            line_search_fn="strong_wolfe",
         )
 
         def closure():
@@ -183,10 +185,7 @@ class LBFGSRefinement(Refinement):
         # Log initial state
         state.aggregate(log_values=True)
 
-        optimizer = torch.optim.AdamW(
-            params,
-            lr=lr
-        )
+        optimizer = torch.optim.AdamW(params, lr=lr)
 
         for step in range(steps):
             optimizer.zero_grad()
@@ -219,7 +218,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         self.model.freeze_all()
-        self.model.unfreeze('b')
+        self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
         state = self.create_loss_state()
@@ -242,7 +241,7 @@ class LBFGSRefinement(Refinement):
         """
         self.model.freeze_all()
         self.scaler.freeze()
-        self.model.unfreeze('xyz')
+        self.model.unfreeze("xyz")
 
         self.scaler.refine_lbfgs()
         state = self.create_loss_state()
@@ -250,7 +249,7 @@ class LBFGSRefinement(Refinement):
 
         self.model.unfreeze_all()
         return state
-    
+
     def _run_xyz_with_weight(self, restraint_weight: float, max_iter: int = 20) -> Dict:
         """
         Run XYZ refinement with a fixed restraint weight and return metrics.
@@ -282,22 +281,22 @@ class LBFGSRefinement(Refinement):
             xray_target = self.xray_loss().item()
             restraints_target = self.restraints_loss().item()
             bond_devs, _ = self.restraints.bond_deviations()
-            rmsd_bonds = torch.sqrt((bond_devs ** 2).mean()).item()
+            rmsd_bonds = torch.sqrt((bond_devs**2).mean()).item()
             angle_devs, _ = self.restraints.angle_deviations()
-            rmsd_angles = torch.sqrt((angle_devs ** 2).mean()).item()
+            rmsd_angles = torch.sqrt((angle_devs**2).mean()).item()
 
         return {
-            'weight': restraint_weight,
-            'rwork': rwork,
-            'rfree': rfree,
-            'rwork_start': rwork_start,
-            'rfree_start': rfree_start,
-            'gap': rfree - rwork,
-            'xray_target': xray_target,
-            'restraints_target': restraints_target,
-            'rmsd_bonds': rmsd_bonds,
-            'rmsd_angles': rmsd_angles,
-            'state': state,
+            "weight": restraint_weight,
+            "rwork": rwork,
+            "rfree": rfree,
+            "rwork_start": rwork_start,
+            "rfree_start": rfree_start,
+            "gap": rfree - rwork,
+            "xray_target": xray_target,
+            "restraints_target": restraints_target,
+            "rmsd_bonds": rmsd_bonds,
+            "rmsd_angles": rmsd_angles,
+            "state": state,
         }
 
     def _run_adp_with_weight(self, adp_weight: float, max_iter: int = 20) -> Dict:
@@ -335,17 +334,17 @@ class LBFGSRefinement(Refinement):
             bi_bj = self._compute_mean_bi_bj()
 
         return {
-            'weight': adp_weight,
-            'rwork': rwork,
-            'rfree': rfree,
-            'gap': rfree - rwork,
-            'xray_target': xray_target,
-            'adp_target': adp_target,
-            'mean_b': mean_b,
-            'bi_bj': bi_bj,
-            'rwork_start': rwork_start,
-            'rfree_start': rfree_start,
-            'state': state,
+            "weight": adp_weight,
+            "rwork": rwork,
+            "rfree": rfree,
+            "gap": rfree - rwork,
+            "xray_target": xray_target,
+            "adp_target": adp_target,
+            "mean_b": mean_b,
+            "bi_bj": bi_bj,
+            "rwork_start": rwork_start,
+            "rfree_start": rfree_start,
+            "state": state,
         }
 
     def _compute_mean_bi_bj(self) -> float:
@@ -358,18 +357,18 @@ class LBFGSRefinement(Refinement):
             Mean absolute B-factor difference for bonded atoms.
         """
         b = self.model.b()
-        
+
         # Make sure 'all' indices are available
-        if 'all' not in self.restraints.restraints['bond']:
+        if "all" not in self.restraints.restraints["bond"]:
             self.restraints.cat_dict()
-        
-        bonds = self.restraints.restraints['bond']['all']['indices']
+
+        bonds = self.restraints.restraints["bond"]["all"]["indices"]
         if bonds is None or len(bonds) == 0:
             return 0.0
         bi = b[bonds[:, 0]]
         bj = b[bonds[:, 1]]
         return torch.abs(bi - bj).mean().item()
-    
+
     def screen_xyz_weights(
         self,
         weights: Optional[List[float]] = None,
@@ -406,63 +405,79 @@ class LBFGSRefinement(Refinement):
             Tuple of (best_weight, results_list).
         """
         from copy import deepcopy
+
         if weights is None:
-            weights = np.logspace(np.log10(min_weight), np.log10(max_weight), n_weights).tolist()
+            weights = np.logspace(
+                np.log10(min_weight), np.log10(max_weight), n_weights
+            ).tolist()
 
         self.scaler.freeze()
         self.model.freeze_all()
-        self.model.unfreeze('xyz')
+        self.model.unfreeze("xyz")
         print(self.model.parameters())
-        
+
         # Deep copy initial state - critical for proper restoration
         model_initial = deepcopy(self.model.xyz.state_dict())
-        
+
         results = []
-        
+
         # Get starting metrics (before refinement)
         with torch.no_grad():
             rwork_start, rfree_start = self.get_rfactor()
-        
+
         if self.verbose > 0:
             print(f"\n{'='*80}")
-            print(f"XYZ Weight Screening (Phenix-style)")
+            print("XYZ Weight Screening (Phenix-style)")
             print(f"{'='*80}")
-            print(f"{'WEIGHT':>10} {'Rwork':>8} {'Rfree':>8} {'Gap':>8} {'RMSD_b':>8} {'RMSD_a':>8} {'X-ray':>10} {'Restr':>10}")
-            print(f"{'start':>10} {rwork_start*100:>7.2f}% {rfree_start*100:>7.2f}% {(rfree_start-rwork_start)*100:>7.2f}%")
-        
+            print(
+                f"{'WEIGHT':>10} {'Rwork':>8} {'Rfree':>8} {'Gap':>8} {'RMSD_b':>8} {'RMSD_a':>8} {'X-ray':>10} {'Restr':>10}"
+            )
+            print(
+                f"{'start':>10} {rwork_start*100:>7.2f}% {rfree_start*100:>7.2f}% {(rfree_start-rwork_start)*100:>7.2f}%"
+            )
+
         for weight in weights:
             result = self._run_xyz_with_weight(weight, max_iter=max_iter)
             # Deep copy the state dict with tensor cloning
-            result['state_dict'] = deepcopy(self.model.xyz.state_dict())
+            result["state_dict"] = deepcopy(self.model.xyz.state_dict())
             results.append(result)
-            
+
             # Restore initial state for next trial
             self.model.xyz.load_state_dict(model_initial)
-            
+
             if self.verbose > 0:
-                print(f"{weight:>10.3f} {result['rwork']*100:>7.2f}% {result['rfree']*100:>7.2f}% "
-                      f"{result['gap']*100:>7.2f}% {result['rmsd_bonds']:>8.4f} {result['rmsd_angles']:>8.2f} "
-                      f"{result['xray_target']:>10.4f} {result['restraints_target']:>10.4f} {result['rwork_start']*100:>7.2f}% {result['rfree_start']*100:>7.2f}%")
-        
+                print(
+                    f"{weight:>10.3f} {result['rwork']*100:>7.2f}% {result['rfree']*100:>7.2f}% "
+                    f"{result['gap']*100:>7.2f}% {result['rmsd_bonds']:>8.4f} {result['rmsd_angles']:>8.2f} "
+                    f"{result['xray_target']:>10.4f} {result['restraints_target']:>10.4f} {result['rwork_start']*100:>7.2f}% {result['rfree_start']*100:>7.2f}%"
+                )
+
         # Multi-metric weight selection
         best = self._select_best_xyz_weight(results, max_gap, rwork_start, rfree_start)
-        
-        best_weight = best['weight']
 
-        self.model.xyz.load_state_dict(best['state_dict'])
-        
+        best_weight = best["weight"]
+
+        self.model.xyz.load_state_dict(best["state_dict"])
+
         if self.verbose > 0:
             print(f"\nBest XYZ weight: {best_weight:.3f}")
-            print(f"  Rwork={best['rwork']*100:.2f}%, Rfree={best['rfree']*100:.2f}%, Gap={best['gap']*100:.2f}%")
+            print(
+                f"  Rwork={best['rwork']*100:.2f}%, Rfree={best['rfree']*100:.2f}%, Gap={best['gap']*100:.2f}%"
+            )
             print(f"  Selection score: {best.get('score', 'N/A')}")
 
         self.model.unfreeze_all()
         self.scaler.unfreeze()
-        
+
         return best_weight, results
-    
-    def _select_best_xyz_weight(self, results: List[Dict], max_gap: float, 
-                                 rwork_start: float, rfree_start: float) -> Dict:
+
+    def _select_best_xyz_weight(
+        self,
+        results: List[Dict],
+        max_gap: float,
+        rwork_start: float,
+        rfree_start: float,
+    ) -> Dict:
         """
         Select best XYZ weight using multi-metric ranking.
 
@@ -490,58 +505,62 @@ class LBFGSRefinement(Refinement):
             Best result dict with 'score' field added.
         """
         # Compute normalized scores for each metric
-        rfree_values = [r['rfree'] for r in results]
-        gap_values = [r['gap'] for r in results]
-        rmsd_bonds = [r['rmsd_bonds'] for r in results]
-        
+        rfree_values = [r["rfree"] for r in results]
+        gap_values = [r["gap"] for r in results]
+        rmsd_bonds = [r["rmsd_bonds"] for r in results]
+
         rfree_min, rfree_max = min(rfree_values), max(rfree_values)
         gap_min, gap_max = min(gap_values), max(gap_values)
         rmsd_min, rmsd_max = min(rmsd_bonds), max(rmsd_bonds)
-        
+
         for r in results:
             # Normalize each metric to [0, 1] where lower is better
             if rfree_max > rfree_min:
-                rfree_norm = (r['rfree'] - rfree_min) / (rfree_max - rfree_min)
+                rfree_norm = (r["rfree"] - rfree_min) / (rfree_max - rfree_min)
             else:
                 rfree_norm = 0.0
-                
+
             if gap_max > gap_min:
-                gap_norm = (r['gap'] - gap_min) / (gap_max - gap_min)
+                gap_norm = (r["gap"] - gap_min) / (gap_max - gap_min)
             else:
                 gap_norm = 0.0
-                
+
             if rmsd_max > rmsd_min:
-                rmsd_norm = (r['rmsd_bonds'] - rmsd_min) / (rmsd_max - rmsd_min)
+                rmsd_norm = (r["rmsd_bonds"] - rmsd_min) / (rmsd_max - rmsd_min)
             else:
                 rmsd_norm = 0.0
-            
+
             # Penalty if Rfree didn't improve
-            rfree_improvement_penalty = 0.0 if r['rfree'] < rfree_start else 0.5
-            
+            rfree_improvement_penalty = 0.0 if r["rfree"] < rfree_start else 0.5
+
             # Penalty for excessive gap (soft constraint)
-            gap_penalty = max(0, (r['gap'] - max_gap) / max_gap) if r['gap'] > max_gap else 0.0
-            
+            gap_penalty = (
+                max(0, (r["gap"] - max_gap) / max_gap) if r["gap"] > max_gap else 0.0
+            )
+
             # Composite score: weighted sum (lower is better)
             # Prioritize: Rfree (40%), Gap (35%), Geometry (15%), Improvement (10%)
-            r['score'] = (
-                0.40 * rfree_norm +
-                0.35 * gap_norm +
-                0.15 * rmsd_norm +
-                0.10 * rfree_improvement_penalty +
-                0.50 * gap_penalty  # Strong penalty for excessive gap
+            r["score"] = (
+                0.40 * rfree_norm
+                + 0.35 * gap_norm
+                + 0.15 * rmsd_norm
+                + 0.10 * rfree_improvement_penalty
+                + 0.50 * gap_penalty  # Strong penalty for excessive gap
             )
-        
+
         # Print ranking if verbose
         if self.verbose > 1:
             print("\nWeight ranking (top 5):")
-            sorted_results = sorted(results, key=lambda x: x['score'])
+            sorted_results = sorted(results, key=lambda x: x["score"])
             for i, r in enumerate(sorted_results[:5]):
-                print(f"  {i+1}. w={r['weight']:.3f}: Rfree={r['rfree']*100:.2f}%, "
-                      f"Gap={r['gap']*100:.2f}%, Score={r['score']:.4f}")
-        
+                print(
+                    f"  {i+1}. w={r['weight']:.3f}: Rfree={r['rfree']*100:.2f}%, "
+                    f"Gap={r['gap']*100:.2f}%, Score={r['score']:.4f}"
+                )
+
         # Return best (lowest score)
-        return min(results, key=lambda x: x['score'])
-    
+        return min(results, key=lambda x: x["score"])
+
     def screen_adp_weights(
         self,
         weights: Optional[List[float]] = None,
@@ -583,62 +602,80 @@ class LBFGSRefinement(Refinement):
         from copy import deepcopy
 
         if weights is None:
-            weights = np.logspace(np.log10(min_weight), np.log10(max_weight), n_weights).tolist()
+            weights = np.logspace(
+                np.log10(min_weight), np.log10(max_weight), n_weights
+            ).tolist()
         self.scaler.freeze()
         self.model.freeze_all()
-        self.model.unfreeze('b')
+        self.model.unfreeze("b")
         print(self.model.parameters())
         # Deep copy initial state - critical for proper restoration
         b_initial = deepcopy(self.model.b.state_dict())
-        
+
         results = []
-        
+
         # Get starting metrics
         with torch.no_grad():
             rwork_start, rfree_start = self.get_rfactor()
             mean_b_start = self.model.b().mean().item()
             bi_bj_start = self._compute_mean_bi_bj()
-        
+
         if self.verbose > 0:
             print(f"\n{'='*80}")
-            print(f"ADP Weight Screening (Phenix-style)")
+            print("ADP Weight Screening (Phenix-style)")
             print(f"{'='*80}")
-            print(f"{'WEIGHT':>10} {'Rwork':>8} {'Rfree':>8} {'Gap':>8} {'<Bi-Bj>':>8} {'<B>':>8} {'X-ray':>10} {'ADP':>10}")
-            print(f"{'start':>10} {rwork_start*100:>7.2f}% {rfree_start*100:>7.2f}% {(rfree_start-rwork_start)*100:>7.2f}% "
-                  f"{bi_bj_start:>8.2f} {mean_b_start:>8.1f}")
-        
+            print(
+                f"{'WEIGHT':>10} {'Rwork':>8} {'Rfree':>8} {'Gap':>8} {'<Bi-Bj>':>8} {'<B>':>8} {'X-ray':>10} {'ADP':>10}"
+            )
+            print(
+                f"{'start':>10} {rwork_start*100:>7.2f}% {rfree_start*100:>7.2f}% {(rfree_start-rwork_start)*100:>7.2f}% "
+                f"{bi_bj_start:>8.2f} {mean_b_start:>8.1f}"
+            )
+
         for weight in weights:
             result = self._run_adp_with_weight(weight, max_iter=max_iter)
             # Deep copy the state dict with tensor cloning
-            result['state_dict'] = deepcopy(self.model.b.state_dict())
+            result["state_dict"] = deepcopy(self.model.b.state_dict())
             results.append(result)
-            
+
             # Restore initial state for next trial
             self.model.b.load_state_dict(b_initial)
-            
+
             if self.verbose > 0:
-                print(f"{weight:>10.3f} {result['rwork']*100:>7.2f}% {result['rfree']*100:>7.2f}% "
-                      f"{result['gap']*100:>7.2f}% {result['bi_bj']:>8.2f} {result['mean_b']:>8.1f} "
-                      f"{result['xray_target']:>10.4f} {result['adp_target']:>10.4f} {result['rwork_start']*100:>7.2f}% {result['rfree_start']*100:>7.2f}%")
-        
+                print(
+                    f"{weight:>10.3f} {result['rwork']*100:>7.2f}% {result['rfree']*100:>7.2f}% "
+                    f"{result['gap']*100:>7.2f}% {result['bi_bj']:>8.2f} {result['mean_b']:>8.1f} "
+                    f"{result['xray_target']:>10.4f} {result['adp_target']:>10.4f} {result['rwork_start']*100:>7.2f}% {result['rfree_start']*100:>7.2f}%"
+                )
+
         # Multi-metric weight selection
-        best = self._select_best_adp_weight(results, max_gap, max_bi_bj, rwork_start, rfree_start)
-        
-        best_weight = best['weight']
-        
+        best = self._select_best_adp_weight(
+            results, max_gap, max_bi_bj, rwork_start, rfree_start
+        )
+
+        best_weight = best["weight"]
+
         if self.verbose > 0:
             print(f"\nBest ADP weight: {best_weight:.3f}")
-            print(f"  Rwork={best['rwork']*100:.2f}%, Rfree={best['rfree']*100:.2f}%, "
-                  f"Gap={best['gap']*100:.2f}%, <Bi-Bj>={best['bi_bj']:.2f}")
+            print(
+                f"  Rwork={best['rwork']*100:.2f}%, Rfree={best['rfree']*100:.2f}%, "
+                f"Gap={best['gap']*100:.2f}%, <Bi-Bj>={best['bi_bj']:.2f}"
+            )
             print(f"  Selection score: {best.get('score', 'N/A')}")
-        
-        self.model.b.load_state_dict(best['state_dict'])
+
+        self.model.b.load_state_dict(best["state_dict"])
         self.model.unfreeze_all()
-        self.scaler.unfreeze()  
+        self.scaler.unfreeze()
         return best_weight, results
-    
-    def _select_best_adp_weight(self, results: List[Dict], max_gap: float, max_bi_bj: float,
-                                 rwork_start: float, rfree_start: float) -> Dict:
+
+    def _select_best_adp_weight(
+        self,
+        results: List[Dict],
+        max_gap: float,
+        max_bi_bj: float,
+        rwork_start: float,
+        rfree_start: float,
+    ) -> Dict:
         """
         Select best ADP weight using multi-metric ranking.
 
@@ -668,64 +705,72 @@ class LBFGSRefinement(Refinement):
             Best result dict with 'score' field added.
         """
         # Compute normalized scores for each metric
-        rfree_values = [r['rfree'] for r in results]
-        gap_values = [r['gap'] for r in results]
-        bi_bj_values = [r['bi_bj'] for r in results]
-        
+        rfree_values = [r["rfree"] for r in results]
+        gap_values = [r["gap"] for r in results]
+        bi_bj_values = [r["bi_bj"] for r in results]
+
         rfree_min, rfree_max = min(rfree_values), max(rfree_values)
         gap_min, gap_max = min(gap_values), max(gap_values)
         bi_bj_min, bi_bj_max = min(bi_bj_values), max(bi_bj_values)
-        
+
         # Ideal <Bi-Bj> is around 2-4 Å² (similar to Phenix target)
         ideal_bi_bj = 3.0
-        
+
         for r in results:
             # Normalize each metric to [0, 1] where lower is better
             if rfree_max > rfree_min:
-                rfree_norm = (r['rfree'] - rfree_min) / (rfree_max - rfree_min)
+                rfree_norm = (r["rfree"] - rfree_min) / (rfree_max - rfree_min)
             else:
                 rfree_norm = 0.0
-                
+
             if gap_max > gap_min:
-                gap_norm = (r['gap'] - gap_min) / (gap_max - gap_min)
+                gap_norm = (r["gap"] - gap_min) / (gap_max - gap_min)
             else:
                 gap_norm = 0.0
-            
+
             # <Bi-Bj> score: penalize deviation from ideal
-            bi_bj_deviation = abs(r['bi_bj'] - ideal_bi_bj) / max(max_bi_bj, 1.0)
+            bi_bj_deviation = abs(r["bi_bj"] - ideal_bi_bj) / max(max_bi_bj, 1.0)
             bi_bj_norm = min(bi_bj_deviation, 1.0)
-            
+
             # Penalty if Rfree didn't improve
-            rfree_improvement_penalty = 0.0 if r['rfree'] < rfree_start else 0.5
-            
+            rfree_improvement_penalty = 0.0 if r["rfree"] < rfree_start else 0.5
+
             # Penalty for excessive gap
-            gap_penalty = max(0, (r['gap'] - max_gap) / max_gap) if r['gap'] > max_gap else 0.0
-            
+            gap_penalty = (
+                max(0, (r["gap"] - max_gap) / max_gap) if r["gap"] > max_gap else 0.0
+            )
+
             # Penalty for excessive <Bi-Bj>
-            bi_bj_penalty = max(0, (r['bi_bj'] - max_bi_bj) / max_bi_bj) if r['bi_bj'] > max_bi_bj else 0.0
-            
+            bi_bj_penalty = (
+                max(0, (r["bi_bj"] - max_bi_bj) / max_bi_bj)
+                if r["bi_bj"] > max_bi_bj
+                else 0.0
+            )
+
             # Composite score: weighted sum (lower is better)
             # Prioritize: Rfree (30%), Gap (30%), Bi-Bj (20%), Improvement (10%), Penalties (10%)
-            r['score'] = (
-                0.30 * rfree_norm +
-                0.30 * gap_norm +
-                0.20 * bi_bj_norm +
-                0.10 * rfree_improvement_penalty +
-                0.50 * gap_penalty +
-                0.30 * bi_bj_penalty
+            r["score"] = (
+                0.30 * rfree_norm
+                + 0.30 * gap_norm
+                + 0.20 * bi_bj_norm
+                + 0.10 * rfree_improvement_penalty
+                + 0.50 * gap_penalty
+                + 0.30 * bi_bj_penalty
             )
-        
+
         # Print ranking if verbose
         if self.verbose > 1:
             print("\nWeight ranking (top 5):")
-            sorted_results = sorted(results, key=lambda x: x['score'])
+            sorted_results = sorted(results, key=lambda x: x["score"])
             for i, r in enumerate(sorted_results[:5]):
-                print(f"  {i+1}. w={r['weight']:.3f}: Rfree={r['rfree']*100:.2f}%, "
-                      f"Gap={r['gap']*100:.2f}%, <Bi-Bj>={r['bi_bj']:.2f}, Score={r['score']:.4f}")
-        
+                print(
+                    f"  {i+1}. w={r['weight']:.3f}: Rfree={r['rfree']*100:.2f}%, "
+                    f"Gap={r['gap']*100:.2f}%, <Bi-Bj>={r['bi_bj']:.2f}, Score={r['score']:.4f}"
+                )
+
         # Return best (lowest score)
-        return min(results, key=lambda x: x['score'])
-    
+        return min(results, key=lambda x: x["score"])
+
     def regularize_adp(self, lr=0.1):
         """
         Apply regularization to B-factors (ADP) using LBFGS optimizer.
@@ -741,7 +786,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         self.model.freeze_all()
-        self.model.unfreeze('b')
+        self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
         state = self.create_loss_state()
@@ -768,7 +813,7 @@ class LBFGSRefinement(Refinement):
         """
         self.model.freeze_all()
         self.scaler.freeze()
-        self.model.unfreeze('xyz')
+        self.model.unfreeze("xyz")
 
         self.scaler.refine_lbfgs()
         state = self.create_loss_state()
@@ -794,7 +839,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         self.model.freeze_all()
-        self.model.unfreeze('b')
+        self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
         state = self.create_loss_state()
@@ -803,7 +848,9 @@ class LBFGSRefinement(Refinement):
         self.model.unfreeze_all()
         return state
 
-    def regularize_xyz_adp_to_rfactor_gap(self, lr=1e-1, max_steps=100, target_rfactor_gap=0.05):
+    def regularize_xyz_adp_to_rfactor_gap(
+        self, lr=1e-1, max_steps=100, target_rfactor_gap=0.05
+    ):
         """
         Apply regularization to coordinates (XYZ) and B-factors (ADP) until target gap.
 
@@ -826,8 +873,8 @@ class LBFGSRefinement(Refinement):
         """
         self.model.freeze_all()
         self.scaler.freeze()
-        self.model.unfreeze('xyz')
-        self.model.unfreeze('b')
+        self.model.unfreeze("xyz")
+        self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
         state = self.create_loss_state()
@@ -849,10 +896,14 @@ class LBFGSRefinement(Refinement):
                 rwork, rfree = self.get_rfactor()
                 rfactor_gap = rfree - rwork
                 if self.verbose > 1:
-                    print(f"Step {step+1}/{max_steps}, Rwork: {rwork:.4f}, Rfree: {rfree:.4f}, Rfactor gap: {rfactor_gap:.4f}")
+                    print(
+                        f"Step {step+1}/{max_steps}, Rwork: {rwork:.4f}, Rfree: {rfree:.4f}, Rfactor gap: {rfactor_gap:.4f}"
+                    )
                 if rfactor_gap <= target_rfactor_gap:
                     if self.verbose > 0:
-                        print(f"Target R-factor gap of {target_rfactor_gap} reached at step {step+1}. Stopping regularization.")
+                        print(
+                            f"Target R-factor gap of {target_rfactor_gap} reached at step {step+1}. Stopping regularization."
+                        )
                     break
 
         # Log final state
@@ -880,8 +931,8 @@ class LBFGSRefinement(Refinement):
         """
         self.model.freeze_all()
         self.scaler.unfreeze()
-        self.model.unfreeze('xyz')
-        self.model.unfreeze('b')
+        self.model.unfreeze("xyz")
+        self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
         state = self.create_loss_state()
@@ -974,6 +1025,7 @@ class LBFGSRefinement(Refinement):
         ...     json.dump(trajectory_to_dict(trajectory), f)
         """
         import time
+
         start_time = time.time()
 
         # Set random seed if provided
@@ -1065,6 +1117,7 @@ class LBFGSRefinement(Refinement):
             Complete trajectory with state-action-reward tuples.
         """
         import time
+
         start_time = time.time()
 
         if seed is not None:
@@ -1084,8 +1137,8 @@ class LBFGSRefinement(Refinement):
             self.scaler.refine_lbfgs()
 
             # Unfreeze all parameters for joint refinement
-            self.model.unfreeze('xyz')
-            self.model.unfreeze('b')
+            self.model.unfreeze("xyz")
+            self.model.unfreeze("b")
 
             for step in range(n_steps):
                 if self.verbose > 1:
@@ -1137,84 +1190,78 @@ class LBFGSRefinement(Refinement):
         dict
             History dictionary with all metrics per cycle (hierarchical structure).
         """
-        
+
         self.scaler.freeze()
         i = 0
 
         while True:
             i += 1
-            master_key = f'refinement_{i}'
-            if not master_key in self.history:
+            master_key = f"refinement_{i}"
+            if master_key not in self.history:
                 break
 
         self.history[master_key] = []
         for cycle in range(macro_cycles):
             # Hierarchical cycle dict structure
             cycle_dict = {
-                'cycle': cycle + 1,
-                'before_scaling': {},
-                'after_scaling': {},
-                'xyz': {
-                    'before': {},
-                    'after': {},
-                    'weights': {}
-                },
-                'adp': {
-                    'before': {},
-                    'after': {},
-                    'weights': {}
-                }
+                "cycle": cycle + 1,
+                "before_scaling": {},
+                "after_scaling": {},
+                "xyz": {"before": {}, "after": {}, "weights": {}},
+                "adp": {"before": {}, "after": {}, "weights": {}},
             }
             self.component_weighting.update_weights()
-            
+
             if self.verbose > 0:
                 print(f"\n{'='*60}")
                 print(f"LBFGS Refinement - Cycle {cycle+1}/{macro_cycles}")
                 print(f"{'='*60}")
-            
+
             # Collect metrics before scaling
             with torch.no_grad():
                 before_scaling = self.collect_metrics()
-                cycle_dict['before_scaling'] = before_scaling
-                
+                cycle_dict["before_scaling"] = before_scaling
+
             self.get_scales()
-            
+
             # Collect metrics after scaling
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
-                cycle_dict['after_scaling'] = after_scaling
+                cycle_dict["after_scaling"] = after_scaling
                 if self.verbose > 0:
-                    print(f"After scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}")
+                    print(
+                        f"After scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}"
+                    )
 
             # Store metrics before XYZ
             with torch.no_grad():
                 before_xyz = self.collect_metrics()
-                cycle_dict['xyz']['before'] = before_xyz
-                cycle_dict['xyz']['weights'] = self.component_weighting.weights.copy()
-            
+                cycle_dict["xyz"]["before"] = before_xyz
+                cycle_dict["xyz"]["weights"] = self.component_weighting.weights.copy()
+
             # XYZ refinement with cycle-aware weighting
             self.refine_xyz()
-            
+
             # Collect metrics after XYZ
             with torch.no_grad():
                 after_xyz = self.collect_metrics()
-                cycle_dict['xyz']['after'] = after_xyz
+                cycle_dict["xyz"]["after"] = after_xyz
                 if self.verbose > 0:
                     self.log_xyz_comparison(before_xyz, after_xyz)
 
             # Store metrics before ADP
             with torch.no_grad():
                 before_adp = self.collect_metrics()
-                cycle_dict['adp']['before'] = before_adp
-                cycle_dict['adp']['weights'] = self.component_weighting.weights.copy()
-            
+                cycle_dict["adp"]["before"] = before_adp
+                cycle_dict["adp"]["weights"] = self.component_weighting.weights.copy()
+
             # B-factor refinement with cycle-aware weighting
             self.refine_adp()
-            
+
             # Collect metrics after ADP (final for this cycle)
             with torch.no_grad():
                 after_adp = self.collect_metrics()
-                cycle_dict['adp']['after'] = after_adp
+                cycle_dict["adp"]["after"] = after_adp
                 if self.verbose > 0:
                     self.log_adp_comparison(before_adp, after_adp)
 
@@ -1242,45 +1289,49 @@ class LBFGSRefinement(Refinement):
 
         while True:
             i += 1
-            master_key = f'refinement_everything_{i}'
-            if not master_key in self.history:
+            master_key = f"refinement_everything_{i}"
+            if master_key not in self.history:
                 break
 
         self.history[master_key] = []
-        self.history['initial'] = self.collect_metrics()
+        self.history["initial"] = self.collect_metrics()
         for cycle in range(macro_cycles):
             # Hierarchical cycle dict structure
             cycle_dict = {
-                'cycle': cycle + 1,
-                'before_scaling': {},
-                'after_scaling': {},
-                'after_refinement': {}
+                "cycle": cycle + 1,
+                "before_scaling": {},
+                "after_scaling": {},
+                "after_refinement": {},
             }
             if self.verbose > 0:
                 print(f"\n{'='*60}")
                 print(f"LBFGS Refinement Everything - Cycle {cycle+1}/{macro_cycles}")
                 print(f"{'='*60}")
-                
+
             self.component_weighting.update_weights()
-                
+
             self.get_scales()
-            
+
             # Collect metrics after scaling
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
-                cycle_dict['after_scaling'] = after_scaling
+                cycle_dict["after_scaling"] = after_scaling
                 if self.verbose > 0:
-                    print(f"After scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}")
+                    print(
+                        f"After scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}"
+                    )
 
             # Full refinement
             self._refine_everything_lbfgs_single_cycle()
-            
+
             # Collect metrics after refinement
             with torch.no_grad():
                 after_refinement = self.collect_metrics()
-                cycle_dict['after_refinement'] = after_refinement
+                cycle_dict["after_refinement"] = after_refinement
                 if self.verbose > 0:
-                    print(f"After refinement: Rwork={after_refinement['rwork']:.4f}, Rfree={after_refinement['rfree']:.4f}")
+                    print(
+                        f"After refinement: Rwork={after_refinement['rwork']:.4f}, Rfree={after_refinement['rfree']:.4f}"
+                    )
                 self.log_xyz_comparison(after_scaling, after_refinement)
                 self.log_adp_comparison(after_scaling, after_refinement)
 
@@ -1348,62 +1399,66 @@ class LBFGSRefinement(Refinement):
             History dictionary with refinement metrics (hierarchical structure).
         """
         self.scaler.freeze()
-        
+
         # Find unique history key
         i = 0
         while True:
             i += 1
-            master_key = f'refinement_screened_{i}'
+            master_key = f"refinement_screened_{i}"
             if master_key not in self.history:
                 break
-        
+
         self.history[master_key] = []
-        
+
         for cycle in range(macro_cycles):
             # Hierarchical cycle dict structure
             cycle_dict = {
-                'cycle': cycle + 1,
-                'before_scaling': {},
-                'after_scaling': {},
-                'xyz': {
-                    'before': {},
-                    'after': {},
-                    'weight': None,
-                    'weight_screens': None
+                "cycle": cycle + 1,
+                "before_scaling": {},
+                "after_scaling": {},
+                "xyz": {
+                    "before": {},
+                    "after": {},
+                    "weight": None,
+                    "weight_screens": None,
                 },
-                'adp': {
-                    'before': {},
-                    'after': {},
-                    'weight': None,
-                    'weight_screens': None
-                }
+                "adp": {
+                    "before": {},
+                    "after": {},
+                    "weight": None,
+                    "weight_screens": None,
+                },
             }
-            
+
             if self.verbose > 0:
                 print(f"\n{'='*80}")
-                print(f"LBFGS Refinement with Weight Screening - Cycle {cycle+1}/{macro_cycles}")
+                print(
+                    f"LBFGS Refinement with Weight Screening - Cycle {cycle+1}/{macro_cycles}"
+                )
                 print(f"{'='*80}")
-            
+
             # Collect metrics before scaling
             with torch.no_grad():
                 before_scaling = self.collect_metrics()
-                cycle_dict['before_scaling'] = before_scaling
-            
+                cycle_dict["before_scaling"] = before_scaling
+
             # Scaling
             self.get_scales()
-            
+
             # Collect metrics after scaling
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
-                cycle_dict['after_scaling'] = after_scaling
+                cycle_dict["after_scaling"] = after_scaling
                 if self.verbose > 0:
-                    print(f"\nAfter scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}")
-            
+                    print(
+                        f"\nAfter scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}"
+                    )
+
             # Store metrics before XYZ
             with torch.no_grad():
                 before_xyz = self.collect_metrics()
-                cycle_dict['xyz']['before'] = before_xyz
-            
+                cycle_dict["xyz"]["before"] = before_xyz
+
             # XYZ refinement with weight screening
             best_xyz_weight, xyz_screens = self.screen_xyz_weights(
                 weights=xyz_weights,
@@ -1413,24 +1468,26 @@ class LBFGSRefinement(Refinement):
                 max_gap=max_gap,
                 max_iter=max_iter,
             )
-            cycle_dict['xyz']['weight_screens'] = xyz_screens
-            cycle_dict['xyz']['weight'] = best_xyz_weight
+            cycle_dict["xyz"]["weight_screens"] = xyz_screens
+            cycle_dict["xyz"]["weight"] = best_xyz_weight
 
             xyz_min_weight = best_xyz_weight / 10
             xyz_max_weight = best_xyz_weight * 10
-            
+
             # Collect metrics after XYZ
             with torch.no_grad():
                 after_xyz = self.collect_metrics()
-                cycle_dict['xyz']['after'] = after_xyz
+                cycle_dict["xyz"]["after"] = after_xyz
                 if self.verbose > 0:
-                    self.log_xyz_comparison(before_xyz, after_xyz, weight=best_xyz_weight)
-            
+                    self.log_xyz_comparison(
+                        before_xyz, after_xyz, weight=best_xyz_weight
+                    )
+
             # Store metrics before ADP
             with torch.no_grad():
                 before_adp = self.collect_metrics()
-                cycle_dict['adp']['before'] = before_adp
-            
+                cycle_dict["adp"]["before"] = before_adp
+
             # ADP refinement with weight screening
             best_adp_weight, adp_screens = self.screen_adp_weights(
                 weights=adp_weights,
@@ -1441,31 +1498,39 @@ class LBFGSRefinement(Refinement):
                 max_bi_bj=max_bi_bj,
                 max_iter=max_iter,
             )
-            cycle_dict['adp']['weight_screens'] = adp_screens
-            cycle_dict['adp']['weight'] = best_adp_weight
+            cycle_dict["adp"]["weight_screens"] = adp_screens
+            cycle_dict["adp"]["weight"] = best_adp_weight
 
             adp_min_weight = best_adp_weight / 10
             adp_max_weight = best_adp_weight * 10
-            
+
             # Collect final metrics after ADP
             with torch.no_grad():
                 after_adp = self.collect_metrics()
-                cycle_dict['adp']['after'] = after_adp
+                cycle_dict["adp"]["after"] = after_adp
                 if self.verbose > 0:
-                    self.log_adp_comparison(before_adp, after_adp, weight=best_adp_weight)
-            
+                    self.log_adp_comparison(
+                        before_adp, after_adp, weight=best_adp_weight
+                    )
+
             # Summary
             if self.verbose > 0:
                 print(f"\n--- Cycle {cycle+1} Summary ---")
                 print(f"  Best XYZ weight: {best_xyz_weight:.3f}")
                 print(f"  Best ADP weight: {best_adp_weight:.3f}")
-                print(f"  Final: Rwork={after_adp['rwork']:.4f}, Rfree={after_adp['rfree']:.4f}, "
-                      f"Gap={after_adp['rfree_gap']:.4f}")
-                print(f"  Bond RMSD: {after_adp.get('geom_bond_rmsd', 0):.4f} Å, "
-                      f"Angle RMSD: {after_adp.get('geom_angle_rmsd', 0):.2f}°")
-                print(f"  <B>: {after_adp.get('adp_mean_b', 0):.1f} Å², "
-                      f"<Bi-Bj>: {after_adp.get('adp_mean_bi_bj', 0):.2f} Å²")
-            
+                print(
+                    f"  Final: Rwork={after_adp['rwork']:.4f}, Rfree={after_adp['rfree']:.4f}, "
+                    f"Gap={after_adp['rfree_gap']:.4f}"
+                )
+                print(
+                    f"  Bond RMSD: {after_adp.get('geom_bond_rmsd', 0):.4f} Å, "
+                    f"Angle RMSD: {after_adp.get('geom_angle_rmsd', 0):.2f}°"
+                )
+                print(
+                    f"  <B>: {after_adp.get('adp_mean_b', 0):.1f} Å², "
+                    f"<Bi-Bj>: {after_adp.get('adp_mean_bi_bj', 0):.2f} Å²"
+                )
+
             self.history[master_key].append(cycle_dict)
-        
+
         return self.history

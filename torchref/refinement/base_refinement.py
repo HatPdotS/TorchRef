@@ -1,26 +1,23 @@
 from typing import Any, Dict, Optional
 
+import torch
+from torch.nn import Module as nnModule
+
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
-from torch.nn import Module as nnModule
-import torch
-from torchref.restraints.restraints_new import RestraintsNew as Restraints
-from torchref.scaling.scaler import Scaler
-from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.stats import (
-    format_stats_table
+from torchref.refinement.aggregator import LossAggregator
+from torchref.refinement.loss_state import LossState, create_loss_state
+from torchref.refinement.targets.combined_targets import (
+    TotalADPTarget,
+    TotalGeometryTarget,
 )
 
 # Target system imports
-from torchref.refinement.targets.targets import (
-    Target, create_xray_target
-)
-from torchref.refinement.targets.combined_targets import (
-    TotalGeometryTarget,
-    TotalADPTarget,
-)
-from torchref.refinement.loss_state import LossState, create_loss_state
-from torchref.refinement.aggregator import LossAggregator
+from torchref.refinement.targets.targets import create_xray_target
+from torchref.restraints.restraints_new import RestraintsNew as Restraints
+from torchref.scaling.scaler import Scaler
+from torchref.utils.debug_utils import DebugMixin
+
 
 class Refinement(DebugMixin, nnModule):
     """
@@ -72,8 +69,18 @@ class Refinement(DebugMixin, nnModule):
         Loss weighting module.
     """
 
-    def __init__(self, data_file: str = None, pdb: str = None, cif=None, verbose: int = 1, 
-                 max_res: float = None, device: torch.device = torch.device('cpu'), nbins: int = 10, manual_weights: Dict[str, float] = None, component_weights: Dict[str, float] = None,):
+    def __init__(
+        self,
+        data_file: str = None,
+        pdb: str = None,
+        cif=None,
+        verbose: int = 1,
+        max_res: float = None,
+        device: torch.device = torch.device("cpu"),
+        nbins: int = 10,
+        manual_weights: Dict[str, float] = None,
+        component_weights: Dict[str, float] = None,
+    ):
         """
         Initialize Refinement.
 
@@ -109,14 +116,20 @@ class Refinement(DebugMixin, nnModule):
         self.max_res = max_res
         self.nbins = nbins
         self.lr = 1e-3
-        
+
         # Empty initialization - create empty submodules for state_dict loading
         if data_file is None and pdb is None:
             # Create empty submodules so state_dict keys exist
-            self.reflection_data = ReflectionData(verbose=self.verbose, device=self.device)
+            self.reflection_data = ReflectionData(
+                verbose=self.verbose, device=self.device
+            )
             self.model = ModelFT(verbose=self.verbose, device=self.device)
-            self.scaler = Scaler(verbose=self.verbose, device=self.device, nbins=self.nbins)
-            self.restraints = None  # Restraints needs model, created during load_state_dict
+            self.scaler = Scaler(
+                verbose=self.verbose, device=self.device, nbins=self.nbins
+            )
+            self.restraints = (
+                None  # Restraints needs model, created during load_state_dict
+            )
             self.weighter = None
             self.effective_weights = {}
             return
@@ -125,12 +138,14 @@ class Refinement(DebugMixin, nnModule):
         try:
             self.to(self.device)
             self.reflection_data = ReflectionData(verbose=self.verbose)
-            if data_file.endswith('.mtz'):
+            if data_file.endswith(".mtz"):
                 self.reflection_data.load_mtz(data_file)
-            elif data_file.endswith('.cif'):
+            elif data_file.endswith(".cif"):
                 self.reflection_data.load_cif(data_file)
             else:
-                raise ValueError(f"Unsupported data file format: {data_file}. Supported formats are .mtz and .cif")
+                raise ValueError(
+                    f"Unsupported data file format: {data_file}. Supported formats are .mtz and .cif"
+                )
             if max_res is not None:
                 try:
                     max_res_val = float(max_res)
@@ -142,30 +157,42 @@ class Refinement(DebugMixin, nnModule):
                 self.max_res = max_res_val
             else:
                 self.max_res = self.reflection_data.get_max_res()
-            self.model = ModelFT(verbose=self.verbose, max_res=self.max_res, device=self.device)
-            
-            if pdb.endswith('.cif'):
+            self.model = ModelFT(
+                verbose=self.verbose, max_res=self.max_res, device=self.device
+            )
+
+            if pdb.endswith(".cif"):
                 self.model.load_cif(pdb)
-            elif pdb.endswith('.pdb'):
+            elif pdb.endswith(".pdb"):
                 self.model.load_pdb(pdb)
             else:
-                raise ValueError(f"Unsupported model file format: {pdb}. Supported formats are .pdb and .cif")
-            
-            self.scaler = Scaler(self.model, self.reflection_data, verbose=self.verbose, device=self.device, nbins=self.nbins)
+                raise ValueError(
+                    f"Unsupported model file format: {pdb}. Supported formats are .pdb and .cif"
+                )
+
+            self.scaler = Scaler(
+                self.model,
+                self.reflection_data,
+                verbose=self.verbose,
+                device=self.device,
+                nbins=self.nbins,
+            )
             self.restraints = Restraints(self.model, cif, self.verbose)
-            
+
             self.manual_weights = manual_weights if manual_weights is not None else {}
-            self.component_weights = component_weights if component_weights is not None else {}
-            
+            self.component_weights = (
+                component_weights if component_weights is not None else {}
+            )
+
             # Initialize target functions (instantiated once, evaluated each iteration)
             self._init_targets()
-            
+
         except Exception as e:
             if self.verbose > 1:
                 self.debug_on_error(e)
             raise e
-    
-    def _init_targets(self, xray_mode: str = 'ml'):
+
+    def _init_targets(self, xray_mode: str = "ml"):
         """
         Initialize target functions.
 
@@ -176,16 +203,17 @@ class Refinement(DebugMixin, nnModule):
             Default is 'ml'.
         """
         # X-ray targets
-        self.xray_target_work = create_xray_target(self, xray_mode, use_work_set=True, verbose=self.verbose)
-        self.xray_target_test = create_xray_target(self, xray_mode, use_work_set=False, verbose=self.verbose)
+        self.xray_target_work = create_xray_target(
+            self, xray_mode, use_work_set=True, verbose=self.verbose
+        )
+        self.xray_target_test = create_xray_target(
+            self, xray_mode, use_work_set=False, verbose=self.verbose
+        )
 
         # Total geometry target (handles bond, angle, torsion internally)
         self.geometry_target = TotalGeometryTarget(self, verbose=self.verbose)
 
-        self.adp_target = TotalADPTarget(
-            self,
-            verbose=self.verbose
-        )
+        self.adp_target = TotalADPTarget(self, verbose=self.verbose)
 
         # LossAggregator for new LossState pipeline
         self.aggregator = LossAggregator()
@@ -194,7 +222,7 @@ class Refinement(DebugMixin, nnModule):
 
         if self.verbose > 0:
             print(f"Initialized targets with xray_mode='{xray_mode}'")
-    
+
     def set_xray_target_mode(self, mode: str):
         """
         Change the X-ray target mode.
@@ -204,8 +232,12 @@ class Refinement(DebugMixin, nnModule):
         mode : str
             X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
         """
-        self.xray_target_work = create_xray_target(self, mode, use_work_set=True, verbose=self.verbose)
-        self.xray_target_test = create_xray_target(self, mode, use_work_set=False, verbose=self.verbose)
+        self.xray_target_work = create_xray_target(
+            self, mode, use_work_set=True, verbose=self.verbose
+        )
+        self.xray_target_test = create_xray_target(
+            self, mode, use_work_set=False, verbose=self.verbose
+        )
         if self.verbose > 0:
             print(f"Changed X-ray target mode to '{mode}'")
 
@@ -222,7 +254,7 @@ class Refinement(DebugMixin, nnModule):
         return self.reflection_data
 
     def get_scales(self):
-        if not hasattr(self, 'scaler'):
+        if not hasattr(self, "scaler"):
             self.setup_scaler()
         self.scaler.initialize()
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
@@ -230,7 +262,13 @@ class Refinement(DebugMixin, nnModule):
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
 
     def setup_scaler(self):
-        self.scaler = Scaler(self.model, self.reflection_data, nbins=self.nbins, verbose=self.verbose, device=self.device)
+        self.scaler = Scaler(
+            self.model,
+            self.reflection_data,
+            nbins=self.nbins,
+            verbose=self.verbose,
+            device=self.device,
+        )
 
     def parameters(self, recurse: bool = True):
         """
@@ -260,13 +298,13 @@ class Refinement(DebugMixin, nnModule):
                 seen.add(pid)
                 unique_params.append(p)
         return unique_params
-    
-    def get_fcalc(self,hkl=None, recalc=False):
-        if hkl is None:
-            hkl, _,_, _ = self.reflection_data()
-        return self.model(hkl,recalc=recalc)
 
-    def get_fcalc_scaled(self,hkl=None, recalc=False):
+    def get_fcalc(self, hkl=None, recalc=False):
+        if hkl is None:
+            hkl, _, _, _ = self.reflection_data()
+        return self.model(hkl, recalc=recalc)
+
+    def get_fcalc_scaled(self, hkl=None, recalc=False):
         fcalc = self.get_fcalc(hkl, recalc=recalc)
         fcalc_scaled = self.scaler(fcalc)
         return fcalc_scaled
@@ -288,10 +326,10 @@ class Refinement(DebugMixin, nnModule):
         """
         return self.adp_target()
 
-    def get_Fcalc(self,hkl=None, recalc=False):
+    def get_Fcalc(self, hkl=None, recalc=False):
         return torch.abs(self.get_fcalc(hkl, recalc=recalc))
 
-    def get_F_calc_scaled(self,hkl=None, recalc=False):
+    def get_F_calc_scaled(self, hkl=None, recalc=False):
         return torch.abs(self.get_fcalc_scaled(hkl, recalc=recalc))
 
     def nll_xray(self):
@@ -304,7 +342,7 @@ class Refinement(DebugMixin, nnModule):
             Tuple of (work_nll, test_nll) tensors.
         """
         return self.xray_target_work(), self.xray_target_test()
-    
+
     def xray_loss_work(self) -> torch.Tensor:
         """
         Compute X-ray loss on work set using instantiated target.
@@ -315,7 +353,7 @@ class Refinement(DebugMixin, nnModule):
             X-ray loss on work set.
         """
         return self.xray_target_work()
-    
+
     def xray_loss_test(self) -> torch.Tensor:
         """
         Compute X-ray loss on test set using instantiated target.
@@ -326,7 +364,7 @@ class Refinement(DebugMixin, nnModule):
             X-ray loss on test set.
         """
         return self.xray_target_test()
-    
+
     def bond_loss(self) -> torch.Tensor:
         """
         Compute bond length NLL via geometry_target.
@@ -335,10 +373,10 @@ class Refinement(DebugMixin, nnModule):
         -------
         torch.Tensor
             Bond length NLL loss.
-            
+
         """
-        return self.geometry_target.target_losses()['bond_target']
-    
+        return self.geometry_target.target_losses()["bond_target"]
+
     def angle_loss(self) -> torch.Tensor:
         """
         Compute angle NLL via geometry_target.
@@ -348,8 +386,8 @@ class Refinement(DebugMixin, nnModule):
         torch.Tensor
             Angle NLL loss.
         """
-        return self.geometry_target.target_losses()['angle_target']
-    
+        return self.geometry_target.target_losses()["angle_target"]
+
     def torsion_loss(self) -> torch.Tensor:
         """
         Compute torsion angle NLL via geometry_target.
@@ -359,8 +397,8 @@ class Refinement(DebugMixin, nnModule):
         torch.Tensor
             Torsion angle NLL loss.
         """
-        return self.geometry_target.target_losses()['torsion_target']
-    
+        return self.geometry_target.target_losses()["torsion_target"]
+
     def geometry_loss(self) -> torch.Tensor:
         """
         Compute total geometry NLL using TotalGeometryTarget.
@@ -385,8 +423,11 @@ class Refinement(DebugMixin, nnModule):
 
     def setup_component_weighting(self):
         from torchref.refinement.weighting.component_weighting import ComponentWeighting
+
         self.get_scales()
-        self.component_weighting = ComponentWeighting(self, weights=self.manual_weights, component_weights=self.component_weights)
+        self.component_weighting = ComponentWeighting(
+            self, weights=self.manual_weights, component_weights=self.component_weights
+        )
 
     def create_loss_state(self) -> LossState:
         """
@@ -423,15 +464,15 @@ class Refinement(DebugMixin, nnModule):
         state = LossState(device=self.device)
 
         # Register X-ray target
-        state.register_target('xray/work', lambda: self.xray_target_work())
+        state.register_target("xray/work", lambda: self.xray_target_work())
 
         # Register geometry targets with hierarchy
         for name, target in self.geometry_target.items():
-            state.register_target(f'geometry/{name}', lambda t=target: t())
+            state.register_target(f"geometry/{name}", lambda t=target: t())
 
         # Register ADP targets with hierarchy
         for name, target in self.adp_target.items():
-            state.register_target(f'adp/{name}', lambda t=target: t())
+            state.register_target(f"adp/{name}", lambda t=target: t())
 
         # Get weights from component_weighting and apply
         self.component_weighting.update_weights()
@@ -454,9 +495,7 @@ class Refinement(DebugMixin, nnModule):
             Fresh LossState ready for the pipeline.
         """
 
-        return create_loss_state(
-            device=self.device
-        )
+        return create_loss_state(device=self.device)
 
     def compute_loss_state(self) -> LossState:
         """
@@ -478,12 +517,10 @@ class Refinement(DebugMixin, nnModule):
         # Apply X-ray targets
         state = self.xray_target_work.add_to_state(state)
         nll_test = self.xray_target_test().detach()
-        state = state.add_metric('xray_test_nll', nll_test)
-
+        state = state.add_metric("xray_test_nll", nll_test)
 
         state = self.geometry_target.add_to_state(state)
         state = self.adp_target.add_to_state(state)
-
 
         state = self.component_weighting.apply_to_state(state)
 
@@ -530,7 +567,7 @@ class Refinement(DebugMixin, nnModule):
             Total geometry restraints loss.
         """
         return self.geometry_loss()
-    
+
     def collect_metrics(self) -> Dict[str, Any]:
         """
         Collect all metrics from component_weighting.stats().
@@ -545,25 +582,36 @@ class Refinement(DebugMixin, nnModule):
             Dictionary with all metrics (unfiltered, with StatEntry objects).
         """
         metrics = {}
-        
+
         with torch.no_grad():
             # R-factors (always essential)
             rwork, rfree = self.get_rfactor()
-            metrics['rwork'] = rwork if isinstance(rwork, float) else rwork.item() if hasattr(rwork, 'item') else float(rwork)
-            metrics['rfree'] = rfree if isinstance(rfree, float) else rfree.item() if hasattr(rfree, 'item') else float(rfree)
-            metrics['rfree_gap'] = metrics['rfree'] - metrics['rwork']
-            
-            # Get all stats from component_weighting (unfiltered)
-            if hasattr(self, 'component_weighting') and self.component_weighting is not None:
-                metrics['component_weighting'] = self.component_weighting.stats()
+            metrics["rwork"] = (
+                rwork
+                if isinstance(rwork, float)
+                else rwork.item() if hasattr(rwork, "item") else float(rwork)
+            )
+            metrics["rfree"] = (
+                rfree
+                if isinstance(rfree, float)
+                else rfree.item() if hasattr(rfree, "item") else float(rfree)
+            )
+            metrics["rfree_gap"] = metrics["rfree"] - metrics["rwork"]
 
-            if hasattr(self, 'geometry_target'):
-                metrics['geometry'] = self.geometry_target.stats()
-            if hasattr(self, 'adp_target'):
-                metrics['adp'] = self.adp_target.stats()
-        
+            # Get all stats from component_weighting (unfiltered)
+            if (
+                hasattr(self, "component_weighting")
+                and self.component_weighting is not None
+            ):
+                metrics["component_weighting"] = self.component_weighting.stats()
+
+            if hasattr(self, "geometry_target"):
+                metrics["geometry"] = self.geometry_target.stats()
+            if hasattr(self, "adp_target"):
+                metrics["adp"] = self.adp_target.stats()
+
         return metrics
-    
+
     def log_refinement(self, phase: str, before: Dict[str, Any], after: Dict[str, Any]):
         """
         Log refinement comparison showing metrics before/after.
@@ -582,39 +630,39 @@ class Refinement(DebugMixin, nnModule):
         """
         if self.verbose < 1:
             return
-        
-        from torchref.utils.stats import filter_stats, StatEntry
-        
+
+        from torchref.utils.stats import StatEntry, filter_stats
+
         # Filter stats based on verbosity level for display
         before_filtered = filter_stats(before, self.verbose)
         after_filtered = filter_stats(after, self.verbose)
-        
+
         # Get weights from after stats
-        weights = after_filtered.get('component_weighting', {}).get('weights', {})
-        
+        weights = after_filtered.get("component_weighting", {}).get("weights", {})
+
         # Get overfitting weight from after stats (need to look in unfiltered to find it)
         overfitting_weight = 0.0
-        after_cw = after.get('component_weighting', {})
-        if 'overfitting_weighting' in after_cw:
-            ow_stats = after_cw['overfitting_weighting']
+        after_cw = after.get("component_weighting", {})
+        if "overfitting_weighting" in after_cw:
+            ow_stats = after_cw["overfitting_weighting"]
             if isinstance(ow_stats, dict):
-                ow_val = ow_stats.get('overfitting_weight')
+                ow_val = ow_stats.get("overfitting_weight")
                 if isinstance(ow_val, StatEntry):
                     overfitting_weight = ow_val.value
                 elif ow_val is not None:
                     overfitting_weight = ow_val
-        
+
         # Get X-ray scale weight from after stats
         xray_scale_weight = 1.0
-        if 'xray_scale_weighting' in after_cw:
-            xsw_stats = after_cw['xray_scale_weighting']
+        if "xray_scale_weighting" in after_cw:
+            xsw_stats = after_cw["xray_scale_weighting"]
             if isinstance(xsw_stats, dict):
-                xsw_val = xsw_stats.get('xray_weight')
+                xsw_val = xsw_stats.get("xray_weight")
                 if isinstance(xsw_val, StatEntry):
                     xray_scale_weight = xsw_val.value
                 elif xsw_val is not None:
                     xray_scale_weight = xsw_val
-        
+
         print(f"\n{'─'*80}")
         print(f"  {phase} Refinement Summary")
         print(f"  X-ray scale weight: {xray_scale_weight:.4f}", end="")
@@ -622,110 +670,167 @@ class Refinement(DebugMixin, nnModule):
             print(f"  |  Overfitting penalty: {overfitting_weight:.3f}", end="")
         print()  # End the line
         print(f"{'─'*80}")
-        
+
         # Header with weight column
-        print(f"\n  {'Metric':<30} {'Before':>12} {'After':>12} {'Change':>12} {'Weight':>10}")
+        print(
+            f"\n  {'Metric':<30} {'Before':>12} {'After':>12} {'Change':>12} {'Weight':>10}"
+        )
         print(f"  {'-'*76}")
-        
-        def format_row(label, b_val, a_val, weight=None, fmt='12.4f'):
+
+        def format_row(label, b_val, a_val, weight=None, fmt="12.4f"):
             delta = a_val - b_val
             weight_str = f"{weight:>10.4f}" if weight is not None else f"{'':>10}"
             return f"  {label:<30} {b_val:>{fmt}} {a_val:>{fmt}} {delta:>+{fmt}} {weight_str}"
-        
+
         # R-factor metrics (always included)
-        for key, label in [('rwork', 'Rwork'), ('rfree', 'Rfree'), ('rfree_gap', 'Rfree-Rwork gap')]:
+        for key, label in [
+            ("rwork", "Rwork"),
+            ("rfree", "Rfree"),
+            ("rfree_gap", "Rfree-Rwork gap"),
+        ]:
             b_val = before_filtered.get(key, 0)
             a_val = after_filtered.get(key, 0)
             print(format_row(label, b_val, a_val))
-        
+
         # X-ray NLL with weight
         print()
-        before_xray = before_filtered.get('component_weighting', {}).get('xray', {})
-        after_xray = after_filtered.get('component_weighting', {}).get('xray', {})
-        xray_weight = weights.get('xray')
-        for key, label in [('work_nll', 'X-ray NLL (work)'), ('test_nll', 'X-ray NLL (test)')]:
+        before_xray = before_filtered.get("component_weighting", {}).get("xray", {})
+        after_xray = after_filtered.get("component_weighting", {}).get("xray", {})
+        xray_weight = weights.get("xray")
+        for key, label in [
+            ("work_nll", "X-ray NLL (work)"),
+            ("test_nll", "X-ray NLL (test)"),
+        ]:
             b_val = before_xray.get(key, 0)
             a_val = after_xray.get(key, 0)
             # Only show weight on first X-ray row
-            w = xray_weight if key == 'work_nll' else None
+            w = xray_weight if key == "work_nll" else None
             print(format_row(label, b_val, a_val, w))
-        
+
         # Geometry loss with weight (verbosity >= 1)
         if self.verbose >= 1:
-            geom_weight = weights.get('geometry')
-            before_geom = before_filtered.get('geometry', {})
-            after_geom = after_filtered.get('geometry', {})
+            geom_weight = weights.get("geometry")
+            before_geom = before_filtered.get("geometry", {})
+            after_geom = after_filtered.get("geometry", {})
             # Get total geometry loss if available
             b_geom_total = 0.0
             a_geom_total = 0.0
             for target_name, target_stats in after_geom.items():
                 if isinstance(target_stats, dict):
-                    a_geom_total += target_stats.get('loss', 0)
+                    a_geom_total += target_stats.get("loss", 0)
                     b_stats = before_geom.get(target_name, {})
                     if isinstance(b_stats, dict):
-                        b_geom_total += b_stats.get('loss', 0)
+                        b_geom_total += b_stats.get("loss", 0)
             if a_geom_total > 0 or b_geom_total > 0:
-                print(format_row('Geometry (total)', b_geom_total, a_geom_total, geom_weight))
-            
+                print(
+                    format_row(
+                        "Geometry (total)", b_geom_total, a_geom_total, geom_weight
+                    )
+                )
+
             # ADP loss with weight
-            adp_weight = weights.get('adp')
-            before_adp = before_filtered.get('adp', {})
-            after_adp = after_filtered.get('adp', {})
+            adp_weight = weights.get("adp")
+            before_adp = before_filtered.get("adp", {})
+            after_adp = after_filtered.get("adp", {})
             # Get total ADP loss if available
             b_adp_total = 0.0
             a_adp_total = 0.0
             for target_name, target_stats in after_adp.items():
                 if isinstance(target_stats, dict):
-                    a_adp_total += target_stats.get('loss', 0)
+                    a_adp_total += target_stats.get("loss", 0)
                     b_stats = before_adp.get(target_name, {})
                     if isinstance(b_stats, dict):
-                        b_adp_total += b_stats.get('loss', 0)
+                        b_adp_total += b_stats.get("loss", 0)
             if a_adp_total > 0 or b_adp_total > 0:
-                print(format_row('ADP (total)', b_adp_total, a_adp_total, adp_weight))
-        
+                print(format_row("ADP (total)", b_adp_total, a_adp_total, adp_weight))
+
         # Detailed component losses (verbosity >= 2)
         if self.verbose >= 2:
             # Geometry targets breakdown
-            before_geom = before_filtered.get('geometry', {})
-            after_geom = after_filtered.get('geometry', {})
+            before_geom = before_filtered.get("geometry", {})
+            after_geom = after_filtered.get("geometry", {})
             if after_geom:
-                print(f"\n  Geometry breakdown:")
+                print("\n  Geometry breakdown:")
                 for target_name, target_stats in after_geom.items():
                     if isinstance(target_stats, dict):
-                        loss = target_stats.get('loss', 0)
-                        b_loss = before_geom.get(target_name, {}).get('loss', 0) if isinstance(before_geom.get(target_name), dict) else 0
-                        label = '    ' + target_name.replace('_target', '').replace('_', ' ').title()
+                        loss = target_stats.get("loss", 0)
+                        b_loss = (
+                            before_geom.get(target_name, {}).get("loss", 0)
+                            if isinstance(before_geom.get(target_name), dict)
+                            else 0
+                        )
+                        label = (
+                            "    "
+                            + target_name.replace("_target", "")
+                            .replace("_", " ")
+                            .title()
+                        )
                         print(format_row(label, b_loss, loss))
-                        
+
                         # Detailed stats at verbosity >= 3
                         if self.verbose >= 3:
                             for stat_key, stat_val in target_stats.items():
-                                if stat_key != 'loss' and isinstance(stat_val, (int, float)):
-                                    b_stat = before_geom.get(target_name, {}).get(stat_key, 0) if isinstance(before_geom.get(target_name), dict) else 0
-                                    print(format_row(f"      {stat_key}", b_stat, stat_val))
-            
+                                if stat_key != "loss" and isinstance(
+                                    stat_val, (int, float)
+                                ):
+                                    b_stat = (
+                                        before_geom.get(target_name, {}).get(
+                                            stat_key, 0
+                                        )
+                                        if isinstance(
+                                            before_geom.get(target_name), dict
+                                        )
+                                        else 0
+                                    )
+                                    print(
+                                        format_row(
+                                            f"      {stat_key}", b_stat, stat_val
+                                        )
+                                    )
+
             # ADP targets breakdown
-            before_adp = before_filtered.get('adp', {})
-            after_adp = after_filtered.get('adp', {})
+            before_adp = before_filtered.get("adp", {})
+            after_adp = after_filtered.get("adp", {})
             if after_adp:
-                print(f"\n  ADP breakdown:")
+                print("\n  ADP breakdown:")
                 for target_name, target_stats in after_adp.items():
                     if isinstance(target_stats, dict):
-                        loss = target_stats.get('loss', 0)
-                        b_loss = before_adp.get(target_name, {}).get('loss', 0) if isinstance(before_adp.get(target_name), dict) else 0
-                        label = '    ' + target_name.replace('_target', '').replace('_', ' ').title()
+                        loss = target_stats.get("loss", 0)
+                        b_loss = (
+                            before_adp.get(target_name, {}).get("loss", 0)
+                            if isinstance(before_adp.get(target_name), dict)
+                            else 0
+                        )
+                        label = (
+                            "    "
+                            + target_name.replace("_target", "")
+                            .replace("_", " ")
+                            .title()
+                        )
                         print(format_row(label, b_loss, loss))
-                        
+
                         # Detailed stats at verbosity >= 3
                         if self.verbose >= 3:
                             for stat_key, stat_val in target_stats.items():
-                                if stat_key != 'loss' and isinstance(stat_val, (int, float)):
-                                    b_stat = before_adp.get(target_name, {}).get(stat_key, 0) if isinstance(before_adp.get(target_name), dict) else 0
-                                    print(format_row(f"      {stat_key}", b_stat, stat_val))
-        
+                                if stat_key != "loss" and isinstance(
+                                    stat_val, (int, float)
+                                ):
+                                    b_stat = (
+                                        before_adp.get(target_name, {}).get(stat_key, 0)
+                                        if isinstance(before_adp.get(target_name), dict)
+                                        else 0
+                                    )
+                                    print(
+                                        format_row(
+                                            f"      {stat_key}", b_stat, stat_val
+                                        )
+                                    )
+
         print(f"{'─'*80}\n")
-    
-    def log_xyz_comparison(self, before: Dict[str, float], after: Dict[str, float], weight: float = None):
+
+    def log_xyz_comparison(
+        self, before: Dict[str, float], after: Dict[str, float], weight: float = None
+    ):
         """
         Log XYZ refinement comparison.
 
@@ -740,9 +845,11 @@ class Refinement(DebugMixin, nnModule):
         weight : float, optional
             Restraint weight (ignored, for backwards compatibility).
         """
-        self.log_refinement('XYZ', before, after)
-    
-    def log_adp_comparison(self, before: Dict[str, float], after: Dict[str, float], weight: float = None):
+        self.log_refinement("XYZ", before, after)
+
+    def log_adp_comparison(
+        self, before: Dict[str, float], after: Dict[str, float], weight: float = None
+    ):
         """
         Log ADP refinement comparison.
 
@@ -757,14 +864,16 @@ class Refinement(DebugMixin, nnModule):
         weight : float, optional
             ADP weight (ignored, for backwards compatibility).
         """
-        self.log_refinement('ADP', before, after)
-    
+        self.log_refinement("ADP", before, after)
 
     def setup_optimizer(self, **kwargs):
         from torch.optim import Adam
+
         self.optimizer = Adam(self.parameters(), **kwargs)
 
-    def run_refinement(self, macro_cycles=5, n_steps=10, lr=[1e-2,5e-4,1e-3, 5e-4, 1e-4]):
+    def run_refinement(
+        self, macro_cycles=5, n_steps=10, lr=[1e-2, 5e-4, 1e-3, 5e-4, 1e-4]
+    ):
         """
         Run refinement cycles.
 
@@ -781,35 +890,43 @@ class Refinement(DebugMixin, nnModule):
             self.scaler.unfreeze()
             self.get_scales()
             self.scaler.freeze()
-            
+
             # Update weights for this cycle
             self.component_weighting.update_weights()
-            
+
             self.setup_optimizer(lr=lr[0])
             if self.verbose > 0:
-                print(f"Starting macro cycle {cycle+1}/{macro_cycles} with learning rate {self.lr if isinstance(self.lr, float) else self.lr[cycle]}")
+                print(
+                    f"Starting macro cycle {cycle+1}/{macro_cycles} with learning rate {self.lr if isinstance(self.lr, float) else self.lr[cycle]}"
+                )
             for _lr in lr:
                 for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = _lr
+                    param_group["lr"] = _lr
                 for step in range(n_steps):
                     self.optimizer.zero_grad()
                     total_loss = self.component_weighting.total_loss()
                     if torch.isnan(total_loss):
-                        raise ValueError("NaN encountered in total loss during refinement.")
+                        raise ValueError(
+                            "NaN encountered in total loss during refinement."
+                        )
                     total_loss.backward()
                     self.optimizer.step()
                     if self.verbose > 2:
-                        print(f"  Step {step+1}/{n_steps}, Total Loss: {total_loss.item():.4f}")
-                
+                        print(
+                            f"  Step {step+1}/{n_steps}, Total Loss: {total_loss.item():.4f}"
+                        )
+
                 # Update weights after each learning rate step
                 self.component_weighting.update_weights()
-                
+
                 if self.verbose > 1:
                     print(f"  Ran for {_lr}, Total Loss: {total_loss.item():.4f}")
             if self.verbose > 0:
                 rwork, rfree = self.get_rfactor()
                 stats = self.component_weighting.stats()
-                print(f'X-ray work NLL: {stats["xray"]["work_nll"]:.4f}, X-ray test NLL: {stats["xray"]["test_nll"]:.4f}')
+                print(
+                    f'X-ray work NLL: {stats["xray"]["work_nll"]:.4f}, X-ray test NLL: {stats["xray"]["test_nll"]:.4f}'
+                )
                 print(f'Current weights: {stats["weights"]}')
                 print(f"  R-work: {rwork:.4f}, R-free: {rfree:.4f}")
 
@@ -817,17 +934,25 @@ class Refinement(DebugMixin, nnModule):
         super().cuda()
         self.model.cuda()  # Explicitly call cuda on model to update its device attributes
         self.reflection_data.cuda()
-        self.scaler.cuda() if hasattr(self.scaler, 'cuda') else None  # Also update scaler if it has cuda method
-        self.restraints.cuda() if hasattr(self.restraints, 'cuda') else None  # Also update restraints if it has cuda method
-        self.device = torch.device('cuda')
+        (
+            self.scaler.cuda() if hasattr(self.scaler, "cuda") else None
+        )  # Also update scaler if it has cuda method
+        (
+            self.restraints.cuda() if hasattr(self.restraints, "cuda") else None
+        )  # Also update restraints if it has cuda method
+        self.device = torch.device("cuda")
         return self
-    
+
     def cpu(self):
         super().cpu()
         self.model.cpu()  # Explicitly call cpu on model to update its device attribute
-        self.scaler.cpu() if hasattr(self.scaler, 'cpu') else None  # Also update scaler if it has cpu method
-        self.restraints.cpu() if hasattr(self.restraints, 'cpu') else None  # Also update restraints if it has cpu method
-        self.device = torch.device('cpu')
+        (
+            self.scaler.cpu() if hasattr(self.scaler, "cpu") else None
+        )  # Also update scaler if it has cpu method
+        (
+            self.restraints.cpu() if hasattr(self.restraints, "cpu") else None
+        )  # Also update restraints if it has cpu method
+        self.device = torch.device("cpu")
         return self
 
     def get_rfactor(self):
@@ -835,33 +960,38 @@ class Refinement(DebugMixin, nnModule):
 
     def update_outliers(self, z_threshold=4.0):
         with torch.no_grad():
-            self.reflection_data = self.reflection_data.update_outliers(self.model, self.scaler, z_threshold=z_threshold)
+            self.reflection_data = self.reflection_data.update_outliers(
+                self.model, self.scaler, z_threshold=z_threshold
+            )
             self.setup_scaler()
 
-    def plot_fcalc_vs_fobs(self,outpath='fcalc_vs_fobs.png'):
+    def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
         import matplotlib.pyplot as plt
+
         with torch.no_grad():
             hkl, F_obs, sigma_F_obs, self.rfree_flags = self.reflection_data()
             self.get_Fcalc()
             F_calc = self.F_calc
             F_obs_amp = torch.abs(F_obs).cpu().numpy()
             F_calc_amp = torch.abs(F_calc).cpu().numpy()
-            plt.figure(figsize=(8,8))
+            plt.figure(figsize=(8, 8))
             plt.scatter(F_obs_amp, F_calc_amp, alpha=0.5)
-            plt.plot([0, max(F_obs_amp)], [0, max(F_obs_amp)], color='red', linestyle='--')
-            plt.xlabel('Observed |F|')
-            plt.ylabel('Calculated |F|')
-            plt.title('Fcalc vs Fobs')
+            plt.plot(
+                [0, max(F_obs_amp)], [0, max(F_obs_amp)], color="red", linestyle="--"
+            )
+            plt.xlabel("Observed |F|")
+            plt.ylabel("Calculated |F|")
+            plt.title("Fcalc vs Fobs")
             plt.grid()
             plt.savefig(outpath)
-    
-    def write_out_mtz(self, out_mtz_path='refined_output.mtz'):
+
+    def write_out_mtz(self, out_mtz_path="refined_output.mtz"):
         with torch.no_grad():
             hkl, _, _, _ = self.reflection_data(mask=False)
             fcalc = self.scaler(self.get_fcalc(hkl), use_mask=False)
             self.reflection_data.write_mtz(out_mtz_path, fcalc)
-    
-    def write_out_pdb(self, out_pdb_path='refined_output.pdb'):
+
+    def write_out_pdb(self, out_pdb_path="refined_output.pdb"):
         self.model.write_pdb(out_pdb_path)
 
     def save_state(self, path: str):
@@ -892,10 +1022,14 @@ class Refinement(DebugMixin, nnModule):
         self.load_state_dict(state_dict, strict=strict)
         if self.verbose > 0:
             print(f"Loaded refinement state from {path}")
-    
+
     @classmethod
-    def create_from_state_dict(cls, state_dict: dict, device: torch.device = torch.device('cpu'),
-                               verbose: int = 1) -> 'Refinement':
+    def create_from_state_dict(
+        cls,
+        state_dict: dict,
+        device: torch.device = torch.device("cpu"),
+        verbose: int = 1,
+    ) -> "Refinement":
         """
         Create a fully initialized Refinement from a state dictionary.
 
@@ -931,73 +1065,76 @@ class Refinement(DebugMixin, nnModule):
         >>> rwork, rfree = refinement.get_rfactor()
         >>> print(f"Restored at R-work={rwork:.4f}, R-free={rfree:.4f}")
         """
+
         # Helper to extract submodule state from flattened state_dict
         def extract_submodule_state(state_dict: dict, prefix: str) -> dict:
             """Extract keys starting with prefix and strip the prefix."""
             result = {}
-            prefix_with_dot = prefix + '.'
+            prefix_with_dot = prefix + "."
             for key, value in state_dict.items():
                 if key.startswith(prefix_with_dot):
-                    result[key[len(prefix_with_dot):]] = value
+                    result[key[len(prefix_with_dot) :]] = value
             return result
-        
+
         # Extract submodule states from flattened keys
-        model_state = extract_submodule_state(state_dict, 'model')
-        reflection_data_state = extract_submodule_state(state_dict, 'reflection_data')
-        scaler_state = extract_submodule_state(state_dict, 'scaler')
-        restraints_state = extract_submodule_state(state_dict, 'restraints')
-        weighter_state = extract_submodule_state(state_dict, 'weighter')
-        
+        model_state = extract_submodule_state(state_dict, "model")
+        reflection_data_state = extract_submodule_state(state_dict, "reflection_data")
+        scaler_state = extract_submodule_state(state_dict, "scaler")
+        restraints_state = extract_submodule_state(state_dict, "restraints")
+        weighter_state = extract_submodule_state(state_dict, "weighter")
+
         if verbose > 0:
-            print(f"Extracted state dict sizes: model={len(model_state)}, data={len(reflection_data_state)}, "
-                  f"scaler={len(scaler_state)}, restraints={len(restraints_state)}")
-        
+            print(
+                f"Extracted state dict sizes: model={len(model_state)}, data={len(reflection_data_state)}, "
+                f"scaler={len(scaler_state)}, restraints={len(restraints_state)}"
+            )
+
         # Create submodules using their factory methods
         # These properly set up structure before loading values
         # ReflectionData is now a dataclass with _from_state() method
         reflection_data = ReflectionData._from_state(
             reflection_data_state, device=str(device)
         )
-        
+
         model = ModelFT.create_from_state_dict(
             model_state, device=device, verbose=verbose
         )
-        
+
         # Create Scaler with model and data (required for proper setup)
         scaler = Scaler(model, reflection_data, verbose=verbose, device=device)
-        
+
         # Create Restraints with model (required for proper setup)
         restraints = Restraints(model, verbose=verbose)
-        
+
         # Create empty instance
         instance = cls.__new__(cls)
         nnModule.__init__(instance)
-        
+
         # Set basic attributes
         instance.device = device
         instance.verbose = verbose
         instance.data_file = None
         instance.pdb = None
         instance.history = {}
-        instance.max_res = model_state.get('_metadata_max_res', None)
+        instance.max_res = model_state.get("_metadata_max_res", None)
         instance.nbins = 10
         instance.lr = 1e-3
         instance.effective_weights = {}
-        
+
         # Register the properly created submodules
         instance.reflection_data = reflection_data
         instance.model = model
         instance.scaler = scaler
         instance.restraints = restraints
         instance.weighter = None
-        
+
         # Now load the state dict - PyTorch's default will fill in values
         # Use strict=False since we may have metadata keys and properly created submodules
         instance.load_state_dict(state_dict, strict=False)
-        
+
         # Reconnect model and data to scaler after loading
         instance.scaler.set_model_and_data(instance.model, instance.reflection_data)
-        
+
         # Initialize targets if model is available
         if instance.model is not None and instance.model.initialized:
             try:
@@ -1005,12 +1142,16 @@ class Refinement(DebugMixin, nnModule):
             except Exception as e:
                 if verbose > 0:
                     print(f"Note: Could not initialize targets: {e}")
-        
+
         if verbose > 0:
             n_atoms = len(instance.model.pdb) if instance.model.pdb is not None else 0
-            n_refl = instance.reflection_data.hkl.shape[0] if instance.reflection_data.hkl is not None else 0
-            print(f"Created Refinement from state_dict: {n_atoms} atoms, {n_refl} reflections")
-        
-        return instance
-    
+            n_refl = (
+                instance.reflection_data.hkl.shape[0]
+                if instance.reflection_data.hkl is not None
+                else 0
+            )
+            print(
+                f"Created Refinement from state_dict: {n_atoms} atoms, {n_refl} reflections"
+            )
 
+        return instance

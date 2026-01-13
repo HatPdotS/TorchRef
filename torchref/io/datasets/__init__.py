@@ -22,11 +22,11 @@ Examples
 """
 
 from .base import CrystalDataset
-from .reflection_data import ReflectionData
 from .collection import DatasetCollection
+from .reflection_data import ReflectionData
 
 __all__ = [
-    'CrystalDataset',
-    'ReflectionData',
-    'DatasetCollection',
+    "CrystalDataset",
+    "ReflectionData",
+    "DatasetCollection",
 ]

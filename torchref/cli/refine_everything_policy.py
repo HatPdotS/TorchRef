@@ -16,16 +16,25 @@ Two modes:
 
 import argparse
 import json
-import sys
 import os
-from pathlib import Path
-import torch
+import sys
 import time
+from pathlib import Path
+
+import torch
 
 # Force unbuffered output for batch systems like SLURM
-sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
-sys.stderr.reconfigure(line_buffering=True) if hasattr(sys.stderr, 'reconfigure') else None
-os.environ['PYTHONUNBUFFERED'] = '1'
+(
+    sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stdout, "reconfigure")
+    else None
+)
+(
+    sys.stderr.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure")
+    else None
+)
+os.environ["PYTHONUNBUFFERED"] = "1"
 
 # Import stats module early to patch json with StatEntry encoder
 import torchref.utils.stats  # noqa: F401
@@ -33,7 +42,7 @@ import torchref.utils.stats  # noqa: F401
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Run LBFGS refinement with policy-based weighting (trained neural network)',
+        description="Run LBFGS refinement with policy-based weighting (trained neural network)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -45,96 +54,101 @@ Examples:
 
   # With temperature for controlled exploration
   torchref-refine-policy -s model.pdb -f reflections.mtz -o output/ --policy policy.pt --sample --temperature 0.5
-        """
+        """,
     )
 
     # Mandatory arguments
     parser.add_argument(
-        '-s', '--structure',
+        "-s",
+        "--structure",
         required=True,
         type=str,
-        help='Input structure file (PDB or CIF format)'
+        help="Input structure file (PDB or CIF format)",
     )
 
     parser.add_argument(
-        '-f', '--structure-factors',
+        "-f",
+        "--structure-factors",
         required=True,
         type=str,
-        help='Input structure factors file (MTZ or CIF format)'
+        help="Input structure factors file (MTZ or CIF format)",
     )
 
     parser.add_argument(
-        '-o', '--outdir',
+        "-o",
+        "--outdir",
         required=True,
         type=str,
-        help='Output directory for refined structure and results'
+        help="Output directory for refined structure and results",
     )
 
-
     parser.add_argument(
-        '--policy',
+        "--policy",
         required=True,
         type=str,
-        help='Path to trained policy checkpoint (.pt file)'
+        help="Path to trained policy checkpoint (.pt file)",
     )
 
     # Optional arguments
     parser.add_argument(
-        '-n', '--n-cycles',
+        "-n",
+        "--n-cycles",
         type=int,
         default=5,
-        help='Number of refinement macro cycles (default: 5)'
+        help="Number of refinement macro cycles (default: 5)",
     )
 
     parser.add_argument(
-        '-c', '--cif-restraints',
+        "-c",
+        "--cif-restraints",
         type=str,
         default=None,
-        help='CIF restraints dictionary (auto-detected if not provided)'
+        help="CIF restraints dictionary (auto-detected if not provided)",
     )
 
     parser.add_argument(
-        '--max-res',
+        "--max-res",
         type=float,
         default=None,
-        help='Maximum resolution cutoff in Angstroms (optional)'
+        help="Maximum resolution cutoff in Angstroms (optional)",
     )
 
     parser.add_argument(
-        '--device',
+        "--device",
         type=str,
-        default='cpu',
-        choices=['cpu', 'cuda'],
-        help='Computation device (default: cpu)'
+        default="cpu",
+        choices=["cpu", "cuda"],
+        help="Computation device (default: cpu)",
     )
 
     parser.add_argument(
-        '--sample',
-        action='store_true',
+        "--sample",
+        action="store_true",
         default=False,
-        help='Sample from policy distribution instead of using mean predictions'
+        help="Sample from policy distribution instead of using mean predictions",
     )
 
     parser.add_argument(
-        '--temperature',
+        "--temperature",
         type=float,
         default=1.0,
-        help='Sampling temperature (only used with --sample). Higher = more exploration (default: 1.0)'
+        help="Sampling temperature (only used with --sample). Higher = more exploration (default: 1.0)",
     )
 
     parser.add_argument(
-        '--record-trajectory',
-        action='store_true',
+        "--record-trajectory",
+        action="store_true",
         default=False,
-        help='Record state-action-reward trajectory for analysis or further training'
+        help="Record state-action-reward trajectory for analysis or further training",
     )
 
     parser.add_argument(
-        '-v', '--verbose',
+        "-v",
+        "--verbose",
         type=int,
         default=1,
         choices=[0, 1, 2],
-        help='Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)'
+        help="Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)",
     )
 
     args = parser.parse_args()
@@ -163,12 +177,12 @@ Examples:
     # Import here to avoid slow startup for --help
     try:
         from torchref.refinement.lbfgs_refinement import LBFGSRefinement
+        from torchref.refinement.weighting.component_weighting import ComponentWeighting
         from torchref.refinement.weighting.policy_weighting import (
+            COMPONENTS,
             PolicyComponentWeighting,
             trajectory_to_dict,
-            COMPONENTS,
         )
-        from torchref.refinement.weighting.component_weighting import ComponentWeighting
     except ImportError as e:
         print(f"Error: Failed to import torchref modules: {e}", file=sys.stderr)
         print("Please ensure torchref is properly installed.", file=sys.stderr)
@@ -179,9 +193,11 @@ Examples:
         print("=" * 80)
         print("TorchRef LBFGS Refinement - POLICY WEIGHTING")
         print("=" * 80)
-        print(f"Weighting scheme: PolicyComponentWeighting")
+        print("Weighting scheme: PolicyComponentWeighting")
         print(f"Policy checkpoint: {policy_path}")
-        print(f"Mode:             {'Sampling' if args.sample else 'Evaluation (deterministic)'}")
+        print(
+            f"Mode:             {'Sampling' if args.sample else 'Evaluation (deterministic)'}"
+        )
         if args.sample:
             print(f"Temperature:      {args.temperature}")
         print(f"Structure:        {structure_path}")
@@ -197,9 +213,12 @@ Examples:
 
     # Setup device
     device = torch.device(args.device)
-    if args.device == 'cuda' and not torch.cuda.is_available():
-        print("Warning: CUDA requested but not available, falling back to CPU", file=sys.stderr)
-        device = torch.device('cpu')
+    if args.device == "cuda" and not torch.cuda.is_available():
+        print(
+            "Warning: CUDA requested but not available, falling back to CPU",
+            file=sys.stderr,
+        )
+        device = torch.device("cpu")
 
     if args.verbose > 0:
         print("Initializing refinement...")
@@ -237,7 +256,7 @@ Examples:
 
     if args.verbose > 0:
         print("Refinement initialized successfully.")
-        print(f"Using PolicyComponentWeighting with trained policy")
+        print("Using PolicyComponentWeighting with trained policy")
         print()
         sys.stdout.flush()
 
@@ -338,9 +357,11 @@ Examples:
             "delta_rfree": float(final_rfree - initial_rfree),
             "total_time": total_time,
         },
-        "final_policy_weights": policy_weighting.last_weights if policy_weighting.last_weights else {},
-        "history": refinement.history if hasattr(refinement, 'history') else {},
-        "final_statistics": {}
+        "final_policy_weights": (
+            policy_weighting.last_weights if policy_weighting.last_weights else {}
+        ),
+        "history": refinement.history if hasattr(refinement, "history") else {},
+        "final_statistics": {},
     }
 
     # Add full trajectory data if recorded
@@ -357,8 +378,12 @@ Examples:
         work_mask = rfree
         test_mask = ~rfree
 
-        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(fobs[work_mask])
-        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(fobs[test_mask])
+        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(
+            fobs[work_mask]
+        )
+        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(
+            fobs[test_mask]
+        )
 
         history_data["final_statistics"] = {
             "R_work": float(r_work.item()),
@@ -366,13 +391,13 @@ Examples:
             "NLL_work": float(work_nll.item()),
             "NLL_test": float(test_nll.item()),
             "n_reflections_work": int(work_mask.sum().item()),
-            "n_reflections_test": int(test_mask.sum().item())
+            "n_reflections_test": int(test_mask.sum().item()),
         }
     except Exception as e:
         if args.verbose > 1:
             print(f"  Warning: Could not compute final statistics: {e}")
 
-    with open(output_json, 'w') as f:
+    with open(output_json, "w") as f:
         json.dump(history_data, f, indent=2)
 
     if args.verbose > 0:
@@ -385,7 +410,7 @@ Examples:
         print("Refinement Summary")
         print("=" * 80)
 
-        print(f"\nTrajectory summary:")
+        print("\nTrajectory summary:")
         print(f"  Initial R-work: {initial_rwork:.4f}")
         print(f"  Initial R-free: {initial_rfree:.4f}")
         print(f"  Final R-work:   {final_rwork:.4f}")
@@ -395,14 +420,18 @@ Examples:
 
         if "final_statistics" in history_data and history_data["final_statistics"]:
             stats = history_data["final_statistics"]
-            print(f"\nFinal statistics:")
-            print(f"  R-work:   {stats['R_work']:.4f} ({stats['n_reflections_work']} reflections)")
-            print(f"  R-free:   {stats['R_free']:.4f} ({stats['n_reflections_test']} reflections)")
+            print("\nFinal statistics:")
+            print(
+                f"  R-work:   {stats['R_work']:.4f} ({stats['n_reflections_work']} reflections)"
+            )
+            print(
+                f"  R-free:   {stats['R_free']:.4f} ({stats['n_reflections_test']} reflections)"
+            )
             print(f"  NLL work: {stats['NLL_work']:.2f}")
             print(f"  NLL test: {stats['NLL_test']:.2f}")
 
         if policy_weighting.last_weights:
-            print(f"\nFinal policy-predicted weights:")
+            print("\nFinal policy-predicted weights:")
             for comp in COMPONENTS:
                 if comp in policy_weighting.last_weights:
                     weight = policy_weighting.last_weights[comp]
@@ -421,5 +450,5 @@ Examples:
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

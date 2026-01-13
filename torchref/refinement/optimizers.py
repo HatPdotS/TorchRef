@@ -1,6 +1,7 @@
 import torch
 from torch.optim import Adam
 
+
 class AdamWithAdaptiveNoise(Adam):
     """
     Drop-in replacement for torch.optim.Adam with adaptive, scale-invariant noise injection.
@@ -35,7 +36,10 @@ class AdamWithAdaptiveNoise(Adam):
     update_weight : float
         EMA weight for noise scale updates.
     """
-    def __init__(self, params, lr=1e-3, alpha=0.1, eps=1e-8, update_weight=0.05,**kwargs):
+
+    def __init__(
+        self, params, lr=1e-3, alpha=0.1, eps=1e-8, update_weight=0.05, **kwargs
+    ):
         """
         Initialize AdamWithAdaptiveNoise.
 
@@ -72,7 +76,7 @@ class AdamWithAdaptiveNoise(Adam):
         if self.noise_scale <= 0:
             return
         for group in self.param_groups:
-            for p in group['params']:
+            for p in group["params"]:
                 if p.grad is None:
                     continue
                 grad = p.grad
@@ -105,7 +109,11 @@ class AdamWithAdaptiveNoise(Adam):
         test_nll : torch.Tensor
             Test set negative log-likelihood.
         """
-        ratio = torch.log(torch.clamp(train_nll, min=1e-4)) - torch.log(torch.clamp(test_nll, min=1e-4))
-        ratio = torch.clamp(ratio, min=0.0,max=0.1)  # only consider overfitting
-        self.noise_scale = self.update_weight * ratio.item() + (1 - self.update_weight) * self.noise_scale
-    
+        ratio = torch.log(torch.clamp(train_nll, min=1e-4)) - torch.log(
+            torch.clamp(test_nll, min=1e-4)
+        )
+        ratio = torch.clamp(ratio, min=0.0, max=0.1)  # only consider overfitting
+        self.noise_scale = (
+            self.update_weight * ratio.item()
+            + (1 - self.update_weight) * self.noise_scale
+        )

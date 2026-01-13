@@ -14,19 +14,19 @@ Advantages over AWR:
 - Simpler, more robust to noise in the signal
 """
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Any
-from pathlib import Path
-import json
-import time
 
 
 @dataclass
 class ESConfig:
     """Configuration for ES training."""
+
     population_size: int = 20  # Number of perturbations per structure
     sigma: float = 0.1  # Perturbation standard deviation
     learning_rate: float = 0.01  # Update step size
@@ -39,6 +39,7 @@ class ESConfig:
 @dataclass
 class ESResult:
     """Results from one ES evaluation."""
+
     pdb_id: str
     perturbation_idx: int
     epsilon: np.ndarray  # The noise vector used
@@ -52,6 +53,7 @@ class ESResult:
 @dataclass
 class GenerationResult:
     """Results from one generation of ES."""
+
     generation: int
     results: List[ESResult]
     mean_final_rfree: float
@@ -90,7 +92,7 @@ class ESPolicyTrainer:
         self,
         policy: nn.Module,
         config: ESConfig = None,
-        device: str = 'cpu',
+        device: str = "cpu",
     ):
         self.policy = policy
         self.config = config or ESConfig()
@@ -109,21 +111,22 @@ class ESPolicyTrainer:
 
     def get_flat_params(self) -> np.ndarray:
         """Get flattened policy parameters."""
-        return np.concatenate([
-            p.detach().cpu().numpy().flatten()
-            for p in self.policy.parameters()
-        ])
+        return np.concatenate(
+            [p.detach().cpu().numpy().flatten() for p in self.policy.parameters()]
+        )
 
     def set_flat_params(self, flat_params: np.ndarray):
         """Set policy parameters from flattened array."""
         offset = 0
         for p, shape in zip(self.policy.parameters(), self._param_shapes):
             size = np.prod(shape)
-            p.data.copy_(torch.tensor(
-                flat_params[offset:offset + size].reshape(shape),
-                dtype=p.dtype,
-                device=p.device
-            ))
+            p.data.copy_(
+                torch.tensor(
+                    flat_params[offset : offset + size].reshape(shape),
+                    dtype=p.dtype,
+                    device=p.device,
+                )
+            )
             offset += size
 
     def sample_perturbations(self) -> List[np.ndarray]:
@@ -145,8 +148,7 @@ class ESPolicyTrainer:
             epsilons = epsilons + [-e for e in epsilons]
         else:
             epsilons = [
-                np.random.randn(self.n_params) * self.config.sigma
-                for _ in range(n)
+                np.random.randn(self.n_params) * self.config.sigma for _ in range(n)
             ]
 
         return epsilons
@@ -154,6 +156,7 @@ class ESPolicyTrainer:
     def create_perturbed_policy(self, epsilon: np.ndarray) -> nn.Module:
         """Create a copy of policy with perturbed parameters."""
         import copy
+
         perturbed = copy.deepcopy(self.policy)
 
         base_params = self.get_flat_params()
@@ -163,11 +166,13 @@ class ESPolicyTrainer:
         offset = 0
         for p, shape in zip(perturbed.parameters(), self._param_shapes):
             size = np.prod(shape)
-            p.data.copy_(torch.tensor(
-                perturbed_params[offset:offset + size].reshape(shape),
-                dtype=p.dtype,
-                device=self.device
-            ))
+            p.data.copy_(
+                torch.tensor(
+                    perturbed_params[offset : offset + size].reshape(shape),
+                    dtype=p.dtype,
+                    device=self.device,
+                )
+            )
             offset += size
 
         return perturbed
@@ -213,9 +218,7 @@ class ESPolicyTrainer:
         return advantages
 
     def compute_gradient(
-        self,
-        epsilons: List[np.ndarray],
-        advantages: Dict[int, float]
+        self, epsilons: List[np.ndarray], advantages: Dict[int, float]
     ) -> np.ndarray:
         """
         Compute ES gradient estimate.
@@ -232,7 +235,7 @@ class ESPolicyTrainer:
                 gradient += advantages[idx] * eps
 
         # Normalize by population size and sigma squared
-        gradient /= (n * sigma ** 2)
+        gradient /= n * sigma**2
 
         return gradient
 
@@ -244,7 +247,9 @@ class ESPolicyTrainer:
 
     def evaluate_generation(
         self,
-        structures: List[Dict[str, str]],  # [{'pdb': path, 'mtz': path, 'pdb_id': id}, ...]
+        structures: List[
+            Dict[str, str]
+        ],  # [{'pdb': path, 'mtz': path, 'pdb_id': id}, ...]
         run_trajectory_fn,  # callable(policy, pdb, mtz, n_steps) -> (final_rfree, initial_rfree, success, error)
     ) -> GenerationResult:
         """
@@ -266,7 +271,7 @@ class ESPolicyTrainer:
         results = []
 
         for struct in structures:
-            pdb_id = struct.get('pdb_id', Path(struct['pdb']).stem)
+            pdb_id = struct.get("pdb_id", Path(struct["pdb"]).stem)
 
             for idx, epsilon in enumerate(epsilons):
                 # Create perturbed policy
@@ -275,32 +280,36 @@ class ESPolicyTrainer:
                 try:
                     final_rfree, initial_rfree, success, error = run_trajectory_fn(
                         perturbed_policy,
-                        struct['pdb'],
-                        struct['mtz'],
-                        self.config.n_steps
+                        struct["pdb"],
+                        struct["mtz"],
+                        self.config.n_steps,
                     )
 
-                    results.append(ESResult(
-                        pdb_id=pdb_id,
-                        perturbation_idx=idx,
-                        epsilon=epsilon,
-                        final_rfree=final_rfree if success else float('inf'),
-                        initial_rfree=initial_rfree,
-                        delta_rfree=final_rfree - initial_rfree if success else 0,
-                        success=success,
-                        error=error
-                    ))
+                    results.append(
+                        ESResult(
+                            pdb_id=pdb_id,
+                            perturbation_idx=idx,
+                            epsilon=epsilon,
+                            final_rfree=final_rfree if success else float("inf"),
+                            initial_rfree=initial_rfree,
+                            delta_rfree=final_rfree - initial_rfree if success else 0,
+                            success=success,
+                            error=error,
+                        )
+                    )
                 except Exception as e:
-                    results.append(ESResult(
-                        pdb_id=pdb_id,
-                        perturbation_idx=idx,
-                        epsilon=epsilon,
-                        final_rfree=float('inf'),
-                        initial_rfree=0,
-                        delta_rfree=0,
-                        success=False,
-                        error=str(e)
-                    ))
+                    results.append(
+                        ESResult(
+                            pdb_id=pdb_id,
+                            perturbation_idx=idx,
+                            epsilon=epsilon,
+                            final_rfree=float("inf"),
+                            initial_rfree=0,
+                            delta_rfree=0,
+                            success=False,
+                            error=str(e),
+                        )
+                    )
 
         # Compute advantages and gradient
         advantages = self.compute_advantages(results)
@@ -313,8 +322,12 @@ class ESPolicyTrainer:
 
         # Compute statistics
         successful = [r for r in results if r.success]
-        mean_rfree = np.mean([r.final_rfree for r in successful]) if successful else float('inf')
-        best_rfree = min([r.final_rfree for r in successful]) if successful else float('inf')
+        mean_rfree = (
+            np.mean([r.final_rfree for r in successful]) if successful else float("inf")
+        )
+        best_rfree = (
+            min([r.final_rfree for r in successful]) if successful else float("inf")
+        )
 
         gen_result = GenerationResult(
             generation=self.generation,
@@ -322,7 +335,7 @@ class ESPolicyTrainer:
             mean_final_rfree=mean_rfree,
             best_final_rfree=best_rfree,
             gradient_norm=np.linalg.norm(gradient),
-            param_update_norm=np.linalg.norm(self.config.learning_rate * gradient)
+            param_update_norm=np.linalg.norm(self.config.learning_rate * gradient),
         )
 
         self.update(gen_result)
@@ -331,29 +344,29 @@ class ESPolicyTrainer:
     def save_checkpoint(self, path: str, state_dim: int = 31, hidden_dim: int = 256):
         """Save training checkpoint."""
         checkpoint = {
-            'policy_state_dict': self.policy.state_dict(),
-            'config': self.config.__dict__,
-            'generation': self.generation,
-            'n_params': self.n_params,
-            'state_dim': state_dim,
-            'hidden_dim': hidden_dim,
-            'history': [
+            "policy_state_dict": self.policy.state_dict(),
+            "config": self.config.__dict__,
+            "generation": self.generation,
+            "n_params": self.n_params,
+            "state_dim": state_dim,
+            "hidden_dim": hidden_dim,
+            "history": [
                 {
-                    'generation': h.generation,
-                    'mean_final_rfree': h.mean_final_rfree,
-                    'best_final_rfree': h.best_final_rfree,
-                    'gradient_norm': h.gradient_norm,
+                    "generation": h.generation,
+                    "mean_final_rfree": h.mean_final_rfree,
+                    "best_final_rfree": h.best_final_rfree,
+                    "gradient_norm": h.gradient_norm,
                 }
                 for h in self.history
-            ]
+            ],
         }
         torch.save(checkpoint, path)
 
     def load_checkpoint(self, path: str):
         """Load training checkpoint."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
-        self.policy.load_state_dict(checkpoint['policy_state_dict'])
-        self.generation = checkpoint.get('generation', 0)
+        self.policy.load_state_dict(checkpoint["policy_state_dict"])
+        self.generation = checkpoint.get("generation", 0)
         # Config and history are informational
 
 
@@ -415,18 +428,20 @@ def initialize_policy_sensibly(state_dim: int = 31, hidden_dim: int = 256) -> nn
 
     with torch.no_grad():
         # Set output bias for log-weights (first 10 outputs)
-        default_log_weights = torch.tensor([
-            1.5,   # xray: high
-            0.5,   # bond: medium
-            0.0,   # angle: medium
-            -0.5,  # torsion: low
-            0.0,   # planarity: medium
-            0.0,   # chiral: medium
-            0.0,   # nonbonded: medium
-            0.5,   # simu: medium
-            0.0,   # locality: medium
-            -0.5,  # KL: low
-        ])
+        default_log_weights = torch.tensor(
+            [
+                1.5,  # xray: high
+                0.5,  # bond: medium
+                0.0,  # angle: medium
+                -0.5,  # torsion: low
+                0.0,  # planarity: medium
+                0.0,  # chiral: medium
+                0.0,  # nonbonded: medium
+                0.5,  # simu: medium
+                0.0,  # locality: medium
+                -0.5,  # KL: low
+            ]
+        )
 
         # Convert to tanh input space
         tanh_targets = default_log_weights / 3.0  # Divide by log_weight_scale

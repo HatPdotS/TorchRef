@@ -30,7 +30,8 @@ ChiralRestraintBuilder
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Iterator, Any
+from typing import Dict, Iterator, List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 import torch
@@ -69,11 +70,11 @@ class ResidueIterator:
     def __init__(self, pdb: pd.DataFrame, filter_atom_type: Optional[str] = None):
         """Initialize with pre-grouping of residues."""
         if filter_atom_type is not None:
-            pdb = pdb[pdb['ATOM'] == filter_atom_type]
-        
+            pdb = pdb[pdb["ATOM"] == filter_atom_type]
+
         self.pdb = pdb
         # Pre-group once - O(N log N) instead of O(N×R)
-        self._grouped = pdb.groupby(['chainid', 'resseq'], sort=False)
+        self._grouped = pdb.groupby(["chainid", "resseq"], sort=False)
         self.groups = list(self._grouped.groups.keys())
 
     def __iter__(self) -> Iterator[Tuple[str, int, pd.DataFrame]]:
@@ -122,11 +123,11 @@ class ResidueIterator:
             for i in range(len(resseqs_sorted) - 1):
                 resseq_i = resseqs_sorted[i]
                 resseq_next = resseqs_sorted[i + 1]
-                
+
                 # Skip if not consecutive (chain break)
                 if resseq_next != resseq_i + 1:
                     continue
-                
+
                 residue_i = self._grouped.get_group((chain_id, resseq_i))
                 residue_next = self._grouped.get_group((chain_id, resseq_next))
                 yield residue_i, residue_next
@@ -179,9 +180,7 @@ class RestraintBuilder(ABC):
 
     @abstractmethod
     def process_residue(
-        self,
-        residue: pd.DataFrame,
-        cif_restraints: pd.DataFrame
+        self, residue: pd.DataFrame, cif_restraints: pd.DataFrame
     ) -> int:
         """
         Process a single residue, matching atoms to CIF restraints.
@@ -201,9 +200,7 @@ class RestraintBuilder(ABC):
         pass
 
     def _filter_usable_restraints(
-        self,
-        cif_restraints: pd.DataFrame,
-        atom_names: set
+        self, cif_restraints: pd.DataFrame, atom_names: set
     ) -> pd.DataFrame:
         """
         Filter CIF restraints to those where all required atoms are present.
@@ -220,13 +217,15 @@ class RestraintBuilder(ABC):
         pd.DataFrame
             Filtered restraints where all atoms exist.
         """
-        mask = np.all([
-            cif_restraints[col].isin(atom_names).values
-            for col in self.atom_columns
-        ], axis=0)
+        mask = np.all(
+            [cif_restraints[col].isin(atom_names).values for col in self.atom_columns],
+            axis=0,
+        )
         return cif_restraints.loc[mask]
 
-    def _build_name_to_index_map(self, residue: pd.DataFrame) -> Optional[Dict[str, int]]:
+    def _build_name_to_index_map(
+        self, residue: pd.DataFrame
+    ) -> Optional[Dict[str, int]]:
         """
         Create atom name to index mapping, checking for duplicates.
 
@@ -240,21 +239,21 @@ class RestraintBuilder(ABC):
         dict or None
             Mapping from atom name to index, or None if duplicates exist.
         """
-        residue_indexed = residue.set_index('name')
+        residue_indexed = residue.set_index("name")
         if residue_indexed.index.has_duplicates:
             if self.verbose > 2:
-                resname = residue['resname'].iloc[0] if len(residue) > 0 else 'UNKNOWN'
-                chain_id = residue['chainid'].iloc[0] if len(residue) > 0 else 'UNKNOWN'
-                resseq = residue['resseq'].iloc[0] if len(residue) > 0 else 'UNKNOWN'
-                print(f"WARNING: Skipping {self.restraint_type} restraints for "
-                      f"{resname} {chain_id} {resseq} (duplicate atom names)")
+                resname = residue["resname"].iloc[0] if len(residue) > 0 else "UNKNOWN"
+                chain_id = residue["chainid"].iloc[0] if len(residue) > 0 else "UNKNOWN"
+                resseq = residue["resseq"].iloc[0] if len(residue) > 0 else "UNKNOWN"
+                print(
+                    f"WARNING: Skipping {self.restraint_type} restraints for "
+                    f"{resname} {chain_id} {resseq} (duplicate atom names)"
+                )
             return None
-        return dict(zip(residue['name'], residue['index']))
+        return dict(zip(residue["name"], residue["index"]))
 
     def _map_atoms_to_indices(
-        self,
-        usable_restraints: pd.DataFrame,
-        name_to_idx: Dict[str, int]
+        self, usable_restraints: pd.DataFrame, name_to_idx: Dict[str, int]
     ) -> np.ndarray:
         """
         Map atom names in restraints to atom indices.
@@ -271,17 +270,16 @@ class RestraintBuilder(ABC):
         np.ndarray
             Array of shape (n_restraints, n_atoms) with atom indices.
         """
-        indices = np.array([
-            [name_to_idx[name] for name in usable_restraints[col].values]
-            for col in self.atom_columns
-        ]).T
+        indices = np.array(
+            [
+                [name_to_idx[name] for name in usable_restraints[col].values]
+                for col in self.atom_columns
+            ]
+        ).T
         return indices
 
     def _accumulate(
-        self,
-        indices: np.ndarray,
-        references: np.ndarray,
-        sigmas: np.ndarray
+        self, indices: np.ndarray, references: np.ndarray, sigmas: np.ndarray
     ):
         """
         Add restraint data to accumulator lists.
@@ -301,10 +299,7 @@ class RestraintBuilder(ABC):
         self._count += len(indices)
 
     def finalize(
-        self,
-        device: torch.device,
-        sort_indices: bool = True,
-        min_sigma: float = 1e-4
+        self, device: torch.device, sort_indices: bool = True, min_sigma: float = 1e-4
     ) -> Optional[Dict[str, torch.Tensor]]:
         """
         Convert accumulated data to sorted tensors.
@@ -342,9 +337,9 @@ class RestraintBuilder(ABC):
         sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
         return {
-            'indices': torch.tensor(indices, dtype=torch.long, device=device),
-            'references': torch.tensor(references, dtype=torch.float32, device=device),
-            'sigmas': torch.tensor(sigmas, dtype=torch.float32, device=device)
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "references": torch.tensor(references, dtype=torch.float32, device=device),
+            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
         }
 
     @property
@@ -370,13 +365,11 @@ class BondRestraintBuilder(RestraintBuilder):
     """
 
     restraint_type = "bond"
-    atom_columns = ['atom1', 'atom2']
+    atom_columns = ["atom1", "atom2"]
     n_atoms = 2
 
     def process_residue(
-        self,
-        residue: pd.DataFrame,
-        cif_restraints: pd.DataFrame
+        self, residue: pd.DataFrame, cif_restraints: pd.DataFrame
     ) -> int:
         """
         Process bond restraints for a single residue.
@@ -393,9 +386,9 @@ class BondRestraintBuilder(RestraintBuilder):
         int
             Number of bond restraints added.
         """
-        atom_names = set(residue['name'].values)
+        atom_names = set(residue["name"].values)
         usable = self._filter_usable_restraints(cif_restraints, atom_names)
-        
+
         if len(usable) == 0:
             return 0
 
@@ -404,8 +397,8 @@ class BondRestraintBuilder(RestraintBuilder):
             return 0
 
         indices = self._map_atoms_to_indices(usable, name_to_idx)
-        references = usable['value'].values.astype(np.float32)
-        sigmas = usable['sigma'].values.astype(np.float32)
+        references = usable["value"].values.astype(np.float32)
+        sigmas = usable["sigma"].values.astype(np.float32)
 
         self._accumulate(indices, references, sigmas)
         return len(usable)
@@ -428,13 +421,11 @@ class AngleRestraintBuilder(RestraintBuilder):
     """
 
     restraint_type = "angle"
-    atom_columns = ['atom1', 'atom2', 'atom3']
+    atom_columns = ["atom1", "atom2", "atom3"]
     n_atoms = 3
 
     def process_residue(
-        self,
-        residue: pd.DataFrame,
-        cif_restraints: pd.DataFrame
+        self, residue: pd.DataFrame, cif_restraints: pd.DataFrame
     ) -> int:
         """
         Process angle restraints for a single residue.
@@ -451,9 +442,9 @@ class AngleRestraintBuilder(RestraintBuilder):
         int
             Number of angle restraints added.
         """
-        atom_names = set(residue['name'].values)
+        atom_names = set(residue["name"].values)
         usable = self._filter_usable_restraints(cif_restraints, atom_names)
-        
+
         if len(usable) == 0:
             return 0
 
@@ -462,8 +453,8 @@ class AngleRestraintBuilder(RestraintBuilder):
             return 0
 
         indices = self._map_atoms_to_indices(usable, name_to_idx)
-        references = usable['value'].values.astype(np.float32)
-        sigmas = usable['sigma'].values.astype(np.float32)
+        references = usable["value"].values.astype(np.float32)
+        sigmas = usable["sigma"].values.astype(np.float32)
 
         self._accumulate(indices, references, sigmas)
         return len(usable)
@@ -493,7 +484,7 @@ class TorsionRestraintBuilder(RestraintBuilder):
     """
 
     restraint_type = "torsion"
-    atom_columns = ['atom1', 'atom2', 'atom3', 'atom4']
+    atom_columns = ["atom1", "atom2", "atom3", "atom4"]
     n_atoms = 4
 
     def __init__(self, verbose: int = 0):
@@ -507,9 +498,7 @@ class TorsionRestraintBuilder(RestraintBuilder):
         self._periods.clear()
 
     def process_residue(
-        self,
-        residue: pd.DataFrame,
-        cif_restraints: pd.DataFrame
+        self, residue: pd.DataFrame, cif_restraints: pd.DataFrame
     ) -> int:
         """
         Process torsion restraints for a single residue.
@@ -529,9 +518,9 @@ class TorsionRestraintBuilder(RestraintBuilder):
         int
             Number of torsion restraints added.
         """
-        atom_names = set(residue['name'].values)
+        atom_names = set(residue["name"].values)
         usable = self._filter_usable_restraints(cif_restraints, atom_names)
-        
+
         if len(usable) == 0:
             return 0
 
@@ -540,12 +529,12 @@ class TorsionRestraintBuilder(RestraintBuilder):
             return 0
 
         indices = self._map_atoms_to_indices(usable, name_to_idx)
-        references = usable['value'].values.astype(np.float32)
-        sigmas = usable['sigma'].values.astype(np.float32)
+        references = usable["value"].values.astype(np.float32)
+        sigmas = usable["sigma"].values.astype(np.float32)
 
         # Get periodicity if available
-        if 'periodicity' in usable.columns:
-            periods = usable['periodicity'].values.astype(np.int64)
+        if "periodicity" in usable.columns:
+            periods = usable["periodicity"].values.astype(np.int64)
         else:
             periods = np.ones(len(usable), dtype=np.int64)
 
@@ -564,10 +553,7 @@ class TorsionRestraintBuilder(RestraintBuilder):
         return len(indices)
 
     def finalize(
-        self,
-        device: torch.device,
-        sort_indices: bool = True,
-        min_sigma: float = 1e-4
+        self, device: torch.device, sort_indices: bool = True, min_sigma: float = 1e-4
     ) -> Optional[Dict[str, torch.Tensor]]:
         """
         Convert accumulated data to sorted tensors, including periods.
@@ -606,10 +592,10 @@ class TorsionRestraintBuilder(RestraintBuilder):
         sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
         return {
-            'indices': torch.tensor(indices, dtype=torch.long, device=device),
-            'references': torch.tensor(references, dtype=torch.float32, device=device),
-            'sigmas': torch.tensor(sigmas, dtype=torch.float32, device=device),
-            'periods': torch.tensor(periods, dtype=torch.long, device=device)
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "references": torch.tensor(references, dtype=torch.float32, device=device),
+            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "periods": torch.tensor(periods, dtype=torch.long, device=device),
         }
 
 
@@ -636,7 +622,7 @@ class PlaneRestraintBuilder(RestraintBuilder):
     """
 
     restraint_type = "plane"
-    atom_columns = ['atom']  # Planes use single atom column with plane_id grouping
+    atom_columns = ["atom"]  # Planes use single atom column with plane_id grouping
     n_atoms = None  # Variable
 
     def __init__(self, verbose: int = 0):
@@ -650,9 +636,7 @@ class PlaneRestraintBuilder(RestraintBuilder):
         self._planes_by_count.clear()
 
     def process_residue(
-        self,
-        residue: pd.DataFrame,
-        cif_restraints: pd.DataFrame
+        self, residue: pd.DataFrame, cif_restraints: pd.DataFrame
     ) -> int:
         """
         Process plane restraints for a single residue.
@@ -671,10 +655,10 @@ class PlaneRestraintBuilder(RestraintBuilder):
         int
             Number of plane restraints added.
         """
-        atom_names = set(residue['name'].values)
-        
+        atom_names = set(residue["name"].values)
+
         # Filter to atoms that exist in residue
-        usable = cif_restraints[cif_restraints['atom'].isin(atom_names)]
+        usable = cif_restraints[cif_restraints["atom"].isin(atom_names)]
         if len(usable) == 0:
             return 0
 
@@ -684,39 +668,33 @@ class PlaneRestraintBuilder(RestraintBuilder):
 
         count = 0
         # Process each plane separately
-        for plane_id in usable['plane_id'].unique():
-            plane_atoms = usable[usable['plane_id'] == plane_id]
-            
+        for plane_id in usable["plane_id"].unique():
+            plane_atoms = usable[usable["plane_id"] == plane_id]
+
             atom_count = len(plane_atoms)
             # Skip invalid planes (fewer than 3 atoms)
             if atom_count < 3:
                 continue
 
             # Get indices and sigmas for this plane
-            atom_indices = np.array([
-                name_to_idx[name] for name in plane_atoms['atom'].values
-            ])
-            sigmas = plane_atoms['sigma'].values.astype(np.float32)
+            atom_indices = np.array(
+                [name_to_idx[name] for name in plane_atoms["atom"].values]
+            )
+            sigmas = plane_atoms["sigma"].values.astype(np.float32)
 
             # Store by atom count
             if atom_count not in self._planes_by_count:
-                self._planes_by_count[atom_count] = {
-                    'indices': [],
-                    'sigmas': []
-                }
+                self._planes_by_count[atom_count] = {"indices": [], "sigmas": []}
 
-            self._planes_by_count[atom_count]['indices'].append(atom_indices)
-            self._planes_by_count[atom_count]['sigmas'].append(sigmas)
+            self._planes_by_count[atom_count]["indices"].append(atom_indices)
+            self._planes_by_count[atom_count]["sigmas"].append(sigmas)
             count += 1
 
         self._count += count
         return count
 
     def finalize(
-        self,
-        device: torch.device,
-        sort_indices: bool = True,
-        min_sigma: float = 1e-4
+        self, device: torch.device, sort_indices: bool = True, min_sigma: float = 1e-4
     ) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
         """
         Convert accumulated data to tensors grouped by atom count.
@@ -741,11 +719,11 @@ class PlaneRestraintBuilder(RestraintBuilder):
 
         result = {}
         for atom_count, data in self._planes_by_count.items():
-            if not data['indices']:
+            if not data["indices"]:
                 continue
 
-            indices = np.stack(data['indices'], axis=0)
-            sigmas = np.stack(data['sigmas'], axis=0)
+            indices = np.stack(data["indices"], axis=0)
+            sigmas = np.stack(data["sigmas"], axis=0)
 
             # Sort by first atom index
             if sort_indices and len(indices) > 0:
@@ -756,10 +734,10 @@ class PlaneRestraintBuilder(RestraintBuilder):
             # Replace zero sigmas
             sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
-            key = f'{atom_count}_atoms'
+            key = f"{atom_count}_atoms"
             result[key] = {
-                'indices': torch.tensor(indices, dtype=torch.long, device=device),
-                'sigmas': torch.tensor(sigmas, dtype=torch.float32, device=device)
+                "indices": torch.tensor(indices, dtype=torch.long, device=device),
+                "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
             }
 
         return result if result else None
@@ -793,15 +771,10 @@ class ChiralRestraintBuilder(RestraintBuilder):
     """
 
     restraint_type = "chiral"
-    atom_columns = ['atom_centre', 'atom1', 'atom2', 'atom3']
+    atom_columns = ["atom_centre", "atom1", "atom2", "atom3"]
     n_atoms = 4
 
-    def __init__(
-        self,
-        ideal_volume: float = 2.5,
-        sigma: float = 0.2,
-        verbose: int = 0
-    ):
+    def __init__(self, ideal_volume: float = 2.5, sigma: float = 0.2, verbose: int = 0):
         """
         Initialize with chiral volume parameters.
 
@@ -825,9 +798,7 @@ class ChiralRestraintBuilder(RestraintBuilder):
         self._ideal_volumes.clear()
 
     def process_residue(
-        self,
-        residue: pd.DataFrame,
-        cif_restraints: pd.DataFrame
+        self, residue: pd.DataFrame, cif_restraints: pd.DataFrame
     ) -> int:
         """
         Process chiral restraints for a single residue.
@@ -848,7 +819,7 @@ class ChiralRestraintBuilder(RestraintBuilder):
         if cif_restraints.empty:
             return 0
 
-        atom_names = set(residue['name'].values)
+        atom_names = set(residue["name"].values)
         name_to_idx = self._build_name_to_index_map(residue)
         if name_to_idx is None:
             return 0
@@ -858,11 +829,11 @@ class ChiralRestraintBuilder(RestraintBuilder):
         sigmas_list = []
 
         for _, row in cif_restraints.iterrows():
-            center = row['atom_centre']
-            atom1 = row['atom1']
-            atom2 = row['atom2']
-            atom3 = row['atom3']
-            volume_sign = row['volume_sign']
+            center = row["atom_centre"]
+            atom1 = row["atom1"]
+            atom2 = row["atom2"]
+            atom3 = row["atom3"]
+            volume_sign = row["volume_sign"]
 
             # Check all atoms are present
             if not all(a in atom_names for a in [center, atom1, atom2, atom3]):
@@ -878,11 +849,11 @@ class ChiralRestraintBuilder(RestraintBuilder):
                 continue
 
             # Determine signed ideal volume
-            if volume_sign == 'positive':
+            if volume_sign == "positive":
                 signed_volume = self.ideal_volume
-            elif volume_sign == 'negative':
+            elif volume_sign == "negative":
                 signed_volume = -self.ideal_volume
-            elif volume_sign in ['both', 'either']:
+            elif volume_sign in ["both", "either"]:
                 signed_volume = 0.0  # Achiral/racemic
             else:
                 if self.verbose > 2:
@@ -903,10 +874,7 @@ class ChiralRestraintBuilder(RestraintBuilder):
         return len(indices_list)
 
     def finalize(
-        self,
-        device: torch.device,
-        sort_indices: bool = True,
-        min_sigma: float = 1e-4
+        self, device: torch.device, sort_indices: bool = True, min_sigma: float = 1e-4
     ) -> Optional[Dict[str, torch.Tensor]]:
         """
         Convert accumulated data to sorted tensors.
@@ -940,15 +908,18 @@ class ChiralRestraintBuilder(RestraintBuilder):
             sigmas = sigmas[sort_order]
 
         return {
-            'indices': torch.tensor(indices, dtype=torch.long, device=device),
-            'ideal_volumes': torch.tensor(ideal_volumes, dtype=torch.float32, device=device),
-            'sigmas': torch.tensor(sigmas, dtype=torch.float32, device=device)
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "ideal_volumes": torch.tensor(
+                ideal_volumes, dtype=torch.float32, device=device
+            ),
+            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
         }
 
 
 # =============================================================================
 # Inter-Residue Restraint Builders
 # =============================================================================
+
 
 class InterResidueBondBuilder:
     """
@@ -1013,21 +984,21 @@ class InterResidueBondBuilder:
         int or None
             Atom index, or None if not found.
         """
-        atoms = residue[residue['name'] == atom_name]
+        atoms = residue[residue["name"] == atom_name]
         if len(atoms) == 0:
             return None
-        if ' ' in atoms['altloc'].values:
-            return int(atoms[atoms['altloc'] == ' '].iloc[0]['index'])
-        elif 'A' in atoms['altloc'].values:
-            return int(atoms[atoms['altloc'] == 'A'].iloc[0]['index'])
+        if " " in atoms["altloc"].values:
+            return int(atoms[atoms["altloc"] == " "].iloc[0]["index"])
+        elif "A" in atoms["altloc"].values:
+            return int(atoms[atoms["altloc"] == "A"].iloc[0]["index"])
         else:
-            return int(atoms.iloc[0]['index'])
+            return int(atoms.iloc[0]["index"])
 
     def process_peptide_bond(
         self,
         residue_i: pd.DataFrame,
         residue_next: pd.DataFrame,
-        link_bonds: pd.DataFrame
+        link_bonds: pd.DataFrame,
     ) -> int:
         """
         Process peptide bond restraints between consecutive residues.
@@ -1049,33 +1020,33 @@ class InterResidueBondBuilder:
         """
         count = 0
         for _, bond_row in link_bonds.iterrows():
-            comp1 = bond_row['atom_1_comp_id']
-            comp2 = bond_row['atom_2_comp_id']
-            atom1_name = bond_row['atom1']
-            atom2_name = bond_row['atom2']
+            comp1 = bond_row["atom_1_comp_id"]
+            comp2 = bond_row["atom_2_comp_id"]
+            atom1_name = bond_row["atom1"]
+            atom2_name = bond_row["atom2"]
 
             # Get residue based on comp_id ('1' = residue_i, '2' = residue_next)
-            res1 = residue_i if comp1 == '1' else residue_next
-            res2 = residue_i if comp2 == '1' else residue_next
+            res1 = residue_i if comp1 == "1" else residue_next
+            res2 = residue_i if comp2 == "1" else residue_next
 
             idx1 = self._get_atom_index(res1, atom1_name)
             idx2 = self._get_atom_index(res2, atom2_name)
 
             if idx1 is not None and idx2 is not None:
                 self._indices.append(np.array([[idx1, idx2]], dtype=np.int64))
-                self._references.append(np.array([float(bond_row['value'])], dtype=np.float32))
-                self._sigmas.append(np.array([float(bond_row['sigma'])], dtype=np.float32))
+                self._references.append(
+                    np.array([float(bond_row["value"])], dtype=np.float32)
+                )
+                self._sigmas.append(
+                    np.array([float(bond_row["sigma"])], dtype=np.float32)
+                )
                 count += 1
 
         self._count += count
         return count
 
     def process_disulfide_bond(
-        self,
-        sg1_idx: int,
-        sg2_idx: int,
-        bond_length: float,
-        bond_sigma: float
+        self, sg1_idx: int, sg2_idx: int, bond_length: float, bond_sigma: float
     ) -> int:
         """
         Process a single disulfide bond restraint.
@@ -1103,10 +1074,7 @@ class InterResidueBondBuilder:
         return 1
 
     def finalize(
-        self,
-        device: torch.device,
-        sort_indices: bool = True,
-        min_sigma: float = 1e-4
+        self, device: torch.device, sort_indices: bool = True, min_sigma: float = 1e-4
     ) -> Optional[Dict[str, torch.Tensor]]:
         """
         Convert accumulated data to sorted tensors.
@@ -1141,9 +1109,9 @@ class InterResidueBondBuilder:
         sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
         return {
-            'indices': torch.tensor(indices, dtype=torch.long, device=device),
-            'references': torch.tensor(references, dtype=torch.float32, device=device),
-            'sigmas': torch.tensor(sigmas, dtype=torch.float32, device=device)
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "references": torch.tensor(references, dtype=torch.float32, device=device),
+            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
         }
 
     @property
@@ -1182,21 +1150,21 @@ class InterResidueAngleBuilder:
     @staticmethod
     def _get_atom_index(residue: pd.DataFrame, atom_name: str) -> Optional[int]:
         """Get atom index from residue, handling alternate conformations."""
-        atoms = residue[residue['name'] == atom_name]
+        atoms = residue[residue["name"] == atom_name]
         if len(atoms) == 0:
             return None
-        if ' ' in atoms['altloc'].values:
-            return int(atoms[atoms['altloc'] == ' '].iloc[0]['index'])
-        elif 'A' in atoms['altloc'].values:
-            return int(atoms[atoms['altloc'] == 'A'].iloc[0]['index'])
+        if " " in atoms["altloc"].values:
+            return int(atoms[atoms["altloc"] == " "].iloc[0]["index"])
+        elif "A" in atoms["altloc"].values:
+            return int(atoms[atoms["altloc"] == "A"].iloc[0]["index"])
         else:
-            return int(atoms.iloc[0]['index'])
+            return int(atoms.iloc[0]["index"])
 
     def process_peptide_angles(
         self,
         residue_i: pd.DataFrame,
         residue_next: pd.DataFrame,
-        link_angles: pd.DataFrame
+        link_angles: pd.DataFrame,
     ) -> int:
         """
         Process peptide angle restraints between consecutive residues.
@@ -1217,16 +1185,16 @@ class InterResidueAngleBuilder:
         """
         count = 0
         for _, angle_row in link_angles.iterrows():
-            comp1 = angle_row['atom_1_comp_id']
-            comp2 = angle_row['atom_2_comp_id']
-            comp3 = angle_row['atom_3_comp_id']
-            atom1_name = angle_row['atom1']
-            atom2_name = angle_row['atom2']
-            atom3_name = angle_row['atom3']
+            comp1 = angle_row["atom_1_comp_id"]
+            comp2 = angle_row["atom_2_comp_id"]
+            comp3 = angle_row["atom_3_comp_id"]
+            atom1_name = angle_row["atom1"]
+            atom2_name = angle_row["atom2"]
+            atom3_name = angle_row["atom3"]
 
-            res1 = residue_i if comp1 == '1' else residue_next
-            res2 = residue_i if comp2 == '1' else residue_next
-            res3 = residue_i if comp3 == '1' else residue_next
+            res1 = residue_i if comp1 == "1" else residue_next
+            res2 = residue_i if comp2 == "1" else residue_next
+            res3 = residue_i if comp3 == "1" else residue_next
 
             idx1 = self._get_atom_index(res1, atom1_name)
             idx2 = self._get_atom_index(res2, atom2_name)
@@ -1234,8 +1202,12 @@ class InterResidueAngleBuilder:
 
             if idx1 is not None and idx2 is not None and idx3 is not None:
                 self._indices.append(np.array([[idx1, idx2, idx3]], dtype=np.int64))
-                self._references.append(np.array([float(angle_row['value'])], dtype=np.float32))
-                self._sigmas.append(np.array([float(angle_row['sigma'])], dtype=np.float32))
+                self._references.append(
+                    np.array([float(angle_row["value"])], dtype=np.float32)
+                )
+                self._sigmas.append(
+                    np.array([float(angle_row["sigma"])], dtype=np.float32)
+                )
                 count += 1
 
         self._count += count
@@ -1245,7 +1217,7 @@ class InterResidueAngleBuilder:
         self,
         res1_atoms: pd.DataFrame,
         res2_atoms: pd.DataFrame,
-        link_angles: pd.DataFrame
+        link_angles: pd.DataFrame,
     ) -> int:
         """
         Process disulfide angle restraints.
@@ -1267,10 +1239,7 @@ class InterResidueAngleBuilder:
         return self.process_peptide_angles(res1_atoms, res2_atoms, link_angles)
 
     def finalize(
-        self,
-        device: torch.device,
-        sort_indices: bool = True,
-        min_sigma: float = 1e-4
+        self, device: torch.device, sort_indices: bool = True, min_sigma: float = 1e-4
     ) -> Optional[Dict[str, torch.Tensor]]:
         """Convert accumulated data to sorted tensors."""
         if not self._indices:
@@ -1289,9 +1258,9 @@ class InterResidueAngleBuilder:
         sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
         return {
-            'indices': torch.tensor(indices, dtype=torch.long, device=device),
-            'references': torch.tensor(references, dtype=torch.float32, device=device),
-            'sigmas': torch.tensor(sigmas, dtype=torch.float32, device=device)
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "references": torch.tensor(references, dtype=torch.float32, device=device),
+            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
         }
 
     @property
@@ -1316,20 +1285,20 @@ class InterResidueTorsionBuilder:
     def __init__(self, verbose: int = 0):
         """Initialize empty accumulator lists for each torsion type."""
         self.verbose = verbose
-        
+
         # Separate accumulators for phi, psi, omega
         self._phi_indices: List[np.ndarray] = []
         self._phi_periods: List[np.ndarray] = []
-        
+
         self._psi_indices: List[np.ndarray] = []
         self._psi_periods: List[np.ndarray] = []
-        
+
         self._omega_indices: List[np.ndarray] = []
         self._omega_references: List[np.ndarray] = []
         self._omega_sigmas: List[np.ndarray] = []
         self._omega_periods: List[np.ndarray] = []
         self._omega_is_proline: List[bool] = []
-        
+
         # For disulfide torsions
         self._disulfide_indices: List[np.ndarray] = []
         self._disulfide_references: List[np.ndarray] = []
@@ -1355,21 +1324,21 @@ class InterResidueTorsionBuilder:
     @staticmethod
     def _get_atom_index(residue: pd.DataFrame, atom_name: str) -> Optional[int]:
         """Get atom index from residue, handling alternate conformations."""
-        atoms = residue[residue['name'] == atom_name]
+        atoms = residue[residue["name"] == atom_name]
         if len(atoms) == 0:
             return None
-        if ' ' in atoms['altloc'].values:
-            return int(atoms[atoms['altloc'] == ' '].iloc[0]['index'])
-        elif 'A' in atoms['altloc'].values:
-            return int(atoms[atoms['altloc'] == 'A'].iloc[0]['index'])
+        if " " in atoms["altloc"].values:
+            return int(atoms[atoms["altloc"] == " "].iloc[0]["index"])
+        elif "A" in atoms["altloc"].values:
+            return int(atoms[atoms["altloc"] == "A"].iloc[0]["index"])
         else:
-            return int(atoms.iloc[0]['index'])
+            return int(atoms.iloc[0]["index"])
 
     def process_peptide_torsions(
         self,
         residue_i: pd.DataFrame,
         residue_next: pd.DataFrame,
-        link_torsions: pd.DataFrame
+        link_torsions: pd.DataFrame,
     ) -> Tuple[int, int, int]:
         """
         Process backbone torsion restraints between consecutive residues.
@@ -1389,28 +1358,28 @@ class InterResidueTorsionBuilder:
         tuple of (int, int, int)
             Number of (phi, psi, omega) torsions added.
         """
-        resname_next = residue_next['resname'].iloc[0]
-        is_proline = (resname_next == 'PRO')
-        
+        resname_next = residue_next["resname"].iloc[0]
+        is_proline = resname_next == "PRO"
+
         phi_count = 0
         psi_count = 0
         omega_count = 0
 
         for _, torsion_row in link_torsions.iterrows():
-            comp1 = torsion_row['atom_1_comp_id']
-            comp2 = torsion_row['atom_2_comp_id']
-            comp3 = torsion_row['atom_3_comp_id']
-            comp4 = torsion_row['atom_4_comp_id']
-            atom1_name = torsion_row['atom1']
-            atom2_name = torsion_row['atom2']
-            atom3_name = torsion_row['atom3']
-            atom4_name = torsion_row['atom4']
-            torsion_id = torsion_row['id']
+            comp1 = torsion_row["atom_1_comp_id"]
+            comp2 = torsion_row["atom_2_comp_id"]
+            comp3 = torsion_row["atom_3_comp_id"]
+            comp4 = torsion_row["atom_4_comp_id"]
+            atom1_name = torsion_row["atom1"]
+            atom2_name = torsion_row["atom2"]
+            atom3_name = torsion_row["atom3"]
+            atom4_name = torsion_row["atom4"]
+            torsion_id = torsion_row["id"]
 
-            res1 = residue_i if comp1 == '1' else residue_next
-            res2 = residue_i if comp2 == '1' else residue_next
-            res3 = residue_i if comp3 == '1' else residue_next
-            res4 = residue_i if comp4 == '1' else residue_next
+            res1 = residue_i if comp1 == "1" else residue_next
+            res2 = residue_i if comp2 == "1" else residue_next
+            res3 = residue_i if comp3 == "1" else residue_next
+            res4 = residue_i if comp4 == "1" else residue_next
 
             idx1 = self._get_atom_index(res1, atom1_name)
             idx2 = self._get_atom_index(res2, atom2_name)
@@ -1420,20 +1389,34 @@ class InterResidueTorsionBuilder:
             if idx1 is None or idx2 is None or idx3 is None or idx4 is None:
                 continue
 
-            period = int(torsion_row['period']) if 'period' in torsion_row and pd.notna(torsion_row['period']) else 0
+            period = (
+                int(torsion_row["period"])
+                if "period" in torsion_row and pd.notna(torsion_row["period"])
+                else 0
+            )
 
-            if torsion_id == 'phi':
-                self._phi_indices.append(np.array([[idx1, idx2, idx3, idx4]], dtype=np.int64))
+            if torsion_id == "phi":
+                self._phi_indices.append(
+                    np.array([[idx1, idx2, idx3, idx4]], dtype=np.int64)
+                )
                 self._phi_periods.append(np.array([period], dtype=np.int64))
                 phi_count += 1
-            elif torsion_id == 'psi':
-                self._psi_indices.append(np.array([[idx1, idx2, idx3, idx4]], dtype=np.int64))
+            elif torsion_id == "psi":
+                self._psi_indices.append(
+                    np.array([[idx1, idx2, idx3, idx4]], dtype=np.int64)
+                )
                 self._psi_periods.append(np.array([period], dtype=np.int64))
                 psi_count += 1
-            elif torsion_id == 'omega':
-                self._omega_indices.append(np.array([[idx1, idx2, idx3, idx4]], dtype=np.int64))
-                self._omega_references.append(np.array([float(torsion_row['value'])], dtype=np.float32))
-                self._omega_sigmas.append(np.array([float(torsion_row['sigma'])], dtype=np.float32))
+            elif torsion_id == "omega":
+                self._omega_indices.append(
+                    np.array([[idx1, idx2, idx3, idx4]], dtype=np.int64)
+                )
+                self._omega_references.append(
+                    np.array([float(torsion_row["value"])], dtype=np.float32)
+                )
+                self._omega_sigmas.append(
+                    np.array([float(torsion_row["sigma"])], dtype=np.float32)
+                )
                 self._omega_periods.append(np.array([period], dtype=np.int64))
                 self._omega_is_proline.append(is_proline)
                 omega_count += 1
@@ -1444,7 +1427,7 @@ class InterResidueTorsionBuilder:
         self,
         res1_atoms: pd.DataFrame,
         res2_atoms: pd.DataFrame,
-        link_torsions: pd.DataFrame
+        link_torsions: pd.DataFrame,
     ) -> int:
         """
         Process disulfide torsion restraints.
@@ -1465,19 +1448,19 @@ class InterResidueTorsionBuilder:
         """
         count = 0
         for _, torsion_row in link_torsions.iterrows():
-            comp1 = torsion_row['atom_1_comp_id']
-            comp2 = torsion_row['atom_2_comp_id']
-            comp3 = torsion_row['atom_3_comp_id']
-            comp4 = torsion_row['atom_4_comp_id']
-            atom1_name = torsion_row['atom1']
-            atom2_name = torsion_row['atom2']
-            atom3_name = torsion_row['atom3']
-            atom4_name = torsion_row['atom4']
+            comp1 = torsion_row["atom_1_comp_id"]
+            comp2 = torsion_row["atom_2_comp_id"]
+            comp3 = torsion_row["atom_3_comp_id"]
+            comp4 = torsion_row["atom_4_comp_id"]
+            atom1_name = torsion_row["atom1"]
+            atom2_name = torsion_row["atom2"]
+            atom3_name = torsion_row["atom3"]
+            atom4_name = torsion_row["atom4"]
 
-            res1 = res1_atoms if comp1 == '1' else res2_atoms
-            res2 = res1_atoms if comp2 == '1' else res2_atoms
-            res3 = res1_atoms if comp3 == '1' else res2_atoms
-            res4 = res1_atoms if comp4 == '1' else res2_atoms
+            res1 = res1_atoms if comp1 == "1" else res2_atoms
+            res2 = res1_atoms if comp2 == "1" else res2_atoms
+            res3 = res1_atoms if comp3 == "1" else res2_atoms
+            res4 = res1_atoms if comp4 == "1" else res2_atoms
 
             idx1 = self._get_atom_index(res1, atom1_name)
             idx2 = self._get_atom_index(res2, atom2_name)
@@ -1487,15 +1470,25 @@ class InterResidueTorsionBuilder:
             if idx1 is None or idx2 is None or idx3 is None or idx4 is None:
                 continue
 
-            self._disulfide_indices.append(np.array([[idx1, idx2, idx3, idx4]], dtype=np.int64))
-            self._disulfide_references.append(np.array([float(torsion_row['value'])], dtype=np.float32))
-            self._disulfide_sigmas.append(np.array([float(torsion_row['sigma'])], dtype=np.float32))
-            self._disulfide_periods.append(np.array([2], dtype=np.int64))  # Period 2 for disulfide
+            self._disulfide_indices.append(
+                np.array([[idx1, idx2, idx3, idx4]], dtype=np.int64)
+            )
+            self._disulfide_references.append(
+                np.array([float(torsion_row["value"])], dtype=np.float32)
+            )
+            self._disulfide_sigmas.append(
+                np.array([float(torsion_row["sigma"])], dtype=np.float32)
+            )
+            self._disulfide_periods.append(
+                np.array([2], dtype=np.int64)
+            )  # Period 2 for disulfide
             count += 1
 
         return count
 
-    def finalize_phi(self, device: torch.device, sort_indices: bool = True) -> Optional[Dict[str, torch.Tensor]]:
+    def finalize_phi(
+        self, device: torch.device, sort_indices: bool = True
+    ) -> Optional[Dict[str, torch.Tensor]]:
         """Finalize phi angle indices and periods."""
         if not self._phi_indices:
             return None
@@ -1509,11 +1502,13 @@ class InterResidueTorsionBuilder:
             periods = periods[sort_order]
 
         return {
-            'indices': torch.tensor(indices, dtype=torch.long, device=device),
-            'periods': torch.tensor(periods, dtype=torch.long, device=device)
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "periods": torch.tensor(periods, dtype=torch.long, device=device),
         }
 
-    def finalize_psi(self, device: torch.device, sort_indices: bool = True) -> Optional[Dict[str, torch.Tensor]]:
+    def finalize_psi(
+        self, device: torch.device, sort_indices: bool = True
+    ) -> Optional[Dict[str, torch.Tensor]]:
         """Finalize psi angle indices and periods."""
         if not self._psi_indices:
             return None
@@ -1527,11 +1522,13 @@ class InterResidueTorsionBuilder:
             periods = periods[sort_order]
 
         return {
-            'indices': torch.tensor(indices, dtype=torch.long, device=device),
-            'periods': torch.tensor(periods, dtype=torch.long, device=device)
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "periods": torch.tensor(periods, dtype=torch.long, device=device),
         }
 
-    def finalize_omega(self, device: torch.device, sort_indices: bool = True) -> Optional[Dict[str, torch.Tensor]]:
+    def finalize_omega(
+        self, device: torch.device, sort_indices: bool = True
+    ) -> Optional[Dict[str, torch.Tensor]]:
         """Finalize omega angle restraints."""
         if not self._omega_indices:
             return None
@@ -1551,14 +1548,16 @@ class InterResidueTorsionBuilder:
             is_proline = is_proline[sort_order]
 
         return {
-            'indices': torch.tensor(indices, dtype=torch.long, device=device),
-            'references': torch.tensor(references, dtype=torch.float32, device=device),
-            'sigmas': torch.tensor(sigmas, dtype=torch.float32, device=device),
-            'periods': torch.tensor(periods, dtype=torch.long, device=device),
-            'is_proline': torch.tensor(is_proline, dtype=torch.bool, device=device)
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "references": torch.tensor(references, dtype=torch.float32, device=device),
+            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "periods": torch.tensor(periods, dtype=torch.long, device=device),
+            "is_proline": torch.tensor(is_proline, dtype=torch.bool, device=device),
         }
 
-    def finalize_disulfide(self, device: torch.device, sort_indices: bool = True) -> Optional[Dict[str, torch.Tensor]]:
+    def finalize_disulfide(
+        self, device: torch.device, sort_indices: bool = True
+    ) -> Optional[Dict[str, torch.Tensor]]:
         """Finalize disulfide torsion restraints."""
         if not self._disulfide_indices:
             return None
@@ -1576,10 +1575,10 @@ class InterResidueTorsionBuilder:
             periods = periods[sort_order]
 
         return {
-            'indices': torch.tensor(indices, dtype=torch.long, device=device),
-            'references': torch.tensor(references, dtype=torch.float32, device=device),
-            'sigmas': torch.tensor(sigmas, dtype=torch.float32, device=device),
-            'periods': torch.tensor(periods, dtype=torch.long, device=device)
+            "indices": torch.tensor(indices, dtype=torch.long, device=device),
+            "references": torch.tensor(references, dtype=torch.float32, device=device),
+            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "periods": torch.tensor(periods, dtype=torch.long, device=device),
         }
 
 
@@ -1610,21 +1609,21 @@ class InterResiduePlaneBuilder:
     @staticmethod
     def _get_atom_index(residue: pd.DataFrame, atom_name: str) -> Optional[int]:
         """Get atom index from residue, handling alternate conformations."""
-        atoms = residue[residue['name'] == atom_name]
+        atoms = residue[residue["name"] == atom_name]
         if len(atoms) == 0:
             return None
-        if ' ' in atoms['altloc'].values:
-            return int(atoms[atoms['altloc'] == ' '].iloc[0]['index'])
-        elif 'A' in atoms['altloc'].values:
-            return int(atoms[atoms['altloc'] == 'A'].iloc[0]['index'])
+        if " " in atoms["altloc"].values:
+            return int(atoms[atoms["altloc"] == " "].iloc[0]["index"])
+        elif "A" in atoms["altloc"].values:
+            return int(atoms[atoms["altloc"] == "A"].iloc[0]["index"])
         else:
-            return int(atoms.iloc[0]['index'])
+            return int(atoms.iloc[0]["index"])
 
     def process_peptide_planes(
         self,
         residue_i: pd.DataFrame,
         residue_next: pd.DataFrame,
-        link_planes: pd.DataFrame
+        link_planes: pd.DataFrame,
     ) -> int:
         """
         Process peptide plane restraints between consecutive residues.
@@ -1645,50 +1644,51 @@ class InterResiduePlaneBuilder:
             Number of plane restraints added.
         """
         count = 0
-        
+
         # Group by plane_id
-        for plane_id in link_planes['plane_id'].unique():
-            plane_atoms = link_planes[link_planes['plane_id'] == plane_id]
-            
+        for plane_id in link_planes["plane_id"].unique():
+            plane_atoms = link_planes[link_planes["plane_id"] == plane_id]
+
             # Collect atom indices for this plane
             atom_indices = []
             sigmas = []
             all_found = True
-            
+
             for _, plane_atom_row in plane_atoms.iterrows():
-                comp_id = plane_atom_row['atom_comp_id']
-                atom_name = plane_atom_row['atom']
-                sigma = float(plane_atom_row['sigma'])
-                
-                residue = residue_i if comp_id == '1' else residue_next
+                comp_id = plane_atom_row["atom_comp_id"]
+                atom_name = plane_atom_row["atom"]
+                sigma = float(plane_atom_row["sigma"])
+
+                residue = residue_i if comp_id == "1" else residue_next
                 atom_idx = self._get_atom_index(residue, atom_name)
-                
+
                 if atom_idx is None:
                     all_found = False
                     break
-                
+
                 atom_indices.append(atom_idx)
                 sigmas.append(sigma)
-            
+
             if not all_found or len(atom_indices) < 3:
                 continue
-            
+
             atom_count = len(atom_indices)
             if atom_count not in self._planes_by_count:
-                self._planes_by_count[atom_count] = {'indices': [], 'sigmas': []}
-            
-            self._planes_by_count[atom_count]['indices'].append(np.array(atom_indices, dtype=np.int64))
-            self._planes_by_count[atom_count]['sigmas'].append(np.array(sigmas, dtype=np.float32))
+                self._planes_by_count[atom_count] = {"indices": [], "sigmas": []}
+
+            self._planes_by_count[atom_count]["indices"].append(
+                np.array(atom_indices, dtype=np.int64)
+            )
+            self._planes_by_count[atom_count]["sigmas"].append(
+                np.array(sigmas, dtype=np.float32)
+            )
             count += 1
-        
+
         self._count += count
         return count
 
     def finalize(
-        self,
-        device: torch.device,
-        sort_indices: bool = True,
-        min_sigma: float = 1e-4
+        self, device: torch.device, sort_indices: bool = True, min_sigma: float = 1e-4
     ) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
         """Convert accumulated data to tensors grouped by atom count."""
         if not self._planes_by_count:
@@ -1696,11 +1696,11 @@ class InterResiduePlaneBuilder:
 
         result = {}
         for atom_count, data in self._planes_by_count.items():
-            if not data['indices']:
+            if not data["indices"]:
                 continue
 
-            indices = np.stack(data['indices'], axis=0)
-            sigmas = np.stack(data['sigmas'], axis=0)
+            indices = np.stack(data["indices"], axis=0)
+            sigmas = np.stack(data["sigmas"], axis=0)
 
             if sort_indices and len(indices) > 0:
                 sort_order = np.argsort(indices[:, 0])
@@ -1709,10 +1709,10 @@ class InterResiduePlaneBuilder:
 
             sigmas = np.where(sigmas == 0, min_sigma, sigmas)
 
-            key = f'{atom_count}_atoms'
+            key = f"{atom_count}_atoms"
             result[key] = {
-                'indices': torch.tensor(indices, dtype=torch.long, device=device),
-                'sigmas': torch.tensor(sigmas, dtype=torch.float32, device=device)
+                "indices": torch.tensor(indices, dtype=torch.long, device=device),
+                "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
             }
 
         return result if result else None

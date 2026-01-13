@@ -45,28 +45,34 @@ utils
     General utilities and debugging tools.
 """
 
-
-__version__ = '0.1.0'
+__version__ = "0.1.0"
 
 
 import os
 import warnings
 from pathlib import Path
 
-from torchref._bootstrap import detect_available_cpus, configure_threading
+from torchref._bootstrap import configure_threading, detect_available_cpus
 
 # Configure threading before importing torch
-if 'TORCHREF_NUM_THREADS' in os.environ:
-    N_CPUS = int(os.environ['TORCHREF_NUM_THREADS'])
-    warnings.warn(f"TorchRef using user-specified {N_CPUS} threads from TORCHREF_NUM_THREADS.", stacklevel=2)
+if "TORCHREF_NUM_THREADS" in os.environ:
+    N_CPUS = int(os.environ["TORCHREF_NUM_THREADS"])
+    warnings.warn(
+        f"TorchRef using user-specified {N_CPUS} threads from TORCHREF_NUM_THREADS.",
+        stacklevel=2,
+    )
 else:
     N_CPUS = detect_available_cpus()
-    os.environ['TORCHREF_NUM_THREADS'] = str(N_CPUS)
-    warnings.warn(f"TorchRef auto-configured {N_CPUS} threads. Set TORCHREF_NUM_THREADS to override.", stacklevel=2)
+    os.environ["TORCHREF_NUM_THREADS"] = str(N_CPUS)
+    warnings.warn(
+        f"TorchRef auto-configured {N_CPUS} threads. Set TORCHREF_NUM_THREADS to override.",
+        stacklevel=2,
+    )
 
 configure_threading(N_CPUS)
 
 import torch
+
 torch.set_num_threads(N_CPUS)
 
 
@@ -80,14 +86,17 @@ PATH_TORCHREF = Path(__file__).parent.resolve()
 # Convenience imports for common classes
 # =============================================================================
 
+# Alignment
+from torchref.alignment import PattersonAligner
+
 # Data I/O
-from torchref.io import ReflectionData, DatasetCollection
+from torchref.io import DatasetCollection, ReflectionData
 
 # Model
 from torchref.model import Model, ModelFT
 
 # Refinement
-from torchref.refinement import Refinement, LBFGSRefinement
+from torchref.refinement import LBFGSRefinement, Refinement
 
 # Restraints
 from torchref.restraints import Restraints
@@ -95,34 +104,26 @@ from torchref.restraints import Restraints
 # Scaling
 from torchref.scaling import Scaler, SolventModel
 
-# Alignment
-from torchref.alignment import PattersonAligner
-
 __all__ = [
     # Version and paths
-    '__version__',
-    'ROOT_TORCHREF',
-    'PATH_TORCHREF',
-    'N_CPUS',
+    "__version__",
+    "ROOT_TORCHREF",
+    "PATH_TORCHREF",
+    "N_CPUS",
     # Data I/O
-    'ReflectionData',
-    'DatasetCollection',
+    "ReflectionData",
+    "DatasetCollection",
     # Model
-    'Model',
-    'ModelFT',
+    "Model",
+    "ModelFT",
     # Refinement
-    'Refinement',
-    'LBFGSRefinement',
+    "Refinement",
+    "LBFGSRefinement",
     # Restraints
-    'Restraints',
+    "Restraints",
     # Scaling
-    'Scaler',
-    'SolventModel',
+    "Scaler",
+    "SolventModel",
     # Alignment
-    'PattersonAligner',
+    "PattersonAligner",
 ]
-
-
-
-
-

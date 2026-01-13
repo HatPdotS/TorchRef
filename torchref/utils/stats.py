@@ -26,22 +26,22 @@ Usage
 '{"rwork": 0.2, "bond_rmsd": 0.015}'
 """
 
-from dataclasses import dataclass
-from typing import Dict, Any
 import json
+from dataclasses import dataclass
+from typing import Any, Dict
 
 # Verbosity levels
 VERBOSITY_ESSENTIAL = 0  # Major weights (ADP, GEOM, Xray), R-factors
-VERBOSITY_STANDARD = 1   # Component weights / component losses
-VERBOSITY_DETAILED = 2   # Detailed stats / RMSDs / per-restraint info
-VERBOSITY_DEBUG = 3      # All internal parameters for debugging
+VERBOSITY_STANDARD = 1  # Component weights / component losses
+VERBOSITY_DETAILED = 2  # Detailed stats / RMSDs / per-restraint info
+VERBOSITY_DEBUG = 3  # All internal parameters for debugging
 
 
 @dataclass
 class StatEntry:
     """
     A statistics entry with value and verbosity level.
-    
+
     JSON serializable - when serialized, only the value is written.
 
     Attributes
@@ -51,12 +51,13 @@ class StatEntry:
     verbosity : int
         Verbosity level required to show this stat.
     """
+
     value: Any
     verbosity: int = VERBOSITY_STANDARD
 
     def __repr__(self):
         return f"{self.value}"
-    
+
     def __json__(self):
         """Return JSON-serializable representation (just the value)."""
         return self.value
@@ -65,16 +66,18 @@ class StatEntry:
 class StatEntryEncoder(json.JSONEncoder):
     """
     Custom JSON encoder that handles StatEntry and torch tensors.
-    
+
     Usage:
         json.dumps(data, cls=StatEntryEncoder)
     """
+
     def default(self, obj):
         if isinstance(obj, StatEntry):
             return obj.value
         # Handle torch tensors
         try:
             import torch
+
             if isinstance(obj, torch.Tensor):
                 return obj.tolist() if obj.numel() > 1 else obj.item()
         except ImportError:
@@ -82,6 +85,7 @@ class StatEntryEncoder(json.JSONEncoder):
         # Handle numpy arrays
         try:
             import numpy as np
+
             if isinstance(obj, np.ndarray):
                 return obj.tolist()
             elif isinstance(obj, (np.integer, np.floating)):
@@ -95,17 +99,20 @@ class StatEntryEncoder(json.JSONEncoder):
 _original_dumps = json.dumps
 _original_dump = json.dump
 
+
 def _patched_dumps(obj, *, cls=None, **kwargs):
     """json.dumps that automatically handles StatEntry objects."""
     if cls is None:
         cls = StatEntryEncoder
     return _original_dumps(obj, cls=cls, **kwargs)
 
+
 def _patched_dump(obj, fp, *, cls=None, **kwargs):
     """json.dump that automatically handles StatEntry objects."""
     if cls is None:
         cls = StatEntryEncoder
     return _original_dump(obj, fp, cls=cls, **kwargs)
+
 
 # Apply patches
 json.dumps = _patched_dumps
@@ -163,7 +170,7 @@ def filter_stats(stats: Dict, max_verbosity: int) -> Dict:
     return filtered
 
 
-def flatten_stats(stats: Dict, prefix: str = '') -> Dict[str, Any]:
+def flatten_stats(stats: Dict, prefix: str = "") -> Dict[str, Any]:
     """
     Flatten nested stats dict into flat dict with dotted keys.
 
@@ -191,7 +198,7 @@ def flatten_stats(stats: Dict, prefix: str = '') -> Dict[str, Any]:
     return flat
 
 
-def format_stats_table(stats: Dict, title: str = '', indent: int = 2) -> str:
+def format_stats_table(stats: Dict, title: str = "", indent: int = 2) -> str:
     """
     Format stats dictionary as a printable table.
 
@@ -210,12 +217,12 @@ def format_stats_table(stats: Dict, title: str = '', indent: int = 2) -> str:
         Formatted table string.
     """
     lines = []
-    ind = ' ' * indent
-    
+    ind = " " * indent
+
     if title:
         lines.append(f"{ind}{title}")
         lines.append(f"{ind}{'-' * len(title)}")
-    
+
     def format_value(val):
         if isinstance(val, float):
             if abs(val) < 0.001 and val != 0:
@@ -225,7 +232,7 @@ def format_stats_table(stats: Dict, title: str = '', indent: int = 2) -> str:
             else:
                 return f"{val:.4f}"
         return str(val)
-    
+
     for key, val in stats.items():
         if isinstance(val, dict):
             lines.append(f"\n{ind}{key}:")
@@ -238,20 +245,20 @@ def format_stats_table(stats: Dict, title: str = '', indent: int = 2) -> str:
                     lines.append(f"{ind}  {subkey}: {format_value(subval)}")
         else:
             lines.append(f"{ind}{key}: {format_value(val)}")
-    
-    return '\n'.join(lines)
+
+    return "\n".join(lines)
 
 
 __all__ = [
     # Verbosity levels
-    'VERBOSITY_ESSENTIAL',
-    'VERBOSITY_STANDARD',
-    'VERBOSITY_DETAILED',
-    'VERBOSITY_DEBUG',
+    "VERBOSITY_ESSENTIAL",
+    "VERBOSITY_STANDARD",
+    "VERBOSITY_DETAILED",
+    "VERBOSITY_DEBUG",
     # Stats classes and functions
-    'StatEntry',
-    'stat',
-    'filter_stats',
-    'flatten_stats',
-    'format_stats_table',
+    "StatEntry",
+    "stat",
+    "filter_stats",
+    "flatten_stats",
+    "format_stats_table",
 ]

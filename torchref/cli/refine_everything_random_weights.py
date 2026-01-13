@@ -16,16 +16,25 @@ The sampled weights and resulting trajectories are recorded for training data.
 
 import argparse
 import json
-import sys
 import os
-from pathlib import Path
-import torch
+import sys
 import time
+from pathlib import Path
+
+import torch
 
 # Force unbuffered output for batch systems like SLURM
-sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
-sys.stderr.reconfigure(line_buffering=True) if hasattr(sys.stderr, 'reconfigure') else None
-os.environ['PYTHONUNBUFFERED'] = '1'
+(
+    sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stdout, "reconfigure")
+    else None
+)
+(
+    sys.stderr.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure")
+    else None
+)
+os.environ["PYTHONUNBUFFERED"] = "1"
 
 # Import stats module early to patch json with StatEntry encoder
 import torchref.utils.stats  # noqa: F401
@@ -33,7 +42,7 @@ import torchref.utils.stats  # noqa: F401
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Run LBFGS refinement with random weighting for policy training data collection',
+        description="Run LBFGS refinement with random weighting for policy training data collection",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -45,88 +54,94 @@ Examples:
 
   # With 10 refinement cycles
   torchref-refine-random -s model.pdb -f reflections.mtz -o output/ -n 10
-        """
+        """,
     )
 
     # Mandatory arguments
     parser.add_argument(
-        '-s', '--structure',
+        "-s",
+        "--structure",
         required=True,
         type=str,
-        help='Input structure file (PDB or CIF format)'
+        help="Input structure file (PDB or CIF format)",
     )
 
     parser.add_argument(
-        '-f', '--structure-factors',
+        "-f",
+        "--structure-factors",
         required=True,
         type=str,
-        help='Input structure factors file (MTZ or CIF format)'
+        help="Input structure factors file (MTZ or CIF format)",
     )
 
     parser.add_argument(
-        '-o', '--outdir',
+        "-o",
+        "--outdir",
         required=True,
         type=str,
-        help='Output directory for refined structure and results'
+        help="Output directory for refined structure and results",
     )
 
     # Optional arguments
     parser.add_argument(
-        '-n', '--n-cycles',
+        "-n",
+        "--n-cycles",
         type=int,
         default=5,
-        help='Number of refinement macro cycles (default: 5)'
+        help="Number of refinement macro cycles (default: 5)",
     )
 
     parser.add_argument(
-        '-c', '--cif-restraints',
+        "-c",
+        "--cif-restraints",
         type=str,
         default=None,
-        help='CIF restraints dictionary (auto-detected if not provided)'
+        help="CIF restraints dictionary (auto-detected if not provided)",
     )
 
     parser.add_argument(
-        '--max-res',
+        "--max-res",
         type=float,
         default=None,
-        help='Maximum resolution cutoff in Angstroms (optional)'
+        help="Maximum resolution cutoff in Angstroms (optional)",
     )
 
     parser.add_argument(
-        '--device',
+        "--device",
         type=str,
-        default='cpu',
-        choices=['cpu', 'cuda'],
-        help='Computation device (default: cpu)'
+        default="cpu",
+        choices=["cpu", "cuda"],
+        help="Computation device (default: cpu)",
     )
 
     parser.add_argument(
-        '--seed',
+        "--seed",
         type=int,
         default=None,
-        help='Random seed for weight sampling (default: random)'
+        help="Random seed for weight sampling (default: random)",
     )
 
     parser.add_argument(
-        '--trajectory-sigma',
+        "--trajectory-sigma",
         type=float,
         default=1.5,
-        help='Standard deviation for trajectory-level base weight sampling in log-space (default: 1.5)'
+        help="Standard deviation for trajectory-level base weight sampling in log-space (default: 1.5)",
     )
 
     parser.add_argument(
-        '--step-sigma',
+        "--step-sigma",
         type=float,
         default=0.3,
-        help='Standard deviation for step-level perturbations in log-space (default: 0.3)'
+        help="Standard deviation for step-level perturbations in log-space (default: 0.3)",
     )
 
     parser.add_argument(
-        '-v', '--verbose',
+        "-v",
+        "--verbose",
         type=int,
         default=1,
         choices=[0, 1, 2],
-        help='Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)'
+        help="Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)",
     )
 
     args = parser.parse_args()
@@ -151,10 +166,10 @@ Examples:
     try:
         from torchref.refinement.lbfgs_refinement import LBFGSRefinement
         from torchref.refinement.weighting.random_weighting import (
-            RandomComponentWeighting,
             DEFAULT_LOG_WEIGHTS,
-            DEFAULT_TRAJECTORY_SIGMAS,
             DEFAULT_STEP_SIGMAS,
+            DEFAULT_TRAJECTORY_SIGMAS,
+            RandomComponentWeighting,
         )
     except ImportError as e:
         print(f"Error: Failed to import torchref modules: {e}", file=sys.stderr)
@@ -166,7 +181,7 @@ Examples:
         print("=" * 80)
         print("TorchRef LBFGS Refinement - RANDOM WEIGHTING")
         print("=" * 80)
-        print(f"Weighting scheme: RandomComponentWeighting")
+        print("Weighting scheme: RandomComponentWeighting")
         print(f"Structure:        {structure_path}")
         print(f"Structure factors: {sf_path}")
         print(f"Output directory: {outdir}")
@@ -183,9 +198,12 @@ Examples:
 
     # Setup device
     device = torch.device(args.device)
-    if args.device == 'cuda' and not torch.cuda.is_available():
-        print("Warning: CUDA requested but not available, falling back to CPU", file=sys.stderr)
-        device = torch.device('cpu')
+    if args.device == "cuda" and not torch.cuda.is_available():
+        print(
+            "Warning: CUDA requested but not available, falling back to CPU",
+            file=sys.stderr,
+        )
+        device = torch.device("cpu")
 
     if args.verbose > 0:
         print("Initializing refinement...")
@@ -204,7 +222,9 @@ Examples:
     )
 
     # Create custom sigmas if specified
-    trajectory_sigmas = {k: args.trajectory_sigma for k in DEFAULT_TRAJECTORY_SIGMAS.keys()}
+    trajectory_sigmas = {
+        k: args.trajectory_sigma for k in DEFAULT_TRAJECTORY_SIGMAS.keys()
+    }
     step_sigmas = {k: args.step_sigma for k in DEFAULT_STEP_SIGMAS.keys()}
 
     # Create and install RandomComponentWeighting
@@ -223,7 +243,7 @@ Examples:
     if args.verbose > 0:
         print("Refinement initialized successfully.")
         print("Using RandomComponentWeighting (XrayScale + RandomWeighting)")
-        print(f"\nBase log-weights (sampled once for this trajectory):")
+        print("\nBase log-weights (sampled once for this trajectory):")
         for name, log_w in random_weighting.get_base_log_weights().items():
             weight = torch.exp(torch.tensor(log_w)).item()
             print(f"  {name:12s}: log_w={log_w:+.3f}  weight={weight:.4f}")
@@ -288,7 +308,7 @@ Examples:
         "input_files": {
             "structure": str(structure_path),
             "structure_factors": str(sf_path),
-            "cif_restraints": args.cif_restraints
+            "cif_restraints": args.cif_restraints,
         },
         "parameters": {
             "n_cycles": args.n_cycles,
@@ -308,8 +328,8 @@ Examples:
             "final_sampled_log_weights": random_weighting.get_sampled_log_weights(),
             "final_sampled_weights": random_weighting.get_sampled_weights(),
         },
-        "history": refinement.history if hasattr(refinement, 'history') else {},
-        "final_statistics": {}
+        "history": refinement.history if hasattr(refinement, "history") else {},
+        "final_statistics": {},
     }
 
     # Add final R-factors if available
@@ -322,8 +342,12 @@ Examples:
         work_mask = rfree
         test_mask = ~rfree
 
-        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(fobs[work_mask])
-        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(fobs[test_mask])
+        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(
+            fobs[work_mask]
+        )
+        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(
+            fobs[test_mask]
+        )
 
         history_data["final_statistics"] = {
             "R_work": float(r_work.item()),
@@ -331,13 +355,13 @@ Examples:
             "NLL_work": float(work_nll.item()),
             "NLL_test": float(test_nll.item()),
             "n_reflections_work": int(work_mask.sum().item()),
-            "n_reflections_test": int(test_mask.sum().item())
+            "n_reflections_test": int(test_mask.sum().item()),
         }
     except Exception as e:
         if args.verbose > 1:
             print(f"  Warning: Could not compute final statistics: {e}")
 
-    with open(output_json, 'w') as f:
+    with open(output_json, "w") as f:
         json.dump(history_data, f, indent=2)
 
     if args.verbose > 0:
@@ -350,7 +374,7 @@ Examples:
         print("Refinement Summary")
         print("=" * 80)
 
-        print(f"\nTrajectory summary:")
+        print("\nTrajectory summary:")
         print(f"  Initial R-work: {initial_rwork:.4f}")
         print(f"  Initial R-free: {initial_rfree:.4f}")
         print(f"  Final R-work:   {final_rwork:.4f}")
@@ -360,13 +384,17 @@ Examples:
 
         if "final_statistics" in history_data and history_data["final_statistics"]:
             stats = history_data["final_statistics"]
-            print(f"\nFinal statistics:")
-            print(f"  R-work:   {stats['R_work']:.4f} ({stats['n_reflections_work']} reflections)")
-            print(f"  R-free:   {stats['R_free']:.4f} ({stats['n_reflections_test']} reflections)")
+            print("\nFinal statistics:")
+            print(
+                f"  R-work:   {stats['R_work']:.4f} ({stats['n_reflections_work']} reflections)"
+            )
+            print(
+                f"  R-free:   {stats['R_free']:.4f} ({stats['n_reflections_test']} reflections)"
+            )
             print(f"  NLL work: {stats['NLL_work']:.2f}")
             print(f"  NLL test: {stats['NLL_test']:.2f}")
 
-        print(f"\nFinal sampled weights:")
+        print("\nFinal sampled weights:")
         for name, weight in random_weighting.get_sampled_weights().items():
             log_w = random_weighting.get_sampled_log_weights()[name]
             print(f"  {name:12s}: log_w={log_w:+.3f}  weight={weight:.4f}")
@@ -383,5 +411,5 @@ Examples:
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

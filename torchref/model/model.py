@@ -1,22 +1,28 @@
-
-'''
+"""
 A base model class for atomic structure models using PyTorch.
 
 Space groups are stored as gemmi.SpaceGroup objects for consistency
 and direct access to symmetry operations.
-'''
+"""
 
+from typing import Optional, Union
+
+import gemmi
 import torch
 import torch.nn as nn
-import gemmi
-from typing import Optional, Union
-from torchref.io import pdb, cif
-from torchref.utils.utils import sanitize_pdb_dataframe
-from torchref.symmetrie import Symmetry, SpaceGroup, SpaceGroupLike
+
 import torchref.math_functions.math_numpy as mnp
+from torchref.io import cif, pdb
 from torchref.math_functions import math_torch
-from torchref.model.parameter_wrappers import MixedTensor, OccupancyTensor, PositiveMixedTensor
+from torchref.model.parameter_wrappers import (
+    MixedTensor,
+    OccupancyTensor,
+    PositiveMixedTensor,
+)
+from torchref.symmetrie import SpaceGroup, Symmetry
 from torchref.utils.debug_utils import DebugMixin
+from torchref.utils.utils import sanitize_pdb_dataframe
+
 
 class Model(DebugMixin, nn.Module):
     """
@@ -26,7 +32,7 @@ class Model(DebugMixin, nn.Module):
     including coordinates, B-factors, anisotropic displacement parameters,
     and occupancies. It supports both empty initialization for state_dict
     loading and file-based initialization from PDB/CIF files.
-    
+
     Parameters
     ----------
     dtype_float : torch.dtype, optional
@@ -71,8 +77,14 @@ class Model(DebugMixin, nn.Module):
     >>> model = Model()
     >>> model.load_pdb('structure.pdb')
     """
-    
-    def __init__(self, dtype_float=torch.float32, verbose=1, device=torch.device('cpu'), strip_H: bool = True):
+
+    def __init__(
+        self,
+        dtype_float=torch.float32,
+        verbose=1,
+        device=torch.device("cpu"),
+        strip_H: bool = True,
+    ):
         """
         Initialize an empty Model shell.
 
@@ -96,7 +108,7 @@ class Model(DebugMixin, nn.Module):
         self.verbose = verbose
         self.device = device
         self.strip_H = strip_H
-        
+
         # State tracking
         self.initialized = False
         self.altloc_pairs = []
@@ -105,45 +117,88 @@ class Model(DebugMixin, nn.Module):
         self.pdb = None
         self.spacegroup: Optional[gemmi.SpaceGroup] = None  # Canonical space group
         self.symmetry: Optional[Symmetry] = None  # Symmetry operations handler
-        
+
         # Submodules (created during load or load_state_dict)
         self.xyz = None
         self.b = None
         self.u = None
         self.occupancy = None
-    
+
     def __bool__(self):
         """Return the initialization status when used in boolean context."""
         return self.initialized
-    
+
     def load(self, reader):
         self.pdb, cell, spacegroup = reader()
 
-        self.pdb = self.pdb.loc[self.pdb['element'] != 'H'].reset_index(drop=True) if self.strip_H else self.pdb
-        self.pdb.dropna(subset=['x', 'y', 'z', 'tempfactor', 'occupancy'], inplace=True)
-        self.pdb['index'] = self.pdb.index.to_numpy(dtype=int)
+        self.pdb = (
+            self.pdb.loc[self.pdb["element"] != "H"].reset_index(drop=True)
+            if self.strip_H
+            else self.pdb
+        )
+        self.pdb.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"], inplace=True)
+        self.pdb["index"] = self.pdb.index.to_numpy(dtype=int)
 
-        self.register_buffer('cell', torch.tensor(cell, requires_grad=False, dtype=self.dtype_float, device=self.device))
+        self.register_buffer(
+            "cell",
+            torch.tensor(
+                cell, requires_grad=False, dtype=self.dtype_float, device=self.device
+            ),
+        )
 
         # Store space group as gemmi.SpaceGroup (reader now returns gemmi.SpaceGroup directly)
         self.spacegroup = SpaceGroup(spacegroup)
         self.symmetry = Symmetry(self.spacegroup)
 
-
         # Register buffers for various matrices
-        self.register_buffer('inv_fractional_matrix',torch.tensor(mnp.get_inv_fractional_matrix(self.cell),dtype=self.dtype_float,requires_grad=False))
-        self.register_buffer('fractional_matrix',torch.tensor(mnp.get_fractional_matrix(self.cell),dtype=self.dtype_float,requires_grad=False))
-        self.register_buffer('aniso_flag',torch.tensor(self.pdb['anisou_flag'].values,dtype=torch.bool))
-        self.register_buffer('recB', math_torch.reciprocal_basis_matrix(self.cell).to(dtype=self.dtype_float).to(self.device))
-        
+        self.register_buffer(
+            "inv_fractional_matrix",
+            torch.tensor(
+                mnp.get_inv_fractional_matrix(self.cell),
+                dtype=self.dtype_float,
+                requires_grad=False,
+            ),
+        )
+        self.register_buffer(
+            "fractional_matrix",
+            torch.tensor(
+                mnp.get_fractional_matrix(self.cell),
+                dtype=self.dtype_float,
+                requires_grad=False,
+            ),
+        )
+        self.register_buffer(
+            "aniso_flag", torch.tensor(self.pdb["anisou_flag"].values, dtype=torch.bool)
+        )
+        self.register_buffer(
+            "recB",
+            math_torch.reciprocal_basis_matrix(self.cell)
+            .to(dtype=self.dtype_float)
+            .to(self.device),
+        )
+
         # Create MixedTensors for model parameters
-        self.xyz = MixedTensor(torch.tensor(self.pdb[['x', 'y', 'z']].values,dtype=self.dtype_float), name='xyz')
-        self.b = PositiveMixedTensor(torch.tensor(self.pdb['tempfactor'].values,dtype=self.dtype_float), name='b_factor')
-        self.u = MixedTensor(torch.tensor(self.pdb[['u11', 'u22', 'u33', 'u12', 'u13', 'u23']].values,dtype=self.dtype_float), name='aniso_U')
-        
+        self.xyz = MixedTensor(
+            torch.tensor(self.pdb[["x", "y", "z"]].values, dtype=self.dtype_float),
+            name="xyz",
+        )
+        self.b = PositiveMixedTensor(
+            torch.tensor(self.pdb["tempfactor"].values, dtype=self.dtype_float),
+            name="b_factor",
+        )
+        self.u = MixedTensor(
+            torch.tensor(
+                self.pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
+                dtype=self.dtype_float,
+            ),
+            name="aniso_U",
+        )
+
         # Create OccupancyTensor with residue-level sharing and altloc support
-        initial_occ = torch.tensor(self.pdb['occupancy'].values, dtype=self.dtype_float)
-        sharing_groups, altloc_groups, refinable_mask = self._create_occupancy_groups(self.pdb, initial_occ)
+        initial_occ = torch.tensor(self.pdb["occupancy"].values, dtype=self.dtype_float)
+        sharing_groups, altloc_groups, refinable_mask = self._create_occupancy_groups(
+            self.pdb, initial_occ
+        )
         self.occupancy = OccupancyTensor(
             initial_values=initial_occ,
             sharing_groups=sharing_groups,
@@ -151,7 +206,7 @@ class Model(DebugMixin, nn.Module):
             refinable_mask=refinable_mask,
             dtype=self.dtype_float,
             device=self.device,
-            name='occupancy'
+            name="occupancy",
         )
 
         self.set_default_masks()
@@ -173,9 +228,9 @@ class Model(DebugMixin, nn.Module):
         Model
             Self, for method chaining.
         """
-        reader = pdb.PDBReader(verbose=self.verbose).read(file)   
+        reader = pdb.PDBReader(verbose=self.verbose).read(file)
         return self.load(reader)
-    
+
     def load_cif(self, file):
         """
         Load atomic model from mmCIF file.
@@ -192,12 +247,12 @@ class Model(DebugMixin, nn.Module):
         """
         if self.verbose > 0:
             print(f"Loading CIF file: {file}")
-        
+
         # Read CIF file
         cif_reader = cif.ModelCIFReader(file)
 
         return self.load(cif_reader)
-    
+
     def _create_occupancy_groups(self, pdb_df, initial_occ):
         """
         Create sharing groups and altloc groups for occupancy.
@@ -231,74 +286,76 @@ class Model(DebugMixin, nn.Module):
         n_atoms = len(initial_occ)
         altloc_groups = []
         refinable_mask = torch.zeros(n_atoms, dtype=torch.bool)
-        
+
         # Initialize sharing groups tensor - each atom maps to its own index initially
         sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)
         collapsed_idx = 0
-        
+
         # First pass: identify and process alternative conformations
         # For altloc atoms: ALL atoms in a conformation MUST share the same collapsed index
         # regardless of their individual occupancy values
-        pdb_with_altlocs = pdb_df[pdb_df['altloc'] != '']
+        pdb_with_altlocs = pdb_df[pdb_df["altloc"] != ""]
         altloc_residues = set()  # Track which residues have altlocs
-        
+
         if len(pdb_with_altlocs) > 0:
-            grouped_by_residue = pdb_with_altlocs.groupby(['resname', 'resseq', 'chainid'])
-            
+            grouped_by_residue = pdb_with_altlocs.groupby(
+                ["resname", "resseq", "chainid"]
+            )
+
             for (resname, resseq, chainid), group in grouped_by_residue:
-                unique_altlocs = sorted(group['altloc'].unique())
-                
+                unique_altlocs = sorted(group["altloc"].unique())
+
                 # Only process if there are multiple conformations
                 if len(unique_altlocs) > 1:
                     altloc_residues.add((resname, resseq, chainid))
                     conformation_atom_lists = []
-                    
+
                     for altloc in unique_altlocs:
                         # Get all atoms for this specific altloc
-                        altloc_atoms = group[group['altloc'] == altloc]
-                        indices = altloc_atoms['index'].tolist()
-                        
+                        altloc_atoms = group[group["altloc"] == altloc]
+                        indices = altloc_atoms["index"].tolist()
+
                         # Assign ALL atoms in this conformation to the same collapsed index
                         sharing_groups_tensor[indices] = collapsed_idx
-                        
+
                         # Check if any atom in this conformation has occupancy != 1.0
                         for idx in indices:
                             if abs(initial_occ[idx].item() - 1.0) > 0.01:
                                 refinable_mask[idx] = True
-                        
+
                         conformation_atom_lists.append(indices)
                         collapsed_idx += 1
-                    
+
                     # Add to altloc_groups
                     altloc_groups.append(tuple(conformation_atom_lists))
-        
+
         # Second pass: process non-altloc residues
         # Group by residue, and create sharing groups based on occupancy similarity
-        grouped = pdb_df.groupby(['resname', 'resseq', 'chainid', 'altloc'])
-        
+        grouped = pdb_df.groupby(["resname", "resseq", "chainid", "altloc"])
+
         for (resname, resseq, chainid, altloc), group in grouped:
             # Skip if this residue has alternative conformations (already processed)
             if (resname, resseq, chainid) in altloc_residues:
                 continue
-            
-            indices = group['index'].tolist()
-            
+
+            indices = group["index"].tolist()
+
             if len(indices) == 0:
                 continue
-            
+
             # Get occupancies for this residue
             residue_occs = initial_occ[indices]
-            
+
             # Check if all occupancies are within tolerance
             occ_min = residue_occs.min().item()
             occ_max = residue_occs.max().item()
             occ_mean = residue_occs.mean().item()
-            
+
             if (occ_max - occ_min) <= 0.01:
                 # All atoms in residue have similar occupancy - create sharing group
                 sharing_groups_tensor[indices] = collapsed_idx
                 collapsed_idx += 1
-                
+
                 # Only refine if mean occupancy differs from 1.0
                 if abs(occ_mean - 1.0) > 0.01:
                     for idx in indices:
@@ -309,38 +366,40 @@ class Model(DebugMixin, nn.Module):
                 for idx in indices:
                     if abs(initial_occ[idx].item() - 1.0) > 0.01:
                         refinable_mask[idx] = True
-        
+
         # Compact the indices - make them contiguous from 0 to n_collapsed-1
         unique_indices = torch.unique(sharing_groups_tensor, sorted=True)
         index_map = torch.zeros(n_atoms, dtype=torch.long)
         for new_idx, old_idx in enumerate(unique_indices):
-            mask = (sharing_groups_tensor == old_idx)
+            mask = sharing_groups_tensor == old_idx
             sharing_groups_tensor[mask] = new_idx
-        
+
         n_collapsed = len(unique_indices)
-        
+
         if self.verbose > 1:
             n_groups = n_collapsed
             n_independent = n_atoms - n_collapsed  # Atoms not sharing with others
             n_refinable = refinable_mask.sum().item()
             n_altloc_groups = len(altloc_groups)
-            
-            print(f"\nOccupancy Setup:")
+
+            print("\nOccupancy Setup:")
             print(f"  Total atoms: {n_atoms}")
             print(f"  Collapsed indices: {n_collapsed}")
             print(f"  Alternative conformation groups: {n_altloc_groups}")
             print(f"  Refinable atoms: {n_refinable}")
             print(f"  Compression ratio: {n_atoms / n_collapsed:.2f}x")
-        
+
         return sharing_groups_tensor, altloc_groups, refinable_mask
 
     def update_pdb(self):
-        self.pdb.loc[:, ['x', 'y', 'z']] = self.xyz().cpu().detach().numpy()
-        self.pdb.loc[:, ['u11', 'u22', 'u33', 'u12', 'u13', 'u23']] = self.u().cpu().detach().numpy()
-        self.pdb.loc[:, 'tempfactor'] = self.b().cpu().detach().numpy()
-        self.pdb.loc[:, 'occupancy'] = self.occupancy().cpu().detach().numpy()
+        self.pdb.loc[:, ["x", "y", "z"]] = self.xyz().cpu().detach().numpy()
+        self.pdb.loc[:, ["u11", "u22", "u33", "u12", "u13", "u23"]] = (
+            self.u().cpu().detach().numpy()
+        )
+        self.pdb.loc[:, "tempfactor"] = self.b().cpu().detach().numpy()
+        self.pdb.loc[:, "occupancy"] = self.occupancy().cpu().detach().numpy()
         return self.pdb
-    
+
     def get_vdw_radii(self):
         """
         Get van der Waals radii for all atoms based on their elements.
@@ -353,45 +412,62 @@ class Model(DebugMixin, nn.Module):
             Van der Waals radii for each atom with shape (n_atoms,).
         """
         import os
+
         import pandas as pd
-        if hasattr(self, 'vdw_radii'):
+
+        if hasattr(self, "vdw_radii"):
             return self.vdw_radii
-        elements = self.pdb.loc[:, 'element']
-        path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'caching/files/atomic_vdw_radii.csv')
-        vdw_df = pd.read_csv(path, comment='#')   
-        vdw_df['element'] = vdw_df['element'].str.strip().str.capitalize()
+        elements = self.pdb.loc[:, "element"]
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "caching/files/atomic_vdw_radii.csv",
+        )
+        vdw_df = pd.read_csv(path, comment="#")
+        vdw_df["element"] = vdw_df["element"].str.strip().str.capitalize()
         elements = elements.str.strip().str.capitalize()
-        elements_not_in = elements[~elements.isin(vdw_df['element'])]
+        elements_not_in = elements[~elements.isin(vdw_df["element"])]
         if len(elements_not_in) > 0:
             # Add missing elements with default vdW radius 1.9 Å
             missing = sorted(set(e.strip().capitalize() for e in elements_not_in))
             if missing:
-                add_df = pd.DataFrame({'element': missing,
-                                       'vdW_Radius_Angstrom': [1.9] * len(missing)})
+                add_df = pd.DataFrame(
+                    {"element": missing, "vdW_Radius_Angstrom": [1.9] * len(missing)}
+                )
                 vdw_df = pd.concat([vdw_df, add_df], ignore_index=True)
 
-
-        vdw_radii = vdw_df.set_index('element').loc[elements]['vdW_Radius_Angstrom'].values
-        self.register_buffer('vdw_radii', torch.tensor(vdw_radii, dtype=self.dtype_float, device=self.device))
-        assert len(self.vdw_radii) == len(self.pdb), f"vdW radii length mismatch with number of atoms {len(self.vdw_radii)} != {len(self.pdb)}"
+        vdw_radii = (
+            vdw_df.set_index("element").loc[elements]["vdW_Radius_Angstrom"].values
+        )
+        self.register_buffer(
+            "vdw_radii",
+            torch.tensor(vdw_radii, dtype=self.dtype_float, device=self.device),
+        )
+        assert len(self.vdw_radii) == len(
+            self.pdb
+        ), f"vdW radii length mismatch with number of atoms {len(self.vdw_radii)} != {len(self.pdb)}"
         return self.vdw_radii
 
     def cuda(self, device: Optional[Union[int, torch.device]] = None):
         super().cuda(device)
         if self.altloc_pairs:
-            self.altloc_pairs = [tuple(tensor.cuda(device) for tensor in group) for group in self.altloc_pairs]
-        self.device = torch.device('cuda')
+            self.altloc_pairs = [
+                tuple(tensor.cuda(device) for tensor in group)
+                for group in self.altloc_pairs
+            ]
+        self.device = torch.device("cuda")
         print(f"Model moved to device: {self.device}")
         return self
-    
+
     def cpu(self):
         super().cpu()
         if self.altloc_pairs:
-            self.altloc_pairs = [tuple(tensor.cpu() for tensor in group) for group in self.altloc_pairs]
-        self.device = torch.device('cpu')
+            self.altloc_pairs = [
+                tuple(tensor.cpu() for tensor in group) for group in self.altloc_pairs
+            ]
+        self.device = torch.device("cpu")
         print(f"Model moved to device: {self.device}")
         return self
-    
+
     def copy(self):
         """
         Create a deep copy of the Model.
@@ -412,15 +488,15 @@ class Model(DebugMixin, nn.Module):
         """
         if not self.initialized:
             raise RuntimeError("Cannot copy an uninitialized Model. Load data first.")
-        
+
         # Create new model instance with same configuration
         model_copy = Model(
             dtype_float=self.dtype_float,
             verbose=self.verbose,
             device=self.device,
-            strip_H=self.strip_H
+            strip_H=self.strip_H,
         )
-        
+
         # Deep copy the PDB DataFrame
         model_copy.pdb = self.pdb.copy(deep=True)
 
@@ -428,35 +504,34 @@ class Model(DebugMixin, nn.Module):
         model_copy.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
         model_copy.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
         model_copy.initialized = True
-        
+
         # Copy all registered buffers using PyTorch's _buffers dict
         for buffer_name, buffer_value in self._buffers.items():
             if buffer_value is not None:
                 model_copy.register_buffer(buffer_name, buffer_value.clone())
-        
+
         # Copy all modules (parameter wrappers) using their .copy() methods
         for module_name, module in self._modules.items():
-            if module is not None and hasattr(module, 'copy'):
+            if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
-        
+
         # Copy alternative conformation pairs
-        if hasattr(self, 'altloc_pairs') and self.altloc_pairs:
+        if hasattr(self, "altloc_pairs") and self.altloc_pairs:
             model_copy.altloc_pairs = [
-                tuple(tensor.clone() for tensor in group) 
-                for group in self.altloc_pairs
+                tuple(tensor.clone() for tensor in group) for group in self.altloc_pairs
             ]
         else:
             model_copy.altloc_pairs = []
-        
+
         if self.verbose > 0:
             print(f"✓ Model copied successfully ({len(model_copy.pdb)} atoms)")
-        
+
         return model_copy
-    
+
     def write_pdb(self, filename):
         self.update_pdb()
         self.pdb = sanitize_pdb_dataframe(self.pdb)
-        self.pdb.attrs['spacegroup'] = self.spacegroup.hm if self.spacegroup else 'P 1'
+        self.pdb.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
         pdb.write(self.pdb, filename)
 
     def get_iso(self):
@@ -466,7 +541,9 @@ class Model(DebugMixin, nn.Module):
         return xyz, b, occupancy
 
     def set_default_masks(self):
-        self.register_buffer("xyz_mask", torch.ones(len(self.pdb), dtype=torch.bool, device=self.device))
+        self.register_buffer(
+            "xyz_mask", torch.ones(len(self.pdb), dtype=torch.bool, device=self.device)
+        )
         self.xyz.update_refinable_mask(self.xyz_mask)
         self.register_buffer("b_mask", ~self.b().detach().isnan())
         self.b.update_refinable_mask(self.b_mask)
@@ -476,40 +553,43 @@ class Model(DebugMixin, nn.Module):
         self.occupancy.update_refinable_mask(self.occupancy_mask)
 
     def freeze(self, target: str):
-        if target == 'xyz':
+        if target == "xyz":
             self.xyz.fix_all()
-        elif target == 'b':
+        elif target == "b":
             self.b.fix_all()
-        elif target == 'u':
+        elif target == "u":
             self.u.fix_all()
-        elif target == 'occupancy':
+        elif target == "occupancy":
             self.occupancy.freeze_all()  # OccupancyTensor uses freeze_all() not fix_all()
-    
+
     def freeze_all(self):
-        self.freeze('xyz')
-        self.freeze('b')
-        self.freeze('u')
-        self.freeze('occupancy')
+        self.freeze("xyz")
+        self.freeze("b")
+        self.freeze("u")
+        self.freeze("occupancy")
 
     def unfreeze_all(self):
-        self.unfreeze('xyz')
-        self.unfreeze('b')
-        self.unfreeze('u')
-        self.unfreeze('occupancy')
+        self.unfreeze("xyz")
+        self.unfreeze("b")
+        self.unfreeze("u")
+        self.unfreeze("occupancy")
 
     def unfreeze(self, target: str):
-        if target == 'xyz':
+        if target == "xyz":
             self.xyz.update_refinable_mask(self.xyz_mask)
-        elif target == 'b':
+        elif target == "b":
             self.b.update_refinable_mask(self.b_mask)
-        elif target == 'u':
+        elif target == "u":
             self.u.update_refinable_mask(self.u_mask)
-        elif target == 'occupancy':
+        elif target == "occupancy":
             # OccupancyTensor uses unfreeze_all() or update_refinable_mask() with full atom space mask
-            self.occupancy.update_refinable_mask(self.occupancy_mask, in_compressed_space=False)
+            self.occupancy.update_refinable_mask(
+                self.occupancy_mask, in_compressed_space=False
+            )
 
-    def update_mask_from_selection(self, selection_string: str, target: str, 
-                                   mode: str = 'set', freeze: bool = True):
+    def update_mask_from_selection(
+        self, selection_string: str, target: str, mode: str = "set", freeze: bool = True
+    ):
         """
         Update the refinable mask for a parameter using Phenix-style selection syntax.
 
@@ -548,44 +628,50 @@ class Model(DebugMixin, nn.Module):
         >>> model.apply_mask_to_parameter("xyz")
         """
         from torchref.utils.utils import create_selection_mask
-        
+
         # Map target to the corresponding mask buffer
         mask_map = {
-            'xyz': 'xyz_mask',
-            'b': 'b_mask',
-            'u': 'u_mask',
-            'occupancy': 'occupancy_mask'
+            "xyz": "xyz_mask",
+            "b": "b_mask",
+            "u": "u_mask",
+            "occupancy": "occupancy_mask",
         }
-        
+
         if target not in mask_map:
-            raise ValueError(f"Invalid target: '{target}'. Must be one of: {list(mask_map.keys())}")
-        
+            raise ValueError(
+                f"Invalid target: '{target}'. Must be one of: {list(mask_map.keys())}"
+            )
+
         mask_name = mask_map[target]
         current_mask = getattr(self, mask_name)
-        
+
         # Get selection mask
         selection_mask = create_selection_mask(
-            selection_string, 
-            self.pdb, 
-            current_mask=current_mask if mode != 'set' else None,
-            mode=mode
+            selection_string,
+            self.pdb,
+            current_mask=current_mask if mode != "set" else None,
+            mode=mode,
         )
-        
+
         # Invert selection if we're freezing (refinable_mask=False means frozen)
         if freeze:
             updated_mask = current_mask & ~selection_mask
         else:
             updated_mask = selection_mask
-        
+
         # Update the buffer
         setattr(self, mask_name, updated_mask)
-        
+
         if self.verbose > 0:
             n_selected = selection_mask.sum().item()
             n_refinable = updated_mask.sum().item()
             action = "frozen" if freeze else "unfrozen"
-            print(f"Selection '{selection_string}' ({n_selected} atoms) {action} for {target}")
-            print(f"  Total refinable atoms for {target}: {n_refinable}/{len(self.pdb)}")
+            print(
+                f"Selection '{selection_string}' ({n_selected} atoms) {action} for {target}"
+            )
+            print(
+                f"  Total refinable atoms for {target}: {n_refinable}/{len(self.pdb)}"
+            )
 
     def apply_mask_to_parameter(self, target: str):
         """
@@ -609,22 +695,28 @@ class Model(DebugMixin, nn.Module):
         >>> model.update_mask_from_selection("chain A", "xyz", freeze=True)
         >>> model.apply_mask_to_parameter("xyz")
         """
-        if target == 'xyz':
+        if target == "xyz":
             self.xyz.update_refinable_mask(self.xyz_mask)
-        elif target == 'b':
+        elif target == "b":
             self.b.update_refinable_mask(self.b_mask)
-        elif target == 'u':
+        elif target == "u":
             self.u.update_refinable_mask(self.u_mask)
-        elif target == 'occupancy':
-            self.occupancy.update_refinable_mask(self.occupancy_mask, in_compressed_space=False)
+        elif target == "occupancy":
+            self.occupancy.update_refinable_mask(
+                self.occupancy_mask, in_compressed_space=False
+            )
         else:
-            raise ValueError(f"Invalid target: '{target}'. Must be 'xyz', 'b', 'u', or 'occupancy'")
-        
+            raise ValueError(
+                f"Invalid target: '{target}'. Must be 'xyz', 'b', 'u', or 'occupancy'"
+            )
+
         if self.verbose > 0:
             n_refinable = getattr(self, f"{target}_mask").sum().item()
             print(f"  Applied mask to {target}: {n_refinable} atoms refinable")
 
-    def freeze_selection(self, selection_string: str, targets: Union[str, list] = 'all'):
+    def freeze_selection(
+        self, selection_string: str, targets: Union[str, list] = "all"
+    ):
         """
         Freeze atoms matching a Phenix-style selection for specified parameters.
 
@@ -650,17 +742,21 @@ class Model(DebugMixin, nn.Module):
         >>> model.freeze_selection("resseq 10:20", targets='xyz')
         """
         # Handle 'all' target
-        if targets == 'all':
-            targets = ['xyz', 'b', 'u', 'occupancy']
+        if targets == "all":
+            targets = ["xyz", "b", "u", "occupancy"]
         elif isinstance(targets, str):
             targets = [targets]
-        
+
         # Update and apply masks for each target
         for target in targets:
-            self.update_mask_from_selection(selection_string, target, mode='set', freeze=True)
+            self.update_mask_from_selection(
+                selection_string, target, mode="set", freeze=True
+            )
             self.apply_mask_to_parameter(target)
 
-    def unfreeze_selection(self, selection_string: str, targets: Union[str, list] = 'all'):
+    def unfreeze_selection(
+        self, selection_string: str, targets: Union[str, list] = "all"
+    ):
         """
         Unfreeze atoms matching a Phenix-style selection for specified parameters.
 
@@ -686,14 +782,16 @@ class Model(DebugMixin, nn.Module):
         >>> model.unfreeze_selection("name CA or name C or name N", targets='xyz')
         """
         # Handle 'all' target
-        if targets == 'all':
-            targets = ['xyz', 'b', 'u', 'occupancy']
+        if targets == "all":
+            targets = ["xyz", "b", "u", "occupancy"]
         elif isinstance(targets, str):
             targets = [targets]
-        
+
         # Update and apply masks for each target
         for target in targets:
-            self.update_mask_from_selection(selection_string, target, mode='set', freeze=False)
+            self.update_mask_from_selection(
+                selection_string, target, mode="set", freeze=False
+            )
             self.apply_mask_to_parameter(target)
 
     def get_aniso(self):
@@ -701,21 +799,21 @@ class Model(DebugMixin, nn.Module):
         u = self.u()[self.aniso_flag]
         occupancy = self.occupancy()[self.aniso_flag]
         return xyz, u, occupancy
-    
+
     def parameters(self, recurse: bool = True):
         return (p for p in super().parameters(recurse) if p.numel() > 0)
-    
+
     def named_mixed_tensors(self):
         """
         Iterate over all MixedTensor attributes with their names.
-        
+
         Yields:
             Tuple of (name, MixedTensor)
         """
         for name, module in self.named_modules():
             if isinstance(module, MixedTensor) and module != self:
                 yield name, module
-    
+
     def print_parameters_info(self):
         """Print information about all MixedTensor parameters."""
         print("=" * 80)
@@ -724,9 +822,11 @@ class Model(DebugMixin, nn.Module):
         for attr_name, mixed_tensor in self.named_mixed_tensors():
             print(f"\n{attr_name}: {mixed_tensor}")
             if mixed_tensor.get_refinable_count() > 0:
-                print(f"  Refinable values: min={mixed_tensor.refinable_params.min().item():.4f}, "
-                      f"max={mixed_tensor.refinable_params.max().item():.4f}, "
-                      f"mean={mixed_tensor.refinable_params.mean().item():.4f}")
+                print(
+                    f"  Refinable values: min={mixed_tensor.refinable_params.min().item():.4f}, "
+                    f"max={mixed_tensor.refinable_params.max().item():.4f}, "
+                    f"mean={mixed_tensor.refinable_params.mean().item():.4f}"
+                )
         print("=" * 80)
 
     def register_alternative_conformations(self):
@@ -754,33 +854,35 @@ class Model(DebugMixin, nn.Module):
         """
         # Initialize the list to store alternative conformation groups
         self.altloc_pairs = []
-        
+
         # Get all atoms with alternative conformations (non-empty altloc field)
-        pdb_with_altlocs = self.pdb[self.pdb['altloc'] != '']
-        
+        pdb_with_altlocs = self.pdb[self.pdb["altloc"] != ""]
+
         if len(pdb_with_altlocs) == 0:
             # No alternative conformations in this structure
             return
-        
+
         # Group by residue (resname, resseq, chainid) to find all residues
         # that have alternative conformations
-        grouped = pdb_with_altlocs.groupby(['resname', 'resseq', 'chainid'])
-        
+        grouped = pdb_with_altlocs.groupby(["resname", "resseq", "chainid"])
+
         for (resname, resseq, chainid), group in grouped:
             # Get all unique altloc identifiers for this residue
-            unique_altlocs = sorted(group['altloc'].unique())
-            
+            unique_altlocs = sorted(group["altloc"].unique())
+
             # Only register if there are actually multiple conformations
             if len(unique_altlocs) > 1:
                 # For each altloc, collect all atom indices belonging to that conformation
                 conformation_tensors = []
                 for altloc in unique_altlocs:
                     # Get all atoms for this specific altloc
-                    altloc_atoms = group[group['altloc'] == altloc]
+                    altloc_atoms = group[group["altloc"] == altloc]
                     # Get their indices and convert to tensor
-                    indices = torch.tensor(altloc_atoms['index'].tolist(), dtype=torch.long)
+                    indices = torch.tensor(
+                        altloc_atoms["index"].tolist(), dtype=torch.long
+                    )
                     conformation_tensors.append(indices)
-                
+
                 # Store as a tuple of tensors
                 self.altloc_pairs.append(tuple(conformation_tensors))
 
@@ -798,8 +900,10 @@ class Model(DebugMixin, nn.Module):
         """
         xyz = self.xyz().detach()
         new_xyz = xyz + torch.normal(mean=0.0, std=stddev, size=xyz.shape)
-        self.xyz = MixedTensor(new_xyz, refinable_mask=self.xyz.refinable_mask, name='xyz')
-   
+        self.xyz = MixedTensor(
+            new_xyz, refinable_mask=self.xyz.refinable_mask, name="xyz"
+        )
+
     def shake_b_factors(self, stddev: float):
         """
         Apply random Gaussian noise to B-factors (temperature factors).
@@ -814,7 +918,9 @@ class Model(DebugMixin, nn.Module):
         """
         b_factors = self.b().detach()
         new_b = b_factors + torch.normal(mean=0.0, std=stddev, size=b_factors.shape)
-        self.b = PositiveMixedTensor(new_b, refinable_mask=self.b.refinable_mask, name='b_factor')
+        self.b = PositiveMixedTensor(
+            new_b, refinable_mask=self.b.refinable_mask, name="b_factor"
+        )
 
     def adp_loss(self):
         """
@@ -832,7 +938,7 @@ class Model(DebugMixin, nn.Module):
         b_mean = torch.mean(b_current)
         loss = torch.mean((b_current - b_mean) ** 2)
         return loss
-    
+
     def adp_nll_loss(self, target_log_std: float = 0.2):
         """
         Compute negative log-likelihood of ADPs assuming Gaussian distribution in log-space.
@@ -878,27 +984,29 @@ class Model(DebugMixin, nn.Module):
         # Access the internal log-space values directly from the PositiveMixedTensor
         # The parent MixedTensor.forward() returns log-space values before exp()
         log_b = super(PositiveMixedTensor, self.b).forward()
-        
+
         # Compute mean in log-space (target center of distribution)
         mu = torch.mean(log_b).detach()
-        
+
         # Use FIXED target_log_std (not computed from data)
         sigma = target_log_std
-        
+
         # Compute NLL for Gaussian distribution
         # NLL = 0.5 * [(log_b - μ)² / σ² + log(2πσ²)]
-        ln_2pi_sigma2 = torch.log(torch.tensor(2.0 * torch.pi * sigma**2, 
-                                               dtype=self.dtype_float, 
-                                               device=self.device))
-        
+        ln_2pi_sigma2 = torch.log(
+            torch.tensor(
+                2.0 * torch.pi * sigma**2, dtype=self.dtype_float, device=self.device
+            )
+        )
+
         squared_deviations = (log_b - mu) ** 2
         nll_per_atom = 0.5 * (squared_deviations / (sigma**2) + ln_2pi_sigma2)
-        
+
         # Return mean NLL across all atoms
         nll = torch.mean(nll_per_atom)
-        
+
         return nll
-    
+
     def adp_nll_loss_per_atom(self, target_log_std: float = 0.2):
         """
         Compute per-atom negative log-likelihood for B-factors in log-space.
@@ -931,23 +1039,25 @@ class Model(DebugMixin, nn.Module):
         """
         # Access the internal log-space values
         log_b = super(PositiveMixedTensor, self.b).forward()
-        
+
         # Compute mean in log-space
         mu = torch.mean(log_b)
-        
+
         # Use FIXED target_log_std
         sigma = target_log_std
-        
+
         # Compute per-atom NLL
-        ln_2pi_sigma2 = torch.log(torch.tensor(2.0 * torch.pi * sigma**2,
-                                               dtype=self.dtype_float,
-                                               device=self.device))
-        
+        ln_2pi_sigma2 = torch.log(
+            torch.tensor(
+                2.0 * torch.pi * sigma**2, dtype=self.dtype_float, device=self.device
+            )
+        )
+
         squared_deviations = (log_b - mu) ** 2
         nll_per_atom = 0.5 * (squared_deviations / (sigma**2) + ln_2pi_sigma2)
-        
+
         return nll_per_atom
-    
+
     def adp_kl_divergence_loss(self, target_log_std: float = 0.2):
         """
         Compute KL divergence between log B-factor distribution and target Gaussian.
@@ -986,25 +1096,28 @@ class Model(DebugMixin, nn.Module):
 
         # Access the internal log-space values
         log_b = super(PositiveMixedTensor, self.b).forward()
-        
+
         # Compute statistics of actual distribution
         mu_data = torch.mean(log_b).detach()  # Detached mean (adapts to data)
         sigma_data = torch.std(log_b)  # Current std (to be regularized)
-        
+
         # Target distribution parameters
         mu_target = mu_data  # Same mean as data
         sigma_target = target_log_std  # Fixed target std
-        
+
         # KL divergence: KL(actual || target) for Gaussians with same mean
         # KL = log(σ_target/σ_data) + σ_data² / (2σ_target²) - 0.5
-        log_sigma_ratio = torch.log(torch.tensor(sigma_target, dtype=self.dtype_float, device=self.device) / sigma_data)
-        variance_ratio = (sigma_data ** 2) / (2 * sigma_target ** 2)
-        
+        log_sigma_ratio = torch.log(
+            torch.tensor(sigma_target, dtype=self.dtype_float, device=self.device)
+            / sigma_data
+        )
+        variance_ratio = (sigma_data**2) / (2 * sigma_target**2)
+
         kl_divergence = log_sigma_ratio + variance_ratio - 0.5
-        
+
         return kl_divergence
 
-    def state_dict(self, destination=None, prefix='', keep_vars=False):
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
         """
         Return a dictionary containing the complete state of the Model.
 
@@ -1026,18 +1139,26 @@ class Model(DebugMixin, nn.Module):
             Complete state dictionary.
         """
         # Get parent class state_dict (includes all registered buffers)
-        state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
-        
+        state = super().state_dict(
+            destination=destination, prefix=prefix, keep_vars=keep_vars
+        )
+
         # Add model-specific state
-        state[prefix + 'pdb'] = self.pdb.copy() if hasattr(self, 'pdb') and self.pdb is not None else None
+        state[prefix + "pdb"] = (
+            self.pdb.copy() if hasattr(self, "pdb") and self.pdb is not None else None
+        )
         # Store spacegroup as string for serialization (gemmi.SpaceGroup is not picklable)
-        state[prefix + 'spacegroup'] = self.spacegroup.xhm() if self.spacegroup else None
-        state[prefix + 'initialized'] = self.initialized
-        state[prefix + 'dtype_float'] = self.dtype_float
-        state[prefix + 'device'] = self.device
-        state[prefix + 'strip_H'] = self.strip_H
-        state[prefix + 'altloc_pairs'] = self.altloc_pairs if hasattr(self, 'altloc_pairs') else []
-        
+        state[prefix + "spacegroup"] = (
+            self.spacegroup.xhm() if self.spacegroup else None
+        )
+        state[prefix + "initialized"] = self.initialized
+        state[prefix + "dtype_float"] = self.dtype_float
+        state[prefix + "device"] = self.device
+        state[prefix + "strip_H"] = self.strip_H
+        state[prefix + "altloc_pairs"] = (
+            self.altloc_pairs if hasattr(self, "altloc_pairs") else []
+        )
+
         return state
 
     def save_state(self, path: str):
@@ -1065,15 +1186,22 @@ class Model(DebugMixin, nn.Module):
             Whether to strictly enforce that keys match. Default is True.
         """
         state_dict = torch.load(path, map_location=self.device, weights_only=False)
-        loaded = type(self).create_from_state_dict(state_dict, device=self.device, verbose=self.verbose)
+        loaded = type(self).create_from_state_dict(
+            state_dict, device=self.device, verbose=self.verbose
+        )
         # Copy loaded state to self
         self.__dict__.update(loaded.__dict__)
         if self.verbose > 0:
             print(f"Loaded model state from {path}")
-    
+
     @classmethod
-    def create_from_state_dict(cls, state_dict: dict, device: torch.device = torch.device('cpu'), 
-                               verbose: int = 1, dtype_float: torch.dtype = torch.float32) -> 'Model':
+    def create_from_state_dict(
+        cls,
+        state_dict: dict,
+        device: torch.device = torch.device("cpu"),
+        verbose: int = 1,
+        dtype_float: torch.dtype = torch.float32,
+    ) -> "Model":
         """
         Create a fully initialized Model from a state dictionary.
 
@@ -1097,17 +1225,19 @@ class Model(DebugMixin, nn.Module):
             Fully initialized instance with restored state.
         """
         # Extract metadata (non-tensor data that we handle specially)
-        pdb = state_dict.pop('pdb', None)
-        spacegroup = state_dict.pop('spacegroup', None)
-        initialized = state_dict.pop('initialized', False)
-        saved_dtype = state_dict.pop('dtype_float', dtype_float)
-        saved_device = state_dict.pop('device', device)
-        strip_H = state_dict.pop('strip_H', True)
-        altloc_pairs = state_dict.pop('altloc_pairs', [])
-        
+        pdb = state_dict.pop("pdb", None)
+        spacegroup = state_dict.pop("spacegroup", None)
+        initialized = state_dict.pop("initialized", False)
+        saved_dtype = state_dict.pop("dtype_float", dtype_float)
+        saved_device = state_dict.pop("device", device)
+        strip_H = state_dict.pop("strip_H", True)
+        altloc_pairs = state_dict.pop("altloc_pairs", [])
+
         # Create instance
-        instance = cls(dtype_float=saved_dtype, verbose=verbose, device=device, strip_H=strip_H)
-        
+        instance = cls(
+            dtype_float=saved_dtype, verbose=verbose, device=device, strip_H=strip_H
+        )
+
         # Set metadata
         instance.pdb = pdb
         instance.initialized = initialized
@@ -1120,41 +1250,49 @@ class Model(DebugMixin, nn.Module):
         else:
             instance.spacegroup = None
             instance.symmetry = None
-        
+
         # If PDB exists, create the parameter wrappers with correct shapes
         if pdb is not None:
             n_atoms = len(pdb)
-            
+
             # Create MixedTensors with initial values from PDB (will be overwritten by load_state_dict)
             # Get refinable masks from state_dict if available
-            xyz_mask = state_dict.get('xyz.refinable_mask')
-            b_mask = state_dict.get('b.refinable_mask')
-            u_mask = state_dict.get('u.refinable_mask')
-            
+            xyz_mask = state_dict.get("xyz.refinable_mask")
+            b_mask = state_dict.get("b.refinable_mask")
+            u_mask = state_dict.get("u.refinable_mask")
+
             instance.xyz = MixedTensor(
-                torch.tensor(pdb[['x', 'y', 'z']].values, dtype=saved_dtype),
-                refinable_mask=xyz_mask, name='xyz'
+                torch.tensor(pdb[["x", "y", "z"]].values, dtype=saved_dtype),
+                refinable_mask=xyz_mask,
+                name="xyz",
             )
             instance.b = PositiveMixedTensor(
-                torch.tensor(pdb['tempfactor'].values, dtype=saved_dtype),
-                refinable_mask=b_mask, name='b_factor'
+                torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype),
+                refinable_mask=b_mask,
+                name="b_factor",
             )
             instance.u = MixedTensor(
-                torch.tensor(pdb[['u11', 'u22', 'u33', 'u12', 'u13', 'u23']].values, dtype=saved_dtype),
-                refinable_mask=u_mask, name='aniso_U'
+                torch.tensor(
+                    pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
+                    dtype=saved_dtype,
+                ),
+                refinable_mask=u_mask,
+                name="aniso_U",
             )
-            
+
             # Create OccupancyTensor
-            initial_occ = torch.tensor(pdb['occupancy'].values, dtype=saved_dtype)
-            sharing_groups, altloc_groups, refinable_mask = instance._create_occupancy_groups(pdb, initial_occ)
-            
+            initial_occ = torch.tensor(pdb["occupancy"].values, dtype=saved_dtype)
+            sharing_groups, altloc_groups, refinable_mask = (
+                instance._create_occupancy_groups(pdb, initial_occ)
+            )
+
             # Override mask if present in state_dict
-            saved_occ_mask = state_dict.get('occupancy.refinable_mask')
+            saved_occ_mask = state_dict.get("occupancy.refinable_mask")
             if saved_occ_mask is not None:
                 if saved_occ_mask.device != sharing_groups.device:
                     saved_occ_mask = saved_occ_mask.to(sharing_groups.device)
                 refinable_mask = saved_occ_mask[sharing_groups]
-            
+
             instance.occupancy = OccupancyTensor(
                 initial_values=initial_occ,
                 sharing_groups=sharing_groups,
@@ -1162,35 +1300,55 @@ class Model(DebugMixin, nn.Module):
                 refinable_mask=refinable_mask,
                 dtype=saved_dtype,
                 device=device,
-                name='occupancy'
+                name="occupancy",
             )
-            
+
             # Register buffers that are needed
-            if 'cell' in state_dict:
-                instance.register_buffer('cell', torch.zeros_like(state_dict['cell'], device=device))
-            if 'aniso_flag' not in instance._buffers or instance.aniso_flag is None:
-                instance.register_buffer('aniso_flag', torch.tensor(pdb['anisou_flag'].values, dtype=torch.bool))
-            
+            if "cell" in state_dict:
+                instance.register_buffer(
+                    "cell", torch.zeros_like(state_dict["cell"], device=device)
+                )
+            if "aniso_flag" not in instance._buffers or instance.aniso_flag is None:
+                instance.register_buffer(
+                    "aniso_flag",
+                    torch.tensor(pdb["anisou_flag"].values, dtype=torch.bool),
+                )
+
             # Register mask buffers
-            instance.register_buffer("xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device))
-            instance.register_buffer("b_mask", torch.ones(n_atoms, dtype=torch.bool, device=device))
-            instance.register_buffer("u_mask", torch.ones(n_atoms, dtype=torch.bool, device=device))
-            instance.register_buffer("occupancy_mask", torch.ones(n_atoms, dtype=torch.bool, device=device))
-            
+            instance.register_buffer(
+                "xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
+            )
+            instance.register_buffer(
+                "b_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
+            )
+            instance.register_buffer(
+                "u_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
+            )
+            instance.register_buffer(
+                "occupancy_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
+            )
+
             # Register other buffers based on state_dict
-            buffer_names = ['inv_fractional_matrix', 'fractional_matrix', 'recB', 'vdw_radii']
+            buffer_names = [
+                "inv_fractional_matrix",
+                "fractional_matrix",
+                "recB",
+                "vdw_radii",
+            ]
             for name in buffer_names:
                 if name in state_dict and state_dict[name] is not None:
-                    instance.register_buffer(name, torch.zeros_like(state_dict[name], device=device))
-        
+                    instance.register_buffer(
+                        name, torch.zeros_like(state_dict[name], device=device)
+                    )
+
         # Now use PyTorch's default load_state_dict
         state_dict = {k: v for k, v in state_dict.items() if k.shape[0] > 0}
         instance.load_state_dict(state_dict, strict=False)
-        
+
         if verbose > 0:
             n_atoms = len(instance.pdb) if instance.pdb is not None else 0
             print(f"Created Model from state_dict: {n_atoms} atoms")
-        
+
         return instance
 
     def get_selection_mask(self, selection: str) -> torch.Tensor:
@@ -1244,13 +1402,15 @@ class Model(DebugMixin, nn.Module):
         >>> mask = model.get_selection_mask("chain A and (resname ALA or resname GLY)")
         """
         from torchref.utils.utils import parse_phenix_selection
-        
+
         if not self.initialized:
-            raise RuntimeError("Cannot get selection mask from an uninitialized Model. Load data first.")
-        
+            raise RuntimeError(
+                "Cannot get selection mask from an uninitialized Model. Load data first."
+            )
+
         return parse_phenix_selection(selection, self.pdb)
-    
-    def select(self, selection: str) -> 'Model':
+
+    def select(self, selection: str) -> "Model":
         """
         Return a new Model containing only atoms matching the Phenix-style selection.
 
@@ -1301,85 +1461,108 @@ class Model(DebugMixin, nn.Module):
         >>> no_water = model.select("not resname HOH")
         >>> # Complex selection with parentheses
         >>> complex_sel = model.select("chain A and (resname ALA or resname GLY)")
-        
+
         Notes
         -----
         This method preserves the class type, so subclasses will return
         instances of themselves, not the base Model class.
         """
         from torchref.utils.utils import parse_phenix_selection
-        
+
         if not self.initialized:
-            raise RuntimeError("Cannot select from an uninitialized Model. Load data first.")
-        
+            raise RuntimeError(
+                "Cannot select from an uninitialized Model. Load data first."
+            )
+
         # Parse selection and get boolean mask
         selection_mask = parse_phenix_selection(selection, self.pdb)
-        
+
         # Check that at least one atom is selected
         n_selected = selection_mask.sum().item()
         if n_selected == 0:
             raise ValueError(f"Selection '{selection}' matched no atoms.")
-        
+
         # Get indices of selected atoms
         selected_indices = torch.where(selection_mask)[0]
-        
+
         # Create new instance of the SAME class (preserves subclass type)
         # Use type(self) to ensure subclasses return their own type
         selected_model = type(self)(
             dtype_float=self.dtype_float,
             verbose=self.verbose,
             device=self.device,
-            strip_H=self.strip_H
+            strip_H=self.strip_H,
         )
-        
+
         # Subset PDB DataFrame and reset index
         # Convert to numpy for indexing, then back to tensor indices
         mask_np = selection_mask.cpu().numpy()
         selected_model.pdb = self.pdb.loc[mask_np].copy()
         selected_model.pdb = selected_model.pdb.reset_index(drop=True)
-        selected_model.pdb['index'] = selected_model.pdb.index.to_numpy(dtype=int)
-        
+        selected_model.pdb["index"] = selected_model.pdb.index.to_numpy(dtype=int)
+
         # Copy scalar attributes
         selected_model.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
         selected_model.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
-        
+
         # Copy cell and matrices (these are same for all atoms)
         if self.cell is not None:
-            selected_model.register_buffer('cell', self.cell.clone())
-        if hasattr(self, 'inv_fractional_matrix') and self.inv_fractional_matrix is not None:
-            selected_model.register_buffer('inv_fractional_matrix', self.inv_fractional_matrix.clone())
-        if hasattr(self, 'fractional_matrix') and self.fractional_matrix is not None:
-            selected_model.register_buffer('fractional_matrix', self.fractional_matrix.clone())
-        if hasattr(self, 'recB') and self.recB is not None:
-            selected_model.register_buffer('recB', self.recB.clone())
-        
+            selected_model.register_buffer("cell", self.cell.clone())
+        if (
+            hasattr(self, "inv_fractional_matrix")
+            and self.inv_fractional_matrix is not None
+        ):
+            selected_model.register_buffer(
+                "inv_fractional_matrix", self.inv_fractional_matrix.clone()
+            )
+        if hasattr(self, "fractional_matrix") and self.fractional_matrix is not None:
+            selected_model.register_buffer(
+                "fractional_matrix", self.fractional_matrix.clone()
+            )
+        if hasattr(self, "recB") and self.recB is not None:
+            selected_model.register_buffer("recB", self.recB.clone())
+
         # Subset per-atom buffers
-        if hasattr(self, 'aniso_flag') and self.aniso_flag is not None:
-            selected_model.register_buffer('aniso_flag', self.aniso_flag[selection_mask].clone())
-        
+        if hasattr(self, "aniso_flag") and self.aniso_flag is not None:
+            selected_model.register_buffer(
+                "aniso_flag", self.aniso_flag[selection_mask].clone()
+            )
+
         # Create new MixedTensors with selected atoms
         selected_model.xyz = MixedTensor(
             self.xyz()[selection_mask].clone().detach(),
-            refinable_mask=self.xyz.refinable_mask[selection_mask] if self.xyz.refinable_mask is not None else None,
-            name='xyz'
+            refinable_mask=(
+                self.xyz.refinable_mask[selection_mask]
+                if self.xyz.refinable_mask is not None
+                else None
+            ),
+            name="xyz",
         )
-        
+
         selected_model.b = PositiveMixedTensor(
             self.b()[selection_mask].clone().detach(),
-            refinable_mask=self.b.refinable_mask[selection_mask] if self.b.refinable_mask is not None else None,
-            name='b_factor'
+            refinable_mask=(
+                self.b.refinable_mask[selection_mask]
+                if self.b.refinable_mask is not None
+                else None
+            ),
+            name="b_factor",
         )
-        
+
         selected_model.u = MixedTensor(
             self.u()[selection_mask].clone().detach(),
-            refinable_mask=self.u.refinable_mask[selection_mask] if self.u.refinable_mask is not None else None,
-            name='aniso_U'
+            refinable_mask=(
+                self.u.refinable_mask[selection_mask]
+                if self.u.refinable_mask is not None
+                else None
+            ),
+            name="aniso_U",
         )
-        
+
         # Handle occupancy (needs special handling due to sharing groups)
         initial_occ = self.occupancy()[selection_mask].clone().detach()
-        sharing_groups, altloc_groups, refinable_mask = selected_model._create_occupancy_groups(
-            selected_model.pdb, initial_occ
+        sharing_groups, altloc_groups, refinable_mask = (
+            selected_model._create_occupancy_groups(selected_model.pdb, initial_occ)
         )
         selected_model.occupancy = OccupancyTensor(
             initial_values=initial_occ,
@@ -1388,18 +1571,18 @@ class Model(DebugMixin, nn.Module):
             refinable_mask=refinable_mask,
             dtype=self.dtype_float,
             device=self.device,
-            name='occupancy'
+            name="occupancy",
         )
-        
+
         # Set default masks for the selected model
         selected_model.set_default_masks()
-        
+
         # Register alternative conformations for the selected subset
         selected_model.register_alternative_conformations()
-        
+
         # Mark as initialized
         selected_model.initialized = True
-        
+
         if self.verbose > 0:
             print(f"Selected {n_selected}/{len(self.pdb)} atoms with '{selection}'")
 
@@ -1418,11 +1601,15 @@ class Model(DebugMixin, nn.Module):
             Tensor of shape (n_atoms, 3) with fractional coordinates.
         """
         if not self.initialized:
-            raise RuntimeError("Model must be initialized to compute fractional coordinates.")
-        
+            raise RuntimeError(
+                "Model must be initialized to compute fractional coordinates."
+            )
+
         # Get Cartesian coordinates
         cartesian_coords = self.xyz()
-        
-        fractional_coords = math_torch.cartesian_to_fractional_torch(cartesian_coords,self.cell, self.inv_fractional_matrix)
-        
+
+        fractional_coords = math_torch.cartesian_to_fractional_torch(
+            cartesian_coords, self.cell, self.inv_fractional_matrix
+        )
+
         return fractional_coords

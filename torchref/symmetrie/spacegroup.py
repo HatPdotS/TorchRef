@@ -25,9 +25,9 @@ Example
 >>> print(sg.short_name())  # 'P212121'
 """
 
-import gemmi
-from typing import Union, Optional
+from typing import Union
 
+import gemmi
 
 # Type alias for space group input
 SpaceGroupLike = Union[str, int, gemmi.SpaceGroup, None]
@@ -68,7 +68,7 @@ def SpaceGroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
     >>> sg2 = SpaceGroup(sg)         # Pass-through
     """
     if spacegroup is None:
-        return gemmi.SpaceGroup('P 1')
+        return gemmi.SpaceGroup("P 1")
 
     if isinstance(spacegroup, gemmi.SpaceGroup):
         return spacegroup
@@ -86,8 +86,8 @@ def SpaceGroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
         sg_clean = spacegroup.strip()
 
         # Handle double spaces that sometimes appear
-        while '  ' in sg_clean:
-            sg_clean = sg_clean.replace('  ', ' ')
+        while "  " in sg_clean:
+            sg_clean = sg_clean.replace("  ", " ")
 
         try:
             return gemmi.SpaceGroup(sg_clean)
@@ -95,7 +95,7 @@ def SpaceGroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
             pass
 
         # Try without spaces
-        sg_nospace = sg_clean.replace(' ', '')
+        sg_nospace = sg_clean.replace(" ", "")
         try:
             return gemmi.SpaceGroup(sg_nospace)
         except Exception:
@@ -127,7 +127,7 @@ def SpaceGroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
     )
 
 
-def spacegroup_to_str(spacegroup: SpaceGroupLike, style: str = 'short') -> str:
+def spacegroup_to_str(spacegroup: SpaceGroupLike, style: str = "short") -> str:
     """
     Convert space group to string representation.
 
@@ -148,11 +148,11 @@ def spacegroup_to_str(spacegroup: SpaceGroupLike, style: str = 'short') -> str:
     """
     sg = SpaceGroup(spacegroup)
 
-    if style == 'short':
+    if style == "short":
         return sg.short_name()
-    elif style == 'hm':
+    elif style == "hm":
         return sg.hm
-    elif style == 'xhm':
+    elif style == "xhm":
         return sg.xhm()
     else:
         raise ValueError(f"Unknown style: {style}. Use 'short', 'hm', or 'xhm'.")
@@ -201,21 +201,22 @@ def get_operations_as_tensors(spacegroup: SpaceGroupLike, dtype=None, device=Non
     if dtype is None:
         dtype = torch.float64
     if device is None:
-        device = torch.device('cpu')
+        device = torch.device("cpu")
 
     sg = SpaceGroup(spacegroup)
 
     # Extract rotation matrices and translations from gemmi operations
     # gemmi stores values as integers multiplied by 24, divide to get actual values
     gemmi_ops = [
-        (torch.tensor(op.rot, dtype=dtype, device=device) / 24.0,
-         torch.tensor(op.tran, dtype=dtype, device=device) / 24.0)
+        (
+            torch.tensor(op.rot, dtype=dtype, device=device) / 24.0,
+            torch.tensor(op.tran, dtype=dtype, device=device) / 24.0,
+        )
         for op in sg.operations()
     ]
     matrices, translations = zip(*gemmi_ops)
 
     return torch.stack(matrices), torch.stack(translations)
-
 
 
 def is_same_spacegroup(sg1: SpaceGroupLike, sg2: SpaceGroupLike) -> bool:

@@ -51,23 +51,22 @@ Examples
 >>> blocks = cif.list_data_blocks('multi-block.cif')
 """
 
+from typing import List, Optional
+
 import numpy as np
 import torch
-from typing import List, Optional
 
 # Import all CIF reader classes from the existing module
 from torchref.io.cif_readers import (
     CIFReader,
-    ReflectionCIFReader,
     ModelCIFReader,
+    ReflectionCIFReader,
     RestraintCIFReader,
 )
 
 
 def read_reflections(
-    filepath: str,
-    data_block: Optional[str] = None,
-    verbose: int = 0
+    filepath: str, data_block: Optional[str] = None, verbose: int = 0
 ) -> ReflectionCIFReader:
     """
     Read reflection data from a CIF file.
@@ -165,12 +164,7 @@ def list_data_blocks(filepath: str) -> List[str]:
     return reader.available_blocks
 
 
-def write_map(
-    data,
-    cell,
-    filepath: str,
-    spacegroup: str = 'P1'
-) -> int:
+def write_map(data, cell, filepath: str, spacegroup: str = "P1") -> int:
     """
     Write a 3D numpy array or torch tensor to a CCP4 map file.
 
@@ -203,7 +197,9 @@ def write_map(
         cell = cell.tolist()
 
     map_ccp = gemmi.Ccp4Map()
-    map_ccp.grid = gemmi.FloatGrid(np_map, gemmi.UnitCell(*cell), gemmi.SpaceGroup(spacegroup))
+    map_ccp.grid = gemmi.FloatGrid(
+        np_map, gemmi.UnitCell(*cell), gemmi.SpaceGroup(spacegroup)
+    )
     map_ccp.setup(0.0)
     map_ccp.update_ccp4_header()
     map_ccp.write_ccp4_map(filepath)
