@@ -209,27 +209,12 @@ Examples:
 
     if args.hyperparameters.lower() != "none":
         try:
-            import importlib.resources
-
             from torchref.utils.utils import dict_to_state_dict
-
             if args.hyperparameters.lower() == "default":
                 # Load default hyperparameters from package data
-                try:
-                    # Python 3.9+
-                    with importlib.resources.files("torchref.data").joinpath(
-                        "default_hyperparameters.json"
-                    ).open() as f:
-                        hyperparams_raw = json.load(f)
-                except (AttributeError, TypeError):
-                    # Fallback for older Python
-                    import pkg_resources
-
-                    hyperparams_path = pkg_resources.resource_filename(
-                        "torchref", "data/default_hyperparameters.json"
-                    )
-                    with open(hyperparams_path) as f:
-                        hyperparams_raw = json.load(f)
+                from torchref import PATH_TORCHREF_DATA
+                default_path = os.path.join(PATH_TORCHREF_DATA, 'default_hyperparameters.json')
+                hyperparams_raw = json.load(f)
 
                 hyperparams_source = "package default (Optuna-optimized)"
                 if args.verbose > 0:

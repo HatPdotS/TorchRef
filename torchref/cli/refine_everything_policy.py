@@ -84,7 +84,8 @@ Examples:
 
     parser.add_argument(
         "--policy",
-        required=True,
+        required=False,
+        default='default',
         type=str,
         help="Path to trained policy checkpoint (.pt file)",
     )
@@ -157,7 +158,11 @@ Examples:
     structure_path = Path(args.structure)
     sf_path = Path(args.structure_factors)
     outdir = Path(args.outdir)
-    policy_path = Path(args.policy)
+    if args.policy.lower() == "default":
+        from torchref import PATH_TORCHREF_DATA
+        policy_path = Path(PATH_TORCHREF_DATA) / 'policy_latest.pt'
+    else:
+        policy_path = Path(args.policy)
 
     if not structure_path.exists():
         print(f"Error: Structure file not found: {structure_path}", file=sys.stderr)

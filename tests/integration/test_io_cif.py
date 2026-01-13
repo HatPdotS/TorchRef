@@ -60,13 +60,14 @@ class TestCIFLoading:
     def test_model_spacegroup(self, sample_cif_file):
         """Test that model has a valid spacegroup."""
         from torchref.model.model import Model
-        
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
-        # Spacegroup should be set
+
+        # Spacegroup should be set (can be string or gemmi.SpaceGroup)
         assert model.spacegroup is not None
-        assert isinstance(model.spacegroup, str)
+        # Check it can be converted to string representation
+        assert len(str(model.spacegroup)) > 0
 
     @pytest.mark.integration
     def test_model_element_types(self, sample_cif_file):

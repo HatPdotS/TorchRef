@@ -420,7 +420,7 @@ class Model(DebugMixin, nn.Module):
         elements = self.pdb.loc[:, "element"]
         path = os.path.join(
             PATH_TORCHREF_DATA,
-            "caching/files/atomic_vdw_radii.csv",
+            "atomic_vdw_radii.csv",
         )
         vdw_df = pd.read_csv(path, comment="#")
         vdw_df["element"] = vdw_df["element"].str.strip().str.capitalize()

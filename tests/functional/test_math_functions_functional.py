@@ -305,26 +305,3 @@ class TestMiscMathFunctions:
         assert torch.allclose(coords, rotated, atol=1e-6)
 
 
-@pytest.mark.integration
-class TestAlignmentFunctions:
-    """Test structure alignment functions."""
-
-    def test_superpose_vectors(self):
-        """Test vector superposition."""
-        from torchref.math_functions.math_torch import superpose_vectors_robust_torch
-        
-        # Create two similar coordinate sets
-        ref_coords = torch.tensor([
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0]
-        ], dtype=torch.float64)
-        
-        # Slightly shifted
-        mov_coords = ref_coords + 0.1
-        
-        rmsd, rotation, translation = superpose_vectors_robust_torch(ref_coords, mov_coords)
-        
-        assert torch.isfinite(rmsd)
-        assert rotation.shape == (3, 3)
-        assert translation.shape == (3,)

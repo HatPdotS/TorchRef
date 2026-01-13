@@ -71,12 +71,14 @@ class TestMTZLoading:
     def test_mtz_spacegroup(self, sample_mtz_file):
         """Test that MTZ has a valid spacegroup."""
         from torchref.io import ReflectionData
-        
+
         data = ReflectionData()
         data.load_mtz(str(sample_mtz_file))
-        
+
+        # Spacegroup should be set (can be string or gemmi.SpaceGroup)
         assert data.spacegroup is not None
-        assert isinstance(data.spacegroup, str)
+        # Check it can be converted to string representation
+        assert len(str(data.spacegroup)) > 0
 
     @pytest.mark.integration
     def test_mtz_sigma_values(self, sample_mtz_file):

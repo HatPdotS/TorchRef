@@ -1,0 +1,261 @@
+name: Dependency Compatibility Testing
+
+on:
+  # Run weekly on Monday at 6 AM UTC
+  schedule:
+    - cron: '0 6 * * 1'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      test_latest:
+        description: 'Test with latest versions (ignore upper bounds)'
+        required: false
+        default: 'true'
+        type: boolean
+      python_version:
+        description: 'Specific Python version to test (leave empty for all)'
+        required: false
+        default: ''
+        type: string
+
+  # Also run on PRs that modify dependencies
+  pull_request:
+    paths:
+      - 'pyproject.toml'
+      - 'tox.ini'
+      - '.github/workflows/compatibility.yml'
+
+env:
+  # Avoid numba caching issues in CI
+  NUMBA_CACHE_DIR: /tmp/numba_cache
+
+jobs:
+  # ==========================================================================
+  # Test with bounded versions (as specified in pyproject.toml)
+  # ==========================================================================
+  test-bounded:
+    name: Bounded - Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+          pip install -e .
+
+      - name: Print installed versions
+        run: |
+          echo "=== Installed Package Versions ==="
+          python -c "import numpy; print(f'numpy: {numpy.__version__}')"
+          python -c "import pandas; print(f'pandas: {pandas.__version__}')"
+          python -c "import torch; print(f'torch: {torch.__version__}')"
+          python -c "import numba; print(f'numba: {numba.__version__}')"
+          python -c "import scipy; print(f'scipy: {scipy.__version__}')"
+          python -c "import gemmi; print(f'gemmi: {gemmi.__version__}')"
+          python -c "import reciprocalspaceship; print(f'reciprocalspaceship: {reciprocalspaceship.__version__}')"
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --tb=short -m "not gpu and not slow"
+
+  # ==========================================================================
+  # Test with LATEST versions (ignore upper bounds)
+  # ==========================================================================
+  test-latest:
+    name: Latest - Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event.inputs.test_latest == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.11', '3.12']
+        exclude:
+          # Python 3.9 has numba constraints, test separately
+          - python-version: '3.9'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install latest dependencies (ignoring upper bounds)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+          # Install dependencies without upper bounds
+          pip install numpy pandas torch numba scipy matplotlib pyarrow tqdm
+          pip install gemmi reciprocalspaceship
+          # Install package in editable mode without deps (already installed)
+          pip install -e . --no-deps
+
+      - name: Print installed versions
+        run: |
+          echo "=== LATEST Package Versions ==="
+          python -c "import numpy; print(f'numpy: {numpy.__version__}')"
+          python -c "import pandas; print(f'pandas: {pandas.__version__}')"
+          python -c "import torch; print(f'torch: {torch.__version__}')"
+          python -c "import numba; print(f'numba: {numba.__version__}')"
+          python -c "import scipy; print(f'scipy: {scipy.__version__}')"
+          python -c "import gemmi; print(f'gemmi: {gemmi.__version__}')"
+          python -c "import reciprocalspaceship; print(f'reciprocalspaceship: {reciprocalspaceship.__version__}')"
+
+      - name: Run tests
+        id: tests
+        run: |
+          pytest tests/ -v --tb=short -m "not gpu and not slow"
+
+      - name: Save test results
+        if: always()
+        run: |
+          echo "PYTHON_VERSION=${{ matrix.python-version }}" >> $GITHUB_ENV
+          echo "TEST_RESULT=${{ steps.tests.outcome }}" >> $GITHUB_ENV
+
+  # ==========================================================================
+  # Python 3.9 with latest compatible versions (numba <= 0.60)
+  # ==========================================================================
+  test-latest-py39:
+    name: Latest - Python 3.9 (numba constrained)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event.inputs.test_latest == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install latest dependencies (with Python 3.9 constraints)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+          # Python 3.9 constraints: numba<0.61, numpy<2.0
+          pip install "numpy>=1.24,<2.0" pandas "torch<2.5" "numba>=0.59,<0.61" scipy matplotlib pyarrow tqdm
+          pip install gemmi reciprocalspaceship
+          pip install -e . --no-deps
+
+      - name: Print installed versions
+        run: |
+          echo "=== Python 3.9 Compatible Versions ==="
+          python -c "import numpy; print(f'numpy: {numpy.__version__}')"
+          python -c "import pandas; print(f'pandas: {pandas.__version__}')"
+          python -c "import torch; print(f'torch: {torch.__version__}')"
+          python -c "import numba; print(f'numba: {numba.__version__}')"
+          python -c "import scipy; print(f'scipy: {scipy.__version__}')"
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --tb=short -m "not gpu and not slow"
+
+  # ==========================================================================
+  # Create issue on failure (scheduled runs only)
+  # ==========================================================================
+  create-issue-on-failure:
+    name: Create Issue on Failure
+    runs-on: ubuntu-latest
+    needs: [test-bounded, test-latest, test-latest-py39]
+    if: failure() && github.event_name == 'schedule'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create or update issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '⚠️ Dependency Compatibility Test Failed';
+            const body = `## Scheduled Compatibility Test Failed
+
+            The weekly dependency compatibility test has failed.
+
+            **Run details:** [View workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+
+            **Date:** ${new Date().toISOString().split('T')[0]}
+
+            ### Possible causes:
+            - A new version of a dependency was released that breaks compatibility
+            - The upper bounds in \`pyproject.toml\` may need updating
+
+            ### Recommended actions:
+            1. Check the workflow logs for specific failures
+            2. Identify which package version caused the failure
+            3. Either:
+               - Update the code to support the new version
+               - Update the upper bounds in \`pyproject.toml\` to exclude the breaking version
+            4. Re-run the tox compatibility tests locally:
+               \`\`\`bash
+               ./run_tox_compatibility.sh
+               \`\`\`
+
+            ---
+            *This issue was automatically created by the compatibility workflow.*
+            `;
+
+            // Check for existing open issue
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'compatibility',
+              per_page: 100
+            });
+
+            const existingIssue = issues.data.find(issue => issue.title === title);
+
+            if (existingIssue) {
+              // Update existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: `### New failure detected\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n**Date:** ${new Date().toISOString()}`
+              });
+            } else {
+              // Create new issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['compatibility', 'automated']
+              });
+            }
+
+  # ==========================================================================
+  # Summary job
+  # ==========================================================================
+  summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [test-bounded, test-latest, test-latest-py39]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          echo "## Compatibility Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Bounded versions | ${{ needs.test-bounded.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Latest versions | ${{ needs.test-latest.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Python 3.9 Latest | ${{ needs.test-latest-py39.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Run completed at: $(date -u)" >> $GITHUB_STEP_SUMMARY
