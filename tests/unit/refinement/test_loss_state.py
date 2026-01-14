@@ -69,6 +69,51 @@ class TestTargetRegistration:
         assert 'geometry/bond' in state.targets
         assert 'adp/simu' in state.targets
 
+    @pytest.mark.unit
+    def test_register_target_with_prefix(self):
+        """Test registering targets with a prefix for multi-model support."""
+        from torchref.refinement.loss_state import LossState
+
+        state = LossState()
+        state.register_target('geometry/bond', lambda: torch.tensor(1.0), prefix='model1')
+        state.register_target('geometry/bond', lambda: torch.tensor(2.0), prefix='model2')
+
+        assert 'model1/geometry/bond' in state.targets
+        assert 'model2/geometry/bond' in state.targets
+        assert len(state.targets) == 2
+
+    @pytest.mark.unit
+    def test_register_targets_with_prefix(self):
+        """Test registering multiple targets with a prefix."""
+        from torchref.refinement.loss_state import LossState
+
+        state = LossState()
+        targets = {
+            'xray': lambda: torch.tensor(1.0),
+            'geometry/bond': lambda: torch.tensor(0.5),
+        }
+        state.register_targets(targets, prefix='model1')
+
+        assert 'model1/xray' in state.targets
+        assert 'model1/geometry/bond' in state.targets
+
+    @pytest.mark.unit
+    def test_prefix_with_hierarchical_weighting(self):
+        """Test that prefix works correctly with hierarchical weighting."""
+        from torchref.refinement.loss_state import LossState
+
+        state = LossState()
+        state.register_target('geometry/bond', lambda: torch.tensor(1.0), prefix='model1')
+        state.register_target('geometry/bond', lambda: torch.tensor(2.0), prefix='model2')
+
+        # Set model-level weights
+        state.set_weight('model1', 0.5)
+        state.set_weight('model2', 1.0)
+
+        total = state.aggregate()
+        # Expected: 0.5 * 1.0 + 1.0 * 2.0 = 2.5
+        assert torch.isclose(total, torch.tensor(2.5))
+
 
 class TestWeightManagement:
     """Tests for weight management."""

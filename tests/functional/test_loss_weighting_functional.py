@@ -18,15 +18,14 @@ class TestManualWeightingFunctional:
         """Test ManualWeighting initialization."""
         from torchref.refinement.weighting.component_weighting import ManualWeighting
 
-        mock_ref = Mock()
-        mock_ref.device = torch.device('cpu')
-        weighting = ManualWeighting(mock_ref, weights={'xray': 1.0})
+        weighting = ManualWeighting(weights={'xray': 1.0}, device=torch.device('cpu'))
 
         assert weighting is not None
 
     def test_manual_weighting_with_custom_weights(self):
         """Test ManualWeighting with custom weights."""
         from torchref.refinement.weighting.component_weighting import ManualWeighting
+        from torchref.refinement.loss_state import LossState
 
         custom_weights = {
             'xray': 2.0,
@@ -34,14 +33,14 @@ class TestManualWeightingFunctional:
             'adp': 0.1
         }
 
-        mock_ref = Mock()
-        mock_ref.device = torch.device('cpu')
-        weighting = ManualWeighting(mock_ref, weights=custom_weights)
+        weighting = ManualWeighting(weights=custom_weights, device=torch.device('cpu'))
 
-        weights = weighting.forward()
-        assert torch.isclose(weights['xray'], torch.tensor(2.0))
-        assert torch.isclose(weights['geometry'], torch.tensor(0.5))
-        assert torch.isclose(weights['adp'], torch.tensor(0.1))
+        # forward() now takes a LossState and returns floats
+        state = LossState()
+        weights = weighting.forward(state)
+        assert weights['xray'] == pytest.approx(2.0)
+        assert weights['geometry'] == pytest.approx(0.5)
+        assert weights['adp'] == pytest.approx(0.1)
 
 
 @pytest.mark.integration
@@ -79,17 +78,17 @@ class TestWeightingMathOperations:
     def test_weight_multiplication(self):
         """Test using weights for loss scaling."""
         from torchref.refinement.weighting.component_weighting import ManualWeighting
+        from torchref.refinement.loss_state import LossState
 
-        mock_ref = Mock()
-        mock_ref.device = torch.device('cpu')
-        weighting = ManualWeighting(mock_ref, weights={'xray': 2.0, 'geometry': 0.5})
-        weights = weighting.forward()
+        weighting = ManualWeighting(weights={'xray': 2.0, 'geometry': 0.5}, device=torch.device('cpu'))
+        state = LossState()
+        weights = weighting.forward(state)
 
         # Create mock losses
         xray_loss = torch.tensor(10.0)
         geometry_loss = torch.tensor(20.0)
 
-        # Apply weights
+        # Apply weights (weights are now floats)
         weighted_xray = weights['xray'] * xray_loss
         weighted_geometry = weights['geometry'] * geometry_loss
 
@@ -205,26 +204,26 @@ class TestWeightingEdgeCases:
     def test_very_small_weight(self):
         """Test very small weight."""
         from torchref.refinement.weighting.component_weighting import ManualWeighting
+        from torchref.refinement.loss_state import LossState
 
-        mock_ref = Mock()
-        mock_ref.device = torch.device('cpu')
-        weighting = ManualWeighting(mock_ref, weights={'adp': 1e-6})
-        weights = weighting.forward()
+        weighting = ManualWeighting(weights={'adp': 1e-6}, device=torch.device('cpu'))
+        state = LossState()
+        weights = weighting.forward(state)
 
-        # Should still be a valid small weight
+        # Should still be a valid small weight (weights are floats now)
         assert weights['adp'] > 0
-        assert torch.isfinite(weights['adp'])
+        assert np.isfinite(weights['adp'])
 
     def test_large_weight(self):
         """Test large weight."""
         from torchref.refinement.weighting.component_weighting import ManualWeighting
+        from torchref.refinement.loss_state import LossState
 
-        mock_ref = Mock()
-        mock_ref.device = torch.device('cpu')
-        weighting = ManualWeighting(mock_ref, weights={'xray': 100.0})
-        weights = weighting.forward()
+        weighting = ManualWeighting(weights={'xray': 100.0}, device=torch.device('cpu'))
+        state = LossState()
+        weights = weighting.forward(state)
 
-        assert torch.isclose(weights['xray'], torch.tensor(100.0))
+        assert weights['xray'] == pytest.approx(100.0)
 
 
 @pytest.mark.integration

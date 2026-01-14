@@ -164,7 +164,9 @@ class LossState:
     # Target Registration
     # =========================================================================
 
-    def register_target(self, name: str, target: Callable) -> "LossState":
+    def register_target(
+        self, name: str, target: Callable, prefix: str = None
+    ) -> "LossState":
         """
         Register a target function.
 
@@ -174,19 +176,35 @@ class LossState:
             Hierarchical name (e.g., 'geometry/bond', 'adp/simu').
         target : Callable
             Function that returns a loss tensor when called.
+        prefix : str, optional
+            Prefix to prepend to the name (e.g., 'model1' -> 'model1/geometry/bond').
+            Useful for registering targets from multiple models in the same state.
 
         Returns
         -------
         LossState
             Self for chaining.
         """
-        self.targets[name] = target
+        key = f"{prefix}/{name}" if prefix else name
+        self.targets[key] = target
         return self
 
-    def register_targets(self, targets) -> "LossState":
-        """Register multiple targets from a component target or dict"""
+    def register_targets(self, targets, prefix: str = None) -> "LossState":
+        """Register multiple targets from a component target or dict.
+
+        For targets with a .name attribute, uses target.name as the key.
+        For plain callables, uses the dict key.
+
+        Parameters
+        ----------
+        targets : dict
+            Dictionary of name -> target mappings.
+        prefix : str, optional
+            Prefix to prepend to all target names.
+        """
         for name, target in targets.items():
-            self.register_target(target.name, target)
+            target_name = getattr(target, 'name', name)
+            self.register_target(target_name, target, prefix=prefix)
         return self
 
     # =========================================================================
