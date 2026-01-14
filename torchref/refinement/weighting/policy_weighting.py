@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torchref.refinement.weighting.component_weighting import WeightingScheme
+from torchref.refinement.weighting.base_weighting import BaseWeighting
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_STANDARD,
@@ -117,7 +117,7 @@ class TrajectoryData:
     error_message: Optional[str] = None
 
 
-class PolicyComponentWeighting(WeightingScheme):
+class PolicyComponentWeighting(BaseWeighting):
     """
     Policy-based component weighting using a trained neural network.
 
@@ -125,12 +125,12 @@ class PolicyComponentWeighting(WeightingScheme):
     from the current refinement state. Supports both training (sampling) and
     evaluation (deterministic) modes.
 
-    Integrates with LossState for hierarchical weight management.
+    Receives all data through LossState.meta and state._losses.
 
     Parameters
     ----------
-    refinement : Refinement
-        Reference to Refinement object
+    device : torch.device, optional
+        Computation device.
     policy_path : str, optional
         Path to trained policy checkpoint (.pt file). If None, uses random init.
     sample : bool, optional
@@ -139,6 +139,10 @@ class PolicyComponentWeighting(WeightingScheme):
         Sampling temperature for exploration (default: 1.0)
         - 0.0: deterministic (use mean predictions)
         - > 0.0: sample from distribution with scaled variance
+    n_steps : int, optional
+        Total number of steps in refinement cycle (default: 10).
+    verbose : int, optional
+        Verbosity level (default: 0).
 
     Attributes
     ----------
@@ -160,39 +164,40 @@ class PolicyComponentWeighting(WeightingScheme):
     Examples
     --------
     >>> # Evaluation mode (deterministic)
-    >>> policy = PolicyComponentWeighting(refinement, 'policy.pt', sample=False)
+    >>> policy = PolicyComponentWeighting(device=device, policy_path='policy.pt', sample=False)
     >>>
     >>> # Training mode (sampling for exploration)
-    >>> policy = PolicyComponentWeighting(refinement, 'policy.pt', sample=True, temperature=1.0)
+    >>> policy = PolicyComponentWeighting(device=device, policy_path='policy.pt', sample=True, temperature=1.0)
     >>>
     >>> # Use with LossState
     >>> state = refinement.create_loss_state()
-    >>> state = policy.apply_to_state(state)
-    >>> loss = state.aggregate()
+    >>> state = policy.forward(state)
     """
 
     name = "policy_weighting"
 
     def __init__(
         self,
-        refinement,
+        device: torch.device = torch.device('cpu'),
         policy_path: Optional[str] = None,
         sample: bool = False,
         temperature: float = 1.0,
         n_steps: int = 10,
+        verbose: int = 0,
     ):
-        super().__init__(refinement)
+        super().__init__(device)
 
         # Sampling parameters
         self.sample = sample
         self.temperature = temperature
         self.n_steps = n_steps
+        self.verbose = verbose
 
         # Load or create policy network
         self.policy = self._create_policy_network()
         if policy_path is not None:
             self._load_policy(policy_path)
-        self.policy.to(refinement.device)
+        self.policy.to(self.device)
         self.policy.eval()
 
         # State tracking
@@ -213,10 +218,10 @@ class PolicyComponentWeighting(WeightingScheme):
         self.predicted_weights = self.last_weights
         self.predicted_uncertainties = {}
 
-        # Compute static features (computed once at initialization)
-        self._compute_static_features()
+        # Static features - computed lazily from first state.meta
+        self.static_features: Optional[Dict[str, float]] = None
 
-        if refinement.verbose > 0:
+        if verbose > 0:
             param_count = sum(p.numel() for p in self.policy.parameters())
             print("PolicyComponentWeighting initialized")
             print(f"  Policy: {policy_path or 'random initialization'}")
@@ -224,11 +229,6 @@ class PolicyComponentWeighting(WeightingScheme):
             print(f"  Sample mode: {sample}")
             print(f"  Temperature: {temperature}")
             print(f"  N steps: {n_steps}")
-            print(
-                f"  Static features: resolution={self.static_features['resolution_min']:.2f}Å, "
-                f"n_atoms={int(np.exp(self.static_features['log_n_atoms']))}, "
-                f"wilson_b={self.static_features['wilson_b']:.1f}"
-            )
 
     def _create_policy_network(self) -> nn.Module:
         """Create the policy network architecture.
@@ -261,8 +261,8 @@ class PolicyComponentWeighting(WeightingScheme):
 
         return PolicyNetwork()
 
-    def _compute_static_features(self):
-        """Compute static features from structure/data (computed once at init).
+    def _compute_static_features(self, state: "LossState"):
+        """Compute static features from state.meta (computed once on first forward).
 
         Static features (7 total):
         - resolution_min: Best resolution in Angstroms
@@ -274,19 +274,16 @@ class PolicyComponentWeighting(WeightingScheme):
         - b_cv: Coefficient of variation of B-factors
         - wilson_b: Wilson B (kept for normalization)
         """
-        ref = self.refinement
+        if self.static_features is not None:
+            return  # Already computed
 
-        with torch.no_grad():
-            # Structure properties
-            n_atoms = len(ref.model.pdb)
-            n_hkl = ref.reflection_data.hkl.shape[0]
-            resolution_min = float(ref.reflection_data.resolution.min())
-            wilson_b = float(ref.reflection_data.wilson_b)
-
-            # Initial B-factor statistics
-            b_factors = ref.model.b()
-            b_mean = float(b_factors.mean())
-            b_std = float(b_factors.std())
+        # Get static data from state.meta
+        n_atoms = state.get("n_atoms", 1)
+        n_hkl = state.get("n_hkl", 1)
+        resolution_min = state.get("resolution_min", 2.0)
+        wilson_b = state.get("wilson_b", 20.0)
+        mean_b = state.get("mean_b", 20.0)
+        b_std = state.get("b_std", 5.0)
 
         self.static_features = {
             "resolution_min": resolution_min,
@@ -295,7 +292,7 @@ class PolicyComponentWeighting(WeightingScheme):
             "log_n_hkl": np.log(n_hkl),
             "data_to_param_ratio": n_hkl / n_atoms,
             "log_wilson_b": np.log(wilson_b),
-            "b_cv": b_std / (b_mean + 1e-6),  # Coefficient of variation
+            "b_cv": b_std / (mean_b + 1e-6),  # Coefficient of variation
             "wilson_b": wilson_b,  # Keep for B-factor normalization
         }
 
@@ -378,15 +375,15 @@ class PolicyComponentWeighting(WeightingScheme):
         self.current_step += 1
 
     def extract_state_features(
-        self, state: "LossState" = None
+        self, state: "LossState"
     ) -> Tuple[torch.Tensor, StepState]:
         """
-        Extract 31-dimensional state features from current refinement state.
+        Extract 31-dimensional state features from LossState.
 
         Parameters
         ----------
-        state : LossState, optional
-            If provided, extract losses from the LossState cache.
+        state : LossState
+            LossState with meta and _losses populated.
 
         Returns
         -------
@@ -406,14 +403,10 @@ class PolicyComponentWeighting(WeightingScheme):
         - ADP losses (4): total, simu, locality, KL
         - B-factor stats (2): mean_b/wilson_b, b_std/wilson_b
         """
-        ref = self.refinement
-
-        # Get current R-factors
-        with torch.no_grad():
-            rwork, rfree = ref.get_rfactor()
-        rwork = float(rwork)
-        rfree = float(rfree)
-        rfree_gap = rfree - rwork
+        # Get R-factors from state.meta
+        rwork = state.get("rwork", 0.2)
+        rfree = state.get("rfree", 0.25)
+        rfree_gap = state.get("rfree_gap", rfree - rwork)
 
         # Progress metrics
         progress = self.current_step / self.n_steps
@@ -428,94 +421,37 @@ class PolicyComponentWeighting(WeightingScheme):
         else:
             delta_rfree = 0.0
 
-        # Get losses - prefer from LossState if available
-        component_losses = {}
-        if state is not None and state._losses:
-            # Extract from LossState cache
-            xray_loss_work = state.get_loss("xray/work")
-            xray_loss_work = (
-                xray_loss_work.item() if xray_loss_work is not None else 0.0
-            )
-
-            # Component losses
-            for comp in COMPONENTS[1:]:  # Skip 'xray'
-                loss_state_name = COMPONENT_TO_LOSS_STATE[comp]
-                loss = state.get_loss(loss_state_name)
-                component_losses[comp] = loss.item() if loss is not None else 0.0
-
-            geom_loss_total = sum(
-                component_losses.get(c, 0.0)
-                for c in [
-                    "bond",
-                    "angle",
-                    "torsion",
-                    "planarity",
-                    "chiral",
-                    "nonbonded",
-                ]
-            )
-            adp_loss_total = sum(
-                component_losses.get(c, 0.0) for c in ["simu", "locality", "KL"]
-            )
-        else:
-            # Compute fresh
-            with torch.no_grad():
-                xray_loss_work = (
-                    ref.xray_target_work().item()
-                    if hasattr(ref, "xray_target_work")
-                    else 0.0
-                )
-
-                # Try to get component losses
-                if hasattr(ref, "geometry_target"):
-                    geom_losses = ref.geometry_target.target_losses()
-                    for name, loss in geom_losses.items():
-                        component_losses[name] = loss.item()
-                    geom_loss_total = sum(loss.item() for loss in geom_losses.values())
-                else:
-                    geom_loss_total = 0.0
-
-                if hasattr(ref, "adp_target"):
-                    adp_losses = ref.adp_target.target_losses()
-                    for name, loss in adp_losses.items():
-                        component_losses[name] = loss.item()
-                    adp_loss_total = sum(loss.item() for loss in adp_losses.values())
-                else:
-                    adp_loss_total = 0.0
-
-        # X-ray test loss
-        with torch.no_grad():
-            xray_loss_test = (
-                ref.xray_target_test().item()
-                if hasattr(ref, "xray_target_test")
-                else xray_loss_work
-            )
+        # Get losses from state.meta and state._losses
+        xray_loss_work = state.get("xray_loss_work", 0.0)
+        xray_loss_test = state.get("xray_loss_test", xray_loss_work)
 
         # X-ray work/test ratio
         xray_work_test_ratio = xray_loss_work / (xray_loss_test + 1e-6)
 
-        # Geometry metrics
-        with torch.no_grad():
-            if hasattr(ref, "restraints") and hasattr(
-                ref.restraints, "bond_deviations"
-            ):
-                bond_devs, _ = ref.restraints.bond_deviations()
-                bond_rmsd = torch.sqrt((bond_devs**2).mean()).item()
-            else:
-                bond_rmsd = 0.0
+        # Component losses from state._losses
+        component_losses = {}
+        state.cache_losses()  # Ensure losses are cached
 
-            if hasattr(ref, "restraints") and hasattr(
-                ref.restraints, "angle_deviations"
-            ):
-                angle_devs, _ = ref.restraints.angle_deviations()
-                angle_rmsd = torch.sqrt((angle_devs**2).mean()).item()
-            else:
-                angle_rmsd = 0.0
+        for comp in COMPONENTS[1:]:  # Skip 'xray'
+            loss_state_name = COMPONENT_TO_LOSS_STATE[comp]
+            loss = state.get_loss(loss_state_name)
+            component_losses[comp] = loss.item() if loss is not None else 0.0
 
-            # B-factor statistics (dynamic)
-            b_factors = ref.model.b()
-            mean_b = float(b_factors.mean())
-            b_std = float(b_factors.std())
+        geom_loss_total = sum(
+            component_losses.get(c, 0.0)
+            for c in ["bond", "angle", "torsion", "planarity", "chiral", "nonbonded"]
+        )
+        adp_loss_total = sum(
+            component_losses.get(c, 0.0) for c in ["simu", "locality", "KL"]
+        )
+
+        # Geometry metrics from state.meta
+        bond_rmsd = state.get("bond_rmsd", 0.0)
+        angle_rmsd = state.get("angle_rmsd", 0.0)
+
+        # B-factor statistics from state.meta
+        mean_b = state.get("mean_b", 20.0)
+        b_std = state.get("b_std", 5.0)
 
         # Normalize B-factor stats by Wilson B
         wilson_b = self.static_features["wilson_b"]
@@ -535,16 +471,10 @@ class PolicyComponentWeighting(WeightingScheme):
                 delta_rfree,  # 5: recent change
                 # Structure/Data properties (7) - STATIC
                 self.static_features["resolution_min"],  # 6: best resolution (Å)
-                self.static_features[
-                    "inv_resolution"
-                ],  # 7: inverted (higher = better data)
+                self.static_features["inv_resolution"],  # 7: inverted (higher = better)
                 self.static_features["log_n_atoms"],  # 8: structure size (log-scaled)
-                self.static_features[
-                    "log_n_hkl"
-                ],  # 9: number of reflections (log-scaled)
-                self.static_features[
-                    "data_to_param_ratio"
-                ],  # 10: data-to-parameter ratio
+                self.static_features["log_n_hkl"],  # 9: reflections (log-scaled)
+                self.static_features["data_to_param_ratio"],  # 10: data/param ratio
                 self.static_features["log_wilson_b"],  # 11: data quality (log-scaled)
                 self.static_features["b_cv"],  # 12: disorder coefficient of variation
                 # X-ray losses (3) - RAW
@@ -572,7 +502,7 @@ class PolicyComponentWeighting(WeightingScheme):
                 b_std_normalized,  # 30: normalized B spread
             ],
             dtype=torch.float32,
-            device=ref.device,
+            device=self.device,
         )
 
         # Create StepState for recording
@@ -602,20 +532,27 @@ class PolicyComponentWeighting(WeightingScheme):
 
         return features, step_state
 
-    def forward(self, state: "LossState" = None) -> Dict[str, float]:
+    def forward(self, state: "LossState") -> Dict[str, float]:
         """
-        Predict component weights from current refinement state.
+        Predict component weights from LossState.
 
         Parameters
         ----------
-        state : LossState, optional
-            If provided, extract features from LossState cache.
+        state : LossState
+            LossState with meta and _losses populated.
 
         Returns
         -------
         dict
             Dictionary of {loss_state_name: weight} for all components
         """
+        # Compute static features on first call (lazy init)
+        self._compute_static_features(state)
+
+        # Initialize initial_rfree on first call
+        if self.initial_rfree is None:
+            self.initial_rfree = state.get("rfree", 0.25)
+
         # Extract state features
         features, step_state = self.extract_state_features(state)
         features = features.unsqueeze(0)  # Add batch dimension
@@ -684,6 +621,24 @@ class PolicyComponentWeighting(WeightingScheme):
         }
 
         return weights
+
+    def compute_weights(self, state: "LossState") -> Dict[str, float]:
+        """
+        Compute component weights from LossState.
+
+        Deprecated: just call the method forward() or the instance directly.
+
+        Parameters
+        ----------
+        state : LossState
+            LossState with meta and _losses populated.
+
+        Returns
+        -------
+        dict
+            Dictionary of {loss_state_name: weight} for all components
+        """
+        return self.forward(state)
 
     def apply_to_state(self, state: "LossState") -> "LossState":
         """

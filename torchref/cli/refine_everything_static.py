@@ -93,6 +93,15 @@ Examples:
     )
 
     parser.add_argument(
+        '-w',
+        '--weights',
+        type=str,
+        default=None,
+        help="Path to JSON file with manual weights for components (overrides defaults) defaults: {xray:1.0, geometry:10.0, adp:5.0}\n \
+            Weights need to matcht the component names used in the refinement setup.",
+    )
+
+    parser.add_argument(
         "--max-res",
         type=float,
         default=None,
@@ -174,7 +183,6 @@ Examples:
         print("Initializing refinement...")
         sys.stdout.flush()
 
-    # Initialize refinement - will use default ComponentWeighting
     refinement = LBFGSRefinement(
         data_file=str(sf_path),
         pdb=str(structure_path),
@@ -183,6 +191,17 @@ Examples:
         max_res=args.max_res,
         device=device,
     )
+
+    from torchref.refinement.weighting import ManualWeighting
+
+    base_weights = {'xray': 1.0, 'geometry': 10.0, 'adp':5.0 }
+    if args.weights is not None:
+        with open(args.weights, 'r') as f:
+            base_weights.update(json.load(f))
+
+    manual_weighting = ManualWeighting(weights=base_weights, device=device)
+
+    refinement.component_weighting = manual_weighting
 
     if args.verbose > 0:
         print("Refinement initialized successfully.")

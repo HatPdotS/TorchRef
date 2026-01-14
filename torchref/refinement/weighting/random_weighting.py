@@ -33,15 +33,15 @@ References
 - design_choices.md in meta_weighting_2/
 """
 
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 import numpy as np
 import torch
 from torch import nn
 
+from torchref.refinement.weighting.base_weighting import BaseWeighting
 from torchref.refinement.weighting.component_weighting import (
     ComponentWeighting,
-    WeightingScheme,
     XrayScaleWeighting,
 )
 from torchref.utils.stats import (
@@ -51,7 +51,9 @@ from torchref.utils.stats import (
     StatEntry,
     stat,
 )
-from torchref.utils.utils import ModuleReference
+
+if TYPE_CHECKING:
+    from torchref.refinement.loss_state import LossState
 
 # Default log-space weights (these are the log of the actual weights)
 # weight = exp(log_weight)
@@ -105,7 +107,7 @@ LOG_WEIGHT_MIN = -3.0
 LOG_WEIGHT_MAX = 3.0
 
 
-class RandomWeightingScheme(WeightingScheme):
+class RandomWeightingScheme(BaseWeighting):
     """
     Weighting scheme with two-level random sampling for stable trajectories.
 
@@ -118,8 +120,8 @@ class RandomWeightingScheme(WeightingScheme):
 
     Parameters
     ----------
-    refinement : Refinement
-        Reference to Refinement object.
+    device : torch.device, optional
+        Computation device. Default is cpu.
     default_log_weights : dict, optional
         Default log-space weights for each component (mean of distribution).
         Default is DEFAULT_LOG_WEIGHTS.
@@ -148,13 +150,13 @@ class RandomWeightingScheme(WeightingScheme):
 
     def __init__(
         self,
-        refinement,
+        device: torch.device = None,
         default_log_weights: Dict[str, float] = None,
         trajectory_sigmas: Dict[str, float] = None,
         step_sigmas: Dict[str, float] = None,
         seed: int = None,
     ):
-        super().__init__(refinement)
+        super().__init__(device)
 
         # Set defaults
         self.default_log_weights = default_log_weights or DEFAULT_LOG_WEIGHTS.copy()
@@ -274,20 +276,21 @@ class RandomWeightingScheme(WeightingScheme):
         """
         return self.apply_step_perturbation()
 
-    def forward(self) -> Dict[str, torch.Tensor]:
+    def forward(self, state: "LossState" = None) -> Dict[str, float]:
         """
-        Return current weights as tensors.
+        Return current weights.
+
+        Parameters
+        ----------
+        state : LossState, optional
+            Current loss state (not used by this scheme, but required by interface).
 
         Returns
         -------
         dict
-            Dictionary mapping component names to weight tensors.
+            Dictionary mapping component names to weight values.
         """
-        device = self.refinement.device
-        return {
-            name: torch.tensor(weight, device=device)
-            for name, weight in self.current_weights.items()
-        }
+        return self.current_weights.copy()
 
     @property
     def sample_count(self) -> int:
@@ -327,9 +330,14 @@ class RandomWeightingScheme(WeightingScheme):
         """
         return self.current_weights.copy()
 
-    def stats(self) -> Dict[str, StatEntry]:
+    def stats(self, state: "LossState" = None) -> Dict[str, StatEntry]:
         """
         Return statistics for reporting.
+
+        Parameters
+        ----------
+        state : LossState, optional
+            If provided, can pull data from LossState (not used by this scheme).
 
         Returns
         -------
@@ -368,8 +376,8 @@ class RandomComponentWeighting(ComponentWeighting):
 
     Parameters
     ----------
-    refinement : Refinement
-        Reference to Refinement object.
+    device : torch.device, optional
+        Computation device. Default is cpu.
     default_log_weights : dict, optional
         Default log-space weights for each component.
     trajectory_sigmas : dict, optional
@@ -379,40 +387,45 @@ class RandomComponentWeighting(ComponentWeighting):
     seed : int, optional
         Random seed for reproducibility.
     resample_each_step : bool, optional
-        If True, apply step perturbation at each update_weights() call.
+        If True, apply step perturbation at each compute_weights() call.
         If False, only apply perturbation when resample_weights() is called.
         Default is True.
+    initial_xray_loss : float, optional
+        Initial X-ray loss for XrayScaleWeighting.
 
     Examples
     --------
-    >>> from torchref.refinement.random_weighting import RandomComponentWeighting
-    >>> weighting = RandomComponentWeighting(refinement, seed=42)
+    >>> from torchref.refinement.weighting import RandomComponentWeighting
+    >>> weighting = RandomComponentWeighting(device=device, seed=42)
     >>> # Base weights are sampled at init
     >>> base = weighting.get_base_log_weights()
-    >>> # Each update applies small perturbation
-    >>> weighting.update_weights()
+    >>> # Each compute_weights applies small perturbation
+    >>> weights = weighting.compute_weights(state)
     >>> current = weighting.get_sampled_log_weights()  # base + perturbation
     """
 
     def __init__(
         self,
-        refinement,
+        device: torch.device = None,
         default_log_weights: Dict[str, float] = None,
         trajectory_sigmas: Dict[str, float] = None,
         step_sigmas: Dict[str, float] = None,
         seed: int = None,
         resample_each_step: bool = True,
+        initial_xray_loss: float = None,
     ):
         # Don't call parent __init__ - we'll set up our own schemes
         nn.Module.__init__(self)
-        self.refinement = ModuleReference(refinement)
+        self.device = device or torch.device("cpu")
         self.resample_each_step = resample_each_step
 
         # Build schemes dict with only xray_scale and random
         schemes_dict = {
-            "xray_scale": XrayScaleWeighting(refinement),
+            "xray_scale": XrayScaleWeighting(
+                device, initial_xray_loss=initial_xray_loss
+            ),
             "random": RandomWeightingScheme(
-                refinement,
+                device,
                 default_log_weights=default_log_weights,
                 trajectory_sigmas=trajectory_sigmas,
                 step_sigmas=step_sigmas,
@@ -421,10 +434,6 @@ class RandomComponentWeighting(ComponentWeighting):
         }
 
         self.schemes = nn.ModuleDict(schemes_dict)
-        self.weights = {}
-
-        # Initialize weights (base weights already sampled in RandomWeightingScheme init)
-        self.update_weights()
 
     @property
     def random_scheme(self) -> RandomWeightingScheme:
@@ -441,28 +450,33 @@ class RandomComponentWeighting(ComponentWeighting):
         Returns
         -------
         dict
-            Dictionary of new combined weights.
+            Dictionary of new base weights from the random scheme.
         """
-        self.random_scheme.resample_trajectory()
-        return self.update_weights()
+        return self.random_scheme.resample_trajectory()
 
     def resample_weights(self) -> Dict[str, float]:
         """
-        Apply step perturbation and update combined weights.
+        Apply step perturbation.
 
         Returns
         -------
         dict
             Dictionary of newly perturbed weights.
         """
-        self.random_scheme.apply_step_perturbation()
-        return self.update_weights()
+        return self.random_scheme.apply_step_perturbation()
 
-    def update_weights(self) -> Dict[str, float]:
+    def compute_weights(self, state: "LossState") -> Dict[str, float]:
         """
-        Update weights by combining scheme outputs.
+        Compute weights from all schemes.
 
         If resample_each_step is True, also applies step perturbation.
+        Returns combined weights (multiplicative for shared keys).
+        Does NOT modify state - just returns the computed weights.
+
+        Parameters
+        ----------
+        state : LossState
+            State with meta and _losses populated.
 
         Returns
         -------
@@ -472,19 +486,18 @@ class RandomComponentWeighting(ComponentWeighting):
         if self.resample_each_step:
             self.random_scheme.apply_step_perturbation()
 
-        # Initialize weights
-        self.weights = {}
+        combined = {}
 
         # Combine weights from all schemes (multiply for shared keys)
         for scheme in self.schemes.values():
-            scheme_weights = scheme()
+            scheme_weights = scheme.forward(state)
             for k, v in scheme_weights.items():
-                if k in self.weights:
-                    self.weights[k] = self.weights[k] * v
+                if k in combined:
+                    combined[k] = combined[k] * v
                 else:
-                    self.weights[k] = v
+                    combined[k] = v
 
-        return self.weights
+        return combined
 
     def get_sampled_log_weights(self) -> Dict[str, float]:
         """
@@ -521,9 +534,14 @@ class RandomComponentWeighting(ComponentWeighting):
         """
         return self.random_scheme.get_weights()
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self, state: "LossState" = None) -> Dict[str, Any]:
         """
         Return statistics for reporting.
+
+        Parameters
+        ----------
+        state : LossState, optional
+            If provided, pull data from state.meta.
 
         Returns
         -------
@@ -534,15 +552,9 @@ class RandomComponentWeighting(ComponentWeighting):
 
         # Collect stats from schemes
         for name, scheme in self.schemes.items():
-            scheme_stats = scheme.stats()
+            scheme_stats = scheme.stats(state)
             if scheme_stats:
                 stats[name] = scheme_stats
-
-        # Add current combined weights
-        stats["weights"] = {
-            k: stat(v.item() if isinstance(v, torch.Tensor) else v, VERBOSITY_STANDARD)
-            for k, v in self.weights.items()
-        }
 
         # Add sampled log-weights (the "actions")
         stats["sampled_log_weights"] = {
@@ -550,32 +562,20 @@ class RandomComponentWeighting(ComponentWeighting):
             for k, v in self.get_sampled_log_weights().items()
         }
 
-        # Add target stats
-        if hasattr(self.refinement, "geometry_target"):
-            geom_stats = self.refinement.geometry_target.stats()
-            if geom_stats:
-                stats["geom_target"] = {
-                    k: v if isinstance(v, StatEntry) else stat(v, VERBOSITY_DETAILED)
-                    for k, v in geom_stats.items()
-                }
+        # Add xray stats from state.meta
+        if state is not None:
+            work_nll = state.get("xray_loss_work", 0.0)
+            test_nll = state.get("xray_loss_test", 0.0)
+            stats["xray"] = {
+                "work_nll": stat(work_nll, VERBOSITY_ESSENTIAL),
+                "test_nll": stat(test_nll, VERBOSITY_ESSENTIAL),
+            }
 
-        if hasattr(self.refinement, "adp_target"):
-            adp_stats = self.refinement.adp_target.stats()
-            if adp_stats:
-                stats["adp_target"] = {
-                    k: v if isinstance(v, StatEntry) else stat(v, VERBOSITY_DETAILED)
-                    for k, v in adp_stats.items()
-                }
-
-        # Add xray stats
-        stats["xray"] = {
-            "work_nll": stat(
-                self.refinement.xray_target_work().item(), VERBOSITY_ESSENTIAL
-            ),
-            "test_nll": stat(
-                self.refinement.xray_target_test().item(), VERBOSITY_ESSENTIAL
-            ),
-        }
+            # Add current weights from state
+            stats["weights"] = {
+                k: stat(v if isinstance(v, (int, float)) else v, VERBOSITY_STANDARD)
+                for k, v in state.weights.items()
+            }
 
         return stats
 

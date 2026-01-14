@@ -5,8 +5,7 @@ from torch.nn import Module as nnModule
 
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
-from torchref.refinement.aggregator import LossAggregator
-from torchref.refinement.loss_state import LossState, create_loss_state
+from torchref.refinement.loss_state import LossState
 from torchref.refinement.targets.combined_targets import (
     TotalADPTarget,
     TotalGeometryTarget,
@@ -215,9 +214,6 @@ class Refinement(DebugMixin, nnModule):
 
         self.adp_target = TotalADPTarget(self, verbose=self.verbose)
 
-        # LossAggregator for new LossState pipeline
-        self.aggregator = LossAggregator()
-
         self.setup_component_weighting()
 
         if self.verbose > 0:
@@ -412,22 +408,136 @@ class Refinement(DebugMixin, nnModule):
 
     def loss(self):
         """
-        Compute total loss using component_weighting.
+        Compute total loss using LossState pipeline.
+
+        Creates a LossState, populates meta, caches losses, updates weights,
+        and returns the aggregated weighted loss.
 
         Returns
         -------
         torch.Tensor
             Total weighted loss.
         """
-        return self.component_weighting.total_loss()
+        state = LossState(device=self.device)
+
+        # Register targets
+        state.register_target("xray_work", lambda: self.xray_target_work())
+        state.register_targets(self.geometry_target)
+        state.register_targets(self.adp_target)
+
+        # Populate meta and update weights
+        state = self.populate_state_meta(state)
+        state = self.update_weights(state)
+
+        return state.aggregate()
 
     def setup_component_weighting(self):
+        """Set up component weighting without refinement reference."""
         from torchref.refinement.weighting.component_weighting import ComponentWeighting
 
         self.get_scales()
+
+        # Get initial xray loss for XrayScaleWeighting
+        with torch.no_grad():
+            initial_xray_loss = self.xray_target_work().detach().item()
+
         self.component_weighting = ComponentWeighting(
-            self, weights=self.manual_weights, component_weights=self.component_weights
+            device=self.device,
+            weights=self.manual_weights,
+            component_weights=self.component_weights,
+            initial_xray_loss=initial_xray_loss,
         )
+
+    def populate_state_meta(self, state: "LossState") -> "LossState":
+        """
+        Populate LossState.meta with all model-level data.
+
+        Called once per macro cycle before weighting schemes are applied.
+        This is the single location where refinement data is extracted into state.
+
+        Parameters
+        ----------
+        state : LossState
+            State to populate with meta data.
+
+        Returns
+        -------
+        LossState
+            State with meta populated.
+        """
+        with torch.no_grad():
+            # R-factors
+            rwork, rfree = self.get_rfactor()
+            rwork = float(rwork) if isinstance(rwork, torch.Tensor) else rwork
+            rfree = float(rfree) if isinstance(rfree, torch.Tensor) else rfree
+
+            # X-ray losses
+            xray_work = self.xray_target_work().detach().item()
+            xray_test = self.xray_target_test().detach().item()
+
+            # B-factor statistics
+            b_factors = self.model.b()
+            mean_b = float(b_factors.mean())
+            b_std = float(b_factors.std())
+
+            # Geometry deviations
+            bond_rmsd = 0.0
+            angle_rmsd = 0.0
+            if hasattr(self, "restraints") and self.restraints is not None:
+                if hasattr(self.restraints, "bond_deviations"):
+                    bond_devs, _ = self.restraints.bond_deviations()
+                    bond_rmsd = float(torch.sqrt((bond_devs**2).mean()))
+                if hasattr(self.restraints, "angle_deviations"):
+                    angle_devs, _ = self.restraints.angle_deviations()
+                    angle_rmsd = float(torch.sqrt((angle_devs**2).mean()))
+
+        state.update_meta(
+            {
+                # Device
+                "device": self.device,
+                # Static structure/data properties
+
+                "n_atoms": len(self.model.pdb),
+                "n_hkl": self.reflection_data.hkl.shape[0],
+                "resolution_min": float(self.reflection_data.resolution.min()),
+                "wilson_b": float(self.reflection_data.wilson_b) if self.reflection_data.wilson_b is not None else 45.0,
+
+                # Dynamic refinement state
+                "rwork": rwork,
+                "rfree": rfree,
+                "rfree_gap": rfree - rwork,
+                "xray_loss_work": xray_work,
+                "xray_loss_test": xray_test,
+                "mean_b": mean_b,
+                "b_std": b_std,
+                "bond_rmsd": bond_rmsd,
+                "angle_rmsd": angle_rmsd,
+            }
+        )
+
+        return state
+
+    def update_weights(self, state: "LossState") -> "LossState":
+        """
+        Compute weights from component_weighting and update state.
+
+        Parameters
+        ----------
+        state : LossState
+            State with meta populated.
+
+        Returns
+        -------
+        LossState
+            State with weights updated.
+        """
+        weights = self.component_weighting(state)
+
+        for name, weight in weights.items():
+            current = state.get_weight(name, default=1.0)
+            state.set_weight(name, current * weight)
+
+        return state
 
     def create_loss_state(self) -> LossState:
         """
@@ -464,87 +574,34 @@ class Refinement(DebugMixin, nnModule):
         state = LossState(device=self.device)
 
         # Register X-ray target
-        state.register_target("xray/work", lambda: self.xray_target_work())
+        state.register_target("xray", self.xray_target_work)
 
-        # Register geometry targets with hierarchy
-        for name, target in self.geometry_target.items():
-            state.register_target(f"geometry/{name}", lambda t=target: t())
-
-        # Register ADP targets with hierarchy
-        for name, target in self.adp_target.items():
-            state.register_target(f"adp/{name}", lambda t=target: t())
+        state.register_targets(self.geometry_target)
 
         # Get weights from component_weighting and apply
-        self.component_weighting.update_weights()
-        for name, weight in self.component_weighting.weights.items():
-            weight_val = weight.item() if isinstance(weight, torch.Tensor) else weight
-            state.set_weight(name, weight_val)
+        state.register_targets(self.adp_target)
 
         return state
 
-    def build_loss_state(self) -> LossState:
+    def complete_loss_state(self) -> "LossState":
         """
-        Build a fresh LossState for the current forward pass.
+        Create and populate a complete LossState.
 
-        This creates a LossState populated with reflection data and references
-        to the model and restraints for lazy computation.
+        Creates a LossState with all targets registered, meta populated,
+        losses cached, and weights applied. Useful for logging or analysis
+        outside of optimization.
 
         Returns
         -------
         LossState
-            Fresh LossState ready for the pipeline.
+            Complete LossState with targets, meta, losses, and weights.
         """
-
-        return create_loss_state(device=self.device)
-
-    def compute_loss_state(self) -> LossState:
-        """
-        Build LossState and compute all losses using the new pipeline.
-
-        This method:
-        1. Creates a fresh LossState
-        2. Applies all targets to add losses
-        3. Applies all weighting schemes to add weights
-
-        Returns
-        -------
-        LossState
-            Complete LossState with losses and weights populated.
-        """
-        # Build initial state
-        state = self.build_loss_state()
-
-        # Apply X-ray targets
-        state = self.xray_target_work.add_to_state(state)
-        nll_test = self.xray_target_test().detach()
-        state = state.add_metric("xray_test_nll", nll_test)
-
-        state = self.geometry_target.add_to_state(state)
-        state = self.adp_target.add_to_state(state)
-
-        state = self.component_weighting.apply_to_state(state)
-
+        state = self.create_loss_state()
+        state = self.populate_state_meta(state)
+        state = self.add_target_info_to_state(state)
+        state.cache_losses()
+        state = self.update_weights(state)
         return state
-
-    def loss_from_state(self, state: Optional[LossState] = None) -> torch.Tensor:
-        """
-        Compute total weighted loss using the LossState pipeline.
-
-        This is an alternative to loss() that uses the new architecture.
-
-        Parameters
-        ----------
-        state : LossState, optional
-            Pre-computed LossState. If None, builds a new one.
-
-        Returns
-        -------
-        torch.Tensor
-            Total weighted loss.
-        """
-        if state is None:
-            state = self.compute_loss_state()
-        return self.aggregator(state)
 
     def xray_loss(self):
         """
@@ -611,7 +668,7 @@ class Refinement(DebugMixin, nnModule):
                 metrics["adp"] = self.adp_target.stats()
 
         return metrics
-
+    
     def log_refinement(self, phase: str, before: Dict[str, Any], after: Dict[str, Any]):
         """
         Log refinement comparison showing metrics before/after.
@@ -630,39 +687,39 @@ class Refinement(DebugMixin, nnModule):
         """
         if self.verbose < 1:
             return
-
-        from torchref.utils.stats import StatEntry, filter_stats
-
+        
+        from torchref.utils.stats import filter_stats, StatEntry
+        
         # Filter stats based on verbosity level for display
         before_filtered = filter_stats(before, self.verbose)
         after_filtered = filter_stats(after, self.verbose)
-
+        
         # Get weights from after stats
-        weights = after_filtered.get("component_weighting", {}).get("weights", {})
-
+        weights = after_filtered.get('component_weighting', {}).get('weights', {})
+        
         # Get overfitting weight from after stats (need to look in unfiltered to find it)
         overfitting_weight = 0.0
-        after_cw = after.get("component_weighting", {})
-        if "overfitting_weighting" in after_cw:
-            ow_stats = after_cw["overfitting_weighting"]
+        after_cw = after.get('component_weighting', {})
+        if 'overfitting_weighting' in after_cw:
+            ow_stats = after_cw['overfitting_weighting']
             if isinstance(ow_stats, dict):
-                ow_val = ow_stats.get("overfitting_weight")
+                ow_val = ow_stats.get('overfitting_weight')
                 if isinstance(ow_val, StatEntry):
                     overfitting_weight = ow_val.value
                 elif ow_val is not None:
                     overfitting_weight = ow_val
-
+        
         # Get X-ray scale weight from after stats
         xray_scale_weight = 1.0
-        if "xray_scale_weighting" in after_cw:
-            xsw_stats = after_cw["xray_scale_weighting"]
+        if 'xray_scale_weighting' in after_cw:
+            xsw_stats = after_cw['xray_scale_weighting']
             if isinstance(xsw_stats, dict):
-                xsw_val = xsw_stats.get("xray_weight")
+                xsw_val = xsw_stats.get('xray_weight')
                 if isinstance(xsw_val, StatEntry):
                     xray_scale_weight = xsw_val.value
                 elif xsw_val is not None:
                     xray_scale_weight = xsw_val
-
+        
         print(f"\n{'─'*80}")
         print(f"  {phase} Refinement Summary")
         print(f"  X-ray scale weight: {xray_scale_weight:.4f}", end="")
@@ -670,167 +727,110 @@ class Refinement(DebugMixin, nnModule):
             print(f"  |  Overfitting penalty: {overfitting_weight:.3f}", end="")
         print()  # End the line
         print(f"{'─'*80}")
-
+        
         # Header with weight column
-        print(
-            f"\n  {'Metric':<30} {'Before':>12} {'After':>12} {'Change':>12} {'Weight':>10}"
-        )
+        print(f"\n  {'Metric':<30} {'Before':>12} {'After':>12} {'Change':>12} {'Weight':>10}")
         print(f"  {'-'*76}")
-
-        def format_row(label, b_val, a_val, weight=None, fmt="12.4f"):
+        
+        def format_row(label, b_val, a_val, weight=None, fmt='12.4f'):
             delta = a_val - b_val
             weight_str = f"{weight:>10.4f}" if weight is not None else f"{'':>10}"
             return f"  {label:<30} {b_val:>{fmt}} {a_val:>{fmt}} {delta:>+{fmt}} {weight_str}"
-
+        
         # R-factor metrics (always included)
-        for key, label in [
-            ("rwork", "Rwork"),
-            ("rfree", "Rfree"),
-            ("rfree_gap", "Rfree-Rwork gap"),
-        ]:
+        for key, label in [('rwork', 'Rwork'), ('rfree', 'Rfree'), ('rfree_gap', 'Rfree-Rwork gap')]:
             b_val = before_filtered.get(key, 0)
             a_val = after_filtered.get(key, 0)
             print(format_row(label, b_val, a_val))
-
+        
         # X-ray NLL with weight
         print()
-        before_xray = before_filtered.get("component_weighting", {}).get("xray", {})
-        after_xray = after_filtered.get("component_weighting", {}).get("xray", {})
-        xray_weight = weights.get("xray")
-        for key, label in [
-            ("work_nll", "X-ray NLL (work)"),
-            ("test_nll", "X-ray NLL (test)"),
-        ]:
+        before_xray = before_filtered.get('component_weighting', {}).get('xray', {})
+        after_xray = after_filtered.get('component_weighting', {}).get('xray', {})
+        xray_weight = weights.get('xray')
+        for key, label in [('work_nll', 'X-ray NLL (work)'), ('test_nll', 'X-ray NLL (test)')]:
             b_val = before_xray.get(key, 0)
             a_val = after_xray.get(key, 0)
             # Only show weight on first X-ray row
-            w = xray_weight if key == "work_nll" else None
+            w = xray_weight if key == 'work_nll' else None
             print(format_row(label, b_val, a_val, w))
-
+        
         # Geometry loss with weight (verbosity >= 1)
         if self.verbose >= 1:
-            geom_weight = weights.get("geometry")
-            before_geom = before_filtered.get("geometry", {})
-            after_geom = after_filtered.get("geometry", {})
+            geom_weight = weights.get('geometry')
+            before_geom = before_filtered.get('geometry', {})
+            after_geom = after_filtered.get('geometry', {})
             # Get total geometry loss if available
             b_geom_total = 0.0
             a_geom_total = 0.0
             for target_name, target_stats in after_geom.items():
                 if isinstance(target_stats, dict):
-                    a_geom_total += target_stats.get("loss", 0)
+                    a_geom_total += target_stats.get('loss', 0)
                     b_stats = before_geom.get(target_name, {})
                     if isinstance(b_stats, dict):
-                        b_geom_total += b_stats.get("loss", 0)
+                        b_geom_total += b_stats.get('loss', 0)
             if a_geom_total > 0 or b_geom_total > 0:
-                print(
-                    format_row(
-                        "Geometry (total)", b_geom_total, a_geom_total, geom_weight
-                    )
-                )
-
+                print(format_row('Geometry (total)', b_geom_total, a_geom_total, geom_weight))
+            
             # ADP loss with weight
-            adp_weight = weights.get("adp")
-            before_adp = before_filtered.get("adp", {})
-            after_adp = after_filtered.get("adp", {})
+            adp_weight = weights.get('adp')
+            before_adp = before_filtered.get('adp', {})
+            after_adp = after_filtered.get('adp', {})
             # Get total ADP loss if available
             b_adp_total = 0.0
             a_adp_total = 0.0
             for target_name, target_stats in after_adp.items():
                 if isinstance(target_stats, dict):
-                    a_adp_total += target_stats.get("loss", 0)
+                    a_adp_total += target_stats.get('loss', 0)
                     b_stats = before_adp.get(target_name, {})
                     if isinstance(b_stats, dict):
-                        b_adp_total += b_stats.get("loss", 0)
+                        b_adp_total += b_stats.get('loss', 0)
             if a_adp_total > 0 or b_adp_total > 0:
-                print(format_row("ADP (total)", b_adp_total, a_adp_total, adp_weight))
-
+                print(format_row('ADP (total)', b_adp_total, a_adp_total, adp_weight))
+        
         # Detailed component losses (verbosity >= 2)
         if self.verbose >= 2:
             # Geometry targets breakdown
-            before_geom = before_filtered.get("geometry", {})
-            after_geom = after_filtered.get("geometry", {})
+            before_geom = before_filtered.get('geometry', {})
+            after_geom = after_filtered.get('geometry', {})
             if after_geom:
-                print("\n  Geometry breakdown:")
+                print(f"\n  Geometry breakdown:")
                 for target_name, target_stats in after_geom.items():
                     if isinstance(target_stats, dict):
-                        loss = target_stats.get("loss", 0)
-                        b_loss = (
-                            before_geom.get(target_name, {}).get("loss", 0)
-                            if isinstance(before_geom.get(target_name), dict)
-                            else 0
-                        )
-                        label = (
-                            "    "
-                            + target_name.replace("_target", "")
-                            .replace("_", " ")
-                            .title()
-                        )
+                        loss = target_stats.get('loss', 0)
+                        b_loss = before_geom.get(target_name, {}).get('loss', 0) if isinstance(before_geom.get(target_name), dict) else 0
+                        label = '    ' + target_name.replace('_target', '').replace('_', ' ').title()
                         print(format_row(label, b_loss, loss))
-
+                        
                         # Detailed stats at verbosity >= 3
                         if self.verbose >= 3:
                             for stat_key, stat_val in target_stats.items():
-                                if stat_key != "loss" and isinstance(
-                                    stat_val, (int, float)
-                                ):
-                                    b_stat = (
-                                        before_geom.get(target_name, {}).get(
-                                            stat_key, 0
-                                        )
-                                        if isinstance(
-                                            before_geom.get(target_name), dict
-                                        )
-                                        else 0
-                                    )
-                                    print(
-                                        format_row(
-                                            f"      {stat_key}", b_stat, stat_val
-                                        )
-                                    )
-
+                                if stat_key != 'loss' and isinstance(stat_val, (int, float)):
+                                    b_stat = before_geom.get(target_name, {}).get(stat_key, 0) if isinstance(before_geom.get(target_name), dict) else 0
+                                    print(format_row(f"      {stat_key}", b_stat, stat_val))
+            
             # ADP targets breakdown
-            before_adp = before_filtered.get("adp", {})
-            after_adp = after_filtered.get("adp", {})
+            before_adp = before_filtered.get('adp', {})
+            after_adp = after_filtered.get('adp', {})
             if after_adp:
-                print("\n  ADP breakdown:")
+                print(f"\n  ADP breakdown:")
                 for target_name, target_stats in after_adp.items():
                     if isinstance(target_stats, dict):
-                        loss = target_stats.get("loss", 0)
-                        b_loss = (
-                            before_adp.get(target_name, {}).get("loss", 0)
-                            if isinstance(before_adp.get(target_name), dict)
-                            else 0
-                        )
-                        label = (
-                            "    "
-                            + target_name.replace("_target", "")
-                            .replace("_", " ")
-                            .title()
-                        )
+                        loss = target_stats.get('loss', 0)
+                        b_loss = before_adp.get(target_name, {}).get('loss', 0) if isinstance(before_adp.get(target_name), dict) else 0
+                        label = '    ' + target_name.replace('_target', '').replace('_', ' ').title()
                         print(format_row(label, b_loss, loss))
-
+                        
                         # Detailed stats at verbosity >= 3
                         if self.verbose >= 3:
                             for stat_key, stat_val in target_stats.items():
-                                if stat_key != "loss" and isinstance(
-                                    stat_val, (int, float)
-                                ):
-                                    b_stat = (
-                                        before_adp.get(target_name, {}).get(stat_key, 0)
-                                        if isinstance(before_adp.get(target_name), dict)
-                                        else 0
-                                    )
-                                    print(
-                                        format_row(
-                                            f"      {stat_key}", b_stat, stat_val
-                                        )
-                                    )
-
+                                if stat_key != 'loss' and isinstance(stat_val, (int, float)):
+                                    b_stat = before_adp.get(target_name, {}).get(stat_key, 0) if isinstance(before_adp.get(target_name), dict) else 0
+                                    print(format_row(f"      {stat_key}", b_stat, stat_val))
+        
         print(f"{'─'*80}\n")
-
-    def log_xyz_comparison(
-        self, before: Dict[str, float], after: Dict[str, float], weight: float = None
-    ):
+    
+    def log_xyz_comparison(self, before: Dict[str, float], after: Dict[str, float], weight: float = None):
         """
         Log XYZ refinement comparison.
 
@@ -845,11 +845,9 @@ class Refinement(DebugMixin, nnModule):
         weight : float, optional
             Restraint weight (ignored, for backwards compatibility).
         """
-        self.log_refinement("XYZ", before, after)
-
-    def log_adp_comparison(
-        self, before: Dict[str, float], after: Dict[str, float], weight: float = None
-    ):
+        self.log_refinement('XYZ', before, after)
+    
+    def log_adp_comparison(self, before: Dict[str, float], after: Dict[str, float], weight: float = None):
         """
         Log ADP refinement comparison.
 
@@ -864,71 +862,41 @@ class Refinement(DebugMixin, nnModule):
         weight : float, optional
             ADP weight (ignored, for backwards compatibility).
         """
-        self.log_refinement("ADP", before, after)
+        self.log_refinement('ADP', before, after)
 
-    def setup_optimizer(self, **kwargs):
-        from torch.optim import Adam
+    def add_target_info_to_state(self, state: "LossState") -> "LossState":
 
-        self.optimizer = Adam(self.parameters(), **kwargs)
-
-    def run_refinement(
-        self, macro_cycles=5, n_steps=10, lr=[1e-2, 5e-4, 1e-3, 5e-4, 1e-4]
-    ):
         """
-        Run refinement cycles.
-
+        Add target information from geometry and ADP targets to LossState.meta.
         Parameters
         ----------
-        macro_cycles : int, optional
-            Number of macro cycles. Default is 5.
-        n_steps : int, optional
-            Steps per learning rate. Default is 10.
-        lr : list of float, optional
-            Learning rate schedule. Default is [1e-2, 5e-4, 1e-3, 5e-4, 1e-4].
+        state : LossState
+            Current loss state. Meta will be updated with target info.      
+        Returns
+        -------
+        LossState
+            Updated loss state with target info in meta.
         """
-        for cycle in range(macro_cycles):
-            self.scaler.unfreeze()
-            self.get_scales()
-            self.scaler.freeze()
 
-            # Update weights for this cycle
-            self.component_weighting.update_weights()
+        target_info = {}
 
-            self.setup_optimizer(lr=lr[0])
-            if self.verbose > 0:
-                print(
-                    f"Starting macro cycle {cycle+1}/{macro_cycles} with learning rate {self.lr if isinstance(self.lr, float) else self.lr[cycle]}"
-                )
-            for _lr in lr:
-                for param_group in self.optimizer.param_groups:
-                    param_group["lr"] = _lr
-                for step in range(n_steps):
-                    self.optimizer.zero_grad()
-                    total_loss = self.component_weighting.total_loss()
-                    if torch.isnan(total_loss):
-                        raise ValueError(
-                            "NaN encountered in total loss during refinement."
-                        )
-                    total_loss.backward()
-                    self.optimizer.step()
-                    if self.verbose > 2:
-                        print(
-                            f"  Step {step+1}/{n_steps}, Total Loss: {total_loss.item():.4f}"
-                        )
+        for loss_object in self.geometry_target.values():
+            target_val, sigma = loss_object._target_value, loss_object._sigma
+            target_info[loss_object.name] = {
+                "target_value": target_val,
+                "sigma": sigma,
+            }
 
-                # Update weights after each learning rate step
-                self.component_weighting.update_weights()
-
-                if self.verbose > 1:
-                    print(f"  Ran for {_lr}, Total Loss: {total_loss.item():.4f}")
-            if self.verbose > 0:
-                rwork, rfree = self.get_rfactor()
-                stats = self.component_weighting.stats()
-                print(
-                    f'X-ray work NLL: {stats["xray"]["work_nll"]:.4f}, X-ray test NLL: {stats["xray"]["test_nll"]:.4f}'
-                )
-                print(f'Current weights: {stats["weights"]}')
-                print(f"  R-work: {rwork:.4f}, R-free: {rfree:.4f}")
+        for loss_object in self.adp_target.values():
+            target_val, sigma = loss_object._target_value, loss_object._sigma
+            target_info[loss_object.name] = {
+                    "target_value": target_val,
+                    "sigma": sigma,
+            }
+            
+        state.update_meta({"target_info": target_info})
+        
+        return state
 
     def cuda(self):
         super().cuda()

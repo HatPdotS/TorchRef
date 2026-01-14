@@ -1,10 +1,10 @@
-from abc import ABC
 from typing import TYPE_CHECKING, Any, Dict, List
 
 import torch
 from torch import nn
 from torch.nn.functional import softplus
 
+from torchref.refinement.weighting.base_weighting import BaseWeighting
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -13,101 +13,57 @@ from torchref.utils.stats import (
     StatEntry,
     stat,
 )
-from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
     from torchref.refinement.loss_state import LossState
 
+from torchref.utils import TensorDict
 
-class WeightingScheme(nn.Module, ABC):
-    """
-    Abstract base class for weighting schemes.
-
-    All tunable parameters should be registered as buffers using register_buffer()
-    so they can be accessed/modified via state_dict notation, e.g.:
-        refinement.component_weighting.schemes.0.target_gap
-
-    LossState Integration:
-        Weighting schemes can add their weights to a LossState:
-        >>> state = scheme.apply_to_state(state)  # Adds weights to state
-    """
-
-    name = "base_weighting_scheme"
-
-    def __init__(self, refinement):
-        super().__init__()
-        self.refinement = ModuleReference(refinement)
-
-    def stats(self, state: "LossState" = None) -> Dict[str, StatEntry]:
-        """
-        Return statistics for reporting.
-
-        Parameters
-        ----------
-        state : LossState, optional
-            If provided, pull data from LossState instead of self.refinement.
-
-        Returns dict with StatEntry values containing verbosity levels.
-        Use filter_stats() to filter by verbosity.
-        """
-        return {}
-
-    def apply_to_state(self, state: "LossState") -> "LossState":
-        """
-        Compute weights and set them in the LossState.
-
-        Parameters
-        ----------
-        state : LossState
-            Loss state to update with weights.
-
-        Returns
-        -------
-        LossState
-            State with this scheme's weights set.
-        """
-        weights = self.forward()
-        for name, weight in weights.items():
-            weight_val = weight.item() if isinstance(weight, torch.Tensor) else weight
-            # Multiply with existing weight if present
-            current = state.get_weight(name, default=1.0)
-            state.set_weight(name, current * weight_val)
-        return state
+# WeightingScheme is now an alias for BaseWeighting for backward compatibility
+WeightingScheme = BaseWeighting
 
 
-class TargetOffsetWeighting(WeightingScheme):
+class TargetOffsetWeighting(BaseWeighting):
     """
     Weights components based on distance from target value.
     weight = 1 + softplus(loss - target_value) / sigma
+
+    Uses state._losses for current loss values and state.meta for target info.
+    If info is missing for a component, it is skipped.
     """
 
     name = "target_offset_weighting"
 
-    def get_weight(self, target):
-        if not hasattr(target, "target_value") or not hasattr(target, "sigma"):
-            # Return 1.0 if attributes missing
-            return torch.tensor(1.0, device=self.refinement.device)
+    def __init__(self, device: torch.device = None):
+        super().__init__(device)
 
-        # We need to compute loss to get the weight
-        loss = target()
-        if isinstance(loss, torch.Tensor) and loss.numel() > 1:
-            loss = loss.sum()
+    def forward(self, state: "LossState") -> Dict[str, float]:
+        """
+        Compute weights based on distance from target values.
 
-        weight = 1 + softplus(loss - target.target_value) / (target.sigma + 1e-6)
-        return weight.detach()
+        Target info should be stored in state.meta as "target_info/{name}".
+        """
+        # Ensure losses are cached
+        state.cache_losses()
+        target_info = state.get(f"target_info", {})
 
-    def forward(self):
+
         weights = {}
+        for name, loss in state._losses.items():
+            if not name in target_info:
+                continue
+            
+            target_value = target_info[name].get("target_value", 0.0)
+            sigma = target_info[name].get("sigma", 0.5)
 
-        # Geometry targets
-        if hasattr(self.refinement, "geometry_target"):
-            for name, target in self.refinement.geometry_target.targets().items():
-                weights[name] = self.get_weight(target)
+            if sigma > 0:
+                if isinstance(loss, torch.Tensor) and loss.numel() > 1:
+                    loss_val = loss.sum()
+                else:
+                    loss_val = loss
 
-        # ADP targets
-        if hasattr(self.refinement, "adp_target"):
-            for name, target in self.refinement.adp_target.targets().items():
-                weights[name] = self.get_weight(target)
+                weight = 1 + softplus(loss_val - target_value) / (sigma + 1e-6)
+                weights[name] = weight.detach().item()
 
         return weights
 
@@ -118,7 +74,7 @@ class TargetOffsetWeighting(WeightingScheme):
         Parameters
         ----------
         state : LossState, optional
-            If provided, pull weights from LossState instead of computing.
+            If provided, pull weights from LossState.
         """
         stats = {}
 
@@ -129,25 +85,15 @@ class TargetOffsetWeighting(WeightingScheme):
                     stats[f"{name}_weight"] = stat(weight.item(), VERBOSITY_STANDARD)
                 else:
                     stats[f"{name}_weight"] = stat(weight, VERBOSITY_STANDARD)
-        else:
-            # Compute weights from targets
-            if hasattr(self.refinement, "geometry_target"):
-                for name, target in self.refinement.geometry_target.targets().items():
-                    stats[f"{name}_weight"] = stat(
-                        self.get_weight(target).item(), VERBOSITY_STANDARD
-                    )
-            if hasattr(self.refinement, "adp_target"):
-                for name, target in self.refinement.adp_target.targets().items():
-                    stats[f"{name}_weight"] = stat(
-                        self.get_weight(target).item(), VERBOSITY_STANDARD
-                    )
 
         return stats
 
 
-class OverfittingWeighting(WeightingScheme):
+class OverfittingWeighting(BaseWeighting):
     """
     Scale-invariant overfitting correction weight.
+
+    Uses state.meta["xray_loss_work"] and state.meta["xray_loss_test"].
 
     Tunable parameters (as buffers):
     - target_gap: float, target overfitting gap threshold
@@ -160,13 +106,13 @@ class OverfittingWeighting(WeightingScheme):
 
     def __init__(
         self,
-        refinement,
+        device: torch.device = None,
         target_gap: float = 0.2,
         min_weight: float = 0.2,
         sharpness: float = 5.0,
         smoothing: float = 0.8,
     ):
-        super().__init__(refinement)
+        super().__init__(device)
         # Register tunable parameters as buffers for state_dict access
         self.register_buffer("target_gap", torch.tensor(target_gap))
         self.register_buffer("min_weight", torch.tensor(min_weight))
@@ -174,9 +120,19 @@ class OverfittingWeighting(WeightingScheme):
         self.register_buffer("smoothing", torch.tensor(smoothing))
         self.register_buffer("weight_reg", torch.tensor(1.0))  # Current weight value
 
-    def forward(self):
-        train_nll = self.refinement.xray_target_work().detach()
-        test_nll = self.refinement.xray_target_test().detach()
+    def forward(self, state: "LossState") -> Dict[str, float]:
+        """
+        Compute overfitting correction weights from state.meta.
+        """
+        train_nll = state.get("xray_loss_work", 0.0)
+        test_nll = state.get("xray_loss_test", 0.0)
+
+        # Convert to tensors if needed
+        if not isinstance(train_nll, torch.Tensor):
+            train_nll = torch.tensor(train_nll, device=self.device)
+        if not isinstance(test_nll, torch.Tensor):
+            test_nll = torch.tensor(test_nll, device=self.device)
+
         scale = torch.abs(test_nll) + 1e-6
         relative_gap = (test_nll - train_nll) / scale
 
@@ -184,9 +140,7 @@ class OverfittingWeighting(WeightingScheme):
         target_weight = self.min_weight + torch.exp(
             self.sharpness * (relative_gap - self.target_gap)
         )
-        target_weight = (
-            target_weight.detach()
-        )  # Detach to prevent gradient flow through weights
+        target_weight = target_weight.detach()
 
         # Apply smoothing
         self.weight_reg = (
@@ -194,7 +148,10 @@ class OverfittingWeighting(WeightingScheme):
         )
 
         # Apply to all regularization terms (geom and adp)
-        return {"geometry": self.weight_reg.detach(), "adp": self.weight_reg.detach()}
+        return {
+            "geometry": self.weight_reg.detach().item(),
+            "adp": self.weight_reg.detach().item(),
+        }
 
     def stats(self, state: "LossState" = None) -> Dict[str, StatEntry]:
         """
@@ -203,17 +160,14 @@ class OverfittingWeighting(WeightingScheme):
         Parameters
         ----------
         state : LossState, optional
-            If provided, pull losses from LossState instead of computing.
+            If provided, pull losses from state.meta.
         """
         if state is not None:
-            # Pull train/test NLL from state's cached losses
-            train_loss = state.get_loss("xray/work") or state.get_loss("xray_work")
-            test_loss = state.get_loss("xray/test") or state.get_loss("xray_test")
-            train_nll = train_loss.detach().item() if train_loss is not None else 0.0
-            test_nll = test_loss.detach().item() if test_loss is not None else 0.0
+            train_nll = state.get("xray_loss_work", 0.0)
+            test_nll = state.get("xray_loss_test", 0.0)
         else:
-            train_nll = self.refinement.xray_target_work().detach().item()
-            test_nll = self.refinement.xray_target_test().detach().item()
+            train_nll = 0.0
+            test_nll = 0.0
 
         return {
             "overfitting_weight": stat(self.weight_reg.item(), VERBOSITY_ESSENTIAL),
@@ -224,24 +178,25 @@ class OverfittingWeighting(WeightingScheme):
             "test_nll": stat(test_nll, VERBOSITY_STANDARD),
         }
 
+class ManualWeighting(BaseWeighting):
+    """
+    Apply fixed manual weights.
 
-class ManualWeighting(WeightingScheme):
+    This scheme doesn't need any state data - just returns the present weights.
+    """
+
     name = "manual_weighting"
 
-    def __init__(self, refinement, weights: Dict[str, float]):
-        super().__init__(refinement)
-        self.weights = weights
+    def __init__(self, weights: Dict[str, float], device: torch.device = None):
+        super().__init__(device)
+        weights_as_tensor = {k: torch.tensor(v, device=self.device) for k, v in weights.items()}
+        self.manual_weights = TensorDict(weights_as_tensor)
 
-    def forward(self):
-        # Return multipliers from manual weights
-        device = self.refinement.device
-        return {
-            k: torch.tensor(v, device=device) if isinstance(v, (float, int)) else v
-            for k, v in self.weights.items()
-        }
+    def forward(self, state: "LossState") -> Dict[str, float]:
+        """Return manual weights (state is not used)."""
+        return {k: v.item() for k, v in self.manual_weights.items()}
 
-
-class XrayScaleWeighting(WeightingScheme):
+class XrayScaleWeighting(BaseWeighting):
     """
     Scale X-ray weight so that the effective X-ray loss is at a fixed target value.
 
@@ -252,8 +207,7 @@ class XrayScaleWeighting(WeightingScheme):
 
     So: weight = target_scale / xray_loss
 
-    This normalizes the X-ray contribution to a consistent scale, making the
-    relative weights of geometry/ADP restraints more interpretable and stable.
+    Uses state.meta["xray_loss_work"] for the current X-ray loss.
 
     Tunable parameters (as buffers):
     - target_scale: float, target effective X-ray loss value
@@ -263,8 +217,8 @@ class XrayScaleWeighting(WeightingScheme):
 
     Parameters
     ----------
-    refinement : Refinement
-        Reference to Refinement object.
+    device : torch.device, optional
+        Computation device.
     target_scale : float, optional
         Target effective X-ray loss value. Default is 50.0.
     min_weight : float, optional
@@ -273,19 +227,22 @@ class XrayScaleWeighting(WeightingScheme):
         Maximum allowed weight (prevents explosion when loss is tiny). Default is 10.0.
     smoothing : float, optional
         Exponential smoothing factor (0-1). Higher = more smoothing. Default is 0.5.
+    initial_xray_loss : float, optional
+        Initial X-ray loss for scaling. If None, uses first state value.
     """
 
     name = "xray_scale_weighting"
 
     def __init__(
         self,
-        refinement,
+        device: torch.device = None,
         target_scale: float = 50.0,
         min_weight: float = 0.01,
         max_weight: float = 10.0,
         smoothing: float = 0.5,
+        initial_xray_loss: float = None,
     ):
-        super().__init__(refinement)
+        super().__init__(device)
         # Register tunable parameters as buffers for state_dict access
         self.register_buffer("target_scale", torch.tensor(target_scale))
         self.register_buffer("min_weight", torch.tensor(min_weight))
@@ -293,29 +250,36 @@ class XrayScaleWeighting(WeightingScheme):
         self.register_buffer("smoothing", torch.tensor(smoothing))
         self.register_buffer("xray_weight", torch.tensor(1.0))  # Current weight value
         self.register_buffer(
-            "xray_loss_initial", self.refinement.xray_target_work().detach()
+            "xray_loss_initial", torch.tensor(initial_xray_loss or 0.0)
         )
-        self._raw_xray_loss = None
+        self._initialized = initial_xray_loss is not None
 
-    def forward(self):
+    def forward(self, state: "LossState") -> Dict[str, float]:
+        """
+        Compute X-ray scale weight from state.meta["xray_loss_work"].
+        """
+        xray_loss = state.get("xray_loss_work", 1.0)
 
-        # weight = target_scale / loss
+        # Initialize on first call if not provided at construction
+        if not self._initialized:
+            self.xray_loss_initial.fill_(xray_loss)
+            self._initialized = True
+
+        # weight = target_scale / initial_loss
         target_weight = self.target_scale / (self.xray_loss_initial + 1e-6)
 
         # Clamp to reasonable range
         target_weight = torch.clamp(
             target_weight, self.min_weight.item(), self.max_weight.item()
         )
-        target_weight = (
-            target_weight.detach()
-        )  # Detach to prevent gradient flow through weights
+        target_weight = target_weight.detach()
 
         # Apply smoothing
         self.xray_weight = (
             self.smoothing * self.xray_weight + (1 - self.smoothing) * target_weight
         )
 
-        return {"xray": self.xray_weight.detach()}
+        return {"xray": self.xray_weight.detach().item()}
 
     def stats(self, state: "LossState" = None) -> Dict[str, StatEntry]:
         """
@@ -324,23 +288,18 @@ class XrayScaleWeighting(WeightingScheme):
         Parameters
         ----------
         state : LossState, optional
-            If provided, pull xray loss from LossState.
+            If provided, pull xray loss from state.meta.
         """
         if state is not None:
-            xray_loss = state.get_loss("xray/work") or state.get_loss("xray_work")
-            raw_xray = xray_loss.detach().item() if xray_loss is not None else 0.0
+            raw_xray = state.get("xray_loss_work", 0.0)
         else:
-            raw_xray = self._raw_xray_loss if self._raw_xray_loss is not None else 0.0
+            raw_xray = 0.0
 
         return {
             "xray_weight": stat(self.xray_weight.item(), VERBOSITY_ESSENTIAL),
             "raw_xray_loss": stat(raw_xray, VERBOSITY_STANDARD),
             "effective_xray_loss": stat(
-                (
-                    (raw_xray * self.xray_weight.item())
-                    if (raw_xray and self.xray_weight is not None)
-                    else 0.0
-                ),
+                raw_xray * self.xray_weight.item() if raw_xray else 0.0,
                 VERBOSITY_STANDARD,
             ),
             "target_scale": stat(self.target_scale.item(), VERBOSITY_DEBUG),
@@ -351,7 +310,10 @@ class XrayScaleWeighting(WeightingScheme):
 
 class ComponentWeighting(nn.Module):
     """
-    Combines multiple weighting schemes using nn.ModuleDict for clean organization.
+    Combines multiple weighting schemes using nn.ModuleDict.
+
+    Holds weighting schemes but does NOT hold a refinement reference.
+    Weighting is computed via compute_weights(state) which receives a LossState.
 
     Default schemes:
     - 'xray_scale': XrayScaleWeighting - normalizes X-ray loss to consistent scale
@@ -360,45 +322,48 @@ class ComponentWeighting(nn.Module):
 
     Parameters
     ----------
-    refinement : Refinement
-        Reference to Refinement object.
+    device : torch.device, optional
+        Computation device.
     weights : dict, optional
-        Manual weight overrides (deprecated, use component_weights).
+        Manual weight overrides.
     component_weights : dict, optional
         Manual weight overrides for specific components.
-    schemes : list of WeightingScheme, optional
+    schemes : list of BaseWeighting, optional
         Additional custom weighting schemes.
+    initial_xray_loss : float, optional
+        Initial X-ray loss for XrayScaleWeighting.
 
     Attributes
     ----------
     schemes : nn.ModuleDict
         Dictionary of weighting schemes.
-    weights : dict
-        Current computed weights for each component.
 
     Examples
     --------
-    >>> cw = ComponentWeighting(refinement)
-    >>> cw.update_weights()
+    >>> cw = ComponentWeighting(device=device, initial_xray_loss=50.0)
+    >>> weights = cw.compute_weights(state)
     >>> xray_scheme = cw['xray_scale']
     >>> xray_scheme.target_scale.fill_(100.0)
     """
 
     def __init__(
         self,
-        refinement,
+        device: torch.device = None,
         weights: Dict[str, float] = None,
         component_weights: Dict[str, float] = None,
-        schemes: List[WeightingScheme] = None,
+        schemes: List[BaseWeighting] = None,
+        initial_xray_loss: float = None,
     ):
         super().__init__()
-        self.refinement = ModuleReference(refinement)
+        self.device = device or torch.device("cpu")
 
-        # Build schemes dict
+        # Build schemes dict - no refinement reference
         schemes_dict = {
-            "xray_scale": XrayScaleWeighting(refinement),
-            "target_offset": TargetOffsetWeighting(refinement),
-            "overfitting": OverfittingWeighting(refinement),
+            "xray_scale": XrayScaleWeighting(
+                device, initial_xray_loss=initial_xray_loss
+            ),
+            "target_offset": TargetOffsetWeighting(device),
+            "overfitting": OverfittingWeighting(device),
         }
 
         # Add manual weights if provided
@@ -409,7 +374,7 @@ class ComponentWeighting(nn.Module):
             manual_weights_dict.update(component_weights)
 
         if manual_weights_dict:
-            schemes_dict["manual"] = ManualWeighting(refinement, manual_weights_dict)
+            schemes_dict["manual"] = ManualWeighting(manual_weights_dict, device)
 
         # Add additional schemes
         if schemes:
@@ -418,10 +383,8 @@ class ComponentWeighting(nn.Module):
                 schemes_dict[key] = scheme
 
         self.schemes = nn.ModuleDict(schemes_dict)
-        self.weights = {}
-        self.update_weights()
 
-    def __getitem__(self, key: str) -> WeightingScheme:
+    def __getitem__(self, key: str) -> BaseWeighting:
         """Get a scheme by name using dictionary-style access."""
         return self.schemes[key]
 
@@ -441,7 +404,7 @@ class ComponentWeighting(nn.Module):
         """Return (name, scheme) pairs."""
         return self.schemes.items()
 
-    def add_scheme(self, name: str, scheme: WeightingScheme):
+    def add_scheme(self, name: str, scheme: BaseWeighting):
         """
         Add a new weighting scheme.
 
@@ -449,62 +412,44 @@ class ComponentWeighting(nn.Module):
         ----------
         name : str
             Name/key for the scheme.
-        scheme : WeightingScheme
+        scheme : BaseWeighting
             The scheme to add.
         """
         self.schemes[name] = scheme
 
-    def update_weights(self):
+    def forward(self, state: "LossState") -> Dict[str, float]:
         """
-        Update weights by combining all scheme outputs.
+        Compute weights from all schemes.
 
-        Each scheme's weights are multiplied together for shared keys.
-
-        Returns
-        -------
-        dict
-            Dictionary of computed weights for each component.
-        """
-        # Initialize weights for all known components to 1.0
-        self.weights = {}
-
-        for scheme in self.schemes.values():
-            scheme_weights = scheme()
-            for k, v in scheme_weights.items():
-                if k in self.weights:
-                    self.weights[k] = self.weights[k] * v
-                else:
-                    self.weights[k] = v
-
-        return self.weights
-
-    def apply_to_state(self, state: "LossState") -> "LossState":
-        """
-        Apply all weighting schemes to the LossState.
-
-        This method enables the new LossState pipeline pattern where
-        all schemes are applied in sequence to add/multiply weights
-        in the state.
+        Returns combined weights (multiplicative for shared keys).
+        Does NOT modify state - just returns the computed weights.
 
         Parameters
         ----------
         state : LossState
-            Current loss state with computed losses.
+            State with meta and _losses populated.
 
         Returns
         -------
-        LossState
-            State with all weights added.
+        Dict[str, float]
+            Dictionary of computed weights for each component.
         """
+        combined = {}
+
         for scheme in self.schemes.values():
-            state = scheme.apply_to_state(state)
-        return state
+            scheme_weights = scheme.forward(state)
+            for k, v in scheme_weights.items():
+                if k in combined:
+                    combined[k] = combined[k] * v
+                else:
+                    combined[k] = v
+
+        return combined
 
     def total_loss_from_state(self, state: "LossState") -> torch.Tensor:
         """
         Compute total weighted loss from a LossState.
 
-        This is the LossState-based equivalent of total_loss().
         Calls aggregate() which evaluates targets and applies weights.
 
         Parameters
@@ -519,28 +464,6 @@ class ComponentWeighting(nn.Module):
         """
         return state.aggregate()
 
-    def total_loss(self):
-        total = 0.0
-
-        # X-ray
-        total += self.refinement.xray_target_work() * self.weights.get("xray", 1.0)
-
-        # Geometry
-        if hasattr(self.refinement, "geometry_target"):
-            losses = self.refinement.geometry_target.target_losses()
-            for name, loss in losses.items():
-                if name in self.weights:
-                    total += loss * self.weights[name]
-
-        # ADP
-        if hasattr(self.refinement, "adp_target"):
-            losses = self.refinement.adp_target.target_losses()
-            for name, loss in losses.items():
-                if name in self.weights:
-                    total += loss * self.weights[name]
-
-        return total
-
     def stats(self, state: "LossState" = None) -> Dict[str, Any]:
         """
         Return statistics for reporting.
@@ -548,15 +471,12 @@ class ComponentWeighting(nn.Module):
         Parameters
         ----------
         state : LossState, optional
-            If provided, pull data from LossState instead of self.refinement.
-
-        Returns full stats dictionary with StatEntry values. Use filter_stats()
-        at the caller level to filter by verbosity when needed.
+            If provided, pull data from LossState.
 
         Returns
         -------
         dict
-            Stats dictionary with StatEntry objects containing verbosity metadata.
+            Stats dictionary with StatEntry objects.
         """
         stats = {}
 
@@ -566,57 +486,29 @@ class ComponentWeighting(nn.Module):
             if scheme_stats:
                 stats[name] = scheme_stats
 
-        # Add current weights (from state if available, else from self.weights)
+        # Add current weights from state
         if state is not None:
             stats["weights"] = {
                 k: stat(v if isinstance(v, (int, float)) else v, VERBOSITY_STANDARD)
                 for k, v in state.weights.items()
             }
-        else:
-            stats["weights"] = {
-                k: stat(
-                    v.item() if isinstance(v, torch.Tensor) else v, VERBOSITY_STANDARD
-                )
-                for k, v in self.weights.items()
+
+            # Add xray stats from state.meta
+            work_nll = state.get("xray_loss_work", 0.0)
+            test_nll = state.get("xray_loss_test", 0.0)
+            stats["xray"] = {
+                "work_nll": stat(work_nll, VERBOSITY_ESSENTIAL),
+                "test_nll": stat(test_nll, VERBOSITY_ESSENTIAL),
             }
-
-        # Add target stats from refinement (state doesn't store target stats)
-        if hasattr(self.refinement, "geometry_target"):
-            geom_stats = self.refinement.geometry_target.stats()
-            if geom_stats:
-                stats["geom_target"] = {
-                    k: v if isinstance(v, StatEntry) else stat(v, VERBOSITY_DETAILED)
-                    for k, v in geom_stats.items()
-                }
-        if hasattr(self.refinement, "adp_target"):
-            adp_stats = self.refinement.adp_target.stats()
-            if adp_stats:
-                stats["adp_target"] = {
-                    k: v if isinstance(v, StatEntry) else stat(v, VERBOSITY_DETAILED)
-                    for k, v in adp_stats.items()
-                }
-
-        # Add xray stats (essential)
-        if state is not None:
-            work_loss = state.get_loss("xray/work") or state.get_loss("xray_work")
-            test_loss = state.get_loss("xray/test") or state.get_loss("xray_test")
-            work_nll = work_loss.item() if work_loss is not None else 0.0
-            test_nll = test_loss.item() if test_loss is not None else 0.0
-        else:
-            work_nll = self.refinement.xray_target_work().item()
-            test_nll = self.refinement.xray_target_test().item()
-
-        stats["xray"] = {
-            "work_nll": stat(work_nll, VERBOSITY_ESSENTIAL),
-            "test_nll": stat(test_nll, VERBOSITY_ESSENTIAL),
-        }
 
         return stats
 
 
 __all__ = [
+    # Base class
+    "BaseWeighting",
     # Weighting classes
-    "WeightingScheme",
+    "WeightingScheme",  # Alias for backward compatibility
     "TargetOffsetWeighting",
     "OverfittingWeighting",
     "ManualWeighting",

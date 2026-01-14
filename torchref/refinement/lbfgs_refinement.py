@@ -221,7 +221,7 @@ class LBFGSRefinement(Refinement):
         self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
         self._optimize_lbfgs(state)
 
         self.model.unfreeze_all()
@@ -244,7 +244,7 @@ class LBFGSRefinement(Refinement):
         self.model.unfreeze("xyz")
 
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
         self._optimize_lbfgs(state)
 
         self.model.unfreeze_all()
@@ -272,7 +272,7 @@ class LBFGSRefinement(Refinement):
             rwork_start, rfree_start = self.get_rfactor()
 
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
         self._optimize_lbfgs(state, params=self.model.parameters(), max_iter=max_iter)
 
         # Collect metrics
@@ -321,7 +321,7 @@ class LBFGSRefinement(Refinement):
             rwork_start, rfree_start = self.get_rfactor()
 
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
         self._optimize_lbfgs(state, params=self.model.parameters(), max_iter=max_iter)
 
         # Collect metrics
@@ -789,7 +789,7 @@ class LBFGSRefinement(Refinement):
         self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
         self._optimize_lbfgs(state, lr=lr)
 
         self.model.unfreeze_all()
@@ -816,7 +816,7 @@ class LBFGSRefinement(Refinement):
         self.model.unfreeze("xyz")
 
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
         self._optimize_adamw(state, lr=lr, steps=steps)
 
         self.model.unfreeze_all()
@@ -842,7 +842,7 @@ class LBFGSRefinement(Refinement):
         self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
         self._optimize_adamw(state, lr=lr, steps=steps)
 
         self.model.unfreeze_all()
@@ -877,7 +877,7 @@ class LBFGSRefinement(Refinement):
         self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
 
         # Log initial state
         state.aggregate(log_values=True)
@@ -935,7 +935,7 @@ class LBFGSRefinement(Refinement):
         self.model.unfreeze("b")
 
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
         self._optimize_adamw(state, lr=lr, steps=steps)
 
         self.model.unfreeze_all()
@@ -954,7 +954,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         self.scaler.refine_lbfgs()
-        state = self.create_loss_state()
+        state = self.complete_loss_state()
         self._optimize_lbfgs(state, nsteps=nsteps)
 
         self.model.unfreeze_all()
@@ -1051,7 +1051,7 @@ class LBFGSRefinement(Refinement):
                     print(f"Step {step + 1}/{n_steps}")
 
                 # Create LossState and apply policy weights
-                state = self.create_loss_state()
+                state = self.complete_loss_state()
 
                 # Evaluate once to populate loss cache (needed for feature extraction)
                 with torch.no_grad():
@@ -1145,7 +1145,7 @@ class LBFGSRefinement(Refinement):
                     print(f"Step {step + 1}/{n_steps}")
 
                 # Create LossState and evaluate to populate cache
-                state = self.create_loss_state()
+                state = self.complete_loss_state()
                 with torch.no_grad():
                     state.aggregate()
 
@@ -1210,7 +1210,6 @@ class LBFGSRefinement(Refinement):
                 "xyz": {"before": {}, "after": {}, "weights": {}},
                 "adp": {"before": {}, "after": {}, "weights": {}},
             }
-            self.component_weighting.update_weights()
 
             if self.verbose > 0:
                 print(f"\n{'='*60}")
@@ -1308,7 +1307,6 @@ class LBFGSRefinement(Refinement):
                 print(f"LBFGS Refinement Everything - Cycle {cycle+1}/{macro_cycles}")
                 print(f"{'='*60}")
 
-            self.component_weighting.update_weights()
 
             self.get_scales()
 

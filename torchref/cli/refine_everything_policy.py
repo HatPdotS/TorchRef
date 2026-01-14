@@ -243,21 +243,12 @@ Examples:
 
     # Create PolicyComponentWeighting
     policy_weighting = PolicyComponentWeighting(
-        refinement,
         policy_path=str(policy_path),
         sample=args.sample,
         temperature=args.temperature,
     )
 
-    # Create a ComponentWeighting that uses the policy scheme
-    # We wrap it in ComponentWeighting to integrate with the existing pipeline
-    component_weighting = ComponentWeighting(
-        refinement,
-        schemes=[policy_weighting],
-    )
-
-    # Replace the default component_weighting with our policy-based version
-    refinement.component_weighting = component_weighting
+    refinement.component_weighting = policy_weighting
 
     if args.verbose > 0:
         print("Refinement initialized successfully.")

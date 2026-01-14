@@ -209,12 +209,11 @@ Examples:
 
     if args.hyperparameters.lower() != "none":
         try:
-            from torchref.utils.utils import dict_to_state_dict
+            from torchref.utils.utils import json_to_state_dicts_separate
             if args.hyperparameters.lower() == "default":
                 # Load default hyperparameters from package data
                 from torchref import PATH_TORCHREF_DATA
-                default_path = os.path.join(PATH_TORCHREF_DATA, 'default_hyperparameters.json')
-                hyperparams_raw = json.load(f)
+                hyperparams_path = os.path.join(PATH_TORCHREF_DATA, 'default_hyperparameters.json')
 
                 hyperparams_source = "package default (Optuna-optimized)"
                 if args.verbose > 0:
@@ -230,8 +229,6 @@ Examples:
                     )
                     sys.exit(1)
 
-                with open(hyperparams_path) as f:
-                    hyperparams_raw = json.load(f)
 
                 hyperparams_source = str(hyperparams_path)
                 if args.verbose > 0:
@@ -239,9 +236,23 @@ Examples:
                     sys.stdout.flush()
 
             # Convert to state dict and apply
-            hyperparams = dict_to_state_dict(hyperparams_raw)
-            refinement.apply_hyperparameters(hyperparams, verbose=(args.verbose > 1))
-            n_hyperparams = len(hyperparams)
+            component_weighting_state, geometry_target_state, adp_target_state, unassigned_keys = json_to_state_dicts_separate(hyperparams_path)
+
+            refinement.component_weighting.load_state_dict(component_weighting_state, strict=False)
+            refinement.geometry_target.load_state_dict(geometry_target_state, strict=False)
+            refinement.adp_target.load_state_dict(adp_target_state, strict=False)
+            
+            n_hyperparams = (
+                len(component_weighting_state) +
+                len(geometry_target_state) +
+                len(adp_target_state))
+
+            if unassigned_keys and args.verbose > 1:
+                print(f"Warning: Unassigned hyperparameter keys in JSON:")
+                for key in unassigned_keys:
+                    print(f"  - {key}")
+                print()
+                sys.stdout.flush()
 
             if args.verbose > 0:
                 print(f"Applied {n_hyperparams} hyperparameters.\n")

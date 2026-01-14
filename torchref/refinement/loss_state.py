@@ -42,6 +42,8 @@ class LossState:
         component weights ('geometry/bond').
     history : List[Dict]
         Log of computed values per aggregation call.
+    meta : Dict[str, Any]
+        Model-level data (rwork, rfree, n_atoms, etc.) populated by refinement.
     """
 
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
@@ -57,6 +59,106 @@ class LossState:
 
     # Cache for computed losses (cleared on each aggregate)
     _losses: Dict[str, torch.Tensor] = field(default_factory=dict, repr=False)
+
+    # Model-level data for weighting schemes
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+    # =========================================================================
+    # Item Access (meta and _losses)
+    # =========================================================================
+
+    def __getitem__(self, key: str) -> Any:
+        """
+        Get value from meta or _losses by key.
+
+        Parameters
+        ----------
+        key : str
+            Key to look up. Checks meta first, then _losses.
+
+        Returns
+        -------
+        Any
+            Value from meta or _losses.
+
+        Raises
+        ------
+        KeyError
+            If key not found in either dict.
+        """
+        if key in self.meta:
+            return self.meta[key]
+        if key in self._losses:
+            return self._losses[key]
+        raise KeyError(f"Key '{key}' not found in meta or _losses")
+
+    def __contains__(self, key: str) -> bool:
+        """Check if key exists in meta or _losses."""
+        return key in self.meta or key in self._losses
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Get value with default fallback.
+
+        Parameters
+        ----------
+        key : str
+            Key to look up.
+        default : Any
+            Value to return if key not found.
+
+        Returns
+        -------
+        Any
+            Value from meta, _losses, or default.
+        """
+        if key in self.meta:
+            return self.meta[key]
+        if key in self._losses:
+            return self._losses[key]
+        return default
+
+    def cache_losses(self, force: bool = False) -> "LossState":
+        """
+        Cache all target losses.
+
+        Evaluates all registered targets and stores results in _losses.
+
+        Parameters
+        ----------
+        force : bool
+            If True, re-evaluate all targets even if already cached.
+
+        Returns
+        -------
+        LossState
+            Self for chaining.
+        """
+        if force:
+            self._losses.clear()
+
+        for name, target in self.targets.items():
+            if name not in self._losses:
+                self._losses[name] = target()
+
+        return self
+
+    def update_meta(self, data: Dict[str, Any]) -> "LossState":
+        """
+        Update meta dict with model-level data.
+
+        Parameters
+        ----------
+        data : Dict[str, Any]
+            Data to add to meta.
+
+        Returns
+        -------
+        LossState
+            Self for chaining.
+        """
+        self.meta.update(data)
+        return self
 
     # =========================================================================
     # Target Registration
@@ -81,10 +183,10 @@ class LossState:
         self.targets[name] = target
         return self
 
-    def register_targets(self, targets: Dict[str, Callable]) -> "LossState":
-        """Register multiple targets."""
+    def register_targets(self, targets) -> "LossState":
+        """Register multiple targets from a component target or dict"""
         for name, target in targets.items():
-            self.register_target(name, target)
+            self.register_target(target.name, target)
         return self
 
     # =========================================================================
@@ -322,7 +424,8 @@ class LossState:
         n_targets = len(self.targets)
         n_weights = len(self.weights)
         n_history = len(self.history)
-        return f"LossState(device={self.device}, targets={n_targets}, weights={n_weights}, history={n_history})"
+        n_meta = len(self.meta)
+        return f"LossState(device={self.device}, targets={n_targets}, weights={n_weights}, meta={n_meta}, history={n_history})"
 
 
 def create_loss_state(

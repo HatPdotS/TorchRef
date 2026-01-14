@@ -1,10 +1,11 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Tuple
 
 import gemmi
 import numpy as np
 import pandas as pd
 import torch
+
 
 
 class ModuleReference:
@@ -572,9 +573,12 @@ class TensorDict(nn.Module):
     - Registers tensors as buffers so they are included in state_dict
     """
 
-    def __init__(self):
+    def __init__(self, initial_dict: Optional[Dict[str, torch.Tensor]] = None):
         super().__init__()
         self._keys = []
+        if initial_dict:
+            for k, v in initial_dict.items():
+                self[k] = v
 
     def __setitem__(self, key: str, tensor: torch.Tensor):
         name = f"_buf_{key}"
@@ -1175,3 +1179,100 @@ def create_selection_mask(
         return current_mask & ~selection_mask
     else:
         raise ValueError(f"Invalid mode: '{mode}'. Must be 'set', 'add', or 'remove'")
+
+def state_dict_to_json_serializable(sd: Dict[str, torch.Tensor]) -> Dict[str, Any]:
+    """
+    Convert a state_dict with tensors to a JSON-serializable format.
+    
+    Parameters
+    ----------
+    sd : Dict[str, torch.Tensor]
+        State dict with tensor values.
+        
+    Returns
+    -------
+    Dict[str, Any]
+        JSON-serializable dictionary.
+    """
+    result = {}
+    for k, v in sd.items():
+        result[k] = {
+            'data': v.tolist() if v.numel() > 1 else [v.item()],
+            'dtype': str(v.dtype),
+            'shape': list(v.shape) if v.shape else [1],
+        }
+    return result
+
+def dict_to_state_dict(sd_raw):
+    """
+    Convert a dict with serialized tensor info to a PyTorch state_dict.
+    
+    Parameters
+    ----------
+    sd_raw : dict
+        Dictionary where values are dicts with 'data', 'dtype', 'shape' keys.
+        
+    Returns
+    -------
+    dict
+        State dict with torch.Tensor values.
+    """
+    sd = {}
+    for k, v in sd_raw.items():
+        tensor = torch.tensor(v["data"], dtype=getattr(torch, v["dtype"].split('.')[-1]))
+        tensor = tensor.reshape(v["shape"])
+        sd[k] = tensor
+    return sd
+
+def json_to_state_dicts_separate(json_path: str) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], list]:
+    """
+    Parse hyperparameter JSON and return state_dicts for component_weighting, geometry_target, and adp_target.
+
+    Parameters
+    ----------
+    json_path : str
+        Path to the JSON file containing hyperparameters.
+
+    Returns
+    -------
+    Tuple[Dict, Dict, Dict, list]
+        Three state_dicts and a list of unassigned keys:
+        (component_weighting_state, geometry_target_state, adp_target_state, unassigned_keys)
+    """
+    with open(json_path) as f:
+        data = json.load(f)
+
+    component_weighting_state = {}
+    geometry_target_state = {}
+    adp_target_state = {}
+    unassigned_keys = []
+
+    # Geometry target components
+    geometry_components = {'bond', 'angle', 'torsion', 'planarity', 'chiral', 'nonbonded'}
+    # ADP target components
+    adp_components = {'simu', 'locality', 'KL'}
+
+    for key, value in data.items():
+        tensor_value = torch.tensor(value)
+        assigned = False
+
+        if key.startswith('schemes.'):
+            # ComponentWeighting state_dict key
+            component_weighting_state[key] = tensor_value
+            assigned = True
+        elif key.startswith('_targets.'):
+            # Extract component name (e.g., "_targets.bond._sigma" -> "bond")
+            parts = key.split('.')
+            component_name = parts[1]
+
+            if component_name in geometry_components:
+                geometry_target_state[key] = tensor_value
+                assigned = True
+            elif component_name in adp_components:
+                adp_target_state[key] = tensor_value
+                assigned = True
+
+        if not assigned:
+            unassigned_keys.append(key)
+
+    return component_weighting_state, geometry_target_state, adp_target_state, unassigned_keys

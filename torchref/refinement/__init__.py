@@ -27,7 +27,6 @@ Example
 
 # Submodules
 from . import targets, weighting
-from .aggregator import LossAggregator
 from .base_refinement import Refinement
 from .lbfgs_refinement import LBFGSRefinement
 from .loss_state import LossState
@@ -38,7 +37,6 @@ __all__ = [
     "Refinement",
     "LBFGSRefinement",
     # Loss handling
-    "LossAggregator",
     "LossState",
     # Optimizers
     "AdamWithAdaptiveNoise",
