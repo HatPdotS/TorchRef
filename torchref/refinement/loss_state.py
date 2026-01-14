@@ -331,6 +331,7 @@ class LossState:
             self.log("total", total)
 
         return total
+    
 
     def get_loss(self, name: str) -> Optional[torch.Tensor]:
         """
@@ -405,6 +406,67 @@ class LossState:
             totals[group] += weighted
 
         return dict(totals)
+
+    # =========================================================================
+    # Device Management
+    # =========================================================================
+
+    def to(self, device) -> "LossState":
+        """
+        Move LossState to the specified device.
+
+        Updates device attribute and moves any cached tensors in _losses and meta.
+
+        Parameters
+        ----------
+        device : str or torch.device
+            Target device ('cpu', 'cuda', 'cuda:0', etc.)
+
+        Returns
+        -------
+        LossState
+            Self, for method chaining.
+        """
+        self.device = torch.device(device)
+
+        # Move cached losses
+        for name, loss in self._losses.items():
+            if isinstance(loss, torch.Tensor):
+                self._losses[name] = loss.to(self.device)
+
+        # Move tensors in meta
+        for key, value in self.meta.items():
+            if isinstance(value, torch.Tensor):
+                self.meta[key] = value.to(self.device)
+
+        return self
+
+    def cuda(self, device=None) -> "LossState":
+        """
+        Move LossState to CUDA device.
+
+        Parameters
+        ----------
+        device : str or torch.device, optional
+            Target CUDA device. If None, uses default CUDA device.
+
+        Returns
+        -------
+        LossState
+            Self, for method chaining.
+        """
+        return self.to(device or "cuda")
+
+    def cpu(self) -> "LossState":
+        """
+        Move LossState to CPU.
+
+        Returns
+        -------
+        LossState
+            Self, for method chaining.
+        """
+        return self.to("cpu")
 
     # =========================================================================
     # Utility

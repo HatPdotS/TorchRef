@@ -671,6 +671,10 @@ class PlanarityTarget(GeometryTarget):
         if "plane" not in self.restraints.restraints:
             return torch.tensor(0.0, device=device)
 
+        log_2pi = torch.log(
+            torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
+        )
+
         for key, plane_data in self.restraints.restraints["plane"].items():
             indices = plane_data.get("indices")
             sigmas = plane_data.get("sigmas")
@@ -680,37 +684,29 @@ class PlanarityTarget(GeometryTarget):
 
             # indices shape: (n_planes, n_atoms_per_plane)
             # sigmas shape: (n_planes, n_atoms_per_plane)
-            n_planes, n_atoms = indices.shape
 
-            for i in range(n_planes):
-                plane_indices = indices[i]
-                plane_sigmas = sigmas[i]
+            # Gather all positions at once: (n_planes, n_atoms, 3)
+            positions = xyz[indices]
 
-                # Get positions of atoms in this plane
-                positions = xyz[plane_indices]  # (n_atoms, 3)
+            # Compute centroids: (n_planes, 1, 3)
+            centroids = positions.mean(dim=1, keepdim=True)
+            centered = positions - centroids  # (n_planes, n_atoms, 3)
 
-                # Compute centroid
-                centroid = positions.mean(dim=0)
-                centered = positions - centroid
+            # BATCHED SVD: process all planes in single GPU kernel
+            U, S, Vh = torch.linalg.svd(centered)  # Vh: (n_planes, 3, 3)
+            normals = Vh[:, -1, :]  # (n_planes, 3) - smallest singular vector
 
-                # SVD to find best-fit plane normal
-                # The plane normal is the singular vector with smallest singular value
-                U, S, Vh = torch.linalg.svd(centered)
-                normal = Vh[-1]  # Normal to best-fit plane
+            # Batched deviation calculation
+            # deviations[p,a] = |centered[p,a] · normal[p]|
+            deviations = torch.abs(torch.einsum('paj,pj->pa', centered, normals))
 
-                # Compute deviations from plane (signed distance to plane)
-                deviations = torch.abs(centered @ normal)
-
-                # Compute NLL for each atom
-                log_2pi = torch.log(
-                    torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
-                )
-                nll = (
-                    0.5 * (deviations / plane_sigmas) ** 2
-                    + torch.log(plane_sigmas)
-                    + 0.5 * log_2pi
-                )
-                all_nlls.append(nll)
+            # NLL calculation (all vectorized)
+            nll = (
+                0.5 * (deviations / sigmas) ** 2
+                + torch.log(sigmas)
+                + 0.5 * log_2pi
+            )
+            all_nlls.append(nll.flatten())
 
         if all_nlls:
             return torch.cat(all_nlls).mean()
@@ -734,22 +730,22 @@ class PlanarityTarget(GeometryTarget):
             if indices is None or len(indices) == 0:
                 continue
 
-            n_planes, n_atoms = indices.shape
+            # Gather all positions at once: (n_planes, n_atoms, 3)
+            positions = xyz[indices]
 
-            for i in range(n_planes):
-                plane_indices = indices[i]
-                plane_sigmas = sigmas[i]
+            # Compute centroids: (n_planes, 1, 3)
+            centroids = positions.mean(dim=1, keepdim=True)
+            centered = positions - centroids  # (n_planes, n_atoms, 3)
 
-                positions = xyz[plane_indices]
-                centroid = positions.mean(dim=0)
-                centered = positions - centroid
+            # BATCHED SVD
+            U, S, Vh = torch.linalg.svd(centered)  # Vh: (n_planes, 3, 3)
+            normals = Vh[:, -1, :]  # (n_planes, 3)
 
-                U, S, Vh = torch.linalg.svd(centered)
-                normal = Vh[-1]
+            # Batched deviation calculation
+            deviations = torch.abs(torch.einsum('paj,pj->pa', centered, normals))
 
-                deviations = torch.abs(centered @ normal)
-                all_deviations.append(deviations)
-                all_sigmas.append(plane_sigmas)
+            all_deviations.append(deviations.flatten())
+            all_sigmas.append(sigmas.flatten())
 
         if not all_deviations:
             return {"n": 0, "rms_delta": 0.0, "rms_z": 0.0, "mean_sigma": 0.0}
@@ -1775,7 +1771,13 @@ class ADPLocalityTarget(ADPTarget):
         loss = scale * mean_ij [w_ij * (log(B_i) - log(B_j))^2]
         where w_ij = exp(-d_ij / correlation_length)
         """
-        if recompute_neighbors or self._neighbor_indices is None:
+        # Check if cached tensors are on wrong device and need rebuilding
+        model_device = self.model.xyz().device
+        cache_stale = (
+            self._neighbor_indices is not None
+            and self._neighbor_indices.device != model_device
+        )
+        if recompute_neighbors or self._neighbor_indices is None or cache_stale:
             self._build_neighbor_list()
 
         b = self.model.b()

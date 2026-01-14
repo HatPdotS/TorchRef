@@ -902,24 +902,27 @@ class Refinement(DebugMixin, nnModule):
         super().cuda()
         self.model.cuda()  # Explicitly call cuda on model to update its device attributes
         self.reflection_data.cuda()
-        (
-            self.scaler.cuda() if hasattr(self.scaler, "cuda") else None
-        )  # Also update scaler if it has cuda method
-        (
-            self.restraints.cuda() if hasattr(self.restraints, "cuda") else None
-        )  # Also update restraints if it has cuda method
+        if hasattr(self, "scaler") and self.scaler is not None:
+            self.scaler.cuda()
+        if hasattr(self, "restraints") and self.restraints is not None:
+            self.restraints.cuda()
+        if hasattr(self, "component_weighting") and self.component_weighting is not None:
+            self.component_weighting.cuda()
+            self.component_weighting.device = torch.device("cuda")
         self.device = torch.device("cuda")
         return self
 
     def cpu(self):
         super().cpu()
         self.model.cpu()  # Explicitly call cpu on model to update its device attribute
-        (
-            self.scaler.cpu() if hasattr(self.scaler, "cpu") else None
-        )  # Also update scaler if it has cpu method
-        (
-            self.restraints.cpu() if hasattr(self.restraints, "cpu") else None
-        )  # Also update restraints if it has cpu method
+        self.reflection_data.cpu()
+        if hasattr(self, "scaler") and self.scaler is not None:
+            self.scaler.cpu()
+        if hasattr(self, "restraints") and self.restraints is not None:
+            self.restraints.cpu()
+        if hasattr(self, "component_weighting") and self.component_weighting is not None:
+            self.component_weighting.cpu()
+            self.component_weighting.device = torch.device("cpu")
         self.device = torch.device("cpu")
         return self
 

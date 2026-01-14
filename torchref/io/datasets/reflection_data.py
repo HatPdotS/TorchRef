@@ -105,8 +105,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Call parent __post_init__ to initialize masks
         super().__post_init__()
 
-    # Note: cuda() and cpu() methods are inherited from CrystalDataset
-
     def load(self, reader):
         """
         Load reflection data using a data reader.

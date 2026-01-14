@@ -899,7 +899,7 @@ class Model(DebugMixin, nn.Module):
             Standard deviation of the Gaussian noise to be added, in Angstroms.
         """
         xyz = self.xyz().detach()
-        new_xyz = xyz + torch.normal(mean=0.0, std=stddev, size=xyz.shape)
+        new_xyz = xyz + torch.normal(mean=0.0, std=stddev, size=xyz.shape,device=self.device)
         self.xyz = MixedTensor(
             new_xyz, refinable_mask=self.xyz.refinable_mask, name="xyz"
         )
@@ -917,7 +917,7 @@ class Model(DebugMixin, nn.Module):
             Standard deviation of the Gaussian noise to be added, in 1/Angstrom^2.
         """
         b_factors = self.b().detach()
-        new_b = b_factors + torch.normal(mean=0.0, std=stddev, size=b_factors.shape)
+        new_b = b_factors + torch.normal(mean=0.0, std=stddev, size=b_factors.shape, device=self.device)
         self.b = PositiveMixedTensor(
             new_b, refinable_mask=self.b.refinable_mask, name="b_factor"
         )

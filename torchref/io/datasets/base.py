@@ -58,6 +58,7 @@ class CrystalDataset:
     outlier_flags: Optional[torch.Tensor] = None  # Outlier flags (N,), bool
     phase: Optional[torch.Tensor] = None  # Phases in radians (N,)
     fom: Optional[torch.Tensor] = None  # Figure of merit (N,)
+    _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool
 
     # === Unit cell and symmetry ===
     cell: Optional[torch.Tensor] = None  # [a, b, c, alpha, beta, gamma]
