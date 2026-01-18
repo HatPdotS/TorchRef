@@ -34,6 +34,7 @@ InterResiduePlaneBuilder
 """
 
 import os
+import subprocess
 from pathlib import Path
 
 from torchref import ROOT_TORCHREF
@@ -52,15 +53,55 @@ from torchref.restraints.builders import (
 )
 from torchref.restraints.restraints_new import RestraintsNew as Restraints
 
-if not os.path.exists(os.path.join(ROOT_TORCHREF, "external_monomer_library")):
-    import warnings
+MONOMER_LIB_URL = "https://github.com/MonomerLibrary/monomers.git"
 
-    warnings.warn(
-        "External monomer library not found in torchref package root. ", ResourceWarning
-    )
-    MONOMER_LIB_PATH = None
-else:
-    MONOMER_LIB_PATH = Path(os.path.join(ROOT_TORCHREF, "external_monomer_library"))
+
+def _ensure_monomer_library() -> Path:
+    """
+    Ensure the external monomer library is available, downloading if necessary.
+
+    Returns
+    -------
+    Path
+        Path to the monomer library directory.
+
+    Raises
+    ------
+    RuntimeError
+        If the library cannot be downloaded.
+    """
+    lib_path = ROOT_TORCHREF / "external_monomer_library"
+
+    if lib_path.exists():
+        return lib_path
+
+    print(f"Monomer library not found at {lib_path}")
+    print("Downloading monomer library (one-time setup)...")
+
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", MONOMER_LIB_URL, str(lib_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        print(f"Successfully downloaded monomer library to {lib_path}")
+        return lib_path
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Failed to download monomer library from {MONOMER_LIB_URL}.\n"
+            f"Error: {e.stderr}\n"
+            f"Please install git or manually clone the repository:\n"
+            f"  git clone {MONOMER_LIB_URL} {lib_path}"
+        ) from e
+    except FileNotFoundError:
+        raise RuntimeError(
+            "git is not installed. Please install git and try again, or manually clone:\n"
+            f"  git clone {MONOMER_LIB_URL} {lib_path}"
+        )
+
+
+MONOMER_LIB_PATH = _ensure_monomer_library()
 
 
 __all__ = [
