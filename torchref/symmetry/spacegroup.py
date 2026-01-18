@@ -12,7 +12,7 @@ gemmi.SpaceGroup objects are:
 
 Example
 -------
->>> from torchref.symmetrie.spacegroup import SpaceGroup
+>>> from torchref.symmetry.spacegroup import SpaceGroup
 >>>
 >>> # Create from various inputs
 >>> sg = SpaceGroup('P 21')

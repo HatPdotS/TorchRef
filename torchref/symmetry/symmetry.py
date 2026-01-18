@@ -9,7 +9,7 @@ import gemmi
 import torch
 import torch.nn as nn
 
-from torchref.symmetrie.spacegroup import (
+from torchref.symmetry.spacegroup import (
     SpaceGroup,
     SpaceGroupLike,
     get_operations_as_tensors,

@@ -9,7 +9,7 @@ Provides crystallographic symmetry operations for:
 
 Example
 -------
->>> from torchref.symmetrie import SpaceGroup, Symmetry, MapSymmetry, ReciprocalSymmetry
+>>> from torchref.symmetry import SpaceGroup, Symmetry, MapSymmetry, ReciprocalSymmetry
 >>>
 >>> # Normalize space group from various inputs
 >>> sg = SpaceGroup('P21')        # From string
@@ -59,7 +59,7 @@ from .spacegroup import (
     n_operations,
     spacegroup_to_str,
 )
-from .symmetrie import Symmetry
+from .symmetry import Symmetry
 
 __all__ = [
     # Space group utilities

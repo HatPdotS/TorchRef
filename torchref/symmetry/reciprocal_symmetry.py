@@ -24,8 +24,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torchref.symmetrie.spacegroup import SpaceGroup, SpaceGroupLike
-from torchref.symmetrie.symmetrie import Symmetry
+from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
+from torchref.symmetry.symmetry import Symmetry
 
 if TYPE_CHECKING:
     from torchref.io.datasets.reflection_data import ReflectionData
@@ -731,7 +731,7 @@ def expand_hkl(
     Examples
     --------
     >>> import torch
-    >>> from torchref.symmetrie import expand_hkl
+    >>> from torchref.symmetry import expand_hkl
     >>>
     >>> hkl_asu = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]], dtype=torch.int32)
     >>> hkl_p1, indices, phases = expand_hkl(hkl_asu, 'P21')
@@ -871,7 +871,7 @@ def complete_hkl(
     Examples
     --------
     >>> import torch
-    >>> from torchref.symmetrie import complete_hkl
+    >>> from torchref.symmetry import complete_hkl
     >>>
     >>> # Incomplete dataset
     >>> input_hkl = torch.tensor([[1, 0, 0], [0, 1, 0]], dtype=torch.int32)
@@ -970,7 +970,7 @@ def expand_reflections(
     Examples
     --------
     >>> from torchref.io.datasets.reflection_data import ReflectionData
-    >>> from torchref.symmetrie import expand_reflections
+    >>> from torchref.symmetry import expand_reflections
     >>>
     >>> data = ReflectionData().load_mtz('data.mtz')
     >>> data_p1 = expand_reflections(data)
@@ -1164,7 +1164,7 @@ def reduce_hkl(
     Examples
     --------
     >>> import torch
-    >>> from torchref.symmetrie import expand_hkl, reduce_hkl
+    >>> from torchref.symmetry import expand_hkl, reduce_hkl
     >>>
     >>> # Start with ASU, expand to P1, then reduce back
     >>> hkl_asu = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]], dtype=torch.int32)
@@ -1327,7 +1327,7 @@ def expand_reciprocal_grid(
     Examples
     --------
     >>> import torch
-    >>> from torchref.symmetrie import expand_reciprocal_grid
+    >>> from torchref.symmetry import expand_reciprocal_grid
     >>>
     >>> # Create a test grid with some values in asymmetric unit
     >>> F = torch.zeros(32, 32, 32, dtype=torch.complex64)

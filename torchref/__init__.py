@@ -35,7 +35,7 @@ restraints
     Geometry restraints (bonds, angles, torsions, planes).
 scaling
     Structure factor scaling and bulk solvent models.
-symmetrie
+symmetry
     Crystallographic symmetry operations.
 alignment
     Patterson-based structure alignment.

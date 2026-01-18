@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 import torchref.math_functions.get_scattering_factor_torch as gsf
-import torchref.symmetrie.symmetrie as sym
+import torchref.symmetry.symmetry as sym
 from torchref.math_functions.math_torch import (
     extract_structure_factor_from_grid,
     fft,
@@ -18,8 +18,8 @@ from torchref.math_functions.math_torch import (
     vectorized_add_to_map_aniso,
 )
 from torchref.model.model import Model
-from torchref.symmetrie import Symmetry
-from torchref.symmetrie.map_symmetry import MapSymmetry
+from torchref.symmetry import Symmetry
+from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.utils.utils import TensorDict
 
 
@@ -723,7 +723,7 @@ class ModelFT(Model):
 
         # Copy map_symmetry if it exists
         if hasattr(self, "map_symmetry") and self.map_symmetry is not None:
-            from torchref.symmetrie.map_symmetry import MapSymmetry
+            from torchref.symmetry.map_symmetry import MapSymmetry
 
             model_copy.map_symmetry = MapSymmetry(
                 space_group=self.spacegroup,
@@ -853,7 +853,7 @@ class ModelFT(Model):
             import gemmi
 
             instance.spacegroup_gemmi = gemmi.SpaceGroup(spacegroup.replace("  ", " "))
-            import torchref.symmetrie.symmetrie as sym
+            import torchref.symmetry.symmetry as sym
 
             instance.spacegroup_function = sym.Symmetry(spacegroup)
 
@@ -981,7 +981,7 @@ class ModelFT(Model):
             # Create MapSymmetry if needed
             has_map_sym = any(k.startswith("map_symmetry.") for k in state_dict.keys())
             if has_map_sym and spacegroup is not None and cell is not None:
-                from torchref.symmetrie.map_symmetry import MapSymmetry
+                from torchref.symmetry.map_symmetry import MapSymmetry
 
                 instance.map_symmetry = MapSymmetry(
                     space_group=spacegroup,

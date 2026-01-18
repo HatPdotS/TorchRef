@@ -3,29 +3,108 @@ Map-level symmetry operations for electron density maps.
 
 This module provides efficient symmetry operations applied directly to density maps,
 which is much faster than applying symmetry to individual atoms.
+
+This module uses a factory pattern: calling MapSymmetry() will automatically
+return either MapSymmetryDirect (fast, no interpolation) or MapSymmetryInterpolation
+(fallback with interpolation) depending on grid compatibility.
+
+Space groups can be specified as strings, integers (1-230), or gemmi.SpaceGroup objects.
 """
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from torchref.symmetrie.symmetrie import Symmetry
+from torchref.symmetry.spacegroup import SpaceGroupLike
+from torchref.symmetry.symmetry import Symmetry
 
 
-class MapSymmetry(nn.Module):
+def MapSymmetry(
+    space_group: SpaceGroupLike,
+    map_shape,
+    cell_params,
+    dtype_float=torch.float32,
+    verbose=1,
+    device=torch.device("cpu"),
+):
     """
-    Applies crystallographic symmetry operations to electron density maps.
+    Factory function to create the appropriate MapSymmetry implementation.
+
+    This function checks if the grid size is compatible with direct indexing
+    (no interpolation needed). If compatible, returns MapSymmetryDirect for
+    maximum performance. Otherwise, returns MapSymmetryInterpolation as fallback.
+
+    Parameters
+    ----------
+    space_group : str, int, or gemmi.SpaceGroup
+        Space group specification (e.g., 'P21', 4, gemmi.SpaceGroup('P 21')).
+    map_shape : tuple of int
+        Shape of the density map (nx, ny, nz).
+    cell_params : array-like, shape (6,)
+        Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
+    dtype_float : torch.dtype, default torch.float32
+        Floating point precision to use.
+    verbose : int, default 1
+        Verbosity level (0=silent, 1=info, 2=debug).
+    device : torch.device, default torch.device('cpu')
+        Device to use for computation.
+
+    Returns
+    -------
+    MapSymmetryDirect or MapSymmetryInterpolation
+        The appropriate implementation based on grid compatibility.
+    """
+    # Check grid compatibility
+    symmetry = Symmetry(space_group, dtype=dtype_float, device=device)
+    compat = symmetry.check_grid_compatibility(map_shape)
+
+    if compat["can_use_direct_indexing"]:
+        # Use fast direct indexing implementation
+        if verbose > 0:
+            print(
+                f"MapSymmetry: Using direct indexing (no interpolation) for {space_group}"
+            )
+        return MapSymmetryDirect(
+            space_group, map_shape, cell_params, dtype_float, verbose, device
+        )
+    else:
+        # Use interpolation-based fallback
+        if verbose > 0:
+            print("MapSymmetry: Grid not compatible with direct indexing")
+            print(f"  Using interpolation-based fallback for {space_group}")
+            if compat["issues"]:
+                for issue in compat["issues"]:
+                    print(f"    - {issue}")
+            suggested = symmetry.suggest_grid_size(map_shape, make_fft_friendly=True)
+            print(f"    Suggested grid for direct indexing: {suggested}")
+
+        # Import and return interpolation version
+        from torchref.symmetry.map_symmetry_interpolation import (
+            MapSymmetry as MapSymmetryInterpolation,
+        )
+
+        return MapSymmetryInterpolation(
+            space_group, map_shape, cell_params, dtype_float, verbose, device
+        )
+
+
+class MapSymmetryDirect(nn.Module):
+    """
+    Fast direct-indexing implementation of crystallographic symmetry operations.
+
+    This class uses precomputed integer index grids for symmetry operations,
+    avoiding interpolation entirely. This is only possible when the grid size
+    is compatible with the symmetry operations.
+
+    NOTE: Do not instantiate this class directly. Use the MapSymmetry() factory
+    function instead, which will automatically select the appropriate implementation.
 
     This class handles space group symmetry by:
 
     1. Taking a density map calculated for the asymmetric unit
     2. Applying rotation and translation operations in fractional coordinates
-    3. Interpolating the transformed maps
+    3. Using direct integer indexing (no interpolation needed)
     4. Summing all symmetry-related maps
-
-    This is much more efficient than generating symmetry mates for each atom
-    and recalculating density.
 
     Attributes
     ----------
@@ -39,6 +118,8 @@ class MapSymmetry(nn.Module):
         Symmetry operations handler.
     n_ops : int
         Number of symmetry operations.
+    can_use_direct_indexing : bool
+        Whether direct indexing is possible.
 
     Examples
     --------
@@ -86,10 +167,15 @@ class MapSymmetry(nn.Module):
             space_group, dtype=self.dtype_float, device=self.device
         )
         self.n_ops = self.symmetry.matrices.shape[0]
+
+        # This class assumes direct indexing is possible
+        self.can_use_direct_indexing = True
+
         if self.verbose > 0:
-            print(f"MapSymmetry initialized for {space_group}")
+            print(f"MapSymmetryDirect initialized for {space_group}")
             print(f"  Number of symmetry operations: {self.n_ops}")
             print(f"  Map shape: {self.map_shape}")
+            print("  ✓ Using direct indexing (no interpolation)")
 
         # Precompute grid coordinates in fractional space
         self._setup_fractional_grid()
@@ -120,69 +206,61 @@ class MapSymmetry(nn.Module):
 
     def _setup_symmetry_grids(self):
         """
-        Precompute transformed grid coordinates for all symmetry operations.
+        Precompute integer index grids for direct indexing (no interpolation).
 
-        For each symmetry operation:
-        - Apply rotation matrix to fractional coordinates
-        - Add translation
-        - Convert to sampling coordinates for grid_sample
+        This is the fast path - we directly compute which source voxel maps to
+        each destination voxel under each symmetry operation.
+        """
+        self._setup_direct_index_grids()
+
+    def _setup_direct_index_grids(self):
+        """Precompute integer index grids for interpolation-free symmetry expansion.
+
+        CRITICAL: This must match the grid_sample behavior exactly.
+        With align_corners=True and the grid-edge convention (voxels at i/N):
+        - Fractional coordinate f maps to sampling coordinate s = -1 + 2*N/(N-1) * f
+        - grid_sample maps s back to index: idx = (s + 1) * (N - 1) / 2
+        - Combining: idx = N/(N-1) * f * (N-1) = f * N
+        - So fractional f should map to index round(f * N) % N
+
+        This ensures exact mapping when f is a grid point (i/N).
         """
         nx, ny, nz = self.map_shape
-
-        # Flatten grid for easier matrix operations
-        # Shape: (nx*ny*nz, 3)
         grid_flat = self.grid_frac.reshape(-1, 3)
 
-        # Storage for transformed grids
-        # Will convert to [-1, 1] range for grid_sample
-        sampling_grids_list = []
+        index_grids_list = []
 
         for i in range(self.n_ops):
             # Apply symmetry operation: R @ coords + t
-            # grid_flat.T shape: (3, nx*ny*nz)
-            # matrices[i] shape: (3, 3)
-            # Result shape: (3, nx*ny*nz)
-            transformed = torch.matmul(self.symmetry.matrices[i], grid_flat.T)
-            transformed = transformed.T  # (nx*ny*nz, 3)
+            transformed = torch.matmul(self.symmetry.matrices[i], grid_flat.T).T
             transformed = transformed + self.symmetry.translations[i]
 
             # Wrap to [0, 1) for periodic boundary conditions
             transformed = transformed - torch.floor(transformed)
+
+            # Convert fractional coordinates to integer indices
+            # Use round() to get nearest grid point, matching interpolation behavior
             grid_shape_tensor = torch.tensor(
-                [nx, ny, nz], dtype=self.dtype_float, device=transformed.device
+                [nx, ny, nz], dtype=self.dtype_float, device=self.device
             )
-            # transformed shape: (nx*ny*nz, 3)
-            # For each dimension: grid_coord = -1 + 2*N/(N-1) * frac
-            sampling_coords = (
-                -1.0 + 2.0 * grid_shape_tensor / (grid_shape_tensor - 1.0) * transformed
-            )
+            indices = torch.round(transformed * grid_shape_tensor).to(torch.int64)
 
-            # Reshape back to 3D grid
-            # grid_sample expects (N, D, H, W, 3) for 3D
-            sampling_grid = sampling_coords.reshape(nx, ny, nz, 3)
+            # Wrap indices to ensure they're within bounds (handle periodic boundary)
+            indices[:, 0] = indices[:, 0] % nx
+            indices[:, 1] = indices[:, 1] % ny
+            indices[:, 2] = indices[:, 2] % nz
 
-            # CRITICAL: grid_sample coordinate interpretation for 3D data
-            # - Input tensor has shape (N, C, D, H, W) where D=nx, H=ny, W=nz in our case
-            # - Grid coords have shape (N, D_out, H_out, W_out, 3)
-            # - The last dimension [grid_x, grid_y, grid_z] maps to [W, H, D] dimensions
-            # - In our fractional coords: [fx, fy, fz] should map to [W, H, D] = [nz, ny, nx]
-            # - So grid_sample expects coords in order: [fz, fy, fx] NOT [fx, fy, fz]
-            # Therefore we need to reorder our [fx, fy, fz] -> [fz, fy, fx]
-            sampling_grid = sampling_grid[
-                ..., [2, 1, 0]
-            ]  # [fx, fy, fz] -> [fz, fy, fx]
+            # Reshape to 3D grid
+            index_grid = indices.reshape(nx, ny, nz, 3)
+            index_grids_list.append(index_grid)
 
-            sampling_grids_list.append(sampling_grid)
-
-        # Stack all grids: (n_ops, nx, ny, nz, 3)
-        sampling_grids_stacked = torch.stack(sampling_grids_list, dim=0)
-
-        # Register as buffer (will be moved to GPU with model)
-        self.register_buffer("sampling_grids", sampling_grids_stacked)
+        # Stack all index grids: (n_ops, nx, ny, nz, 3)
+        index_grids_stacked = torch.stack(index_grids_list, dim=0)
+        self.register_buffer("index_grids", index_grids_stacked)
 
     def get_symmetry_mate(self, density_map, operation_index):
         """
-        Apply a single symmetry operation to get one symmetry mate.
+        Apply a single symmetry operation to get one symmetry mate using direct indexing.
 
         Parameters
         ----------
@@ -207,30 +285,14 @@ class MapSymmetry(nn.Module):
                 f"Map shape {density_map.shape} doesn't match expected {self.map_shape}"
             )
 
-        # Prepare for grid_sample
-        map_5d = density_map.unsqueeze(0).unsqueeze(0)  # (1, 1, nx, ny, nz)
+        # Use precomputed integer indices - no interpolation needed!
+        index_grid = self.index_grids[operation_index]  # (nx, ny, nz, 3)
 
-        # Get sampling grid for this operation
-        sampling_grid = self.sampling_grids[operation_index]
-        sampling_grid_batch = sampling_grid.unsqueeze(0)
-
-        # Interpolate map at transformed coordinates
-        # align_corners=True ensures that:
-        #   -1 maps to index 0 (fractional coord 0)
-        #   +1 maps to index N-1 (fractional coord (N-1)/N)
-        # This matches the grid-edge convention (voxels at i/N)
-        # padding_mode='border' handles periodic boundary conditions via the wrapping
-        # we did in _setup_symmetry_grids
-        transformed_map = F.grid_sample(
-            map_5d,
-            sampling_grid_batch,
-            mode="bilinear",  # Trilinear interpolation for 3D
-            padding_mode="border",  # Use border mode since we pre-wrapped coordinates
-            align_corners=True,  # Critical: matches grid-edge convention
-        )
-
-        # Remove batch and channel dimensions
-        transformed_map = transformed_map.squeeze(0).squeeze(0)
+        # Extract values using advanced indexing
+        # This is much faster than grid_sample
+        transformed_map = density_map[
+            index_grid[..., 0], index_grid[..., 1], index_grid[..., 2]
+        ]
 
         return transformed_map
 
@@ -342,6 +404,6 @@ class MapSymmetry(nn.Module):
 
     def __repr__(self):
         return (
-            f"MapSymmetry(space_group='{self.space_group}', "
+            f"MapSymmetryDirect(space_group='{self.space_group}', "
             f"n_ops={self.n_ops}, map_shape={self.map_shape})"
         )

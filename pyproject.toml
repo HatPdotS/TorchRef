@@ -47,10 +47,13 @@ dev = [
     "pytest-cov>=2.12.0",
     "black>=21.5b2",
     "isort>=5.9.0",
-    "iotbx>=2021.1",
     "flake8>=3.9.0",
     "black==25.12.0"
 ]
+
+# Optional CCTBX/iotbx functionality (requires conda, not pip)
+# Install with: conda install -c conda-forge cctbx-base
+# The iotbx module is used in torchref/math_functions/CCTBX_related.py
 
 docs = [
     "sphinx>=4.0.0",

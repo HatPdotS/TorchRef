@@ -19,7 +19,7 @@ from torchref.model.parameter_wrappers import (
     OccupancyTensor,
     PositiveMixedTensor,
 )
-from torchref.symmetrie import SpaceGroup, Symmetry
+from torchref.symmetry import SpaceGroup, Symmetry
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import sanitize_pdb_dataframe
 

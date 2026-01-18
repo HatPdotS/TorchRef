@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 
 from torchref.math_functions import math_torch
-from torchref.symmetrie import SpaceGroupLike, Symmetry
+from torchref.symmetry import SpaceGroupLike, Symmetry
 
 # Acentric lookup tables from French-Wilson supplement (1978)
 AC_ZJ = torch.tensor(

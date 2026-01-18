@@ -1967,7 +1967,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         return self._centric_flags
 
     def calc_patterson(
-        self, grid_size: Optional[Tuple[int, int, int]] = None
+        self, grid_size: Optional[Tuple[int, int, int]] = None, grid_sampling: Optional[float] = 1
     ) -> torch.Tensor:
         """
         Calculate Patterson map of the dataset.
@@ -1981,6 +1981,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         grid_size : tuple of int, optional
             Grid dimensions (Nx, Ny, Nz). If None, automatically determined
             from unit cell and resolution.
+        grid_sampling : float, optional
+            Sampling interval for the grid. Default is 1. 
+            This sets the grid so that we sample twice as much as normal for a given resolution
 
         Returns
         -------
@@ -1993,7 +1996,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Expand to P1 symmetry (don't fill missing reflections - use only observed data)
         data = self.expand_to_p1()
 
-        max_res = data.resolution.min() * 2
+        max_res = data.resolution.min() * grid_sampling
 
         if grid_size is None:
             grid_size = find_grid_size(data.cell, max_res)
@@ -2069,7 +2072,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             - 1.0 for F_sigma, I_sigma (conservative uncertainty)
             - True for masks['missing']
         """
-        from torchref.symmetrie.spacegroup import SpaceGroup
+        from torchref.symmetry.spacegroup import SpaceGroup
 
         # Helper function for remapping tensors with missing handling
         def _remap_tensor(tensor, fill_value):
@@ -2182,7 +2185,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         >>> data_filled = data.fill(d_min=2.0)
         >>> print(f"Original: {len(data)}, Filled: {len(data_filled)}")
         """
-        from torchref.symmetrie.reciprocal_symmetry import complete_hkl
+        from torchref.symmetry.reciprocal_symmetry import complete_hkl
 
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
@@ -2261,7 +2264,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         >>> # Without Friedel mates (for anomalous data)
         >>> data_p1_anom = data.expand_to_p1(include_friedel=False)
         """
-        from torchref.symmetrie.reciprocal_symmetry import expand_hkl
+        from torchref.symmetry.reciprocal_symmetry import expand_hkl
 
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
@@ -2331,8 +2334,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         >>> # Reduce with sum instead of mean
         >>> data_summed = data_p1.reduce_to_spacegroup('P21', aggregation='sum')
         """
-        from torchref.symmetrie.reciprocal_symmetry import reduce_hkl
-        from torchref.symmetrie.spacegroup import SpaceGroup
+        from torchref.symmetry.reciprocal_symmetry import reduce_hkl
+        from torchref.symmetry.spacegroup import SpaceGroup
 
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")

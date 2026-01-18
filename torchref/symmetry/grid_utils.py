@@ -14,7 +14,7 @@ symmetry operations, which is more robust and maintainable.
 import numpy as np
 import torch
 
-from torchref.symmetrie.symmetrie import Symmetry
+from torchref.symmetry.symmetry import Symmetry
 
 
 def get_symmetry_grid_requirements(space_group: str) -> dict:

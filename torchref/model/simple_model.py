@@ -15,7 +15,7 @@ import torch.nn as nn
 
 import torchref.math_functions.get_scattering_factor_torch as gsf
 import torchref.math_functions.math_numpy as mnp
-import torchref.symmetrie.symmetrie as sym
+import torchref.symmetry.symmetry as sym
 from torchref.math_functions.math_torch import (
     extract_structure_factor_from_grid,
     find_grid_size,
@@ -24,7 +24,7 @@ from torchref.math_functions.math_torch import (
     ifft,
     vectorized_add_to_map,
 )
-from torchref.symmetrie.map_symmetry import MapSymmetry
+from torchref.symmetry.map_symmetry import MapSymmetry
 
 
 class SimpleModel(nn.Module):
