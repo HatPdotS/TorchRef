@@ -14,11 +14,11 @@ def sample_cif_file(test_files_dir):
     if not cif_dir.exists():
         pytest.skip("Test data directory 'cif' not found")
     
-    # Get first available CIF file
-    cif_files = list(cif_dir.glob("*.cif"))
+    # Get first available CIF file (sorted for deterministic ordering)
+    cif_files = sorted(cif_dir.glob("*.cif"))
     if not cif_files:
         pytest.skip("No CIF files found in test data directory")
-    
+
     return cif_files[0]
 
 
@@ -29,10 +29,10 @@ def sample_pdb_file(test_files_dir):
     if not pdb_dir.exists():
         pytest.skip("Test data directory 'pdb' not found")
     
-    pdb_files = list(pdb_dir.glob("*.pdb"))
+    pdb_files = sorted(pdb_dir.glob("*.pdb"))
     if not pdb_files:
         pytest.skip("No PDB files found in test data directory")
-    
+
     return pdb_files[0]
 
 
@@ -43,10 +43,10 @@ def sample_mtz_file(test_files_dir):
     if not mtz_dir.exists():
         pytest.skip("Test data directory 'mtz' not found")
     
-    mtz_files = list(mtz_dir.glob("*.mtz"))
+    mtz_files = sorted(mtz_dir.glob("*.mtz"))
     if not mtz_files:
         pytest.skip("No MTZ files found in test data directory")
-    
+
     return mtz_files[0]
 
 
@@ -57,10 +57,10 @@ def sample_structure_factor_cif(test_files_dir):
     if not sf_dir.exists():
         pytest.skip("Test data directory 'cif_sf' not found")
     
-    sf_files = list(sf_dir.glob("*.cif"))
+    sf_files = sorted(sf_dir.glob("*.cif"))
     if not sf_files:
         pytest.skip("No structure factor CIF files found")
-    
+
     return sf_files[0]
 
 
