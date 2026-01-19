@@ -1,7 +1,9 @@
 Contributing
 ============
 
-We welcome contributions to TorchRef! This document provides guidelines for contributing.
+Contributions are very welcome. This started as a small personal project but has become quite complex.
+If you have any idea for improvement or find a bug let me know via a github issue or fis it yourself and submit a pull request!
+
 
 Development Setup
 -----------------
@@ -10,7 +12,7 @@ Development Setup
 
    .. code-block:: bash
 
-      git clone https://github.com/your-org/torchref.git
+      git clone https://github.com/HatPdotS/TorchRef.git
       cd torchref
 
 2. Install in development mode:
@@ -19,11 +21,9 @@ Development Setup
 
       pip install -e ".[dev]"
 
-3. Install pre-commit hooks (optional but recommended):
-
-   .. code-block:: bash
-
-      pre-commit install
+3. Use of Generative AI
+    Please feel free to use it, most of the doc strings were written with its help and only corrected.
+    I used it a lot for docstrings and refactoring.
 
 Code Style
 ----------

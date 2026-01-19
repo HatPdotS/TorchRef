@@ -43,7 +43,7 @@ After installation, verify that TorchRef is correctly installed:
 GPU Support
 -----------
 
-TorchRef automatically uses GPU acceleration if PyTorch is installed with CUDA support. 
+TorchRef supports GPU acceleration if PyTorch is installed with CUDA support. 
 To verify GPU availability:
 
 .. code-block:: python
