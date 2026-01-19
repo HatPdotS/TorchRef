@@ -49,7 +49,6 @@ dev = [
     "black>=21.5b2",
     "isort>=5.9.0",
     "flake8>=3.9.0",
-    "black==25.12.0"
 ]
 
 # Optional CCTBX/iotbx functionality (requires conda, not pip)
