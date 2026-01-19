@@ -80,12 +80,14 @@ class ESPolicyTrainer:
 
     Example
     -------
-    >>> policy = create_policy_network()
-    >>> trainer = ESPolicyTrainer(policy, ESConfig())
-    >>>
-    >>> # Run one generation
-    >>> results = trainer.evaluate_generation(structures, run_trajectory_fn)
-    >>> trainer.update(results)
+    ::
+
+        policy = create_policy_network()
+        trainer = ESPolicyTrainer(policy, ESConfig())
+
+        # Run one generation
+        results = trainer.evaluate_generation(structures, run_trajectory_fn)
+        trainer.update(results)
     """
 
     def __init__(

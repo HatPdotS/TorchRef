@@ -12,18 +12,20 @@ Verbosity Levels
 
 Usage
 -----
->>> from torchref.utils.stats import stat, filter_stats, VERBOSITY_STANDARD
->>> stats = {
-...     'rwork': stat(0.20, VERBOSITY_ESSENTIAL),
-...     'bond_rmsd': stat(0.015, VERBOSITY_DETAILED),
-... }
->>> filter_stats(stats, VERBOSITY_ESSENTIAL)
-{'rwork': 0.20}
+::
 
-# StatEntry is JSON serializable - just use json.dumps directly:
->>> import json
->>> json.dumps(stats, cls=StatEntryEncoder)
-'{"rwork": 0.2, "bond_rmsd": 0.015}'
+    from torchref.utils.stats import stat, filter_stats, VERBOSITY_STANDARD
+    stats = {
+        'rwork': stat(0.20, VERBOSITY_ESSENTIAL),
+        'bond_rmsd': stat(0.015, VERBOSITY_DETAILED),
+    }
+    filter_stats(stats, VERBOSITY_ESSENTIAL)
+    # {'rwork': 0.20}
+
+    # StatEntry is JSON serializable - just use json.dumps directly:
+    import json
+    json.dumps(stats, cls=StatEntryEncoder)
+    # '{"rwork": 0.2, "bond_rmsd": 0.015}'
 """
 
 import json

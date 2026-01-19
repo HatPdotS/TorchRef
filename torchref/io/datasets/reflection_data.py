@@ -76,10 +76,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     Examples
     --------
-    >>> data = ReflectionData(verbose=1, device='cuda')
-    >>> data.load_mtz('data.mtz')
-    >>> print(f"Loaded {len(data.hkl)} reflections")
-    >>> print(f"Resolution range: {data.resolution.min():.2f} - {data.resolution.max():.2f} Å")
+    Load reflection data from an MTZ file::
+
+        data = ReflectionData(verbose=1, device='cuda')
+        data.load_mtz('data.mtz')
+        print(f"Loaded {len(data.hkl)} reflections")
+        print(f"Resolution range: {data.resolution.min():.2f} - {data.resolution.max():.2f} Å")
     """
 
     # Additional fields specific to ReflectionData (beyond CrystalDataset)
@@ -275,10 +277,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> blocks = ReflectionData.list_cif_data_blocks('1VLM-sf.cif')
-        >>> print(blocks)
-        ['r1vlmsf', 'r1vlmAsf', 'r1vlmBsf', ...]
-        >>> data = ReflectionData().load_cif('1VLM-sf.cif', data_block=blocks[1])
+        List and load a specific data block::
+
+            blocks = ReflectionData.list_cif_data_blocks('1VLM-sf.cif')
+            print(blocks)  # ['r1vlmsf', 'r1vlmAsf', 'r1vlmBsf', ...]
+            data = ReflectionData().load_cif('1VLM-sf.cif', data_block=blocks[1])
         """
         return cif.list_data_blocks(path)
 
@@ -593,10 +596,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> # Generate 2% free reflections with reproducible seed
-        >>> data.regenerate_rfree_flags(free_fraction=0.02, n_bins=20, seed=42)
-        >>> # Generate 5% free with 10 bins, overwriting existing
-        >>> data.regenerate_rfree_flags(free_fraction=0.05, n_bins=10, force=True)
+        Generate R-free flags::
+
+            # Generate 2% free reflections with reproducible seed
+            data.regenerate_rfree_flags(free_fraction=0.02, n_bins=20, seed=42)
+            # Generate 5% free with 10 bins, overwriting existing
+            data.regenerate_rfree_flags(free_fraction=0.05, n_bins=10, force=True)
         """
         if self.rfree_flags is not None and not force:
             print("⚠️  WARNING: R-free flags already exist!")
@@ -963,9 +968,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> F, sigma_F = data.get_structure_factors_with_sigma()
-        >>> if sigma_F is not None:
-        ...     weighted_residual = (F_obs - F_calc) / sigma_F
+        Get amplitudes with uncertainties::
+
+            F, sigma_F = data.get_structure_factors_with_sigma()
+            if sigma_F is not None:
+                weighted_residual = (F_obs - F_calc) / sigma_F
         """
         if self.F is None:
             raise ValueError("No amplitude data loaded")
@@ -1063,10 +1070,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> # Keep reflections between 50 Å and 1.5 Å
-        >>> filtered = data.cut_res(highres=1.5, lowres=50.0)
-        >>> # Keep only high-resolution data (< 2 Å)
-        >>> high_res = data.cut_res(highres=1.0, lowres=2.0)
+        Filter by resolution::
+
+            # Keep reflections between 50 Å and 1.5 Å
+            filtered = data.cut_res(highres=1.5, lowres=50.0)
+            # Keep only high-resolution data (< 2 Å)
+            high_res = data.cut_res(highres=1.0, lowres=2.0)
         """
         return self.filter_by_resolution(d_min=highres, d_max=lowres)
 
@@ -1084,10 +1093,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> work_mask, test_mask = data.get_rfree_masks()
-        >>> if work_mask is not None:
-        ...     F_work = data.F[work_mask]
-        ...     F_test = data.F[test_mask]
+        Separate work and test sets::
+
+            work_mask, test_mask = data.get_rfree_masks()
+            if work_mask is not None:
+                F_work = data.F[work_mask]
+                F_test = data.F[test_mask]
         """
         if self.rfree_flags is None:
             return None, None
@@ -1209,8 +1220,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> mask = data.get_valid_mask()
-        >>> print(f"{mask.sum()} of {len(mask)} reflections are valid")
+        Check validity::
+
+            mask = data.get_valid_mask()
+            print(f"{mask.sum()} of {len(mask)} reflections are valid")
         """
         return self.masks()
 
@@ -1243,8 +1256,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> hkl, F, sigma, rfree = data.forward_indexed()
-        >>> F_np = F.cpu().numpy()  # Safe for writing to files
+        Get indexed data for file writing::
+
+            hkl, F, sigma, rfree = data.data_indexed()
+            F_np = F.cpu().numpy()  # Safe for writing to files
         """
         to_mask = self.masks()
 
@@ -1301,13 +1316,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> hkl, F, sigma, rfree = data()
-        >>> print(F.shape)  # Full shape
-        >>> print(F.sum())  # Only sums valid (unmasked) values
-        >>>
-        >>> # Access underlying data
-        >>> valid_mask = F.get_mask()
-        >>> F_values = F.get_data()[valid_mask]
+        Access reflection data with MaskedTensors::
+
+            hkl, F, sigma, rfree = data()
+            print(F.shape)  # Full shape
+            print(F.sum())  # Only sums valid (unmasked) values
+
+            # Access underlying data
+            valid_mask = F.get_mask()
+            F_values = F.get_data()[valid_mask]
         """
         from torch.masked import MaskedTensor
 
@@ -1480,12 +1497,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> # Align multiple datasets to a common HKL set
-        >>> reference_hkl = data1.hkl.clone()
-        >>> data1.validate_hkl(reference_hkl)
-        >>> data2.validate_hkl(reference_hkl)
-        >>> # Now data1 and data2 have identical shapes
-        >>> assert data1.hkl.shape == data2.hkl.shape
+        Align multiple datasets to a common HKL set::
+
+            reference_hkl = data1.hkl.clone()
+            data1.validate_hkl(reference_hkl)
+            data2.validate_hkl(reference_hkl)
+            # Now data1 and data2 have identical shapes
+            assert data1.hkl.shape == data2.hkl.shape
         """
         if self.hkl is None:
             raise ValueError("No Miller indices loaded in ReflectionData")
@@ -1840,13 +1858,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> data = ReflectionData().load_mtz('observed.mtz')
-        >>> model = Model().load_pdb('model.pdb')
-        >>> model_ft = ModelFT(model, data.cell, data.spacegroup)
-        >>> fcalc = model_ft.forward(data.hkl)
-        >>> data.write_mtz('output.mtz', fcalc=fcalc)
+        Write MTZ with map coefficients::
+
+            data = ReflectionData().load_mtz('observed.mtz')
+            model = Model().load_pdb('model.pdb')
+            model_ft = ModelFT(model, data.cell, data.spacegroup)
+            fcalc = model_ft.forward(data.hkl)
+            data.write_mtz('output.mtz', fcalc=fcalc)
         """
-        from torchref.io import file_writers
+        from torchref.io.mtz import write
 
         # Convert data to numpy for DataFrame creation
         hkl_np = self.hkl.detach().cpu().numpy()
@@ -1929,7 +1949,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         df = pd.DataFrame(data_dict)
 
         # Write MTZ file
-        file_writers.write_mtz(df, self.cell, self.spacegroup, fname)
+        write(df, self.cell, self.spacegroup, fname)
 
         if self.verbose > 0:
             print(f"✓ Wrote MTZ file: {fname}")
@@ -2181,9 +2201,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> data = ReflectionData().load_mtz('data.mtz')
-        >>> data_filled = data.fill(d_min=2.0)
-        >>> print(f"Original: {len(data)}, Filled: {len(data_filled)}")
+        Fill to completeness::
+
+            data = ReflectionData().load_mtz('data.mtz')
+            data_filled = data.fill(d_min=2.0)
+            print(f"Original: {len(data)}, Filled: {len(data_filled)}")
         """
         from torchref.symmetry.reciprocal_symmetry import complete_hkl
 
@@ -2253,16 +2275,18 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> # Load data in original space group
-        >>> data = ReflectionData().load_mtz('data.mtz')
-        >>> print(f"Original: {len(data)} reflections, {data.spacegroup}")
+        Expand to P1 for calculations::
 
-        >>> # Expand to P1
-        >>> data_p1 = data.expand_to_p1()
-        >>> print(f"Expanded: {len(data_p1)} reflections, {data_p1.spacegroup}")
+            # Load data in original space group
+            data = ReflectionData().load_mtz('data.mtz')
+            print(f"Original: {len(data)} reflections, {data.spacegroup}")
 
-        >>> # Without Friedel mates (for anomalous data)
-        >>> data_p1_anom = data.expand_to_p1(include_friedel=False)
+            # Expand to P1
+            data_p1 = data.expand_to_p1()
+            print(f"Expanded: {len(data_p1)} reflections, {data_p1.spacegroup}")
+
+            # Without Friedel mates (for anomalous data)
+            data_p1_anom = data.expand_to_p1(include_friedel=False)
         """
         from torchref.symmetry.reciprocal_symmetry import expand_hkl
 
@@ -2326,13 +2350,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Examples
         --------
-        >>> # Expand to P1 for calculations, then reduce back
-        >>> data_p1 = data.expand_to_p1()
-        >>> # ... modify F_p1 ...
-        >>> data_merged = data_p1.reduce_to_spacegroup('P21')
+        Reduce symmetry-expanded data::
 
-        >>> # Reduce with sum instead of mean
-        >>> data_summed = data_p1.reduce_to_spacegroup('P21', aggregation='sum')
+            # Expand to P1 for calculations, then reduce back
+            data_p1 = data.expand_to_p1()
+            # ... modify F_p1 ...
+            data_merged = data_p1.reduce_to_spacegroup('P21')
+
+            # Reduce with sum instead of mean
+            data_summed = data_p1.reduce_to_spacegroup('P21', aggregation='sum')
         """
         from torchref.symmetry.reciprocal_symmetry import reduce_hkl
         from torchref.symmetry.spacegroup import SpaceGroup

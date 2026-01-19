@@ -24,12 +24,14 @@ class Refinement(DebugMixin, nnModule):
 
     Supports two initialization patterns:
 
-    1. Empty initialization (for state_dict loading):
-        >>> refinement = Refinement()  # Creates empty shell with submodules
-        >>> refinement.load_state_dict(torch.load('refinement.pt'))
+    1. Empty initialization (for state_dict loading)::
 
-    2. Full initialization with file paths:
-        >>> refinement = Refinement(data_file='data.mtz', pdb='model.pdb')
+        refinement = Refinement()  # Creates empty shell with submodules
+        refinement.load_state_dict(torch.load('refinement.pt'))
+
+    2. Full initialization with file paths::
+
+        refinement = Refinement(data_file='data.mtz', pdb='model.pdb')
 
     Parameters
     ----------
@@ -130,21 +132,25 @@ class Refinement(DebugMixin, nnModule):
                 None  # Restraints needs model, created during load_state_dict
             )
             self.weighter = None
-            self.effective_weights = {}
+            self.manual_weights = manual_weights if manual_weights is not None else {}
+            self.component_weights = (
+                component_weights if component_weights is not None else {}
+            )
             return
 
         # Full initialization with file paths
         try:
             self.to(self.device)
-            self.reflection_data = ReflectionData(verbose=self.verbose)
-            if data_file.endswith(".mtz"):
-                self.reflection_data.load_mtz(data_file)
-            elif data_file.endswith(".cif"):
-                self.reflection_data.load_cif(data_file)
-            else:
-                raise ValueError(
-                    f"Unsupported data file format: {data_file}. Supported formats are .mtz and .cif"
-                )
+            if isinstance(data_file, str):
+                self.reflection_data = ReflectionData(verbose=self.verbose)
+                if data_file.endswith(".mtz"):
+                    self.reflection_data.load_mtz(data_file)
+                elif data_file.endswith(".cif"):
+                    self.reflection_data.load_cif(data_file)
+                else:
+                    raise ValueError(
+                        f"Unsupported data file format: {data_file}. Supported formats are .mtz and .cif"
+                    )
             if max_res is not None:
                 try:
                     max_res_val = float(max_res)
@@ -159,7 +165,6 @@ class Refinement(DebugMixin, nnModule):
             self.model = ModelFT(
                 verbose=self.verbose, max_res=self.max_res, device=self.device
             )
-
             if pdb.endswith(".cif"):
                 self.model.load_cif(pdb)
             elif pdb.endswith(".pdb"):
@@ -432,7 +437,12 @@ class Refinement(DebugMixin, nnModule):
         return state.aggregate()
 
     def setup_component_weighting(self):
-        """Set up component weighting without refinement reference."""
+        """
+        
+        Set up component weighting.
+        Loads default hyperparameters and initializes ComponentWeighting.
+        
+        """
         from torchref.refinement.weighting.component_weighting import ComponentWeighting
 
         self.get_scales()
@@ -447,6 +457,19 @@ class Refinement(DebugMixin, nnModule):
             component_weights=self.component_weights,
             initial_xray_loss=initial_xray_loss,
         )
+
+        # Load default hyperparameters
+        from torchref import PATH_TORCHREF_DATA
+        import os
+        from torchref.utils.utils import json_to_state_dicts_separate
+
+
+        hyperparams_path = os.path.join(PATH_TORCHREF_DATA, 'default_hyperparameters.json')
+        component_weighting_state, geometry_target_state, adp_target_state, unassigned_keys = json_to_state_dicts_separate(hyperparams_path)
+
+        self.component_weighting.load_state_dict(component_weighting_state, strict=False)
+        self.geometry_target.load_state_dict(geometry_target_state, strict=False)
+        self.adp_target.load_state_dict(adp_target_state, strict=False)
 
     def populate_state_meta(self, state: "LossState") -> "LossState":
         """
@@ -654,13 +677,6 @@ class Refinement(DebugMixin, nnModule):
                 else rfree.item() if hasattr(rfree, "item") else float(rfree)
             )
             metrics["rfree_gap"] = metrics["rfree"] - metrics["rwork"]
-
-            # Get all stats from component_weighting (unfiltered)
-            if (
-                hasattr(self, "component_weighting")
-                and self.component_weighting is not None
-            ):
-                metrics["component_weighting"] = self.component_weighting.stats()
 
             if hasattr(self, "geometry_target"):
                 metrics["geometry"] = self.geometry_target.stats()
@@ -1025,16 +1041,18 @@ class Refinement(DebugMixin, nnModule):
 
         Examples
         --------
-        >>> # Save
-        >>> torch.save(refinement.state_dict(), 'refinement.pt')
-        >>>
-        >>> # Load
-        >>> state = torch.load('refinement.pt')
-        >>> refinement = Refinement.create_from_state_dict(state)
-        >>>
-        >>> # Continue refinement
-        >>> rwork, rfree = refinement.get_rfactor()
-        >>> print(f"Restored at R-work={rwork:.4f}, R-free={rfree:.4f}")
+        Save and load refinement state::
+
+            # Save
+            torch.save(refinement.state_dict(), 'refinement.pt')
+
+            # Load
+            state = torch.load('refinement.pt')
+            refinement = Refinement.create_from_state_dict(state)
+
+            # Continue refinement
+            rwork, rfree = refinement.get_rfactor()
+            print(f"Restored at R-work={rwork:.4f}, R-free={rfree:.4f}")
         """
 
         # Helper to extract submodule state from flattened state_dict

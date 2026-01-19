@@ -22,15 +22,17 @@ MTZReader
 
 Examples
 --------
->>> from torchref.io import mtz
->>>
->>> # Reading
->>> reader = mtz.read('data.mtz', verbose=1)
->>> data_dict, cell, spacegroup = reader()
->>> print(spacegroup.short_name())  # gemmi.SpaceGroup object
->>>
->>> # Writing
->>> mtz.write(df, cell, spacegroup, 'output.mtz')
+::
+
+    from torchref.io import mtz
+    
+    # Reading
+    reader = mtz.read('data.mtz', verbose=1)
+    data_dict, cell, spacegroup = reader()
+    print(spacegroup.short_name())  # gemmi.SpaceGroup object
+    
+    # Writing
+    mtz.write(df, cell, spacegroup, 'output.mtz')
 """
 
 from typing import Optional, Tuple, Union
@@ -65,9 +67,11 @@ class MTZReader:
 
     Examples
     --------
-    >>> reader = mtz.read('data.mtz', verbose=1)
-    >>> data_dict, cell, spacegroup = reader()
-    >>> print(f"Found {len(data_dict['HKL'])} reflections in {spacegroup.short_name()}")
+    ::
+
+        reader = mtz.read('data.mtz', verbose=1)
+        data_dict, cell, spacegroup = reader()
+        print(f"Found {len(data_dict['HKL'])} reflections in {spacegroup.short_name()}")
     """
 
     AMPLITUDE_PRIORITY = [
@@ -350,7 +354,7 @@ def read(filepath: str, verbose: int = 0) -> MTZReader:
 def write(
     df: pd.DataFrame,
     cell: Union[list, np.ndarray, torch.Tensor],
-    spacegroup: str,
+    spacegroup: Union[str, gemmi.SpaceGroup],
     filepath: str,
 ) -> int:
     """

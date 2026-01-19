@@ -11,18 +11,20 @@ This module provides:
 
 Example
 -------
->>> from torchref.utils import TensorMasks, DebugMixin, gradnorm
->>>
->>> # Create tensor masks for parameter selection
->>> masks = TensorMasks()
->>> masks['backbone'] = backbone_mask
->>>
->>> # Use debugging mixin in your class
->>> class MyRefinement(DebugMixin):
-...     pass
->>>
->>> # Compute gradient norm
->>> grad_norm = gradnorm(loss, model.parameters())
+::
+
+    from torchref.utils import TensorMasks, DebugMixin, gradnorm
+
+    # Create tensor masks for parameter selection
+    masks = TensorMasks()
+    masks['backbone'] = backbone_mask
+
+    # Use debugging mixin in your class
+    class MyRefinement(DebugMixin):
+        pass
+
+    # Compute gradient norm
+    grad_norm = gradnorm(loss, model.parameters())
 """
 
 # Debugging

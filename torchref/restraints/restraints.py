@@ -59,12 +59,12 @@ class Restraints(DebugMixin, Module):
 
     1. Empty initialization (for state_dict loading)::
 
-        >>> restraints = Restraints()  # Creates empty shell
-        >>> restraints.load_state_dict(torch.load('restraints.pt'))
+        restraints = Restraints()  # Creates empty shell
+        restraints.load_state_dict(torch.load('restraints.pt'))
 
     2. Full initialization with model::
 
-        >>> restraints = Restraints(model, cif_path='restraints.cif')
+        restraints = Restraints(model, cif_path='restraints.cif')
 
     The restraints are organized in a hierarchical dictionary structure:
     ``restraints[restraint_type][origin][property]``
@@ -103,25 +103,27 @@ class Restraints(DebugMixin, Module):
 
     Examples
     --------
-    >>> from torchref.model import Model
-    >>> from torchref.restraints import Restraints
-    >>>
-    >>> # Load model
-    >>> model = Model()
-    >>> model.load_pdb_from_file('structure.pdb')
-    >>>
-    >>> # Create restraints
-    >>> restraints = Restraints(model)
-    >>>
-    >>> # Access via hierarchical structure (new way)
-    >>> bond_indices = restraints.restraints['bond']['intra']['indices']
-    >>> angle_refs = restraints.restraints['angle']['peptide']['references']
-    >>> torsion_periods = restraints.restraints['torsion']['intra']['periods']
-    >>> plane_4atom_indices = restraints.restraints['plane']['4_atoms']['indices']
-    >>>
-    >>> # Or use backward-compatible properties (old way)
-    >>> bond_indices = restraints.bond_indices  # intra-residue bonds
-    >>> bond_indices_inter = restraints.bond_indices_inter  # peptide bonds
+    ::
+
+        from torchref.model import Model
+        from torchref.restraints import Restraints
+
+        # Load model
+        model = Model()
+        model.load_pdb_from_file('structure.pdb')
+
+        # Create restraints
+        restraints = Restraints(model)
+
+        # Access via hierarchical structure (new way)
+        bond_indices = restraints.restraints['bond']['intra']['indices']
+        angle_refs = restraints.restraints['angle']['peptide']['references']
+        torsion_periods = restraints.restraints['torsion']['intra']['periods']
+        plane_4atom_indices = restraints.restraints['plane']['4_atoms']['indices']
+
+        # Or use backward-compatible properties (old way)
+        bond_indices = restraints.bond_indices  # intra-residue bonds
+        bond_indices_inter = restraints.bond_indices_inter  # peptide bonds
     """
 
     def __init__(self, model: Model = None, cif_path=None, verbose: int = 1):

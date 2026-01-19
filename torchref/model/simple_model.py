@@ -51,14 +51,16 @@ class SimpleModel(nn.Module):
 
     Examples
     --------
-    >>> model = SimpleModel(max_res=1.5)
-    >>> xyz = torch.randn(100, 3, requires_grad=True)
-    >>> B = torch.ones(100) * 20.0
-    >>> occ = torch.ones(100)
-    >>> atom_types = ['C'] * 50 + ['N'] * 30 + ['O'] * 20
-    >>> cell = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
-    >>> hkl = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    >>> sf = model(xyz, B, occ, atom_types, cell, 'P 21 21 21', hkl)
+    ::
+
+        model = SimpleModel(max_res=1.5)
+        xyz = torch.randn(100, 3, requires_grad=True)
+        B = torch.ones(100) * 20.0
+        occ = torch.ones(100)
+        atom_types = ['C'] * 50 + ['N'] * 30 + ['O'] * 20
+        cell = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
+        hkl = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        sf = model(xyz, B, occ, atom_types, cell, 'P 21 21 21', hkl)
     """
 
     def __init__(
@@ -326,14 +328,16 @@ class SimpleModel(nn.Module):
 
         Examples
         --------
-        >>> model = SimpleModel(max_res=1.5)
-        >>> xyz = torch.tensor([[10.0, 10.0, 10.0], [15.0, 15.0, 15.0]])
-        >>> B = torch.tensor([20.0, 25.0])
-        >>> occ = torch.tensor([1.0, 1.0])
-        >>> atom_types = ['C', 'N']
-        >>> cell = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
-        >>> hkl = torch.tensor([[1, 0, 0], [0, 1, 0]])
-        >>> sf = model(xyz, B, occ, atom_types, cell, 'P 1', hkl)
+        ::
+
+            model = SimpleModel(max_res=1.5)
+            xyz = torch.tensor([[10.0, 10.0, 10.0], [15.0, 15.0, 15.0]])
+            B = torch.tensor([20.0, 25.0])
+            occ = torch.tensor([1.0, 1.0])
+            atom_types = ['C', 'N']
+            cell = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
+            hkl = torch.tensor([[1, 0, 0], [0, 1, 0]])
+            sf = model(xyz, B, occ, atom_types, cell, 'P 1', hkl)
         """
         # Ensure tensors are on correct device and dtype
         xyz = xyz.to(device=self.device, dtype=self.dtype_float)

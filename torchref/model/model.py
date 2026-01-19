@@ -67,15 +67,15 @@ class Model(DebugMixin, nn.Module):
 
     Examples
     --------
-    Empty initialization for state_dict loading:
+    Empty initialization for state_dict loading::
 
-    >>> model = Model()
-    >>> model.load_state_dict(torch.load('model.pt'))
+        model = Model()
+        model.load_state_dict(torch.load('model.pt'))
 
-    File-based initialization:
+    File-based initialization::
 
-    >>> model = Model()
-    >>> model.load_pdb('structure.pdb')
+        model = Model()
+        model.load_pdb('structure.pdb')
     """
 
     def __init__(
@@ -482,9 +482,11 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> model = Model().load_pdb('structure.pdb')
-        >>> model_copy = model.copy()
-        >>> # model_copy is independent, changes won't affect model
+        ::
+
+            model = Model().load_pdb('structure.pdb')
+            model_copy = model.copy()
+            # model_copy is independent, changes won't affect model
         """
         if not self.initialized:
             raise RuntimeError("Cannot copy an uninitialized Model. Load data first.")
@@ -619,13 +621,15 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> # Freeze chain A coordinates
-        >>> model.update_mask_from_selection("chain A", "xyz", mode='set', freeze=True)
-        >>> model.apply_mask_to_parameter("xyz")
+        ::
 
-        >>> # Unfreeze backbone atoms
-        >>> model.update_mask_from_selection("name CA or name C or name N", "xyz", freeze=False)
-        >>> model.apply_mask_to_parameter("xyz")
+            # Freeze chain A coordinates
+            model.update_mask_from_selection("chain A", "xyz", mode='set', freeze=True)
+            model.apply_mask_to_parameter("xyz")
+
+            # Unfreeze backbone atoms
+            model.update_mask_from_selection("name CA or name C or name N", "xyz", freeze=False)
+            model.apply_mask_to_parameter("xyz")
         """
         from torchref.utils.utils import create_selection_mask
 
@@ -692,8 +696,10 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> model.update_mask_from_selection("chain A", "xyz", freeze=True)
-        >>> model.apply_mask_to_parameter("xyz")
+        ::
+
+            model.update_mask_from_selection("chain A", "xyz", freeze=True)
+            model.apply_mask_to_parameter("xyz")
         """
         if target == "xyz":
             self.xyz.update_refinable_mask(self.xyz_mask)
@@ -735,11 +741,13 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> # Freeze all parameters for chain A
-        >>> model.freeze_selection("chain A", targets='all')
+        ::
 
-        >>> # Freeze only coordinates for residues 10-20
-        >>> model.freeze_selection("resseq 10:20", targets='xyz')
+            # Freeze all parameters for chain A
+            model.freeze_selection("chain A", targets='all')
+
+            # Freeze only coordinates for residues 10-20
+            model.freeze_selection("resseq 10:20", targets='xyz')
         """
         # Handle 'all' target
         if targets == "all":
@@ -775,11 +783,13 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> # Unfreeze all parameters for chain A
-        >>> model.unfreeze_selection("chain A", targets='all')
+        ::
 
-        >>> # Unfreeze only coordinates for backbone atoms
-        >>> model.unfreeze_selection("name CA or name C or name N", targets='xyz')
+            # Unfreeze all parameters for chain A
+            model.unfreeze_selection("chain A", targets='all')
+
+            # Unfreeze only coordinates for backbone atoms
+            model.unfreeze_selection("name CA or name C or name N", targets='xyz')
         """
         # Handle 'all' target
         if targets == "all":
@@ -842,15 +852,15 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        For a residue with conformations A and B:
+        For a residue with conformations A and B::
 
-        >>> # Conformation A has atoms at indices [100, 101, 102, ...]
-        >>> # Conformation B has atoms at indices [110, 111, 112, ...]
-        >>> # Result: [(tensor([100, 101, 102, ...]), tensor([110, 111, 112, ...])), ...]
+            # Conformation A has atoms at indices [100, 101, 102, ...]
+            # Conformation B has atoms at indices [110, 111, 112, ...]
+            # Result: [(tensor([100, 101, 102, ...]), tensor([110, 111, 112, ...])), ...]
 
-        For a residue with conformations A, B, C:
+        For a residue with conformations A, B, C::
 
-        >>> # Result: [(tensor([200, 201, ...]), tensor([210, 211, ...]), tensor([220, 221, ...])), ...]
+            # Result: [(tensor([200, 201, ...]), tensor([210, 211, ...]), tensor([220, 221, ...])), ...]
         """
         # Initialize the list to store alternative conformation groups
         self.altloc_pairs = []
@@ -970,11 +980,13 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> # During refinement
-        >>> structure_factor_loss = compute_structure_factor_loss()
-        >>> nll_reg = model.adp_nll_loss(target_log_std=0.2)
-        >>> total_loss = structure_factor_loss + 0.01 * nll_reg
-        >>> total_loss.backward()
+        ::
+
+            # During refinement
+            structure_factor_loss = compute_structure_factor_loss()
+            nll_reg = model.adp_nll_loss(target_log_std=0.2)
+            total_loss = structure_factor_loss + 0.01 * nll_reg
+            total_loss.backward()
 
         Notes
         -----
@@ -1031,11 +1043,13 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> # Get per-atom NLL
-        >>> atom_nll = model.adp_nll_loss_per_atom(target_log_std=0.2)
-        >>> # Identify outlier atoms (high NLL)
-        >>> threshold = atom_nll.mean() + 2 * atom_nll.std()
-        >>> outliers = atom_nll > threshold
+        ::
+
+            # Get per-atom NLL
+            atom_nll = model.adp_nll_loss_per_atom(target_log_std=0.2)
+            # Identify outlier atoms (high NLL)
+            threshold = atom_nll.mean() + 2 * atom_nll.std()
+            outliers = atom_nll > threshold
         """
         # Access the internal log-space values
         log_b = super(PositiveMixedTensor, self.b).forward()
@@ -1085,8 +1099,10 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> # Use in loss function
-        >>> loss = xray_loss + w_adp * model.adp_kl_divergence_loss(0.2)
+        ::
+
+            # Use in loss function
+            loss = xray_loss + w_adp * model.adp_kl_divergence_loss(0.2)
 
         Notes
         -----
@@ -1390,16 +1406,18 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> model = Model().load_pdb('structure.pdb')
-        >>> # Get mask for chain A
-        >>> mask = model.get_selection_mask("chain A")
-        >>> # Use mask to update coordinates
-        >>> new_coords = model.xyz()[mask] + translation
-        >>> model.xyz.set(new_coords, mask)
-        >>> # Get mask for backbone atoms
-        >>> backbone_mask = model.get_selection_mask("name CA or name C or name N or name O")
-        >>> # Complex selection with parentheses
-        >>> mask = model.get_selection_mask("chain A and (resname ALA or resname GLY)")
+        ::
+
+            model = Model().load_pdb('structure.pdb')
+            # Get mask for chain A
+            mask = model.get_selection_mask("chain A")
+            # Use mask to update coordinates
+            new_coords = model.xyz()[mask] + translation
+            model.xyz.set(new_coords, mask)
+            # Get mask for backbone atoms
+            backbone_mask = model.get_selection_mask("name CA or name C or name N or name O")
+            # Complex selection with parentheses
+            mask = model.get_selection_mask("chain A and (resname ALA or resname GLY)")
         """
         from torchref.utils.utils import parse_phenix_selection
 
@@ -1450,17 +1468,19 @@ class Model(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> model = Model().load_pdb('structure.pdb')
-        >>> # Select chain A
-        >>> chain_a = model.select("chain A")
-        >>> # Select backbone atoms
-        >>> backbone = model.select("name CA or name C or name N or name O")
-        >>> # Select residues 10-50 of chain B
-        >>> region = model.select("chain B and resseq 10:50")
-        >>> # Select all except water
-        >>> no_water = model.select("not resname HOH")
-        >>> # Complex selection with parentheses
-        >>> complex_sel = model.select("chain A and (resname ALA or resname GLY)")
+        ::
+
+            model = Model().load_pdb('structure.pdb')
+            # Select chain A
+            chain_a = model.select("chain A")
+            # Select backbone atoms
+            backbone = model.select("name CA or name C or name N or name O")
+            # Select residues 10-50 of chain B
+            region = model.select("chain B and resseq 10:50")
+            # Select all except water
+            no_water = model.select("not resname HOH")
+            # Complex selection with parentheses
+            complex_sel = model.select("chain A and (resname ALA or resname GLY)")
 
         Notes
         -----

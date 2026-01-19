@@ -395,13 +395,15 @@ class RandomComponentWeighting(ComponentWeighting):
 
     Examples
     --------
-    >>> from torchref.refinement.weighting import RandomComponentWeighting
-    >>> weighting = RandomComponentWeighting(device=device, seed=42)
-    >>> # Base weights are sampled at init
-    >>> base = weighting.get_base_log_weights()
-    >>> # Each compute_weights applies small perturbation
-    >>> weights = weighting.compute_weights(state)
-    >>> current = weighting.get_sampled_log_weights()  # base + perturbation
+    ::
+
+        from torchref.refinement.weighting import RandomComponentWeighting
+        weighting = RandomComponentWeighting(device=device, seed=42)
+        # Base weights are sampled at init
+        base = weighting.get_base_log_weights()
+        # Each compute_weights applies small perturbation
+        weights = weighting.compute_weights(state)
+        current = weighting.get_sampled_log_weights()  # base + perturbation
     """
 
     def __init__(

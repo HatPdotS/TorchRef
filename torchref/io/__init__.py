@@ -8,21 +8,24 @@ This module provides:
 
 High-level API
 --------------
->>> from torchref.io import ReflectionData, DatasetCollection
->>> from torchref.io import mtz, pdb, cif
+Load a single dataset::
 
->>> # Load single dataset
->>> data = ReflectionData(verbose=1)
->>> data.load_mtz('structure.mtz')
+    from torchref.io import ReflectionData
+    data = ReflectionData(verbose=1)
+    data.load_mtz('structure.mtz')
 
->>> # Multi-dataset
->>> collection = DatasetCollection()
->>> collection.add_dataset('native', native_data)
->>> collection.add_dataset('derivative', derivative_data)
+Multi-dataset handling::
 
->>> # Direct format access
->>> reader = mtz.read('data.mtz')
->>> data_dict, cell, spacegroup = reader()
+    from torchref.io import DatasetCollection
+    collection = DatasetCollection()
+    collection.add_dataset('native', native_data)
+    collection.add_dataset('derivative', derivative_data)
+
+Direct format access::
+
+    from torchref.io import mtz
+    reader = mtz.read('data.mtz')
+    data_dict, cell, spacegroup = reader()
 """
 
 # Format modules

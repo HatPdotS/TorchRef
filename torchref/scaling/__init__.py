@@ -16,15 +16,17 @@ SolventModel
 
 Example
 -------
->>> from torchref.scaling import Scaler, SolventModel
->>>
->>> # Scale structure factors
->>> scaler = Scaler(device='cuda')
->>> F_calc_scaled = scaler(F_calc, F_obs, s_squared)
->>>
->>> # Add bulk solvent contribution
->>> solvent = SolventModel(device='cuda')
->>> F_calc_total = solvent(F_calc, F_mask, s_squared)
+::
+
+    from torchref.scaling import Scaler, SolventModel
+
+    # Scale structure factors
+    scaler = Scaler(device='cuda')
+    F_calc_scaled = scaler(F_calc, F_obs, s_squared)
+
+    # Add bulk solvent contribution
+    solvent = SolventModel(device='cuda')
+    F_calc_total = solvent(F_calc, F_mask, s_squared)
 """
 
 from torchref.scaling.scaler import Scaler

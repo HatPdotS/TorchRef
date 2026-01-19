@@ -5,7 +5,7 @@ import gemmi
 import numpy as np
 import pandas as pd
 import torch
-
+import json
 
 
 class ModuleReference:
@@ -29,11 +29,13 @@ class ModuleReference:
 
     Examples
     --------
-    >>> model = MyModel()
-    >>> scaler = Scaler()
-    >>> scaler._model = ModuleReference(model)  # Won't register as submodule
-    >>> # Access the module via .module property
-    >>> output = scaler._model.module(input_data)
+    ::
+
+        model = MyModel()
+        scaler = Scaler()
+        scaler._model = ModuleReference(model)  # Won't register as submodule
+        # Access the module via .module property
+        output = scaler._model.module(input_data)
     """
 
     def __init__(self, module):
@@ -669,11 +671,13 @@ class TensorMasks(dict):
 
     Examples
     --------
-    >>> masks = TensorMasks(device='cuda')
-    >>> masks['valid'] = torch.ones(100, dtype=torch.bool)
-    >>> masks['rfree'] = rfree_flags > 0
-    >>> combined = masks()  # Get combined mask (AND of all)
-    >>> masks.cpu()  # Move all to CPU
+    ::
+
+        masks = TensorMasks(device='cuda')
+        masks['valid'] = torch.ones(100, dtype=torch.bool)
+        masks['rfree'] = rfree_flags > 0
+        combined = masks()  # Get combined mask (AND of all)
+        masks.cpu()  # Move all to CPU
     """
 
     def __init__(self, data=None, device="cpu"):
@@ -788,11 +792,13 @@ def sanitize_pdb_dataframe(pdb: pd.DataFrame, verbose: int = 0) -> pd.DataFrame:
 
     Examples
     --------
-    >>> from torchref.model import Model
-    >>> from torchref.utils import sanitize_pdb_dataframe
-    >>> model = Model()
-    >>> model.load_cif('structure.cif')
-    >>> model.pdb = sanitize_pdb_dataframe(model.pdb, verbose=1)
+    ::
+
+        from torchref.model import Model
+        from torchref.utils import sanitize_pdb_dataframe
+        model = Model()
+        model.load_cif('structure.cif')
+        model.pdb = sanitize_pdb_dataframe(model.pdb, verbose=1)
     """
     pdb = pdb.copy()
 
@@ -1085,23 +1091,25 @@ def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch
 
     Examples
     --------
-    >>> # Select chain A
-    >>> mask = parse_phenix_selection("chain A", pdb_df)
-    >>>
-    >>> # Select residues 10-20 in chain A
-    >>> mask = parse_phenix_selection("chain A and resseq 10:20", pdb_df)
-    >>>
-    >>> # Select all CA atoms
-    >>> mask = parse_phenix_selection("name CA", pdb_df)
-    >>>
-    >>> # Select backbone atoms
-    >>> mask = parse_phenix_selection("name CA or name C or name N or name O", pdb_df)
-    >>>
-    >>> # Select everything except water
-    >>> mask = parse_phenix_selection("not resname HOH", pdb_df)
-    >>>
-    >>> # Use parentheses for grouping
-    >>> mask = parse_phenix_selection("chain A and (name CA or name CB)", pdb_df)
+    ::
+
+        # Select chain A
+        mask = parse_phenix_selection("chain A", pdb_df)
+        
+        # Select residues 10-20 in chain A
+        mask = parse_phenix_selection("chain A and resseq 10:20", pdb_df)
+        
+        # Select all CA atoms
+        mask = parse_phenix_selection("name CA", pdb_df)
+        
+        # Select backbone atoms
+        mask = parse_phenix_selection("name CA or name C or name N or name O", pdb_df)
+        
+        # Select everything except water
+        mask = parse_phenix_selection("not resname HOH", pdb_df)
+        
+        # Use parentheses for grouping
+        mask = parse_phenix_selection("chain A and (name CA or name CB)", pdb_df)
     """
     # Clear any cached masks from previous calls
     if hasattr(_parse_with_parentheses, "_mask_cache"):
@@ -1154,14 +1162,16 @@ def create_selection_mask(
 
     Examples
     --------
-    >>> # Create new mask selecting chain A
-    >>> mask = create_selection_mask("chain A", pdb_df, mode='set')
-    >>>
-    >>> # Add residues 10-20 to existing mask
-    >>> mask = create_selection_mask("resseq 10:20", pdb_df, current_mask=mask, mode='add')
-    >>>
-    >>> # Remove water from mask
-    >>> mask = create_selection_mask("resname HOH", pdb_df, current_mask=mask, mode='remove')
+    ::
+
+        # Create new mask selecting chain A
+        mask = create_selection_mask("chain A", pdb_df, mode='set')
+        
+        # Add residues 10-20 to existing mask
+        mask = create_selection_mask("resseq 10:20", pdb_df, current_mask=mask, mode='add')
+        
+        # Remove water from mask
+        mask = create_selection_mask("resname HOH", pdb_df, current_mask=mask, mode='remove')
     """
     # Parse the selection
     selection_mask = parse_phenix_selection(selection_string, pdb_df)

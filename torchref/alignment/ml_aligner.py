@@ -18,16 +18,18 @@ The workflow is:
 
 Examples
 --------
->>> from torchref.alignment import MLOrientationAligner
->>> from torchref.model import ModelFT
->>> from torchref.io.datasets.reflection_data import ReflectionData
->>>
->>> data = ReflectionData().load_mtz('observed.mtz')
->>> model = ModelFT().load_pdb('search_model.pdb')
->>>
->>> aligner = MLOrientationAligner(data, model)
->>> aligned_model, result = aligner.align()
->>> print(f"Final LLG: {result.llg:.2f}")
+::
+
+    from torchref.alignment import MLOrientationAligner
+    from torchref.model import ModelFT
+    from torchref.io.datasets.reflection_data import ReflectionData
+    
+    data = ReflectionData().load_mtz('observed.mtz')
+    model = ModelFT().load_pdb('search_model.pdb')
+    
+    aligner = MLOrientationAligner(data, model)
+    aligned_model, result = aligner.align()
+    print(f"Final LLG: {result.llg:.2f}")
 """
 
 import math
@@ -735,9 +737,11 @@ class MLOrientationAligner:
 
     Examples
     --------
-    >>> aligner = MLOrientationAligner(data, model)
-    >>> aligned_model, result = aligner.align()
-    >>> print(f"LLG: {result.llg:.2f}, Iterations: {result.n_iterations}")
+    ::
+
+        aligner = MLOrientationAligner(data, model)
+        aligned_model, result = aligner.align()
+        print(f"LLG: {result.llg:.2f}, Iterations: {result.n_iterations}")
     """
 
     def __init__(
@@ -1260,10 +1264,13 @@ class TranslationSearchTarget(nn.Module):
         # IFFT gives correlation at all translations
         correlation_map = torch.fft.ifftn(product_grid).real
 
-        # Normalize by sum of |F_obs|²
+        # Normalize by sum of |F_obs|² for consistent scale
         norm_factor = (self.F_obs**2).sum().sqrt()
         if norm_factor > 0:
             correlation_map = correlation_map / norm_factor
+
+        # Also compute F_calc norm for later use in proper CC comparison
+        self._last_fcalc_norm = (torch.abs(F_calc_sym)**2).sum().sqrt()
 
         # Find best translation
         best_idx = correlation_map.argmax()
@@ -1312,12 +1319,15 @@ class TranslationSearchTarget(nn.Module):
         dtype = self.reciprocal_grid.dtype
         n_refl = len(self.hkl)
 
+        # Ensure rotation matrix is on the correct device
+        rotation_matrix = rotation_matrix.to(device=device, dtype=torch.float32)
+
         F_calc_sym = torch.zeros(n_refl, dtype=dtype, device=device)
 
         # Loop over symmetry operations
         for i in range(self.symmetry.n_ops):
-            R_sym = self.symmetry.matrices[i]  # (3, 3)
-            t_sym = self.symmetry.translations[i]  # (3,)
+            R_sym = self.symmetry.matrices[i].to(device=device)  # (3, 3)
+            t_sym = self.symmetry.translations[i].to(device=device)  # (3,)
 
             # Combined rotation: first symmetry, then MR rotation
             # For HKL transformation: hkl @ R_sym @ R_mr

@@ -54,11 +54,16 @@ from torchref.restraints.builders import (
 from torchref.restraints.restraints_new import RestraintsNew as Restraints
 
 MONOMER_LIB_URL = "https://github.com/MonomerLibrary/monomers.git"
+# Pin to specific commit to avoid breaking changes (e.g., SS link deletion in f1ef252bb)
+MONOMER_LIB_COMMIT = "f113ca1aa"
 
 
 def _ensure_monomer_library() -> Path:
     """
     Ensure the external monomer library is available, downloading if necessary.
+
+    Downloads the monomer library and checks out a specific pinned commit to
+    ensure compatibility with TorchRef's restraints system.
 
     Returns
     -------
@@ -79,25 +84,36 @@ def _ensure_monomer_library() -> Path:
     print("Downloading monomer library (one-time setup)...")
 
     try:
+        # Clone the repository
         subprocess.run(
-            ["git", "clone", "--depth", "1", MONOMER_LIB_URL, str(lib_path)],
+            ["git", "clone", MONOMER_LIB_URL, str(lib_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        # Checkout the pinned commit
+        subprocess.run(
+            ["git", "-C", str(lib_path), "checkout", MONOMER_LIB_COMMIT],
             check=True,
             capture_output=True,
             text=True,
         )
         print(f"Successfully downloaded monomer library to {lib_path}")
+        print(f"  Pinned to commit: {MONOMER_LIB_COMMIT}")
         return lib_path
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
             f"Failed to download monomer library from {MONOMER_LIB_URL}.\n"
             f"Error: {e.stderr}\n"
             f"Please install git or manually clone the repository:\n"
-            f"  git clone {MONOMER_LIB_URL} {lib_path}"
+            f"  git clone {MONOMER_LIB_URL} {lib_path}\n"
+            f"  git -C {lib_path} checkout {MONOMER_LIB_COMMIT}"
         ) from e
     except FileNotFoundError:
         raise RuntimeError(
             "git is not installed. Please install git and try again, or manually clone:\n"
-            f"  git clone {MONOMER_LIB_URL} {lib_path}"
+            f"  git clone {MONOMER_LIB_URL} {lib_path}\n"
+            f"  git -C {lib_path} checkout {MONOMER_LIB_COMMIT}"
         )
 
 

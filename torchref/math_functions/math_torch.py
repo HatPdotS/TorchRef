@@ -2453,12 +2453,14 @@ def find_solvent_voids(mask, periodic=True):
 
     Examples
     --------
-    >>> import torch
-    >>> # Create a simple 5x5x5 grid with a void in the center
-    >>> mask = torch.ones(5, 5, 5, dtype=torch.bool)
-    >>> mask[2, 2, 2] = False  # Single void voxel
-    >>> voids = find_solvent_voids(mask)
-    >>> print(voids)
+    ::
+
+        import torch
+        # Create a simple 5x5x5 grid with a void in the center
+        mask = torch.ones(5, 5, 5, dtype=torch.bool)
+        mask[2, 2, 2] = False  # Single void voxel
+        voids = find_solvent_voids(mask)
+        print(voids)
     {1: tensor([[[False, False, ...]], dtype=torch.bool)}
 
     Notes

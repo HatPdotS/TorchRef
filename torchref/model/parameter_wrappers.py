@@ -45,18 +45,18 @@ class MixedTensor(nn.Module):
 
     Examples
     --------
-    Empty initialization for state_dict loading:
+    Empty initialization for state_dict loading::
 
-    >>> mixed = MixedTensor()
-    >>> mixed.load_state_dict(torch.load('mixed.pt'))
+        mixed = MixedTensor()
+        mixed.load_state_dict(torch.load('mixed.pt'))
 
-    Full initialization with values:
+    Full initialization with values::
 
-    >>> mask = torch.zeros(100, dtype=torch.bool)
-    >>> mask[20:30] = True
-    >>> initial_values = torch.randn(100)
-    >>> mixed = MixedTensor(initial_values, refinable_mask=mask, requires_grad=True)
-    >>> optimizer = torch.optim.Adam([mixed.refinable_params], lr=0.01)
+        mask = torch.zeros(100, dtype=torch.bool)
+        mask[20:30] = True
+        initial_values = torch.randn(100)
+        mixed = MixedTensor(initial_values, refinable_mask=mask, requires_grad=True)
+        optimizer = torch.optim.Adam([mixed.refinable_params], lr=0.01)
     """
 
     def __init__(
@@ -210,10 +210,12 @@ class MixedTensor(nn.Module):
 
         Examples
         --------
-        >>> model.b[5]           # Get B-factor for atom 5
-        >>> model.b[5:10]        # Get B-factors for atoms 5-9
-        >>> model.b[mask]        # Get B-factors where mask is True
-        >>> model.xyz[:, 0]      # Get all x-coordinates
+        ::
+
+            model.b[5]           # Get B-factor for atom 5
+            model.b[5:10]        # Get B-factors for atoms 5-9
+            model.b[mask]        # Get B-factors where mask is True
+            model.xyz[:, 0]      # Get all x-coordinates
 
         Notes
         -----
@@ -260,11 +262,13 @@ class MixedTensor(nn.Module):
 
         Examples
         --------
-        >>> model.b[:] = 30.0           # Set all B-factors to 30
-        >>> model.b[5:10] = 25.0        # Set B-factors 5-9 to 25
-        >>> model.b[mask] = new_values  # Set B-factors where mask is True
-        >>> model.xyz[mask] = new_coords  # Set coordinates for masked atoms
-        >>> model.xyz[:, 0] += 1.0      # Shift all x-coordinates (read-modify-write)
+        ::
+
+            model.b[:] = 30.0           # Set all B-factors to 30
+            model.b[5:10] = 25.0        # Set B-factors 5-9 to 25
+            model.b[mask] = new_values  # Set B-factors where mask is True
+            model.xyz[mask] = new_coords  # Set coordinates for masked atoms
+            model.xyz[:, 0] += 1.0      # Shift all x-coordinates (read-modify-write)
 
         Notes
         -----
@@ -338,15 +342,17 @@ class MixedTensor(nn.Module):
 
         Examples
         --------
-        >>> # Update coordinates for selected atoms
-        >>> mask = model.get_selection_mask("chain A")
-        >>> new_coords = original_coords[mask] + shift
-        >>> model.xyz.set(new_coords, mask)
+        ::
 
-        >>> # Update B-factors for specific residues
-        >>> mask = model.get_selection_mask("resseq 10:20")
-        >>> new_b = torch.ones(mask.sum()) * 30.0
-        >>> model.b.set(new_b, mask)
+            # Update coordinates for selected atoms
+            mask = model.get_selection_mask("chain A")
+            new_coords = original_coords[mask] + shift
+            model.xyz.set(new_coords, mask)
+
+            # Update B-factors for specific residues
+            mask = model.get_selection_mask("resseq 10:20")
+            new_b = torch.ones(mask.sum()) * 30.0
+            model.b.set(new_b, mask)
 
         Notes
         -----
@@ -557,8 +563,10 @@ class MixedTensor(nn.Module):
 
         Examples
         --------
-        >>> mixed.refine(slice(10, 20))  # Make elements 10-19 refinable
-        >>> mixed.refine(mask)  # Make elements where mask is True refinable
+        ::
+
+            mixed.refine(slice(10, 20))  # Make elements 10-19 refinable
+            mixed.refine(mask)  # Make elements where mask is True refinable
         """
         # Get current full tensor
         current_full = self.forward().detach()
@@ -631,8 +639,10 @@ class MixedTensor(nn.Module):
 
         Examples
         --------
-        >>> mixed.fix(slice(10, 20))  # Fix elements 10-19
-        >>> mixed.fix(mask)  # Fix elements where mask is True
+        ::
+
+            mixed.fix(slice(10, 20))  # Fix elements 10-19
+            mixed.fix(mask)  # Fix elements where mask is True
         """
         # Get current full tensor
         current_full = self.forward().detach()
@@ -770,17 +780,17 @@ class PositiveMixedTensor(MixedTensor):
 
     Examples
     --------
-    Empty initialization for state_dict loading:
+    Empty initialization for state_dict loading::
 
-    >>> b = PositiveMixedTensor()
-    >>> b.load_state_dict(torch.load('b_factors.pt'))
+        b = PositiveMixedTensor()
+        b.load_state_dict(torch.load('b_factors.pt'))
 
-    Full initialization with values:
+    Full initialization with values::
 
-    >>> initial_b = torch.tensor([20.0, 30.0, 15.0])
-    >>> b = PositiveMixedTensor(initial_b)
-    >>> output = b()  # Returns exp(log_b) = positive values
-    >>> assert (b() > 0).all()
+        initial_b = torch.tensor([20.0, 30.0, 15.0])
+        b = PositiveMixedTensor(initial_b)
+        output = b()  # Returns exp(log_b) = positive values
+        assert (b() > 0).all()
     """
 
     def __init__(
@@ -985,10 +995,12 @@ class PositiveMixedTensor(MixedTensor):
 
         Examples
         --------
-        >>> # Update B-factors for selected atoms
-        >>> mask = model.get_selection_mask("name CA")
-        >>> new_b = torch.ones(mask.sum()) * 30.0  # Set CA B-factors to 30
-        >>> model.b.set(new_b, mask)
+        ::
+
+            # Update B-factors for selected atoms
+            mask = model.get_selection_mask("name CA")
+            new_b = torch.ones(mask.sum()) * 30.0  # Set CA B-factors to 30
+            model.b.set(new_b, mask)
 
         Notes
         -----
@@ -1200,13 +1212,15 @@ class OccupancyTensor(MixedTensor):
 
     Examples
     --------
-    >>> sharing_groups = torch.tensor([0, 0, 1, 1, 2, 2])
-    >>> occ = OccupancyTensor(
-    ...     initial_values=torch.tensor([1.0, 1.0, 0.7, 0.7, 0.3, 0.3]),
-    ...     sharing_groups=sharing_groups,
-    ...     altloc_groups=[([2, 3], [4, 5])],
-    ... )
-    >>> result = occ()  # Atoms 2-3 and 4-5 will sum to 1.0
+    ::
+
+        sharing_groups = torch.tensor([0, 0, 1, 1, 2, 2])
+        occ = OccupancyTensor(
+            initial_values=torch.tensor([1.0, 1.0, 0.7, 0.7, 0.3, 0.3]),
+            sharing_groups=sharing_groups,
+            altloc_groups=[([2, 3], [4, 5])],
+        )
+        result = occ()  # Atoms 2-3 and 4-5 will sum to 1.0
     """
 
     def __init__(
@@ -1780,12 +1794,14 @@ class OccupancyTensor(MixedTensor):
 
         Examples
         --------
-        >>> # Freeze atoms 0-10 (in full atom space)
-        >>> freeze_mask = torch.zeros(n_atoms, dtype=torch.bool)
-        >>> freeze_mask[0:11] = True
-        >>> occ.freeze(freeze_mask)
-        >>> # Freeze all atoms
-        >>> occ.freeze()
+        ::
+
+            # Freeze atoms 0-10 (in full atom space)
+            freeze_mask = torch.zeros(n_atoms, dtype=torch.bool)
+            freeze_mask[0:11] = True
+            occ.freeze(freeze_mask)
+            # Freeze all atoms
+            occ.freeze()
         """
         if mask is None:
             # Freeze all - set refinable_mask to all False
@@ -1852,12 +1868,14 @@ class OccupancyTensor(MixedTensor):
 
         Examples
         --------
-        >>> # Unfreeze atoms 100-200 (in full atom space)
-        >>> unfreeze_mask = torch.zeros(n_atoms, dtype=torch.bool)
-        >>> unfreeze_mask[100:201] = True
-        >>> occ.unfreeze(unfreeze_mask)
-        >>> # Unfreeze all atoms
-        >>> occ.unfreeze()
+        ::
+
+            # Unfreeze atoms 100-200 (in full atom space)
+            unfreeze_mask = torch.zeros(n_atoms, dtype=torch.bool)
+            unfreeze_mask[100:201] = True
+            occ.unfreeze(unfreeze_mask)
+            # Unfreeze all atoms
+            occ.unfreeze()
         """
         if mask is None:
             # Unfreeze all - set refinable_mask to all True
@@ -1993,17 +2011,17 @@ class OccupancyTensor(MixedTensor):
 
         Examples
         --------
-        Full atom space:
+        Full atom space::
 
-        >>> atom_mask = torch.zeros(n_atoms, dtype=torch.bool)
-        >>> atom_mask[:100] = True
-        >>> occ.update_refinable_mask(atom_mask, in_compressed_space=False)
+            atom_mask = torch.zeros(n_atoms, dtype=torch.bool)
+            atom_mask[:100] = True
+            occ.update_refinable_mask(atom_mask, in_compressed_space=False)
 
-        Compressed space:
+        Compressed space::
 
-        >>> group_mask = torch.zeros(n_groups, dtype=torch.bool)
-        >>> group_mask[::2] = True
-        >>> occ.update_refinable_mask(group_mask, in_compressed_space=True)
+            group_mask = torch.zeros(n_groups, dtype=torch.bool)
+            group_mask[::2] = True
+            occ.update_refinable_mask(group_mask, in_compressed_space=True)
         """
         # Validate and convert mask
         if not in_compressed_space:

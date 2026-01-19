@@ -163,15 +163,17 @@ class PolicyComponentWeighting(BaseWeighting):
 
     Examples
     --------
-    >>> # Evaluation mode (deterministic)
-    >>> policy = PolicyComponentWeighting(device=device, policy_path='policy.pt', sample=False)
-    >>>
-    >>> # Training mode (sampling for exploration)
-    >>> policy = PolicyComponentWeighting(device=device, policy_path='policy.pt', sample=True, temperature=1.0)
-    >>>
-    >>> # Use with LossState
-    >>> state = refinement.create_loss_state()
-    >>> state = policy.forward(state)
+    ::
+
+        # Evaluation mode (deterministic)
+        policy = PolicyComponentWeighting(device=device, policy_path='policy.pt', sample=False)
+
+        # Training mode (sampling for exploration)
+        policy = PolicyComponentWeighting(device=device, policy_path='policy.pt', sample=True, temperature=1.0)
+
+        # Use with LossState
+        state = refinement.create_loss_state()
+        state = policy.forward(state)
     """
 
     name = "policy_weighting"
@@ -659,9 +661,11 @@ class PolicyComponentWeighting(BaseWeighting):
 
         Example
         -------
-        >>> state = refinement.create_loss_state()
-        >>> state = policy_weighting.apply_to_state(state)
-        >>> loss = state.aggregate()
+        ::
+
+            state = refinement.create_loss_state()
+            state = policy_weighting.apply_to_state(state)
+            loss = state.aggregate()
         """
         weights = self.forward(state)
         for name, weight in weights.items():

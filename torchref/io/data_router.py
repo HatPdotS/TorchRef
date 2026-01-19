@@ -64,9 +64,11 @@ class DataRouter:
 
     Examples
     --------
-    >>> router = DataRouter("structure.cif")
-    >>> reader = router.get_reader()
-    >>> print(router.data_type)  # 'structure'
+    ::
+
+        router = DataRouter("structure.cif")
+        reader = router.get_reader()
+        print(router.data_type)  # 'structure'
     """
 
     # Supported file extensions
@@ -301,9 +303,11 @@ class DataRouter:
 
         Examples
         --------
-        >>> reader, data_type = DataRouter.route("7JI4-sf.cif")
-        >>> if data_type == 'reflections':
-        ...     data_dict, cell, spacegroup = reader()
+        ::
+
+            reader, data_type = DataRouter.route("7JI4-sf.cif")
+            if data_type == 'reflections':
+                data_dict, cell, spacegroup = reader()
         """
         router = cls(filepath, verbose=verbose)
         reader = router.get_reader()

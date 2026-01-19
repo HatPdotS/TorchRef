@@ -39,6 +39,7 @@ torchref-refine-random-weights = "torchref.cli.refine_everything_random_weights:
 torchref-refine-policy = 'torchref.cli.refine_everything_policy:main'
 torchref-refine-static = 'torchref.cli.refine_everything_static:main'
 torchref-refine-hyperparameters = 'torchref.cli.refine_everything_hyperparameters:main'
+torchref-download-data = 'torchref.cli.download_data:main'
 
 [project.optional-dependencies]
 

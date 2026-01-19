@@ -24,14 +24,16 @@ PDBReader
 
 Examples
 --------
->>> from torchref.io import pdb
->>>
->>> # Reading
->>> reader = pdb.read('structure.pdb', verbose=1)
->>> df, cell, spacegroup = reader()
->>>
->>> # Writing
->>> pdb.write(df, 'output.pdb')
+::
+
+    from torchref.io import pdb
+    
+    # Reading
+    reader = pdb.read('structure.pdb', verbose=1)
+    df, cell, spacegroup = reader()
+    
+    # Writing
+    pdb.write(df, 'output.pdb')
 """
 
 from typing import List, Optional, Tuple
@@ -299,9 +301,11 @@ class PDBReader:
 
     Examples
     --------
-    >>> reader = pdb.read('structure.pdb', verbose=1)
-    >>> df, cell, spacegroup = reader()
-    >>> print(f"Loaded {len(df)} atoms")
+    ::
+
+        reader = pdb.read('structure.pdb', verbose=1)
+        df, cell, spacegroup = reader()
+        print(f"Loaded {len(df)} atoms")
     """
 
     def __init__(self, verbose: int = 0):

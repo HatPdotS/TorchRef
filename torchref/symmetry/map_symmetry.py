@@ -123,9 +123,11 @@ class MapSymmetryDirect(nn.Module):
 
     Examples
     --------
-    >>> map_sym = MapSymmetry(space_group='P21', map_shape=(64, 64, 64), cell_params=cell)
-    >>> asymmetric_map = model.build_density_map()
-    >>> symmetric_map = map_sym(asymmetric_map)
+    ::
+
+        map_sym = MapSymmetry(space_group='P21', map_shape=(64, 64, 64), cell_params=cell)
+        asymmetric_map = model.build_density_map()
+        symmetric_map = map_sym(asymmetric_map)
     """
 
     def __init__(

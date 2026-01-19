@@ -51,10 +51,16 @@ class LBFGSRefinement(Refinement):
 
     Examples
     --------
-    >>> from torchref.refinement.loss_weighting import ResolutionDependentWeighting
-    >>> weighter = ResolutionDependentWeighting()
-    >>> refinement = LBFGSRefinement(mtz_file, pdb_file, weighter=weighter, target_mode='ml')
-    >>> refinement.refine(macro_cycles=2)
+    Basic usage::
+
+        from torchref.refinement import LBFGSRefinement
+
+        refinement = LBFGSRefinement(
+            data_file='data.mtz',
+            pdb='model.pdb',
+            target_mode='ml'
+        )
+        refinement.refine(macro_cycles=2)
     """
 
     def __init__(self, *args, target_mode: str = "ml", **kwargs):
@@ -1005,24 +1011,26 @@ class LBFGSRefinement(Refinement):
 
         Example
         -------
-        >>> from torchref.refinement.weighting import PolicyComponentWeighting
-        >>>
-        >>> # Create policy in training mode (sampling enabled)
-        >>> policy = PolicyComponentWeighting(
-        ...     refinement, policy_path='policy.pt',
-        ...     sample=True, temperature=1.0
-        ... )
-        >>>
-        >>> # Run trajectory
-        >>> trajectory = refinement.run_training_trajectory(
-        ...     policy, n_steps=10, pdb_id='3GR5'
-        ... )
-        >>>
-        >>> # Save trajectory for training
-        >>> import json
-        >>> from torchref.refinement.weighting import trajectory_to_dict
-        >>> with open('trajectory.json', 'w') as f:
-        ...     json.dump(trajectory_to_dict(trajectory), f)
+        ::
+
+            from torchref.refinement.weighting import PolicyComponentWeighting
+
+            # Create policy in training mode (sampling enabled)
+            policy = PolicyComponentWeighting(
+                refinement, policy_path='policy.pt',
+                sample=True, temperature=1.0
+            )
+
+            # Run trajectory
+            trajectory = refinement.run_training_trajectory(
+                policy, n_steps=10, pdb_id='3GR5'
+            )
+
+            # Save trajectory for training
+            import json
+            from torchref.refinement.weighting import trajectory_to_dict
+            with open('trajectory.json', 'w') as f:
+                json.dump(trajectory_to_dict(trajectory), f)
         """
         import time
 

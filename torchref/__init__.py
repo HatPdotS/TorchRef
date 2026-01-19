@@ -13,15 +13,17 @@ Key Features
 
 Quick Start
 -----------
->>> from torchref import Refinement, ReflectionData, Model
->>>
->>> # Load data and model
->>> data = ReflectionData().load_mtz('data.mtz')
->>> model = Model().load_pdb('structure.pdb')
->>>
->>> # Run refinement
->>> refinement = Refinement(data=data, model=model, device='cuda')
->>> refinement.run_refinement(macro_cycles=10)
+::
+
+    from torchref import Refinement, ReflectionData, Model
+
+    # Load data and model
+    data = ReflectionData().load_mtz('data.mtz')
+    model = Model().load_pdb('structure.pdb')
+
+    # Run refinement
+    refinement = Refinement(data=data, model=model, device='cuda')
+    refinement.run_refinement(macro_cycles=10)
 
 Modules
 -------
@@ -88,8 +90,7 @@ PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 # Convenience imports for common classes
 # =============================================================================
 
-# Alignment
-from torchref.alignment import PattersonAligner
+
 
 # Data I/O
 from torchref.io import DatasetCollection, ReflectionData
@@ -126,6 +127,4 @@ __all__ = [
     # Scaling
     "Scaler",
     "SolventModel",
-    # Alignment
-    "PattersonAligner",
 ]

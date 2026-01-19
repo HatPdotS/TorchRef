@@ -75,9 +75,11 @@ def compute_d_factors(
 
     Examples
     --------
-    >>> d = torch.tensor([10.0, 5.0, 3.0, 2.0, 1.5])  # Angstroms
-    >>> D = compute_d_factors(d, rms_error=1.0)
-    >>> D[0] > D[-1]  # D decreases with resolution
+    ::
+
+        d = torch.tensor([10.0, 5.0, 3.0, 2.0, 1.5])  # Angstroms
+        D = compute_d_factors(d, rms_error=1.0)
+        D[0] > D[-1]  # D decreases with resolution
     True
     """
     # Guard against zero resolution
@@ -222,13 +224,15 @@ def mltf(
 
     Examples
     --------
-    >>> F_obs = torch.tensor([100.0, 80.0, 60.0])
-    >>> F_calc = torch.tensor([95.0, 75.0, 55.0])
-    >>> D = torch.tensor([0.9, 0.85, 0.8])
-    >>> epsilon = torch.tensor([1.0, 1.0, 1.0])
-    >>> centric = torch.tensor([False, False, False])
-    >>> llg = mltf(F_obs, F_calc, D, epsilon, centric)
-    >>> llg > 0  # Good model should have positive LLG
+    ::
+
+        F_obs = torch.tensor([100.0, 80.0, 60.0])
+        F_calc = torch.tensor([95.0, 75.0, 55.0])
+        D = torch.tensor([0.9, 0.85, 0.8])
+        epsilon = torch.tensor([1.0, 1.0, 1.0])
+        centric = torch.tensor([False, False, False])
+        llg = mltf(F_obs, F_calc, D, epsilon, centric)
+        llg > 0  # Good model should have positive LLG
     True
     """
     # Estimate variance

@@ -92,9 +92,11 @@ class ReciprocalSymmetryGrid(nn.Module):
 
     Examples
     --------
-    >>> recip_sym = ReciprocalSymmetry('P21', grid_shape=(64, 64, 64))
-    >>> F_expanded = recip_sym(F_asym)  # Expand from asymmetric unit
-    >>> F_avg = recip_sym.symmetry_average(F_full)  # Average symmetry-related reflections
+    ::
+
+        recip_sym = ReciprocalSymmetry('P21', grid_shape=(64, 64, 64))
+        F_expanded = recip_sym(F_asym)  # Expand from asymmetric unit
+        F_avg = recip_sym.symmetry_average(F_full)  # Average symmetry-related reflections
     """
 
     def __init__(
@@ -730,19 +732,21 @@ def expand_hkl(
 
     Examples
     --------
-    >>> import torch
-    >>> from torchref.symmetry import expand_hkl
-    >>>
-    >>> hkl_asu = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]], dtype=torch.int32)
-    >>> hkl_p1, indices, phases = expand_hkl(hkl_asu, 'P21')
-    >>>
-    >>> # Expand amplitude data
-    >>> F_asu = torch.tensor([100.0, 80.0, 75.0])
-    >>> F_p1 = F_asu[indices]
-    >>>
-    >>> # Expand phase data (apply phase shifts)
-    >>> phi_asu = torch.tensor([0.0, 1.5, 2.0])
-    >>> phi_p1 = phi_asu[indices] + phases
+    ::
+
+        import torch
+        from torchref.symmetry import expand_hkl
+        
+        hkl_asu = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]], dtype=torch.int32)
+        hkl_p1, indices, phases = expand_hkl(hkl_asu, 'P21')
+        
+        # Expand amplitude data
+        F_asu = torch.tensor([100.0, 80.0, 75.0])
+        F_p1 = F_asu[indices]
+        
+        # Expand phase data (apply phase shifts)
+        phi_asu = torch.tensor([0.0, 1.5, 2.0])
+        phi_p1 = phi_asu[indices] + phases
     """
     if device is None:
         device = hkl.device
@@ -870,20 +874,22 @@ def complete_hkl(
 
     Examples
     --------
-    >>> import torch
-    >>> from torchref.symmetry import complete_hkl
-    >>>
-    >>> # Incomplete dataset
-    >>> input_hkl = torch.tensor([[1, 0, 0], [0, 1, 0]], dtype=torch.int32)
-    >>> cell = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
-    >>>
-    >>> complete, indices, missing = complete_hkl(input_hkl, cell, 'P21', d_min=10.0)
-    >>>
-    >>> # Fill F values
-    >>> F_input = torch.tensor([100.0, 80.0])
-    >>> F_complete = torch.zeros(len(complete))
-    >>> present_mask = ~missing
-    >>> F_complete[present_mask] = F_input[indices[present_mask]]
+    ::
+
+        import torch
+        from torchref.symmetry import complete_hkl
+        
+        # Incomplete dataset
+        input_hkl = torch.tensor([[1, 0, 0], [0, 1, 0]], dtype=torch.int32)
+        cell = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
+        
+        complete, indices, missing = complete_hkl(input_hkl, cell, 'P21', d_min=10.0)
+        
+        # Fill F values
+        F_input = torch.tensor([100.0, 80.0])
+        F_complete = torch.zeros(len(complete))
+        present_mask = ~missing
+        F_complete[present_mask] = F_input[indices[present_mask]]
     """
     from torchref.math_functions.reciprocal_space import generate_possible_hkl
 
@@ -969,12 +975,14 @@ def expand_reflections(
 
     Examples
     --------
-    >>> from torchref.io.datasets.reflection_data import ReflectionData
-    >>> from torchref.symmetry import expand_reflections
-    >>>
-    >>> data = ReflectionData().load_mtz('data.mtz')
-    >>> data_p1 = expand_reflections(data)
-    >>> print(f"Expanded from {len(data)} to {len(data_p1)} reflections")
+    ::
+
+        from torchref.io.datasets.reflection_data import ReflectionData
+        from torchref.symmetry import expand_reflections
+        
+        data = ReflectionData().load_mtz('data.mtz')
+        data_p1 = expand_reflections(data)
+        print(f"Expanded from {len(data)} to {len(data_p1)} reflections")
     """
     from torchref.io.datasets.reflection_data import ReflectionData as RefData
 
@@ -1163,21 +1171,23 @@ def reduce_hkl(
 
     Examples
     --------
-    >>> import torch
-    >>> from torchref.symmetry import expand_hkl, reduce_hkl
-    >>>
-    >>> # Start with ASU, expand to P1, then reduce back
-    >>> hkl_asu = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]], dtype=torch.int32)
-    >>> hkl_p1, exp_idx, exp_phase = expand_hkl(hkl_asu, 'P21')
-    >>>
-    >>> # Reduce back to ASU
-    >>> hkl_asu_back, red_idx, red_phase = reduce_hkl(hkl_p1, 'P21')
-    >>>
-    >>> # Aggregate F values from P1 to ASU
-    >>> F_p1 = torch.randn(len(hkl_p1))
-    >>> valid_mask = red_idx >= 0
-    >>> F_gathered = torch.where(valid_mask, F_p1[red_idx.clamp(min=0)], torch.zeros_like(F_p1[0]))
-    >>> F_asu = F_gathered.sum(dim=1) / valid_mask.sum(dim=1).clamp(min=1)
+    ::
+
+        import torch
+        from torchref.symmetry import expand_hkl, reduce_hkl
+        
+        # Start with ASU, expand to P1, then reduce back
+        hkl_asu = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]], dtype=torch.int32)
+        hkl_p1, exp_idx, exp_phase = expand_hkl(hkl_asu, 'P21')
+        
+        # Reduce back to ASU
+        hkl_asu_back, red_idx, red_phase = reduce_hkl(hkl_p1, 'P21')
+        
+        # Aggregate F values from P1 to ASU
+        F_p1 = torch.randn(len(hkl_p1))
+        valid_mask = red_idx >= 0
+        F_gathered = torch.where(valid_mask, F_p1[red_idx.clamp(min=0)], torch.zeros_like(F_p1[0]))
+        F_asu = F_gathered.sum(dim=1) / valid_mask.sum(dim=1).clamp(min=1)
 
     Notes
     -----
@@ -1326,18 +1336,20 @@ def expand_reciprocal_grid(
 
     Examples
     --------
-    >>> import torch
-    >>> from torchref.symmetry import expand_reciprocal_grid
-    >>>
-    >>> # Create a test grid with some values in asymmetric unit
-    >>> F = torch.zeros(32, 32, 32, dtype=torch.complex64)
-    >>> F[5, 3, 2] = 1.0 + 0.5j
-    >>>
-    >>> # Expand to full grid
-    >>> F_full = expand_reciprocal_grid(F, 'P21', mode='expand')
-    >>>
-    >>> # Or symmetrize an existing full grid
-    >>> F_sym = expand_reciprocal_grid(F_noisy, 'P21', mode='average')
+    ::
+
+        import torch
+        from torchref.symmetry import expand_reciprocal_grid
+        
+        # Create a test grid with some values in asymmetric unit
+        F = torch.zeros(32, 32, 32, dtype=torch.complex64)
+        F[5, 3, 2] = 1.0 + 0.5j
+        
+        # Expand to full grid
+        F_full = expand_reciprocal_grid(F, 'P21', mode='expand')
+        
+        # Or symmetrize an existing full grid
+        F_sym = expand_reciprocal_grid(F_noisy, 'P21', mode='average')
     """
     if device is None:
         device = F_grid.device

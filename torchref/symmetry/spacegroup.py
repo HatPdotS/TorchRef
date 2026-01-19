@@ -12,17 +12,19 @@ gemmi.SpaceGroup objects are:
 
 Example
 -------
->>> from torchref.symmetry.spacegroup import SpaceGroup
->>>
->>> # Create from various inputs
->>> sg = SpaceGroup('P 21')
->>> sg = SpaceGroup('P21')  # Same result
->>> sg = SpaceGroup(19)     # From space group number
->>>
->>> # Access properties
->>> print(sg.hm)            # 'P 21 21 21' (Hermann-Mauguin)
->>> print(sg.number)        # 19
->>> print(sg.short_name())  # 'P212121'
+::
+
+    from torchref.symmetry.spacegroup import SpaceGroup
+    
+    # Create from various inputs
+    sg = SpaceGroup('P 21')
+    sg = SpaceGroup('P21')  # Same result
+    sg = SpaceGroup(19)     # From space group number
+    
+    # Access properties
+    print(sg.hm)            # 'P 21 21 21' (Hermann-Mauguin)
+    print(sg.number)        # 19
+    print(sg.short_name())  # 'P212121'
 """
 
 from typing import Union
@@ -61,11 +63,13 @@ def SpaceGroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
 
     Examples
     --------
-    >>> sg = SpaceGroup('P21')
-    >>> sg = SpaceGroup('P 21')      # Same as above
-    >>> sg = SpaceGroup(4)           # P21 by number
-    >>> sg = SpaceGroup(None)        # Returns P1
-    >>> sg2 = SpaceGroup(sg)         # Pass-through
+    ::
+
+        sg = SpaceGroup('P21')
+        sg = SpaceGroup('P 21')      # Same as above
+        sg = SpaceGroup(4)           # P21 by number
+        sg = SpaceGroup(None)        # Returns P1
+        sg2 = SpaceGroup(sg)         # Pass-through
     """
     if spacegroup is None:
         return gemmi.SpaceGroup("P 1")

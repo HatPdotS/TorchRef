@@ -194,15 +194,17 @@ def get_rotation_sampling_range(
 
     Examples
     --------
-    >>> from torchref.symmetry import Symmetry
-    >>> S = Symmetry('P212121')  # Orthorhombic
-    >>> ranges = get_rotation_sampling_range(S.matrices)
-    >>> print(f"alpha: {ranges[0]:.4f}, beta: {ranges[1]:.4f}, gamma: {ranges[2]:.4f}")
-    alpha: 3.1416, beta: 3.1416, gamma: 3.1416
+    ::
 
-    >>> S = Symmetry('P1')  # Triclinic - need full SO(3)
-    >>> ranges = get_rotation_sampling_range(S.matrices)
-    >>> print(f"alpha: {ranges[0]:.4f}, beta: {ranges[1]:.4f}, gamma: {ranges[2]:.4f}")
+        from torchref.symmetry import Symmetry
+        S = Symmetry('P212121')  # Orthorhombic
+        ranges = get_rotation_sampling_range(S.matrices)
+        print(f"alpha: {ranges[0]:.4f}, beta: {ranges[1]:.4f}, gamma: {ranges[2]:.4f}")
+        # alpha: 3.1416, beta: 3.1416, gamma: 3.1416
+
+        S = Symmetry('P1')  # Triclinic - need full SO(3)
+        ranges = get_rotation_sampling_range(S.matrices)
+        print(f"alpha: {ranges[0]:.4f}, beta: {ranges[1]:.4f}, gamma: {ranges[2]:.4f}")
     alpha: 6.2832, beta: 3.1416, gamma: 6.2832
     """
     n_ops = rotation_matrices.shape[0]

@@ -24,12 +24,14 @@ class SolventModel(DebugMixin, nn.Module):
 
     Supports two initialization patterns:
 
-    1. Empty initialization (for state_dict loading):
-        >>> solvent = SolventModel()  # Creates empty shell
-        >>> solvent.load_state_dict(torch.load('solvent.pt'))
+    1. Empty initialization (for state_dict loading)::
 
-    2. Full initialization with model:
-        >>> solvent = SolventModel(model, k_solvent=0.35, b_solvent=46.0)
+        solvent = SolventModel()  # Creates empty shell
+        solvent.load_state_dict(torch.load('solvent.pt'))
+
+    2. Full initialization with model::
+
+        solvent = SolventModel(model, k_solvent=0.35, b_solvent=46.0)
 
     Attributes
     ----------

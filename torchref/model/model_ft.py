@@ -63,15 +63,15 @@ class ModelFT(Model):
 
     Examples
     --------
-    Empty initialization for state_dict loading:
+    Empty initialization for state_dict loading::
 
-    >>> model = ModelFT()
-    >>> model.load_state_dict(torch.load('model.pt'))
+        model = ModelFT()
+        model.load_state_dict(torch.load('model.pt'))
 
-    File-based initialization:
+    File-based initialization::
 
-    >>> model = ModelFT(max_res=1.5)
-    >>> model.load_pdb('structure.pdb')
+        model = ModelFT(max_res=1.5)
+        model.load_pdb('structure.pdb')
     """
 
     def __init__(
@@ -662,9 +662,11 @@ class ModelFT(Model):
 
         Examples
         --------
-        >>> model = ModelFT().load_pdb('structure.pdb')
-        >>> model_copy = model.copy()
-        >>> # model_copy is independent, changes won't affect model
+        ::
+
+            model = ModelFT().load_pdb('structure.pdb')
+            model_copy = model.copy()
+            # model_copy is independent, changes won't affect model
         """
         if not self.initialized:
             raise RuntimeError("Cannot copy an uninitialized ModelFT. Load data first.")

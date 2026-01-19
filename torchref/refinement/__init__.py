@@ -9,20 +9,20 @@ This module provides the core refinement framework including:
 
 Example
 -------
->>> from torchref.refinement import Refinement, LBFGSRefinement
->>> from torchref.refinement import targets, weighting
->>>
->>> # Basic refinement
->>> refinement = Refinement(
-...     data_file='reflections.mtz',
-...     pdb='structure.pdb',
-...     device='cuda'
-... )
->>> refinement.run_refinement(macro_cycles=10)
->>>
->>> # Access targets and weighting schemes
->>> from torchref.refinement.targets import XrayTarget, BondTarget
->>> from torchref.refinement.weighting import ComponentWeighting
+Basic refinement::
+
+    from torchref.refinement import LBFGSRefinement
+
+    refinement = LBFGSRefinement(
+        data_file='reflections.mtz',
+        pdb='structure.pdb',
+    )
+    refinement.refine_everything(macro_cycles=5)
+
+Access targets and weighting schemes::
+
+    from torchref.refinement.targets import XrayTarget, BondTarget
+    from torchref.refinement.weighting import ComponentWeighting
 """
 
 # Submodules

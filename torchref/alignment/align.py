@@ -139,27 +139,29 @@ class PattersonAligner:
 
     Examples
     --------
-    >>> from torchref.model import Model
-    >>> from torchref.io.datasets.reflection_data import ReflectionData
-    >>> from torchref.alignment import PattersonAligner
-    >>>
-    >>> # Load data and model
-    >>> data = ReflectionData(verbose=1).load_mtz('observed.mtz')
-    >>> model = Model(verbose=1).load_pdb('predicted.pdb')
-    >>>
-    >>> # Create aligner (precomputes Patterson map and clash calculator)
-    >>> aligner = PattersonAligner(data, model)
-    >>>
-    >>> # Align model to data
-    >>> aligned_model, result = aligner.align(n_starts=20)
-    >>> print(f"Score: {result.score:.4f}")
-    >>>
-    >>> # Check for clashes in the aligned model
-    >>> clash_score = aligner.compute_clash_score(model=aligned_model)
-    >>> print(f"Clash score: {clash_score.item():.4f}")
-    >>>
-    >>> # Save aligned structure
-    >>> aligned_model.write_pdb('aligned.pdb')
+    ::
+
+        from torchref.model import Model
+        from torchref.io.datasets.reflection_data import ReflectionData
+        from torchref.alignment import PattersonAligner
+        
+        # Load data and model
+        data = ReflectionData(verbose=1).load_mtz('observed.mtz')
+        model = Model(verbose=1).load_pdb('predicted.pdb')
+        
+        # Create aligner (precomputes Patterson map and clash calculator)
+        aligner = PattersonAligner(data, model)
+        
+        # Align model to data
+        aligned_model, result = aligner.align(n_starts=20)
+        print(f"Score: {result.score:.4f}")
+        
+        # Check for clashes in the aligned model
+        clash_score = aligner.compute_clash_score(model=aligned_model)
+        print(f"Clash score: {clash_score.item():.4f}")
+        
+        # Save aligned structure
+        aligned_model.write_pdb('aligned.pdb')
     """
 
     def __init__(

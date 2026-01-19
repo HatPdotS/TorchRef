@@ -59,16 +59,19 @@ class Target(nn.Module):
 
     Supports two initialization patterns:
 
-    1. Empty initialization (for state_dict loading):
-        >>> target = Target()  # Creates empty shell
-        >>> target.load_state_dict(torch.load('target.pt'))
+    1. Empty initialization (for state_dict loading)::
 
-    2. Full initialization with refinement:
-        >>> target = Target(refinement)
+        target = Target()  # Creates empty shell
+        target.load_state_dict(torch.load('target.pt'))
+
+    2. Full initialization with refinement::
+
+        target = Target(refinement)
 
     LossState Integration:
-        Targets can work with LossState for the new pipeline:
-        >>> state = target.apply_to_state(state)  # Adds loss to state
+        Targets can work with LossState for the new pipeline::
+
+            state = target.apply_to_state(state)  # Adds loss to state
 
     Parameters
     ----------
@@ -331,6 +334,31 @@ class XrayTarget(Target):
 
         return F_obs_sel, F_calc_sel, sigma_sel, centric_sel
 
+    def stats(self) -> Dict[str, StatEntry]:
+        """
+        Get statistics for this X-ray target.
+
+        Returns dict with StatEntry values. Filter with filter_stats() at display time.
+
+        Returns
+        -------
+        dict
+            Statistics dict with StatEntry values containing verbosity levels.
+        """
+        F_obs, F_calc, sigma, _ = self.get_data()
+        F_calc_amp = torch.abs(F_calc)
+        diff = F_obs - F_calc_amp
+
+        loss = self.forward()
+
+        rwork, rfree = self.refinement.get_rfactor()
+
+        return {
+            "loss": stat(loss.item(), VERBOSITY_STANDARD),
+            "n": stat(len(F_obs), VERBOSITY_DEBUG),
+            "rwork": stat(rwork, VERBOSITY_STANDARD),
+            "rfree": stat(rfree, VERBOSITY_STANDARD)}
+            
 
 class GaussianXrayTarget(XrayTarget):
     """

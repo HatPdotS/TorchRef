@@ -10,15 +10,17 @@ crystallographic data:
 
 Examples
 --------
->>> from torchref.io.datasets import ReflectionData
->>> data = ReflectionData(device='cuda')
->>> data.load_mtz('observed.mtz')
->>> print(f"Loaded {len(data)} reflections")
+::
 
->>> from torchref.io.datasets import DatasetCollection
->>> collection = DatasetCollection()
->>> collection.add_dataset('native', native_data)
->>> collection.add_dataset('derivative', derivative_data)
+    from torchref.io.datasets import ReflectionData
+    data = ReflectionData(device='cuda')
+    data.load_mtz('observed.mtz')
+    print(f"Loaded {len(data)} reflections")
+
+    from torchref.io.datasets import DatasetCollection
+    collection = DatasetCollection()
+    collection.add_dataset('native', native_data)
+    collection.add_dataset('derivative', derivative_data)
 """
 
 from .base import CrystalDataset

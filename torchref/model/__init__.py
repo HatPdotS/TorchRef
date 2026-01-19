@@ -22,19 +22,21 @@ OccupancyTensor
 
 Example
 -------
->>> from torchref.model import Model, ModelFT, MixedTensor
->>>
->>> # Load model from PDB
->>> model = Model()
->>> model.load_pdb('structure.pdb')
->>>
->>> # Access coordinates and B-factors
->>> xyz = model.xyz  # (N, 3) tensor
->>> b = model.b      # (N,) tensor
->>>
->>> # Use ModelFT for FFT-based structure factors
->>> model_ft = ModelFT(data, device='cuda')
->>> F_calc = model_ft.get_F_calc()
+::
+
+    from torchref.model import Model, ModelFT, MixedTensor
+
+    # Load model from PDB
+    model = Model()
+    model.load_pdb('structure.pdb')
+
+    # Access coordinates and B-factors
+    xyz = model.xyz  # (N, 3) tensor
+    b = model.b      # (N,) tensor
+
+    # Use ModelFT for FFT-based structure factors
+    model_ft = ModelFT(data, device='cuda')
+    F_calc = model_ft.get_F_calc()
 """
 
 from torchref.model.model import Model

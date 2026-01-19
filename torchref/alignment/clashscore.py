@@ -58,10 +58,12 @@ class AtomSampler:
 
         Examples
         --------
-        >>> from torchref.model import Model
-        >>> model = Model().load_pdb('protein.pdb')
-        >>> mask = AtomSampler.from_model(model, mode='auto')
-        >>> print(f"Selected {mask.sum()} atoms out of {len(mask)}")
+        ::
+
+            from torchref.model import Model
+            model = Model().load_pdb('protein.pdb')
+            mask = AtomSampler.from_model(model, mode='auto')
+            print(f"Selected {mask.sum()} atoms out of {len(mask)}")
         """
         pdb = model.pdb
 
@@ -111,14 +113,16 @@ class ClashScoreCalculator(nn.Module):
 
     Examples
     --------
-    >>> from torchref.alignment.clashscore import ClashScoreCalculator, AtomSampler
-    >>> from torchref.model import Model
-    >>>
-    >>> model = Model().load_pdb('structure.pdb')
-    >>> calc = ClashScoreCalculator(symmetry=model.spacegroup)
-    >>> mask = AtomSampler.from_model(model)
-    >>> score = calc(xyz=model.xyz(), cell=model.cell, atom_mask=mask)
-    >>> print(f"Clash score: {score.item():.4f}")
+    ::
+
+        from torchref.alignment.clashscore import ClashScoreCalculator, AtomSampler
+        from torchref.model import Model
+        
+        model = Model().load_pdb('structure.pdb')
+        calc = ClashScoreCalculator(symmetry=model.spacegroup)
+        mask = AtomSampler.from_model(model)
+        score = calc(xyz=model.xyz(), cell=model.cell, atom_mask=mask)
+        print(f"Clash score: {score.item():.4f}")
     """
 
     # Cell offsets for neighboring cells (7 cells: central + 6 face neighbors)
@@ -354,11 +358,13 @@ def compute_clash_score(
 
     Examples
     --------
-    >>> from torchref.model import Model
-    >>> from torchref.alignment.clashscore import compute_clash_score
-    >>> model = Model().load_pdb('structure.pdb')
-    >>> score = compute_clash_score(model)
-    >>> print(f"Clash score: {score.item():.4f}")
+    ::
+
+        from torchref.model import Model
+        from torchref.alignment.clashscore import compute_clash_score
+        model = Model().load_pdb('structure.pdb')
+        score = compute_clash_score(model)
+        print(f"Clash score: {score.item():.4f}")
     """
     calc = ClashScoreCalculator(
         symmetry=model.spacegroup,

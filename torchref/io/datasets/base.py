@@ -40,10 +40,11 @@ class CrystalDataset:
 
     Examples
     --------
-    >>> data = CrystalDataset(device='cuda')
-    >>> data.hkl = torch.tensor([[1, 0, 0], [0, 1, 0]])
-    >>> data.cpu()  # Move all tensors to CPU
-    >>> data.save('data.pt')  # Serialize to file
+    Basic usage::
+
+        data = CrystalDataset(device='cuda')
+        data.hkl = torch.tensor([[1, 0, 0], [0, 1, 0]])
+        data.cpu()  # Move all tensors to CPU
     """
 
     # === Core reflection tensors ===
@@ -248,7 +249,9 @@ class CrystalDataset:
 
         Examples
         --------
-        >>> data.save_state('reflection_data.pt')
+        Save to file::
+
+            data.save_state('reflection_data.pt')
         """
         state = self._get_state()
         state["__class__"] = self.__class__.__name__
@@ -275,7 +278,9 @@ class CrystalDataset:
 
         Examples
         --------
-        >>> data = ReflectionData.load_state('reflection_data.pt', device='cuda')
+        Load from file::
+
+            data = ReflectionData.load_state('reflection_data.pt', device='cuda')
         """
         state = torch.load(path, map_location="cpu")
         # Remove class marker if present

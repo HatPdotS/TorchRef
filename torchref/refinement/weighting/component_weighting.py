@@ -340,10 +340,12 @@ class ComponentWeighting(nn.Module):
 
     Examples
     --------
-    >>> cw = ComponentWeighting(device=device, initial_xray_loss=50.0)
-    >>> weights = cw.compute_weights(state)
-    >>> xray_scheme = cw['xray_scale']
-    >>> xray_scheme.target_scale.fill_(100.0)
+    ::
+
+        cw = ComponentWeighting(device=device, initial_xray_loss=50.0)
+        weights = cw.compute_weights(state)
+        xray_scheme = cw['xray_scale']
+        xray_scheme.target_scale.fill_(100.0)
     """
 
     def __init__(

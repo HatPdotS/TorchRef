@@ -4,31 +4,33 @@ PyTorch implementation of French-Wilson conversion from intensities to structure
 Reference: French, S. & Wilson, K. (1978). Acta Cryst. A34, 517-525
 Based on Phenix implementation in cctbx/french_wilson.py
 
-Usage - PyTorch Module (Recommended):
-    >>> import torch
-    >>> from french_wilson_pytorch import FrenchWilsonModule
-    >>>
-    >>> # Miller indices for your reflections
-    >>> hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-    >>>
-    >>> # Unit cell: [a, b, c, alpha, beta, gamma] in Å and degrees
-    >>> unit_cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
-    >>>
-    >>> # Create module (does all preprocessing)
-    >>> fw_module = FrenchWilsonModule(hkl, unit_cell, space_group='P212121')
-    >>>
-    >>> # Apply conversion (can be called repeatedly with different I, sigma_I)
-    >>> I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-    >>> sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-    >>> F, sigma_F = fw_module(I, sigma_I)
-    >>> print(f"F = {F}")
+Usage - PyTorch Module (Recommended)::
 
-Usage - Functional API (for one-off conversions):
-    >>> from french_wilson_pytorch import french_wilson_auto
-    >>>
-    >>> F, sigma_F, valid = french_wilson_auto(
-    ...     I, sigma_I, hkl, d_spacings, space_group='P212121'
-    ... )
+        import torch
+        from french_wilson_pytorch import FrenchWilsonModule
+        
+        # Miller indices for your reflections
+        hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
+        
+        # Unit cell: [a, b, c, alpha, beta, gamma] in Å and degrees
+        unit_cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
+        
+        # Create module (does all preprocessing)
+        fw_module = FrenchWilsonModule(hkl, unit_cell, space_group='P212121')
+        
+        # Apply conversion (can be called repeatedly with different I, sigma_I)
+        I = torch.tensor([100.0, 50.0, 30.0, 200.0])
+        sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
+        F, sigma_F = fw_module(I, sigma_I)
+        print(f"F = {F}")
+
+Usage - Functional API (for one-off conversions)::
+
+        from french_wilson_pytorch import french_wilson_auto
+        
+        F, sigma_F, valid = french_wilson_auto(
+            I, sigma_I, hkl, d_spacings, space_group='P212121'
+        )
 """
 
 import torch
@@ -952,11 +954,13 @@ def french_wilson(
 
     Examples
     --------
-    >>> I = torch.tensor([100.0, 5.0, -15.0, 200.0])
-    >>> sigma_I = torch.tensor([10.0, 10.0, 10.0, 15.0])
-    >>> mean_I = torch.tensor([80.0, 80.0, 80.0, 150.0])
-    >>> F, sigma_F, valid = french_wilson(I, sigma_I, mean_I)
-    >>> print(f"F = {F}")
+    ::
+
+        I = torch.tensor([100.0, 5.0, -15.0, 200.0])
+        sigma_I = torch.tensor([10.0, 10.0, 10.0, 15.0])
+        mean_I = torch.tensor([80.0, 80.0, 80.0, 150.0])
+        F, sigma_F, valid = french_wilson(I, sigma_I, mean_I)
+        print(f"F = {F}")
     """
     i_sig_min = h_min + 0.3
 
@@ -1255,11 +1259,13 @@ def french_wilson_auto(
 
     Examples
     --------
-    >>> hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-    >>> I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-    >>> sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-    >>> d_spacings = torch.tensor([2.5, 3.0, 2.8, 2.0])
-    >>> F, sigma_F, valid = french_wilson_auto(I, sigma_I, hkl, d_spacings, "P212121")
+    ::
+
+        hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
+        I = torch.tensor([100.0, 50.0, 30.0, 200.0])
+        sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
+        d_spacings = torch.tensor([2.5, 3.0, 2.8, 2.0])
+        F, sigma_F, valid = french_wilson_auto(I, sigma_I, hkl, d_spacings, "P212121")
     """
     # Step 1: Estimate mean intensity by resolution
     mean_intensity = estimate_mean_intensity_by_resolution(
@@ -1312,12 +1318,14 @@ class FrenchWilson(nn.Module):
 
     Examples
     --------
-    >>> hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-    >>> unit_cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
-    >>> fw_module = FrenchWilson(hkl, unit_cell, 'P212121')
-    >>> I = torch.tensor([100.0, 50.0, 30.0, 200.0])
-    >>> sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
-    >>> F, sigma_F = fw_module(I, sigma_I)
+    ::
+
+        hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
+        unit_cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
+        fw_module = FrenchWilson(hkl, unit_cell, 'P212121')
+        I = torch.tensor([100.0, 50.0, 30.0, 200.0])
+        sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
+        F, sigma_F = fw_module(I, sigma_I)
     """
 
     def __init__(

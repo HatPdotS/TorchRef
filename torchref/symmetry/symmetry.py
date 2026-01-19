@@ -50,10 +50,12 @@ class Symmetry(DebugMixin, nn.Module):
 
     Examples
     --------
-    >>> sym = Symmetry('P21')
-    >>> coords = torch.tensor([[0.1, 0.2, 0.3]])
-    >>> transformed = sym(coords)  # Apply all symmetry operations
-    >>> print(transformed.shape)   # (3, 1, 2) for P21 with 2 operations
+    ::
+
+        sym = Symmetry('P21')
+        coords = torch.tensor([[0.1, 0.2, 0.3]])
+        transformed = sym(coords)  # Apply all symmetry operations
+        print(transformed.shape)   # (3, 1, 2) for P21 with 2 operations
     """
 
     def __init__(
@@ -142,9 +144,11 @@ class Symmetry(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> sym = Symmetry('P21')
-        >>> req = sym.get_grid_requirements()
-        >>> print(req)  # {'nx_mod': 1, 'ny_mod': 2, 'nz_mod': 1}
+        ::
+
+            sym = Symmetry('P21')
+            req = sym.get_grid_requirements()
+            print(req)  # {'nx_mod': 1, 'ny_mod': 2, 'nz_mod': 1}
         """
         import math
         from fractions import Fraction
@@ -203,10 +207,12 @@ class Symmetry(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> sym = Symmetry('P21')
-        >>> result = sym.check_grid_compatibility((131, 163, 148))
-        >>> print(result['compatible'])  # False
-        >>> print(result['issues'])  # ['ny=163 not divisible by 2']
+        ::
+
+            sym = Symmetry('P21')
+            result = sym.check_grid_compatibility((131, 163, 148))
+            print(result['compatible'])  # False
+            print(result['issues'])  # ['ny=163 not divisible by 2']
         """
         nx, ny, nz = grid_shape
         requirements = self.get_grid_requirements()
@@ -266,9 +272,11 @@ class Symmetry(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> sym = Symmetry('P21')
-        >>> suggested = sym.suggest_grid_size((131, 163, 148))
-        >>> print(suggested)  # (135, 164, 150) or similar
+        ::
+
+            sym = Symmetry('P21')
+            suggested = sym.suggest_grid_size((131, 163, 148))
+            print(suggested)  # (135, 164, 150) or similar
         """
         requirements = self.get_grid_requirements()
 

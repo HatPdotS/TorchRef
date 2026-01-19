@@ -62,9 +62,11 @@ class ResidueIterator:
 
     Examples
     --------
-    >>> iterator = ResidueIterator(model.pdb)
-    >>> for chain_id, resseq, residue_df in iterator:
-    ...     print(f"Processing {chain_id}:{resseq}")
+    ::
+
+        iterator = ResidueIterator(model.pdb)
+        for chain_id, resseq, residue_df in iterator:
+            print(f"Processing {chain_id}:{resseq}")
     """
 
     def __init__(self, pdb: pd.DataFrame, filter_atom_type: Optional[str] = None):
@@ -357,11 +359,13 @@ class BondRestraintBuilder(RestraintBuilder):
 
     Examples
     --------
-    >>> builder = BondRestraintBuilder()
-    >>> for residue in residues:
-    ...     builder.process_residue(residue, cif_bonds)
-    >>> result = builder.finalize(device)
-    >>> print(result['indices'].shape)  # (n_bonds, 2)
+    ::
+
+        builder = BondRestraintBuilder()
+        for residue in residues:
+            builder.process_residue(residue, cif_bonds)
+        result = builder.finalize(device)
+        print(result['indices'].shape)  # (n_bonds, 2)
     """
 
     restraint_type = "bond"
@@ -413,11 +417,13 @@ class AngleRestraintBuilder(RestraintBuilder):
 
     Examples
     --------
-    >>> builder = AngleRestraintBuilder()
-    >>> for residue in residues:
-    ...     builder.process_residue(residue, cif_angles)
-    >>> result = builder.finalize(device)
-    >>> print(result['indices'].shape)  # (n_angles, 3)
+    ::
+
+        builder = AngleRestraintBuilder()
+        for residue in residues:
+            builder.process_residue(residue, cif_angles)
+        result = builder.finalize(device)
+        print(result['indices'].shape)  # (n_angles, 3)
     """
 
     restraint_type = "angle"
@@ -475,12 +481,14 @@ class TorsionRestraintBuilder(RestraintBuilder):
 
     Examples
     --------
-    >>> builder = TorsionRestraintBuilder()
-    >>> for residue in residues:
-    ...     builder.process_residue(residue, cif_torsions)
-    >>> result = builder.finalize(device)
-    >>> print(result['indices'].shape)  # (n_torsions, 4)
-    >>> print(result['periods'].shape)  # (n_torsions,)
+    ::
+
+        builder = TorsionRestraintBuilder()
+        for residue in residues:
+            builder.process_residue(residue, cif_torsions)
+        result = builder.finalize(device)
+        print(result['indices'].shape)  # (n_torsions, 4)
+        print(result['periods'].shape)  # (n_torsions,)
     """
 
     restraint_type = "torsion"
@@ -614,11 +622,13 @@ class PlaneRestraintBuilder(RestraintBuilder):
 
     Examples
     --------
-    >>> builder = PlaneRestraintBuilder()
-    >>> for residue in residues:
-    ...     builder.process_residue(residue, cif_planes)
-    >>> result = builder.finalize(device)
-    >>> # Returns dict like {'4_atoms': {...}, '6_atoms': {...}}
+    ::
+
+        builder = PlaneRestraintBuilder()
+        for residue in residues:
+            builder.process_residue(residue, cif_planes)
+        result = builder.finalize(device)
+        # Returns dict like {'4_atoms': {...}, '6_atoms': {...}}
     """
 
     restraint_type = "plane"
@@ -762,12 +772,14 @@ class ChiralRestraintBuilder(RestraintBuilder):
 
     Examples
     --------
-    >>> builder = ChiralRestraintBuilder(ideal_volume=2.5, sigma=0.2)
-    >>> for residue in residues:
-    ...     builder.process_residue(residue, cif_chirals)
-    >>> result = builder.finalize(device)
-    >>> print(result['indices'].shape)  # (n_chirals, 4)
-    >>> print(result['ideal_volumes'].shape)  # (n_chirals,)
+    ::
+
+        builder = ChiralRestraintBuilder(ideal_volume=2.5, sigma=0.2)
+        for residue in residues:
+            builder.process_residue(residue, cif_chirals)
+        result = builder.finalize(device)
+        print(result['indices'].shape)  # (n_chirals, 4)
+        print(result['ideal_volumes'].shape)  # (n_chirals,)
     """
 
     restraint_type = "chiral"
@@ -944,10 +956,12 @@ class InterResidueBondBuilder:
 
     Examples
     --------
-    >>> builder = InterResidueBondBuilder()
-    >>> for res_i, res_next in iterator.get_consecutive_pairs():
-    ...     builder.process_peptide_bond(res_i, res_next, trans_link)
-    >>> result = builder.finalize(device)
+    ::
+
+        builder = InterResidueBondBuilder()
+        for res_i, res_next in iterator.get_consecutive_pairs():
+            builder.process_peptide_bond(res_i, res_next, trans_link)
+        result = builder.finalize(device)
     """
 
     def __init__(self, verbose: int = 0):

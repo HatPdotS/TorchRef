@@ -213,11 +213,13 @@ class TotalGeometryTarget(CombinedTargets, targets.GeometryTarget):
 
     Examples
     --------
-    >>> geom_target = TotalGeometryTarget(refinement)
-    >>> loss = geom_target()
-    >>> bond_loss = geom_target['bond']()
-    >>> for name, target in geom_target.items():
-    ...     print(f"{name}: {target()}")
+    ::
+
+        geom_target = TotalGeometryTarget(refinement)
+        loss = geom_target()
+        bond_loss = geom_target['bond']()
+        for name, target in geom_target.items():
+            print(f"{name}: {target()}")
     """
 
     def _create_targets(self) -> Dict[str, targets.Target]:
@@ -387,11 +389,13 @@ class TotalADPTarget(CombinedTargets, targets.ADPTarget):
 
     Examples
     --------
-    >>> adp_target = TotalADPTarget(refinement)
-    >>> loss = adp_target()
-    >>> simu_loss = adp_target['simu']()
-    >>> for name, target in adp_target.items():
-    ...     print(f"{name}: {target()}")
+    ::
+
+        adp_target = TotalADPTarget(refinement)
+        loss = adp_target()
+        simu_loss = adp_target['simu']()
+        for name, target in adp_target.items():
+            print(f"{name}: {target()}")
     """
 
     def _create_targets(self) -> Dict[str, targets.Target]:

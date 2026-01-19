@@ -40,21 +40,23 @@ class DatasetCollection(CrystalDataset):
 
     Examples
     --------
-    >>> from torchref.io import DatasetCollection, ReflectionData
-    >>>
-    >>> collection = DatasetCollection(device='cuda')
-    >>>
-    >>> native = ReflectionData().load_mtz('native.mtz')
-    >>> derivative = ReflectionData().load_mtz('derivative.mtz')
-    >>>
-    >>> collection.add_dataset('native', native, set_as_reference=True)
-    >>> collection.add_dataset('derivative', derivative)
-    >>>
-    >>> for name, dataset in collection:
-    ...     print(f"{name}: {len(dataset)} reflections")
-    >>>
-    >>> # Access by name
-    >>> native_F = collection['native'].F
+    ::
+
+        from torchref.io import DatasetCollection, ReflectionData
+        
+        collection = DatasetCollection(device='cuda')
+        
+        native = ReflectionData().load_mtz('native.mtz')
+        derivative = ReflectionData().load_mtz('derivative.mtz')
+        
+        collection.add_dataset('native', native, set_as_reference=True)
+        collection.add_dataset('derivative', derivative)
+        
+        for name, dataset in collection:
+            print(f"{name}: {len(dataset)} reflections")
+        
+        # Access by name
+        native_F = collection['native'].F
     """
 
     # Collection-specific fields (not inherited from CrystalDataset)
@@ -95,9 +97,11 @@ class DatasetCollection(CrystalDataset):
 
         Examples
         --------
-        >>> collection = DatasetCollection()
-        >>> collection.add_dataset('native', native_data, set_as_reference=True)
-        >>> collection.add_dataset('derivative', derivative_data)
+        ::
+
+            collection = DatasetCollection()
+            collection.add_dataset('native', native_data, set_as_reference=True)
+            collection.add_dataset('derivative', derivative_data)
         """
         if name in self._datasets:
             raise ValueError(f"Dataset '{name}' already exists in collection")

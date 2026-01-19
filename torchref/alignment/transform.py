@@ -470,10 +470,12 @@ class RigidTransform(nn.Module):
 
     Examples
     --------
-    >>> T = RigidTransform.random()
-    >>> coords = torch.randn(100, 3)
-    >>> coords_transformed = T.apply(coords)
-    >>> coords_back = T.inverse().apply(coords_transformed)
+    ::
+
+        T = RigidTransform.random()
+        coords = torch.randn(100, 3)
+        coords_transformed = T.apply(coords)
+        coords_back = T.inverse().apply(coords_transformed)
     """
 
     def __init__(

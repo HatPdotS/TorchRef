@@ -197,12 +197,11 @@ def read_link_definitions():
         - link_list : DataFrame
             DataFrame containing the list of all link definitions.
     """
-    link_file_path = (
-        Path(__file__).parent.parent.parent
-        / "external_monomer_library"
-        / "list"
-        / "mon_lib_list.cif"
-    )
+    
+    from torchref.restraints import MONOMER_LIB_PATH
+    import os
+
+    link_file_path = os.path.join(MONOMER_LIB_PATH, 'list' , 'mon_lib_list.cif')
     with open(link_file_path) as f:
         lines = f.readlines()
 

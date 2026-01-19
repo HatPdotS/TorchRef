@@ -41,10 +41,12 @@ def generate_possible_hkl(
 
     Examples
     --------
-    >>> import torch
-    >>> cell = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
-    >>> hkl = generate_possible_hkl(cell, d_min=2.0)
-    >>> print(f"Generated {len(hkl)} reflections")
+    ::
+
+        import torch
+        cell = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
+        hkl = generate_possible_hkl(cell, d_min=2.0)
+        print(f"Generated {len(hkl)} reflections")
     """
     if device is None:
         device = cell.device

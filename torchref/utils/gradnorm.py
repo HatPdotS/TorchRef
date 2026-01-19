@@ -34,9 +34,11 @@ def gradnorm(loss: torch.Tensor, parameters: iter) -> float:
 
     Examples
     --------
-    >>> loss = model(input)
-    >>> grad_norm = gradnorm(loss, model.parameters())
-    >>> print(f"Gradient norm: {grad_norm:.4f}")
+    ::
+
+        loss = model(input)
+        grad_norm = gradnorm(loss, model.parameters())
+        print(f"Gradient norm: {grad_norm:.4f}")
     """
     loss.backward(retain_graph=True)
     grad_norm = (

@@ -33,22 +33,24 @@ RestraintCIFReader
 
 Examples
 --------
->>> from torchref.io import cif
->>>
->>> # Reading reflections
->>> reader = cif.read_reflections('structure-sf.cif', verbose=1)
->>> data_dict, cell, spacegroup = reader()
->>>
->>> # Reading model
->>> reader = cif.read_model('structure.cif')
->>> df, cell, spacegroup = reader()
->>>
->>> # Reading restraints
->>> reader = cif.read_restraints('ALA.cif')
->>> restraints = reader.get_all_restraints()
->>>
->>> # List data blocks
->>> blocks = cif.list_data_blocks('multi-block.cif')
+::
+
+    from torchref.io import cif
+    
+    # Reading reflections
+    reader = cif.read_reflections('structure-sf.cif', verbose=1)
+    data_dict, cell, spacegroup = reader()
+    
+    # Reading model
+    reader = cif.read_model('structure.cif')
+    df, cell, spacegroup = reader()
+    
+    # Reading restraints
+    reader = cif.read_restraints('ALA.cif')
+    restraints = reader.get_all_restraints()
+    
+    # List data blocks
+    blocks = cif.list_data_blocks('multi-block.cif')
 """
 
 from typing import List, Optional
@@ -87,9 +89,11 @@ def read_reflections(
 
     Examples
     --------
-    >>> reader = cif.read_reflections('structure-sf.cif')
-    >>> data_dict, cell, spacegroup = reader()
-    >>> hkl = data_dict['HKL']
+    ::
+
+        reader = cif.read_reflections('structure-sf.cif')
+        data_dict, cell, spacegroup = reader()
+        hkl = data_dict['HKL']
     """
     return ReflectionCIFReader(filepath, verbose=verbose, data_block=data_block)
 
@@ -112,9 +116,11 @@ def read_model(filepath: str, verbose: int = 0) -> ModelCIFReader:
 
     Examples
     --------
-    >>> reader = cif.read_model('structure.cif')
-    >>> df, cell, spacegroup = reader()
-    >>> print(f"Loaded {len(df)} atoms")
+    ::
+
+        reader = cif.read_model('structure.cif')
+        df, cell, spacegroup = reader()
+        print(f"Loaded {len(df)} atoms")
     """
     return ModelCIFReader(filepath, verbose=verbose)
 
@@ -135,8 +141,10 @@ def read_restraints(filepath: str) -> RestraintCIFReader:
 
     Examples
     --------
-    >>> reader = cif.read_restraints('ALA.cif')
-    >>> restraints = reader.get_all_restraints()
+    ::
+
+        reader = cif.read_restraints('ALA.cif')
+        restraints = reader.get_all_restraints()
     """
     return RestraintCIFReader(filepath)
 
@@ -157,8 +165,10 @@ def list_data_blocks(filepath: str) -> List[str]:
 
     Examples
     --------
-    >>> blocks = cif.list_data_blocks('multi-dataset.cif')
-    >>> print(f"Available blocks: {blocks}")
+    ::
+
+        blocks = cif.list_data_blocks('multi-dataset.cif')
+        print(f"Available blocks: {blocks}")
     """
     reader = CIFReader(filepath)
     return reader.available_blocks

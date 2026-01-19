@@ -46,16 +46,18 @@ class HyperparameterMixin:
 
     Examples
     --------
-    >>> class MyTarget(HyperparameterMixin, nn.Module):
-    ...     def __init__(self, sigma=1.0, target_value=0.0):
-    ...         nn.Module.__init__(self)
-    ...         HyperparameterMixin.__init__(self)
-    ...         self.register_hyperparameter('sigma', sigma)
-    ...         self.register_hyperparameter('target_value', target_value)
-    ...
-    >>> target = MyTarget(sigma=2.5)
-    >>> dict(target.hyperparameters())
-    {'sigma': tensor(2.5), 'target_value': tensor(0.0)}
+    ::
+
+        class MyTarget(HyperparameterMixin, nn.Module):
+            def __init__(self, sigma=1.0, target_value=0.0):
+                nn.Module.__init__(self)
+                HyperparameterMixin.__init__(self)
+                self.register_hyperparameter('sigma', sigma)
+                self.register_hyperparameter('target_value', target_value)
+
+        target = MyTarget(sigma=2.5)
+        dict(target.hyperparameters())
+        # {'sigma': tensor(2.5), 'target_value': tensor(0.0)}
     """
 
     def __init__(self):
@@ -86,9 +88,11 @@ class HyperparameterMixin:
 
         Examples
         --------
-        >>> self.register_hyperparameter('sigma', 2.0)
-        >>> self.sigma  # Access via property (if defined) or _hp_sigma
-        2.0
+        ::
+
+            self.register_hyperparameter('sigma', 2.0)
+            self.sigma  # Access via property (if defined) or _hp_sigma
+            # 2.0
         """
         # Initialize tracking set if needed
         if not hasattr(self, "_hyperparameter_names"):
@@ -153,8 +157,10 @@ class HyperparameterMixin:
 
         Examples
         --------
-        >>> for name, hp in module.hyperparameters():
-        ...     print(f"{name}: {hp.item()}")
+        ::
+
+            for name, hp in module.hyperparameters():
+                print(f"{name}: {hp.item()}")
         """
         # Yield own hyperparameters
         if hasattr(self, "_hyperparameter_names"):
@@ -218,8 +224,10 @@ class HyperparameterMixin:
 
         Examples
         --------
-        >>> hp_state = module.hyperparameter_state_dict()
-        >>> torch.save(hp_state, 'hyperparameters.pt')
+        ::
+
+            hp_state = module.hyperparameter_state_dict()
+            torch.save(hp_state, 'hyperparameters.pt')
         """
         result = OrderedDict()
         for name, hp in self.named_hyperparameters(prefix=prefix, recurse=True):
@@ -241,8 +249,10 @@ class HyperparameterMixin:
 
         Examples
         --------
-        >>> hp_state = torch.load('hyperparameters.pt')
-        >>> module.load_hyperparameter_state_dict(hp_state)
+        ::
+
+            hp_state = torch.load('hyperparameters.pt')
+            module.load_hyperparameter_state_dict(hp_state)
         """
         # Get all hyperparameter names (with module paths)
         own_hp_names = set(name for name, _ in self.named_hyperparameters(recurse=True))
@@ -291,9 +301,11 @@ class HyperparameterMixin:
 
         Examples
         --------
-        >>> params = module.hyperparameter_dict()
-        >>> import json
-        >>> json.dumps(params)  # JSON serializable
+        ::
+
+            params = module.hyperparameter_dict()
+            import json
+            json.dumps(params)  # JSON serializable
         """
         return {name: hp.item() for name, hp in self.hyperparameters(recurse=True)}
 
@@ -330,17 +342,19 @@ def create_hyperparameter_property(name: str) -> property:
 
     Examples
     --------
-    >>> class MyModule(HyperparameterMixin, nn.Module):
-    ...     sigma = create_hyperparameter_property('sigma')
-    ...
-    ...     def __init__(self, sigma=1.0):
-    ...         super().__init__()
-    ...         self.register_hyperparameter('sigma', sigma)
-    ...
-    >>> m = MyModule(sigma=2.5)
-    >>> m.sigma  # Uses the property
-    2.5
-    >>> m.sigma = 3.0  # Sets via property
+    ::
+
+        class MyModule(HyperparameterMixin, nn.Module):
+            sigma = create_hyperparameter_property('sigma')
+        
+            def __init__(self, sigma=1.0):
+                super().__init__()
+                self.register_hyperparameter('sigma', sigma)
+        
+        m = MyModule(sigma=2.5)
+        m.sigma  # Uses the property
+        # 2.5
+        m.sigma = 3.0  # Sets via property
     """
 
     def getter(self):

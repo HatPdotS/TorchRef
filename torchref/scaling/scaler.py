@@ -35,13 +35,13 @@ class Scaler(DebugMixin, nn.Module):
 
     1. Empty initialization (for state_dict loading)::
 
-        >>> scaler = Scaler()  # Creates empty shell
-        >>> scaler.load_state_dict(torch.load('scaler.pt'))
+        scaler = Scaler()  # Creates empty shell
+        scaler.load_state_dict(torch.load('scaler.pt'))
 
     2. Full initialization with model and data::
 
-        >>> scaler = Scaler(model, reflection_data, nbins=20)
-        >>> scaler.initialize()
+        scaler = Scaler(model, reflection_data, nbins=20)
+        scaler.initialize()
 
     Parameters
     ----------
@@ -600,9 +600,11 @@ class Scaler(DebugMixin, nn.Module):
 
         Examples
         --------
-        >>> scaler.unfreeze()
-        >>> metrics = scaler.refine_lbfgs(nsteps=5, verbose=True)
-        >>> scaler.freeze()
+        ::
+
+            scaler.unfreeze()
+            metrics = scaler.refine_lbfgs(nsteps=5, verbose=True)
+            scaler.freeze()
         """
         # Ensure scaler is unfrozen
         was_frozen = self.frozen

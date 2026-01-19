@@ -52,9 +52,11 @@ def stable_log_bessel_i0(x: torch.Tensor) -> torch.Tensor:
 
     Examples
     --------
-    >>> x = torch.tensor([0.1, 10.0, 100.0, 1000.0])
-    >>> log_i0 = stable_log_bessel_i0(x)
-    >>> torch.all(torch.isfinite(log_i0))
+    ::
+
+        x = torch.tensor([0.1, 10.0, 100.0, 1000.0])
+        log_i0 = stable_log_bessel_i0(x)
+        torch.all(torch.isfinite(log_i0))
     True
     """
     # Ensure non-negative input
@@ -239,11 +241,13 @@ def combined_log_likelihood(
 
     Examples
     --------
-    >>> F_obs = torch.tensor([10.0, 20.0, 15.0])
-    >>> F_mean = torch.tensor([9.5, 18.0, 14.0])
-    >>> variance = torch.tensor([5.0, 8.0, 6.0])
-    >>> centric = torch.tensor([False, True, False])
-    >>> ll = combined_log_likelihood(F_obs, F_mean, variance, centric)
+    ::
+
+        F_obs = torch.tensor([10.0, 20.0, 15.0])
+        F_mean = torch.tensor([9.5, 18.0, 14.0])
+        variance = torch.tensor([5.0, 8.0, 6.0])
+        centric = torch.tensor([False, True, False])
+        ll = combined_log_likelihood(F_obs, F_mean, variance, centric)
     """
     # Initialize with Rice likelihood (acentric default)
     log_likelihood = rice_log_likelihood(F_obs, F_mean, variance)
