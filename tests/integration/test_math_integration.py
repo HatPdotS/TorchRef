@@ -144,7 +144,7 @@ class TestAtomExpansion:
     def test_symmetry_matrices_for_expansion(self, sample_cif_file):
         """Test that symmetry provides matrices for expansion."""
         from torchref.model.model import Model
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         model = Model()
         model.load_cif(str(sample_cif_file))

@@ -250,7 +250,7 @@ class TestStructureFactorCalculationFunctional:
         """Test that calculated structure factors have correct shape."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -394,7 +394,7 @@ class TestSymmetryFunctional:
     def test_symmetry_matrices_orthogonal(self, sample_cif_file):
         """Test that symmetry rotation matrices are orthogonal."""
         from torchref.model.model import Model
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -421,7 +421,7 @@ class TestSymmetryFunctional:
     def test_symmetry_determinant(self, sample_cif_file):
         """Test that symmetry matrices have determinant +1 or -1."""
         from torchref.model.model import Model
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         model = Model()
         model.load_cif(str(sample_cif_file))

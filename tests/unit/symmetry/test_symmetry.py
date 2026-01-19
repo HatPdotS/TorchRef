@@ -1,5 +1,5 @@
 """
-Unit tests for torchref.symmetrie.symmetrie
+Unit tests for torchref.symmetry.symmetry
 
 Tests symmetry operations for crystallographic space groups.
 """
@@ -15,7 +15,7 @@ class TestSymmetryInitialization:
     @pytest.mark.unit
     def test_symmetry_p1(self):
         """Test P1 space group (trivial, only identity)."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
 
         sym = Symmetry("P1")
 
@@ -29,7 +29,7 @@ class TestSymmetryInitialization:
     @pytest.mark.unit
     def test_symmetry_p21(self):
         """Test P21 space group."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P21")
         
@@ -40,7 +40,7 @@ class TestSymmetryInitialization:
     @pytest.mark.unit
     def test_symmetry_p212121(self):
         """Test P212121 space group (common for proteins)."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P212121")
         
@@ -51,7 +51,7 @@ class TestSymmetryInitialization:
     @pytest.mark.unit
     def test_symmetry_with_spaces(self):
         """Test space group name with spaces."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
 
         sym1 = Symmetry("P 21 21 21")
         sym2 = Symmetry("P212121")
@@ -62,7 +62,7 @@ class TestSymmetryInitialization:
     @pytest.mark.unit
     def test_symmetry_unknown_raises(self):
         """Unknown space group should raise ValueError."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         with pytest.raises(ValueError):
             Symmetry("NotASpaceGroup123")
@@ -74,7 +74,7 @@ class TestSymmetryMatrices:
     @pytest.mark.unit
     def test_identity_in_matrices(self):
         """Every space group should have identity matrix."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P21")
         
@@ -92,7 +92,7 @@ class TestSymmetryMatrices:
     @pytest.mark.unit
     def test_matrices_are_3x3(self):
         """Rotation matrices should be 3x3."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P212121")
         
@@ -102,7 +102,7 @@ class TestSymmetryMatrices:
     @pytest.mark.unit
     def test_translations_are_3d(self):
         """Translation vectors should be 3D."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P212121")
         
@@ -111,7 +111,7 @@ class TestSymmetryMatrices:
     @pytest.mark.unit
     def test_rotation_matrices_orthogonal(self):
         """Rotation matrices should be orthogonal (R^T @ R = I)."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P21")
         
@@ -123,7 +123,7 @@ class TestSymmetryMatrices:
     @pytest.mark.unit
     def test_rotation_matrices_determinant(self):
         """Rotation matrices should have determinant +1 or -1."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P212121")
         
@@ -138,7 +138,7 @@ class TestSymmetryApplication:
     @pytest.mark.unit
     def test_apply_identity(self, random_fractional_coordinates):
         """Identity operation should not change coordinates."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P1")
         # Symmetry expects (3, N) format, not (N, 3)
@@ -158,7 +158,7 @@ class TestSymmetryApplication:
     @pytest.mark.unit
     def test_symmetry_generates_mates(self, random_fractional_coordinates):
         """Symmetry should generate correct number of mates."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P21")  # 2 operations
         coords = random_fractional_coordinates(n_atoms=5).T  # (3, N) format
@@ -172,7 +172,7 @@ class TestSymmetryApplication:
     @pytest.mark.unit
     def test_symmetry_callable(self, random_fractional_coordinates):
         """Symmetry should be callable."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P212121")
         coords = random_fractional_coordinates(n_atoms=10).T  # (3, N) format
@@ -191,7 +191,7 @@ class TestSymmetryDeviceHandling:
     @pytest.mark.unit
     def test_symmetry_cpu(self):
         """Test symmetry on CPU."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P21", device=torch.device('cpu'))
         
@@ -202,7 +202,7 @@ class TestSymmetryDeviceHandling:
     @pytest.mark.gpu
     def test_symmetry_gpu(self, gpu_device):
         """Test symmetry on GPU."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P21", device=gpu_device)
         
@@ -212,7 +212,7 @@ class TestSymmetryDeviceHandling:
     @pytest.mark.unit
     def test_symmetry_dtype(self):
         """Test symmetry dtype specification."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P21", dtype=torch.float32)
         
@@ -226,7 +226,7 @@ class TestSpaceGroupMapping:
     @pytest.mark.unit
     def test_common_spacegroups(self):
         """Test common crystallographic space groups."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         # Common protein space groups
         common_sgs = ["P1", "P21", "P212121", "C2", "P21212"]
@@ -238,7 +238,7 @@ class TestSpaceGroupMapping:
     @pytest.mark.unit
     def test_case_insensitivity(self):
         """Space group names should be somewhat case-insensitive."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
 
         # Try different case variations - may not all work
         try:

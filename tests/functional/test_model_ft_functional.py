@@ -149,7 +149,7 @@ class TestModelFTSymmetry:
         
         # Map symmetry can be created if gridsize is available
         if model.gridsize is not None:
-            from torchref.symmetrie.map_symmetry import MapSymmetry
+            from torchref.symmetry.map_symmetry import MapSymmetry
             
             gridsize = tuple(model.gridsize.tolist())
             cell_params = model.cell

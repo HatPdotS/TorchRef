@@ -15,7 +15,7 @@ class TestSymmetryInitialization:
     @pytest.mark.integration
     def test_symmetry_from_spacegroup_string(self):
         """Test creating Symmetry from spacegroup string."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         # P 21 21 21 is a common orthorhombic spacegroup
         sym = Symmetry("P 21 21 21")
@@ -26,7 +26,7 @@ class TestSymmetryInitialization:
     @pytest.mark.integration
     def test_symmetry_from_spacegroup_number(self):
         """Test creating Symmetry from spacegroup name."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         # Use string representation for spacegroup 19
         sym = Symmetry("P212121")
@@ -38,7 +38,7 @@ class TestSymmetryInitialization:
     def test_symmetry_from_model(self, sample_cif_file):
         """Test creating Symmetry from model spacegroup."""
         from torchref.model.model import Model
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -55,7 +55,7 @@ class TestSymmetryMatrices:
     @pytest.mark.integration
     def test_symmetry_matrices_shape(self):
         """Test shape of symmetry matrices."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P 21 21 21")
         
@@ -70,7 +70,7 @@ class TestSymmetryMatrices:
     @pytest.mark.integration
     def test_symmetry_identity_present(self):
         """Test that identity operation is present."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P 1")  # Triclinic - only identity
         
@@ -80,7 +80,7 @@ class TestSymmetryMatrices:
     @pytest.mark.integration
     def test_symmetry_matrices_orthogonal(self):
         """Test that rotation parts of symmetry matrices are orthogonal."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P 21 21 21")
         
@@ -106,7 +106,7 @@ class TestSymmetryDevice:
     @pytest.mark.integration
     def test_symmetry_default_device(self):
         """Test symmetry matrices default to CPU."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P 21 21 21")
         
@@ -115,7 +115,7 @@ class TestSymmetryDevice:
     @pytest.mark.integration
     def test_symmetry_explicit_device(self, cpu_device):
         """Test creating symmetry on explicit device."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         sym = Symmetry("P 21 21 21", device=cpu_device)
         
@@ -129,7 +129,7 @@ class TestSymmetryOperations:
     def test_expand_coordinates(self, sample_cif_file):
         """Test expanding coordinates by symmetry."""
         from torchref.model.model import Model
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -150,7 +150,7 @@ class TestSpacegroupVariants:
     @pytest.mark.integration
     def test_common_spacegroups(self):
         """Test loading common spacegroups."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         common_spacegroups = [
             "P 1",           # Triclinic
@@ -173,7 +173,7 @@ class TestSpacegroupVariants:
     @pytest.mark.integration
     def test_spacegroup_name_variations(self):
         """Test that different spacegroup name formats work."""
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         # Both formats should work
         sym_with_spaces = Symmetry("P 21 21 21")
@@ -190,7 +190,7 @@ class TestSymmetryWithData:
     def test_symmetry_with_multiple_structures(self, cif_dir):
         """Test symmetry for multiple structures."""
         from torchref.model.model import Model
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         cif_files = list(cif_dir.glob("*.cif"))[:3]
         
@@ -209,7 +209,7 @@ class TestSymmetryWithData:
     def test_symmetry_consistent_with_cell(self, sample_cif_file):
         """Test that symmetry is consistent with unit cell."""
         from torchref.model.model import Model
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -229,7 +229,7 @@ class TestMapSymmetry:
     def test_map_symmetry_initialization(self, sample_cif_file):
         """Test map symmetry initialization."""
         from torchref.model.model import Model
-        from torchref.symmetrie.map_symmetry import MapSymmetry
+        from torchref.symmetry.map_symmetry import MapSymmetry
         
         model = Model()
         model.load_cif(str(sample_cif_file))

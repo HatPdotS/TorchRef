@@ -18,7 +18,7 @@ class TestRefinementSetup:
         from torchref.model.model import Model
         from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         # Load model
         model = Model()
@@ -136,7 +136,7 @@ class TestDeviceConsistency:
         """Test that all components can be moved to the same device."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
-        from torchref.symmetrie.symmetrie import Symmetry
+        from torchref.symmetry.symmetry import Symmetry
         
         # Load
         model = Model(device=cpu_device)
