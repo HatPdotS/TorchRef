@@ -210,9 +210,11 @@ Examples:
                 # Load default hyperparameters from package data
                 try:
                     # Python 3.9+
-                    with importlib.resources.files("torchref.data").joinpath(
-                        "default_hyperparameters.json"
-                    ).open() as f:
+                    with (
+                        importlib.resources.files("torchref.data")
+                        .joinpath("default_hyperparameters.json")
+                        .open() as f
+                    ):
                         hyperparams_raw = json.load(f)
                 except (AttributeError, TypeError):
                     # Fallback for older Python

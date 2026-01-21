@@ -85,7 +85,7 @@ Examples:
     parser.add_argument(
         "--policy",
         required=False,
-        default='default',
+        default="default",
         type=str,
         help="Path to trained policy checkpoint (.pt file)",
     )
@@ -160,7 +160,8 @@ Examples:
     outdir = Path(args.outdir)
     if args.policy.lower() == "default":
         from torchref import PATH_TORCHREF_DATA
-        policy_path = Path(PATH_TORCHREF_DATA) / 'policy_latest.pt'
+
+        policy_path = Path(PATH_TORCHREF_DATA) / "policy_latest.pt"
     else:
         policy_path = Path(args.policy)
 

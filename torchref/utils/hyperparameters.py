@@ -346,11 +346,11 @@ def create_hyperparameter_property(name: str) -> property:
 
         class MyModule(HyperparameterMixin, nn.Module):
             sigma = create_hyperparameter_property('sigma')
-        
+
             def __init__(self, sigma=1.0):
                 super().__init__()
                 self.register_hyperparameter('sigma', sigma)
-        
+
         m = MyModule(sigma=2.5)
         m.sigma  # Uses the property
         # 2.5

@@ -28,11 +28,11 @@ Example
 
     from torchref.math_functions import FrenchWilson
     from torchref.math_functions import math_torch, math_numpy
-    
+
     # French-Wilson conversion
     fw = FrenchWilson(spacegroup='P21', cell=cell)
     F_french_wilson = fw(I_obs, sigma_I)
-    
+
     # Coordinate transformations
     frac_coords = math_torch.cartesian_to_fractional_torch(cart_coords, cell)
 """

@@ -7,7 +7,6 @@ from torch.nn.functional import softplus
 from torchref.refinement.weighting.base_weighting import BaseWeighting
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
-    VERBOSITY_DETAILED,
     VERBOSITY_ESSENTIAL,
     VERBOSITY_STANDARD,
     StatEntry,
@@ -45,14 +44,13 @@ class TargetOffsetWeighting(BaseWeighting):
         """
         # Ensure losses are cached
         state.cache_losses()
-        target_info = state.get(f"target_info", {})
-
+        target_info = state.get("target_info", {})
 
         weights = {}
         for name, loss in state._losses.items():
-            if not name in target_info:
+            if name not in target_info:
                 continue
-            
+
             target_value = target_info[name].get("target_value", 0.0)
             sigma = target_info[name].get("sigma", 0.5)
 
@@ -178,6 +176,7 @@ class OverfittingWeighting(BaseWeighting):
             "test_nll": stat(test_nll, VERBOSITY_STANDARD),
         }
 
+
 class ManualWeighting(BaseWeighting):
     """
     Apply fixed manual weights.
@@ -189,12 +188,15 @@ class ManualWeighting(BaseWeighting):
 
     def __init__(self, weights: Dict[str, float], device: torch.device = None):
         super().__init__(device)
-        weights_as_tensor = {k: torch.tensor(v, device=self.device) for k, v in weights.items()}
+        weights_as_tensor = {
+            k: torch.tensor(v, device=self.device) for k, v in weights.items()
+        }
         self.manual_weights = TensorDict(weights_as_tensor)
 
     def forward(self, state: "LossState") -> Dict[str, float]:
         """Return manual weights (state is not used)."""
         return {k: v.item() for k, v in self.manual_weights.items()}
+
 
 class XrayScaleWeighting(BaseWeighting):
     """

@@ -1315,7 +1315,6 @@ class LBFGSRefinement(Refinement):
                 print(f"LBFGS Refinement Everything - Cycle {cycle+1}/{macro_cycles}")
                 print(f"{'='*60}")
 
-
             self.get_scales()
 
             # Collect metrics after scaling

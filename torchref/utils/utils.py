@@ -1095,19 +1095,19 @@ def parse_phenix_selection(selection_string: str, pdb_df: pd.DataFrame) -> torch
 
         # Select chain A
         mask = parse_phenix_selection("chain A", pdb_df)
-        
+
         # Select residues 10-20 in chain A
         mask = parse_phenix_selection("chain A and resseq 10:20", pdb_df)
-        
+
         # Select all CA atoms
         mask = parse_phenix_selection("name CA", pdb_df)
-        
+
         # Select backbone atoms
         mask = parse_phenix_selection("name CA or name C or name N or name O", pdb_df)
-        
+
         # Select everything except water
         mask = parse_phenix_selection("not resname HOH", pdb_df)
-        
+
         # Use parentheses for grouping
         mask = parse_phenix_selection("chain A and (name CA or name CB)", pdb_df)
     """
@@ -1166,10 +1166,10 @@ def create_selection_mask(
 
         # Create new mask selecting chain A
         mask = create_selection_mask("chain A", pdb_df, mode='set')
-        
+
         # Add residues 10-20 to existing mask
         mask = create_selection_mask("resseq 10:20", pdb_df, current_mask=mask, mode='add')
-        
+
         # Remove water from mask
         mask = create_selection_mask("resname HOH", pdb_df, current_mask=mask, mode='remove')
     """
@@ -1190,15 +1190,16 @@ def create_selection_mask(
     else:
         raise ValueError(f"Invalid mode: '{mode}'. Must be 'set', 'add', or 'remove'")
 
+
 def state_dict_to_json_serializable(sd: Dict[str, torch.Tensor]) -> Dict[str, Any]:
     """
     Convert a state_dict with tensors to a JSON-serializable format.
-    
+
     Parameters
     ----------
     sd : Dict[str, torch.Tensor]
         State dict with tensor values.
-        
+
     Returns
     -------
     Dict[str, Any]
@@ -1207,21 +1208,22 @@ def state_dict_to_json_serializable(sd: Dict[str, torch.Tensor]) -> Dict[str, An
     result = {}
     for k, v in sd.items():
         result[k] = {
-            'data': v.tolist() if v.numel() > 1 else [v.item()],
-            'dtype': str(v.dtype),
-            'shape': list(v.shape) if v.shape else [1],
+            "data": v.tolist() if v.numel() > 1 else [v.item()],
+            "dtype": str(v.dtype),
+            "shape": list(v.shape) if v.shape else [1],
         }
     return result
+
 
 def dict_to_state_dict(sd_raw):
     """
     Convert a dict with serialized tensor info to a PyTorch state_dict.
-    
+
     Parameters
     ----------
     sd_raw : dict
         Dictionary where values are dicts with 'data', 'dtype', 'shape' keys.
-        
+
     Returns
     -------
     dict
@@ -1229,12 +1231,19 @@ def dict_to_state_dict(sd_raw):
     """
     sd = {}
     for k, v in sd_raw.items():
-        tensor = torch.tensor(v["data"], dtype=getattr(torch, v["dtype"].split('.')[-1]))
+        tensor = torch.tensor(
+            v["data"], dtype=getattr(torch, v["dtype"].split(".")[-1])
+        )
         tensor = tensor.reshape(v["shape"])
         sd[k] = tensor
     return sd
 
-def json_to_state_dicts_separate(json_path: str) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], list]:
+
+def json_to_state_dicts_separate(
+    json_path: str,
+) -> Tuple[
+    Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], list
+]:
     """
     Parse hyperparameter JSON and return state_dicts for component_weighting, geometry_target, and adp_target.
 
@@ -1258,21 +1267,28 @@ def json_to_state_dicts_separate(json_path: str) -> Tuple[Dict[str, torch.Tensor
     unassigned_keys = []
 
     # Geometry target components
-    geometry_components = {'bond', 'angle', 'torsion', 'planarity', 'chiral', 'nonbonded'}
+    geometry_components = {
+        "bond",
+        "angle",
+        "torsion",
+        "planarity",
+        "chiral",
+        "nonbonded",
+    }
     # ADP target components
-    adp_components = {'simu', 'locality', 'KL'}
+    adp_components = {"simu", "locality", "KL"}
 
     for key, value in data.items():
         tensor_value = torch.tensor(value)
         assigned = False
 
-        if key.startswith('schemes.'):
+        if key.startswith("schemes."):
             # ComponentWeighting state_dict key
             component_weighting_state[key] = tensor_value
             assigned = True
-        elif key.startswith('_targets.'):
+        elif key.startswith("_targets."):
             # Extract component name (e.g., "_targets.bond._sigma" -> "bond")
-            parts = key.split('.')
+            parts = key.split(".")
             component_name = parts[1]
 
             if component_name in geometry_components:
@@ -1285,4 +1301,9 @@ def json_to_state_dicts_separate(json_path: str) -> Tuple[Dict[str, torch.Tensor
         if not assigned:
             unassigned_keys.append(key)
 
-    return component_weighting_state, geometry_target_state, adp_target_state, unassigned_keys
+    return (
+        component_weighting_state,
+        geometry_target_state,
+        adp_target_state,
+        unassigned_keys,
+    )

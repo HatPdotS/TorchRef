@@ -210,10 +210,14 @@ Examples:
     if args.hyperparameters.lower() != "none":
         try:
             from torchref.utils.utils import json_to_state_dicts_separate
+
             if args.hyperparameters.lower() == "default":
                 # Load default hyperparameters from package data
                 from torchref import PATH_TORCHREF_DATA
-                hyperparams_path = os.path.join(PATH_TORCHREF_DATA, 'default_hyperparameters.json')
+
+                hyperparams_path = os.path.join(
+                    PATH_TORCHREF_DATA, "default_hyperparameters.json"
+                )
 
                 hyperparams_source = "package default (Optuna-optimized)"
                 if args.verbose > 0:
@@ -229,26 +233,35 @@ Examples:
                     )
                     sys.exit(1)
 
-
                 hyperparams_source = str(hyperparams_path)
                 if args.verbose > 0:
                     print(f"Loading hyperparameters from: {hyperparams_path}")
                     sys.stdout.flush()
 
             # Convert to state dict and apply
-            component_weighting_state, geometry_target_state, adp_target_state, unassigned_keys = json_to_state_dicts_separate(hyperparams_path)
+            (
+                component_weighting_state,
+                geometry_target_state,
+                adp_target_state,
+                unassigned_keys,
+            ) = json_to_state_dicts_separate(hyperparams_path)
 
-            refinement.component_weighting.load_state_dict(component_weighting_state, strict=False)
-            refinement.geometry_target.load_state_dict(geometry_target_state, strict=False)
+            refinement.component_weighting.load_state_dict(
+                component_weighting_state, strict=False
+            )
+            refinement.geometry_target.load_state_dict(
+                geometry_target_state, strict=False
+            )
             refinement.adp_target.load_state_dict(adp_target_state, strict=False)
-            
+
             n_hyperparams = (
-                len(component_weighting_state) +
-                len(geometry_target_state) +
-                len(adp_target_state))
+                len(component_weighting_state)
+                + len(geometry_target_state)
+                + len(adp_target_state)
+            )
 
             if unassigned_keys and args.verbose > 1:
-                print(f"Warning: Unassigned hyperparameter keys in JSON:")
+                print("Warning: Unassigned hyperparameter keys in JSON:")
                 for key in unassigned_keys:
                     print(f"  - {key}")
                 print()

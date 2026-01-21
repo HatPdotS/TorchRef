@@ -11,10 +11,12 @@ and direct access to symmetry operations.
 """
 
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import gemmi
 import torch
+
+from torchref.symmetry import Cell
 
 if TYPE_CHECKING:
     pass
@@ -62,7 +64,7 @@ class CrystalDataset:
     _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool
 
     # === Unit cell and symmetry ===
-    cell: Optional[torch.Tensor] = None  # [a, b, c, alpha, beta, gamma]
+    cell: Optional[Cell] = None  # Cell object with [a, b, c, alpha, beta, gamma]
     spacegroup: Optional[gemmi.SpaceGroup] = None  # Space group (gemmi object)
 
     # === Metadata ===
@@ -110,6 +112,10 @@ class CrystalDataset:
         ------
         Tuple[str, torch.Tensor]
             Field name and tensor value for each tensor field.
+
+        Note
+        ----
+        Cell objects are excluded; they are handled separately in to().
         """
         for f in fields(self):
             val = getattr(self, f.name)
@@ -133,6 +139,9 @@ class CrystalDataset:
         self.device = torch.device(device)
         for name, tensor in self._tensor_fields():
             setattr(self, name, tensor.to(self.device))
+        # Move Cell object
+        if self.cell is not None:
+            self.cell = self.cell.to(device=self.device)
         if hasattr(self, "masks") and self.masks is not None:
             self.masks.to(self.device)
         if self.verbose > 1:
@@ -183,6 +192,9 @@ class CrystalDataset:
             val = getattr(self, f.name)
             if isinstance(val, torch.Tensor):
                 state[f.name] = val.cpu()
+            elif f.name == "cell" and val is not None:
+                # Store Cell tensor data for serialization
+                state[f.name] = val.data.cpu()
             elif f.name == "device":
                 # Store device as string
                 state[f.name] = str(val)
@@ -228,6 +240,11 @@ class CrystalDataset:
         if "spacegroup" in state and state["spacegroup"] is not None:
             if isinstance(state["spacegroup"], str):
                 state["spacegroup"] = gemmi.SpaceGroup(state["spacegroup"])
+
+        # Convert cell tensor back to Cell object
+        if "cell" in state and state["cell"] is not None:
+            if isinstance(state["cell"], torch.Tensor):
+                state["cell"] = Cell(state["cell"], dtype=torch.float32, device=device)
 
         # Create object with remaining state
         obj = cls(**state)

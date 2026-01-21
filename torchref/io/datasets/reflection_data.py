@@ -18,6 +18,7 @@ from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
 from torchref.math_functions import math_torch
 from torchref.math_functions.french_wilson import FrenchWilson
+from torchref.symmetry import Cell
 from torchref.utils.debug_utils import DebugMixin
 
 if TYPE_CHECKING:
@@ -31,7 +32,6 @@ warnings.filterwarnings(
 
 if TYPE_CHECKING:
     from torch.masked import MaskedTensor
-
 
 
 @dataclass
@@ -137,9 +137,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         self.hkl = hkl
 
         if cell is not None:
-            self.cell = torch.tensor(
-                cell, dtype=torch.float32, device=self.device, requires_grad=False
-            )
+            self.cell = Cell(cell, dtype=torch.float32, device=self.device)
         else:
             raise ValueError(
                 "Unit cell parameters are required in the data and could not be read."
@@ -166,7 +164,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 )
             self.intensity_source = data_dict.get("I_col", "Unknown")
             self._FrenchWilson = FrenchWilson(
-                self.hkl, self.cell, self.spacegroup, verbose=self.verbose
+                self.hkl, self.cell.data, self.spacegroup, verbose=self.verbose
             )
             F, F_sigma = self._FrenchWilson(self.I, self.I_sigma)
             self.F = F
@@ -639,7 +637,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             raise ValueError(
                 "Unit cell parameters are required to calculate resolution"
             )
-        s = math_torch.get_scattering_vectors(self.hkl, self.cell)
+        s = math_torch.get_scattering_vectors(self.hkl, self.cell.data)
         resolution = 1.0 / torch.linalg.norm(s, axis=1)
         self.resolution = resolution
 
@@ -1949,7 +1947,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         df = pd.DataFrame(data_dict)
 
         # Write MTZ file
-        write(df, self.cell, self.spacegroup, fname)
+        write(df, self.cell.data, self.spacegroup, fname)
 
         if self.verbose > 0:
             print(f"✓ Wrote MTZ file: {fname}")
@@ -1987,7 +1985,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         return self._centric_flags
 
     def calc_patterson(
-        self, grid_size: Optional[Tuple[int, int, int]] = None, grid_sampling: Optional[float] = 1
+        self,
+        grid_size: Optional[Tuple[int, int, int]] = None,
+        grid_sampling: Optional[float] = 1,
     ) -> torch.Tensor:
         """
         Calculate Patterson map of the dataset.
@@ -2002,7 +2002,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Grid dimensions (Nx, Ny, Nz). If None, automatically determined
             from unit cell and resolution.
         grid_sampling : float, optional
-            Sampling interval for the grid. Default is 1. 
+            Sampling interval for the grid. Default is 1.
             This sets the grid so that we sample twice as much as normal for a given resolution
 
         Returns
@@ -2051,7 +2051,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
 
         max_res = self.resolution.min().item()
-        possible_hkl = generate_possible_hkl(self.cell, max_res, device=self.device)
+        possible_hkl = generate_possible_hkl(self.cell.data, max_res, device=self.device)
 
         return possible_hkl
 
@@ -2222,7 +2222,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Get complete HKL set with index mapping
         filled_hkl, indices, missing = complete_hkl(
-            self.hkl, self.cell, self.spacegroup or "P1", d_min, device=self.device
+            self.hkl, self.cell.data, self.spacegroup or "P1", d_min, device=self.device
         )
 
         # Use remap to create the new dataset

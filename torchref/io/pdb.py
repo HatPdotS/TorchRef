@@ -27,11 +27,11 @@ Examples
 ::
 
     from torchref.io import pdb
-    
+
     # Reading
     reader = pdb.read('structure.pdb', verbose=1)
     df, cell, spacegroup = reader()
-    
+
     # Writing
     pdb.write(df, 'output.pdb')
 """
