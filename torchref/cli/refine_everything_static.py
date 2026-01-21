@@ -93,8 +93,8 @@ Examples:
     )
 
     parser.add_argument(
-        '-w',
-        '--weights',
+        "-w",
+        "--weights",
         type=str,
         default=None,
         help="Path to JSON file with manual weights for components (overrides defaults) defaults: {xray:1.0, geometry:10.0, adp:5.0}\n \
@@ -194,9 +194,9 @@ Examples:
 
     from torchref.refinement.weighting import ManualWeighting
 
-    base_weights = {'xray': 1.0, 'geometry': 10.0, 'adp':5.0 }
+    base_weights = {"xray": 1.0, "geometry": 10.0, "adp": 5.0}
     if args.weights is not None:
-        with open(args.weights, 'r') as f:
+        with open(args.weights, "r") as f:
             base_weights.update(json.load(f))
 
     manual_weighting = ManualWeighting(weights=base_weights, device=device)

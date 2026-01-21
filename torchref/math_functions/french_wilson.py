@@ -8,16 +8,16 @@ Usage - PyTorch Module (Recommended)::
 
         import torch
         from french_wilson_pytorch import FrenchWilsonModule
-        
+
         # Miller indices for your reflections
         hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-        
+
         # Unit cell: [a, b, c, alpha, beta, gamma] in Å and degrees
         unit_cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
-        
+
         # Create module (does all preprocessing)
         fw_module = FrenchWilsonModule(hkl, unit_cell, space_group='P212121')
-        
+
         # Apply conversion (can be called repeatedly with different I, sigma_I)
         I = torch.tensor([100.0, 50.0, 30.0, 200.0])
         sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
@@ -27,7 +27,7 @@ Usage - PyTorch Module (Recommended)::
 Usage - Functional API (for one-off conversions)::
 
         from french_wilson_pytorch import french_wilson_auto
-        
+
         F, sigma_F, valid = french_wilson_auto(
             I, sigma_I, hkl, d_spacings, space_group='P212121'
         )

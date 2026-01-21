@@ -43,18 +43,18 @@ class DatasetCollection(CrystalDataset):
     ::
 
         from torchref.io import DatasetCollection, ReflectionData
-        
+
         collection = DatasetCollection(device='cuda')
-        
+
         native = ReflectionData().load_mtz('native.mtz')
         derivative = ReflectionData().load_mtz('derivative.mtz')
-        
+
         collection.add_dataset('native', native, set_as_reference=True)
         collection.add_dataset('derivative', derivative)
-        
+
         for name, dataset in collection:
             print(f"{name}: {len(dataset)} reflections")
-        
+
         # Access by name
         native_F = collection['native'].F
     """

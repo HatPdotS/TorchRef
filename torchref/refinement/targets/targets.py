@@ -357,8 +357,9 @@ class XrayTarget(Target):
             "loss": stat(loss.item(), VERBOSITY_STANDARD),
             "n": stat(len(F_obs), VERBOSITY_DEBUG),
             "rwork": stat(rwork, VERBOSITY_STANDARD),
-            "rfree": stat(rfree, VERBOSITY_STANDARD)}
-            
+            "rfree": stat(rfree, VERBOSITY_STANDARD),
+        }
+
 
 class GaussianXrayTarget(XrayTarget):
     """
@@ -699,9 +700,7 @@ class PlanarityTarget(GeometryTarget):
         if "plane" not in self.restraints.restraints:
             return torch.tensor(0.0, device=device)
 
-        log_2pi = torch.log(
-            torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
-        )
+        log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
 
         for key, plane_data in self.restraints.restraints["plane"].items():
             indices = plane_data.get("indices")
@@ -726,14 +725,10 @@ class PlanarityTarget(GeometryTarget):
 
             # Batched deviation calculation
             # deviations[p,a] = |centered[p,a] · normal[p]|
-            deviations = torch.abs(torch.einsum('paj,pj->pa', centered, normals))
+            deviations = torch.abs(torch.einsum("paj,pj->pa", centered, normals))
 
             # NLL calculation (all vectorized)
-            nll = (
-                0.5 * (deviations / sigmas) ** 2
-                + torch.log(sigmas)
-                + 0.5 * log_2pi
-            )
+            nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
             all_nlls.append(nll.flatten())
 
         if all_nlls:
@@ -770,7 +765,7 @@ class PlanarityTarget(GeometryTarget):
             normals = Vh[:, -1, :]  # (n_planes, 3)
 
             # Batched deviation calculation
-            deviations = torch.abs(torch.einsum('paj,pj->pa', centered, normals))
+            deviations = torch.abs(torch.einsum("paj,pj->pa", centered, normals))
 
             all_deviations.append(deviations.flatten())
             all_sigmas.append(sigmas.flatten())

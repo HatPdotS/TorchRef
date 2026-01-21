@@ -15,12 +15,12 @@ Example
 ::
 
     from torchref.symmetry.spacegroup import SpaceGroup
-    
+
     # Create from various inputs
     sg = SpaceGroup('P 21')
     sg = SpaceGroup('P21')  # Same result
     sg = SpaceGroup(19)     # From space group number
-    
+
     # Access properties
     print(sg.hm)            # 'P 21 21 21' (Hermann-Mauguin)
     print(sg.number)        # 19

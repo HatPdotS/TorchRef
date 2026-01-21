@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import torch
 from torch.nn import Module as nnModule
@@ -438,10 +438,10 @@ class Refinement(DebugMixin, nnModule):
 
     def setup_component_weighting(self):
         """
-        
+
         Set up component weighting.
         Loads default hyperparameters and initializes ComponentWeighting.
-        
+
         """
         from torchref.refinement.weighting.component_weighting import ComponentWeighting
 
@@ -463,11 +463,19 @@ class Refinement(DebugMixin, nnModule):
         import os
         from torchref.utils.utils import json_to_state_dicts_separate
 
+        hyperparams_path = os.path.join(
+            PATH_TORCHREF_DATA, "default_hyperparameters.json"
+        )
+        (
+            component_weighting_state,
+            geometry_target_state,
+            adp_target_state,
+            unassigned_keys,
+        ) = json_to_state_dicts_separate(hyperparams_path)
 
-        hyperparams_path = os.path.join(PATH_TORCHREF_DATA, 'default_hyperparameters.json')
-        component_weighting_state, geometry_target_state, adp_target_state, unassigned_keys = json_to_state_dicts_separate(hyperparams_path)
-
-        self.component_weighting.load_state_dict(component_weighting_state, strict=False)
+        self.component_weighting.load_state_dict(
+            component_weighting_state, strict=False
+        )
         self.geometry_target.load_state_dict(geometry_target_state, strict=False)
         self.adp_target.load_state_dict(adp_target_state, strict=False)
 
@@ -519,12 +527,14 @@ class Refinement(DebugMixin, nnModule):
                 # Device
                 "device": self.device,
                 # Static structure/data properties
-
                 "n_atoms": len(self.model.pdb),
                 "n_hkl": self.reflection_data.hkl.shape[0],
                 "resolution_min": float(self.reflection_data.resolution.min()),
-                "wilson_b": float(self.reflection_data.wilson_b) if self.reflection_data.wilson_b is not None else 45.0,
-
+                "wilson_b": (
+                    float(self.reflection_data.wilson_b)
+                    if self.reflection_data.wilson_b is not None
+                    else 45.0
+                ),
                 # Dynamic refinement state
                 "rwork": rwork,
                 "rfree": rfree,
@@ -684,7 +694,7 @@ class Refinement(DebugMixin, nnModule):
                 metrics["adp"] = self.adp_target.stats()
 
         return metrics
-    
+
     def log_refinement(self, phase: str, before: Dict[str, Any], after: Dict[str, Any]):
         """
         Log refinement comparison showing metrics before/after.
@@ -703,39 +713,39 @@ class Refinement(DebugMixin, nnModule):
         """
         if self.verbose < 1:
             return
-        
+
         from torchref.utils.stats import filter_stats, StatEntry
-        
+
         # Filter stats based on verbosity level for display
         before_filtered = filter_stats(before, self.verbose)
         after_filtered = filter_stats(after, self.verbose)
-        
+
         # Get weights from after stats
-        weights = after_filtered.get('component_weighting', {}).get('weights', {})
-        
+        weights = after_filtered.get("component_weighting", {}).get("weights", {})
+
         # Get overfitting weight from after stats (need to look in unfiltered to find it)
         overfitting_weight = 0.0
-        after_cw = after.get('component_weighting', {})
-        if 'overfitting_weighting' in after_cw:
-            ow_stats = after_cw['overfitting_weighting']
+        after_cw = after.get("component_weighting", {})
+        if "overfitting_weighting" in after_cw:
+            ow_stats = after_cw["overfitting_weighting"]
             if isinstance(ow_stats, dict):
-                ow_val = ow_stats.get('overfitting_weight')
+                ow_val = ow_stats.get("overfitting_weight")
                 if isinstance(ow_val, StatEntry):
                     overfitting_weight = ow_val.value
                 elif ow_val is not None:
                     overfitting_weight = ow_val
-        
+
         # Get X-ray scale weight from after stats
         xray_scale_weight = 1.0
-        if 'xray_scale_weighting' in after_cw:
-            xsw_stats = after_cw['xray_scale_weighting']
+        if "xray_scale_weighting" in after_cw:
+            xsw_stats = after_cw["xray_scale_weighting"]
             if isinstance(xsw_stats, dict):
-                xsw_val = xsw_stats.get('xray_weight')
+                xsw_val = xsw_stats.get("xray_weight")
                 if isinstance(xsw_val, StatEntry):
                     xray_scale_weight = xsw_val.value
                 elif xsw_val is not None:
                     xray_scale_weight = xsw_val
-        
+
         print(f"\n{'─'*80}")
         print(f"  {phase} Refinement Summary")
         print(f"  X-ray scale weight: {xray_scale_weight:.4f}", end="")
@@ -743,110 +753,167 @@ class Refinement(DebugMixin, nnModule):
             print(f"  |  Overfitting penalty: {overfitting_weight:.3f}", end="")
         print()  # End the line
         print(f"{'─'*80}")
-        
+
         # Header with weight column
-        print(f"\n  {'Metric':<30} {'Before':>12} {'After':>12} {'Change':>12} {'Weight':>10}")
+        print(
+            f"\n  {'Metric':<30} {'Before':>12} {'After':>12} {'Change':>12} {'Weight':>10}"
+        )
         print(f"  {'-'*76}")
-        
-        def format_row(label, b_val, a_val, weight=None, fmt='12.4f'):
+
+        def format_row(label, b_val, a_val, weight=None, fmt="12.4f"):
             delta = a_val - b_val
             weight_str = f"{weight:>10.4f}" if weight is not None else f"{'':>10}"
             return f"  {label:<30} {b_val:>{fmt}} {a_val:>{fmt}} {delta:>+{fmt}} {weight_str}"
-        
+
         # R-factor metrics (always included)
-        for key, label in [('rwork', 'Rwork'), ('rfree', 'Rfree'), ('rfree_gap', 'Rfree-Rwork gap')]:
+        for key, label in [
+            ("rwork", "Rwork"),
+            ("rfree", "Rfree"),
+            ("rfree_gap", "Rfree-Rwork gap"),
+        ]:
             b_val = before_filtered.get(key, 0)
             a_val = after_filtered.get(key, 0)
             print(format_row(label, b_val, a_val))
-        
+
         # X-ray NLL with weight
         print()
-        before_xray = before_filtered.get('component_weighting', {}).get('xray', {})
-        after_xray = after_filtered.get('component_weighting', {}).get('xray', {})
-        xray_weight = weights.get('xray')
-        for key, label in [('work_nll', 'X-ray NLL (work)'), ('test_nll', 'X-ray NLL (test)')]:
+        before_xray = before_filtered.get("component_weighting", {}).get("xray", {})
+        after_xray = after_filtered.get("component_weighting", {}).get("xray", {})
+        xray_weight = weights.get("xray")
+        for key, label in [
+            ("work_nll", "X-ray NLL (work)"),
+            ("test_nll", "X-ray NLL (test)"),
+        ]:
             b_val = before_xray.get(key, 0)
             a_val = after_xray.get(key, 0)
             # Only show weight on first X-ray row
-            w = xray_weight if key == 'work_nll' else None
+            w = xray_weight if key == "work_nll" else None
             print(format_row(label, b_val, a_val, w))
-        
+
         # Geometry loss with weight (verbosity >= 1)
         if self.verbose >= 1:
-            geom_weight = weights.get('geometry')
-            before_geom = before_filtered.get('geometry', {})
-            after_geom = after_filtered.get('geometry', {})
+            geom_weight = weights.get("geometry")
+            before_geom = before_filtered.get("geometry", {})
+            after_geom = after_filtered.get("geometry", {})
             # Get total geometry loss if available
             b_geom_total = 0.0
             a_geom_total = 0.0
             for target_name, target_stats in after_geom.items():
                 if isinstance(target_stats, dict):
-                    a_geom_total += target_stats.get('loss', 0)
+                    a_geom_total += target_stats.get("loss", 0)
                     b_stats = before_geom.get(target_name, {})
                     if isinstance(b_stats, dict):
-                        b_geom_total += b_stats.get('loss', 0)
+                        b_geom_total += b_stats.get("loss", 0)
             if a_geom_total > 0 or b_geom_total > 0:
-                print(format_row('Geometry (total)', b_geom_total, a_geom_total, geom_weight))
-            
+                print(
+                    format_row(
+                        "Geometry (total)", b_geom_total, a_geom_total, geom_weight
+                    )
+                )
+
             # ADP loss with weight
-            adp_weight = weights.get('adp')
-            before_adp = before_filtered.get('adp', {})
-            after_adp = after_filtered.get('adp', {})
+            adp_weight = weights.get("adp")
+            before_adp = before_filtered.get("adp", {})
+            after_adp = after_filtered.get("adp", {})
             # Get total ADP loss if available
             b_adp_total = 0.0
             a_adp_total = 0.0
             for target_name, target_stats in after_adp.items():
                 if isinstance(target_stats, dict):
-                    a_adp_total += target_stats.get('loss', 0)
+                    a_adp_total += target_stats.get("loss", 0)
                     b_stats = before_adp.get(target_name, {})
                     if isinstance(b_stats, dict):
-                        b_adp_total += b_stats.get('loss', 0)
+                        b_adp_total += b_stats.get("loss", 0)
             if a_adp_total > 0 or b_adp_total > 0:
-                print(format_row('ADP (total)', b_adp_total, a_adp_total, adp_weight))
-        
+                print(format_row("ADP (total)", b_adp_total, a_adp_total, adp_weight))
+
         # Detailed component losses (verbosity >= 2)
         if self.verbose >= 2:
             # Geometry targets breakdown
-            before_geom = before_filtered.get('geometry', {})
-            after_geom = after_filtered.get('geometry', {})
+            before_geom = before_filtered.get("geometry", {})
+            after_geom = after_filtered.get("geometry", {})
             if after_geom:
-                print(f"\n  Geometry breakdown:")
+                print("\n  Geometry breakdown:")
                 for target_name, target_stats in after_geom.items():
                     if isinstance(target_stats, dict):
-                        loss = target_stats.get('loss', 0)
-                        b_loss = before_geom.get(target_name, {}).get('loss', 0) if isinstance(before_geom.get(target_name), dict) else 0
-                        label = '    ' + target_name.replace('_target', '').replace('_', ' ').title()
+                        loss = target_stats.get("loss", 0)
+                        b_loss = (
+                            before_geom.get(target_name, {}).get("loss", 0)
+                            if isinstance(before_geom.get(target_name), dict)
+                            else 0
+                        )
+                        label = (
+                            "    "
+                            + target_name.replace("_target", "")
+                            .replace("_", " ")
+                            .title()
+                        )
                         print(format_row(label, b_loss, loss))
-                        
+
                         # Detailed stats at verbosity >= 3
                         if self.verbose >= 3:
                             for stat_key, stat_val in target_stats.items():
-                                if stat_key != 'loss' and isinstance(stat_val, (int, float)):
-                                    b_stat = before_geom.get(target_name, {}).get(stat_key, 0) if isinstance(before_geom.get(target_name), dict) else 0
-                                    print(format_row(f"      {stat_key}", b_stat, stat_val))
-            
+                                if stat_key != "loss" and isinstance(
+                                    stat_val, (int, float)
+                                ):
+                                    b_stat = (
+                                        before_geom.get(target_name, {}).get(
+                                            stat_key, 0
+                                        )
+                                        if isinstance(
+                                            before_geom.get(target_name), dict
+                                        )
+                                        else 0
+                                    )
+                                    print(
+                                        format_row(
+                                            f"      {stat_key}", b_stat, stat_val
+                                        )
+                                    )
+
             # ADP targets breakdown
-            before_adp = before_filtered.get('adp', {})
-            after_adp = after_filtered.get('adp', {})
+            before_adp = before_filtered.get("adp", {})
+            after_adp = after_filtered.get("adp", {})
             if after_adp:
-                print(f"\n  ADP breakdown:")
+                print("\n  ADP breakdown:")
                 for target_name, target_stats in after_adp.items():
                     if isinstance(target_stats, dict):
-                        loss = target_stats.get('loss', 0)
-                        b_loss = before_adp.get(target_name, {}).get('loss', 0) if isinstance(before_adp.get(target_name), dict) else 0
-                        label = '    ' + target_name.replace('_target', '').replace('_', ' ').title()
+                        loss = target_stats.get("loss", 0)
+                        b_loss = (
+                            before_adp.get(target_name, {}).get("loss", 0)
+                            if isinstance(before_adp.get(target_name), dict)
+                            else 0
+                        )
+                        label = (
+                            "    "
+                            + target_name.replace("_target", "")
+                            .replace("_", " ")
+                            .title()
+                        )
                         print(format_row(label, b_loss, loss))
-                        
+
                         # Detailed stats at verbosity >= 3
                         if self.verbose >= 3:
                             for stat_key, stat_val in target_stats.items():
-                                if stat_key != 'loss' and isinstance(stat_val, (int, float)):
-                                    b_stat = before_adp.get(target_name, {}).get(stat_key, 0) if isinstance(before_adp.get(target_name), dict) else 0
-                                    print(format_row(f"      {stat_key}", b_stat, stat_val))
-        
+                                if stat_key != "loss" and isinstance(
+                                    stat_val, (int, float)
+                                ):
+                                    b_stat = (
+                                        before_adp.get(target_name, {}).get(stat_key, 0)
+                                        if isinstance(before_adp.get(target_name), dict)
+                                        else 0
+                                    )
+                                    print(
+                                        format_row(
+                                            f"      {stat_key}", b_stat, stat_val
+                                        )
+                                    )
+
         print(f"{'─'*80}\n")
-    
-    def log_xyz_comparison(self, before: Dict[str, float], after: Dict[str, float], weight: float = None):
+
+    def log_xyz_comparison(
+        self, before: Dict[str, float], after: Dict[str, float], weight: float = None
+    ):
         """
         Log XYZ refinement comparison.
 
@@ -861,9 +928,11 @@ class Refinement(DebugMixin, nnModule):
         weight : float, optional
             Restraint weight (ignored, for backwards compatibility).
         """
-        self.log_refinement('XYZ', before, after)
-    
-    def log_adp_comparison(self, before: Dict[str, float], after: Dict[str, float], weight: float = None):
+        self.log_refinement("XYZ", before, after)
+
+    def log_adp_comparison(
+        self, before: Dict[str, float], after: Dict[str, float], weight: float = None
+    ):
         """
         Log ADP refinement comparison.
 
@@ -878,16 +947,15 @@ class Refinement(DebugMixin, nnModule):
         weight : float, optional
             ADP weight (ignored, for backwards compatibility).
         """
-        self.log_refinement('ADP', before, after)
+        self.log_refinement("ADP", before, after)
 
     def add_target_info_to_state(self, state: "LossState") -> "LossState":
-
         """
         Add target information from geometry and ADP targets to LossState.meta.
         Parameters
         ----------
         state : LossState
-            Current loss state. Meta will be updated with target info.      
+            Current loss state. Meta will be updated with target info.
         Returns
         -------
         LossState
@@ -906,12 +974,12 @@ class Refinement(DebugMixin, nnModule):
         for loss_object in self.adp_target.values():
             target_val, sigma = loss_object._target_value, loss_object._sigma
             target_info[loss_object.name] = {
-                    "target_value": target_val,
-                    "sigma": sigma,
+                "target_value": target_val,
+                "sigma": sigma,
             }
-            
+
         state.update_meta({"target_info": target_info})
-        
+
         return state
 
     def cuda(self):
@@ -922,7 +990,10 @@ class Refinement(DebugMixin, nnModule):
             self.scaler.cuda()
         if hasattr(self, "restraints") and self.restraints is not None:
             self.restraints.cuda()
-        if hasattr(self, "component_weighting") and self.component_weighting is not None:
+        if (
+            hasattr(self, "component_weighting")
+            and self.component_weighting is not None
+        ):
             self.component_weighting.cuda()
             self.component_weighting.device = torch.device("cuda")
         self.device = torch.device("cuda")
@@ -936,7 +1007,10 @@ class Refinement(DebugMixin, nnModule):
             self.scaler.cpu()
         if hasattr(self, "restraints") and self.restraints is not None:
             self.restraints.cpu()
-        if hasattr(self, "component_weighting") and self.component_weighting is not None:
+        if (
+            hasattr(self, "component_weighting")
+            and self.component_weighting is not None
+        ):
             self.component_weighting.cpu()
             self.component_weighting.device = torch.device("cpu")
         self.device = torch.device("cpu")

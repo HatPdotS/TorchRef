@@ -6,10 +6,12 @@ This module requires the iotbx package from CCTBX, which must be installed via c
 
 Functions in this module will raise ImportError if iotbx is not available.
 """
+
 import numpy as np
 
 try:
     from iotbx import pdb
+
     IOTBX_AVAILABLE = True
 except ImportError:
     IOTBX_AVAILABLE = False

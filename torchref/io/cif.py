@@ -36,19 +36,19 @@ Examples
 ::
 
     from torchref.io import cif
-    
+
     # Reading reflections
     reader = cif.read_reflections('structure-sf.cif', verbose=1)
     data_dict, cell, spacegroup = reader()
-    
+
     # Reading model
     reader = cif.read_model('structure.cif')
     df, cell, spacegroup = reader()
-    
+
     # Reading restraints
     reader = cif.read_restraints('ALA.cif')
     restraints = reader.get_all_restraints()
-    
+
     # List data blocks
     blocks = cif.list_data_blocks('multi-block.cif')
 """

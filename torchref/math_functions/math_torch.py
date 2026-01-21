@@ -1642,9 +1642,9 @@ def interpolate_structure_factor_from_grid(
     l1 = l0 + 1
 
     # Fractional parts (weights) - use float32 for weights
-    hd = (h - h0.float())
-    kd = (k - k0.float())
-    ld = (l - l0.float())
+    hd = h - h0.float()
+    kd = k - k0.float()
+    ld = l - l0.float()
 
     # Wrap indices to grid (periodic boundary)
     h0 = torch.remainder(h0, Nx)
@@ -2904,6 +2904,7 @@ def random_rotation_uniform(
 
     return R
 
+
 def trilinear_interpolate_patterson(
     grid: torch.Tensor, points: torch.Tensor, chunk_size: int = 10_000_000
 ) -> torch.Tensor:
@@ -2937,7 +2938,7 @@ def trilinear_interpolate_patterson(
     original_shape = points.shape[:-1]
     points = points.reshape(-1, 3)
     n_total = points.shape[0]
-    
+
     nx, ny, nz = grid.shape
     device = grid.device
     dtype = grid.dtype
@@ -2965,7 +2966,7 @@ def trilinear_interpolate_patterson(
         xd = (px - px.floor()).to(dtype)
         yd = (py - py.floor()).to(dtype)
         zd = (pz - pz.floor()).to(dtype)
-        
+
         # Precompute complementary weights
         xd1 = 1 - xd
         yd1 = 1 - yd
@@ -2973,14 +2974,14 @@ def trilinear_interpolate_patterson(
 
         # Direct accumulation - avoids storing 8 corner arrays
         result[start:end] = (
-            grid[x0, y0, z0] * (xd1 * yd1 * zd1) +
-            grid[x0, y0, z1] * (xd1 * yd1 * zd) +
-            grid[x0, y1, z0] * (xd1 * yd * zd1) +
-            grid[x0, y1, z1] * (xd1 * yd * zd) +
-            grid[x1, y0, z0] * (xd * yd1 * zd1) +
-            grid[x1, y0, z1] * (xd * yd1 * zd) +
-            grid[x1, y1, z0] * (xd * yd * zd1) +
-            grid[x1, y1, z1] * (xd * yd * zd)
+            grid[x0, y0, z0] * (xd1 * yd1 * zd1)
+            + grid[x0, y0, z1] * (xd1 * yd1 * zd)
+            + grid[x0, y1, z0] * (xd1 * yd * zd1)
+            + grid[x0, y1, z1] * (xd1 * yd * zd)
+            + grid[x1, y0, z0] * (xd * yd1 * zd1)
+            + grid[x1, y0, z1] * (xd * yd1 * zd)
+            + grid[x1, y1, z0] * (xd * yd * zd1)
+            + grid[x1, y1, z1] * (xd * yd * zd)
         )
 
     return result.reshape(original_shape)

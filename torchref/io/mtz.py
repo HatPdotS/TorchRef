@@ -25,12 +25,12 @@ Examples
 ::
 
     from torchref.io import mtz
-    
+
     # Reading
     reader = mtz.read('data.mtz', verbose=1)
     data_dict, cell, spacegroup = reader()
     print(spacegroup.short_name())  # gemmi.SpaceGroup object
-    
+
     # Writing
     mtz.write(df, cell, spacegroup, 'output.mtz')
 """

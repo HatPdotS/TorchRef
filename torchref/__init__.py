@@ -91,7 +91,6 @@ PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 # =============================================================================
 
 
-
 # Data I/O
 from torchref.io import DatasetCollection, ReflectionData
 

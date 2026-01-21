@@ -180,7 +180,7 @@ class PolicyComponentWeighting(BaseWeighting):
 
     def __init__(
         self,
-        device: torch.device = torch.device('cpu'),
+        device: torch.device = torch.device("cpu"),
         policy_path: Optional[str] = None,
         sample: bool = False,
         temperature: float = 1.0,

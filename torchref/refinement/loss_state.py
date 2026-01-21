@@ -203,7 +203,7 @@ class LossState:
             Prefix to prepend to all target names.
         """
         for name, target in targets.items():
-            target_name = getattr(target, 'name', name)
+            target_name = getattr(target, "name", name)
             self.register_target(target_name, target, prefix=prefix)
         return self
 
@@ -349,7 +349,6 @@ class LossState:
             self.log("total", total)
 
         return total
-    
 
     def get_loss(self, name: str) -> Optional[torch.Tensor]:
         """
