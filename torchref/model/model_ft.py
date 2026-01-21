@@ -4,19 +4,12 @@ import gemmi
 import numpy as np
 import torch
 
-import torchref.math_functions.get_scattering_factor_torch as gsf
-import torchref.symmetry.symmetry as sym
 from torchref.math_functions.math_torch import (
-    extract_structure_factor_from_grid,
     fft,
-    find_grid_size,
-    find_relevant_voxels,
-    get_real_grid,
     hash_tensors,
     ifft,
-    vectorized_add_to_map,
-    vectorized_add_to_map_aniso,
 )
+from torchref.model.fft import FFT
 from torchref.model.model import Model
 from torchref.symmetry import Symmetry
 from torchref.symmetry.map_symmetry import MapSymmetry
@@ -106,22 +99,9 @@ class ModelFT(Model):
         # FT-specific configuration
         self.max_res = max_res
         self.radius_angstrom = radius_angstrom
+        self._explicit_gridsize = gridsize
         self._cache = TensorDict()
 
-        # Electron density map (computed on demand)
-        self.map = None
-
-        # Grid size (set during load or load_state_dict)
-        if gridsize is not None:
-            self.register_buffer("gridsize", torch.tensor(gridsize, dtype=torch.int32))
-        else:
-            self.register_buffer("gridsize", None)
-
-        # Parametrization dict (set during _build_parametrization)
-        self.parametrization = {}
-
-        # Map symmetry operator (set during setup_grid)
-        self.map_symmetry = None
 
     def load_pdb(self, filename):
         """
@@ -138,13 +118,16 @@ class ModelFT(Model):
             Self, for method chaining.
         """
         super().load_pdb(filename)
-        self._build_parametrization()
+        # Set cell and spacegroup on FFT submodule
+        self._fft = FFT(self.cell, self.spacegroup, device=self.device, dtype_float=self.dtype_float)
         self.setup_grid()
         return self
 
     def select(self, selection):
         selection = super().select(selection)
         selection._build_parametrization()
+        # Set cell and spacegroup on the new FFT submodule
+        selection._fft.set_cell_and_spacegroup(selection.cell, selection.spacegroup)
         selection.setup_grid()
         return selection
 
@@ -164,61 +147,121 @@ class ModelFT(Model):
         """
         super().load_cif(filename)
         self._build_parametrization()
+        # Set cell and spacegroup on FFT submodule
+        self._fft.set_cell_and_spacegroup(self.cell, self.spacegroup)
         self.setup_grid()
         return self
 
     def setup_gridsize(self, max_res=None):
+        """
+        Compute optimal grid dimensions.
+
+        Delegates to FFT.compute_grid_size().
+
+        Parameters
+        ----------
+        max_res : float, optional
+            Maximum resolution in Angstroms. If None, uses self.max_res.
+
+        Returns
+        -------
+        torch.Tensor
+            Grid dimensions (nx, ny, nz) as int32 tensor.
+        """
         if max_res is not None:
             self.max_res = max_res
+            self._fft.max_res = max_res
+
         if self.verbose > 1:
             print(f"Defining grid size for ={self.max_res} Å")
-        gridsize_initial = find_grid_size(self.cell, self.max_res)
-        if hasattr(self, "spacegroup") and self.spacegroup is not None:
-            # Convert tensor to tuple of ints for suggest_grid_size
-            gridsize_tuple = tuple(gridsize_initial.tolist())
-            gridsize_optimized = sym.Symmetry(self.spacegroup).suggest_grid_size(
-                gridsize_tuple
-            )
-            if self.verbose > 1:
-                print(
-                    f"Optimized grid size from {gridsize_tuple} to {gridsize_optimized} based on symmetry, for cell {self.cell} and maxres {self.max_res}"
-                )
-            return torch.tensor(gridsize_optimized, dtype=torch.int32)
-        return torch.tensor(gridsize_initial, dtype=torch.int32)
+
+        # Use Cell's compute_grid_size method
+        gridsize = self.cell.compute_grid_size(self.max_res)
+        return torch.tensor(gridsize, dtype=torch.int32, device=self.device)
 
     def _build_parametrization(self):
         """
         Build ITC92 parametrization for all atoms in the model.
 
-        Creates and stores the parametrization dictionary mapping element types
-        to their ITC92 scattering factor parameters (A, B, C). Registers the
-        A and B parameter tensors as buffers.
+        Delegates to parent Model class which handles the actual parametrization
+        building. This method exists for API compatibility.
         """
-        if self.verbose > 1:
-            print("Building ITC92 parametrization...")
+        # Use parent's implementation
+        return super()._build_parametrization()
 
-        self.parametrization = gsf.get_parameterization_extended(self.pdb)
-        if self.verbose > 0:
-            print(
-                f"Parametrization built for {len(self.parametrization)} unique atom types"
-            )
-        if self.verbose > 1:
-            print("Elements with parametrization:", list(self.parametrization.keys()))
+    # =========================================================================
+    # Backward-compatible properties for scattering parameters
+    # =========================================================================
 
-        elements = self.pdb.element.tolist()
+    @property
+    def A(self) -> torch.Tensor:
+        """
+        ITC92 A parameters (amplitudes) for all atoms.
 
-        self.register_buffer(
-            "A",
-            torch.cat(
-                [self.parametrization[element][0] for element in elements], dim=0
-            ),
-        )
-        self.register_buffer(
-            "B",
-            torch.cat(
-                [self.parametrization[element][1] for element in elements], dim=0
-            ),
-        )
+        Returns
+        -------
+        torch.Tensor
+            A parameters with shape (n_atoms, 5).
+        """
+        self._build_parametrization()
+        return self._A
+
+    @property
+    def B(self) -> torch.Tensor:
+        """
+        ITC92 B parameters (widths) for all atoms.
+
+        Returns
+        -------
+        torch.Tensor
+            B parameters with shape (n_atoms, 5).
+        """
+        self._build_parametrization()
+        return self._B
+
+    # =========================================================================
+    # Backward-compatible properties for FFT grid attributes
+    # =========================================================================
+
+    @property
+    def gridsize(self) -> Optional[torch.Tensor]:
+        """Grid dimensions (nx, ny, nz)."""
+        return self._fft.gridsize
+
+    @gridsize.setter
+    def gridsize(self, value):
+        """Set grid size (for backward compatibility)."""
+        self._fft.gridsize = value
+
+    @property
+    def real_space_grid(self) -> Optional[torch.Tensor]:
+        """Real-space coordinate grid with shape (nx, ny, nz, 3)."""
+        return self._fft.real_space_grid
+
+    @real_space_grid.setter
+    def real_space_grid(self, value):
+        """Set real space grid (for backward compatibility)."""
+        self._fft.real_space_grid = value
+
+    @property
+    def voxel_size(self) -> Optional[torch.Tensor]:
+        """Voxel dimensions."""
+        return self._fft.voxel_size
+
+    @voxel_size.setter
+    def voxel_size(self, value):
+        """Set voxel size (for backward compatibility)."""
+        self._fft.voxel_size = value
+
+    @property
+    def map_symmetry(self) -> Optional[MapSymmetry]:
+        """Symmetry operator for map calculations."""
+        return self._fft.map_symmetry
+
+    @map_symmetry.setter
+    def map_symmetry(self, value):
+        """Set map symmetry (for backward compatibility)."""
+        self._fft.map_symmetry = value
 
     def get_iso(self):
         """
@@ -237,13 +280,11 @@ class ModelFT(Model):
         B : torch.Tensor
             ITC92 B parameters (widths) with shape (n_atoms, 5).
         """
-        # Get base isotropic data
+        # Get base isotropic data from parent
         xyz, b, occupancy = super().get_iso()
 
-        # Get elements for isotropic atoms
-        iso_mask = ~self.aniso_flag
-        A = self.A[iso_mask]
-        B = self.B[iso_mask]
+        # Get scattering parameters from parent
+        A, B = self.get_scattering_params_iso()
 
         return xyz, b, occupancy, A, B
 
@@ -264,14 +305,11 @@ class ModelFT(Model):
         B : torch.Tensor
             ITC92 B parameters (widths) with shape (n_atoms, 5).
         """
-        # Get base anisotropic data
+        # Get base anisotropic data from parent
         xyz, u, occupancy = super().get_aniso()
 
-        # Get elements for anisotropic atoms
-        aniso_mask = self.aniso_flag
-
-        A = self.A[aniso_mask]
-        B = self.B[aniso_mask]
+        # Get scattering parameters from parent
+        A, B = self.get_scattering_params_aniso()
 
         return xyz, u, occupancy, A, B
 
@@ -279,52 +317,36 @@ class ModelFT(Model):
         """
         Setup real-space grid for electron density calculation.
 
+        Delegates to FFT.setup_grid() using the stored cell and spacegroup.
+
         Parameters
         ----------
         max_res : float, optional
             Maximum resolution for grid spacing in Angstroms.
             If None, uses self.max_res.
         gridsize : tuple of int, optional
-            Explicit grid size (nx, ny, nz). If None, computed automatically.
+            Explicit grid size (nx, ny, nz). If None, computed automatically
+            using Cell.compute_grid_size() and Symmetry.suggest_grid_size().
         """
         if max_res is not None:
             self.max_res = max_res
+            self._fft.max_res = max_res
+
         if self.verbose > 1:
             print(f"Setting up grids with max_res={self.max_res} Å")
-        if gridsize is not None:
-            self.register_buffer(
-                "gridsize",
-                torch.tensor(gridsize, dtype=torch.int32, device=self.device),
-            )
-        else:
-            self.register_buffer(
-                "gridsize",
-                self.setup_gridsize(max_res=self.max_res)
-                .to(dtype=torch.int32)
-                .to(device=self.device),
-            )
 
-        self.register_buffer(
-            "real_space_grid",
-            get_real_grid(self.cell, gridsize=self.gridsize, device=self.device),
-        )
-        self.register_buffer(
-            "voxel_size", self.real_space_grid[2, 2, 2] - self.real_space_grid[1, 1, 1]
-        )
+        # Determine grid size to use
+        gridsize_to_use = gridsize or self._explicit_gridsize
 
-        # Initialize map symmetry operator
-        if hasattr(self, "spacegroup") and self.spacegroup is not None:
-            self.map_symmetry = MapSymmetry(
-                space_group=self.spacegroup,
-                map_shape=self.real_space_grid.shape[:-1],
-                cell_params=self.cell,
-                verbose=self.verbose,
-                device=self.device,
-            )
+        # Delegate to FFT submodule (which now uses stored cell/spacegroup)
+        self._fft.setup_grid(
+            gridsize=gridsize_to_use,
+            max_res=self.max_res,
+        )
 
         if self.verbose > 2:
-            print(f"Grid shape: {self.real_space_grid.shape[:-1]}")
-            print(f"Voxel size: {self.voxel_size}")
+            print(f"Grid shape: {self._fft.real_space_grid.shape[:-1]}")
+            print(f"Voxel size: {self._fft.voxel_size}")
 
     def get_radius(self, min_radius_Angstrom: float = 4.0):
         """
@@ -384,7 +406,22 @@ class ModelFT(Model):
         return self.map
 
     def build_initial_map(self, apply_symmetry=True):
-        if "real_space_grid" not in self._buffers:
+        """
+        Build electron density map from atomic parameters.
+
+        Delegates to FFT.build_density_map() using the model's stored parameters.
+
+        Parameters
+        ----------
+        apply_symmetry : bool, optional
+            If True, apply crystallographic symmetry to the map. Default is True.
+
+        Returns
+        -------
+        torch.Tensor
+            Electron density map with shape (nx, ny, nz).
+        """
+        if self._fft.real_space_grid is None:
             self.setup_grid()
 
         if self.verbose > 2:
@@ -392,13 +429,9 @@ class ModelFT(Model):
                 f"Building density map with radius={self.radius_angstrom} angstrom..."
             )
 
-        # Reset map
-        self.map = torch.zeros(
-            self.real_space_grid.shape[:-1], dtype=self.dtype_float, device=self.device
-        )
-
-        # Add isotropic atoms
+        # Get isotropic atoms
         xyz_iso, b_iso, occ_iso, A_iso, B_iso = self.get_iso()
+
         if self.verbose > 3:
             assert torch.all(
                 torch.isfinite(A_iso)
@@ -416,72 +449,31 @@ class ModelFT(Model):
                 torch.isfinite(occ_iso)
             ), "Non-finite values found in occ_iso during map building."
 
-        if len(xyz_iso) > 0:
-            if self.verbose > 3:
-                print(
-                    xyz_iso.shape, b_iso.shape, occ_iso.shape, A_iso.shape, B_iso.shape
-                )
-            if self.verbose > 2:
-                print(f"  Adding {len(xyz_iso)} isotropic atoms...")
-            surrounding_coords, voxel_indices = find_relevant_voxels(
-                self.real_space_grid,
-                xyz_iso,
-                radius_angstrom=self.radius_angstrom,
-                inv_frac_matrix=self.inv_fractional_matrix,
-            )
-            self.map = vectorized_add_to_map(
-                surrounding_coords,
-                voxel_indices,
-                self.map,
-                xyz_iso,
-                b_iso,
-                self.inv_fractional_matrix,
-                self.fractional_matrix,
-                A_iso,
-                B_iso,
-                occ_iso,
-            )
-        if self.verbose > 3:
-            assert torch.all(
-                torch.isfinite(self.map)
-            ), "Non-finite values found in map after adding isotropic atoms."
-        # Add anisotropic atoms
+        # Get anisotropic atoms
         xyz_aniso, u_aniso, occ_aniso, A_aniso, B_aniso = self.get_aniso()
 
-        if len(xyz_aniso) > 0:
-            if self.verbose > 2:
-                print(f"  Adding {len(xyz_aniso)} anisotropic atoms...")
-            surrounding_coords, voxel_indices = find_relevant_voxels(
-                self.real_space_grid,
-                xyz_aniso,
-                radius_angstrom=self.radius_angstrom,
-                inv_frac_matrix=self.inv_fractional_matrix,
-            )
-            self.map = vectorized_add_to_map_aniso(
-                surrounding_coords,
-                voxel_indices,
-                self.map,
-                xyz_aniso,
-                u_aniso,
-                self.inv_fractional_matrix,
-                self.fractional_matrix,
-                A_aniso,
-                B_aniso,
-                occ_aniso,
-            )
+        # Delegate to FFT submodule
+        self.map = self._fft.build_density_map(
+            xyz_iso=xyz_iso,
+            b_iso=b_iso,
+            occ_iso=occ_iso,
+            A_iso=A_iso,
+            B_iso=B_iso,
+            inv_fractional_matrix=self.inv_fractional_matrix,
+            fractional_matrix=self.fractional_matrix,
+            xyz_aniso=xyz_aniso if len(xyz_aniso) > 0 else None,
+            u_aniso=u_aniso if len(xyz_aniso) > 0 else None,
+            occ_aniso=occ_aniso if len(xyz_aniso) > 0 else None,
+            A_aniso=A_aniso if len(xyz_aniso) > 0 else None,
+            B_aniso=B_aniso if len(xyz_aniso) > 0 else None,
+            apply_symmetry=apply_symmetry,
+        )
+
         if self.verbose > 3:
             assert torch.all(
                 torch.isfinite(self.map)
-            ), "Non-finite values found in map after adding anisotropic atoms."
-        # Apply symmetry if requested
-        if apply_symmetry and self.map_symmetry is not None:
-            if self.verbose > 2:
-                print(f"  Applying {self.map_symmetry.n_ops} symmetry operations...")
-            self.map = self.map_symmetry(self.map)
-            if self.verbose > 3:
-                assert torch.all(
-                    torch.isfinite(self.map)
-                ), "Non-finite values found in map after applying symmetry."
+            ), "Non-finite values found in map."
+
         return self.map
 
     def save_map(self, filename):
@@ -557,19 +549,44 @@ class ModelFT(Model):
             print("Rebuilding density map from scratch...")
         return self.build_density_map(radius=radius)
 
+    def to(self, device=None, dtype=None):
+        """
+        Move model and FT-specific data to specified device and/or dtype.
+
+        Parameters
+        ----------
+        device : torch.device or str, optional
+            Target device.
+        dtype : torch.dtype, optional
+            Target data type.
+
+        Returns
+        -------
+        ModelFT
+            Self, for method chaining.
+        """
+        result = super().to(device=device, dtype=dtype)
+
+        # Update FFT module's device/dtype tracking
+        if device is not None:
+            self._fft.device = torch.device(device)
+        if dtype is not None:
+            self._fft.dtype_float = dtype
+
+        # Move map if it exists
+        if self.map is not None:
+            self.map = self.map.to(device=device, dtype=dtype)
+
+        return result
+
     def cuda(self, device=None):
         """Move model and FT-specific data to GPU."""
-        super().cuda(device)
-        if self.map is not None:
-            self.map = self.map.cuda(device)
-        return self
+        cuda_device = f"cuda:{device}" if device is not None else "cuda"
+        return self.to(device=cuda_device)
 
     def cpu(self):
         """Move model and FT-specific data to CPU."""
-        super().cpu()
-        if self.map is not None:
-            self.map = self.map.cpu()
-        return self
+        return self.to(device="cpu")
 
     def update_pdb(self):
         """
@@ -608,10 +625,10 @@ class ModelFT(Model):
                 print("Using cached structure factors")
             return self._cache[key]
 
-        # Build map and compute structure factors
+        # Build map and compute structure factors using FFT module
         self.build_complete_map()
         self.reciprocal_space_grid = ifft(self.map)
-        sf = extract_structure_factor_from_grid(self.reciprocal_space_grid, hkl)
+        sf = FFT.map_to_structure_factors(self.map, hkl)
 
         self._cache[key] = sf.detach()
 
@@ -651,8 +668,8 @@ class ModelFT(Model):
         Create a deep copy of the ModelFT.
 
         Creates a complete independent copy including all Model base class data,
-        FT-specific buffers (gridsize, real_space_grid, voxel_size, A, B),
-        ITC92 parametrization, map symmetry operator, and scalar attributes.
+        FFT submodule state (gridsize, real_space_grid, voxel_size, map_symmetry),
+        ITC92 parametrization, and scalar attributes.
         Cache is reset to empty.
 
         Returns
@@ -679,28 +696,32 @@ class ModelFT(Model):
             strip_H=self.strip_H,
             max_res=self.max_res,
             radius_angstrom=self.radius_angstrom,
-            gridsize=None,  # Will be copied from buffers
+            gridsize=self._explicit_gridsize,
         )
 
         # Deep copy the PDB DataFrame
         model_copy.pdb = self.pdb.copy(deep=True)
-
-        # Copy scalar attributes from Model
-        model_copy.spacegroup = self.spacegroup
-        model_copy.initialized = True
 
         # Copy scalar attributes
         model_copy.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
         model_copy.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
         model_copy.initialized = True
 
+        # Copy Cell object
+        if self.cell is not None:
+            model_copy.cell = self.cell.clone()
+
         # Copy all registered buffers using PyTorch's _buffers dict
+        # (excluding FFT submodule buffers which are handled separately)
         for buffer_name, buffer_value in self._buffers.items():
             if buffer_value is not None:
                 model_copy.register_buffer(buffer_name, buffer_value.clone())
 
         # Copy all modules (parameter wrappers) using their .copy() methods
+        # Note: _fft is handled separately below
         for module_name, module in self._modules.items():
+            if module_name == "_fft":
+                continue  # Handled below
             if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
 
@@ -712,33 +733,21 @@ class ModelFT(Model):
         else:
             model_copy.altloc_pairs = []
 
-        # Copy FT-specific attributes
-        if hasattr(self, "parametrization") and self.parametrization is not None:
-            # Deep copy the parametrization dictionary
+        # Copy FT-specific attributes: _parametrization dict
+        if hasattr(self, "_parametrization") and self._parametrization is not None:
             import copy as copy_module
-
-            model_copy.parametrization = copy_module.deepcopy(self.parametrization)
+            model_copy._parametrization = copy_module.deepcopy(self._parametrization)
 
         # Copy map if it exists
         if self.map is not None:
             model_copy.map = self.map.clone()
 
-        # Copy map_symmetry if it exists
-        if hasattr(self, "map_symmetry") and self.map_symmetry is not None:
-            from torchref.symmetry.map_symmetry import MapSymmetry
-
-            model_copy.map_symmetry = MapSymmetry(
-                space_group=self.spacegroup,
-                map_shape=model_copy.real_space_grid.shape[:-1],
-                cell_params=model_copy.cell,
-                verbose=self.verbose,
-                device=self.device,
-            )
+        # Copy FFT submodule state by setting up grid if it was set up
+        if self._fft.real_space_grid is not None:
+            model_copy.setup_grid(max_res=self.max_res)
 
         # Reset cache (don't copy cached structure factors)
-        # Use object.__setattr__ since _cache is special in nn.Module
         from torchref.utils.utils import TensorDict
-
         object.__setattr__(model_copy, "_cache", TensorDict())
 
         if self.verbose > 0:
@@ -751,7 +760,7 @@ class ModelFT(Model):
         Return a dictionary containing the complete state of the ModelFT.
 
         Extends parent Model.state_dict() with FT-specific parameters including
-        max_res, radius_angstrom, and gridsize.
+        max_res, radius_angstrom. Grid state is handled by the FFT submodule.
 
         Parameters
         ----------
@@ -767,7 +776,7 @@ class ModelFT(Model):
         dict
             Complete state dictionary.
         """
-        # Get parent Model state_dict
+        # Get parent Model state_dict (includes _A, _B buffers and FFT submodule)
         state = super().state_dict(
             destination=destination, prefix=prefix, keep_vars=keep_vars
         )
@@ -776,8 +785,9 @@ class ModelFT(Model):
         state[prefix + "max_res"] = self.max_res
         state[prefix + "radius_angstrom"] = self.radius_angstrom
 
-        # Note: parametrization dict contains tensors that are already in buffers A and B
-        # gridsize is a registered buffer so it's already included
+        # Note: FFT submodule state (gridsize, real_space_grid, voxel_size) is
+        # automatically included via PyTorch's module serialization with _fft. prefix
+        # _parametrization dict is not saved as it can be rebuilt from _A, _B buffers
         # _cache is not saved as it should be rebuilt
 
         return state
@@ -812,27 +822,28 @@ class ModelFT(Model):
         ModelFT
             Fully initialized instance with restored state.
         """
+        from torchref.symmetry import SpaceGroup
+
         # Extract ModelFT-specific metadata
         max_res = state_dict.pop("max_res", 1.0)
         radius_angstrom = state_dict.pop("radius_angstrom", 4.0)
 
-        # Extract Model metadata (will be used by parent create_from_state_dict logic)
-        pdb = state_dict.get("pdb")
-        spacegroup = state_dict.get("spacegroup")
-        gridsize = state_dict.get("gridsize")
-        cell = state_dict.get("cell")
-
-        # Use parent's create_from_state_dict to handle Model-level setup
-        # But we need to do it manually to set up FT-specific things
-
-        # Extract parent metadata
+        # Extract Model metadata
         pdb = state_dict.pop("pdb", None)
-        spacegroup = state_dict.pop("spacegroup", None)
+        spacegroup_str = state_dict.pop("spacegroup", None)
+        cell_tensor = state_dict.pop("cell", None)
         initialized = state_dict.pop("initialized", False)
         saved_dtype = state_dict.pop("dtype_float", dtype_float)
-        saved_device = state_dict.pop("device", device)
+        state_dict.pop("device", None)  # Remove but don't use (use provided device)
         strip_H = state_dict.pop("strip_H", True)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
+
+        # Extract grid info from FFT submodule state
+        # Note: FFT buffers are prefixed with "_fft."
+        gridsize = state_dict.pop("_fft.gridsize", None)
+        # Also try old-style keys for backward compatibility
+        if gridsize is None:
+            gridsize = state_dict.pop("gridsize", None)
 
         # Create instance with FT-specific params
         instance = cls(
@@ -846,18 +857,21 @@ class ModelFT(Model):
 
         # Set metadata
         instance.pdb = pdb
-        instance.spacegroup = spacegroup
         instance.initialized = initialized
         instance.altloc_pairs = altloc_pairs
 
-        # Setup spacegroup objects if spacegroup exists
-        if spacegroup is not None:
-            import gemmi
+        # Setup spacegroup if it exists
+        if spacegroup_str is not None:
+            instance.spacegroup = SpaceGroup(spacegroup_str)
+            instance.symmetry = Symmetry(instance.spacegroup)
+        else:
+            instance.spacegroup = None
+            instance.symmetry = None
 
-            instance.spacegroup_gemmi = gemmi.SpaceGroup(spacegroup.replace("  ", " "))
-            import torchref.symmetry.symmetry as sym
-
-            instance.spacegroup_function = sym.Symmetry(spacegroup)
+        # Create Cell object from saved tensor data
+        from torchref.symmetry import Cell
+        if cell_tensor is not None:
+            instance.cell = Cell(cell_tensor, dtype=saved_dtype, device=device)
 
         # If PDB exists, create the parameter wrappers with correct shapes
         if pdb is not None:
@@ -915,17 +929,14 @@ class ModelFT(Model):
                 name="occupancy",
             )
 
-            # Register Model buffers
-            if "cell" in state_dict:
-                instance.register_buffer(
-                    "cell", torch.zeros_like(state_dict["cell"], device=device)
-                )
+            # Register aniso_flag buffer
             if "aniso_flag" not in instance._buffers or instance.aniso_flag is None:
                 instance.register_buffer(
                     "aniso_flag",
                     torch.tensor(pdb["anisou_flag"].values, dtype=torch.bool),
                 )
 
+            # Register mask buffers
             instance.register_buffer(
                 "xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
             )
@@ -939,84 +950,52 @@ class ModelFT(Model):
                 "occupancy_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
             )
 
-            buffer_names = [
-                "inv_fractional_matrix",
-                "fractional_matrix",
-                "recB",
-                "vdw_radii",
-            ]
-            for name in buffer_names:
-                if name in state_dict and state_dict[name] is not None:
-                    instance.register_buffer(
-                        name, torch.zeros_like(state_dict[name], device=device)
-                    )
-
-            # Register FT-specific buffers (A, B for parametrization)
-            if "A" in state_dict and state_dict["A"] is not None:
+            # Register vdw_radii if present
+            if "vdw_radii" in state_dict and state_dict["vdw_radii"] is not None:
                 instance.register_buffer(
-                    "A", torch.zeros_like(state_dict["A"], device=device)
-                )
-            if "B" in state_dict and state_dict["B"] is not None:
-                instance.register_buffer(
-                    "B", torch.zeros_like(state_dict["B"], device=device)
+                    "vdw_radii", torch.zeros_like(state_dict["vdw_radii"], device=device)
                 )
 
-        # Setup grid-related buffers
-        if gridsize is not None:
+            # Handle _A and _B buffers (scattering parameters)
+            # Check both old-style (A, B) and new-style (_A, _B) keys
+            a_key = "_A" if "_A" in state_dict else "A" if "A" in state_dict else None
+            b_key = "_B" if "_B" in state_dict else "B" if "B" in state_dict else None
+
+            if a_key and state_dict[a_key] is not None:
+                instance.register_buffer(
+                    "_A", torch.zeros_like(state_dict[a_key], device=device)
+                )
+            if b_key and state_dict[b_key] is not None:
+                instance.register_buffer(
+                    "_B", torch.zeros_like(state_dict[b_key], device=device)
+                )
+
+        # Setup grid via FFT submodule
+        if gridsize is not None and cell_tensor is not None:
             if isinstance(gridsize, torch.Tensor):
-                gs_list = gridsize.tolist()
+                gs_tuple = tuple(int(x) for x in gridsize.tolist())
             else:
-                gs_list = list(gridsize)
-            nx, ny, nz = [int(x) for x in gs_list]
+                gs_tuple = tuple(int(x) for x in gridsize)
 
-            instance.register_buffer(
-                "gridsize", torch.zeros(3, dtype=torch.int32, device=device)
-            )
-            instance.register_buffer(
-                "real_space_grid",
-                torch.zeros(nx, ny, nz, 3, dtype=saved_dtype, device=device),
-            )
-            instance.register_buffer(
-                "voxel_size", torch.tensor(0.0, dtype=saved_dtype, device=device)
-            )
+            instance.setup_grid(gridsize=gs_tuple)
 
-            # Create MapSymmetry if needed
-            has_map_sym = any(k.startswith("map_symmetry.") for k in state_dict.keys())
-            if has_map_sym and spacegroup is not None and cell is not None:
-                from torchref.symmetry.map_symmetry import MapSymmetry
+        # Filter state_dict and load
+        # Remap old-style A/B keys to new _A/_B keys
+        filtered_state_dict = {}
+        for k, v in state_dict.items():
+            if not hasattr(v, 'shape') or v.shape[0] > 0:
+                # Remap old keys to new keys
+                if k == "A":
+                    filtered_state_dict["_A"] = v
+                elif k == "B":
+                    filtered_state_dict["_B"] = v
+                else:
+                    filtered_state_dict[k] = v
 
-                instance.map_symmetry = MapSymmetry(
-                    space_group=spacegroup,
-                    map_shape=(nx, ny, nz),
-                    cell_params=cell,
-                    verbose=verbose,
-                    device=device,
-                )
-
-        # Now use PyTorch's default load_state_dict
-        state_dict = {k: v for k, v in state_dict.items() if v.shape[0] > 0}
-        instance.load_state_dict(state_dict, strict=False)
-
-        # Rebuild parametrization dict from A and B buffers
-        if (
-            hasattr(instance, "pdb")
-            and instance.pdb is not None
-            and hasattr(instance, "A")
-            and hasattr(instance, "B")
-        ):
-            instance.parametrization = {}
-            elements = instance.pdb.element.unique().tolist()
-            idx = 0
-            for element in elements:
-                instance.parametrization[element] = (
-                    instance.A[idx : idx + 5],
-                    instance.B[idx : idx + 5],
-                )
-                idx += 5
+        instance.load_state_dict(filtered_state_dict, strict=False)
 
         # Reset cache
         from torchref.utils.utils import TensorDict
-
         object.__setattr__(instance, "_cache", TensorDict())
 
         if verbose > 0:

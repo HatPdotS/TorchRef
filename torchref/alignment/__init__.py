@@ -77,6 +77,12 @@ from .ml_aligner import (
     RigidBodyMLTarget,
     TranslationSearchTarget,
 )
+from .rigid_body import (
+    RigidBodyRefinement,
+    RigidBodyResult,
+    compute_r_factor,
+    ml_xray_loss,
+)
 from .sampling import VectorSampler, get_rotation_sampling_range
 from .transform import RigidTransform
 
@@ -99,6 +105,11 @@ __all__ = [
     "FRFPeak",
     "FRFResult",
     "fast_rotation_function",
+    # Rigid body refinement
+    "RigidBodyRefinement",
+    "RigidBodyResult",
+    "compute_r_factor",
+    "ml_xray_loss",
     # Rigid body transformations
     "RigidTransform",
     # Clash scoring

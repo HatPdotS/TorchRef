@@ -311,3 +311,301 @@ def n_operations(spacegroup: SpaceGroupLike) -> int:
     """
     sg = SpaceGroup(spacegroup)
     return len(list(sg.operations()))
+
+
+# =============================================================================
+# Grid size utilities (combined FFT-friendly and symmetry-friendly)
+# =============================================================================
+
+
+def is_fft_friendly(n: int) -> bool:
+    """
+    Check if a number has only factors of 2, 3, and 5.
+
+    These are optimal for radix-2,3,5 FFT algorithms used by PyTorch/cuFFT.
+
+    Parameters
+    ----------
+    n : int
+        Number to check.
+
+    Returns
+    -------
+    bool
+        True if n has only factors of 2, 3, 5.
+
+    Examples
+    --------
+    ::
+
+        is_fft_friendly(128)  # True (2^7)
+        is_fft_friendly(135)  # True (3^3 * 5)
+        is_fft_friendly(131)  # False (prime)
+    """
+    if n <= 0:
+        return False
+
+    # Remove all factors of 2, 3, 5
+    while n % 2 == 0:
+        n //= 2
+    while n % 3 == 0:
+        n //= 3
+    while n % 5 == 0:
+        n //= 5
+
+    # If we're left with 1, the number is FFT-friendly
+    return n == 1
+
+
+def find_fft_friendly_size(n: int, divisibility: int = 1) -> int:
+    """
+    Find the nearest FFT-friendly size >= n that satisfies divisibility constraint.
+
+    FFT-friendly means factors only of 2, 3, and 5 (radix-2,3,5 FFT algorithms).
+
+    Parameters
+    ----------
+    n : int
+        Minimum grid size.
+    divisibility : int, default 1
+        Required divisibility (e.g., 2 for screw axes).
+
+    Returns
+    -------
+    int
+        Optimal grid size.
+
+    Examples
+    --------
+    ::
+
+        find_fft_friendly_size(131)      # 135
+        find_fft_friendly_size(131, 2)   # 160 (divisible by 2, FFT-friendly)
+    """
+    candidate = n
+
+    # Make sure it satisfies divisibility
+    if candidate % divisibility != 0:
+        candidate = ((candidate // divisibility) + 1) * divisibility
+
+    # Now find nearest FFT-friendly size
+    while not is_fft_friendly(candidate):
+        candidate += divisibility
+
+    return candidate
+
+
+def get_grid_requirements(spacegroup: SpaceGroupLike) -> dict:
+    """
+    Analyze symmetry operations to determine grid size requirements.
+
+    Examines all rotation matrices and translations to determine which
+    grid dimensions must satisfy divisibility constraints for exact
+    integer indexing (interpolation-free symmetry expansion).
+
+    Parameters
+    ----------
+    spacegroup : SpaceGroupLike
+        Space group in any supported format.
+
+    Returns
+    -------
+    dict
+        {'nx_mod': int, 'ny_mod': int, 'nz_mod': int}
+        Required divisibility for each axis.
+
+    Examples
+    --------
+    ::
+
+        get_grid_requirements('P21')
+        # {'nx_mod': 1, 'ny_mod': 2, 'nz_mod': 1}
+
+        get_grid_requirements('P212121')
+        # {'nx_mod': 2, 'ny_mod': 2, 'nz_mod': 2}
+    """
+    import math
+    from fractions import Fraction
+
+    sg = SpaceGroup(spacegroup)
+
+    # Start with no requirements
+    nx_lcm = 1
+    ny_lcm = 1
+    nz_lcm = 1
+
+    # Analyze each symmetry operation
+    for op in sg.operations():
+        # gemmi stores translations as integers multiplied by 24
+        trans = [t / 24.0 for t in op.tran]
+
+        # For each axis, check if translation has fractional component
+        for axis_idx, t in enumerate(trans):
+            if abs(t) > 1e-9:
+                # Convert to fraction and get denominator
+                frac = Fraction(t).limit_denominator(24)
+                denom = frac.denominator
+
+                if axis_idx == 0:
+                    nx_lcm = math.lcm(nx_lcm, denom)
+                elif axis_idx == 1:
+                    ny_lcm = math.lcm(ny_lcm, denom)
+                else:
+                    nz_lcm = math.lcm(nz_lcm, denom)
+
+    return {"nx_mod": nx_lcm, "ny_mod": ny_lcm, "nz_mod": nz_lcm}
+
+
+def check_grid_compatibility(grid_shape: tuple, spacegroup: SpaceGroupLike) -> dict:
+    """
+    Check if a grid is compatible with space group symmetry and FFT requirements.
+
+    Verifies that the grid satisfies both:
+    1. Symmetry requirements (divisibility for screw axes)
+    2. FFT-friendly sizes (factors of 2, 3, 5 only)
+
+    Parameters
+    ----------
+    grid_shape : tuple of int
+        Grid dimensions (nx, ny, nz).
+    spacegroup : SpaceGroupLike
+        Space group in any supported format.
+
+    Returns
+    -------
+    dict
+        Dictionary with the following keys:
+
+        - 'compatible' : bool
+            True if grid satisfies all requirements.
+        - 'symmetry_compatible' : bool
+            True if grid satisfies symmetry requirements.
+        - 'fft_friendly' : bool
+            True if all dimensions are FFT-friendly.
+        - 'can_use_direct_indexing' : bool
+            True if interpolation-free expansion is possible.
+        - 'issues' : list of str
+            Descriptions of incompatibilities (empty if compatible).
+        - 'requirements' : dict
+            Required divisibility from get_grid_requirements().
+
+    Examples
+    --------
+    ::
+
+        check_grid_compatibility((131, 163, 148), 'P21')
+        # {'compatible': False, 'issues': ['ny=163 not divisible by 2', ...]}
+
+        check_grid_compatibility((135, 164, 150), 'P21')
+        # {'compatible': True, 'issues': []}
+    """
+    nx, ny, nz = grid_shape
+    sg = SpaceGroup(spacegroup)
+    requirements = get_grid_requirements(sg)
+
+    issues = []
+    sg_name = sg.short_name()
+
+    # Check symmetry requirements
+    if nx % requirements["nx_mod"] != 0:
+        issues.append(
+            f"nx={nx} not divisible by {requirements['nx_mod']} "
+            f"(required for {sg_name} symmetry)"
+        )
+
+    if ny % requirements["ny_mod"] != 0:
+        issues.append(
+            f"ny={ny} not divisible by {requirements['ny_mod']} "
+            f"(required for {sg_name} symmetry)"
+        )
+
+    if nz % requirements["nz_mod"] != 0:
+        issues.append(
+            f"nz={nz} not divisible by {requirements['nz_mod']} "
+            f"(required for {sg_name} symmetry)"
+        )
+
+    symmetry_compatible = len(issues) == 0
+
+    # Check FFT-friendly
+    fft_x = is_fft_friendly(nx)
+    fft_y = is_fft_friendly(ny)
+    fft_z = is_fft_friendly(nz)
+    fft_friendly = fft_x and fft_y and fft_z
+
+    if not fft_x:
+        issues.append(f"nx={nx} is not FFT-friendly (not a product of 2, 3, 5)")
+    if not fft_y:
+        issues.append(f"ny={ny} is not FFT-friendly (not a product of 2, 3, 5)")
+    if not fft_z:
+        issues.append(f"nz={nz} is not FFT-friendly (not a product of 2, 3, 5)")
+
+    return {
+        "compatible": symmetry_compatible and fft_friendly,
+        "symmetry_compatible": symmetry_compatible,
+        "fft_friendly": fft_friendly,
+        "can_use_direct_indexing": symmetry_compatible,
+        "issues": issues,
+        "requirements": requirements,
+    }
+
+
+def suggest_grid_size(
+    min_grid_shape: tuple,
+    spacegroup: SpaceGroupLike,
+    make_fft_friendly: bool = True,
+) -> tuple:
+    """
+    Suggest an optimal grid size that satisfies symmetry and FFT requirements.
+
+    Given a minimum grid size, finds the nearest larger size that:
+    1. Satisfies symmetry requirements (divisibility constraints)
+    2. Optionally, is FFT-friendly (factors of 2, 3, 5 only)
+
+    Parameters
+    ----------
+    min_grid_shape : tuple of int
+        Minimum (nx, ny, nz) grid dimensions.
+    spacegroup : SpaceGroupLike
+        Space group in any supported format.
+    make_fft_friendly : bool, default True
+        If True, ensures result has only factors of 2, 3, 5.
+
+    Returns
+    -------
+    tuple of int
+        Suggested grid dimensions (nx, ny, nz).
+
+    Examples
+    --------
+    ::
+
+        suggest_grid_size((131, 163, 148), 'P21')
+        # (135, 164, 150) or similar
+
+        suggest_grid_size((131, 163, 148), 'P212121')
+        # (135, 164, 150) - all divisible by 2 and FFT-friendly
+    """
+    requirements = get_grid_requirements(spacegroup)
+
+    def find_next_valid(n, divisibility):
+        """Find next number >= n that satisfies divisibility and FFT constraints."""
+        if n % divisibility == 0:
+            candidate = n
+        else:
+            candidate = ((n // divisibility) + 1) * divisibility
+
+        if not make_fft_friendly:
+            return candidate
+
+        # Find FFT-friendly size that also satisfies divisibility
+        while not is_fft_friendly(candidate):
+            candidate += divisibility
+
+        return candidate
+
+    nx = find_next_valid(min_grid_shape[0], requirements["nx_mod"])
+    ny = find_next_valid(min_grid_shape[1], requirements["ny_mod"])
+    nz = find_next_valid(min_grid_shape[2], requirements["nz_mod"])
+
+    return (nx, ny, nz)

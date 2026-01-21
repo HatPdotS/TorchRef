@@ -1714,7 +1714,11 @@ class OccupancyTensor(MixedTensor):
 
         import numpy as np
         import warnings
-        warnings.warn("Using numpy inside torchref/model/parameter_wrappers.py, @Peter please fix", UserWarning)
+
+        warnings.warn(
+            "Using numpy inside torchref/model/parameter_wrappers.py, @Peter please fix",
+            UserWarning,
+        )
 
         if group_idx < 0 or group_idx >= self._collapsed_shape:
             raise ValueError(f"Invalid group index {group_idx}")

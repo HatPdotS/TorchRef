@@ -24,6 +24,7 @@ from torchref.math_functions.math_torch import (
     ifft,
     vectorized_add_to_map,
 )
+from torchref.symmetry import Cell
 from torchref.symmetry.map_symmetry import MapSymmetry
 
 
@@ -178,19 +179,10 @@ class SimpleModel(nn.Module):
         frac_matrix : torch.Tensor
             Fractional coordinate transformation matrix.
         """
-        cell_np = cell.detach().cpu().numpy()
-
-        # Compute transformation matrices
-        inv_frac_matrix = torch.tensor(
-            mnp.get_inv_fractional_matrix(cell_np),
-            dtype=self.dtype_float,
-            device=self.device,
-        )
-        frac_matrix = torch.tensor(
-            mnp.get_fractional_matrix(cell_np),
-            dtype=self.dtype_float,
-            device=self.device,
-        )
+        # Use Cell object to compute transformation matrices
+        cell_obj = Cell(cell, dtype=self.dtype_float, device=self.device)
+        inv_frac_matrix = cell_obj.inv_fractional_matrix
+        frac_matrix = cell_obj.fractional_matrix
 
         # Compute grid size
         gridsize_initial = find_grid_size(cell, self.max_res)
@@ -207,7 +199,7 @@ class SimpleModel(nn.Module):
         real_space_grid = get_real_grid(cell, gridsize=gridsize, device=self.device)
 
         if self.verbose > 1:
-            print(f"Grid computed: shape={gridsize_optimized}, cell={cell_np}")
+            print(f"Grid computed: shape={gridsize_optimized}, cell={cell_obj}")
 
         return real_space_grid, gridsize, inv_frac_matrix, frac_matrix
 

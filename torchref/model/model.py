@@ -11,6 +11,7 @@ import gemmi
 import torch
 import torch.nn as nn
 
+import torchref.math_functions.get_scattering_factor_torch as gsf
 import torchref.math_functions.math_numpy as mnp
 from torchref.io import cif, pdb
 from torchref.math_functions import math_torch
@@ -19,7 +20,7 @@ from torchref.model.parameter_wrappers import (
     OccupancyTensor,
     PositiveMixedTensor,
 )
-from torchref.symmetry import SpaceGroup, Symmetry
+from torchref.symmetry import Cell, SpaceGroup, Symmetry
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import sanitize_pdb_dataframe
 
@@ -56,8 +57,8 @@ class Model(DebugMixin, nn.Module):
         Atomic occupancies with values in [0, 1].
     pdb : pandas.DataFrame
         DataFrame containing atomic model data.
-    cell : torch.Tensor
-        Unit cell parameters [a, b, c, alpha, beta, gamma].
+    cell : Cell
+        Unit cell object with parameters [a, b, c, alpha, beta, gamma].
     spacegroup : gemmi.SpaceGroup
         Space group object.
     symmetry : Symmetry
@@ -124,9 +125,161 @@ class Model(DebugMixin, nn.Module):
         self.u = None
         self.occupancy = None
 
+        # Scattering factor parametrization (built lazily on first access)
+        self._parametrization = None
+
     def __bool__(self):
         """Return the initialization status when used in boolean context."""
         return self.initialized
+
+    # =========================================================================
+    # Crystallographic matrix properties (delegated to Cell)
+    # =========================================================================
+
+    @property
+    def inv_fractional_matrix(self) -> torch.Tensor:
+        """
+        Fractionalization matrix B^-1 (Cartesian -> fractional).
+
+        Delegates to Cell for automatic caching and device/dtype handling.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape (3, 3) fractionalization matrix.
+        """
+        return self.cell.inv_fractional_matrix.to(dtype=self.dtype_float)
+
+    @property
+    def fractional_matrix(self) -> torch.Tensor:
+        """
+        Orthogonalization matrix B (fractional -> Cartesian).
+
+        Delegates to Cell for automatic caching and device/dtype handling.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape (3, 3) orthogonalization matrix.
+        """
+        return self.cell.fractional_matrix.to(dtype=self.dtype_float)
+
+    @property
+    def recB(self) -> torch.Tensor:
+        """
+        Reciprocal basis matrix with [a*, b*, c*] as rows.
+
+        Delegates to Cell for automatic caching and device/dtype handling.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape (3, 3) matrix where rows are the reciprocal basis vectors.
+        """
+        return self.cell.reciprocal_basis_matrix.to(dtype=self.dtype_float)
+
+    # =========================================================================
+    # Scattering Factor Parametrization
+    # =========================================================================
+
+    def _build_parametrization(self):
+        """
+        Build ITC92 parametrization for all atoms in the model.
+
+        Creates and stores the parametrization dictionary mapping element types
+        to their ITC92 scattering factor parameters (A, B). Registers the
+        _A and _B parameter tensors as internal buffers.
+
+        This method is called lazily on first access to `parametrization` or
+        scattering parameters.
+
+        Returns
+        -------
+        dict
+            Parametrization dictionary {element: (A_tensor, B_tensor)}.
+        """
+        if self._parametrization is not None:
+            return self._parametrization
+
+        if not self.initialized or self.pdb is None:
+            raise RuntimeError(
+                "Cannot build parametrization: model not initialized. "
+                "Load data first with load_pdb() or load_cif()."
+            )
+
+        if self.verbose > 1:
+            print("Building ITC92 parametrization...")
+
+        self._parametrization = gsf.get_parameterization_extended(self.pdb)
+
+        if self.verbose > 0:
+            print(
+                f"Parametrization built for {len(self._parametrization)} unique atom types"
+            )
+        if self.verbose > 1:
+            print("Elements with parametrization:", list(self._parametrization.keys()))
+
+        # Build A and B tensors for all atoms
+        elements = self.pdb.element.tolist()
+
+        self.register_buffer(
+            "_A",
+            torch.cat(
+                [self._parametrization[element][0] for element in elements], dim=0
+            ),
+        )
+        self.register_buffer(
+            "_B",
+            torch.cat(
+                [self._parametrization[element][1] for element in elements], dim=0
+            ),
+        )
+
+        return self._parametrization
+
+    @property
+    def parametrization(self):
+        """
+        ITC92 parametrization dictionary {element: (A, B)}.
+
+        The parametrization is built lazily on first access.
+
+        Returns
+        -------
+        dict
+            Dictionary mapping element symbols to tuples of (A, B) tensors.
+        """
+        return self._build_parametrization()
+
+    def get_scattering_params_iso(self):
+        """
+        Get ITC92 scattering parameters (A, B) for isotropic atoms.
+
+        Returns
+        -------
+        A : torch.Tensor
+            ITC92 A parameters (amplitudes) with shape (n_iso_atoms, 5).
+        B : torch.Tensor
+            ITC92 B parameters (widths) with shape (n_iso_atoms, 5).
+        """
+        self._build_parametrization()
+        mask = ~self.aniso_flag
+        return self._A[mask], self._B[mask]
+
+    def get_scattering_params_aniso(self):
+        """
+        Get ITC92 scattering parameters (A, B) for anisotropic atoms.
+
+        Returns
+        -------
+        A : torch.Tensor
+            ITC92 A parameters (amplitudes) with shape (n_aniso_atoms, 5).
+        B : torch.Tensor
+            ITC92 B parameters (widths) with shape (n_aniso_atoms, 5).
+        """
+        self._build_parametrization()
+        mask = self.aniso_flag
+        return self._A[mask], self._B[mask]
 
     def load(self, reader):
         self.pdb, cell, spacegroup = reader()
@@ -139,42 +292,16 @@ class Model(DebugMixin, nn.Module):
         self.pdb.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"], inplace=True)
         self.pdb["index"] = self.pdb.index.to_numpy(dtype=int)
 
-        self.register_buffer(
-            "cell",
-            torch.tensor(
-                cell, requires_grad=False, dtype=self.dtype_float, device=self.device
-            ),
-        )
+        # Store Cell object directly and use its cached derived quantities
+        self.cell = Cell(cell, dtype=self.dtype_float, device=self.device)
 
         # Store space group as gemmi.SpaceGroup (reader now returns gemmi.SpaceGroup directly)
         self.spacegroup = SpaceGroup(spacegroup)
         self.symmetry = Symmetry(self.spacegroup)
 
-        # Register buffers for various matrices
-        self.register_buffer(
-            "inv_fractional_matrix",
-            torch.tensor(
-                mnp.get_inv_fractional_matrix(self.cell),
-                dtype=self.dtype_float,
-                requires_grad=False,
-            ),
-        )
-        self.register_buffer(
-            "fractional_matrix",
-            torch.tensor(
-                mnp.get_fractional_matrix(self.cell),
-                dtype=self.dtype_float,
-                requires_grad=False,
-            ),
-        )
+        # Register aniso_flag buffer (crystallographic matrices are delegated to Cell)
         self.register_buffer(
             "aniso_flag", torch.tensor(self.pdb["anisou_flag"].values, dtype=torch.bool)
-        )
-        self.register_buffer(
-            "recB",
-            math_torch.reciprocal_basis_matrix(self.cell)
-            .to(dtype=self.dtype_float)
-            .to(self.device),
         )
 
         # Create MixedTensors for model parameters
@@ -447,26 +574,51 @@ class Model(DebugMixin, nn.Module):
         ), f"vdW radii length mismatch with number of atoms {len(self.vdw_radii)} != {len(self.pdb)}"
         return self.vdw_radii
 
-    def cuda(self, device: Optional[Union[int, torch.device]] = None):
-        super().cuda(device)
+    def to(self, device=None, dtype=None):
+        """
+        Move Model to specified device and/or dtype.
+
+        Parameters
+        ----------
+        device : torch.device or str, optional
+            Target device.
+        dtype : torch.dtype, optional
+            Target data type.
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
+        """
+        # Move Cell object
+        if self.cell is not None:
+            self.cell = self.cell.to(device=device, dtype=dtype)
+
+        # Move altloc_pairs tensors
         if self.altloc_pairs:
             self.altloc_pairs = [
-                tuple(tensor.cuda(device) for tensor in group)
+                tuple(tensor.to(device=device) for tensor in group)
                 for group in self.altloc_pairs
             ]
-        self.device = torch.device("cuda")
-        print(f"Model moved to device: {self.device}")
-        return self
+
+        # Update device tracking
+        if device is not None:
+            self.device = torch.device(device)
+
+        # Call parent to move all registered buffers and parameters
+        result = super().to(device=device, dtype=dtype)
+        if self.verbose > 0:
+            print(f"Model moved to device: {self.device}")
+        return result
+
+    def cuda(self, device: Optional[Union[int, torch.device]] = None):
+        """Move Model to CUDA device."""
+        cuda_device = f"cuda:{device}" if device is not None else "cuda"
+        return self.to(device=cuda_device)
 
     def cpu(self):
-        super().cpu()
-        if self.altloc_pairs:
-            self.altloc_pairs = [
-                tuple(tensor.cpu() for tensor in group) for group in self.altloc_pairs
-            ]
-        self.device = torch.device("cpu")
-        print(f"Model moved to device: {self.device}")
-        return self
+        """Move Model to CPU."""
+        return self.to(device="cpu")
 
     def copy(self):
         """
@@ -506,6 +658,10 @@ class Model(DebugMixin, nn.Module):
         model_copy.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
         model_copy.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
         model_copy.initialized = True
+
+        # Copy Cell object
+        if self.cell is not None:
+            model_copy.cell = self.cell.clone()
 
         # Copy all registered buffers using PyTorch's _buffers dict
         for buffer_name, buffer_value in self._buffers.items():
@@ -909,7 +1065,9 @@ class Model(DebugMixin, nn.Module):
             Standard deviation of the Gaussian noise to be added, in Angstroms.
         """
         xyz = self.xyz().detach()
-        new_xyz = xyz + torch.normal(mean=0.0, std=stddev, size=xyz.shape,device=self.device)
+        new_xyz = xyz + torch.normal(
+            mean=0.0, std=stddev, size=xyz.shape, device=self.device
+        )
         self.xyz = MixedTensor(
             new_xyz, refinable_mask=self.xyz.refinable_mask, name="xyz"
         )
@@ -927,7 +1085,9 @@ class Model(DebugMixin, nn.Module):
             Standard deviation of the Gaussian noise to be added, in 1/Angstrom^2.
         """
         b_factors = self.b().detach()
-        new_b = b_factors + torch.normal(mean=0.0, std=stddev, size=b_factors.shape, device=self.device)
+        new_b = b_factors + torch.normal(
+            mean=0.0, std=stddev, size=b_factors.shape, device=self.device
+        )
         self.b = PositiveMixedTensor(
             new_b, refinable_mask=self.b.refinable_mask, name="b_factor"
         )
@@ -1163,6 +1323,10 @@ class Model(DebugMixin, nn.Module):
         state[prefix + "pdb"] = (
             self.pdb.copy() if hasattr(self, "pdb") and self.pdb is not None else None
         )
+        # Store Cell tensor data for serialization
+        state[prefix + "cell"] = (
+            self.cell.data.cpu() if self.cell is not None else None
+        )
         # Store spacegroup as string for serialization (gemmi.SpaceGroup is not picklable)
         state[prefix + "spacegroup"] = (
             self.spacegroup.xhm() if self.spacegroup else None
@@ -1242,6 +1406,7 @@ class Model(DebugMixin, nn.Module):
         """
         # Extract metadata (non-tensor data that we handle specially)
         pdb = state_dict.pop("pdb", None)
+        cell_tensor = state_dict.pop("cell", None)
         spacegroup = state_dict.pop("spacegroup", None)
         initialized = state_dict.pop("initialized", False)
         saved_dtype = state_dict.pop("dtype_float", dtype_float)
@@ -1266,6 +1431,10 @@ class Model(DebugMixin, nn.Module):
         else:
             instance.spacegroup = None
             instance.symmetry = None
+
+        # Create Cell object from saved tensor data
+        if cell_tensor is not None:
+            instance.cell = Cell(cell_tensor, dtype=saved_dtype, device=device)
 
         # If PDB exists, create the parameter wrappers with correct shapes
         if pdb is not None:
@@ -1320,10 +1489,6 @@ class Model(DebugMixin, nn.Module):
             )
 
             # Register buffers that are needed
-            if "cell" in state_dict:
-                instance.register_buffer(
-                    "cell", torch.zeros_like(state_dict["cell"], device=device)
-                )
             if "aniso_flag" not in instance._buffers or instance.aniso_flag is None:
                 instance.register_buffer(
                     "aniso_flag",
@@ -1345,12 +1510,9 @@ class Model(DebugMixin, nn.Module):
             )
 
             # Register other buffers based on state_dict
-            buffer_names = [
-                "inv_fractional_matrix",
-                "fractional_matrix",
-                "recB",
-                "vdw_radii",
-            ]
+            # Note: inv_fractional_matrix, fractional_matrix, recB are now properties
+            # delegating to Cell, so they're not registered as buffers
+            buffer_names = ["vdw_radii"]
             for name in buffer_names:
                 if name in state_dict and state_dict[name] is not None:
                     instance.register_buffer(
@@ -1525,22 +1687,10 @@ class Model(DebugMixin, nn.Module):
         selected_model.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
         selected_model.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
 
-        # Copy cell and matrices (these are same for all atoms)
+        # Copy cell (as Cell object) - crystallographic matrices are properties
+        # that delegate to Cell, so copying the Cell is sufficient
         if self.cell is not None:
-            selected_model.register_buffer("cell", self.cell.clone())
-        if (
-            hasattr(self, "inv_fractional_matrix")
-            and self.inv_fractional_matrix is not None
-        ):
-            selected_model.register_buffer(
-                "inv_fractional_matrix", self.inv_fractional_matrix.clone()
-            )
-        if hasattr(self, "fractional_matrix") and self.fractional_matrix is not None:
-            selected_model.register_buffer(
-                "fractional_matrix", self.fractional_matrix.clone()
-            )
-        if hasattr(self, "recB") and self.recB is not None:
-            selected_model.register_buffer("recB", self.recB.clone())
+            selected_model.cell = self.cell.clone()
 
         # Subset per-atom buffers
         if hasattr(self, "aniso_flag") and self.aniso_flag is not None:
@@ -1629,7 +1779,133 @@ class Model(DebugMixin, nn.Module):
         cartesian_coords = self.xyz()
 
         fractional_coords = math_torch.cartesian_to_fractional_torch(
-            cartesian_coords, self.cell, self.inv_fractional_matrix
+            cartesian_coords, self.cell.data, self.inv_fractional_matrix
         )
 
         return fractional_coords
+
+    def rotate(
+        self, rotation_matrix: torch.Tensor, center: Optional[torch.Tensor] = None
+    ) -> "Model":
+        """
+        Apply rotation to atomic coordinates (in-place).
+
+        Rotates all atoms around a specified center point. The rotation is
+        applied using the formula: xyz_new = R @ (xyz - center) + center
+
+        Parameters
+        ----------
+        rotation_matrix : torch.Tensor
+            3x3 rotation matrix. Should be orthogonal (R^T @ R = I).
+        center : torch.Tensor, optional
+            Center of rotation with shape (3,). If None, uses the centroid
+            of all atomic coordinates.
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
+
+        Examples
+        --------
+        ::
+
+            # Rotate 90 degrees around Z-axis
+            import math
+            angle = math.pi / 2
+            R = torch.tensor([
+                [math.cos(angle), -math.sin(angle), 0],
+                [math.sin(angle), math.cos(angle), 0],
+                [0, 0, 1]
+            ])
+            model.rotate(R)
+
+            # Rotate around a specific point
+            center = torch.tensor([10.0, 20.0, 30.0])
+            model.rotate(R, center=center)
+        """
+        if not self.initialized:
+            raise RuntimeError("Model must be initialized to apply rotation.")
+
+        xyz = self.xyz()
+        if center is None:
+            center = xyz.mean(dim=0)
+
+        # Ensure tensors are on the same device
+        rotation_matrix = rotation_matrix.to(device=xyz.device, dtype=xyz.dtype)
+        center = center.to(device=xyz.device, dtype=xyz.dtype)
+
+        # Apply rotation: xyz_new = R @ (xyz - center) + center
+        xyz_centered = xyz - center
+        xyz_rotated = xyz_centered @ rotation_matrix.T + center
+
+        # Update coordinates in-place
+        self.xyz.fixed_values.copy_(xyz_rotated)
+
+        return self
+
+    def translate(
+        self, translation: torch.Tensor, fractional: bool = False
+    ) -> "Model":
+        """
+        Apply translation to atomic coordinates (in-place).
+
+        Translates all atoms by a specified vector. The translation can be
+        given in either Cartesian or fractional coordinates.
+
+        Parameters
+        ----------
+        translation : torch.Tensor
+            Translation vector with shape (3,).
+        fractional : bool, optional
+            If True, the translation is interpreted as fractional coordinates
+            and converted to Cartesian before applying. Default is False
+            (translation is in Cartesian Angstroms).
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
+
+        Examples
+        --------
+        ::
+
+            # Translate by 5 Angstroms along X
+            model.translate(torch.tensor([5.0, 0.0, 0.0]))
+
+            # Translate by half a unit cell along each axis
+            model.translate(torch.tensor([0.5, 0.5, 0.5]), fractional=True)
+        """
+        if not self.initialized:
+            raise RuntimeError("Model must be initialized to apply translation.")
+
+        xyz = self.xyz()
+        translation = translation.to(device=xyz.device, dtype=xyz.dtype)
+
+        if fractional:
+            # Convert fractional to Cartesian using the fractional matrix
+            # fractional_matrix transforms fractional -> Cartesian
+            translation_cart = translation @ self.fractional_matrix
+        else:
+            translation_cart = translation
+
+        # Apply translation in-place
+        xyz_translated = xyz + translation_cart
+        self.xyz.fixed_values.copy_(xyz_translated)
+
+        return self
+
+    def get_centroid(self) -> torch.Tensor:
+        """
+        Compute the centroid (center of mass) of all atoms.
+
+        Returns
+        -------
+        torch.Tensor
+            Centroid coordinates with shape (3,).
+        """
+        if not self.initialized:
+            raise RuntimeError("Model must be initialized to compute centroid.")
+
+        return self.xyz().mean(dim=0)

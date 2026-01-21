@@ -361,6 +361,58 @@ class Cell:
         return math_torch.reciprocal_basis_matrix(self._data)
 
     # =========================================================================
+    # Grid computation methods
+    # =========================================================================
+
+    def compute_grid_size(self, max_res: float, oversampling: float = 3.0) -> tuple:
+        """
+        Compute minimum grid dimensions for a given resolution.
+
+        Uses Shannon-Nyquist sampling criterion to determine the minimum
+        number of grid points needed along each axis.
+
+        Parameters
+        ----------
+        max_res : float
+            Maximum resolution in Angstroms.
+        oversampling : float, optional
+            Oversampling factor relative to max_res. Default is 3.0
+            (standard for crystallographic calculations).
+
+        Returns
+        -------
+        tuple of int
+            Minimum grid dimensions (nx, ny, nz).
+
+        Examples
+        --------
+        >>> cell = Cell([50, 60, 70, 90, 90, 90])
+        >>> cell.compute_grid_size(2.0)
+        (75, 90, 105)
+        """
+        import math
+
+        a, b, c = self.a.item(), self.b.item(), self.c.item()
+
+        # Shannon-Nyquist: sample at oversampling × the maximum frequency
+        nx = int(math.floor(a / max_res * oversampling))
+        ny = int(math.floor(b / max_res * oversampling))
+        nz = int(math.floor(c / max_res * oversampling))
+
+        return (nx, ny, nz)
+
+    def tolist(self) -> list:
+        """
+        Convert Cell parameters to a standard Python list.
+
+        Returns
+        -------
+        list
+            List of cell parameters [a, b, c, alpha, beta, gamma].
+        """
+        return self._data.tolist()
+
+    # =========================================================================
     # Dunder methods
     # =========================================================================
 

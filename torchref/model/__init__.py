@@ -11,6 +11,8 @@ Model
     Base atomic model storing xyz coordinates, B-factors, occupancies.
 ModelFT
     Fourier Transform model for FFT-based structure factor calculation.
+FFT
+    Standalone FFT module for electron density and structure factor calculations.
 MixedTensor
     Hybrid tensor allowing partial freezing of parameters.
 PositiveMixedTensor
@@ -24,7 +26,7 @@ Example
 -------
 ::
 
-    from torchref.model import Model, ModelFT, MixedTensor
+    from torchref.model import Model, ModelFT, MixedTensor, FFT
 
     # Load model from PDB
     model = Model()
@@ -37,8 +39,14 @@ Example
     # Use ModelFT for FFT-based structure factors
     model_ft = ModelFT(data, device='cuda')
     F_calc = model_ft.get_F_calc()
+
+    # Use FFT standalone for custom workflows
+    fft = FFT(max_res=1.5)
+    fft.setup_grid(cell, spacegroup)
+    sf = fft.map_to_structure_factors(density_map, hkl)
 """
 
+from torchref.model.fft import FFT
 from torchref.model.model import Model
 from torchref.model.model_ft import ModelFT
 from torchref.model.parameter_wrappers import (
@@ -49,8 +57,9 @@ from torchref.model.parameter_wrappers import (
 )
 
 __all__ = [
-    "ModelFT",
+    "FFT",
     "Model",
+    "ModelFT",
     "MixedTensor",
     "PositiveMixedTensor",
     "PassThroughTensor",

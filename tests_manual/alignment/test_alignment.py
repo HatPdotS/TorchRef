@@ -16,15 +16,14 @@ D = ReflectionData().load_mtz(mtz)
 
 
 
-aligner = PattersonAligner(data=D, model=M, verbose=2)
-sampler = VectorSampler(model=M)
+aligner = PattersonAligner(data=D, model=M, verbose=2, n_vectors=int(1e8))
+# sampler = VectorSampler(model=M)
 
-idx1, idx2 = sampler.sample(n_vectors=500)
+# idx1, idx2 = sampler.sample(n_vectors=500)
 
 M = M.select('not resname HOH')  # Exclude water molecules
 
 fractional_coords = M.xyz_fractional()
-
 
 
 from torchref.math_functions.math_torch import random_rotation_uniform
@@ -46,8 +45,6 @@ print(get_rfactor(model=M, data=D))
 
 M.xyz[:] = M.xyz().to(torch.float64) @ R.T + T
 
-print(get_rfactor(model=M, data=D))
 
-aligned_model,res = aligner.align(model=M)
 
-print(get_rfactor(model=aligned_model, data=D))
+

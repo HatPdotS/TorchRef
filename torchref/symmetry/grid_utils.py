@@ -6,22 +6,19 @@ with the symmetry operations. Specifically:
 - Screw axes require specific divisibility constraints
 - Grid sizes should also be FFT-friendly (factors of 2, 3, 5)
 
-NOTE: These functions are convenience wrappers around the Symmetry class methods.
-The Symmetry class itself now handles all grid analysis based on actual loaded
-symmetry operations, which is more robust and maintainable.
+This module provides the canonical implementations of FFT-friendly grid utilities.
+The spacegroup module imports and re-exports these functions for convenience.
 """
 
 import numpy as np
 import torch
-
-from torchref.symmetry.symmetry import Symmetry
 
 
 def get_symmetry_grid_requirements(space_group: str) -> dict:
     """
     Get grid size requirements for a given space group.
 
-    This is a convenience wrapper around Symmetry.get_grid_requirements().
+    This is a convenience wrapper around spacegroup.get_grid_requirements().
 
     Returns a dict with keys 'nx_mod', 'ny_mod', 'nz_mod' indicating
     the required divisibility for each axis.
@@ -37,8 +34,10 @@ def get_symmetry_grid_requirements(space_group: str) -> dict:
         {'nx_mod': int, 'ny_mod': int, 'nz_mod': int}
         Required divisibility for each axis.
     """
-    sym = Symmetry(space_group)
-    return sym.get_grid_requirements()
+    # Import here to avoid circular imports
+    from torchref.symmetry.spacegroup import get_grid_requirements
+
+    return get_grid_requirements(space_group)
 
 
 def find_fft_friendly_size(n: int, divisibility: int = 1) -> int:
@@ -118,6 +117,9 @@ def calculate_optimal_grid_size(cell_params, max_res: float, space_group: str) -
     tuple
         Optimal grid dimensions (nx, ny, nz).
     """
+    # Import here to avoid circular imports
+    from torchref.symmetry.spacegroup import suggest_grid_size
+
     if isinstance(cell_params, torch.Tensor):
         cell_params = cell_params.cpu().numpy()
 
@@ -128,18 +130,15 @@ def calculate_optimal_grid_size(cell_params, max_res: float, space_group: str) -
     ny_min = int(np.floor(b / max_res * 3))
     nz_min = int(np.floor(c / max_res * 3))
 
-    # Use Symmetry class to suggest optimal size
-    sym = Symmetry(space_group)
-    nx, ny, nz = sym.suggest_grid_size((nx_min, ny_min, nz_min), make_fft_friendly=True)
-
-    return (nx, ny, nz)
+    # Use spacegroup module to suggest optimal size
+    return suggest_grid_size((nx_min, ny_min, nz_min), space_group, make_fft_friendly=True)
 
 
 def check_grid_compatibility(grid_shape: tuple, space_group: str) -> dict:
     """
     Check if a grid is compatible with the space group symmetry.
 
-    This is a convenience wrapper around Symmetry.check_grid_compatibility().
+    This is a convenience wrapper around spacegroup.check_grid_compatibility().
 
     Parameters
     ----------
@@ -157,18 +156,14 @@ def check_grid_compatibility(grid_shape: tuple, space_group: str) -> dict:
         - 'issues' : list of str (description of problems)
         - 'requirements' : dict (required divisibility)
         - 'can_use_direct_indexing' : bool (True if interpolation not needed)
-        - 'is_fft_friendly' : bool
+        - 'fft_friendly' : bool
     """
-    sym = Symmetry(space_group)
-    result = sym.check_grid_compatibility(grid_shape)
-
-    # Add FFT-friendly check
-    nx, ny, nz = grid_shape
-    result["is_fft_friendly"] = (
-        is_fft_friendly(nx) and is_fft_friendly(ny) and is_fft_friendly(nz)
+    # Import here to avoid circular imports
+    from torchref.symmetry.spacegroup import (
+        check_grid_compatibility as sg_check_grid_compatibility,
     )
 
-    return result
+    return sg_check_grid_compatibility(grid_shape, space_group)
 
 
 def recommend_grid_size(current_shape: tuple, space_group: str) -> tuple:
@@ -187,5 +182,7 @@ def recommend_grid_size(current_shape: tuple, space_group: str) -> tuple:
     tuple
         Recommended (nx, ny, nz).
     """
-    sym = Symmetry(space_group)
-    return sym.suggest_grid_size(current_shape, make_fft_friendly=True)
+    # Import here to avoid circular imports
+    from torchref.symmetry.spacegroup import suggest_grid_size
+
+    return suggest_grid_size(current_shape, space_group, make_fft_friendly=True)

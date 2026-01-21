@@ -22,3 +22,13 @@ __pycache__/
 *.ccp4
 *.png
 make_flow_chart/
+
+__pycache__/
+*.py[cod]
+./ruff_cache/
+./cli_testing
+claude
+.out
+.err
+# Sphinx build output
+docs/_build/

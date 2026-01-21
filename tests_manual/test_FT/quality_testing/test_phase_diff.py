@@ -4,7 +4,7 @@
 #SBATCH -o /das/work/p17/p17490/Peter/Library/torchref/tests_manual/test_FT/quality_testing/compare_cctbx_map_multiplicative_new_io.log
 
 from torchref.model.model_ft import ModelFT
-from torchref.symmetrie.map_symmetry import MapSymmetry
+from torchref.symmetry.map_symmetry import MapSymmetry
 import torch
 import numpy as np
 import reciprocalspaceship as rs
