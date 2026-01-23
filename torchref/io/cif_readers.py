@@ -838,7 +838,7 @@ class ReflectionCIFReader:
                 ).combine_first(sigF_minus)
                 result["sigma_F_obs_key"] = f"{sigF_plus_col}+{sigF_minus_col}_averaged"
             else:
-                result["sigma_F_obs"], sigFobskey = self._extract_numeric(
+                result["sigma_F_obs"], sigma_F_obs_key = self._extract_numeric(
                     refln_df,
                     [
                         "_refln.F_meas_sigma_au",
@@ -848,7 +848,7 @@ class ReflectionCIFReader:
                     ],
                     target_type="float",
                 )
-                result["sigma_F_obs_key"] = sigFobskey
+                result["sigma_F_obs_key"] = sigma_F_obs_key
 
             if self.verbose > 0:
                 n_both = ((pd.notna(F_plus)) & (pd.notna(F_minus))).sum()
@@ -860,7 +860,7 @@ class ReflectionCIFReader:
                 print(f"  Reflections with F- only: {n_minus_only}")
         else:
             # Standard non-anomalous data
-            result["F_obs"], Fobskey = self._extract_numeric(
+            result["F_obs"], F_obs_key = self._extract_numeric(
                 refln_df,
                 [
                     "_refln.F_meas_au",
@@ -872,8 +872,8 @@ class ReflectionCIFReader:
                 ],
                 target_type="float",
             )
-            result["F_obs_key"] = Fobskey
-            result["sigma_F_obs"], sigFobskey = self._extract_numeric(
+            result["F_obs_key"] = F_obs_key
+            result["sigma_F_obs"], sigma_F_obs_key = self._extract_numeric(
                 refln_df,
                 [
                     "_refln.F_meas_sigma_au",
@@ -883,7 +883,7 @@ class ReflectionCIFReader:
                 ],
                 target_type="float",
             )
-            result["sigma_F_obs_key"] = sigFobskey
+            result["sigma_F_obs_key"] = sigma_F_obs_key
 
         # Intensities - check for anomalous intensities
         I_plus_col = (

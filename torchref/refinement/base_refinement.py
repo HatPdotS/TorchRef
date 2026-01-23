@@ -13,7 +13,6 @@ from torchref.refinement.targets.combined_targets import (
 
 # Target system imports
 from torchref.refinement.targets.targets import create_xray_target
-from torchref.restraints.restraints_new import RestraintsNew as Restraints
 from torchref.scaling.scaler import Scaler
 from torchref.utils.debug_utils import DebugMixin
 
@@ -61,11 +60,9 @@ class Refinement(DebugMixin, nnModule):
     reflection_data : ReflectionData
         Reflection data container.
     model : ModelFT
-        Structure factor model.
+        Structure factor model (includes lazy restraints via model.restraints).
     scaler : Scaler
         Scale factor calculator.
-    restraints : Restraints
-        Geometry restraints.
     weighter : LossWeightingModule
         Loss weighting module.
     """
@@ -128,9 +125,7 @@ class Refinement(DebugMixin, nnModule):
             self.scaler = Scaler(
                 verbose=self.verbose, device=self.device, nbins=self.nbins
             )
-            self.restraints = (
-                None  # Restraints needs model, created during load_state_dict
-            )
+            # Restraints are now lazy-loaded via model.restraints property
             self.weighter = None
             self.manual_weights = manual_weights if manual_weights is not None else {}
             self.component_weights = (
@@ -181,7 +176,8 @@ class Refinement(DebugMixin, nnModule):
                 device=self.device,
                 nbins=self.nbins,
             )
-            self.restraints = Restraints(self.model, cif, self.verbose)
+            # Configure CIF path for lazy restraint building (restraints built on first access)
+            self.model.set_restraints_cif(cif)
 
             self.manual_weights = manual_weights if manual_weights is not None else {}
             self.component_weights = (
@@ -206,18 +202,29 @@ class Refinement(DebugMixin, nnModule):
             X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
             Default is 'ml'.
         """
-        # X-ray targets
+        # X-ray targets (now accept model, data, scaler directly)
         self.xray_target_work = create_xray_target(
-            self, xray_mode, use_work_set=True, verbose=self.verbose
+            model=self.model,
+            data=self.reflection_data,
+            scaler=self.scaler,
+            mode=xray_mode,
+            use_work_set=True,
+            verbose=self.verbose,
         )
         self.xray_target_test = create_xray_target(
-            self, xray_mode, use_work_set=False, verbose=self.verbose
+            model=self.model,
+            data=self.reflection_data,
+            scaler=self.scaler,
+            mode=xray_mode,
+            use_work_set=False,
+            verbose=self.verbose,
         )
 
         # Total geometry target (handles bond, angle, torsion internally)
-        self.geometry_target = TotalGeometryTarget(self, verbose=self.verbose)
+        # Geometry targets now accept model directly instead of refinement
+        self.geometry_target = TotalGeometryTarget(self.model, verbose=self.verbose)
 
-        self.adp_target = TotalADPTarget(self, verbose=self.verbose)
+        self.adp_target = TotalADPTarget(self.model, verbose=self.verbose)
 
         self.setup_component_weighting()
 
@@ -234,10 +241,20 @@ class Refinement(DebugMixin, nnModule):
             X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
         """
         self.xray_target_work = create_xray_target(
-            self, mode, use_work_set=True, verbose=self.verbose
+            model=self.model,
+            data=self.reflection_data,
+            scaler=self.scaler,
+            mode=mode,
+            use_work_set=True,
+            verbose=self.verbose,
         )
         self.xray_target_test = create_xray_target(
-            self, mode, use_work_set=False, verbose=self.verbose
+            model=self.model,
+            data=self.reflection_data,
+            scaler=self.scaler,
+            mode=mode,
+            use_work_set=False,
+            verbose=self.verbose,
         )
         if self.verbose > 0:
             print(f"Changed X-ray target mode to '{mode}'")
@@ -327,7 +344,7 @@ class Refinement(DebugMixin, nnModule):
         """
         return self.adp_target()
 
-    def get_Fcalc(self, hkl=None, recalc=False):
+    def get_F_calc(self, hkl=None, recalc=False):
         return torch.abs(self.get_fcalc(hkl, recalc=recalc))
 
     def get_F_calc_scaled(self, hkl=None, recalc=False):
@@ -506,20 +523,21 @@ class Refinement(DebugMixin, nnModule):
             xray_work = self.xray_target_work().detach().item()
             xray_test = self.xray_target_test().detach().item()
 
-            # B-factor statistics
-            b_factors = self.model.b()
-            mean_b = float(b_factors.mean())
-            b_std = float(b_factors.std())
+            # ADP statistics
+            adp_values = self.model.adp()
+            mean_adp = float(adp_values.mean())
+            adp_std = float(adp_values.std())
 
-            # Geometry deviations
+            # Geometry deviations (restraints accessed via model.restraints)
             bond_rmsd = 0.0
             angle_rmsd = 0.0
-            if hasattr(self, "restraints") and self.restraints is not None:
-                if hasattr(self.restraints, "bond_deviations"):
-                    bond_devs, _ = self.restraints.bond_deviations()
+            if self.model.initialized and self.model._restraints is not None:
+                restraints = self.model.restraints
+                if hasattr(restraints, "bond_deviations"):
+                    bond_devs, _ = restraints.bond_deviations()
                     bond_rmsd = float(torch.sqrt((bond_devs**2).mean()))
-                if hasattr(self.restraints, "angle_deviations"):
-                    angle_devs, _ = self.restraints.angle_deviations()
+                if hasattr(restraints, "angle_deviations"):
+                    angle_devs, _ = restraints.angle_deviations()
                     angle_rmsd = float(torch.sqrt((angle_devs**2).mean()))
 
         state.update_meta(
@@ -541,8 +559,8 @@ class Refinement(DebugMixin, nnModule):
                 "rfree_gap": rfree - rwork,
                 "xray_loss_work": xray_work,
                 "xray_loss_test": xray_test,
-                "mean_b": mean_b,
-                "b_std": b_std,
+                "mean_adp": mean_adp,
+                "adp_std": adp_std,
                 "bond_rmsd": bond_rmsd,
                 "angle_rmsd": angle_rmsd,
             }
@@ -984,12 +1002,11 @@ class Refinement(DebugMixin, nnModule):
 
     def cuda(self):
         super().cuda()
-        self.model.cuda()  # Explicitly call cuda on model to update its device attributes
+        self.model.cuda()  # Explicitly call cuda on model (restraints moved via model)
         self.reflection_data.cuda()
         if hasattr(self, "scaler") and self.scaler is not None:
             self.scaler.cuda()
-        if hasattr(self, "restraints") and self.restraints is not None:
-            self.restraints.cuda()
+        # Note: restraints are now managed by model and moved via model.cuda()
         if (
             hasattr(self, "component_weighting")
             and self.component_weighting is not None
@@ -1001,12 +1018,11 @@ class Refinement(DebugMixin, nnModule):
 
     def cpu(self):
         super().cpu()
-        self.model.cpu()  # Explicitly call cpu on model to update its device attribute
+        self.model.cpu()  # Explicitly call cpu on model (restraints moved via model)
         self.reflection_data.cpu()
         if hasattr(self, "scaler") and self.scaler is not None:
             self.scaler.cpu()
-        if hasattr(self, "restraints") and self.restraints is not None:
-            self.restraints.cpu()
+        # Note: restraints are now managed by model and moved via model.cpu()
         if (
             hasattr(self, "component_weighting")
             and self.component_weighting is not None
@@ -1031,7 +1047,7 @@ class Refinement(DebugMixin, nnModule):
 
         with torch.no_grad():
             hkl, F_obs, sigma_F_obs, self.rfree_flags = self.reflection_data()
-            self.get_Fcalc()
+            self.get_F_calc()
             F_calc = self.F_calc
             F_obs_amp = torch.abs(F_obs).cpu().numpy()
             F_calc_amp = torch.abs(F_calc).cpu().numpy()
@@ -1042,7 +1058,7 @@ class Refinement(DebugMixin, nnModule):
             )
             plt.xlabel("Observed |F|")
             plt.ylabel("Calculated |F|")
-            plt.title("Fcalc vs Fobs")
+            plt.title("F_calc vs F_obs")
             plt.grid()
             plt.savefig(outpath)
 

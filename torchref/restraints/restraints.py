@@ -3117,7 +3117,7 @@ class Restraints(DebugMixin, Module):
         torch.Tensor
             Tensor of B-factor differences (B_i - B_j) for all bonds.
         """
-        b_factors = self.model.b()
+        b_factors = self.model.adp()
 
         diffs_list = []
         if "bond" in self.restraints:

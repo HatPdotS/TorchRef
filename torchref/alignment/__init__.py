@@ -79,10 +79,8 @@ from .ml_aligner import (
 )
 from .rigid_body import (
     RigidBodyRefinement,
-    RigidBodyResult,
-    compute_r_factor,
-    ml_xray_loss,
-)
+    RigidBodyResult)
+
 from .sampling import VectorSampler, get_rotation_sampling_range
 from .transform import RigidTransform
 

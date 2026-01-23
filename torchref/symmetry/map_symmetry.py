@@ -40,7 +40,7 @@ def MapSymmetry(
         Space group specification (e.g., 'P21', 4, gemmi.SpaceGroup('P 21')).
     map_shape : tuple of int
         Shape of the density map (nx, ny, nz).
-    cell_params : array-like, shape (6,)
+    cell_params : torch.Tensor, shape (6,)
         Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
     dtype_float : torch.dtype, default torch.float32
         Floating point precision to use.
@@ -161,7 +161,7 @@ class MapSymmetryDirect(nn.Module):
         self.dtype_float = dtype_float
         self.space_group = space_group
         self.map_shape = tuple(map_shape)
-        self.cell_params = np.array(cell_params)
+        self.cell_params = cell_params
         self.verbose = verbose
         self.device = device
         # Get symmetry operations

@@ -351,13 +351,13 @@ Examples:
     # Add final R-factors
     try:
         rwork, rfree = refinement.get_rfactor()
-        mean_b = refinement.model.b().mean().item()
+        mean_adp = refinement.model.adp().mean().item()
 
         history_data["final_statistics"] = {
             "R_work": float(rwork),
             "R_free": float(rfree),
             "R_gap": float(rfree - rwork),
-            "mean_B": float(mean_b),
+            "mean_adp": float(mean_adp),
         }
 
         # Add restraint statistics if available

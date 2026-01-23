@@ -126,8 +126,8 @@ class ModelFT(Model):
     def select(self, selection):
         selection = super().select(selection)
         selection._build_parametrization()
-        # Set cell and spacegroup on the new FFT submodule
-        selection._fft.set_cell_and_spacegroup(selection.cell, selection.spacegroup)
+        # Create FFT submodule for the selection
+        selection._fft = FFT(selection.cell, selection.spacegroup, device=selection.device, dtype_float=selection.dtype_float)
         selection.setup_grid()
         return selection
 
@@ -147,8 +147,8 @@ class ModelFT(Model):
         """
         super().load_cif(filename)
         self._build_parametrization()
-        # Set cell and spacegroup on FFT submodule
-        self._fft.set_cell_and_spacegroup(self.cell, self.spacegroup)
+        # Create FFT submodule with cell and spacegroup
+        self._fft = FFT(self.cell, self.spacegroup, device=self.device, dtype_float=self.dtype_float)
         self.setup_grid()
         return self
 
@@ -271,8 +271,8 @@ class ModelFT(Model):
         -------
         xyz : torch.Tensor
             Atomic coordinates with shape (n_atoms, 3).
-        b : torch.Tensor
-            B-factors with shape (n_atoms,).
+        adp : torch.Tensor
+            Atomic displacement parameters (isotropic) with shape (n_atoms,).
         occupancy : torch.Tensor
             Occupancies with shape (n_atoms,).
         A : torch.Tensor
@@ -281,12 +281,12 @@ class ModelFT(Model):
             ITC92 B parameters (widths) with shape (n_atoms, 5).
         """
         # Get base isotropic data from parent
-        xyz, b, occupancy = super().get_iso()
+        xyz, adp, occupancy = super().get_iso()
 
         # Get scattering parameters from parent
         A, B = self.get_scattering_params_iso()
 
-        return xyz, b, occupancy, A, B
+        return xyz, adp, occupancy, A, B
 
     def get_aniso(self):
         """
@@ -430,7 +430,7 @@ class ModelFT(Model):
             )
 
         # Get isotropic atoms
-        xyz_iso, b_iso, occ_iso, A_iso, B_iso = self.get_iso()
+        xyz_iso, adp_iso, occ_iso, A_iso, B_iso = self.get_iso()
 
         if self.verbose > 3:
             assert torch.all(
@@ -443,8 +443,8 @@ class ModelFT(Model):
                 torch.isfinite(xyz_iso)
             ), "Non-finite values found in xyz_iso during map building."
             assert torch.all(
-                torch.isfinite(b_iso)
-            ), "Non-finite values found in b_iso during map building."
+                torch.isfinite(adp_iso)
+            ), "Non-finite values found in adp_iso during map building."
             assert torch.all(
                 torch.isfinite(occ_iso)
             ), "Non-finite values found in occ_iso during map building."
@@ -455,12 +455,10 @@ class ModelFT(Model):
         # Delegate to FFT submodule
         self.map = self._fft.build_density_map(
             xyz_iso=xyz_iso,
-            b_iso=b_iso,
+            adp_iso=adp_iso,
             occ_iso=occ_iso,
             A_iso=A_iso,
             B_iso=B_iso,
-            inv_fractional_matrix=self.inv_fractional_matrix,
-            fractional_matrix=self.fractional_matrix,
             xyz_aniso=xyz_aniso if len(xyz_aniso) > 0 else None,
             u_aniso=u_aniso if len(xyz_aniso) > 0 else None,
             occ_aniso=occ_aniso if len(xyz_aniso) > 0 else None,
@@ -573,16 +571,11 @@ class ModelFT(Model):
         if dtype is not None:
             self._fft.dtype_float = dtype
 
-        # Move map if it exists
-        if self.map is not None:
-            self.map = self.map.to(device=device, dtype=dtype)
-
         return result
 
     def cuda(self, device=None):
         """Move model and FT-specific data to GPU."""
-        cuda_device = f"cuda:{device}" if device is not None else "cuda"
-        return self.to(device=cuda_device)
+        return self.to(device='cuda' if device is None else device)
 
     def cpu(self):
         """Move model and FT-specific data to CPU."""
@@ -628,7 +621,7 @@ class ModelFT(Model):
         # Build map and compute structure factors using FFT module
         self.build_complete_map()
         self.reciprocal_space_grid = ifft(self.map)
-        sf = FFT.map_to_structure_factors(self.map, hkl)
+        sf = self._fft.map_to_structure_factors(self.map, hkl)
 
         self._cache[key] = sf.detach()
 

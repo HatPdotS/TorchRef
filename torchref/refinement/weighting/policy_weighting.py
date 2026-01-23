@@ -82,8 +82,8 @@ class StepState:
     adp_loss: float
     bond_rmsd: float
     angle_rmsd: float
-    mean_b_normalized: float  # mean_b / wilson_b
-    b_std_normalized: float  # b_std / wilson_b
+    mean_adp_normalized: float  # mean_adp / wilson_b
+    adp_std_normalized: float  # adp_std / wilson_b
     component_losses: Dict[str, float] = field(default_factory=dict)
     component_weights: Dict[str, float] = field(default_factory=dict)
 
@@ -284,8 +284,8 @@ class PolicyComponentWeighting(BaseWeighting):
         n_hkl = state.get("n_hkl", 1)
         resolution_min = state.get("resolution_min", 2.0)
         wilson_b = state.get("wilson_b", 20.0)
-        mean_b = state.get("mean_b", 20.0)
-        b_std = state.get("b_std", 5.0)
+        mean_adp = state.get("mean_adp", 20.0)
+        adp_std = state.get("adp_std", 5.0)
 
         self.static_features = {
             "resolution_min": resolution_min,
@@ -294,7 +294,7 @@ class PolicyComponentWeighting(BaseWeighting):
             "log_n_hkl": np.log(n_hkl),
             "data_to_param_ratio": n_hkl / n_atoms,
             "log_wilson_b": np.log(wilson_b),
-            "b_cv": b_std / (mean_b + 1e-6),  # Coefficient of variation
+            "adp_cv": adp_std / (mean_adp + 1e-6),  # Coefficient of variation
             "wilson_b": wilson_b,  # Keep for B-factor normalization
         }
 
@@ -403,7 +403,7 @@ class PolicyComponentWeighting(BaseWeighting):
         - Geometry losses (7): total, bond, angle, torsion, planarity, chiral, nonbonded
         - Geometry RMSD (2): bond_rmsd, angle_rmsd
         - ADP losses (4): total, simu, locality, KL
-        - B-factor stats (2): mean_b/wilson_b, b_std/wilson_b
+        - ADP stats (2): mean_adp/wilson_b, adp_std/wilson_b
         """
         # Get R-factors from state.meta
         rwork = state.get("rwork", 0.2)
@@ -451,14 +451,14 @@ class PolicyComponentWeighting(BaseWeighting):
         bond_rmsd = state.get("bond_rmsd", 0.0)
         angle_rmsd = state.get("angle_rmsd", 0.0)
 
-        # B-factor statistics from state.meta
-        mean_b = state.get("mean_b", 20.0)
-        b_std = state.get("b_std", 5.0)
+        # ADP statistics from state.meta
+        mean_adp = state.get("mean_adp", 20.0)
+        adp_std = state.get("adp_std", 5.0)
 
-        # Normalize B-factor stats by Wilson B
+        # Normalize ADP stats by Wilson B
         wilson_b = self.static_features["wilson_b"]
-        mean_b_normalized = mean_b / wilson_b
-        b_std_normalized = b_std / wilson_b
+        mean_adp_normalized = mean_adp / wilson_b
+        adp_std_normalized = adp_std / wilson_b
 
         # Build 31-feature tensor matching meta_weighting_4/worker.py
         features = torch.tensor(
@@ -478,7 +478,7 @@ class PolicyComponentWeighting(BaseWeighting):
                 self.static_features["log_n_hkl"],  # 9: reflections (log-scaled)
                 self.static_features["data_to_param_ratio"],  # 10: data/param ratio
                 self.static_features["log_wilson_b"],  # 11: data quality (log-scaled)
-                self.static_features["b_cv"],  # 12: disorder coefficient of variation
+                self.static_features["adp_cv"],  # 12: disorder coefficient of variation
                 # X-ray losses (3) - RAW
                 xray_loss_work,  # 13
                 xray_loss_test,  # 14
@@ -499,9 +499,9 @@ class PolicyComponentWeighting(BaseWeighting):
                 component_losses.get("simu", 0.0),  # 26
                 component_losses.get("locality", 0.0),  # 27
                 component_losses.get("KL", 0.0),  # 28
-                # B-factor stats (2) - normalized by Wilson B
-                mean_b_normalized,  # 29: normalized mean B
-                b_std_normalized,  # 30: normalized B spread
+                # ADP stats (2) - normalized by Wilson B
+                mean_adp_normalized,  # 29: normalized mean ADP
+                adp_std_normalized,  # 30: normalized ADP spread
             ],
             dtype=torch.float32,
             device=self.device,
@@ -523,8 +523,8 @@ class PolicyComponentWeighting(BaseWeighting):
             adp_loss=adp_loss_total,
             bond_rmsd=bond_rmsd,
             angle_rmsd=angle_rmsd,
-            mean_b_normalized=mean_b_normalized,
-            b_std_normalized=b_std_normalized,
+            mean_adp_normalized=mean_adp_normalized,
+            adp_std_normalized=adp_std_normalized,
             component_losses=component_losses.copy(),
             component_weights={},  # Will be filled by forward()
         )

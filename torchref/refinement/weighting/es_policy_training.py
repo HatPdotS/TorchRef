@@ -379,12 +379,12 @@ def create_policy_network(state_dim: int = 31, hidden_dim: int = 256) -> nn.Modu
     - Progress (2): progress, improvement_rate
     - R-factors (4): rwork, rfree, gap, delta_rfree
     - Static features (7): resolution_min, inv_resolution, log_n_atoms,
-      log_n_hkl, data_to_param_ratio, log_wilson_b, b_cv
+      log_n_hkl, data_to_param_ratio, log_wilson_b, adp_cv
     - X-ray losses (3): work, test, work/test ratio
     - Geometry losses (7): total, bond, angle, torsion, planarity, chiral, nonbonded
     - Geometry RMSD (2): bond_rmsd, angle_rmsd
     - ADP losses (4): total, simu, locality, KL
-    - B-factor stats (2): mean_b/wilson_b, b_std/wilson_b
+    - ADP stats (2): mean_adp/wilson_b, adp_std/wilson_b
     """
 
     class PolicyNetwork(nn.Module):

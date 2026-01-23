@@ -19,12 +19,13 @@ from torchref.utils.stats import (
 )
 
 if TYPE_CHECKING:
+    from torchref.model.model import Model
     from torchref.refinement.base_refinement import Refinement
 
 
 class CombinedTargets(targets.Target):
     """
-    Base class for combined targets (e.g., geometry + ADP).
+    Base class for combined targets.
 
     Uses nn.ModuleDict to store component targets for clean organization
     and easy access via dictionary-style notation.
@@ -33,8 +34,6 @@ class CombinedTargets(targets.Target):
 
     Parameters
     ----------
-    refinement : Refinement, optional
-        Reference to Refinement object.
     verbose : int, optional
         Verbosity level. Default is 0.
 
@@ -44,18 +43,16 @@ class CombinedTargets(targets.Target):
         Dictionary of component targets.
     """
 
-    def __init__(self, refinement: "Refinement" = None, verbose: int = 0):
+    def __init__(self, verbose: int = 0):
         """
         Initialize CombinedTargets.
 
         Parameters
         ----------
-        refinement : Refinement, optional
-            Reference to Refinement object.
         verbose : int, optional
             Verbosity level. Default is 0.
         """
-        super().__init__(refinement, verbose)
+        super().__init__(verbose=verbose)
         self._targets = nn.ModuleDict(self._create_targets())
 
     def _create_targets(self) -> Dict[str, "targets.Target"]:
@@ -72,30 +69,11 @@ class CombinedTargets(targets.Target):
         raise NotImplementedError("Subclasses must implement _create_targets() method.")
 
     def targets(self) -> nn.ModuleDict:
-        """
-        Return registered sub-targets as ModuleDict.
-
-        Returns
-        -------
-        nn.ModuleDict
-            ModuleDict mapping target names to Target instances.
-        """
+        """Return registered sub-targets as ModuleDict."""
         return self._targets
 
     def __getitem__(self, key: str) -> "targets.Target":
-        """
-        Get a target by name using dictionary-style access.
-
-        Parameters
-        ----------
-        key : str
-            Name of the target.
-
-        Returns
-        -------
-        Target
-            The requested target.
-        """
+        """Get a target by name using dictionary-style access."""
         return self._targets[key]
 
     def __contains__(self, key: str) -> bool:
@@ -115,44 +93,18 @@ class CombinedTargets(targets.Target):
         return self._targets.items()
 
     def target_losses(self) -> Dict[str, torch.Tensor]:
-        """
-        Get individual component losses (without weights).
-
-        Returns
-        -------
-        dict
-            Dictionary mapping target names to their loss tensors.
-        """
+        """Get individual component losses (without weights)."""
         return {name: target() for name, target in self._targets.items()}
 
     def forward(self) -> torch.Tensor:
-        """
-        Compute total combined target loss.
-
-        Returns
-        -------
-        torch.Tensor
-            Sum of all component target losses.
-        """
+        """Compute total combined target loss."""
         losses = list(self.target_losses().values())
         if not losses:
-            return torch.tensor(
-                0.0, device=self.refinement.device if self.refinement else "cpu"
-            )
+            return torch.tensor(0.0)
         return torch.stack(losses).sum()
 
     def stats(self) -> Dict[str, any]:
-        """
-        Get statistics from all registered targets.
-
-        Returns full stats dictionary with StatEntry values. Use filter_stats()
-        at the caller level to filter by verbosity when needed.
-
-        Returns
-        -------
-        dict
-            Dictionary with statistics from all component targets.
-        """
+        """Get statistics from all registered targets."""
         statistics = {}
         for name, target in self._targets.items():
             if hasattr(target, "stats"):
@@ -162,14 +114,7 @@ class CombinedTargets(targets.Target):
         return statistics
 
     def get(self) -> dict:
-        """
-        Get individual component losses.
-
-        Returns
-        -------
-        dict
-            Dictionary mapping target names to their loss tensors.
-        """
+        """Get individual component losses."""
         return self.target_losses()
 
     def add_to_state(self, state):
@@ -178,7 +123,111 @@ class CombinedTargets(targets.Target):
         return state
 
 
-class TotalGeometryTarget(CombinedTargets, targets.GeometryTarget):
+class CombinedModelTargets(targets.ModelTarget):
+    """
+    Base class for combined targets that only need Model (geometry/ADP targets).
+
+    Uses nn.ModuleDict to store component targets for clean organization
+    and easy access via dictionary-style notation.
+
+    Subclasses should override `_create_targets()` to define their component targets.
+
+    Parameters
+    ----------
+    model : Model, optional
+        Reference to Model object.
+    verbose : int, optional
+        Verbosity level. Default is 0.
+
+    Attributes
+    ----------
+    _targets : nn.ModuleDict
+        Dictionary of component targets.
+    """
+
+    def __init__(self, model: "Model" = None, verbose: int = 0):
+        """
+        Initialize CombinedModelTargets.
+
+        Parameters
+        ----------
+        model : Model, optional
+            Reference to Model object.
+        verbose : int, optional
+            Verbosity level. Default is 0.
+        """
+        super().__init__(model, verbose)
+        self._targets = nn.ModuleDict(self._create_targets())
+
+    def _create_targets(self) -> Dict[str, "targets.Target"]:
+        """
+        Create and return component targets as a dictionary.
+
+        Subclasses must override this method to define their component targets.
+
+        Returns
+        -------
+        Dict[str, Target]
+            Dictionary mapping target names to Target instances.
+        """
+        raise NotImplementedError("Subclasses must implement _create_targets() method.")
+
+    def targets(self) -> nn.ModuleDict:
+        """Return registered sub-targets as ModuleDict."""
+        return self._targets
+
+    def __getitem__(self, key: str) -> "targets.Target":
+        """Get a target by name using dictionary-style access."""
+        return self._targets[key]
+
+    def __contains__(self, key: str) -> bool:
+        """Check if a target exists."""
+        return key in self._targets
+
+    def keys(self):
+        """Return target names."""
+        return self._targets.keys()
+
+    def values(self):
+        """Return target instances."""
+        return self._targets.values()
+
+    def items(self):
+        """Return (name, target) pairs."""
+        return self._targets.items()
+
+    def target_losses(self) -> Dict[str, torch.Tensor]:
+        """Get individual component losses (without weights)."""
+        return {name: target() for name, target in self._targets.items()}
+
+    def forward(self) -> torch.Tensor:
+        """Compute total combined target loss."""
+        losses = list(self.target_losses().values())
+        if not losses:
+            return torch.tensor(0.0, device=self.model.xyz().device if self.model else "cpu")
+        return torch.stack(losses).sum()
+
+    def stats(self) -> Dict[str, any]:
+        """Get statistics from all registered targets."""
+        statistics = {}
+        for name, target in self._targets.items():
+            if hasattr(target, "stats"):
+                target_stats = target.stats()
+                if target_stats:
+                    statistics[name] = target_stats
+        return statistics
+
+    def get(self) -> dict:
+        """Get individual component losses."""
+        return self.target_losses()
+
+    def add_to_state(self, state):
+        for name, target in self._targets.items():
+            target.add_to_state(state)
+        return state
+
+
+class TotalGeometryTarget(CombinedModelTargets):
     """
     Computes weighted sum of all geometry restraint NLLs.
 
@@ -206,8 +255,8 @@ class TotalGeometryTarget(CombinedTargets, targets.GeometryTarget):
 
     Parameters
     ----------
-    refinement : Refinement, optional
-        Reference to Refinement object.
+    model : Model, optional
+        Reference to Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
 
@@ -215,7 +264,7 @@ class TotalGeometryTarget(CombinedTargets, targets.GeometryTarget):
     --------
     ::
 
-        geom_target = TotalGeometryTarget(refinement)
+        geom_target = TotalGeometryTarget(model)
         loss = geom_target()
         bond_loss = geom_target['bond']()
         for name, target in geom_target.items():
@@ -233,12 +282,12 @@ class TotalGeometryTarget(CombinedTargets, targets.GeometryTarget):
         """
         print("Initializing TotalGeometryTarget with component targets...")
         return {
-            "bond": targets.BondTarget(self.refinement, self.verbose),
-            "angle": targets.AngleTarget(self.refinement, self.verbose),
-            "torsion": targets.TorsionTarget(self.refinement, self.verbose),
-            "planarity": targets.PlanarityTarget(self.refinement, self.verbose),
-            "chiral": targets.ChiralTarget(self.refinement, self.verbose),
-            "nonbonded": targets.NonBondedTarget(self.refinement, verbose=self.verbose),
+            "bond": targets.BondTarget(self.model, self.verbose),
+            "angle": targets.AngleTarget(self.model, self.verbose),
+            "torsion": targets.TorsionTarget(self.model, self.verbose),
+            "planarity": targets.PlanarityTarget(self.model, self.verbose),
+            "chiral": targets.ChiralTarget(self.model, self.verbose),
+            "nonbonded": targets.NonBondedTarget(self.model, verbose=self.verbose),
         }
 
     def get_metrics(self, verbosity: int = VERBOSITY_DETAILED) -> Dict[str, float]:
@@ -348,7 +397,7 @@ class TotalGeometryTarget(CombinedTargets, targets.GeometryTarget):
         print("=" * 90 + "\n")
 
 
-class TotalADPTarget(CombinedTargets, targets.ADPTarget):
+class TotalADPTarget(CombinedModelTargets):
     """
     Total ADP restraint target combining global, similarity, and local components.
 
@@ -382,8 +431,8 @@ class TotalADPTarget(CombinedTargets, targets.ADPTarget):
 
     Parameters
     ----------
-    refinement : Refinement
-        Reference to Refinement object.
+    model : Model
+        Reference to Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
 
@@ -391,7 +440,7 @@ class TotalADPTarget(CombinedTargets, targets.ADPTarget):
     --------
     ::
 
-        adp_target = TotalADPTarget(refinement)
+        adp_target = TotalADPTarget(model)
         loss = adp_target()
         simu_loss = adp_target['simu']()
         for name, target in adp_target.items():
@@ -409,11 +458,11 @@ class TotalADPTarget(CombinedTargets, targets.ADPTarget):
         """
         print("Initializing TotalADPTarget with component targets...")
         return {
-            "simu": targets.ADPSimilarityTarget(self.refinement, verbose=self.verbose),
+            "simu": targets.ADPSimilarityTarget(self.model, verbose=self.verbose),
             "locality": targets.ADPLocalityTarget(
-                self.refinement, verbose=self.verbose
+                self.model, verbose=self.verbose
             ),
-            "KL": targets.ADPEntropyTarget(self.refinement, verbose=self.verbose),
+            "KL": targets.ADPEntropyTarget(self.model, verbose=self.verbose),
         }
 
     def print_statistics(self) -> None:

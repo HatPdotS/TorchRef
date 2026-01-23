@@ -12,11 +12,11 @@ Usage - PyTorch Module (Recommended)::
         # Miller indices for your reflections
         hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
 
-        # Unit cell: [a, b, c, alpha, beta, gamma] in Å and degrees
-        unit_cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
+        # Cell: [a, b, c, alpha, beta, gamma] in Å and degrees
+        cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
 
         # Create module (does all preprocessing)
-        fw_module = FrenchWilsonModule(hkl, unit_cell, space_group='P212121')
+        fw_module = FrenchWilsonModule(hkl, cell, space_group='P212121')
 
         # Apply conversion (can be called repeatedly with different I, sigma_I)
         I = torch.tensor([100.0, 50.0, 30.0, 200.0])
@@ -1294,7 +1294,7 @@ class FrenchWilson(nn.Module):
     ----------
     hkl : torch.Tensor
         Miller indices of shape (n_reflections, 3), integer tensor.
-    unit_cell : torch.Tensor
+    cell : torch.Tensor
         Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
     space_group : str, int, or gemmi.SpaceGroup, optional
         Space group specification (e.g., 'P21', 4, gemmi.SpaceGroup('P 21')). Default is "P1".
@@ -1321,8 +1321,8 @@ class FrenchWilson(nn.Module):
     ::
 
         hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
-        unit_cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
-        fw_module = FrenchWilson(hkl, unit_cell, 'P212121')
+        cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
+        fw_module = FrenchWilson(hkl, cell, 'P212121')
         I = torch.tensor([100.0, 50.0, 30.0, 200.0])
         sigma_I = torch.tensor([10.0, 8.0, 7.0, 15.0])
         F, sigma_F = fw_module(I, sigma_I)
@@ -1331,7 +1331,7 @@ class FrenchWilson(nn.Module):
     def __init__(
         self,
         hkl: torch.Tensor,
-        unit_cell: torch.Tensor,
+        cell: torch.Tensor,
         space_group: SpaceGroupLike = "P1",
         n_bins: int = 60,
         min_per_bin: int = 40,
@@ -1351,8 +1351,8 @@ class FrenchWilson(nn.Module):
         # Register HKL as buffer (will be moved to device with model)
         self.register_buffer("hkl", hkl.long())
 
-        # Calculate d-spacings from unit cell and HKL
-        d_spacings = math_torch.get_d_spacing(hkl, unit_cell)
+        # Calculate d-spacings from cell and HKL
+        d_spacings = math_torch.get_d_spacing(hkl, cell)
         self.register_buffer("d_spacings", d_spacings)
 
         # Determine centric reflections

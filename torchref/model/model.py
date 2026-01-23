@@ -3,6 +3,13 @@ A base model class for atomic structure models using PyTorch.
 
 Space groups are stored as gemmi.SpaceGroup objects for consistency
 and direct access to symmetry operations.
+
+Variable naming conventions:
+- adp: Atomic displacement parameters (model-level, replaces b_factor)
+- xyz: Cartesian coordinates
+- xyz_fractional: Fractional coordinates
+- F_calc/F_obs: Structure factor amplitudes (uppercase = amplitudes)
+- f_calc/f_obs: Complex structure factors (lowercase = complex)
 """
 
 from typing import Optional, Union
@@ -30,7 +37,7 @@ class Model(DebugMixin, nn.Module):
     Base model class for atomic structure models using PyTorch.
 
     This class provides the foundation for managing atomic structure data
-    including coordinates, B-factors, anisotropic displacement parameters,
+    including coordinates, atomic displacement parameters (ADPs),
     and occupancies. It supports both empty initialization for state_dict
     loading and file-based initialization from PDB/CIF files.
 
@@ -49,8 +56,8 @@ class Model(DebugMixin, nn.Module):
     ----------
     xyz : MixedTensor
         Atomic coordinates tensor with shape (n_atoms, 3).
-    b : PositiveMixedTensor
-        Isotropic B-factors tensor with shape (n_atoms,).
+    adp : PositiveMixedTensor
+        Atomic displacement parameters (isotropic B-factors) with shape (n_atoms,).
     u : MixedTensor
         Anisotropic displacement parameters with shape (n_atoms, 6).
     occupancy : OccupancyTensor
@@ -121,12 +128,16 @@ class Model(DebugMixin, nn.Module):
 
         # Submodules (created during load or load_state_dict)
         self.xyz = None
-        self.b = None
+        self.adp = None
         self.u = None
         self.occupancy = None
 
         # Scattering factor parametrization (built lazily on first access)
         self._parametrization = None
+
+        # Restraints (built lazily on first access)
+        self._restraints = None
+        self._cif_path = None
 
     def __bool__(self):
         """Return the initialization status when used in boolean context."""
@@ -281,6 +292,118 @@ class Model(DebugMixin, nn.Module):
         mask = self.aniso_flag
         return self._A[mask], self._B[mask]
 
+    # =========================================================================
+    # Restraints (Geometry Restraints)
+    # =========================================================================
+
+    def set_restraints_cif(self, cif_path):
+        """
+        Set CIF path for lazy restraint building.
+
+        Parameters
+        ----------
+        cif_path : str or list of str
+            Path(s) to CIF restraints dictionary file(s).
+        """
+        self._cif_path = cif_path
+        # Reset restraints so they will be rebuilt on next access
+        self._restraints = None
+
+    def _build_restraints(self):
+        """
+        Build restraints lazily on first access.
+
+        This method creates RestraintsNew with the model's pdb DataFrame
+        and callables for xyz, adp, and vdw_radii.
+
+        Returns
+        -------
+        RestraintsNew
+            The restraints object.
+        """
+        if self._restraints is not None:
+            return self._restraints
+
+        if not self.initialized:
+            raise RuntimeError(
+                "Cannot build restraints: model not initialized. "
+                "Load data first with load_pdb() or load_cif()."
+            )
+
+        from torchref.restraints.restraints_new import RestraintsNew
+
+        if self.verbose > 0:
+            print("Building restraints...")
+
+        self._restraints = RestraintsNew(
+            pdb=self.pdb,
+            cif_path=self._cif_path,
+            xyz_fn=self.xyz,
+            adp_fn=self.adp,
+            vdw_radii_fn=self.get_vdw_radii,
+            verbose=self.verbose,
+        )
+
+        return self._restraints
+
+    @property
+    def restraints(self):
+        """
+        Lazy restraints property.
+
+        The restraints are built on first access using the model's pdb DataFrame
+        and the CIF path set via set_restraints_cif().
+
+        Returns
+        -------
+        RestraintsNew
+            The restraints object containing bond, angle, torsion, etc. restraints.
+        """
+        return self._build_restraints()
+
+    # =========================================================================
+    # Restraint Evaluation Wrappers
+    # =========================================================================
+
+    def bond_deviations(self):
+        """
+        Compute bond length deviations using current xyz coordinates.
+
+        Returns
+        -------
+        deviations : torch.Tensor
+            Calculated minus expected bond lengths in Angstroms.
+        sigmas : torch.Tensor
+            Standard deviations from CIF library in Angstroms.
+        """
+        return self.restraints.bond_deviations(self.xyz())
+
+    def angle_deviations(self):
+        """
+        Compute angle deviations using current xyz coordinates.
+
+        Returns
+        -------
+        deviations : torch.Tensor
+            Calculated minus expected angles in radians.
+        sigmas : torch.Tensor
+            Standard deviations in radians.
+        """
+        return self.restraints.angle_deviations(self.xyz())
+
+    def torsion_deviations_with_sigmas(self):
+        """
+        Compute torsion deviations (wrapped for periodicity) and sigmas.
+
+        Returns
+        -------
+        deviations_rad : torch.Tensor
+            Wrapped deviations in radians.
+        sigmas_deg : torch.Tensor
+            Standard deviations in degrees (for von Mises NLL).
+        """
+        return self.restraints.torsion_deviations_with_sigmas(self.xyz())
+
     def load(self, reader):
         self.pdb, cell, spacegroup = reader()
 
@@ -309,9 +432,9 @@ class Model(DebugMixin, nn.Module):
             torch.tensor(self.pdb[["x", "y", "z"]].values, dtype=self.dtype_float),
             name="xyz",
         )
-        self.b = PositiveMixedTensor(
+        self.adp = PositiveMixedTensor(
             torch.tensor(self.pdb["tempfactor"].values, dtype=self.dtype_float),
-            name="b_factor",
+            name="adp",
         )
         self.u = MixedTensor(
             torch.tensor(
@@ -523,7 +646,7 @@ class Model(DebugMixin, nn.Module):
         self.pdb.loc[:, ["u11", "u22", "u33", "u12", "u13", "u23"]] = (
             self.u().cpu().detach().numpy()
         )
-        self.pdb.loc[:, "tempfactor"] = self.b().cpu().detach().numpy()
+        self.pdb.loc[:, "tempfactor"] = self.adp().cpu().detach().numpy()
         self.pdb.loc[:, "occupancy"] = self.occupancy().cpu().detach().numpy()
         return self.pdb
 
@@ -604,6 +727,10 @@ class Model(DebugMixin, nn.Module):
         # Update device tracking
         if device is not None:
             self.device = torch.device(device)
+
+        # Move restraints if they exist (not a registered submodule, so move explicitly)
+        if self._restraints is not None:
+            self._restraints.to(device=device, dtype=dtype)
 
         # Call parent to move all registered buffers and parameters
         result = super().to(device=device, dtype=dtype)
@@ -694,17 +821,17 @@ class Model(DebugMixin, nn.Module):
 
     def get_iso(self):
         xyz = self.xyz()[~self.aniso_flag]
-        b = self.b()[~self.aniso_flag]
+        adp = self.adp()[~self.aniso_flag]
         occupancy = self.occupancy()[~self.aniso_flag]
-        return xyz, b, occupancy
+        return xyz, adp, occupancy
 
     def set_default_masks(self):
         self.register_buffer(
             "xyz_mask", torch.ones(len(self.pdb), dtype=torch.bool, device=self.device)
         )
         self.xyz.update_refinable_mask(self.xyz_mask)
-        self.register_buffer("b_mask", ~self.b().detach().isnan())
-        self.b.update_refinable_mask(self.b_mask)
+        self.register_buffer("adp_mask", ~self.adp().detach().isnan())
+        self.adp.update_refinable_mask(self.adp_mask)
         self.register_buffer("u_mask", ~self.u().detach().isnan().any(dim=1))
         self.u.update_refinable_mask(self.u_mask)
         self.register_buffer("occupancy_mask", self.occupancy() < 0.999)
@@ -713,8 +840,8 @@ class Model(DebugMixin, nn.Module):
     def freeze(self, target: str):
         if target == "xyz":
             self.xyz.fix_all()
-        elif target == "b":
-            self.b.fix_all()
+        elif target == "adp":
+            self.adp.fix_all()
         elif target == "u":
             self.u.fix_all()
         elif target == "occupancy":
@@ -722,21 +849,21 @@ class Model(DebugMixin, nn.Module):
 
     def freeze_all(self):
         self.freeze("xyz")
-        self.freeze("b")
+        self.freeze("adp")
         self.freeze("u")
         self.freeze("occupancy")
 
     def unfreeze_all(self):
         self.unfreeze("xyz")
-        self.unfreeze("b")
+        self.unfreeze("adp")
         self.unfreeze("u")
         self.unfreeze("occupancy")
 
     def unfreeze(self, target: str):
         if target == "xyz":
             self.xyz.update_refinable_mask(self.xyz_mask)
-        elif target == "b":
-            self.b.update_refinable_mask(self.b_mask)
+        elif target == "adp":
+            self.adp.update_refinable_mask(self.adp_mask)
         elif target == "u":
             self.u.update_refinable_mask(self.u_mask)
         elif target == "occupancy":
@@ -751,7 +878,7 @@ class Model(DebugMixin, nn.Module):
         """
         Update the refinable mask for a parameter using Phenix-style selection syntax.
 
-        This method updates the internal mask buffer (xyz_mask, b_mask, u_mask, or
+        This method updates the internal mask buffer (xyz_mask, adp_mask, u_mask, or
         occupancy_mask) based on the selection. The updated mask is NOT automatically
         applied to the parameter tensors - use apply_mask_to_parameter() to apply it.
 
@@ -760,7 +887,7 @@ class Model(DebugMixin, nn.Module):
         selection_string : str
             Phenix-style selection string (see parse_phenix_selection docs).
         target : str
-            Parameter to update: 'xyz', 'b', 'u', or 'occupancy'.
+            Parameter to update: 'xyz', 'adp', 'u', or 'occupancy'.
         mode : str, optional
             How to combine with current mask:
             - 'set': Replace mask with selection (default)
@@ -792,7 +919,7 @@ class Model(DebugMixin, nn.Module):
         # Map target to the corresponding mask buffer
         mask_map = {
             "xyz": "xyz_mask",
-            "b": "b_mask",
+            "adp": "adp_mask",
             "u": "u_mask",
             "occupancy": "occupancy_mask",
         }
@@ -837,13 +964,13 @@ class Model(DebugMixin, nn.Module):
         """
         Apply the current mask buffer to the parameter tensor.
 
-        Takes the current state of the mask buffer (xyz_mask, b_mask, etc.)
+        Takes the current state of the mask buffer (xyz_mask, adp_mask, etc.)
         and applies it to the corresponding parameter tensor's refinable mask.
 
         Parameters
         ----------
         target : str
-            Parameter to update: 'xyz', 'b', 'u', or 'occupancy'.
+            Parameter to update: 'xyz', 'adp', 'u', or 'occupancy'.
 
         Raises
         ------
@@ -859,8 +986,8 @@ class Model(DebugMixin, nn.Module):
         """
         if target == "xyz":
             self.xyz.update_refinable_mask(self.xyz_mask)
-        elif target == "b":
-            self.b.update_refinable_mask(self.b_mask)
+        elif target == "adp":
+            self.adp.update_refinable_mask(self.adp_mask)
         elif target == "u":
             self.u.update_refinable_mask(self.u_mask)
         elif target == "occupancy":
@@ -869,7 +996,7 @@ class Model(DebugMixin, nn.Module):
             )
         else:
             raise ValueError(
-                f"Invalid target: '{target}'. Must be 'xyz', 'b', 'u', or 'occupancy'"
+                f"Invalid target: '{target}'. Must be 'xyz', 'adp', 'u', or 'occupancy'"
             )
 
         if self.verbose > 0:
@@ -891,9 +1018,9 @@ class Model(DebugMixin, nn.Module):
             Phenix-style selection string.
         targets : str or list of str, optional
             Parameter(s) to freeze. Can be:
-            - 'all': Freeze xyz, b, u, and occupancy (default)
-            - str: Single parameter ('xyz', 'b', 'u', 'occupancy')
-            - list: List of parameters, e.g., ['xyz', 'b']
+            - 'all': Freeze xyz, adp, u, and occupancy (default)
+            - str: Single parameter ('xyz', 'adp', 'u', 'occupancy')
+            - list: List of parameters, e.g., ['xyz', 'adp']
 
         Examples
         --------
@@ -907,7 +1034,7 @@ class Model(DebugMixin, nn.Module):
         """
         # Handle 'all' target
         if targets == "all":
-            targets = ["xyz", "b", "u", "occupancy"]
+            targets = ["xyz", "adp", "u", "occupancy"]
         elif isinstance(targets, str):
             targets = [targets]
 
@@ -933,9 +1060,9 @@ class Model(DebugMixin, nn.Module):
             Phenix-style selection string.
         targets : str or list of str, optional
             Parameter(s) to unfreeze. Can be:
-            - 'all': Unfreeze xyz, b, u, and occupancy (default)
-            - str: Single parameter ('xyz', 'b', 'u', 'occupancy')
-            - list: List of parameters, e.g., ['xyz', 'b']
+            - 'all': Unfreeze xyz, adp, u, and occupancy (default)
+            - str: Single parameter ('xyz', 'adp', 'u', 'occupancy')
+            - list: List of parameters, e.g., ['xyz', 'adp']
 
         Examples
         --------
@@ -949,7 +1076,7 @@ class Model(DebugMixin, nn.Module):
         """
         # Handle 'all' target
         if targets == "all":
-            targets = ["xyz", "b", "u", "occupancy"]
+            targets = ["xyz", "adp", "u", "occupancy"]
         elif isinstance(targets, str):
             targets = [targets]
 
@@ -1072,31 +1199,31 @@ class Model(DebugMixin, nn.Module):
             new_xyz, refinable_mask=self.xyz.refinable_mask, name="xyz"
         )
 
-    def shake_b_factors(self, stddev: float):
+    def shake_adp(self, stddev: float):
         """
-        Apply random Gaussian noise to B-factors (temperature factors).
+        Apply random Gaussian noise to ADPs (atomic displacement parameters).
 
-        Perturbs the B-factors by adding Gaussian noise with a specified
+        Perturbs the ADPs by adding Gaussian noise with a specified
         standard deviation. The noise is applied to all atoms.
 
         Parameters
         ----------
         stddev : float
-            Standard deviation of the Gaussian noise to be added, in 1/Angstrom^2.
+            Standard deviation of the Gaussian noise to be added, in Angstrom^2.
         """
-        b_factors = self.b().detach()
-        new_b = b_factors + torch.normal(
-            mean=0.0, std=stddev, size=b_factors.shape, device=self.device
+        adp_values = self.adp().detach()
+        new_adp = adp_values + torch.normal(
+            mean=0.0, std=stddev, size=adp_values.shape, device=self.device
         )
-        self.b = PositiveMixedTensor(
-            new_b, refinable_mask=self.b.refinable_mask, name="b_factor"
+        self.adp = PositiveMixedTensor(
+            new_adp, refinable_mask=self.adp.refinable_mask, name="adp"
         )
 
     def adp_loss(self):
         """
-        Compute the ADP (B-factor) regularization loss.
+        Compute the ADP regularization loss.
 
-        This loss encourages B-factors to have similar values across the
+        This loss encourages ADPs to have similar values across the
         structure, helping to prevent overfitting during refinement.
 
         Returns
@@ -1104,33 +1231,33 @@ class Model(DebugMixin, nn.Module):
         torch.Tensor
             Scalar tensor representing the ADP loss.
         """
-        b_current = self.b()
-        b_mean = torch.mean(b_current)
-        loss = torch.mean((b_current - b_mean) ** 2)
+        adp_current = self.adp()
+        adp_mean = torch.mean(adp_current)
+        loss = torch.mean((adp_current - adp_mean) ** 2)
         return loss
 
     def adp_nll_loss(self, target_log_std: float = 0.2):
         """
         Compute negative log-likelihood of ADPs assuming Gaussian distribution in log-space.
 
-        This regularization penalizes B-factors that deviate from a target distribution
+        This regularization penalizes ADPs that deviate from a target distribution
         with a FIXED standard deviation (hyperparameter), avoiding circular dependency
         on the current distribution's statistics.
 
         The NLL for a Gaussian distribution in log-space is::
 
-            NLL = 0.5 * mean[(log_b - mu)^2 / sigma^2 + log(2*pi*sigma^2)]
+            NLL = 0.5 * mean[(log_adp - mu)^2 / sigma^2 + log(2*pi*sigma^2)]
 
-        Where mu is the mean of log-space B-factors (computed from current data) and
+        Where mu is the mean of log-space ADPs (computed from current data) and
         sigma is the FIXED target standard deviation (hyperparameter).
 
         Parameters
         ----------
         target_log_std : float, optional
             Target standard deviation in log-space. Default is 0.2.
-            - 0.1 = very tight (B-factors within ~10% of mean)
-            - 0.2 = moderate spread (B-factors within ~20% of mean) [RECOMMENDED]
-            - 0.3 = looser spread (B-factors within ~30% of mean)
+            - 0.1 = very tight (ADPs within ~10% of mean)
+            - 0.2 = moderate spread (ADPs within ~20% of mean) [RECOMMENDED]
+            - 0.3 = looser spread (ADPs within ~30% of mean)
 
         Returns
         -------
@@ -1155,23 +1282,23 @@ class Model(DebugMixin, nn.Module):
         """
         # Access the internal log-space values directly from the PositiveMixedTensor
         # The parent MixedTensor.forward() returns log-space values before exp()
-        log_b = super(PositiveMixedTensor, self.b).forward()
+        log_adp = super(PositiveMixedTensor, self.adp).forward()
 
         # Compute mean in log-space (target center of distribution)
-        mu = torch.mean(log_b).detach()
+        mu = torch.mean(log_adp).detach()
 
         # Use FIXED target_log_std (not computed from data)
         sigma = target_log_std
 
         # Compute NLL for Gaussian distribution
-        # NLL = 0.5 * [(log_b - μ)² / σ² + log(2πσ²)]
+        # NLL = 0.5 * [(log_adp - μ)² / σ² + log(2πσ²)]
         ln_2pi_sigma2 = torch.log(
             torch.tensor(
                 2.0 * torch.pi * sigma**2, dtype=self.dtype_float, device=self.device
             )
         )
 
-        squared_deviations = (log_b - mu) ** 2
+        squared_deviations = (log_adp - mu) ** 2
         nll_per_atom = 0.5 * (squared_deviations / (sigma**2) + ln_2pi_sigma2)
 
         # Return mean NLL across all atoms
@@ -1181,14 +1308,14 @@ class Model(DebugMixin, nn.Module):
 
     def adp_nll_loss_per_atom(self, target_log_std: float = 0.2):
         """
-        Compute per-atom negative log-likelihood for B-factors in log-space.
+        Compute per-atom negative log-likelihood for ADPs in log-space.
 
         Returns the NLL contribution for each individual atom, useful for
         identifying outliers or applying atom-specific regularization weights.
 
         The per-atom NLL is::
 
-            NLL_i = 0.5 * [(log_b_i - mu)^2 / sigma^2 + log(2*pi*sigma^2)]
+            NLL_i = 0.5 * [(log_adp_i - mu)^2 / sigma^2 + log(2*pi*sigma^2)]
 
         Parameters
         ----------
@@ -1212,10 +1339,10 @@ class Model(DebugMixin, nn.Module):
             outliers = atom_nll > threshold
         """
         # Access the internal log-space values
-        log_b = super(PositiveMixedTensor, self.b).forward()
+        log_adp = super(PositiveMixedTensor, self.adp).forward()
 
         # Compute mean in log-space
-        mu = torch.mean(log_b)
+        mu = torch.mean(log_adp)
 
         # Use FIXED target_log_std
         sigma = target_log_std
@@ -1227,17 +1354,17 @@ class Model(DebugMixin, nn.Module):
             )
         )
 
-        squared_deviations = (log_b - mu) ** 2
+        squared_deviations = (log_adp - mu) ** 2
         nll_per_atom = 0.5 * (squared_deviations / (sigma**2) + ln_2pi_sigma2)
 
         return nll_per_atom
 
     def adp_kl_divergence_loss(self, target_log_std: float = 0.2):
         """
-        Compute KL divergence between log B-factor distribution and target Gaussian.
+        Compute KL divergence between log ADP distribution and target Gaussian.
 
-        Measures how different the current log B-factor distribution is from a
-        target Gaussian distribution with the current mean of log B-factors and
+        Measures how different the current log ADP distribution is from a
+        target Gaussian distribution with the current mean of log ADPs and
         a fixed target standard deviation.
 
         KL divergence formula for two Gaussians with same mean::
@@ -1248,7 +1375,7 @@ class Model(DebugMixin, nn.Module):
         ----------
         target_log_std : float, optional
             Target standard deviation in log-space. Default is 0.2.
-            Controls how tightly B-factors should cluster.
+            Controls how tightly ADPs should cluster.
 
         Returns
         -------
@@ -1271,11 +1398,11 @@ class Model(DebugMixin, nn.Module):
         """
 
         # Access the internal log-space values
-        log_b = super(PositiveMixedTensor, self.b).forward()
+        log_adp = super(PositiveMixedTensor, self.adp).forward()
 
         # Compute statistics of actual distribution
-        mu_data = torch.mean(log_b).detach()  # Detached mean (adapts to data)
-        sigma_data = torch.std(log_b)  # Current std (to be regularized)
+        mu_data = torch.mean(log_adp).detach()  # Detached mean (adapts to data)
+        sigma_data = torch.std(log_adp)  # Current std (to be regularized)
 
         # Target distribution parameters
         mu_target = mu_data  # Same mean as data
@@ -1443,7 +1570,7 @@ class Model(DebugMixin, nn.Module):
             # Create MixedTensors with initial values from PDB (will be overwritten by load_state_dict)
             # Get refinable masks from state_dict if available
             xyz_mask = state_dict.get("xyz.refinable_mask")
-            b_mask = state_dict.get("b.refinable_mask")
+            adp_mask = state_dict.get("adp.refinable_mask")
             u_mask = state_dict.get("u.refinable_mask")
 
             instance.xyz = MixedTensor(
@@ -1451,10 +1578,10 @@ class Model(DebugMixin, nn.Module):
                 refinable_mask=xyz_mask,
                 name="xyz",
             )
-            instance.b = PositiveMixedTensor(
+            instance.adp = PositiveMixedTensor(
                 torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype),
-                refinable_mask=b_mask,
-                name="b_factor",
+                refinable_mask=adp_mask,
+                name="adp",
             )
             instance.u = MixedTensor(
                 torch.tensor(
@@ -1500,7 +1627,7 @@ class Model(DebugMixin, nn.Module):
                 "xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
             )
             instance.register_buffer(
-                "b_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
+                "adp_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
             )
             instance.register_buffer(
                 "u_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
@@ -1595,7 +1722,7 @@ class Model(DebugMixin, nn.Module):
         Return a new Model containing only atoms matching the Phenix-style selection.
 
         Creates an independent copy of the model containing only the selected atoms.
-        All tensor data (coordinates, B-factors, occupancies, etc.) and metadata
+        All tensor data (coordinates, ADPs, occupancies, etc.) and metadata
         are properly subsetted.
 
         Parameters
@@ -1709,14 +1836,14 @@ class Model(DebugMixin, nn.Module):
             name="xyz",
         )
 
-        selected_model.b = PositiveMixedTensor(
-            self.b()[selection_mask].clone().detach(),
+        selected_model.adp = PositiveMixedTensor(
+            self.adp()[selection_mask].clone().detach(),
             refinable_mask=(
-                self.b.refinable_mask[selection_mask]
-                if self.b.refinable_mask is not None
+                self.adp.refinable_mask[selection_mask]
+                if self.adp.refinable_mask is not None
                 else None
             ),
-            name="b_factor",
+            name="adp",
         )
 
         selected_model.u = MixedTensor(

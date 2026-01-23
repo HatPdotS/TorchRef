@@ -361,7 +361,7 @@ class ScalerBase(DebugMixin, nn.Module):
         Fit a single global scale factor analytically (least-squares).
 
         This is the simple scaling approach:
-            k = sum(|Fobs||Fcalc|) / sum(|Fcalc|²)
+            k = sum(|F_obs||F_calc|) / sum(|F_calc|²)
 
         Useful for rigid body refinement where only an overall scale is needed.
 
@@ -516,13 +516,13 @@ class ScalerBase(DebugMixin, nn.Module):
             Mean observed intensity, mean calculated intensity, and mean resolution per bin.
         """
         hkl, fobs, _, rfree = self._data()
-        Fcalc = torch.abs(self(fcalc))
+        F_calc = torch.abs(self(fcalc))
         intensities = torch.abs(fobs) ** 2
-        calc_intensities = torch.abs(Fcalc) ** 2
+        calc_intensities = torch.abs(F_calc) ** 2
         mean_obs_intensity = torch.zeros(self.nbins, device=self.device)
         mean_calc_intensity = torch.zeros(self.nbins, device=self.device)
         counts = torch.zeros(self.nbins, device=self.device)
-        counts_vals = torch.ones_like(Fcalc, device=self.device, dtype=fobs.dtype)
+        counts_vals = torch.ones_like(F_calc, device=self.device, dtype=fobs.dtype)
         mask = self._data.get_mask()
         mean_obs_intensity = torch.scatter_add(
             mean_obs_intensity,

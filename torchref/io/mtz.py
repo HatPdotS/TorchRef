@@ -364,7 +364,7 @@ def write(
     ----------
     df : pandas.DataFrame
         DataFrame containing reflection data. Expected columns include
-        H, K, L (Miller indices) and data columns like Fobs, I-obs, etc.
+        H, K, L (Miller indices) and data columns like F_obs, I_obs, etc.
     cell : list, numpy.ndarray, or torch.Tensor
         Unit cell parameters [a, b, c, alpha, beta, gamma] in A and degrees.
     spacegroup : str or gemmi.SpaceGroup

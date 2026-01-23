@@ -63,6 +63,13 @@ class CrystalDataset:
     fom: Optional[torch.Tensor] = None  # Figure of merit (N,)
     _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool
 
+    # === E-value and anisotropy correction fields ===
+    E: Optional[torch.Tensor] = None  # E-values (N,)
+    E_squared: Optional[torch.Tensor] = None  # E² values (N,)
+    F_squared_corrected: Optional[torch.Tensor] = None  # Anisotropy-corrected F² (N,)
+    U_aniso: Optional[torch.Tensor] = None  # Fitted anisotropy parameters (6,)
+    radial_shell_indices: Optional[torch.Tensor] = None  # Shell assignments (N,)
+
     # === Unit cell and symmetry ===
     cell: Optional[Cell] = None  # Cell object with [a, b, c, alpha, beta, gamma]
     spacegroup: Optional[gemmi.SpaceGroup] = None  # Space group (gemmi object)

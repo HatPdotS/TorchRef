@@ -1,3 +1,27 @@
+"""
+NumPy implementations of mathematical functions for crystallography.
+
+.. deprecated::
+    This module is deprecated. Please import from domain-specific submodules:
+
+    - ``torchref.math_functions.coordinates`` - Coordinate transformations
+    - ``torchref.math_functions.reciprocal`` - Reciprocal space calculations
+    - ``torchref.math_functions.fourier`` - Grid utilities
+    - ``torchref.math_functions.alignment`` - Coordinate alignment
+    - ``torchref.math_functions.metrics`` - R-factors
+
+This module is maintained for backward compatibility.
+
+Example (new style - recommended)::
+
+    from torchref.math_functions.coordinates import cartesian_to_fractional
+    from torchref.math_functions.metrics import get_rfactor
+
+Example (old style - still works)::
+
+    from torchref.math_functions.math_numpy import cartesian_to_fractional
+"""
+
 import numpy as np
 
 
@@ -35,18 +59,18 @@ def rotate_coords_numpy(coords, phi, rho):
     return np.einsum("ij,kj->ki", rot_matrix, coords)
 
 
-def get_rfactor(fobs, fcalc):
+def get_rfactor(F_obs, F_calc):
     """
     Calculate the R-factor between observed and calculated structure factors.
 
     The R-factor is a measure of agreement between observed and calculated
-    structure factor amplitudes, defined as sum(|Fobs - Fcalc|) / sum(Fobs).
+    structure factor amplitudes, defined as sum(|F_obs - F_calc|) / sum(F_obs).
 
     Parameters
     ----------
-    fobs : numpy.ndarray
+    F_obs : numpy.ndarray
         Observed structure factor amplitudes.
-    fcalc : numpy.ndarray
+    F_calc : numpy.ndarray
         Calculated structure factor amplitudes.
 
     Returns
@@ -54,12 +78,12 @@ def get_rfactor(fobs, fcalc):
     float
         R-factor value between 0 and 1.
     """
-    fobs = np.abs(fobs)
-    fcalc = np.abs(fcalc)
-    return np.sum(np.abs(fobs - fcalc)) / np.sum(fobs)
+    F_obs = np.abs(F_obs)
+    F_calc = np.abs(F_calc)
+    return np.sum(np.abs(F_obs - F_calc)) / np.sum(F_obs)
 
 
-def get_s(hkl, unit_cell):
+def get_s(hkl, cell):
     """
     Calculate the magnitude of scattering vectors for given Miller indices.
 
@@ -69,7 +93,7 @@ def get_s(hkl, unit_cell):
     ----------
     hkl : numpy.ndarray
         Miller indices with shape (N, 3).
-    unit_cell : numpy.ndarray or list
+    cell : numpy.ndarray or list
         Unit cell parameters [a, b, c, alpha, beta, gamma] where lengths are
         in Angstroms and angles are in degrees.
 
@@ -78,12 +102,12 @@ def get_s(hkl, unit_cell):
     numpy.ndarray
         Magnitude of scattering vectors with shape (N,).
     """
-    s = get_scattering_vectors(hkl, unit_cell)
+    s = get_scattering_vectors(hkl, cell)
     s = np.sum(s**2, axis=1) ** 0.5
     return s
 
 
-def get_scattering_vectors(hkl, unit_cell):
+def get_scattering_vectors(hkl, cell):
     """
     Calculate scattering vectors from Miller indices and unit cell.
 
@@ -94,7 +118,7 @@ def get_scattering_vectors(hkl, unit_cell):
     ----------
     hkl : numpy.ndarray or list
         Miller indices with shape (N, 3).
-    unit_cell : numpy.ndarray or list
+    cell : numpy.ndarray or list
         Unit cell parameters [a, b, c, alpha, beta, gamma] where lengths are
         in Angstroms and angles are in degrees.
 
@@ -103,13 +127,13 @@ def get_scattering_vectors(hkl, unit_cell):
     numpy.ndarray
         Scattering vectors in reciprocal space with shape (N, 3).
     """
-    recB = reciprocal_basis_matrix(unit_cell)
+    recB = reciprocal_basis_matrix(cell)
     hkl = np.array(hkl)  # Ensure hkl is a numpy array
     s = np.dot(hkl, recB)
     return s
 
 
-def get_fractional_matrix(unit_cell):
+def get_fractional_matrix(cell):
     """
     Calculate the fractional-to-Cartesian transformation matrix.
 
@@ -118,7 +142,7 @@ def get_fractional_matrix(unit_cell):
 
     Parameters
     ----------
-    unit_cell : numpy.ndarray or list
+    cell : numpy.ndarray or list
         Unit cell parameters [a, b, c, alpha, beta, gamma] where lengths are
         in Angstroms and angles are in degrees.
 
@@ -127,8 +151,8 @@ def get_fractional_matrix(unit_cell):
     numpy.ndarray
         3x3 transformation matrix B such that cart = frac @ B.T.
     """
-    a, b, c = unit_cell[:3]
-    alpha, beta, gamma = np.radians(unit_cell[3:])
+    a, b, c = cell[:3]
+    alpha, beta, gamma = np.radians(cell[3:])
     cos_alpha, cos_beta, cos_gamma = np.cos(alpha), np.cos(beta), np.cos(gamma)
     sin_gamma = np.sin(gamma)
     volume = np.sqrt(
@@ -173,15 +197,15 @@ def get_res_for_dataset(ds):
     return res
 
 
-def cartesian_to_fractional(cart_coords, unit_cell):
+def cartesian_to_fractional(xyz, cell):
     """
     Convert Cartesian coordinates to fractional coordinates.
 
     Parameters
     ----------
-    cart_coords : numpy.ndarray
+    xyz : numpy.ndarray
         Cartesian coordinates with shape (N, 3).
-    unit_cell : numpy.ndarray or list
+    cell : numpy.ndarray or list
         Unit cell parameters [a, b, c, alpha, beta, gamma] where lengths are
         in Angstroms and angles are in degrees.
 
@@ -190,12 +214,12 @@ def cartesian_to_fractional(cart_coords, unit_cell):
     numpy.ndarray
         Fractional coordinates with shape (N, 3).
     """
-    B_inv = get_inv_fractional_matrix(unit_cell)
-    fractional_vector = np.dot(cart_coords, B_inv.T)
-    return fractional_vector
+    B_inv = get_inv_fractional_matrix(cell)
+    xyz_fractional = np.dot(xyz, B_inv.T)
+    return xyz_fractional
 
 
-def get_inv_fractional_matrix(unit_cell):
+def get_inv_fractional_matrix(cell):
     """
     Calculate the Cartesian-to-fractional transformation matrix.
 
@@ -204,7 +228,7 @@ def get_inv_fractional_matrix(unit_cell):
 
     Parameters
     ----------
-    unit_cell : numpy.ndarray or list
+    cell : numpy.ndarray or list
         Unit cell parameters [a, b, c, alpha, beta, gamma] where lengths are
         in Angstroms and angles are in degrees.
 
@@ -213,20 +237,20 @@ def get_inv_fractional_matrix(unit_cell):
     numpy.ndarray
         3x3 inverse transformation matrix B_inv such that frac = cart @ B_inv.T.
     """
-    B = get_fractional_matrix(unit_cell)
+    B = get_fractional_matrix(cell)
     B_inv = np.linalg.inv(B)
     return B_inv
 
 
-def fractional_to_cartesian(fractional_coords, unit_cell):
+def fractional_to_cartesian(xyz_fractional, cell):
     """
     Convert fractional coordinates to Cartesian coordinates.
 
     Parameters
     ----------
-    fractional_coords : numpy.ndarray
+    xyz_fractional : numpy.ndarray
         Fractional coordinates with shape (N, 3).
-    unit_cell : numpy.ndarray or list
+    cell : numpy.ndarray or list
         Unit cell parameters [a, b, c, alpha, beta, gamma] where lengths are
         in Angstroms and angles are in degrees.
 
@@ -235,12 +259,12 @@ def fractional_to_cartesian(fractional_coords, unit_cell):
     numpy.ndarray
         Cartesian coordinates with shape (N, 3).
     """
-    B = get_fractional_matrix(unit_cell)
-    cart_coords = np.dot(fractional_coords, B.T)
-    return cart_coords
+    B = get_fractional_matrix(cell)
+    xyz = np.dot(xyz_fractional, B.T)
+    return xyz
 
 
-def convert_coords_to_fractional(df, unit_cell):
+def convert_coords_to_fractional(df, cell):
     """
     Convert coordinates from a DataFrame to fractional coordinates.
 
@@ -251,7 +275,7 @@ def convert_coords_to_fractional(df, unit_cell):
     ----------
     df : pandas.DataFrame
         DataFrame containing 'x', 'y', 'z' columns with Cartesian coordinates.
-    unit_cell : numpy.ndarray or list
+    cell : numpy.ndarray or list
         Unit cell parameters [a, b, c, alpha, beta, gamma] where lengths are
         in Angstroms and angles are in degrees.
 
@@ -261,11 +285,11 @@ def convert_coords_to_fractional(df, unit_cell):
         Fractional coordinates with shape (N, 3).
     """
     xyz = df[["x", "y", "z"]].values
-    fractional_coordinates = cartesian_to_fractional(xyz, unit_cell)
-    return fractional_coordinates
+    xyz_fractional = cartesian_to_fractional(xyz, cell)
+    return xyz_fractional
 
 
-def reciprocal_basis_matrix(unit_cell):
+def reciprocal_basis_matrix(cell):
     """
     Calculate the reciprocal basis matrix from unit cell parameters.
 
@@ -274,7 +298,7 @@ def reciprocal_basis_matrix(unit_cell):
 
     Parameters
     ----------
-    unit_cell : numpy.ndarray or list
+    cell : numpy.ndarray or list
         Unit cell parameters [a, b, c, alpha, beta, gamma] where lengths are
         in Angstroms and angles are in degrees.
 
@@ -283,8 +307,8 @@ def reciprocal_basis_matrix(unit_cell):
     numpy.ndarray
         3x3 matrix containing reciprocal basis vectors as rows [a*, b*, c*].
     """
-    # Extract unit cell parameters
-    a, b, c, alpha, beta, gamma = unit_cell
+    # Extract cell parameters
+    a, b, c, alpha, beta, gamma = cell
     alpha, beta, gamma = np.radians([alpha, beta, gamma])
     # Compute real-space basis vectors
     cos_alpha, cos_beta, cos_gamma = np.cos(alpha), np.cos(beta), np.cos(gamma)
@@ -314,7 +338,7 @@ def reciprocal_basis_matrix(unit_cell):
     return np.array([a_star, b_star, c_star])
 
 
-def calc_outliers(fobs, fcalc, z):
+def calc_outliers(F_obs, F_calc, z):
     """
     Identify outlier reflections based on structure factor differences.
 
@@ -323,9 +347,9 @@ def calc_outliers(fobs, fcalc, z):
 
     Parameters
     ----------
-    fobs : numpy.ndarray
+    F_obs : numpy.ndarray
         Observed structure factor amplitudes.
-    fcalc : numpy.ndarray
+    F_calc : numpy.ndarray
         Calculated structure factor amplitudes.
     z : float
         Number of standard deviations for outlier threshold.
@@ -335,9 +359,9 @@ def calc_outliers(fobs, fcalc, z):
     numpy.ndarray
         Boolean array where True indicates an outlier reflection.
     """
-    fobs = np.abs(fobs)
-    fcalc = np.abs(fcalc)
-    diff = np.abs(fobs - fcalc) / fobs * np.mean(fobs)
+    F_obs = np.abs(F_obs)
+    F_calc = np.abs(F_calc)
+    diff = np.abs(F_obs - F_calc) / F_obs * np.mean(F_obs)
     std = np.std(diff)
     outliers = diff > z * std
     return outliers
@@ -721,3 +745,36 @@ def invert_transformation_matrix(transformation_matrix):
     inverse_matrix[:3, 3] = inverse_translation
 
     return inverse_matrix
+
+
+# =============================================================================
+# __all__ - Public API
+# =============================================================================
+__all__ = [
+    # Coordinate transforms
+    "cartesian_to_fractional",
+    "fractional_to_cartesian",
+    "get_fractional_matrix",
+    "get_inv_fractional_matrix",
+    "convert_coords_to_fractional",
+    # Reciprocal space
+    "reciprocal_basis_matrix",
+    "get_scattering_vectors",
+    "get_s",
+    # Grid utilities
+    "get_real_grid",
+    "get_grids",
+    "put_hkl_on_grid",
+    # Alignment
+    "rotate_coords_numpy",
+    "superpose_vectors_robust",
+    "align_pdbs",
+    "get_alignment_matrix",
+    "apply_transformation",
+    "invert_transformation_matrix",
+    # Metrics
+    "get_rfactor",
+    "calc_outliers",
+    # Utility functions
+    "get_res_for_dataset",
+]

@@ -10,16 +10,16 @@ Key improvements:
 - Pre-grouped residue data for O(N log N) vs O(N×R) complexity
 - Sorted indices for cache-friendly tensor access
 - Separated builder classes for easier testing and maintenance
+- Decoupled from Model: accepts pdb DataFrame and callable functions for xyz/adp
 """
 
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.nn import Module
 
-from torchref.model.model import Model
 from torchref.restraints.builders_fast import (
     AngleRestraintBuilder,
     BondRestraintBuilder,
@@ -37,7 +37,6 @@ from torchref.restraints.restraints_helper import (
     read_link_definitions,
 )
 from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.utils import ModuleReference
 
 
 class RestraintsNew(DebugMixin, Module):
@@ -45,52 +44,77 @@ class RestraintsNew(DebugMixin, Module):
     Refactored restraints handler for crystallographic model refinement.
 
     This class uses the builder pattern internally for efficient construction
-    of restraint tensors. It maintains API compatibility with the original
-    Restraints class.
+    of restraint tensors. It is decoupled from Model and accepts a pdb DataFrame
+    with callable functions for accessing coordinates and ADPs.
 
     Parameters
     ----------
-    model : Model, optional
-        Model instance containing the atomic structure. If None, creates empty shell.
+    pdb : pd.DataFrame, optional
+        DataFrame containing atomic structure data. If None, creates empty shell.
     cif_path : str or list of str, optional
         Path to the CIF restraints dictionary file(s).
+    xyz_fn : callable, optional
+        Function returning current xyz coordinates as torch.Tensor.
+        Required for building and evaluation if pdb is provided.
+    adp_fn : callable, optional
+        Function returning current ADP values as torch.Tensor.
+        Required for ADP-based restraints.
+    vdw_radii_fn : callable, optional
+        Function returning VDW radii as torch.Tensor.
+        Required for VDW restraints.
     verbose : int, default 1
         Verbosity level (0=silent, 1=normal, 2=detailed).
 
     Attributes
     ----------
-    model : ModuleReference
-        Reference to the Model instance.
+    pdb : pd.DataFrame
+        DataFrame containing atomic structure data.
+    xyz_fn : callable
+        Function returning current xyz coordinates.
+    adp_fn : callable
+        Function returning current ADP values.
+    vdw_radii_fn : callable
+        Function returning VDW radii.
     cif_dict : dict
         Parsed CIF dictionary with restraints for each residue type.
     restraints : dict
         Hierarchical dictionary containing all restraints.
     """
 
-    def __init__(self, model: Model = None, cif_path=None, verbose: int = 1):
+    def __init__(
+        self,
+        pdb: pd.DataFrame = None,
+        cif_path=None,
+        xyz_fn: Callable[[], torch.Tensor] = None,
+        adp_fn: Callable[[], torch.Tensor] = None,
+        vdw_radii_fn: Callable[[], torch.Tensor] = None,
+        verbose: int = 1,
+    ):
         """Initialize the Restraints handler."""
         super().__init__()
         self.cif_path = cif_path
         self.verbose = verbose
 
+        # Store callable functions for coordinate/ADP access
+        self._xyz_fn = xyz_fn
+        self._adp_fn = adp_fn
+        self._vdw_radii_fn = vdw_radii_fn
+
         # Empty initialization
-        if model is None:
-            self.model = None
+        if pdb is None:
+            self.pdb = None
             self.cif_dict = {}
             self.unique_residues = []
             self.restraints = {}
             return
 
-        # Full initialization with model
-        self.model = ModuleReference(model)
-        self.unique_residues = model.pdb.resname.unique()
+        # Full initialization with pdb
+        self.pdb = pdb
+        self.unique_residues = pdb.resname.unique()
         self.unique_residues = [
             residue
             for residue in self.unique_residues
-            if self.model.pdb.loc[
-                self.model.pdb["resname"] == residue, "name"
-            ].nunique()
-            > 1
+            if self.pdb.loc[self.pdb["resname"] == residue, "name"].nunique() > 1
         ]
 
         # Parse CIF files
@@ -110,6 +134,67 @@ class RestraintsNew(DebugMixin, Module):
         self.build_restraints()
         if self.verbose > 0:
             self.summary()
+
+    def xyz(self, xyz: torch.Tensor = None) -> torch.Tensor:
+        """
+        Get current xyz coordinates.
+
+        Parameters
+        ----------
+        xyz : torch.Tensor, optional
+            If provided, returns this tensor directly.
+            Otherwise calls the stored xyz_fn callable.
+
+        Returns
+        -------
+        torch.Tensor
+            Current xyz coordinates of shape (n_atoms, 3).
+        """
+        if xyz is not None:
+            return xyz
+        if self._xyz_fn is None:
+            raise RuntimeError(
+                "No xyz callable provided. Initialize with xyz_fn or pass xyz argument."
+            )
+        return self._xyz_fn()
+
+    def adp(self, adp: torch.Tensor = None) -> torch.Tensor:
+        """
+        Get current ADP values.
+
+        Parameters
+        ----------
+        adp : torch.Tensor, optional
+            If provided, returns this tensor directly.
+            Otherwise calls the stored adp_fn callable.
+
+        Returns
+        -------
+        torch.Tensor
+            Current ADP values of shape (n_atoms,).
+        """
+        if adp is not None:
+            return adp
+        if self._adp_fn is None:
+            raise RuntimeError(
+                "No adp callable provided. Initialize with adp_fn or pass adp argument."
+            )
+        return self._adp_fn()
+
+    def get_vdw_radii(self) -> torch.Tensor:
+        """
+        Get VDW radii for all atoms.
+
+        Returns
+        -------
+        torch.Tensor
+            VDW radii of shape (n_atoms,).
+        """
+        if self._vdw_radii_fn is None:
+            raise RuntimeError(
+                "No vdw_radii callable provided. Initialize with vdw_radii_fn."
+            )
+        return self._vdw_radii_fn()
 
     def _load_cif_dictionaries(self, cif_path):
         """Load CIF dictionaries from provided paths and monomer library."""
@@ -202,8 +287,8 @@ class RestraintsNew(DebugMixin, Module):
         internally with Numba-accelerated matching (~10x faster).
         """
         try:
-            device = self.model.xyz().device
-            pdb = self.model.pdb
+            device = self.xyz().device
+            pdb = self.pdb
 
             # Build intra-residue restraints using fast builders
             # Each builder.build() handles all residues internally - no looping needed!
@@ -262,7 +347,7 @@ class RestraintsNew(DebugMixin, Module):
             return
 
         trans_link = self.link_dict["TRANS"]
-        pdb = self.model.pdb
+        pdb = self.pdb
 
         # Build peptide bonds using fast builder
         bond_result = InterResidueBondBuilder(verbose=self.verbose).build(
@@ -351,14 +436,14 @@ class RestraintsNew(DebugMixin, Module):
         bond_sigma = float(sg_sg_bond["sigma"].values[0])
 
         # Find all SG atoms
-        pdb = self.model.pdb
+        pdb = self.pdb
         sg_atoms = pdb[(pdb["name"] == "SG") & (pdb["ATOM"] == "ATOM")]
 
         if len(sg_atoms) == 0:
             return
 
         # Get coordinates and find close pairs
-        xyz = self.model.xyz()
+        xyz = self.xyz()
         sg_indices = sg_atoms["index"].values
         sg_coords = xyz[sg_indices]
         sg_residues = (
@@ -514,10 +599,10 @@ class RestraintsNew(DebugMixin, Module):
             print("\nBuilding VDW (non-bonded) restraints...")
 
         exclusions = self._build_exclusion_set()
-        vdw_radii = self.model.get_vdw_radii()
-        xyz = self.model.xyz()
+        vdw_radii = self.get_vdw_radii()
+        xyz = self.xyz()
         device = xyz.device
-        pdb = self.model.pdb
+        pdb = self.pdb
 
         # Find nearby pairs
         if use_spatial_hash:
@@ -779,7 +864,7 @@ class RestraintsNew(DebugMixin, Module):
 
         return torch.cat(values_list, dim=0)
 
-    def bond_lengths(self, idx):
+    def bond_lengths(self, idx, xyz: torch.Tensor = None):
         """
         Compute current bond lengths from atomic coordinates.
 
@@ -787,15 +872,18 @@ class RestraintsNew(DebugMixin, Module):
         ----------
         idx : torch.Tensor
             Bond indices tensor of shape (N, 2).
+        xyz : torch.Tensor, optional
+            Coordinates tensor of shape (n_atoms, 3).
+            If None, uses the stored xyz_fn callable.
 
         Returns
         -------
         torch.Tensor
             Tensor of bond lengths of shape (N,).
         """
+        xyz = self.xyz(xyz)
         if idx is None:
-            return torch.tensor([], device=self.model.xyz().device)
-        xyz = self.model.xyz()
+            return torch.tensor([], device=xyz.device)
         pos1 = xyz[idx[:, 0], :]
         pos2 = xyz[idx[:, 1], :]
         return torch.linalg.norm(pos2 - pos1, dim=-1)
@@ -813,9 +901,14 @@ class RestraintsNew(DebugMixin, Module):
 
         return copy.deepcopy(self)
 
-    def bond_deviations(self):
+    def bond_deviations(self, xyz: torch.Tensor = None):
         """
         Compute bond length deviations and sigmas.
+
+        Parameters
+        ----------
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
 
         Returns
         -------
@@ -832,12 +925,12 @@ class RestraintsNew(DebugMixin, Module):
         sigmas = self.restraints["bond"]["all"]["sigmas"]
 
         # Get current bond lengths
-        bond_lengths = self.bond_lengths(idx)
+        bond_lengths = self.bond_lengths(idx, xyz)
         deviations = bond_lengths - references
 
         return deviations, sigmas
 
-    def nll_bonds(self):
+    def nll_bonds(self, xyz: torch.Tensor = None):
         """
         Compute negative log-likelihood for bond length restraints.
 
@@ -846,6 +939,11 @@ class RestraintsNew(DebugMixin, Module):
 
         This is the true NLL where exp(-NLL) = probability density.
 
+        Parameters
+        ----------
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
+
         Returns
         -------
         torch.Tensor
@@ -853,10 +951,10 @@ class RestraintsNew(DebugMixin, Module):
         """
         from torchref.refinement.targets import gaussian_nll
 
-        deviations, sigmas = self.bond_deviations()
+        deviations, sigmas = self.bond_deviations(xyz)
         return gaussian_nll(deviations, sigmas)
 
-    def angles(self, idx):
+    def angles(self, idx, xyz: torch.Tensor = None):
         """
         Compute current angle values for all angle restraints.
 
@@ -864,13 +962,15 @@ class RestraintsNew(DebugMixin, Module):
         ----------
         idx : torch.Tensor
             Angle indices tensor of shape (N, 3).
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
 
         Returns
         -------
         torch.Tensor
             Tensor of shape (n_angles,) with current angle values in degrees.
         """
-        xyz = self.model.xyz()
+        xyz = self.xyz(xyz)
         pos1 = xyz[idx[:, 0], :]
         pos2 = xyz[idx[:, 1], :]
         pos3 = xyz[idx[:, 2], :]
@@ -894,9 +994,14 @@ class RestraintsNew(DebugMixin, Module):
 
         return angles_deg
 
-    def angle_deviations(self):
+    def angle_deviations(self, xyz: torch.Tensor = None):
         """
         Compute angle deviations and sigmas.
+
+        Parameters
+        ----------
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
 
         Returns
         -------
@@ -914,12 +1019,12 @@ class RestraintsNew(DebugMixin, Module):
         )
         sigmas_rad = self.restraints["angle"]["all"]["sigmas"] * (torch.pi / 180.0)
 
-        calculated_rad = self.angles(idx) * (torch.pi / 180.0)
+        calculated_rad = self.angles(idx, xyz) * (torch.pi / 180.0)
         deviations = calculated_rad - references_rad
 
         return deviations, sigmas_rad
 
-    def nll_angles(self):
+    def nll_angles(self, xyz: torch.Tensor = None):
         """
         Compute negative log-likelihood for angle restraints.
 
@@ -928,6 +1033,11 @@ class RestraintsNew(DebugMixin, Module):
 
         This is the true NLL where exp(-NLL) = probability density.
 
+        Parameters
+        ----------
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
+
         Returns
         -------
         torch.Tensor
@@ -935,7 +1045,7 @@ class RestraintsNew(DebugMixin, Module):
         """
         from torchref.refinement.targets import gaussian_nll
 
-        deviations, sigmas = self.angle_deviations()
+        deviations, sigmas = self.angle_deviations(xyz)
         return gaussian_nll(deviations, sigmas)
 
     def cat_dict(self):
@@ -968,7 +1078,7 @@ class RestraintsNew(DebugMixin, Module):
             ),
         }
 
-    def torsions(self, idx):
+    def torsions(self, idx, xyz: torch.Tensor = None):
         """
         Compute current torsion angle values for all torsion restraints.
 
@@ -976,13 +1086,15 @@ class RestraintsNew(DebugMixin, Module):
         ----------
         idx : torch.Tensor
             Torsion indices tensor of shape (N, 4).
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
 
         Returns
         -------
         torch.Tensor
             Tensor of shape (n_torsions,) with current torsion values in degrees.
         """
-        xyz = self.model.xyz()
+        xyz = self.xyz(xyz)
 
         pos1 = xyz[idx[:, 0], :]
         pos2 = xyz[idx[:, 1], :]
@@ -1102,12 +1214,14 @@ class RestraintsNew(DebugMixin, Module):
             # All periods are 0 or 1, simple wrapping
             return torch.atan2(torch.sin(diff_rad), torch.cos(diff_rad))
 
-    def torsion_deviations(self, wrapped=True):
+    def torsion_deviations(self, xyz: torch.Tensor = None, wrapped=True):
         """
         Compute deviations between calculated and expected torsion angles.
 
         Parameters
         ----------
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
         wrapped : bool, default True
             If True, wrap deviations accounting for periodicity.
             If False, return raw deviations (calculated - expected).
@@ -1130,7 +1244,7 @@ class RestraintsNew(DebugMixin, Module):
         idx = self.restraints["torsion"]["all"]["indices"]
         expected = self.restraints["torsion"]["all"]["references"]
         periods = self.restraints["torsion"]["all"]["periods"]
-        calculated = self.torsions(idx)
+        calculated = self.torsions(idx, xyz)
 
         if not wrapped:
             # Simple difference
@@ -1143,9 +1257,14 @@ class RestraintsNew(DebugMixin, Module):
             # Convert back to degrees
             return torch.rad2deg(diff_wrapped_rad)
 
-    def torsion_deviations_with_sigmas(self):
+    def torsion_deviations_with_sigmas(self, xyz: torch.Tensor = None):
         """
         Compute torsion deviations (wrapped for periodicity) and sigmas.
+
+        Parameters
+        ----------
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
 
         Returns
         -------
@@ -1162,7 +1281,7 @@ class RestraintsNew(DebugMixin, Module):
         sigmas_deg = self.restraints["torsion"]["all"]["sigmas"]
         periods = self.restraints["torsion"]["all"]["periods"]
 
-        calculated = self.torsions(idx)
+        calculated = self.torsions(idx, xyz)
 
         # Wrap for periodicity
         diff_rad = (calculated - expected) * (torch.pi / 180.0)
@@ -1170,7 +1289,7 @@ class RestraintsNew(DebugMixin, Module):
 
         return deviations_rad, sigmas_deg
 
-    def nll_torsions(self):
+    def nll_torsions(self, xyz: torch.Tensor = None):
         """
         Compute negative log-likelihood for torsion angle restraints.
 
@@ -1188,6 +1307,11 @@ class RestraintsNew(DebugMixin, Module):
 
         This is the true NLL where exp(-NLL) = probability density.
 
+        Parameters
+        ----------
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
+
         Returns
         -------
         torch.Tensor
@@ -1195,15 +1319,20 @@ class RestraintsNew(DebugMixin, Module):
         """
         from torchref.refinement.targets import von_mises_nll
 
-        deviations_rad, sigmas_deg = self.torsion_deviations_with_sigmas()
+        deviations_rad, sigmas_deg = self.torsion_deviations_with_sigmas(xyz)
         return von_mises_nll(deviations_rad, sigmas_deg)
 
-    def nll_planes(self):
+    def nll_planes(self, xyz: torch.Tensor = None):
         """
         Compute negative log-likelihood for plane restraints.
 
         For each plane, computes the RMSD of atom deviations from the best-fit plane.
         Uses Gaussian NLL: NLL = 0.5 * (deviation / σ)² + log(σ) + 0.5 * log(2π)
+
+        Parameters
+        ----------
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
 
         Returns
         -------
@@ -1212,7 +1341,7 @@ class RestraintsNew(DebugMixin, Module):
         """
         from torchref.refinement.targets import gaussian_nll
 
-        xyz = self.model.xyz()
+        xyz = self.xyz(xyz)
         device = xyz.device
 
         all_nlls = []
@@ -1256,7 +1385,7 @@ class RestraintsNew(DebugMixin, Module):
             return torch.cat(all_nlls)
         return torch.tensor([0.0], device=device)
 
-    def nll_vdw(self):
+    def nll_vdw(self, xyz: torch.Tensor = None):
         """
         Compute negative log-likelihood for VDW (non-bonded) restraints.
 
@@ -1265,6 +1394,11 @@ class RestraintsNew(DebugMixin, Module):
 
         Only violations (distances shorter than minimum) contribute to the loss.
 
+        Parameters
+        ----------
+        xyz : torch.Tensor, optional
+            Coordinates tensor. If None, uses the stored xyz_fn callable.
+
         Returns
         -------
         torch.Tensor
@@ -1272,7 +1406,7 @@ class RestraintsNew(DebugMixin, Module):
         """
         from torchref.refinement.targets import gaussian_nll
 
-        xyz = self.model.xyz()
+        xyz = self.xyz(xyz)
         device = xyz.device
 
         if "vdw" not in self.restraints:
@@ -1303,16 +1437,21 @@ class RestraintsNew(DebugMixin, Module):
 
         return nll
 
-    def adp_b_differences(self):
+    def adp_b_differences(self, adp: torch.Tensor = None):
         """
         Compute B-factor differences between bonded atoms.
+
+        Parameters
+        ----------
+        adp : torch.Tensor, optional
+            ADP values. If None, uses the stored adp_fn callable.
 
         Returns
         -------
         torch.Tensor
             Tensor of B-factor differences (B_i - B_j) for all bonds.
         """
-        b_factors = self.model.b()
+        b_factors = self.adp(adp)
 
         diffs_list = []
         if "bond" in self.restraints:
@@ -1329,7 +1468,7 @@ class RestraintsNew(DebugMixin, Module):
             return torch.cat(diffs_list, dim=0)
         return torch.tensor([], device=b_factors.device)
 
-    def adp_similarity_loss(self, sigma: float = 2.0):
+    def adp_similarity_loss(self, adp: torch.Tensor = None, sigma: float = 2.0):
         """
         Compute ADP similarity loss (SIMU in Phenix/SHELX).
 
@@ -1338,6 +1477,8 @@ class RestraintsNew(DebugMixin, Module):
 
         Parameters
         ----------
+        adp : torch.Tensor, optional
+            ADP values. If None, uses the stored adp_fn callable.
         sigma : float, default 2.0
             Target standard deviation for B-factor differences in Å².
 
@@ -1348,7 +1489,7 @@ class RestraintsNew(DebugMixin, Module):
         """
         from torchref.refinement.targets import adp_similarity_nll
 
-        b_diffs = self.adp_b_differences()
+        b_diffs = self.adp_b_differences(adp)
         if len(b_diffs) == 0:
-            return torch.tensor(0.0, device=self.model.xyz().device)
+            return torch.tensor(0.0, device=self.xyz().device)
         return adp_similarity_nll(b_diffs, sigma).mean()

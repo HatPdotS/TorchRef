@@ -320,14 +320,9 @@ class Cell:
 
         Delegates to math_numpy.get_fractional_matrix for the computation.
         """
-        from torchref.math_functions import math_numpy as mnp
+        from torchref.math_functions import math_torch
 
-        cell_np = self._data.detach().cpu().numpy()
-        return torch.tensor(
-            mnp.get_fractional_matrix(cell_np),
-            dtype=self._data.dtype,
-            device=self._data.device,
-        )
+        return math_torch.get_fractional_matrix(self._data)
 
     def _compute_volume(self) -> torch.Tensor:
         """

@@ -95,13 +95,13 @@ class Symmetry(DebugMixin, nn.Module):
         """Get space group number."""
         return self.spacegroup.number
 
-    def apply(self, fractional_coords: torch.Tensor) -> torch.Tensor:
+    def apply(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
         """
         Apply symmetry operations to fractional coordinates.
 
         Parameters
         ----------
-        fractional_coords : torch.Tensor
+        xyz_fractional : torch.Tensor
             Input tensor of shape (N, 3) representing fractional coordinates.
 
         Returns
@@ -111,7 +111,7 @@ class Symmetry(DebugMixin, nn.Module):
             number of symmetry operations.
         """
         coords = (
-            fractional_coords.reshape(3, -1)
+            xyz_fractional.reshape(3, -1)
             .to(self.matrices.device)
             .to(self.matrices.dtype)
         )  # (3, N)
@@ -122,9 +122,9 @@ class Symmetry(DebugMixin, nn.Module):
         # transformed: (ops, 3, N)
         return transformed.permute(1, 2, 0)  # (3, N, ops)
 
-    def forward(self, fractional_coords: torch.Tensor) -> torch.Tensor:
+    def forward(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
         """Forward pass applies symmetry operations."""
-        return self.apply(fractional_coords)
+        return self.apply(xyz_fractional)
 
     def get_grid_requirements(self) -> dict:
         """

@@ -22,6 +22,7 @@ This preserves resolution information while reducing to a standard Wigner transf
 import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+import warnings
 
 import numpy as np
 import torch
@@ -33,14 +34,40 @@ jax.config.update("jax_enable_x64", True)
 import s2fft
 import s2ball.transform.wigner as wigner_transform
 
+# Import normalization functions from the centralized module
+from torchref.math_functions.normalization import (
+    compute_radial_shells as _compute_radial_shells_torch,
+    assign_to_shells as _assign_to_shells_torch,
+    compute_anisotropy_correction as _compute_anisotropy_correction_torch,
+    fit_anisotropy_correction as _fit_anisotropy_correction_torch,
+    apply_anisotropy_correction as _apply_anisotropy_correction_torch,
+    F_squared_to_E_values as _F_squared_to_E_values_torch,
+)
+
 
 # =============================================================================
-# Anisotropy Correction Functions
+# NumPy Wrappers for Backward Compatibility
 # =============================================================================
+# These functions wrap the PyTorch implementations for NumPy inputs.
+# They are kept for backward compatibility with existing code.
+
+
+def _to_numpy(tensor: torch.Tensor) -> np.ndarray:
+    """Convert torch tensor to numpy array."""
+    return tensor.detach().cpu().numpy()
+
+
+def _to_torch(array: np.ndarray, device: str = "cpu") -> torch.Tensor:
+    """Convert numpy array to torch tensor."""
+    return torch.from_numpy(np.asarray(array)).to(device)
+
 
 def U_to_matrix_np(U: np.ndarray) -> np.ndarray:
     """
     Convert anisotropic parameters from 6-component vector to 3x3 matrix.
+
+    .. deprecated::
+        Use `torchref.math_functions.math_torch.U_to_matrix` instead.
 
     Parameters
     ----------
@@ -52,6 +79,11 @@ def U_to_matrix_np(U: np.ndarray) -> np.ndarray:
     np.ndarray
         Symmetric 3x3 matrix.
     """
+    warnings.warn(
+        "U_to_matrix_np is deprecated. Use torchref.math_functions.math_torch.U_to_matrix instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     U_matrix = np.array([
         [U[0], U[3], U[4]],
         [U[3], U[1], U[5]],
@@ -67,33 +99,19 @@ def compute_anisotropy_correction(
     """
     Compute anisotropic correction factor for F² values.
 
-    The correction is: exp(-2π² * s^T U s)
-
-    This scales F² values to correct for anisotropic diffraction
-    before normalizing to E-values.
-
-    Parameters
-    ----------
-    s_vectors : np.ndarray
-        Reciprocal space vectors in Å⁻¹, shape (N, 3).
-    U : np.ndarray
-        Anisotropic parameters [u11, u22, u33, u12, u13, u23], shape (6,).
-
-    Returns
-    -------
-    correction : np.ndarray
-        Correction factors, shape (N,).
+    .. deprecated::
+        Use `torchref.math_functions.normalization.compute_anisotropy_correction` instead.
     """
-    U_matrix = U_to_matrix_np(U)
-
-    # exp(-2π² * s^T U s)
-    sUs = np.einsum('ni,ij,nj->n', s_vectors, U_matrix, s_vectors)
-    exponent = -2 * np.pi**2 * sUs
-
-    # Clamp to avoid numerical issues
-    exponent = np.clip(exponent, -10.0, 10.0)
-
-    return np.exp(exponent)
+    warnings.warn(
+        "compute_anisotropy_correction (NumPy version) is deprecated. "
+        "Use torchref.math_functions.normalization.compute_anisotropy_correction instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    s_torch = _to_torch(s_vectors)
+    U_torch = _to_torch(U)
+    result = _compute_anisotropy_correction_torch(s_torch, U_torch)
+    return _to_numpy(result)
 
 
 def compute_shell_std(
@@ -104,39 +122,19 @@ def compute_shell_std(
     """
     Compute mean standard deviation of F² values within resolution shells.
 
-    After proper anisotropy correction, F² should have similar std
-    in all directions within each resolution shell.
-
-    Parameters
-    ----------
-    F2_values : np.ndarray
-        F² values, shape (N,).
-    shell_idx : np.ndarray
-        Shell assignments, shape (N,).
-    P : int
-        Number of shells.
-
-    Returns
-    -------
-    mean_std : float
-        Mean std across shells (normalized by shell mean).
+    .. deprecated::
+        Use `torchref.math_functions.normalization.compute_shell_cv` instead.
     """
-    total_cv = 0.0  # coefficient of variation
-    n_shells = 0
-
-    for p in range(P):
-        mask = shell_idx == p
-        if mask.sum() < 10:
-            continue
-
-        F2_shell = F2_values[mask]
-        mean_shell = np.mean(F2_shell)
-        if mean_shell > 1e-10:
-            cv = np.std(F2_shell) / mean_shell
-            total_cv += cv
-            n_shells += 1
-
-    return total_cv / max(n_shells, 1)
+    warnings.warn(
+        "compute_shell_std is deprecated. "
+        "Use torchref.math_functions.normalization.compute_shell_cv instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from torchref.math_functions.normalization import compute_shell_cv
+    F2_torch = _to_torch(F2_values)
+    shell_torch = _to_torch(shell_idx).to(torch.int64)
+    return compute_shell_cv(F2_torch, shell_torch, P)
 
 
 def fit_anisotropy_correction(
@@ -151,85 +149,22 @@ def fit_anisotropy_correction(
     """
     Fit anisotropy correction parameters to minimize variance within shells.
 
-    Optimizes U parameters so that corrected F² values have minimal
-    coefficient of variation within each resolution shell, making the
-    distribution more isotropic before E-value conversion.
-
-    Parameters
-    ----------
-    F2_values : np.ndarray
-        F² values, shape (N,).
-    s_vectors : np.ndarray
-        Reciprocal space vectors in Å⁻¹, shape (N, 3).
-    P : int
-        Number of resolution shells for variance calculation.
-    d_min : float
-        High resolution limit in Å.
-    d_max : float
-        Low resolution limit in Å.
-    n_iterations : int
-        Number of optimization iterations.
-    verbose : bool
-        Print progress.
-
-    Returns
-    -------
-    U_optimal : np.ndarray
-        Optimal anisotropic parameters, shape (6,).
-    final_std : float
-        Final mean coefficient of variation after correction.
+    .. deprecated::
+        Use `torchref.math_functions.normalization.fit_anisotropy_correction` instead.
     """
-    from scipy.optimize import minimize
-
-    # Compute shell assignments
-    shell_edges, _ = compute_radial_shells(d_min, d_max, P)
-    s_mag = np.linalg.norm(s_vectors, axis=1)
-    shell_idx = assign_to_shells(s_mag, shell_edges)
-
-    # Filter to valid shells
-    valid = shell_idx >= 0
-    F2_valid = F2_values[valid]
-    s_valid = s_vectors[valid]
-    shell_valid = shell_idx[valid]
-
-    # Initial std
-    initial_std = compute_shell_std(F2_valid, shell_valid, P)
-
-    if verbose:
-        print(f"Anisotropy correction fitting:")
-        print(f"  Initial mean CV: {initial_std:.6f}")
-
-    def objective(U):
-        """Objective: minimize CV of corrected F² values within shells."""
-        correction = compute_anisotropy_correction(s_valid, U)
-        F2_corrected = F2_valid * correction
-        return compute_shell_std(F2_corrected, shell_valid, P)
-
-    # Start from identity (no anisotropy)
-    U_init = np.zeros(6, dtype=np.float64)
-
-    # Use scipy.optimize for robust optimization
-    result = minimize(
-        objective,
-        U_init,
-        method='L-BFGS-B',
-        options={'maxiter': n_iterations, 'disp': False},
+    warnings.warn(
+        "fit_anisotropy_correction (NumPy version) is deprecated. "
+        "Use torchref.math_functions.normalization.fit_anisotropy_correction instead.",
+        DeprecationWarning,
+        stacklevel=2,
     )
-
-    U_optimal = result.x
-    final_std = result.fun
-
-    if verbose:
-        print(f"  Final mean CV: {final_std:.6f}")
-        print(f"  CV reduction: {100*(1 - final_std/initial_std):.1f}%")
-        print(f"  U parameters: [{', '.join(f'{u:.4f}' for u in U_optimal)}]")
-
-        # Print the correction magnitude in principal directions
-        U_matrix = U_to_matrix_np(U_optimal)
-        eigenvalues = np.linalg.eigvalsh(U_matrix)
-        print(f"  U eigenvalues: [{', '.join(f'{e:.4f}' for e in eigenvalues)}]")
-
-    return U_optimal, final_std
+    F2_torch = _to_torch(F2_values)
+    s_torch = _to_torch(s_vectors)
+    U_torch, final_cv = _fit_anisotropy_correction_torch(
+        F2_torch, s_torch, n_shells=P, d_min=d_min, d_max=d_max,
+        n_iterations=n_iterations, verbose=verbose
+    )
+    return _to_numpy(U_torch), final_cv
 
 
 def apply_anisotropy_correction(
@@ -240,24 +175,20 @@ def apply_anisotropy_correction(
     """
     Apply anisotropic correction to F² values.
 
-    Should be called BEFORE converting F² to E-values.
-
-    Parameters
-    ----------
-    F2_values : np.ndarray
-        F² values, shape (N,).
-    s_vectors : np.ndarray
-        Reciprocal space vectors in Å⁻¹, shape (N, 3).
-    U : np.ndarray
-        Anisotropic parameters, shape (6,).
-
-    Returns
-    -------
-    F2_corrected : np.ndarray
-        Corrected F² values, shape (N,).
+    .. deprecated::
+        Use `torchref.math_functions.normalization.apply_anisotropy_correction` instead.
     """
-    correction = compute_anisotropy_correction(s_vectors, U)
-    return F2_values * correction
+    warnings.warn(
+        "apply_anisotropy_correction (NumPy version) is deprecated. "
+        "Use torchref.math_functions.normalization.apply_anisotropy_correction instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    F2_torch = _to_torch(F2_values)
+    s_torch = _to_torch(s_vectors)
+    U_torch = _to_torch(U)
+    result = _apply_anisotropy_correction_torch(F2_torch, s_torch, U_torch)
+    return _to_numpy(result)
 
 
 # =============================================================================
@@ -292,6 +223,23 @@ class BallHarmonicCoefficients:
     shell_counts: np.ndarray
 
 
+def _compute_radial_shells_np(
+    d_min: float,
+    d_max: float,
+    P: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Internal NumPy version for ball-specific functions.
+    """
+    s_min = 1.0 / d_max  # Low resolution end
+    s_max = 1.0 / d_min  # High resolution end
+
+    shell_edges = np.linspace(s_min, s_max, P + 1)
+    shell_centers = 0.5 * (shell_edges[:-1] + shell_edges[1:])
+
+    return shell_edges, shell_centers
+
+
 def compute_radial_shells(
     d_min: float,
     d_max: float,
@@ -299,6 +247,9 @@ def compute_radial_shells(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute uniform radial shell boundaries in reciprocal space.
+
+    .. deprecated::
+        Use `torchref.math_functions.normalization.compute_radial_shells` instead.
 
     Shells are spaced uniformly in 1/d (|s|) for even coverage of resolution.
 
@@ -318,13 +269,13 @@ def compute_radial_shells(
     shell_centers : np.ndarray
         Shell centers in Å⁻¹, shape (P,).
     """
-    s_min = 1.0 / d_max  # Low resolution end
-    s_max = 1.0 / d_min  # High resolution end
-
-    shell_edges = np.linspace(s_min, s_max, P + 1)
-    shell_centers = 0.5 * (shell_edges[:-1] + shell_edges[1:])
-
-    return shell_edges, shell_centers
+    warnings.warn(
+        "compute_radial_shells (NumPy version) is deprecated. "
+        "Use torchref.math_functions.normalization.compute_radial_shells instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _compute_radial_shells_np(d_min, d_max, P)
 
 
 def get_mw_grid(L: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -423,12 +374,29 @@ def splat_to_mw_grid(
     return grid
 
 
+def _assign_to_shells_np(
+    s_mag: np.ndarray,
+    shell_edges: np.ndarray,
+) -> np.ndarray:
+    """
+    Internal NumPy version for ball-specific functions.
+    """
+    shell_idx = np.digitize(s_mag, shell_edges) - 1
+    P = len(shell_edges) - 1
+    # Mark out-of-range as -1
+    shell_idx[(shell_idx < 0) | (shell_idx >= P)] = -1
+    return shell_idx
+
+
 def assign_to_shells(
     s_mag: np.ndarray,
     shell_edges: np.ndarray,
 ) -> np.ndarray:
     """
     Assign reflections to radial shells.
+
+    .. deprecated::
+        Use `torchref.math_functions.normalization.assign_to_shells` instead.
 
     Parameters
     ----------
@@ -443,11 +411,13 @@ def assign_to_shells(
         Shell index for each reflection, shape (N,).
         Values 0 to P-1, or -1 for out-of-range.
     """
-    shell_idx = np.digitize(s_mag, shell_edges) - 1
-    P = len(shell_edges) - 1
-    # Mark out-of-range as -1
-    shell_idx[(shell_idx < 0) | (shell_idx >= P)] = -1
-    return shell_idx
+    warnings.warn(
+        "assign_to_shells (NumPy version) is deprecated. "
+        "Use torchref.math_functions.normalization.assign_to_shells instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _assign_to_shells_np(s_mag, shell_edges)
 
 
 def splat_evalues_to_ball(
@@ -491,7 +461,7 @@ def splat_evalues_to_ball(
         Number of reflections per shell.
     """
     # Compute uniform radial shells
-    shell_edges, shell_centers = compute_radial_shells(d_min, d_max, P)
+    shell_edges, shell_centers = _compute_radial_shells_np(d_min, d_max, P)
 
     # Compute |s| and angles
     s_mag = np.linalg.norm(s_vectors, axis=1)
@@ -503,7 +473,7 @@ def splat_evalues_to_ball(
     phi = phi % (2 * np.pi)
 
     # Assign to shells
-    shell_idx = assign_to_shells(s_mag, shell_edges)
+    shell_idx = _assign_to_shells_np(s_mag, shell_edges)
 
     # Initialize ball grid
     ball_grid = np.zeros((P, L, 2 * L - 1), dtype=np.float64)
@@ -1139,7 +1109,8 @@ def F2_to_E_values(
     """
     Convert F² values to E-values by normalizing within resolution shells.
 
-    E = (F² - <F²>_shell) / std(F²)_shell
+    .. deprecated::
+        Use `torchref.math_functions.normalization.F_squared_to_E_values` instead.
 
     Parameters
     ----------
@@ -1159,27 +1130,18 @@ def F2_to_E_values(
     E_values : np.ndarray
         Normalized E-values, shape (N,).
     """
-    shell_edges, _ = compute_radial_shells(d_min, d_max, P)
-    s_mag = np.linalg.norm(s_vectors, axis=1)
-    shell_idx = assign_to_shells(s_mag, shell_edges)
-
-    E_values = np.zeros_like(F2_values)
-
-    for p in range(P):
-        mask = shell_idx == p
-        if mask.sum() < 2:
-            continue
-
-        F2_shell = F2_values[mask]
-        mean_shell = np.mean(F2_shell)
-        std_shell = np.std(F2_shell)
-
-        if std_shell > 1e-10:
-            E_values[mask] = (F2_shell - mean_shell) / std_shell
-        else:
-            E_values[mask] = 0.0
-
-    return E_values
+    warnings.warn(
+        "F2_to_E_values (NumPy version) is deprecated. "
+        "Use torchref.math_functions.normalization.F_squared_to_E_values instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    F2_torch = _to_torch(F2_values)
+    s_torch = _to_torch(s_vectors)
+    E, _, _ = _F_squared_to_E_values_torch(
+        F2_torch, s_torch, n_shells=P, d_min=d_min, d_max=d_max
+    )
+    return _to_numpy(E)
 
 
 def ball_rotation_search_with_anisotropy(

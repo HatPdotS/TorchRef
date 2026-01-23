@@ -1167,7 +1167,22 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         if self.resolution is None:
             self._calculate_resolution()
-        return float(self.resolution.min().item())
+        mask = self.masks()
+        return float(self.resolution[mask].min().item())
+    
+    def get_min_res(self) -> Optional[float]:
+        """
+        Return minimum resolution (highest d-spacing).
+
+        Returns
+        -------
+        float
+            Minimum resolution in Ångströms.
+        """
+        if self.resolution is None:
+            self._calculate_resolution()
+        mask = self.masks()
+        return float(self.resolution[mask].max().item())
 
     def __len__(self) -> int:
         """
@@ -2514,3 +2529,316 @@ class ReflectionData(CrystalDataset, DebugMixin):
         )
 
         return reduced
+
+    # ========== E-VALUE AND ANISOTROPY CORRECTION METHODS ==========
+
+    def get_scattering_vectors(self) -> torch.Tensor:
+        """
+        Get scattering vectors (s-vectors) from hkl and cell.
+
+        The s-vector for a reflection hkl is defined as:
+            s = B* @ hkl
+        where B* is the reciprocal basis matrix.
+
+        Returns
+        -------
+        s_vectors : torch.Tensor
+            Reciprocal space vectors in Angstroms^-1, shape (N, 3).
+
+        Raises
+        ------
+        ValueError
+            If hkl or cell is not available.
+        """
+        if self.hkl is None:
+            raise ValueError("No Miller indices loaded")
+        if self.cell is None:
+            raise ValueError("No unit cell defined")
+
+        return math_torch.get_scattering_vectors(self.hkl, self.cell.data)
+
+    def get_radial_shells(
+        self,
+        n_shells: int = 20,
+        d_min: Optional[float] = None,
+        d_max: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Create uniform radial shells in 1/d space for normalization.
+
+        This creates shells with uniform spacing in reciprocal space (1/d),
+        different from get_bins() which creates equal-count bins.
+
+        Parameters
+        ----------
+        n_shells : int
+            Number of radial shells. Default is 20.
+        d_min : float, optional
+            High resolution limit in Angstroms. If None, uses dataset minimum.
+        d_max : float, optional
+            Low resolution limit in Angstroms. If None, uses dataset maximum.
+
+        Returns
+        -------
+        shell_edges : torch.Tensor
+            Shell boundaries in Angstroms^-1, shape (n_shells+1,).
+        shell_centers : torch.Tensor
+            Shell centers in Angstroms^-1, shape (n_shells,).
+        shell_indices : torch.Tensor
+            Shell index for each reflection, shape (N,). Values -1 for out-of-range.
+        """
+        from torchref.math_functions.normalization import (
+            assign_to_shells,
+            compute_radial_shells,
+        )
+
+        if self.resolution is None:
+            self._calculate_resolution()
+
+        # Get resolution limits
+        if d_min is None:
+            d_min = self.get_max_res()
+        if d_max is None:
+            d_max = self.get_min_res()
+
+        # Compute shells
+        shell_edges, shell_centers = compute_radial_shells(
+            d_min, d_max, n_shells, device=self.device
+        )
+
+        # Get s-vectors and magnitudes
+        s_vectors = self.get_scattering_vectors()
+        s_mag = torch.linalg.norm(s_vectors, dim=1)
+
+        # Assign to shells
+        shell_indices = assign_to_shells(s_mag, shell_edges)
+
+        # Cache shell indices
+        self.radial_shell_indices = shell_indices
+
+        return shell_edges, shell_centers, shell_indices
+
+    def fit_anisotropy(
+        self,
+        n_shells: int = 20,
+        d_min: Optional[float] = None,
+        d_max: Optional[float] = None,
+        n_iterations: int = 100,
+        verbose: Optional[bool] = None,
+    ) -> torch.Tensor:
+        """
+        Fit anisotropy correction parameters to minimize CV within shells.
+
+        Optimizes U parameters so that corrected F² values have minimal
+        coefficient of variation within each resolution shell.
+
+        Parameters
+        ----------
+        n_shells : int
+            Number of resolution shells for variance calculation.
+        d_min : float, optional
+            High resolution limit in Angstroms. If None, uses dataset minimum.
+        d_max : float, optional
+            Low resolution limit in Angstroms. If None, uses dataset maximum.
+        n_iterations : int
+            Number of optimization iterations.
+        verbose : bool, optional
+            Print progress. If None, uses self.verbose.
+
+        Returns
+        -------
+        U : torch.Tensor
+            Fitted anisotropy parameters [u11, u22, u33, u12, u13, u23], shape (6,).
+            Also stored in self.U_aniso.
+
+        Raises
+        ------
+        ValueError
+            If no amplitude data is available.
+        """
+        from torchref.math_functions.normalization import fit_anisotropy_correction
+
+        if self.F is None:
+            raise ValueError("No amplitude data loaded")
+
+        if verbose is None:
+            verbose = self.verbose > 0
+
+        # Get F² values
+        F_squared = self.F**2
+
+        # Get s-vectors
+        s_vectors = self.get_scattering_vectors()
+
+        # Get resolution limits
+        if d_min is None:
+            d_min = self.get_max_res()
+        if d_max is None:
+            d_max = self.get_min_res()
+
+        # Fit anisotropy
+        U, final_cv = fit_anisotropy_correction(
+            F_squared,
+            s_vectors,
+            n_shells=n_shells,
+            d_min=d_min,
+            d_max=d_max,
+            n_iterations=n_iterations,
+            verbose=verbose,
+        )
+
+        # Store result
+        self.U_aniso = U
+
+        return U
+
+    def apply_anisotropy_correction(
+        self,
+        U_aniso: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Apply anisotropy correction to F² values.
+
+        Parameters
+        ----------
+        U_aniso : torch.Tensor, optional
+            Anisotropic parameters [u11, u22, u33, u12, u13, u23], shape (6,).
+            If None, uses self.U_aniso (must have called fit_anisotropy first).
+
+        Returns
+        -------
+        F_squared_corrected : torch.Tensor
+            Anisotropy-corrected F² values, shape (N,).
+            Also stored in self.F_squared_corrected.
+
+        Raises
+        ------
+        ValueError
+            If no U parameters available and none provided.
+        """
+        from torchref.math_functions.normalization import apply_anisotropy_correction
+
+        if U_aniso is None:
+            U_aniso = self.U_aniso
+        if U_aniso is None:
+            raise ValueError(
+                "No anisotropy parameters available. "
+                "Call fit_anisotropy() first or provide U_aniso."
+            )
+
+        if self.F is None:
+            raise ValueError("No amplitude data loaded")
+
+        # Get F² values
+        F_squared = self.F**2
+
+        # Get s-vectors
+        s_vectors = self.get_scattering_vectors()
+
+        # Apply correction
+        F_squared_corrected = apply_anisotropy_correction(F_squared, s_vectors, U_aniso)
+
+        # Store result
+        self.F_squared_corrected = F_squared_corrected
+
+        return F_squared_corrected
+
+    def compute_e_values(
+        self,
+        n_shells: int = 20,
+        d_min: Optional[float] = None,
+        d_max: Optional[float] = None,
+        apply_anisotropy: bool = True,
+        fit_anisotropy: bool = True,
+        verbose: Optional[bool] = None,
+    ) -> torch.Tensor:
+        """
+        Compute E-values with optional anisotropy correction.
+
+        E-values are normalized structure factors where <E²> = 1 within each
+        resolution shell. Anisotropy correction can be applied first to account
+        for directional variation in diffraction.
+
+        Parameters
+        ----------
+        n_shells : int
+            Number of resolution shells for normalization.
+        d_min : float, optional
+            High resolution limit in Angstroms. If None, uses dataset minimum.
+        d_max : float, optional
+            Low resolution limit in Angstroms. If None, uses dataset maximum.
+        apply_anisotropy : bool
+            If True, apply anisotropy correction before E-value calculation.
+        fit_anisotropy : bool
+            If True and apply_anisotropy is True, fit anisotropy parameters.
+            If False and apply_anisotropy is True, uses existing self.U_aniso.
+        verbose : bool, optional
+            Print progress. If None, uses self.verbose.
+
+        Returns
+        -------
+        E : torch.Tensor
+            E-values, shape (N,). Also stored in self.E.
+            self.E_squared is also populated with E² values.
+
+        Raises
+        ------
+        ValueError
+            If no amplitude data is available.
+
+        Examples
+        --------
+        Compute E-values with automatic anisotropy correction::
+
+            data = ReflectionData().load_mtz('data.mtz')
+            E = data.compute_e_values(n_shells=30)
+            print(f"E-values: mean={E.mean():.3f}, std={E.std():.3f}")
+
+        Compute E-values without anisotropy correction::
+
+            E = data.compute_e_values(apply_anisotropy=False)
+        """
+        from torchref.math_functions.normalization import F_squared_to_E_values
+
+        if self.F is None:
+            raise ValueError("No amplitude data loaded")
+
+        if verbose is None:
+            verbose = self.verbose > 0
+
+        # Get resolution limits
+        if d_min is None:
+            d_min = self.get_max_res()
+        if d_max is None:
+            d_max = self.get_min_res()
+
+        # Get F² values (possibly with anisotropy correction)
+        if apply_anisotropy:
+            if fit_anisotropy:
+                self.fit_anisotropy(
+                    n_shells=n_shells, d_min=d_min, d_max=d_max, verbose=verbose
+                )
+            F_squared = self.apply_anisotropy_correction()
+        else:
+            F_squared = self.F**2
+
+        # Get s-vectors
+        s_vectors = self.get_scattering_vectors()
+
+        # Compute E-values
+        E, E_squared, shell_idx = F_squared_to_E_values(
+            F_squared, s_vectors, n_shells=n_shells, d_min=d_min, d_max=d_max
+        )
+
+        # Store results
+        self.E = E
+        self.E_squared = E_squared
+        self.radial_shell_indices = shell_idx
+
+        if verbose:
+            print(f"E-value statistics:")
+            print(f"  E range: [{E.min():.3f}, {E.max():.3f}]")
+            print(f"  E mean: {E.mean():.3f}, std: {E.std():.3f}")
+            print(f"  E² mean: {E_squared.mean():.3f} (should be ~1.0)")
+
+        return E

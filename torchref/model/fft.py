@@ -20,9 +20,9 @@ from torchref.math_functions.math_torch import (
     find_relevant_voxels,
     get_real_grid,
     ifft,
-    vectorized_add_to_map,
     vectorized_add_to_map_aniso,
 )
+from torchref.math_functions import vectorized_add_to_map
 from torchref.symmetry import Cell, Symmetry
 from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.symmetry.spacegroup import SpaceGroupLike
@@ -102,6 +102,7 @@ class FFT(nn.Module):
         dtype_float: torch.dtype = torch.float32,
         device: torch.device = torch.device("cpu"),
         verbose: int = 0,
+        use_late_symmetry: bool = True,
     ):
         """
         Initialize the FFT module with cell and spacegroup.
@@ -122,6 +123,10 @@ class FFT(nn.Module):
             Computation device. Default is torch.device('cpu').
         verbose : int, optional
             Verbosity level for logging. Default is 0.
+        use_late_symmetry : bool, optional
+            If True (default), apply symmetry in reciprocal space after FFT
+            ("late symmetry") for faster structure factor calculation (~5x speedup).
+            If False, apply symmetry to density map before FFT ("early symmetry").
         """
         super().__init__()
         self.max_res = max_res
@@ -129,6 +134,7 @@ class FFT(nn.Module):
         self.dtype_float = dtype_float
         self.device = device
         self.verbose = verbose
+        self.use_late_symmetry = use_late_symmetry
 
         # Store cell and spacegroup
         self._cell = cell
@@ -148,6 +154,9 @@ class FFT(nn.Module):
 
         # Map symmetry operator (set during setup_grid)
         self.map_symmetry: Optional[MapSymmetry] = None
+
+        # Late symmetry compatibility flag (set during setup_grid)
+        self._late_symmetry_compatible: Optional[bool] = None
 
     # =========================================================================
     # Cell and SpaceGroup properties
@@ -261,7 +270,7 @@ class FFT(nn.Module):
 
     @staticmethod
     def compute_real_space_grid(
-        cell_data: torch.Tensor,
+        fractional_matrix: torch.Tensor,
         gridsize: torch.Tensor,
         device: torch.device = torch.device("cpu"),
     ) -> torch.Tensor:
@@ -282,7 +291,7 @@ class FFT(nn.Module):
         torch.Tensor
             Real-space grid with shape (nx, ny, nz, 3).
         """
-        return get_real_grid(cell_data, gridsize=gridsize, device=device)
+        return get_real_grid(fractional_matrix=fractional_matrix, gridsize=gridsize, device=device)
 
     def setup_grid(
         self,
@@ -330,7 +339,7 @@ class FFT(nn.Module):
 
         # Compute real space grid
         self.real_space_grid = self.compute_real_space_grid(
-            self._cell.data, self.gridsize, self.device
+            self._cell.fractional_matrix, self.gridsize, self.device
         )
 
         # Compute voxel size
@@ -347,12 +356,48 @@ class FFT(nn.Module):
                 verbose=self.verbose,
                 device=self.device,
             )
+
+            # Check late symmetry compatibility
+            self._late_symmetry_compatible = self._check_late_symmetry_compatible()
+
+            if self.use_late_symmetry and self._late_symmetry_compatible:
+                if self.verbose > 0:
+                    print("FFT: Using late symmetry (reciprocal space) for ~5x speedup")
+            elif self.use_late_symmetry and not self._late_symmetry_compatible:
+                if self.verbose > 0:
+                    print(
+                        "FFT: Late symmetry disabled - grid not compatible "
+                        "(falling back to early symmetry)"
+                    )
         else:
             self.map_symmetry = None
+            self._late_symmetry_compatible = False
 
         if self.verbose > 2:
             print(f"Grid shape: {self.real_space_grid.shape[:-1]}")
             print(f"Voxel size: {self.voxel_size}")
+
+    def _check_late_symmetry_compatible(self) -> bool:
+        """
+        Check if late symmetry can be used (all equiv HKLs land on grid).
+
+        Late symmetry requires that symmetry-equivalent HKL indices map to
+        integer grid points. This is ensured when using MapSymmetryDirect
+        (direct indexing without interpolation), which is created by the
+        MapSymmetry factory when the grid is compatible.
+
+        Returns
+        -------
+        bool
+            True if late symmetry is compatible, False otherwise.
+        """
+        if self.map_symmetry is None:
+            return False
+
+        # Check if using MapSymmetryDirect (not interpolation)
+        # MapSymmetryDirect has the can_use_direct_indexing attribute set to True
+        from torchref.symmetry.map_symmetry import MapSymmetryDirect
+        return isinstance(self.map_symmetry, MapSymmetryDirect)
 
     # =========================================================================
     # Density Map Building Methods
@@ -361,12 +406,10 @@ class FFT(nn.Module):
     def build_density_map(
         self,
         xyz_iso: torch.Tensor,
-        b_iso: torch.Tensor,
+        adp_iso: torch.Tensor,
         occ_iso: torch.Tensor,
         A_iso: torch.Tensor,
         B_iso: torch.Tensor,
-        inv_fractional_matrix: torch.Tensor,
-        fractional_matrix: torch.Tensor,
         xyz_aniso: Optional[torch.Tensor] = None,
         u_aniso: Optional[torch.Tensor] = None,
         occ_aniso: Optional[torch.Tensor] = None,
@@ -383,18 +426,14 @@ class FFT(nn.Module):
         ----------
         xyz_iso : torch.Tensor
             Isotropic atom coordinates with shape (n_iso, 3).
-        b_iso : torch.Tensor
-            Isotropic B-factors with shape (n_iso,).
+        adp_iso : torch.Tensor
+            Isotropic ADPs (atomic displacement parameters) with shape (n_iso,).
         occ_iso : torch.Tensor
             Isotropic occupancies with shape (n_iso,).
         A_iso : torch.Tensor
             ITC92 A parameters for isotropic atoms with shape (n_iso, 5).
         B_iso : torch.Tensor
             ITC92 B parameters for isotropic atoms with shape (n_iso, 5).
-        inv_fractional_matrix : torch.Tensor
-            Fractionalization matrix (Cartesian -> fractional) with shape (3, 3).
-        fractional_matrix : torch.Tensor
-            Orthogonalization matrix (fractional -> Cartesian) with shape (3, 3).
         xyz_aniso : torch.Tensor, optional
             Anisotropic atom coordinates with shape (n_aniso, 3).
         u_aniso : torch.Tensor, optional
@@ -419,9 +458,7 @@ class FFT(nn.Module):
             If setup_grid() has not been called.
         """
         if self.real_space_grid is None:
-            raise RuntimeError(
-                "Grid not initialized. Call setup_grid() first."
-            )
+            self.setup_grid()
 
         if self.verbose > 2:
             print(
@@ -444,16 +481,16 @@ class FFT(nn.Module):
                 self.real_space_grid,
                 xyz_iso,
                 radius_angstrom=self.radius_angstrom,
-                inv_frac_matrix=inv_fractional_matrix,
+                inv_frac_matrix=self.inv_fractional_matrix,
             )
             density_map = vectorized_add_to_map(
                 surrounding_coords,
                 voxel_indices,
                 density_map,
                 xyz_iso,
-                b_iso,
-                inv_fractional_matrix,
-                fractional_matrix,
+                adp_iso,
+                self.inv_fractional_matrix,
+                self.fractional_matrix,
                 A_iso,
                 B_iso,
                 occ_iso,
@@ -468,7 +505,7 @@ class FFT(nn.Module):
                 self.real_space_grid,
                 xyz_aniso,
                 radius_angstrom=self.radius_angstrom,
-                inv_frac_matrix=inv_fractional_matrix,
+                inv_frac_matrix=self.inv_fractional_matrix,
             )
             density_map = vectorized_add_to_map_aniso(
                 surrounding_coords,
@@ -476,8 +513,8 @@ class FFT(nn.Module):
                 density_map,
                 xyz_aniso,
                 u_aniso,
-                inv_fractional_matrix,
-                fractional_matrix,
+                self.inv_fractional_matrix,
+                self.fractional_matrix,
                 A_aniso,
                 B_aniso,
                 occ_aniso,
@@ -495,10 +532,11 @@ class FFT(nn.Module):
     # Structure Factor Methods
     # =========================================================================
 
-    @staticmethod
     def map_to_structure_factors(
+        self,
         density_map: torch.Tensor,
         hkl: torch.Tensor,
+        apply_symmetry: bool = False,
     ) -> torch.Tensor:
         """
         Convert density map to structure factors via FFT.
@@ -507,8 +545,13 @@ class FFT(nn.Module):
         ----------
         density_map : torch.Tensor
             Electron density map with shape (nx, ny, nz).
+            If apply_symmetry=True, this should be a P1 density map.
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
+        apply_symmetry : bool, optional
+            If True and late symmetry is enabled/compatible, apply symmetry
+            in reciprocal space. Default is False (assume map already has
+            symmetry applied or use early symmetry path).
 
         Returns
         -------
@@ -516,18 +559,35 @@ class FFT(nn.Module):
             Complex structure factors with shape (n_reflections,).
         """
         reciprocal_space_grid = ifft(density_map)
-        return extract_structure_factor_from_grid(reciprocal_space_grid, hkl)
+
+        # Use late symmetry if enabled, compatible, and requested
+        if (
+            apply_symmetry
+            and self.use_late_symmetry
+            and self._late_symmetry_compatible
+            and self._symmetry is not None
+        ):
+            from torchref.math_functions.reciprocal_symmetry import (
+                extract_structure_factors_with_symmetry,
+            )
+
+            return extract_structure_factors_with_symmetry(
+                reciprocal_space_grid,
+                hkl,
+                self._symmetry.matrices,
+                self._symmetry.translations,
+            )
+        else:
+            return extract_structure_factor_from_grid(reciprocal_space_grid, hkl)
 
     def compute_structure_factors(
         self,
         hkl: torch.Tensor,
         xyz_iso: torch.Tensor,
-        b_iso: torch.Tensor,
+        adp_iso: torch.Tensor,
         occ_iso: torch.Tensor,
         A_iso: torch.Tensor,
         B_iso: torch.Tensor,
-        inv_fractional_matrix: torch.Tensor,
-        fractional_matrix: torch.Tensor,
         xyz_aniso: Optional[torch.Tensor] = None,
         u_aniso: Optional[torch.Tensor] = None,
         occ_aniso: Optional[torch.Tensor] = None,
@@ -541,24 +601,24 @@ class FFT(nn.Module):
         This is a convenience method that builds the density map and computes
         structure factors in one call.
 
+        When use_late_symmetry=True (default) and the grid is compatible,
+        symmetry is applied in reciprocal space after FFT for ~5x speedup.
+        Otherwise, symmetry is applied to the density map before FFT.
+
         Parameters
         ----------
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
         xyz_iso : torch.Tensor
             Isotropic atom coordinates with shape (n_iso, 3).
-        b_iso : torch.Tensor
-            Isotropic B-factors with shape (n_iso,).
+        adp_iso : torch.Tensor
+            Isotropic ADPs (atomic displacement parameters) with shape (n_iso,).
         occ_iso : torch.Tensor
             Isotropic occupancies with shape (n_iso,).
         A_iso : torch.Tensor
             ITC92 A parameters for isotropic atoms.
         B_iso : torch.Tensor
             ITC92 B parameters for isotropic atoms.
-        inv_fractional_matrix : torch.Tensor
-            Fractionalization matrix with shape (3, 3).
-        fractional_matrix : torch.Tensor
-            Orthogonalization matrix with shape (3, 3).
         xyz_aniso : torch.Tensor, optional
             Anisotropic atom coordinates.
         u_aniso : torch.Tensor, optional
@@ -578,24 +638,38 @@ class FFT(nn.Module):
             Complex structure factors with shape (n_reflections,).
         density_map : torch.Tensor
             Electron density map with shape (nx, ny, nz).
+            Note: When using late symmetry, this is the P1 map (without symmetry).
         """
+        # Decide symmetry strategy:
+        # - Late symmetry: build P1 map, apply symmetry in reciprocal space
+        # - Early symmetry: apply symmetry to density map before FFT
+        use_late = (
+            apply_symmetry
+            and self.use_late_symmetry
+            and self._late_symmetry_compatible
+        )
+
+        # Build density map (with or without early symmetry)
         density_map = self.build_density_map(
             xyz_iso=xyz_iso,
-            b_iso=b_iso,
+            adp_iso=adp_iso,
             occ_iso=occ_iso,
             A_iso=A_iso,
             B_iso=B_iso,
-            inv_fractional_matrix=inv_fractional_matrix,
-            fractional_matrix=fractional_matrix,
             xyz_aniso=xyz_aniso,
             u_aniso=u_aniso,
             occ_aniso=occ_aniso,
             A_aniso=A_aniso,
             B_aniso=B_aniso,
-            apply_symmetry=apply_symmetry,
+            apply_symmetry=not use_late and apply_symmetry,  # Early symmetry
         )
 
-        sf = self.map_to_structure_factors(density_map, hkl)
+        # Extract structure factors (with or without late symmetry)
+        sf = self.map_to_structure_factors(
+            density_map,
+            hkl,
+            apply_symmetry=use_late,  # Late symmetry
+        )
         return sf, density_map
 
     # =========================================================================

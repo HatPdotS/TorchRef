@@ -26,10 +26,12 @@ import torch
 import torch.nn as nn
 
 from torchref.scaling import ScalerBase
-
+from torchref.model import FFT
+from torchref.symmetry import spacegroup
+from torchref.refinement.targets import MaximumLikelihoodXrayTarget
 
 def rotation_matrix_from_euler_zyz_torch(
-    alpha: torch.Tensor, beta: torch.Tensor, gamma: torch.Tensor
+    angles: torch.Tensor,
 ) -> torch.Tensor:
     """
     Create rotation matrix from ZYZ Euler angles (differentiable PyTorch version).
@@ -38,21 +40,18 @@ def rotation_matrix_from_euler_zyz_torch(
 
     Parameters
     ----------
-    alpha : torch.Tensor
-        First rotation angle (around Z) in radians.
-    beta : torch.Tensor
-        Second rotation angle (around Y) in radians.
-    gamma : torch.Tensor
-        Third rotation angle (around Z) in radians.
+    angles : torch.Tensor
+        Tensor of three rotation angles (alpha, beta, gamma) in radians.
 
     Returns
     -------
     torch.Tensor
         3x3 rotation matrix.
     """
-    ca, sa = torch.cos(alpha), torch.sin(alpha)
-    cb, sb = torch.cos(beta), torch.sin(beta)
-    cg, sg = torch.cos(gamma), torch.sin(gamma)
+
+    ca, sa = torch.cos(angles[0]), torch.sin(angles[0])
+    cb, sb = torch.cos(angles[1]), torch.sin(angles[1])
+    cg, sg = torch.cos(angles[2]), torch.sin(angles[2])
 
     # Build rotation matrix element by element
     R = torch.stack([
@@ -64,101 +63,6 @@ def rotation_matrix_from_euler_zyz_torch(
     return R
 
 
-def ml_xray_loss(
-    fobs: torch.Tensor,
-    fcalc: torch.Tensor,
-    sigma: torch.Tensor,
-    centric_flags: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Maximum Likelihood X-ray target with proper centric/acentric handling.
-
-    Based on the MaximumLikelihoodXrayTarget implementation in
-    torchref/refinement/targets/targets.py.
-
-    Parameters
-    ----------
-    fobs : torch.Tensor
-        Observed structure factor amplitudes.
-    fcalc : torch.Tensor
-        Calculated structure factors (complex or amplitude).
-    sigma : torch.Tensor
-        Standard deviations of observed amplitudes.
-    centric_flags : torch.Tensor
-        Boolean tensor indicating centric reflections.
-
-    Returns
-    -------
-    torch.Tensor
-        Mean ML loss across all reflections.
-    """
-    # Default model parameters (simplified for rigid body refinement)
-    alpha = torch.ones_like(fobs)  # Figure of merit parameter
-    beta = sigma ** 2  # Variance estimate
-    epsilon = torch.ones_like(fobs)  # Symmetry factor
-
-    fcalc_amp = torch.abs(fcalc)
-
-    # Precompute common terms
-    eb = (epsilon * beta).clamp(min=1e-6)
-
-    # Acentric term (Rice distribution)
-    term1 = -torch.log(2 * fobs / eb + 1e-12)
-    term2 = (fobs ** 2) / eb
-    term3 = (alpha * fcalc_amp) ** 2 / eb
-
-    arg_bessel = 2 * alpha * fobs * fcalc_amp / eb
-    # Use numerically stable I0 computation: log(I0(x)) approx x for large x
-    term4 = -(
-        torch.log(torch.special.i0e(arg_bessel) + 1e-12) + torch.abs(arg_bessel)
-    )
-
-    loss_acentric = term1 + term2 + term3 + term4
-
-    # Centric term (Woolfson distribution)
-    term1_c = -0.5 * torch.log(2 / (np.pi * eb) + 1e-12)
-    term2_c = (fobs ** 2) / (2 * eb)
-    term3_c = (alpha * fcalc_amp) ** 2 / (2 * eb)
-    term4_c = -(alpha * fobs * fcalc_amp) / eb
-
-    arg_exp = -2 * alpha * fobs * fcalc_amp / eb
-    term5_c = -torch.log((1 + torch.exp(arg_exp.clamp(max=10))) / 2 + 1e-12)
-
-    loss_centric = term1_c + term2_c + term3_c + term4_c + term5_c
-
-    # Combine based on centric flags
-    loss = torch.where(centric_flags, loss_centric, loss_acentric)
-
-    return loss.mean()
-
-
-def compute_r_factor(
-    fobs: torch.Tensor, fcalc: torch.Tensor
-) -> float:
-    """
-    Compute R-factor between observed and calculated structure factors.
-
-    R = sum(||Fobs| - |Fcalc||) / sum(|Fobs|)
-
-    Parameters
-    ----------
-    fobs : torch.Tensor
-        Observed structure factor amplitudes.
-    fcalc : torch.Tensor
-        Calculated structure factors (complex or amplitude).
-
-    Returns
-    -------
-    float
-        R-factor value.
-    """
-    fobs_amp = torch.abs(fobs)
-    fcalc_amp = torch.abs(fcalc)
-
-    r = torch.sum(torch.abs(fobs_amp - fcalc_amp)) / torch.sum(fobs_amp)
-    return r.item()
-
-
 @dataclass
 class RigidBodyResult:
     """
@@ -166,7 +70,7 @@ class RigidBodyResult:
 
     Attributes
     ----------
-    final_rotation : Tuple[float, float, float]
+    final_rotation : torch.Tensor
         Final Euler angles (alpha, beta, gamma) in radians.
     final_translation_frac : torch.Tensor
         Final translation in fractional coordinates.
@@ -181,13 +85,18 @@ class RigidBodyResult:
     converged : bool
         Whether the refinement converged.
     """
-    final_rotation: Tuple[float, float, float]
+    final_rotation: torch.Tensor
     final_translation_frac: torch.Tensor
     initial_r_factor: float
     final_r_factor: float
     final_ml_loss: float
     n_steps: int
+    LBFGS_iterations: int
+    LBFGS_function_evaluations: int
     converged: bool
+
+
+
 
 
 class RigidBodyRefinement(nn.Module):
@@ -208,7 +117,7 @@ class RigidBodyRefinement(nn.Module):
         Model with atomic coordinates (tensors extracted, not stored).
     data : ReflectionData
         Observed reflection data.
-    initial_rotation : Tuple[float, float, float], optional
+    initial_rotation : torch.Tensor, optional
         Initial Euler angles (alpha, beta, gamma) in radians.
         Default is (0, 0, 0).
     initial_translation : torch.Tensor, optional
@@ -231,26 +140,35 @@ class RigidBodyRefinement(nn.Module):
         self,
         model,  # ModelFT
         data,  # ReflectionData
-        initial_rotation: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        expected_rotational_error: float = 0.1,
+        initial_rotation: torch.Tensor = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32),
         initial_translation: Optional[torch.Tensor] = None,
         device: torch.device = torch.device("cpu"),
+        rfactor_converged_threshold: float = 0.45,
+        verbose: int = 1,
     ):
         super().__init__()
         self.device = device
         self.data = data
 
-        # Extract and store all tensors from model ONCE
-        # These are detached - no connection to Model's MixedTensor
-        self.original_xyz = model.xyz().detach().clone().to(device)
-        self.centroid = self.original_xyz.mean(dim=0)
+        xyz_iso, adp_iso, occ_iso, A_iso, B_iso = model.get_iso()
 
-        # Get isotropic atomic parameters (B-factors, occupancy, scattering params)
-        xyz_iso, b_iso, occ_iso, A_iso, B_iso = model.get_iso()
-        self.b_iso = b_iso.detach().clone().to(device)
-        self.occ_iso = occ_iso.detach().clone().to(device)
-        self.A_iso = A_iso.detach().clone().to(device)
-        self.B_iso = B_iso.detach().clone().to(device)
+        self.register_buffer("xyz_initial", xyz_iso.detach().clone().to(device))
+        self.register_buffer("adp_iso", adp_iso.detach().clone().to(device))
+        self.register_buffer("occ_iso", occ_iso.detach().clone().to(device))
+        self.register_buffer("A_iso", A_iso.detach().clone().to(device))
+        self.register_buffer("B_iso", B_iso.detach().clone().to(device))
+        centroid = torch.mean(self.xyz_initial, dim=0)
+        self.register_buffer("centroid", centroid)
 
+        self.cell = data.cell
+        self.spacegroup = data.spacegroup
+
+        self.fft = FFT(self.cell,  self.spacegroup, max_res=4.0) # we dont need high res for rigid body Nyquist sampling makes it so we can go 3 times higher in res anyway
+
+
+        self.verbose = verbose
+        self.rfactor_converged_threshold = rfactor_converged_threshold
         # Get anisotropic atoms if any
         xyz_aniso, u_aniso, occ_aniso, A_aniso, B_aniso = model.get_aniso()
         self.has_aniso = len(xyz_aniso) > 0
@@ -267,20 +185,14 @@ class RigidBodyRefinement(nn.Module):
             self.A_aniso = None
             self.B_aniso = None
 
-        # Store fractional matrices
-        self.inv_fractional_matrix = model.inv_fractional_matrix.detach().clone().to(device)
-        self.fractional_matrix = model.fractional_matrix.detach().clone().to(device)
 
-        # Store FFT module reference (already initialized with cell/spacegroup/grid)
-        self.fft = model._fft
 
-        # Refinable rotation parameters (small perturbations around initial)
-        self.d_alpha = nn.Parameter(torch.tensor(0.0, device=device))
-        self.d_beta = nn.Parameter(torch.tensor(0.0, device=device))
-        self.d_gamma = nn.Parameter(torch.tensor(0.0, device=device))
 
         # Store initial rotation
-        self.alpha0, self.beta0, self.gamma0 = initial_rotation
+        self.register_buffer("initial_rotation", initial_rotation.to(device=device).clone())
+
+        self.rotation_parameters = nn.Parameter(torch.zeros(3, device=device))
+        self.expected_rotational_error = expected_rotational_error
 
         # Refinable translation (fractional coordinates)
         if initial_translation is None:
@@ -289,9 +201,13 @@ class RigidBodyRefinement(nn.Module):
             initial_translation = initial_translation.to(device=device).clone()
         self.translation_frac = nn.Parameter(initial_translation)
 
-        # Create ScalerBase for proper crystallographic scaling
-        # Will be initialized with fcalc in refine()
         self.scaler = ScalerBase(data=data, nbins=20, verbose=0, device=device)
+        fcalc_initial = self()
+
+        self.scaler.initialize(fcalc_initial)
+        self.scaler.refine_lbfgs(fcalc=fcalc_initial)
+
+        self.xray_target = MaximumLikelihoodXrayTarget(data=self.data, scaler=self.scaler)
 
     def get_rotation_matrix(self) -> torch.Tensor:
         """
@@ -302,24 +218,33 @@ class RigidBodyRefinement(nn.Module):
         torch.Tensor
             3x3 rotation matrix combining initial and perturbation rotations.
         """
-        alpha = self.alpha0 + self.d_alpha
-        beta = self.beta0 + self.d_beta
-        gamma = self.gamma0 + self.d_gamma
-        return rotation_matrix_from_euler_zyz_torch(alpha, beta, gamma)
 
-    def get_current_rotation_angles(self) -> Tuple[float, float, float]:
+        angles = self.initial_rotation + self.rotation
+        return rotation_matrix_from_euler_zyz_torch(angles)
+
+    @property
+    def rotation(self) -> torch.Tensor:
+        """
+        Get current rotation perturbation angles.
+
+        Returns
+        -------
+        torch.Tensor
+            Current (d_alpha, d_beta, d_gamma) in radians.
+        """
+        return (2 * torch.sigmoid(self.rotation_parameters) - 1) * self.expected_rotational_error
+
+    def get_current_rotation_angles(self) -> torch.Tensor:
         """
         Get current rotation angles (initial + perturbation).
 
         Returns
         -------
-        Tuple[float, float, float]
+        torch.Tensor
             Current (alpha, beta, gamma) in radians.
         """
-        alpha = self.alpha0 + self.d_alpha.item()
-        beta = self.beta0 + self.d_beta.item()
-        gamma = self.gamma0 + self.d_gamma.item()
-        return (alpha, beta, gamma)
+        angles = self.initial_rotation + self.rotation
+        return angles
 
     def get_transformed_xyz(self) -> torch.Tensor:
         """
@@ -335,18 +260,18 @@ class RigidBodyRefinement(nn.Module):
         R = self.get_rotation_matrix()
 
         # Rotate around centroid
-        xyz_centered = self.original_xyz - self.centroid
+        xyz_centered = self.xyz_initial - self.centroid
         xyz_rotated = xyz_centered @ R.T + self.centroid
 
         # Apply translation (fractional -> Cartesian)
-        t_cart = self.translation_frac @ self.fractional_matrix
+        t_cart = self.translation_frac @ self.cell.fractional_matrix
         return xyz_rotated + t_cart
 
     def get_scale(self) -> float:
         """Get current scale factor from scaler."""
         return self.scaler.get_scale()
 
-    def forward(self, hkl: torch.Tensor, debug: bool = False) -> torch.Tensor:
+    def forward(self, debug: bool = False) -> torch.Tensor:
         """
         Compute unscaled structure factors using FFT directly.
 
@@ -367,6 +292,8 @@ class RigidBodyRefinement(nn.Module):
         # Get transformed coordinates (has gradient to rotation params)
         xyz_transformed = self.get_transformed_xyz()
 
+        hkl = self.data.hkl
+
         if debug:
             print(f"      xyz_transformed.requires_grad: {xyz_transformed.requires_grad}")
             print(f"      xyz_transformed.grad_fn: {xyz_transformed.grad_fn}")
@@ -377,19 +304,18 @@ class RigidBodyRefinement(nn.Module):
             R = self.get_rotation_matrix()
             xyz_aniso_centered = self.xyz_aniso_original - self.centroid
             xyz_aniso_rotated = xyz_aniso_centered @ R.T + self.centroid
-            t_cart = self.translation_frac @ self.fractional_matrix
+            t_cart = self.translation_frac @ self.cell.fractional_matrix
             xyz_aniso = xyz_aniso_rotated + t_cart
 
         # Compute structure factors via FFT (bypasses MixedTensor!)
+        # Note: fractional matrices are now obtained from FFT's internal Cell object
         sf, _ = self.fft.compute_structure_factors(
             hkl=hkl,
             xyz_iso=xyz_transformed,
-            b_iso=self.b_iso,
+            adp_iso=self.adp_iso,
             occ_iso=self.occ_iso,
             A_iso=self.A_iso,
             B_iso=self.B_iso,
-            inv_fractional_matrix=self.inv_fractional_matrix,
-            fractional_matrix=self.fractional_matrix,
             xyz_aniso=xyz_aniso,
             u_aniso=self.u_aniso if self.has_aniso else None,
             occ_aniso=self.occ_aniso if self.has_aniso else None,
@@ -405,33 +331,30 @@ class RigidBodyRefinement(nn.Module):
 
     def refine(
         self,
-        n_steps: int = 100,
-        lr: float = 1.0,
-        convergence_threshold: float = 1e-5,
-        print_interval: int = 5,
-        verbose: bool = True,
-        line_search_fn: str = "strong_wolfe",
+        n_tries: int = 1,
+        n_iter: int = 100, 
     ) -> RigidBodyResult:
         """
-        Run rigid body refinement using ML target with LBFGS optimizer.
+        Run rigid body refinement using least-squares loss with Adam optimizer.
 
-        Optimizes rigid body parameters (rotation, translation) AND
-        scale parameter jointly for best Fcalc-Fobs agreement.
+        Uses analytical scale fitting at each step rather than jointly optimizing
+        the scale parameter with rotation/translation.
 
         Parameters
         ----------
         n_steps : int, optional
             Maximum number of optimization steps. Default is 100.
         lr : float, optional
-            Learning rate for LBFGS. Default is 1.0.
+            Learning rate for Adam optimizer. Default is 0.01.
         convergence_threshold : float, optional
-            Stop if loss change is below this threshold. Default is 1e-5.
+            Stop if loss change is below this threshold. Default is 1e-6.
         print_interval : int, optional
             Print progress every N steps. Default is 5.
         verbose : bool, optional
             Print progress information. Default is True.
-        line_search_fn : str, optional
-            Line search function for LBFGS. Default is "strong_wolfe".
+        loss_type : str, optional
+            Loss function to use: "ls" for least-squares, "ml" for ML.
+            Default is "ls".
 
         Returns
         -------
@@ -440,188 +363,90 @@ class RigidBodyRefinement(nn.Module):
         """
         import sys
 
-        if verbose:
-            print("    Setting up LBFGS optimizer...")
+        if self.verbose > 2:
+            print(f"    Setting up LBFGS optimizer niter = {n_iter} and max tries = {n_tries}")
             sys.stdout.flush()
+        parameters = [self.rotation_parameters, self.translation_frac, *self.scaler.parameters()]
 
-        # Get reflection data
-        hkl, fobs, sigma, rfree_mask = self.data()
-
-        if verbose:
-            print(f"    Got {len(hkl)} reflections, moving to device...")
-            sys.stdout.flush()
-
-        hkl = hkl.to(self.device)
-        fobs = fobs.to(self.device)
-        sigma = sigma.to(self.device)
-        rfree_mask = rfree_mask.to(self.device)
-
-        # Handle MaskedTensor: get underlying data
-        if hasattr(fobs, 'get_data'):
-            fobs_data = fobs.get_data()
-        else:
-            fobs_data = fobs
-
-        if hasattr(sigma, 'get_data'):
-            sigma_data = sigma.get_data()
-        else:
-            sigma_data = sigma
-
-        # Get centric flags if available
-        if hasattr(self.data, 'centric') and self.data.centric is not None:
-            centric_flags = self.data.centric.to(self.device)
-        else:
-            centric_flags = torch.zeros_like(fobs_data, dtype=torch.bool)
-
-        # Extract work set indices for training (need this before initial R-factor)
-        work_indices = rfree_mask.nonzero(as_tuple=True)[0]
-        fobs_work = fobs_data[work_indices]
-        sigma_work = sigma_data[work_indices]
-        centric_work = centric_flags[work_indices]
-
-        if verbose:
-            print("    Computing initial structure factors and initializing scaler...")
-            sys.stdout.flush()
-
-        # Compute initial Fcalc and initialize scaler
-        with torch.no_grad():
-            fcalc_initial = self.forward(hkl)
-            # Initialize scaler with initial Fcalc
-            self.scaler.initialize(fcalc_initial)
-            # Compute initial R-factor with analytical scale
-            fcalc_work_init = fcalc_initial[work_indices]
-            fcalc_amp = torch.abs(fcalc_work_init)
-            scale_init = (fobs_work * fcalc_amp).sum() / (fcalc_amp**2).sum().clamp(min=1e-10)
-            initial_r_factor = compute_r_factor(fobs_work, scale_init * fcalc_work_init)
-
-        if verbose:
-            print(f"Rigid body refinement starting (LBFGS)")
-            print(f"  Initial R-work: {initial_r_factor:.4f}")
-            print(f"  Initial rotation: ({np.degrees(self.alpha0):.2f}, "
-                  f"{np.degrees(self.beta0):.2f}, {np.degrees(self.gamma0):.2f}) deg")
-            print(f"  Initial translation: {self.translation_frac.detach().cpu().numpy()}")
-
-        # Setup LBFGS optimizer with rigid body params + scaler params
-        rigid_params = [self.d_alpha, self.d_beta, self.d_gamma, self.translation_frac]
-        self.scaler.unfreeze()
-        all_params = rigid_params + list(self.scaler.parameters())
-        optimizer = torch.optim.LBFGS(
-            all_params,
-            lr=lr,
-            max_iter=20,
-            history_size=10,
-            line_search_fn=line_search_fn,
+        self.optimizer = torch.optim.LBFGS(
+            parameters,
+            lr=1, max_iter=100, line_search_fn='strong_wolfe'
         )
 
-        prev_loss = float('inf')
-        converged = False
-        final_step = 0
+        def loss():
+            fcalc = self()
+            return self.xray_target(fcalc)
+
+        noise = 0
+
 
         def closure():
-            optimizer.zero_grad()
-            # Compute unscaled Fcalc
-            fcalc_raw = self.forward(hkl)
-            # Apply scaling via scaler
-            fcalc_scaled = self.scaler(fcalc_raw)
-            fcalc_work = fcalc_scaled[work_indices]
-            loss = ml_xray_loss(fobs_work, fcalc_work, sigma_work, centric_work)
-            loss.backward()
-            return loss
+            self.optimizer.zero_grad()
+            current_loss = loss()
+            current_loss.backward()
+            gradnorm = self.optimizer.param_groups[0]['params'][0].norm().item()
+            if noise > 0:
+                self.optimizer.param_groups[0]['params'][0].grad  += noise * torch.randn_like(self.optimizer.param_groups[0]['params'][0].grad) * gradnorm
+            return current_loss
+        
+        rwork_initial, rfree_initial = self.scaler.rfactor(self())
 
-        for step in range(n_steps):
-            final_step = step
+        initial_loss = closure().item()
+        if self.verbose > 0:
+            print(f"Initial R-work: {rwork_initial:.4f}, R-free: {rfree_initial:.4f}, ML loss: {initial_loss:.4f}")
 
-            # LBFGS step
-            loss = optimizer.step(closure)
-            loss_val = loss.item()
+        from time import time
+        start_time = time()
 
-            # Debug: check gradients on first step
-            if step == 0 and verbose:
-                print(f"    Gradient check (after first step):")
-                print(f"      d_alpha.grad: {self.d_alpha.grad}")
-                print(f"      d_beta.grad: {self.d_beta.grad}")
-                print(f"      d_gamma.grad: {self.d_gamma.grad}")
-                print(f"      translation_frac.grad: {self.translation_frac.grad}")
-                print(f"      scaler log_scale.grad: {self.scaler.log_scale.grad.mean() if self.scaler.log_scale.grad is not None else None}")
-                print(f"      loss value: {loss_val}")
-                sys.stdout.flush()
+        tries_needed = 0
 
-            # Check convergence
-            if abs(prev_loss - loss_val) < convergence_threshold:
-                converged = True
-                if verbose:
-                    print(f"Converged at step {step}")
+        while True:
+            tries_needed += 1
+
+            self.optimizer.step(closure)
+            with torch.no_grad():
+                current_loss = loss().item()
+                if self.verbose > 1:
+                    print(f"Iter {tries_needed}   Current ML loss: {current_loss:.4f}")
+            final_loss = closure().item()
+            final_rwork, final_rfree = self.scaler.rfactor(self())
+            converged = final_rwork < self.rfactor_converged_threshold
+
+            if converged or tries_needed >= n_tries:
+                if noise > 0:
+                    noise = 0
+                    self.optimizer.step(closure) 
+                if self.verbose > 1:
+                    print(f"Converged at iteration {tries_needed} with R-work: {final_rwork:.4f}")
                 break
-            prev_loss = loss_val
 
-            # Print progress with analytical scale fit for accurate R-factor
-            if verbose and (step % print_interval == 0 or step == n_steps - 1):
-                with torch.no_grad():
-                    fcalc_raw = self.forward(hkl)
-                    fcalc_work_eval = fcalc_raw[work_indices]
-                    # Analytical scale for R-factor evaluation
-                    fcalc_amp = torch.abs(fcalc_work_eval)
-                    scale_fit = (fobs_work * fcalc_amp).sum() / (fcalc_amp**2).sum().clamp(min=1e-10)
-                    rwork = compute_r_factor(fobs_work, scale_fit * fcalc_work_eval)
-                    print(f"  Step {step:3d}: R-work = {rwork:.4f}, "
-                          f"ML-loss = {loss_val:.4f}, scale = {scale_fit.item():.4f}")
+            else:
+                noise += 1e-2
+                self.optimizer = torch.optim.LBFGS(
+                    parameters,
+                    lr=1, max_iter=100, line_search_fn='strong_wolfe'
+                )
 
-        # Final evaluation with analytical scale fit
-        with torch.no_grad():
-            fcalc_final = self.forward(hkl)
-            fcalc_work_final = fcalc_final[work_indices]
-            # Analytical scale for final R-factor
-            fcalc_amp = torch.abs(fcalc_work_final)
-            scale_final = (fobs_work * fcalc_amp).sum() / (fcalc_amp**2).sum().clamp(min=1e-10)
-            final_r_factor = compute_r_factor(fobs_work, scale_final * fcalc_work_final)
-            # Compute final loss with analytical scale
-            final_loss = ml_xray_loss(
-                fobs_work,
-                scale_final * fcalc_work_final,
-                sigma_work,
-                centric_work
-            ).item()
+        end_time = time()
 
-        if verbose:
-            print(f"\nRefinement complete after {final_step + 1} steps")
-            print(f"  Final R-work: {final_r_factor:.4f} (improved by {initial_r_factor - final_r_factor:.4f})")
-            print(f"  Final rotation perturbation: ({np.degrees(self.d_alpha.item()):.4f}, "
-                  f"{np.degrees(self.d_beta.item()):.4f}, {np.degrees(self.d_gamma.item()):.4f}) deg")
+        if self.verbose > 0:
+            print(f"\nRefinement complete after {tries_needed} steps in {end_time - start_time:.2f} seconds.")
+            print(f"  Final R-work: {final_rwork:.4f} (improved by {rwork_initial - final_rwork:.4f})")
+            print(f"  Final R-free: {final_rfree:.4f} (improved by {rfree_initial - final_rfree:.4f})")
+            print(f"  Final rotation angles (deg):", self.get_current_rotation_angles().rad2deg().detach().cpu().numpy())
             print(f"  Final translation: {self.translation_frac.detach().cpu().numpy()}")
 
         return RigidBodyResult(
-            final_rotation=self.get_current_rotation_angles(),
-            final_translation_frac=self.translation_frac.detach().clone(),
-            initial_r_factor=initial_r_factor,
-            final_r_factor=final_r_factor,
+            final_rotation=self.get_current_rotation_angles().detach().cpu().numpy().tolist(),
+            final_translation_frac=self.translation_frac.detach().cpu().numpy().tolist(),
+            initial_r_factor=rwork_initial,
+            final_r_factor=final_rwork,
             final_ml_loss=final_loss,
-            n_steps=final_step + 1,
-            converged=converged,
+            LBFGS_iterations=self.optimizer.state['n_iter'],
+            LBFGS_function_evaluations=self.optimizer.state['func_evals'],
+            n_steps=tries_needed,
+            converged=converged
         )
-
-    def apply_to_model(self, model):
-        """
-        Apply current transformation to a model.
-
-        Parameters
-        ----------
-        model : Model
-            Model to transform.
-
-        Returns
-        -------
-        Model
-            Transformed model.
-        """
-        # Get final transformation
-        R = self.get_rotation_matrix().detach()
-        t_frac = self.translation_frac.detach()
-
-        # Apply rotation and translation
-        model.rotate(R.cpu(), center=self.centroid.cpu())
-        model.translate(t_frac.cpu(), fractional=True)
-
-        return model
 
     def get_final_parameters(self) -> dict:
         """

@@ -321,7 +321,7 @@ class LBFGSRefinement(Refinement):
         Returns
         -------
         dict
-            Dictionary with rwork, rfree, mean_b, state, etc.
+            Dictionary with rwork, rfree, mean_adp, state, etc.
         """
         with torch.no_grad():
             rwork_start, rfree_start = self.get_rfactor()
@@ -335,8 +335,8 @@ class LBFGSRefinement(Refinement):
             rwork, rfree = self.get_rfactor()
             xray_target = self.xray_loss().item()
             adp_target = self.adp_loss().item()
-            b_factors = self.model.b()
-            mean_b = b_factors.mean().item()
+            adp_values = self.model.adp()
+            mean_adp = adp_values.mean().item()
             bi_bj = self._compute_mean_bi_bj()
 
         return {
@@ -346,7 +346,7 @@ class LBFGSRefinement(Refinement):
             "gap": rfree - rwork,
             "xray_target": xray_target,
             "adp_target": adp_target,
-            "mean_b": mean_b,
+            "mean_adp": mean_adp,
             "bi_bj": bi_bj,
             "rwork_start": rwork_start,
             "rfree_start": rfree_start,
@@ -362,7 +362,7 @@ class LBFGSRefinement(Refinement):
         float
             Mean absolute B-factor difference for bonded atoms.
         """
-        b = self.model.b()
+        b = self.model.adp()
 
         # Make sure 'all' indices are available
         if "all" not in self.restraints.restraints["bond"]:
@@ -623,7 +623,7 @@ class LBFGSRefinement(Refinement):
         # Get starting metrics
         with torch.no_grad():
             rwork_start, rfree_start = self.get_rfactor()
-            mean_b_start = self.model.b().mean().item()
+            mean_adp_start = self.model.adp().mean().item()
             bi_bj_start = self._compute_mean_bi_bj()
 
         if self.verbose > 0:
@@ -631,11 +631,11 @@ class LBFGSRefinement(Refinement):
             print("ADP Weight Screening (Phenix-style)")
             print(f"{'='*80}")
             print(
-                f"{'WEIGHT':>10} {'Rwork':>8} {'Rfree':>8} {'Gap':>8} {'<Bi-Bj>':>8} {'<B>':>8} {'X-ray':>10} {'ADP':>10}"
+                f"{'WEIGHT':>10} {'Rwork':>8} {'Rfree':>8} {'Gap':>8} {'<Bi-Bj>':>8} {'<ADP>':>8} {'X-ray':>10} {'ADP':>10}"
             )
             print(
                 f"{'start':>10} {rwork_start*100:>7.2f}% {rfree_start*100:>7.2f}% {(rfree_start-rwork_start)*100:>7.2f}% "
-                f"{bi_bj_start:>8.2f} {mean_b_start:>8.1f}"
+                f"{bi_bj_start:>8.2f} {mean_adp_start:>8.1f}"
             )
 
         for weight in weights:
@@ -650,7 +650,7 @@ class LBFGSRefinement(Refinement):
             if self.verbose > 0:
                 print(
                     f"{weight:>10.3f} {result['rwork']*100:>7.2f}% {result['rfree']*100:>7.2f}% "
-                    f"{result['gap']*100:>7.2f}% {result['bi_bj']:>8.2f} {result['mean_b']:>8.1f} "
+                    f"{result['gap']*100:>7.2f}% {result['bi_bj']:>8.2f} {result['mean_adp']:>8.1f} "
                     f"{result['xray_target']:>10.4f} {result['adp_target']:>10.4f} {result['rwork_start']*100:>7.2f}% {result['rfree_start']*100:>7.2f}%"
                 )
 
@@ -1532,7 +1532,7 @@ class LBFGSRefinement(Refinement):
                     f"Angle RMSD: {after_adp.get('geom_angle_rmsd', 0):.2f}°"
                 )
                 print(
-                    f"  <B>: {after_adp.get('adp_mean_b', 0):.1f} Å², "
+                    f"  <ADP>: {after_adp.get('adp_mean_adp', 0):.1f} Å², "
                     f"<Bi-Bj>: {after_adp.get('adp_mean_bi_bj', 0):.2f} Å²"
                 )
 

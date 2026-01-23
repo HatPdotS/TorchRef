@@ -5,12 +5,6 @@ This module provides target (loss) functions for crystallographic refinement.
 Each target is instantiated once with a reference to the refinement object,
 then evaluated on each iteration by calling the target.
 
-Design Pattern:
-- Target classes hold a reference to the refinement object
-- __call__() computes and returns the loss
-- This avoids repeated instantiation and allows stateful targets
-- NEW: Targets can also work with LossState for the new pipeline
-
 Target Types:
 - X-ray targets: Least Squares, Maximum Likelihood, Gaussian NLL
 - Geometry restraint targets: Bonds, Angles, Torsions
@@ -18,7 +12,6 @@ Target Types:
 
 LossState Integration:
 - Targets can optionally receive a LossState and add their loss to it
-- This enables a clean pipeline without circular references
 """
 
 from typing import TYPE_CHECKING, Dict, Tuple
@@ -35,11 +28,12 @@ from torchref.utils.stats import (
     StatEntry,
     stat,
 )
-from torchref.utils.utils import ModuleReference
-
 if TYPE_CHECKING:
-    from torchref.refinement.base_refinement import Refinement
+    from torchref.model.model import Model
+    from torchref.model.model_ft import ModelFT
     from torchref.refinement.loss_state import LossState
+    from torchref.io.reflection_data import ReflectionData
+    from torchref.scaling.scaler_base import Scaler
 
 
 # =============================================================================
@@ -49,43 +43,34 @@ if TYPE_CHECKING:
 
 class Target(nn.Module):
     """
-    Base class for all target functions.
-
-    Targets are instantiated with a reference to the refinement object,
-    then called to compute the loss value.
+    Abstract base class for all target functions.
 
     All tunable parameters should be registered as buffers using register_buffer()
     so they can be accessed/modified via state_dict notation.
 
-    Supports two initialization patterns:
-
-    1. Empty initialization (for state_dict loading)::
+    Supports empty initialization for state_dict loading::
 
         target = Target()  # Creates empty shell
         target.load_state_dict(torch.load('target.pt'))
 
-    2. Full initialization with refinement::
-
-        target = Target(refinement)
-
     LossState Integration:
         Targets can work with LossState for the new pipeline::
 
-            state = target.apply_to_state(state)  # Adds loss to state
+            state = target.add_to_state(state)  # Adds loss to state
 
     Parameters
     ----------
-    refinement : Refinement, optional
-        Reference to the Refinement object.
     verbose : int, optional
         Verbosity level. Default is 0.
+    target_value : float, optional
+        Target value for this loss. Default is 0.0.
+    sigma : float, optional
+        Sigma parameter for weighting. Default is 0.5.
 
     Attributes
     ----------
     name : str
         Unique name for this target (used as loss key in LossState).
-    _refinement : ModuleReference
-        Reference to the refinement object.
     verbose : int
         Verbosity level.
     _target_value : torch.Tensor (buffer)
@@ -100,7 +85,6 @@ class Target(nn.Module):
 
     def __init__(
         self,
-        refinement: "Refinement" = None,
         verbose: int = 0,
         target_value: float = 0.0,
         sigma: float = 0.5,
@@ -108,13 +92,8 @@ class Target(nn.Module):
         """
         Initialize target.
 
-        If refinement is provided, fully initializes the target.
-        If not provided (empty init), creates a shell ready for load_state_dict().
-
         Parameters
         ----------
-        refinement : Refinement, optional
-            Reference to the Refinement object (optional for empty init).
         verbose : int, optional
             Verbosity level. Default is 0.
         target_value : float, optional
@@ -123,9 +102,6 @@ class Target(nn.Module):
             Sigma parameter for weighting. Default is 0.5.
         """
         super().__init__()
-        self._refinement = (
-            ModuleReference(refinement) if refinement is not None else None
-        )
         self.verbose = verbose
         # Register target_value and sigma as buffers for state_dict access
         self.register_buffer("_target_value", torch.tensor(target_value))
@@ -150,31 +126,6 @@ class Target(nn.Module):
     def sigma(self, value: float):
         """Set sigma."""
         self._sigma.fill_(value)
-
-    @property
-    def refinement(self) -> "Refinement":
-        """Access the refinement object."""
-        return self._refinement
-
-    @property
-    def model(self):
-        """Shortcut to refinement.model"""
-        return self._refinement.model
-
-    @property
-    def data(self):
-        """Shortcut to refinement.reflection_data"""
-        return self._refinement.reflection_data
-
-    @property
-    def restraints(self):
-        """Shortcut to refinement.restraints"""
-        return self._refinement.restraints
-
-    @property
-    def scaler(self):
-        """Shortcut to refinement.scaler"""
-        return self._refinement.scaler
 
     def get_deviation_weight(self, current_value: float = None) -> float:
         """
@@ -203,10 +154,6 @@ class Target(nn.Module):
         """Compute and return the loss. Override in subclasses."""
         raise NotImplementedError
 
-    def __call__(self) -> torch.Tensor:
-        """Compute the loss."""
-        return self.forward()
-
     def add_to_state(self, state: "LossState") -> "LossState":
         """
         Compute loss and add it to the LossState.
@@ -231,21 +178,309 @@ class Target(nn.Module):
 
 
 # =============================================================================
+# Model-Only Target Base Class
+# =============================================================================
+
+
+class ModelTarget(Target):
+    """
+    Base class for targets that only need a Model reference.
+
+    This class provides a simpler interface for geometry and ADP targets
+    that don't need access to reflection data or refinement machinery.
+    Targets inherit from this class when they only need the atomic model.
+
+    The model is registered as a proper submodule, allowing PyTorch to
+    handle device movement and state_dict operations automatically.
+
+    Parameters
+    ----------
+    model : Model, optional
+        Reference to the Model object.
+    verbose : int, optional
+        Verbosity level. Default is 0.
+    target_value : float, optional
+        Target value for this loss. Default is 0.0.
+    sigma : float, optional
+        Sigma parameter for weighting. Default is 0.5.
+
+    Attributes
+    ----------
+    name : str
+        Unique name for this target (used as loss key in LossState).
+    _model : Model
+        Reference to the model object (registered as submodule).
+    verbose : int
+        Verbosity level.
+    """
+
+    name: str = "model_target"
+
+    def __init__(
+        self,
+        model: "Model" = None,
+        verbose: int = 0,
+        target_value: float = 0.0,
+        sigma: float = 0.5,
+    ):
+        """
+        Initialize model target.
+
+        Parameters
+        ----------
+        model : Model, optional
+            Reference to the Model object (optional for empty init).
+        verbose : int, optional
+            Verbosity level. Default is 0.
+        target_value : float, optional
+            Target value for this loss. Default is 0.0.
+        sigma : float, optional
+            Sigma parameter for weighting. Default is 0.5.
+        """
+        super().__init__(verbose=verbose, target_value=target_value, sigma=sigma)
+        # Register model as a proper submodule (not in state_dict but handles device)
+        # Use add_module to allow None values
+        self.add_module("_model", model)
+
+    @property
+    def model(self) -> "Model":
+        """Access the model object."""
+        return self._model
+
+    @property
+    def restraints(self):
+        """Access model's restraints (built lazily on first access)."""
+        if self._model is None:
+            return None
+        return self._model.restraints
+
+
+# =============================================================================
+# Data Target Base Class (for X-ray targets)
+# =============================================================================
+
+
+class DataTarget(Target):
+    """
+    Base class for targets that need ReflectionData and optionally Model/Scaler.
+
+    This class provides a flexible interface for X-ray targets that can work
+    in two modes:
+
+    1. With Model: Computes F_calc from the model on each forward pass
+    2. Without Model: Uses pre-computed F_calc passed directly
+
+    This decoupling allows targets to be used for:
+    - Standard refinement (with model)
+    - Analysis/scoring of pre-computed structure factors (without model)
+    - Testing and validation workflows
+
+    All objects (model, data, scaler) are registered as proper submodules,
+    allowing PyTorch to handle device movement and state_dict operations.
+
+    Parameters
+    ----------
+    data : ReflectionData, optional
+        Reference to the ReflectionData object. Required for forward().
+    model : Model or ModelFT, optional
+        Reference to a Model object for F_calc computation.
+        If None, F_calc must be provided to forward().
+    scaler : Scaler, optional
+        Reference to the Scaler object for scaling F_calc.
+    verbose : int, optional
+        Verbosity level. Default is 0.
+    target_value : float, optional
+        Target value for this loss. Default is 0.0.
+    sigma : float, optional
+        Sigma parameter for weighting. Default is 0.5.
+
+    Attributes
+    ----------
+    name : str
+        Unique name for this target (used as loss key in LossState).
+    _model : Model
+        Reference to the model object (registered as submodule).
+    _data : ReflectionData
+        Reference to the reflection data object (registered as submodule).
+    _scaler : Scaler
+        Reference to the scaler object (registered as submodule).
+    verbose : int
+        Verbosity level.
+    """
+
+    name: str = "data_target"
+
+    def __init__(
+        self,
+        data: "ReflectionData" = None,
+        model: "Model" = None,
+        scaler: "Scaler" = None,
+        verbose: int = 0,
+        target_value: float = 0.0,
+        sigma: float = 0.5,
+    ):
+        """
+        Initialize data target.
+
+        Parameters
+        ----------
+        data : ReflectionData, optional
+            Reference to the ReflectionData object. Required for forward().
+        model : Model or ModelFT, optional
+            Reference to Model object for F_calc computation.
+            If None, F_calc must be provided when calling forward().
+        scaler : Scaler, optional
+            Reference to the Scaler object.
+        verbose : int, optional
+            Verbosity level. Default is 0.
+        target_value : float, optional
+            Target value for this loss. Default is 0.0.
+        sigma : float, optional
+            Sigma parameter for weighting. Default is 0.5.
+        """
+        super().__init__(verbose=verbose, target_value=target_value, sigma=sigma)
+        # Register as proper submodules (allows None values)
+        self.add_module("_model", model)
+        self._data = data
+        self.add_module("_scaler", scaler)
+
+    @property
+    def model(self) -> "Model":
+        """Access the model object."""
+        return self._model
+
+    @property
+    def data(self) -> "ReflectionData":
+        """Access the reflection data object."""
+        return self._data
+
+    @property
+    def scaler(self) -> "Scaler":
+        """Access the scaler object."""
+        return self._scaler
+
+    @property
+    def has_model(self) -> bool:
+        """Check if a model is available for F_calc computation."""
+        return self._model is not None
+
+    def get_fcalc(self, hkl=None, recalc=False):
+        """
+        Compute structure factors from model.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor, optional
+            Miller indices. If None, uses data's hkl.
+        recalc : bool, optional
+            Force recalculation. Default is False.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex structure factors.
+
+        Raises
+        ------
+        RuntimeError
+            If no model is set.
+        """
+        if self._model is None:
+            raise RuntimeError(
+                "Cannot compute F_calc: no model set. "
+                "Either provide a model or pass fcalc directly."
+            )
+        if hkl is None:
+            hkl, _, _, _ = self._data()
+        return self._model(hkl, recalc=recalc)
+
+    def get_fcalc_scaled(self, hkl=None, recalc=False, fcalc=None):
+        """
+        Compute or scale structure factors.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor, optional
+            Miller indices. If None, uses data's hkl.
+        recalc : bool, optional
+            Force recalculation. Default is False.
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors. If provided, skips model computation.
+
+        Returns
+        -------
+        torch.Tensor
+            Scaled complex structure factors.
+        """
+        if fcalc is None:
+            fcalc = self.get_fcalc(hkl, recalc=recalc)
+        if self._scaler is not None:
+            return self._scaler(fcalc)
+        return fcalc
+
+    def get_F_calc_scaled(self, hkl=None, recalc=False, fcalc=None):
+        """
+        Compute scaled structure factor amplitudes.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor, optional
+            Miller indices. If None, uses data's hkl.
+        recalc : bool, optional
+            Force recalculation. Default is False.
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors. If provided, skips model computation.
+
+        Returns
+        -------
+        torch.Tensor
+            Scaled structure factor amplitudes |F_calc|.
+        """
+        return torch.abs(self.get_fcalc_scaled(hkl, recalc=recalc, fcalc=fcalc))
+
+    def get_rfactor(self):
+        """
+        Compute R-factors using scaler.
+
+        Returns
+        -------
+        tuple
+            (R_work, R_free) values.
+
+        Raises
+        ------
+        RuntimeError
+            If no scaler is set.
+        """
+        if self._scaler is None:
+            raise RuntimeError("Cannot compute R-factor: no scaler set.")
+        return self._scaler.rfactor()
+
+
+# =============================================================================
 # X-ray Target Functions
 # =============================================================================
 
 
-class XrayTarget(Target):
+class XrayTarget(DataTarget):
     """
     Base class for X-ray targets.
 
     Provides common functionality for accessing F_obs, F_calc, etc.
-    Supports empty initialization for state_dict loading.
+    Supports two modes of operation:
+
+    1. With Model: Computes F_calc from model on each forward pass
+    2. Without Model: Uses pre-computed F_calc passed to forward()/get_data()
 
     Parameters
     ----------
-    refinement : Refinement, optional
-        Reference to the Refinement object.
+    data : ReflectionData, optional
+        Reference to the ReflectionData object. Required for forward().
+    model : Model or ModelFT, optional
+        Reference to Model object for F_calc computation.
+        If None, fcalc must be provided to forward().
+    scaler : Scaler, optional
+        Reference to the Scaler object.
     use_work_set : bool, optional
         If True, compute loss on work set; if False, on test set. Default is True.
     verbose : int, optional
@@ -261,7 +496,9 @@ class XrayTarget(Target):
 
     def __init__(
         self,
-        refinement: "Refinement" = None,
+        data: "ReflectionData" = None,
+        model: "Model" = None,
+        scaler: "Scaler" = None,
         use_work_set: bool = True,
         verbose: int = 0,
     ):
@@ -270,32 +507,55 @@ class XrayTarget(Target):
 
         Parameters
         ----------
-        refinement : Refinement, optional
-            Reference to the Refinement object (optional for empty init).
+        data : ReflectionData, optional
+            Reference to the ReflectionData object. Required for forward().
+        model : Model or ModelFT, optional
+            Reference to Model object for F_calc computation.
+            If None, fcalc must be provided to forward().
+        scaler : Scaler, optional
+            Reference to the Scaler object.
         use_work_set : bool, optional
             If True, compute loss on work set; if False, on test set. Default is True.
         verbose : int, optional
             Verbosity level. Default is 0.
         """
-        super().__init__(refinement, verbose)
+        super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
         self.use_work_set = use_work_set
         # Set name based on work/test set
         self.name = "xray_work" if use_work_set else "xray_test"
 
-    def get_data(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_data(
+        self, fcalc: torch.Tensor = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Get F_obs, F_calc, sigma, and centric flags for the appropriate set.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors. If provided, uses these instead
+            of computing from model. Useful when model is not set.
 
         Returns
         -------
         tuple
             Tuple of (F_obs, F_calc, sigma_F_obs, centric_flags).
+
+        Raises
+        ------
+        RuntimeError
+            If neither model nor fcalc is available.
         """
-        hkl, F_obs, sigma_F_obs, rfree_mask = self.refinement.reflection_data()
-        F_calc = self.refinement.get_F_calc_scaled(hkl, recalc=True)
+        hkl, F_obs, sigma_F_obs, rfree_mask = self._data()
+
+        # Get F_calc: either from argument or compute from model
+        if fcalc is not None:
+            F_calc = self.get_F_calc_scaled(fcalc=fcalc)
+        else:
+            F_calc = self.get_F_calc_scaled(hkl, recalc=True)
 
         # Get centric flags (full size, unfiltered)
-        centric_all = self.data.centric
+        centric_all = self._data.centric
 
         # Handle MaskedTensor inputs: extract valid data first
         if hasattr(F_obs, "get_mask"):
@@ -334,24 +594,27 @@ class XrayTarget(Target):
 
         return F_obs_sel, F_calc_sel, sigma_sel, centric_sel
 
-    def stats(self) -> Dict[str, StatEntry]:
+    def stats(self, fcalc: torch.Tensor = None) -> Dict[str, StatEntry]:
         """
         Get statistics for this X-ray target.
 
-        Returns dict with StatEntry values. Filter with filter_stats() at display time.
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors.
 
         Returns
         -------
         dict
             Statistics dict with StatEntry values containing verbosity levels.
         """
-        F_obs, F_calc, sigma, _ = self.get_data()
+        F_obs, F_calc, sigma, _ = self.get_data(fcalc=fcalc)
         F_calc_amp = torch.abs(F_calc)
         diff = F_obs - F_calc_amp
 
-        loss = self.forward()
+        loss = self.forward(fcalc=fcalc)
 
-        rwork, rfree = self.refinement.get_rfactor()
+        rwork, rfree = self.get_rfactor()
 
         return {
             "loss": stat(loss.item(), VERBOSITY_STANDARD),
@@ -370,8 +633,22 @@ class GaussianXrayTarget(XrayTarget):
 
     target_value: float = 1.0  # Ideal normalized NLL
 
-    def forward(self) -> torch.Tensor:
-        F_obs, F_calc, sigma, _ = self.get_data()
+    def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
+        """
+        Compute Gaussian NLL loss.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors. If provided, uses these instead
+            of computing from model.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean NLL loss value.
+        """
+        F_obs, F_calc, sigma, _ = self.get_data(fcalc=fcalc)
 
         F_calc_amp = torch.abs(F_calc)
         diff = F_obs - F_calc_amp
@@ -396,16 +673,32 @@ class LeastSquaresXrayTarget(XrayTarget):
 
     def __init__(
         self,
-        refinement: "Refinement",
+        data: "ReflectionData" = None,
+        model: "Model" = None,
+        scaler: "Scaler" = None,
         weighting: str = "sigma",
         use_work_set: bool = True,
         verbose: int = 0,
     ):
-        super().__init__(refinement, use_work_set, verbose)
+        super().__init__(data=data, model=model, scaler=scaler, use_work_set=use_work_set, verbose=verbose)
         self.weighting = weighting
 
-    def forward(self) -> torch.Tensor:
-        F_obs, F_calc, sigma, _ = self.get_data()
+    def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
+        """
+        Compute least squares loss.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors. If provided, uses these instead
+            of computing from model.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean weighted least squares loss.
+        """
+        F_obs, F_calc, sigma, _ = self.get_data(fcalc=fcalc)
 
         F_calc_amp = torch.abs(F_calc)
         diff = F_obs - F_calc_amp
@@ -428,8 +721,22 @@ class MaximumLikelihoodXrayTarget(XrayTarget):
     Maximum Likelihood target function with proper centric/acentric handling.
     """
 
-    def forward(self) -> torch.Tensor:
-        F_obs, F_calc, sigma, centric_flags = self.get_data()
+    def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
+        """
+        Compute maximum likelihood loss.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors. If provided, uses these instead
+            of computing from model.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean ML loss value.
+        """
+        F_obs, F_calc, sigma, centric_flags = self.get_data(fcalc=fcalc)
 
         # Default parameters if not available
         alpha = torch.ones_like(F_obs)
@@ -479,17 +786,33 @@ class MaximumLikelihoodXrayTarget(XrayTarget):
 # =============================================================================
 
 
-class GeometryTarget(Target):
-    """Base class for geometry restraint targets."""
+class GeometryTarget(ModelTarget):
+    """
+    Base class for geometry restraint targets.
+
+    Geometry targets access the model's restraints property (built lazily)
+    to compute losses for bonds, angles, torsions, planes, etc.
+
+    Parameters
+    ----------
+    model : Model, optional
+        Reference to the Model object.
+    verbose : int, optional
+        Verbosity level. Default is 0.
+    target_value : float, optional
+        Target value for this loss. Default is -1.0.
+    sigma : float, optional
+        Sigma parameter for weighting. Default is 0.5.
+    """
 
     def __init__(
         self,
-        refinement: "Refinement" = None,
+        model: "Model" = None,
         verbose: int = 0,
         target_value: float = -1.0,
         sigma: float = 0.5,
     ):
-        super().__init__(refinement, verbose, target_value=target_value, sigma=sigma)
+        super().__init__(model, verbose, target_value=target_value, sigma=sigma)
 
     def stats(self) -> Dict[str, StatEntry]:
         """
@@ -514,8 +837,8 @@ class BondTarget(GeometryTarget):
 
     name: str = "geometry/bond"
 
-    def __init__(self, refinement: "Refinement" = None, verbose: int = 0):
-        super().__init__(refinement, verbose, target_value=-2.0, sigma=1.0)
+    def __init__(self, model: "Model" = None, verbose: int = 0):
+        super().__init__(model, verbose, target_value=-2.0, sigma=1.0)
 
     def forward(self) -> torch.Tensor:
         deviations, sigmas = self.restraints.bond_deviations()
@@ -559,8 +882,8 @@ class AngleTarget(GeometryTarget):
 
     name: str = "geometry/angle"
 
-    def __init__(self, refinement: "Refinement" = None, verbose: int = 0):
-        super().__init__(refinement, verbose, target_value=-2.0, sigma=0.5)
+    def __init__(self, model: "Model" = None, verbose: int = 0):
+        super().__init__(model, verbose, target_value=-2.0, sigma=0.5)
 
     def forward(self) -> torch.Tensor:
         deviations, sigmas = self.restraints.angle_deviations()
@@ -608,8 +931,8 @@ class TorsionTarget(GeometryTarget):
 
     name: str = "geometry/torsion"
 
-    def __init__(self, refinement: "Refinement" = None, verbose: int = 0):
-        super().__init__(refinement, verbose, target_value=1.0, sigma=0.3)
+    def __init__(self, model: "Model" = None, verbose: int = 0):
+        super().__init__(model, verbose, target_value=1.0, sigma=0.3)
 
     def forward(self) -> torch.Tensor:
         deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas()
@@ -688,8 +1011,8 @@ class PlanarityTarget(GeometryTarget):
 
     name: str = "geometry/planarity"
 
-    def __init__(self, refinement: "Refinement" = None, verbose: int = 0):
-        super().__init__(refinement, verbose, target_value=-2.0, sigma=0.2)
+    def __init__(self, model: "Model" = None, verbose: int = 0):
+        super().__init__(model, verbose, target_value=-2.0, sigma=0.2)
 
     def forward(self) -> torch.Tensor:
         xyz = self.model.xyz()
@@ -813,8 +1136,8 @@ class ChiralTarget(GeometryTarget):
 
     name: str = "geometry/chiral"
 
-    def __init__(self, refinement: "Refinement" = None, verbose: int = 0):
-        super().__init__(refinement, verbose, target_value=-2.0, sigma=0.2)
+    def __init__(self, model: "Model" = None, verbose: int = 0):
+        super().__init__(model, verbose, target_value=-2.0, sigma=0.2)
 
     def forward(self) -> torch.Tensor:
         xyz = self.model.xyz()
@@ -1021,8 +1344,8 @@ class NonBondedTarget(GeometryTarget):
 
     Parameters
     ----------
-    refinement : Refinement, optional
-        Reference to Refinement object.
+    model : Model, optional
+        Reference to Model object.
     mode : str, optional
         Repulsion function type ('prolsq', 'gaussian', 'soft'). Default is 'prolsq'.
     c_rep : float, optional
@@ -1037,7 +1360,7 @@ class NonBondedTarget(GeometryTarget):
 
     def __init__(
         self,
-        refinement: "Refinement" = None,
+        model: "Model" = None,
         mode: str = "prolsq",
         c_rep: float = 16.0,
         r_exp: float = 4.0,
@@ -1048,8 +1371,8 @@ class NonBondedTarget(GeometryTarget):
 
         Parameters
         ----------
-        refinement : Refinement, optional
-            Reference to Refinement object.
+        model : Model, optional
+            Reference to Model object.
         mode : str, optional
             Repulsion function type ('prolsq', 'gaussian', 'soft'). Default is 'prolsq'.
         c_rep : float, optional
@@ -1059,7 +1382,7 @@ class NonBondedTarget(GeometryTarget):
         verbose : int, optional
             Verbosity level. Default is 0.
         """
-        super().__init__(refinement, verbose, target_value=0.5, sigma=1.2)
+        super().__init__(model, verbose, target_value=0.5, sigma=1.2)
         self.mode = mode
         # Register c_rep and r_exp as buffers for state_dict access
         self.register_buffer("_c_rep", torch.tensor(c_rep))
@@ -1236,17 +1559,33 @@ class NonBondedTarget(GeometryTarget):
         }
 
 
-class ADPTarget(Target):
-    """Base class for ADP restraint targets."""
+class ADPTarget(ModelTarget):
+    """
+    Base class for ADP restraint targets.
+
+    ADP targets access the model's ADP values and restraints for similarity,
+    rigid bond, and other ADP-related restraints.
+
+    Parameters
+    ----------
+    model : Model, optional
+        Reference to the Model object.
+    verbose : int, optional
+        Verbosity level. Default is 0.
+    target_value : float, optional
+        Target value for this loss. Default is -1.0.
+    sigma : float, optional
+        Sigma parameter for weighting. Default is 1.0.
+    """
 
     def __init__(
         self,
-        refinement: "Refinement" = None,
+        model: "Model" = None,
         verbose: int = 0,
         target_value: float = -1.0,
         sigma: float = 1.0,
     ):
-        super().__init__(refinement, verbose, target_value=target_value, sigma=sigma)
+        super().__init__(model, verbose, target_value=target_value, sigma=sigma)
 
 
 class ADPSimilarityTarget(ADPTarget):
@@ -1263,9 +1602,9 @@ class ADPSimilarityTarget(ADPTarget):
     name: str = "adp/simu"
 
     def __init__(
-        self, refinement: "Refinement", simu_sigma: float = 2.0, verbose: int = 0
+        self, model: "Model" = None, simu_sigma: float = 2.0, verbose: int = 0
     ):
-        super().__init__(refinement, verbose, target_value=4.0, sigma=1.2)
+        super().__init__(model, verbose, target_value=4.0, sigma=1.2)
         # Register simu-specific sigma as buffer (separate from base sigma)
         self.register_buffer("_simu_sigma", torch.tensor(simu_sigma))
 
@@ -1354,8 +1693,8 @@ class RigidBondTarget(ADPTarget):
 
     Parameters
     ----------
-    refinement : Refinement
-        Reference to Refinement object.
+    model : Model
+        Reference to Model object.
     sigma : float, optional
         Target standard deviation for Δz. Default is 0.004 Å².
         Hirshfeld found typical values of 0.001 Å² for good structures.
@@ -1370,12 +1709,12 @@ class RigidBondTarget(ADPTarget):
 
     def __init__(
         self,
-        refinement: "Refinement",
+        model: "Model" = None,
         sigma: float = 0.004,
         use_aniso: bool = True,
         verbose: int = 0,
     ):
-        super().__init__(refinement, verbose)
+        super().__init__(model, verbose)
         self.sigma = sigma
         self.use_aniso = use_aniso
 
@@ -1405,7 +1744,7 @@ class RigidBondTarget(ADPTarget):
 
         We use ΔB directly and scale sigma accordingly.
         """
-        b_factors = self.model.b()
+        adp = self.model.adp()
         xyz = self.model.xyz()
         device = xyz.device
 
@@ -1419,13 +1758,13 @@ class RigidBondTarget(ADPTarget):
                 continue
             indices = restraint_group.get("indices")
             if indices is not None and len(indices) > 0:
-                b1 = b_factors[indices[:, 0]]
-                b2 = b_factors[indices[:, 1]]
+                adp1 = adp[indices[:, 0]]
+                adp2 = adp[indices[:, 1]]
 
                 # For isotropic ADPs: U_iso = B / (8π²)
                 # MSDA along bond = U_iso (same in all directions)
                 # Δz = (B1 - B2) / (8π²)
-                delta_z = (b1 - b2) / (8.0 * np.pi**2)
+                delta_z = (adp1 - adp2) / (8.0 * np.pi**2)
                 delta_z_list.append(delta_z)
 
         if not delta_z_list:
@@ -1526,7 +1865,7 @@ class RigidBondTarget(ADPTarget):
         dict
             Dictionary with mean, std, max, min of |Δz| values and Z-scores.
         """
-        b_factors = self.model.b()
+        adp = self.model.adp()
         xyz = self.model.xyz()
         device = xyz.device
 
@@ -1549,9 +1888,9 @@ class RigidBondTarget(ADPTarget):
                 continue
             indices = restraint_group.get("indices")
             if indices is not None and len(indices) > 0:
-                b1 = b_factors[indices[:, 0]]
-                b2 = b_factors[indices[:, 1]]
-                delta_z = (b1 - b2) / (8.0 * np.pi**2)
+                adp1 = adp[indices[:, 0]]
+                adp2 = adp[indices[:, 1]]
+                delta_z = (adp1 - adp2) / (8.0 * np.pi**2)
                 delta_z_list.append(delta_z)
 
         if not delta_z_list:
@@ -1617,27 +1956,27 @@ class ADPEntropyTarget(ADPTarget):
 
     name: str = "adp/KL"
 
-    def __init__(self, refinement: "Refinement" = None, verbose: int = 0):
-        super().__init__(refinement, verbose, target_value=0.5, sigma=0.5)
+    def __init__(self, model: "Model" = None, verbose: int = 0):
+        super().__init__(model, verbose, target_value=0.5, sigma=0.5)
 
     def forward(self) -> torch.Tensor:
         return self.model.adp_kl_divergence_loss()
 
     def stats(self) -> Dict[str, any]:
         """Get KL divergence statistics."""
-        b = self.model.b().detach()
-        log_b = torch.log(b.clamp(min=1e-3))
+        adp = self.model.adp().detach()
+        log_adp = torch.log(adp.clamp(min=1e-3))
         loss = self.forward()
 
         return {
             "loss": stat(loss.item(), VERBOSITY_STANDARD),
-            "n_atoms": stat(len(b), VERBOSITY_DEBUG),
-            "mean_b": stat(b.mean().item(), VERBOSITY_DETAILED),
-            "std_b": stat(b.std().item(), VERBOSITY_DETAILED),
-            "min_b": stat(b.min().item(), VERBOSITY_DETAILED),
-            "max_b": stat(b.max().item(), VERBOSITY_DETAILED),
-            "mean_log_b": stat(log_b.mean().item(), VERBOSITY_DEBUG),
-            "std_log_b": stat(log_b.std().item(), VERBOSITY_DEBUG),
+            "n_atoms": stat(len(adp), VERBOSITY_DEBUG),
+            "mean_adp": stat(adp.mean().item(), VERBOSITY_DETAILED),
+            "std_adp": stat(adp.std().item(), VERBOSITY_DETAILED),
+            "min_adp": stat(adp.min().item(), VERBOSITY_DETAILED),
+            "max_adp": stat(adp.max().item(), VERBOSITY_DETAILED),
+            "mean_log_adp": stat(log_adp.mean().item(), VERBOSITY_DEBUG),
+            "std_log_adp": stat(log_adp.std().item(), VERBOSITY_DEBUG),
         }
 
 
@@ -1645,10 +1984,10 @@ class ADPLocalityTarget(ADPTarget):
     """
     Proximity-based ADP restraint using K nearest neighbors.
 
-    B-factors of nearby atoms should be similar because:
+    ADPs of nearby atoms should be similar because:
 
-    1. Core residues (buried) tend to have low B
-    2. Surface/loop residues tend to have high B
+    1. Core residues (buried) tend to have low ADP
+    2. Surface/loop residues tend to have high ADP
     3. Disorder propagates through space
 
     This restraint finds the K nearest neighbors for each atom and computes
@@ -1675,8 +2014,8 @@ class ADPLocalityTarget(ADPTarget):
 
     Parameters
     ----------
-    refinement : Refinement
-        Reference to Refinement object.
+    model : Model
+        Reference to Model object.
     k_neighbors : int, optional
         Number of nearest neighbors to consider. Default is 50.
     correlation_length : float, optional
@@ -1693,14 +2032,14 @@ class ADPLocalityTarget(ADPTarget):
 
     def __init__(
         self,
-        refinement: "Refinement",
+        model: "Model" = None,
         k_neighbors: int = 50,
         correlation_length: float = 5.0,  # xi in Angstrom
         scale: float = 5.0,  # Scale factor for loss magnitude (reduced from 10.0)
         exclude_bonded: bool = True,
         verbose: int = 0,
     ):
-        super().__init__(refinement, verbose, target_value=0.3, sigma=0.2)
+        super().__init__(model, verbose, target_value=0.3, sigma=0.2)
         # Register tunable parameters as buffers
         self.register_buffer(
             "_k_neighbors", torch.tensor(k_neighbors, dtype=torch.int64)
@@ -1803,23 +2142,23 @@ class ADPLocalityTarget(ADPTarget):
         if recompute_neighbors or self._neighbor_indices is None or cache_stale:
             self._build_neighbor_list()
 
-        b = self.model.b()
-        device = b.device
-        n_atoms = len(b)
+        adp = self.model.adp()
+        device = adp.device
+        n_atoms = len(adp)
 
         if n_atoms == 0 or self._neighbor_indices is None:
             return torch.tensor(0.0, device=device)
 
-        log_b = torch.log(b.clamp(min=1e-3))
+        log_adp = torch.log(adp.clamp(min=1e-3))
 
         indices = self._neighbor_indices  # (N, k)
         distances = self._neighbor_distances  # (N, k)
 
-        # Gather neighbor log(B) values
-        neighbor_log_b = log_b[indices]  # (N, k)
+        # Gather neighbor log(ADP) values
+        neighbor_log_adp = log_adp[indices]  # (N, k)
 
-        # Compute pairwise differences: diff_ij = log(B_i) - log(B_j)
-        diff = log_b.unsqueeze(1) - neighbor_log_b  # (N, k)
+        # Compute pairwise differences: diff_ij = log(ADP_i) - log(ADP_j)
+        diff = log_adp.unsqueeze(1) - neighbor_log_adp  # (N, k)
 
         weights = 1 / distances + 1e-6  # Avoid div by zero
 
@@ -1840,14 +2179,14 @@ class ADPLocalityTarget(ADPTarget):
         if self._neighbor_indices is None:
             return {}
 
-        b = self.model.b().detach()
-        log_b = torch.log(b.clamp(min=1e-3))
+        adp = self.model.adp().detach()
+        log_adp = torch.log(adp.clamp(min=1e-3))
 
         indices = self._neighbor_indices
         distances = self._neighbor_distances
 
-        neighbor_log_b = log_b[indices]
-        diff = log_b.unsqueeze(1) - neighbor_log_b
+        neighbor_log_adp = log_adp[indices]
+        diff = log_adp.unsqueeze(1) - neighbor_log_adp
 
         # Exponential weights
         weights = torch.exp(-distances / self.correlation_length)
@@ -1859,7 +2198,7 @@ class ADPLocalityTarget(ADPTarget):
 
         return {
             "loss": stat(loss.item(), VERBOSITY_STANDARD),
-            "n_atoms": stat(len(b), VERBOSITY_DEBUG),
+            "n_atoms": stat(len(adp), VERBOSITY_DEBUG),
             "weighted_rms_log": stat(weighted_rms, VERBOSITY_DETAILED),
             "rms_deviation_log": stat(
                 torch.sqrt((diff**2).mean()).item(), VERBOSITY_DETAILED
@@ -1875,7 +2214,9 @@ class ADPLocalityTarget(ADPTarget):
 
 
 def create_xray_target(
-    refinement: "Refinement",
+    data: "ReflectionData" = None,
+    model: "Model" = None,
+    scaler: "Scaler" = None,
     mode: str = "gaussian",
     use_work_set: bool = True,
     verbose: int = 0,
@@ -1885,8 +2226,13 @@ def create_xray_target(
 
     Parameters
     ----------
-    refinement : Refinement
-        Reference to Refinement object.
+    data : ReflectionData
+        Reference to ReflectionData object. Required for forward().
+    model : Model or ModelFT, optional
+        Reference to Model object for F_calc computation.
+        If None, fcalc must be provided when calling forward().
+    scaler : Scaler, optional
+        Reference to Scaler object.
     mode : str, optional
         Target mode: 'gaussian', 'ls', or 'ml'. Default is 'gaussian'.
     use_work_set : bool, optional
@@ -1900,13 +2246,17 @@ def create_xray_target(
         Appropriate XrayTarget instance.
     """
     if mode == "gaussian":
-        return GaussianXrayTarget(refinement, use_work_set, verbose)
+        return GaussianXrayTarget(
+            data=data, model=model, scaler=scaler, use_work_set=use_work_set, verbose=verbose
+        )
     elif mode == "ls":
         return LeastSquaresXrayTarget(
-            refinement, use_work_set=use_work_set, verbose=verbose
+            data=data, model=model, scaler=scaler, use_work_set=use_work_set, verbose=verbose
         )
     elif mode == "ml":
-        return MaximumLikelihoodXrayTarget(refinement, use_work_set, verbose)
+        return MaximumLikelihoodXrayTarget(
+            data=data, model=model, scaler=scaler, use_work_set=use_work_set, verbose=verbose
+        )
     else:
         raise ValueError(f"Unknown X-ray target mode: {mode}")
 
@@ -1986,14 +2336,14 @@ def von_mises_nll(
     return -log_prob
 
 
-def adp_similarity_nll(b_diffs: torch.Tensor, sigma: float = 2.0) -> torch.Tensor:
+def adp_similarity_nll(adp_diffs: torch.Tensor, sigma: float = 2.0) -> torch.Tensor:
     """
     Compute ADP similarity NLL (SIMU restraint).
 
     Parameters
     ----------
-    b_diffs : torch.Tensor
-        B-factor differences between bonded atoms.
+    adp_diffs : torch.Tensor
+        ADP differences between bonded atoms.
     sigma : float, optional
         Target standard deviation. Default is 2.0 Å².
 
@@ -2003,7 +2353,7 @@ def adp_similarity_nll(b_diffs: torch.Tensor, sigma: float = 2.0) -> torch.Tenso
         Tensor of NLL values (same shape as input).
     """
     log_2pi = torch.log(
-        torch.tensor(2.0 * np.pi, device=b_diffs.device, dtype=b_diffs.dtype)
+        torch.tensor(2.0 * np.pi, device=adp_diffs.device, dtype=adp_diffs.dtype)
     )
-    nll = 0.5 * (b_diffs / sigma) ** 2 + np.log(sigma) + 0.5 * log_2pi
+    nll = 0.5 * (adp_diffs / sigma) ** 2 + np.log(sigma) + 0.5 * log_2pi
     return nll
