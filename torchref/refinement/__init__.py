@@ -31,6 +31,7 @@ from .base_refinement import Refinement
 from .lbfgs_refinement import LBFGSRefinement
 from .loss_state import LossState
 from .optimizers import AdamWithAdaptiveNoise
+from .targets import Target, DataTarget, ModelTarget
 
 __all__ = [
     # Main refinement classes
@@ -43,4 +44,8 @@ __all__ = [
     # Submodules
     "targets",
     "weighting",
+    #Base target classes
+    "Target",
+    "DataTarget", 
+    "ModelTarget"
 ]

@@ -320,7 +320,7 @@ class Cell:
 
         Delegates to math_numpy.get_fractional_matrix for the computation.
         """
-        from torchref.math_functions import math_torch
+        from torchref.base import math_torch
 
         return math_torch.get_fractional_matrix(self._data)
 
@@ -351,7 +351,7 @@ class Cell:
 
         Delegates to math_torch.reciprocal_basis_matrix for the computation.
         """
-        from torchref.math_functions import math_torch
+        from torchref.base import math_torch
 
         return math_torch.reciprocal_basis_matrix(self._data)
 

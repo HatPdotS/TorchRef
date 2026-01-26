@@ -178,6 +178,7 @@ class Refinement(DebugMixin, nnModule):
             )
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
+            self.model._build_restraints()
 
             self.manual_weights = manual_weights if manual_weights is not None else {}
             self.component_weights = (

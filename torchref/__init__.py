@@ -47,7 +47,7 @@ utils
     General utilities and debugging tools.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 import os
@@ -76,6 +76,9 @@ configure_threading(N_CPUS)
 import torch
 
 torch.set_num_threads(N_CPUS)
+
+# Dtype configuration (must be imported after torch)
+from torchref.config import dtypes
 
 
 # Project root path for referencing package files
@@ -112,6 +115,8 @@ __all__ = [
     "ROOT_TORCHREF",
     "PATH_TORCHREF",
     "N_CPUS",
+    # Dtype configuration
+    "dtypes",
     # Data I/O
     "ReflectionData",
     "DatasetCollection",

@@ -275,13 +275,13 @@ class TestPositiveMixedTensor:
         assert PositiveMixedTensor is not None
 
     @pytest.mark.unit
-    def test_positive_mixed_tensor_stays_positive(self, random_b_factors):
-        """B-factors should always be positive."""
+    def test_positive_mixed_tensor_stays_positive(self, random_adp):
+        """ADPs should always be positive."""
         from torchref.model.parameter_wrappers import PositiveMixedTensor
-        
-        b_factors = random_b_factors(n_atoms=10)
-        
-        pos_tensor = PositiveMixedTensor(b_factors)
+
+        adp_values = random_adp(n_atoms=10)
+
+        pos_tensor = PositiveMixedTensor(adp_values)
         result = pos_tensor()
         
         assert torch.all(result > 0)

@@ -35,8 +35,8 @@ def random_fractional_coordinates():
 
 
 @pytest.fixture
-def random_b_factors():
-    """Generate random B-factors (reasonable range 10-60 Å²)."""
+def random_adp():
+    """Generate random ADPs (atomic displacement parameters, reasonable range 10-60 Å²)."""
     def _generate(n_atoms: int = 10, seed: int = 42):
         np.random.seed(seed)
         return torch.tensor(np.random.rand(n_atoms) * 50 + 10, dtype=torch.float64)
@@ -53,14 +53,14 @@ def random_occupancies():
 
 
 @pytest.fixture
-def mock_unit_cell():
-    """Mock unit cell parameters [a, b, c, alpha, beta, gamma]."""
+def mock_cell():
+    """Mock cell parameters [a, b, c, alpha, beta, gamma]."""
     return torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float64)
 
 
 @pytest.fixture
-def mock_unit_cell_triclinic():
-    """Mock triclinic unit cell parameters."""
+def mock_cell_triclinic():
+    """Mock triclinic cell parameters."""
     return torch.tensor([40.0, 50.0, 60.0, 70.0, 80.0, 85.0], dtype=torch.float64)
 
 
@@ -91,7 +91,7 @@ def mock_structure_factors():
 
 
 @pytest.fixture
-def mock_fobs():
+def mock_F_obs():
     """Generate mock observed structure factor amplitudes."""
     def _generate(n_reflections: int = 100, seed: int = 42):
         np.random.seed(seed)
@@ -101,8 +101,8 @@ def mock_fobs():
 
 
 @pytest.fixture
-def mock_sigfobs():
-    """Generate mock sigma values for Fobs."""
+def mock_F_sigma():
+    """Generate mock sigma values for F_obs."""
     def _generate(n_reflections: int = 100, seed: int = 42):
         np.random.seed(seed)
         return torch.tensor(np.abs(np.random.randn(n_reflections) * 5) + 1, dtype=torch.float64)

@@ -5,7 +5,7 @@ A class for modelling solvent contribution to structure factors.
 import torch
 import torch.nn as nn
 
-from torchref.math_functions.math_torch import (
+from torchref.base.math_torch import (
     add_to_phenix_mask,
     excise_angstrom_radius_around_coord,
     extract_structure_factor_from_grid,

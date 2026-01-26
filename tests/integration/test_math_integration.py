@@ -17,7 +17,7 @@ class TestScatteringVectors:
         """Test computing scattering vectors from HKL and cell."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
-        from torchref.math_functions.math_torch import get_scattering_vectors
+        from torchref.base.math_torch import get_scattering_vectors
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -35,7 +35,7 @@ class TestScatteringVectors:
     @pytest.mark.integration
     def test_scattering_vectors_batch(self):
         """Test scattering vectors with batch HKL indices."""
-        from torchref.math_functions.math_torch import get_scattering_vectors
+        from torchref.base.math_torch import get_scattering_vectors
         
         # Create test HKL indices and cubic cell
         hkl = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=torch.float32)
@@ -54,7 +54,7 @@ class TestRfactorCalculations:
     @pytest.mark.integration
     def test_get_rfactors(self):
         """Test R-factor computation with synthetic data."""
-        from torchref.math_functions.math_torch import get_rfactors
+        from torchref.base.math_torch import get_rfactors
         
         # Create synthetic data with known R-factor
         fobs = torch.tensor([100.0, 200.0, 150.0, 300.0], dtype=torch.float32)
@@ -71,7 +71,7 @@ class TestRfactorCalculations:
     @pytest.mark.integration
     def test_bin_wise_rfactors(self):
         """Test bin-wise R-factor computation."""
-        from torchref.math_functions.math_torch import bin_wise_rfactors
+        from torchref.base.math_torch import bin_wise_rfactors
         
         # Create synthetic data
         n_refl = 100
@@ -92,7 +92,7 @@ class TestNLLFunctions:
     @pytest.mark.integration
     def test_nll_xray(self):
         """Test Gaussian NLL for X-ray data."""
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
         
         fobs = torch.tensor([100.0, 200.0, 150.0], dtype=torch.float32)
         fcalc = torch.tensor([105.0, 195.0, 155.0], dtype=torch.float32)
@@ -106,7 +106,7 @@ class TestNLLFunctions:
     @pytest.mark.integration
     def test_nll_xray_lognormal(self):
         """Test lognormal NLL for X-ray data."""
-        from torchref.math_functions.math_torch import nll_xray_lognormal
+        from torchref.base.math_torch import nll_xray_lognormal
         
         fobs = torch.tensor([100.0, 200.0, 150.0], dtype=torch.float32)
         fcalc = torch.tensor([105.0, 195.0, 155.0], dtype=torch.float32)
@@ -123,7 +123,7 @@ class TestMatrixOperations:
     @pytest.mark.integration
     def test_U_to_matrix(self):
         """Test converting 6-component U tensor to 3x3 matrix."""
-        from torchref.math_functions.math_torch import U_to_matrix
+        from torchref.base.math_torch import U_to_matrix
         
         # 6 components: U11, U22, U33, U12, U13, U23
         u_params = torch.tensor([0.1, 0.1, 0.1, 0.0, 0.0, 0.0], dtype=torch.float32)
@@ -144,17 +144,17 @@ class TestAtomExpansion:
     def test_symmetry_matrices_for_expansion(self, sample_cif_file):
         """Test that symmetry provides matrices for expansion."""
         from torchref.model.model import Model
-        from torchref.symmetry.symmetry import Symmetry
-        
+        from torchref.symmetry import SpaceGroup
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
+
         xyz = model.xyz()
-        sym = Symmetry(model.spacegroup)
-        
-        # Symmetry should have matrices that can be applied
-        assert sym.matrices is not None
-        assert sym.matrices.shape[0] >= 1
+        sg = SpaceGroup(model.spacegroup)
+
+        # SpaceGroup should have matrices that can be applied
+        assert sg.matrices is not None
+        assert sg.matrices.shape[0] >= 1
 
 
 class TestResolutionCalculations:
@@ -202,7 +202,7 @@ class TestGradientFunctions:
     @pytest.mark.integration
     def test_scattering_vectors_computation(self):
         """Test that scattering vectors can be computed."""
-        from torchref.math_functions.math_torch import get_scattering_vectors
+        from torchref.base.math_torch import get_scattering_vectors
         
         # Create test HKL and cell
         hkl = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=torch.float32)

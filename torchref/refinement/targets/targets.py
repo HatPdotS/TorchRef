@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from torchref.model.model import Model
     from torchref.model.model_ft import ModelFT
     from torchref.refinement.loss_state import LossState
-    from torchref.io.reflection_data import ReflectionData
+    from torchref.io import ReflectionData
     from torchref.scaling.scaler_base import Scaler
 
 

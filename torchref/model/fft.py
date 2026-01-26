@@ -15,15 +15,17 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from torchref.math_functions.math_torch import (
+from torchref.base.math_torch import (
     extract_structure_factor_from_grid,
     find_relevant_voxels,
     get_real_grid,
     ifft,
     vectorized_add_to_map_aniso,
 )
-from torchref.math_functions import vectorized_add_to_map
-from torchref.symmetry import Cell, Symmetry
+from torchref.config import dtypes
+
+from torchref.base import vectorized_add_to_map
+from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.symmetry.spacegroup import SpaceGroupLike
 
@@ -48,7 +50,7 @@ class FFT(nn.Module):
     radius_angstrom : float, optional
         Radius in Angstroms for density calculation around each atom. Default is 4.0.
     dtype_float : torch.dtype, optional
-        Data type for floating point tensors. Default is torch.float32.
+        Data type for floating point tensors. Default is dtypes.float.
     device : torch.device, optional
         Computation device. Default is torch.device('cpu').
     verbose : int, optional
@@ -58,10 +60,10 @@ class FFT(nn.Module):
     ----------
     cell : Cell
         Unit cell object.
-    spacegroup : gemmi.SpaceGroup
-        Space group object (normalized via SpaceGroup()).
-    symmetry : Symmetry
-        Symmetry operations handler.
+    spacegroup : SpaceGroup
+        Space group object (SpaceGroup nn.Module with matrices and translations).
+    symmetry : SpaceGroup
+        Alias for spacegroup (backward compatibility).
     max_res : float
         Maximum resolution for grid spacing.
     radius_angstrom : float
@@ -99,7 +101,7 @@ class FFT(nn.Module):
         spacegroup: SpaceGroupLike = None,
         max_res: float = 1.5,
         radius_angstrom: float = 3.0,
-        dtype_float: torch.dtype = torch.float32,
+        dtype_float: torch.dtype = dtypes.float,
         device: torch.device = torch.device("cpu"),
         verbose: int = 0,
         use_late_symmetry: bool = True,
@@ -118,7 +120,7 @@ class FFT(nn.Module):
         radius_angstrom : float, optional
             Radius in Angstroms for density calculation. Default is 3.0.
         dtype_float : torch.dtype, optional
-            Data type for floating point tensors. Default is torch.float32.
+            Data type for floating point tensors. Default is dtypes.float.
         device : torch.device, optional
             Computation device. Default is torch.device('cpu').
         verbose : int, optional
@@ -139,13 +141,11 @@ class FFT(nn.Module):
         # Store cell and spacegroup
         self._cell = cell
         self._spacegroup = None
-        self._symmetry = None
 
         if spacegroup is not None or cell is not None:
-            # Import here to avoid circular imports
-            from torchref.symmetry.spacegroup import SpaceGroup
-            self._spacegroup = SpaceGroup(spacegroup)
-            self._symmetry = Symmetry(self._spacegroup, device=device)
+            self._spacegroup = SpaceGroup(
+                spacegroup, dtype=dtype_float, device=device
+            )
 
         # Buffers (registered during setup_grid)
         self.register_buffer("gridsize", None)
@@ -173,22 +173,24 @@ class FFT(nn.Module):
         self._cell = value
 
     @property
-    def spacegroup(self):
-        """Space group object (gemmi.SpaceGroup)."""
+    def spacegroup(self) -> Optional[SpaceGroup]:
+        """Space group object (SpaceGroup nn.Module)."""
         return self._spacegroup
 
     @spacegroup.setter
     def spacegroup(self, value: SpaceGroupLike):
         """Set space group."""
-        from torchref.symmetry.spacegroup import SpaceGroup
-        self._spacegroup = SpaceGroup(value) if value is not None else None
-        if self._spacegroup is not None:
-            self._symmetry = Symmetry(self._spacegroup, device=self.device)
+        if value is not None:
+            self._spacegroup = SpaceGroup(
+                value, dtype=self.dtype_float, device=self.device
+            )
+        else:
+            self._spacegroup = None
 
     @property
-    def symmetry(self) -> Optional[Symmetry]:
-        """Symmetry operations handler."""
-        return self._symmetry
+    def symmetry(self) -> Optional[SpaceGroup]:
+        """Symmetry operations handler (alias for spacegroup)."""
+        return self._spacegroup
     
     @property
     def fractional_matrix(self) -> Optional[torch.Tensor]:
@@ -329,12 +331,12 @@ class FFT(nn.Module):
         # Compute or use provided grid size
         if gridsize is not None:
             self.gridsize = torch.tensor(
-                gridsize, dtype=torch.int32, device=self.device
+                gridsize, dtype=dtypes.int, device=self.device
             )
         else:
             optimal_gridsize = self.compute_optimal_gridsize(self.max_res)
             self.gridsize = torch.tensor(
-                optimal_gridsize, dtype=torch.int32, device=self.device
+                optimal_gridsize, dtype=dtypes.int, device=self.device
             )
 
         # Compute real space grid
@@ -565,17 +567,17 @@ class FFT(nn.Module):
             apply_symmetry
             and self.use_late_symmetry
             and self._late_symmetry_compatible
-            and self._symmetry is not None
+            and self._spacegroup is not None
         ):
-            from torchref.math_functions.reciprocal_symmetry import (
+            from torchref.base.reciprocal import (
                 extract_structure_factors_with_symmetry,
             )
 
             return extract_structure_factors_with_symmetry(
                 reciprocal_space_grid,
                 hkl,
-                self._symmetry.matrices,
-                self._symmetry.translations,
+                self._spacegroup.matrices,
+                self._spacegroup.translations,
             )
         else:
             return extract_structure_factor_from_grid(reciprocal_space_grid, hkl)

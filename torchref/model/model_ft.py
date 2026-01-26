@@ -4,16 +4,17 @@ import gemmi
 import numpy as np
 import torch
 
-from torchref.math_functions.math_torch import (
+from torchref.base.math_torch import (
     fft,
     hash_tensors,
     ifft,
 )
 from torchref.model.fft import FFT
 from torchref.model.model import Model
-from torchref.symmetry import Symmetry
+from torchref.symmetry import SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.utils.utils import TensorDict
+from torchref.config import dtypes
 
 
 class ModelFT(Model):
@@ -102,6 +103,73 @@ class ModelFT(Model):
         self._explicit_gridsize = gridsize
         self._cache = TensorDict()
 
+        # Initialize FFT submodule (will be configured when cell and spacegroup are set)
+        self._fft = FFT(
+            device=self.device,
+            max_res=self.max_res,
+            radius_angstrom=self.radius_angstrom,
+        )
+
+    # =========================================================================
+    # Cell and SpaceGroup property overrides
+    # =========================================================================
+
+    @property
+    def cell(self):
+        """Unit cell object with parameters [a, b, c, alpha, beta, gamma]."""
+        return self._cell
+
+    @cell.setter
+    def cell(self, value):
+        """
+        Set the unit cell and initialize FFT if spacegroup is also set.
+
+        Parameters
+        ----------
+        value : Cell
+            The unit cell object to set.
+        """
+        self._cell = value
+        self._maybe_initialize_fft()
+
+    @property
+    def spacegroup(self):
+        """Space group object."""
+        return self._spacegroup
+
+    @spacegroup.setter
+    def spacegroup(self, value):
+        """
+        Set the space group and initialize FFT if cell is also set.
+
+        Parameters
+        ----------
+        value : SpaceGroup, gemmi.SpaceGroup, str, or int
+            The space group to set.
+        """
+        if value is not None:
+            self._spacegroup = SpaceGroup(
+                value, dtype=self.dtype_float, device=self.device
+            )
+        else:
+            self._spacegroup = None
+        self._maybe_initialize_fft()
+
+    def _maybe_initialize_fft(self):
+        """
+        Initialize FFT module if both cell and spacegroup are set.
+
+        This method is called by the cell and spacegroup setters to ensure
+        the FFT module is properly configured when both crystallographic
+        parameters are available.
+        """
+        if self._cell is not None and self._spacegroup is not None:
+            self._fft = FFT(
+                cell=self._cell,
+                spacegroup=self._spacegroup,
+                device=self.device,
+                max_res=self.max_res,
+            )
 
     def load_pdb(self, filename):
         """
@@ -118,16 +186,14 @@ class ModelFT(Model):
             Self, for method chaining.
         """
         super().load_pdb(filename)
-        # Set cell and spacegroup on FFT submodule
-        self._fft = FFT(self.cell, self.spacegroup, device=self.device, dtype_float=self.dtype_float)
+        # FFT is now initialized via cell/spacegroup setters in parent load()
         self.setup_grid()
         return self
 
     def select(self, selection):
         selection = super().select(selection)
         selection._build_parametrization()
-        # Create FFT submodule for the selection
-        selection._fft = FFT(selection.cell, selection.spacegroup, device=selection.device, dtype_float=selection.dtype_float)
+        # FFT is initialized via cell/spacegroup setters in parent select()
         selection.setup_grid()
         return selection
 
@@ -147,8 +213,7 @@ class ModelFT(Model):
         """
         super().load_cif(filename)
         self._build_parametrization()
-        # Create FFT submodule with cell and spacegroup
-        self._fft = FFT(self.cell, self.spacegroup, device=self.device, dtype_float=self.dtype_float)
+        # FFT is now initialized via cell/spacegroup setters in parent load()
         self.setup_grid()
         return self
 
@@ -177,7 +242,7 @@ class ModelFT(Model):
 
         # Use Cell's compute_grid_size method
         gridsize = self.cell.compute_grid_size(self.max_res)
-        return torch.tensor(gridsize, dtype=torch.int32, device=self.device)
+        return torch.tensor(gridsize, dtype=dtypes.int, device=self.device)
 
     def _build_parametrization(self):
         """
@@ -326,7 +391,7 @@ class ModelFT(Model):
             If None, uses self.max_res.
         gridsize : tuple of int, optional
             Explicit grid size (nx, ny, nz). If None, computed automatically
-            using Cell.compute_grid_size() and Symmetry.suggest_grid_size().
+            using Cell.compute_grid_size() and SpaceGroup.suggest_grid_size().
         """
         if max_res is not None:
             self.max_res = max_res
@@ -367,7 +432,7 @@ class ModelFT(Model):
         voxel_size = self.real_space_grid[1, 1, 1] - self.real_space_grid[0, 0, 0]
         min_radius = (
             torch.ceil(min_radius_Angstrom / torch.min(voxel_size))
-            .to(torch.int32)
+            .to(dtypes.int)
             .item()
         )
         if self.verbose > 1:
@@ -695,12 +760,11 @@ class ModelFT(Model):
         # Deep copy the PDB DataFrame
         model_copy.pdb = self.pdb.copy(deep=True)
 
-        # Copy scalar attributes
-        model_copy.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
-        model_copy.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
+        # Copy scalar attributes - spacegroup setter also sets symmetry
+        model_copy.spacegroup = self.spacegroup
         model_copy.initialized = True
 
-        # Copy Cell object
+        # Copy Cell object - cell setter will initialize FFT since spacegroup is already set
         if self.cell is not None:
             model_copy.cell = self.cell.clone()
 
@@ -791,7 +855,7 @@ class ModelFT(Model):
         state_dict: dict,
         device: torch.device = torch.device("cpu"),
         verbose: int = 1,
-        dtype_float: torch.dtype = torch.float32,
+        dtype_float: torch.dtype = dtypes.float,
     ) -> "ModelFT":
         """
         Create a fully initialized ModelFT from a state dictionary.
@@ -808,7 +872,7 @@ class ModelFT(Model):
         verbose : int, optional
             Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional
-            Float dtype for tensors. Default is torch.float32.
+            Float dtype for tensors. Default is dtypes.float.
 
         Returns
         -------
@@ -826,7 +890,7 @@ class ModelFT(Model):
         spacegroup_str = state_dict.pop("spacegroup", None)
         cell_tensor = state_dict.pop("cell", None)
         initialized = state_dict.pop("initialized", False)
-        saved_dtype = state_dict.pop("dtype_float", dtype_float)
+        saved_dtype = state_dict.pop("dtype_float", dtypes.float)
         state_dict.pop("device", None)  # Remove but don't use (use provided device)
         strip_H = state_dict.pop("strip_H", True)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
@@ -853,15 +917,10 @@ class ModelFT(Model):
         instance.initialized = initialized
         instance.altloc_pairs = altloc_pairs
 
-        # Setup spacegroup if it exists
-        if spacegroup_str is not None:
-            instance.spacegroup = SpaceGroup(spacegroup_str)
-            instance.symmetry = Symmetry(instance.spacegroup)
-        else:
-            instance.spacegroup = None
-            instance.symmetry = None
+        # Setup spacegroup - setter also sets symmetry automatically
+        instance.spacegroup = spacegroup_str
 
-        # Create Cell object from saved tensor data
+        # Create Cell object - setter will initialize FFT since spacegroup is already set
         from torchref.symmetry import Cell
         if cell_tensor is not None:
             instance.cell = Cell(cell_tensor, dtype=saved_dtype, device=device)

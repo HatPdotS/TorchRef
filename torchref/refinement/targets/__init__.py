@@ -24,9 +24,11 @@ from .targets import (
     NonBondedTarget,
     PlanarityTarget,
     RigidBondTarget,
-    Target,
     TorsionTarget,
     XrayTarget,
+    Target,
+    ModelTarget,
+    DataTarget,
 )
 
 __all__ = [

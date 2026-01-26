@@ -13,10 +13,10 @@ import gemmi
 import torch
 import torch.nn as nn
 
-import torchref.math_functions.get_scattering_factor_torch as gsf
-import torchref.math_functions.math_numpy as mnp
-import torchref.symmetry.symmetry as sym
-from torchref.math_functions.math_torch import (
+import torchref.base.get_scattering_factor_torch as gsf
+import torchref.base.math_numpy as mnp
+from torchref.symmetry import SpaceGroup
+from torchref.base.math_torch import (
     extract_structure_factor_from_grid,
     find_grid_size,
     find_relevant_voxels,
@@ -129,13 +129,13 @@ class SimpleModel(nn.Module):
 
         return torch.cat(A_list, dim=0), torch.cat(B_list, dim=0)
 
-    def _get_symmetry_function(self, spacegroup: str) -> sym.Symmetry:
+    def _get_symmetry_function(self, spacegroup: str) -> SpaceGroup:
         """Get or create symmetry function for spacegroup."""
         if spacegroup not in self._symmetry_cache:
             sg_gemmi = gemmi.SpaceGroup(spacegroup.replace("  ", " "))
             sg_hm = sg_gemmi.hm
             self._symmetry_cache[spacegroup] = {
-                "function": sym.Symmetry(sg_hm),
+                "function": SpaceGroup(sg_hm),
                 "hm": sg_hm,
                 "map_symmetry": {},  # grid_shape -> MapSymmetry
             }

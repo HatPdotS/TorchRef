@@ -153,10 +153,10 @@ def model_and_data(sample_structure_pair):
 @pytest.fixture
 def model_with_symmetry(loaded_model):
     """Fixture providing model with initialized symmetry."""
-    from torchref.symmetry.symmetry import Symmetry
-    
-    sym = Symmetry(loaded_model.spacegroup)
-    return {"model": loaded_model, "symmetry": sym}
+    from torchref.symmetry import SpaceGroup
+
+    sg = SpaceGroup(loaded_model.spacegroup)
+    return {"model": loaded_model, "symmetry": sg}
 
 
 @pytest.fixture

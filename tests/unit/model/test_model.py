@@ -17,13 +17,13 @@ class TestModelInitialization:
     def test_model_empty_initialization(self):
         """Test Model can be initialized without files."""
         from torchref.model.model import Model
-        
+
         model = Model()
-        
+
         assert model.initialized == False
         assert model.pdb is None
         assert model.xyz is None
-        assert model.b is None
+        assert model.adp is None
 
     @pytest.mark.unit
     def test_model_is_nn_module(self):

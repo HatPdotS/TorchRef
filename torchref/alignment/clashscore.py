@@ -10,13 +10,12 @@ from typing import TYPE_CHECKING, List, Optional
 import torch
 import torch.nn as nn
 
-from torchref.math_functions.math_torch import (
+from torchref.base.math_torch import (
     cartesian_to_fractional_torch,
     fractional_to_cartesian_torch,
 )
-from torchref.symmetry import Cell
+from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
-from torchref.symmetry.symmetry import Symmetry
 
 from .transform import RigidTransform
 
@@ -100,7 +99,7 @@ class ClashScoreCalculator(nn.Module):
 
     Parameters
     ----------
-    symmetry : str, int, gemmi.SpaceGroup, or Symmetry
+    symmetry : str, int, gemmi.SpaceGroup, or SpaceGroup
         Space group specification for symmetry expansion.
     default_clash_radius : float, default 5.0
         Default minimum allowed distance between atoms (can be overridden in forward).
@@ -147,10 +146,10 @@ class ClashScoreCalculator(nn.Module):
         self._device = device
 
         # Initialize symmetry handler
-        if isinstance(symmetry, Symmetry):
+        if isinstance(symmetry, SpaceGroup):
             self.symmetry = symmetry
         else:
-            self.symmetry = Symmetry(symmetry, dtype=torch.float64, device=device)
+            self.symmetry = SpaceGroup(symmetry, dtype=torch.float64, device=device)
 
     def _get_valid_transforms(
         self,

@@ -15,8 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torchref.symmetry.spacegroup import SpaceGroupLike
-from torchref.symmetry.symmetry import Symmetry
+from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
 
 
 def MapSymmetry(
@@ -55,7 +54,7 @@ def MapSymmetry(
         The appropriate implementation based on grid compatibility.
     """
     # Check grid compatibility
-    symmetry = Symmetry(space_group, dtype=dtype_float, device=device)
+    symmetry = SpaceGroup(space_group, dtype=dtype_float, device=device)
     compat = symmetry.check_grid_compatibility(map_shape)
 
     if compat["can_use_direct_indexing"]:
@@ -165,7 +164,7 @@ class MapSymmetryDirect(nn.Module):
         self.verbose = verbose
         self.device = device
         # Get symmetry operations
-        self.symmetry = Symmetry(
+        self.symmetry = SpaceGroup(
             space_group, dtype=self.dtype_float, device=self.device
         )
         self.n_ops = self.symmetry.matrices.shape[0]

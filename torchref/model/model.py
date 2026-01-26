@@ -18,10 +18,10 @@ import gemmi
 import torch
 import torch.nn as nn
 
-import torchref.math_functions.get_scattering_factor_torch as gsf
-import torchref.math_functions.math_numpy as mnp
+import torchref.base.get_scattering_factor_torch as gsf
+import torchref.base.math_numpy as mnp
 from torchref.io import cif, pdb
-from torchref.math_functions import math_torch
+from torchref.base import math_torch
 from torchref.model.parameter_wrappers import (
     MixedTensor,
     OccupancyTensor,
@@ -123,8 +123,9 @@ class Model(DebugMixin, nn.Module):
 
         # These will be set during load() or load_state_dict()
         self.pdb = None
-        self.spacegroup: Optional[gemmi.SpaceGroup] = None  # Canonical space group
-        self.symmetry: Optional[Symmetry] = None  # Symmetry operations handler
+        self._cell: Optional[Cell] = None
+        self._spacegroup: Optional[gemmi.SpaceGroup] = None  # Canonical space group
+        self._symmetry: Optional[Symmetry] = None  # Symmetry operations handler
 
         # Submodules (created during load or load_state_dict)
         self.xyz = None
@@ -142,6 +143,88 @@ class Model(DebugMixin, nn.Module):
     def __bool__(self):
         """Return the initialization status when used in boolean context."""
         return self.initialized
+
+    # =========================================================================
+    # Cell, SpaceGroup, and Symmetry properties
+    # =========================================================================
+
+    @property
+    def cell(self) -> Optional[Cell]:
+        """
+        Unit cell object with parameters [a, b, c, alpha, beta, gamma].
+
+        Returns
+        -------
+        Cell or None
+            The unit cell object, or None if not set.
+        """
+        return self._cell
+
+    @cell.setter
+    def cell(self, value: Cell):
+        """
+        Set the unit cell.
+
+        Parameters
+        ----------
+        value : Cell
+            The unit cell object to set.
+        """
+        self._cell = value
+
+    @property
+    def spacegroup(self) -> Optional[gemmi.SpaceGroup]:
+        """
+        Space group object.
+
+        Returns
+        -------
+        gemmi.SpaceGroup or None
+            The space group object, or None if not set.
+        """
+        return self._spacegroup
+
+    @spacegroup.setter
+    def spacegroup(self, value):
+        """
+        Set the space group and update the symmetry object.
+
+        Parameters
+        ----------
+        value : gemmi.SpaceGroup or str or int
+            The space group to set. Can be a gemmi.SpaceGroup object,
+            a space group name string, or a space group number.
+        """
+        if value is not None:
+            self._spacegroup = SpaceGroup(value)
+            self._symmetry = Symmetry(self._spacegroup)
+        else:
+            self._spacegroup = None
+            self._symmetry = None
+
+    @property
+    def symmetry(self) -> Optional[Symmetry]:
+        """
+        Symmetry operations handler for this space group.
+
+        Returns
+        -------
+        Symmetry or None
+            The symmetry object, or None if spacegroup is not set.
+        """
+        return self._symmetry
+
+    @symmetry.setter
+    def symmetry(self, value: Optional[Symmetry]):
+        """
+        Set the symmetry object directly.
+
+        Parameters
+        ----------
+        value : Symmetry or None
+            The symmetry object to set.
+        """
+        self._symmetry = value
 
     # =========================================================================
     # Crystallographic matrix properties (delegated to Cell)
@@ -418,9 +501,8 @@ class Model(DebugMixin, nn.Module):
         # Store Cell object directly and use its cached derived quantities
         self.cell = Cell(cell, dtype=self.dtype_float, device=self.device)
 
-        # Store space group as gemmi.SpaceGroup (reader now returns gemmi.SpaceGroup directly)
-        self.spacegroup = SpaceGroup(spacegroup)
-        self.symmetry = Symmetry(self.spacegroup)
+        # Store space group - setter also updates symmetry automatically
+        self.spacegroup = spacegroup
 
         # Register aniso_flag buffer (crystallographic matrices are delegated to Cell)
         self.register_buffer(
@@ -781,9 +863,8 @@ class Model(DebugMixin, nn.Module):
         # Deep copy the PDB DataFrame
         model_copy.pdb = self.pdb.copy(deep=True)
 
-        # Copy scalar attributes
+        # Copy scalar attributes - spacegroup setter also sets symmetry
         model_copy.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
-        model_copy.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
         model_copy.initialized = True
 
         # Copy Cell object
@@ -1456,7 +1537,7 @@ class Model(DebugMixin, nn.Module):
         )
         # Store spacegroup as string for serialization (gemmi.SpaceGroup is not picklable)
         state[prefix + "spacegroup"] = (
-            self.spacegroup.xhm() if self.spacegroup else None
+            self.spacegroup.xhm if self.spacegroup else None
         )
         state[prefix + "initialized"] = self.initialized
         state[prefix + "dtype_float"] = self.dtype_float
@@ -1551,13 +1632,8 @@ class Model(DebugMixin, nn.Module):
         instance.initialized = initialized
         instance.altloc_pairs = altloc_pairs
 
-        # Setup spacegroup (convert from string if needed)
-        if spacegroup is not None:
-            instance.spacegroup = SpaceGroup(spacegroup)
-            instance.symmetry = Symmetry(instance.spacegroup)
-        else:
-            instance.spacegroup = None
-            instance.symmetry = None
+        # Setup spacegroup (setter also sets symmetry automatically)
+        instance.spacegroup = spacegroup
 
         # Create Cell object from saved tensor data
         if cell_tensor is not None:
@@ -1810,9 +1886,8 @@ class Model(DebugMixin, nn.Module):
         selected_model.pdb = selected_model.pdb.reset_index(drop=True)
         selected_model.pdb["index"] = selected_model.pdb.index.to_numpy(dtype=int)
 
-        # Copy scalar attributes
+        # Copy scalar attributes - spacegroup setter also sets symmetry
         selected_model.spacegroup = self.spacegroup  # gemmi.SpaceGroup is immutable
-        selected_model.symmetry = Symmetry(self.spacegroup) if self.spacegroup else None
 
         # Copy cell (as Cell object) - crystallographic matrices are properties
         # that delegate to Cell, so copying the Cell is sufficient
@@ -1967,7 +2042,7 @@ class Model(DebugMixin, nn.Module):
         xyz_rotated = xyz_centered @ rotation_matrix.T + center
 
         # Update coordinates in-place
-        self.xyz.fixed_values.copy_(xyz_rotated)
+        self.xyz[:] = xyz_rotated
 
         return self
 
@@ -2019,7 +2094,7 @@ class Model(DebugMixin, nn.Module):
 
         # Apply translation in-place
         xyz_translated = xyz + translation_cart
-        self.xyz.fixed_values.copy_(xyz_translated)
+        self.xyz[:] = xyz_translated
 
         return self
 

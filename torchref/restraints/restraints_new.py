@@ -37,6 +37,141 @@ from torchref.restraints.restraints_helper import (
     read_link_definitions,
 )
 from torchref.utils.debug_utils import DebugMixin
+from torchref.utils.utils import TensorDict
+
+
+class _RestraintsAccessor:
+    """
+    Provides backward-compatible dict-like access to restraints stored in TensorDict.
+
+    This class mimics the old nested dict interface:
+        restraints["bond"]["intra"]["indices"]
+
+    While actually accessing the TensorDict with flattened keys:
+        _tensor_storage["bond_intra_indices"]
+    """
+
+    # Types that don't have origin level (assigned directly as dicts)
+    _FLAT_TYPES = {"vdw", "chiral"}
+
+    def __init__(self, parent: "RestraintsNew"):
+        self._parent = parent
+
+    def __getitem__(self, rtype: str) -> "_RestraintTypeAccessor":
+        return _RestraintTypeAccessor(self._parent, rtype)
+
+    def __setitem__(self, rtype: str, value):
+        """Handle direct assignment for flat types like vdw and chiral."""
+        if rtype in self._FLAT_TYPES and isinstance(value, dict):
+            # Store all tensors with empty origin
+            self._parent._set_restraint_group(rtype, "", value)
+        else:
+            raise TypeError(
+                f"Cannot assign directly to restraints['{rtype}']. "
+                f"Use restraints['{rtype}'][origin] = data for nested types."
+            )
+
+    def __contains__(self, rtype: str) -> bool:
+        return len(self._parent._restraint_groups.get(rtype, set())) > 0 or \
+               rtype in self._FLAT_TYPES and self._parent._has_restraint(rtype, "")
+
+    def get(self, rtype: str, default=None):
+        if rtype in self:
+            return self[rtype]
+        return default
+
+    def keys(self):
+        """Return all restraint types that have data."""
+        result = []
+        for rtype in ["bond", "angle", "torsion", "plane"]:
+            if len(self._parent._restraint_groups.get(rtype, set())) > 0:
+                result.append(rtype)
+        # Check for special types (vdw, chiral) which don't have origins
+        for rtype in self._FLAT_TYPES:
+            if self._parent._has_restraint(rtype, ""):
+                result.append(rtype)
+        return result
+
+
+class _RestraintTypeAccessor:
+    """
+    Provides access to origins within a restraint type.
+
+    For regular types (bond, angle, torsion, plane):
+        restraints["bond"]["intra"] -> dict with indices, references, sigmas
+
+    For special types (vdw, chiral), this class acts as the dict itself:
+        restraints["vdw"]["indices"] -> tensor
+        restraints["vdw"] = {"indices": ..., "sigmas": ...}
+    """
+
+    # Types that don't have origin level (accessed directly as dicts)
+    _FLAT_TYPES = {"vdw", "chiral"}
+
+    def __init__(self, parent: "RestraintsNew", rtype: str):
+        self._parent = parent
+        self._rtype = rtype
+
+    def __getitem__(self, key: str):
+        if self._rtype in self._FLAT_TYPES:
+            # For vdw/chiral, key is a property name (indices, sigmas, etc.)
+            tensor = self._parent._get_restraint_tensor(self._rtype, "", key)
+            if tensor is None:
+                raise KeyError(f"No {key} for {self._rtype}")
+            return tensor
+        else:
+            # For bond/angle/torsion/plane, key is an origin name
+            result = self._parent._get_restraint_group(self._rtype, key)
+            if result is None:
+                raise KeyError(f"No restraints for {self._rtype}/{key}")
+            return result
+
+    def __setitem__(self, key: str, value):
+        if self._rtype in self._FLAT_TYPES:
+            # For vdw/chiral, if value is a tensor, store it directly
+            # If value is a dict, store all tensors
+            if isinstance(value, torch.Tensor):
+                self._parent._set_restraint_tensor(self._rtype, "", key, value)
+            elif isinstance(value, dict):
+                # This handles: restraints["vdw"] = {"indices": ..., "sigmas": ...}
+                # But this is called as restraints["vdw"][key] = value, so it won't work
+                # We need special handling in the parent accessor
+                pass
+        else:
+            # For bond/angle/torsion/plane, key is origin, value is dict
+            self._parent._set_restraint_group(self._rtype, key, value)
+
+    def __contains__(self, key: str) -> bool:
+        if self._rtype in self._FLAT_TYPES:
+            return self._parent._get_restraint_tensor(self._rtype, "", key) is not None
+        return self._parent._has_restraint(self._rtype, key)
+
+    def get(self, key: str, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def keys(self):
+        if self._rtype in self._FLAT_TYPES:
+            # Return property names for flat types
+            result = []
+            for prop in ["indices", "references", "sigmas", "periods", "min_distances"]:
+                if self._parent._get_restraint_tensor(self._rtype, "", prop) is not None:
+                    result.append(prop)
+            return result
+        return self._parent._get_origins_for_type(self._rtype)
+
+    def items(self):
+        if self._rtype in self._FLAT_TYPES:
+            for prop in self.keys():
+                yield prop, self._parent._get_restraint_tensor(self._rtype, "", prop)
+        else:
+            for origin in self.keys():
+                yield origin, self._parent._get_restraint_group(self._rtype, origin)
+
+    def __iter__(self):
+        return iter(self.keys())
 
 
 class RestraintsNew(DebugMixin, Module):
@@ -100,12 +235,17 @@ class RestraintsNew(DebugMixin, Module):
         self._adp_fn = adp_fn
         self._vdw_radii_fn = vdw_radii_fn
 
+        # Initialize TensorDict for restraint storage (registered as submodule)
+        self._tensor_storage = TensorDict()
+
+        # Track which restraint groups exist (for iteration)
+        self._restraint_groups = {"bond": set(), "angle": set(), "torsion": set(), "plane": set()}
+
         # Empty initialization
         if pdb is None:
             self.pdb = None
             self.cif_dict = {}
             self.unique_residues = []
-            self.restraints = {}
             return
 
         # Full initialization with pdb
@@ -126,9 +266,6 @@ class RestraintsNew(DebugMixin, Module):
         self.link_dict, self.link_list = read_link_definitions()
         if verbose > 1:
             print(f"Loaded {len(self.link_dict)} link types")
-
-        # Initialize hierarchical restraints dictionary
-        self.restraints = {"bond": {}, "angle": {}, "torsion": {}, "plane": {}}
 
         # Build restraints using the new builder pattern
         self.build_restraints()
@@ -195,6 +332,73 @@ class RestraintsNew(DebugMixin, Module):
                 "No vdw_radii callable provided. Initialize with vdw_radii_fn."
             )
         return self._vdw_radii_fn()
+
+    # =========================================================================
+    # TensorDict Helper Methods for Restraint Storage
+    # =========================================================================
+
+    def _make_key(self, rtype: str, origin: str, prop: str) -> str:
+        """Create flattened key for TensorDict storage."""
+        if origin:
+            return f"{rtype}_{origin}_{prop}"
+        else:
+            # For flat types (vdw, chiral) with no origin
+            return f"{rtype}_{prop}"
+
+    def _set_restraint_tensor(
+        self, rtype: str, origin: str, prop: str, tensor: torch.Tensor
+    ):
+        """Store a restraint tensor with flattened key."""
+        key = self._make_key(rtype, origin, prop)
+        self._tensor_storage[key] = tensor
+        # Track that this origin exists for this restraint type
+        if rtype in self._restraint_groups:
+            self._restraint_groups[rtype].add(origin)
+
+    def _get_restraint_tensor(
+        self, rtype: str, origin: str, prop: str
+    ) -> Optional[torch.Tensor]:
+        """Get a restraint tensor by type, origin, and property."""
+        key = self._make_key(rtype, origin, prop)
+        if key in self._tensor_storage:
+            return self._tensor_storage[key]
+        return None
+
+    def _has_restraint(self, rtype: str, origin: str) -> bool:
+        """Check if a restraint group exists."""
+        key = self._make_key(rtype, origin, "indices")
+        return key in self._tensor_storage
+
+    def _set_restraint_group(self, rtype: str, origin: str, data: dict):
+        """Store all tensors from a restraint data dict."""
+        for prop, tensor in data.items():
+            if tensor is not None and isinstance(tensor, torch.Tensor):
+                self._set_restraint_tensor(rtype, origin, prop, tensor)
+
+    def _get_restraint_group(self, rtype: str, origin: str) -> Optional[dict]:
+        """Get all tensors for a restraint group as a dict."""
+        if not self._has_restraint(rtype, origin):
+            return None
+        result = {}
+        # Common properties for different restraint types
+        for prop in ["indices", "references", "sigmas", "periods", "min_distances"]:
+            tensor = self._get_restraint_tensor(rtype, origin, prop)
+            if tensor is not None:
+                result[prop] = tensor
+        return result if result else None
+
+    def _get_origins_for_type(self, rtype: str) -> list:
+        """Get all origins (e.g., 'intra', 'peptide') for a restraint type."""
+        return list(self._restraint_groups.get(rtype, set()))
+
+    @property
+    def restraints(self) -> "_RestraintsAccessor":
+        """
+        Provide dict-like access to restraints for backward compatibility.
+
+        Returns an accessor object that mimics the old nested dict interface.
+        """
+        return _RestraintsAccessor(self)
 
     def _load_cif_dictionaries(self, cif_path):
         """Load CIF dictionaries from provided paths and monomer library."""
@@ -391,7 +595,7 @@ class RestraintsNew(DebugMixin, Module):
             n_planes = 0
             for key, data in plane_result.items():
                 n_planes += data["indices"].shape[0]
-                if key in self.restraints["plane"]:
+                if self._has_restraint("plane", key):
                     # Append to existing planes of same atom count
                     existing = self.restraints["plane"][key]
                     self.restraints["plane"][key] = {
@@ -693,38 +897,8 @@ class RestraintsNew(DebugMixin, Module):
             scope = "inter-residue" if inter_residue_only else "all"
             print(f"  Built {len(filtered_pairs)} VDW restraints ({scope} contacts)")
 
-    def _move_to_device(self, device):
-        """Move all restraint tensors to the specified device."""
-        for restraint_type in ["bond", "angle", "torsion", "plane"]:
-            if restraint_type in self.restraints:
-                for origin, properties in self.restraints[restraint_type].items():
-                    if isinstance(properties, dict):
-                        for prop_name, tensor in properties.items():
-                            if tensor is not None and isinstance(tensor, torch.Tensor):
-                                self.restraints[restraint_type][origin][prop_name] = (
-                                    tensor.to(device)
-                                )
-
-        if "vdw" in self.restraints:
-            for prop_name, tensor in self.restraints["vdw"].items():
-                if tensor is not None and isinstance(tensor, torch.Tensor):
-                    self.restraints["vdw"][prop_name] = tensor.to(device)
-
-        if "chiral" in self.restraints:
-            for prop_name, tensor in self.restraints["chiral"].items():
-                if tensor is not None and isinstance(tensor, torch.Tensor):
-                    self.restraints["chiral"][prop_name] = tensor.to(device)
-
-    def cuda(self, device: Optional[int] = None):
-        """Move all restraint tensors to CUDA device."""
-        cuda_device = torch.device("cuda" if device is None else f"cuda:{device}")
-        self._move_to_device(cuda_device)
-        return self
-
-    def cpu(self):
-        """Move all restraint tensors to CPU."""
-        self._move_to_device(torch.device("cpu"))
-        return self
+    # Device movement is handled automatically by TensorDict (registered as _tensor_storage)
+    # through PyTorch's Module.to(), cuda(), and cpu() methods
 
     def summary(self):
         """Print a detailed summary of all restraints."""

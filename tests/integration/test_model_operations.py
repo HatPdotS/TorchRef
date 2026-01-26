@@ -53,34 +53,34 @@ class TestModelCoordinates:
 
 
 class TestModelBfactors:
-    """Tests for B-factor operations."""
+    """Tests for ADP (B-factor) operations."""
 
     @pytest.mark.integration
     def test_model_bfactors_shape(self, sample_cif_file):
-        """Test B-factor tensor shape."""
+        """Test ADP tensor shape."""
         from torchref.model.model import Model
-        
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
-        b = model.b()
+
+        adp = model.adp()
         n_atoms = model.xyz().shape[0]
-        
-        assert b is not None
-        assert b.shape[0] == n_atoms
+
+        assert adp is not None
+        assert adp.shape[0] == n_atoms
 
     @pytest.mark.integration
     def test_model_bfactors_positive(self, sample_cif_file):
-        """Test that B-factors are positive."""
+        """Test that ADPs are positive."""
         from torchref.model.model import Model
-        
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
-        b = model.b()
-        
-        # B-factors should be positive (physically meaningful)
-        assert torch.all(b >= 0)
+
+        adp = model.adp()
+
+        # ADPs should be positive (physically meaningful)
+        assert torch.all(adp >= 0)
 
 
 class TestModelOccupancy:
@@ -463,10 +463,10 @@ class TestModelSetWithSelection:
         n_selected = mask.sum().item()
         
         if n_selected > 0:
-            # Set all CA B-factors to 30.0
-            new_b = torch.ones(n_selected) * 30.0
-            model.b.set(new_b, mask)
-            
+            # Set all CA ADPs to 30.0
+            new_adp = torch.ones(n_selected) * 30.0
+            model.adp.set(new_adp, mask)
+
             # Verify the update
-            updated_b = model.b()[mask]
-            assert torch.allclose(updated_b, torch.ones(n_selected) * 30.0)
+            updated_adp = model.adp()[mask]
+            assert torch.allclose(updated_adp, torch.ones(n_selected) * 30.0)

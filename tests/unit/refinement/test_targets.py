@@ -16,20 +16,20 @@ class TestTargetBase:
 
     @pytest.mark.unit
     def test_target_empty_initialization(self):
-        """Test Target can be initialized without refinement object."""
+        """Test Target can be initialized without arguments."""
         from torchref.refinement.targets import Target
-        
+
         target = Target()
-        
-        assert target._refinement is None
+
+        assert target.verbose == 0
 
     @pytest.mark.unit
     def test_target_is_nn_module(self):
         """Target should be a nn.Module."""
         from torchref.refinement.targets import Target
-        
+
         target = Target()
-        
+
         assert isinstance(target, nn.Module)
 
 
@@ -37,12 +37,12 @@ class TestGaussianNLL:
     """Tests for Gaussian NLL calculation logic."""
 
     @pytest.mark.unit
-    def test_gaussian_nll_identical_gives_small_loss(self, mock_fobs, mock_sigfobs):
+    def test_gaussian_nll_identical_gives_small_loss(self, mock_F_obs, mock_F_sigma):
         """When Fobs = Fcalc, NLL should be small (just the log sigma term)."""
-        from torchref.math_functions.math_torch import nll_xray
-        
-        fobs = mock_fobs(n_reflections=100)
-        sigma = mock_sigfobs(n_reflections=100)
+        from torchref.base.math_torch import nll_xray
+
+        fobs = mock_F_obs(n_reflections=100)
+        sigma = mock_F_sigma(n_reflections=100)
         fcalc = fobs.clone().to(torch.complex64)  # |Fcalc| = Fobs
         
         # Calculate manually what Gaussian NLL should be
@@ -54,11 +54,11 @@ class TestGaussianNLL:
         assert torch.allclose(expected_data_term, torch.zeros_like(expected_data_term), atol=1e-5)
 
     @pytest.mark.unit
-    def test_gaussian_nll_positive(self, mock_fobs, mock_sigfobs):
+    def test_gaussian_nll_positive(self, mock_F_obs, mock_F_sigma):
         """NLL should generally be positive or close to zero."""
-        fobs = mock_fobs(n_reflections=100)
-        sigma = mock_sigfobs(n_reflections=100)
-        fcalc = mock_fobs(n_reflections=100, seed=123).to(torch.complex64)  # Different
+        fobs = mock_F_obs(n_reflections=100)
+        sigma = mock_F_sigma(n_reflections=100)
+        fcalc = mock_F_obs(n_reflections=100, seed=123).to(torch.complex64)  # Different
         
         # Simple Gaussian NLL
         diff = fobs - torch.abs(fcalc)
@@ -75,9 +75,9 @@ class TestLeastSquaresTarget:
     """Tests for Least Squares target calculation."""
 
     @pytest.mark.unit
-    def test_least_squares_identical_zero(self, mock_fobs):
+    def test_least_squares_identical_zero(self, mock_F_obs):
         """LS loss should be 0 when Fobs = Fcalc."""
-        fobs = mock_fobs(n_reflections=100)
+        fobs = mock_F_obs(n_reflections=100)
         fcalc = fobs.clone()
         
         # Simple LS: sum((fobs - fcalc)^2)
@@ -86,9 +86,9 @@ class TestLeastSquaresTarget:
         assert torch.isclose(loss, torch.tensor(0.0, dtype=loss.dtype), atol=1e-10)
 
     @pytest.mark.unit
-    def test_least_squares_scaled(self, mock_fobs):
+    def test_least_squares_scaled(self, mock_F_obs):
         """Test LS loss with scaled Fcalc."""
-        fobs = mock_fobs(n_reflections=100)
+        fobs = mock_F_obs(n_reflections=100)
         fcalc = fobs * 1.1  # 10% scaled
         
         loss = torch.mean((fobs - fcalc) ** 2)
@@ -98,11 +98,11 @@ class TestLeastSquaresTarget:
         assert torch.isclose(loss, expected_loss, rtol=1e-5)
 
     @pytest.mark.unit
-    def test_least_squares_weighted(self, mock_fobs, mock_sigfobs):
+    def test_least_squares_weighted(self, mock_F_obs, mock_F_sigma):
         """Test weighted LS with sigma weights."""
-        fobs = mock_fobs(n_reflections=100)
-        sigma = mock_sigfobs(n_reflections=100)
-        fcalc = mock_fobs(n_reflections=100, seed=123)
+        fobs = mock_F_obs(n_reflections=100)
+        sigma = mock_F_sigma(n_reflections=100)
+        fcalc = mock_F_obs(n_reflections=100, seed=123)
         
         # Weighted LS: sum(w * (fobs - fcalc)^2) where w = 1/sigma^2
         weights = 1.0 / (sigma ** 2)
@@ -117,13 +117,13 @@ class TestRiceNLL:
     """Tests for Rice distribution NLL (used for acentric reflections)."""
 
     @pytest.mark.unit
-    def test_rice_nll_components(self, mock_fobs, mock_sigfobs):
+    def test_rice_nll_components(self, mock_F_obs, mock_F_sigma):
         """Test components of Rice NLL calculation."""
         from torch.special import i0
-        
-        fobs = mock_fobs(n_reflections=50)
-        sigma = mock_sigfobs(n_reflections=50)
-        fcalc_amp = mock_fobs(n_reflections=50, seed=123)
+
+        fobs = mock_F_obs(n_reflections=50)
+        sigma = mock_F_sigma(n_reflections=50)
+        fcalc_amp = mock_F_obs(n_reflections=50, seed=123)
         
         # Rice NLL components
         # NLL = (Fo^2 + Fc^2)/(2σ^2) - log(I0(Fo*Fc/σ^2)) - log(Fo/σ^2)
@@ -140,10 +140,10 @@ class TestTargetDeviceHandling:
     """Tests for proper device handling in targets."""
 
     @pytest.mark.unit
-    def test_target_cpu_tensors(self, mock_fobs, mock_sigfobs):
+    def test_target_cpu_tensors(self, mock_F_obs, mock_F_sigma):
         """Test calculations work on CPU."""
-        fobs = mock_fobs(n_reflections=100)
-        sigma = mock_sigfobs(n_reflections=100)
+        fobs = mock_F_obs(n_reflections=100)
+        sigma = mock_F_sigma(n_reflections=100)
         
         # Simple calculation on CPU
         loss = torch.mean((fobs / sigma) ** 2)
@@ -153,10 +153,10 @@ class TestTargetDeviceHandling:
 
     @pytest.mark.unit
     @pytest.mark.gpu
-    def test_target_gpu_tensors(self, mock_fobs, mock_sigfobs, gpu_device):
+    def test_target_gpu_tensors(self, mock_F_obs, mock_F_sigma, gpu_device):
         """Test calculations work on GPU."""
-        fobs = mock_fobs(n_reflections=100).to(gpu_device)
-        sigma = mock_sigfobs(n_reflections=100).to(gpu_device)
+        fobs = mock_F_obs(n_reflections=100).to(gpu_device)
+        sigma = mock_F_sigma(n_reflections=100).to(gpu_device)
         
         loss = torch.mean((fobs / sigma) ** 2)
         
@@ -168,11 +168,11 @@ class TestNumericStability:
     """Tests for numeric stability in target calculations."""
 
     @pytest.mark.unit
-    def test_small_sigma_handling(self, mock_fobs):
+    def test_small_sigma_handling(self, mock_F_obs):
         """Test handling of very small sigma values."""
-        fobs = mock_fobs(n_reflections=100)
+        fobs = mock_F_obs(n_reflections=100)
         sigma = torch.ones_like(fobs) * 1e-10  # Very small sigma
-        fcalc = mock_fobs(n_reflections=100, seed=123)
+        fcalc = mock_F_obs(n_reflections=100, seed=123)
         
         # Clamped sigma approach
         eps = torch.median(sigma) * 0.1
@@ -184,10 +184,10 @@ class TestNumericStability:
         assert torch.isfinite(loss)
 
     @pytest.mark.unit
-    def test_zero_fcalc_handling(self, mock_fobs, mock_sigfobs):
+    def test_zero_fcalc_handling(self, mock_F_obs, mock_F_sigma):
         """Test handling of zero Fcalc values."""
-        fobs = mock_fobs(n_reflections=100)
-        sigma = mock_sigfobs(n_reflections=100)
+        fobs = mock_F_obs(n_reflections=100)
+        sigma = mock_F_sigma(n_reflections=100)
         fcalc = torch.zeros_like(fobs, dtype=torch.complex64)  # All zero
         
         fcalc_amp = torch.abs(fcalc)  # Will be zero

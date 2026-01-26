@@ -211,7 +211,7 @@ class DatasetCollection(CrystalDataset):
 
     def _calculate_resolution(self) -> None:
         """Calculate resolution for common HKL."""
-        from torchref.math_functions import math_torch
+        from torchref.base import math_torch
 
         if self._common_hkl is None or self._cell is None:
             return

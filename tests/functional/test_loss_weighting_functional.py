@@ -120,7 +120,7 @@ class TestNLLXrayFunction:
 
     def test_nll_xray_basic(self):
         """Test basic NLL X-ray calculation."""
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
 
         fobs = torch.tensor([100.0, 200.0, 300.0], dtype=torch.float32)
         fcalc = torch.tensor([105.0, 195.0, 305.0], dtype=torch.float32)
@@ -133,7 +133,7 @@ class TestNLLXrayFunction:
 
     def test_nll_decreases_with_better_fit(self):
         """Test that NLL decreases as fit improves."""
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
 
         fobs = torch.tensor([100.0], dtype=torch.float32)
         sigma = torch.tensor([10.0], dtype=torch.float32)

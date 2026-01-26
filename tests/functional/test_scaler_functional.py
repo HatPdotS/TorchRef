@@ -329,7 +329,7 @@ class TestScalerUMatrixFunctional:
         from torchref.model.model import Model
         from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
-        from torchref.math_functions.math_torch import U_to_matrix
+        from torchref.base.math_torch import U_to_matrix
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))

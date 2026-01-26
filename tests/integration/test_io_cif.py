@@ -24,7 +24,7 @@ class TestCIFLoading:
         n_atoms = model.xyz().shape[0]
         assert n_atoms > 0
         assert hasattr(model, 'xyz')
-        assert hasattr(model, 'b')
+        assert hasattr(model, 'adp')
         assert hasattr(model, 'occupancy')
 
     @pytest.mark.integration
@@ -38,7 +38,7 @@ class TestCIFLoading:
         # All arrays should have same number of atoms
         n_atoms = model.xyz().shape[0]
         assert model.xyz().shape[0] == n_atoms
-        assert model.b().shape[0] == n_atoms
+        assert model.adp().shape[0] == n_atoms
         assert model.occupancy().shape[0] == n_atoms
 
     @pytest.mark.integration

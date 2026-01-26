@@ -2,13 +2,10 @@
 Space group utilities using gemmi as the canonical representation.
 
 This module provides a unified interface for space group handling throughout
-torchref. All space groups are stored and passed as gemmi.SpaceGroup objects.
-
-gemmi.SpaceGroup objects are:
-- Hashable (can be used as dict keys)
-- Immutable
-- Provide direct access to symmetry operations
-- Handle all name aliasing internally
+torchref. The primary class is SpaceGroup, an nn.Module that:
+- Normalizes input (string, int, gemmi.SpaceGroup) in the constructor
+- Stores symmetry matrices and translations as registered buffers
+- Provides all symmetry operation methods
 
 Example
 -------
@@ -24,31 +21,42 @@ Example
     # Access properties
     print(sg.hm)            # 'P 21 21 21' (Hermann-Mauguin)
     print(sg.number)        # 19
-    print(sg.short_name())  # 'P212121'
+    print(sg.name)          # 'P21' (short name)
+
+    # Apply symmetry operations
+    coords = torch.tensor([[0.1, 0.2, 0.3]])
+    transformed = sg(coords)  # Apply all symmetry operations
 """
+from __future__ import annotations
 
 from typing import Union
 
 import gemmi
+import torch
+import torch.nn as nn
 
-# Type alias for space group input
-SpaceGroupLike = Union[str, int, gemmi.SpaceGroup, None]
+from torchref.utils.debug_utils import DebugMixin
+
+# Type alias for space group input - includes SpaceGroup class itself
+SpaceGroupLike = Union[str, int, gemmi.SpaceGroup, "SpaceGroup", None]
 
 
-def SpaceGroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
+def _normalize_spacegroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
     """
-    Normalize space group input to a gemmi.SpaceGroup object.
+    Normalize space group input to a gemmi.SpaceGroup object (internal helper).
 
-    This is the canonical way to create/convert space groups in torchref.
-    Accepts various input formats and returns a gemmi.SpaceGroup.
+    This is an internal function used by the SpaceGroup class constructor.
+    For external use, prefer the SpaceGroup class which provides a full
+    nn.Module interface with symmetry operations.
 
     Parameters
     ----------
-    spacegroup : str, int, gemmi.SpaceGroup, or None
+    spacegroup : str, int, gemmi.SpaceGroup, SpaceGroup, or None
         Space group specification:
         - str: Hermann-Mauguin symbol (e.g., 'P21', 'P 21', 'P212121')
         - int: Space group number (1-230)
         - gemmi.SpaceGroup: Passed through unchanged
+        - SpaceGroup: Extracts the internal gemmi.SpaceGroup
         - None: Returns P1
 
     Returns
@@ -60,22 +68,16 @@ def SpaceGroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
     ------
     ValueError
         If the space group cannot be recognized.
-
-    Examples
-    --------
-    ::
-
-        sg = SpaceGroup('P21')
-        sg = SpaceGroup('P 21')      # Same as above
-        sg = SpaceGroup(4)           # P21 by number
-        sg = SpaceGroup(None)        # Returns P1
-        sg2 = SpaceGroup(sg)         # Pass-through
     """
     if spacegroup is None:
         return gemmi.SpaceGroup("P 1")
 
     if isinstance(spacegroup, gemmi.SpaceGroup):
         return spacegroup
+
+    # Handle SpaceGroup class instances (forward reference resolved at runtime)
+    if hasattr(spacegroup, "_gemmi") and hasattr(spacegroup, "matrices"):
+        return spacegroup._gemmi
 
     if isinstance(spacegroup, int):
         # Space group number
@@ -126,7 +128,7 @@ def SpaceGroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
         )
 
     raise TypeError(
-        f"spacegroup must be str, int, gemmi.SpaceGroup, or None, "
+        f"spacegroup must be str, int, gemmi.SpaceGroup, SpaceGroup, or None, "
         f"got {type(spacegroup).__name__}"
     )
 
@@ -150,7 +152,7 @@ def spacegroup_to_str(spacegroup: SpaceGroupLike, style: str = "short") -> str:
     str
         Space group name in requested style.
     """
-    sg = SpaceGroup(spacegroup)
+    sg = _normalize_spacegroup(spacegroup)
 
     if style == "short":
         return sg.short_name()
@@ -176,7 +178,7 @@ def get_symmetry_operations(spacegroup: SpaceGroupLike):
     list of gemmi.Op
         List of symmetry operations.
     """
-    sg = SpaceGroup(spacegroup)
+    sg = _normalize_spacegroup(spacegroup)
     return list(sg.operations())
 
 
@@ -207,7 +209,7 @@ def get_operations_as_tensors(spacegroup: SpaceGroupLike, dtype=None, device=Non
     if device is None:
         device = torch.device("cpu")
 
-    sg = SpaceGroup(spacegroup)
+    sg = _normalize_spacegroup(spacegroup)
 
     # Extract rotation matrices and translations from gemmi operations
     # gemmi stores values as integers multiplied by 24, divide to get actual values
@@ -237,7 +239,7 @@ def is_same_spacegroup(sg1: SpaceGroupLike, sg2: SpaceGroupLike) -> bool:
     bool
         True if the space groups are identical.
     """
-    return SpaceGroup(sg1).number == SpaceGroup(sg2).number
+    return _normalize_spacegroup(sg1).number == _normalize_spacegroup(sg2).number
 
 
 def get_point_group(spacegroup: SpaceGroupLike) -> str:
@@ -254,7 +256,7 @@ def get_point_group(spacegroup: SpaceGroupLike) -> str:
     str
         Point group symbol (e.g., '222', 'mmm', '4/mmm').
     """
-    sg = SpaceGroup(spacegroup)
+    sg = _normalize_spacegroup(spacegroup)
     return sg.point_group_hm()
 
 
@@ -273,7 +275,7 @@ def get_crystal_system(spacegroup: SpaceGroupLike) -> str:
         Crystal system name (triclinic, monoclinic, orthorhombic,
         tetragonal, trigonal, hexagonal, or cubic).
     """
-    sg = SpaceGroup(spacegroup)
+    sg = _normalize_spacegroup(spacegroup)
     return sg.crystal_system_str()
 
 
@@ -291,7 +293,7 @@ def is_centrosymmetric(spacegroup: SpaceGroupLike) -> bool:
     bool
         True if the space group has an inversion center.
     """
-    sg = SpaceGroup(spacegroup)
+    sg = _normalize_spacegroup(spacegroup)
     return sg.centrosymmetric()
 
 
@@ -309,7 +311,7 @@ def n_operations(spacegroup: SpaceGroupLike) -> int:
     int
         Number of symmetry operations.
     """
-    sg = SpaceGroup(spacegroup)
+    sg = _normalize_spacegroup(spacegroup)
     return len(list(sg.operations()))
 
 
@@ -427,7 +429,7 @@ def get_grid_requirements(spacegroup: SpaceGroupLike) -> dict:
     import math
     from fractions import Fraction
 
-    sg = SpaceGroup(spacegroup)
+    sg = _normalize_spacegroup(spacegroup)
 
     # Start with no requirements
     nx_lcm = 1
@@ -500,7 +502,7 @@ def check_grid_compatibility(grid_shape: tuple, spacegroup: SpaceGroupLike) -> d
         # {'compatible': True, 'issues': []}
     """
     nx, ny, nz = grid_shape
-    sg = SpaceGroup(spacegroup)
+    sg = _normalize_spacegroup(spacegroup)
     requirements = get_grid_requirements(sg)
 
     issues = []
@@ -609,3 +611,344 @@ def suggest_grid_size(
     nz = find_next_valid(min_grid_shape[2], requirements["nz_mod"])
 
     return (nx, ny, nz)
+
+
+# =============================================================================
+# SpaceGroup class - unified interface combining normalization and operations
+# =============================================================================
+
+
+class SpaceGroup(DebugMixin, nn.Module):
+    """
+    Unified space group handler for crystallographic symmetry operations.
+
+    This class combines space group normalization with symmetry operations,
+    providing a single interface for:
+    - Normalizing input (string, int, gemmi.SpaceGroup) in the constructor
+    - Storing symmetry matrices and translations as PyTorch buffers
+    - Applying symmetry operations to fractional coordinates
+    - Grid size utilities for symmetry-compatible grids
+
+    Parameters
+    ----------
+    space_group : str, int, gemmi.SpaceGroup, SpaceGroup, or None
+        Space group specification. Accepts:
+        - Hermann-Mauguin symbol (e.g., 'P21', 'P 21 21 21')
+        - Space group number (1-230)
+        - gemmi.SpaceGroup object
+        - Another SpaceGroup instance
+        - None (defaults to P1)
+    dtype : torch.dtype, default torch.float64
+        Data type for rotation matrices and translations.
+    device : torch.device, default torch.device('cpu')
+        Device for computation.
+
+    Attributes
+    ----------
+    matrices : torch.Tensor, shape (n_ops, 3, 3)
+        Rotation matrices for all symmetry operations (registered buffer).
+    translations : torch.Tensor, shape (n_ops, 3)
+        Translation vectors for all symmetry operations (registered buffer).
+    n_ops : int
+        Number of symmetry operations.
+
+    Examples
+    --------
+    ::
+
+        # Create from various inputs
+        sg = SpaceGroup('P21')
+        sg = SpaceGroup('P 21')      # Same result
+        sg = SpaceGroup(4)           # P21 by number
+        sg = SpaceGroup(None)        # Returns P1
+
+        # Access properties
+        print(sg.name)          # 'P21' (short name)
+        print(sg.hm)            # 'P 21' (Hermann-Mauguin with spaces)
+        print(sg.number)        # 4
+
+        # Apply symmetry operations
+        coords = torch.tensor([[0.1, 0.2, 0.3]])
+        transformed = sg(coords)  # Apply all symmetry operations
+
+        # Grid utilities
+        req = sg.get_grid_requirements()
+        suggested = sg.suggest_grid_size((131, 163, 148))
+    """
+
+    def __init__(
+        self,
+        space_group: SpaceGroupLike = None,
+        dtype: torch.dtype = torch.float64,
+        device: torch.device = torch.device("cpu"),
+    ):
+        super(SpaceGroup, self).__init__()
+        self._device = device
+        self._dtype = dtype
+
+        # Normalize to gemmi.SpaceGroup
+        self._gemmi = _normalize_spacegroup(space_group)
+
+        # Get symmetry operations as tensors
+        matrices, translations = get_operations_as_tensors(
+            self._gemmi, dtype=dtype, device=device
+        )
+
+        self.register_buffer("matrices", matrices)
+        self.register_buffer("translations", translations)
+
+    # =========================================================================
+    # Core properties
+    # =========================================================================
+
+    @property
+    def n_ops(self) -> int:
+        """Number of symmetry operations."""
+        return self.matrices.shape[0]
+
+    @property
+    def name(self) -> str:
+        """Short space group name (e.g., 'P21')."""
+        return self._gemmi.short_name()
+
+    @property
+    def hm(self) -> str:
+        """Hermann-Mauguin notation with spaces (e.g., 'P 21')."""
+        return self._gemmi.hm
+
+    @property
+    def xhm(self) -> str:
+        """Extended Hermann-Mauguin notation."""
+        return self._gemmi.xhm()
+
+    @property
+    def number(self) -> int:
+        """Space group number (1-230)."""
+        return self._gemmi.number
+
+    @property
+    def gemmi(self) -> gemmi.SpaceGroup:
+        """Access the underlying gemmi.SpaceGroup object."""
+        return self._gemmi
+
+    @property
+    def point_group(self) -> str:
+        """Point group symbol (e.g., '222', 'mmm')."""
+        return self._gemmi.point_group_hm()
+
+    @property
+    def crystal_system(self) -> str:
+        """Crystal system name."""
+        return self._gemmi.crystal_system_str()
+
+    @property
+    def centrosymmetric(self) -> bool:
+        """True if space group has inversion center."""
+        return self._gemmi.centrosymmetric()
+
+    @property
+    def dtype(self) -> torch.dtype:
+        """Data type used for matrices."""
+        return self._dtype
+
+    @property
+    def device(self) -> torch.device:
+        """Device for matrices."""
+        return self._device
+
+    # =========================================================================
+    # Backward compatibility aliases
+    # =========================================================================
+
+    @property
+    def spacegroup(self) -> gemmi.SpaceGroup:
+        """Alias for gemmi property (backward compatibility)."""
+        return self._gemmi
+
+    @property
+    def space_group(self) -> gemmi.SpaceGroup:
+        """Alias for gemmi property (backward compatibility)."""
+        return self._gemmi
+
+    @property
+    def space_group_name(self) -> str:
+        """Alias for name property (backward compatibility)."""
+        return self.name
+
+    @property
+    def space_group_number(self) -> int:
+        """Alias for number property (backward compatibility)."""
+        return self.number
+
+    # =========================================================================
+    # Gemmi method delegation for backward compatibility
+    # =========================================================================
+
+    def short_name(self) -> str:
+        """Get short space group name (delegates to gemmi)."""
+        return self._gemmi.short_name()
+
+    def operations(self):
+        """Get symmetry operations (delegates to gemmi)."""
+        return self._gemmi.operations()
+
+    # =========================================================================
+    # Symmetry operation methods
+    # =========================================================================
+
+    def apply(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
+        """
+        Apply symmetry operations to fractional coordinates.
+
+        Parameters
+        ----------
+        xyz_fractional : torch.Tensor
+            Input tensor of shape (N, 3) representing fractional coordinates.
+
+        Returns
+        -------
+        torch.Tensor
+            Transformed coordinates of shape (3, N, ops) where ops is the
+            number of symmetry operations.
+        """
+        coords = (
+            xyz_fractional.reshape(3, -1)
+            .to(self.matrices.device)
+            .to(self.matrices.dtype)
+        )  # (3, N)
+        coords = coords.unsqueeze(0)  # (1, 3, N)
+        transformed = torch.matmul(self.matrices, coords) + self.translations.unsqueeze(
+            2
+        )
+        # transformed: (ops, 3, N)
+        return transformed.permute(1, 2, 0)  # (3, N, ops)
+
+    def forward(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
+        """Forward pass applies symmetry operations."""
+        return self.apply(xyz_fractional)
+
+    # =========================================================================
+    # Grid utilities
+    # =========================================================================
+
+    def get_grid_requirements(self) -> dict:
+        """
+        Analyze symmetry operations to determine grid size requirements.
+
+        Returns
+        -------
+        dict
+            {'nx_mod': int, 'ny_mod': int, 'nz_mod': int}
+            Required divisibility for each axis.
+
+        Examples
+        --------
+        ::
+
+            sg = SpaceGroup('P21')
+            req = sg.get_grid_requirements()
+            print(req)  # {'nx_mod': 1, 'ny_mod': 2, 'nz_mod': 1}
+        """
+        return get_grid_requirements(self._gemmi)
+
+    def check_grid_compatibility(self, grid_shape: tuple) -> dict:
+        """
+        Check if a grid size is compatible with the symmetry operations.
+
+        Parameters
+        ----------
+        grid_shape : tuple of int
+            (nx, ny, nz) grid dimensions.
+
+        Returns
+        -------
+        dict
+            Dictionary with keys:
+            - 'compatible' : bool - True if grid satisfies all requirements
+            - 'symmetry_compatible' : bool - True if grid satisfies symmetry
+            - 'fft_friendly' : bool - True if all dimensions are FFT-friendly
+            - 'can_use_direct_indexing' : bool - True if no interpolation needed
+            - 'issues' : list of str - Descriptions of incompatibilities
+            - 'requirements' : dict - Required divisibility
+
+        Examples
+        --------
+        ::
+
+            sg = SpaceGroup('P21')
+            result = sg.check_grid_compatibility((131, 163, 148))
+            print(result['compatible'])  # False
+            print(result['issues'])  # ['ny=163 not divisible by 2']
+        """
+        return check_grid_compatibility(grid_shape, self._gemmi)
+
+    def suggest_grid_size(
+        self, min_grid_shape: tuple, make_fft_friendly: bool = True
+    ) -> tuple:
+        """
+        Suggest an optimal grid size that satisfies symmetry requirements.
+
+        Parameters
+        ----------
+        min_grid_shape : tuple of int
+            Minimum (nx, ny, nz) grid dimensions.
+        make_fft_friendly : bool, default True
+            If True, ensures result has only factors of 2, 3, 5.
+
+        Returns
+        -------
+        tuple of int
+            Suggested grid dimensions (nx, ny, nz).
+
+        Examples
+        --------
+        ::
+
+            sg = SpaceGroup('P21')
+            suggested = sg.suggest_grid_size((131, 163, 148))
+            print(suggested)  # (135, 164, 150) or similar
+        """
+        return suggest_grid_size(min_grid_shape, self._gemmi, make_fft_friendly)
+
+    # =========================================================================
+    # Dunder methods
+    # =========================================================================
+
+    def __repr__(self) -> str:
+        return (
+            f"SpaceGroup('{self.name}', number={self.number}, n_ops={self.n_ops})"
+        )
+
+    def __hash__(self) -> int:
+        """Hash based on space group number."""
+        return hash(self._gemmi.number)
+
+    def __eq__(self, other) -> bool:
+        """Equality based on space group number."""
+        if isinstance(other, SpaceGroup):
+            return self._gemmi.number == other._gemmi.number
+        if isinstance(other, gemmi.SpaceGroup):
+            return self._gemmi.number == other.number
+        return False
+
+    # =========================================================================
+    # Device movement
+    # =========================================================================
+
+    def to(self, device=None, dtype=None):
+        """Move SpaceGroup to specified device and/or dtype."""
+        result = super().to(device=device, dtype=dtype)
+        if device is not None:
+            self._device = torch.device(device)
+        if dtype is not None:
+            self._dtype = dtype
+        return result
+
+    def cuda(self, device=None):
+        """Move SpaceGroup to CUDA device."""
+        cuda_device = f"cuda:{device}" if device is not None else "cuda"
+        return self.to(device=cuda_device)
+
+    def cpu(self):
+        """Move SpaceGroup to CPU."""
+        return self.to(device="cpu")

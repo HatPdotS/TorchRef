@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 
 from torchref.io import ReflectionData
-from torchref.math_functions.math_torch import (
+from torchref.base.math_torch import (
     bin_wise_rfactors,
     get_rfactors,
     get_scattering_vectors,

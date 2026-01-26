@@ -120,7 +120,7 @@ class TestModelFTRealSpaceMap:
     def test_get_real_space_grid(self, sample_cif_file):
         """Test getting real space grid."""
         from torchref.model.model_ft import ModelFT
-        from torchref.math_functions.math_torch import get_real_grid
+        from torchref.base.math_torch import get_real_grid
         
         model = ModelFT(max_res=2.0, verbose=0)
         model.load_cif(str(sample_cif_file))
@@ -277,7 +277,7 @@ class TestModelFTCoordinateOperations:
     def test_cartesian_to_fractional(self, sample_cif_file):
         """Test coordinate conversion."""
         from torchref.model.model_ft import ModelFT
-        from torchref.math_functions.math_torch import cartesian_to_fractional_torch
+        from torchref.base.math_torch import cartesian_to_fractional_torch
         
         model = ModelFT(max_res=2.0, verbose=0)
         model.load_cif(str(sample_cif_file))
@@ -300,7 +300,7 @@ class TestModelFTCoordinateOperations:
     def test_fractional_to_cartesian(self, sample_cif_file):
         """Test fractional to cartesian conversion."""
         from torchref.model.model_ft import ModelFT
-        from torchref.math_functions.math_torch import (
+        from torchref.base.math_torch import (
             cartesian_to_fractional_torch,
             fractional_to_cartesian_torch
         )
@@ -344,13 +344,13 @@ class TestModelFTAnisoHandling:
     def test_isotropic_b_factors(self, sample_cif_file):
         """Test accessing isotropic B-factors."""
         from torchref.model.model_ft import ModelFT
-        
+
         model = ModelFT(max_res=2.0, verbose=0)
         model.load_cif(str(sample_cif_file))
-        
-        # Get B-factors
-        b_factors = model.b()
-        
+
+        # Get B-factors (now accessed via adp())
+        b_factors = model.adp()
+
         assert b_factors is not None
         assert b_factors.shape[0] == model.xyz().shape[0]
         # B-factors should be positive

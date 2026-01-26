@@ -9,6 +9,7 @@ intensities, and R-free flags.
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from torchref.config import dtypes
 
 import numpy as np
 import pandas as pd
@@ -16,8 +17,8 @@ import torch
 
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
-from torchref.math_functions import math_torch
-from torchref.math_functions.french_wilson import FrenchWilson
+from torchref.base import math_torch
+from torchref.base.french_wilson import FrenchWilson
 from torchref.symmetry import Cell
 from torchref.utils.debug_utils import DebugMixin
 
@@ -131,13 +132,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         data_dict, cell, spacegroup = reader()
 
         hkl = torch.tensor(
-            data_dict["HKL"], dtype=torch.int32, device=self.device, requires_grad=False
+            data_dict["HKL"], dtype=dtypes.int, device=self.device, requires_grad=False
         )
 
         self.hkl = hkl
 
         if cell is not None:
-            self.cell = Cell(cell, dtype=torch.float32, device=self.device)
+            self.cell = Cell(cell, dtype=dtypes.float, device=self.device)
         else:
             raise ValueError(
                 "Unit cell parameters are required in the data and could not be read."
@@ -151,14 +152,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if "I" in data_dict:
             self.I = torch.tensor(
                 data_dict["I"],
-                dtype=torch.float32,
+                dtype=dtypes.float,
                 device=self.device,
                 requires_grad=False,
             )
             if "SIGI" in data_dict:
                 self.I_sigma = torch.tensor(
                     data_dict["SIGI"],
-                    dtype=torch.float32,
+                    dtype=dtypes.float,
                     device=self.device,
                     requires_grad=False,
                 )
@@ -172,7 +173,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         elif "F" in data_dict:
             self.F = torch.tensor(
                 data_dict["F"],
-                dtype=torch.float32,
+                dtype=dtypes.float,
                 device=self.device,
                 requires_grad=False,
             )
@@ -180,7 +181,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 if data_dict["SIGF"] is not None:
                     self.F_sigma = torch.tensor(
                         data_dict["SIGF"],
-                        dtype=torch.float32,
+                        dtype=dtypes.float,
                         device=self.device,
                         requires_grad=False,
                     )
@@ -343,7 +344,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         print(f"  Created {actual_n_bins} resolution bins")
 
         # Initialize all flags as work set (1)
-        flags = torch.ones(n_refl, dtype=torch.int32, requires_grad=False)
+        flags = torch.ones(n_refl, dtype=dtypes.int, requires_grad=False)
 
         # Sample free reflections from each bin
         total_free = 0
@@ -370,7 +371,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             total_free += n_free_in_bin
 
         # Move to correct device and assign
-        flags_tensor = flags.to(dtype=torch.int32, device=self.device)
+        flags_tensor = flags.to(dtype=dtypes.int, device=self.device)
         self.rfree_flags = flags_tensor
         self.rfree_source = "Generated (resolution-binned)"
 
@@ -420,14 +421,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         _, sort_indices = torch.sort(self.resolution)
 
         # Create bins with approximately equal number of VALID reflections
-        bin_indices = torch.zeros(n_refl, dtype=torch.int32, device=self.device)
+        bin_indices = torch.zeros(n_refl, dtype=dtypes.int, device=self.device)
         reflections_per_bin = total_valid // actual_n_bins
 
         # Get the valid mask in sorted order
         valid_mask_sorted = valid_mask[sort_indices]
 
         # Cumulative sum of valid reflections in sorted order
-        cumsum_valid = torch.cumsum(valid_mask_sorted.to(torch.int32), dim=0)
+        cumsum_valid = torch.cumsum(valid_mask_sorted.to(dtypes.int), dim=0)
 
         # Create bin edges based on cumulative count of valid reflections
         # Each bin should contain approximately reflections_per_bin valid reflections
@@ -481,9 +482,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             raise ValueError("Bins have not been created yet")
 
         mean_resolutions = torch.zeros(
-            self._n_bins, dtype=torch.float32, device=self.device
+            self._n_bins, dtype=dtypes.float, device=self.device
         )
-        count_per_bin = torch.zeros(self._n_bins, dtype=torch.int32, device=self.device)
+        count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_resolutions = torch.scatter_add(
             mean_resolutions,
@@ -495,7 +496,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             count_per_bin,
             0,
             self.bin_indices[mask].to(torch.int64),
-            torch.ones_like(self.resolution[mask], dtype=torch.int32),
+            torch.ones_like(self.resolution[mask], dtype=dtypes.int),
         )
         mean_resolutions = mean_resolutions / count_per_bin.clamp(min=1).float()
         return mean_resolutions
@@ -519,8 +520,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if self.F is None:
             raise ValueError("No amplitude data loaded")
 
-        mean_F = torch.zeros(self._n_bins, dtype=torch.float32, device=self.device)
-        count_per_bin = torch.zeros(self._n_bins, dtype=torch.int32, device=self.device)
+        mean_F = torch.zeros(self._n_bins, dtype=dtypes.float, device=self.device)
+        count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_F = torch.scatter_add(
             mean_F, 0, self.bin_indices[mask].to(torch.int64), self.F[mask]
@@ -529,7 +530,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             count_per_bin,
             0,
             self.bin_indices[mask].to(torch.int64),
-            torch.ones_like(self.F[mask], dtype=torch.int32),
+            torch.ones_like(self.F[mask], dtype=dtypes.int),
         )
         mean_F = mean_F / count_per_bin.clamp(min=1).float()
         return mean_F
@@ -553,8 +554,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if self.F is None:
             raise ValueError("No amplitude data loaded")
 
-        mean_sigma = torch.zeros(self._n_bins, dtype=torch.float32, device=self.device)
-        count_per_bin = torch.zeros(self._n_bins, dtype=torch.int32, device=self.device)
+        mean_sigma = torch.zeros(self._n_bins, dtype=dtypes.float, device=self.device)
+        count_per_bin = torch.zeros(self._n_bins, dtype=dtypes.int, device=self.device)
         mask = self.masks()
         mean_sigma = torch.scatter_add(
             mean_sigma, 0, self.bin_indices[mask].to(torch.int64), self.F_sigma[mask]
@@ -563,7 +564,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             count_per_bin,
             0,
             self.bin_indices[mask].to(torch.int64),
-            torch.ones_like(self.F_sigma[mask], dtype=torch.int32),
+            torch.ones_like(self.F_sigma[mask], dtype=dtypes.int),
         )
         mean_sigma = mean_sigma / count_per_bin.clamp(min=1).float()
         return mean_sigma
@@ -1530,7 +1531,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Ensure hkl_ref is 2D and int32
         if hkl_ref.dim() == 1:
             hkl_ref = hkl_ref.unsqueeze(0)
-        hkl_ref = hkl_ref.to(dtype=torch.int32, device=self.device)
+        hkl_ref = hkl_ref.to(dtype=dtypes.int, device=self.device)
 
         n_ref = len(hkl_ref)
         n_data = len(self.hkl)
@@ -1989,7 +1990,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Check if we already have it cached (could be stored in a buffer if we want persistence)
         if not hasattr(self, "_centric_flags") or self._centric_flags is None:
-            from torchref.math_functions.french_wilson import is_centric_from_hkl
+            from torchref.base.french_wilson import is_centric_from_hkl
 
             # Ensure we have spacegroup
             sg = self.spacegroup if self.spacegroup else "P1"
@@ -2026,7 +2027,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Real-valued Patterson map of shape (Nx, Ny, Nz).
             Origin is at grid position [0, 0, 0].
         """
-        from torchref.math_functions.math_torch import find_grid_size, place_on_grid
+        from torchref.base.math_torch import find_grid_size, place_on_grid
 
         # Expand to P1 symmetry (don't fill missing reflections - use only observed data)
         data = self.expand_to_p1()
@@ -2058,7 +2059,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Tensor of shape (M, 3) containing all possible Miller indices
             within the resolution limit defined by self.resolution.
         """
-        from torchref.math_functions.reciprocal_space import generate_possible_hkl
+        from torchref.base.reciprocal import generate_possible_hkl
 
         if self.cell is None or self.resolution is None:
             raise ValueError(
@@ -2140,13 +2141,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         prior_mask = self.masks()
         if prior_mask is not None:
             remapped.masks["prior_flagged"] = _remap_tensor(
-                prior_mask.to(torch.int32), fill_value=0
+                prior_mask.to(dtype=dtypes.int), fill_value=0
             ).to(torch.bool)
 
         # Handle rfree_flags (True = include in Rfree for missing)
         if self.rfree_flags is not None:
             remapped.rfree_flags = _remap_tensor(
-                self.rfree_flags.to(torch.int32), fill_value=1
+                self.rfree_flags.to(dtype=dtypes.int), fill_value=1
             ).to(torch.bool)
 
         # Handle phases with optional shifts
@@ -2407,7 +2408,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 return gathered.sum(dim=1)
             elif agg_func == "first":
                 # Take first valid value
-                first_valid_idx = valid_mask.to(torch.int).argmax(dim=1)
+                first_valid_idx = valid_mask.to(dtype=dtypes.int).argmax(dim=1)
                 return gathered[
                     torch.arange(n_asu, device=self.device), first_valid_idx
                 ]
@@ -2432,7 +2433,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 variance_sum = (gathered**2).sum(dim=1)
                 return torch.sqrt(variance_sum)
             elif agg_func == "first":
-                first_valid_idx = valid_mask.to(torch.int).argmax(dim=1)
+                first_valid_idx = valid_mask.to(dtype=dtypes.int).argmax(dim=1)
                 return gathered[
                     torch.arange(n_asu, device=self.device), first_valid_idx
                 ]
@@ -2493,7 +2494,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Handle rfree_flags: OR operation (free if any equivalent is free)
         if self.rfree_flags is not None:
             rfree_gathered = self.rfree_flags[reduction_indices.clamp(min=0)].to(
-                torch.int32
+                dtypes.int
             )
             rfree_gathered = torch.where(
                 valid_mask,
@@ -2587,7 +2588,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         shell_indices : torch.Tensor
             Shell index for each reflection, shape (N,). Values -1 for out-of-range.
         """
-        from torchref.math_functions.normalization import (
+        from torchref.base.normalization import (
             assign_to_shells,
             compute_radial_shells,
         )
@@ -2656,7 +2657,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ValueError
             If no amplitude data is available.
         """
-        from torchref.math_functions.normalization import fit_anisotropy_correction
+        from torchref.base import fit_anisotropy_correction
 
         if self.F is None:
             raise ValueError("No amplitude data loaded")
@@ -2716,7 +2717,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ValueError
             If no U parameters available and none provided.
         """
-        from torchref.math_functions.normalization import apply_anisotropy_correction
+        from torchref.base import apply_anisotropy_correction
 
         if U_aniso is None:
             U_aniso = self.U_aniso
@@ -2798,7 +2799,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
             E = data.compute_e_values(apply_anisotropy=False)
         """
-        from torchref.math_functions.normalization import F_squared_to_E_values
+        from torchref.base import F_squared_to_E_values
 
         if self.F is None:
             raise ValueError("No amplitude data loaded")

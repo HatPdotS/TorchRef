@@ -18,26 +18,26 @@ class TestRefinementSetup:
         from torchref.model.model import Model
         from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
-        from torchref.symmetry.symmetry import Symmetry
-        
+        from torchref.symmetry import SpaceGroup
+
         # Load model
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
-        
+
         # Load data
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
-        
-        # Create symmetry
-        sym = Symmetry(model.spacegroup)
-        
+
+        # Create SpaceGroup
+        sg = SpaceGroup(model.spacegroup)
+
         # Create scaler
         scaler = Scaler()
-        
+
         # All components should be ready
         assert model.xyz().shape[0] > 0
         assert data.hkl is not None
-        assert sym.matrices is not None
+        assert sg.matrices is not None
         assert scaler is not None
 
     @pytest.mark.integration
@@ -136,21 +136,21 @@ class TestDeviceConsistency:
         """Test that all components can be moved to the same device."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
-        from torchref.symmetry.symmetry import Symmetry
-        
+        from torchref.symmetry import SpaceGroup
+
         # Load
         model = Model(device=cpu_device)
         model.load_cif(str(sample_structure_pair["model"]))
-        
+
         data = ReflectionData(device=cpu_device)
         data.load_mtz(str(sample_structure_pair["reflections"]))
-        
-        sym = Symmetry(model.spacegroup, device=cpu_device)
+
+        sg = SpaceGroup(model.spacegroup, device=cpu_device)
         
         # Check devices
         assert model.xyz().device == cpu_device
         assert data.hkl.device == cpu_device
-        assert sym.matrices.device == cpu_device
+        assert sg.matrices.device == cpu_device
 
     @pytest.mark.integration
     @pytest.mark.gpu

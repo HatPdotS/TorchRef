@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torchref.symmetry.symmetry import Symmetry
+from torchref.symmetry.spacegroup import SpaceGroup
 
 
 class MapSymmetry(nn.Module):
@@ -84,7 +84,7 @@ class MapSymmetry(nn.Module):
         self.verbose = verbose
         self.device = device
         # Get symmetry operations
-        self.symmetry = Symmetry(
+        self.symmetry = SpaceGroup(
             space_group, dtype=self.dtype_float, device=self.device
         )
         self.n_ops = self.symmetry.matrices.shape[0]

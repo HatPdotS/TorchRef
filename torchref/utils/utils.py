@@ -589,8 +589,14 @@ class TensorDict(nn.Module):
             self.register_buffer(name, tensor)
             self._keys.append(key)
         else:
-            # Update existing buffer in-place
-            getattr(self, name).data.copy_(tensor)
+            existing = getattr(self, name)
+            if existing.shape == tensor.shape:
+                # Update existing buffer in-place (same shape)
+                existing.data.copy_(tensor)
+            else:
+                # Shape changed - re-register the buffer with new tensor
+                delattr(self, name)
+                self.register_buffer(name, tensor)
 
     def __getitem__(self, key: str) -> torch.Tensor:
         name = f"_buf_{key}"

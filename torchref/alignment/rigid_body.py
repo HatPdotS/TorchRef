@@ -29,39 +29,7 @@ from torchref.scaling import ScalerBase
 from torchref.model import FFT
 from torchref.symmetry import spacegroup
 from torchref.refinement.targets import MaximumLikelihoodXrayTarget
-
-def rotation_matrix_from_euler_zyz_torch(
-    angles: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Create rotation matrix from ZYZ Euler angles (differentiable PyTorch version).
-
-    R = Rz(alpha) @ Ry(beta) @ Rz(gamma)
-
-    Parameters
-    ----------
-    angles : torch.Tensor
-        Tensor of three rotation angles (alpha, beta, gamma) in radians.
-
-    Returns
-    -------
-    torch.Tensor
-        3x3 rotation matrix.
-    """
-
-    ca, sa = torch.cos(angles[0]), torch.sin(angles[0])
-    cb, sb = torch.cos(angles[1]), torch.sin(angles[1])
-    cg, sg = torch.cos(angles[2]), torch.sin(angles[2])
-
-    # Build rotation matrix element by element
-    R = torch.stack([
-        torch.stack([ca*cb*cg - sa*sg, -ca*cb*sg - sa*cg, ca*sb]),
-        torch.stack([sa*cb*cg + ca*sg, -sa*cb*sg + ca*cg, sa*sb]),
-        torch.stack([-sb*cg,            sb*sg,             cb])
-    ])
-
-    return R
-
+from torchref.base import rotation_matrix_euler_zyz
 
 @dataclass
 class RigidBodyResult:
@@ -145,6 +113,7 @@ class RigidBodyRefinement(nn.Module):
         initial_translation: Optional[torch.Tensor] = None,
         device: torch.device = torch.device("cpu"),
         rfactor_converged_threshold: float = 0.45,
+        max_res: float = 4.0,
         verbose: int = 1,
     ):
         super().__init__()
@@ -164,7 +133,7 @@ class RigidBodyRefinement(nn.Module):
         self.cell = data.cell
         self.spacegroup = data.spacegroup
 
-        self.fft = FFT(self.cell,  self.spacegroup, max_res=4.0) # we dont need high res for rigid body Nyquist sampling makes it so we can go 3 times higher in res anyway
+        self.fft = FFT(self.cell, self.spacegroup, max_res=max_res)
 
 
         self.verbose = verbose
@@ -220,7 +189,7 @@ class RigidBodyRefinement(nn.Module):
         """
 
         angles = self.initial_rotation + self.rotation
-        return rotation_matrix_from_euler_zyz_torch(angles)
+        return rotation_matrix_euler_zyz(angles)
 
     @property
     def rotation(self) -> torch.Tensor:

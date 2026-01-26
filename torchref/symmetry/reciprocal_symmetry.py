@@ -25,7 +25,6 @@ import torch
 import torch.nn as nn
 
 from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
-from torchref.symmetry.symmetry import Symmetry
 
 if TYPE_CHECKING:
     from torchref.io.datasets.reflection_data import ReflectionData
@@ -85,7 +84,7 @@ class ReciprocalSymmetryGrid(nn.Module):
         Space group name.
     grid_shape : tuple of int
         Shape of the reciprocal space grid (nh, nk, nl).
-    symmetry : Symmetry
+    symmetry : SpaceGroup
         Base symmetry operations handler.
     n_ops : int
         Number of symmetry operations.
@@ -131,7 +130,7 @@ class ReciprocalSymmetryGrid(nn.Module):
         self.device = device
 
         # Get symmetry operations from base class
-        self.symmetry = Symmetry(space_group, dtype=dtype_float, device=device)
+        self.symmetry = SpaceGroup(space_group, dtype=dtype_float, device=device)
         self.n_ops = self.symmetry.matrices.shape[0]
 
         # Precompute reciprocal space rotation matrices (transpose of real space)
@@ -752,7 +751,7 @@ def expand_hkl(
         device = hkl.device
 
     # Get symmetry operations
-    symmetry = Symmetry(spacegroup, dtype=torch.float32, device=device)
+    symmetry = SpaceGroup(spacegroup, dtype=torch.float32, device=device)
     n_ops = symmetry.matrices.shape[0]
 
     # Reciprocal space matrices (transpose of real space)
@@ -891,7 +890,7 @@ def complete_hkl(
         present_mask = ~missing
         F_complete[present_mask] = F_input[indices[present_mask]]
     """
-    from torchref.math_functions.reciprocal_space import generate_possible_hkl
+    from torchref.base.reciprocal import generate_possible_hkl
 
     if device is None:
         device = input_hkl.device
@@ -900,7 +899,7 @@ def complete_hkl(
     all_hkl = generate_possible_hkl(cell, d_min, device=device)
 
     # Get symmetry operations for absence check
-    symmetry = Symmetry(spacegroup, dtype=torch.float32, device=device)
+    symmetry = SpaceGroup(spacegroup, dtype=torch.float32, device=device)
     translations = symmetry.translations
 
     # Remove systematic absences
@@ -994,7 +993,7 @@ def expand_reflections(
     n_orig = len(reflection_data.hkl)
 
     if verbose > 0:
-        symmetry = Symmetry(space_group, dtype=torch.float32, device=device)
+        symmetry = SpaceGroup(space_group, dtype=torch.float32, device=device)
         print(f"Expanding reflections for {space_group}")
         print(f"  Original reflections: {n_orig}")
         print(f"  Symmetry operations: {symmetry.n_ops}")
@@ -1200,7 +1199,7 @@ def reduce_hkl(
         device = hkl_p1.device
 
     # Get symmetry operations
-    symmetry = Symmetry(spacegroup, dtype=torch.float32, device=device)
+    symmetry = SpaceGroup(spacegroup, dtype=torch.float32, device=device)
     n_ops = symmetry.matrices.shape[0]
 
     # Reciprocal space matrices (transpose of real space)

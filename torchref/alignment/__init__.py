@@ -1,133 +1,232 @@
 """
 Alignment module for TorchRef.
 
-Provides two approaches for aligning predicted structures to observed
-diffraction data:
+Provides molecular replacement functionality including:
 
-1. Patterson-based alignment: Uses Patterson map vector matching for
-   initial orientation search.
+1. Fast Rotation Function: Ball harmonic transform for rotation search
+2. Translation Search: FFT-based translation function
+3. Rigid Body Refinement: Optimization of rotation and translation
+4. Unified Pipeline: Complete MR workflow with early stopping
 
-2. Maximum Likelihood alignment: Uses ML target functions for gradient-based
-   refinement of rotation and translation.
-
-Example - Patterson alignment
------------------------------
+Example - Full MR Pipeline
+--------------------------
 ::
 
-    from torchref.alignment import PattersonAligner
-    from torchref.model import Model
-    from torchref.io.datasets.reflection_data import ReflectionData
-
-    data = ReflectionData().load_mtz('data.mtz')
-    model = Model().load_pdb('predicted.pdb')
-
-    aligner = PattersonAligner(data, model)
-    aligned_model, result = aligner.align(model)
-
-Example - ML alignment
-----------------------
-::
-
-    from torchref.alignment import MLOrientationAligner
+    from torchref.alignment import MolecularReplacementPipeline
     from torchref.model import ModelFT
     from torchref.io.datasets.reflection_data import ReflectionData
 
-    data = ReflectionData().load_mtz('data.mtz')
-    model = ModelFT().load_pdb('predicted.pdb')
+    data = ReflectionData().load_mtz('observed.mtz')
+    model = ModelFT().load_pdb('search_model.pdb')
 
-    aligner = MLOrientationAligner(data, model)
-    aligned_model, result = aligner.align()
-    print(f"Final LLG: {result.llg:.2f}")
+    pipeline = MolecularReplacementPipeline(data, model)
+    solutions = pipeline.run(n_rotation_peaks=50, min_tries=3, max_tries=10)
+    print(f"Best R-factor: {solutions[0].r_factor:.3f}")
+
+Example - Individual Components
+-------------------------------
+::
+
+    from torchref.alignment import (
+        ball_rotation_search_torch,
+        fft_translation_search_torch,
+        RigidBodyRefinement,
+    )
+
+    # 1. Rotation search
+    rf, angles, peaks = ball_rotation_search_torch(
+        E_obs, s_obs, E_calc, s_calc, L=32, P=20
+    )
+
+    # 2. Translation search for top rotation
+    alpha, beta, gamma, score, sigma = peaks[0]
+    corr_map, best_trans, trans_peaks = fft_translation_search_torch(
+        F_obs, F_calc_rotated, hkl
+    )
+
+    # 3. Rigid body refinement
+    rb = RigidBodyRefinement(model, data, initial_rotation=..., initial_translation=...)
+    result = rb.refine()
 """
 
 import warnings
 
 warnings.warn(
-    "torchref.alignment is in development and does not have full functionality. "
-    "APIs will change in future releases.",
+    "torchref.alignment is in development. APIs may change.",
     FutureWarning,
 )
 
-from .align import AlignmentResult, PattersonAligner
-from .clashscore import AtomSampler, ClashScoreCalculator, compute_clash_score
-from .distributions import (
-    combined_log_likelihood,
-    rice_log_likelihood,
-    stable_log_bessel_i0,
-    woolfson_log_likelihood,
-)
-from .fast_rotation_function import (
-    FastRotationFunction,
-    FRFPeak,
-    FRFResult,
-    apply_anisotropic_normalization,
-    apply_patterson_sharpening,
-    compute_anisotropic_scale,
-    compute_e_values,
-    fast_rotation_function,
-    fit_anisotropic_wilson,
-)
-from .likelihood import MLTargetFunction, compute_d_factors, compute_llg, mltf
-from .ml_aligner import (
-    InterpolatedMLTarget,
-    MLAlignmentResult,
-    MLOrientationAligner,
+# =============================================================================
+# Pipeline (main entry point)
+# =============================================================================
+from .pipeline import (
     MolecularReplacementPipeline,
-    MRResult,
-    RigidBodyMLTarget,
-    TranslationSearchTarget,
+    MRSolution,
+    cluster_rotation_peaks,
+    rotation_angular_distance,
+    euler_angular_distance,
 )
-from .rigid_body import (
-    RigidBodyRefinement,
-    RigidBodyResult)
 
+# =============================================================================
+# Rotation search (Ball Transform)
+# =============================================================================
+from .ball_transform import (
+    ball_rotation_search,
+    ball_rotation_search_torch,
+    rotation_matrix_from_euler_zyz,
+    rotation_matrix_to_euler_zyz,
+    rotation_matrix_to_quaternion,
+    check_rotation_recovery,
+    BallHarmonicCoefficients,
+    splat_evalues_to_ball,
+    compute_ball_harmonic_coefficients,
+    compute_ball_cross_correlation_coefficients,
+    evaluate_rotation_function,
+    find_rotation_peaks,
+    reduce_rotation_by_symmetry,
+    reduce_peaks_by_symmetry,
+    reduce_peaks_by_symmetry_torch,
+    cluster_rotation_peaks,
+    cluster_rotation_peaks_torch,
+    RotationCluster,
+)
+
+# =============================================================================
+# Translation search
+# =============================================================================
+from .translation import (
+    fft_translation_search,
+    fft_translation_search_torch,
+    TranslationPeak,
+    find_translation_peaks,
+    apply_translation_to_fcalc,
+    apply_translation_to_fcalc_torch,
+)
+
+# =============================================================================
+# Rigid body refinement
+# =============================================================================
+from .rigid_body import RigidBodyRefinement, RigidBodyResult
+
+# =============================================================================
+# Rigid body transformations
+# =============================================================================
+from .transform import (
+    RigidTransform,
+    quaternion_normalize,
+    quaternion_conjugate,
+    quaternion_multiply,
+    quaternion_rotate,
+    quaternion_to_matrix,
+    matrix_to_quaternion,
+    axis_angle_to_quaternion,
+    quaternion_to_axis_angle,
+    quaternion_to_euler_zyz,
+    euler_zyz_to_quaternion,
+    rotation_matrix_from_euler,
+    sample_angles,
+)
+
+# =============================================================================
+# Clash scoring
+# =============================================================================
+from .clashscore import ClashScoreCalculator, AtomSampler, compute_clash_score
+
+# =============================================================================
+# ML distributions
+# =============================================================================
+from .distributions import (
+    stable_log_bessel_i0,
+    rice_log_likelihood,
+    woolfson_log_likelihood,
+    combined_log_likelihood,
+    acentric_pdf,
+    centric_pdf,
+)
+
+# =============================================================================
+# Sampling utilities
+# =============================================================================
 from .sampling import VectorSampler, get_rotation_sampling_range
-from .transform import RigidTransform
 
 __all__ = [
-    # Main API - Patterson
-    "PattersonAligner",
-    "AlignmentResult",
-    # Main API - Maximum Likelihood
-    "MLOrientationAligner",
-    "RigidBodyMLTarget",
-    "MLAlignmentResult",
-    "MLTargetFunction",
-    # MR Pipeline
+    # -------------------------------------------------------------------------
+    # Pipeline (main entry point)
+    # -------------------------------------------------------------------------
     "MolecularReplacementPipeline",
-    "MRResult",
-    "TranslationSearchTarget",
-    "InterpolatedMLTarget",
-    # Fast Rotation Function
-    "FastRotationFunction",
-    "FRFPeak",
-    "FRFResult",
-    "fast_rotation_function",
+    "MRSolution",
+    "cluster_rotation_peaks",
+    "rotation_angular_distance",
+    "euler_angular_distance",
+    # -------------------------------------------------------------------------
+    # Rotation search
+    # -------------------------------------------------------------------------
+    "ball_rotation_search",
+    "ball_rotation_search_torch",
+    "rotation_matrix_from_euler_zyz",
+    "rotation_matrix_to_euler_zyz",
+    "rotation_matrix_to_quaternion",
+    "check_rotation_recovery",
+    "BallHarmonicCoefficients",
+    "splat_evalues_to_ball",
+    "compute_ball_harmonic_coefficients",
+    "compute_ball_cross_correlation_coefficients",
+    "evaluate_rotation_function",
+    "find_rotation_peaks",
+    "reduce_rotation_by_symmetry",
+    "reduce_peaks_by_symmetry",
+    "reduce_peaks_by_symmetry_torch",
+    "cluster_rotation_peaks",
+    "cluster_rotation_peaks_torch",
+    "RotationCluster",
+    # -------------------------------------------------------------------------
+    # Translation search
+    # -------------------------------------------------------------------------
+    "fft_translation_search",
+    "fft_translation_search_torch",
+    "TranslationPeak",
+    "find_translation_peaks",
+    "apply_translation_to_fcalc",
+    "apply_translation_to_fcalc_torch",
+    # -------------------------------------------------------------------------
     # Rigid body refinement
+    # -------------------------------------------------------------------------
     "RigidBodyRefinement",
     "RigidBodyResult",
-    "compute_r_factor",
-    "ml_xray_loss",
-    # Rigid body transformations
+    # -------------------------------------------------------------------------
+    # Transforms
+    # -------------------------------------------------------------------------
     "RigidTransform",
+    "quaternion_normalize",
+    "quaternion_conjugate",
+    "quaternion_multiply",
+    "quaternion_rotate",
+    "quaternion_to_matrix",
+    "matrix_to_quaternion",
+    "axis_angle_to_quaternion",
+    "quaternion_to_axis_angle",
+    "quaternion_to_euler_zyz",
+    "euler_zyz_to_quaternion",
+    "rotation_matrix_from_euler",
+    "sample_angles",
+    # -------------------------------------------------------------------------
     # Clash scoring
+    # -------------------------------------------------------------------------
     "ClashScoreCalculator",
     "AtomSampler",
     "compute_clash_score",
-    # ML likelihood functions
-    "mltf",
-    "compute_d_factors",
-    "compute_llg",
-    # Distribution primitives
+    # -------------------------------------------------------------------------
+    # Distributions
+    # -------------------------------------------------------------------------
     "stable_log_bessel_i0",
     "rice_log_likelihood",
     "woolfson_log_likelihood",
     "combined_log_likelihood",
-    # Lower-level utilities (for advanced users)
+    "acentric_pdf",
+    "centric_pdf",
+    # -------------------------------------------------------------------------
+    # Utilities
+    # -------------------------------------------------------------------------
     "VectorSampler",
     "get_rotation_sampling_range",
-    "params_to_matrix",
-    "matrix_to_params",
-    "random_rotation_params",
-    "random_rotation_matrix",
 ]

@@ -2,8 +2,8 @@
 Symmetry operations module for TorchRef.
 
 Provides crystallographic symmetry operations for:
-- Space group handling (using gemmi.SpaceGroup as canonical representation)
-- Fractional coordinates (base Symmetry class)
+- Space group handling via SpaceGroup class (nn.Module with buffers)
+- Symmetry alias for backward compatibility (same as SpaceGroup)
 - Real space density maps (MapSymmetry)
 - Reciprocal space structure factor grids (ReciprocalSymmetry)
 
@@ -13,14 +13,18 @@ Example
 
     from torchref.symmetry import SpaceGroup, Symmetry, MapSymmetry, ReciprocalSymmetry
 
-    # Normalize space group from various inputs
+    # SpaceGroup is the unified class for space group handling
     sg = SpaceGroup('P21')        # From string
     sg = SpaceGroup(4)            # From number
     sg = SpaceGroup(gemmi_sg)     # Pass-through gemmi object
 
-    # Base symmetry for coordinates
-    sym = Symmetry('P21')
-    transformed_coords = sym(fractional_coords)
+    # SpaceGroup is an nn.Module with symmetry operations
+    transformed_coords = sg(fractional_coords)
+    print(sg.n_ops)               # Number of symmetry operations
+    print(sg.matrices.shape)      # (n_ops, 3, 3) rotation matrices
+
+    # Symmetry is now an alias for SpaceGroup (backward compatibility)
+    sym = Symmetry('P21')         # Same as SpaceGroup('P21')
 
     # Real space map symmetry
     map_sym = MapSymmetry('P21', map_shape=(64, 64, 64), cell_params=cell)

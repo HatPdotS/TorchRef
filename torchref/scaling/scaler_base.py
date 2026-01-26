@@ -17,7 +17,7 @@ from typing import Optional, Tuple, TYPE_CHECKING
 import torch
 import torch.nn as nn
 
-from torchref.math_functions.math_torch import (
+from torchref.base.math_torch import (
     U_to_matrix,
     bin_wise_rfactors,
     get_rfactors,

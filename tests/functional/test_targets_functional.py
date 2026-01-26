@@ -17,7 +17,7 @@ class TestXrayTargetsFunctional:
         """Test Gaussian NLL calculation with real reflection data."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -76,7 +76,7 @@ class TestRfactorCalculationsFunctional:
         """Test R-factor calculation with real reflection data."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
-        from torchref.math_functions.math_torch import get_rfactors
+        from torchref.base.math_torch import get_rfactors
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -112,7 +112,7 @@ class TestRfactorCalculationsFunctional:
         """Test bin-wise R-factor calculation."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
-        from torchref.math_functions.math_torch import bin_wise_rfactors
+        from torchref.base.math_torch import bin_wise_rfactors
         
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
@@ -149,17 +149,13 @@ class TestGeometryTargetsFunctional:
     def test_bond_target_with_real_structure(self, sample_cif_file, external_monomer_library):
         """Test bond target calculation with real structure."""
         from torchref.model.model import Model
-        from torchref.restraints.restraints import Restraints
-        
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
-        restraints = Restraints(
-            model=model,
-            cif_path=str(external_monomer_library),
-            verbose=0
-        )
-        restraints.build_restraints()
+
+        # Use new model-based restraints API
+        model.set_restraints_cif(str(external_monomer_library))
+        restraints = model.restraints
         
         # Calculate bond deviations manually
         if 'bond' in restraints.restraints and 'intra' in restraints.restraints['bond']:
@@ -190,17 +186,13 @@ class TestGeometryTargetsFunctional:
     def test_angle_target_with_real_structure(self, sample_cif_file, external_monomer_library):
         """Test angle target calculation with real structure."""
         from torchref.model.model import Model
-        from torchref.restraints.restraints import Restraints
-        
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
-        restraints = Restraints(
-            model=model,
-            cif_path=str(external_monomer_library),
-            verbose=0
-        )
-        restraints.build_restraints()
+
+        # Use new model-based restraints API
+        model.set_restraints_cif(str(external_monomer_library))
+        restraints = model.restraints
         
         # Calculate angle deviations
         if 'angle' in restraints.restraints and 'intra' in restraints.restraints['angle']:
@@ -250,18 +242,17 @@ class TestStructureFactorCalculationFunctional:
         """Test that calculated structure factors have correct shape."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
-        from torchref.symmetry.symmetry import Symmetry
-        
+
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
-        
+
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
-        
+
         # Check if model has fcalc calculation method
         if hasattr(model, 'calc_fcalc'):
             fcalc = model.calc_fcalc(data)
-            
+
             # Fcalc should have same number of reflections as data
             assert fcalc.shape[0] == data.hkl.shape[0]
 
@@ -325,7 +316,7 @@ class TestMathFunctionsFunctional:
     def test_scattering_vectors_from_real_data(self, sample_structure_pair):
         """Test scattering vector calculation with real HKL and cell."""
         from torchref.io import ReflectionData
-        from torchref.math_functions.math_torch import get_scattering_vectors
+        from torchref.base.math_torch import get_scattering_vectors
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -343,7 +334,7 @@ class TestMathFunctionsFunctional:
     def test_coordinate_transformations_with_real_cell(self, sample_cif_file):
         """Test coordinate transformations with real unit cell."""
         from torchref.model.model import Model
-        from torchref.math_functions.math_torch import (
+        from torchref.base.math_torch import (
             cartesian_to_fractional_torch,
             fractional_to_cartesian_torch
         )
@@ -370,7 +361,7 @@ class TestMathFunctionsFunctional:
     @pytest.mark.integration
     def test_u_matrix_conversion(self):
         """Test conversion of U parameters to matrix form."""
-        from torchref.math_functions.math_torch import U_to_matrix
+        from torchref.base.math_torch import U_to_matrix
         
         # Create U parameters (U11, U22, U33, U12, U13, U23)
         u_params = torch.tensor([0.05, 0.06, 0.04, 0.01, 0.005, -0.01], dtype=torch.float32)
@@ -387,50 +378,50 @@ class TestMathFunctionsFunctional:
         assert torch.isclose(U[2, 2], u_params[2])
 
 
-class TestSymmetryFunctional:
+class TestSpaceGroupFunctional:
     """Functional tests for symmetry operations."""
 
     @pytest.mark.integration
-    def test_symmetry_matrices_orthogonal(self, sample_cif_file):
+    def test_spacegroup_matrices_orthogonal(self, sample_cif_file):
         """Test that symmetry rotation matrices are orthogonal."""
         from torchref.model.model import Model
-        from torchref.symmetry.symmetry import Symmetry
-        
+        from torchref.symmetry import SpaceGroup
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
-        sym = Symmetry(model.spacegroup)
-        
+
+        sg = SpaceGroup(model.spacegroup)
+
         # Check each symmetry operation
-        for i in range(sym.matrices.shape[0]):
-            mat = sym.matrices[i]
-            
+        for i in range(sg.matrices.shape[0]):
+            mat = sg.matrices[i]
+
             # Extract rotation part (first 3x3)
             if mat.shape[-1] == 4:
                 rot = mat[:3, :3]
             else:
                 rot = mat[:3, :3]
-            
+
             # R * R^T should be identity
             product = torch.mm(rot.float(), rot.float().T)
             identity = torch.eye(3, dtype=product.dtype)
-            
+
             assert torch.allclose(product, identity, atol=1e-5)
 
     @pytest.mark.integration
-    def test_symmetry_determinant(self, sample_cif_file):
+    def test_spacegroup_determinant(self, sample_cif_file):
         """Test that symmetry matrices have determinant +1 or -1."""
         from torchref.model.model import Model
-        from torchref.symmetry.symmetry import Symmetry
-        
+        from torchref.symmetry import SpaceGroup
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
-        sym = Symmetry(model.spacegroup)
-        
-        for i in range(sym.matrices.shape[0]):
-            mat = sym.matrices[i]
-            
+
+        sg = SpaceGroup(model.spacegroup)
+
+        for i in range(sg.matrices.shape[0]):
+            mat = sg.matrices[i]
+
             if mat.shape[-1] == 4:
                 rot = mat[:3, :3]
             else:
@@ -449,7 +440,7 @@ class TestNLLFunctionsFunctional:
     def test_nll_xray_with_identical_data(self, sample_structure_pair):
         """Test NLL is minimal when Fobs equals Fcalc."""
         from torchref.io import ReflectionData
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -473,7 +464,7 @@ class TestNLLFunctionsFunctional:
     def test_nll_xray_increases_with_error(self, sample_structure_pair):
         """Test NLL increases as Fcalc differs from Fobs."""
         from torchref.io import ReflectionData
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -504,7 +495,7 @@ class TestNLLFunctionsFunctional:
     def test_nll_xray_lognormal(self, sample_structure_pair):
         """Test lognormal NLL calculation."""
         from torchref.io import ReflectionData
-        from torchref.math_functions.math_torch import nll_xray_lognormal
+        from torchref.base.math_torch import nll_xray_lognormal
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -602,7 +593,7 @@ class TestWeightingSchemesFunctional:
     def test_resolution_weighting(self, sample_structure_pair):
         """Test resolution-based weighting."""
         from torchref.io import ReflectionData
-        from torchref.math_functions.math_torch import get_scattering_vectors
+        from torchref.base.math_torch import get_scattering_vectors
         
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
@@ -637,17 +628,13 @@ class TestLossComponentsFunctional:
     def test_bond_deviation_calculation(self, sample_cif_file, external_monomer_library):
         """Test bond deviation calculation."""
         from torchref.model.model import Model
-        from torchref.restraints.restraints import Restraints
-        
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
-        restraints = Restraints(
-            model=model,
-            cif_path=str(external_monomer_library),
-            verbose=0
-        )
-        restraints.build_restraints()
+
+        # Use new model-based restraints API
+        model.set_restraints_cif(str(external_monomer_library))
+        restraints = model.restraints
         
         if 'bond' in restraints.restraints and 'intra' in restraints.restraints['bond']:
             bond = restraints.restraints['bond']['intra']
@@ -672,17 +659,13 @@ class TestLossComponentsFunctional:
     def test_angle_deviation_calculation(self, sample_cif_file, external_monomer_library):
         """Test angle deviation calculation."""
         from torchref.model.model import Model
-        from torchref.restraints.restraints import Restraints
-        
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
-        restraints = Restraints(
-            model=model,
-            cif_path=str(external_monomer_library),
-            verbose=0
-        )
-        restraints.build_restraints()
+
+        # Use new model-based restraints API
+        model.set_restraints_cif(str(external_monomer_library))
+        restraints = model.restraints
         
         if 'angle' in restraints.restraints and 'intra' in restraints.restraints['angle']:
             angle = restraints.restraints['angle']['intra']
@@ -723,21 +706,17 @@ class TestCombinedLossFunctional:
         """Test combining X-ray and geometry losses."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
-        from torchref.restraints.restraints import Restraints
-        from torchref.math_functions.math_torch import nll_xray
-        
+        from torchref.base.math_torch import nll_xray
+
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
-        
+
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
-        
-        restraints = Restraints(
-            model=model,
-            cif_path=str(external_monomer_library),
-            verbose=0
-        )
-        restraints.build_restraints()
+
+        # Use new model-based restraints API
+        model.set_restraints_cif(str(external_monomer_library))
+        restraints = model.restraints
         
         # X-ray loss
         fobs = data.F

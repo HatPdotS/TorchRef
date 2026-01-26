@@ -97,12 +97,12 @@ class TestScalingCalculations:
     """Tests for scaling calculation utilities."""
 
     @pytest.mark.unit
-    def test_resolution_binning_logic(self, mock_hkl_indices, mock_unit_cell):
+    def test_resolution_binning_logic(self, mock_hkl_indices, mock_cell):
         """Test resolution binning creates correct number of bins."""
-        from torchref.math_functions.math_numpy import get_s
-        
+        from torchref.base.math_numpy import get_s
+
         hkl = mock_hkl_indices(n_reflections=1000).numpy()
-        cell = mock_unit_cell.numpy()
+        cell = mock_cell.numpy()
         
         # Calculate s values
         s = get_s(hkl, cell)
@@ -144,12 +144,12 @@ class TestBFactorScaling:
     """Tests for B-factor scaling logic."""
 
     @pytest.mark.unit
-    def test_b_factor_debye_waller(self, mock_hkl_indices, mock_unit_cell):
+    def test_b_factor_debye_waller(self, mock_hkl_indices, mock_cell):
         """Test Debye-Waller factor calculation."""
-        from torchref.math_functions.math_numpy import get_s
-        
+        from torchref.base.math_numpy import get_s
+
         hkl = mock_hkl_indices(n_reflections=100).numpy()
-        cell = mock_unit_cell.numpy()
+        cell = mock_cell.numpy()
         s = torch.tensor(get_s(hkl, cell))
         
         B_factor = 20.0  # Å²
@@ -162,11 +162,11 @@ class TestBFactorScaling:
         assert torch.all(dw_factor <= 1)  # Should attenuate
 
     @pytest.mark.unit
-    def test_b_factor_high_resolution_attenuation(self, mock_unit_cell):
+    def test_b_factor_high_resolution_attenuation(self, mock_cell):
         """Higher resolution (larger s) should have more attenuation."""
-        from torchref.math_functions.math_numpy import get_s
-        
-        cell = mock_unit_cell.numpy()
+        from torchref.base.math_numpy import get_s
+
+        cell = mock_cell.numpy()
         
         # Low and high resolution reflections
         hkl_low = torch.tensor([[1, 0, 0]], dtype=torch.float64).numpy()
@@ -189,7 +189,7 @@ class TestAnisotropicScaling:
     @pytest.mark.unit
     def test_u_to_matrix_shape(self, mock_aniso_u):
         """Test U tensor to matrix conversion."""
-        from torchref.math_functions.math_torch import U_to_matrix
+        from torchref.base.math_torch import U_to_matrix
         
         U = mock_aniso_u(n_atoms=10)
         
@@ -202,7 +202,7 @@ class TestAnisotropicScaling:
     @pytest.mark.unit
     def test_u_matrix_symmetric(self, mock_aniso_u):
         """U matrices should be symmetric."""
-        from torchref.math_functions.math_torch import U_to_matrix
+        from torchref.base.math_torch import U_to_matrix
         
         U = mock_aniso_u(n_atoms=5)
         U_matrices = U_to_matrix(U)

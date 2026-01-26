@@ -21,9 +21,8 @@ class TestBaseTarget:
     def test_target_initialization_empty(self):
         """Test empty initialization for state_dict loading."""
         from torchref.refinement.targets import Target
-        
+
         target = Target()
-        assert target._refinement is None
         assert target.verbose == 0
 
     def test_target_initialization_with_verbose(self):
@@ -53,9 +52,11 @@ class TestXrayTargetBase:
     def test_xray_target_initialization(self):
         """Test XrayTarget initialization."""
         from torchref.refinement.targets import XrayTarget
-        
+
         target = XrayTarget()
-        assert target._refinement is None
+        assert target._model is None
+        assert target._data is None
+        assert target._scaler is None
 
 
 @pytest.mark.unit
@@ -65,13 +66,14 @@ class TestGaussianXrayTarget:
     def test_gaussian_target_initialization(self):
         """Test GaussianXrayTarget initialization."""
         from torchref.refinement.targets import GaussianXrayTarget
-        
+
         target = GaussianXrayTarget()
-        assert target._refinement is None
+        assert target._model is None
+        assert target._data is None
 
     def test_gaussian_nll_computation(self):
         """Test Gaussian NLL computation with mock data."""
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
         
         # Test the underlying function
         fobs = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
@@ -109,9 +111,10 @@ class TestMaximumLikelihoodXrayTarget:
     def test_ml_target_initialization(self):
         """Test MaximumLikelihoodXrayTarget initialization."""
         from torchref.refinement.targets import MaximumLikelihoodXrayTarget
-        
+
         target = MaximumLikelihoodXrayTarget()
-        assert target._refinement is None
+        assert target._model is None
+        assert target._data is None
 
 
 # =============================================================================
@@ -125,9 +128,9 @@ class TestGeometryTargetBase:
     def test_geometry_target_initialization(self):
         """Test GeometryTarget initialization."""
         from torchref.refinement.targets import GeometryTarget
-        
+
         target = GeometryTarget()
-        assert target._refinement is None
+        assert target._model is None
 
 
 @pytest.mark.unit
@@ -137,9 +140,9 @@ class TestBondTarget:
     def test_bond_target_initialization(self):
         """Test BondTarget initialization."""
         from torchref.refinement.targets import BondTarget
-        
+
         target = BondTarget()
-        assert target._refinement is None
+        assert target._model is None
 
     def test_bond_deviation_calculation(self):
         """Test bond deviation calculation with mock data."""
@@ -173,9 +176,9 @@ class TestAngleTarget:
     def test_angle_target_initialization(self):
         """Test AngleTarget initialization."""
         from torchref.refinement.targets import AngleTarget
-        
+
         target = AngleTarget()
-        assert target._refinement is None
+        assert target._model is None
 
     def test_angle_calculation(self):
         """Test angle calculation with mock data."""
@@ -206,9 +209,9 @@ class TestTorsionTarget:
     def test_torsion_target_initialization(self):
         """Test TorsionTarget initialization."""
         from torchref.refinement.targets import TorsionTarget
-        
+
         target = TorsionTarget()
-        assert target._refinement is None
+        assert target._model is None
 
     def test_torsion_angle_calculation(self):
         """Test torsion angle calculation."""
@@ -246,9 +249,9 @@ class TestPlanarityTarget:
     def test_planarity_target_initialization(self):
         """Test PlanarityTarget initialization."""
         from torchref.refinement.targets import PlanarityTarget
-        
+
         target = PlanarityTarget()
-        assert target._refinement is None
+        assert target._model is None
 
     def test_planarity_calculation(self):
         """Test planarity calculation for coplanar atoms."""
@@ -281,9 +284,9 @@ class TestChiralTarget:
     def test_chiral_target_initialization(self):
         """Test ChiralTarget initialization."""
         from torchref.refinement.targets import ChiralTarget
-        
+
         target = ChiralTarget()
-        assert target._refinement is None
+        assert target._model is None
 
     def test_chiral_volume_calculation(self):
         """Test chiral volume calculation."""
@@ -313,9 +316,9 @@ class TestNonBondedTarget:
     def test_nonbonded_target_initialization(self):
         """Test NonBondedTarget initialization."""
         from torchref.refinement.targets import NonBondedTarget
-        
+
         target = NonBondedTarget()
-        assert target._refinement is None
+        assert target._model is None
 
 
 @pytest.mark.unit
@@ -327,7 +330,7 @@ class TestTotalGeometryTarget:
         from torchref.refinement.targets import TotalGeometryTarget
 
         target = TotalGeometryTarget()
-        assert target._refinement is None
+        assert target._model is None
 
 
 # =============================================================================
@@ -341,9 +344,9 @@ class TestADPTargetBase:
     def test_adp_target_initialization(self):
         """Test ADPTarget initialization."""
         from torchref.refinement.targets import ADPTarget
-        
+
         target = ADPTarget()
-        assert target._refinement is None
+        assert target._model is None
 
 
 @pytest.mark.unit
@@ -409,9 +412,9 @@ class TestADPEntropyTarget:
     def test_entropy_target_initialization(self):
         """Test ADPEntropyTarget initialization."""
         from torchref.refinement.targets import ADPEntropyTarget
-        
+
         target = ADPEntropyTarget()
-        assert target._refinement is None
+        assert target._model is None
 
     def test_entropy_calculation(self):
         """Test entropy calculation for B-factors."""
@@ -441,7 +444,7 @@ class TestRfactorCalculations:
 
     def test_get_rfactors_basic(self):
         """Test basic R-factor calculation."""
-        from torchref.math_functions.math_torch import get_rfactors
+        from torchref.base.math_torch import get_rfactors
         
         fobs = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.float32)
         fcalc = torch.tensor([1.1, 2.1, 3.1, 4.1, 5.1], dtype=torch.float32)
@@ -457,7 +460,7 @@ class TestRfactorCalculations:
 
     def test_get_rfactors_perfect_fit(self):
         """Test R-factor with perfect fit."""
-        from torchref.math_functions.math_torch import get_rfactors
+        from torchref.base.math_torch import get_rfactors
         
         fobs = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.float32)
         fcalc = fobs.clone()  # Perfect fit
@@ -470,7 +473,7 @@ class TestRfactorCalculations:
 
     def test_bin_wise_rfactors(self):
         """Test bin-wise R-factor calculation."""
-        from torchref.math_functions.math_torch import bin_wise_rfactors
+        from torchref.base.math_torch import bin_wise_rfactors
         
         n_refl = 100
         n_bins = 5
@@ -500,7 +503,7 @@ class TestLossFunctions:
 
     def test_nll_xray(self):
         """Test NLL X-ray loss function."""
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
         
         fobs = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
         fcalc = torch.tensor([1.1, 2.1, 3.1], dtype=torch.float32)
@@ -527,7 +530,7 @@ class TestLossFunctions:
 
     def test_nll_xray_with_mask(self):
         """Test NLL X-ray with masking."""
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
         
         fobs = torch.tensor([1.0, 2.0, 3.0, float('nan')], dtype=torch.float32)
         fcalc = torch.tensor([1.1, 2.1, 3.1, 0.0], dtype=torch.float32)

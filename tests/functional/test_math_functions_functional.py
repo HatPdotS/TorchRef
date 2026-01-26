@@ -14,7 +14,7 @@ class TestStructureFactorCalculations:
 
     def test_get_scattering_vectors(self, model_and_data):
         """Test scattering vector calculation."""
-        from torchref.math_functions.math_torch import get_scattering_vectors
+        from torchref.base.math_torch import get_scattering_vectors
         
         data = model_and_data["data"]
         model = model_and_data["model"]
@@ -35,7 +35,7 @@ class TestStructureFactorCalculations:
 
     def test_get_d_spacing(self, model_and_data):
         """Test d-spacing calculation."""
-        from torchref.math_functions.math_torch import get_d_spacing
+        from torchref.base.math_torch import get_d_spacing
         
         data = model_and_data["data"]
         model = model_and_data["model"]
@@ -59,7 +59,7 @@ class TestStructureFactorCalculations:
 
     def test_reciprocal_basis_matrix(self, model_and_data):
         """Test reciprocal basis matrix calculation."""
-        from torchref.math_functions.math_torch import reciprocal_basis_matrix
+        from torchref.base.math_torch import reciprocal_basis_matrix
         
         model = model_and_data["model"]
         cell = model.cell
@@ -83,7 +83,7 @@ class TestRfactorFunctions:
 
     def test_rfactor_basic(self):
         """Test basic R-factor calculation."""
-        from torchref.math_functions.math_torch import get_rfactor_torch
+        from torchref.base.math_torch import get_rfactor_torch
         
         fobs = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
         fcalc = torch.tensor([1.1, 2.0, 2.9, 4.1], dtype=torch.float32)
@@ -95,7 +95,7 @@ class TestRfactorFunctions:
 
     def test_get_rfactors(self, model_and_data):
         """Test R-factor calculation with real data."""
-        from torchref.math_functions.math_torch import get_rfactors
+        from torchref.base.math_torch import get_rfactors
         
         data = model_and_data["data"]
         
@@ -119,7 +119,7 @@ class TestCoordinateTransformations:
 
     def test_coordinate_roundtrip(self, model_and_data):
         """Test coordinate transformation roundtrip."""
-        from torchref.math_functions.math_torch import (
+        from torchref.base.math_torch import (
             cartesian_to_fractional_torch,
             fractional_to_cartesian_torch
         )
@@ -147,7 +147,7 @@ class TestNLLFunctions:
 
     def test_nll_xray_basic(self):
         """Test basic NLL X-ray calculation."""
-        from torchref.math_functions.math_torch import nll_xray
+        from torchref.base.math_torch import nll_xray
         
         fobs = torch.tensor([10.0, 20.0, 30.0], dtype=torch.float32)
         fcalc = torch.tensor([11.0, 19.0, 31.0], dtype=torch.float32)
@@ -159,7 +159,7 @@ class TestNLLFunctions:
 
     def test_nll_xray_sum(self):
         """Test NLL X-ray sum."""
-        from torchref.math_functions.math_torch import nll_xray_sum
+        from torchref.base.math_torch import nll_xray_sum
         
         fobs = torch.tensor([10.0, 20.0, 30.0], dtype=torch.float32)
         fcalc = torch.tensor([11.0, 19.0, 31.0], dtype=torch.float32)
@@ -171,7 +171,7 @@ class TestNLLFunctions:
 
     def test_log_loss(self):
         """Test log loss function."""
-        from torchref.math_functions.math_torch import log_loss
+        from torchref.base.math_torch import log_loss
         
         fobs = torch.tensor([10.0, 20.0, 30.0], dtype=torch.float32)
         fcalc = torch.tensor([11.0, 19.0, 31.0], dtype=torch.float32)
@@ -188,7 +188,7 @@ class TestFrenchWilson:
 
     def test_french_wilson_basic(self):
         """Test French-Wilson conversion with mock data."""
-        from torchref.math_functions.math_torch import french_wilson_conversion
+        from torchref.base.math_torch import french_wilson_conversion
         
         # Create mock intensity data
         Iobs = torch.tensor([100.0, 200.0, 300.0], dtype=torch.float32)
@@ -207,7 +207,7 @@ class TestGridFunctions:
 
     def test_find_grid_size(self, model_and_data):
         """Test grid size calculation."""
-        from torchref.math_functions.math_torch import find_grid_size
+        from torchref.base import find_grid_size
         
         model = model_and_data["model"]
         cell = model.cell
@@ -219,7 +219,7 @@ class TestGridFunctions:
 
     def test_get_real_grid(self, model_and_data):
         """Test real space grid creation."""
-        from torchref.math_functions.math_torch import get_real_grid
+        from torchref.base.math_torch import get_real_grid
         
         model = model_and_data["model"]
         cell = model.cell
@@ -238,7 +238,7 @@ class TestFFTFunctions:
 
     def test_fft_basic(self):
         """Test FFT function."""
-        from torchref.math_functions.math_torch import fft
+        from torchref.base.math_torch import fft
         
         # Create simple 3D grid (real-valued)
         grid = torch.randn(8, 8, 8, dtype=torch.float32)
@@ -249,7 +249,7 @@ class TestFFTFunctions:
 
     def test_ifft_basic(self):
         """Test inverse FFT function."""
-        from torchref.math_functions.math_torch import ifft
+        from torchref.base.math_torch import ifft
         
         # Create simple 3D grid
         grid = torch.randn(8, 8, 8, dtype=torch.complex64)
@@ -260,7 +260,7 @@ class TestFFTFunctions:
 
     def test_fft_output_valid(self):
         """Test FFT output is valid."""
-        from torchref.math_functions.math_torch import fft
+        from torchref.base.math_torch import fft
         
         # Create test grid
         grid = torch.randn(8, 8, 8, dtype=torch.float32)
@@ -276,7 +276,7 @@ class TestMiscMathFunctions:
 
     def test_smallest_diff(self):
         """Test smallest difference calculation."""
-        from torchref.math_functions.math_torch import smallest_diff
+        from torchref.base.math_torch import smallest_diff
         
         # Create difference vectors
         diff = torch.tensor([[1.5, 0.0, 0.0], [0.0, 1.5, 0.0]], dtype=torch.float64)
@@ -293,7 +293,7 @@ class TestMiscMathFunctions:
 
     def test_rotation_function(self):
         """Test coordinate rotation."""
-        from torchref.math_functions.math_torch import rotate_coords_torch
+        from torchref.base.math_torch import rotate_coords_torch
         
         coords = torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float64)
         phi = torch.tensor(0.0)  # No rotation (tensor form)

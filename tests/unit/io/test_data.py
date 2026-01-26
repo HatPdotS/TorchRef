@@ -169,13 +169,13 @@ class TestMockReflectionData:
         assert data.hkl.shape[1] == 3
 
     @pytest.mark.unit
-    def test_set_mock_amplitudes(self, mock_fobs, mock_sigfobs):
+    def test_set_mock_amplitudes(self, mock_F_obs, mock_F_sigma):
         """Test setting mock structure factor amplitudes."""
         from torchref.io import ReflectionData
 
         data = ReflectionData()
-        F = mock_fobs(n_reflections=100)
-        sigma = mock_sigfobs(n_reflections=100)
+        F = mock_F_obs(n_reflections=100)
+        sigma = mock_F_sigma(n_reflections=100)
 
         # Set directly (dataclass attributes)
         data.F = F
