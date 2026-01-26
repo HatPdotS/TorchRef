@@ -314,7 +314,8 @@ class Scaler(ScalerBase):
             Dictionary with refinement metrics.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            with torch.no_grad():
+                fcalc = self._compute_fcalc()
         return super().refine_lbfgs(
             fcalc,
             nsteps=nsteps,

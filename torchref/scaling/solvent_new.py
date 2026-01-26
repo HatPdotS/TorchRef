@@ -468,25 +468,23 @@ class SolventModel(DebugMixin, nn.Module):
             Complex solvent structure factors, shape (N,).
         """
 
-        if not update_fsol:
-            hkl_hash = hash_tensors([hkl])
-            if hkl_hash in self._cache:
-                f_sol = self._cache[hkl_hash]
-            else:
-                f_sol = self.get_rec_solvent(hkl)
-                self._cache[hkl_hash] = f_sol
+        hkl_hash = hash_tensors([hkl])
+        if not update_fsol and hkl_hash in self._cache:
+            f_sol = self._cache[hkl_hash]
+            s_squared = self._cache[hkl_hash + "_s_squared"]
         else:
             f_sol = self.get_rec_solvent(hkl)
             self._cache[hkl_hash] = f_sol
 
-        # Calculate scattering vector magnitude: s = sin(θ)/λ
-        # Note: get_scattering_vectors returns h* = (h·a*, k·b*, l·c*)
-        # For the Debye-Waller factor, we need s = |h*|/2 = sin(θ)/λ
-        scattering_vectors = get_scattering_vectors(
-            hkl, self.model.cell, recB=self.model.recB
-        )
-        s = torch.norm(scattering_vectors, dim=1) / 2.0  # This is sin(θ)/λ
-        s_squared = s**2  # Now s² is correct for B-factor formula
+            # Calculate scattering vector magnitude: s = sin(θ)/λ
+            # Note: get_scattering_vectors returns h* = (h·a*, k·b*, l·c*)
+            # For the Debye-Waller factor, we need s = |h*|/2 = sin(θ)/λ
+            scattering_vectors = get_scattering_vectors(
+                hkl, self.model.cell, recB=self.model.recB
+            )
+            s = torch.norm(scattering_vectors, dim=1) / 2.0  # This is sin(θ)/λ
+            s_squared = s**2  # Now s² is correct for B-factor formula
+            self._cache[hkl_hash + "_s_squared"] = s_squared
 
         # Apply B-factor damping: exp(-B * s²)
         # The Debye-Waller factor for isotropic displacement

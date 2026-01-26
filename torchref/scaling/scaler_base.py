@@ -718,14 +718,20 @@ class ScalerBase(DebugMixin, nn.Module):
             metrics = scaler.refine_lbfgs(fcalc, nsteps=5, verbose=True)
             scaler.freeze()
         """
-        # Ensure scaler is unfrozen
+
+
         was_frozen = self.frozen
         if was_frozen:
             self.unfreeze()
 
-        # Create LBFGS optimizer for scaler parameters only
-        optimizer = torch.optim.LBFGS(
-            self.parameters(),
+
+        # Debug timing
+        from torch.optim import LBFGS as _LBFGS
+
+        params_list = list(self.parameters())
+
+        optimizer = _LBFGS(
+            params_list,
             lr=lr,
             max_iter=max_iter,
             history_size=history_size,
@@ -737,39 +743,10 @@ class ScalerBase(DebugMixin, nn.Module):
 
         def closure():
             optimizer.zero_grad()
-            try:
-                fcalc_scaled = self.forward(fcalc)
-            except RuntimeError:
-                if self.verbose > 0:
-                    import warnings
-
-                    warnings.warn(
-                        "Non-finite loss encountered during scale optimization. "
-                        "LBFGS line search will reject this step and try a smaller step size.",
-                        RuntimeWarning,
-                    )
-                return torch.tensor(
-                    1e10, device=self.device, dtype=fobs.dtype, requires_grad=True
-                )
-
+            fcalc_scaled = self.forward(fcalc)
             U_penalty = torch.sum(self.U**2)
             loss = nll_xray(fobs, fcalc_scaled, sigma) + U_penalty
-
-            # Handle non-finite loss gracefully for LBFGS line search
-            if not torch.all(torch.isfinite(loss)):
-                if self.verbose > 0:
-                    import warnings
-
-                    warnings.warn(
-                        "Non-finite loss encountered during scale optimization. "
-                        "LBFGS line search will reject this step and try a smaller step size.",
-                        RuntimeWarning,
-                    )
-                return torch.tensor(
-                    1e10, device=loss.device, dtype=loss.dtype, requires_grad=True
-                )
-
-            loss.backward(retain_graph=True)
+            loss.backward()
             return loss
 
         # Track metrics
@@ -784,17 +761,18 @@ class ScalerBase(DebugMixin, nn.Module):
 
         if verbose and self.verbose > 0:
             print("Refining scales with LBFGS...")
+            print(f"  LBFGS params: nsteps={nsteps}, max_iter={max_iter}")
 
         if self.verbose > 2:
             assert torch.all(
                 torch.isfinite(fcalc)
             ), "Non-finite values found in fcalc during scale optimization."
 
+
         # Run optimization
         for step in range(nsteps):
             optimizer.step(closure)
 
-            # Evaluate metrics
             with torch.no_grad():
                 hkl, fobs, sigma, rfree_mask = self._data()
                 fcalc_scaled = self.forward(fcalc)
@@ -804,19 +782,18 @@ class ScalerBase(DebugMixin, nn.Module):
                 rwork, rfree_val = get_rfactors(
                     torch.abs(fobs), torch.abs(fcalc_scaled), rfree_mask
                 )
-
                 metrics["steps"].append(step + 1)
                 metrics["xray_work"].append(xray_work.item())
                 metrics["xray_test"].append(xray_test.item())
                 metrics["rwork"].append(rwork)
                 metrics["rfree"].append(rfree_val)
 
-                if verbose and self.verbose > 2:
-                    print(
-                        f"  Step {step+1}/{nsteps}: "
-                        f"Rwork={rwork:.4f}, Rfree={rfree_val:.4f}, "
-                        f"NLL_work={xray_work.item():.2f}, NLL_test={xray_test.item():.2f}"
-                    )
+            if verbose and self.verbose > 2:
+                print(
+                    f"  Step {step+1}/{nsteps}: "
+                    f"Rwork={rwork:.4f}, Rfree={rfree_val:.4f}, "
+                    f"NLL_work={xray_work.item():.2f}, NLL_test={xray_test.item():.2f}"
+                )
 
         # Restore frozen state
         if was_frozen:
