@@ -22,7 +22,8 @@ __pycache__/
 *.ccp4
 *.png
 make_flow_chart/
-
+.matrices/
+.vscode/
 __pycache__/
 *.py[cod]
 ./ruff_cache/
