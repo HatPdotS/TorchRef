@@ -65,6 +65,9 @@ docs = [
 where = ["."]
 include = ["torchref*"]
 
+[tool.setuptools.package-data]
+torchref = ["data/*.csv", "data/*.json", "data/*.pt"]
+
 [tool.black]
 line-length = 88
 target-version = ["py39"]
