@@ -22,6 +22,15 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. By 
 
 - **State Management**: Full `state_dict` support enables saving and loading complete refinement states, including model parameters, scaler settings, and restraints.
 
+## Example Notebooks
+
+| Notebook | Description |
+|----------|-------------|
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/basic_usage.ipynb) | Basic Usage - Getting started tutorial |
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/code_examples.ipynb) | Code Examples - Common patterns and recipes |
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/target_exploration.ipynb) | Target Exploration - Exploring refinement targets |
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factor_calculation.ipynb) | Structure Factor Calculation - FFT-based F_calc |
+
 ## Installation
 
 ```bash
@@ -85,6 +94,8 @@ Contributions are welcome! Please follow these guidelines:
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+
 
 
 
