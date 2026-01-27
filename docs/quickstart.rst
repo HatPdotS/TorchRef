@@ -24,7 +24,7 @@ The simplest way to run a refinement:
    # Initialize refinement with data and model
    refinement = LBFGSRefinement(
        data_file="example.mtz",
-       pdb="example.pdb",
+       pdb=f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb",
    )
 
    # Check initial R-factors
