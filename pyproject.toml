@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "torchref"
 version = "0.3.1"
-description = "Tools for multicopy refinement of crystallographic models"
+description = "Pytorch based crystallographic refinement"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
