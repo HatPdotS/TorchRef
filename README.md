@@ -1,4 +1,4 @@
-### TorchRef
+# TorchRef
 
 **A PyTorch-based crystallographic refinement library**
 
@@ -8,7 +8,7 @@
 
 TorchRef is a crystallographic refinement package built entirely on PyTorch. By leveraging PyTorch's automatic differentiation and GPU acceleration, TorchRef enables seamless integration with machine learning workflows and provides a flexible, extensible framework for crystallographic structure refinement.
 
-### Key Features
+# Key Features
 
 - **Native PyTorch Integration**: Built on PyTorch's `nn.Module` architecture, TorchRef integrates naturally with the PyTorch ecosystem, including machine learning models, optimizers, and GPU acceleration.
 
@@ -22,7 +22,7 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. By 
 
 - **State Management**: Full `state_dict` support enables saving and loading complete refinement states, including model parameters, scaler settings, and restraints.
 
-### Getting Started
+# Getting Started
 
 | Notebook | Description |
 |----------|-------------|
@@ -39,16 +39,16 @@ pip install torchref
 
 ```
 
-# Local installation for development
+### Local installation for development
 
-# clone the repository
+### clone the repository
 git clone https://github.com/HatPdotS/TorchRef.git
 cd torchref
 
-# Install with pip
+### Install with pip
 pip install -e .
 
-# Or install with development dependencies
+### Or install with development dependencies
 pip install -e ".[dev]"
 
 ## Dependencies
