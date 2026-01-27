@@ -11,6 +11,13 @@ Requirements
 - reciprocalspaceship ≥ 0.9
 - SciPy ≥ 1.7
 
+
+Installing via pip
+----------------------
+
+.. code-block:: bash
+   pip install torchref
+
 Installing from Source
 ----------------------
 

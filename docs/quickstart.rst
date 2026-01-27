@@ -5,6 +5,13 @@ This guide walks you through a basic crystallographic refinement with TorchRef.
 
 For interactive examples, see the Jupyter notebooks in ``example_notebooks/``.
 
+For a more detailed explanation check out these collabs:
+
+- `Basic Usage <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/basic_usage.ipynb>`_ - Getting started tutorial
+- `Code Examples <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/code_examples.ipynb>`_ - Common patterns and recipes
+- `Target Exploration <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/target_exploration.ipynb>`_ - Exploring refinement targets
+- `Structure Factor Calculation <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factor_calculation.ipynb>`_ - FFT-based F_calc
+
 Basic Refinement
 ----------------
 
@@ -16,8 +23,8 @@ The simplest way to run a refinement:
 
    # Initialize refinement with data and model
    refinement = LBFGSRefinement(
-       data_file=f"{ROOT_TORCHREF}/example_notebooks/1DAW.mtz",
-       pdb=f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb",
+       data_file="example.mtz",
+       pdb="example.pdb",
    )
 
    # Check initial R-factors

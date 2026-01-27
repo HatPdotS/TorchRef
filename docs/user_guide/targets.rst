@@ -73,9 +73,9 @@ Using Targets
    )
 
    # Create targets
-   xray_target = create_xray_target(refinement, target_type='ml')
-   geom_target = TotalGeometryTarget(refinement)
-   adp_target = TotalADPTarget(refinement)
+   xray_target = create_xray_target(data, model, target_type='ml')
+   geom_target = TotalGeometryTarget(model)
+   adp_target = TotalADPTarget(model)
 
    # Compute losses
    xray_loss = xray_target()
@@ -95,8 +95,8 @@ Create custom targets by subclassing :class:`~torchref.refinement.targets.Target
    class EntropyRegularization(Target):
        """Entropy regularization for B-factors."""
        
-       def __init__(self, refinement, weight=0.01):
-           super().__init__(refinement) 
+       def __init__(self, model, weight=0.01):
+           super().__init__(model) 
        
        def forward(self):
            b_factors = self.model.b()

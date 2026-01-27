@@ -17,7 +17,7 @@ Basic Usage
 
 .. code-block:: python
 
-   from torchref.scaling.scaler import Scaler
+   from torchref import Scaler
 
    scaler = Scaler(model, reflection_data, verbose=1)
 

@@ -46,9 +46,8 @@ Key Features
    api/torchref.restraints
    api/torchref.scaling
    api/torchref.symmetry
-   api/torchref.math_functions
+   api/torchref.base
    api/torchref.utils
-   api/torchref.alignment
 
 .. toctree::
    :maxdepth: 1

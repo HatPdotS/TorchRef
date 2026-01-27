@@ -2,6 +2,10 @@ Changelog
 =========
 
 
+Version 0.3.2
+-------------
+
+- Hotfix for imports, bundled data and a minor bug in LBFGSRefinement
 
 Version 0.3.0
 -------------
