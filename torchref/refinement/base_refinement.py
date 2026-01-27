@@ -569,14 +569,18 @@ class Refinement(DebugMixin, nnModule):
 
         return state
 
-    def update_weights(self, state: "LossState") -> "LossState":
+    def update_weights(self, state: "LossState", multiply=False) -> "LossState":
         """
         Compute weights from component_weighting and update state.
+        Weights are clipped to 0.1, 10.0 to avoid extreme values.
 
         Parameters
         ----------
         state : LossState
             State with meta populated.
+        multiply : bool, optional
+            If True, multiply existing weights by computed weights.
+            If False, replace existing weights with computed weights.
 
         Returns
         -------
@@ -587,7 +591,11 @@ class Refinement(DebugMixin, nnModule):
 
         for name, weight in weights.items():
             current = state.get_weight(name, default=1.0)
-            state.set_weight(name, current * weight)
+            if multiply:
+                weight_effective = min(max(current * weight, 0.1), 10.0)
+            else:
+                weight_effective = min(max(weight, 0.1), 10.0)
+            state.set_weight(name, weight_effective)
 
         return state
 
@@ -711,6 +719,17 @@ class Refinement(DebugMixin, nnModule):
                 metrics["geometry"] = self.geometry_target.stats()
             if hasattr(self, "adp_target"):
                 metrics["adp"] = self.adp_target.stats()
+
+            # Add X-ray NLL stats for component_weighting
+            if hasattr(self, "component_weighting"):
+                xray_work = self.xray_loss_work()
+                xray_test = self.xray_loss_test()
+                metrics["component_weighting"] = {
+                    "xray": {
+                        "work_nll": xray_work.item() if hasattr(xray_work, "item") else float(xray_work),
+                        "test_nll": xray_test.item() if hasattr(xray_test, "item") else float(xray_test),
+                    }
+                }
 
         return metrics
 
