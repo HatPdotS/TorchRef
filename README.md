@@ -25,6 +25,13 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. By 
 ## Installation
 
 ```bash
+
+pip install torchref
+
+```
+
+## Local installation for development
+
 # Clone the repository
 git clone https://github.com/HatPdotS/TorchRef.git
 cd torchref
@@ -34,7 +41,6 @@ pip install -e .
 
 # Or install with development dependencies
 pip install -e ".[dev]"
-```
 
 ### Dependencies
 
