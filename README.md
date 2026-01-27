@@ -1,4 +1,4 @@
-# TorchRef
+### TorchRef
 
 **A PyTorch-based crystallographic refinement library**
 
@@ -8,7 +8,7 @@
 
 TorchRef is a crystallographic refinement package built entirely on PyTorch. By leveraging PyTorch's automatic differentiation and GPU acceleration, TorchRef enables seamless integration with machine learning workflows and provides a flexible, extensible framework for crystallographic structure refinement.
 
-## Key Features
+### Key Features
 
 - **Native PyTorch Integration**: Built on PyTorch's `nn.Module` architecture, TorchRef integrates naturally with the PyTorch ecosystem, including machine learning models, optimizers, and GPU acceleration.
 
@@ -22,7 +22,7 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. By 
 
 - **State Management**: Full `state_dict` support enables saving and loading complete refinement states, including model parameters, scaler settings, and restraints.
 
-## Example Notebooks
+### Getting Started
 
 | Notebook | Description |
 |----------|-------------|
@@ -39,9 +39,9 @@ pip install torchref
 
 ```
 
-## Local installation for development
+# Local installation for development
 
-# Clone the repository
+# clone the repository
 git clone https://github.com/HatPdotS/TorchRef.git
 cd torchref
 
@@ -51,7 +51,7 @@ pip install -e .
 # Or install with development dependencies
 pip install -e ".[dev]"
 
-### Dependencies
+## Dependencies
 
 - Python ≥ 3.8
 - PyTorch ≥ 1.9
@@ -59,14 +59,6 @@ pip install -e ".[dev]"
 - Gemmi ≥ 0.5
 - reciprocalspaceship ≥ 0.9
 - SciPy ≥ 1.7
-
-## Getting Started
-
-For demonstrations and usage examples, see the example notebooks in [`example_notebooks/`](example_notebooks/):
-
-- [`basic_usage.ipynb`](example_notebooks/basic_usage.ipynb) - Getting started tutorial
-- [`code_examples.ipynb`](example_notebooks/code_examples.ipynb) - Code examples and patterns
-- [`target_exploration.ipynb`](example_notebooks/target_exploration.ipynb) - Exploring refinement targets
 
 ## Testing
 
