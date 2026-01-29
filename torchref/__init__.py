@@ -34,7 +34,7 @@ model
 refinement
     Core refinement framework with targets and weighting schemes.
 restraints
-    Geometry restraints (bonds, angles, torsions, planes).
+    Geometry restraints (bonds, angles, torsions, planes). (initialized lazily as it requires downloading the monomer library)
 scaling
     Structure factor scaling and bulk solvent models.
 symmetry
@@ -104,7 +104,7 @@ from torchref.model import Model, ModelFT
 from torchref.refinement import LBFGSRefinement, Refinement
 
 # Restraints
-from torchref.restraints import Restraints
+# from torchref.restraints import Restraints # Initialized lazily due to monomer library download requirement
 
 # Scaling
 from torchref.scaling import Scaler, SolventModel

@@ -5,15 +5,15 @@ A class for modelling solvent contribution to structure factors.
 import torch
 import torch.nn as nn
 
-from torchref.base.math_torch import (
+from torchref.base import (
     add_to_phenix_mask,
     excise_angstrom_radius_around_coord,
     extract_structure_factor_from_grid,
     find_relevant_voxels,
     get_scattering_vectors,
-    hash_tensors,
     ifft,
 )
+from torchref.base.math_torch import hash_tensors
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorDict
 
@@ -90,7 +90,7 @@ class SolventModel(DebugMixin, nn.Module):
         erosion_radius : float, default 0.9
             Radius in Angstroms for erosion step.
         transition : float, optional
-            Gaussian smoothing sigma for mask edges (default: radius/4 in voxels).
+            Gaussian smoothing sigma for mask edges (default: radius/4 in voxels). Avoids ringing artifacts.
         optimize_phase : bool, default True
             Whether to optimize phase offset parameter.
         initial_phase_offset : float, default 0.0

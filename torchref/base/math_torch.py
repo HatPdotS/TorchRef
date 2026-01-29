@@ -6,7 +6,7 @@ PyTorch implementations of mathematical functions for crystallography.
 
     - ``torchref.base.coordinates`` - Coordinate transformations
     - ``torchref.base.reciprocal`` - Reciprocal space calculations
-    - ``torchref.base.structure_factors`` - Structure factor calculations
+    - ``torchref.base.direct_summation`` - Structure factor calculations
     - ``torchref.base.electron_density`` - Electron density map building
     - ``torchref.base.fourier`` - FFT operations
     - ``torchref.base.scattering`` - Atomic scattering factors
@@ -58,9 +58,9 @@ from torchref.base.reciprocal import (
 )
 
 # =============================================================================
-# Re-exports from structure_factors submodule
+# Re-exports from direct_summation submodule
 # =============================================================================
-from torchref.base.structure_factors import (
+from torchref.base.direct_summation import (
     iso_structure_factor_torched,
     iso_structure_factor_torched_no_complex,
     aniso_structure_factor_torched,

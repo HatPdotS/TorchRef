@@ -408,6 +408,42 @@ class Cell:
         return self._data.tolist()
 
     # =========================================================================
+    # Fractional/Cartesian conversion methods
+    # =========================================================================
+
+    def fractional_to_cartesian(self, frac_coords: torch.Tensor) -> torch.Tensor:
+        """
+        Convert fractional coordinates to Cartesian coordinates.
+
+        Parameters
+        ----------
+        frac_coords : torch.Tensor
+            Tensor of fractional coordinates, shape (..., 3).
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of Cartesian coordinates, shape (..., 3).
+        """
+        return torch.matmul(frac_coords, self.fractional_matrix.T)
+    
+    def cartesian_to_fractional(self, cart_coords: torch.Tensor) -> torch.Tensor:
+        """
+        Convert Cartesian coordinates to fractional coordinates.
+
+        Parameters
+        ----------
+        cart_coords : torch.Tensor
+            Tensor of Cartesian coordinates, shape (..., 3).
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of fractional coordinates, shape (..., 3).
+        """
+        return torch.matmul(cart_coords, self.inv_fractional_matrix.T)
+
+    # =========================================================================
     # Dunder methods
     # =========================================================================
 

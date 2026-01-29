@@ -97,6 +97,8 @@ class SimpleModel(nn.Module):
         """
         Get ITC92 scattering parameters for a list of atom types.
 
+        Uses vectorized table lookup for efficiency.
+
         Parameters
         ----------
         atom_types : list of str
@@ -109,25 +111,22 @@ class SimpleModel(nn.Module):
         B : torch.Tensor
             ITC92 B parameters with shape (n_atoms, 5).
         """
-        # Get unique elements and cache their parameters
-        unique_elements = list(set(atom_types))
-        for elem in unique_elements:
-            if elem not in self._scattering_cache:
-                params = gsf.get_parametrization_atom(0, elem)  # charge=0
-                self._scattering_cache[elem] = (
-                    params[0].to(device=self.device, dtype=self.dtype_float),
-                    params[1].to(device=self.device, dtype=self.dtype_float),
-                )
+        from torchref.base.scattering.scattering_table import (
+            load_scattering_table,
+            elements_to_z,
+        )
 
-        # Build A and B tensors for all atoms
-        A_list = []
-        B_list = []
-        for atom in atom_types:
-            A, B = self._scattering_cache[atom]
-            A_list.append(A)
-            B_list.append(B)
+        # Convert element symbols to atomic numbers
+        z_tensor = elements_to_z(atom_types, normalize=True)
 
-        return torch.cat(A_list, dim=0), torch.cat(B_list, dim=0)
+        # Load table and perform vectorized lookup
+        table = load_scattering_table(device=self.device, dtype=self.dtype_float)
+        z_idx = z_tensor.to(device=self.device, dtype=torch.long)
+
+        A = table["A"][z_idx]
+        B = table["B"][z_idx]
+
+        return A, B
 
     def _get_symmetry_function(self, spacegroup: str) -> SpaceGroup:
         """Get or create symmetry function for spacegroup."""

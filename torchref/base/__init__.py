@@ -61,7 +61,7 @@ Legacy imports (still supported)::
 from . import (
     coordinates,
     reciprocal,
-    structure_factors,
+    direct_summation,
     electron_density,
     fourier,
     scattering,
@@ -132,9 +132,9 @@ from .reciprocal import (
 )
 
 # =============================================================================
-# Structure factors (from structure_factors submodule)
+# Structure factors (from direct_summation submodule)
 # =============================================================================
-from .structure_factors import (
+from .direct_summation import (
     iso_structure_factor_torched,
     iso_structure_factor_torched_no_complex,
     aniso_structure_factor_torched,

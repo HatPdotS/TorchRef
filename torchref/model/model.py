@@ -273,16 +273,119 @@ class Model(DebugMixin, nn.Module):
         return self.cell.reciprocal_basis_matrix.to(dtype=self.dtype_float)
 
     # =========================================================================
+    # Atomic Number (Z) Property
+    # =========================================================================
+
+    @property
+    def Z(self) -> torch.Tensor:
+        """
+        Atomic numbers for all atoms.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of atomic numbers with shape (n_atoms,).
+        """
+        return self._build_z_tensor()
+
+    def _build_z_tensor(self) -> torch.Tensor:
+        """
+        Build atomic number tensor from element column.
+
+        Converts element symbols to atomic numbers using the pre-loaded
+        element-to-Z mapping from the scattering table.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of atomic numbers with shape (n_atoms,).
+        """
+        if hasattr(self, "_Z") and self._Z is not None:
+            return self._Z
+
+        if not self.initialized or self.pdb is None:
+            raise RuntimeError(
+                "Cannot build Z tensor: model not initialized. "
+                "Load data first with load_pdb() or load_cif()."
+            )
+
+        from torchref.base.scattering.scattering_table import get_element_to_z_mapping
+
+        element_to_z = get_element_to_z_mapping()
+        z_values = [
+            element_to_z.get(elem.strip().capitalize(), 0)
+            for elem in self.pdb["element"]
+        ]
+        self.register_buffer("_Z", torch.tensor(z_values, dtype=torch.int32))
+        return self._Z
+
+    # =========================================================================
     # Scattering Factor Parametrization
     # =========================================================================
+
+    def get_P1_parameters_iso(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Get model parameters transformed to P1 space for optimization.
+
+        This is useful for optimizers that do not handle symmetry directly or MD.
+
+        Returns
+        -------
+        xyz_p1 : torch.Tensor
+            Fractional coordinates expanded to P1 space.
+        adp_p1 : torch.Tensor
+            Isotropic ADPs expanded to P1 space.
+        occupancy_p1 : torch.Tensor
+            Occupancies expanded to P1 space.
+        A : torch.Tensor
+            Scattering factor A coefficients expanded to P1 space.
+        B : torch.Tensor
+            Scattering factor B coefficients expanded to P1 space.
+        """
+        Nops = self.spacegroup.n_ops
+        xyz_initial = self.xyz()
+        xyz_fractional = self.cell.cartesian_to_fractional(xyz_initial)
+        xyz_p1 = self.spacegroup.expand_coords_to_P1(xyz_fractional)
+        adp_p1 = self.adp().expand(Nops, -1).reshape(-1)
+        occupancy_p1 = self.occupancy().expand(Nops, -1).reshape(-1)
+        A = self._A.expand(Nops, -1).reshape(-1, 5)
+        B = self._B.expand(Nops, -1).reshape(-1, 5)
+        return xyz_p1, adp_p1, occupancy_p1, A, B
+
+    def get_MD_parameters(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Get model parameters prepared for molecular dynamics simulation.
+
+        Returns all P1-expanded parameters plus atomic numbers for MD engines.
+
+        Returns
+        -------
+        xyz_p1 : torch.Tensor
+            Fractional coordinates expanded to P1 space.
+        adp_p1 : torch.Tensor
+            Isotropic ADPs expanded to P1 space.
+        occupancy_p1 : torch.Tensor
+            Occupancies expanded to P1 space.
+        A : torch.Tensor
+            Scattering factor A coefficients expanded to P1 space.
+        B : torch.Tensor
+            Scattering factor B coefficients expanded to P1 space.
+        Z_p1 : torch.Tensor
+            Atomic numbers expanded to P1 space.
+        """
+        xyz_p1, adp_p1, occupancy_p1, A, B = self.get_P1_parameters_iso()
+        Nops = self.spacegroup.n_ops
+        Z_p1 = self.Z.expand(Nops, -1).reshape(-1)
+        return xyz_p1, adp_p1, occupancy_p1, A, B, Z_p1
 
     def _build_parametrization(self):
         """
         Build ITC92 parametrization for all atoms in the model.
 
-        Creates and stores the parametrization dictionary mapping element types
-        to their ITC92 scattering factor parameters (A, B). Registers the
-        _A and _B parameter tensors as internal buffers.
+        Uses vectorized Z-based table lookup from pre-computed scattering
+        factor table. Also builds a backward-compatible parametrization
+        dictionary for legacy code. Registers the _A and _B parameter
+        tensors as internal buffers.
 
         This method is called lazily on first access to `parametrization` or
         scattering parameters.
@@ -302,9 +405,32 @@ class Model(DebugMixin, nn.Module):
             )
 
         if self.verbose > 1:
-            print("Building ITC92 parametrization...")
+            print("Building ITC92 parametrization via table lookup...")
 
-        self._parametrization = gsf.get_parameterization_extended(self.pdb)
+        # Use Z-based vectorized lookup
+        from torchref.base.scattering.scattering_table import get_scattering_params_by_z
+
+        z_tensor = self.Z
+        A, B = get_scattering_params_by_z(
+            z_tensor, device=self.device, dtype=self.dtype_float
+        )
+
+        self.register_buffer("_A", A)
+        self.register_buffer("_B", B)
+
+        # Build backward-compatible parametrization dict
+        # Group by element to create {element: (A, B)} mapping
+        elements = self.pdb.element.tolist()
+        unique_elements = list(set(elements))
+        self._parametrization = {}
+
+        for elem in unique_elements:
+            # Find first occurrence of this element
+            idx = elements.index(elem)
+            self._parametrization[elem] = (
+                A[idx : idx + 1],  # Keep shape (1, 5)
+                B[idx : idx + 1],
+            )
 
         if self.verbose > 0:
             print(
@@ -312,22 +438,6 @@ class Model(DebugMixin, nn.Module):
             )
         if self.verbose > 1:
             print("Elements with parametrization:", list(self._parametrization.keys()))
-
-        # Build A and B tensors for all atoms
-        elements = self.pdb.element.tolist()
-
-        self.register_buffer(
-            "_A",
-            torch.cat(
-                [self._parametrization[element][0] for element in elements], dim=0
-            ),
-        )
-        self.register_buffer(
-            "_B",
-            torch.cat(
-                [self._parametrization[element][1] for element in elements], dim=0
-            ),
-        )
 
         return self._parametrization
 

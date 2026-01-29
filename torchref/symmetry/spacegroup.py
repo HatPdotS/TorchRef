@@ -812,7 +812,7 @@ class SpaceGroup(DebugMixin, nn.Module):
             number of symmetry operations.
         """
         coords = (
-            xyz_fractional.reshape(3, -1)
+            xyz_fractional.permute(1, 0)
             .to(self.matrices.device)
             .to(self.matrices.dtype)
         )  # (3, N)
@@ -822,6 +822,26 @@ class SpaceGroup(DebugMixin, nn.Module):
         )
         # transformed: (ops, 3, N)
         return transformed.permute(1, 2, 0)  # (3, N, ops)
+
+    def expand_coords_to_P1(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
+        """
+        Expand fractional coordinates by applying all symmetry operations.
+
+        Parameters
+        ----------
+        xyz_fractional : torch.Tensor
+            Input tensor of shape (N, 3) representing fractional coordinates.
+
+        Returns
+        -------
+        torch.Tensor
+            Expanded coordinates of shape (N * ops, 3).
+        """
+        transformed = self.apply(xyz_fractional)  # (3, N, ops)
+        N = xyz_fractional.shape[0]
+        ops = self.n_ops
+        expanded = transformed.permute(1, 2, 0).reshape(N * ops, 3)
+        return expanded
 
     def forward(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
         """Forward pass applies symmetry operations."""
