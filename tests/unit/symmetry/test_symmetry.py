@@ -141,16 +141,16 @@ class TestSpaceGroupApplication:
         from torchref.symmetry import SpaceGroup
 
         sg = SpaceGroup("P1")
-        # SpaceGroup expects (3, N) format, not (N, 3)
-        coords = random_fractional_coordinates(n_atoms=10).T  # Transpose to (3, N)
+        # SpaceGroup expects (N, 3) format
+        coords = random_fractional_coordinates(n_atoms=10)  # Shape: (N, 3)
 
         # Apply symmetry (P1 only has identity)
-        # Output shape is (3, n_atoms, n_operations)
+        # Output shape is (n_atoms, 3, n_operations)
         transformed = sg(coords)
 
-        # Should have shape (3, n_atoms, n_operations)
-        assert transformed.shape[0] == 3  # 3D coordinates
-        assert transformed.shape[1] == 10  # 10 atoms
+        # Should have shape (n_atoms, 3, n_operations)
+        assert transformed.shape[0] == 10  # 10 atoms
+        assert transformed.shape[1] == 3   # 3D coordinates
         assert transformed.shape[2] == 1   # 1 operation (identity)
         # First (and only) symmetry mate should match original
         assert torch.allclose(transformed[:, :, 0], coords.to(transformed.dtype), atol=1e-5)
@@ -161,9 +161,9 @@ class TestSpaceGroupApplication:
         from torchref.symmetry import SpaceGroup
 
         sg = SpaceGroup("P21")  # 2 operations
-        coords = random_fractional_coordinates(n_atoms=5).T  # (3, N) format
+        coords = random_fractional_coordinates(n_atoms=5)  # (N, 3) format
 
-        # Output shape is (3, n_atoms, n_operations)
+        # Output shape is (n_atoms, 3, n_operations)
         transformed = sg(coords)
 
         # Should have 2 symmetry operations
@@ -175,10 +175,10 @@ class TestSpaceGroupApplication:
         from torchref.symmetry import SpaceGroup
 
         sg = SpaceGroup("P212121")
-        coords = random_fractional_coordinates(n_atoms=10).T  # (3, N) format
+        coords = random_fractional_coordinates(n_atoms=10)  # (N, 3) format
 
         # Should be callable
-        # Output shape is (3, n_atoms, n_operations)
+        # Output shape is (n_atoms, 3, n_operations)
         result = sg(coords)
 
         assert result is not None
