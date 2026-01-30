@@ -15,7 +15,7 @@ Key features:
 - Ring handling: Rings are treated as rigid entities with only the anchor movable
 """
 
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
@@ -636,6 +636,18 @@ class InternalCoordinateTensor(nn.Module):
             chain_orientations.clone(), requires_grad=requires_grad
         )
 
+        # Initialize refinable mask (all atoms refinable by default)
+        # True = use internal coordinates (refinable), False = use fixed xyz (frozen)
+        self.register_buffer(
+            "refinable_mask",
+            torch.ones(self.n_atoms, dtype=torch.bool, device=device)
+        )
+        # Buffer to store frozen atom coordinates
+        self.register_buffer(
+            "fixed_xyz",
+            xyz.clone()
+        )
+
     def _extract_ring_local_coords(self, xyz: torch.Tensor) -> torch.Tensor:
         """
         Extract local coordinates for ring atoms relative to ring anchors.
@@ -1108,7 +1120,7 @@ class InternalCoordinateTensor(nn.Module):
 
         return xyz
 
-    def forward(self) -> torch.Tensor:
+    def forward_slow(self) -> torch.Tensor:
         """
         Reconstruct Cartesian xyz from internal coordinates.
 
@@ -1141,18 +1153,26 @@ class InternalCoordinateTensor(nn.Module):
         # Place rigid ring atoms (vectorized)
         xyz = self._place_rigid_rings(xyz)
 
+        # Apply frozen coordinates
+        # For atoms that are not refinable (frozen), use fixed_xyz
+        if not self.refinable_mask.all():
+            frozen_mask = ~self.refinable_mask
+            xyz[frozen_mask] = self.fixed_xyz[frozen_mask]
+
         return xyz
 
-    def __call__(self) -> torch.Tensor:
+    def forward(self) -> torch.Tensor:
         """
-        Alias for forward() - matches MixedTensor interface.
+        Reconstruct Cartesian xyz from internal coordinates.
+
+        Uses optimized parallel scan method for efficiency.
 
         Returns
         -------
         torch.Tensor
             Reconstructed Cartesian coordinates of shape (N, 3).
         """
-        return self.forward()
+        return self.forward_parallel()
 
     def shake(self, magnitude: float = 0.1) -> torch.Tensor:
         """
@@ -1202,6 +1222,231 @@ class InternalCoordinateTensor(nn.Module):
 
         return self.forward()
 
+    # ===== Freeze/Unfreeze Methods (MixedTensor-style interface) =====
+
+    def fix(
+        self,
+        selection: Union[torch.Tensor, slice, None] = None,
+        freeze_at_current: bool = True
+    ) -> None:
+        """
+        Fix (freeze) atoms to use fixed xyz coordinates instead of internal coordinates.
+
+        Fixed atoms will not be updated during reconstruction from internal coordinates.
+        Their positions will remain at the stored fixed_xyz values.
+
+        Parameters
+        ----------
+        selection : torch.Tensor, slice, or None
+            Boolean mask (shape n_atoms) or indices of atoms to fix.
+            If None, fixes all atoms.
+        freeze_at_current : bool, optional
+            If True (default), store current reconstructed xyz for the selected atoms.
+            If False, use the existing fixed_xyz values.
+        """
+        if selection is None:
+            selection = slice(None)
+
+        # Convert boolean mask or indices to proper indexing
+        if isinstance(selection, torch.Tensor) and selection.dtype == torch.bool:
+            mask = selection
+        elif isinstance(selection, torch.Tensor):
+            mask = torch.zeros(self.n_atoms, dtype=torch.bool, device=self._device)
+            mask[selection] = True
+        elif isinstance(selection, slice):
+            mask = torch.zeros(self.n_atoms, dtype=torch.bool, device=self._device)
+            mask[selection] = True
+        else:
+            raise TypeError(f"selection must be Tensor, slice, or None, got {type(selection)}")
+
+        if freeze_at_current:
+            # Compute current coordinates and store them
+            with torch.no_grad():
+                current_xyz = self.forward()
+                self.fixed_xyz[mask] = current_xyz[mask]
+
+        # Mark atoms as not refinable (frozen)
+        self.refinable_mask[mask] = False
+
+    def freeze(
+        self,
+        selection: Union[torch.Tensor, slice, None] = None,
+        freeze_at_current: bool = True
+    ) -> None:
+        """
+        Alias for fix(). Freeze atoms to use fixed xyz coordinates.
+
+        See fix() for full documentation.
+        """
+        self.fix(selection, freeze_at_current)
+
+    def refine(
+        self,
+        selection: Union[torch.Tensor, slice, None] = None,
+        rebuild: bool = True
+    ) -> None:
+        """
+        Make atoms refinable by computing their positions from internal coordinates.
+
+        This unfreezes atoms, meaning their positions will be computed from
+        bond lengths, angles, and torsions during forward pass.
+
+        Parameters
+        ----------
+        selection : torch.Tensor, slice, or None
+            Boolean mask (shape n_atoms) or indices of atoms to make refinable.
+            If None, makes all atoms refinable.
+        rebuild : bool, optional
+            If True (default), rebuild internal coordinates from current fixed_xyz
+            for the selected atoms. This ensures the internal coordinates match
+            the current atom positions before unfreezing.
+        """
+        if selection is None:
+            selection = slice(None)
+
+        # Convert boolean mask or indices to proper indexing
+        if isinstance(selection, torch.Tensor) and selection.dtype == torch.bool:
+            mask = selection
+        elif isinstance(selection, torch.Tensor):
+            mask = torch.zeros(self.n_atoms, dtype=torch.bool, device=self._device)
+            mask[selection] = True
+        elif isinstance(selection, slice):
+            mask = torch.zeros(self.n_atoms, dtype=torch.bool, device=self._device)
+            mask[selection] = True
+        else:
+            raise TypeError(f"selection must be Tensor, slice, or None, got {type(selection)}")
+
+        if rebuild:
+            # Update internal coordinates for selected atoms from fixed_xyz
+            self._update_internal_coords_from_xyz(self.fixed_xyz, mask)
+
+        # Mark atoms as refinable
+        self.refinable_mask[mask] = True
+
+    def unfreeze(
+        self,
+        selection: Union[torch.Tensor, slice, None] = None,
+        rebuild: bool = True
+    ) -> None:
+        """
+        Alias for refine(). Unfreeze atoms to use internal coordinates.
+
+        See refine() for full documentation.
+        """
+        self.refine(selection, rebuild)
+
+    def fix_all(self, freeze_at_current: bool = True) -> None:
+        """
+        Fix (freeze) all atoms.
+
+        Parameters
+        ----------
+        freeze_at_current : bool, optional
+            If True (default), store current reconstructed xyz for all atoms.
+        """
+        self.fix(None, freeze_at_current)
+
+    def freeze_all(self, freeze_at_current: bool = True) -> None:
+        """
+        Alias for fix_all(). Freeze all atoms.
+        """
+        self.fix_all(freeze_at_current)
+
+    def refine_all(self, rebuild: bool = True) -> None:
+        """
+        Make all atoms refinable.
+
+        Parameters
+        ----------
+        rebuild : bool, optional
+            If True (default), rebuild internal coordinates from current fixed_xyz.
+        """
+        self.refine(None, rebuild)
+
+    def unfreeze_all(self, rebuild: bool = True) -> None:
+        """
+        Alias for refine_all(). Unfreeze all atoms.
+        """
+        self.refine_all(rebuild)
+
+    def _update_internal_coords_from_xyz(
+        self,
+        xyz: torch.Tensor,
+        mask: torch.Tensor
+    ) -> None:
+        """
+        Update internal coordinate parameters from xyz for masked atoms.
+
+        This re-extracts bond lengths, angles, and torsions from the provided
+        xyz coordinates for atoms where mask is True.
+
+        Parameters
+        ----------
+        xyz : torch.Tensor
+            Atomic coordinates of shape (N, 3).
+        mask : torch.Tensor
+            Boolean mask of shape (N,) indicating which atoms to update.
+        """
+        # Update bond lengths for masked atoms with depth >= 1
+        bond_update_mask = mask & (self.atom_depth >= 1)
+        if bond_update_mask.any():
+            child_xyz = xyz[bond_update_mask]
+            parent_xyz = xyz[self.parent_indices[bond_update_mask]]
+            new_bonds = torch.linalg.norm(child_xyz - parent_xyz, dim=-1)
+            bond_idx = self.bond_param_indices[bond_update_mask]
+            with torch.no_grad():
+                self.bond_lengths.data[bond_idx] = new_bonds
+
+        # Update angles for masked atoms with depth >= 2
+        angle_update_mask = mask & (self.atom_depth >= 2)
+        if angle_update_mask.any():
+            child_xyz = xyz[angle_update_mask]
+            parent_xyz = xyz[self.parent_indices[angle_update_mask]]
+            grandparent_xyz = xyz[self.grandparent_indices[angle_update_mask]]
+
+            v1 = child_xyz - parent_xyz
+            v2 = grandparent_xyz - parent_xyz
+            cos_angles = torch.sum(v1 * v2, dim=-1) / (
+                torch.linalg.norm(v1, dim=-1) * torch.linalg.norm(v2, dim=-1) + 1e-10
+            )
+            cos_angles = torch.clamp(cos_angles, -1.0, 1.0)
+            new_angles = torch.acos(cos_angles)
+            angle_idx = self.angle_param_indices[angle_update_mask]
+            with torch.no_grad():
+                self.angles.data[angle_idx] = new_angles
+
+        # Update torsions for masked atoms with depth >= 3
+        torsion_update_mask = mask & (self.atom_depth >= 3)
+        if torsion_update_mask.any():
+            child_xyz = xyz[torsion_update_mask]
+            parent_xyz = xyz[self.parent_indices[torsion_update_mask]]
+            grandparent_xyz = xyz[self.grandparent_indices[torsion_update_mask]]
+            great_grandparent_xyz = xyz[self.great_grandparent_indices[torsion_update_mask]]
+
+            new_torsions = self._compute_torsion_angles(
+                great_grandparent_xyz, grandparent_xyz, parent_xyz, child_xyz
+            )
+            torsion_idx = self.torsion_param_indices[torsion_update_mask]
+            with torch.no_grad():
+                self.torsions.data[torsion_idx] = new_torsions
+
+        # Update chain positions if any chain roots are in the mask
+        for chain_idx in range(self.n_chains):
+            root = self.chain_roots[chain_idx]
+            if mask[root]:
+                with torch.no_grad():
+                    self.chain_positions.data[chain_idx] = xyz[root]
+
+    @property
+    def n_refinable(self) -> int:
+        """Return the number of refinable (unfrozen) atoms."""
+        return self.refinable_mask.sum().item()
+
+    @property
+    def n_fixed(self) -> int:
+        """Return the number of fixed (frozen) atoms."""
+        return (~self.refinable_mask).sum().item()
+
     def to(self, device=None, dtype=None):
         """
         Move tensor to specified device and/or dtype.
@@ -1227,6 +1472,7 @@ class InternalCoordinateTensor(nn.Module):
     def __repr__(self) -> str:
         return (
             f"InternalCoordinateTensor(n_atoms={self.n_atoms}, "
+            f"n_refinable={self.n_refinable}, n_fixed={self.n_fixed}, "
             f"n_chains={self.n_chains}, n_bonds={self.n_bonds}, "
             f"n_angles={self.n_angles}, n_torsions={self.n_torsions}, "
             f"n_rings={self.n_rings}, max_depth={self.max_depth}, "
@@ -1719,5 +1965,11 @@ class InternalCoordinateTensor(nn.Module):
 
         # === Phase 5: Place rigid rings ===
         xyz = self._place_rigid_rings(xyz)
+
+        # === Phase 6: Apply frozen coordinates ===
+        # For atoms that are not refinable (frozen), use fixed_xyz
+        if not self.refinable_mask.all():
+            frozen_mask = ~self.refinable_mask
+            xyz[frozen_mask] = self.fixed_xyz[frozen_mask]
 
         return xyz
