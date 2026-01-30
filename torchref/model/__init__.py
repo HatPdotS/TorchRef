@@ -47,6 +47,7 @@ Example
 """
 
 from torchref.model.fft import FFT
+from torchref.model.internal_coordinates import InternalCoordinateTensor
 from torchref.model.model import Model
 from torchref.model.model_ft import ModelFT
 from torchref.model.parameter_wrappers import (
@@ -58,6 +59,7 @@ from torchref.model.parameter_wrappers import (
 
 __all__ = [
     "FFT",
+    "InternalCoordinateTensor",
     "Model",
     "ModelFT",
     "MixedTensor",

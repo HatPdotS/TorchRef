@@ -796,9 +796,11 @@ class SpaceGroup(DebugMixin, nn.Module):
     # Symmetry operation methods
     # =========================================================================
 
-    def apply(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
+    def apply(self, xyz_fractional: torch.Tensor, apply_translation: bool = True) -> torch.Tensor:
         """
-        Apply symmetry operations to fractional coordinates.
+        Apply symmetry operations to fractional coordinates (rotation + translation).
+
+        For real space coordinates, applies the full symmetry operation: x' = R·x + t
 
         Parameters
         ----------
@@ -808,20 +810,47 @@ class SpaceGroup(DebugMixin, nn.Module):
         Returns
         -------
         torch.Tensor
-            Transformed coordinates of shape (3, N, ops) where ops is the
+            Transformed coordinates of shape (N, 3, ops) where ops is the
             number of symmetry operations.
+
+        See Also
+        --------
+        apply_to_hkl : For reciprocal space (Miller indices), rotation only.
         """
-        coords = (
-            xyz_fractional.permute(1, 0)
-            .to(self.matrices.device)
-            .to(self.matrices.dtype)
-        )  # (3, N)
-        coords = coords.unsqueeze(0)  # (1, 3, N)
-        transformed = torch.matmul(self.matrices, coords) + self.translations.unsqueeze(
-            2
-        )
-        # transformed: (ops, 3, N)
-        return transformed.permute(1, 2, 0)  # (3, N, ops)
+        coords = xyz_fractional.to(self.matrices.device).to(self.matrices.dtype)
+        # coords: (N, 3), matrices: (ops, 3, 3)
+        # Apply rotation: result[n, i, o] = sum_j(matrices[o, i, j] * coords[n, j])
+        transformed = torch.einsum("oij,nj->nio", self.matrices, coords)
+        # transformed: (N, 3, ops)
+        # Add translations: translations (ops, 3) -> (1, 3, ops) for broadcasting
+        if apply_translation:
+            transformed = transformed + self.translations.T.unsqueeze(0)
+        return transformed  # (N, 3, ops)
+
+    def apply_to_hkl(self, hkl: torch.Tensor) -> torch.Tensor:
+        """
+        Apply symmetry operations to Miller indices (rotation only, no translation).
+
+        For reciprocal space, only the rotational part of symmetry operations
+        applies to Miller indices: h' = R·h. The translation vector affects the
+        phase of structure factors, not the indices themselves.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Input tensor of shape (N, 3) representing Miller indices.
+
+        Returns
+        -------
+        torch.Tensor
+            Transformed Miller indices of shape (N, 3, ops) where ops is the
+            number of symmetry operations.
+
+        See Also
+        --------
+        apply : For real space coordinates (rotation + translation).
+        """
+        return self.apply(hkl, apply_translation=False)
 
     def expand_coords_to_P1(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
         """
@@ -837,10 +866,11 @@ class SpaceGroup(DebugMixin, nn.Module):
         torch.Tensor
             Expanded coordinates of shape (N * ops, 3).
         """
-        transformed = self.apply(xyz_fractional)  # (3, N, ops)
+        transformed = self.apply(xyz_fractional)  # (N, 3, ops)
         N = xyz_fractional.shape[0]
         ops = self.n_ops
-        expanded = transformed.permute(1, 2, 0).reshape(N * ops, 3)
+        # (N, 3, ops) -> (N, ops, 3) -> (N * ops, 3)
+        expanded = transformed.permute(0, 2, 1).reshape(N * ops, 3)
         return expanded
 
     def forward(self, xyz_fractional: torch.Tensor) -> torch.Tensor:

@@ -2221,3 +2221,74 @@ class Model(DebugMixin, nn.Module):
             raise RuntimeError("Model must be initialized to compute centroid.")
 
         return self.xyz().mean(dim=0)
+
+    def use_internal_coordinates(
+        self, bond_cutoff: float = 2.0, requires_grad: bool = True
+    ) -> "Model":
+        """
+        Switch xyz to internal coordinate parametrization.
+
+        Replaces the current xyz MixedTensor with an InternalCoordinateTensor
+        that parametrizes atomic positions using bond lengths, angles, and
+        torsion angles. This enables physically meaningful perturbations
+        and differentiable reconstruction.
+
+        Parameters
+        ----------
+        bond_cutoff : float, optional
+            Distance cutoff for bond detection in Angstroms. Default is 2.0.
+        requires_grad : bool, optional
+            Whether internal coordinate parameters should have gradients.
+            Default is True.
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
+
+        Examples
+        --------
+        ::
+
+            model = Model()
+            model.load_pdb('structure.pdb')
+            model.use_internal_coordinates(bond_cutoff=2.0)
+
+            # Now model.xyz() returns coordinates reconstructed from
+            # internal coordinates (bond lengths, angles, torsions)
+
+            # Shake the structure using internal coordinates
+            new_xyz = model.xyz.shake(magnitude=0.1)
+
+        Notes
+        -----
+        After calling this method, model.xyz will be an InternalCoordinateTensor
+        instead of a MixedTensor. The InternalCoordinateTensor supports:
+        - forward() / __call__(): Reconstruct Cartesian coordinates
+        - shake(magnitude): Add noise to internal parameters
+        - Gradient flow through all internal coordinate parameters
+        """
+        if not self.initialized:
+            raise RuntimeError(
+                "Model must be initialized before switching to internal coordinates. "
+                "Load data first with load_pdb() or load_cif()."
+            )
+
+        from torchref.model.internal_coordinates import InternalCoordinateTensor
+
+        # Get current coordinates
+        current_xyz = self.xyz().detach()
+
+        # Create internal coordinate tensor
+        self.xyz = InternalCoordinateTensor(
+            current_xyz,
+            bond_cutoff=bond_cutoff,
+            requires_grad=requires_grad,
+            dtype=self.dtype_float,
+            device=self.device,
+        )
+
+        if self.verbose > 0:
+            print(f"Switched to internal coordinate parametrization: {self.xyz}")
+
+        return self

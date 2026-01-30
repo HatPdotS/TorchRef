@@ -1032,34 +1032,35 @@ def is_centric_from_hkl(
     n_reflections = hkl_flat.shape[0]
 
     # Get symmetry operations from the SpaceGroup class
-    symmetry = SpaceGroup(space_group, dtype=torch.float64, device=hkl.device)
+    spacegroup = SpaceGroup(space_group, dtype=torch.float64, device=hkl.device)
 
     # Convert HKL to float64 for symmetry operations
-    hkl_float = hkl_flat.to(torch.float64).T  # Shape: (3, n_reflections)
+    hkl_float = hkl_flat.to(torch.float64)  # Shape: (n_reflections, 3)
 
-    # Apply all symmetry operations to all reflections at once
-    # hkl_float shape: (3, n_reflections)
-    # symmetry.apply returns shape: (3, n_reflections, n_ops)
-    hkl_sym = symmetry.apply(hkl_float)
+    # Apply all spacegroup operations to all reflections at once
+    # For reciprocal space (Miller indices), only rotation applies, not translation
+    # hkl_float shape: (n_reflections, 3)
+    # spacegroup.apply_to_hkl returns shape: (n_reflections, 3, n_ops)
+    hkl_sym = spacegroup.apply_to_hkl(hkl_float)
 
     # Compute Friedel mates: -h, -k, -l
-    # Shape: (3, n_reflections, 1) to broadcast against (3, n_reflections, n_ops)
-    friedel_hkl = -hkl_float.unsqueeze(-1)  # Shape: (3, n_reflections, 1)
+    # Shape: (n_reflections, 3, 1) to broadcast against (n_reflections, 3, n_ops)
+    friedel_hkl = -hkl_float.unsqueeze(-1)  # Shape: (n_reflections, 3, 1)
 
-    # Check if any symmetry operation produces the Friedel mate
+    # Check if any spacegroup operation produces the Friedel mate
     # Round to nearest integer (Miller indices should be integers)
     hkl_sym_rounded = torch.round(hkl_sym)
 
-    # Compute difference for all reflections and all symmetry operations
-    # Shape: (3, n_reflections, n_ops)
+    # Compute difference for all reflections and all spacegroup operations
+    # Shape: (n_reflections, 3, n_ops)
     diff = torch.abs(hkl_sym_rounded - friedel_hkl)
 
-    # A reflection is centric if ANY symmetry operation maps it to its Friedel mate
+    # A reflection is centric if ANY spacegroup operation maps it to its Friedel mate
     # Check if all 3 components (h,k,l) match (diff < 0.5) for any operation
     # Shape: (n_reflections, n_ops) after checking all 3 components match
-    matches = torch.all(diff < 0.5, dim=0)  # Check all 3 Miller indices match
+    matches = torch.all(diff < 0.5, dim=1)  # Check all 3 Miller indices match
 
-    # A reflection is centric if it matches for ANY symmetry operation
+    # A reflection is centric if it matches for ANY spacegroup operation
     # Shape: (n_reflections,)
     is_centric = torch.any(matches, dim=1)
 
