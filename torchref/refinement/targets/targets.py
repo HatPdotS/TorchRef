@@ -29,10 +29,11 @@ from torchref.utils.stats import (
     stat,
 )
 if TYPE_CHECKING:
+    from torchref.io import ReflectionData
+    from torchref.io.datasets.collection import DatasetCollection
     from torchref.model.model import Model
     from torchref.model.model_ft import ModelFT
     from torchref.refinement.loss_state import LossState
-    from torchref.io import ReflectionData
     from torchref.scaling.scaler_base import Scaler
 
 
@@ -2211,6 +2212,8 @@ class ADPLocalityTarget(ADPTarget):
             "max_neighbor_dist": stat(distances.max().item(), VERBOSITY_DEBUG),
             "avg_weight": stat(weights.mean().item(), VERBOSITY_DEBUG),
         }
+
+
 
 
 def create_xray_target(

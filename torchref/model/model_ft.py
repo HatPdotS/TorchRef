@@ -721,7 +721,7 @@ class ModelFT(Model):
 
         return f
 
-    def copy(self):
+    def copy(self, detach: bool = True) -> "ModelFT":
         """
         Create a deep copy of the ModelFT.
 
@@ -729,6 +729,12 @@ class ModelFT(Model):
         FFT submodule state (gridsize, real_space_grid, voxel_size, map_symmetry),
         ITC92 parametrization, and scalar attributes.
         Cache is reset to empty.
+
+        Parameters
+        ----------
+        detach : bool, optional
+            If True, the copy's parameters will be detached from the
+            computation graph (default: True).
 
         Returns
         -------
@@ -760,11 +766,15 @@ class ModelFT(Model):
         # Deep copy the PDB DataFrame
         model_copy.pdb = self.pdb.copy(deep=True)
 
-        # Copy scalar attributes - spacegroup setter also sets symmetry
-        model_copy.spacegroup = self.spacegroup
+        # Copy spacegroup using its copy() method
+        if self._spacegroup is not None:
+            model_copy._spacegroup = self._spacegroup.copy()
+        else:
+            model_copy._spacegroup = None
+
         model_copy.initialized = True
 
-        # Copy Cell object - cell setter will initialize FFT since spacegroup is already set
+        # Copy Cell object using its clone() method
         if self.cell is not None:
             model_copy.cell = self.cell.clone()
 
@@ -772,13 +782,17 @@ class ModelFT(Model):
         # (excluding FFT submodule buffers which are handled separately)
         for buffer_name, buffer_value in self._buffers.items():
             if buffer_value is not None:
-                model_copy.register_buffer(buffer_name, buffer_value.clone())
+                if detach:
+                    model_copy.register_buffer(buffer_name, buffer_value.clone().detach())
+                else:
+                    model_copy.register_buffer(buffer_name, buffer_value.clone())
 
         # Copy all modules (parameter wrappers) using their .copy() methods
-        # Note: _fft is handled separately below
+        # Skip _fft and _spacegroup as they are handled separately
+        skip_modules = {"_fft", "_spacegroup", "spacegroup", "_symmetry", "symmetry"}
         for module_name, module in self._modules.items():
-            if module_name == "_fft":
-                continue  # Handled below
+            if module_name in skip_modules:
+                continue
             if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
 
@@ -795,13 +809,12 @@ class ModelFT(Model):
             import copy as copy_module
             model_copy._parametrization = copy_module.deepcopy(self._parametrization)
 
-        # Copy map if it exists
-        if self.map is not None:
-            model_copy.map = self.map.clone()
-
-        # Copy FFT submodule state by setting up grid if it was set up
-        if self._fft.real_space_grid is not None:
-            model_copy.setup_grid(max_res=self.max_res)
+        # Copy FFT submodule using its copy() method
+        if self._fft is not None:
+            model_copy._fft = self._fft.copy()
+            # Setup grid if it was set up in the original
+            if self._fft.real_space_grid is not None:
+                model_copy.setup_grid(max_res=self.max_res)
 
         # Reset cache (don't copy cached structure factors)
         from torchref.utils.utils import TensorDict

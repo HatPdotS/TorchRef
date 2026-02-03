@@ -1,10 +1,11 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import torch
 from torch.nn import Module as nnModule
 
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
+from torchref.refinement.logger import Logger
 from torchref.refinement.loss_state import LossState
 from torchref.refinement.targets.combined_targets import (
     TotalADPTarget,
@@ -114,6 +115,10 @@ class Refinement(DebugMixin, nnModule):
         self.max_res = max_res
         self.nbins = nbins
         self.lr = 1e-3
+
+        # Persistent state and logger (created lazily)
+        self._loss_state: Optional[LossState] = None
+        self._logger: Optional[Logger] = None
 
         # Empty initialization - create empty submodules for state_dict loading
         if data_file is None and pdb is None:
@@ -257,6 +262,8 @@ class Refinement(DebugMixin, nnModule):
             use_work_set=False,
             verbose=self.verbose,
         )
+        # Reset loss state since targets changed
+        self.reset_loss_state()
         if self.verbose > 0:
             print(f"Changed X-ray target mode to '{mode}'")
 
@@ -271,6 +278,50 @@ class Refinement(DebugMixin, nnModule):
             The reflection data container.
         """
         return self.reflection_data
+
+    @property
+    def loss_state(self) -> LossState:
+        """
+        Get or create the persistent LossState.
+
+        The LossState is created once and reused across refinement cycles.
+        Targets are registered once; weights are updated each cycle.
+
+        Returns
+        -------
+        LossState
+            The persistent loss state with targets registered.
+        """
+        if self._loss_state is None:
+            self._loss_state = self._create_loss_state()
+        return self._loss_state
+
+    @property
+    def logger(self) -> Logger:
+        """
+        Get or create the Logger for this refinement.
+
+        Returns
+        -------
+        Logger
+            Logger instance linked to the persistent LossState.
+        """
+        if self._logger is None:
+            self._logger = Logger(
+                state=self.loss_state,
+                verbose=self.verbose,
+            )
+        return self._logger
+
+    def reset_loss_state(self) -> None:
+        """
+        Reset the persistent LossState and Logger.
+
+        Call this if targets need to be re-registered (e.g., after changing
+        target modes or reinitializing targets).
+        """
+        self._loss_state = None
+        self._logger = None
 
     def get_scales(self):
         if not hasattr(self, "scaler"):
@@ -599,9 +650,38 @@ class Refinement(DebugMixin, nnModule):
 
         return state
 
+    def _create_loss_state(self) -> LossState:
+        """
+        Create a configured LossState for optimization (internal).
+
+        Sets up a LossState with all targets registered as callables with
+        hierarchical naming (e.g., 'geometry/bond', 'adp/simu').
+
+        Returns
+        -------
+        LossState
+            Configured LossState with targets registered.
+        """
+        state = LossState(device=self.device)
+
+        # Register X-ray target
+        state.register_target("xray", self.xray_target_work)
+
+        # Register geometry targets
+        state.register_targets(self.geometry_target)
+
+        # Register ADP targets
+        state.register_targets(self.adp_target)
+
+        return state
+
     def create_loss_state(self) -> LossState:
         """
         Create a configured LossState for optimization.
+
+        .. deprecated::
+            Use the `loss_state` property instead for the persistent state.
+            This method is kept for backwards compatibility.
 
         Sets up a LossState with all targets registered as callables with
         hierarchical naming (e.g., 'geometry/bond', 'adp/simu'). Weights are
@@ -631,32 +711,21 @@ class Refinement(DebugMixin, nnModule):
         LossState
             Configured LossState with targets and weights.
         """
-        state = LossState(device=self.device)
-
-        # Register X-ray target
-        state.register_target("xray", self.xray_target_work)
-
-        state.register_targets(self.geometry_target)
-
-        # Get weights from component_weighting and apply
-        state.register_targets(self.adp_target)
-
-        return state
+        return self._create_loss_state()
 
     def complete_loss_state(self) -> "LossState":
         """
-        Create and populate a complete LossState.
+        Update and return the persistent LossState.
 
-        Creates a LossState with all targets registered, meta populated,
-        losses cached, and weights applied. Useful for logging or analysis
-        outside of optimization.
+        Updates the persistent LossState with current meta, target info,
+        cached losses, and weights. The state is reused across cycles.
 
         Returns
         -------
         LossState
             Complete LossState with targets, meta, losses, and weights.
         """
-        state = self.create_loss_state()
+        state = self.loss_state
         state = self.populate_state_meta(state)
         state = self.add_target_info_to_state(state)
         state.cache_losses()
@@ -732,260 +801,6 @@ class Refinement(DebugMixin, nnModule):
                 }
 
         return metrics
-
-    def log_refinement(self, phase: str, before: Dict[str, Any], after: Dict[str, Any]):
-        """
-        Log refinement comparison showing metrics before/after.
-
-        Uses the refinement's verbosity level to determine detail level.
-        Filters the full stats dict based on verbosity at display time.
-
-        Parameters
-        ----------
-        phase : str
-            Refinement phase name ('XYZ', 'ADP', 'scaling', etc.).
-        before : dict
-            Metrics dict from collect_metrics() before refinement.
-        after : dict
-            Metrics dict from collect_metrics() after refinement.
-        """
-        if self.verbose < 1:
-            return
-
-        from torchref.utils.stats import filter_stats, StatEntry
-
-        # Filter stats based on verbosity level for display
-        before_filtered = filter_stats(before, self.verbose)
-        after_filtered = filter_stats(after, self.verbose)
-
-        # Get weights from after stats
-        weights = after_filtered.get("component_weighting", {}).get("weights", {})
-
-        # Get overfitting weight from after stats (need to look in unfiltered to find it)
-        overfitting_weight = 0.0
-        after_cw = after.get("component_weighting", {})
-        if "overfitting_weighting" in after_cw:
-            ow_stats = after_cw["overfitting_weighting"]
-            if isinstance(ow_stats, dict):
-                ow_val = ow_stats.get("overfitting_weight")
-                if isinstance(ow_val, StatEntry):
-                    overfitting_weight = ow_val.value
-                elif ow_val is not None:
-                    overfitting_weight = ow_val
-
-        # Get X-ray scale weight from after stats
-        xray_scale_weight = 1.0
-        if "xray_scale_weighting" in after_cw:
-            xsw_stats = after_cw["xray_scale_weighting"]
-            if isinstance(xsw_stats, dict):
-                xsw_val = xsw_stats.get("xray_weight")
-                if isinstance(xsw_val, StatEntry):
-                    xray_scale_weight = xsw_val.value
-                elif xsw_val is not None:
-                    xray_scale_weight = xsw_val
-
-        print(f"\n{'─'*80}")
-        print(f"  {phase} Refinement Summary")
-        print(f"  X-ray scale weight: {xray_scale_weight:.4f}", end="")
-        if overfitting_weight > 0:
-            print(f"  |  Overfitting penalty: {overfitting_weight:.3f}", end="")
-        print()  # End the line
-        print(f"{'─'*80}")
-
-        # Header with weight column
-        print(
-            f"\n  {'Metric':<30} {'Before':>12} {'After':>12} {'Change':>12} {'Weight':>10}"
-        )
-        print(f"  {'-'*76}")
-
-        def format_row(label, b_val, a_val, weight=None, fmt="12.4f"):
-            delta = a_val - b_val
-            weight_str = f"{weight:>10.4f}" if weight is not None else f"{'':>10}"
-            return f"  {label:<30} {b_val:>{fmt}} {a_val:>{fmt}} {delta:>+{fmt}} {weight_str}"
-
-        # R-factor metrics (always included)
-        for key, label in [
-            ("rwork", "Rwork"),
-            ("rfree", "Rfree"),
-            ("rfree_gap", "Rfree-Rwork gap"),
-        ]:
-            b_val = before_filtered.get(key, 0)
-            a_val = after_filtered.get(key, 0)
-            print(format_row(label, b_val, a_val))
-
-        # X-ray NLL with weight
-        print()
-        before_xray = before_filtered.get("component_weighting", {}).get("xray", {})
-        after_xray = after_filtered.get("component_weighting", {}).get("xray", {})
-        xray_weight = weights.get("xray")
-        for key, label in [
-            ("work_nll", "X-ray NLL (work)"),
-            ("test_nll", "X-ray NLL (test)"),
-        ]:
-            b_val = before_xray.get(key, 0)
-            a_val = after_xray.get(key, 0)
-            # Only show weight on first X-ray row
-            w = xray_weight if key == "work_nll" else None
-            print(format_row(label, b_val, a_val, w))
-
-        # Geometry loss with weight (verbosity >= 1)
-        if self.verbose >= 1:
-            geom_weight = weights.get("geometry")
-            before_geom = before_filtered.get("geometry", {})
-            after_geom = after_filtered.get("geometry", {})
-            # Get total geometry loss if available
-            b_geom_total = 0.0
-            a_geom_total = 0.0
-            for target_name, target_stats in after_geom.items():
-                if isinstance(target_stats, dict):
-                    a_geom_total += target_stats.get("loss", 0)
-                    b_stats = before_geom.get(target_name, {})
-                    if isinstance(b_stats, dict):
-                        b_geom_total += b_stats.get("loss", 0)
-            if a_geom_total > 0 or b_geom_total > 0:
-                print(
-                    format_row(
-                        "Geometry (total)", b_geom_total, a_geom_total, geom_weight
-                    )
-                )
-
-            # ADP loss with weight
-            adp_weight = weights.get("adp")
-            before_adp = before_filtered.get("adp", {})
-            after_adp = after_filtered.get("adp", {})
-            # Get total ADP loss if available
-            b_adp_total = 0.0
-            a_adp_total = 0.0
-            for target_name, target_stats in after_adp.items():
-                if isinstance(target_stats, dict):
-                    a_adp_total += target_stats.get("loss", 0)
-                    b_stats = before_adp.get(target_name, {})
-                    if isinstance(b_stats, dict):
-                        b_adp_total += b_stats.get("loss", 0)
-            if a_adp_total > 0 or b_adp_total > 0:
-                print(format_row("ADP (total)", b_adp_total, a_adp_total, adp_weight))
-
-        # Detailed component losses (verbosity >= 2)
-        if self.verbose >= 2:
-            # Geometry targets breakdown
-            before_geom = before_filtered.get("geometry", {})
-            after_geom = after_filtered.get("geometry", {})
-            if after_geom:
-                print("\n  Geometry breakdown:")
-                for target_name, target_stats in after_geom.items():
-                    if isinstance(target_stats, dict):
-                        loss = target_stats.get("loss", 0)
-                        b_loss = (
-                            before_geom.get(target_name, {}).get("loss", 0)
-                            if isinstance(before_geom.get(target_name), dict)
-                            else 0
-                        )
-                        label = (
-                            "    "
-                            + target_name.replace("_target", "")
-                            .replace("_", " ")
-                            .title()
-                        )
-                        print(format_row(label, b_loss, loss))
-
-                        # Detailed stats at verbosity >= 3
-                        if self.verbose >= 3:
-                            for stat_key, stat_val in target_stats.items():
-                                if stat_key != "loss" and isinstance(
-                                    stat_val, (int, float)
-                                ):
-                                    b_stat = (
-                                        before_geom.get(target_name, {}).get(
-                                            stat_key, 0
-                                        )
-                                        if isinstance(
-                                            before_geom.get(target_name), dict
-                                        )
-                                        else 0
-                                    )
-                                    print(
-                                        format_row(
-                                            f"      {stat_key}", b_stat, stat_val
-                                        )
-                                    )
-
-            # ADP targets breakdown
-            before_adp = before_filtered.get("adp", {})
-            after_adp = after_filtered.get("adp", {})
-            if after_adp:
-                print("\n  ADP breakdown:")
-                for target_name, target_stats in after_adp.items():
-                    if isinstance(target_stats, dict):
-                        loss = target_stats.get("loss", 0)
-                        b_loss = (
-                            before_adp.get(target_name, {}).get("loss", 0)
-                            if isinstance(before_adp.get(target_name), dict)
-                            else 0
-                        )
-                        label = (
-                            "    "
-                            + target_name.replace("_target", "")
-                            .replace("_", " ")
-                            .title()
-                        )
-                        print(format_row(label, b_loss, loss))
-
-                        # Detailed stats at verbosity >= 3
-                        if self.verbose >= 3:
-                            for stat_key, stat_val in target_stats.items():
-                                if stat_key != "loss" and isinstance(
-                                    stat_val, (int, float)
-                                ):
-                                    b_stat = (
-                                        before_adp.get(target_name, {}).get(stat_key, 0)
-                                        if isinstance(before_adp.get(target_name), dict)
-                                        else 0
-                                    )
-                                    print(
-                                        format_row(
-                                            f"      {stat_key}", b_stat, stat_val
-                                        )
-                                    )
-
-        print(f"{'─'*80}\n")
-
-    def log_xyz_comparison(
-        self, before: Dict[str, float], after: Dict[str, float], weight: float = None
-    ):
-        """
-        Log XYZ refinement comparison.
-
-        Deprecated: Use log_refinement() instead.
-
-        Parameters
-        ----------
-        before : dict
-            Metrics dict from collect_metrics() before XYZ refinement.
-        after : dict
-            Metrics dict from collect_metrics() after XYZ refinement.
-        weight : float, optional
-            Restraint weight (ignored, for backwards compatibility).
-        """
-        self.log_refinement("XYZ", before, after)
-
-    def log_adp_comparison(
-        self, before: Dict[str, float], after: Dict[str, float], weight: float = None
-    ):
-        """
-        Log ADP refinement comparison.
-
-        Deprecated: Use log_refinement() instead.
-
-        Parameters
-        ----------
-        before : dict
-            Metrics dict from collect_metrics() before ADP refinement.
-        after : dict
-            Metrics dict from collect_metrics() after ADP refinement.
-        weight : float, optional
-            ADP weight (ignored, for backwards compatibility).
-        """
-        self.log_refinement("ADP", before, after)
 
     def add_target_info_to_state(self, state: "LossState") -> "LossState":
         """

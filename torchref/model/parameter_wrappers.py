@@ -1300,6 +1300,9 @@ class OccupancyTensor(MixedTensor):
         if device is None:
             device = initial_values.device
 
+        # Ensure initial_values is on the correct device and dtype
+        initial_values = initial_values.to(device=device, dtype=dtype)
+
         # Validate initial values are in valid range
         if self.use_sigmoid:
             if torch.any(initial_values < 0) or torch.any(initial_values > 1):

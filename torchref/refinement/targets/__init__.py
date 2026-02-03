@@ -31,12 +31,31 @@ from .targets import (
     DataTarget,
 )
 
+from .difference_xray_target import DifferenceXrayTarget
+from .phase_informed_difference_target import PhaseInformedDifferenceTarget
+from .taylor_corrected_difference_target import TaylorCorrectedDifferenceTarget
+from .occupancy_floor_diagnostic import (
+    OccupancyFloorDiagnostic,
+    NegativeDensityPenalty,
+    DisplacementRegularizer,
+    DifferenceAmplitudeRegularizer,
+)
+
+# Force field target (optional dependency)
+try:
+    from .forcefield_target import ForceFieldTarget
+except ImportError:
+    ForceFieldTarget = None  # torchmd-net not installed
+
 __all__ = [
     "Target",
     "XrayTarget",
     "GaussianXrayTarget",
     "MaximumLikelihoodXrayTarget",
     "LeastSquaresXrayTarget",
+    "DifferenceXrayTarget",
+    "PhaseInformedDifferenceTarget",
+    "TaylorCorrectedDifferenceTarget",
     "GeometryTarget",
     "BondTarget",
     "AngleTarget",
@@ -52,4 +71,9 @@ __all__ = [
     "CombinedTargets",
     "TotalGeometryTarget",
     "TotalADPTarget",
+    "ForceFieldTarget",
+    "OccupancyFloorDiagnostic",
+    "NegativeDensityPenalty",
+    "DisplacementRegularizer",
+    "DifferenceAmplitudeRegularizer",
 ]

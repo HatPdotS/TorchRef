@@ -29,6 +29,7 @@ Access targets and weighting schemes::
 from . import targets, weighting
 from .base_refinement import Refinement
 from .lbfgs_refinement import LBFGSRefinement
+from .logger import Logger
 from .loss_state import LossState
 from .optimizers import AdamWithAdaptiveNoise
 from .targets import Target, DataTarget, ModelTarget
@@ -39,13 +40,15 @@ __all__ = [
     "LBFGSRefinement",
     # Loss handling
     "LossState",
+    # Logging
+    "Logger",
     # Optimizers
     "AdamWithAdaptiveNoise",
     # Submodules
     "targets",
     "weighting",
-    #Base target classes
+    # Base target classes
     "Target",
-    "DataTarget", 
-    "ModelTarget"
+    "DataTarget",
+    "ModelTarget",
 ]

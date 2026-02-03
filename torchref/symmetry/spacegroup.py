@@ -1002,3 +1002,15 @@ class SpaceGroup(DebugMixin, nn.Module):
     def cpu(self):
         """Move SpaceGroup to CPU."""
         return self.to(device="cpu")
+
+    def copy(self) -> "SpaceGroup":
+        """Create a deep copy of this SpaceGroup.
+
+        Returns
+        -------
+        SpaceGroup
+            A new SpaceGroup instance with cloned buffers.
+        """
+        # Create new SpaceGroup from our gemmi object to preserve symmetry info
+        new_sg = SpaceGroup(self._gemmi, dtype=self._dtype, device=self._device)
+        return new_sg

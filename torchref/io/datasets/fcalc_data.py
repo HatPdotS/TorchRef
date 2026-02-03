@@ -121,7 +121,8 @@ class FcalcDataset(CrystalDataset):
             )
             print(f"Generated {len(dataset)} reflections")
         """
-        from torchref.base.reciprocal import generate_possible_hkl, get_d_spacing
+        import gemmi
+        from torchref.base.reciprocal import get_d_spacing
 
         # Handle Cell input - convert to Cell object if needed
         if isinstance(cell, Cell):
@@ -140,11 +141,23 @@ class FcalcDataset(CrystalDataset):
         else:
             sg_obj = SpaceGroup(spacegroup)  # Normalize any input
 
-        # Generate HKL indices
-        hkl = generate_possible_hkl(cell_tensor, d_min, device=device)
+        # Generate HKL indices using gemmi (respects space group symmetry)
+        # This generates only unique reflections in the asymmetric unit
+        cell_list = cell_tensor.cpu().tolist()
+        gemmi_cell = gemmi.UnitCell(
+            cell_list[0], cell_list[1], cell_list[2],
+            cell_list[3], cell_list[4], cell_list[5]
+        )
+        gemmi_sg = sg_obj._gemmi  # Get underlying gemmi.SpaceGroup
+
+        # make_miller_array returns unique HKL for the asymmetric unit
+        hkl_list = gemmi.make_miller_array(gemmi_cell, gemmi_sg, d_min)
+        hkl = torch.tensor(hkl_list, dtype=torch.int32, device=device)
 
         # Calculate resolution
-        resolution = get_d_spacing(hkl, cell_tensor)
+        resolution = get_d_spacing(hkl.float(), cell_tensor)
+
+        print(f"Generated dataset with {len(hkl)} reflections.")
 
         return FcalcDataset(
             hkl=hkl,

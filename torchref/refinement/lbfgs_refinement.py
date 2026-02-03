@@ -11,7 +11,7 @@ Weight optimization follows the Phenix approach:
 - Select best weight based on Rfree while respecting gap constraints
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import torch
@@ -255,56 +255,6 @@ class LBFGSRefinement(Refinement):
 
         self.model.unfreeze_all()
         return state
-
-    def _run_xyz_with_weight(self, restraint_weight: float, max_iter: int = 20) -> Dict:
-        """
-        Run XYZ refinement with a fixed restraint weight and return metrics.
-
-        This is used internally for weight screening. Saves and restores model state.
-
-        Parameters
-        ----------
-        restraint_weight : float
-            Weight for restraints relative to X-ray target.
-        max_iter : int, optional
-            Maximum LBFGS iterations. Default is 20.
-
-        Returns
-        -------
-        dict
-            Dictionary with rwork, rfree, rmsd_bonds, rmsd_angles, state, etc.
-        """
-        with torch.no_grad():
-            rwork_start, rfree_start = self.get_rfactor()
-
-        self.scaler.refine_lbfgs()
-        state = self.complete_loss_state()
-        self._optimize_lbfgs(state, params=self.model.parameters(), max_iter=max_iter)
-
-        # Collect metrics
-        with torch.no_grad():
-            rwork, rfree = self.get_rfactor()
-            xray_target = self.xray_loss().item()
-            restraints_target = self.restraints_loss().item()
-            bond_devs, _ = self.restraints.bond_deviations()
-            rmsd_bonds = torch.sqrt((bond_devs**2).mean()).item()
-            angle_devs, _ = self.restraints.angle_deviations()
-            rmsd_angles = torch.sqrt((angle_devs**2).mean()).item()
-
-        return {
-            "weight": restraint_weight,
-            "rwork": rwork,
-            "rfree": rfree,
-            "rwork_start": rwork_start,
-            "rfree_start": rfree_start,
-            "gap": rfree - rwork,
-            "xray_target": xray_target,
-            "restraints_target": restraints_target,
-            "rmsd_bonds": rmsd_bonds,
-            "rmsd_angles": rmsd_angles,
-            "state": state,
-        }
-
 
     def regularize_adp(self, lr=0.1):
         """
@@ -664,7 +614,6 @@ class LBFGSRefinement(Refinement):
         dict
             History dictionary with all metrics per cycle (hierarchical structure).
         """
-
         self.scaler.freeze()
         i = 0
 
@@ -675,6 +624,10 @@ class LBFGSRefinement(Refinement):
                 break
 
         self.history[master_key] = []
+
+        # Clear logger history for fresh refinement
+        self.logger.clear()
+
         for cycle in range(macro_cycles):
             # Hierarchical cycle dict structure
             cycle_dict = {
@@ -706,35 +659,39 @@ class LBFGSRefinement(Refinement):
                         f"After scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}"
                     )
 
-            # Store metrics before XYZ
-            with torch.no_grad():
-                before_xyz = self.collect_metrics()
-                cycle_dict["xyz"]["before"] = before_xyz
+            # Record state before XYZ
+            self.logger.record(label="before_xyz")
+            cycle_dict["xyz"]["before"] = self.collect_metrics()
 
             # XYZ refinement with cycle-aware weighting
             self.refine_xyz()
 
-            # Collect metrics after XYZ
-            with torch.no_grad():
-                after_xyz = self.collect_metrics()
-                cycle_dict["xyz"]["after"] = after_xyz
-                if self.verbose > 0:
-                    self.log_xyz_comparison(before_xyz, after_xyz)
+            # Record state after XYZ and log comparison
+            self.logger.record(label="after_xyz")
+            cycle_dict["xyz"]["after"] = self.collect_metrics()
+            if self.verbose > 0:
+                self.logger.compare(
+                    label_before="before_xyz",
+                    label_after="after_xyz",
+                    title="XYZ Refinement",
+                )
 
-            # Store metrics before ADP
-            with torch.no_grad():
-                before_adp = self.collect_metrics()
-                cycle_dict["adp"]["before"] = before_adp
+            # Record state before ADP
+            self.logger.record(label="before_adp")
+            cycle_dict["adp"]["before"] = self.collect_metrics()
 
             # B-factor refinement with cycle-aware weighting
             self.refine_adp()
 
-            # Collect metrics after ADP (final for this cycle)
-            with torch.no_grad():
-                after_adp = self.collect_metrics()
-                cycle_dict["adp"]["after"] = after_adp
-                if self.verbose > 0:
-                    self.log_adp_comparison(before_adp, after_adp)
+            # Record state after ADP and log comparison
+            self.logger.record(label="after_adp")
+            cycle_dict["adp"]["after"] = self.collect_metrics()
+            if self.verbose > 0:
+                self.logger.compare(
+                    label_before="before_adp",
+                    label_after="after_adp",
+                    title="ADP Refinement",
+                )
 
             self.history[master_key].append(cycle_dict)
 
@@ -766,6 +723,10 @@ class LBFGSRefinement(Refinement):
 
         self.history[master_key] = []
         self.history["initial"] = self.collect_metrics()
+
+        # Clear logger history for fresh refinement
+        self.logger.clear()
+
         for cycle in range(macro_cycles):
             # Hierarchical cycle dict structure
             cycle_dict = {
@@ -781,7 +742,8 @@ class LBFGSRefinement(Refinement):
 
             self.get_scales()
 
-            # Collect metrics after scaling
+            # Record state after scaling (before refinement)
+            self.logger.record(label="after_scaling")
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
                 cycle_dict["after_scaling"] = after_scaling
@@ -793,7 +755,8 @@ class LBFGSRefinement(Refinement):
             # Full refinement
             self._refine_everything_lbfgs_single_cycle()
 
-            # Collect metrics after refinement
+            # Record state after refinement and log comparison
+            self.logger.record(label="after_refinement")
             with torch.no_grad():
                 after_refinement = self.collect_metrics()
                 cycle_dict["after_refinement"] = after_refinement
@@ -801,8 +764,11 @@ class LBFGSRefinement(Refinement):
                     print(
                         f"After refinement: Rwork={after_refinement['rwork']:.4f}, Rfree={after_refinement['rfree']:.4f}"
                     )
-                self.log_xyz_comparison(after_scaling, after_refinement)
-                self.log_adp_comparison(after_scaling, after_refinement)
+                    self.logger.compare(
+                        label_before="after_scaling",
+                        label_after="after_refinement",
+                        title="Joint XYZ+ADP Refinement",
+                    )
 
             self.history[master_key].append(cycle_dict)
 

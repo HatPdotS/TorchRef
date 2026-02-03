@@ -713,3 +713,31 @@ class FFT(nn.Module):
     def cpu(self):
         """Move FFT module to CPU."""
         return self.to(device="cpu")
+
+    def copy(self) -> "FFT":
+        """Create a deep copy of this FFT module.
+
+        Returns
+        -------
+        FFT
+            A new FFT instance with cloned cell, spacegroup, and buffers.
+        """
+        # Clone the cell
+        new_cell = self._cell.clone() if self._cell is not None else None
+
+        # Copy the spacegroup
+        new_spacegroup = self._spacegroup.copy() if self._spacegroup is not None else None
+
+        # Create new FFT with copied components
+        new_fft = FFT(
+            cell=new_cell,
+            spacegroup=new_spacegroup,
+            max_res=self.max_res,
+            radius_angstrom=self.radius_angstrom,
+            dtype_float=self.dtype_float,
+            device=self.device,
+            verbose=self.verbose,
+            use_late_symmetry=self.use_late_symmetry,
+        )
+
+        return new_fft
