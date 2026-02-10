@@ -379,14 +379,14 @@ def write(
     """
     import gemmi
 
-    mtz_rs = rs.DataSet(df)
-    if "H" in mtz_rs.columns and "K" in mtz_rs.columns and "L" in mtz_rs.columns:
-        mtz_rs = mtz_rs.set_index("H", "K", "L")
+
 
     if torch.is_tensor(cell):
         cell = cell.detach().cpu().numpy().tolist()
     elif isinstance(cell, np.ndarray):
         cell = cell.tolist()
+    
+    cell = gemmi.UnitCell(*cell)
 
     # Handle spacegroup
     if isinstance(spacegroup, gemmi.SpaceGroup):
@@ -406,14 +406,22 @@ def write(
         raise ValueError(
             f"Spacegroup must be str or gemmi.SpaceGroup, got {type(spacegroup)}"
         )
+    mtz_rs = rs.DataSet(df, cell=cell, spacegroup=spacegroup)
 
     # Assign MTZ data types
-    structure_factor_cols = ["Fobs", "2FOFCWT", "FOFCWT", "F-model"]
-    intensity_cols = ["I-obs"]
-    sigma_cols = ["SIGF-obs", "SIGI-obs"]
-    phase_cols = ["PH2FOFCWT", "PHFOFCWT", "PH-model"]
-    flags = ["R-free-flags"]
+    structure_factor_cols = ["F-obs", "Fobs", "FP", "2FOFCWT", "FOFCWT", "F-model", "FWT", "DELFWT"]
+    intensity_cols = ["I-obs", "I"]
+    sigma_cols = ["SIGF-obs", "SIGI-obs", "SIGFP", "SIGI"]
+    phase_cols = ["PH2FOFCWT", "PHFOFCWT", "PH-model", "PHWT", "PHDELWT"]
+    flags = ["R-free-flags", "FreeR_flag", "FREE"]
 
+
+    if "H" in mtz_rs.columns and "K" in mtz_rs.columns and "L" in mtz_rs.columns:
+        mtz_rs['H'] = mtz_rs['H'].astype('H')
+        mtz_rs['K'] = mtz_rs['K'].astype('H')   
+        mtz_rs['L'] = mtz_rs['L'].astype('H')
+        mtz_rs = mtz_rs.set_index("H", "K", "L")
+        
     for col in structure_factor_cols:
         if col in mtz_rs.columns:
             mtz_rs[col] = mtz_rs[col].astype("F")
@@ -435,8 +443,6 @@ def write(
             mtz_rs[col] = mtz_rs[col].astype("I")
 
     mtz_rs = mtz_rs.infer_mtz_dtypes()
-    mtz_rs.cell = gemmi.UnitCell(*cell)
-    mtz_rs.spacegroup = spacegroup
     mtz_rs.write_mtz(filepath)
 
     return 1

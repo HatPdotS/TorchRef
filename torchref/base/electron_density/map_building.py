@@ -184,13 +184,15 @@ def vectorized_add_to_map_aniso(
     """
     Add anisotropic atoms to density map using ITC92 Gaussian parameterization.
 
-    For anisotropic atoms, the Gaussian is:
-    rho(r) = sum_i A_i * exp(-2*pi^2 * dr^T * (U + U_i) * dr)
+    Uses the same convention as the isotropic case for consistency:
+    - B_total = (B_itc92 + B_atomic) / 4
+    - rho = A × (π/B_total)^(3/2) × exp(-π² r² / B_total)
 
-    where:
-    - U is the atomic displacement parameter tensor (6 components)
-    - U_i is the ITC92 Gaussian width tensor derived from B_i parameter
-    - dr is the distance vector from atom center
+    For anisotropic atoms, this generalizes to:
+    - B_atomic_ij = 8π² × U_atomic_ij (standard crystallographic conversion)
+    - B_total_ij = (B_itc92 × δ_ij + 8π² × U_atomic_ij) / 4
+    - Normalization: (π³ / det(B_total))^(1/2)
+    - Exponent: exp(-π² × r^T × B_total^(-1) × r)
 
     Parameters
     ----------
@@ -210,10 +212,10 @@ def vectorized_add_to_map_aniso(
     frac_matrix : torch.Tensor
         Fractionalization matrix of shape (3, 3).
     A : torch.Tensor
-        ITC92 amplitude coefficients for each atom of shape (N_atoms, 4).
+        ITC92 amplitude coefficients for each atom of shape (N_atoms, 5).
     B : torch.Tensor
         ITC92 width coefficients (b parameters) in Angstroms squared
-        for each atom of shape (N_atoms, 4).
+        for each atom of shape (N_atoms, 5).
     occ : torch.Tensor
         Occupancies for each atom of shape (N_atoms,).
 
@@ -223,77 +225,79 @@ def vectorized_add_to_map_aniso(
         Updated electron density map.
     """
     # Calculate distance vectors with periodic boundary conditions
-    # diff_coords shape: (N_atoms, N_voxels, 3)
     diff_coords = surrounding_coords - xyz.unsqueeze(1)
-
     diff_coords = smallest_diff_aniso(diff_coords, inv_frac_matrix, frac_matrix)
 
-    four_pi_sq = 4 * np.pi**2
+    n_atoms = B.shape[0]
+    n_gauss = B.shape[1]
 
-    # Diagonal U terms
-    U_diag = U[:, :3]  # (N_atoms, 3) - u11, u22, u33
+    # Convert atomic U to B using standard crystallographic convention: B = 8π² U
+    eight_pi_sq = 8 * np.pi**2
 
-    # Compute u_total for each combination of ITC92 component and U diagonal
-    B_expanded = B.unsqueeze(2)  # (N_atoms, 4, 1)
-    U_diag_expanded = U_diag.unsqueeze(1)  # (N_atoms, 1, 3)
+    U_diag = U[:, :3]  # u11, u22, u33
+    U_off_diag = U[:, 3:]  # u12, u13, u23
 
-    U_total_diag = 1.0 / (B_expanded + four_pi_sq * U_diag_expanded)  # (N_atoms, 4, 3)
+    # Convert U to B
+    B_atomic_diag = eight_pi_sq * U_diag  # (N_atoms, 3)
+    B_atomic_off = eight_pi_sq * U_off_diag  # (N_atoms, 3)
 
-    # Build U_total tensor with proper format [u11, u22, u33, u12, u13, u23]
-    U_total = torch.zeros(B.shape[0], B.shape[1], 6, device=B.device, dtype=B.dtype)
-    U_total[:, :, :3] = U_total_diag  # u11, u22, u33
+    # Compute B_total = (B_itc92 + B_atomic) / 4 for each ITC92 component
+    # B_itc92 is isotropic, so it only adds to diagonal
+    B_expanded = B.unsqueeze(2)  # (N_atoms, n_gauss, 1)
+    B_atomic_diag_expanded = B_atomic_diag.unsqueeze(1)  # (N_atoms, 1, 3)
 
-    # For off-diagonal terms, use similar approach
-    U_off_diag = U[:, 3:]  # (N_atoms, 3) - u12, u13, u23
-    U_total[:, :, 3:] = (U_off_diag.unsqueeze(1) / four_pi_sq).expand(
-        -1, B.shape[1], -1
-    )  # Approximate
+    B_total_diag = (B_expanded + B_atomic_diag_expanded) / 4  # (N_atoms, n_gauss, 3)
+    B_total_diag = B_total_diag.clamp(min=0.1)  # Clamp for numerical stability
 
-    U_matrix = torch.zeros(
-        U_total.shape[0],
-        U_total.shape[1],
-        3,
-        3,
-        device=U_total.device,
-        dtype=U_total.dtype,
-    )
-    U_matrix[:, :, 0, 0] = U_total[:, :, 0]  # u11
-    U_matrix[:, :, 1, 1] = U_total[:, :, 1]  # u22
-    U_matrix[:, :, 2, 2] = U_total[:, :, 2]  # u33
-    U_matrix[:, :, 0, 1] = U_total[:, :, 3]  # u12
-    U_matrix[:, :, 1, 0] = U_total[:, :, 3]  # u12 (symmetric)
-    U_matrix[:, :, 0, 2] = U_total[:, :, 4]  # u13
-    U_matrix[:, :, 2, 0] = U_total[:, :, 4]  # u13 (symmetric)
-    U_matrix[:, :, 1, 2] = U_total[:, :, 5]  # u23
-    U_matrix[:, :, 2, 1] = U_total[:, :, 5]  # u23 (symmetric)
+    # Off-diagonal B_total (ITC92 doesn't contribute to off-diagonals)
+    B_total_off = B_atomic_off.unsqueeze(1).expand(-1, n_gauss, -1) / 4
 
-    # Compute quadratic form: Δr^T * U * Δr for each Gaussian component
+    # Build the B_total matrix for each atom and Gaussian component
+    B_matrix = torch.zeros(n_atoms, n_gauss, 3, 3, device=B.device, dtype=B.dtype)
+    B_matrix[:, :, 0, 0] = B_total_diag[:, :, 0]
+    B_matrix[:, :, 1, 1] = B_total_diag[:, :, 1]
+    B_matrix[:, :, 2, 2] = B_total_diag[:, :, 2]
+    B_matrix[:, :, 0, 1] = B_total_off[:, :, 0]
+    B_matrix[:, :, 1, 0] = B_total_off[:, :, 0]
+    B_matrix[:, :, 0, 2] = B_total_off[:, :, 1]
+    B_matrix[:, :, 2, 0] = B_total_off[:, :, 1]
+    B_matrix[:, :, 1, 2] = B_total_off[:, :, 2]
+    B_matrix[:, :, 2, 1] = B_total_off[:, :, 2]
+
+    # Compute inverse of B_total matrix for the exponent
+    B_inv = torch.linalg.inv(B_matrix)  # (N_atoms, n_gauss, 3, 3)
+
+    # Compute determinant for normalization
+    det_B = torch.linalg.det(B_matrix)  # (N_atoms, n_gauss)
+    det_B = det_B.clamp(min=1e-10)
+
+    # Normalization: (π³ / det(B))^(1/2) - generalizes (π/B)^(3/2) to 3D
+    normalization = (np.pi**3 / det_B) ** 0.5  # (N_atoms, n_gauss)
+
+    # Scale amplitudes by occupancy and normalization
+    A_normalized = A * occ.unsqueeze(1) * normalization  # (N_atoms, n_gauss)
+
+    # Compute quadratic form: r^T × B^(-1) × r for each Gaussian component
     diff_coords_expanded = diff_coords.unsqueeze(2)  # (N_atoms, N_voxels, 1, 3)
-    U_matrix_expanded = U_matrix.unsqueeze(1)  # (N_atoms, 1, 4, 3, 3)
+    B_inv_expanded = B_inv.unsqueeze(1)  # (N_atoms, 1, n_gauss, 3, 3)
 
-    # First: U * Δr -> (N_atoms, N_voxels, 4, 3)
-    U_times_diff = torch.einsum(
-        "naijk,namk->naij", U_matrix_expanded, diff_coords_expanded
-    )
+    # First: B^(-1) × r -> (N_atoms, N_voxels, n_gauss, 3)
+    Binv_times_r = torch.einsum("naijk,namk->naij", B_inv_expanded, diff_coords_expanded)
 
-    # Second: Δr^T * (U * Δr) -> (N_atoms, N_voxels, 4)
-    quad_form = torch.einsum("namk,namk->nam", diff_coords_expanded, U_times_diff)
+    # Second: r^T × (B^(-1) × r) -> (N_atoms, N_voxels, n_gauss)
+    quad_form = torch.einsum("namk,namk->nam", diff_coords_expanded, Binv_times_r)
 
-    # Apply occupancy scaling to amplitudes
-    A_scaled = A * occ.unsqueeze(1)  # Shape: (N_atoms, 4)
+    # Calculate Gaussian density: exp(-π² × r^T × B^(-1) × r)
+    gaussian_terms = torch.exp(-np.pi**2 * quad_form)  # (N_atoms, N_voxels, n_gauss)
 
-    # Calculate Gaussian density for each component
-    gaussian_terms = torch.exp(-2 * np.pi**2 * quad_form)  # (N_atoms, N_voxels, 4)
-
-    # Sum over 4 Gaussian components
+    # Sum over Gaussian components
     density = torch.sum(
-        A_scaled.unsqueeze(1) * gaussian_terms, dim=2
+        A_normalized.unsqueeze(1) * gaussian_terms, dim=2
     )  # (N_atoms, N_voxels)
 
-    # Flatten to (N_atoms * N_voxels,)
+    # Flatten and add to map
     density_flat = density.flatten()
     voxel_indices_flat = voxel_indices.reshape(-1, 3)
 
-    # Add to map
     map = scatter_add_nd(density_flat, voxel_indices_flat, map)
     return map

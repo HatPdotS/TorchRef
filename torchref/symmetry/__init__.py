@@ -48,6 +48,7 @@ from .map_symmetry import MapSymmetry, MapSymmetryDirect
 from .reciprocal_symmetry import (
     ReciprocalSymmetry,
     ReciprocalSymmetryGrid,
+    canonicalize_hkl,
     complete_hkl,
     expand_hkl,
     expand_reciprocal_grid,
@@ -93,6 +94,7 @@ __all__ = [
     "expand_hkl",
     "complete_hkl",
     "reduce_hkl",
+    "canonicalize_hkl",
     "expand_reflections",
     "expand_reciprocal_grid",
     # Grid utilities

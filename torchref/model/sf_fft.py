@@ -1,13 +1,15 @@
 """
-FFT - Standalone FFT module for electron density and structure factor calculations.
+SfFFT - Structure Factor calculation via FFT (Fast Fourier Transform).
 
 This module provides a PyTorch nn.Module that handles:
 - Grid setup for real-space electron density calculations
 - Building electron density maps from atomic parameters
 - FFT-based conversion to structure factors
 
-The FFT class can be used standalone (stateless) or with stored grid state
+The SfFFT class can be used standalone (stateless) or with stored grid state
 (stateful), making it flexible for various use cases.
+
+Note: FFT is provided as a backward compatibility alias for SfFFT.
 """
 
 from typing import Optional, Tuple, Union
@@ -30,9 +32,9 @@ from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.symmetry.spacegroup import SpaceGroupLike
 
 
-class FFT(nn.Module):
+class SfFFT(nn.Module):
     """
-    Standalone FFT module for electron density and structure factor calculations.
+    Structure Factor calculator using FFT (Fast Fourier Transform).
 
     This module encapsulates all FFT-related functionality for computing electron
     density maps and structure factors. It is initialized with a Cell and optionally
@@ -83,16 +85,16 @@ class FFT(nn.Module):
 
         from torchref.symmetry import Cell
         cell = Cell([50, 60, 70, 90, 90, 90])
-        fft = FFT(cell, spacegroup='P212121', max_res=1.5)
-        fft.setup_grid()
-        density_map = fft.build_density_map(xyz, b, occ, A, B, inv_frac, frac)
-        sf = fft.map_to_structure_factors(density_map, hkl)
+        sf_fft = SfFFT(cell, spacegroup='P212121', max_res=1.5)
+        sf_fft.setup_grid()
+        density_map = sf_fft.build_density_map(xyz, b, occ, A, B, inv_frac, frac)
+        sf = sf_fft.map_to_structure_factors(density_map, hkl)
 
     With ModelFT (composition)::
 
         model = ModelFT()
         model.load_pdb('structure.pdb')
-        sf = model.get_structure_factor(hkl)  # Uses internal FFT instance
+        sf = model.get_structure_factor(hkl)  # Uses internal SfFFT instance
     """
 
     def __init__(
@@ -107,7 +109,7 @@ class FFT(nn.Module):
         use_late_symmetry: bool = True,
     ):
         """
-        Initialize the FFT module with cell and spacegroup.
+        Initialize the SfFFT module with cell and spacegroup.
 
         Parameters
         ----------
@@ -208,7 +210,7 @@ class FFT(nn.Module):
 
     def set_cell_and_spacegroup(self, cell: Cell, spacegroup: SpaceGroupLike = None):
         """
-        Set cell and spacegroup for this FFT instance.
+        Set cell and spacegroup for this SfFFT instance.
 
         Parameters
         ----------
@@ -364,11 +366,11 @@ class FFT(nn.Module):
 
             if self.use_late_symmetry and self._late_symmetry_compatible:
                 if self.verbose > 0:
-                    print("FFT: Using late symmetry (reciprocal space) for ~5x speedup")
+                    print("SfFFT: Using late symmetry (reciprocal space) for ~5x speedup")
             elif self.use_late_symmetry and not self._late_symmetry_compatible:
                 if self.verbose > 0:
                     print(
-                        "FFT: Late symmetry disabled - grid not compatible "
+                        "SfFFT: Late symmetry disabled - grid not compatible "
                         "(falling back to early symmetry)"
                     )
         else:
@@ -538,7 +540,7 @@ class FFT(nn.Module):
         self,
         density_map: torch.Tensor,
         hkl: torch.Tensor,
-        apply_symmetry: bool = False,
+        apply_symmetry: bool = True,
     ) -> torch.Tensor:
         """
         Convert density map to structure factors via FFT.
@@ -560,24 +562,18 @@ class FFT(nn.Module):
         torch.Tensor
             Complex structure factors with shape (n_reflections,).
         """
-        reciprocal_space_grid = ifft(density_map)
+        reciprocal_space_grid = ifft(density_map, self.cell.volume)
 
         # Use late symmetry if enabled, compatible, and requested
-        if (
-            apply_symmetry
-            and self.use_late_symmetry
-            and self._late_symmetry_compatible
-            and self._spacegroup is not None
-        ):
+        if apply_symmetry:
             from torchref.base.reciprocal import (
                 extract_structure_factors_with_symmetry,
             )
-
             return extract_structure_factors_with_symmetry(
                 reciprocal_space_grid,
                 hkl,
-                self._spacegroup.matrices,
-                self._spacegroup.translations,
+                self.spacegroup.matrices,
+                self.spacegroup.translations,
             )
         else:
             return extract_structure_factor_from_grid(reciprocal_space_grid, hkl)
@@ -665,7 +661,6 @@ class FFT(nn.Module):
             B_aniso=B_aniso,
             apply_symmetry=not use_late and apply_symmetry,  # Early symmetry
         )
-
         # Extract structure factors (with or without late symmetry)
         sf = self.map_to_structure_factors(
             density_map,
@@ -680,7 +675,7 @@ class FFT(nn.Module):
 
     def to(self, device=None, dtype=None):
         """
-        Move FFT module to specified device and/or dtype.
+        Move SfFFT module to specified device and/or dtype.
 
         Parameters
         ----------
@@ -691,13 +686,21 @@ class FFT(nn.Module):
 
         Returns
         -------
-        FFT
+        SfFFT
             Self, for method chaining.
         """
         if device is not None:
             self.device = torch.device(device)
         if dtype is not None:
             self.dtype_float = dtype
+
+        # Move cell if it exists (critical for inv_fractional_matrix)
+        if self._cell is not None:
+            self._cell = self._cell.to(device=device, dtype=dtype)
+
+        # Move spacegroup if it exists
+        if self._spacegroup is not None:
+            self._spacegroup = self._spacegroup.to(device=device, dtype=dtype)
 
         # Move map_symmetry if it exists
         if self.map_symmetry is not None:
@@ -706,21 +709,21 @@ class FFT(nn.Module):
         return super().to(device=device, dtype=dtype)
 
     def cuda(self, device=None):
-        """Move FFT module to CUDA device."""
+        """Move SfFFT module to CUDA device."""
         cuda_device = f"cuda:{device}" if device is not None else "cuda"
         return self.to(device=cuda_device)
 
     def cpu(self):
-        """Move FFT module to CPU."""
+        """Move SfFFT module to CPU."""
         return self.to(device="cpu")
 
-    def copy(self) -> "FFT":
-        """Create a deep copy of this FFT module.
+    def copy(self) -> "SfFFT":
+        """Create a deep copy of this SfFFT module.
 
         Returns
         -------
-        FFT
-            A new FFT instance with cloned cell, spacegroup, and buffers.
+        SfFFT
+            A new SfFFT instance with cloned cell, spacegroup, and buffers.
         """
         # Clone the cell
         new_cell = self._cell.clone() if self._cell is not None else None
@@ -728,8 +731,8 @@ class FFT(nn.Module):
         # Copy the spacegroup
         new_spacegroup = self._spacegroup.copy() if self._spacegroup is not None else None
 
-        # Create new FFT with copied components
-        new_fft = FFT(
+        # Create new SfFFT with copied components
+        new_fft = SfFFT(
             cell=new_cell,
             spacegroup=new_spacegroup,
             max_res=self.max_res,
@@ -741,3 +744,7 @@ class FFT(nn.Module):
         )
 
         return new_fft
+
+
+# Backward compatibility alias
+FFT = SfFFT

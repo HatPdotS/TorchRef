@@ -69,22 +69,21 @@ def compute_symmetry_equivalent_hkls(
     # Ensure correct types
     hkl_float = hkl.to(dtype=dtype, device=device)  # (N, 3)
 
-    # Reciprocal space matrices: R_recip = R^T
-    # For h' = R^T @ h, we compute h @ R (row vector convention)
-    recip_matrices = rotation_matrices.transpose(-2, -1).to(
-        dtype=dtype, device=device
-    )  # (n_ops, 3, 3)
+    # For reciprocal space: F_sym(h) = sum_ops exp(2πi h·t) * F_P1(R^T @ h)
+    # With row vector convention: h' = h @ R equals (R^T @ h) in column notation
+    # So we use rotation_matrices directly (no transpose)
+    rot_matrices = rotation_matrices.to(dtype=dtype, device=device)  # (n_ops, 3, 3)
 
-    n_ops = recip_matrices.shape[0]
+    n_ops = rot_matrices.shape[0]
 
     # Compute h' = h @ R for each operation
     # hkl_float: (N, 3) -> (1, N, 3)
-    # recip_matrices: (n_ops, 3, 3)
+    # rot_matrices: (n_ops, 3, 3)
     # Result: (n_ops, N, 3)
     hkl_expanded = hkl_float.unsqueeze(0).expand(n_ops, -1, -1)  # (n_ops, N, 3)
 
     # Batch matrix multiply: (n_ops, N, 3) @ (n_ops, 3, 3) -> (n_ops, N, 3)
-    equiv_hkl = torch.bmm(hkl_expanded, recip_matrices)
+    equiv_hkl = torch.bmm(hkl_expanded, rot_matrices)
 
     # Round to nearest integer (should be exact for valid crystallographic ops)
     equiv_hkl = torch.round(equiv_hkl).to(torch.int64)

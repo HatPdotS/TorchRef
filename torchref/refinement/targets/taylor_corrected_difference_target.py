@@ -145,11 +145,14 @@ class TaylorCorrectedDifferenceTarget(Target):
         _, F_light, sigma_light, rfree_light = self._data_light()
         _, F_dark, sigma_dark, rfree_dark = self._data_dark()
 
-        # Handle MaskedTensor
-        if hasattr(F_light, "get_data"):
+        # Handle MaskedTensor — extract data AND validity masks
+        valid_light = valid_dark = None
+        if hasattr(F_light, "get_mask"):
+            valid_light = F_light.get_mask()
             F_light = F_light.get_data()
             sigma_light = sigma_light.get_data()
-        if hasattr(F_dark, "get_data"):
+        if hasattr(F_dark, "get_mask"):
+            valid_dark = F_dark.get_mask()
             F_dark = F_dark.get_data()
             sigma_dark = sigma_dark.get_data()
 
@@ -159,10 +162,15 @@ class TaylorCorrectedDifferenceTarget(Target):
         self.register_buffer("_sigma_dark", sigma_dark)
         self.register_buffer("_sigma_diff", torch.sqrt(sigma_light**2 + sigma_dark**2))
 
-        # Work/test set masks
+        # Work/test set masks incorporating data validity
         # Note: rfree flags indicate work set (True=work, False=free)
-        work_mask = rfree_light.bool() & rfree_dark.bool()
-        free_mask = ~rfree_light.bool() & ~rfree_dark.bool()
+        valid_mask = torch.ones_like(rfree_light, dtype=torch.bool)
+        if valid_light is not None:
+            valid_mask = valid_mask & valid_light
+        if valid_dark is not None:
+            valid_mask = valid_mask & valid_dark
+        work_mask = rfree_light.bool() & rfree_dark.bool() & valid_mask
+        free_mask = ~rfree_light.bool() & ~rfree_dark.bool() & valid_mask
 
         if self.use_work_set:
             mask = work_mask

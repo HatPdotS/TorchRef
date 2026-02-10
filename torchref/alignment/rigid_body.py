@@ -427,14 +427,15 @@ class RigidBodyRefinement(nn.Module):
             Dictionary with rotation angles (degrees), translation (fractional),
             and scale factor.
         """
-        alpha, beta, gamma = self.get_current_rotation_angles()
+        angles = self.get_current_rotation_angles().detach().cpu()
+        rotation_perturbation = self.rotation.detach().cpu()
         return {
-            'alpha_deg': np.degrees(alpha),
-            'beta_deg': np.degrees(beta),
-            'gamma_deg': np.degrees(gamma),
+            'alpha_deg': np.degrees(angles[0].item()),
+            'beta_deg': np.degrees(angles[1].item()),
+            'gamma_deg': np.degrees(angles[2].item()),
             'translation_frac': self.translation_frac.detach().cpu().numpy(),
             'scale': self.get_scale(),
-            'd_alpha_deg': np.degrees(self.d_alpha.item()),
-            'd_beta_deg': np.degrees(self.d_beta.item()),
-            'd_gamma_deg': np.degrees(self.d_gamma.item()),
+            'd_alpha_deg': np.degrees(rotation_perturbation[0].item()),
+            'd_beta_deg': np.degrees(rotation_perturbation[1].item()),
+            'd_gamma_deg': np.degrees(rotation_perturbation[2].item()),
         }

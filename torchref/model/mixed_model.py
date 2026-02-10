@@ -222,7 +222,7 @@ class MixedModel(nn.Module):
         if self.verbose > 0:
             print("Fractions unfrozen")
 
-    def forward(self, hkl: torch.Tensor, recalc: bool = True) -> torch.Tensor:
+    def forward(self, hkl: torch.Tensor, recalc: bool = False) -> torch.Tensor:
         """
         Compute weighted sum of structure factors from all models.
 
@@ -234,7 +234,7 @@ class MixedModel(nn.Module):
             Miller indices with shape (n_reflections, 3).
         recalc : bool, optional
             If True, force recalculation of structure factors.
-            Default is True.
+            Default is False.
 
         Returns
         -------

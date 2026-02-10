@@ -6,15 +6,38 @@ import torch
 
 from torchref.base.math_torch import (
     fft,
-    hash_tensors,
     ifft,
 )
-from torchref.model.fft import FFT
+from torchref.model.sf_fft import SfFFT
 from torchref.model.model import Model
 from torchref.symmetry import SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
-from torchref.utils.utils import TensorDict
 from torchref.config import dtypes
+
+
+class ParameterFingerprint:
+    """Lightweight fingerprint for detecting parameter changes.
+
+    Captures (data_ptr, _version, numel) per tensor. Comparison is O(n_params)
+    integer comparisons — much cheaper than SHA-1 hashing.
+    """
+
+    __slots__ = ("_entries",)
+
+    def __init__(self, params=()):
+        self._entries = tuple(
+            (t.data_ptr(), t._version, t.numel()) for t in params
+        )
+
+    def matches(self, params) -> bool:
+        """Return True if *params* have the same fingerprint."""
+        other = tuple(
+            (t.data_ptr(), t._version, t.numel()) for t in params
+        )
+        return self._entries == other
+
+    def __bool__(self):
+        return len(self._entries) > 0
 
 
 class ModelFT(Model):
@@ -33,6 +56,14 @@ class ModelFT(Model):
         Radius in Angstroms for density calculation around each atom. Default is 4.0.
     gridsize : tuple of int, optional
         Explicit grid size (nx, ny, nz). If None, computed from cell and max_res.
+    wavelength : float or None, optional
+        X-ray wavelength in Angstroms for anomalous scattering correction.
+        Default is 1.0 (standard synchrotron, ~12.4 keV). Set to None to
+        disable anomalous corrections entirely.
+    anomalous_threshold : float, optional
+        Significance threshold for anomalous scattering in electrons.
+        Atoms with |f'| > threshold or |f''| > threshold will have
+        anomalous corrections applied. Default is 0.5.
     *args
         Additional positional arguments passed to parent Model class.
     **kwargs
@@ -44,6 +75,10 @@ class ModelFT(Model):
         Maximum resolution for grid spacing.
     radius_angstrom : float
         Radius for density calculation.
+    wavelength : float or None
+        X-ray wavelength for anomalous scattering corrections.
+    anomalous_threshold : float
+        Threshold for significant anomalous scattering (electrons).
     gridsize : torch.Tensor
         Grid dimensions (nx, ny, nz).
     real_space_grid : torch.Tensor
@@ -74,6 +109,8 @@ class ModelFT(Model):
         max_res=1.0,
         radius_angstrom=4.0,
         gridsize: Optional[Tuple[int, int, int]] = None,
+        wavelength: Optional[float] = 1.0,
+        anomalous_threshold: float = 0.5,
         **kwargs,
     ):
         """
@@ -90,6 +127,14 @@ class ModelFT(Model):
             Radius in Angstroms for density calculation. Default is 4.0.
         gridsize : tuple of int, optional
             Explicit grid size tuple (nx, ny, nz). If None, computed automatically.
+        wavelength : float or None, optional
+            X-ray wavelength in Angstroms for anomalous scattering correction.
+            Default is 1.0 (standard synchrotron, ~12.4 keV). Set to None to
+            disable anomalous corrections entirely.
+        anomalous_threshold : float, optional
+            Significance threshold for anomalous scattering in electrons.
+            Atoms with |f'| > threshold or |f''| > threshold will have
+            anomalous corrections applied. Default is 0.5.
         *args
             Passed to parent Model class.
         **kwargs
@@ -101,18 +146,20 @@ class ModelFT(Model):
         self.max_res = max_res
         self.radius_angstrom = radius_angstrom
         self._explicit_gridsize = gridsize
-        self._cache = TensorDict()
 
-        # Initialize FFT submodule (will be configured when cell and spacegroup are set)
-        self._fft = FFT(
-            device=self.device,
-            max_res=self.max_res,
-            radius_angstrom=self.radius_angstrom,
-        )
+        # Smart SF cache state
+        self._cached_sf = None          # Cached structure factor (with autograd graph)
+        self._cached_hkl_id = None      # id() of the hkl tensor used for cached SF
+        self._param_fingerprint = ParameterFingerprint()
+        self._cache_generation = 0      # Generation when SF was cached
+        self._current_generation = 0    # Bumped by backward hook
 
-    # =========================================================================
-    # Cell and SpaceGroup property overrides
-    # =========================================================================
+        # Anomalous scattering configuration
+        self.wavelength = wavelength
+        self.anomalous_threshold = anomalous_threshold
+        self._anomalous_cache = None  # Will hold (mask, f_prime, f_double_prime)
+        self._anomalous_elements_hash = None  # Hash of element list for cache invalidation
+        self._fft = None
 
     @property
     def cell(self):
@@ -157,14 +204,14 @@ class ModelFT(Model):
 
     def _maybe_initialize_fft(self):
         """
-        Initialize FFT module if both cell and spacegroup are set.
+        Initialize SfFFT module if both cell and spacegroup are set.
 
         This method is called by the cell and spacegroup setters to ensure
-        the FFT module is properly configured when both crystallographic
+        the SfFFT module is properly configured when both crystallographic
         parameters are available.
         """
         if self._cell is not None and self._spacegroup is not None:
-            self._fft = FFT(
+            self._fft = SfFFT(
                 cell=self._cell,
                 spacegroup=self._spacegroup,
                 device=self.device,
@@ -630,11 +677,9 @@ class ModelFT(Model):
         """
         result = super().to(device=device, dtype=dtype)
 
-        # Update FFT module's device/dtype tracking
-        if device is not None:
-            self._fft.device = torch.device(device)
-        if dtype is not None:
-            self._fft.dtype_float = dtype
+        # Explicitly move FFT submodule (ensures cell and spacegroup are moved)
+        if self._fft is not None:
+            self._fft.to(device=device, dtype=dtype)
 
         return result
 
@@ -653,51 +698,254 @@ class ModelFT(Model):
         super().update_pdb()
 
     def reset_cache(self):
-        self._cache = TensorDict()
+        """Reset all smart-cache state."""
+        self._cached_sf = None
+        self._cached_hkl_id = None
+        self._param_fingerprint = ParameterFingerprint()
+        self._cache_generation = 0
+        self._current_generation = 0
 
-    def get_structure_factor(self, hkl: torch.Tensor, recalc=True) -> torch.Tensor:
+    def invalidate_cache(self):
+        """Force cache miss on next get_structure_factor call.
+
+        Use this after direct buffer edits that bypass the parameter
+        wrappers (rare). Equivalent to ``reset_cache()``.
+        """
+        self.reset_cache()
+
+    # =========================================================================
+    # Anomalous Scattering Correction Methods
+    # =========================================================================
+
+    def _get_anomalous_cache(
+        self,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Lazily compute and cache anomalous correction data.
+
+        Returns mask, f_prime, f_double_prime for significant atoms.
+        Recomputes if element list changes.
+
+        Returns
+        -------
+        mask : torch.Tensor
+            Boolean mask of shape (n_atoms,) - True for atoms needing correction
+        f_prime : torch.Tensor
+            f' values for significant atoms only (n_significant,)
+        f_double_prime : torch.Tensor
+            f'' values for significant atoms only (n_significant,)
+        """
+        from torchref.base.scattering.anomalous_table import (
+            get_significant_elements,
+            get_anomalous_corrections_by_indices,
+        )
+
+        # Get element list from PDB
+        element_list = self.pdb["element"].tolist()
+
+        # Hash current element list
+        elements_hash = hash(tuple(element_list))
+
+        if (
+            self._anomalous_cache is None
+            or self._anomalous_elements_hash != elements_hash
+        ):
+            # Find significant elements at current wavelength
+            unique_elements = list(set(element_list))
+            significant = get_significant_elements(
+                unique_elements, self.wavelength, self.anomalous_threshold
+            )
+
+            if self.verbose > 1 and significant:
+                print(
+                    f"Anomalous scatterers at {self.wavelength:.4f} Å: "
+                    f"{list(significant.keys())}"
+                )
+
+            # Get corrections for all atoms
+            mask, f_prime, f_double_prime = get_anomalous_corrections_by_indices(
+                element_list, significant, self.device, self.dtype_float
+            )
+
+            self._anomalous_cache = (mask, f_prime, f_double_prime)
+            self._anomalous_elements_hash = elements_hash
+
+        return self._anomalous_cache
+
+    def _apply_anomalous_correction(
+        self,
+        sf: torch.Tensor,
+        hkl: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Apply anomalous scattering correction to structure factors.
+
+        The correction adds the contribution from anomalous scattering:
+        ΔF(h) = Σ_significant (f' + if'') × exp(2πi h·r) × occ
+
+        Only computed for atoms where |f'| > threshold or |f''| > threshold.
+
+        Parameters
+        ----------
+        sf : torch.Tensor
+            Complex structure factors from FFT with shape (n_reflections,)
+        hkl : torch.Tensor
+            Miller indices with shape (n_reflections, 3)
+
+        Returns
+        -------
+        torch.Tensor
+            Corrected complex structure factors with shape (n_reflections,)
+        """
+        mask, f_prime, f_double_prime = self._get_anomalous_cache()
+
+        if not mask.any():
+            return sf  # No significant anomalous scatterers
+
+        # Get fractional coordinates and occupancies for significant atoms only
+        xyz_frac = self.xyz_fractional()[mask]  # (n_significant, 3)
+        occ = self.occupancy()[mask]  # (n_significant,)
+
+        # Compute phase factors: exp(2πi h·r)
+        # h·r is the dot product of hkl with fractional coordinates
+        h_dot_r = torch.matmul(
+            hkl.to(dtype=self.dtype_float), xyz_frac.T
+        )  # (n_refl, n_significant)
+        phase = 2 * torch.pi * h_dot_r
+
+        cos_phase = torch.cos(phase)
+        sin_phase = torch.sin(phase)
+
+        # Anomalous contribution weighted by occupancy
+        # f' contributes to both real and imaginary parts
+        # f'' contributes with a phase shift (it's the imaginary part of f)
+        f_prime_occ = f_prime * occ  # (n_significant,)
+        f_double_prime_occ = f_double_prime * occ  # (n_significant,)
+
+        # For each reflection:
+        # Real part: Σ [f'·cos(φ) - f''·sin(φ)] × occ
+        # Imag part: Σ [f'·sin(φ) + f''·cos(φ)] × occ
+        delta_real = torch.sum(
+            f_prime_occ * cos_phase - f_double_prime_occ * sin_phase, dim=-1
+        )
+        delta_imag = torch.sum(
+            f_prime_occ * sin_phase + f_double_prime_occ * cos_phase, dim=-1
+        )
+
+        return sf + torch.complex(delta_real, delta_imag)
+
+    def _get_fingerprint_params(self):
+        """Collect tensors whose identity/version determines cache validity.
+
+        Includes both ``refinable_params`` and ``fixed_values`` from every
+        parameter wrapper (xyz, b, u, occupancy) so that in-place mutations
+        from the optimizer (``_version++``) as well as freeze/unfreeze
+        operations (``data_ptr`` change) are detected.
+        """
+        tensors = []
+        for wrapper_name in ("xyz", "b", "u", "occupancy"):
+            wrapper = getattr(self, wrapper_name, None)
+            if wrapper is None:
+                continue
+            rp = getattr(wrapper, "refinable_params", None)
+            if rp is not None:
+                tensors.append(rp)
+            fv = getattr(wrapper, "fixed_values", None)
+            if fv is not None:
+                tensors.append(fv)
+        return tensors
+
+    def get_structure_factor(
+        self, hkl: torch.Tensor, recalc=False, apply_anomalous: bool = True
+    ) -> torch.Tensor:
         """
         Get structure factors for given hkl reflections.
 
-        Uses caching to avoid recomputation if parameters haven't changed.
+        Uses a smart cache that preserves the autograd graph and avoids
+        recomputation when parameters haven't changed and no backward pass
+        has propagated through the cached result.
 
         Parameters
         ----------
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
         recalc : bool, optional
-            If True, forces recalculation even if cached. Default is True.
+            If True, forces recalculation bypassing the cache.
+            Default is False.
+        apply_anomalous : bool, optional
+            If True and wavelength is set, apply anomalous scattering
+            corrections (f' and f'') for heavy atoms. Default is True.
 
         Returns
         -------
         torch.Tensor
             Complex structure factors with shape (n_reflections,).
+
+        Notes
+        -----
+        The complete scattering factor is:
+            f(s, λ) = f₀(s) + f'(λ) + i·f''(λ)
+
+        where f₀ is the normal (Thomson) scattering factor computed via FFT,
+        and f'/f'' are the wavelength-dependent anomalous corrections.
+
+        Anomalous corrections are only computed for atoms where
+        |f'| > anomalous_threshold or |f''| > anomalous_threshold.
         """
-        # Compute current parameter hash
-        params = (*self.parameters(), hkl)
-        current_param_hash = hash_tensors(params)
+        if not recalc and self._cached_sf is not None:
+            # Check 1: same hkl tensor?
+            hkl_ok = (id(hkl) == self._cached_hkl_id)
+            # Check 2: parameters unchanged?
+            fp_params = self._get_fingerprint_params()
+            params_ok = self._param_fingerprint.matches(fp_params)
+            # Check 3: backward hasn't propagated through the cached SF?
+            gen_ok = (self._current_generation == self._cache_generation)
 
-        key = current_param_hash
-        if not recalc and key in self._cache:
-            if self.verbose > 2:
-                print("Using cached structure factors")
-            return self._cache[key]
+            if hkl_ok and params_ok and gen_ok:
+                if self.verbose > 2:
+                    print("Using cached structure factors")
+                return self._cached_sf
 
-        # Build map and compute structure factors using FFT module
-        self.build_complete_map()
-        self.reciprocal_space_grid = ifft(self.map)
-        sf = self._fft.map_to_structure_factors(self.map, hkl)
+        # --- (Re)compute structure factors ---
+        sf, self.ed = self.fft.compute_structure_factors(
+            hkl,
+            *self.get_iso(),
+            *self.get_aniso(),
+            apply_symmetry=True,
+        )
 
-        self._cache[key] = sf.detach()
+        # Apply anomalous correction as post-processing
+        if apply_anomalous and self.wavelength is not None:
+            sf = self._apply_anomalous_correction(sf, hkl)
+
+        # Register backward hook to bump generation counter so that the
+        # cache is invalidated once gradients have been consumed.
+        if sf.grad_fn is not None:
+            def _bump_generation(grad, self_ref=self):
+                self_ref._current_generation += 1
+            sf.register_hook(_bump_generation)
+
+        # Store WITH autograd graph intact (no detach)
+        self._cached_sf = sf
+        self._cached_hkl_id = id(hkl)
+        self._param_fingerprint = ParameterFingerprint(
+            self._get_fingerprint_params()
+        )
+        self._cache_generation = self._current_generation
 
         return sf
-
+    
+    @property
     def fft(self):
-        """Perform FFT on the current reciprocal grid."""
-        self.density = fft(self.reciprocal_space_grid)
-        return self.density
+        """Access the SfFFT submodule."""
+        if self._fft is None:
+            self._maybe_initialize_fft()
+        
+        return self._fft
 
-    def forward(self, hkl, recalc=True) -> torch.Tensor:
+    def forward(
+        self, hkl, recalc=False, apply_anomalous: bool = True
+    ) -> torch.Tensor:
         """
         Forward pass to compute structure factors for given hkl.
 
@@ -706,14 +954,18 @@ class ModelFT(Model):
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
         recalc : bool, optional
-            If True, forces recalculation. Default is True.
+            If True, forces recalculation bypassing the cache.
+            Default is False.
+        apply_anomalous : bool, optional
+            If True and wavelength is set, apply anomalous scattering
+            corrections (f' and f'') for heavy atoms. Default is True.
 
         Returns
         -------
         torch.Tensor
             Calculated complex structure factors with shape (n_reflections,).
         """
-        f = self.get_structure_factor(hkl, recalc=recalc)
+        f = self.get_structure_factor(hkl, recalc=recalc, apply_anomalous=apply_anomalous)
         if self.verbose > 2:
             assert torch.all(
                 torch.isfinite(f)
@@ -761,6 +1013,8 @@ class ModelFT(Model):
             max_res=self.max_res,
             radius_angstrom=self.radius_angstrom,
             gridsize=self._explicit_gridsize,
+            wavelength=self.wavelength,
+            anomalous_threshold=self.anomalous_threshold,
         )
 
         # Deep copy the PDB DataFrame
@@ -816,9 +1070,8 @@ class ModelFT(Model):
             if self._fft.real_space_grid is not None:
                 model_copy.setup_grid(max_res=self.max_res)
 
-        # Reset cache (don't copy cached structure factors)
-        from torchref.utils.utils import TensorDict
-        object.__setattr__(model_copy, "_cache", TensorDict())
+        # Reset cache on the copy (don't share cached structure factors)
+        model_copy.reset_cache()
 
         if self.verbose > 0:
             print(f"✓ ModelFT copied successfully ({len(model_copy.pdb)} atoms)")
@@ -854,11 +1107,14 @@ class ModelFT(Model):
         # Add ModelFT-specific state
         state[prefix + "max_res"] = self.max_res
         state[prefix + "radius_angstrom"] = self.radius_angstrom
+        state[prefix + "wavelength"] = self.wavelength
+        state[prefix + "anomalous_threshold"] = self.anomalous_threshold
 
         # Note: FFT submodule state (gridsize, real_space_grid, voxel_size) is
         # automatically included via PyTorch's module serialization with _fft. prefix
         # _parametrization dict is not saved as it can be rebuilt from _A, _B buffers
         # _cache is not saved as it should be rebuilt
+        # _anomalous_cache is not saved as it can be rebuilt from element list
 
         return state
 
@@ -897,6 +1153,8 @@ class ModelFT(Model):
         # Extract ModelFT-specific metadata
         max_res = state_dict.pop("max_res", 1.0)
         radius_angstrom = state_dict.pop("radius_angstrom", 4.0)
+        wavelength = state_dict.pop("wavelength", 1.0)
+        anomalous_threshold = state_dict.pop("anomalous_threshold", 0.5)
 
         # Extract Model metadata
         pdb = state_dict.pop("pdb", None)
@@ -923,6 +1181,8 @@ class ModelFT(Model):
             strip_H=strip_H,
             max_res=max_res,
             radius_angstrom=radius_angstrom,
+            wavelength=wavelength,
+            anomalous_threshold=anomalous_threshold,
         )
 
         # Set metadata
@@ -1060,8 +1320,7 @@ class ModelFT(Model):
         instance.load_state_dict(filtered_state_dict, strict=False)
 
         # Reset cache
-        from torchref.utils.utils import TensorDict
-        object.__setattr__(instance, "_cache", TensorDict())
+        instance.reset_cache()
 
         if verbose > 0:
             n_atoms = len(instance.pdb) if instance.pdb is not None else 0

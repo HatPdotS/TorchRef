@@ -11,8 +11,12 @@ Model
     Base atomic model storing xyz coordinates, B-factors, occupancies.
 ModelFT
     Fourier Transform model for FFT-based structure factor calculation.
+SfFFT
+    Structure Factor calculator using FFT (Fast Fourier Transform).
+SfDS
+    Structure Factor calculator using Direct Summation.
 FFT
-    Standalone FFT module for electron density and structure factor calculations.
+    Backward compatibility alias for SfFFT.
 MixedTensor
     Hybrid tensor allowing partial freezing of parameters.
 PositiveMixedTensor
@@ -26,7 +30,7 @@ Example
 -------
 ::
 
-    from torchref.model import Model, ModelFT, MixedTensor, FFT
+    from torchref.model import Model, ModelFT, MixedTensor, SfFFT, SfDS
 
     # Load model from PDB
     model = Model()
@@ -40,13 +44,18 @@ Example
     model_ft = ModelFT(data, device='cuda')
     F_calc = model_ft.get_F_calc()
 
-    # Use FFT standalone for custom workflows
-    fft = FFT(max_res=1.5)
-    fft.setup_grid(cell, spacegroup)
-    sf = fft.map_to_structure_factors(density_map, hkl)
+    # Use SfFFT standalone for custom workflows
+    sf_fft = SfFFT(max_res=1.5)
+    sf_fft.setup_grid(cell, spacegroup)
+    sf = sf_fft.map_to_structure_factors(density_map, hkl)
+
+    # Use SfDS for direct summation
+    sf_ds = SfDS(cell, spacegroup)
+    sf, _ = sf_ds.compute_structure_factors(hkl, xyz, adp, occ, A, B)
 """
 
-from torchref.model.fft import FFT
+from torchref.model.sf_fft import SfFFT, FFT
+from torchref.model.sf_ds import SfDS
 from torchref.model.internal_coordinates import InternalCoordinateTensor
 from torchref.model.mixed_model import MixedModel
 from torchref.model.model import Model
@@ -57,9 +66,14 @@ from torchref.model.parameter_wrappers import (
     PassThroughTensor,
     PositiveMixedTensor,
 )
+from torchref.model.segmented_internal_coordinates import (
+    SegmentedInternalCoordinateTensor,
+)
 
 __all__ = [
     "FFT",
+    "SfFFT",
+    "SfDS",
     "InternalCoordinateTensor",
     "MixedModel",
     "Model",
@@ -68,4 +82,5 @@ __all__ = [
     "PositiveMixedTensor",
     "PassThroughTensor",
     "OccupancyTensor",
+    "SegmentedInternalCoordinateTensor",
 ]

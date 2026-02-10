@@ -10,6 +10,8 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from torchref.config import dtypes
+from torch.nn import Parameter
+
 
 import numpy as np
 import pandas as pd
@@ -107,6 +109,52 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         # Call parent __post_init__ to initialize masks
         super().__post_init__()
+        self.setup_scale()
+        self.setup_anisotropy()
+
+    def _canonicalize_in_place(self) -> None:
+        """Remap HKL to canonical CCP4 ASU form and reorder all data in-place."""
+        from dataclasses import fields as dc_fields
+        from torchref.symmetry.reciprocal_symmetry import canonicalize_hkl
+
+        if self.hkl is None or self.spacegroup is None:
+            return
+
+        canonical_hkl, phase_shifts, friedel_flags, sort_indices = canonicalize_hkl(
+            self.hkl, self.spacegroup, include_friedel=True, device=self.device
+        )
+
+        n_refl = len(self.hkl)
+
+        # Reorder every per-reflection tensor field in-place
+        for f in dc_fields(self):
+            val = getattr(self, f.name)
+            if isinstance(val, torch.Tensor) and val.shape and val.shape[0] == n_refl:
+                setattr(self, f.name, val[sort_indices])
+
+        # Overwrite HKL with canonical form
+        self.hkl = canonical_hkl
+
+        # Apply phase correction
+        if self.phase is not None:
+            self.phase = torch.where(friedel_flags, -self.phase, self.phase) + phase_shifts
+
+        # Recalculate resolution from canonical HKL
+        if self.cell is not None:
+            self._calculate_resolution()
+
+        # Reorder masks
+        if hasattr(self, "masks") and self.masks is not None:
+            for name in list(self.masks.keys()):
+                mask_tensor = self.masks[name]
+                if mask_tensor is not None:
+                    # Bypass __setitem__ validation (reordering preserves True count)
+                    dict.__setitem__(self.masks, name, mask_tensor[sort_indices])
+            self.masks._updated = True
+
+        # Reorder DataFrame
+        if hasattr(self, "dataset") and self.dataset is not None:
+            self.dataset = self.dataset.iloc[sort_indices.cpu().numpy()].copy()
 
     def load(self, reader):
         """
@@ -210,6 +258,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
             self.masks["flagged_initial"] = ~flagged
             self._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
+
+        self._canonicalize_in_place()
 
         self.sanitize_F()
 
@@ -344,7 +394,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         print(f"  Created {actual_n_bins} resolution bins")
 
         # Initialize all flags as work set (1)
-        flags = torch.ones(n_refl, dtype=dtypes.int, requires_grad=False)
+        flags = torch.ones(n_refl, dtype=dtypes.int, device=self.device, requires_grad=False)
 
         # Sample free reflections from each bin
         total_free = 0
@@ -1019,7 +1069,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if self.resolution is None:
             self._calculate_resolution()
 
-        mask = torch.ones(len(self.hkl), dtype=torch.bool)
+        mask = torch.ones(len(self.hkl), dtype=torch.bool, device=self.device)
 
         if d_min is not None:
             mask &= self.resolution >= d_min
@@ -1196,6 +1246,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         return len(self.hkl) if self.hkl is not None else 0
 
+    @property
+    def d_min(self) -> Optional[float]:
+        """
+        Return maximum resolution (lowest d-spacing).
+
+        Returns
+        -------
+        float
+            Maximum resolution in Ångströms.
+        """
+        return self.get_max_res()
+
+
     def __repr__(self) -> str:
         """
         Return string representation.
@@ -1289,7 +1352,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         return hkl, F, F_sigma, rfree_flags
 
     def __call__(
-        self, mask: bool = True
+        self, mask: bool = True, scale: bool = True
     ) -> Tuple[torch.Tensor, "MaskedTensor", "MaskedTensor", torch.Tensor]:
         """
         Return core reflection data with MaskedTensors for F and sigma.
@@ -1302,6 +1365,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ----------
         mask : bool, optional
             If True, apply current masks to F and sigma. Default is True.
+        scale : bool, optional
+            If True, apply scaling to F and sigma before returning.
 
         Returns
         -------
@@ -1341,15 +1406,20 @@ class ReflectionData(CrystalDataset, DebugMixin):
             F_values = F.get_data()[valid_mask]
         """
         from torch.masked import MaskedTensor
-
         hkl, F, F_sigma, rfree_flags = self.hkl, self.F, self.F_sigma, self.rfree_flags
 
+        if scale:
+            F, F_sigma = self.get_corrected_data()
+            
         if mask:
             to_mask = self.masks()
+            if to_mask.sum() == 0:
+                raise RuntimeError(
+                    "All reflections are masked! Check your filters/masks."
+                )
             F = MaskedTensor(F.detach().clone(), to_mask)
             if F_sigma is not None:
                 F_sigma = MaskedTensor(F_sigma.detach().clone(), to_mask)
-
         return hkl, F, F_sigma, rfree_flags
 
     def data_fill_masked(
@@ -1388,14 +1458,35 @@ class ReflectionData(CrystalDataset, DebugMixin):
         else:
             raise ValueError(f"Unknown fill mode: {mode}")
 
-    def __select__(self, mask: torch.Tensor, op=None) -> "ReflectionData":
+    def __getitem__(self, key):
         """
-        Select reflections based on a boolean mask.
+        Index into the reflection dataset.
 
         Parameters
         ----------
-        mask : torch.Tensor
-            Boolean mask of shape (N,) for selection.
+        key : torch.Tensor
+            Boolean mask or integer indices for selection.
+
+        Returns
+        -------
+        ReflectionData
+            New ReflectionData object with selected reflections.
+        """
+        if isinstance(key, torch.Tensor):
+            return self.__select__(key)
+        raise TypeError(f"Unsupported index type: {type(key)}")
+
+    def __select__(self, indices: torch.Tensor, op=None) -> "ReflectionData":
+        """
+        Select reflections by boolean mask or integer indices.
+
+        Iterates over all dataclass fields generically, so new tensor fields
+        are handled automatically.
+
+        Parameters
+        ----------
+        indices : torch.Tensor
+            Boolean mask of shape (N,) or integer indices for selection.
         op : str, optional
             Operation name for tracking purposes.
 
@@ -1404,42 +1495,45 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             New ReflectionData object with selected reflections.
         """
+        from dataclasses import fields as dc_fields
+        from torchref.utils.utils import TensorMasks
+
+        n_refl = len(self.hkl) if self.hkl is not None else 0
+
         # Create new instance with same device
         selected = ReflectionData(verbose=self.verbose, device=self.device)
 
-        # Copy tensor fields with selection
-        if self.hkl is not None:
-            selected.hkl = self.hkl[mask]
-        if self.I is not None:
-            selected.I = self.I[mask]
-        if self.F is not None:
-            selected.F = self.F[mask]
-        if self.F_sigma is not None:
-            selected.F_sigma = self.F_sigma[mask]
-        if hasattr(self, "phase") and self.phase is not None:
-            selected.phase = self.phase[mask]
-        if hasattr(self, "fom") and self.fom is not None:
-            selected.fom = self.fom[mask]
-        if self.rfree_flags is not None:
-            selected.rfree_flags = self.rfree_flags[mask]
-        if self.cell is not None:
-            selected.cell = self.cell.clone()
-        if self.resolution is not None:
-            selected.resolution = self.resolution[mask]
+        for f in dc_fields(self):
+            val = getattr(self, f.name)
+            if val is None:
+                continue
+            if isinstance(val, torch.Tensor):
+                if val.shape and val.shape[0] == n_refl:
+                    setattr(selected, f.name, val[indices])
+                else:
+                    # Non-matching tensor (e.g. U_aniso shape (6,)): copy as-is
+                    setattr(selected, f.name, val.clone())
+            elif isinstance(val, Cell):
+                setattr(selected, f.name, val.clone())
+            else:
+                # Scalars, strings, None, gemmi objects, etc.
+                setattr(selected, f.name, val)
 
-        selected.spacegroup = self.spacegroup
-        selected.amplitude_source = self.amplitude_source
-        selected.intensity_source = self.intensity_source
-        selected.phase_source = self.phase_source
-        selected.rfree_source = self.rfree_source
-        selected.verbose = self.verbose
+        # Handle masks (not a dataclass field)
+        if hasattr(self, "masks") and self.masks is not None and len(self.masks) > 0:
+            new_masks = TensorMasks(device=self.device)
+            for name, mask_tensor in self.masks.items():
+                if mask_tensor is not None:
+                    new_masks[name] = mask_tensor[indices]
+            selected.masks = new_masks
+
+        # Handle DataFrame
+        if hasattr(self, "dataset") and self.dataset is not None:
+            idx_np = indices.cpu().numpy()
+            selected.dataset = self.dataset.iloc[idx_np].copy()
+
         selected.source = self
-        selected.dataset = (
-            self.dataset.iloc[mask.cpu().numpy()].copy()
-            if hasattr(self, "dataset") and self.dataset is not None
-            else None
-        )
-        self.last_op = op
+        selected.last_op = op
         return selected
 
     def sanitize_F(self):
@@ -1460,7 +1554,18 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     "found nan F_sigma values: ", torch.isnan(self.F_sigma).sum().item()
                 )
             mask |= torch.isnan(self.F_sigma)
+        neg_mask = self.F <= 0
+        if torch.any(neg_mask):
+            warnings.warn(
+                f"Found {neg_mask.sum().item()} non-positive F values, masking them out. This really should not happen!")
+            mask |= neg_mask
         self.masks["sanity_F"] = ~mask
+        # Zero out invalid values so they can't leak NaN through autograd
+        # (masked indexing produces 0 gradients, but 0 * NaN = NaN in IEEE 754)
+        if mask.any():
+            self.F[mask] = 0.0
+            if self.F_sigma is not None:
+                self.F_sigma[mask] = 0.0
         return self
 
     def check_all_data_types(self):
@@ -1807,7 +1912,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         log_sigmas = torch.log(sigmas)
         flagged_initial = torch.isnan(log_sigmas) | torch.isinf(log_sigmas)
         mean_log_sigma = torch.mean(log_sigmas[~flagged_initial])
-        std_log_sigma = torch.std(log_sigmas[~flagged_initial])
+        std_log_sigma = torch.std(log_sigmas[~flagged_initial]) + 1e-5 * mean_log_sigma
         z_scores = (log_sigmas - mean_log_sigma) / std_log_sigma
         flagged = torch.abs(z_scores) > z_threshold
         flagged = flagged | flagged_initial
@@ -1853,9 +1958,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             If provided, computes phases and map coefficients.
         model_ft : ModelFT, optional
             ModelFT object to compute fcalc if not provided.
-        fill_to_resolution : bool, optional
-            If True and fcalc provided, fill map coefficients to resolution
-            limit. Default is True.
 
         Notes
         -----
@@ -1930,9 +2032,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
             # Compute map coefficients
             # 2mFo-DFc: Use observed amplitudes with calculated phases
-            two_mfo_dfc_amp = 2.0 * F_obs - F_calc_amp
-            two_mfo_dfc_amp[~mask] = 0.0  # Zero out reflections outside mask
-            two_mfo_dfc_phase = phases
+            # When 2*Fobs - Fcalc < 0, flip phase by 180° and use absolute amplitude
+            two_mfo_dfc_raw = 2.0 * F_obs - F_calc_amp
+            two_mfo_dfc_amp = np.abs(two_mfo_dfc_raw)
+            two_mfo_dfc_phase = phases.copy()
 
             # mFo-DFc: Difference map
             mfo_dfc_complex = F_obs * np.exp(1j * np.deg2rad(phases)) - fcalc_np
@@ -1940,13 +2043,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             mfo_dfc_amp = np.abs(mfo_dfc_complex)
             mfo_dfc_phase = np.angle(mfo_dfc_complex, deg=True)
 
-            # Add 2mFo-DFc map coefficients (canonical names: FWT, PHWT)
-            data_dict["2FOFCWT"] = two_mfo_dfc_amp
-            data_dict["PH2FOFCWT"] = two_mfo_dfc_phase
+            # Add 2mFo-DFc map coefficients (standard Coot names: FWT, PHWT)
+            data_dict["FWT"] = two_mfo_dfc_amp
+            data_dict["PHWT"] = two_mfo_dfc_phase
 
-            # Add mFo-DFc map coefficients (canonical names: DELFWT, PHDELWT)
-            data_dict["FOFCWT"] = mfo_dfc_amp
-            data_dict["PHFOFCWT"] = mfo_dfc_phase
+            # Add mFo-DFc map coefficients (standard Coot names: DELFWT, PHDELWT)
+            data_dict["DELFWT"] = mfo_dfc_amp
+            data_dict["PHDELWT"] = mfo_dfc_phase
 
             data_dict["F-model"] = F_calc_amp
             data_dict["PH-model"] = phases
@@ -1963,7 +2066,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         df = pd.DataFrame(data_dict)
 
         # Write MTZ file
-        write(df, self.cell.data, self.spacegroup, fname)
+        write(df, self.cell.data, self.spacegroup.hm, fname)
 
         if self.verbose > 0:
             print(f"✓ Wrote MTZ file: {fname}")
@@ -2531,6 +2634,51 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         return reduced
 
+    def canonicalize(self, include_friedel: bool = True) -> "ReflectionData":
+        """Return new ReflectionData with HKL in standard CCP4 ASU form.
+
+        Remaps all Miller indices to the canonical CCP4 asymmetric unit
+        representative using ``gemmi.ReciprocalAsu``, adjusts phases
+        accordingly, and sorts reflections lexicographically by (h, k, l).
+
+        Parameters
+        ----------
+        include_friedel : bool, default True
+            Whether Friedel mates are considered equivalent.
+
+        Returns
+        -------
+        ReflectionData
+            New object with canonicalized, sorted Miller indices.
+        """
+        from torchref.symmetry.reciprocal_symmetry import canonicalize_hkl
+
+        if self.hkl is None:
+            raise ValueError("ReflectionData has no Miller indices loaded")
+
+        canonical_hkl, phase_shifts, friedel_flags, sort_indices = canonicalize_hkl(
+            self.hkl, self.spacegroup or "P1", include_friedel, device=self.device
+        )
+
+        # Reorder all fields using __select__
+        result = self.__select__(sort_indices, op=f"canonicalize(include_friedel={include_friedel})")
+
+        # Overwrite HKL with canonical form (already sorted)
+        result.hkl = canonical_hkl
+
+        # Fix phases: phi_new = where(friedel, -phi_old, phi_old) + phase_shift
+        if result.phase is not None:
+            result.phase = torch.where(friedel_flags, -result.phase, result.phase) + phase_shifts
+
+        # Recalculate resolution from canonical HKL + cell
+        if result.cell is not None:
+            result._calculate_resolution()
+
+        # Invalidate bin_indices
+        result.bin_indices = None
+
+        return result
+
     # ========== E-VALUE AND ANISOTROPY CORRECTION METHODS ==========
 
     def get_scattering_vectors(self) -> torch.Tensor:
@@ -2692,6 +2840,28 @@ class ReflectionData(CrystalDataset, DebugMixin):
         self.U_aniso = U
 
         return U
+    
+    def setup_anisotropy(
+        self,
+        U_aniso: Optional[torch.Tensor] = None,
+    ) -> None:
+        
+        """
+        Setup anisotropy correction parameters.
+        Parameters
+        ----------
+        U_aniso : torch.Tensor, optional
+            Anisotropic parameters [u11, u22, u33, u12, u13, u23], shape (6,).
+            If None, uses Initializes as zeros.
+        """
+
+        if U_aniso is None:
+            U_aniso = torch.zeros(6, device=self.device, dtype=dtypes.float, requires_grad=False)
+        else:
+            U_aniso = U_aniso.to(device=self.device, dtype=dtypes.float, requires_grad=False)
+        self.U_aniso = U_aniso
+
+        return self
 
     def apply_anisotropy_correction(
         self,
@@ -2708,10 +2878,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Returns
         -------
-        F_squared_corrected : torch.Tensor
-            Anisotropy-corrected F² values, shape (N,).
-            Also stored in self.F_squared_corrected.
-
+        F_corrected: torch.Tensor
+            Anisotropy-corrected F values, shape (N,).
+        sigma_F_corrected: torch.Tensor
+            Uncertainties of corrected F values, shape (N,).
         Raises
         ------
         ValueError
@@ -2730,19 +2900,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if self.F is None:
             raise ValueError("No amplitude data loaded")
 
-        # Get F² values
-        F_squared = self.F**2
-
         # Get s-vectors
         s_vectors = self.get_scattering_vectors()
-
+        # Use raw tensors directly to preserve gradient flow
+        # (MaskedTensor doesn't support autograd operations)
+        F = self.F
+        sigma = self.F_sigma
         # Apply correction
-        F_squared_corrected = apply_anisotropy_correction(F_squared, s_vectors, U_aniso)
+        F_corrected = apply_anisotropy_correction(F, s_vectors, U_aniso)
+        sigma_F_corrected = apply_anisotropy_correction(
+            sigma, s_vectors, U_aniso
+        ) if sigma is not None else None
 
-        # Store result
-        self.F_squared_corrected = F_squared_corrected
-
-        return F_squared_corrected
+        return F_corrected, sigma_F_corrected
 
     def compute_e_values(
         self,
@@ -2819,7 +2989,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 self.fit_anisotropy(
                     n_shells=n_shells, d_min=d_min, d_max=d_max, verbose=verbose
                 )
-            F_squared = self.apply_anisotropy_correction()
+            F_squared = self.apply_anisotropy_correction()[0] ** 2 
         else:
             F_squared = self.F**2
 
@@ -2841,5 +3011,64 @@ class ReflectionData(CrystalDataset, DebugMixin):
             print(f"  E range: [{E.min():.3f}, {E.max():.3f}]")
             print(f"  E mean: {E.mean():.3f}, std: {E.std():.3f}")
             print(f"  E² mean: {E_squared.mean():.3f} (should be ~1.0)")
-
         return E
+
+    def setup_scale(self, scale: Optional[float] = None) -> float:
+        """
+        Set overall scale factor, parametrized in log space. 
+
+        Parameters
+        ----------
+        scale : float, optional
+            If provided, sets the scale factor directly.
+            If None, computes scale to make mean F equal to 1.0.
+
+        Returns
+        -------
+        float
+            The scale factor applied.
+        """
+        if scale is None:
+            self.log_scale = torch.tensor(0.0, device=self.device, requires_grad=False, dtype=dtypes.float)
+        else:
+            self.log_scale = torch.log(torch.tensor(scale, device=self.device, requires_grad=False, dtype=dtypes.float))
+        return self
+
+    def get_corrected_data(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get scaled amplitude and uncertainty tensors.
+
+        Applies the current scale factor (from self.log_scale) to F and F_sigma.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor]
+            Scaled F and F_sigma tensors. If log_scale is None, returns original.
+        """
+
+        if not hasattr(self, "log_scale") or self.log_scale is None:
+            raise ValueError("Scale not set up. Call setup_scale() first.")
+        if not hasattr(self, "U_aniso") or self.U_aniso is None:
+            raise ValueError("Anisotropy not set up. Call setup_anisotropy() first.")
+        F_corrected, F_sigma_corrected = self.apply_anisotropy_correction()
+        scale_factor = torch.exp(self.log_scale)
+        F_scaled = F_corrected * scale_factor
+        F_sigma_scaled = F_sigma_corrected * scale_factor
+
+        return F_scaled, F_sigma_scaled
+    
+    def parameters(self) -> List[Parameter]:
+        """
+        Get list of learnable parameters for optimization.
+
+        Returns
+        -------
+        iter[Parameter]
+            iter of torch Parameters to be optimized. Includes log_scale and U_aniso if set.
+        """
+        params = []
+        if self.log_scale is not None:
+            params.append(self.log_scale)
+        if self.U_aniso is not None:
+            params.append(self.U_aniso)
+        return params

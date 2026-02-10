@@ -41,6 +41,12 @@ from .scattering_table import (
     elements_to_z,
 )
 
+from .anomalous_table import (
+    get_anomalous_correction,
+    get_significant_elements,
+    get_anomalous_corrections_by_indices,
+)
+
 __all__ = [
     # Legacy gemmi-based functions
     "get_scattering_factors_unique",
@@ -59,4 +65,8 @@ __all__ = [
     "get_z_to_element_mapping",
     "get_scattering_params_for_ion",
     "elements_to_z",
+    # Anomalous scattering (f' and f'')
+    "get_anomalous_correction",
+    "get_significant_elements",
+    "get_anomalous_corrections_by_indices",
 ]

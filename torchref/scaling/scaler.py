@@ -110,11 +110,26 @@ class Scaler(ScalerBase):
             device=device,
         )
 
-        # Model reference (only in Scaler, not in ScalerBase)
-        if model is None:
-            self._model = None
-        else:
-            self._model = ModuleReference(model)
+        # Wrap in ModuleReference to avoid registering the model as a
+        # submodule (which would leak its state into the scaler's state_dict).
+        self._model_ref = ModuleReference(model) if model is not None else None
+
+    @property
+    def model(self):
+        """Access the model object (not a registered submodule)."""
+        if self._model_ref is None:
+            return None
+        return self._model_ref.module
+
+    @model.setter
+    def model(self, value):
+        """Set the model reference.
+
+        Note: Uses object.__setattr__ to bypass PyTorch's nn.Module.__setattr__,
+        which would intercept nn.Module assignments and register them as submodules.
+        """
+        ref = ModuleReference(value) if value is not None else None
+        object.__setattr__(self, "_model_ref", ref)
 
     def set_model_and_data(self, model: "Model", data: ReflectionData):
         """
@@ -130,7 +145,10 @@ class Scaler(ScalerBase):
         data : ReflectionData
             ReflectionData object with observed data.
         """
-        self._model = ModuleReference(model)
+        # Set _model_ref directly: nn.Module.__setattr__ intercepts assignments
+        # of nn.Module instances (like `self.model = model`) and registers them
+        # as submodules, bypassing the property setter entirely.
+        self._model_ref = ModuleReference(model) if model is not None else None
         # Use parent class method for data
         self.set_data(data)
 
@@ -146,12 +164,12 @@ class Scaler(ScalerBase):
             Calculated structure factors. If None, computed from model.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            fcalc = self.compute_fcalc()
         self.calc_initial_scale(fcalc)
         self.setup_solvent()
         self.setup_anisotropy_correction()
 
-    def _compute_fcalc(self) -> torch.Tensor:
+    def compute_fcalc(self) -> torch.Tensor:
         """
         Compute F_calc from internal model.
 
@@ -165,9 +183,9 @@ class Scaler(ScalerBase):
         RuntimeError
             If no model is set.
         """
-        if self._model is None:
+        if self.model is None:
             raise RuntimeError("No model set and no fcalc provided")
-        return self._model(self.hkl)
+        return self.model(self.hkl)
 
     def calc_initial_scale(self, fcalc: torch.Tensor = None):
         """
@@ -186,7 +204,7 @@ class Scaler(ScalerBase):
             The log scale parameter for each resolution bin.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            fcalc = self.compute_fcalc()
         return super().calc_initial_scale(fcalc)
 
     def fit_anisotropy(self, fcalc: torch.Tensor = None, nsteps: int = 100):
@@ -203,7 +221,7 @@ class Scaler(ScalerBase):
             Number of optimization steps.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            fcalc = self.compute_fcalc()
         return super().fit_anisotropy(fcalc, nsteps=nsteps)
 
     def setup_solvent(self):
@@ -212,10 +230,10 @@ class Scaler(ScalerBase):
 
         Creates a SolventModel using the internal model reference.
         """
-        if self._model is None:
+        if self.model is None:
             raise RuntimeError("Model required for solvent setup")
         self.solvent = SolventModel(
-            self._model,
+            self.model,
             device=self.device,
             radius=1.1,
             k_solvent=0.35,
@@ -236,7 +254,7 @@ class Scaler(ScalerBase):
             Calculated structure factors. If None, computed from model.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            fcalc = self.compute_fcalc()
         return super().fit_all_scales(fcalc)
 
     def screen_solvent_params(
@@ -269,7 +287,7 @@ class Scaler(ScalerBase):
             Resolution limit for low-res only fitting in Angstroms.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            fcalc = self.compute_fcalc()
         return super().screen_solvent_params(
             fcalc,
             steps=steps,
@@ -314,7 +332,7 @@ class Scaler(ScalerBase):
             Dictionary with refinement metrics.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            fcalc = self.compute_fcalc()
         return super().refine_lbfgs(
             fcalc,
             nsteps=nsteps,
@@ -341,7 +359,7 @@ class Scaler(ScalerBase):
             R-work and R-free values.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            fcalc = self.compute_fcalc()
         return super().rfactor(fcalc)
 
     def bin_wise_rfactor(self, fcalc: torch.Tensor = None):
@@ -365,7 +383,7 @@ class Scaler(ScalerBase):
             R-free per bin.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            fcalc = self.compute_fcalc()
         return super().bin_wise_rfactor(fcalc)
 
     def get_binwise_mean_intensity(self, fcalc: torch.Tensor = None):
@@ -385,7 +403,7 @@ class Scaler(ScalerBase):
             Mean observed intensity, mean calculated intensity, and mean resolution per bin.
         """
         if fcalc is None:
-            fcalc = self._compute_fcalc()
+            fcalc = self.compute_fcalc()
         return super().get_binwise_mean_intensity(fcalc)
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
@@ -439,9 +457,9 @@ class Scaler(ScalerBase):
         if solvent_state is not None and not hasattr(self, "solvent"):
             # We need to instantiate SolventModel.
             # It requires: model, radius, k_solvent, b_solvent, etc.
-            if hasattr(self, "_model") and self._model is not None:
+            if hasattr(self, "model") and self.model is not None:
                 self.solvent = SolventModel(
-                    model=self._model.module, device=self.device, verbose=self.verbose
+                    model=self.model, device=self.device, verbose=self.verbose
                 )
 
         # Use parent class implementation (handles removing 'solvent' from state_dict)

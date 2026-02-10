@@ -40,6 +40,12 @@ from .occupancy_floor_diagnostic import (
     DisplacementRegularizer,
     DifferenceAmplitudeRegularizer,
 )
+from .sampled_ml_phase_target import (
+    SampledMLPhaseTarget,
+    SampledMLDifferenceTarget,
+    create_sampled_ml_target,
+    create_sampled_ml_difference_target,
+)
 
 # Force field target (optional dependency)
 try:
@@ -76,4 +82,8 @@ __all__ = [
     "NegativeDensityPenalty",
     "DisplacementRegularizer",
     "DifferenceAmplitudeRegularizer",
+    "SampledMLPhaseTarget",
+    "SampledMLDifferenceTarget",
+    "create_sampled_ml_target",
+    "create_sampled_ml_difference_target",
 ]

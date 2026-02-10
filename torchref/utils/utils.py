@@ -14,7 +14,7 @@ class ModuleReference:
 
     When you assign a nn.Module to an attribute of another nn.Module, PyTorch
     automatically registers it as a submodule, which adds its parameters to the
-    parent's parameter tree. This wrapper prevents that automatic registration.
+    parent's parameter tree. This wrapper prevents tlog_normal_stdhat automatic registration.
 
     This is useful when you want to:
 
@@ -704,6 +704,8 @@ class TensorMasks(dict):
                 raise ValueError(
                     f"Mask '{key}' must be boolean dtype, got {tensor.dtype}"
                 )
+            if tensor.sum() == 0:
+                raise ValueError(f"Mask '{key}' cannot be all False, this would mask all data.")
             tensor = tensor.to(self.device)
         super().__setitem__(key, tensor)
         self._updated = True
@@ -1313,3 +1315,25 @@ def json_to_state_dicts_separate(
         adp_target_state,
         unassigned_keys,
     )
+
+
+def disable_grad_outside_optimizer(optimized_params, all_params):
+    """Set ``requires_grad=False`` on parameters not being optimized.
+
+    Call this once after creating the optimizer. Non-optimized parameters
+    will no longer contribute to the autograd graph, which means
+    ``ModelFT.get_structure_factor`` will produce structure factors
+    without ``grad_fn`` for frozen models — enabling indefinite caching
+    until parameters change.
+
+    Parameters
+    ----------
+    optimized_params : iterable of torch.Tensor
+        Parameters passed to the optimizer.
+    all_params : iterable of torch.Tensor
+        All model parameters (e.g. ``model.parameters()``).
+    """
+    optimized_ids = set(id(p) for p in optimized_params)
+    for p in all_params:
+        if id(p) not in optimized_ids:
+            p.requires_grad_(False)

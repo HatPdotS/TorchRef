@@ -553,7 +553,7 @@ class XrayTarget(DataTarget):
         if fcalc is not None:
             F_calc = self.get_F_calc_scaled(fcalc=fcalc)
         else:
-            F_calc = self.get_F_calc_scaled(hkl, recalc=True)
+            F_calc = self.get_F_calc_scaled(hkl, recalc=False)
 
         # Get centric flags (full size, unfiltered)
         centric_all = self._data.centric
@@ -570,10 +570,12 @@ class XrayTarget(DataTarget):
             )
 
             # Combine validity mask with work/free selection
+            # Note: rfree_mask may be int32 (0/1), must convert to bool for proper masking
+            rfree_bool = rfree_mask.bool()
             if self.use_work_set:
-                combined_mask = validity_mask & rfree_mask
+                combined_mask = validity_mask & rfree_bool
             else:
-                combined_mask = validity_mask & ~rfree_mask
+                combined_mask = validity_mask & ~rfree_bool
 
             F_obs_sel = F_obs_data[combined_mask]
             F_calc_sel = F_calc[combined_mask]
@@ -583,10 +585,12 @@ class XrayTarget(DataTarget):
             )
         else:
             # Traditional indexed tensor case
+            # Note: rfree_mask may be int32 (0/1), must convert to bool for proper masking
+            rfree_bool = rfree_mask.bool()
             if self.use_work_set:
-                mask = rfree_mask
+                mask = rfree_bool
             else:
-                mask = ~rfree_mask
+                mask = ~rfree_bool
 
             F_obs_sel = F_obs[mask]
             F_calc_sel = F_calc[mask]
@@ -759,8 +763,10 @@ class MaximumLikelihoodXrayTarget(XrayTarget):
         term3 = (alpha * F_calc_amp) ** 2 / eb
 
         arg_bessel = 2 * alpha * F_obs * F_calc_amp / eb
+        # Clamp to prevent overflow in float32 (large arg_bessel causes issues in subsequent ops)
+        arg_bessel = torch.clamp(arg_bessel, max=1e6)
         term4 = -(
-            torch.log(torch.special.i0e(arg_bessel) + 1e-12) + torch.abs(arg_bessel)
+            torch.log(torch.special.i0e(arg_bessel) + 1e-12) + arg_bessel
         )
 
         loss_acentric = term1 + term2 + term3 + term4
@@ -772,12 +778,17 @@ class MaximumLikelihoodXrayTarget(XrayTarget):
         term4_c = -(alpha * F_obs * F_calc_amp) / eb
 
         arg_exp = -2 * alpha * F_obs * F_calc_amp / eb
-        term5_c = -torch.log((1 + torch.exp(arg_exp)) / 2 + 1e-12)
+        # Clamp only the exp argument to prevent overflow (float32 safe range: ~[-88, 88])
+        arg_exp_safe = torch.clamp(arg_exp, min=-80.0, max=80.0)
+        term5_c = -torch.log((1 + torch.exp(arg_exp_safe)) / 2 + 1e-12)
 
         loss_centric = term1_c + term2_c + term3_c + term4_c + term5_c
 
         # Combine based on centric flags
         loss = torch.where(centric_flags, loss_centric, loss_acentric)
+
+        # Replace any NaN/Inf with large finite value to maintain gradient signal
+        loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
 
         return loss.mean()
 
@@ -1429,8 +1440,9 @@ class NonBondedTarget(GeometryTarget):
         pos1 = xyz[indices[:, 0]]
         pos2 = xyz[indices[:, 1]]
 
-        # Compute actual distances
-        actual_distances = torch.norm(pos2 - pos1, dim=-1)
+        # Compute actual distances with small epsilon to prevent gradient issues at d=0
+        diff = pos2 - pos1
+        actual_distances = torch.sqrt((diff**2).sum(dim=-1) + 1e-8)
 
         # Violations: where actual distance is less than VDW sum
         violations = torch.clamp(min_distances - actual_distances, min=0.0)
@@ -1830,7 +1842,8 @@ class RigidBondTarget(ADPTarget):
                 r1 = xyz[idx1]  # (n_bonds, 3)
                 r2 = xyz[idx2]  # (n_bonds, 3)
                 bond_vec = r2 - r1  # (n_bonds, 3)
-                bond_length = torch.norm(bond_vec, dim=-1, keepdim=True)
+                # Add small epsilon to prevent division by zero gradient issues
+                bond_length = torch.sqrt((bond_vec**2).sum(dim=-1, keepdim=True) + 1e-8)
                 l = bond_vec / bond_length  # Unit vector along bond
 
                 # Get U tensors for bonded atoms
@@ -2161,7 +2174,7 @@ class ADPLocalityTarget(ADPTarget):
         # Compute pairwise differences: diff_ij = log(ADP_i) - log(ADP_j)
         diff = log_adp.unsqueeze(1) - neighbor_log_adp  # (N, k)
 
-        weights = 1 / distances + 1e-6  # Avoid div by zero
+        weights = 1 / (distances + 1e-6)  # Avoid div by zero
 
         weights = weights / (weights.mean() + 1e-8)  # Normalize weights per atom
 

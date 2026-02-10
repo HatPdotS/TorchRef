@@ -55,11 +55,14 @@ def smallest_diff_aniso(
     Returns
     -------
     torch.Tensor
-        Absolute difference vectors with shape (..., 3).
+        Signed difference vectors with shape (..., 3).
+        Note: For anisotropic calculations, the signed vectors are needed
+        to correctly compute the quadratic form r^T × B^(-1) × r with
+        off-diagonal U tensor terms.
     """
     diff_shape = diff.shape
     diff = diff.reshape(-1, 3)
     diff_frac = torch.matmul(inv_frac_matrix, diff.T)
     translation = torch.round(diff_frac)
     diff -= torch.matmul(frac_matrix, translation).T
-    return torch.abs(diff).reshape(diff_shape)
+    return diff.reshape(diff_shape)

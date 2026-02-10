@@ -67,6 +67,7 @@ class DatasetCollection(CrystalDataset):
     _cell: Optional[torch.Tensor] = field(default=None, repr=False)
     _spacegroup: Optional[str] = field(default=None, repr=False)
     _resolution: Optional[torch.Tensor] = field(default=None, repr=False)
+    _scale_factors: Dict[str, torch.Tensor] = field(default_factory=dict, repr=False)
 
     def add_dataset(
         self, name: str, dataset: ReflectionData, set_as_reference: bool = False
@@ -222,7 +223,7 @@ class DatasetCollection(CrystalDataset):
 
     def __call__(self, mask: bool = True) -> Dict[str, Tuple]:
         """
-        Return all datasets' data.
+        Return all datasets' data scaled if scale factors are set.
 
         Parameters
         ----------
@@ -234,7 +235,78 @@ class DatasetCollection(CrystalDataset):
         dict
             Dictionary mapping name to (hkl, F, F_sigma, rfree) tuples.
         """
-        return {name: ds(mask=mask) for name, ds in self}
+        data = {}
+
+        return {name: ds(mask=mask, scale=True) for name, ds in self}
+
+    def scale(self):
+        '''
+        Scale all datasets to a common reference scale.
+        This method optimizes the scaling parameters of all non-reference datasets
+        to minimize the mean squared error between their structure factors and
+        those of the reference dataset. The optimization corrects for both overall
+        scale differences and anisotropy.
+        The method uses the L-BFGS optimizer with strong Wolfe line search
+        to iteratively refine the scaling parameters over multiple optimization
+        steps.
+            The collection instance, allowing for method chaining.
+        Raises
+        ------
+        ValueError
+            If no reference dataset has been set prior to calling this method or only a reference dataset exists.
+            Make sure to have at least 2 datasets duh...
+        Notes
+        -----
+        The reference dataset must be set before calling this method using
+        the appropriate setter. All datasets except the reference will have
+        their scaling parameters optimized.
+        """
+        Scale all datasets to the same overall scale.
+        Corrects overall scale and anisotropy based on the reference dataset.
+        Returns
+        -------
+        self
+            for method chaining.
+        '''
+        if self._reference_dataset is None:
+            raise ValueError("No reference dataset set for scaling")
+
+
+        ref_ds = self._datasets[self._reference_dataset]
+        to_scale = [ds for name, ds in self if name != self._reference_dataset]
+
+        if not to_scale:
+            raise ValueError("No datasets to scale against reference")
+        
+        parameters = [p for data in to_scale for p in data.parameters()]
+        [p.requires_grad_(True) for p in parameters]
+        optimizer = torch.optim.LBFGS(parameters, max_iter=100, line_search_fn='strong_wolfe')
+
+        # Get masks once (they don't change during optimization)
+        ref_mask = ref_ds.masks()
+        ds_masks = [ds.masks() for ds in to_scale]
+
+        def closure():
+            optimizer.zero_grad()
+            loss = 0.0
+            # Get scaled reference data (bypassing MaskedTensor which doesn't support autograd)
+            ref_F_scaled, _ = ref_ds.get_corrected_data()
+
+            for ds, ds_mask in zip(to_scale, ds_masks):
+                F_scaled, _ = ds.get_corrected_data()
+                # Combine masks
+                combined_mask = ds_mask & ref_mask
+                # Compute loss on valid reflections only
+                F_data = F_scaled[combined_mask]
+                ref_F_data = ref_F_scaled[combined_mask]
+                loss = loss + torch.sum((F_data - ref_F_data) ** 2)
+            loss.backward()
+            return loss
+
+        for i in range(10):
+            optimizer.step(closure)
+        [p.requires_grad_(False) for p in parameters]
+
 
     def to(self, device) -> "DatasetCollection":
         """Move collection and all datasets to device."""

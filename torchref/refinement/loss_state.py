@@ -170,12 +170,16 @@ class LossState:
         """
         Register a target function.
 
+        Automatically detects combined targets (like TotalGeometryTarget,
+        TotalADPTarget) and expands them into their component targets.
+
         Parameters
         ----------
         name : str
             Hierarchical name (e.g., 'geometry/bond', 'adp/simu').
         target : Callable
-            Function that returns a loss tensor when called.
+            Function that returns a loss tensor when called. Can also be a
+            combined target with .items() method, which will be auto-expanded.
         prefix : str, optional
             Prefix to prepend to the name (e.g., 'model1' -> 'model1/geometry/bond').
             Useful for registering targets from multiple models in the same state.
@@ -185,6 +189,14 @@ class LossState:
         LossState
             Self for chaining.
         """
+        # Check if target is a combined/dictionary-like target with .items()
+        # This handles CombinedTargets, TotalGeometryTarget, TotalADPTarget, etc.
+        if hasattr(target, 'items') and callable(getattr(target, 'items', None)):
+            # Use name as prefix to maintain hierarchy (e.g., "geometry" -> "geometry/bond")
+            combined_prefix = f"{prefix}/{name}" if prefix else name
+            return self.register_targets(target, prefix=combined_prefix)
+
+        # Normal single target registration
         key = f"{prefix}/{name}" if prefix else name
         self.targets[key] = target
         return self
@@ -423,6 +435,13 @@ class LossState:
             totals[group] += weighted
 
         return dict(totals)
+    
+    def summary(self) -> str:
+        print("LossState Summary:")
+        for name, loss in self._losses.items():
+            weight = self.get_effective_weight(name)
+            weighted_loss = weight * loss
+            print(f"  {name}: loss={loss.item():.4f}, weight={weight:.4f}, weighted={weighted_loss.item():.4f}")
 
     # =========================================================================
     # Device Management

@@ -31,7 +31,6 @@ from .base_refinement import Refinement
 from .lbfgs_refinement import LBFGSRefinement
 from .logger import Logger
 from .loss_state import LossState
-from .optimizers import AdamWithAdaptiveNoise
 from .targets import Target, DataTarget, ModelTarget
 
 __all__ = [
@@ -42,8 +41,6 @@ __all__ = [
     "LossState",
     # Logging
     "Logger",
-    # Optimizers
-    "AdamWithAdaptiveNoise",
     # Submodules
     "targets",
     "weighting",

@@ -497,10 +497,13 @@ class Model(DebugMixin, nn.Module):
         ----------
         cif_path : str or list of str
             Path(s) to CIF restraints dictionary file(s).
+        return self
+            For method chaining
         """
         self._cif_path = cif_path
         # Reset restraints so they will be rebuilt on next access
         self._restraints = None
+        return self
 
     def _build_restraints(self):
         """
@@ -623,10 +626,12 @@ class Model(DebugMixin, nn.Module):
         self.xyz = MixedTensor(
             torch.tensor(self.pdb[["x", "y", "z"]].values, dtype=self.dtype_float),
             name="xyz",
+            device=self.device,
         )
         self.adp = PositiveMixedTensor(
             torch.tensor(self.pdb["tempfactor"].values, dtype=self.dtype_float),
             name="adp",
+            device=self.device,
         )
         self.u = MixedTensor(
             torch.tensor(
@@ -634,6 +639,7 @@ class Model(DebugMixin, nn.Module):
                 dtype=self.dtype_float,
             ),
             name="aniso_U",
+            device=self.device,
         )
 
         # Create OccupancyTensor with residue-level sharing and altloc support
@@ -2223,20 +2229,35 @@ class Model(DebugMixin, nn.Module):
         return self.xyz().mean(dim=0)
 
     def use_internal_coordinates(
-        self, bond_cutoff: float = 2.0, requires_grad: bool = True
+        self,
+        n_aa_per_segment: int = 3,
+        bond_cutoff: float = 2.0,
+        cif_dict: dict = None,
+        requires_grad: bool = True,
     ) -> "Model":
         """
-        Switch xyz to internal coordinate parametrization.
+        Switch xyz to segmented internal coordinate parametrization.
 
-        Replaces the current xyz MixedTensor with an InternalCoordinateTensor
-        that parametrizes atomic positions using bond lengths, angles, and
-        torsion angles. This enables physically meaningful perturbations
-        and differentiable reconstruction.
+        Replaces the current xyz MixedTensor with a SegmentedInternalCoordinateTensor
+        that parametrizes atomic positions using bond lengths, angles, torsion angles,
+        and per-segment rigid body parameters. The molecule is broken into independent
+        segments to avoid the "lever arm problem" where small torsion changes near
+        the root cause large displacements at distant atoms.
 
         Parameters
         ----------
+        n_aa_per_segment : int, optional
+            Number of amino acids per segment. Default is 3.
+            - Smaller values (1-2): More segments, shallower trees, less lever arm
+            - Larger values (5-10): Fewer segments, deeper trees, more lever arm
         bond_cutoff : float, optional
             Distance cutoff for bond detection in Angstroms. Default is 2.0.
+            Only used when cif_dict is not provided.
+        cif_dict : dict, optional
+            CIF dictionary containing bond definitions per residue type.
+            If provided, bonds are determined from chemical definitions rather
+            than distances, which is more robust for structures with poor geometry.
+            Expected format: cif_dict[resname]['bonds'] DataFrame with 'atom1', 'atom2'.
         requires_grad : bool, optional
             Whether internal coordinate parameters should have gradients.
             Default is True.
@@ -2252,18 +2273,24 @@ class Model(DebugMixin, nn.Module):
 
             model = Model()
             model.load_pdb('structure.pdb')
-            model.use_internal_coordinates(bond_cutoff=2.0)
+            model.use_internal_coordinates(n_aa_per_segment=3)
 
             # Now model.xyz() returns coordinates reconstructed from
-            # internal coordinates (bond lengths, angles, torsions)
+            # segmented internal coordinates
 
             # Shake the structure using internal coordinates
             new_xyz = model.xyz.shake(magnitude=0.1)
 
+            # Each segment has independent internal coordinates and
+            # rigid body parameters (position + orientation)
+
         Notes
         -----
-        After calling this method, model.xyz will be an InternalCoordinateTensor
-        instead of a MixedTensor. The InternalCoordinateTensor supports:
+        After calling this method, model.xyz will be a SegmentedInternalCoordinateTensor
+        instead of a MixedTensor. This provides:
+        - Shallow spanning trees within segments (depth ~10-30 vs ~1000)
+        - Independent segments that don't propagate changes to distant atoms
+        - Rigid body parameters (position + orientation) per segment
         - forward() / __call__(): Reconstruct Cartesian coordinates
         - shake(magnitude): Add noise to internal parameters
         - Gradient flow through all internal coordinate parameters
@@ -2274,15 +2301,20 @@ class Model(DebugMixin, nn.Module):
                 "Load data first with load_pdb() or load_cif()."
             )
 
-        from torchref.model.internal_coordinates import InternalCoordinateTensor
+        from torchref.model.segmented_internal_coordinates import (
+            SegmentedInternalCoordinateTensor
+        )
 
         # Get current coordinates
         current_xyz = self.xyz().detach()
 
-        # Create internal coordinate tensor
-        self.xyz = InternalCoordinateTensor(
+        # Create segmented internal coordinate tensor
+        self.xyz = SegmentedInternalCoordinateTensor(
             current_xyz,
+            pdb=self.pdb,
+            n_aa_per_segment=n_aa_per_segment,
             bond_cutoff=bond_cutoff,
+            cif_dict=cif_dict,
             requires_grad=requires_grad,
             dtype=self.dtype_float,
             device=self.device,
@@ -2292,3 +2324,27 @@ class Model(DebugMixin, nn.Module):
             print(f"Switched to internal coordinate parametrization: {self.xyz}")
 
         return self
+
+    def use_segmented_internal_coordinates(
+        self,
+        n_aa_per_segment: int = 3,
+        bond_cutoff: float = 2.0,
+        cif_dict: dict = None,
+        requires_grad: bool = True,
+    ) -> "Model":
+        """
+        Alias for use_internal_coordinates().
+
+        This method is provided for backward compatibility. It calls
+        use_internal_coordinates() with the same parameters.
+
+        See Also
+        --------
+        use_internal_coordinates : The main method for internal coordinate conversion.
+        """
+        return self.use_internal_coordinates(
+            n_aa_per_segment=n_aa_per_segment,
+            bond_cutoff=bond_cutoff,
+            cif_dict=cif_dict,
+            requires_grad=requires_grad,
+        )

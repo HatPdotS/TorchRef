@@ -429,7 +429,7 @@ class SolventModel(DebugMixin, nn.Module):
             self, "mask_smoothed"
         ), "Smoothed solvent mask not computed. Call smooth_solvent_mask() first."
         fsol = extract_structure_factor_from_grid(
-            ifft(self.mask_smoothed), hkl
+            ifft(self.mask_smoothed, self.model.cell.volume), hkl
         ).detach()
         assert torch.isfinite(
             fsol

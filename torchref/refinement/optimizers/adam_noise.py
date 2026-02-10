@@ -1,3 +1,10 @@
+"""
+Adam optimizer with adaptive noise injection for regularization.
+
+This optimizer extends Adam with scale-invariant Gaussian noise injection
+to prevent overfitting during crystallographic refinement.
+"""
+
 import torch
 from torch.optim import Adam
 

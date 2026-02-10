@@ -355,10 +355,13 @@ class DifferenceXrayTarget(Target):
         valid_both = validity_light & validity_dark
 
         # Work/test set selection
+        # Note: rfree masks may be int32 (0/1), must convert to bool for proper masking
+        rfree_light_bool = rfree_light.bool()
+        rfree_dark_bool = rfree_dark.bool()
         if self.use_work_set:
-            set_mask = rfree_light & rfree_dark  # Work set in both
+            set_mask = rfree_light_bool & rfree_dark_bool  # Work set in both
         else:
-            set_mask = ~rfree_light & ~rfree_dark  # Test set in both
+            set_mask = ~rfree_light_bool & ~rfree_dark_bool  # Test set in both
 
         mask = valid_both & set_mask
 
@@ -412,10 +415,13 @@ class DifferenceXrayTarget(Target):
         rfree_dark_matched = rfree_dark[self._matched_indices_dark]
 
         # Only include reflections that are valid AND in work/test set for BOTH
+        # Note: rfree masks may be int32 (0/1), must convert to bool for proper masking
+        rfree_light_bool = rfree_light_matched.bool()
+        rfree_dark_bool = rfree_dark_matched.bool()
         if self.use_work_set:
-            set_mask = rfree_light_matched & rfree_dark_matched
+            set_mask = rfree_light_bool & rfree_dark_bool
         else:
-            set_mask = ~rfree_light_matched & ~rfree_dark_matched
+            set_mask = ~rfree_light_bool & ~rfree_dark_bool
 
         mask = valid_both & set_mask
 
@@ -425,7 +431,7 @@ class DifferenceXrayTarget(Target):
         self,
         fcalc_light: torch.Tensor = None,
         fcalc_dark: torch.Tensor = None,
-        recalc: bool = True,
+        recalc: bool = False,
     ) -> torch.Tensor:
         """
         Compute calculated difference structure factors.
@@ -439,7 +445,7 @@ class DifferenceXrayTarget(Target):
         fcalc_dark : torch.Tensor, optional
             Pre-computed dark state structure factors.
         recalc : bool, optional
-            Force recalculation if True. Default is True.
+            Force recalculation if True. Default is False.
 
         Returns
         -------
@@ -482,7 +488,7 @@ class DifferenceXrayTarget(Target):
         self,
         fcalc_light: torch.Tensor = None,
         fcalc_dark: torch.Tensor = None,
-        recalc: bool = True,
+        recalc: bool = False,
     ) -> torch.Tensor:
         """
         Compute Gaussian NLL loss for difference structure factors.
@@ -496,7 +502,7 @@ class DifferenceXrayTarget(Target):
         fcalc_dark : torch.Tensor, optional
             Pre-computed dark state structure factors.
         recalc : bool, optional
-            Force recalculation if True. Default is True.
+            Force recalculation if True. Default is False.
 
         Returns
         -------

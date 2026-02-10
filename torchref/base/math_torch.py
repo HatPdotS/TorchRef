@@ -156,21 +156,13 @@ def U_to_matrix(U: torch.Tensor) -> torch.Tensor:
     u12 = U[..., 3]
     u13 = U[..., 4]
     u23 = U[..., 5]
-    if U.ndim == 1:
-        U_matrix = torch.zeros((3, 3), device=U.device, dtype=U.dtype)
-    else:
-        U_matrix = torch.zeros(U.shape[:-1] + (3, 3), device=U.device, dtype=U.dtype)
-    U_matrix[..., 0, 0] = u11
-    U_matrix[..., 1, 1] = u22
-    U_matrix[..., 2, 2] = u33
-    U_matrix[..., 0, 1] = u12
-    U_matrix[..., 1, 0] = u12
-    U_matrix[..., 0, 2] = u13
-    U_matrix[..., 2, 0] = u13
-    U_matrix[..., 1, 2] = u23
-    U_matrix[..., 2, 1] = u23
 
-    return U_matrix
+    # Build rows and stack to preserve gradient flow
+    row0 = torch.stack([u11, u12, u13], dim=-1)
+    row1 = torch.stack([u12, u22, u23], dim=-1)
+    row2 = torch.stack([u13, u23, u33], dim=-1)
+
+    return torch.stack([row0, row1, row2], dim=-2)
 
 
 def deterministic_tensor_digest(t: torch.Tensor, n_chunks: int = 16) -> torch.Tensor:
