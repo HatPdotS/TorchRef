@@ -28,7 +28,7 @@ class TestScalerCreationFunctional:
         scaler = Scaler(model=model, data=data, nbins=20, verbose=0)
         
         # Check all components are initialized
-        assert scaler._model is not None
+        assert scaler.model is not None
         assert scaler._data is not None
         assert scaler.s is not None
         assert scaler.bins is not None
@@ -243,7 +243,7 @@ class TestScalerStateDictFunctional:
         scaler2 = Scaler(model=model, data=data, nbins=10, verbose=0)
         scaler2.setup_anisotropy_correction()
         scaler2.setup_bin_wise_bfactor()
-        scaler2.load_state_dict(torch.load(state_path))
+        scaler2.load_state_dict(torch.load(state_path, weights_only=False))
         
         # Parameters should match
         assert torch.allclose(scaler1.U, scaler2.U)

@@ -19,7 +19,7 @@ class TestScalerInitialization:
         
         scaler = Scaler()
         
-        assert scaler._model is None
+        assert scaler.model is None
         assert scaler._data is None
         assert scaler.nbins == 20
 
@@ -38,7 +38,7 @@ class TestScalerInitialization:
         
         scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
         
-        assert scaler._model is not None
+        assert scaler.model is not None
         assert scaler._data is not None
         assert scaler.nbins == 10
         assert scaler.s is not None
@@ -91,7 +91,7 @@ class TestScalerOperations:
         # Set them on the scaler
         scaler.set_model_and_data(model, data)
         
-        assert scaler._model is not None
+        assert scaler.model is not None
         assert scaler._data is not None
 
 

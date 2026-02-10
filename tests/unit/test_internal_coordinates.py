@@ -258,12 +258,14 @@ class TestInternalCoordinateTensor:
 
     def test_model_use_internal_coordinates(self, sample_model):
         """Test Model.use_internal_coordinates() method."""
+        from torchref.model.segmented_internal_coordinates import SegmentedInternalCoordinateTensor
+
         original_xyz = sample_model.xyz().detach().clone()
 
         sample_model.use_internal_coordinates(bond_cutoff=2.0)
 
-        # xyz should now be an InternalCoordinateTensor
-        assert isinstance(sample_model.xyz, InternalCoordinateTensor)
+        # xyz should now be a SegmentedInternalCoordinateTensor (or InternalCoordinateTensor)
+        assert isinstance(sample_model.xyz, (InternalCoordinateTensor, SegmentedInternalCoordinateTensor))
 
         # Should recover original coordinates
         recovered_xyz = sample_model.xyz()

@@ -20,7 +20,7 @@ class TestScalerInitialization:
         
         scaler = Scaler()
         
-        assert scaler._model is None
+        assert scaler.model is None
         assert scaler._data is None
         assert scaler.cell is None
 
