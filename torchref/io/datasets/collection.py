@@ -315,14 +315,6 @@ class DatasetCollection(CrystalDataset):
             ds.to(device)
         return self
 
-    def cuda(self, device=None) -> "DatasetCollection":
-        """Move collection and all datasets to CUDA device."""
-        return self.to(device or "cuda")
-
-    def cpu(self) -> "DatasetCollection":
-        """Move collection and all datasets to CPU."""
-        return self.to("cpu")
-
     def keys(self) -> List[str]:
         """Return list of dataset names."""
         return list(self._dataset_order)

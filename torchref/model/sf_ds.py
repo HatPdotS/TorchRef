@@ -26,9 +26,10 @@ from torchref.base.reciprocal import (
 from torchref.config import dtypes
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
+from torchref.utils.device_mixin import DeviceMovementMixin
 
 
-class SfDS(nn.Module):
+class SfDS(DeviceMovementMixin, nn.Module):
     """
     Structure Factor calculator using Direct Summation.
 
@@ -518,15 +519,6 @@ class SfDS(nn.Module):
             self._spacegroup = self._spacegroup.to(device=device, dtype=dtype)
 
         return super().to(device=device, dtype=dtype)
-
-    def cuda(self, device=None):
-        """Move SfDS module to CUDA device."""
-        cuda_device = f"cuda:{device}" if device is not None else "cuda"
-        return self.to(device=cuda_device)
-
-    def cpu(self):
-        """Move SfDS module to CPU."""
-        return self.to(device="cpu")
 
     def copy(self) -> "SfDS":
         """Create a deep copy of this SfDS module.

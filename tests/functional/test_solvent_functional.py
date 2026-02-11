@@ -14,7 +14,7 @@ class TestSolventModelInitialization:
 
     def test_empty_initialization(self):
         """Test empty SolventModel initialization."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         solvent = SolventModel()
         assert solvent is not None
@@ -23,7 +23,7 @@ class TestSolventModelInitialization:
 
     def test_initialization_with_parameters(self):
         """Test SolventModel with custom parameters."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         solvent = SolventModel(
             k_solvent=0.35,
@@ -45,7 +45,7 @@ class TestSolventParameters:
 
     def test_k_solvent_property(self):
         """Test k_solvent conversion from log."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         k_solvent_initial = 0.35
         solvent = SolventModel(k_solvent=k_solvent_initial)
@@ -56,7 +56,7 @@ class TestSolventParameters:
 
     def test_b_solvent_parameter(self):
         """Test B-solvent parameter."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         b_solvent_initial = 50.0
         solvent = SolventModel(b_solvent=b_solvent_initial)
@@ -65,7 +65,7 @@ class TestSolventParameters:
 
     def test_phase_offset_parameter(self):
         """Test phase offset parameter."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         # With optimize_phase=True
         solvent = SolventModel(optimize_phase=True, initial_phase_offset=0.1)
@@ -83,7 +83,7 @@ class TestSolventGradients:
 
     def test_k_solvent_gradients(self):
         """Test gradients for k_solvent."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         solvent = SolventModel(k_solvent=0.35, b_solvent=46.0)
         
@@ -95,7 +95,7 @@ class TestSolventGradients:
 
     def test_b_solvent_gradients(self):
         """Test gradients for b_solvent."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         solvent = SolventModel(k_solvent=0.35, b_solvent=46.0)
         
@@ -112,7 +112,7 @@ class TestSolventStateDictFunctional:
 
     def test_state_dict_keys(self):
         """Test state dict contains expected keys."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         solvent = SolventModel(k_solvent=0.35, b_solvent=46.0, optimize_phase=True)
         state_dict = solvent.state_dict()
@@ -124,7 +124,7 @@ class TestSolventStateDictFunctional:
 
     def test_save_and_load_state(self, tmp_path):
         """Test saving and loading state dict."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         solvent = SolventModel(k_solvent=0.35, b_solvent=46.0)
         original_k = solvent.log_k_solvent.clone()
@@ -148,7 +148,7 @@ class TestSolventDeviceOperations:
 
     def test_cpu_operation(self):
         """Test solvent model on CPU."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         solvent = SolventModel(device=torch.device('cpu'))
         
@@ -157,7 +157,7 @@ class TestSolventDeviceOperations:
 
     def test_float_type(self):
         """Test solvent model with different float types."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         # Float32
         solvent32 = SolventModel(float_type=torch.float32)
@@ -174,7 +174,7 @@ class TestSolventCacheOperations:
 
     def test_cache_initialization(self):
         """Test that cache is initialized."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         solvent = SolventModel()
         
@@ -219,32 +219,26 @@ class TestSolventBFactorCorrection:
 class TestSolventTypicalValues:
     """Test typical solvent parameter values."""
 
-    def test_typical_k_solvent_range(self):
+    @pytest.mark.parametrize("k", [0.3, 0.35, 0.4, 0.45, 0.5])
+    def test_typical_k_solvent_range(self, k):
         """Test typical k_solvent values."""
-        from torchref.scaling.solvent_new import SolventModel
-        
-        # Typical values from literature: 0.3-0.5
-        typical_values = [0.3, 0.35, 0.4, 0.45, 0.5]
-        
-        for k in typical_values:
-            solvent = SolventModel(k_solvent=k)
-            k_recovered = torch.exp(solvent.log_k_solvent)
-            assert torch.isclose(k_recovered, torch.tensor(k), rtol=1e-5)
+        from torchref.scaling.solvent import SolventModel
 
-    def test_typical_b_solvent_range(self):
+        solvent = SolventModel(k_solvent=k)
+        k_recovered = torch.exp(solvent.log_k_solvent)
+        assert torch.isclose(k_recovered, torch.tensor(k), rtol=1e-5)
+
+    @pytest.mark.parametrize("b", [30.0, 46.0, 50.0, 70.0, 100.0])
+    def test_typical_b_solvent_range(self, b):
         """Test typical B_solvent values."""
-        from torchref.scaling.solvent_new import SolventModel
-        
-        # Typical values: 30-100 Å²
-        typical_values = [30.0, 46.0, 50.0, 70.0, 100.0]
-        
-        for b in typical_values:
-            solvent = SolventModel(b_solvent=b)
-            assert torch.isclose(solvent.b_solvent, torch.tensor(b))
+        from torchref.scaling.solvent import SolventModel
+
+        solvent = SolventModel(b_solvent=b)
+        assert torch.isclose(solvent.b_solvent, torch.tensor(b))
 
     def test_default_parameters(self):
         """Test default parameter values are reasonable."""
-        from torchref.scaling.solvent_new import SolventModel
+        from torchref.scaling.solvent import SolventModel
         
         solvent = SolventModel()
         

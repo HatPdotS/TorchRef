@@ -4,10 +4,7 @@ import gemmi
 import numpy as np
 import torch
 
-from torchref.base.math_torch import (
-    fft,
-    ifft,
-)
+from torchref.base.fourier import fft, ifft
 from torchref.model.sf_fft import SfFFT
 from torchref.model.model import Model
 from torchref.symmetry import SpaceGroup
@@ -613,7 +610,7 @@ class ModelFT(Model):
 
         map_ccp = gemmi.Ccp4Map()
         map_ccp.grid = gemmi.FloatGrid(
-            np_map, gemmi.UnitCell(*cell), gemmi.SpaceGroup("P1")
+            np_map, gemmi.UnitCell(*cell), SpaceGroup("P1")._gemmi
         )
         map_ccp.setup(0.0)
         map_ccp.update_ccp4_header()
@@ -682,14 +679,6 @@ class ModelFT(Model):
             self._fft.to(device=device, dtype=dtype)
 
         return result
-
-    def cuda(self, device=None):
-        """Move model and FT-specific data to GPU."""
-        return self.to(device='cuda' if device is None else device)
-
-    def cpu(self):
-        """Move model and FT-specific data to CPU."""
-        return self.to(device="cpu")
 
     def update_pdb(self):
         """

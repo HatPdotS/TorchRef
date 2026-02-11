@@ -25,9 +25,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 import torch
 
+from torchref.utils.device_mixin import DeviceMovementMixin
+
 
 @dataclass
-class LossState:
+class LossState(DeviceMovementMixin):
     """
     Hierarchical loss state with lazy evaluation.
 
@@ -476,33 +478,6 @@ class LossState:
                 self.meta[key] = value.to(self.device)
 
         return self
-
-    def cuda(self, device=None) -> "LossState":
-        """
-        Move LossState to CUDA device.
-
-        Parameters
-        ----------
-        device : str or torch.device, optional
-            Target CUDA device. If None, uses default CUDA device.
-
-        Returns
-        -------
-        LossState
-            Self, for method chaining.
-        """
-        return self.to(device or "cuda")
-
-    def cpu(self) -> "LossState":
-        """
-        Move LossState to CPU.
-
-        Returns
-        -------
-        LossState
-            Self, for method chaining.
-        """
-        return self.to("cpu")
 
     # =========================================================================
     # Utility

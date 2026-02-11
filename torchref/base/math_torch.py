@@ -226,6 +226,11 @@ def hash_tensors(tensors) -> str:
     """
     Compute a hash of multiple tensors for caching purposes.
 
+    .. deprecated::
+        Use ``(tensor.data_ptr(), tensor._version, tensor.numel())`` tuples
+        for lightweight fingerprinting instead. ``hash_tensors`` copies data
+        to CPU and computes SHA-1, which is expensive.
+
     Parameters
     ----------
     tensors : list of torch.Tensor or None
@@ -236,6 +241,13 @@ def hash_tensors(tensors) -> str:
     str
         SHA-1 hash of the tensor contents.
     """
+    import warnings
+    warnings.warn(
+        "hash_tensors is deprecated. Use (tensor.data_ptr(), tensor._version, "
+        "tensor.numel()) tuples for lightweight fingerprinting instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     h = hashlib.sha1()
     for t in tensors:
         if t is None:

@@ -11,11 +11,13 @@ from typing import TYPE_CHECKING, List, Optional
 import torch
 from torch import nn
 
+from torchref.utils.device_mixin import DeviceMovementMixin
+
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
 
 
-class MixedModel(nn.Module):
+class MixedModel(DeviceMovementMixin, nn.Module):
     """
     Model wrapper combining N ModelFT objects with learnable fractions.
 
@@ -330,14 +332,6 @@ class MixedModel(nn.Module):
             model.to(device=device, dtype=dtype)
 
         return self
-
-    def cuda(self, device=None):
-        """Move MixedModel to GPU."""
-        return self.to(device='cuda' if device is None else device)
-
-    def cpu(self):
-        """Move MixedModel to CPU."""
-        return self.to(device='cpu')
 
     def __repr__(self) -> str:
         """String representation."""

@@ -360,7 +360,8 @@ def vectorized_add_to_map_optimized(
     torch.Tensor
         Updated electron density map.
     """
-    from torchref.base.math_torch import scatter_add_nd, smallest_diff
+    from torchref.base.coordinates import smallest_diff
+    from torchref.base.electron_density import scatter_add_nd
 
     # Calculate squared distances with periodic boundary conditions
     diff_coords_squared = smallest_diff(

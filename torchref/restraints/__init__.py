@@ -51,7 +51,7 @@ from torchref.restraints.builders import (
     RestraintBuilder,
     TorsionRestraintBuilder,
 )
-from torchref.restraints.restraints_new import RestraintsNew as Restraints
+from torchref.restraints.restraints import RestraintsNew as Restraints
 
 MONOMER_LIB_URL = "https://github.com/MonomerLibrary/monomers.git"
 # Pin to specific commit to avoid breaking changes (e.g., SS link deletion in f1ef252bb)

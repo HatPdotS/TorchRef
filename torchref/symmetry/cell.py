@@ -12,9 +12,11 @@ from typing import Any
 
 import torch
 
+from torchref.utils.device_mixin import DeviceMovementMixin
+
 
 @dataclass
-class Cell:
+class Cell(DeviceMovementMixin):
     """
     Dataclass for crystallographic unit cells with cached derived quantities.
 
@@ -124,35 +126,6 @@ class Cell:
         object.__setattr__(new_cell, "_data", new_data)
         object.__setattr__(new_cell, "_cache", {})
         return new_cell
-
-    def cpu(self) -> "Cell":
-        """
-        Move Cell to CPU.
-
-        Returns
-        -------
-        Cell
-            New Cell on CPU.
-        """
-        return self.to(device="cpu")
-
-    def cuda(self, device: int | None = None) -> "Cell":
-        """
-        Move Cell to CUDA device.
-
-        Parameters
-        ----------
-        device : int, optional
-            CUDA device index. If None, uses current CUDA device.
-
-        Returns
-        -------
-        Cell
-            New Cell on CUDA.
-        """
-        if device is None:
-            return self.to(device="cuda")
-        return self.to(device=f"cuda:{device}")
 
     def detach(self) -> "Cell":
         """

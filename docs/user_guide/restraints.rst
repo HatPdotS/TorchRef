@@ -21,7 +21,7 @@ Restraints are automatically generated from the monomer library:
 
 .. code-block:: python
 
-   from torchref.restraints.restraints import Restraints
+   from torchref.restraints import Restraints
 
    # Automatic setup from model
    restraints = Restraints(model, cif_file=None, verbose=1)

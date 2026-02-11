@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 
 from torchref.scaling import ScalerBase
-from torchref.model import FFT
+from torchref.model import SfFFT
 from torchref.symmetry import spacegroup
 from torchref.refinement.targets import MaximumLikelihoodXrayTarget
 from torchref.base import rotation_matrix_euler_zyz
@@ -133,7 +133,7 @@ class RigidBodyRefinement(nn.Module):
         self.cell = data.cell
         self.spacegroup = data.spacegroup
 
-        self.fft = FFT(self.cell, self.spacegroup, max_res=max_res)
+        self.fft = SfFFT(self.cell, self.spacegroup, max_res=max_res)
 
 
         self.verbose = verbose

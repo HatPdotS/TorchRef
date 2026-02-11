@@ -41,16 +41,16 @@ class TestRefinementSetup:
         assert scaler is not None
 
     @pytest.mark.integration
-    def test_restraints_from_model(self, sample_cif_file, monomer_library_path):
+    def test_restraints_from_model(self, sample_cif_file):
         """Test building restraints from a loaded model."""
         from torchref.model.model import Model
-        from torchref.restraints.restraints import Restraints
-        
+        from torchref.restraints import Restraints
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
+
         # Build restraints
-        restraints = Restraints(model=model, cif_path=monomer_library_path)
+        restraints = Restraints(pdb=model.pdb, xyz_fn=model.xyz, vdw_radii_fn=model.get_vdw_radii)
         restraints.build_restraints()
         
         # Should have some restraints

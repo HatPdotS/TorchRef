@@ -27,12 +27,13 @@ from torchref.model.parameter_wrappers import (
     OccupancyTensor,
     PositiveMixedTensor,
 )
-from torchref.symmetry import Cell, SpaceGroup, Symmetry
+from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
+from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.utils import sanitize_pdb_dataframe
 
 
-class Model(DebugMixin, nn.Module):
+class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     """
     Base model class for atomic structure models using PyTorch.
 
@@ -124,8 +125,7 @@ class Model(DebugMixin, nn.Module):
         # These will be set during load() or load_state_dict()
         self.pdb = None
         self._cell: Optional[Cell] = None
-        self._spacegroup: Optional[gemmi.SpaceGroup] = None  # Canonical space group
-        self._symmetry: Optional[Symmetry] = None  # Symmetry operations handler
+        self._spacegroup: Optional[SpaceGroup] = None
 
         # Submodules (created during load or load_state_dict)
         self.xyz = None
@@ -197,34 +197,35 @@ class Model(DebugMixin, nn.Module):
         """
         if value is not None:
             self._spacegroup = SpaceGroup(value)
-            self._symmetry = Symmetry(self._spacegroup)
         else:
             self._spacegroup = None
-            self._symmetry = None
 
     @property
-    def symmetry(self) -> Optional[Symmetry]:
+    def symmetry(self) -> Optional[SpaceGroup]:
         """
         Symmetry operations handler for this space group.
 
+        Returns the same SpaceGroup object as `self.spacegroup` — the separate
+        Symmetry wrapper was redundant since Symmetry is just an alias.
+
         Returns
         -------
-        Symmetry or None
-            The symmetry object, or None if spacegroup is not set.
+        SpaceGroup or None
+            The space group object, or None if not set.
         """
-        return self._symmetry
+        return self._spacegroup
 
     @symmetry.setter
-    def symmetry(self, value: Optional[Symmetry]):
+    def symmetry(self, value: Optional[SpaceGroup]):
         """
-        Set the symmetry object directly.
+        Set the symmetry / space group object directly.
 
         Parameters
         ----------
-        value : Symmetry or None
-            The symmetry object to set.
+        value : SpaceGroup or None
+            The space group object to set.
         """
-        self._symmetry = value
+        self._spacegroup = value
 
     # =========================================================================
     # Crystallographic matrix properties (delegated to Cell)
@@ -526,7 +527,7 @@ class Model(DebugMixin, nn.Module):
                 "Load data first with load_pdb() or load_cif()."
             )
 
-        from torchref.restraints.restraints_new import RestraintsNew
+        from torchref.restraints.restraints import RestraintsNew
 
         if self.verbose > 0:
             print("Building restraints...")
@@ -935,15 +936,6 @@ class Model(DebugMixin, nn.Module):
         if self.verbose > 0:
             print(f"Model moved to device: {self.device}")
         return result
-
-    def cuda(self, device: Optional[Union[int, torch.device]] = None):
-        """Move Model to CUDA device."""
-        cuda_device = f"cuda:{device}" if device is not None else "cuda"
-        return self.to(device=cuda_device)
-
-    def cpu(self):
-        """Move Model to CPU."""
-        return self.to(device="cpu")
 
     def copy(self):
         """

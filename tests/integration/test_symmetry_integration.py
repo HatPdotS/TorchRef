@@ -148,27 +148,21 @@ class TestSpacegroupVariants:
     """Tests for different spacegroup conventions."""
 
     @pytest.mark.integration
-    def test_common_spacegroups(self):
+    @pytest.mark.parametrize("sg_name", [
+        "P 1",           # Triclinic
+        "P 21",          # Monoclinic
+        "P 21 21 21",    # Orthorhombic
+        "P 43 21 2",     # Tetragonal
+        "P 3 2 1",       # Trigonal
+        "P 6 2 2",       # Hexagonal
+        "P 2 3",         # Cubic
+    ])
+    def test_common_spacegroups(self, sg_name):
         """Test loading common spacegroups."""
         from torchref.symmetry import SpaceGroup
 
-        common_spacegroups = [
-            "P 1",           # Triclinic
-            "P 21",          # Monoclinic
-            "P 21 21 21",    # Orthorhombic
-            "P 43 21 2",     # Tetragonal
-            "P 3 2 1",       # Trigonal
-            "P 6 2 2",       # Hexagonal
-            "P 2 3",         # Cubic
-        ]
-
-        for sg_name in common_spacegroups:
-            try:
-                sg = SpaceGroup(sg_name)
-                assert sg.matrices is not None
-            except Exception as e:
-                # Some spacegroups might not be supported - that's ok
-                pass
+        sg = SpaceGroup(sg_name)
+        assert sg.matrices is not None
 
     @pytest.mark.integration
     def test_spacegroup_name_variations(self):

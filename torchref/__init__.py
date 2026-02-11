@@ -126,8 +126,6 @@ __all__ = [
     # Refinement
     "Refinement",
     "LBFGSRefinement",
-    # Restraints
-    "Restraints",
     # Scaling
     "Scaler",
     "SolventModel",

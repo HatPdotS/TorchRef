@@ -224,16 +224,13 @@ class TestSpaceGroupMapping:
     """Tests for space group name mapping."""
 
     @pytest.mark.unit
-    def test_common_spacegroups(self):
+    @pytest.mark.parametrize("sg_name", ["P1", "P21", "P212121", "C2", "P21212"])
+    def test_common_spacegroups(self, sg_name):
         """Test common crystallographic space groups."""
         from torchref.symmetry import SpaceGroup
 
-        # Common protein space groups
-        common_sgs = ["P1", "P21", "P212121", "C2", "P21212"]
-
-        for sg_name in common_sgs:
-            sg = SpaceGroup(sg_name)
-            assert sg.matrices is not None
+        sg = SpaceGroup(sg_name)
+        assert sg.matrices is not None
 
     @pytest.mark.unit
     def test_case_insensitivity(self):

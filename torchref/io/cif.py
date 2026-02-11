@@ -208,7 +208,7 @@ def write_map(data, cell, filepath: str, spacegroup: str = "P1") -> int:
 
     map_ccp = gemmi.Ccp4Map()
     map_ccp.grid = gemmi.FloatGrid(
-        np_map, gemmi.UnitCell(*cell), gemmi.SpaceGroup(spacegroup)
+        np_map, gemmi.UnitCell(*cell), gemmi.find_spacegroup_by_name(spacegroup)
     )
     map_ccp.setup(0.0)
     map_ccp.update_ccp4_header()

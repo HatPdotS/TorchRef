@@ -17,22 +17,19 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from torchref.base.math_torch import (
-    extract_structure_factor_from_grid,
-    find_relevant_voxels,
-    get_real_grid,
-    ifft,
-    vectorized_add_to_map_aniso,
-)
+from torchref.base.electron_density import find_relevant_voxels, vectorized_add_to_map_aniso
+from torchref.base.fourier import get_real_grid, ifft
+from torchref.base.reciprocal import extract_structure_factor_from_grid
 from torchref.config import dtypes
 
 from torchref.base import vectorized_add_to_map
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.symmetry.spacegroup import SpaceGroupLike
+from torchref.utils.device_mixin import DeviceMovementMixin
 
 
-class SfFFT(nn.Module):
+class SfFFT(DeviceMovementMixin, nn.Module):
     """
     Structure Factor calculator using FFT (Fast Fourier Transform).
 
@@ -708,15 +705,6 @@ class SfFFT(nn.Module):
 
         return super().to(device=device, dtype=dtype)
 
-    def cuda(self, device=None):
-        """Move SfFFT module to CUDA device."""
-        cuda_device = f"cuda:{device}" if device is not None else "cuda"
-        return self.to(device=cuda_device)
-
-    def cpu(self):
-        """Move SfFFT module to CPU."""
-        return self.to(device="cpu")
-
     def copy(self) -> "SfFFT":
         """Create a deep copy of this SfFFT module.
 
@@ -746,5 +734,14 @@ class SfFFT(nn.Module):
         return new_fft
 
 
-# Backward compatibility alias
-FFT = SfFFT
+# Backward compatibility alias — deprecated, use SfFFT directly
+def FFT(*args, **kwargs):
+    """Deprecated: use SfFFT instead."""
+    import warnings
+    warnings.warn(
+        "FFT is deprecated, use SfFFT instead. "
+        "FFT will be removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return SfFFT(*args, **kwargs)

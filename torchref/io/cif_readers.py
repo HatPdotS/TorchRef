@@ -1183,14 +1183,14 @@ class ReflectionCIFReader:
         except Exception:
             return None
 
-    def get_space_group(self) -> gemmi.SpaceGroup:
+    def get_space_group(self) -> str:
         """
-        Extract space group.
+        Extract space group name.
 
         Returns
         -------
-        gemmi.SpaceGroup
-            Space group object. Returns P1 if not found.
+        str
+            Space group name string. Returns "P 1" if not found.
         """
         sg_name = "P 1"
         if "symmetry" in self.cif_reader:
@@ -1205,14 +1205,16 @@ class ReflectionCIFReader:
                 "P 1",
             )
 
+        # Validate the name by trying to parse it
         try:
-            return gemmi.SpaceGroup(sg_name)
+            gemmi.SpaceGroup(sg_name)
+            return sg_name
         except Exception:
-            # Try with spaces removed
             try:
-                return gemmi.SpaceGroup(sg_name.replace(" ", ""))
+                gemmi.SpaceGroup(sg_name.replace(" ", ""))
+                return sg_name.replace(" ", "")
             except Exception:
-                return gemmi.SpaceGroup("P 1")
+                return "P 1"
 
     def _get_value(self, data, possible_keys: List[str], default: Any = None) -> Any:
         """Get value from DataFrame or dict, trying multiple keys."""
@@ -1569,14 +1571,14 @@ class ModelCIFReader:
         except Exception:
             return None
 
-    def get_space_group(self) -> gemmi.SpaceGroup:
+    def get_space_group(self) -> str:
         """
-        Extract space group.
+        Extract space group name.
 
         Returns
         -------
-        gemmi.SpaceGroup
-            Space group object. Returns P1 if not found.
+        str
+            Space group name string. Returns "P 1" if not found.
         """
         sg_name = "P 1"
         if "symmetry" in self.cif.data:
@@ -1591,13 +1593,16 @@ class ModelCIFReader:
                 "P 1",
             )
 
+        # Validate the name by trying to parse it
         try:
-            return gemmi.SpaceGroup(sg_name)
+            gemmi.SpaceGroup(sg_name)
+            return sg_name
         except Exception:
             try:
-                return gemmi.SpaceGroup(sg_name.replace(" ", ""))
+                gemmi.SpaceGroup(sg_name.replace(" ", ""))
+                return sg_name.replace(" ", "")
             except Exception:
-                return gemmi.SpaceGroup("P 1")
+                return "P 1"
 
     def _get_first_value(
         self, data, possible_keys: List[str], default: Any = None

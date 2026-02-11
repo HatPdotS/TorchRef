@@ -17,13 +17,14 @@ import gemmi
 import torch
 
 from torchref.symmetry import Cell
+from torchref.utils.device_mixin import DeviceMovementMixin
 
 if TYPE_CHECKING:
     pass
 
 
 @dataclass
-class CrystalDataset:
+class CrystalDataset(DeviceMovementMixin):
     """
     Base dataclass for crystallographic datasets.
 
@@ -72,7 +73,7 @@ class CrystalDataset:
 
     # === Unit cell and symmetry ===
     cell: Optional[Cell] = None  # Cell object with [a, b, c, alpha, beta, gamma]
-    spacegroup: Optional[gemmi.SpaceGroup] = None  # Space group (gemmi object)
+    spacegroup: Optional[str] = None  # Space group name string
 
     # === Metadata ===
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
@@ -155,33 +156,6 @@ class CrystalDataset:
             print(f"{self.__class__.__name__} moved to device: {self.device}")
         return self
 
-    def cuda(self, device=None) -> "CrystalDataset":
-        """
-        Move all tensors to CUDA device.
-
-        Parameters
-        ----------
-        device : str or torch.device, optional
-            Target CUDA device. If None, uses default CUDA device.
-
-        Returns
-        -------
-        CrystalDataset
-            Self, for method chaining.
-        """
-        return self.to(device or "cuda")
-
-    def cpu(self) -> "CrystalDataset":
-        """
-        Move all tensors to CPU.
-
-        Returns
-        -------
-        CrystalDataset
-            Self, for method chaining.
-        """
-        return self.to("cpu")
-
     # ========== SERIALIZATION ==========
 
     def _get_state(self) -> Dict[str, Any]:
@@ -243,10 +217,8 @@ class CrystalDataset:
         if "device" in state:
             state["device"] = torch.device(state["device"])
 
-        # Convert spacegroup string back to gemmi.SpaceGroup
-        if "spacegroup" in state and state["spacegroup"] is not None:
-            if isinstance(state["spacegroup"], str):
-                state["spacegroup"] = gemmi.SpaceGroup(state["spacegroup"])
+        # Spacegroup is stored as string — keep as-is
+        # (no conversion needed since CrystalDataset.spacegroup is now str)
 
         # Convert cell tensor back to Cell object
         if "cell" in state and state["cell"] is not None:
@@ -325,7 +297,7 @@ class CrystalDataset:
     def __repr__(self) -> str:
         """String representation of dataset."""
         n_refl = len(self)
-        sg = self.spacegroup.short_name() if self.spacegroup else "unknown"
+        sg = self.spacegroup if self.spacegroup else "unknown"
         return f"{self.__class__.__name__}(n_reflections={n_refl}, spacegroup='{sg}', device={self.device})"
 
     @property
@@ -333,18 +305,18 @@ class CrystalDataset:
         """Get space group name as string (short form, e.g., 'P212121')."""
         if self.spacegroup is None:
             return None
-        return self.spacegroup.short_name()
+        return gemmi.SpaceGroup(self.spacegroup).short_name()
 
     @property
     def spacegroup_hm(self) -> Optional[str]:
         """Get space group Hermann-Mauguin name with spaces (e.g., 'P 21 21 21')."""
         if self.spacegroup is None:
             return None
-        return self.spacegroup.hm
+        return gemmi.SpaceGroup(self.spacegroup).hm
 
     @property
     def spacegroup_number(self) -> Optional[int]:
         """Get space group number (1-230)."""
         if self.spacegroup is None:
             return None
-        return self.spacegroup.number
+        return gemmi.SpaceGroup(self.spacegroup).number

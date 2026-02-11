@@ -13,7 +13,6 @@ from torchref.base import (
     get_scattering_vectors,
     ifft,
 )
-from torchref.base.math_torch import hash_tensors
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorDict
 
@@ -468,16 +467,14 @@ class SolventModel(DebugMixin, nn.Module):
             Complex solvent structure factors, shape (N,).
         """
 
-        if not update_fsol:
-            hkl_hash = hash_tensors([hkl])
-            if hkl_hash in self._cache:
-                f_sol = self._cache[hkl_hash]
-            else:
-                f_sol = self.get_rec_solvent(hkl)
-                self._cache[hkl_hash] = f_sol
+        # Lightweight fingerprint: (data_ptr, version, numel) — avoids SHA-1
+        hkl_key = (hkl.data_ptr(), hkl._version, hkl.numel())
+
+        if not update_fsol and hkl_key in self._cache:
+            f_sol = self._cache[hkl_key]
         else:
             f_sol = self.get_rec_solvent(hkl)
-            self._cache[hkl_hash] = f_sol
+            self._cache[hkl_key] = f_sol
 
         # Calculate scattering vector magnitude: s = sin(θ)/λ
         # Note: get_scattering_vectors returns h* = (h·a*, k·b*, l·c*)

@@ -92,14 +92,14 @@ class TestMultipleCIFFiles:
 
     @pytest.mark.integration
     @pytest.mark.slow
-    def test_load_all_test_structures(self, all_test_structures):
+    def test_load_all_test_structures(self, all_cif_files):
         """Test loading all available test structures."""
         from torchref.model.model import Model
-        
+
         loaded = 0
         errors = []
-        
-        for cif_file in all_test_structures:
+
+        for cif_file in all_cif_files:
             try:
                 model = Model()
                 model.load_cif(str(cif_file))
@@ -108,12 +108,12 @@ class TestMultipleCIFFiles:
                 loaded += 1
             except Exception as e:
                 errors.append((cif_file.name, str(e)))
-        
+
         # Report
-        print(f"\nLoaded {loaded}/{len(all_test_structures)} structures")
+        print(f"\nLoaded {loaded}/{len(all_cif_files)} structures")
         if errors:
             print(f"Errors: {errors}")
-        
+
         # Should load at least most structures
         assert loaded > 0
 

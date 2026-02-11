@@ -7,6 +7,8 @@ import pandas as pd
 import torch
 import json
 
+from torchref.utils.device_mixin import DeviceMovementMixin
+
 
 class ModuleReference:
     """
@@ -554,7 +556,7 @@ def save_map(array, cell, filename):
         cell = cell.tolist()
     map_ccp = gemmi.Ccp4Map()
     map_ccp.grid = gemmi.FloatGrid(
-        np_map, gemmi.UnitCell(*cell), gemmi.SpaceGroup("P1")
+        np_map, gemmi.UnitCell(*cell), gemmi.find_spacegroup_by_name("P1")
     )
     map_ccp.setup(0.0)
     map_ccp.update_ccp4_header()
@@ -659,7 +661,7 @@ class TensorDict(nn.Module):
         )
 
 
-class TensorMasks(dict):
+class TensorMasks(DeviceMovementMixin, dict):
     """
     A dictionary for managing boolean mask tensors with device support.
 
@@ -730,14 +732,6 @@ class TensorMasks(dict):
                 super().__setitem__(k, self[k].to(self.device))
         self._updated = True
         return self
-
-    def cuda(self, device=None) -> "TensorMasks":
-        """Move all masks to CUDA device."""
-        return self.to(device or "cuda")
-
-    def cpu(self) -> "TensorMasks":
-        """Move all masks to CPU."""
-        return self.to("cpu")
 
     def __call__(self) -> torch.Tensor:
         """

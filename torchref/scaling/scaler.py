@@ -17,15 +17,10 @@ import torch
 import torch.nn as nn
 
 from torchref.io import ReflectionData
-from torchref.base.math_torch import (
-    bin_wise_rfactors,
-    get_rfactors,
-    get_scattering_vectors,
-    nll_xray,
-    nll_xray_lognormal,
-)
+from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll_xray_lognormal
+from torchref.base.reciprocal import get_scattering_vectors
 from torchref.scaling.scaler_base import ScalerBase
-from torchref.scaling.solvent_new import SolventModel
+from torchref.scaling.solvent import SolventModel
 from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:

@@ -36,6 +36,7 @@ import torch
 import torch.nn as nn
 
 from torchref.utils.debug_utils import DebugMixin
+from torchref.utils.device_mixin import DeviceMovementMixin
 
 # Type alias for space group input - includes SpaceGroup class itself
 SpaceGroupLike = Union[str, int, gemmi.SpaceGroup, "SpaceGroup", None]
@@ -76,8 +77,8 @@ def _normalize_spacegroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
         return spacegroup
 
     # Handle SpaceGroup class instances (forward reference resolved at runtime)
-    if hasattr(spacegroup, "_gemmi") and hasattr(spacegroup, "matrices"):
-        return spacegroup._gemmi
+    if hasattr(spacegroup, "_sg_hm") and hasattr(spacegroup, "matrices"):
+        return gemmi.find_spacegroup_by_name(spacegroup._sg_hm)
 
     if isinstance(spacegroup, int):
         # Space group number
@@ -294,7 +295,7 @@ def is_centrosymmetric(spacegroup: SpaceGroupLike) -> bool:
         True if the space group has an inversion center.
     """
     sg = _normalize_spacegroup(spacegroup)
-    return sg.centrosymmetric()
+    return sg.is_centrosymmetric()
 
 
 def n_operations(spacegroup: SpaceGroupLike) -> int:
@@ -618,7 +619,7 @@ def suggest_grid_size(
 # =============================================================================
 
 
-class SpaceGroup(DebugMixin, nn.Module):
+class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     """
     Unified space group handler for crystallographic symmetry operations.
 
@@ -686,16 +687,24 @@ class SpaceGroup(DebugMixin, nn.Module):
         self._device = device
         self._dtype = dtype
 
-        # Normalize to gemmi.SpaceGroup
-        self._gemmi = _normalize_spacegroup(space_group)
+        # Normalize to gemmi.SpaceGroup, extract metadata, then release
+        gemmi_sg = _normalize_spacegroup(space_group)
+        self._sg_number: int = gemmi_sg.number
+        self._sg_hm: str = gemmi_sg.hm
+        self._sg_short_name: str = gemmi_sg.short_name()
+        self._sg_xhm: str = gemmi_sg.xhm()
+        self._sg_point_group: str = gemmi_sg.point_group_hm()
+        self._sg_crystal_system: str = gemmi_sg.crystal_system_str()
+        self._sg_centrosymmetric: bool = gemmi_sg.is_centrosymmetric()
 
         # Get symmetry operations as tensors
         matrices, translations = get_operations_as_tensors(
-            self._gemmi, dtype=dtype, device=device
+            gemmi_sg, dtype=dtype, device=device
         )
 
         self.register_buffer("matrices", matrices)
         self.register_buffer("translations", translations)
+        # gemmi_sg goes out of scope here — no persistent gemmi reference
 
     # =========================================================================
     # Core properties
@@ -707,44 +716,53 @@ class SpaceGroup(DebugMixin, nn.Module):
         return self.matrices.shape[0]
 
     @property
+    def _gemmi(self) -> gemmi.SpaceGroup:
+        """Create gemmi.SpaceGroup on demand (not stored persistently).
+
+        This avoids holding a persistent reference to the C++ singleton,
+        which prevents nanobind leak warnings during interpreter shutdown.
+        """
+        return gemmi.find_spacegroup_by_name(self._sg_hm)
+
+    @property
     def name(self) -> str:
         """Short space group name (e.g., 'P21')."""
-        return self._gemmi.short_name()
+        return self._sg_short_name
 
     @property
     def hm(self) -> str:
         """Hermann-Mauguin notation with spaces (e.g., 'P 21')."""
-        return self._gemmi.hm
+        return self._sg_hm
 
     @property
     def xhm(self) -> str:
         """Extended Hermann-Mauguin notation."""
-        return self._gemmi.xhm()
+        return self._sg_xhm
 
     @property
     def number(self) -> int:
         """Space group number (1-230)."""
-        return self._gemmi.number
+        return self._sg_number
 
     @property
     def gemmi(self) -> gemmi.SpaceGroup:
-        """Access the underlying gemmi.SpaceGroup object."""
+        """Access a gemmi.SpaceGroup object (created on demand, not stored)."""
         return self._gemmi
 
     @property
     def point_group(self) -> str:
         """Point group symbol (e.g., '222', 'mmm')."""
-        return self._gemmi.point_group_hm()
+        return self._sg_point_group
 
     @property
     def crystal_system(self) -> str:
         """Crystal system name."""
-        return self._gemmi.crystal_system_str()
+        return self._sg_crystal_system
 
     @property
     def centrosymmetric(self) -> bool:
         """True if space group has inversion center."""
-        return self._gemmi.centrosymmetric()
+        return self._sg_centrosymmetric
 
     @property
     def dtype(self) -> torch.dtype:
@@ -785,11 +803,11 @@ class SpaceGroup(DebugMixin, nn.Module):
     # =========================================================================
 
     def short_name(self) -> str:
-        """Get short space group name (delegates to gemmi)."""
-        return self._gemmi.short_name()
+        """Get short space group name."""
+        return self._sg_short_name
 
     def operations(self):
-        """Get symmetry operations (delegates to gemmi)."""
+        """Get symmetry operations (creates temporary gemmi object on demand)."""
         return self._gemmi.operations()
 
     # =========================================================================
@@ -899,7 +917,7 @@ class SpaceGroup(DebugMixin, nn.Module):
             req = sg.get_grid_requirements()
             print(req)  # {'nx_mod': 1, 'ny_mod': 2, 'nz_mod': 1}
         """
-        return get_grid_requirements(self._gemmi)
+        return get_grid_requirements(self)
 
     def check_grid_compatibility(self, grid_shape: tuple) -> dict:
         """
@@ -930,7 +948,7 @@ class SpaceGroup(DebugMixin, nn.Module):
             print(result['compatible'])  # False
             print(result['issues'])  # ['ny=163 not divisible by 2']
         """
-        return check_grid_compatibility(grid_shape, self._gemmi)
+        return check_grid_compatibility(grid_shape, self)
 
     def suggest_grid_size(
         self, min_grid_shape: tuple, make_fft_friendly: bool = True
@@ -958,7 +976,7 @@ class SpaceGroup(DebugMixin, nn.Module):
             suggested = sg.suggest_grid_size((131, 163, 148))
             print(suggested)  # (135, 164, 150) or similar
         """
-        return suggest_grid_size(min_grid_shape, self._gemmi, make_fft_friendly)
+        return suggest_grid_size(min_grid_shape, self, make_fft_friendly)
 
     # =========================================================================
     # Dunder methods
@@ -971,14 +989,14 @@ class SpaceGroup(DebugMixin, nn.Module):
 
     def __hash__(self) -> int:
         """Hash based on space group number."""
-        return hash(self._gemmi.number)
+        return hash(self._sg_number)
 
     def __eq__(self, other) -> bool:
         """Equality based on space group number."""
         if isinstance(other, SpaceGroup):
-            return self._gemmi.number == other._gemmi.number
+            return self._sg_number == other._sg_number
         if isinstance(other, gemmi.SpaceGroup):
-            return self._gemmi.number == other.number
+            return self._sg_number == other.number
         return False
 
     # =========================================================================
@@ -994,15 +1012,6 @@ class SpaceGroup(DebugMixin, nn.Module):
             self._dtype = dtype
         return result
 
-    def cuda(self, device=None):
-        """Move SpaceGroup to CUDA device."""
-        cuda_device = f"cuda:{device}" if device is not None else "cuda"
-        return self.to(device=cuda_device)
-
-    def cpu(self):
-        """Move SpaceGroup to CPU."""
-        return self.to(device="cpu")
-
     def copy(self) -> "SpaceGroup":
         """Create a deep copy of this SpaceGroup.
 
@@ -1011,6 +1020,6 @@ class SpaceGroup(DebugMixin, nn.Module):
         SpaceGroup
             A new SpaceGroup instance with cloned buffers.
         """
-        # Create new SpaceGroup from our gemmi object to preserve symmetry info
-        new_sg = SpaceGroup(self._gemmi, dtype=self._dtype, device=self._device)
+        # Create new SpaceGroup from HM string to preserve symmetry info
+        new_sg = SpaceGroup(self._sg_hm, dtype=self._dtype, device=self._device)
         return new_sg

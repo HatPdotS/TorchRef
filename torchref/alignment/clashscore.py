@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, List, Optional
 import torch
 import torch.nn as nn
 
-from torchref.base.math_torch import (
+from torchref.base.coordinates import (
     cartesian_to_fractional_torch,
     fractional_to_cartesian_torch,
 )

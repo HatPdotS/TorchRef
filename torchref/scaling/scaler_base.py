@@ -17,20 +17,15 @@ from typing import Optional, Tuple, TYPE_CHECKING
 import torch
 import torch.nn as nn
 
-from torchref.base.math_torch import (
-    U_to_matrix,
-    bin_wise_rfactors,
-    get_rfactors,
-    get_scattering_vectors,
-    nll_xray,
-    nll_xray_lognormal,
-)
+from torchref.base.math_torch import U_to_matrix
+from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll_xray_lognormal
+from torchref.base.reciprocal import get_scattering_vectors
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
-    from torchref.scaling.solvent_new import SolventModel
+    from torchref.scaling.solvent import SolventModel
 
 
 class ScalerBase(DebugMixin, nn.Module):

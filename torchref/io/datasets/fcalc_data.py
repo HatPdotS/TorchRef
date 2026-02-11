@@ -253,8 +253,8 @@ class FcalcDataset(CrystalDataset):
             }
         )
 
-        # Write using existing mtz.write() - pass gemmi spacegroup via ._gemmi
-        mtz.write(df, self.cell.data, self.spacegroup._gemmi, filepath)
+        # Write using existing mtz.write() - pass SpaceGroup wrapper
+        mtz.write(df, self.cell.data, self.spacegroup, filepath)
 
     # ========== SERIALIZATION OVERRIDES ==========
 

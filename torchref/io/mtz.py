@@ -172,15 +172,15 @@ class MTZReader:
         )
         hkl = self.mtz_data.reset_index()[["H", "K", "L"]].to_numpy().astype(np.int32)
         self.data["HKL"] = hkl
-        # Store as gemmi.SpaceGroup object
-        self.spacegroup = self.mtz_data.spacegroup
+        # Store as string (the caller wraps in SpaceGroup as needed)
+        self.spacegroup = self.mtz_data.spacegroup.hm
 
         self._extract_amplitudes_and_intensities()
         self._extract_rfree_flags()
 
         return self
 
-    def __call__(self) -> Tuple[dict, np.ndarray, gemmi.SpaceGroup]:
+    def __call__(self) -> Tuple[dict, np.ndarray, str]:
         """
         Return extracted data in a standardized format.
 
@@ -190,8 +190,8 @@ class MTZReader:
             Dictionary with extracted data arrays.
         cell : np.ndarray
             Unit cell parameters [a, b, c, alpha, beta, gamma].
-        spacegroup : gemmi.SpaceGroup
-            Space group object.
+        spacegroup : str
+            Space group name string.
         """
         if self.data is None:
             raise ValueError("No data loaded. Call read() first.")
@@ -388,8 +388,11 @@ def write(
     
     cell = gemmi.UnitCell(*cell)
 
-    # Handle spacegroup
-    if isinstance(spacegroup, gemmi.SpaceGroup):
+    # Handle spacegroup — normalize to gemmi.SpaceGroup for reciprocalspaceship
+    from torchref.symmetry import SpaceGroup as TorchRefSpaceGroup
+    if isinstance(spacegroup, TorchRefSpaceGroup):
+        spacegroup = spacegroup._gemmi
+    elif isinstance(spacegroup, gemmi.SpaceGroup):
         pass
     elif isinstance(spacegroup, str):
         if spacegroup.startswith("<gemmi.SpaceGroup"):
@@ -404,7 +407,7 @@ def write(
             spacegroup = gemmi.SpaceGroup(spacegroup)
     else:
         raise ValueError(
-            f"Spacegroup must be str or gemmi.SpaceGroup, got {type(spacegroup)}"
+            f"Spacegroup must be str, gemmi.SpaceGroup, or torchref SpaceGroup, got {type(spacegroup)}"
         )
     mtz_rs = rs.DataSet(df, cell=cell, spacegroup=spacegroup)
 

@@ -2066,7 +2066,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         df = pd.DataFrame(data_dict)
 
         # Write MTZ file
-        write(df, self.cell.data, self.spacegroup.hm, fname)
+        write(df, self.cell.data, self.spacegroup, fname)
 
         if self.verbose > 0:
             print(f"✓ Wrote MTZ file: {fname}")
@@ -2130,7 +2130,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Real-valued Patterson map of shape (Nx, Ny, Nz).
             Origin is at grid position [0, 0, 0].
         """
-        from torchref.base.math_torch import find_grid_size, place_on_grid
+        from torchref.base.fourier import find_grid_size
+        from torchref.base.reciprocal import place_on_grid
 
         # Expand to P1 symmetry (don't fill missing reflections - use only observed data)
         data = self.expand_to_p1()

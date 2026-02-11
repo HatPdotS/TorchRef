@@ -36,24 +36,24 @@ class TestScalerCreationFunctional:
         assert scaler.cell is not None
 
     @pytest.mark.integration
-    def test_scaler_with_different_nbins(self, sample_structure_pair):
+    @pytest.mark.parametrize("nbins", [5, 10, 15, 20])
+    def test_scaler_with_different_nbins(self, sample_structure_pair, nbins):
         """Test scaler with different bin counts."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
-        
+
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
-        
+
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
-        
-        for nbins in [5, 10, 15, 20]:
-            scaler = Scaler(model=model, data=data, nbins=nbins, verbose=0)
-            assert scaler.nbins == nbins
-            # Verify bin values are in valid range
-            assert scaler.bins.min() >= 0
-            assert scaler.bins.max() < nbins
+
+        scaler = Scaler(model=model, data=data, nbins=nbins, verbose=0)
+        assert scaler.nbins == nbins
+        # Verify bin values are in valid range
+        assert scaler.bins.min() >= 0
+        assert scaler.bins.max() < nbins
 
 
 class TestScatteringVectorsFunctional:
