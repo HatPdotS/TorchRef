@@ -102,6 +102,7 @@ from torchref.model import Model, ModelFT
 
 # Refinement
 from torchref.refinement import LBFGSRefinement, Refinement
+from torchref.symmetry import Cell, SpaceGroup
 
 # Restraints
 # from torchref.restraints import Restraints # Initialized lazily due to monomer library download requirement
@@ -129,4 +130,7 @@ __all__ = [
     # Scaling
     "Scaler",
     "SolventModel",
+    # Symmetry
+    "Cell",
+    "SpaceGroup",
 ]

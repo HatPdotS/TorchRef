@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from torchref.config import dtypes
 from torch.nn import Parameter
 
+from torchref.symmetry import SpaceGroup
 
 import numpy as np
 import pandas as pd
@@ -193,7 +194,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
 
         if spacegroup is not None:
-            self.spacegroup = spacegroup
+            self.spacegroup = Spaspacegroup
 
         self._calculate_resolution()
 
