@@ -54,8 +54,8 @@ from torchref.restraints.builders import (
 from torchref.restraints.restraints import RestraintsNew as Restraints
 
 MONOMER_LIB_URL = "https://github.com/MonomerLibrary/monomers.git"
-# Pin to specific commit to avoid breaking changes (e.g., SS link deletion in f1ef252bb)
-MONOMER_LIB_COMMIT = "f113ca1aa"
+# Monomer library commit (latest master)
+MONOMER_LIB_COMMIT = "713a04911"
 
 
 def _ensure_monomer_library() -> Path:

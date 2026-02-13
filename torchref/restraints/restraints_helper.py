@@ -196,115 +196,77 @@ def read_link_definitions():
         - link_list : DataFrame
             DataFrame containing the list of all link definitions.
     """
-
+    from torchref.io.cif_readers import CIFReader
     from torchref.restraints import MONOMER_LIB_PATH
     import os
+    import re
 
     link_file_path = os.path.join(MONOMER_LIB_PATH, "list", "mon_lib_list.cif")
     with open(link_file_path) as f:
-        lines = f.readlines()
+        content = f.read()
 
-    link_dict = {}
+    # Split content into blocks at every "data_" line.
+    # re.split keeps the delimiter when using a capture group.
+    parts = re.split(r"(?=^data_)", content, flags=re.MULTILINE)
+
+    blocks = {}  # block_name -> block_text
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith("data_"):
+            first_newline = part.find("\n")
+            if first_newline == -1:
+                block_name = part[5:].strip()
+                block_body = ""
+            else:
+                block_name = part[5:first_newline].strip()
+                block_body = part
+            blocks[block_name] = block_body
+
+    # --- Parse the link_list block ---
     link_list = None
+    if "link_list" in blocks:
+        reader = CIFReader.from_string(blocks["link_list"])
+        if "chem_link" in reader.data:
+            df = reader.data["chem_link"]
+            # Strip CIF prefixes from column names
+            df.columns = [c.split(".")[-1] for c in df.columns]
+            link_list = df
+            print(f"Found {len(link_list)} link definitions")
 
-    # First, read the link list to get all link IDs
-    lines_iter = iter(lines)
-    for line in lines_iter:
-        if line.strip() == "data_link_list":
-            # Read the link list
-            for line in lines_iter:
-                if line.strip() == "loop_":
-                    comp_list = []
-                    values = []
-                    for line in lines_iter:
-                        if line.startswith("#") or (
-                            line.strip() == "" and len(values) > 0
-                        ):
-                            break
-                        if line.startswith("_chem_link."):
-                            comp_list.append(line.split(".")[1].strip())
-                        else:
-                            split_items = split_respecting_quotes(line.strip())
-                            if split_items:
-                                values.append(split_items)
+    # --- Parse each individual link block ---
+    link_dict = {}
 
-                    if len(values) > 0:
-                        link_list = pd.DataFrame(values, columns=comp_list)
-                        print(f"Found {len(link_list)} link definitions")
-                        break
-                    break
-            break
+    # Map CIFReader category names to our section types
+    category_map = {
+        "chem_link_bond": "bonds",
+        "chem_link_angle": "angles",
+        "chem_link_tor": "torsions",
+        "chem_link_plane": "planes",
+        "chem_link_chir": "chirals",
+    }
 
-    # Now read each individual link definition
-    lines_iter = iter(lines)
-    for line in lines_iter:
-        if line.startswith("data_link_") and line.strip() != "data_link_list":
-            link_id = line.strip().replace("data_link_", "")
+    for block_name, block_text in blocks.items():
+        if not block_name.startswith("link_") or block_name == "link_list":
+            continue
 
-            link_data = {}
+        link_id = block_name[5:]  # strip "link_" prefix
 
-            # Read bonds, angles, torsions for this link
-            while True:
-                line = next(lines_iter, None)
-                if line is None:
-                    break
+        # Parse this block independently
+        reader = CIFReader.from_string(block_text)
 
-                # Stop if we hit the next link
-                if line.startswith("data_link_"):
-                    break
+        link_data = {}
+        for cif_category, section_type in category_map.items():
+            if cif_category in reader.data:
+                df = reader.data[cif_category]
+                # Strip CIF prefixes (e.g. "_chem_link_bond.atom_id_1" -> "atom_id_1")
+                df.columns = [c.split(".")[-1] for c in df.columns]
+                df = _standardize_link_columns(df, section_type)
+                link_data[section_type] = df
 
-                if line.strip() == "loop_":
-                    # Read the next line to see what type of data this is
-                    first_col_line = next(lines_iter)
-
-                    if "_chem_link_bond." in first_col_line:
-                        section_type = "bonds"
-                        prefix = "_chem_link_bond."
-                    elif "_chem_link_angle." in first_col_line:
-                        section_type = "angles"
-                        prefix = "_chem_link_angle."
-                    elif "_chem_link_tor." in first_col_line:
-                        section_type = "torsions"
-                        prefix = "_chem_link_tor."
-                    elif "_chem_link_plane." in first_col_line:
-                        section_type = "planes"
-                        prefix = "_chem_link_plane."
-                    else:
-                        # Skip unknown sections
-                        continue
-
-                    # Read column names
-                    columns = [first_col_line.split(".")[1].strip()]
-                    for line in lines_iter:
-                        if line.startswith(prefix):
-                            columns.append(line.split(".")[1].strip())
-                        else:
-                            # First data line
-                            break
-
-                    # Read data values
-                    values = []
-                    while line is not None:
-                        if (
-                            line.strip() == ""
-                            or line.startswith("loop_")
-                            or line.startswith("data_")
-                        ):
-                            break
-                        split_items = split_respecting_quotes(line.strip())
-                        if split_items and not line.startswith("_"):
-                            values.append(split_items)
-
-                        line = next(lines_iter, None)
-
-                    if len(values) > 0:
-                        df = pd.DataFrame(values, columns=columns)
-                        # Standardize column names for consistency
-                        df = _standardize_link_columns(df, section_type)
-                        link_data[section_type] = df
-
-            if len(link_data) > 0:
-                link_dict[link_id] = link_data
+        if link_data:
+            link_dict[link_id] = link_data
 
     return link_dict, link_list
 

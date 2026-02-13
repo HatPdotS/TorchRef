@@ -79,6 +79,13 @@ class CIFReader:
         if filepath:
             self.load(filepath)
 
+    @classmethod
+    def from_string(cls, content: str, **kwargs) -> "CIFReader":
+        """Create CIFReader from string content instead of a file."""
+        reader = cls(**kwargs)
+        reader._parse(content)
+        return reader
+
     def load(self, filepath: str):
         """
         Load and parse a CIF file.
