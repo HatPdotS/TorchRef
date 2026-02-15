@@ -194,8 +194,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
 
         if spacegroup is not None:
-            self.spacegroup = Spaspacegroup
-
+            self.spacegroup = SpaceGroup(spacegroup)
         self._calculate_resolution()
 
         if "I" in data_dict:

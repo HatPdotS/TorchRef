@@ -157,6 +157,65 @@ class LBFGSRefinement(Refinement):
 
         return state
 
+    def _optimize_exploratory_lbfgs(
+        self,
+        state: LossState,
+        params=None,
+        nsteps: int = 50,
+        **exploration_kwargs,
+    ) -> LossState:
+        """
+        Run ExploratoryLBFGS optimization on a LossState.
+
+        Same pattern as _optimize_lbfgs() but uses ExploratoryLBFGS which
+        adds automatic landscape exploration via Lanczos eigenanalysis after
+        convergence.
+
+        Parameters
+        ----------
+        state : LossState
+            Configured loss state with targets and weights.
+        params : iterable, optional
+            Parameters to optimize. Defaults to self.parameters().
+        nsteps : int, optional
+            Number of optimizer steps. Default is 50.
+        **exploration_kwargs
+            Forwarded to ExploratoryLBFGS constructor (e.g., m_modes,
+            scan_points, max_exploration_cycles, etc.).
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
+        """
+        from torchref.refinement.optimizers import ExploratoryLBFGS
+
+        if params is None:
+            params = self.parameters()
+
+        # Log initial state
+        state.aggregate(log_values=True)
+
+        optimizer = ExploratoryLBFGS(
+            params,
+            **exploration_kwargs,
+        )
+
+        def closure():
+            optimizer.zero_grad()
+            loss = state.aggregate()
+            loss.backward()
+            return loss
+
+        for _ in range(nsteps):
+            optimizer.step(closure)
+
+        # Log final state
+        state.new_entry()
+        state.aggregate(log_values=True)
+
+        return state
+
     def _optimize_adamw(
         self,
         state: LossState,
