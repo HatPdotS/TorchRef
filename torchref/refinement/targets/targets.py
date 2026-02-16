@@ -558,7 +558,7 @@ class XrayTarget(DataTarget):
         # Get centric flags (full size, unfiltered)
         centric_all = self._data.centric
 
-        # Handle MaskedTensor inputs: extract valid data first
+        # Build selection mask (validity + work/free set)
         if hasattr(F_obs, "get_mask"):
             # MaskedTensor case: F_obs and sigma have validity mask built-in
             validity_mask = F_obs.get_mask()  # True = valid reflection
@@ -568,36 +568,26 @@ class XrayTarget(DataTarget):
                 if hasattr(sigma_F_obs, "get_mask")
                 else sigma_F_obs
             )
-
-            # Combine validity mask with work/free selection
-            # Note: rfree_mask may be int32 (0/1), must convert to bool for proper masking
             rfree_bool = rfree_mask.bool()
             if self.use_work_set:
-                combined_mask = validity_mask & rfree_bool
+                mask = validity_mask & rfree_bool
             else:
-                combined_mask = validity_mask & ~rfree_bool
-
-            F_obs_sel = F_obs_data[combined_mask]
-            F_calc_sel = F_calc[combined_mask]
-            sigma_sel = sigma_data[combined_mask]
-            centric_sel = (
-                centric_all[combined_mask] if centric_all is not None else None
-            )
+                mask = validity_mask & ~rfree_bool
         else:
-            # Traditional indexed tensor case
-            # Note: rfree_mask may be int32 (0/1), must convert to bool for proper masking
+            F_obs_data = F_obs
+            sigma_data = sigma_F_obs
             rfree_bool = rfree_mask.bool()
-            if self.use_work_set:
-                mask = rfree_bool
-            else:
-                mask = ~rfree_bool
+            mask = rfree_bool if self.use_work_set else ~rfree_bool
 
-            F_obs_sel = F_obs[mask]
-            F_calc_sel = F_calc[mask]
-            sigma_sel = sigma_F_obs[mask]
-            centric_sel = centric_all[mask] if centric_all is not None else None
+        # Use torch.where instead of boolean indexing to avoid
+        # nonzero() calls that force CPU-GPU synchronization.
+        # Invalid elements get safe defaults (0 for data, 1 for sigma).
+        F_obs_sel = torch.where(mask, F_obs_data, torch.zeros_like(F_obs_data))
+        F_calc_sel = torch.where(mask, F_calc, torch.zeros_like(F_calc))
+        sigma_sel = torch.where(mask, sigma_data, torch.ones_like(sigma_data))
+        centric_sel = (centric_all & mask) if centric_all is not None else None
 
-        return F_obs_sel, F_calc_sel, sigma_sel, centric_sel
+        return F_obs_sel, F_calc_sel, sigma_sel, centric_sel, mask
 
     def stats(self, fcalc: torch.Tensor = None) -> Dict[str, StatEntry]:
         """
@@ -613,7 +603,7 @@ class XrayTarget(DataTarget):
         dict
             Statistics dict with StatEntry values containing verbosity levels.
         """
-        F_obs, F_calc, sigma, _ = self.get_data(fcalc=fcalc)
+        F_obs, F_calc, sigma, _, mask = self.get_data(fcalc=fcalc)
         F_calc_amp = torch.abs(F_calc)
         diff = F_obs - F_calc_amp
 
@@ -623,7 +613,7 @@ class XrayTarget(DataTarget):
 
         return {
             "loss": stat(loss.item(), VERBOSITY_STANDARD),
-            "n": stat(len(F_obs), VERBOSITY_DEBUG),
+            "n": stat(mask.sum().item(), VERBOSITY_DEBUG),
             "rwork": stat(rwork, VERBOSITY_STANDARD),
             "rfree": stat(rfree, VERBOSITY_STANDARD),
         }
@@ -653,13 +643,13 @@ class GaussianXrayTarget(XrayTarget):
         torch.Tensor
             Mean NLL loss value.
         """
-        F_obs, F_calc, sigma, _ = self.get_data(fcalc=fcalc)
+        F_obs, F_calc, sigma, _, mask = self.get_data(fcalc=fcalc)
 
         F_calc_amp = torch.abs(F_calc)
         diff = F_obs - F_calc_amp
 
         # Avoid division by zero
-        eps = torch.median(sigma).item() * 1e-1
+        eps = torch.median(sigma) * 1e-1
         sigma_safe = torch.clamp(sigma, min=eps)
 
         log_2pi = torch.log(
@@ -667,7 +657,7 @@ class GaussianXrayTarget(XrayTarget):
         )
         nll = 0.5 * (diff**2) / (sigma_safe**2) + torch.log(sigma_safe) + 0.5 * log_2pi
 
-        return nll.mean()
+        return (nll * mask).sum() / mask.sum()
 
 
 class LeastSquaresXrayTarget(XrayTarget):
@@ -703,13 +693,13 @@ class LeastSquaresXrayTarget(XrayTarget):
         torch.Tensor
             Mean weighted least squares loss.
         """
-        F_obs, F_calc, sigma, _ = self.get_data(fcalc=fcalc)
+        F_obs, F_calc, sigma, _, mask = self.get_data(fcalc=fcalc)
 
         F_calc_amp = torch.abs(F_calc)
         diff = F_obs - F_calc_amp
 
         if self.weighting == "sigma":
-            eps = torch.median(sigma).item() * 1e-1
+            eps = torch.median(sigma) * 1e-1
             sigma_safe = torch.clamp(sigma, min=eps)
             weights = 1.0 / (sigma_safe**2)
         elif self.weighting == "unit":
@@ -717,8 +707,8 @@ class LeastSquaresXrayTarget(XrayTarget):
         else:
             raise ValueError(f"Unknown weighting scheme: {self.weighting}")
 
-        loss = 0.5 * torch.sum(weights * (diff**2))
-        return loss / F_obs.numel()
+        loss = 0.5 * weights * (diff**2)
+        return (loss * mask).sum() / mask.sum()
 
 
 class MaximumLikelihoodXrayTarget(XrayTarget):
@@ -741,7 +731,7 @@ class MaximumLikelihoodXrayTarget(XrayTarget):
         torch.Tensor
             Mean ML loss value.
         """
-        F_obs, F_calc, sigma, centric_flags = self.get_data(fcalc=fcalc)
+        F_obs, F_calc, sigma, centric_flags, mask = self.get_data(fcalc=fcalc)
 
         # Default parameters if not available
         alpha = torch.ones_like(F_obs)
@@ -790,7 +780,7 @@ class MaximumLikelihoodXrayTarget(XrayTarget):
         # Replace any NaN/Inf with large finite value to maintain gradient signal
         loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
 
-        return loss.mean()
+        return (loss * mask).sum() / mask.sum()
 
 
 # =============================================================================
@@ -956,18 +946,16 @@ class TorsionTarget(GeometryTarget):
         kappa = torch.clamp(1.0 / (sigmas_rad**2), min=1e-3, max=1e4)
 
         # Compute log(I_0(kappa)) using stable approximation
-        log_i0_kappa = torch.zeros_like(kappa)
+        # Use torch.where to avoid boolean indexing (GPU sync)
+        # For small kappa (<50): log(I_0(kappa)) computed directly
+        # For large kappa (>=50): asymptotic approx kappa - 0.5*log(2*pi*kappa)
         small_kappa_mask = kappa < 50.0
-        large_kappa_mask = ~small_kappa_mask
-
-        if small_kappa_mask.any():
-            log_i0_kappa[small_kappa_mask] = torch.log(i0(kappa[small_kappa_mask]))
-
-        if large_kappa_mask.any():
-            kappa_large = kappa[large_kappa_mask]
-            log_i0_kappa[large_kappa_mask] = kappa_large - 0.5 * torch.log(
-                2.0 * np.pi * kappa_large
-            )
+        kappa_clamped = torch.clamp(kappa, max=49.9)  # prevent i0 overflow
+        log_i0_small = torch.log(i0(kappa_clamped))
+        log_i0_large = kappa - 0.5 * torch.log(
+            2.0 * np.pi * kappa.clamp(min=1e-8)
+        )
+        log_i0_kappa = torch.where(small_kappa_mask, log_i0_small, log_i0_large)
 
         log_2pi = torch.log(
             torch.tensor(2.0 * np.pi, device=sigmas_deg.device, dtype=sigmas_deg.dtype)
@@ -1184,20 +1172,15 @@ class ChiralTarget(GeometryTarget):
 
         # Handle achiral centers (ideal_volume = 0) differently
         # For achiral: restrain |V| to typical value (2.5 Å³)
+        # Use torch.where unconditionally to avoid .any() GPU sync
         achiral_mask = ideal_volumes == 0
-
-        if achiral_mask.any():
-            # For achiral centers, use absolute volume
-            effective_ideal = torch.where(
-                achiral_mask,
-                torch.full_like(ideal_volumes, 2.5),  # Default magnitude
-                ideal_volumes,
-            )
-            effective_volumes = torch.where(achiral_mask, torch.abs(volumes), volumes)
-            deviations = effective_volumes - effective_ideal
-        else:
-            # All chiral - simple case
-            deviations = volumes - ideal_volumes
+        effective_ideal = torch.where(
+            achiral_mask,
+            torch.full_like(ideal_volumes, 2.5),
+            ideal_volumes,
+        )
+        effective_volumes = torch.where(achiral_mask, torch.abs(volumes), volumes)
+        deviations = effective_volumes - effective_ideal
 
         # Gaussian NLL
         log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
@@ -1450,7 +1433,8 @@ class NonBondedTarget(GeometryTarget):
         if self.mode == "prolsq":
             # PROLSQ repulsion: E = c_rep * violation^r_exp
             # This is the standard crystallographic repulsion function
-            energy = self.c_rep * (violations**self.r_exp)
+            # Use buffer tensors directly to avoid .item() GPU sync
+            energy = self._c_rep * (violations**self._r_exp)
             return energy.mean()
 
         elif self.mode == "gaussian":
@@ -1468,11 +1452,11 @@ class NonBondedTarget(GeometryTarget):
 
             # Quadratic region
             quadratic_mask = violations <= threshold
-            quadratic_energy = self.c_rep * (violations**2)
+            quadratic_energy = self._c_rep * (violations**2)
 
             # Linear region (for severe clashes)
             linear_mask = ~quadratic_mask
-            linear_energy = self.c_rep * (2 * threshold * violations - threshold**2)
+            linear_energy = self._c_rep * (2 * threshold * violations - threshold**2)
 
             energy = torch.where(quadratic_mask, quadratic_energy, linear_energy)
             return energy.mean()
@@ -1641,8 +1625,8 @@ class ADPSimilarityTarget(ADPTarget):
             torch.tensor(2.0 * np.pi, device=b_diffs.device, dtype=b_diffs.dtype)
         )
         nll = (
-            0.5 * (b_diffs / self.simu_sigma) ** 2
-            + np.log(self.simu_sigma)
+            0.5 * (b_diffs / self._simu_sigma) ** 2
+            + torch.log(self._simu_sigma)
             + 0.5 * log_2pi
         )
 

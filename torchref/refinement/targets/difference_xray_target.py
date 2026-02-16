@@ -517,16 +517,16 @@ class DifferenceXrayTarget(Target):
             fcalc_light=fcalc_light, fcalc_dark=fcalc_dark, recalc=recalc
         )
 
-        # Apply mask
-        delta_F_obs = delta_F_obs[mask]
-        delta_F_calc = delta_F_calc[mask]
-        sigma_diff = sigma_diff[mask]
+        # Apply mask using torch.where to avoid boolean indexing (no nonzero sync)
+        delta_F_obs = torch.where(mask, delta_F_obs, torch.zeros_like(delta_F_obs))
+        delta_F_calc = torch.where(mask, delta_F_calc, torch.zeros_like(delta_F_calc))
+        sigma_diff = torch.where(mask, sigma_diff, torch.ones_like(sigma_diff))
 
         # Compute Gaussian NLL
         diff = delta_F_obs - delta_F_calc
 
         # Avoid division by zero
-        eps = torch.median(sigma_diff).item() * 1e-1
+        eps = torch.median(sigma_diff) * 1e-1
         sigma_safe = torch.clamp(sigma_diff, min=eps)
 
         log_2pi = torch.log(
@@ -538,7 +538,7 @@ class DifferenceXrayTarget(Target):
             + 0.5 * log_2pi
         )
 
-        return nll.mean()
+        return (nll * mask).sum() / mask.sum()
 
     def stats(
         self,

@@ -104,6 +104,8 @@ class MixedTensor(nn.Module):
             self.refinable_params = nn.Parameter(
                 torch.empty(0), requires_grad=requires_grad
             )
+            self._has_refinable = False
+            self._refinable_indices = None
             return
 
         if dtype is None:
@@ -162,6 +164,26 @@ class MixedTensor(nn.Module):
         # Store shape for reconstruction
         self.register_buffer("_shape", torch.tensor(initial_values.shape))
 
+        # Pre-compute index cache to avoid boolean indexing at runtime
+        self._build_index_cache()
+
+    def _build_index_cache(self):
+        """Pre-compute integer indices from refinable_mask to avoid GPU sync."""
+        if (
+            self.refinable_mask is not None
+            and self.refinable_mask.numel() > 0
+            and self.refinable_params is not None
+            and self.refinable_params.numel() > 0
+        ):
+            self._has_refinable = bool(self.refinable_mask.any().item())
+            if self._has_refinable:
+                self._refinable_indices = self.refinable_mask.nonzero(as_tuple=True)
+            else:
+                self._refinable_indices = None
+        else:
+            self._has_refinable = False
+            self._refinable_indices = None
+
     def forward(self) -> torch.Tensor:
         """
         Reconstruct and return the full tensor.
@@ -178,11 +200,11 @@ class MixedTensor(nn.Module):
         # Start with fixed values
         result = self.fixed_values.clone()
 
-        # Insert refinable values at their positions
-        # For multi-dimensional tensors, mask broadcasts automatically
-        # Only assign if there are refinable parameters
-        if self.refinable_mask.any():
-            result[self.refinable_mask] = self.refinable_params
+        # Insert refinable values using pre-computed integer indices
+        # (avoids boolean indexing which triggers nonzero + GPU sync)
+        # The numel() guard handles stale cache after load_state_dict()
+        if self._has_refinable and self.refinable_params.numel() > 0:
+            result[self._refinable_indices] = self.refinable_params
 
         return result
 
@@ -568,7 +590,10 @@ class MixedTensor(nn.Module):
                     new_param, requires_grad=self.refinable_params.requires_grad
                 )
 
-        return super().to(device=device, dtype=dtype)
+        result = super().to(device=device, dtype=dtype)
+        # Rebuild index cache after device move
+        self._build_index_cache()
+        return result
 
     def parameters(self):
         parameter = super().parameters()
@@ -648,6 +673,9 @@ class MixedTensor(nn.Module):
         self.refinable_params = nn.Parameter(
             new_refinable, requires_grad=self.refinable_params.requires_grad
         )
+
+        # Rebuild index cache after mask change
+        self._build_index_cache()
 
     def fix(
         self,
@@ -731,6 +759,9 @@ class MixedTensor(nn.Module):
                 torch.tensor([], dtype=self.dtype, device=self.device),
                 requires_grad=self.refinable_params.requires_grad,
             )
+
+        # Rebuild index cache after mask change
+        self._build_index_cache()
 
     def refine_all(self):
         """Make all elements refinable."""
@@ -1322,6 +1353,8 @@ class OccupancyTensor(MixedTensor):
             self.refinable_params = nn.Parameter(
                 torch.empty(0), requires_grad=requires_grad
             )
+            self._has_refinable = False
+            self._refinable_indices = None
             return
 
         # Full initialization
@@ -1389,6 +1422,9 @@ class OccupancyTensor(MixedTensor):
 
         # Store collapsed shape
         self.register_buffer("_shape", torch.tensor([self._collapsed_shape]))
+
+        # Pre-compute index cache to avoid boolean indexing at runtime
+        self._build_index_cache()
 
     def _setup_sharing_groups_and_expansion(
         self,
@@ -1583,8 +1619,10 @@ class OccupancyTensor(MixedTensor):
             Full occupancy tensor with values in [0, 1] and shape (n_atoms,).
         """
         # Get collapsed logit values (combining fixed and refinable)
+        # Uses pre-computed integer indices to avoid boolean indexing GPU sync
         result = self.fixed_values.clone()
-        result[self.refinable_mask] = self.refinable_params
+        if self._has_refinable and self.refinable_params.numel() > 0:
+            result[self._refinable_indices] = self.refinable_params
 
         # Apply sigmoid transformation to get raw occupancies
         if self.use_sigmoid:
@@ -1885,6 +1923,9 @@ class OccupancyTensor(MixedTensor):
         self.refinable_mask = new_refinable_mask
         self.fixed_mask = ~new_refinable_mask
 
+        # Rebuild index cache after mask change
+        self._build_index_cache()
+
     def unfreeze(self, mask: Optional[torch.Tensor] = None):
         """
         Unfreeze occupancy parameters, making them refinable.
@@ -1960,6 +2001,9 @@ class OccupancyTensor(MixedTensor):
         # Update masks
         self.refinable_mask = new_refinable_mask
         self.fixed_mask = ~new_refinable_mask
+
+        # Rebuild index cache after mask change
+        self._build_index_cache()
 
     def freeze_all(self):
         """

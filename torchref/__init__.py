@@ -110,6 +110,9 @@ from torchref.symmetry import Cell, SpaceGroup
 # Scaling
 from torchref.scaling import Scaler, SolventModel
 
+# Maps
+from torchref.maps import DifferenceMap, Map
+
 __all__ = [
     # Version and paths
     "__version__",
@@ -133,4 +136,7 @@ __all__ = [
     # Symmetry
     "Cell",
     "SpaceGroup",
+    # Maps
+    "Map",
+    "DifferenceMap",
 ]

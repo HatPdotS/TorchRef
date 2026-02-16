@@ -5,7 +5,7 @@ from torch.optim.optimizer import _use_grad_for_differentiable
 from typing import Optional
 
 '''
-This is really just SGD with noisy gradients.
+This is really just ADAM with noisy gradients.
 Temperature controls the magnitude of the noise relative to the gradient.
 
 '''

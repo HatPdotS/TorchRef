@@ -1251,6 +1251,12 @@ class RestraintsNew(DebugMixin, Module):
                 "torsion", "periods", ["intra", "disulfide"]
             ),
         }
+        # Cache max period to avoid .item() GPU sync every iteration
+        periods = self.restraints["torsion"]["all"]["periods"]
+        if periods is not None and periods.numel() > 0:
+            self._torsion_max_period = int(periods.max().item())
+        else:
+            self._torsion_max_period = 1
 
     def torsions(self, idx, xyz: torch.Tensor = None):
         """
@@ -1331,7 +1337,10 @@ class RestraintsNew(DebugMixin, Module):
         """
         # Clamp periods to minimum of 1 to avoid division by zero
         periods_safe = torch.clamp(periods, min=1)
-        max_period = periods_safe.max().item()
+        # Use cached max_period to avoid .item() GPU sync every iteration
+        max_period = getattr(self, "_torsion_max_period", None)
+        if max_period is None:
+            max_period = int(periods_safe.max().item())
 
         if max_period > 1:
             # Vectorized approach: generate all equivalent angles

@@ -300,7 +300,7 @@ END
 
         # If Fe contributes significant anomalous scattering, they should not be conjugates
         # We check this indirectly - the cache should have anomalous scatterers
-        mask, _, _ = model._get_anomalous_cache()
+        mask, _, _, _, _ = model._get_anomalous_cache()
         if mask.any():
             # There are anomalous scatterers, so Friedel pairs should differ
             # (in principle - the actual difference depends on the positions)

@@ -46,6 +46,11 @@ from .sampled_ml_phase_target import (
     create_sampled_ml_target,
     create_sampled_ml_difference_target,
 )
+from .realspace_targets import (
+    RealSpaceTarget,
+    RealSpaceCorrelationTarget,
+    RealSpaceDifferenceTarget,
+)
 
 # Force field target (optional dependency)
 try:
@@ -86,4 +91,7 @@ __all__ = [
     "SampledMLDifferenceTarget",
     "create_sampled_ml_target",
     "create_sampled_ml_difference_target",
+    "RealSpaceTarget",
+    "RealSpaceCorrelationTarget",
+    "RealSpaceDifferenceTarget",
 ]

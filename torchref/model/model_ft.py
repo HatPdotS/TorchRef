@@ -756,7 +756,10 @@ class ModelFT(Model):
                 element_list, significant, self.device, self.dtype_float
             )
 
-            self._anomalous_cache = (mask, f_prime, f_double_prime)
+            # Pre-compute integer indices to avoid boolean indexing GPU sync
+            has_anomalous = bool(mask.any().item())
+            anomalous_indices = mask.nonzero(as_tuple=True)[0] if has_anomalous else None
+            self._anomalous_cache = (mask, f_prime, f_double_prime, has_anomalous, anomalous_indices)
             self._anomalous_elements_hash = elements_hash
 
         return self._anomalous_cache
@@ -786,14 +789,15 @@ class ModelFT(Model):
         torch.Tensor
             Corrected complex structure factors with shape (n_reflections,)
         """
-        mask, f_prime, f_double_prime = self._get_anomalous_cache()
+        mask, f_prime, f_double_prime, has_anomalous, anomalous_indices = self._get_anomalous_cache()
 
-        if not mask.any():
+        if not has_anomalous:
             return sf  # No significant anomalous scatterers
 
         # Get fractional coordinates and occupancies for significant atoms only
-        xyz_frac = self.xyz_fractional()[mask]  # (n_significant, 3)
-        occ = self.occupancy()[mask]  # (n_significant,)
+        # Uses pre-computed integer indices to avoid boolean indexing GPU sync
+        xyz_frac = self.xyz_fractional()[anomalous_indices]  # (n_significant, 3)
+        occ = self.occupancy()[anomalous_indices]  # (n_significant,)
 
         # Compute phase factors: exp(2πi h·r)
         # h·r is the dot product of hkl with fractional coordinates

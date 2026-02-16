@@ -468,8 +468,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ITC92 B parameters (widths) with shape (n_iso_atoms, 5).
         """
         self._build_parametrization()
-        mask = ~self.aniso_flag
-        return self._A[mask], self._B[mask]
+        idx = self._iso_indices
+        return self._A[idx], self._B[idx]
 
     def get_scattering_params_aniso(self):
         """
@@ -483,8 +483,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ITC92 B parameters (widths) with shape (n_aniso_atoms, 5).
         """
         self._build_parametrization()
-        mask = self.aniso_flag
-        return self._A[mask], self._B[mask]
+        idx = self._aniso_indices
+        return self._A[idx], self._B[idx]
 
     # =========================================================================
     # Restraints (Geometry Restraints)
@@ -620,8 +620,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Register aniso_flag buffer (crystallographic matrices are delegated to Cell)
         self.register_buffer(
-            "aniso_flag", torch.tensor(self.pdb["anisou_flag"].values, dtype=torch.bool)
+            "aniso_flag", torch.tensor(
+                self.pdb["anisou_flag"].values, dtype=torch.bool, device=self.device
+            )
         )
+        # Pre-compute integer indices from aniso_flag to avoid boolean indexing GPU sync
+        self._iso_indices = (~self.aniso_flag).nonzero(as_tuple=True)[0]
+        self._aniso_indices = self.aniso_flag.nonzero(as_tuple=True)[0]
 
         # Create MixedTensors for model parameters
         self.xyz = MixedTensor(
@@ -933,6 +938,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Call parent to move all registered buffers and parameters
         result = super().to(device=device, dtype=dtype)
+
+        # Rebuild pre-computed aniso_flag indices on new device
+        if hasattr(self, "aniso_flag") and self.aniso_flag is not None:
+            self._iso_indices = (~self.aniso_flag).nonzero(as_tuple=True)[0]
+            self._aniso_indices = self.aniso_flag.nonzero(as_tuple=True)[0]
+
         if self.verbose > 0:
             print(f"Model moved to device: {self.device}")
         return result
@@ -1009,9 +1020,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         pdb.write(self.pdb, filename)
 
     def get_iso(self):
-        xyz = self.xyz()[~self.aniso_flag]
-        adp = self.adp()[~self.aniso_flag]
-        occupancy = self.occupancy()[~self.aniso_flag]
+        # Use pre-computed integer indices to avoid boolean indexing GPU sync
+        idx = self._iso_indices
+        xyz = self.xyz()[idx]
+        adp = self.adp()[idx]
+        occupancy = self.occupancy()[idx]
         return xyz, adp, occupancy
 
     def set_default_masks(self):
@@ -1277,9 +1290,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.apply_mask_to_parameter(target)
 
     def get_aniso(self):
-        xyz = self.xyz()[self.aniso_flag]
-        u = self.u()[self.aniso_flag]
-        occupancy = self.occupancy()[self.aniso_flag]
+        # Use pre-computed integer indices to avoid boolean indexing GPU sync
+        idx = self._aniso_indices
+        xyz = self.xyz()[idx]
+        u = self.u()[idx]
+        occupancy = self.occupancy()[idx]
         return xyz, u, occupancy
 
     def parameters(self, recurse: bool = True):
@@ -1805,6 +1820,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                     "aniso_flag",
                     torch.tensor(pdb["anisou_flag"].values, dtype=torch.bool),
                 )
+            # Pre-compute integer indices from aniso_flag
+            instance._iso_indices = (~instance.aniso_flag).nonzero(as_tuple=True)[0]
+            instance._aniso_indices = instance.aniso_flag.nonzero(as_tuple=True)[0]
 
             # Register mask buffers
             instance.register_buffer(
@@ -2007,6 +2025,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             selected_model.register_buffer(
                 "aniso_flag", self.aniso_flag[selection_mask].clone()
             )
+            # Pre-compute integer indices from aniso_flag
+            selected_model._iso_indices = (~selected_model.aniso_flag).nonzero(as_tuple=True)[0]
+            selected_model._aniso_indices = selected_model.aniso_flag.nonzero(as_tuple=True)[0]
 
         # Create new MixedTensors with selected atoms
         selected_model.xyz = MixedTensor(

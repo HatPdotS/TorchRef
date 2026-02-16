@@ -28,22 +28,20 @@ def nll_xray(
     torch.Tensor
         Mean negative log-likelihood.
     """
-    # Handle MaskedTensor inputs: extract valid data to avoid complex dtype issues in autograd
-    # MaskedTensor doesn't support complex numbers, so we must work with regular tensors
+    # Handle MaskedTensor inputs: use torch.where to avoid boolean indexing
+    # (boolean indexing triggers nonzero() which forces CPU-GPU sync)
+    mask = None
     if hasattr(F_obs, "get_mask"):
         mask = F_obs.get_mask()
-        F_obs = F_obs.get_data()[mask]
-        F_calc = F_calc[mask]
-        sigma_F_obs = (
-            sigma_F_obs.get_data()[mask]
-            if hasattr(sigma_F_obs, "get_mask")
-            else sigma_F_obs[mask]
-        )
+        F_obs = torch.where(mask, F_obs.get_data(), torch.zeros_like(F_obs.get_data()))
+        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
+        sigma_raw = sigma_F_obs.get_data() if hasattr(sigma_F_obs, "get_mask") else sigma_F_obs
+        sigma_F_obs = torch.where(mask, sigma_raw, torch.ones_like(sigma_raw))
     elif hasattr(sigma_F_obs, "get_mask"):
         mask = sigma_F_obs.get_mask()
-        F_obs = F_obs[mask]
-        F_calc = F_calc[mask]
-        sigma_F_obs = sigma_F_obs.get_data()[mask]
+        F_obs = torch.where(mask, F_obs, torch.zeros_like(F_obs))
+        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
+        sigma_F_obs = torch.where(mask, sigma_F_obs.get_data(), torch.ones_like(sigma_F_obs.get_data()))
 
     # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
@@ -51,12 +49,14 @@ def nll_xray(
     # Compute residual
     diff = F_obs - F_calc_amp
     # Avoid division by zero by setting a minimum sigma
-    eps = torch.median(sigma_F_obs).item() * 1e-1
+    eps = torch.median(sigma_F_obs) * 1e-1
     # Compute Gaussian NLL: 0.5*(x-μ)²/σ² + log(σ) + 0.5*log(2π)
     log_2pi = torch.log(torch.tensor(2.0 * torch.pi))
     sigma_save = torch.clamp(sigma_F_obs, min=eps)
     nll = 0.5 * (diff**2) / (sigma_save**2) + torch.log(sigma_save) + 0.5 * log_2pi
 
+    if mask is not None:
+        return (nll * mask).sum() / mask.sum()
     return nll.mean()
 
 
@@ -80,21 +80,19 @@ def nll_xray_sum(
     torch.Tensor
         Sum of negative log-likelihood values.
     """
-    # Handle MaskedTensor inputs: extract valid data to avoid complex dtype issues in autograd
+    # Handle MaskedTensor inputs: use torch.where to avoid boolean indexing
+    mask = None
     if hasattr(F_obs, "get_mask"):
         mask = F_obs.get_mask()
-        F_obs = F_obs.get_data()[mask]
-        F_calc = F_calc[mask]
-        sigma_F_obs = (
-            sigma_F_obs.get_data()[mask]
-            if hasattr(sigma_F_obs, "get_mask")
-            else sigma_F_obs[mask]
-        )
+        F_obs = torch.where(mask, F_obs.get_data(), torch.zeros_like(F_obs.get_data()))
+        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
+        sigma_raw = sigma_F_obs.get_data() if hasattr(sigma_F_obs, "get_mask") else sigma_F_obs
+        sigma_F_obs = torch.where(mask, sigma_raw, torch.ones_like(sigma_raw))
     elif hasattr(sigma_F_obs, "get_mask"):
         mask = sigma_F_obs.get_mask()
-        F_obs = F_obs[mask]
-        F_calc = F_calc[mask]
-        sigma_F_obs = sigma_F_obs.get_data()[mask]
+        F_obs = torch.where(mask, F_obs, torch.zeros_like(F_obs))
+        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
+        sigma_F_obs = torch.where(mask, sigma_F_obs.get_data(), torch.ones_like(sigma_F_obs.get_data()))
 
     # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
@@ -102,12 +100,14 @@ def nll_xray_sum(
     # Compute residual
     diff = F_obs - F_calc_amp
     # Avoid division by zero by setting a minimum sigma
-    eps = torch.median(sigma_F_obs).item() * 1e-1
+    eps = torch.median(sigma_F_obs) * 1e-1
     # Compute Gaussian NLL: 0.5*(x-μ)²/σ² + log(σ) + 0.5*log(2π)
     log_2pi = torch.log(torch.tensor(2.0 * torch.pi))
     sigma_save = torch.clamp(sigma_F_obs, min=eps)
     nll = 0.5 * (diff**2) / (sigma_save**2) + torch.log(sigma_save) + 0.5 * log_2pi
 
+    if mask is not None:
+        return (nll * mask).sum()
     return nll.sum()
 
 

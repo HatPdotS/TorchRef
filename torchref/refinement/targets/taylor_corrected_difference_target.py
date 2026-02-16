@@ -156,19 +156,24 @@ class TaylorCorrectedDifferenceTarget(Target):
             F_dark = F_dark.get_data()
             sigma_dark = sigma_dark.get_data()
 
-        self.register_buffer("_F_obs_light", F_light)
-        self.register_buffer("_F_obs_dark", F_dark)
-        self.register_buffer("_sigma_light", sigma_light)
-        self.register_buffer("_sigma_dark", sigma_dark)
-        self.register_buffer("_sigma_diff", torch.sqrt(sigma_light**2 + sigma_dark**2))
-
-        # Work/test set masks incorporating data validity
-        # Note: rfree flags indicate work set (True=work, False=free)
+        # Build validity mask first (needed for cleanup below)
         valid_mask = torch.ones_like(rfree_light, dtype=torch.bool)
         if valid_light is not None:
             valid_mask = valid_mask & valid_light
         if valid_dark is not None:
             valid_mask = valid_mask & valid_dark
+
+        # Clean invalid values to avoid NaN propagation in torch.where path
+        sigma_diff = torch.sqrt(sigma_light**2 + sigma_dark**2)
+        F_light = torch.where(valid_mask, F_light, torch.zeros_like(F_light))
+        F_dark = torch.where(valid_mask, F_dark, torch.zeros_like(F_dark))
+        sigma_diff = torch.where(valid_mask, sigma_diff, torch.ones_like(sigma_diff))
+
+        self.register_buffer("_F_obs_light", F_light)
+        self.register_buffer("_F_obs_dark", F_dark)
+        self.register_buffer("_sigma_light", sigma_light)
+        self.register_buffer("_sigma_dark", sigma_dark)
+        self.register_buffer("_sigma_diff", sigma_diff)
         work_mask = rfree_light.bool() & rfree_dark.bool() & valid_mask
         free_mask = ~rfree_light.bool() & ~rfree_dark.bool() & valid_mask
 
@@ -258,16 +263,16 @@ class TaylorCorrectedDifferenceTarget(Target):
         # Calculated complex difference
         delta_F_calc = fcalc_light - fcalc_dark
 
-        # Apply mask
-        delta_F_obs_complex = delta_F_obs_complex[self._mask]
-        delta_F_calc = delta_F_calc[self._mask]
-        sigma_diff = self._sigma_diff[self._mask]
+        # Apply mask using torch.where to avoid boolean indexing (no nonzero sync)
+        zero_c = torch.zeros_like(delta_F_obs_complex)
+        delta_F_obs_complex = torch.where(self._mask, delta_F_obs_complex, zero_c)
+        delta_F_calc = torch.where(self._mask, delta_F_calc, zero_c)
 
-        # Complex difference loss
+        # Complex difference loss (invalid: diff=0, sigma=1 → loss=0)
         diff = delta_F_obs_complex - delta_F_calc
-        loss = (torch.abs(diff)**2 / sigma_diff**2).mean()
+        loss = torch.abs(diff)**2 / self._sigma_diff**2
 
-        return loss
+        return (loss * self._mask).sum() / self._mask.sum()
 
     def compute_free_metrics(
         self,
