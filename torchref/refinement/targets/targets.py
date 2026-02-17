@@ -945,17 +945,9 @@ class TorsionTarget(GeometryTarget):
         sigmas_rad = sigmas_deg * (np.pi / 180.0)
         kappa = torch.clamp(1.0 / (sigmas_rad**2), min=1e-3, max=1e4)
 
-        # Compute log(I_0(kappa)) using stable approximation
-        # Use torch.where to avoid boolean indexing (GPU sync)
-        # For small kappa (<50): log(I_0(kappa)) computed directly
-        # For large kappa (>=50): asymptotic approx kappa - 0.5*log(2*pi*kappa)
-        small_kappa_mask = kappa < 50.0
-        kappa_clamped = torch.clamp(kappa, max=49.9)  # prevent i0 overflow
-        log_i0_small = torch.log(i0(kappa_clamped))
-        log_i0_large = kappa - 0.5 * torch.log(
-            2.0 * np.pi * kappa.clamp(min=1e-8)
-        )
-        log_i0_kappa = torch.where(small_kappa_mask, log_i0_small, log_i0_large)
+        # log(I_0(kappa)) via exponentially-scaled Bessel (stable for all kappa)
+        # i0e(x) = exp(-|x|) * i0(x), so log(i0(x)) = log(i0e(x)) + x
+        log_i0_kappa = torch.log(torch.special.i0e(kappa) + 1e-45) + kappa
 
         log_2pi = torch.log(
             torch.tensor(2.0 * np.pi, device=sigmas_deg.device, dtype=sigmas_deg.dtype)
@@ -1042,9 +1034,11 @@ class PlanarityTarget(GeometryTarget):
             centroids = positions.mean(dim=1, keepdim=True)
             centered = positions - centroids  # (n_planes, n_atoms, 3)
 
-            # BATCHED SVD: process all planes in single GPU kernel
-            U, S, Vh = torch.linalg.svd(centered)  # Vh: (n_planes, 3, 3)
-            normals = Vh[:, -1, :]  # (n_planes, 3) - smallest singular vector
+            # Eigendecomposition of 3x3 covariance matrix (faster than SVD)
+            # Plane normal = eigenvector with smallest eigenvalue of A^T A
+            cov = torch.bmm(centered.transpose(1, 2), centered)  # (n_planes, 3, 3)
+            eigenvalues, eigenvectors = torch.linalg.eigh(cov)  # sorted ascending
+            normals = eigenvectors[:, :, 0]  # (n_planes, 3) - smallest eigenvalue
 
             # Batched deviation calculation
             # deviations[p,a] = |centered[p,a] · normal[p]|
@@ -1083,9 +1077,10 @@ class PlanarityTarget(GeometryTarget):
             centroids = positions.mean(dim=1, keepdim=True)
             centered = positions - centroids  # (n_planes, n_atoms, 3)
 
-            # BATCHED SVD
-            U, S, Vh = torch.linalg.svd(centered)  # Vh: (n_planes, 3, 3)
-            normals = Vh[:, -1, :]  # (n_planes, 3)
+            # Eigendecomposition of 3x3 covariance matrix (faster than SVD)
+            cov = torch.bmm(centered.transpose(1, 2), centered)  # (n_planes, 3, 3)
+            eigenvalues, eigenvectors = torch.linalg.eigh(cov)  # sorted ascending
+            normals = eigenvectors[:, :, 0]  # (n_planes, 3)
 
             # Batched deviation calculation
             deviations = torch.abs(torch.einsum("paj,pj->pa", centered, normals))

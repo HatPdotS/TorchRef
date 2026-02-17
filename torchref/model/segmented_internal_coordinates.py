@@ -28,9 +28,10 @@ import torch
 import torch.nn as nn
 
 from torchref.base.alignment.rotation import rotation_matrix_euler_zyz
+from torchref.utils.caching import CachedForwardMixin
 
 
-class SegmentedInternalCoordinateTensor(nn.Module):
+class SegmentedInternalCoordinateTensor(CachedForwardMixin, nn.Module):
     """
     Parameter wrapper using segmented internal coordinates.
 
@@ -1341,10 +1342,6 @@ class SegmentedInternalCoordinateTensor(nn.Module):
             xyz[frozen_mask] = self.fixed_xyz[frozen_mask]
 
         return xyz
-
-    def __call__(self) -> torch.Tensor:
-        """Alias for forward()."""
-        return self.forward()
 
     def _place_depth1_atoms(
         self, xyz: torch.Tensor, R_matrices: torch.Tensor

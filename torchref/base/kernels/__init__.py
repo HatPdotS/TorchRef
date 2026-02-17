@@ -31,7 +31,7 @@ from .optimized_ops import (
 
 # Triton kernel is optional (requires triton package)
 try:
-    from .triton_kernel import fused_add_to_map_gpu
+    from .triton_kernel import fused_add_to_map_gpu, fused_find_and_place_atoms
     _HAS_TRITON = True
 except ImportError:
     _HAS_TRITON = False
@@ -55,4 +55,5 @@ __all__ = [
     "vectorized_add_to_map_optimized",
     # Triton kernel (if available)
     "fused_add_to_map_gpu",
+    "fused_find_and_place_atoms",
 ]

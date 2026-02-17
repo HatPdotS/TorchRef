@@ -1369,9 +1369,9 @@ class RestraintsNew(DebugMixin, Module):
             equiv_diffs = diff_rad_expanded - offsets  # (n_angles, max_period)
 
             # Wrap all equivalent angles to [-pi, pi]
-            equiv_diffs_wrapped = torch.atan2(
-                torch.sin(equiv_diffs), torch.cos(equiv_diffs)
-            )
+            equiv_diffs_wrapped = torch.remainder(
+                equiv_diffs + torch.pi, 2.0 * torch.pi
+            ) - torch.pi
 
             # Mask out invalid offsets (where k >= period for each angle)
             valid_mask = k_range < periods_expanded  # (n_angles, max_period)
@@ -1395,7 +1395,7 @@ class RestraintsNew(DebugMixin, Module):
             return diff_wrapped_best.reshape(original_shape)
         else:
             # All periods are 0 or 1, simple wrapping
-            return torch.atan2(torch.sin(diff_rad), torch.cos(diff_rad))
+            return torch.remainder(diff_rad + torch.pi, 2.0 * torch.pi) - torch.pi
 
     def torsion_deviations(self, xyz: torch.Tensor = None, wrapped=True):
         """

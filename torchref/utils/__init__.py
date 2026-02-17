@@ -27,6 +27,9 @@ Example
     grad_norm = gradnorm(loss, model.parameters())
 """
 
+# Caching
+from .caching import CachedForwardMixin, ParameterFingerprint
+
 # Debugging
 from .debug_utils import DebugMixin, print_module_summary
 
@@ -57,6 +60,9 @@ from .utils import (
 )
 
 __all__ = [
+    # Caching
+    "ParameterFingerprint",
+    "CachedForwardMixin",
     # Core utilities
     "TensorMasks",
     "TensorDict",

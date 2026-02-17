@@ -246,17 +246,14 @@ class TestModelFTCaching:
     """Test ModelFT caching mechanism."""
 
     def test_cache_initialization(self, sample_cif_file):
-        """Test that smart cache fields are initialized."""
+        """Test that CachedForwardMixin cache starts empty."""
         from torchref.model.model_ft import ModelFT
 
         model = ModelFT(max_res=2.0, verbose=0)
         model.load_cif(str(sample_cif_file))
 
-        # Smart cache fields should be initialized
-        assert model._cached_sf is None
-        assert model._cached_hkl_id is None
-        assert model._cache_generation == 0
-        assert model._current_generation == 0
+        # Mixin cache should start empty (lazily initialized)
+        assert getattr(model, "_fwd_cached_output", None) is None
 
     def test_cache_usage(self, sample_cif_file):
         """Test that cache can be used for computations."""

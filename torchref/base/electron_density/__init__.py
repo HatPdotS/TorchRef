@@ -22,6 +22,8 @@ from .voxel_utils import (
     excise_angstrom_radius_around_coord,
 )
 
+from .main import build_electron_density
+
 from .solvent_mask import (
     add_to_solvent_mask,
     add_to_phenix_mask,
@@ -41,4 +43,6 @@ __all__ = [
     "add_to_solvent_mask",
     "add_to_phenix_mask",
     "find_solvent_voids",
+    # Central dispatch
+    "build_electron_density",
 ]

@@ -7,8 +7,10 @@ from typing import Optional, Union
 import torch
 from torch import nn
 
+from torchref.utils.caching import CachedForwardMixin
 
-class MixedTensor(nn.Module):
+
+class MixedTensor(CachedForwardMixin, nn.Module):
     """
     A wrapper class for tensors with mixed fixed and refinable elements.
 
@@ -208,10 +210,6 @@ class MixedTensor(nn.Module):
 
         return result
 
-    def __call__(self) -> torch.Tensor:
-        """Allow instance to be called like a function."""
-        return self.forward()
-
     def __getitem__(self, key) -> torch.Tensor:
         """
         Get values at specified indices/mask from the full tensor.
@@ -259,7 +257,7 @@ class MixedTensor(nn.Module):
         torch.Tensor
             Selected values from the full tensor.
         """
-        return self.forward()[key]
+        return self()[key]
 
     def __setitem__(self, key, value) -> None:
         """
@@ -506,6 +504,9 @@ class MixedTensor(nn.Module):
         self.refinable_params = nn.Parameter(
             new_refinable, requires_grad=self.refinable_params.requires_grad
         )
+
+        # Rebuild index cache after mask change
+        self._build_index_cache()
 
     def detach(self) -> torch.Tensor:
         """Return a detached copy of the full tensor."""
@@ -1172,6 +1173,9 @@ class PositiveMixedTensor(MixedTensor):
         self.refinable_params = nn.Parameter(
             new_refinable_log, requires_grad=self.refinable_params.requires_grad
         )
+
+        # Rebuild index cache after mask change
+        self._build_index_cache()
 
     def copy(self) -> "PositiveMixedTensor":
         """
@@ -2150,6 +2154,9 @@ class OccupancyTensor(MixedTensor):
         # Update masks
         self.refinable_mask = collapsed_mask
         self.fixed_mask = ~collapsed_mask
+
+        # Rebuild index cache after mask change
+        self._build_index_cache()
 
     @staticmethod
     def from_residue_groups(

@@ -18,7 +18,7 @@ pytestmark = [
 ]
 
 # Structure IDs to test (available in tests/files/pdb/ and tests/files/cif/)
-TEST_STRUCTURE_IDS = ["1DAW",'2DQ6','6G9X']
+TEST_STRUCTURE_IDS = ["1DAW",'2DQ6','3E98']
 
 # Default resolution for structure factor calculation
 DEFAULT_D_MIN = 2.0

@@ -17,12 +17,10 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from torchref.base.electron_density import find_relevant_voxels, vectorized_add_to_map_aniso
 from torchref.base.fourier import get_real_grid, ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
 from torchref.config import dtypes
 
-from torchref.base import vectorized_add_to_map
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.symmetry.spacegroup import SpaceGroupLike
@@ -461,70 +459,29 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         if self.real_space_grid is None:
             self.setup_grid()
 
-        if self.verbose > 2:
-            print(
-                f"Building density map with radius={self.radius_angstrom} angstrom..."
-            )
+        from torchref.base.electron_density.main import build_electron_density
 
-        # Initialize empty map
-        density_map = torch.zeros(
-            self.real_space_grid.shape[:-1],
+        density_map = build_electron_density(
+            real_space_grid=self.real_space_grid,
+            xyz_iso=xyz_iso,
+            adp_iso=adp_iso,
+            occ_iso=occ_iso,
+            A_iso=A_iso,
+            B_iso=B_iso,
+            inv_frac_matrix=self.inv_fractional_matrix,
+            frac_matrix=self.fractional_matrix,
+            radius_angstrom=self.radius_angstrom,
+            voxel_size=self.voxel_size,
+            xyz_aniso=xyz_aniso,
+            u_aniso=u_aniso,
+            occ_aniso=occ_aniso,
+            A_aniso=A_aniso,
+            B_aniso=B_aniso,
             dtype=self.dtype_float,
-            device=self.device,
         )
-
-        # Add isotropic atoms
-        if len(xyz_iso) > 0:
-            if self.verbose > 2:
-                print(f"  Adding {len(xyz_iso)} isotropic atoms...")
-
-            surrounding_coords, voxel_indices = find_relevant_voxels(
-                self.real_space_grid,
-                xyz_iso,
-                radius_angstrom=self.radius_angstrom,
-                inv_frac_matrix=self.inv_fractional_matrix,
-            )
-            density_map = vectorized_add_to_map(
-                surrounding_coords,
-                voxel_indices,
-                density_map,
-                xyz_iso,
-                adp_iso,
-                self.inv_fractional_matrix,
-                self.fractional_matrix,
-                A_iso,
-                B_iso,
-                occ_iso,
-            )
-
-        # Add anisotropic atoms
-        if xyz_aniso is not None and len(xyz_aniso) > 0:
-            if self.verbose > 2:
-                print(f"  Adding {len(xyz_aniso)} anisotropic atoms...")
-
-            surrounding_coords, voxel_indices = find_relevant_voxels(
-                self.real_space_grid,
-                xyz_aniso,
-                radius_angstrom=self.radius_angstrom,
-                inv_frac_matrix=self.inv_fractional_matrix,
-            )
-            density_map = vectorized_add_to_map_aniso(
-                surrounding_coords,
-                voxel_indices,
-                density_map,
-                xyz_aniso,
-                u_aniso,
-                self.inv_fractional_matrix,
-                self.fractional_matrix,
-                A_aniso,
-                B_aniso,
-                occ_aniso,
-            )
 
         # Apply symmetry if requested
         if apply_symmetry and self.map_symmetry is not None:
-            if self.verbose > 2:
-                print(f"  Applying {self.map_symmetry.n_ops} symmetry operations...")
             density_map = self.map_symmetry(density_map)
 
         return density_map

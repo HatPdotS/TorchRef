@@ -10,34 +10,10 @@ from torchref.model.model import Model
 from torchref.symmetry import SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.config import dtypes
+from torchref.utils.caching import CachedForwardMixin
 
 
-class ParameterFingerprint:
-    """Lightweight fingerprint for detecting parameter changes.
-
-    Captures (data_ptr, _version, numel) per tensor. Comparison is O(n_params)
-    integer comparisons — much cheaper than SHA-1 hashing.
-    """
-
-    __slots__ = ("_entries",)
-
-    def __init__(self, params=()):
-        self._entries = tuple(
-            (t.data_ptr(), t._version, t.numel()) for t in params
-        )
-
-    def matches(self, params) -> bool:
-        """Return True if *params* have the same fingerprint."""
-        other = tuple(
-            (t.data_ptr(), t._version, t.numel()) for t in params
-        )
-        return self._entries == other
-
-    def __bool__(self):
-        return len(self._entries) > 0
-
-
-class ModelFT(Model):
+class ModelFT(CachedForwardMixin, Model):
     """
     Model subclass for Fourier Transform-based electron density and structure factor calculations.
 
@@ -143,13 +119,6 @@ class ModelFT(Model):
         self.max_res = max_res
         self.radius_angstrom = radius_angstrom
         self._explicit_gridsize = gridsize
-
-        # Smart SF cache state
-        self._cached_sf = None          # Cached structure factor (with autograd graph)
-        self._cached_hkl_id = None      # id() of the hkl tensor used for cached SF
-        self._param_fingerprint = ParameterFingerprint()
-        self._cache_generation = 0      # Generation when SF was cached
-        self._current_generation = 0    # Bumped by backward hook
 
         # Anomalous scattering configuration
         self.wavelength = wavelength
@@ -687,19 +656,14 @@ class ModelFT(Model):
         super().update_pdb()
 
     def reset_cache(self):
-        """Reset all smart-cache state."""
-        self._cached_sf = None
-        self._cached_hkl_id = None
-        self._param_fingerprint = ParameterFingerprint()
-        self._cache_generation = 0
-        self._current_generation = 0
+        """Reset SF cache and all wrapper forward caches."""
+        self.reset_forward_cache()
+        for module in self.children():
+            if hasattr(module, "reset_forward_cache"):
+                module.reset_forward_cache()
 
     def invalidate_cache(self):
-        """Force cache miss on next get_structure_factor call.
-
-        Use this after direct buffer edits that bypass the parameter
-        wrappers (rare). Equivalent to ``reset_cache()``.
-        """
+        """Alias for ``reset_cache()``."""
         self.reset_cache()
 
     # =========================================================================
@@ -827,36 +791,14 @@ class ModelFT(Model):
 
         return sf + torch.complex(delta_real, delta_imag)
 
-    def _get_fingerprint_params(self):
-        """Collect tensors whose identity/version determines cache validity.
-
-        Includes both ``refinable_params`` and ``fixed_values`` from every
-        parameter wrapper (xyz, b, u, occupancy) so that in-place mutations
-        from the optimizer (``_version++``) as well as freeze/unfreeze
-        operations (``data_ptr`` change) are detected.
-        """
-        tensors = []
-        for wrapper_name in ("xyz", "b", "u", "occupancy"):
-            wrapper = getattr(self, wrapper_name, None)
-            if wrapper is None:
-                continue
-            rp = getattr(wrapper, "refinable_params", None)
-            if rp is not None:
-                tensors.append(rp)
-            fv = getattr(wrapper, "fixed_values", None)
-            if fv is not None:
-                tensors.append(fv)
-        return tensors
-
     def get_structure_factor(
         self, hkl: torch.Tensor, recalc=False, apply_anomalous: bool = True
     ) -> torch.Tensor:
         """
         Get structure factors for given hkl reflections.
 
-        Uses a smart cache that preserves the autograd graph and avoids
-        recomputation when parameters haven't changed and no backward pass
-        has propagated through the cached result.
+        Uses ``CachedForwardMixin`` to cache the result and auto-invalidate
+        when parameters change or a backward pass propagates through.
 
         Parameters
         ----------
@@ -885,21 +827,38 @@ class ModelFT(Model):
         Anomalous corrections are only computed for atoms where
         |f'| > anomalous_threshold or |f''| > anomalous_threshold.
         """
-        if not recalc and self._cached_sf is not None:
-            # Check 1: same hkl tensor?
-            hkl_ok = (id(hkl) == self._cached_hkl_id)
-            # Check 2: parameters unchanged?
-            fp_params = self._get_fingerprint_params()
-            params_ok = self._param_fingerprint.matches(fp_params)
-            # Check 3: backward hasn't propagated through the cached SF?
-            gen_ok = (self._current_generation == self._cache_generation)
+        return self(hkl, recalc=recalc, apply_anomalous=apply_anomalous)
 
-            if hkl_ok and params_ok and gen_ok:
-                if self.verbose > 2:
-                    print("Using cached structure factors")
-                return self._cached_sf
+    @property
+    def fft(self):
+        """Access the SfFFT submodule."""
+        if self._fft is None:
+            self._maybe_initialize_fft()
 
-        # --- (Re)compute structure factors ---
+        return self._fft
+
+    def forward(
+        self, hkl, apply_anomalous: bool = True
+    ) -> torch.Tensor:
+        """
+        Compute structure factors for given hkl.
+
+        This is called by the mixin's ``__call__`` which handles caching,
+        backward-hook registration, and auto-invalidation.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices with shape (n_reflections, 3).
+        apply_anomalous : bool, optional
+            If True and wavelength is set, apply anomalous scattering
+            corrections (f' and f'') for heavy atoms. Default is True.
+
+        Returns
+        -------
+        torch.Tensor
+            Calculated complex structure factors with shape (n_reflections,).
+        """
         sf, self.ed = self.fft.compute_structure_factors(
             hkl,
             *self.get_iso(),
@@ -911,60 +870,12 @@ class ModelFT(Model):
         if apply_anomalous and self.wavelength is not None:
             sf = self._apply_anomalous_correction(sf, hkl)
 
-        # Register backward hook to bump generation counter so that the
-        # cache is invalidated once gradients have been consumed.
-        if sf.grad_fn is not None:
-            def _bump_generation(grad, self_ref=self):
-                self_ref._current_generation += 1
-            sf.register_hook(_bump_generation)
-
-        # Store WITH autograd graph intact (no detach)
-        self._cached_sf = sf
-        self._cached_hkl_id = id(hkl)
-        self._param_fingerprint = ParameterFingerprint(
-            self._get_fingerprint_params()
-        )
-        self._cache_generation = self._current_generation
-
-        return sf
-    
-    @property
-    def fft(self):
-        """Access the SfFFT submodule."""
-        if self._fft is None:
-            self._maybe_initialize_fft()
-        
-        return self._fft
-
-    def forward(
-        self, hkl, recalc=False, apply_anomalous: bool = True
-    ) -> torch.Tensor:
-        """
-        Forward pass to compute structure factors for given hkl.
-
-        Parameters
-        ----------
-        hkl : torch.Tensor
-            Miller indices with shape (n_reflections, 3).
-        recalc : bool, optional
-            If True, forces recalculation bypassing the cache.
-            Default is False.
-        apply_anomalous : bool, optional
-            If True and wavelength is set, apply anomalous scattering
-            corrections (f' and f'') for heavy atoms. Default is True.
-
-        Returns
-        -------
-        torch.Tensor
-            Calculated complex structure factors with shape (n_reflections,).
-        """
-        f = self.get_structure_factor(hkl, recalc=recalc, apply_anomalous=apply_anomalous)
         if self.verbose > 2:
             assert torch.all(
-                torch.isfinite(f)
+                torch.isfinite(sf)
             ), "Non-finite values found while calculating fcalc."
 
-        return f
+        return sf
 
     def copy(self, detach: bool = True) -> "ModelFT":
         """
