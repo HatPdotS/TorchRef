@@ -1034,14 +1034,11 @@ class PlanarityTarget(GeometryTarget):
             centroids = positions.mean(dim=1, keepdim=True)
             centered = positions - centroids  # (n_planes, n_atoms, 3)
 
-            # Eigendecomposition of 3x3 covariance matrix (faster than SVD)
-            # Plane normal = eigenvector with smallest eigenvalue of A^T A
-            cov = torch.bmm(centered.transpose(1, 2), centered)  # (n_planes, 3, 3)
-            eigenvalues, eigenvectors = torch.linalg.eigh(cov)  # sorted ascending
-            normals = eigenvectors[:, :, 0]  # (n_planes, 3) - smallest eigenvalue
+            # BATCHED SVD
+            U, S, Vh = torch.linalg.svd(centered)  # Vh: (n_planes, 3, 3)
+            normals = Vh[:, -1, :]  # (n_planes, 3)
 
             # Batched deviation calculation
-            # deviations[p,a] = |centered[p,a] · normal[p]|
             deviations = torch.abs(torch.einsum("paj,pj->pa", centered, normals))
 
             # NLL calculation (all vectorized)

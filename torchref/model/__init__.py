@@ -69,6 +69,9 @@ from torchref.model.parameter_wrappers import (
 from torchref.model.segmented_internal_coordinates import (
     SegmentedInternalCoordinateTensor,
 )
+from torchref.model.closed_segmented_internal_coordinates import (
+    ClosedSegmentedInternalCoordinateTensor,
+)
 
 __all__ = [
     "FFT",
@@ -83,4 +86,5 @@ __all__ = [
     "PassThroughTensor",
     "OccupancyTensor",
     "SegmentedInternalCoordinateTensor",
+    "ClosedSegmentedInternalCoordinateTensor",
 ]

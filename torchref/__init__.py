@@ -108,7 +108,7 @@ from torchref.symmetry import Cell, SpaceGroup
 # from torchref.restraints import Restraints # Initialized lazily due to monomer library download requirement
 
 # Scaling
-from torchref.scaling import Scaler, SolventModel
+from torchref.scaling import Scaler, SolventModel, ScalerBase
 
 # Maps
 from torchref.maps import DifferenceMap, Map
@@ -132,6 +132,7 @@ __all__ = [
     "LBFGSRefinement",
     # Scaling
     "Scaler",
+    "ScalerBase",
     "SolventModel",
     # Symmetry
     "Cell",

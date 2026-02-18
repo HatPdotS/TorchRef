@@ -1,4 +1,4 @@
-#!/das/work/p17/p17490/CONDA/torchref/bin/python -u
+#!/usr/bin/env python3 -u
 
 """
 Command-line script for LBFGS refinement with HYPERPARAMETER-TUNED weighting.

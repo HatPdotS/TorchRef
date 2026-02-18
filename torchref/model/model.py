@@ -2243,7 +2243,113 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def use_internal_coordinates(
         self,
-        n_aa_per_segment: int = 3,
+        n_aa_per_segment: int = 18,
+        junction_size: int = 3,
+        bond_cutoff: float = 2.0,
+        cif_dict: dict = None,
+        prefer_loops: bool = True,
+        requires_grad: bool = True,
+    ) -> "Model":
+        """
+        Switch xyz to closed segmented internal coordinate parametrization.
+
+        Replaces the current xyz MixedTensor with a
+        ClosedSegmentedInternalCoordinateTensor that parametrizes atomic positions
+        using bond lengths, angles, torsion angles, and per-segment rigid body
+        parameters. Between segments, 3-residue junctions maintain chain continuity
+        via Newton-solved backbone torsions with IFT gradients.
+
+        Parameters
+        ----------
+        n_aa_per_segment : int, optional
+            Number of amino acids per segment. Default is 18.
+        junction_size : int, optional
+            Number of residues per junction (slave DOFs). Default is 3.
+        bond_cutoff : float, optional
+            Distance cutoff for bond detection in Angstroms. Default is 2.0.
+            Only used when cif_dict is not provided.
+        cif_dict : dict, optional
+            CIF dictionary containing bond definitions per residue type.
+            If provided, bonds are determined from chemical definitions rather
+            than distances, which is more robust for structures with poor geometry.
+            Expected format: cif_dict[resname]['bonds'] DataFrame with 'atom1', 'atom2'.
+        prefer_loops : bool, optional
+            If True, slide junctions to prefer loop regions. Default is True.
+        requires_grad : bool, optional
+            Whether internal coordinate parameters should have gradients.
+            Default is True.
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
+
+        Examples
+        --------
+        ::
+
+            model = Model()
+            model.load_pdb('structure.pdb')
+            model.use_internal_coordinates(n_aa_per_segment=18)
+
+            # Now model.xyz() returns coordinates reconstructed from
+            # closed segmented internal coordinates
+
+            # Shake the structure using internal coordinates
+            new_xyz = model.xyz.shake(magnitude=0.1)
+
+            # Each segment has independent internal coordinates and
+            # rigid body parameters (position + orientation)
+            # Junctions maintain chain continuity between segments
+
+        Notes
+        -----
+        After calling this method, model.xyz will be a
+        ClosedSegmentedInternalCoordinateTensor instead of a MixedTensor. This provides:
+        - Shallow spanning trees within segments (depth ~10-30 vs ~1000)
+        - Independent segments that don't propagate changes to distant atoms
+        - Rigid body parameters (position + orientation) per segment
+        - Chain continuity via junction residues with Newton-solved torsions
+        - IFT-based exact gradients through the closure constraint
+        - forward() / __call__(): Reconstruct Cartesian coordinates
+        - shake(magnitude): Add noise to internal parameters
+        - Gradient flow through all internal coordinate parameters
+        """
+        if not self.initialized:
+            raise RuntimeError(
+                "Model must be initialized before switching to internal coordinates. "
+                "Load data first with load_pdb() or load_cif()."
+            )
+
+        from torchref.model.segmented_internal_coordinates import (
+            SegmentedInternalCoordinateTensor
+        )
+
+        # Get current coordinates
+        current_xyz = self.xyz().detach()
+
+        # Create closed segmented internal coordinate tensor
+        self.xyz = SegmentedInternalCoordinateTensor(
+            current_xyz,
+            pdb=self.pdb,
+            n_aa_per_segment=n_aa_per_segment,
+            junction_size=junction_size,
+            bond_cutoff=bond_cutoff,
+            cif_dict=cif_dict,
+            prefer_loops=prefer_loops,
+            requires_grad=requires_grad,
+            dtype=self.dtype_float,
+            device=self.device,
+        )
+
+        if self.verbose > 0:
+            print(f"Switched to internal coordinate parametrization: {self.xyz}")
+
+        return self
+
+    def use_internal_coordinates(
+        self,
+        n_aa_per_segment: int = 5,
         bond_cutoff: float = 2.0,
         cif_dict: dict = None,
         requires_grad: bool = True,
@@ -2260,7 +2366,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Parameters
         ----------
         n_aa_per_segment : int, optional
-            Number of amino acids per segment. Default is 3.
+            Number of amino acids per segment. Default is 5.
             - Smaller values (1-2): More segments, shallower trees, less lever arm
             - Larger values (5-10): Fewer segments, deeper trees, more lever arm
         bond_cutoff : float, optional
@@ -2331,33 +2437,4 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             requires_grad=requires_grad,
             dtype=self.dtype_float,
             device=self.device,
-        )
-
-        if self.verbose > 0:
-            print(f"Switched to internal coordinate parametrization: {self.xyz}")
-
-        return self
-
-    def use_segmented_internal_coordinates(
-        self,
-        n_aa_per_segment: int = 3,
-        bond_cutoff: float = 2.0,
-        cif_dict: dict = None,
-        requires_grad: bool = True,
-    ) -> "Model":
-        """
-        Alias for use_internal_coordinates().
-
-        This method is provided for backward compatibility. It calls
-        use_internal_coordinates() with the same parameters.
-
-        See Also
-        --------
-        use_internal_coordinates : The main method for internal coordinate conversion.
-        """
-        return self.use_internal_coordinates(
-            n_aa_per_segment=n_aa_per_segment,
-            bond_cutoff=bond_cutoff,
-            cif_dict=cif_dict,
-            requires_grad=requires_grad,
         )

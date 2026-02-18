@@ -163,6 +163,7 @@ class Scaler(ScalerBase):
         self.calc_initial_scale(fcalc)
         self.setup_solvent()
         self.setup_anisotropy_correction()
+        return self
 
     def compute_fcalc(self) -> torch.Tensor:
         """

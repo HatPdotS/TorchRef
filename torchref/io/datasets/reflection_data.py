@@ -259,13 +259,95 @@ class ReflectionData(CrystalDataset, DebugMixin):
             self.masks["flagged_initial"] = ~flagged
             self._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
 
-        self._canonicalize_in_place()
-
-        self.sanitize_F()
-
-        self.flag_suspicious_sigma()
+        self._post_load_cleanup()
 
         return self
+
+    def _post_load_cleanup(self) -> "ReflectionData":
+        """
+        Run all post-load processing steps on the reflection data.
+
+        This is called automatically after ``load()`` and ``from_tensors()``.
+        It performs:
+        1. Resolution calculation from HKL + cell
+        2. Initial flagging mask (marks all reflections as valid if not set)
+        3. Canonicalization of HKL to CCP4 ASU
+        4. Sanitization of F (mask NaN/Inf/non-positive)
+        5. Suspicious sigma detection
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
+        """
+        if self.resolution is None:
+            self._calculate_resolution()
+
+        if "flagged_initial" not in self.masks:
+            self.masks["flagged_initial"] = torch.ones(
+                len(self.hkl), dtype=torch.bool, device=self.device
+            )
+
+        self._canonicalize_in_place()
+        self.sanitize_F()
+        self.flag_suspicious_sigma()
+        return self
+
+    @classmethod
+    def from_tensors(
+        cls,
+        hkl: torch.Tensor,
+        F: torch.Tensor,
+        F_sigma: torch.Tensor,
+        cell: "Cell",
+        spacegroup: "SpaceGroup",
+        rfree_flags: Optional[torch.Tensor] = None,
+        device: str = "cpu",
+        verbose: int = 1,
+    ) -> "ReflectionData":
+        """
+        Construct ReflectionData directly from tensors.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices of shape (N, 3).
+        F : torch.Tensor
+            Structure factor amplitudes of shape (N,).
+        F_sigma : torch.Tensor
+            Amplitude uncertainties of shape (N,).
+        cell : Cell
+            Unit cell parameters.
+        spacegroup : SpaceGroup
+            Space group.
+        rfree_flags : torch.Tensor, optional
+            R-free flags of shape (N,), dtype bool. If None, flags are
+            generated automatically (2% free fraction).
+        device : str, optional
+            Device for tensors. Default is 'cpu'.
+        verbose : int, optional
+            Verbosity level. Default is 1.
+
+        Returns
+        -------
+        ReflectionData
+            Fully initialized reflection data with all cleanup applied.
+        """
+        data = cls(device=device, verbose=verbose)
+        data.hkl = hkl.to(device=data.device)
+        data.F = F.to(device=data.device)
+        data.F_sigma = F_sigma.to(device=data.device)
+        data.cell = cell.to(device=data.device) if hasattr(cell, 'to') else Cell(cell, device=data.device)
+        data.spacegroup = spacegroup if isinstance(spacegroup, SpaceGroup) else SpaceGroup(spacegroup)
+
+        if rfree_flags is not None:
+            data.rfree_flags = rfree_flags.to(device=data.device, dtype=torch.bool)
+        else:
+            data._calculate_resolution()
+            data._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
+
+        data._post_load_cleanup()
+        return data
 
     def load_mtz(self, path: str) -> "ReflectionData":
         """

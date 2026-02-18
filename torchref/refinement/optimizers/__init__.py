@@ -12,15 +12,18 @@ This module provides custom optimizers and optimization functions:
 - optimize_momentum_sa: Phenix-style SA (gradient descent + momentum + noise)
 - refine_momentum_sa_lbfgs: Combined Phenix-style SA + LBFGS pipeline
 - ExploratoryLBFGS: LBFGS with automatic landscape exploration via Lanczos
+- LangevinSA: BAOAB Langevin dynamics with simulated annealing
 """
 
 from .adam_noise import AdamWithAdaptiveNoise
 from .exploratory_lbfgs import ExploratoryLBFGS
+from .langevin_sa import LangevinSA
 from .momentum_sa import MomentumStochasticSA
 
 
 __all__ = [
     "AdamWithAdaptiveNoise",
     "ExploratoryLBFGS",
+    "LangevinSA",
     "MomentumStochasticSA",
 ]
