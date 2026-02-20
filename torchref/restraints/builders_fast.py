@@ -228,7 +228,9 @@ class PreprocessedCIF:
             if "angles" in data and len(data["angles"]) > 0:
                 self.angles[restype] = self._preprocess_angles(data["angles"])
             if "torsions" in data and len(data["torsions"]) > 0:
-                self.torsions[restype] = self._preprocess_torsions(data["torsions"])
+                result = self._preprocess_torsions(data["torsions"])
+                if result is not None:
+                    self.torsions[restype] = result
             if "planes" in data and len(data["planes"]) > 0:
                 self.planes[restype] = self._preprocess_planes(data["planes"])
             if "chirals" in data and len(data["chirals"]) > 0:
@@ -253,8 +255,35 @@ class PreprocessedCIF:
             "sigma": angles_df["sigma"].values.astype(np.float64),
         }
 
+    # Backbone heavy atoms — torsions where ALL four atoms fall in this set
+    # are phi/psi-equivalent and must NOT be restrained as intra-residue
+    # torsions (they conflict with Ramachandran-favored angles).
+    # Example: CIF "sp2_sp3_1  O C CA N  0.0 10.0 6" directly restrains psi.
+    _BACKBONE_ATOMS = frozenset({"N", "CA", "C", "O", "OXT"})
+
     def _preprocess_torsions(self, torsions_df: pd.DataFrame) -> Dict[str, np.ndarray]:
-        """Convert torsions DataFrame to NumPy arrays."""
+        """Convert torsions DataFrame to NumPy arrays.
+
+        Filters out torsions where all four atoms are backbone heavy atoms
+        (N, CA, C, O, OXT), since those are phi/psi-equivalent and would
+        conflict with Ramachandran-favored conformations.
+        """
+        # Filter out backbone-only torsions (e.g. sp2_sp3_1: O-C-CA-N)
+        bb = self._BACKBONE_ATOMS
+        keep = np.array([
+            not ({a1, a2, a3, a4} <= bb)
+            for a1, a2, a3, a4 in zip(
+                torsions_df["atom1"].values,
+                torsions_df["atom2"].values,
+                torsions_df["atom3"].values,
+                torsions_df["atom4"].values,
+            )
+        ], dtype=bool)
+        torsions_df = torsions_df[keep].reset_index(drop=True)
+
+        if len(torsions_df) == 0:
+            return None
+
         # Handle both 'period' and 'periodicity' column names
         if "periodicity" in torsions_df.columns:
             periods = torsions_df["periodicity"].values.astype(np.int64)
@@ -1695,6 +1724,19 @@ class InterResidueTorsionBuilder:
         """Return total number of disulfide torsion restraints accumulated."""
         return self._disulfide_count
 
+    @staticmethod
+    def _torsion_angle_np(coords: np.ndarray, i1, i2, i3, i4) -> float:
+        """Compute torsion angle (degrees) from coordinates for 4 atom indices."""
+        p = coords[[i1, i2, i3, i4]]
+        b1, b2, b3 = p[1] - p[0], p[2] - p[1], p[3] - p[2]
+        n1, n2 = np.cross(b1, b2), np.cross(b2, b3)
+        n1_len, n2_len = np.linalg.norm(n1), np.linalg.norm(n2)
+        if n1_len < 1e-10 or n2_len < 1e-10:
+            return 180.0
+        n1, n2 = n1 / n1_len, n2 / n2_len
+        m1 = np.cross(n1, b2 / np.linalg.norm(b2))
+        return float(np.degrees(np.arctan2(np.dot(m1, n2), np.dot(n1, n2))))
+
     def build(
         self,
         pdb: pd.DataFrame,
@@ -1706,7 +1748,7 @@ class InterResidueTorsionBuilder:
         """
         Build all inter-residue torsion restraints.
 
-        Returns separate phi, psi, omega results.
+        Returns separate phi, psi, omega, and ramachandran results.
         """
         if "torsions" not in link_dict or link_dict["torsions"] is None:
             return None
@@ -1721,6 +1763,11 @@ class InterResidueTorsionBuilder:
         residue_maps = self._build_residue_maps(pp_pdb)
         pairs = self._find_consecutive_pairs(pp_pdb)
 
+        # Build coordinate array for omega angle computation (cis/trans PRO)
+        max_idx = int(pdb["index"].max()) + 1
+        coords_np = np.zeros((max_idx, 3))
+        coords_np[pdb["index"].values] = pdb[["x", "y", "z"]].values
+
         # Separate accumulators for phi, psi, omega
         phi_data = {"indices": [], "periods": []}
         psi_data = {"indices": [], "periods": []}
@@ -1731,15 +1778,30 @@ class InterResidueTorsionBuilder:
             "periods": [],
             "is_proline": [],
         }
+        # Ramachandran: collect phi/psi per residue, then match afterwards
+        # phi from pair (i, j) belongs to residue j (second residue)
+        # psi from pair (i, j) belongs to residue i (first residue)
+        phi_by_residue = {}  # res_idx -> atom indices
+        psi_by_residue = {}  # res_idx -> atom indices
+        omega_by_residue = {}  # res_idx -> omega_deg (for cis/trans PRO detection)
+        resname_by_residue = {}  # res_idx -> resname
+        next_resname_by_residue = {}  # res_idx -> next resname (for pre-PRO)
 
         torsions = link_data.torsions
         n_torsions = len(torsions["atom1"])
 
+        from torchref.restraints.ramachandran import classify_residue
+
         for res_i_idx, res_next_idx in pairs:
             map_i = residue_maps[res_i_idx]
             map_next = residue_maps[res_next_idx]
+            resname_i = pp_pdb.residue_resnames[res_i_idx]
             resname_next = pp_pdb.residue_resnames[res_next_idx]
             is_proline = resname_next == "PRO"
+
+            # Track which residue each phi/psi belongs to
+            pair_phi = None   # phi from this pair belongs to res_next_idx
+            pair_psi = None   # psi from this pair belongs to res_i_idx
 
             for t in range(n_torsions):
                 comp1 = torsions["comp1"][t]
@@ -1773,15 +1835,44 @@ class InterResidueTorsionBuilder:
                 if torsion_id == "phi":
                     phi_data["indices"].append([idx1, idx2, idx3, idx4])
                     phi_data["periods"].append(period)
+                    pair_phi = [idx1, idx2, idx3, idx4]
                 elif torsion_id == "psi":
                     psi_data["indices"].append([idx1, idx2, idx3, idx4])
                     psi_data["periods"].append(period)
+                    pair_psi = [idx1, idx2, idx3, idx4]
                 elif torsion_id == "omega":
                     omega_data["indices"].append([idx1, idx2, idx3, idx4])
                     omega_data["references"].append(float(torsions["value"][t]))
                     omega_data["sigmas"].append(float(torsions["sigma"][t]))
                     omega_data["periods"].append(period)
                     omega_data["is_proline"].append(is_proline)
+
+            # Store phi/psi by the residue they actually belong to:
+            # phi: C(i) - N(j) - CA(j) - C(j)  → belongs to residue j
+            # psi: N(i) - CA(i) - C(i)  - N(j)  → belongs to residue i
+            if pair_phi is not None:
+                phi_by_residue[res_next_idx] = pair_phi
+            if pair_psi is not None:
+                psi_by_residue[res_i_idx] = pair_psi
+            # Track residue names and next-residue names for classification
+            resname_by_residue[res_i_idx] = resname_i
+            resname_by_residue[res_next_idx] = resname_next
+            next_resname_by_residue[res_i_idx] = resname_next
+            # Compute omega for PRO cis/trans detection
+            if resname_next == "PRO" and pair_psi is not None:
+                # omega belongs to the same peptide bond as psi(i)
+                # We need omega for residue j (the PRO), which is from this pair
+                omega_idx = [idx1, idx2, idx3, idx4] if omega_data["indices"] else None
+                # Actually use the omega from the torsion loop if available
+                pass
+            # For omega: it defines the peptide bond between i and j.
+            # The residue that "is PRO" is j (resname_next).
+            # We store omega keyed by the PRO residue (res_next_idx).
+            if is_proline and omega_data["indices"]:
+                omega_deg = self._torsion_angle_np(
+                    coords_np, *omega_data["indices"][-1]
+                )
+                omega_by_residue[res_next_idx] = omega_deg
 
         result = {}
 
@@ -1833,6 +1924,46 @@ class InterResidueTorsionBuilder:
                 "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
                 "periods": torch.tensor(periods, dtype=torch.long, device=device),
                 "is_proline": torch.tensor(is_proline, dtype=torch.bool, device=device),
+            }
+
+        # Finalize ramachandran — match phi and psi for the SAME residue
+        # phi_by_residue[r] = phi atom indices for residue r
+        # psi_by_residue[r] = psi atom indices for residue r
+        # A residue needs both phi and psi for a Ramachandran restraint
+        rama_residues = sorted(
+            set(phi_by_residue.keys()) & set(psi_by_residue.keys())
+        )
+        if rama_residues:
+            rama_phi = []
+            rama_psi = []
+            rama_types = []
+            for res_idx in rama_residues:
+                resname = resname_by_residue[res_idx]
+                next_rn = next_resname_by_residue.get(res_idx, "")
+                omega_deg = omega_by_residue.get(res_idx, 180.0)
+                rama_type = classify_residue(resname, next_rn, omega_deg)
+                rama_phi.append(phi_by_residue[res_idx])
+                rama_psi.append(psi_by_residue[res_idx])
+                rama_types.append(rama_type)
+
+            phi_idx = np.array(rama_phi, dtype=np.int64)
+            psi_idx = np.array(rama_psi, dtype=np.int64)
+            stypes = np.array(rama_types, dtype=np.int64)
+            if sort_indices:
+                order = np.argsort(phi_idx[:, 0])
+                phi_idx = phi_idx[order]
+                psi_idx = psi_idx[order]
+                stypes = stypes[order]
+            result["ramachandran"] = {
+                "phi_indices": torch.tensor(
+                    phi_idx, dtype=torch.long, device=device
+                ),
+                "psi_indices": torch.tensor(
+                    psi_idx, dtype=torch.long, device=device
+                ),
+                "surface_type": torch.tensor(
+                    stypes, dtype=torch.long, device=device
+                ),
             }
 
         return result if result else None

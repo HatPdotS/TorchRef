@@ -1,20 +1,23 @@
 #!/usr/bin/env python3 -u
 
 """
+
 Command-line script for difference refinement of time-resolved
 crystallographic data using torchref.
 
 Refines a mixed model (dark + light state) against observed dark and
-light reflection data using the Taylor-corrected difference target
+light reflection data using an amplitude-only difference target
 together with geometry, ADP, and maximum-likelihood restraints.
 
 The weight schedule controls how the difference-target weight is annealed
 over the course of refinement.  By default the schedule ``5,3,2`` is
 repeated for 3 macro-cycles with 2 LBFGS optimisation rounds per weight
 step, matching the protocol in Seidel et al.
+
 """
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -45,17 +48,21 @@ os.environ["PYTHONUNBUFFERED"] = "1"
 DEFAULT_TARGET_WEIGHTS = {
     # ML target
     "light/maximum_likelihood_xray": 1.0,
-    # Geometry (6 components)
+    # Geometry (7 components)
     "light/model_target/geometry/bond": 1.0,
     "light/model_target/geometry/angle": 0.5,
     "light/model_target/geometry/torsion": 0.5,
     "light/model_target/geometry/planarity": 2.0,
     "light/model_target/geometry/chiral": 3.0,
     "light/model_target/geometry/nonbonded": 0.5,
+    "light/model_target/geometry/ramachandran": 1.0,
     # ADP (3 components)
     "light/model_target/adp/simu": 3.0,
     "light/model_target/adp/locality": 0.5,
     "light/model_target/adp/KL": 0.3,
+    # Real-space targets
+    "light/realspace/correlation": 5,
+    "light/realspace_extrapolated": 10,
 }
 
 
@@ -164,16 +171,18 @@ def setup_loss_state(mixed_model, model_dark, model_light,
     """
     from torchref.refinement import LossState
     from torchref.refinement.targets import (
-        TaylorCorrectedDifferenceTarget,
+        DifferenceXrayTarget,
         TotalADPTarget,
         TotalGeometryTarget,
         MaximumLikelihoodXrayTarget,
+        RealSpaceCorrelationTarget,
+        RealSpaceExtrapolatedTarget,
     )
 
     state = LossState(device=device)
 
-    diff_target = TaylorCorrectedDifferenceTarget(
-        dataset_collection,
+    diff_target = DifferenceXrayTarget(
+        dataset_collection=dataset_collection,
         model_dark=model_dark,
         model_light=mixed_model,
         scaler_dark=scaler_dark,
@@ -183,6 +192,19 @@ def setup_loss_state(mixed_model, model_dark, model_light,
     adp_target_light = TotalADPTarget(model_light)
     ml_target_light = MaximumLikelihoodXrayTarget(
         dataset_collection["light"], mixed_model, scaler=scaler_mixed
+    )
+    rs_mixed_target = RealSpaceCorrelationTarget(
+        data=dataset_collection["light"],
+        model=mixed_model,
+        scaler=scaler_mixed,
+    )
+    rs_extra_target = RealSpaceExtrapolatedTarget(
+        dataset_collection,
+        model_dark=model_dark,
+        model_light=model_light,
+        model_mixed=mixed_model,
+        scaler_dark=scaler_dark,
+        scaler_mixed=scaler_mixed,
     )
 
     state.register_target(diff_target.name, diff_target)
@@ -194,6 +216,12 @@ def setup_loss_state(mixed_model, model_dark, model_light,
     )
     state.register_target(
         ml_target_light.name, ml_target_light, prefix="light"
+    )
+    state.register_target(
+        rs_mixed_target.name, rs_mixed_target, prefix="light"
+    )
+    state.register_target(
+        rs_extra_target.name, rs_extra_target, prefix="light"
     )
 
     state.set_weights(target_weights)
@@ -254,6 +282,7 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
 
         F_obs_dark_phased = Fobs_dark_vals * torch.exp(1j * phi_dark)
         F_obs_light_phased = Fobs_light_vals * torch.exp(1j * phi_mixed)
+
         F_light_extra = (                                                   # Phase aware extrapolation of the difference, scaled by the light fraction
             (F_obs_light_phased - w_dark * F_obs_dark_phased) / w_light
         )
@@ -282,6 +311,32 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
 
         phi_light_calc = torch.angle(F_light_calc_scaled_F_extra)
         amp_2fofc_light = 2 * amp_extra - amp_light_calc
+        amp_fextfc = amp_extra - amp_light_calc
+
+        # Classic (amplitude-only) extrapolation: F_ext = (|F_l| - w_d·|F_d|) / w_l
+        amp_extra_classic = (Fobs_light_vals - w_dark * Fobs_dark_vals) / w_light
+        
+        sig_extra_classic = sig_light_extra  # same error propagation
+
+        data_light_extra_classic = ReflectionData.from_tensors(
+            hkl=hkl,
+            F=amp_extra_classic,
+            F_sigma=sig_extra_classic,
+            cell=data_light.cell,
+            spacegroup=data_light.spacegroup,
+            rfree_flags=data_light.rfree_flags,
+            device=str(hkl.device),
+            verbose=0,
+        )
+
+        scaler_light_extra_classic = Scaler(model_light, data_light_extra_classic, device=hkl.device)
+        scaler_light_extra_classic.initialize().refine_lbfgs()  
+
+        F_light_calc_scaled_F_extra_classic = scaler_light_extra_classic(model_light(hkl))
+        amp_light_calc_classic = torch.abs(F_light_calc_scaled_F_extra_classic)
+
+        amp_2fofc_classic = 2 * amp_extra_classic - amp_light_calc_classic
+        amp_fofc_classic = amp_extra_classic - amp_light_calc_classic
 
     m = mask
     hkl_np = hkl[m].cpu().numpy()
@@ -293,17 +348,27 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
     Fcalc_dark = torch.abs(fcalc_dark[m]).cpu().numpy()
     Fcalc_light = torch.abs(fcalc_mixed[m]).cpu().numpy()
     phases_dark = torch.angle(fcalc_dark[m]).rad2deg().cpu().numpy()
-    phases_light = torch.angle(fcalc_mixed[m]).rad2deg().cpu().numpy()
+    phases_mixed = torch.angle(fcalc_mixed[m]).rad2deg().cpu().numpy()
 
     Fcalc_diff_amp = torch.abs(fcalc_diff[m]).cpu().numpy()
     Fcalc_diff_scalar = Fcalc_light - Fcalc_dark
     phases_diff = torch.angle(fcalc_diff[m]).rad2deg().cpu().numpy()
+
+    # Complex observed difference: |F_obs_light·exp(iφ_mixed) - F_obs_dark·exp(iφ_dark)|
+    # Pairs with phases_diff for a proper DED map
+    Fobs_diff_phased = torch.abs(
+        F_obs_light_phased[m] - F_obs_dark_phased[m]
+    ).cpu().numpy()
 
     diff_Fobs = Fobs_light - Fobs_dark
     sig_diff = (sig_dark**2 + sig_light**2) ** 0.5
     weights = 1 / sig_diff**2
     weights = weights / weights.mean()
     weighted_diff_Fobs = diff_Fobs * weights
+
+    # 2Fo-Fc style DED: sigma-weighted, reduces phase bias
+    amp_2DFoDFc = (2 * Fobs_diff_phased - Fcalc_diff_amp) * weights
+    amp_DFoDFc = (Fobs_diff_phased - Fcalc_diff_amp) * weights
 
     df = rs.DataSet(
         {
@@ -314,18 +379,25 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
             "sig_Fobs_dark": sig_dark,
             "Fobs_light": Fobs_light,
             "sig_Fobs_light": sig_light,
-            "Fobs_diff": diff_Fobs,
-            "weighted_Fobs_diff": weighted_diff_Fobs,
-            "sig_Fobs_diff": sig_diff,
+            "DFo": diff_Fobs,
+            "WDFo": weighted_diff_Fobs,
+            "sig_DFo": sig_diff,
             "Fcalc_dark": Fcalc_dark,
             "Fcalc_light": Fcalc_light,
             "Fcalc_diff": Fcalc_diff_scalar,
             "Fcalc_diff_w_phases": Fcalc_diff_amp,
+            "W2DFoDFc": amp_2DFoDFc,
+            "WDFoDFc": amp_DFoDFc,
             "phase_dark": phases_dark,
-            "phase_light": phases_light,
+            "phase_mixed": phases_mixed,
             "phase_diff": phases_diff,
-            "2FoFc_light": amp_2fofc_light[m].cpu().numpy(),
-            "PHI_2FoFc_light": phi_light_calc[m].rad2deg().cpu().numpy(),
+            "phase_light": phi_light_calc[m].rad2deg().cpu().numpy(),
+            "2FextFc_light": amp_2fofc_light[m].cpu().numpy(),
+            "FextFc": amp_fextfc[m].cpu().numpy(),
+            "Fext_classic": amp_extra_classic[m].cpu().numpy(),
+            "sig_Fext_classic": sig_extra_classic[m].cpu().numpy(),
+            "2Fext_classic_Fc": amp_2fofc_classic[m].cpu().numpy(),
+            "Fext_classic_Fc": amp_fofc_classic[m].cpu().numpy(),
         },
         cell=data_dark.cell.data.cpu().tolist(),
         spacegroup=data_dark.spacegroup.hm,
@@ -334,22 +406,26 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
     df[["H", "K", "L"]] = df[["H", "K", "L"]].astype("H")
     df[
         [
-            "Fobs_dark", "Fobs_light", "Fobs_diff", "weighted_Fobs_diff",
+            "Fobs_dark", "Fobs_light", "DFo", "WDFo", "sig_DFo",
             "Fcalc_dark", "Fcalc_light", "Fcalc_diff", "Fcalc_diff_w_phases",
-            "2FoFc_light",
+            "W2DFoDFc", "WDFoDFc",
+            "2FextFc_light", "FextFc",
+            "Fext_classic", "2Fext_classic_Fc", "Fext_classic_Fc",
         ]
     ] = df[
         [
-            "Fobs_dark", "Fobs_light", "Fobs_diff", "weighted_Fobs_diff",
+            "Fobs_dark", "Fobs_light", "DFo", "WDFo", "sig_DFo",
             "Fcalc_dark", "Fcalc_light", "Fcalc_diff", "Fcalc_diff_w_phases",
-            "2FoFc_light",
+            "W2DFoDFc", "WDFoDFc",
+            "2FextFc_light", "FextFc",
+            "Fext_classic", "2Fext_classic_Fc", "Fext_classic_Fc",
         ]
     ].astype("F")
-    df[["sig_Fobs_dark", "sig_Fobs_light", "sig_Fobs_diff"]] = df[
-        ["sig_Fobs_dark", "sig_Fobs_light", "sig_Fobs_diff"]
+    df[["sig_Fobs_dark", "sig_Fobs_light", "sig_Fobs_diff", "sig_Fext_classic"]] = df[
+        ["sig_Fobs_dark", "sig_Fobs_light", "sig_Fobs_diff", "sig_Fext_classic"]
     ].astype("Q")
-    df[["phase_dark", "phase_light", "phase_diff", "PHI_2FoFc_light"]] = df[
-        ["phase_dark", "phase_light", "phase_diff", "PHI_2FoFc_light"]
+    df[["phase_dark", "phase_light", "phase_diff", "phase_mixed"]] = df[
+        ["phase_dark", "phase_light", "phase_diff", "phase_mixed"]
     ].astype("P")
     df.set_index(["H", "K", "L"], inplace=True)
     df.write_mtz(filename)
@@ -497,6 +573,13 @@ Examples:
              + json.dumps(DEFAULT_TARGET_WEIGHTS, indent=None),
     )
     parser.add_argument(
+        "--refine-fractions",
+        action="store_true",
+        default=False,
+        help="Refine population fractions during optimisation "
+             "(default: fractions are frozen at initial values)",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         type=int,
         default=1,
@@ -536,11 +619,16 @@ Examples:
     target_weights = dict(DEFAULT_TARGET_WEIGHTS)
     # Include the difference target with an initial value (will be
     # overridden each schedule step, but needs a key in the dict).
-    target_weights["taylor_corrected_difference"] = weight_schedule[0]
+    target_weights["difference_xray"] = weight_schedule[0]
 
     if args.target_weights is not None:
         try:
-            user_weights = json.loads(args.target_weights)
+            # Accept either a JSON file path or an inline JSON string
+            if Path(args.target_weights).is_file():
+                with open(args.target_weights) as f:
+                    user_weights = json.load(f)
+            else:
+                user_weights = json.loads(args.target_weights)
             if not isinstance(user_weights, dict):
                 raise ValueError("must be a JSON object")
             target_weights.update(user_weights)
@@ -586,7 +674,8 @@ Examples:
         print(f"Light PDB:         {args.light_pdb}")
         print(f"Dark MTZ:          {args.dark_mtz}")
         print(f"Light MTZ:         {args.light_mtz}")
-        print(f"Fractions:         dark={fractions[0]}, light={fractions[1]}")
+        frac_mode = "refinable" if args.refine_fractions else "frozen"
+        print(f"Fractions:         dark={fractions[0]}, light={fractions[1]} ({frac_mode})")
         print(f"Output:            {outdir}")
         print(f"Device:            {device}")
         if args.max_res:
@@ -615,6 +704,11 @@ Examples:
         args.dark_pdb, args.light_pdb, fractions,
         args.restraints_cif, d_min, device, args.verbose,
     )
+
+    if args.refine_fractions:
+        mixed.unfreeze_fractions()
+    else:
+        mixed.freeze_fractions()
 
     if args.verbose > 0:
         print("Loading reflection data...")
@@ -660,19 +754,30 @@ Examples:
     total_rounds = args.n_cycles * len(weight_schedule)
     round_idx = 0
 
+    # Collect parameters for optimisation
+    if args.refine_fractions:
+        params = itertools.chain(light.parameters(), [mixed.fraction_params])
+    else:
+        params = light.parameters()
+    params = list(params)
+
     for cycle in range(args.n_cycles):
         for t_weight in weight_schedule:
             round_idx += 1
             if args.verbose > 0:
+                frac_str = (
+                    f", fractions={mixed.fractions.detach().cpu().tolist()}"
+                    if args.refine_fractions else ""
+                )
                 print(
                     f"[{round_idx}/{total_rounds}] cycle {cycle + 1}/"
-                    f"{args.n_cycles}, diff_weight={t_weight}"
+                    f"{args.n_cycles}, diff_weight={t_weight}{frac_str}"
                 )
                 sys.stdout.flush()
 
-            state.set_weights({"taylor_corrected_difference": t_weight})
+            state.set_weights({"difference_xray": t_weight})
             optimize_lbfgs(
-                state, light.parameters(),
+                state, params,
                 max_iter=args.max_iter,
                 nsteps=args.n_steps,
                 n_clean=args.n_clean,
@@ -713,7 +818,6 @@ Examples:
 
     dark.write_pdb(dark_pdb_out)
     light.write_pdb(light_pdb_out)
-    data_light.write_mtz(light_mtz_out, model_ft=mixed)
 
     write_results_mtz(
         data_dark, data_light, mixed, dark, light,

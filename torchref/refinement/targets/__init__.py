@@ -51,6 +51,7 @@ from .realspace_targets import (
     RealSpaceCorrelationTarget,
     RealSpaceDifferenceTarget,
 )
+from .realspace_extrapolated_target import RealSpaceExtrapolatedTarget
 
 # Force field target (optional dependency)
 try:
@@ -94,4 +95,5 @@ __all__ = [
     "RealSpaceTarget",
     "RealSpaceCorrelationTarget",
     "RealSpaceDifferenceTarget",
+    "RealSpaceExtrapolatedTarget",
 ]

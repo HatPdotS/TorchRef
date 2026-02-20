@@ -483,6 +483,13 @@ class RestraintsNew(DebugMixin, Module):
                 residue_alt = residue.loc[residue["altloc"] == alt_loc]
                 yield residue_alt
 
+    def _load_rama_surfaces(self, device: torch.device):
+        """Load pre-computed Ramachandran NLL surfaces as a buffer."""
+        from torchref.restraints.ramachandran import load_nll_surfaces
+
+        surfaces = load_nll_surfaces(device)
+        self.register_buffer("_rama_surfaces", surfaces)
+
     def build_restraints(self):
         """
         Build all restraints using the fast builder API.
@@ -586,6 +593,12 @@ class RestraintsNew(DebugMixin, Module):
                 self.restraints["torsion"]["psi"] = torsion_result["psi"]
             if "omega" in torsion_result:
                 self.restraints["torsion"]["omega"] = torsion_result["omega"]
+            if "ramachandran" in torsion_result:
+                rama = torsion_result["ramachandran"]
+                self.register_buffer("_rama_phi_indices", rama["phi_indices"])
+                self.register_buffer("_rama_psi_indices", rama["psi_indices"])
+                self.register_buffer("_rama_surface_type", rama["surface_type"])
+                self._load_rama_surfaces(device)
 
         # Build peptide planes
         plane_result = InterResiduePlaneBuilder(verbose=self.verbose).build(
@@ -863,8 +876,24 @@ class RestraintsNew(DebugMixin, Module):
         else:
             same_residue = np.zeros(len(pairs_np), dtype=bool)
 
-        # Combined mask: keep pairs that are not excluded and not same-residue
-        keep_mask = ~exclusion_mask & ~same_residue
+        # Altloc compatibility: exclude pairs where both atoms have
+        # different non-empty altlocs (they don't physically coexist)
+        if "altloc" in pdb.columns:
+            altloc_array = pdb["altloc"].values.astype(str)
+            altloc_array = np.where(
+                np.isin(altloc_array, ["", " "]), " ", altloc_array
+            )
+            altloc_i = altloc_array[i1_arr]
+            altloc_j = altloc_array[i2_arr]
+            incompatible_altloc = (
+                (altloc_i != " ") & (altloc_j != " ") & (altloc_i != altloc_j)
+            )
+        else:
+            incompatible_altloc = np.zeros(len(pairs_np), dtype=bool)
+
+        # Combined mask: keep pairs that are not excluded, not same-residue,
+        # and have compatible altlocs
+        keep_mask = ~exclusion_mask & ~same_residue & ~incompatible_altloc
 
         # Filter pairs
         filtered_pairs = pairs_np[keep_mask]
@@ -947,6 +976,13 @@ class RestraintsNew(DebugMixin, Module):
         print(f"  Phi: {get_count('torsion', 'phi')}")
         print(f"  Psi: {get_count('torsion', 'psi')}")
         print(f"  Omega: {get_count('torsion', 'omega')}")
+
+        # Ramachandran
+        rama_count = 0
+        if hasattr(self, "_rama_phi_indices") and self._rama_phi_indices is not None:
+            rama_count = self._rama_phi_indices.shape[0]
+        if rama_count > 0:
+            print(f"  Ramachandran: {rama_count}")
 
         print()
         print("VDW RESTRAINTS:")
@@ -1239,16 +1275,21 @@ class RestraintsNew(DebugMixin, Module):
             "references": self._get_all_property("angle", "references"),
             "sigmas": self._get_all_property("angle", "sigmas"),
         }
+        # Note: phi/psi origins are excluded because they have no reference
+        # values or sigmas (conformationally free). Omega IS included — it
+        # has references (~180°) and sigmas and must be evaluated to maintain
+        # peptide bond planarity.
+        _torsion_origins = ["intra", "disulfide", "omega"]
         self.restraints["torsion"]["all"] = {
-            "indices": self._get_all_indices("torsion", ["intra", "disulfide"]),
+            "indices": self._get_all_indices("torsion", _torsion_origins),
             "references": self._get_all_property(
-                "torsion", "references", ["intra", "disulfide"]
+                "torsion", "references", _torsion_origins
             ),
             "sigmas": self._get_all_property(
-                "torsion", "sigmas", ["intra", "disulfide"]
+                "torsion", "sigmas", _torsion_origins
             ),
             "periods": self._get_all_property(
-                "torsion", "periods", ["intra", "disulfide"]
+                "torsion", "periods", _torsion_origins
             ),
         }
         # Cache max period to avoid .item() GPU sync every iteration

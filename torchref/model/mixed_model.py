@@ -203,6 +203,105 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         """Float dtype from first model (for compatibility)."""
         return self.models[0].dtype_float
 
+    # =========================================================================
+    # Grid infrastructure (delegates to constituent models)
+    # =========================================================================
+
+    @property
+    def real_space_grid(self) -> Optional[torch.Tensor]:
+        """Real-space coordinate grid from first model (shared cell → same grid)."""
+        return self.models[0].real_space_grid
+
+    @property
+    def fft(self):
+        """SfFFT submodule from first model (for gridsize access)."""
+        return self.models[0].fft
+
+    @property
+    def gridsize(self) -> Optional[torch.Tensor]:
+        """Grid dimensions (nx, ny, nz) from first model."""
+        return self.models[0].gridsize
+
+    @property
+    def map_symmetry(self):
+        """Map symmetry operator from first model."""
+        return self.models[0].map_symmetry
+
+    @property
+    def inv_fractional_matrix(self) -> torch.Tensor:
+        """Inverse fractionalization (orthogonalization) matrix."""
+        return self.cell.inv_fractional_matrix.to(dtype=self.dtype_float)
+
+    @property
+    def fractional_matrix(self) -> torch.Tensor:
+        """Fractionalization matrix."""
+        return self.cell.fractional_matrix.to(dtype=self.dtype_float)
+
+    def setup_grid(self, max_res=None, gridsize=None):
+        """
+        Setup real-space grid on all constituent models.
+
+        All models share the same cell/spacegroup, so the grid is identical
+        across all of them. This ensures each model's SfFFT is ready for
+        density map calculations.
+
+        Parameters
+        ----------
+        max_res : float, optional
+            Maximum resolution for grid spacing in Angstroms.
+        gridsize : tuple of int, optional
+            Explicit grid size (nx, ny, nz).
+        """
+        for model in self.models:
+            model.setup_grid(max_res=max_res, gridsize=gridsize)
+
+    def get_radius(self, min_radius_Angstrom: float = 4.0) -> int:
+        """
+        Get the radius in voxels for density calculation.
+
+        Delegates to first model (same grid → same voxel size).
+
+        Parameters
+        ----------
+        min_radius_Angstrom : float, optional
+            Minimum radius in Angstroms. Default is 4.0.
+
+        Returns
+        -------
+        int
+            Radius in voxels.
+        """
+        return self.models[0].get_radius(min_radius_Angstrom)
+
+    def build_complete_map(self) -> torch.Tensor:
+        """
+        Build the mixed electron density map as the weighted sum of
+        constituent model density maps.
+
+        density_mixed = Σ w_i * density_i
+
+        Each constituent model builds its own density map on the shared
+        grid, and the results are combined using the current population
+        fractions.
+
+        Returns
+        -------
+        torch.Tensor
+            Electron density map with shape (nx, ny, nz).
+        """
+        fractions = self.fractions
+
+        density = None
+        for i, model in enumerate(self.models):
+            model_density = model.build_complete_map()
+            weighted = fractions[i] * model_density
+            if density is None:
+                density = weighted
+            else:
+                density = density + weighted
+
+        return density
+
     def freeze_fractions(self):
         """
         Exclude fractions from optimization.

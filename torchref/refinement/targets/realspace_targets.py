@@ -18,6 +18,7 @@ import torch
 
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.symmetry.grid_utils import calculate_optimal_grid_size
+from torchref.symmetry.reciprocal_symmetry import expand_hkl
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -106,6 +107,11 @@ class RealSpaceTarget(DataTarget):
         self._molecular_mask = None
         self._gridsize = None
 
+        # P1 expansion cache (ASU → P1 mapping)
+        self._hkl_p1 = None
+        self._p1_indices = None
+        self._p1_phase_shifts = None
+
     def _ensure_grid(self):
         """Ensure model's SfFFT grid is set up."""
         if self._model is None:
@@ -118,6 +124,27 @@ class RealSpaceTarget(DataTarget):
         if self._data_p1 is None:
             self._data_p1 = self._data.expand_to_p1()
         return self._data_p1
+
+    def _ensure_p1_expansion(self):
+        """Compute and cache the ASU → P1 expansion mapping."""
+        if self._hkl_p1 is not None:
+            return
+        hkl_p1, indices, phase_shifts = expand_hkl(
+            self._data.hkl,
+            self._data.spacegroup or "P1",
+            include_friedel=True,
+            remove_absences=True,
+            device=self._data.hkl.device,
+        )
+        self._hkl_p1 = hkl_p1
+        self._p1_indices = indices
+        self._p1_phase_shifts = phase_shifts
+
+    def _expand_to_p1(self, fcalc: torch.Tensor) -> torch.Tensor:
+        """Expand ASU complex structure factors to P1 using cached mapping."""
+        self._ensure_p1_expansion()
+        fcalc_p1 = fcalc[self._p1_indices]
+        return fcalc_p1 * torch.exp(1j * self._p1_phase_shifts)
 
     def _get_gridsize(self) -> Tuple[int, int, int]:
         """
@@ -144,16 +171,22 @@ class RealSpaceTarget(DataTarget):
         For ``"Fo-Fc"``: ``(Fobs - |Fcalc|) * exp(i * phi_calc)``
         with |Fcalc| retaining gradients and phases detached.
 
+        Scaling is applied at ASU level before P1 expansion.
+
         Returns
         -------
         torch.Tensor
             3D real-space density map.
         """
-        data_p1 = self._get_data_p1()
-        hkl_p1, fobs_p1, _, _ = data_p1.data_indexed()
+        self._ensure_p1_expansion()
 
-        # Compute Fcalc at P1 hkl (with optional scaling)
-        fcalc_p1 = self.get_fcalc_scaled(hkl=hkl_p1)
+        # Expand Fobs to P1 using the same index mapping as Fcalc
+        # (amplitudes are invariant under symmetry, no phase shift needed)
+        fobs_p1 = self._data.F[self._p1_indices]
+
+        # Compute and scale Fcalc at ASU level, then expand to P1
+        fcalc_asu = self.get_fcalc_scaled()
+        fcalc_p1 = self._expand_to_p1(fcalc_asu)
 
         # Detach phases (following PhaseInformedDifferenceTarget pattern)
         phi_calc = torch.angle(fcalc_p1).detach()
@@ -170,13 +203,14 @@ class RealSpaceTarget(DataTarget):
             raise ValueError(f"Unknown map_type: {self.map_type}")
 
         gridsize = self._get_gridsize()
-        grid = place_on_grid(hkl_p1, coefficients, gridsize, enforce_hermitian=False)
+        grid = place_on_grid(self._hkl_p1, coefficients, gridsize, enforce_hermitian=False)
         return torch.fft.ifftn(grid, dim=(0, 1, 2), norm="forward").real
 
     def _compute_model_density(self) -> torch.Tensor:
         """
         Compute model electron density via Fcalc -> grid -> IFFT.
 
+        Scaling is applied at ASU level before P1 expansion.
         Retains full autograd graph for gradient flow through model parameters.
 
         Returns
@@ -184,14 +218,14 @@ class RealSpaceTarget(DataTarget):
         torch.Tensor
             3D real-space model density map.
         """
-        data_p1 = self._get_data_p1()
-        hkl_p1, _, _, _ = data_p1.data_indexed()
+        self._ensure_p1_expansion()
 
-        # Compute Fcalc with optional scaling (retains gradients)
-        fcalc_p1 = self.get_fcalc_scaled(hkl=hkl_p1)
+        # Compute and scale Fcalc at ASU level, then expand to P1
+        fcalc_asu = self.get_fcalc_scaled()
+        fcalc_p1 = self._expand_to_p1(fcalc_asu)
 
         gridsize = self._get_gridsize()
-        grid = place_on_grid(hkl_p1, fcalc_p1, gridsize, enforce_hermitian=False)
+        grid = place_on_grid(self._hkl_p1, fcalc_p1, gridsize, enforce_hermitian=False)
         return torch.fft.ifftn(grid, dim=(0, 1, 2), norm="forward").real
 
     def _build_molecular_mask(self):

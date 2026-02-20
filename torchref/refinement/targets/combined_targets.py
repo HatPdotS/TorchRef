@@ -288,6 +288,7 @@ class TotalGeometryTarget(CombinedModelTargets):
             "planarity": targets.PlanarityTarget(self.model, self.verbose),
             "chiral": targets.ChiralTarget(self.model, self.verbose),
             "nonbonded": targets.NonBondedTarget(self.model, verbose=self.verbose),
+            "ramachandran": targets.RamachandranTarget(self.model, self.verbose),
         }
 
     def get_metrics(self, verbosity: int = VERBOSITY_DETAILED) -> Dict[str, float]:
