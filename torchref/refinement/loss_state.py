@@ -7,6 +7,7 @@ Design:
 - Weights computed at initialization, not recalculated each pass
 - Internal history logging for debugging/analysis
 - Aggregation handled directly in this class
+- Loss functions with zeroed weight are not evaluated at all. 
 
 Example:
     state = LossState(device)
@@ -343,11 +344,15 @@ class LossState(DeviceMovementMixin):
 
         for name, target in self.targets.items():
             # Evaluate target
+            weight = self.get_effective_weight(name)
+            
+            if weight == 0.0:
+                continue
+
             loss = target()
             self._losses[name] = loss
 
             # Get effective weight
-            weight = self.get_effective_weight(name)
 
             # Accumulate
             weighted_loss = weight * loss

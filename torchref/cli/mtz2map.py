@@ -88,6 +88,15 @@ def main():
         help="Verbosity (0=silent, 1=normal, 2=debug). Default: 1.",
     )
 
+    parser.add_argument(
+        "-n",
+        "--normalize",
+        type=str,
+        choices=['True', 'False'],
+        default='True',
+        help="Normalize amplitudes to unit variance. Default: False.",
+    )
+
     args = parser.parse_args()
 
     # --- Read MTZ ---
@@ -98,6 +107,8 @@ def main():
 
     mtz = rs.read_mtz(args.mtz)
     available = list(mtz.columns)
+
+    normalize = args.normalize == 'True'
 
     if args.amplitude not in available:
         print(
@@ -210,6 +221,9 @@ def main():
     # FFT to real space: rho(r) = sum_h F(h) * exp(-2*pi*i * h.r)
     real_map = torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
 
+    if normalize:
+        real_map = (real_map - real_map.mean()) / real_map.std()
+        
     # --- Write output ---
     from torchref.io.cif import write_map
 

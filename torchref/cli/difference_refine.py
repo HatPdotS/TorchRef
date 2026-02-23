@@ -12,7 +12,9 @@ together with geometry, ADP, and maximum-likelihood restraints.
 The weight schedule controls how the difference-target weight is annealed
 over the course of refinement.  By default the schedule ``5,3,2`` is
 repeated for 3 macro-cycles with 2 LBFGS optimisation rounds per weight
-step, matching the protocol in Seidel et al.
+step.
+
+Rfree-flags from both datasets are respected. In the difference target the rfree sets are combined. 
 
 """
 
@@ -57,12 +59,12 @@ DEFAULT_TARGET_WEIGHTS = {
     "light/model_target/geometry/nonbonded": 0.5,
     "light/model_target/geometry/ramachandran": 1.0,
     # ADP (3 components)
-    "light/model_target/adp/simu": 3.0,
-    "light/model_target/adp/locality": 0.5,
-    "light/model_target/adp/KL": 0.3,
+    "light/model_target/adp/simu": 0.5,
+    "light/model_target/adp/locality": 0.2,
+    "light/model_target/adp/KL": 0.2,
     # Real-space targets
-    "light/realspace/correlation": 5,
-    "light/realspace_extrapolated": 10,
+    "light/realspace/correlation": 0,
+    "light/realspace_extrapolated": 0,
 }
 
 
@@ -254,6 +256,75 @@ def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
                 print(f"    LBFGS step {i + 1}/{nsteps}, loss: {loss.item():.4f}")
 
 
+def compute_bayes_extrapolated_amplitudes(
+    Fobs_dark, Fobs_light, sig_dark, sig_light, phi_dark, phi_mixed, f,
+    *, tau_sq_floor=1e-4,
+):
+    """Empirical Bayes shrinkage estimator for extrapolated SF amplitudes.
+
+    Given dark- and mixed-state observed amplitudes with measurement
+    uncertainties, compute posterior-mean extrapolated amplitudes for the
+    pure excited state by shrinking noisy extrapolated values toward the
+    dark-state amplitudes.  The shrinkage is per-reflection and driven
+    entirely by the propagated variance sigma_ext^2(h) = sigma_dF^2(h)/f^2,
+    so high-resolution / weakly-measured reflections are automatically
+    damped without resolution binning.
+
+    Parameters
+    ----------
+    Fobs_dark, Fobs_light : Tensor, shape (N,)
+        Observed amplitudes (real, positive).
+    sig_dark, sig_light : Tensor, shape (N,)
+        Measurement standard deviations.
+    phi_dark, phi_mixed : Tensor, shape (N,)
+        Calculated phases (radians) for dark and mixed models.
+    f : float or Tensor (scalar)
+        Excited-state population fraction.
+    tau_sq_floor : float
+        Minimum value for the estimated signal variance tau^2.
+
+    Returns
+    -------
+    F_ext_bayes : Tensor (N,)
+        Posterior-mean extrapolated amplitudes.
+    var_ext_bayes : Tensor (N,)
+        Posterior variance per reflection.
+    w_shrinkage : Tensor (N,)
+        Shrinkage weight w(h) = tau^2 / (tau^2 + sigma_ext^2(h)).
+    tau_sq : float
+        Estimated global signal variance.
+    """
+    # --- Step 1: complex difference structure factors ---
+    F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
+    F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
+    delta_F = F_light_phased - F_dark_phased
+
+    # Propagated variance on the complex difference (phases exact)
+    sig_sq_dF = sig_light**2 + sig_dark**2
+
+    # --- Step 2: noisy complex extrapolation ---
+    F_ext_complex = F_dark_phased + delta_F / f
+    F_ext_obs = torch.abs(F_ext_complex)
+
+    # Propagated variance on extrapolated amplitude
+    sig_sq_ext = sig_sq_dF / f**2
+
+    # --- Step 3: estimate tau^2 (global signal variance) ---
+    residuals_sq = (F_ext_obs - Fobs_dark) ** 2
+    tau_sq = (residuals_sq.mean() - sig_sq_ext.mean()).item()
+    tau_sq = max(tau_sq, tau_sq_floor)
+
+    # --- Step 4: posterior mean (shrinkage) ---
+    w = tau_sq / (tau_sq + sig_sq_ext)           # per-reflection weight
+    w = w / w.mean()                             # normalise to mean 1
+    F_ext_bayes = w * F_ext_obs + (1 - w) * Fobs_dark
+
+    # --- Step 5: posterior variance ---
+    var_ext_bayes = (tau_sq * sig_sq_ext) / (tau_sq + sig_sq_ext)
+
+    return F_ext_bayes, var_ext_bayes, w, tau_sq
+
+
 def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
                       model_light, scaler_dark, scaler_mixed, filename):
     """Write difference / extrapolated map coefficients to an MTZ file."""
@@ -272,71 +343,109 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
     w_dark = fractions[0]
     w_light = fractions[1]
 
-    with torch.no_grad():
-        fcalc_dark = scaler_dark(model_dark(hkl))
-        fcalc_mixed = scaler_mixed(mixed_model(hkl))
-        fcalc_diff = fcalc_mixed - fcalc_dark
+    # Calulate different types of extrapolated amplitudes for comparison, all using the same phases from the mixed model to ensure a fair comparison of amplitude estimates and resulting maps.
+    fcalc_dark = scaler_dark(model_dark(hkl))
+    fcalc_mixed = scaler_mixed(mixed_model(hkl))
+    fcalc_diff = fcalc_mixed - fcalc_dark
 
-        phi_dark = torch.angle(fcalc_dark)
-        phi_mixed = torch.angle(fcalc_mixed)
+    phi_dark = torch.angle(fcalc_dark)
+    phi_mixed = torch.angle(fcalc_mixed)
 
-        F_obs_dark_phased = Fobs_dark_vals * torch.exp(1j * phi_dark)
-        F_obs_light_phased = Fobs_light_vals * torch.exp(1j * phi_mixed)
+    F_obs_dark_phased = Fobs_dark_vals * torch.exp(1j * phi_dark)
+    F_obs_light_phased = Fobs_light_vals * torch.exp(1j * phi_mixed)
 
-        F_light_extra = (                                                   # Phase aware extrapolation of the difference, scaled by the light fraction
-            (F_obs_light_phased - w_dark * F_obs_dark_phased) / w_light
+    F_light_extra = (                                                   # Phase aware extrapolation of the difference, scaled by the light fraction
+        (F_obs_light_phased - w_dark * F_obs_dark_phased) / w_light
+    )
+
+    amp_light_extra = torch.abs(F_light_extra)
+    sig_light_extra = torch.sqrt(sig_light_vals**2 + w_dark**2 * sig_dark_vals**2) / w_light
+
+    data_light_extra = ReflectionData.from_tensors(
+        hkl=hkl,
+        F=amp_light_extra,
+        F_sigma=sig_light_extra,
+        cell=data_light.cell,
+        spacegroup=data_light.spacegroup,
+        rfree_flags=data_light.rfree_flags,
+        device=str(hkl.device),
+        verbose=0,
+    )
+
+    scaler_light_extra = Scaler(model_light, data_light_extra, device=hkl.device, verbose=-1)
+    scaler_light_extra.initialize().refine_lbfgs()
+
+    F_light_calc_scaled_F_extra = scaler_light_extra(model_light(hkl))
+
+    amp_extra = torch.abs(F_light_extra)
+    amp_light_calc = torch.abs(F_light_calc_scaled_F_extra)
+
+    phi_light_calc = torch.angle(F_light_calc_scaled_F_extra)
+    amp_2fofc_light = 2 * amp_extra - amp_light_calc
+    amp_fextfc = amp_extra - amp_light_calc
+
+    # Classic (amplitude-only) extrapolation: F_ext = (|F_l| - w_d·|F_d|) / w_l
+    amp_extra_classic = (Fobs_light_vals - w_dark * Fobs_dark_vals) / w_light
+    
+    sig_extra_classic = sig_light_extra  # same error propagation
+
+    data_light_extra_classic = ReflectionData.from_tensors(
+        hkl=hkl,
+        F=amp_extra_classic,
+        F_sigma=sig_extra_classic,
+        cell=data_light.cell,
+        spacegroup=data_light.spacegroup,
+        rfree_flags=data_light.rfree_flags,
+        device=str(hkl.device),
+        verbose=0,
+    )
+
+    scaler_light_extra_classic = Scaler(model_light, data_light_extra_classic, device=hkl.device, verbose=-1)
+    scaler_light_extra_classic.initialize().refine_lbfgs()  
+
+    F_light_calc_scaled_F_extra_classic = scaler_light_extra_classic(model_light(hkl))
+    amp_light_calc_classic = torch.abs(F_light_calc_scaled_F_extra_classic)
+
+    amp_2fofc_classic = 2 * amp_extra_classic - amp_light_calc_classic
+    amp_fofc_classic = amp_extra_classic - amp_light_calc_classic
+
+
+
+    # --- Empirical Bayes extrapolation ---
+    F_ext_bayes, var_ext_bayes, w_shrinkage, tau_sq = (
+        compute_bayes_extrapolated_amplitudes(
+            Fobs_dark_vals, Fobs_light_vals,
+            sig_dark_vals, sig_light_vals,
+            phi_dark, phi_mixed, w_light,
         )
+    )
+    sig_ext_bayes = torch.sqrt(var_ext_bayes)
 
-        amp_light_extra = torch.abs(F_light_extra)
-        sig_light_extra = torch.sqrt(sig_light_vals**2 + w_dark**2 * sig_dark_vals**2) / w_light
+    data_light_extra_bayes = ReflectionData.from_tensors(
+        hkl=hkl,
+        F=F_ext_bayes,
+        F_sigma=sig_ext_bayes,
+        cell=data_light.cell,
+        spacegroup=data_light.spacegroup,
+        rfree_flags=data_light.rfree_flags,
+        device=str(hkl.device),
+        verbose=0,
+    )
+    scaler_light_extra_bayes = Scaler(model_light, data_light_extra_bayes, device=hkl.device, verbose=-1)
+    scaler_light_extra_bayes.initialize().refine_lbfgs()
 
-        data_light_extra = ReflectionData.from_tensors(
-            hkl=hkl,
-            F=amp_light_extra,
-            F_sigma=sig_light_extra,
-            cell=data_light.cell,
-            spacegroup=data_light.spacegroup,
-            rfree_flags=data_light.rfree_flags,
-            device=str(hkl.device),
-            verbose=0,
-        )
+    F_light_calc_scaled_F_extra_bayes = scaler_light_extra_bayes(model_light(hkl))
 
-        scaler_light_extra = Scaler(model_light, data_light_extra, device=hkl.device)
-        scaler_light_extra.initialize().refine_lbfgs()
+    # Map coefficients: use light-model Fcalc (already scaled above)
+    amp_calc_bayes = torch.abs(F_light_calc_scaled_F_extra_bayes)
+    amp_2fofc_bayes = 2 * F_ext_bayes - amp_calc_bayes
+    amp_fofc_bayes = F_ext_bayes - amp_calc_bayes
 
-        F_light_calc_scaled_F_extra = scaler_light_extra(model_light(hkl))
-
-        amp_extra = torch.abs(F_light_extra)
-        amp_light_calc = torch.abs(F_light_calc_scaled_F_extra)
-
-        phi_light_calc = torch.angle(F_light_calc_scaled_F_extra)
-        amp_2fofc_light = 2 * amp_extra - amp_light_calc
-        amp_fextfc = amp_extra - amp_light_calc
-
-        # Classic (amplitude-only) extrapolation: F_ext = (|F_l| - w_d·|F_d|) / w_l
-        amp_extra_classic = (Fobs_light_vals - w_dark * Fobs_dark_vals) / w_light
-        
-        sig_extra_classic = sig_light_extra  # same error propagation
-
-        data_light_extra_classic = ReflectionData.from_tensors(
-            hkl=hkl,
-            F=amp_extra_classic,
-            F_sigma=sig_extra_classic,
-            cell=data_light.cell,
-            spacegroup=data_light.spacegroup,
-            rfree_flags=data_light.rfree_flags,
-            device=str(hkl.device),
-            verbose=0,
-        )
-
-        scaler_light_extra_classic = Scaler(model_light, data_light_extra_classic, device=hkl.device)
-        scaler_light_extra_classic.initialize().refine_lbfgs()  
-
-        F_light_calc_scaled_F_extra_classic = scaler_light_extra_classic(model_light(hkl))
-        amp_light_calc_classic = torch.abs(F_light_calc_scaled_F_extra_classic)
-
-        amp_2fofc_classic = 2 * amp_extra_classic - amp_light_calc_classic
-        amp_fofc_classic = amp_extra_classic - amp_light_calc_classic
+    print("Phase-aware extrapolation rfactors:", scaler_light_extra.rfactor())
+    print("Classic extrapolation rfactors:", scaler_light_extra_classic.rfactor())
+    print("Bayes extrapolation rfactors:", scaler_light_extra_bayes.rfactor())
+    print(f"  Bayes extrapolation: tau^2 = {tau_sq:.4f}, "
+          f"mean w(h) = {w_shrinkage[mask].mean().item():.3f}")
 
     m = mask
     hkl_np = hkl[m].cpu().numpy()
@@ -345,20 +454,20 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
     sig_dark = sig_dark_vals[m].cpu().numpy()
     sig_light = sig_light_vals[m].cpu().numpy()
 
-    Fcalc_dark = torch.abs(fcalc_dark[m]).cpu().numpy()
-    Fcalc_light = torch.abs(fcalc_mixed[m]).cpu().numpy()
-    phases_dark = torch.angle(fcalc_dark[m]).rad2deg().cpu().numpy()
-    phases_mixed = torch.angle(fcalc_mixed[m]).rad2deg().cpu().numpy()
+    Fcalc_dark = torch.abs(fcalc_dark[m]).detach().cpu().numpy()
+    Fcalc_light = torch.abs(fcalc_mixed[m]).detach().cpu().numpy()
+    phases_dark = torch.angle(fcalc_dark[m]).detach().rad2deg().cpu().numpy()
+    phases_mixed = torch.angle(fcalc_mixed[m]).detach().rad2deg().cpu().numpy()
 
-    Fcalc_diff_amp = torch.abs(fcalc_diff[m]).cpu().numpy()
+    Fcalc_diff_amp = torch.abs(fcalc_diff[m]).detach().detach().cpu().numpy()
     Fcalc_diff_scalar = Fcalc_light - Fcalc_dark
-    phases_diff = torch.angle(fcalc_diff[m]).rad2deg().cpu().numpy()
+    phases_diff = torch.angle(fcalc_diff[m]).detach().rad2deg().cpu().numpy()
 
     # Complex observed difference: |F_obs_light·exp(iφ_mixed) - F_obs_dark·exp(iφ_dark)|
     # Pairs with phases_diff for a proper DED map
     Fobs_diff_phased = torch.abs(
         F_obs_light_phased[m] - F_obs_dark_phased[m]
-    ).cpu().numpy()
+    ).detach().cpu().numpy()
 
     diff_Fobs = Fobs_light - Fobs_dark
     sig_diff = (sig_dark**2 + sig_light**2) ** 0.5
@@ -391,13 +500,17 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
             "phase_dark": phases_dark,
             "phase_mixed": phases_mixed,
             "phase_diff": phases_diff,
-            "phase_light": phi_light_calc[m].rad2deg().cpu().numpy(),
-            "2FextFc_light": amp_2fofc_light[m].cpu().numpy(),
-            "FextFc": amp_fextfc[m].cpu().numpy(),
-            "Fext_classic": amp_extra_classic[m].cpu().numpy(),
-            "sig_Fext_classic": sig_extra_classic[m].cpu().numpy(),
-            "2Fext_classic_Fc": amp_2fofc_classic[m].cpu().numpy(),
-            "Fext_classic_Fc": amp_fofc_classic[m].cpu().numpy(),
+            "phase_light": phi_light_calc[m].detach().rad2deg().cpu().numpy(),
+            "2FextFc_light": amp_2fofc_light[m].detach().cpu().numpy(),
+            "FextFc": amp_fextfc[m].detach().cpu().numpy(),
+            "Fext_classic": amp_extra_classic[m].detach().cpu().numpy(),
+            "sig_Fext_classic": sig_extra_classic[m].detach().cpu().numpy(),
+            "2Fext_classic_Fc": amp_2fofc_classic[m].detach().cpu().numpy(),
+            "Fext_classic_Fc": amp_fofc_classic[m].detach().cpu().numpy(),
+            "Fext_bayes": F_ext_bayes[m].detach().cpu().numpy(),
+            "sig_Fext_bayes": sig_ext_bayes[m].detach().cpu().numpy(),
+            "2Fext_bayes_Fc": amp_2fofc_bayes[m].detach().cpu().numpy(),
+            "Fext_bayes_Fc": amp_fofc_bayes[m].detach().cpu().numpy(),
         },
         cell=data_dark.cell.data.cpu().tolist(),
         spacegroup=data_dark.spacegroup.hm,
@@ -411,6 +524,7 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
             "W2DFoDFc", "WDFoDFc",
             "2FextFc_light", "FextFc",
             "Fext_classic", "2Fext_classic_Fc", "Fext_classic_Fc",
+            "Fext_bayes", "2Fext_bayes_Fc", "Fext_bayes_Fc"
         ]
     ] = df[
         [
@@ -419,10 +533,11 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
             "W2DFoDFc", "WDFoDFc",
             "2FextFc_light", "FextFc",
             "Fext_classic", "2Fext_classic_Fc", "Fext_classic_Fc",
+            "Fext_bayes", "2Fext_bayes_Fc", "Fext_bayes_Fc",
         ]
     ].astype("F")
-    df[["sig_Fobs_dark", "sig_Fobs_light", "sig_Fobs_diff", "sig_Fext_classic"]] = df[
-        ["sig_Fobs_dark", "sig_Fobs_light", "sig_Fobs_diff", "sig_Fext_classic"]
+    df[["sig_Fobs_dark", "sig_Fobs_light", "sig_DFo", "sig_Fext_classic", "sig_Fext_bayes"]] = df[
+        ["sig_Fobs_dark", "sig_Fobs_light", "sig_DFo", "sig_Fext_classic", "sig_Fext_bayes"]
     ].astype("Q")
     df[["phase_dark", "phase_light", "phase_diff", "phase_mixed"]] = df[
         ["phase_dark", "phase_light", "phase_diff", "phase_mixed"]

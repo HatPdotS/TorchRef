@@ -32,14 +32,14 @@ dependencies = [
 ]
 
 [project.scripts]
-torchref-refine = "torchref.cli.refine:main"
-torchref-refine-screened = "torchref.cli.refine_screened:main"
-torchref-refine-everything = "torchref.cli.refine_everything:main"
-torchref-refine-random-weights = "torchref.cli.refine_everything_random_weights:main"
-torchref-refine-policy = 'torchref.cli.refine_everything_policy:main'
-torchref-refine-static = 'torchref.cli.refine_everything_static:main'
-torchref-refine-hyperparameters = 'torchref.cli.refine_everything_hyperparameters:main'
-torchref-download-data = 'torchref.cli.download_data:main'
+torchref.refine = "torchref.cli.refine:main"
+torchref.refine-random-weights = "torchref.cli.refine_everything_random_weights:main"
+torchref.refine-policy = 'torchref.cli.refine_everything_policy:main'
+torchref.refine-static = 'torchref.cli.refine_everything_static:main'
+torchref.difference-refine = 'torchref.cli.difference_refine:main'
+torchref.mtz2map = 'torchref.cli.mtz2map:main'
+torchref.validate-ded = 'torchref.cli.validate_ded:main'
+torchref.download-data = 'torchref.cli.download_data:main'
 
 [project.optional-dependencies]
 

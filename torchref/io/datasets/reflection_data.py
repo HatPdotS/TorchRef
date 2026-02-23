@@ -349,7 +349,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         data._post_load_cleanup()
         return data
 
-    def load_mtz(self, path: str) -> "ReflectionData":
+    def load_mtz(
+        self, path: str, column_names: Optional[dict] = None
+    ) -> "ReflectionData":
         """
         Load reflection data from MTZ file.
 
@@ -357,13 +359,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ----------
         path : str
             Path to MTZ file.
+        column_names : dict, optional
+            Explicit column name mapping to override automatic detection.
+            Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
+            Example: ``{"F": "DFo", "SIGF": "sig_DFo"}``.
 
         Returns
         -------
         ReflectionData
             Self, for method chaining.
         """
-        reader = mtz.MTZReader(verbose=self.verbose).read(path)
+        reader = mtz.MTZReader(
+            verbose=self.verbose, column_names=column_names
+        ).read(path)
         return self.load(reader)
 
     def load_cif(self, path: str, data_block: Optional[str] = None) -> "ReflectionData":

@@ -126,7 +126,7 @@ class MTZReader:
         "Free",
     ]
 
-    def __init__(self, verbose: int = 0):
+    def __init__(self, verbose: int = 0, column_names: Optional[dict] = None):
         """
         Initialize MTZ reader.
 
@@ -134,8 +134,13 @@ class MTZReader:
         ----------
         verbose : int, optional
             Verbosity level (0=silent, 1=normal, 2=debug). Default is 0.
+        column_names : dict, optional
+            Explicit column name mapping to override automatic detection.
+            Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
+            Example: ``{"F": "DFo", "SIGF": "sig_DFo"}``.
         """
         self.verbose = verbose
+        self.column_names = column_names or {}
         self.data = None
         self.cell = None
         self.spacegroup = None
@@ -198,47 +203,79 @@ class MTZReader:
         return self.data, self.cell, self.spacegroup
 
     def _extract_amplitudes_and_intensities(self) -> None:
-        """Extract amplitude and intensity data with priority ordering."""
+        """Extract amplitude and intensity data with priority ordering.
+
+        If ``column_names`` were provided at init, those columns are used
+        directly instead of the priority-based search.
+        """
         available_cols = set(self.mtz_data.columns)
 
-        # Find intensity column
-        intensity_col = None
-        for col in self.INTENSITY_PRIORITY:
-            if col in available_cols:
-                dtype = str(self.mtz_data.dtypes[col])
-                if "Intensity" in dtype or "J" in dtype:
-                    intensity_col = col
-                    break
+        # --- Explicit column names override priority search ---
+        if "I" in self.column_names:
+            intensity_col = self.column_names["I"]
+            if intensity_col not in available_cols:
+                raise ValueError(
+                    f"Intensity column '{intensity_col}' not found in MTZ. "
+                    f"Available: {sorted(available_cols)}"
+                )
+        else:
+            intensity_col = None
+            for col in self.INTENSITY_PRIORITY:
+                if col in available_cols:
+                    dtype = str(self.mtz_data.dtypes[col])
+                    if "Intensity" in dtype or "J" in dtype:
+                        intensity_col = col
+                        break
 
-        # Find amplitude column
-        amplitude_col = None
-        for col in self.AMPLITUDE_PRIORITY:
-            if col in available_cols:
-                dtype = str(self.mtz_data.dtypes[col])
-                if "SFAmplitude" in dtype or "F" in dtype:
-                    amplitude_col = col
-                    break
+        if "F" in self.column_names:
+            amplitude_col = self.column_names["F"]
+            if amplitude_col not in available_cols:
+                raise ValueError(
+                    f"Amplitude column '{amplitude_col}' not found in MTZ. "
+                    f"Available: {sorted(available_cols)}"
+                )
+        else:
+            amplitude_col = None
+            for col in self.AMPLITUDE_PRIORITY:
+                if col in available_cols:
+                    dtype = str(self.mtz_data.dtypes[col])
+                    if "SFAmplitude" in dtype or "F" in dtype:
+                        amplitude_col = col
+                        break
 
-        # Extract data
+        # Extract intensity data
         if intensity_col:
             self.data["I"] = self.mtz_data[intensity_col].to_numpy().astype(np.float32)
             self.data["I_col"] = intensity_col
-            sigma_col = self._find_sigma_column(intensity_col, is_intensity=True)
-            if sigma_col:
-                self.data["SIGI"] = (
-                    self.mtz_data[sigma_col].to_numpy().astype(np.float32)
-                )
-                self.data["SIGI_col"] = sigma_col
+            if "SIGI" in self.column_names:
+                scol = self.column_names["SIGI"]
+                if scol in available_cols:
+                    self.data["SIGI"] = self.mtz_data[scol].to_numpy().astype(np.float32)
+                    self.data["SIGI_col"] = scol
+            else:
+                sigma_col = self._find_sigma_column(intensity_col, is_intensity=True)
+                if sigma_col:
+                    self.data["SIGI"] = (
+                        self.mtz_data[sigma_col].to_numpy().astype(np.float32)
+                    )
+                    self.data["SIGI_col"] = sigma_col
 
+        # Extract amplitude data
         if amplitude_col:
             self.data["F"] = self.mtz_data[amplitude_col].to_numpy().astype(np.float32)
             self.data["F_col"] = amplitude_col
-            sigma_col = self._find_sigma_column(amplitude_col, is_intensity=False)
-            if sigma_col:
-                self.data["SIGF"] = (
-                    self.mtz_data[sigma_col].to_numpy().astype(np.float32)
-                )
-                self.data["SIGF_col"] = sigma_col
+            if "SIGF" in self.column_names:
+                scol = self.column_names["SIGF"]
+                if scol in available_cols:
+                    self.data["SIGF"] = self.mtz_data[scol].to_numpy().astype(np.float32)
+                    self.data["SIGF_col"] = scol
+            else:
+                sigma_col = self._find_sigma_column(amplitude_col, is_intensity=False)
+                if sigma_col:
+                    self.data["SIGF"] = (
+                        self.mtz_data[sigma_col].to_numpy().astype(np.float32)
+                    )
+                    self.data["SIGF_col"] = sigma_col
 
     def _extract_rfree_flags(self) -> None:
         """Extract R-free flags from the dataset."""
