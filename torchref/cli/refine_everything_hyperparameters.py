@@ -9,10 +9,18 @@ OverfittingWeighting) with Optuna-optimized hyperparameters loaded from file.
 The hyperparameters were optimized to achieve the best R-free across a diverse
 set of protein structures at various resolutions.
 
-Options:
-- "default": Load optimized hyperparameters from package data
-- Custom path: Load from user-specified JSON file
-- "none": Skip hyperparameter loading (same as static weighting)
+Options for ``--hyperparameters``:
+
+- ``"default"``: Load optimized hyperparameters from package data.
+- Custom path: Load from user-specified JSON file.
+- ``"none"``: Skip hyperparameter loading (same as static weighting).
+
+Examples
+--------
+::
+
+    torchref.refine-hyper -s model.pdb -f reflections.mtz -o output_dir/
+    torchref.refine-hyper -s model.pdb -f reflections.mtz -o output/ --hyperparameters my_params.json
 """
 
 import argparse
@@ -47,13 +55,13 @@ def main():
         epilog="""
 Examples:
   # Refinement with default optimized hyperparameters
-  torchref-refine-hyper -s model.pdb -f reflections.mtz -o output_dir/
+  torchref.refine-hyper -s model.pdb -f reflections.mtz -o output_dir/
 
   # With custom hyperparameters file
-  torchref-refine-hyper -s model.pdb -f reflections.mtz -o output/ --hyperparameters my_params.json
+  torchref.refine-hyper -s model.pdb -f reflections.mtz -o output/ --hyperparameters my_params.json
 
   # Skip hyperparameters (equivalent to static weighting)
-  torchref-refine-hyper -s model.pdb -f reflections.mtz -o output/ --hyperparameters none
+  torchref.refine-hyper -s model.pdb -f reflections.mtz -o output/ --hyperparameters none
         """,
     )
 

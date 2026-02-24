@@ -3,12 +3,18 @@
 """
 Command-line script for LBFGS refinement with STATIC weighting.
 
-This script uses the default ComponentWeighting scheme (XrayScaleWeighting +
-TargetOffsetWeighting + OverfittingWeighting) but without loading optimized
-hyperparameters. The weighting scheme adapts during refinement based on
-the loss values.
+This script uses ``ManualWeighting`` with fixed component weights
+(default: xray=1.0, geometry=10.0, adp=5.0).  Weights can be overridden
+via a JSON file passed with ``--weights``.
 
 Use this as a baseline to compare against hyperparameter-tuned refinement.
+
+Examples
+--------
+::
+
+    torchref.refine-static -s model.pdb -f reflections.mtz -o output_dir/
+    torchref.refine-static -s model.pdb -f reflections.mtz -o output/ -n 10
 """
 
 import argparse
@@ -43,10 +49,10 @@ def main():
         epilog="""
 Examples:
   # Basic refinement with static weights
-  torchref-refine-static -s model.pdb -f reflections.mtz -o output_dir/
+  torchref.refine-static -s model.pdb -f reflections.mtz -o output_dir/
 
   # With 10 refinement cycles
-  torchref-refine-static -s model.pdb -f reflections.mtz -o output/ -n 10
+  torchref.refine-static -s model.pdb -f reflections.mtz -o output/ -n 10
         """,
     )
 
@@ -250,61 +256,59 @@ Examples:
         print(f"  Refined structure factors: {output_mtz}")
         sys.stdout.flush()
 
-        # Save refinement history as JSON
-        output_json = outdir / "refinement_history.json"
+    # Save refinement history as JSON
+    output_json = outdir / "refinement_history.json"
 
-        # Prepare history data
-        history_data = {
-            "weighting_scheme": "static",
-            "input_files": {
-                "structure": str(structure_path),
-                "structure_factors": str(sf_path),
-                "cif_restraints": args.cif_restraints,
-            },
-            "parameters": {
-                "n_cycles": args.n_cycles,
-                "max_resolution": args.max_res,
-                "device": str(device),
-            },
-            "history": refinement.history if hasattr(refinement, "history") else {},
-            "final_statistics": {},
+    history_data = {
+        "weighting_scheme": "static",
+        "input_files": {
+            "structure": str(structure_path),
+            "structure_factors": str(sf_path),
+            "cif_restraints": args.cif_restraints,
+        },
+        "parameters": {
+            "n_cycles": args.n_cycles,
+            "max_resolution": args.max_res,
+            "device": str(device),
+        },
+        "history": refinement.history if hasattr(refinement, "history") else {},
+        "final_statistics": {},
+    }
+
+    # Add final R-factors if available
+    try:
+        work_nll, test_nll = refinement.nll_xray()
+        hkl, fobs, sigma, rfree = refinement.reflection_data()
+        fcalc = refinement.get_F_calc_scaled(hkl, recalc=True)
+
+        work_mask = rfree
+        test_mask = ~rfree
+
+        r_work = torch.sum(
+            torch.abs(fobs[work_mask] - fcalc[work_mask])
+        ) / torch.sum(fobs[work_mask])
+        r_free = torch.sum(
+            torch.abs(fobs[test_mask] - fcalc[test_mask])
+        ) / torch.sum(fobs[test_mask])
+
+        history_data["final_statistics"] = {
+            "R_work": float(r_work.item()),
+            "R_free": float(r_free.item()),
+            "NLL_work": float(work_nll.item()),
+            "NLL_test": float(test_nll.item()),
+            "n_reflections_work": int(work_mask.sum().item()),
+            "n_reflections_test": int(test_mask.sum().item()),
         }
+    except Exception as e:
+        if args.verbose > 1:
+            print(f"  Warning: Could not compute final statistics: {e}")
 
-        # Add final R-factors if available
-        try:
-            work_nll, test_nll = refinement.nll_xray()
-            hkl, fobs, sigma, rfree = refinement.reflection_data()
-            fcalc = refinement.get_F_calc_scaled(hkl, recalc=True)
+    with open(output_json, "w") as f:
+        json.dump(history_data, f, indent=2)
 
-            # Calculate R-factors
-            work_mask = rfree
-            test_mask = ~rfree
-
-            r_work = torch.sum(
-                torch.abs(fobs[work_mask] - fcalc[work_mask])
-            ) / torch.sum(fobs[work_mask])
-            r_free = torch.sum(
-                torch.abs(fobs[test_mask] - fcalc[test_mask])
-            ) / torch.sum(fobs[test_mask])
-
-            history_data["final_statistics"] = {
-                "R_work": float(r_work.item()),
-                "R_free": float(r_free.item()),
-                "NLL_work": float(work_nll.item()),
-                "NLL_test": float(test_nll.item()),
-                "n_reflections_work": int(work_mask.sum().item()),
-                "n_reflections_test": int(test_mask.sum().item()),
-            }
-        except Exception as e:
-            if args.verbose > 1:
-                print(f"  Warning: Could not compute final statistics: {e}")
-
-        with open(output_json, "w") as f:
-            json.dump(history_data, f, indent=2)
-
-        if args.verbose > 0:
-            print(f"  Refinement history: {output_json}")
-            sys.stdout.flush()
+    if args.verbose > 0:
+        print(f"  Refinement history: {output_json}")
+        sys.stdout.flush()
 
     # Print final summary
     if args.verbose > 0:

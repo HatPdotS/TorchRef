@@ -48,7 +48,7 @@ def validate_restraint_data(residue_data, cif_path):
                     f"a proper restraint file. Restraint files must include ideal geometry parameters\n"
                     f"such as 'value' and 'sigma' for bonds.\n\n"
                     f"Solution: Remove this file or use the monomer library files which contain\n"
-                    f"proper restraint parameters (in external_monomer_library/)."
+                    f"proper restraint parameters (from the CCP4 Monomer Library)."
                 )
         else:
             # No bond data at all - definitely not a restraint file
@@ -136,11 +136,11 @@ def split_respecting_quotes(line):
 
 def find_cif_file_in_library(resname):
     """
-    Find a CIF file in the external monomer library based on residue name.
+    Find a CIF file in the monomer library based on residue name.
 
-    The library is organized by first character (e.g., 'ALA' -> 'a/ALA.cif').
-    This function works regardless of the current working directory by
-    calculating the path relative to this script's location.
+    Resolves files using the MonomerLibraryManager priority chain:
+    environment variable > bundled package data > user cache >
+    legacy external_monomer_library > on-demand download.
 
     Parameters
     ----------
@@ -152,28 +152,9 @@ def find_cif_file_in_library(resname):
     Path or None
         Path object pointing to the CIF file, or None if not found.
     """
-    from torchref.restraints import MONOMER_LIB_PATH
+    from torchref.restraints.library import get_library_manager
 
-    if MONOMER_LIB_PATH is None:
-        raise RuntimeError(
-            "MONOMER_LIB_PATH is not set. External monomer library not found."
-        )
-
-    # The library organizes files by first character (lowercase)
-    first_char = resname[0].lower()
-
-    # Construct the expected path
-    cif_file = MONOMER_LIB_PATH / first_char / f"{resname}.cif"
-
-    # Check if file exists
-    if cif_file.exists():
-        return cif_file
-    else:
-        # Try uppercase version as fallback
-        cif_file_upper = MONOMER_LIB_PATH / first_char / f"{resname.upper()}.cif"
-        if cif_file_upper.exists():
-            return cif_file_upper
-        return None
+    return get_library_manager().get_cif_file(resname)
 
 
 def read_link_definitions():
@@ -197,11 +178,11 @@ def read_link_definitions():
             DataFrame containing the list of all link definitions.
     """
     from torchref.io.cif_readers import CIFReader
-    from torchref.restraints import MONOMER_LIB_PATH
+    from torchref.restraints.library import get_library_manager
     import os
     import re
 
-    link_file_path = os.path.join(MONOMER_LIB_PATH, "list", "mon_lib_list.cif")
+    link_file_path = str(get_library_manager().get_link_definitions_path())
     with open(link_file_path) as f:
         content = f.read()
 

@@ -14,16 +14,16 @@ Examples
 ::
 
     # Basic validation (full cell correlation)
-    validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
+    torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
         --dark-pdb dark.pdb --light-pdb light.pdb
 
     # With light fraction and ligand masking
-    validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
+    torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
         --dark-pdb dark.pdb --light-pdb light.pdb \\
         --fraction 0.20 --selection "chain B and resname IBL" --mask-radius 2.5
 
     # Full output with plots and CCP4 maps
-    validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
+    torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
         --dark-pdb dark.pdb --light-pdb light.pdb \\
         --fraction 0.20 --selection "resname IBL" --plot --write-maps -o validation/
 """
@@ -36,6 +36,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+
+from torchref.utils.serialization import convert_to_serializable
 
 # Force unbuffered output for batch systems like SLURM
 (
@@ -54,21 +56,6 @@ os.environ["PYTHONUNBUFFERED"] = "1"
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-
-
-def convert_to_serializable(obj):
-    """Convert tensors and numpy arrays to JSON-serializable types."""
-    if isinstance(obj, (torch.Tensor, np.ndarray)):
-        return obj.tolist()
-    if isinstance(obj, np.floating):
-        return float(obj)
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, dict):
-        return {k: convert_to_serializable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [convert_to_serializable(v) for v in obj]
-    return obj
 
 
 def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
@@ -161,7 +148,7 @@ def compute_map_from_coefficients(amplitudes, phases_rad, hkl_p1, gridsize):
 
 
 def generate_plots(results, map_dfo, map_dfc, mask_dict, outdir, verbose):
-    """Generate a 3-panel validation figure.
+    """Generate a 2-panel validation figure.
 
     Parameters
     ----------
@@ -181,26 +168,14 @@ def generate_plots(results, map_dfo, map_dfc, mask_dict, outdir, verbose):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     fig.suptitle("DED Validation: WDFo vs WDFcalc", fontsize=14)
 
-    # Panel 1: Real-space CC by region
-    ax = axes[0]
     rs_corr = results["realspace_correlation"]
-    regions = list(rs_corr.keys())
-    ccs = [rs_corr[r]["cc"] for r in regions]
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
-    ax.bar(range(len(regions)), ccs, color=colors[: len(regions)])
-    ax.set_xticks(range(len(regions)))
-    ax.set_xticklabels(regions, rotation=30, ha="right")
-    ax.set_ylabel("Pearson CC")
-    ax.set_title("Real-Space CC (WDFo vs WDFcalc)")
-    ax.set_ylim(-0.3, 1.0)
-    for i, cc in enumerate(ccs):
-        ax.text(i, cc + 0.02, f"{cc:.3f}", ha="center", fontsize=10)
 
-    # Panel 2: Resolution-binned CC
-    ax = axes[1]
+
+    # Panel 1: Resolution-binned CC
+    ax = axes[0]
     bins = results["resolution_bins"]
     d_mins = [b["d_min"] for b in bins]
     cc_vals = [b["cc"] for b in bins]
@@ -212,8 +187,8 @@ def generate_plots(results, map_dfo, map_dfc, mask_dict, outdir, verbose):
     ax.axhline(y=0, color="gray", ls="--", alpha=0.3)
     ax.set_ylim(-0.2, 1.0)
 
-    # Panel 3: Scatter of map values in first masked region (or full cell)
-    ax = axes[2]
+    # Panel 2: Scatter of map values in first masked region (or full cell)
+    ax = axes[1]
     # Use the first non-full_cell mask, or full_cell if no selection masks
     scatter_region = "full_cell"
     for name in mask_dict:
@@ -451,14 +426,6 @@ def run_validation(args):
         if args.verbose >= 1:
             print(f"  Selection voxels: {mask_sel.sum().item()}")
 
-        # Pocket mask
-        if args.pocket_radius > args.mask_radius:
-            mask_pocket = build_atom_mask(
-                selected_xyz, real_space_grid, cell_t, args.pocket_radius, device
-            )
-            mask_dict["pocket"] = mask_pocket
-            if args.verbose >= 1:
-                print(f"  Pocket voxels: {mask_pocket.sum().item()}")
 
     # ------------------------------------------------------------------
     # 7. Compute real-space correlations
@@ -541,7 +508,6 @@ def run_validation(args):
             "fraction": args.fraction,
             "selection": args.selection,
             "mask_radius": args.mask_radius,
-            "pocket_radius": args.pocket_radius,
             "max_res": d_min,
         },
         "realspace_correlation": rs_corr,
@@ -615,16 +581,16 @@ def main():
         epilog="""
 Examples:
   # Basic validation
-  validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
+  torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
       --dark-pdb dark.pdb --light-pdb light.pdb
 
   # With fraction and ligand masking
-  validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
+  torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --fraction 0.20 --selection "chain B and resname IBL" --mask-radius 2.5
 
   # Full output
-  validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
+  torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --fraction 0.20 --selection "resname IBL" --plot --write-maps -o validation/
         """,
@@ -683,12 +649,6 @@ Examples:
         type=float,
         default=2.5,
         help="Mask sphere radius in Angstroms (default: 2.5)",
-    )
-    parser.add_argument(
-        "--pocket-radius",
-        type=float,
-        default=5.0,
-        help="Pocket region radius in Angstroms (default: 5.0)",
     )
     parser.add_argument(
         "--max-res",

@@ -48,6 +48,9 @@ from .stats import (
     stat,
 )
 
+# Serialization
+from .serialization import convert_to_serializable
+
 # Core utilities
 from .utils import (
     ModuleReference,
@@ -82,6 +85,8 @@ __all__ = [
     "format_stats_table",
     # Hyperparameters
     "HyperparameterMixin",
+    # Serialization
+    "convert_to_serializable",
     # Gradients
     "gradnorm",
 ]

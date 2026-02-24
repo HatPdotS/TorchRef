@@ -3,15 +3,23 @@
 """
 Command-line script for LBFGS refinement with RANDOM weighting.
 
-This script uses RandomComponentWeighting which samples component weights
+This script uses ``RandomComponentWeighting`` which samples component weights
 from log-normal distributions. This is used to generate diverse training
 trajectories for policy network training via AWR (Advantage-Weighted Regression).
 
 Two-level sampling strategy:
-1. Trajectory-level base weights: Sampled once at initialization
-2. Step-level perturbations: Applied at each optimization step
+
+1. Trajectory-level base weights: Sampled once at initialization.
+2. Step-level perturbations: Applied at each optimization step.
 
 The sampled weights and resulting trajectories are recorded for training data.
+
+Examples
+--------
+::
+
+    torchref.refine-random-weights -s model.pdb -f reflections.mtz -o output_dir/
+    torchref.refine-random-weights -s model.pdb -f reflections.mtz -o output/ --seed 42
 """
 
 import argparse
@@ -47,13 +55,13 @@ def main():
         epilog="""
 Examples:
   # Basic refinement with random weights
-  torchref-refine-random -s model.pdb -f reflections.mtz -o output_dir/
+  torchref.refine-random-weights -s model.pdb -f reflections.mtz -o output_dir/
 
   # With specific random seed for reproducibility
-  torchref-refine-random -s model.pdb -f reflections.mtz -o output/ --seed 42
+  torchref.refine-random-weights -s model.pdb -f reflections.mtz -o output/ --seed 42
 
   # With 10 refinement cycles
-  torchref-refine-random -s model.pdb -f reflections.mtz -o output/ -n 10
+  torchref.refine-random-weights -s model.pdb -f reflections.mtz -o output/ -n 10
         """,
     )
 

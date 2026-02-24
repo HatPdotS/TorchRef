@@ -14,7 +14,7 @@ from torchref.base import (
     ifft,
 )
 from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.utils import TensorDict
+from torchref.utils.utils import TensorDict, ModuleReference
 
 
 class SolventModel(DebugMixin, nn.Module):
@@ -138,7 +138,7 @@ class SolventModel(DebugMixin, nn.Module):
             return
 
         # Full initialization with model
-        self.model = model
+        self.model = ModuleReference(model)  # Store reference to model
         self.model.get_vdw_radii()  # Ensure VdW radii are available
         assert self.model, "Model is not initialized"
         if model.real_space_grid == None:
@@ -524,3 +524,8 @@ class SolventModel(DebugMixin, nn.Module):
             f_solvent
         ).all(), "Non-finite values in solvent structure factors"
         return f_solvent
+
+    def parameters(self):
+        return [self.log_k_solvent, self.b_solvent] + (
+            [self.phase_offset] if self.optimize_phase else []
+        )

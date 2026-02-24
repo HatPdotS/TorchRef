@@ -4,6 +4,16 @@ Restraints module for crystallographic refinement.
 This module provides classes for building and managing geometry restraints
 (bonds, angles, torsions, planes, chirals, VDW contacts) from CIF dictionaries.
 
+Restraint geometry parameters are sourced from the CCP4 Monomer Library,
+which derives ideal values from the Cambridge Structural Database.
+
+References
+----------
+Long, F., et al. (2017). AceDRG: a stereochemical description generator
+    for ligands. Acta Cryst. D73, 112-122.
+Sherri, L.N., et al. (2018). Updated CCP4 Monomer Library.
+    Acta Cryst. D74, 641-655.
+
 Classes
 -------
 
@@ -33,11 +43,6 @@ InterResiduePlaneBuilder
     Builder for inter-residue plane restraints.
 """
 
-import os
-import subprocess
-from pathlib import Path
-
-from torchref import ROOT_TORCHREF
 from torchref.restraints.builders import (
     AngleRestraintBuilder,
     BondRestraintBuilder,
@@ -51,73 +56,15 @@ from torchref.restraints.builders import (
     RestraintBuilder,
     TorsionRestraintBuilder,
 )
+from torchref.restraints.library import get_library_manager
 from torchref.restraints.restraints import RestraintsNew as Restraints
 
-MONOMER_LIB_URL = "https://github.com/MonomerLibrary/monomers.git"
-# Monomer library commit (latest master)
-MONOMER_LIB_COMMIT = "713a04911"
 
-
-def _ensure_monomer_library() -> Path:
-    """
-    Ensure the external monomer library is available, downloading if necessary.
-
-    Downloads the monomer library and checks out a specific pinned commit to
-    ensure compatibility with TorchRef's restraints system.
-
-    Returns
-    -------
-    Path
-        Path to the monomer library directory.
-
-    Raises
-    ------
-    RuntimeError
-        If the library cannot be downloaded.
-    """
-    lib_path = ROOT_TORCHREF / "external_monomer_library"
-
-    if lib_path.exists():
-        return lib_path
-
-    print(f"Monomer library not found at {lib_path}")
-    print("Downloading monomer library (one-time setup)...")
-
-    try:
-        # Clone the repository
-        subprocess.run(
-            ["git", "clone", MONOMER_LIB_URL, str(lib_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        # Checkout the pinned commit
-        subprocess.run(
-            ["git", "-C", str(lib_path), "checkout", MONOMER_LIB_COMMIT],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        print(f"Successfully downloaded monomer library to {lib_path}")
-        print(f"  Pinned to commit: {MONOMER_LIB_COMMIT}")
-        return lib_path
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(
-            f"Failed to download monomer library from {MONOMER_LIB_URL}.\n"
-            f"Error: {e.stderr}\n"
-            f"Please install git or manually clone the repository:\n"
-            f"  git clone {MONOMER_LIB_URL} {lib_path}\n"
-            f"  git -C {lib_path} checkout {MONOMER_LIB_COMMIT}"
-        ) from e
-    except FileNotFoundError:
-        raise RuntimeError(
-            "git is not installed. Please install git and try again, or manually clone:\n"
-            f"  git clone {MONOMER_LIB_URL} {lib_path}\n"
-            f"  git -C {lib_path} checkout {MONOMER_LIB_COMMIT}"
-        )
-
-
-MONOMER_LIB_PATH = _ensure_monomer_library()
+def __getattr__(name):
+    """Lazy access to MONOMER_LIB_PATH for backward compatibility."""
+    if name == "MONOMER_LIB_PATH":
+        return get_library_manager().monomer_dir
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
@@ -135,4 +82,5 @@ __all__ = [
     "InterResidueTorsionBuilder",
     "InterResiduePlaneBuilder",
     "MONOMER_LIB_PATH",
+    "get_library_manager",
 ]

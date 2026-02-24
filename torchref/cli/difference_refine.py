@@ -1,7 +1,6 @@
 #!/usr/bin/env python3 -u
 
 """
-
 Command-line script for difference refinement of time-resolved
 crystallographic data using torchref.
 
@@ -14,8 +13,24 @@ over the course of refinement.  By default the schedule ``5,3,2`` is
 repeated for 3 macro-cycles with 2 LBFGS optimisation rounds per weight
 step.
 
-Rfree-flags from both datasets are respected. In the difference target the rfree sets are combined. 
+Rfree-flags from both datasets are respected. In the difference target
+the rfree sets are combined.
 
+Examples
+--------
+::
+
+    # Basic difference refinement
+    torchref.difference-refine \\
+        --dark-pdb dark.pdb --light-pdb light.pdb \\
+        --dark-mtz dark.mtz --light-mtz light.mtz \\
+        --fractions 0.63,0.37 -o output/
+
+    # Custom weight schedule
+    torchref.difference-refine \\
+        --dark-pdb dark.pdb --light-pdb light.pdb \\
+        --dark-mtz dark.mtz --light-mtz light.mtz \\
+        --fractions 0.63,0.37 --weight-schedule 10,5,3,1 -o output/
 """
 
 import argparse
@@ -26,6 +41,8 @@ import sys
 from pathlib import Path
 
 import torch
+
+from torchref.utils.serialization import convert_to_serializable
 
 # Force unbuffered output for batch systems like SLURM
 (
@@ -79,34 +96,13 @@ def _auto_device():
     return torch.device("cpu")
 
 
-def convert_to_serializable(obj):
-    """Convert tensors and numpy arrays to JSON-serializable types."""
-    if isinstance(obj, torch.Tensor):
-        return obj.tolist() if obj.numel() > 1 else obj.item()
-    elif isinstance(obj, dict):
-        return {k: convert_to_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_to_serializable(item) for item in obj]
-    elif isinstance(obj, tuple):
-        return tuple(convert_to_serializable(item) for item in obj)
-    else:
-        try:
-            import numpy as np
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, (np.integer, np.floating)):
-                return obj.item()
-        except ImportError:
-            pass
-        return obj
-
-
 # ---------------------------------------------------------------------------
 # Core pipeline functions
 # ---------------------------------------------------------------------------
 
 def setup_mixed_model(pdb_dark, pdb_light, fractions, restraints_cif,
                       d_min, device, verbose):
+    """Load dark and light ModelFT instances and combine into a MixedModel."""
     from torchref import ModelFT
     from torchref.model import MixedModel
 
@@ -129,6 +125,7 @@ def setup_mixed_model(pdb_dark, pdb_light, fractions, restraints_cif,
 
 
 def setup_data(mtz_dark, mtz_light, d_min, device):
+    """Load dark and light MTZ files into ReflectionData, with optional resolution cut."""
     from torchref import ReflectionData
 
     data_dark = ReflectionData(device=device).load_mtz(mtz_dark)
@@ -140,6 +137,7 @@ def setup_data(mtz_dark, mtz_light, d_min, device):
 
 
 def setup_collection(data_dark, data_light, device):
+    """Bundle dark and light datasets into a scaled DatasetCollection."""
     from torchref import DatasetCollection
 
     collection = DatasetCollection(device=device)
@@ -150,6 +148,7 @@ def setup_collection(data_dark, data_light, device):
 
 
 def setup_scaler(model, dataset, device):
+    """Create a Scaler, compute initial scale and anisotropy, then refine."""
     from torchref import Scaler
 
     scaler = Scaler(model, dataset, device=device)
@@ -562,27 +561,27 @@ def main():
         epilog="""
 Examples:
   # Basic difference refinement
-  torchref-difference-refine \\
+  torchref.difference-refine \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --dark-mtz dark.mtz --light-mtz light.mtz \\
       --fractions 0.63,0.37 -o output/
 
   # Custom weight schedule (anneal from 10 down to 1)
-  torchref-difference-refine \\
+  torchref.difference-refine \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --dark-mtz dark.mtz --light-mtz light.mtz \\
       --fractions 0.63,0.37 \\
       --weight-schedule 10,5,3,1 --n-cycles 2 -o output/
 
   # With custom restraints and resolution cutoff
-  torchref-difference-refine \\
+  torchref.difference-refine \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --dark-mtz dark.mtz --light-mtz light.mtz \\
       --fractions 0.63,0.37 \\
       --restraints-cif ligand.cif --max-res 1.7 -o output/
 
   # Override specific regularisation weights
-  torchref-difference-refine \\
+  torchref.difference-refine \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --dark-mtz dark.mtz --light-mtz light.mtz \\
       --fractions 0.63,0.37 \\

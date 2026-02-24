@@ -1817,7 +1817,7 @@ class RestraintCIFReader:
                     f"This appears to be a structure definition file (from PDB) rather than\n"
                     f"a proper restraint dictionary. Restraint files must include ideal\n"
                     f"geometry parameters such as 'value_dist' and 'value_dist_esd'.\n\n"
-                    f"Solution: Use files from the monomer library (external_monomer_library/)\n"
+                    f"Solution: Use files from the CCP4 Monomer Library\n"
                     f"which contain proper restraint parameters."
                 )
         else:

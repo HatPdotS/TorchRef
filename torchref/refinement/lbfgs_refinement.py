@@ -283,7 +283,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         self.model.freeze_all()
-        self.model.unfreeze("b")
+        self.model.unfreeze("adp")
 
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
@@ -330,7 +330,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         self.model.freeze_all()
-        self.model.unfreeze("b")
+        self.model.unfreeze("adp")
 
         self.scaler.refine_lbfgs()
         state = LossState(self.device)
@@ -385,7 +385,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         self.model.freeze_all()
-        self.model.unfreeze("b")
+        self.model.unfreeze("adp")
 
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
@@ -413,7 +413,7 @@ class LBFGSRefinement(Refinement):
         self.model.freeze_all()
         self.scaler.unfreeze()
         self.model.unfreeze("xyz")
-        self.model.unfreeze("b")
+        self.model.unfreeze("adp")
 
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
@@ -621,7 +621,7 @@ class LBFGSRefinement(Refinement):
 
             # Unfreeze all parameters for joint refinement
             self.model.unfreeze("xyz")
-            self.model.unfreeze("b")
+            self.model.unfreeze("adp")
 
             for step in range(n_steps):
                 if self.verbose > 1:

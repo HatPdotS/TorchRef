@@ -1,13 +1,21 @@
 #!/usr/bin/env python3 -u
 
 """
-
 Command-line script for LBFGS crystallographic refinement using torchref.
 
-This script provides a simple interface to run structure refinement with
-reflection data, producing refined coordinates, structure factors, and
-refinement statistics.
+Provides a simple interface to run structure refinement with reflection
+data, producing refined coordinates, structure factors, and refinement
+statistics.
 
+Examples
+--------
+::
+
+    # Basic refinement
+    torchref.refine -s model.pdb -f reflections.mtz -o output_dir/
+
+    # With 10 refinement cycles
+    torchref.refine -s model.pdb -f reflections.mtz -o output/ -n 10
 """
 
 import argparse
@@ -17,6 +25,8 @@ import sys
 from pathlib import Path
 
 import torch
+
+from torchref.utils.serialization import convert_to_serializable
 
 # Force unbuffered output for batch systems like SLURM
 (
@@ -32,30 +42,6 @@ import torch
 os.environ["PYTHONUNBUFFERED"] = "1"
 
 
-def convert_to_serializable(obj):
-    """Convert tensors and numpy arrays to JSON-serializable types."""
-    if isinstance(obj, torch.Tensor):
-        return obj.tolist() if obj.numel() > 1 else obj.item()
-    elif isinstance(obj, dict):
-        return {k: convert_to_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_to_serializable(item) for item in obj]
-    elif isinstance(obj, tuple):
-        return tuple(convert_to_serializable(item) for item in obj)
-    else:
-        try:
-            # Try to convert numpy arrays and similar
-            import numpy as np
-
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, (np.integer, np.floating)):
-                return obj.item()
-        except ImportError:
-            pass
-        return obj
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Run LBFGS crystallographic refinement",
@@ -63,13 +49,13 @@ def main():
         epilog="""
 Examples:
   # Basic refinement
-  torchref-refine -s model.pdb -f reflections.mtz -o output_dir/
+  torchref.refine -s model.pdb -f reflections.mtz -o output_dir/
   
   # With 10 refinement cycles
-  torchref-refine -s model.pdb -f reflections.mtz -o output/ -n 10
+  torchref.refine -s model.pdb -f reflections.mtz -o output/ -n 10
   
   # Using CIF files
-  torchref-refine -s model.cif -f reflections.cif -o output/
+  torchref.refine -s model.cif -f reflections.cif -o output/
         """,
     )
 
@@ -273,63 +259,58 @@ Examples:
         print(f"  Refined structure factors: {output_mtz}")
         sys.stdout.flush()
 
-        # Save refinement history as JSON
-        output_json = outdir / "refinement_history.json"
+    # Save refinement history as JSON
+    output_json = outdir / "refinement_history.json"
 
-        # Prepare history data
-        history_data = {
-            "input_files": {
-                "structure": str(structure_path),
-                "structure_factors": str(sf_path),
-                "cif_restraints": args.cif_restraints,
-            },
-            "parameters": {
-                "n_cycles": args.n_cycles,
-                "max_resolution": args.max_res,
-                "device": str(device),
-            },
-            "history": refinement.history if hasattr(refinement, "history") else {},
-            "final_statistics": {},
+    history_data = {
+        "input_files": {
+            "structure": str(structure_path),
+            "structure_factors": str(sf_path),
+            "cif_restraints": args.cif_restraints,
+        },
+        "parameters": {
+            "n_cycles": args.n_cycles,
+            "max_resolution": args.max_res,
+            "device": str(device),
+        },
+        "history": refinement.history if hasattr(refinement, "history") else {},
+        "final_statistics": {},
+    }
+
+    # Add final R-factors if available
+    try:
+        work_nll, test_nll = refinement.nll_xray()
+        hkl, fobs, sigma, rfree = refinement.reflection_data()
+        fcalc = refinement.get_F_calc_scaled(hkl, recalc=True)
+
+        work_mask = rfree
+        test_mask = ~rfree
+
+        r_work = torch.sum(
+            torch.abs(fobs[work_mask] - fcalc[work_mask])
+        ) / torch.sum(fobs[work_mask])
+        r_free = torch.sum(
+            torch.abs(fobs[test_mask] - fcalc[test_mask])
+        ) / torch.sum(fobs[test_mask])
+
+        history_data["final_statistics"] = {
+            "R_work": float(r_work.item()),
+            "R_free": float(r_free.item()),
+            "NLL_work": float(work_nll.item()),
+            "NLL_test": float(test_nll.item()),
+            "n_reflections_work": int(work_mask.sum().item()),
+            "n_reflections_test": int(test_mask.sum().item()),
         }
+    except Exception as e:
+        if args.verbose > 1:
+            print(f"  Warning: Could not compute final statistics: {e}")
 
-        # Add final R-factors if available
-        try:
-            work_nll, test_nll = refinement.nll_xray()
-            hkl, fobs, sigma, rfree = refinement.reflection_data()
-            fcalc = refinement.get_F_calc_scaled(hkl, recalc=True)
+    with open(output_json, "w") as f:
+        json.dump(convert_to_serializable(history_data), f, indent=2)
 
-            # Calculate R-factors
-            work_mask = rfree
-            test_mask = ~rfree
-
-            r_work = torch.sum(
-                torch.abs(fobs[work_mask] - fcalc[work_mask])
-            ) / torch.sum(fobs[work_mask])
-            r_free = torch.sum(
-                torch.abs(fobs[test_mask] - fcalc[test_mask])
-            ) / torch.sum(fobs[test_mask])
-
-            history_data["final_statistics"] = {
-                "R_work": float(r_work.item()),
-                "R_free": float(r_free.item()),
-                "NLL_work": float(work_nll.item()),
-                "NLL_test": float(test_nll.item()),
-                "n_reflections_work": int(work_mask.sum().item()),
-                "n_reflections_test": int(test_mask.sum().item()),
-            }
-        except Exception as e:
-            if args.verbose > 1:
-                print(f"  Warning: Could not compute final statistics: {e}")
-
-        # Write JSON - convert any tensors to serializable types
-        with open(output_json, "w") as f:
-            json.dump(convert_to_serializable(history_data), f, indent=2)
-
-        if args.verbose > 0:
-            print(f"  Refinement history: {output_json}")
-            sys.stdout.flush()
-
-        sys.exit(1)
+    if args.verbose > 0:
+        print(f"  Refinement history: {output_json}")
+        sys.stdout.flush()
 
     # Print final summary
     if args.verbose > 0:

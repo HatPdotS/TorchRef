@@ -12,13 +12,13 @@ Examples
 ::
 
     # 2mFo-DFc map from refinement output
-    torchref-mtz2map -f refined.mtz --amplitude FWT --phase PHWT -o 2fofc.ccp4
+    torchref.mtz2map -f refined.mtz --amplitude FWT --phase PHWT -o 2fofc.ccp4
 
     # mFo-DFc difference map
-    torchref-mtz2map -f refined.mtz --amplitude DELFWT --phase PHDELWT -o fofc.ccp4
+    torchref.mtz2map -f refined.mtz --amplitude DELFWT --phase PHDELWT -o fofc.ccp4
 
     # Custom columns with resolution cutoff
-    torchref-mtz2map -f data.mtz --amplitude 2FOFCWT --phase PH2FOFCWT --high-res 2.0 -o map.ccp4
+    torchref.mtz2map -f data.mtz --amplitude 2FOFCWT --phase PH2FOFCWT --high-res 2.0 -o map.ccp4
 """
 
 import argparse
@@ -33,9 +33,9 @@ def main():
         description="Convert MTZ map coefficients to a CCP4 map.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  torchref-mtz2map -f refined.mtz --amplitude FWT --phase PHWT -o 2fofc.ccp4
-  torchref-mtz2map -f refined.mtz --amplitude DELFWT --phase PHDELWT -o fofc.ccp4
-  torchref-mtz2map -f data.mtz -F 2FOFCWT -P PH2FOFCWT --high-res 2.0 -o map.ccp4
+  torchref.mtz2map -f refined.mtz --amplitude FWT --phase PHWT -o 2fofc.ccp4
+  torchref.mtz2map -f refined.mtz --amplitude DELFWT --phase PHDELWT -o fofc.ccp4
+  torchref.mtz2map -f data.mtz -F 2FOFCWT -P PH2FOFCWT --high-res 2.0 -o map.ccp4
         """,
     )
 
@@ -94,7 +94,7 @@ def main():
         type=str,
         choices=['True', 'False'],
         default='True',
-        help="Normalize amplitudes to unit variance. Default: False.",
+        help="Normalize amplitudes to unit variance. Default: True.",
     )
 
     args = parser.parse_args()

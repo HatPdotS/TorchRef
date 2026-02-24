@@ -3,15 +3,23 @@
 """
 Command-line script for LBFGS refinement with POLICY-BASED weighting.
 
-This script uses PolicyComponentWeighting which predicts component weights
+This script uses ``PolicyComponentWeighting`` which predicts component weights
 from the current refinement state using a trained neural network policy.
 
 The policy network was trained on trajectories collected with random weighting
 using Advantage-Weighted Regression (AWR) to learn optimal weight selection.
 
 Two modes:
-- Evaluation mode (default): Use mean policy predictions for deterministic refinement
-- Sampling mode: Sample from policy distribution for exploration/data collection
+
+- Evaluation mode (default): Use mean policy predictions for deterministic refinement.
+- Sampling mode: Sample from policy distribution for exploration/data collection.
+
+Examples
+--------
+::
+
+    torchref.refine-policy -s model.pdb -f reflections.mtz -o output/ --policy policy.pt
+    torchref.refine-policy -s model.pdb -f reflections.mtz -o output/ --policy policy.pt --sample
 """
 
 import argparse
@@ -47,13 +55,13 @@ def main():
         epilog="""
 Examples:
   # Basic refinement with trained policy
-  torchref-refine-policy -s model.pdb -f reflections.mtz -o output_dir/ --policy policy.pt
+  torchref.refine-policy -s model.pdb -f reflections.mtz -o output_dir/ --policy policy.pt
 
   # With sampling for exploration
-  torchref-refine-policy -s model.pdb -f reflections.mtz -o output/ --policy policy.pt --sample
+  torchref.refine-policy -s model.pdb -f reflections.mtz -o output/ --policy policy.pt --sample
 
   # With temperature for controlled exploration
-  torchref-refine-policy -s model.pdb -f reflections.mtz -o output/ --policy policy.pt --sample --temperature 0.5
+  torchref.refine-policy -s model.pdb -f reflections.mtz -o output/ --policy policy.pt --sample --temperature 0.5
         """,
     )
 
