@@ -342,9 +342,6 @@ class LossState(DeviceMovementMixin):
             Self for chaining.
         """
         compile_kwargs.setdefault("fullgraph", False)
-        # reduce-overhead uses CUDA graphs — only safe/useful on CUDA
-        if self.device.type == "cuda":
-            compile_kwargs.setdefault("mode", "reduce-overhead")
 
         active = [
             (self.targets[n], self.get_effective_weight(n))

@@ -11,7 +11,6 @@ from torchref.utils.stats import (
 )
 
 from .base import GeometryTarget
-from ..base import gaussian_nll
 
 if TYPE_CHECKING:
     from torchref.model.model import Model
@@ -22,19 +21,22 @@ class PlanarityTarget(GeometryTarget):
     Planarity restraint target (Gaussian NLL).
 
     For each planar group (e.g., aromatic rings, peptide planes), computes the
-    distance of each atom from the best-fit plane determined by SVD.
+    distance of each atom from the best-fit plane.
 
-    The best-fit plane is found by:
-    1. Computing the centroid of the atoms
-    2. Centering the coordinates
-    3. Finding the eigenvector with smallest eigenvalue via SVD
-    4. This eigenvector is the plane normal
+    The best-fit plane normal is found by eigendecomposition of the 3x3
+    covariance matrix of centered coordinates (eigh). The normal is detached
+    from the computational graph so that gradients flow only through the
+    deviation projection, not through the eigendecomposition. This is standard
+    practice in crystallographic refinement (SHELXL, Phenix, Refmac) and is
+    more numerically robust than differentiating through SVD — in particular
+    it avoids NaN gradients when atoms are exactly coplanar.
+
+    Plane groups with <= 3 atoms are skipped since 3 coplanar points have
+    zero deviation by construction and contribute no gradient signal.
 
     NLL = 0.5 * (d_i / σ_i)² + log(σ_i) + 0.5 * log(2π)
 
     where d_i is the distance of atom i from the best-fit plane.
-
-    Reference: cctbx/geometry_restraints/planarity.h
     """
 
     name: str = "geometry/planarity"
@@ -53,31 +55,36 @@ class PlanarityTarget(GeometryTarget):
 
         log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
 
-        for key, plane_data in self.restraints.restraints["plane"].items():
+        for _key, plane_data in self.restraints.restraints["plane"].items():
             indices = plane_data.get("indices")
             sigmas = plane_data.get("sigmas")
 
             if indices is None or len(indices) == 0:
                 continue
 
-            # indices shape: (n_planes, n_atoms_per_plane)
-            # sigmas shape: (n_planes, n_atoms_per_plane)
+            # 3 atoms are always coplanar — zero deviations, no gradient signal
+            n_atoms = indices.shape[1]
+            if n_atoms <= 3:
+                continue
 
-            # Gather all positions at once: (n_planes, n_atoms, 3)
+            # Gather positions: (n_planes, n_atoms, 3)
             positions = xyz[indices]
 
-            # Compute centroids: (n_planes, 1, 3)
+            # Center: (n_planes, n_atoms, 3)
             centroids = positions.mean(dim=1, keepdim=True)
-            centered = positions - centroids  # (n_planes, n_atoms, 3)
+            centered = positions - centroids
 
-            # BATCHED SVD
-            U, S, Vh = torch.linalg.svd(centered)  # Vh: (n_planes, 3, 3)
-            normals = Vh[:, -1, :]  # (n_planes, 3)
+            # Plane normal via eigh on 3x3 covariance (detached — no backward
+            # through the eigendecomposition, avoids NaN at degenerate eigenvalues)
+            with torch.no_grad():
+                cov = torch.bmm(centered.transpose(1, 2), centered)
+                _eigenvalues, eigenvectors = torch.linalg.eigh(cov)
+                normals = eigenvectors[:, :, 0]  # smallest eigenvalue
 
-            # Batched deviation calculation
-            deviations = torch.abs(torch.einsum("paj,pj->pa", centered, normals))
+            # Deviations: gradient flows through centered only
+            deviations = torch.einsum("paj,pj->pa", centered, normals)
 
-            # NLL calculation (all vectorized)
+            # NLL (squaring handles sign — no abs needed)
             nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
             all_nlls.append(nll.flatten())
 
@@ -88,7 +95,6 @@ class PlanarityTarget(GeometryTarget):
     def stats(self) -> Dict[str, any]:
         """Get planarity restraint statistics."""
         xyz = self.model.xyz()
-        device = xyz.device
 
         if "plane" not in self.restraints.restraints:
             return {}
@@ -96,26 +102,25 @@ class PlanarityTarget(GeometryTarget):
         all_deviations = []
         all_sigmas = []
 
-        for key, plane_data in self.restraints.restraints["plane"].items():
+        for _key, plane_data in self.restraints.restraints["plane"].items():
             indices = plane_data.get("indices")
             sigmas = plane_data.get("sigmas")
 
             if indices is None or len(indices) == 0:
                 continue
 
-            # Gather all positions at once: (n_planes, n_atoms, 3)
+            n_atoms = indices.shape[1]
+            if n_atoms <= 3:
+                continue
+
             positions = xyz[indices]
-
-            # Compute centroids: (n_planes, 1, 3)
             centroids = positions.mean(dim=1, keepdim=True)
-            centered = positions - centroids  # (n_planes, n_atoms, 3)
+            centered = positions - centroids
 
-            # Eigendecomposition of 3x3 covariance matrix (faster than SVD)
-            cov = torch.bmm(centered.transpose(1, 2), centered)  # (n_planes, 3, 3)
-            eigenvalues, eigenvectors = torch.linalg.eigh(cov)  # sorted ascending
-            normals = eigenvectors[:, :, 0]  # (n_planes, 3)
+            cov = torch.bmm(centered.transpose(1, 2), centered)
+            _eigenvalues, eigenvectors = torch.linalg.eigh(cov)
+            normals = eigenvectors[:, :, 0]
 
-            # Batched deviation calculation
             deviations = torch.abs(torch.einsum("paj,pj->pa", centered, normals))
 
             all_deviations.append(deviations.flatten())
