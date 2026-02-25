@@ -22,7 +22,7 @@ Example:
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 import torch
 
@@ -62,6 +62,12 @@ class LossState(DeviceMovementMixin):
 
     # Cache for computed losses (cleared on each aggregate)
     _losses: Dict[str, torch.Tensor] = field(default_factory=dict, repr=False)
+
+    # Set of target keys marked as compilable
+    _compilable: Set[str] = field(default_factory=set, repr=False)
+
+    # Cached compiled callable; None until compile_aggregate() is called
+    _compiled_aggregate: Optional[Callable] = field(default=None, repr=False)
 
     # Model-level data for weighting schemes
     meta: Dict[str, Any] = field(default_factory=dict)
@@ -168,7 +174,7 @@ class LossState(DeviceMovementMixin):
     # =========================================================================
 
     def register_target(
-        self, name: str, target: Callable, prefix: str = None
+        self, name: str, target: Callable, prefix: str = None, compile: bool = False
     ) -> "LossState":
         """
         Register a target function.
@@ -186,25 +192,32 @@ class LossState(DeviceMovementMixin):
         prefix : str, optional
             Prefix to prepend to the name (e.g., 'model1' -> 'model1/geometry/bond').
             Useful for registering targets from multiple models in the same state.
+        compile : bool
+            If True, mark this target (or all its sub-targets if combined) as
+            eligible for the compiled aggregate closure built by compile_aggregate().
 
         Returns
         -------
         LossState
             Self for chaining.
         """
+        self._compiled_aggregate = None  # invalidate stale compiled closure
+
         # Check if target is a combined/dictionary-like target with .items()
         # This handles CombinedTargets, TotalGeometryTarget, TotalADPTarget, etc.
         if hasattr(target, 'items') and callable(getattr(target, 'items', None)):
             # Use name as prefix to maintain hierarchy (e.g., "geometry" -> "geometry/bond")
             combined_prefix = f"{prefix}/{name}" if prefix else name
-            return self.register_targets(target, prefix=combined_prefix)
+            return self.register_targets(target, prefix=combined_prefix, compile=compile)
 
         # Normal single target registration
         key = f"{prefix}/{name}" if prefix else name
         self.targets[key] = target
+        if compile:
+            self._compilable.add(key)
         return self
 
-    def register_targets(self, targets, prefix: str = None) -> "LossState":
+    def register_targets(self, targets, prefix: str = None, compile: bool = False) -> "LossState":
         """Register multiple targets from a component target or dict.
 
         For targets with a .name attribute, uses target.name as the key.
@@ -216,10 +229,12 @@ class LossState(DeviceMovementMixin):
             Dictionary of name -> target mappings.
         prefix : str, optional
             Prefix to prepend to all target names.
+        compile : bool
+            If True, propagate the compile flag to all sub-targets.
         """
         for name, target in targets.items():
             target_name = getattr(target, "name", name)
-            self.register_target(target_name, target, prefix=prefix)
+            self.register_target(target_name, target, prefix=prefix, compile=compile)
         return self
 
     # =========================================================================
@@ -243,6 +258,7 @@ class LossState(DeviceMovementMixin):
             Self for chaining.
         """
         self.weights[name] = weight
+        self._compiled_aggregate = None  # invalidate stale compiled closure (weights baked in)
         return self
 
     def set_weights(self, weights: Dict[str, float]) -> "LossState":
@@ -282,6 +298,80 @@ class LossState(DeviceMovementMixin):
             effective *= self.weights.get(path, 1.0)
 
         return effective
+
+    # =========================================================================
+    # Compiled Aggregate
+    # =========================================================================
+
+    def mark_compilable(self, names: List[str]) -> "LossState":
+        """
+        Mark already-registered targets as eligible for the compiled aggregate.
+
+        Parameters
+        ----------
+        names : List[str]
+            Target keys to mark (must already be registered).
+
+        Returns
+        -------
+        LossState
+            Self for chaining.
+        """
+        for name in names:
+            if name in self.targets:
+                self._compilable.add(name)
+        self._compiled_aggregate = None
+        return self
+
+    def compile_aggregate(self, **compile_kwargs) -> "LossState":
+        """
+        Build and cache a torch.compile'd closure over all compilable targets.
+
+        Must be called after all targets and weights have been registered.
+        Re-call if weights or compilable targets change (or call reset_compiled_aggregate()).
+
+        Parameters
+        ----------
+        **compile_kwargs
+            Keyword arguments forwarded to torch.compile. Defaults to
+            fullgraph=False so partial-graph fallback is allowed.
+
+        Returns
+        -------
+        LossState
+            Self for chaining.
+        """
+        compile_kwargs.setdefault("fullgraph", False)
+        # reduce-overhead uses CUDA graphs — only safe/useful on CUDA
+        if self.device.type == "cuda":
+            compile_kwargs.setdefault("mode", "reduce-overhead")
+
+        active = [
+            (self.targets[n], self.get_effective_weight(n))
+            for n in self.targets
+            if n in self._compilable and self.get_effective_weight(n) != 0.0
+        ]
+        if not active:
+            self._compiled_aggregate = None
+            return self
+
+        fns, weights = zip(*active)
+        fns, weights = list(fns), list(weights)
+        device = self.device
+
+        def _compiled_fn():
+            total = torch.tensor(0.0, device=device)
+            for fn, w in zip(fns, weights):
+                total = total + w * fn()
+            return total
+
+        self._compiled_aggregate = torch.compile(_compiled_fn, **compile_kwargs)
+        return self
+
+    def reset_compiled_aggregate(self) -> "LossState":
+        """Clear the cached compiled closure (e.g. after changing weights)."""
+        self._compiled_aggregate = None
+        return self
 
     # =========================================================================
     # History Logging
@@ -326,6 +416,11 @@ class LossState(DeviceMovementMixin):
         """
         Evaluate all targets and compute weighted sum.
 
+        When compile_aggregate() has been called and log_values=False, the
+        compilable targets are evaluated through a single torch.compile'd closure
+        for improved performance.  With log_values=True all targets run eagerly
+        so per-target losses are available in _losses.
+
         Parameters
         ----------
         log_values : bool
@@ -339,30 +434,46 @@ class LossState(DeviceMovementMixin):
         if log_values:
             self.new_entry()
 
-        total = torch.tensor(0.0, device=self.device)
         self._losses.clear()
+        total = torch.tensor(0.0, device=self.device)
 
+        # --- compiled group ---
+        # Skipped when log_values=True: the fused closure does not expose
+        # per-target losses needed for logging.
+        if self._compiled_aggregate is not None and not log_values:
+            total = total + self._compiled_aggregate()
+        else:
+            # Run compilable targets eagerly (log_values path or no compiled fn)
+            for name in self._compilable:
+                if name not in self.targets:
+                    continue
+                weight = self.get_effective_weight(name)
+                if weight == 0.0:
+                    continue
+                loss = self.targets[name]()
+                self._losses[name] = loss
+                weighted = weight * loss
+                total = total + weighted
+                if log_values:
+                    self.log(f"loss/{name}", loss)
+                    self.log(f"weight/{name}", weight)
+                    self.log(f"weighted/{name}", weighted)
+
+        # --- eager group (non-compilable) ---
         for name, target in self.targets.items():
-            # Evaluate target
+            if name in self._compilable:
+                continue  # already handled above
             weight = self.get_effective_weight(name)
-            
             if weight == 0.0:
                 continue
-
             loss = target()
             self._losses[name] = loss
-
-            # Get effective weight
-
-            # Accumulate
-            weighted_loss = weight * loss
-            total = total + weighted_loss
-
-            # Log
+            weighted = weight * loss
+            total = total + weighted
             if log_values:
                 self.log(f"loss/{name}", loss)
                 self.log(f"weight/{name}", weight)
-                self.log(f"weighted/{name}", weighted_loss)
+                self.log(f"weighted/{name}", weighted)
 
         if log_values:
             self.log("total", total)

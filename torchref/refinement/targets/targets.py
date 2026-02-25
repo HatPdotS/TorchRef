@@ -942,12 +942,13 @@ class TorsionTarget(GeometryTarget):
         if len(deviations_rad) == 0:
             return torch.tensor(0.0, device=self.model.xyz().device)
 
-        sigmas_rad = sigmas_deg * (np.pi / 180.0)
+        sigmas_rad = sigmas_deg * float(np.pi / 180.0)
         kappa = torch.clamp(1.0 / (sigmas_rad**2), min=1e-3, max=1e4)
 
         # log(I_0(kappa)) via exponentially-scaled Bessel (stable for all kappa)
         # i0e(x) = exp(-|x|) * i0(x), so log(i0(x)) = log(i0e(x)) + x
-        log_i0_kappa = torch.log(torch.special.i0e(kappa) + 1e-45) + kappa
+        # i0e is always > 0 for finite kappa, so no epsilon needed.
+        log_i0_kappa = torch.log(torch.special.i0e(kappa)) + kappa
 
         log_2pi = torch.log(
             torch.tensor(2.0 * np.pi, device=sigmas_deg.device, dtype=sigmas_deg.dtype)
