@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, Dict
 import torch
 from torch import nn
 
-from torchref.refinement.targets import targets
+from torchref.refinement.targets.base import Target, ModelTarget
+from torchref.refinement.targets.geometry import (
+    BondTarget, AngleTarget, TorsionTarget, PlanarityTarget,
+    ChiralTarget, NonBondedTarget, RamachandranTarget,
+)
+from torchref.refinement.targets.adp import (
+    ADPSimilarityTarget, ADPLocalityTarget, ADPEntropyTarget,
+)
 from torchref.utils.stats import (
     VERBOSITY_DETAILED,
     filter_stats,
@@ -23,7 +30,7 @@ if TYPE_CHECKING:
     from torchref.refinement.base_refinement import Refinement
 
 
-class CombinedTargets(targets.Target):
+class CombinedTargets(Target):
     """
     Base class for combined targets.
 
@@ -55,7 +62,7 @@ class CombinedTargets(targets.Target):
         super().__init__(verbose=verbose)
         self._targets = nn.ModuleDict(self._create_targets())
 
-    def _create_targets(self) -> Dict[str, "targets.Target"]:
+    def _create_targets(self) -> Dict[str, "Target"]:
         """
         Create and return component targets as a dictionary.
 
@@ -72,7 +79,7 @@ class CombinedTargets(targets.Target):
         """Return registered sub-targets as ModuleDict."""
         return self._targets
 
-    def __getitem__(self, key: str) -> "targets.Target":
+    def __getitem__(self, key: str) -> "Target":
         """Get a target by name using dictionary-style access."""
         return self._targets[key]
 
@@ -123,7 +130,7 @@ class CombinedTargets(targets.Target):
         return state
 
 
-class CombinedModelTargets(targets.ModelTarget):
+class CombinedModelTargets(ModelTarget):
     """
     Base class for combined targets that only need Model (geometry/ADP targets).
 
@@ -159,7 +166,7 @@ class CombinedModelTargets(targets.ModelTarget):
         super().__init__(model, verbose)
         self._targets = nn.ModuleDict(self._create_targets())
 
-    def _create_targets(self) -> Dict[str, "targets.Target"]:
+    def _create_targets(self) -> Dict[str, "Target"]:
         """
         Create and return component targets as a dictionary.
 
@@ -176,7 +183,7 @@ class CombinedModelTargets(targets.ModelTarget):
         """Return registered sub-targets as ModuleDict."""
         return self._targets
 
-    def __getitem__(self, key: str) -> "targets.Target":
+    def __getitem__(self, key: str) -> "Target":
         """Get a target by name using dictionary-style access."""
         return self._targets[key]
 
@@ -271,7 +278,7 @@ class TotalGeometryTarget(CombinedModelTargets):
             print(f"{name}: {target()}")
     """
 
-    def _create_targets(self) -> Dict[str, targets.Target]:
+    def _create_targets(self) -> Dict[str, Target]:
         """
         Create geometry component targets.
 
@@ -282,13 +289,13 @@ class TotalGeometryTarget(CombinedModelTargets):
         """
         print("Initializing TotalGeometryTarget with component targets...")
         return {
-            "bond": targets.BondTarget(self.model, self.verbose),
-            "angle": targets.AngleTarget(self.model, self.verbose),
-            "torsion": targets.TorsionTarget(self.model, self.verbose),
-            "planarity": targets.PlanarityTarget(self.model, self.verbose),
-            "chiral": targets.ChiralTarget(self.model, self.verbose),
-            "nonbonded": targets.NonBondedTarget(self.model, verbose=self.verbose),
-            "ramachandran": targets.RamachandranTarget(self.model, self.verbose),
+            "bond": BondTarget(self.model, self.verbose),
+            "angle": AngleTarget(self.model, self.verbose),
+            "torsion": TorsionTarget(self.model, self.verbose),
+            "planarity": PlanarityTarget(self.model, self.verbose),
+            "chiral": ChiralTarget(self.model, self.verbose),
+            "nonbonded": NonBondedTarget(self.model, verbose=self.verbose),
+            "ramachandran": RamachandranTarget(self.model, self.verbose),
         }
 
     def get_metrics(self, verbosity: int = VERBOSITY_DETAILED) -> Dict[str, float]:
@@ -448,7 +455,7 @@ class TotalADPTarget(CombinedModelTargets):
             print(f"{name}: {target()}")
     """
 
-    def _create_targets(self) -> Dict[str, targets.Target]:
+    def _create_targets(self) -> Dict[str, Target]:
         """
         Create ADP component targets.
 
@@ -459,11 +466,11 @@ class TotalADPTarget(CombinedModelTargets):
         """
         print("Initializing TotalADPTarget with component targets...")
         return {
-            "simu": targets.ADPSimilarityTarget(self.model, verbose=self.verbose),
-            "locality": targets.ADPLocalityTarget(
+            "simu": ADPSimilarityTarget(self.model, verbose=self.verbose),
+            "locality": ADPLocalityTarget(
                 self.model, verbose=self.verbose
             ),
-            "KL": targets.ADPEntropyTarget(self.model, verbose=self.verbose),
+            "KL": ADPEntropyTarget(self.model, verbose=self.verbose),
         }
 
     def print_statistics(self) -> None:

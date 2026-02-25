@@ -15,7 +15,8 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict, Tuple
 
-from .targets import Target, XrayTarget
+from .base import Target
+from .xray import XrayTarget
 from torchref.utils.stats import (
     VERBOSITY_STANDARD,
     VERBOSITY_DETAILED,

@@ -1,0 +1,175 @@
+from typing import TYPE_CHECKING, Dict, Tuple
+
+import torch
+
+from torchref.utils.stats import (
+    VERBOSITY_DEBUG,
+    VERBOSITY_DETAILED,
+    VERBOSITY_STANDARD,
+    StatEntry,
+    stat,
+)
+
+from ..base import DataTarget
+
+if TYPE_CHECKING:
+    from torchref.io import ReflectionData
+    from torchref.model.model import Model
+    from torchref.model.model_ft import ModelFT
+    from torchref.scaling.scaler_base import Scaler
+
+
+class XrayTarget(DataTarget):
+    """
+    Base class for X-ray targets.
+
+    Provides common functionality for accessing F_obs, F_calc, etc.
+    Supports two modes of operation:
+
+    1. With Model: Computes F_calc from model on each forward pass
+    2. Without Model: Uses pre-computed F_calc passed to forward()/get_data()
+
+    Parameters
+    ----------
+    data : ReflectionData, optional
+        Reference to the ReflectionData object. Required for forward().
+    model : Model or ModelFT, optional
+        Reference to Model object for F_calc computation.
+        If None, fcalc must be provided to forward().
+    scaler : Scaler, optional
+        Reference to the Scaler object.
+    use_work_set : bool, optional
+        If True, compute loss on work set; if False, on test set. Default is True.
+    verbose : int, optional
+        Verbosity level. Default is 0.
+
+    Attributes
+    ----------
+    use_work_set : bool
+        Whether to use work set or test set.
+    """
+
+    name: str = "xray"  # Will be overridden based on work/test set
+
+    def __init__(
+        self,
+        data: "ReflectionData" = None,
+        model: "Model" = None,
+        scaler: "Scaler" = None,
+        use_work_set: bool = True,
+        verbose: int = 0,
+    ):
+        """
+        Initialize X-ray target.
+
+        Parameters
+        ----------
+        data : ReflectionData, optional
+            Reference to the ReflectionData object. Required for forward().
+        model : Model or ModelFT, optional
+            Reference to Model object for F_calc computation.
+            If None, fcalc must be provided to forward().
+        scaler : Scaler, optional
+            Reference to the Scaler object.
+        use_work_set : bool, optional
+            If True, compute loss on work set; if False, on test set. Default is True.
+        verbose : int, optional
+            Verbosity level. Default is 0.
+        """
+        super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
+        self.use_work_set = use_work_set
+        # Set name based on work/test set
+        self.name = "xray_work" if use_work_set else "xray_test"
+
+    def get_data(
+        self, fcalc: torch.Tensor = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Get F_obs, F_calc, sigma, and centric flags for the appropriate set.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors. If provided, uses these instead
+            of computing from model. Useful when model is not set.
+
+        Returns
+        -------
+        tuple
+            Tuple of (F_obs, F_calc, sigma_F_obs, centric_flags).
+
+        Raises
+        ------
+        RuntimeError
+            If neither model nor fcalc is available.
+        """
+        hkl, F_obs, sigma_F_obs, rfree_mask = self._data()
+
+        # Get F_calc: either from argument or compute from model
+        if fcalc is not None:
+            F_calc = self.get_F_calc_scaled(fcalc=fcalc)
+        else:
+            F_calc = self.get_F_calc_scaled(hkl, recalc=False)
+
+        # Get centric flags (full size, unfiltered)
+        centric_all = self._data.centric
+
+        # Build selection mask (validity + work/free set)
+        if hasattr(F_obs, "get_mask"):
+            # MaskedTensor case: F_obs and sigma have validity mask built-in
+            validity_mask = F_obs.get_mask()  # True = valid reflection
+            F_obs_data = F_obs.get_data()
+            sigma_data = (
+                sigma_F_obs.get_data()
+                if hasattr(sigma_F_obs, "get_mask")
+                else sigma_F_obs
+            )
+            rfree_bool = rfree_mask.bool()
+            if self.use_work_set:
+                mask = validity_mask & rfree_bool
+            else:
+                mask = validity_mask & ~rfree_bool
+        else:
+            F_obs_data = F_obs
+            sigma_data = sigma_F_obs
+            rfree_bool = rfree_mask.bool()
+            mask = rfree_bool if self.use_work_set else ~rfree_bool
+
+        # Use torch.where instead of boolean indexing to avoid
+        # nonzero() calls that force CPU-GPU synchronization.
+        # Invalid elements get safe defaults (0 for data, 1 for sigma).
+        F_obs_sel = torch.where(mask, F_obs_data, torch.zeros_like(F_obs_data))
+        F_calc_sel = torch.where(mask, F_calc, torch.zeros_like(F_calc))
+        sigma_sel = torch.where(mask, sigma_data, torch.ones_like(sigma_data))
+        centric_sel = (centric_all & mask) if centric_all is not None else None
+
+        return F_obs_sel, F_calc_sel, sigma_sel, centric_sel, mask
+
+    def stats(self, fcalc: torch.Tensor = None) -> Dict[str, StatEntry]:
+        """
+        Get statistics for this X-ray target.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors.
+
+        Returns
+        -------
+        dict
+            Statistics dict with StatEntry values containing verbosity levels.
+        """
+        F_obs, F_calc, sigma, _, mask = self.get_data(fcalc=fcalc)
+        F_calc_amp = torch.abs(F_calc)
+        diff = F_obs - F_calc_amp
+
+        loss = self.forward(fcalc=fcalc)
+
+        rwork, rfree = self.get_rfactor()
+
+        return {
+            "loss": stat(loss.item(), VERBOSITY_STANDARD),
+            "n": stat(mask.sum().item(), VERBOSITY_DEBUG),
+            "rwork": stat(rwork, VERBOSITY_STANDARD),
+            "rfree": stat(rfree, VERBOSITY_STANDARD),
+        }
