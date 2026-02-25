@@ -7,13 +7,13 @@ from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
 from torchref.refinement.loss_state import LossState
-from torchref.refinement.targets.combined_targets import (
+from torchref.refinement.targets.combined import (
     TotalADPTarget,
     TotalGeometryTarget,
 )
 
 # Target system imports
-from torchref.refinement.targets.targets import create_xray_target
+from torchref.refinement.targets.xray import create_xray_target
 from torchref.scaling.scaler import Scaler
 from torchref.utils.debug_utils import DebugMixin
 

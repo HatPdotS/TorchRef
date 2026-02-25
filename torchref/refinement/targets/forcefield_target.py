@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Dict, Optional
 import torch
 from torch import nn
 
-from torchref.refinement.targets.targets import ModelTarget
+from .base import ModelTarget
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,

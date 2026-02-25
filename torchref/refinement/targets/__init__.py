@@ -4,36 +4,54 @@ Refinement target functions for crystallographic structure refinement.
 This module provides target (loss) functions for X-ray, geometry, and ADP restraints.
 """
 
-from .combined_targets import (
+from .base import (
+    Target,
+    ModelTarget,
+    DataTarget,
+    gaussian_nll,
+    von_mises_nll,
+    adp_similarity_nll,
+)
+from .combined import (
     CombinedTargets,
     TotalADPTarget,
     TotalGeometryTarget,
 )
-from .targets import (
-    ADPEntropyTarget,
-    ADPLocalityTarget,
-    ADPSimilarityTarget,
-    ADPTarget,
-    AngleTarget,
-    BondTarget,
-    ChiralTarget,
+from .xray import (
+    XrayTarget,
     GaussianXrayTarget,
-    GeometryTarget,
     LeastSquaresXrayTarget,
     MaximumLikelihoodXrayTarget,
-    NonBondedTarget,
-    PlanarityTarget,
-    RigidBondTarget,
-    TorsionTarget,
-    XrayTarget,
-    Target,
-    ModelTarget,
-    DataTarget,
+    create_xray_target,
 )
-
-from .difference_xray_target import DifferenceXrayTarget
-from .phase_informed_difference_target import PhaseInformedDifferenceTarget
-from .taylor_corrected_difference_target import TaylorCorrectedDifferenceTarget
+from .geometry import (
+    GeometryTarget,
+    BondTarget,
+    AngleTarget,
+    TorsionTarget,
+    PlanarityTarget,
+    ChiralTarget,
+    NonBondedTarget,
+    RamachandranTarget,
+)
+from .adp import (
+    ADPTarget,
+    ADPSimilarityTarget,
+    RigidBondTarget,
+    ADPEntropyTarget,
+    ADPLocalityTarget,
+)
+from .difference import (
+    DifferenceXrayTarget,
+    PhaseInformedDifferenceTarget,
+    TaylorCorrectedDifferenceTarget,
+)
+from .realspace import (
+    RealSpaceTarget,
+    RealSpaceCorrelationTarget,
+    RealSpaceDifferenceTarget,
+    RealSpaceExtrapolatedTarget,
+)
 from .occupancy_floor_diagnostic import (
     OccupancyFloorDiagnostic,
     NegativeDensityPenalty,
@@ -46,12 +64,6 @@ from .sampled_ml_phase_target import (
     create_sampled_ml_target,
     create_sampled_ml_difference_target,
 )
-from .realspace_targets import (
-    RealSpaceTarget,
-    RealSpaceCorrelationTarget,
-    RealSpaceDifferenceTarget,
-)
-from .realspace_extrapolated_target import RealSpaceExtrapolatedTarget
 
 # Force field target (optional dependency)
 try:
@@ -60,14 +72,25 @@ except ImportError:
     ForceFieldTarget = None  # torchmd-net not installed
 
 __all__ = [
+    # Base classes
     "Target",
+    "ModelTarget",
+    "DataTarget",
+    # Utility functions
+    "gaussian_nll",
+    "von_mises_nll",
+    "adp_similarity_nll",
+    # X-ray targets
     "XrayTarget",
     "GaussianXrayTarget",
     "MaximumLikelihoodXrayTarget",
     "LeastSquaresXrayTarget",
+    "create_xray_target",
+    # Difference targets
     "DifferenceXrayTarget",
     "PhaseInformedDifferenceTarget",
     "TaylorCorrectedDifferenceTarget",
+    # Geometry targets
     "GeometryTarget",
     "BondTarget",
     "AngleTarget",
@@ -75,23 +98,30 @@ __all__ = [
     "PlanarityTarget",
     "ChiralTarget",
     "NonBondedTarget",
+    "RamachandranTarget",
+    # ADP targets
     "ADPTarget",
     "ADPSimilarityTarget",
     "RigidBondTarget",
     "ADPEntropyTarget",
     "ADPLocalityTarget",
+    # Combined targets
     "CombinedTargets",
     "TotalGeometryTarget",
     "TotalADPTarget",
+    # Force field
     "ForceFieldTarget",
+    # Occupancy diagnostics
     "OccupancyFloorDiagnostic",
     "NegativeDensityPenalty",
     "DisplacementRegularizer",
     "DifferenceAmplitudeRegularizer",
+    # Sampled ML phase targets
     "SampledMLPhaseTarget",
     "SampledMLDifferenceTarget",
     "create_sampled_ml_target",
     "create_sampled_ml_difference_target",
+    # Real-space targets
     "RealSpaceTarget",
     "RealSpaceCorrelationTarget",
     "RealSpaceDifferenceTarget",
