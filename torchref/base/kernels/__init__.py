@@ -29,12 +29,18 @@ from .optimized_ops import (
     vectorized_add_to_map_optimized,
 )
 
-# Triton kernel is optional (requires triton package)
+# Triton kernels are optional (require triton package)
 try:
     from .triton_kernel import fused_add_to_map_gpu, fused_find_and_place_atoms
     _HAS_TRITON = True
 except ImportError:
     _HAS_TRITON = False
+
+try:
+    from .separable_triton_kernel import separable_density_gpu
+    _HAS_SEPARABLE_TRITON = True
+except ImportError:
+    _HAS_SEPARABLE_TRITON = False
 
 __all__ = [
     # JIT kernels
@@ -53,7 +59,8 @@ __all__ = [
     "CachedRadiusMask",
     "get_cached_radius_offsets",
     "vectorized_add_to_map_optimized",
-    # Triton kernel (if available)
+    # Triton kernels (if available)
     "fused_add_to_map_gpu",
     "fused_find_and_place_atoms",
+    "separable_density_gpu",
 ]

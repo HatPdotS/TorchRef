@@ -182,6 +182,7 @@ class ModelFT(CachedForwardMixin, Model):
                 spacegroup=self._spacegroup,
                 device=self.device,
                 max_res=self.max_res,
+                radius_angstrom=self.radius_angstrom,
             )
 
     def load_pdb(self, filename):
