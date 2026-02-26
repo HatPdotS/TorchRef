@@ -165,6 +165,7 @@ def extract_structure_factors_with_symmetry(
         Complex structure factors with symmetry applied.
     """
     device = reciprocal_grid.device
+    Nx, Ny, Nz = reciprocal_grid.shape
 
     # Move everything to the same device
     hkl = hkl.to(device=device)
@@ -172,18 +173,15 @@ def extract_structure_factors_with_symmetry(
     translations = translations.to(device=device)
 
     n_ops = rotation_matrices.shape[0]
+    N = hkl.shape[0]
 
     # 1. Compute equivalent HKLs: (n_ops, N, 3)
     equiv_hkls = compute_symmetry_equivalent_hkls(hkl, rotation_matrices)
 
-    # 2. Extract F_P1 at each equivalent HKL: (n_ops, N)
-    # We need to extract from the grid for each operation
-    f_p1_list = []
-    for i in range(n_ops):
-        f_i = extract_structure_factor_from_grid(reciprocal_grid, equiv_hkls[i])
-        f_p1_list.append(f_i)
-
-    f_p1 = torch.stack(f_p1_list, dim=0)  # (n_ops, N)
+    # 2. Vectorized extraction: single flat gather for all symops at once
+    flat_indices = _equiv_hkls_to_flat_indices(equiv_hkls, Nx, Ny, Nz)
+    f_all = reciprocal_grid.reshape(-1)[flat_indices]  # (n_ops * N,)
+    f_p1 = f_all.view(n_ops, N)
 
     # 3. Compute phase shifts: (n_ops, N)
     phases = compute_translation_phases(hkl, translations)
@@ -194,13 +192,26 @@ def extract_structure_factors_with_symmetry(
     return f_sym
 
 
+def _equiv_hkls_to_flat_indices(
+    equiv_hkls: torch.Tensor, Nx: int, Ny: int, Nz: int,
+) -> torch.Tensor:
+    """Convert (n_ops, N, 3) equiv HKLs to flat linear grid indices."""
+    all_hkl = equiv_hkls.reshape(-1, 3)  # (n_ops*N, 3)
+    hi = torch.remainder(all_hkl[:, 0], Nx)
+    ki = torch.remainder(all_hkl[:, 1], Ny)
+    li = torch.remainder(all_hkl[:, 2], Nz)
+    return (hi * (Ny * Nz) + ki * Nz + li).to(torch.int64)
+
+
 class ReciprocalSymmetryExtractor:
     """
     Class-based interface for reciprocal space symmetry extraction.
 
     This provides a more efficient interface when computing structure factors
     multiple times with the same symmetry and HKLs (e.g., during refinement).
-    Precomputes equivalent HKLs and phase factors.
+    Precomputes equivalent HKLs, phase factors, and flat grid indices so that
+    each call reduces to a single gather + multiply + sum (~3 GPU kernels
+    instead of ~28).
 
     Parameters
     ----------
@@ -208,19 +219,22 @@ class ReciprocalSymmetryExtractor:
         Target Miller indices.
     symmetry : SpaceGroup
         SpaceGroup object containing rotation matrices and translations.
+    grid_shape : tuple of int
+        Reciprocal grid dimensions (Nx, Ny, Nz).
     device : torch.device, optional
         Device for computation.
 
     Examples
     --------
-    >>> extractor = ReciprocalSymmetryExtractor(hkl, symmetry)
-    >>> f_calc = extractor(density_map)  # Compute structure factors
+    >>> extractor = ReciprocalSymmetryExtractor(hkl, symmetry, grid_shape=(209, 86, 67))
+    >>> f_calc = extractor.extract_from_grid(reciprocal_grid)
     """
 
     def __init__(
         self,
         hkl: torch.Tensor,
         symmetry: "SpaceGroup",
+        grid_shape: tuple,
         device: Optional[torch.device] = None,
     ):
         self.device = device or hkl.device
@@ -228,6 +242,7 @@ class ReciprocalSymmetryExtractor:
         self.symmetry = symmetry
         self.n_ops = symmetry.n_ops
         self.N = len(hkl)
+        self.grid_shape = grid_shape
 
         # Precompute equivalent HKLs
         self.equiv_hkls = compute_symmetry_equivalent_hkls(
@@ -240,6 +255,12 @@ class ReciprocalSymmetryExtractor:
             self.hkl,
             symmetry.translations.to(device=self.device),
         )  # (n_ops, N) complex
+
+        # Precompute flat linear indices for single-gather extraction
+        Nx, Ny, Nz = grid_shape
+        self._flat_indices = _equiv_hkls_to_flat_indices(
+            self.equiv_hkls, Nx, Ny, Nz,
+        )  # (n_ops * N,) int64
 
     def __call__(self, density_map: torch.Tensor) -> torch.Tensor:
         """
@@ -282,7 +303,8 @@ class ReciprocalSymmetryExtractor:
         """
         Extract structure factors from precomputed reciprocal grid.
 
-        Use this when you already have the FFT result.
+        Uses precomputed flat indices for a single vectorized gather,
+        avoiding per-symop Python loops and kernel launches.
 
         Parameters
         ----------
@@ -294,19 +316,8 @@ class ReciprocalSymmetryExtractor:
         torch.Tensor, shape (N,)
             Complex structure factors with symmetry applied.
         """
-        # Extract F at all equivalent HKLs
-        f_p1_list = []
-        for i in range(self.n_ops):
-            f_i = extract_structure_factor_from_grid(
-                reciprocal_grid, self.equiv_hkls[i]
-            )
-            f_p1_list.append(f_i)
-
-        f_p1 = torch.stack(f_p1_list, dim=0)  # (n_ops, N)
-
-        # Apply phases and sum
-        f_sym = (f_p1 * self.phases).sum(dim=0)
-
+        f_all = reciprocal_grid.reshape(-1)[self._flat_indices]  # (n_ops * N,)
+        f_sym = (f_all.view(self.n_ops, self.N) * self.phases).sum(dim=0)
         return f_sym
 
     def to(self, device: torch.device) -> "ReciprocalSymmetryExtractor":
@@ -315,4 +326,5 @@ class ReciprocalSymmetryExtractor:
         self.hkl = self.hkl.to(device=device)
         self.equiv_hkls = self.equiv_hkls.to(device=device)
         self.phases = self.phases.to(device=device)
+        self._flat_indices = self._flat_indices.to(device=device)
         return self

@@ -2143,6 +2143,7 @@ class RestraintCIFReader:
             coord_cols = [
                 f"pdbx_model_Cartn_{coord}_ideal",
                 f"_chem_comp_atom.pdbx_model_Cartn_{coord}_ideal",
+                f"_chem_comp_atom.{coord}",
                 coord,
             ]
             if any(col in df.columns for col in coord_cols):

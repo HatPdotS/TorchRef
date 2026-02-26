@@ -100,9 +100,57 @@ torch::Tensor structured_scatter_add(
     return output;
 }
 
+// Parallel structured gather (backward of scatter_add).
+//
+// grad_cube[c, ix, iyz] = grad_output[wa[c,ix] + wbwc[c,iyz]]
+//
+// Each atom's output is independent — parallelize over atoms directly.
+// No index tensor allocation, no fancy indexing overhead.
+torch::Tensor structured_gather(
+    torch::Tensor grad_output,
+    torch::Tensor wa,
+    torch::Tensor wbwc,
+    int64_t nx, int64_t ny, int64_t nz)
+{
+    TORCH_CHECK(grad_output.is_contiguous() && grad_output.scalar_type() == torch::kFloat32);
+    TORCH_CHECK(wa.is_contiguous()   && wa.scalar_type() == torch::kInt64);
+    TORCH_CHECK(wbwc.is_contiguous() && wbwc.scalar_type() == torch::kInt64);
+
+    const int64_t C      = wa.size(0);
+    const int64_t ny_nz  = ny * nz;
+    const int64_t nxyz   = nx * ny_nz;
+
+    auto grad_cube = torch::empty({C, nxyz}, grad_output.options());
+
+    const float*   __restrict__ go_p   = grad_output.data_ptr<float>();
+    const int64_t* __restrict__ wa_p   = wa.data_ptr<int64_t>();
+    const int64_t* __restrict__ wbwc_p = wbwc.data_ptr<int64_t>();
+    float*         __restrict__ gc_p   = grad_cube.data_ptr<float>();
+
+    #pragma omp parallel for schedule(static)
+    for (int64_t c = 0; c < C; c++) {
+        const int64_t* wa_row   = wa_p   + c * nx;
+        const int64_t* wbwc_row = wbwc_p + c * ny_nz;
+        float*         out_row  = gc_p   + c * nxyz;
+
+        for (int64_t ix = 0; ix < nx; ix++) {
+            int64_t wa_val = wa_row[ix];
+            float*  dst    = out_row + ix * ny_nz;
+
+            for (int64_t iyz = 0; iyz < ny_nz; iyz++) {
+                dst[iyz] = go_p[wa_val + wbwc_row[iyz]];
+            }
+        }
+    }
+
+    return grad_cube;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("structured_scatter_add", &structured_scatter_add,
           "Parallel partitioned scatter_add from structured (wa, wbwc) indices");
+    m.def("structured_gather", &structured_gather,
+          "Parallel structured gather (backward of scatter_add)");
 }
 """
 
@@ -112,11 +160,55 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 _module = None
 
 
+def _clear_stale_lock(extension_name: str = "cpu_scatter"):
+    """Remove stale lock files left behind by killed compilation processes.
+
+    torch.utils.cpp_extension.load_inline uses file locks to prevent
+    concurrent compilation.  If a process is killed mid-compile, the lock
+    stays behind and all future imports block forever.  We detect this by
+    attempting a non-blocking acquire — if it succeeds the lock is stale
+    (no live process holds it) and we can safely rename it out of the way.
+    We rename instead of delete because load_inline's baton.release()
+    expects the lock file to exist when it cleans up.
+    """
+    import os
+    from pathlib import Path
+
+    cache_root = Path(os.path.expanduser(
+        os.environ.get("TORCH_EXTENSIONS_DIR",
+                        os.path.join("~", ".cache", "torch_extensions"))
+    ))
+    if not cache_root.exists():
+        return
+
+    for lock_file in cache_root.rglob(f"{extension_name}/lock"):
+        try:
+            import fcntl
+            fd = os.open(str(lock_file), os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Lock acquired → no live process holds it → stale
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+                # Rename instead of delete — load_inline's baton.release()
+                # will recreate and remove its own lock file cleanly.
+                stale = lock_file.with_suffix(".stale")
+                lock_file.rename(stale)
+                stale.unlink(missing_ok=True)
+            except BlockingIOError:
+                # Another process legitimately holds the lock
+                os.close(fd)
+        except Exception:
+            pass
+
+
 def _get_module():
     global _module
     if _module is None:
         import os
         import sys
+        # Remove stale lock files from killed processes before attempting load
+        _clear_stale_lock()
         # Ensure ninja (installed via pip) is on PATH for compute nodes
         bin_dir = os.path.dirname(sys.executable)
         if bin_dir not in os.environ.get("PATH", ""):
@@ -174,10 +266,14 @@ class _StructuredScatterAdd(torch.autograd.Function):
     def backward(ctx, grad_output):
         wa, wbwc = ctx.saved_tensors
         C, nx, ny, nz = ctx.cube_shape
-        # Gather: grad_cube[c, ix, iy, iz] = grad_output[wa[c,ix] + wbwc[c,iy,iz]]
-        idx_flat = wa[:, :, None, None] + wbwc[:, None, :, :]  # (C, nx, ny, nz)
-        grad_cube = grad_output[idx_flat.reshape(-1)].reshape(C, nx, ny, nz)
-        return grad_cube, None, None, None
+        mod = _get_module()
+        grad_cube = mod.structured_gather(
+            grad_output.contiguous(),
+            wa.contiguous(),
+            wbwc.reshape(C, ny * nz).contiguous(),
+            nx, ny, nz,
+        )
+        return grad_cube.reshape(C, nx, ny, nz), None, None, None
 
 
 def structured_scatter_add(density_cube, wa, wbwc, map_size):

@@ -544,6 +544,12 @@ class RestraintsNew(DebugMixin, Module):
                 cutoff=5.0, sigma=0.05, inter_residue_only=False, use_spatial_hash=True
             )
 
+            # Pre-compute concatenated 'all' groups so every buffer is registered
+            # on the correct device at build time.  This prevents register_buffer()
+            # being called during a forward pass (which would break CUDA-graph
+            # capture) and ensures model.to(device) moves ALL restraint tensors.
+            self.cat_dict()
+
         except Exception as e:
             self.debug_on_error(e, context="RestraintsNew.build_restraints")
             raise

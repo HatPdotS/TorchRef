@@ -155,6 +155,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         # Late symmetry compatibility flag (set during setup_grid)
         self._late_symmetry_compatible: Optional[bool] = None
 
+        # Cached reciprocal symmetry extractor (precomputed flat indices)
+        self._sym_extractor = None
+        self._sym_extractor_hkl_id: Optional[int] = None
+
     # =========================================================================
     # Cell and SpaceGroup properties
     # =========================================================================
@@ -372,6 +376,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             self.map_symmetry = None
             self._late_symmetry_compatible = False
 
+        # Invalidate cached symmetry extractor (grid shape changed)
+        self._sym_extractor = None
+        self._sym_extractor_hkl_id = None
+
         if self.verbose > 2:
             print(f"Grid shape: {self.real_space_grid.shape[:-1]}")
             print(f"Voxel size: {self.voxel_size}")
@@ -520,15 +528,15 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
         # Use late symmetry if enabled, compatible, and requested
         if apply_symmetry:
-            from torchref.base.reciprocal import (
-                extract_structure_factors_with_symmetry,
-            )
-            return extract_structure_factors_with_symmetry(
-                reciprocal_space_grid,
-                hkl,
-                self.spacegroup.matrices,
-                self.spacegroup.translations,
-            )
+            # Lazily build / reuse cached extractor (precomputed flat indices)
+            if self._sym_extractor is None or id(hkl) != self._sym_extractor_hkl_id:
+                from torchref.base.reciprocal import ReciprocalSymmetryExtractor
+                grid_shape = tuple(int(x) for x in self.gridsize)
+                self._sym_extractor = ReciprocalSymmetryExtractor(
+                    hkl, self.spacegroup, grid_shape, device=hkl.device,
+                )
+                self._sym_extractor_hkl_id = id(hkl)
+            return self._sym_extractor.extract_from_grid(reciprocal_space_grid)
         else:
             return extract_structure_factor_from_grid(reciprocal_space_grid, hkl)
 
@@ -659,6 +667,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         # Move map_symmetry if it exists
         if self.map_symmetry is not None:
             self.map_symmetry = self.map_symmetry.to(device=device)
+
+        # Invalidate cached extractor (device changed, indices stale)
+        self._sym_extractor = None
+        self._sym_extractor_hkl_id = None
 
         return super().to(device=device, dtype=dtype)
 

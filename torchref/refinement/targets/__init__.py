@@ -71,6 +71,13 @@ try:
 except ImportError:
     ForceFieldTarget = None  # torchmd-net not installed
 
+# AMBER target (optional dependency: openmm, pdbfixer)
+try:
+    from .amber_target import AmberTarget, AMBER14_STANDARD
+except ImportError:
+    AmberTarget = None  # openmm / pdbfixer not installed
+    AMBER14_STANDARD = None
+
 __all__ = [
     # Base classes
     "Target",
@@ -111,6 +118,9 @@ __all__ = [
     "TotalADPTarget",
     # Force field
     "ForceFieldTarget",
+    # AMBER force field
+    "AmberTarget",
+    "AMBER14_STANDARD",
     # Occupancy diagnostics
     "OccupancyFloorDiagnostic",
     "NegativeDensityPenalty",

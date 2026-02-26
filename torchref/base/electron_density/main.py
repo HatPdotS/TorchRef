@@ -17,7 +17,7 @@ CPU backends (``ISO_MAP_ENGINE_CPU``):
 
 Override at import time via environment variables::
 
-    TORCHREF_ISO_MAP_ENGINE_GPU=fused_triton
+    TORCHREF_ISO_MAP_ENGINE_GPU=auto
     TORCHREF_ISO_MAP_ENGINE_CPU=fused
 
 or at runtime by setting the module-level variables directly::

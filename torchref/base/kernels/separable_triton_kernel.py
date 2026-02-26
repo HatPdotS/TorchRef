@@ -10,6 +10,8 @@ Eliminates the real_space_grid tensor (~500 MB) and all PBC matrix
 operations that the fused kernel requires.
 
 Forward + backward kernels with full autograd support for xyz, b, occ.
+
+Litters Nan in strcuture factor duirng first evaluation. 
 """
 
 import math
@@ -920,7 +922,6 @@ def _warmup_kernel(cfg, grid_shape, device):
 # Scratch buffer cache: reuse if large enough
 _scratch_buf: torch.Tensor | None = None
 
-
 # =============================================================================
 # Autograd wrapper
 # =============================================================================
@@ -1098,7 +1099,7 @@ def separable_density_gpu(
     # Reuse scratch buffer if large enough, otherwise allocate
     if _scratch_buf is None or _scratch_buf.numel() < needed or \
        _scratch_buf.device != device:
-        _scratch_buf = torch.empty(needed, device=device, dtype=torch.float32)
+        _scratch_buf = torch.zeros(needed, device=device, dtype=torch.float32)
     scratch = _scratch_buf[:needed].view(N_atoms, cfg["base_scratch"])
 
     return _SeparableDensityFunction.apply(

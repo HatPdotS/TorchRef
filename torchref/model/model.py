@@ -317,7 +317,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             element_to_z.get(elem.strip().capitalize(), 0)
             for elem in self.pdb["element"]
         ]
-        self.register_buffer("_Z", torch.tensor(z_values, dtype=torch.int32))
+        self.register_buffer("_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device))
         return self._Z
 
     # =========================================================================
@@ -1422,6 +1422,782 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.adp = PositiveMixedTensor(
             new_adp, refinable_mask=self.adp.refinable_mask, name="adp"
         )
+
+    def generate_hydrogens(self, mon_lib_path: str = None) -> "Model":
+        """
+        Generate hydrogen atoms for the current model using gemmi.
+
+        Places hydrogens at ideal geometry using the CCP4 monomer library and
+        gemmi's topology engine. Returns a new Model instance with hydrogens
+        added; the original model is not modified.
+
+        Parameters
+        ----------
+        mon_lib_path : str, optional
+            Path to CCP4 monomer library directory. If None, uses the monomer
+            library bundled with torchref (covers standard amino acids and
+            common small molecules).
+
+        Returns
+        -------
+        Model
+            A new Model instance with hydrogen atoms added (strip_H=False).
+            Unknown residues are skipped silently.
+
+        Notes
+        -----
+        Requires gemmi (already a torchref dependency).
+        Heavy-atom coordinates from the current model state are used, so call
+        this after any coordinate changes you want reflected in the H positions.
+
+        Examples
+        --------
+        >>> model_no_h = Model().load_pdb('structure.pdb')
+        >>> model_with_h = model_no_h.generate_hydrogens()
+        >>> print(model_with_h.Z.shape)   # more atoms than model_no_h
+        """
+        import gemmi
+        import os
+        import tempfile
+        from torchref import PATH_TORCHREF_DATA
+
+        if mon_lib_path is None:
+            # Search candidate paths in priority order
+            import os as _os
+            candidates = [
+                # CCP4 standard environment variable
+                _os.environ.get("CLIBD_MON", ""),
+                # External library bundled alongside the package repo
+                str(PATH_TORCHREF_DATA.parent.parent / "external_monomer_library"),
+                # Internal (partial) monomer library shipped with torchref
+                str(PATH_TORCHREF_DATA / "monomer_library"),
+            ]
+            mon_lib_path = None
+            for c in candidates:
+                if c and _os.path.isfile(_os.path.join(c, "ener_lib.cif")):
+                    mon_lib_path = c
+                    break
+            if mon_lib_path is None:
+                raise FileNotFoundError(
+                    "CCP4 monomer library not found. Provide mon_lib_path explicitly, "
+                    "or set the CLIBD_MON environment variable to the library directory."
+                )
+
+        # Sync current xyz/adp/occupancy into DataFrame
+        self.update_pdb()
+
+        # Write current model to temp PDB
+        with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as f:
+            tmp_heavy = f.name
+        with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as f:
+            tmp_with_h = f.name
+
+        try:
+            from torchref.utils.utils import sanitize_pdb_dataframe
+            from torchref.io import pdb as io_pdb
+
+            pdb_out = sanitize_pdb_dataframe(self.pdb.copy())
+            pdb_out.attrs["spacegroup"] = (
+                self.spacegroup.hm if self.spacegroup else "P 1"
+            )
+            io_pdb.write(pdb_out, tmp_heavy)
+
+            # Load with gemmi
+            st = gemmi.read_structure(tmp_heavy)
+            st.setup_entities()
+
+            # Load monomer library and add relevant monomers
+            monlib = gemmi.read_monomer_lib(mon_lib_path, [])
+            resnames = set(r.name for m in st for c in m for r in c)
+            for rn in resnames:
+                cif_path = os.path.join(mon_lib_path, rn[0].lower(), rn + ".cif")
+                if not os.path.exists(cif_path):
+                    continue
+                doc = gemmi.cif.read(cif_path)
+                for block in doc:
+                    if block.name == rn or block.name.startswith("comp_" + rn):
+                        monlib.add_monomer_if_present(block)
+                        break
+
+            # Place hydrogens
+            gemmi.prepare_topology(
+                st, monlib, h_change=gemmi.HydrogenChange.ReAdd
+            )
+
+            # Write structure with hydrogens
+            st.write_pdb(tmp_with_h)
+
+            # Load as a new Model
+            new_model = self.__class__(
+                dtype_float=self.dtype_float,
+                verbose=self.verbose,
+                device=self.device,
+                strip_H=False,
+            )
+            new_model.load_pdb(tmp_with_h)
+
+        finally:
+            for p in (tmp_heavy, tmp_with_h):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+        return new_model
+
+    def _new_model_from_df(self, df, *, strip_H=None):
+        """Build a fresh model of the same class from a DataFrame."""
+        import inspect
+
+        sh = self.strip_H if strip_H is None else strip_H
+        ctor_kw = dict(
+            dtype_float=self.dtype_float, verbose=0,
+            device=self.device, strip_H=sh,
+        )
+        sig = inspect.signature(self.__class__.__init__)
+        for pname, param in sig.parameters.items():
+            if pname in ("self",) or pname in ctor_kw:
+                continue
+            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                continue
+            if hasattr(self, pname):
+                ctor_kw[pname] = getattr(self, pname)
+        if "gridsize" in sig.parameters and hasattr(self, "_explicit_gridsize"):
+            ctor_kw["gridsize"] = self._explicit_gridsize
+
+        new_model = self.__class__(**ctor_kw)
+        sg_str = self.spacegroup.xhm if self.spacegroup else "P 1"
+        new_model.load(
+            lambda: (df, self.pdb.attrs.get("cell"), sg_str)
+        )
+        if hasattr(new_model, "setup_grid"):
+            new_model.setup_grid()
+        return new_model
+
+    def strip_altlocs(self) -> "Model":
+        """Return a new model with alternate conformations removed.
+
+        For each residue that has multiple altlocs, the conformer with
+        highest average occupancy is kept (ties broken alphabetically).
+        The ``altloc`` column is cleared to ``""`` in the returned model.
+        The original model is not modified.
+        """
+        import pandas as pd
+
+        pdb = self.pdb.copy()
+        has_altloc = pdb["altloc"].astype(str).str.strip() != ""
+        if not has_altloc.any():
+            return self._new_model_from_df(pdb)
+
+        drop_idx = []
+        res_cols = ["chainid", "resseq", "icode", "resname"]
+        altloc_rows = pdb.loc[has_altloc]
+        for _, grp in altloc_rows.groupby(res_cols):
+            altlocs = sorted(grp["altloc"].unique())
+            if len(altlocs) <= 1:
+                continue
+            # Pick conformer with highest mean occupancy
+            best, best_occ = altlocs[0], -1.0
+            for al in altlocs:
+                occ = grp.loc[grp["altloc"] == al, "occupancy"].mean()
+                if occ > best_occ:
+                    best, best_occ = al, occ
+            # Drop rows belonging to non-best conformers
+            for al in altlocs:
+                if al != best:
+                    drop_idx.extend(grp.index[grp["altloc"] == al].tolist())
+
+        filtered = pdb.drop(index=drop_idx).reset_index(drop=True)
+        filtered["altloc"] = ""
+        filtered["serial"] = range(1, len(filtered) + 1)
+        filtered["index"] = range(len(filtered))
+
+        # Preserve DataFrame attrs
+        filtered.attrs = pdb.attrs.copy()
+
+        return self._new_model_from_df(filtered)
+
+    # Module-level cache for CIF monomer data (shared across calls)
+    _hydrogenate_cif_cache = {}
+
+    def hydrogenate(self, verbose: int = 0, optimize: bool = False,
+                    lbfgs_steps: int = 3, max_iter: int = 20) -> "Model":
+        """
+        Return a new model with hydrogen atoms placed via Kabsch alignment.
+
+        Uses torchref's monomer library to identify missing H atoms, places
+        them by SVD-aligning ideal monomer coordinates onto the current model
+        coordinates, then corrects each H to sit at ideal bond length from its
+        parent atom. The original model is not modified.
+
+        Parameters
+        ----------
+        verbose : int, optional
+            Verbosity level (0=silent, 1=summary, 2=detailed). Default 0.
+        optimize : bool, optional
+            If True, run a short LBFGS geometry optimization on H positions
+            after placement. Default False (Kabsch placement only).
+        lbfgs_steps : int, optional
+            Number of LBFGS outer steps (only when optimize=True). Default 3.
+        max_iter : int, optional
+            Max line-search iterations per LBFGS step. Default 20.
+
+        Returns
+        -------
+        Model
+            New model with hydrogen atoms added.
+            All parameters are unfrozen in the returned model.
+        """
+        import numpy as np
+        import pandas as pd
+
+        from torchref.restraints.library import MonomerLibraryManager
+
+        # Sync current coordinates into DataFrame
+        self.update_pdb()
+
+        lib = MonomerLibraryManager(verbose=0)
+        cache = Model._hydrogenate_cif_cache
+
+        # --- Phase A: build per-residue-type lookup tables (cached) ---
+        for rn in self.pdb["resname"].unique():
+            rn_str = str(rn).strip()
+            if not rn_str:
+                continue
+            if rn_str in cache:
+                if cache[rn_str] is None or "heavy_neighbor_map" in cache[rn_str]:
+                    continue
+                del cache[rn_str]  # Stale entry, re-read
+            cif_path = lib.get_cif_file(rn_str)
+            if cif_path is None:
+                cache[rn_str] = None
+                continue
+            try:
+                from torchref.io.cif_readers import RestraintCIFReader
+                reader = RestraintCIFReader(str(cif_path))
+                all_data = reader.get_all_restraints()
+                comp_data = (all_data.get(rn_str)
+                             or all_data.get(rn_str.upper()))
+                if comp_data is None:
+                    cache[rn_str] = None
+                    continue
+                atom_df = comp_data.get("atoms", comp_data.get("atom"))
+                bond_df = comp_data.get("bonds", comp_data.get("bond"))
+                if atom_df is None or atom_df.empty or "x" not in atom_df.columns:
+                    cache[rn_str] = None
+                    continue
+            except Exception:
+                cache[rn_str] = None
+                continue
+
+            ids = atom_df["atom_id"].astype(str).str.strip().values
+            elems = atom_df["type_symbol"].astype(str).str.strip().values
+            coords = atom_df[["x", "y", "z"]].values.astype(np.float64)
+            is_h = np.array([e.upper() == "H" for e in elems])
+            id_to_idx = {n: i for i, n in enumerate(ids)}
+
+            # H→parent map + ideal bond lengths + heavy adjacency
+            parent_map = {}  # h_name -> parent_name
+            ideal_bl = {}    # h_name -> ideal bond length (Angstrom)
+            heavy_neighbor_map = {}  # heavy_name -> [bonded heavy names]
+            if bond_df is not None and not bond_df.empty:
+                a1s = bond_df["atom1"].astype(str).str.strip().values
+                a2s = bond_df["atom2"].astype(str).str.strip().values
+                vals = pd.to_numeric(bond_df["value"], errors="coerce").values
+                h_set = set(ids[is_h])
+                for i in range(len(a1s)):
+                    b1, b2 = a1s[i], a2s[i]
+                    if b1 in h_set and b2 in id_to_idx and not is_h[id_to_idx[b2]]:
+                        parent_map[b1] = b2
+                        if np.isfinite(vals[i]):
+                            ideal_bl[b1] = float(vals[i])
+                    elif b2 in h_set and b1 in id_to_idx and not is_h[id_to_idx[b1]]:
+                        parent_map[b2] = b1
+                        if np.isfinite(vals[i]):
+                            ideal_bl[b2] = float(vals[i])
+                    # Heavy-atom adjacency for local Kabsch
+                    i1, i2 = id_to_idx.get(b1), id_to_idx.get(b2)
+                    if (i1 is not None and i2 is not None
+                            and not is_h[i1] and not is_h[i2]):
+                        heavy_neighbor_map.setdefault(b1, []).append(b2)
+                        heavy_neighbor_map.setdefault(b2, []).append(b1)
+
+            cache[rn_str] = {
+                "ids": ids, "elems": elems, "coords": coords,
+                "is_h": is_h, "id_to_idx": id_to_idx,
+                "heavy_names": ids[~is_h], "heavy_coords": coords[~is_h],
+                "h_names": ids[is_h], "h_coords": coords[is_h],
+                "parent_map": parent_map, "ideal_bl": ideal_bl,
+                "heavy_neighbor_map": heavy_neighbor_map,
+            }
+
+        # Filter to available residue types
+        available = {rn: cache[rn] for rn in self.pdb["resname"].unique()
+                     if str(rn).strip() in cache and cache.get(str(rn).strip()) is not None}
+        if not available:
+            if verbose > 0:
+                print("No monomer library data found; returning copy.")
+            return self.copy()
+
+        # --- Phase B: place H atoms via Kabsch alignment ---
+        model_names_arr = self.pdb["name"].astype(str).str.strip().values
+        model_xyz_arr = self.pdb[["x", "y", "z"]].values.astype(np.float64)
+        model_occ_arr = self.pdb["occupancy"].values.astype(np.float64)
+        model_bfac_arr = self.pdb["tempfactor"].values.astype(np.float64)
+        model_atom_type_arr = self.pdb["ATOM"].values
+        model_altloc_arr = self.pdb["altloc"].values.astype(str)
+
+        group_cols = ["chainid", "resseq", "icode", "resname"]
+        group_keys = self.pdb[group_cols].values
+        changes = np.zeros(len(group_keys), dtype=bool)
+        changes[0] = True
+        for c in range(4):
+            changes[1:] |= group_keys[1:, c] != group_keys[:-1, c]
+        group_starts = np.nonzero(changes)[0]
+        group_ends = np.append(group_starts[1:], len(group_keys))
+
+        # Pre-allocate lists for H atom data columns
+        h_x, h_y, h_z = [], [], []
+        h_names_out, h_altlocs, h_resnames = [], [], []
+        h_chainids, h_resseqs, h_icodes = [], [], []
+        h_occ, h_bfac, h_atom_types = [], [], []
+        h_insert_after = []
+
+        max_bond_dist = 1.5  # Reject H atoms placed > this from parent
+        _std_val = {"C": 4, "N": 3, "O": 2, "S": 2}
+
+        # Heavy-atom mask for distance-based neighbor detection
+        model_elem_arr = self.pdb["element"].astype(str).str.strip().values
+        model_heavy_mask_full = np.array(
+            [e.upper() != "H" for e in model_elem_arr])
+
+        for gi in range(len(group_starts)):
+            s, e = group_starts[gi], group_ends[gi]
+            rn = str(group_keys[s, 3]).strip()
+            info = cache.get(rn)
+            if info is None:
+                continue
+            chainid = group_keys[s, 0]
+            resseq = group_keys[s, 1]
+            icode = group_keys[s, 2]
+
+            names_in_model = set(model_names_arr[s:e])
+            h_to_add_mask = np.array(
+                [n not in names_in_model for n in info["h_names"]], dtype=bool
+            )
+            if not h_to_add_mask.any():
+                continue
+            h_names_add = info["h_names"][h_to_add_mask]
+            h_coords_ideal = info["h_coords"][h_to_add_mask]
+
+            # Altloc handling
+            altlocs_in_res = set(model_altloc_arr[s:e])
+            altloc_list = (
+                [""] if altlocs_in_res <= {""}
+                else sorted(a for a in altlocs_in_res if a != "")
+            )
+
+            for altloc in altloc_list:
+                if altloc == "":
+                    mask = np.ones(e - s, dtype=bool)
+                else:
+                    al = model_altloc_arr[s:e]
+                    mask = (al == altloc) | (al == "")
+
+                conf_names = model_names_arr[s:e][mask]
+                conf_xyz = model_xyz_arr[s:e][mask]
+                conf_occ = model_occ_arr[s:e][mask]
+                conf_bfac = model_bfac_arr[s:e][mask]
+                conf_atom_type = model_atom_type_arr[s:e][mask]
+
+                # Name→index lookup for this conformer
+                name_to_idx = {}
+                for j, cn in enumerate(conf_names):
+                    if cn not in name_to_idx:
+                        name_to_idx[cn] = j
+
+                conf_name_set = set(conf_names)
+                common_mask = np.array(
+                    [n in conf_name_set for n in info["heavy_names"]],
+                    dtype=bool,
+                )
+                n_common = common_mask.sum()
+
+                # Global Kabsch when ≥ 3 matching heavy atoms
+                R_global = t_global = None
+                if n_common >= 3:
+                    P = info["heavy_coords"][common_mask]
+                    Q = np.array(
+                        [conf_xyz[name_to_idx[n]]
+                         for n in info["heavy_names"][common_mask]],
+                        dtype=np.float64,
+                    )
+                    cp, cq = P.mean(0), Q.mean(0)
+                    Hm = (P - cp).T @ (Q - cq)
+                    U, S, Vt = np.linalg.svd(Hm)
+                    d = np.linalg.det(Vt.T @ U.T)
+                    sign_d = np.diag([1.0, 1.0, 1.0 if d > 0 else -1.0])
+                    R_global = Vt.T @ sign_d @ U.T
+                    t_global = cq - R_global @ cp
+
+                # Group H atoms by parent for placement
+                parent_to_hi = {}
+                for hi, h_name in enumerate(h_names_add):
+                    pn = info["parent_map"].get(h_name)
+                    if pn is not None and pn in name_to_idx:
+                        parent_to_hi.setdefault(pn, []).append(hi)
+
+                hnm = info.get("heavy_neighbor_map", {})
+                id2i = info["id_to_idx"]
+                all_coords = info["coords"]
+                mask_idx = np.where(mask)[0]  # conformer indices in [s:e]
+
+                for par_name, hi_list in parent_to_hi.items():
+                    pidx = name_to_idx[par_name]
+                    parent_pos = conf_xyz[pidx]
+                    parent_full = s + mask_idx[pidx]
+
+                    # Heavy neighbors in the model (distance-based,
+                    # includes cross-residue bonds like C-N peptide)
+                    dvec = model_xyz_arr - model_xyz_arr[parent_full]
+                    dists_sq = (dvec ** 2).sum(1)
+                    bonded = np.where(
+                        (dists_sq > 0.09) & (dists_sq < 3.61)
+                        & model_heavy_mask_full
+                    )[0]
+                    bonded = bonded[bonded != parent_full]
+                    n_model_heavy = len(bonded)
+
+                    # Expected H count from standard valence
+                    par_elem = info["elems"][id2i[par_name]].upper()
+                    expected_h = max(
+                        0,
+                        _std_val.get(par_elem, 4) - n_model_heavy,
+                    )
+
+                    # --- Step 1: local Kabsch for initial placement ---
+                    local_set = {par_name}
+                    for nb in hnm.get(par_name, []):
+                        local_set.add(nb)
+                        for nb2 in hnm.get(nb, []):
+                            local_set.add(nb2)
+                    local_names = [
+                        n for n in local_set
+                        if n in name_to_idx and n in id2i
+                    ]
+
+                    if len(local_names) >= 3:
+                        Pl = np.array([all_coords[id2i[n]]
+                                       for n in local_names])
+                        Ql = np.array([conf_xyz[name_to_idx[n]]
+                                       for n in local_names])
+                        cpl, cql = Pl.mean(0), Ql.mean(0)
+                        Hl = (Pl - cpl).T @ (Ql - cql)
+                        Ul, _, Vtl = np.linalg.svd(Hl)
+                        dl = np.linalg.det(Vtl.T @ Ul.T)
+                        sl = np.diag([1., 1., 1. if dl > 0 else -1.])
+                        R_use = Vtl.T @ sl @ Ul.T
+                        t_use = cql - R_use @ cpl
+                    elif R_global is not None:
+                        R_use, t_use = R_global, t_global
+                    else:
+                        R_use = None  # Will use random placement
+
+                    # Kabsch-place and filter by distance
+                    valid_h = []
+                    if R_use is not None:
+                        for hi in hi_list:
+                            h_name = h_names_add[hi]
+                            h_cif = all_coords[id2i[h_name]]
+                            h_pos = R_use @ h_cif + t_use
+                            direction = h_pos - parent_pos
+                            dist = np.linalg.norm(direction)
+                            if dist < 1e-6 or dist > max_bond_dist:
+                                continue
+                            bl = info["ideal_bl"].get(h_name, dist)
+                            h_pos = parent_pos + direction * (bl / dist)
+                            valid_h.append((h_name, h_pos, bl))
+                    else:
+                        # Random-rotation placement (< 3 matching atoms)
+                        # Apply a random SO(3) rotation to ideal CIF
+                        # geometry so internal angles are preserved.
+                        # Random rotation via QR decomposition.
+                        M = np.random.randn(3, 3)
+                        Q_r, _ = np.linalg.qr(M)
+                        if np.linalg.det(Q_r) < 0:
+                            Q_r[:, 0] = -Q_r[:, 0]
+                        par_cif = all_coords[id2i[par_name]]
+                        for hi in hi_list:
+                            h_name = h_names_add[hi]
+                            h_cif = all_coords[id2i[h_name]]
+                            bl = info["ideal_bl"].get(h_name, 0.97)
+                            d_ideal = h_cif - par_cif
+                            d_rot = Q_r @ d_ideal
+                            dn = np.linalg.norm(d_rot)
+                            if dn > 1e-6:
+                                d_rot = d_rot * (bl / dn)
+                            else:
+                                d_rot = np.array([bl, 0.0, 0.0])
+                            valid_h.append(
+                                (h_name, parent_pos + d_rot, bl))
+
+                    # Limit to expected count (removes terminal H)
+                    if len(valid_h) > expected_h:
+                        valid_h.sort(
+                            key=lambda x: x[0])  # alphabetical
+                        valid_h = valid_h[:expected_h]
+
+                    # --- Step 2: geometric re-placement ---
+                    if n_model_heavy >= 2:
+                        nvecs = (model_xyz_arr[bonded]
+                                 - model_xyz_arr[parent_full])
+                        svec = nvecs.sum(0)
+                        snorm = np.linalg.norm(svec)
+
+                        if len(valid_h) == 1 and snorm > 1e-6:
+                            # Single H: place opposite to neighbors
+                            h_nm, _, bl = valid_h[0]
+                            h_pos = parent_pos - bl * svec / snorm
+                            valid_h[0] = (h_nm, h_pos, bl)
+
+                        elif (len(valid_h) == 2
+                              and n_model_heavy == 2
+                              and snorm > 1e-6):
+                            # CH2-like: sp3 tetrahedral placement
+                            v1, v2 = nvecs[0], nvecs[1]
+                            base = -svec / snorm
+                            perp = np.cross(v1, v2)
+                            pn = np.linalg.norm(perp)
+                            if pn > 1e-6:
+                                perp = perp / pn
+                                n1 = np.linalg.norm(v1)
+                                n2 = np.linalg.norm(v2)
+                                c12 = np.dot(v1, v2) / (n1 * n2)
+                                denom = 3.0 * np.sqrt(
+                                    max(1e-12, (1 + c12) / 2))
+                                a = min(1.0, 1.0 / denom)
+                                b = np.sqrt(max(0, 1 - a * a))
+                                d_up = a * base + b * perp
+                                d_dn = a * base - b * perp
+                                # Assign Kabsch-nearest to each
+                                _, pos0, bl0 = valid_h[0]
+                                _, pos1, bl1 = valid_h[1]
+                                g_up = parent_pos + bl0 * d_up
+                                g_dn = parent_pos + bl1 * d_dn
+                                if pos0 is not None and pos1 is not None:
+                                    d_same = (
+                                        np.linalg.norm(pos0 - g_up)
+                                        + np.linalg.norm(pos1 - g_dn))
+                                    d_swap = (
+                                        np.linalg.norm(pos0 - g_dn)
+                                        + np.linalg.norm(pos1 - g_up))
+                                    if d_swap < d_same:
+                                        g_up, g_dn = g_dn, g_up
+                                valid_h[0] = (valid_h[0][0], g_up,
+                                              bl0)
+                                valid_h[1] = (valid_h[1][0], g_dn,
+                                              bl1)
+
+                    elif n_model_heavy == 1:
+                        # One heavy neighbor: place H opposite to it
+                        nvec = (model_xyz_arr[bonded[0]]
+                                - model_xyz_arr[parent_full])
+                        nn = np.linalg.norm(nvec)
+                        if nn > 1e-6:
+                            d_opp = -nvec / nn
+                            for vi in range(len(valid_h)):
+                                if valid_h[vi][1] is None:
+                                    nm, _, bl = valid_h[vi]
+                                    valid_h[vi] = (
+                                        nm, parent_pos + bl * d_opp, bl)
+
+                    # Fill remaining None positions with random dirs
+                    for vi in range(len(valid_h)):
+                        if valid_h[vi][1] is not None:
+                            continue
+                        nm, _, bl = valid_h[vi]
+                        # Random unit vector via Marsaglia method
+                        while True:
+                            u = np.random.uniform(-1, 1, 3)
+                            n2 = (u * u).sum()
+                            if 0.01 < n2 < 1.0:
+                                break
+                        d = u / np.sqrt(n2)
+                        # Push away from already-placed H siblings
+                        for vj in range(len(valid_h)):
+                            if vj == vi or valid_h[vj][1] is None:
+                                continue
+                            sep = (parent_pos + bl * d
+                                   - valid_h[vj][1])
+                            if np.linalg.norm(sep) < 0.5 * bl:
+                                d = -d  # flip to other hemisphere
+                                break
+                        valid_h[vi] = (nm, parent_pos + bl * d, bl)
+
+                    # --- Step 3: emit placed H atoms ---
+                    for h_nm, h_pos, _ in valid_h:
+                        h_x.append(h_pos[0])
+                        h_y.append(h_pos[1])
+                        h_z.append(h_pos[2])
+                        h_names_out.append(h_nm)
+                        h_altlocs.append(altloc)
+                        h_resnames.append(rn)
+                        h_chainids.append(chainid)
+                        h_resseqs.append(resseq)
+                        h_icodes.append(icode)
+                        h_occ.append(conf_occ[pidx])
+                        h_bfac.append(conf_bfac[pidx])
+                        h_atom_types.append(conf_atom_type[pidx])
+                        h_insert_after.append(e - 1)
+
+        n_h_placed = len(h_x)
+        if n_h_placed == 0:
+            if verbose > 0:
+                print("No hydrogen atoms to add; returning copy.")
+            return self.copy()
+
+        if verbose > 0:
+            print(f"Placing {n_h_placed} hydrogen atoms...")
+
+        # Build H DataFrame in one shot
+        h_df = pd.DataFrame({
+            "ATOM": h_atom_types, "serial": 0, "name": h_names_out,
+            "altloc": h_altlocs, "resname": h_resnames,
+            "chainid": h_chainids, "resseq": h_resseqs, "icode": h_icodes,
+            "x": h_x, "y": h_y, "z": h_z,
+            "occupancy": h_occ, "tempfactor": h_bfac,
+            "element": "H", "charge": 0, "anisou_flag": False,
+            "u11": 0.0, "u22": 0.0, "u33": 0.0,
+            "u12": 0.0, "u13": 0.0, "u23": 0.0,
+        })
+        insert_after = np.array(h_insert_after)
+
+        # Interleave: assign sort keys
+        n_orig = len(self.pdb)
+        sort_key = np.empty(n_orig + n_h_placed, dtype=np.float64)
+        sort_key[:n_orig] = np.arange(n_orig, dtype=np.float64)
+        _, inv, counts = np.unique(
+            insert_after, return_inverse=True, return_counts=True
+        )
+        cumcount = np.zeros(n_h_placed, dtype=np.float64)
+        group_running = np.zeros(len(counts), dtype=np.float64)
+        for i in range(n_h_placed):
+            g = inv[i]
+            cumcount[i] = group_running[g]
+            group_running[g] += 1
+        sort_key[n_orig:] = (
+            insert_after + 0.5
+            + cumcount * (0.4 / np.maximum(counts[inv], 1))
+        )
+
+        augmented_df = pd.concat([self.pdb, h_df], ignore_index=True)
+        augmented_df = augmented_df.iloc[
+            np.argsort(sort_key, kind="stable")
+        ].reset_index(drop=True)
+        augmented_df["serial"] = np.arange(1, len(augmented_df) + 1)
+        augmented_df["index"] = np.arange(len(augmented_df))
+
+        for col in ("x", "y", "z", "occupancy", "tempfactor",
+                     "u11", "u22", "u33", "u12", "u13", "u23"):
+            augmented_df[col] = pd.to_numeric(
+                augmented_df[col], errors="coerce"
+            ).astype(float)
+        augmented_df["serial"] = augmented_df["serial"].astype(int)
+        augmented_df["resseq"] = augmented_df["resseq"].astype(int)
+        augmented_df["charge"] = augmented_df["charge"].fillna(0).astype(int)
+        augmented_df["anisou_flag"] = augmented_df["anisou_flag"].astype(bool)
+        augmented_df[["altloc", "icode"]] = (
+            augmented_df[["altloc", "icode"]].fillna("")
+        )
+        augmented_df["element"] = (
+            augmented_df["element"].astype(str).str.strip().str.capitalize()
+        )
+        augmented_df.attrs["cell"] = self.pdb.attrs.get("cell")
+        augmented_df.attrs["spacegroup"] = self.pdb.attrs.get(
+            "spacegroup", "P 1"
+        )
+
+        new_model = self._new_model_from_df(augmented_df, strip_H=False)
+
+        if verbose > 0:
+            n_h = (new_model.pdb["element"] == "H").sum()
+            print(f"  New model: {len(new_model.pdb)} atoms ({n_h} H)")
+
+        # --- Phase C (optional): LBFGS geometry optimization ---
+        if optimize:
+            new_model.freeze_all()
+            new_model.unfreeze_selection("element H", targets="xyz")
+            refinable_params = [
+                p for p in new_model.parameters() if p.numel() > 0
+            ]
+            if refinable_params:
+                try:
+                    from torchref.refinement.targets.combined import (
+                        TotalGeometryTarget,
+                    )
+                    geom_target = TotalGeometryTarget(new_model, verbose=0)
+                    targets = {n: geom_target[n]
+                               for n in ("bond", "angle", "torsion", "chiral")}
+
+                    def _geom_loss():
+                        total = torch.tensor(0.0, device=self.device)
+                        for t in targets.values():
+                            val = t()
+                            if torch.isfinite(val):
+                                total = total + val
+                        return total
+
+                    if verbose > 0:
+                        with torch.no_grad():
+                            init_l = _geom_loss()
+                        print(f"  Geometry loss before: {init_l.item():.4f}")
+                        for m in new_model.modules():
+                            if hasattr(m, "reset_forward_cache"):
+                                m.reset_forward_cache()
+
+                    opt = torch.optim.LBFGS(
+                        refinable_params, lr=0.1, max_iter=max_iter,
+                        history_size=100, line_search_fn="strong_wolfe",
+                    )
+                    best_loss = float("inf")
+                    best_params = [p.data.clone() for p in refinable_params]
+
+                    def closure():
+                        opt.zero_grad()
+                        loss = _geom_loss()
+                        if loss.requires_grad and torch.isfinite(loss):
+                            loss.backward()
+                            for p in refinable_params:
+                                if p.grad is not None:
+                                    p.grad.nan_to_num_(
+                                        nan=0.0, posinf=0.0, neginf=0.0)
+                        return loss
+
+                    for _ in range(lbfgs_steps):
+                        opt.step(closure)
+                        with torch.no_grad():
+                            cur = _geom_loss()
+                        if torch.isfinite(cur) and cur.item() < best_loss:
+                            best_loss = cur.item()
+                            best_params = [
+                                p.data.clone() for p in refinable_params]
+                    with torch.no_grad():
+                        for p, bp in zip(refinable_params, best_params):
+                            p.data.copy_(bp)
+                    if verbose > 0:
+                        with torch.no_grad():
+                            fin_l = _geom_loss()
+                        print(f"  Geometry loss after:  {fin_l.item():.4f}")
+                except Exception as e:
+                    if verbose > 0:
+                        print(f"  Warning: optimization failed: {e}")
+            new_model.set_default_masks()
+            new_model.unfreeze_all()
+
+        if verbose > 0:
+            print("  Hydrogenation complete.")
+
+        return new_model
 
     def adp_loss(self):
         """
