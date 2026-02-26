@@ -89,13 +89,6 @@ DEFAULT_TARGET_WEIGHTS = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _auto_device():
-    """Pick CUDA if available, otherwise CPU."""
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
-
-
 # ---------------------------------------------------------------------------
 # Core pipeline functions
 # ---------------------------------------------------------------------------
@@ -694,6 +687,13 @@ Examples:
              "(default: fractions are frozen at initial values)",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Computation device (default: auto, uses CUDA if available)",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         type=int,
         default=1,
@@ -702,6 +702,10 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    from torchref.utils.timing import register_timing
+
+    register_timing()
 
     # --- Parse fractions ---
     try:
@@ -777,7 +781,16 @@ Examples:
     outdir.mkdir(parents=True, exist_ok=True)
 
     # --- Device ---
-    device = _auto_device()
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+        if args.device == "cuda" and not torch.cuda.is_available():
+            print(
+                "Warning: CUDA requested but not available, falling back to CPU",
+                file=sys.stderr,
+            )
+            device = torch.device("cpu")
 
     # --- Header ---
     if args.verbose > 0:

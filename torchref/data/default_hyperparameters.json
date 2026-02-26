@@ -13,7 +13,7 @@
   "_targets.nonbonded._c_rep": 2.0,
   "_targets.nonbonded._r_exp": 1.0,
   "_targets.simu._sigma": 0.45882918428846503,
-  "_targets.simu._simu_sigma": 10.0,
+  "_targets.simu._simu_sigma": 2.0,
   "_targets.locality._sigma": 1.9999999999999993,
   "_targets.locality._correlation_length": 10.0,
   "_targets.locality._scale": 4.490291881800031,

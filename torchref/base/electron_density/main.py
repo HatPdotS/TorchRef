@@ -419,6 +419,18 @@ def _separable_density(
     cross-term corrections for non-orthogonal cells. Batches all corrections
     across the 5 ITC92 components and uses einsum where possible.
 
+    For non-orthogonal cells, cross-term exponents are combined with the
+    relevant diagonal exponents before taking exp() to avoid float32 overflow
+    (exp(-big) * exp(+big) = 0 * inf = NaN).  Each combined 2D block
+    exponent corresponds to a principal sub-matrix of G (positive definite),
+    guaranteeing the exponent is always <= 0 and exp() is in (0, 1].
+
+    Dispatch by crystal system for optimal performance:
+    - Orthogonal (no cross terms): separable 1D products + einsum
+    - Hexagonal  (ab only):  combined ab exponent + einsum with e_c
+    - Monoclinic (ac only):  combined ac exponent + einsum with e_b
+    - General    (bc, or multiple cross terms): full 3D exponent per component
+
     Parameters
     ----------
     d_frac : (C, 3, n_axis) — fractional distances per axis, PBC-wrapped.
@@ -437,21 +449,24 @@ def _separable_density(
     cell_lengths = torch.sqrt(torch.diagonal(G))
     d_cart = d_frac * cell_lengths[None, :, None]  # (C, 3, n)
 
-    # --- 1D Gaussian evaluations ---
+    # --- 1D exponents (always <= 0) ---
     da2 = d_cart[:, 0, :] ** 2
     db2 = d_cart[:, 1, :] ** 2
     dc2 = d_cart[:, 2, :] ** 2
 
-    e_a = torch.exp(-alpha.unsqueeze(2) * da2.unsqueeze(1))  # (C, Nc, n)
-    e_b = torch.exp(-alpha.unsqueeze(2) * db2.unsqueeze(1))
-    e_c = torch.exp(-alpha.unsqueeze(2) * dc2.unsqueeze(1))
+    log_a = -alpha.unsqueeze(2) * da2.unsqueeze(1)  # (C, Nc, n)
+    log_b = -alpha.unsqueeze(2) * db2.unsqueeze(1)
+    log_c = -alpha.unsqueeze(2) * dc2.unsqueeze(1)
 
     if not (has_ab or has_ac or has_bc):
-        # Diagonal path: single einsum, no intermediates
-        e_ab = e_a.unsqueeze(3) * e_b.unsqueeze(2)  # (C, Nc, n, n)
+        # ---- Orthogonal cells: pure separable, all exp() args <= 0 ----
+        e_a = torch.exp(log_a)
+        e_b = torch.exp(log_b)
+        e_c = torch.exp(log_c)
+        e_ab = e_a.unsqueeze(3) * e_b.unsqueeze(2)
         return torch.einsum("cg,cgij,cgk->cijk", A_norm, e_ab, e_c)
 
-    # --- Cross-term corrections, batched across all components ---
+    # --- Cross-term coefficients ---
     cos_gamma = G[0, 1] / (cell_lengths[0] * cell_lengths[1])
     cos_beta = G[0, 2] / (cell_lengths[0] * cell_lengths[2])
     cos_alpha = G[1, 2] / (cell_lengths[1] * cell_lengths[2])
@@ -461,45 +476,59 @@ def _separable_density(
     dc = d_cart[:, 2, :]
     alpha_4d = alpha[:, :, None, None]  # (C, Nc, 1, 1)
 
-    # 2D ab slice with correction folded in: (C, Nc, n, n)
-    slice_ab = e_a[:, :, :, None] * e_b[:, :, None, :]
-    if has_ab:
+    if has_ab and not has_ac and not has_bc:
+        # ---- Hexagonal / trigonal: only ab cross-term ----
+        # Combined 2D exponent: -alpha*(da2 + db2 + 2*cos_gamma*da*db)
+        # = -alpha * d_ab^T G_ab d_ab <= 0 (G_ab positive definite)
         prod_ab = da.unsqueeze(2) * db.unsqueeze(1)
-        slice_ab = slice_ab * torch.exp(
-            -2.0 * alpha_4d * cos_gamma * prod_ab[:, None, :, :]
-        )
+        log_ab = (log_a[:, :, :, None] + log_b[:, :, None, :]
+                  + (-2.0 * alpha_4d * cos_gamma * prod_ab[:, None, :, :]))
+        slice_ab = torch.exp(log_ab)  # (C, Nc, n, n), all in (0, 1]
+        e_c = torch.exp(log_c)
+        return torch.einsum("cg,cgij,cgk->cijk", A_norm, slice_ab, e_c)
 
-    # ac correction folded into ec at 2D level
-    if has_ac:
+    if has_ac and not has_ab and not has_bc:
+        # ---- Monoclinic (beta != 90): only ac cross-term ----
+        # Combined 2D exponent: -alpha*(da2 + dc2 + 2*cos_beta*da*dc)
+        # = -alpha * d_ac^T G_ac d_ac <= 0 (G_ac positive definite)
         prod_ac = da.unsqueeze(2) * dc.unsqueeze(1)
-        ec_ik = e_c[:, :, None, :] * torch.exp(
-            -2.0 * alpha_4d * cos_beta * prod_ac[:, None, :, :]
-        )  # (C, Nc, n_a, n_c)
+        log_ac = (log_a[:, :, :, None] + log_c[:, :, None, :]
+                  + (-2.0 * alpha_4d * cos_beta * prod_ac[:, None, :, :]))
+        e_ac = torch.exp(log_ac)  # (C, Nc, n_a, n_c), all in (0, 1]
+        e_b = torch.exp(log_b)
+        return torch.einsum("cg,cgj,cgik->cijk", A_norm, e_b, e_ac)
 
-    if not has_bc:
-        # No bc: single einsum replaces entire component loop
-        if has_ac:
-            weighted_ab = A_norm[:, :, None, None] * slice_ab
-            return torch.einsum("cgij,cgik->cijk", weighted_ab, ec_ik)
-        else:
-            return torch.einsum("cg,cgij,cgk->cijk", A_norm, slice_ab, e_c)
-
-    # --- Has bc: component loop for 3D expansion ---
-    prod_bc = db.unsqueeze(2) * dc.unsqueeze(1)
-    corr_bc = torch.exp(
-        -2.0 * alpha_4d * cos_alpha * prod_bc[:, None, :, :]
-    )  # (C, Nc, n_b, n_c)
+    # ---- General path (triclinic, or multiple cross-terms) ----
+    # Combine ALL exponents into a single 3D value per voxel per component
+    # to guarantee no overflow.  Component loop keeps memory at O(C*n^3).
+    prod_ab = da.unsqueeze(2) * db.unsqueeze(1) if has_ab else None
+    prod_ac = da.unsqueeze(2) * dc.unsqueeze(1) if has_ac else None
+    prod_bc = db.unsqueeze(2) * dc.unsqueeze(1) if has_bc else None
 
     C = d_frac.shape[0]
     n = d_frac.shape[2]
-    density_cube = torch.zeros(C, n, n, n, device=d_frac.device, dtype=d_frac.dtype)
+    density_cube = d_frac.new_zeros(C, n, n, n)
     for g in range(alpha.shape[1]):
+        # Full 3D exponent: -alpha * r^T G r  (always <= 0)
+        exp_3d = (log_a[:, g, :, None, None]
+                  + log_b[:, g, None, :, None]
+                  + log_c[:, g, None, None, :])
+        if has_ab:
+            exp_3d = exp_3d + (
+                -2.0 * alpha[:, g, None, None] * cos_gamma
+                * prod_ab
+            ).unsqueeze(3)  # broadcast (C, n_a, n_b, 1)
         if has_ac:
-            temp = slice_ab[:, g, :, :, None] * ec_ik[:, g, :, None, :]
-        else:
-            temp = slice_ab[:, g, :, :, None] * e_c[:, g, None, None, :]
-        temp = temp * corr_bc[:, g, None, :, :]
-        density_cube += A_norm[:, g, None, None, None] * temp
+            exp_3d = exp_3d + (
+                -2.0 * alpha[:, g, None, None] * cos_beta
+                * prod_ac
+            ).unsqueeze(2)  # broadcast (C, n_a, 1, n_c)
+        if has_bc:
+            exp_3d = exp_3d + (
+                -2.0 * alpha[:, g, None, None] * cos_alpha
+                * prod_bc
+            ).unsqueeze(1)  # broadcast (C, 1, n_b, n_c)
+        density_cube += A_norm[:, g, None, None, None] * torch.exp(exp_3d)
 
     return density_cube
 

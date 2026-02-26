@@ -117,9 +117,9 @@ Examples:
     parser.add_argument(
         "--device",
         type=str,
-        default="cpu",
-        choices=["cpu", "cuda"],
-        help="Computation device (default: cpu)",
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Computation device (default: auto, uses CUDA if available)",
     )
 
     parser.add_argument(
@@ -132,6 +132,15 @@ Examples:
     )
 
     parser.add_argument(
+        "--mode",
+        type=str,
+        default="everything",
+        choices=["everything", "refine"],
+        help='Refinement mode: "everything" for joint XYZ+ADP+scaler LBFGS, '
+        '"refine" for separated XYZ then ADP cycles (default: "everything")',
+    )
+
+    parser.add_argument(
         "-v",
         "--verbose",
         type=int,
@@ -141,6 +150,10 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    from torchref.utils.timing import register_timing
+
+    register_timing()
 
     # Validate inputs
     structure_path = Path(args.structure)
@@ -176,6 +189,7 @@ Examples:
         print(f"Structure:        {structure_path}")
         print(f"Structure factors: {sf_path}")
         print(f"Output directory: {outdir}")
+        print(f"Refinement mode:  {args.mode}")
         print(f"Refinement cycles: {args.n_cycles}")
         print(f"Device:           {args.device}")
         if args.max_res:
@@ -185,13 +199,16 @@ Examples:
         sys.stdout.flush()
 
     # Setup device
-    device = torch.device(args.device)
-    if args.device == "cuda" and not torch.cuda.is_available():
-        print(
-            "Warning: CUDA requested but not available, falling back to CPU",
-            file=sys.stderr,
-        )
-        device = torch.device("cpu")
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+        if args.device == "cuda" and not torch.cuda.is_available():
+            print(
+                "Warning: CUDA requested but not available, falling back to CPU",
+                file=sys.stderr,
+            )
+            device = torch.device("cpu")
 
     if args.verbose > 0:
         print("Initializing refinement...")
@@ -296,7 +313,10 @@ Examples:
             print(f"Starting refinement with {args.n_cycles} macro cycles...\n")
             sys.stdout.flush()
 
-        refinement.refine_everything(macro_cycles=args.n_cycles)
+        if args.mode == "everything":
+            refinement.refine_everything(macro_cycles=args.n_cycles)
+        else:
+            refinement.refine(macro_cycles=args.n_cycles)
 
         refinement.get_scales()
 

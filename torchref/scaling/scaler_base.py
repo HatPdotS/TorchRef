@@ -105,6 +105,8 @@ class ScalerBase(DebugMixin, nn.Module):
             self.cell = None
             self.register_buffer("s", None)
             self.register_buffer("bins", None)
+            self.register_buffer("_s_half_sq", None)
+            self._f_sol_raw = None
             return
 
         # Full initialization with data
@@ -112,7 +114,11 @@ class ScalerBase(DebugMixin, nn.Module):
         self._data = ModuleReference(data)
 
         self.cell = data.cell
-        self.register_buffer("s", get_scattering_vectors(data.hkl, self.cell))
+        s = get_scattering_vectors(data.hkl, self.cell)
+        self.register_buffer("s", s)
+        # Precompute (sin(θ)/λ)² for B-factor damping — avoids recomputing per call
+        self.register_buffer("_s_half_sq", (torch.norm(s, dim=1) / 2.0) ** 2)
+        self._f_sol_raw = None
         bins, self.nbins = self._data.get_bins(self.nbins)
         self.register_buffer("bins", bins)
         if self.verbose > 0:
@@ -134,7 +140,10 @@ class ScalerBase(DebugMixin, nn.Module):
         if data.cell is not None:
             self.cell = data.cell
         if self.s is None and data.hkl is not None and data.cell is not None:
-            self.register_buffer("s", get_scattering_vectors(data.hkl, data.cell))
+            s = get_scattering_vectors(data.hkl, data.cell)
+            self.register_buffer("s", s)
+            self.register_buffer("_s_half_sq", (torch.norm(s, dim=1) / 2.0) ** 2)
+        self._f_sol_raw = None
         if self.bins is None and data.hkl is not None:
             bins, self.nbins = self._data.get_bins(self.nbins)
             self.register_buffer("bins", bins)
@@ -247,7 +256,10 @@ class ScalerBase(DebugMixin, nn.Module):
             Anisotropic correction factors for each reflection.
         """
         U = U_to_matrix(self.U)
-        exp = -2 * torch.pi**2 * torch.einsum("ij,jk,ik->i", self.s, U, self.s)
+        # matmul + element-wise multiply + sum is much faster than einsum
+        # for this bilinear form s^T U s on CPU (avoids einsum dispatch overhead)
+        sU = torch.matmul(self.s, U)  # (N, 3)
+        exp = -2 * torch.pi**2 * (sU * self.s).sum(dim=1)
         return torch.exp(exp.clamp(max=10.0, min=-10.0))
 
     def fit_anisotropy(self, fcalc: torch.Tensor, nsteps: int = 100):
@@ -293,6 +305,7 @@ class ScalerBase(DebugMixin, nn.Module):
             Pre-configured solvent model that can compute solvent structure factors.
         """
         self.solvent = solvent_model
+        self._f_sol_raw = None  # Invalidate cached raw solvent SFs
 
     def setup_binwise_solvent_scale(self):
         """
@@ -877,18 +890,31 @@ class ScalerBase(DebugMixin, nn.Module):
             aniso_correction = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
 
         if hasattr(self, "solvent") and self.solvent is not None:
-            if hasattr(self, "log_kmask"):
-                f_mask = self.solvent.get_rec_solvent(self.hkl)
-                f_mask = f_mask[mask] if apply_internal_mask else f_mask
+            # Lazily cache raw solvent SFs (FFT of mask) — only recomputed
+            # when invalidated via _f_sol_raw = None (e.g. after update_solvent)
+            if self._f_sol_raw is None:
+                self._f_sol_raw = self.solvent.get_rec_solvent(self.hkl)
 
+            f_sol_raw = self._f_sol_raw[mask] if apply_internal_mask else self._f_sol_raw
+
+            if hasattr(self, "log_kmask"):
                 kmask = torch.exp(self.log_kmask.clamp(min=-10.0, max=10.0))
                 kmask = torch.clamp(kmask, min=0.0, max=10.0)
                 bins_to_use = self.bins[mask] if apply_internal_mask else self.bins
                 kmask_per_refl = kmask[bins_to_use]
-                f_sol = kmask_per_refl * f_mask
+                f_sol = kmask_per_refl * f_sol_raw
             else:
-                f_sol = self.solvent(self.hkl)
-                f_sol = f_sol[mask] if apply_internal_mask else f_sol
+                # Inline solvent scaling: k_sol * exp(i*phase) * exp(-B*s²) * f_mask
+                # Uses precomputed self._s_half_sq instead of recomputing scattering vectors
+                sol = self.solvent
+                k_sol = torch.exp(sol.log_k_solvent.clamp(min=-10.0, max=10.0))
+                s_half_sq = self._s_half_sq[mask] if apply_internal_mask else self._s_half_sq
+                b_factor = torch.exp(
+                    (-sol.b_solvent.clamp(min=-500.0, max=500.0) * s_half_sq).clamp(min=-10.0, max=10.0)
+                )
+                if sol.optimize_phase:
+                    f_sol_raw = f_sol_raw * torch.exp(1j * sol.phase_offset)
+                f_sol = k_sol * f_sol_raw * b_factor
         else:
             f_sol = torch.tensor(0.0, device=self.device, dtype=fcalc.dtype)
 

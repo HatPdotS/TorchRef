@@ -236,7 +236,16 @@ def run_validation(args):
     from torchref.symmetry.grid_utils import calculate_optimal_grid_size
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+        if args.device == "cuda" and not torch.cuda.is_available():
+            print(
+                "Warning: CUDA requested but not available, falling back to CPU",
+                file=sys.stderr,
+            )
+            device = torch.device("cpu")
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -680,6 +689,13 @@ Examples:
         help="Write CCP4 map files for WDFo and WDFcalc",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Computation device (default: auto, uses CUDA if available)",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         type=int,
@@ -689,6 +705,10 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    from torchref.utils.timing import register_timing
+
+    register_timing()
 
     # Validate input files exist
     for path_arg, label in [

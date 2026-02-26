@@ -11,11 +11,25 @@ automatically via antechamber/GAFF2.  Results are cached under
 
 Intended workflow::
 
-    model_h = model.generate_hydrogens()
-    target  = AmberTarget(model=model_h, residue_charges={'LIG': -1})
-    loss    = target()          # kJ/mol per atom
+    # Canonical one-liner — strips altlocs, adds H, then build target:
+    mh = (Model(verbose=0, strip_H=True)
+          .load_pdb('structure.pdb')
+          .strip_altlocs()
+          .generate_hydrogens())
+    target = AmberTarget(model=mh)                               # protein-only
+    target = AmberTarget(model=mh, residue_charges={'LIG': -1})  # with ligand
+
+    loss = target()          # kJ/mol per atom
     loss.backward()
     # xyz gradient is now populated with AMBER forces
+
+Performance note
+----------------
+OpenMM's ``Modeller.addHydrogens()`` is 4–5× faster when H atoms are already
+present in the model (it refines positions rather than building from scratch).
+For pure-protein structures: init ~3 s with H, ~11 s from heavy atoms only.
+Gradient and energy are identical either way (H are stripped from the atom map;
+``n_model_atoms`` changes only the energy normalisation).
 
 Design notes
 ------------
@@ -108,20 +122,22 @@ _MODELLER_FF_RESIDUES: frozenset = frozenset(
     }
 )
 
-# For the GAFF2 tleap path: exclude water from the protein PDB.
-# tleap can reorder HOH residues relative to the model (PDB numbering vs
-# tleap sequential numbering), which breaks the sequential atom-map strategy
-# when hundreds of waters are present.  Waters are excluded: they get
-# model_to_omm = -1 (no AMBER gradient — acceptable since crystal waters
-# are not primary targets of force-field restraints and would anyway alter
-# the effective dielectric for in-vacuo protein calculations).
+# Residues to exclude from the protein PDB written to tleap (GAFF2 path).
+# Currently empty: all AMBER14_STANDARD residues (protein, ions, water) are
+# included so they participate in both LJ (steric) and Coulomb gradients.
 #
-# Monatomic ions (MG, ZN, CA, …) are NOT excluded: leaprc.water.tip3p
-# already loads their parameters (Li/Merz 12-6 + Joung-Cheatham sets),
-# they appear in a fixed, predictable order in the PDB we write, and their
-# point-charge + LJ treatment is exactly the AMBER approach.  Including them
-# is important for electrostatics near charged ligands.
-_TLEAP_EXCLUDE_RESIDUES: frozenset = frozenset({"HOH", "WAT"})
+# Waters ARE included because:
+# - Crystal waters are poorly restrained by X-ray data (weak density, high B)
+#   so their AMBER LJ/Coulomb gradient is their primary positional restraint.
+# - tleap reads the PDB sequentially and preserves HOH order, so the
+#   sequential residue map still matches correctly.
+# - The Coulomb magnitude is wrong (no dielectric screening) but the direction
+#   is correct; the AMBER weight in the total loss absorbs the scale error.
+#
+# Monatomic ions (MG, ZN, CA, …) are covered by leaprc.water.tip3p
+# (Li/Merz 12-6 + Joung-Cheatham sets) and are critical for electrostatics
+# near charged ligands.
+_TLEAP_EXCLUDE_RESIDUES: frozenset = frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -204,18 +220,29 @@ class AmberTarget(ModelTarget):
          ligand's mol2 via ``combine{}``.  Combined AMBER14+GAFF2 topology
          is parameterised by parmed.
 
-    4. Creates an OpenMM Context on the requested platform
-       (CUDA → OpenCL → CPU).
+    4. Creates an OpenMM Context on the platform that matches the model's
+       device: CUDA for ``model.device.type == 'cuda'``, CPU otherwise.
+       Falls back CUDA → OpenCL → CPU if the preferred platform is unavailable.
     5. Builds a model-atom → OpenMM-atom index map so that only heavy atoms
        are transferred; H positions are kept from the initial OpenMM setup.
 
     Parameters
     ----------
     model : Model
-        TorchRef model.  Should include hydrogens (call
-        ``model.generate_hydrogens()`` beforehand) so atom counts match the
-        intended refinement state.  Heavy-atom-only models also work — H
-        atoms are added internally by OpenMM.
+        TorchRef model.  Heavy-atom-only models (``strip_H=True``) are
+        accepted.  H atoms are added internally by OpenMM's Modeller or
+        tleap and are NOT included in the atom map or gradient.
+
+        Passing a model that already has H atoms (via
+        ``model.generate_hydrogens()`` or loading a PDB with H) speeds up
+        initialisation ~4× because ``Modeller.addHydrogens()`` converges
+        faster from existing positions.
+
+        **Required for GAFF2 ligands**: antechamber's BCC charge scheme
+        runs a semiempirical QM step (sqm) that requires a fully protonated
+        molecule.  If the model has no H atoms for a non-standard residue,
+        an explicit error is raised.  Call ``model.generate_hydrogens()``
+        or load the PDB with ``strip_H=False`` before creating the target.
     cutoff : float
         Non-bonded cutoff in Angstroms.  Default 5.0.
     normalize_by_atoms : bool
@@ -225,8 +252,6 @@ class AmberTarget(ModelTarget):
         Net formal charge per non-standard residue name,
         e.g. ``{'LIG': -1, 'ATP': -4}``.  Residues not listed default to 0
         with a warning.
-    platform : str
-        Preferred OpenMM platform.  Tried first; falls back CUDA → OpenCL → CPU.
     verbose : int
         Verbosity level (0 = silent, 1 = informational, 2 = debug).
     """
@@ -239,13 +264,11 @@ class AmberTarget(ModelTarget):
         cutoff: float = 5.0,
         normalize_by_atoms: bool = True,
         residue_charges: Optional[Dict[str, int]] = None,
-        platform: str = "CUDA",
         verbose: int = 0,
     ):
         super().__init__(model=model, verbose=verbose)
 
         self._normalize = normalize_by_atoms
-        self._preferred_platform = platform
         self._residue_charges = dict(residue_charges) if residue_charges else {}
 
         self.register_buffer("_cutoff_buf", torch.tensor(float(cutoff)))
@@ -281,7 +304,12 @@ class AmberTarget(ModelTarget):
         self._system = system
         self._topology = topology
 
+        # Make tleap positions available to _build_atom_map (GAFF2 path uses
+        # position-based matching; positions_nm will be cleaned up afterward).
+        self._tleap_pos_nm = positions_nm
         self._build_atom_map()
+        del self._tleap_pos_nm
+
         self._build_context(positions_nm)
 
         # Pre-allocate nm position buffer: H positions pre-filled from OpenMM init
@@ -385,6 +413,35 @@ class AmberTarget(ModelTarget):
         pdb = self._model.pdb
         res_atoms = pdb[pdb["resname"].astype(str).str.strip() == resname]
         atom_names = res_atoms["name"].astype(str).str.strip().tolist()
+
+        # antechamber's BCC charges require a fully protonated molecule so that
+        # the semiempirical QM step (sqm) has an even electron count.
+        # Detect odd-electron count early and emit a clear error.
+        _Z = {"H":1,"He":2,"Li":3,"Be":4,"B":5,"C":6,"N":7,"O":8,"F":9,"Ne":10,
+               "Na":11,"Mg":12,"Al":13,"Si":14,"P":15,"S":16,"Cl":17,"Ar":18,
+               "K":19,"Ca":20,"Cr":24,"Mn":25,"Fe":26,"Co":27,"Ni":28,"Cu":29,
+               "Zn":30,"Br":35,"I":53,"Se":34,"Mo":42,"W":74,"Pt":78,"Au":79}
+        elems = res_atoms["element"].astype(str).str.strip().str.capitalize()
+        n_protons = sum(_Z.get(e, 0) for e in elems)
+        n_electrons = n_protons - charge
+        if n_electrons % 2 != 0:
+            # Odd electron count → sqm cannot converge.  Almost certainly caused
+            # by missing H atoms in an organic molecule.
+            has_h = elems.isin(["H", "D"]).any()
+            raise RuntimeError(
+                f"[AmberTarget] Cannot run antechamber for '{resname}': "
+                f"odd electron count ({n_electrons}) for charge {charge:+d}.\n"
+                + (
+                    "The model has no H atoms for this residue; sqm (inside antechamber) "
+                    "requires a fully protonated molecule.\n"
+                    "Fix: call model.generate_hydrogens() or load the PDB with "
+                    "strip_H=False before creating AmberTarget."
+                    if not has_h else
+                    f"Check the net charge (residue_charges={{'{resname}': <charge>}}) "
+                    f"and verify the protonation state."
+                )
+            )
+
         key = self._cache_key(resname, atom_names, charge)
         cache_dir = self._get_cache_dir(resname)
 
@@ -555,42 +612,6 @@ class AmberTarget(ModelTarget):
 
         return pdb[mask].copy()
 
-    # ------------------------------------------------------------------
-    # Helpers: ordered residue → model-row mapping (for atom map)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _ordered_residue_map(df) -> List[Dict[str, int]]:
-        """
-        Given a DataFrame with original model.pdb index, produce an ordered
-        list of dicts ``{atom_name: model_row_index}`` — one per unique
-        residue in the order the residues appear.  Used to match the
-        sequential tleap topology back to model atoms.
-        """
-        result: List[Dict[str, int]] = []
-        seen: list = []  # ordered unique residue keys
-
-        # Use a stable groupby preserving first-appearance order
-        res_key_col = list(
-            zip(
-                df["chainid"].astype(str).str.strip(),
-                df["resseq"].astype(int),
-                df.get("icode", "").astype(str).str.strip()
-                if "icode" in df.columns else [""] * len(df),
-                df["resname"].astype(str).str.strip(),
-            )
-        )
-
-        rk_to_idx: Dict[tuple, int] = {}
-        for row_idx, rk in zip(df.index, res_key_col):
-            if rk not in rk_to_idx:
-                rk_to_idx[rk] = len(result)
-                result.append({})
-            atom_name = str(df.loc[row_idx, "name"]).strip()
-            result[rk_to_idx[rk]][atom_name] = int(row_idx)
-
-        return result
-
     def _build_omm_system(
         self, gaff2_params: Dict[str, Tuple[Path, Path]]
     ) -> Tuple:
@@ -675,14 +696,16 @@ class AmberTarget(ModelTarget):
         """
         AMBER14 + GAFF2 path via tleap + parmed.
 
-        Protein heavy atoms (no OXT, no H, no non-standard) + each ligand
-        mol2 are combined by tleap ``combine{}``.  parmed loads the resulting
-        prmtop/inpcrd and creates the OpenMM system.
+        All AMBER14-standard heavy atoms (protein, ions, waters — no OXT, no H,
+        no non-standard HETATM) plus each ligand mol2 are combined by tleap
+        ``combine{}``.  parmed loads the resulting prmtop/inpcrd.
 
-        Also builds ``self._tleap_residue_map``: ordered list of
-        ``{atom_name: model_row_idx}`` dicts, one per tleap residue, used
-        by :meth:`_build_atom_map` to recover the model↔OpenMM correspondence
-        (tleap strips chain IDs and renumbers residues sequentially).
+        Atom mapping uses position-based matching (see :meth:`_build_atom_map`):
+        tleap's initial coordinates are taken directly from the PDB we write,
+        so model and tleap positions agree to 3 decimal places (PDB precision),
+        making a KD-tree nearest-neighbour search unambiguous.  This avoids
+        relying on tleap's residue-sequential numbering, which is fragile for
+        water molecules.
         """
         import parmed as pmd  # noqa: PLC0415
         from torchref.io import pdb as pdbio  # noqa: PLC0415
@@ -692,29 +715,11 @@ class AmberTarget(ModelTarget):
             prot_pdb = work_dir / "protein.pdb"
             pdb_tleap = self._filter_pdb_for_tleap()
 
-            # Build ordered residue map BEFORE writing (needed for atom map)
-            protein_res_map = self._ordered_residue_map(pdb_tleap)
-
-            # Add each ligand residue: atom_name → model row idx (primary, heavy)
-            model_pdb = self._model.pdb
-            ligand_res_maps: List[Dict[str, int]] = []
-            for rn in gaff2_params:
-                lig_df = model_pdb[
-                    model_pdb["resname"].astype(str).str.strip() == rn
-                ]
-                lig_df = lig_df[
-                    lig_df["altloc"].astype(str).str.strip().isin(["", "A"]) &
-                    ~lig_df["element"].astype(str).str.strip().isin(["H", "D"])
-                ]
-                d: Dict[str, int] = {}
-                for row_idx in lig_df.index:
-                    aname = str(model_pdb.loc[row_idx, "name"]).strip()
-                    d[aname] = int(row_idx)
-                ligand_res_maps.append(d)
-
-            self._tleap_residue_map: Optional[List[Dict[str, int]]] = (
-                protein_res_map + ligand_res_maps
-            )
+            # Signal GAFF2 path to _build_atom_map (position-based + name fallback)
+            self._tleap_residue_map = True  # type: ignore[assignment]
+            # Store GAFF2 resnames so _build_atom_map can do name-based fallback
+            # for ligand atoms (mol2 may have old coords if model was refined first)
+            self._gaff2_resnames: set = set(gaff2_params.keys())
 
             pdbio.write(pdb_tleap.reset_index(drop=True), str(prot_pdb))
 
@@ -787,19 +792,25 @@ class AmberTarget(ModelTarget):
         """
         Build ``self._model_to_omm``: int32 array [n_model] where entry *i*
         is the OpenMM atom index corresponding to model atom *i*, or -1 for
-        unmatched atoms (H atoms, altloc atoms excluded from topology, …).
+        unmatched atoms (H atoms, altloc-B atoms, non-standard HETATM, …).
 
         Two strategies depending on how the system was built:
 
         **Standard path** (``_tleap_residue_map is None``):
-        Modeller preserves chain IDs and residue numbers from the input PDB,
-        so matching uses the key ``(chain_id, resseq, icode, atom_name)``.
+        OpenMM Modeller preserves chain IDs and residue numbers from the input
+        PDB, so matching uses the key ``(chain_id, resseq, icode, atom_name)``.
 
         **GAFF2 path** (``_tleap_residue_map is not None``):
-        tleap strips chain IDs and renumbers residues sequentially.  Matching
-        uses the ordered list of per-residue ``{atom_name: model_row_idx}``
-        dicts stored in ``_tleap_residue_map`` during :meth:`_build_gaff2`.
+        tleap strips chain IDs and renumbers residues sequentially, making
+        name/number-based matching unreliable (especially for waters).
+        Instead, the tleap initial positions are taken from the exact
+        coordinates we wrote to the PDB (via ``update_pdb()``), so model and
+        tleap positions agree to within PDB precision (0.001 Å = 0.0001 nm).
+        A KD-tree nearest-neighbour search with a tight threshold (0.005 nm)
+        unambiguously identifies each tleap heavy atom's model counterpart.
         """
+        from scipy.spatial import cKDTree  # noqa: PLC0415
+
         pdb = self._model.pdb
         n_model = len(pdb)
         model_to_omm = np.full(n_model, -1, dtype=np.int32)
@@ -834,19 +845,64 @@ class AmberTarget(ModelTarget):
                     model_to_omm[idx] = omm_atom.index
 
         else:
-            # ---- GAFF2 path: match by sequential residue order + atom_name ----
-            res_map = self._tleap_residue_map  # list of {name: model_row_idx}
+            # ---- GAFF2 path: position-based matching via KD-tree ----
+            # Collect tleap heavy-atom positions (nm) and their indices.
+            tleap_pos_nm = self._tleap_pos_nm  # set by _build() before this call
+            tleap_ha_omm_idx: List[int] = []
+            tleap_ha_pos: List[np.ndarray] = []
+            for omm_atom in self._topology.atoms():
+                if not self._is_hydrogen(omm_atom):
+                    tleap_ha_omm_idx.append(omm_atom.index)
+                    tleap_ha_pos.append(tleap_pos_nm[omm_atom.index])
 
-            for res_seq_idx, omm_res in enumerate(self._topology.residues()):
-                if res_seq_idx >= len(res_map):
-                    break  # topology has more residues than expected (water?)
-                name_to_model = res_map[res_seq_idx]
-                for omm_atom in omm_res.atoms():
+            tleap_ha_pos_arr = np.array(tleap_ha_pos)  # (N_tleap_heavy, 3) nm
+            tree = cKDTree(tleap_ha_pos_arr)
+
+            # Collect model primary-altloc heavy-atom positions (nm) and indices.
+            # Use update_pdb() coords — same values that were written to tleap PDB.
+            fresh_pdb = self._model.update_pdb()
+            altloc_ok = fresh_pdb["altloc"].astype(str).str.strip().isin(["", "A"])
+            not_h = ~fresh_pdb["element"].astype(str).str.strip().isin(["H", "D"])
+            primary_heavy = np.where((altloc_ok & not_h).values)[0]
+
+            model_pos_nm = np.column_stack([
+                fresh_pdb["x"].values[primary_heavy],
+                fresh_pdb["y"].values[primary_heavy],
+                fresh_pdb["z"].values[primary_heavy],
+            ]) * 0.1  # Å → nm
+
+            # Match: threshold = 0.005 nm (50× PDB precision of 0.0001 nm)
+            dists, nn_idx = tree.query(model_pos_nm, k=1)
+            matched = dists < 0.005
+            for local_i, (model_i, nn_i) in enumerate(zip(primary_heavy, nn_idx)):
+                if matched[local_i]:
+                    model_to_omm[model_i] = tleap_ha_omm_idx[nn_i]
+
+            # Name-based fallback for GAFF2 ligand residues whose mol2 positions
+            # differ from the current model (e.g. after refinement steps).
+            # The cached mol2 retains original antechamber coordinates, so a
+            # second AmberTarget init after LBFGS will have position shifts.
+            gaff2_resnames = getattr(self, "_gaff2_resnames", set())
+            if gaff2_resnames:
+                # Build (resname, atom_name) → model positional index for primary heavy
+                lig_key_to_model: Dict[Tuple[str, str], int] = {}
+                for arr_pos in primary_heavy:
+                    rn = str(fresh_pdb["resname"].values[arr_pos]).strip()
+                    if rn not in gaff2_resnames:
+                        continue
+                    aname = str(fresh_pdb["name"].values[arr_pos]).strip()
+                    lig_key_to_model[(rn, aname)] = int(arr_pos)
+
+                for omm_atom in self._topology.atoms():
                     if self._is_hydrogen(omm_atom):
                         continue
-                    model_idx = name_to_model.get(omm_atom.name.strip())
-                    if model_idx is not None:
-                        model_to_omm[model_idx] = omm_atom.index
+                    rn = omm_atom.residue.name
+                    if rn not in gaff2_resnames:
+                        continue
+                    aname = omm_atom.name.strip()
+                    model_arr_pos = lig_key_to_model.get((rn, aname))
+                    if model_arr_pos is not None and model_to_omm[model_arr_pos] < 0:
+                        model_to_omm[model_arr_pos] = omm_atom.index
 
         # Warn about UNEXPECTED unmatched heavy atoms.
         # Expected to be unmatched (silently skipped in gradient):
@@ -894,7 +950,7 @@ class AmberTarget(ModelTarget):
             )
             print(
                 f"[AmberTarget] {unmatched_heavy} heavy atoms have model_to_omm=-1 "
-                f"(all expected: waters/ions/altloc-B/OXT)"
+                f"(expected: non-standard HETATM / altloc-B / OXT)"
             )
 
         self._model_to_omm = model_to_omm
@@ -913,14 +969,19 @@ class AmberTarget(ModelTarget):
 
     def _build_context(self, pos_nm: np.ndarray) -> None:
         """
-        Create an OpenMM Context on the best available platform.
-        Tries preferred → OpenCL → CPU.
+        Create an OpenMM Context on the platform that matches the model's device.
+
+        Mapping: ``model.device.type == 'cuda'`` → CUDA, otherwise CPU.
+        Falls back CUDA → OpenCL → CPU if the preferred platform is unavailable.
         """
         import openmm as mm  # noqa: PLC0415
 
+        device_type = getattr(self._model.device, "type", "cpu")
+        preferred = "CUDA" if device_type == "cuda" else "CPU"
+
         seen: set = set()
         platforms = [
-            p for p in [self._preferred_platform, "OpenCL", "CPU"]
+            p for p in [preferred, "OpenCL", "CPU"]
             if not (p in seen or seen.add(p))  # type: ignore[func-returns-value]
         ]
 

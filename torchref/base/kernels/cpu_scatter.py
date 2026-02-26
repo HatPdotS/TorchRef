@@ -155,60 +155,25 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 """
 
 # ---------------------------------------------------------------------------
-# Lazy compilation
+# Lazy compilation with POSIX lockf locking (works across cluster nodes).
+#
+# PyTorch's load_inline uses FileBaton (file-existence lock) which stays
+# behind when a process is killed mid-compile, blocking all future imports.
+# We wrap it with fcntl.lockf (POSIX record locks) which:
+#   - are enforced by the filesystem → work across NFS/GPFS cluster nodes
+#   - are released by the kernel on process death (even SIGKILL)
+# First process compiles; all others (same node or different) reuse cache.
 # ---------------------------------------------------------------------------
 _module = None
-
-
-def _clear_stale_lock(extension_name: str = "cpu_scatter"):
-    """Remove stale lock files left behind by killed compilation processes.
-
-    torch.utils.cpp_extension.load_inline uses file locks to prevent
-    concurrent compilation.  If a process is killed mid-compile, the lock
-    stays behind and all future imports block forever.  We detect this by
-    attempting a non-blocking acquire — if it succeeds the lock is stale
-    (no live process holds it) and we can safely rename it out of the way.
-    We rename instead of delete because load_inline's baton.release()
-    expects the lock file to exist when it cleans up.
-    """
-    import os
-    from pathlib import Path
-
-    cache_root = Path(os.path.expanduser(
-        os.environ.get("TORCH_EXTENSIONS_DIR",
-                        os.path.join("~", ".cache", "torch_extensions"))
-    ))
-    if not cache_root.exists():
-        return
-
-    for lock_file in cache_root.rglob(f"{extension_name}/lock"):
-        try:
-            import fcntl
-            fd = os.open(str(lock_file), os.O_RDWR)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                # Lock acquired → no live process holds it → stale
-                fcntl.flock(fd, fcntl.LOCK_UN)
-                os.close(fd)
-                # Rename instead of delete — load_inline's baton.release()
-                # will recreate and remove its own lock file cleanly.
-                stale = lock_file.with_suffix(".stale")
-                lock_file.rename(stale)
-                stale.unlink(missing_ok=True)
-            except BlockingIOError:
-                # Another process legitimately holds the lock
-                os.close(fd)
-        except Exception:
-            pass
 
 
 def _get_module():
     global _module
     if _module is None:
+        import fcntl
         import os
         import sys
-        # Remove stale lock files from killed processes before attempting load
-        _clear_stale_lock()
+
         # Ensure ninja (installed via pip) is on PATH for compute nodes
         bin_dir = os.path.dirname(sys.executable)
         if bin_dir not in os.environ.get("PATH", ""):
@@ -220,13 +185,54 @@ def _get_module():
                 os.environ["CXX"] = gcc
                 os.environ["CC"] = gcc.replace("g++", "gcc")
                 break
-        _module = load_inline(
-            name="cpu_scatter",
-            cpp_sources=[_CPP_SRC],
-            extra_cflags=["-O3", "-fopenmp", "-march=native"],
-            extra_ldflags=["-fopenmp"],
-            verbose=False,
+
+        # Per-microarchitecture build directory — prevents Illegal Instruction
+        # when different cluster nodes have different CPUs (e.g., AMD vs Intel).
+        import platform
+        cpu_tag = platform.machine()
+        try:
+            # Use the CPU model to distinguish microarchitectures
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        # e.g. "EPYC_7443P" or "Xeon_Gold_6248"
+                        cpu_tag = line.split(":")[1].strip().replace(" ", "_")
+                        break
+        except OSError:
+            pass
+        build_dir = os.path.join(
+            os.environ.get(
+                "TORCH_EXTENSIONS_DIR",
+                os.path.join(os.path.expanduser("~"), ".cache", "torch_extensions"),
+            ),
+            f"cpu_scatter_{cpu_tag}",
         )
+        os.makedirs(build_dir, exist_ok=True)
+
+        # fcntl.lockf uses POSIX record locks (fcntl F_SETLKW) which are:
+        #   1. filesystem-level → work across NFS/GPFS cluster nodes
+        #   2. released by kernel on process death, even SIGKILL
+        lock_fd = os.open(
+            os.path.join(build_dir, "compile.lock"), os.O_CREAT | os.O_RDWR
+        )
+        try:
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+            # Clear any stale PyTorch FileBaton lock from a killed process
+            try:
+                os.unlink(os.path.join(build_dir, "lock"))
+            except FileNotFoundError:
+                pass
+            _module = load_inline(
+                name="cpu_scatter",
+                cpp_sources=[_CPP_SRC],
+                extra_cflags=["-O3", "-fopenmp", "-march=native"],
+                extra_ldflags=["-fopenmp"],
+                build_directory=build_dir,
+                verbose=False,
+            )
+        finally:
+            fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
     return _module
 
 

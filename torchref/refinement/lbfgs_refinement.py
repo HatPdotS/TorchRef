@@ -284,6 +284,8 @@ class LBFGSRefinement(Refinement):
         """
         self.model.freeze_all()
         self.model.unfreeze("adp")
+        self.model.unfreeze("u")
+        self.model.unfreeze("occupancy")
 
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
@@ -658,6 +660,29 @@ class LBFGSRefinement(Refinement):
             raise
 
         return trajectory
+    
+    def refine_occ(self):
+        """
+        Refine occupancies using LBFGS optimizer.
+
+        Freezes all parameters except occupancies and runs LBFGS optimization
+        with a combined occupancy and X-ray loss.
+
+        Returns
+        -------
+        LossState
+            State with history containing before/after loss values.
+        """
+        self.model.freeze_all()
+        self.model.unfreeze("occ")
+
+        self.scaler.refine_lbfgs()
+        state = self.complete_loss_state()
+        self._optimize_lbfgs(state)
+
+        self.model.unfreeze_all()
+        return state
+
 
     def refine(self, macro_cycles=5):
         """

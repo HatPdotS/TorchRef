@@ -1,0 +1,12 @@
+{
+  "resname": "SO4",
+  "charge": 0,
+  "atom_names": [
+    "O1",
+    "O2",
+    "O3",
+    "O4",
+    "S"
+  ],
+  "cache_key": "198ca2f645754b6b63fb4cb204f0fff7f2b15cd0"
+}

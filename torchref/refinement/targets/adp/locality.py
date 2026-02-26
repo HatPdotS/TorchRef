@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
@@ -19,33 +20,9 @@ class ADPLocalityTarget(ADPTarget):
     """
     Proximity-based ADP restraint using K nearest neighbors.
 
-    ADPs of nearby atoms should be similar because:
-
-    1. Core residues (buried) tend to have low ADP
-    2. Surface/loop residues tend to have high ADP
-    3. Disorder propagates through space
-
-    This restraint finds the K nearest neighbors for each atom and computes
-    a weighted MSE on log(B) differences. The weight decays exponentially
-    with distance, based on a correlation length parameter::
-
-        w_ij = exp(-d_ij / xi)
-
-    Where xi (correlation length) controls how quickly the restraint weakens
-    with distance. Typical values: 4-8 Å for proteins.
-
-    The loss is weighted MSE in log-space::
-
-        loss = scale * mean_ij [w_ij * (log(B_i) - log(B_j))^2]
-
-    This is simpler than NLL - no fake probabilistic sigma. The exponential
-    decay has a clear physical interpretation: atoms within correlation
-    length xi should have similar B-factors.
-
-    Tunable parameters (as buffers):
-    - _k_neighbors: int, number of nearest neighbors
-    - _correlation_length: float, distance scale for weight decay (Å)
-    - _scale: float, scaling factor for loss magnitude
+    Uses a spatial cell-list (O(N) memory, O(N·k) time) instead of
+    a full N×N distance matrix, so it scales to arbitrarily large
+    structures without memory issues.
 
     Parameters
     ----------
@@ -69,13 +46,12 @@ class ADPLocalityTarget(ADPTarget):
         self,
         model: "Model" = None,
         k_neighbors: int = 50,
-        correlation_length: float = 5.0,  # xi in Angstrom
-        scale: float = 5.0,  # Scale factor for loss magnitude (reduced from 10.0)
+        correlation_length: float = 5.0,
+        scale: float = 5.0,
         exclude_bonded: bool = True,
         verbose: int = 0,
     ):
         super().__init__(model, verbose, target_value=0.3, sigma=0.2)
-        # Register tunable parameters as buffers
         self.register_buffer(
             "_k_neighbors", torch.tensor(k_neighbors, dtype=torch.int64)
         )
@@ -90,85 +66,163 @@ class ADPLocalityTarget(ADPTarget):
 
     @property
     def k_neighbors(self) -> int:
-        """Get k_neighbors value."""
         return self._k_neighbors.item()
 
     @k_neighbors.setter
     def k_neighbors(self, value: int):
-        """Set k_neighbors value."""
         self._k_neighbors.fill_(value)
 
     @property
     def correlation_length(self) -> float:
-        """Get correlation_length value."""
         return self._correlation_length.item()
 
     @correlation_length.setter
     def correlation_length(self, value: float):
-        """Set correlation_length value."""
         self._correlation_length.fill_(value)
 
     @property
     def scale(self) -> float:
-        """Get scale value."""
         return self._scale.item()
 
     @scale.setter
     def scale(self, value: float):
-        """Set scale value."""
         self._scale.fill_(value)
+
+    # ------------------------------------------------------------------
+    # Spatial-hash k-NN (O(N) memory)
+    # ------------------------------------------------------------------
 
     def _build_neighbor_list(self) -> None:
         """
-        Build list of K nearest neighbors for each atom.
+        Build k-nearest-neighbor list using a spatial cell-list.
 
-        Stores:
-            _neighbor_indices: (N, k_neighbors) indices of neighbors
-            _neighbor_distances: (N, k_neighbors) distances to neighbors
+        Memory usage is O(N·k) for the output arrays and O(N) for the
+        cell-list bookkeeping, instead of O(N²) for a full distance matrix.
         """
         xyz = self.model.xyz()
         device = xyz.device
         n_atoms = xyz.shape[0]
-
-        # Compute all pairwise distances (O(N^2) but simple and fast for proteins)
         k = min(self.k_neighbors, n_atoms - 1)
 
-        # Compute distance matrix
-        diff = xyz.unsqueeze(0) - xyz.unsqueeze(1)  # (N, N, 3)
-        dist_matrix = torch.sqrt((diff**2).sum(dim=-1)).detach()  # (N, N)
+        coords = xyz.detach().cpu().numpy()
 
-        # Create mask for diagonal (self-distances) and bonded pairs
-        # Use non-inplace operations to avoid gradient issues
-        mask = torch.eye(n_atoms, device=device, dtype=torch.bool)
+        # Cell size should cover the kth-neighbor distance.  For proteins
+        # k=50 neighbors are typically within ~8-10 Å, so 12 Å is safe.
+        cell_size = 12.0
 
-        # Apply mask using torch.where (non-inplace)
-        dist_matrix = torch.where(
-            mask, torch.tensor(float("inf"), device=device), dist_matrix
+        xyz_min = coords.min(axis=0)
+        cell_idx = ((coords - xyz_min) / cell_size).astype(np.int64)
+
+        grid_dims = cell_idx.max(axis=0) + 1
+        gx, gy, gz = int(grid_dims[0]), int(grid_dims[1]), int(grid_dims[2])
+        gyz = gy * gz
+
+        flat = cell_idx[:, 0] * gyz + cell_idx[:, 1] * gz + cell_idx[:, 2]
+
+        order = np.argsort(flat)
+        sorted_flat = flat[order]
+
+        unique_cells, first_idx, counts = np.unique(
+            sorted_flat, return_index=True, return_counts=True
         )
+        n_unique = len(unique_cells)
 
-        # Get k nearest neighbors
-        distances, indices = torch.topk(dist_matrix, k, dim=1, largest=False)
+        # start[i] .. start[i+1] are the atoms in unique cell i
+        starts = np.empty(n_unique + 1, dtype=np.int64)
+        starts[0] = 0
+        starts[1:] = np.cumsum(counts)
 
-        self._neighbor_indices = indices  # (N, k)
-        self._neighbor_distances = distances  # (N, k)
+        # flat_cell -> unique index (-1 = empty)
+        n_grid = gx * gyz
+        cell_lookup = np.full(n_grid, -1, dtype=np.int64)
+        cell_lookup[unique_cells] = np.arange(n_unique, dtype=np.int64)
+
+        # 27 neighbor offsets (self + all adjacent cells)
+        offsets = []
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                for dz in range(-1, 2):
+                    offsets.append((dx, dy, dz, dx * gyz + dy * gz + dz))
+
+        # For each atom, collect candidate neighbors and keep top-k
+        all_neighbor_idx = np.zeros((n_atoms, k), dtype=np.int64)
+        all_neighbor_dist = np.full((n_atoms, k), np.inf, dtype=np.float32)
+
+        # atom_cell[i] = unique-cell index for atom i
+        atom_cell = np.empty(n_atoms, dtype=np.int64)
+        atom_cell[order] = np.repeat(np.arange(n_unique), counts)
+
+        for ci in range(n_unique):
+            cell_flat = int(unique_cells[ci])
+            sa, ea = int(starts[ci]), int(starts[ci + 1])
+            atoms_a = order[sa:ea]
+            xyz_a = coords[atoms_a]
+
+            cx = cell_flat // gyz
+            cy = (cell_flat % gyz) // gz
+            cz = cell_flat % gz
+
+            # Collect all candidate neighbor atoms from adjacent cells
+            cand_atoms_list = []
+            cand_xyz_list = []
+            for dx, dy, dz, _ in offsets:
+                ncx, ncy, ncz = cx + dx, cy + dy, cz + dz
+                if ncx < 0 or ncx >= gx or ncy < 0 or ncy >= gy or ncz < 0 or ncz >= gz:
+                    continue
+                nb_flat = ncx * gyz + ncy * gz + ncz
+                nb_ci = int(cell_lookup[nb_flat])
+                if nb_ci < 0:
+                    continue
+                sb, eb = int(starts[nb_ci]), int(starts[nb_ci + 1])
+                cand_atoms_list.append(order[sb:eb])
+                cand_xyz_list.append(coords[order[sb:eb]])
+
+            if not cand_atoms_list:
+                continue
+
+            cand_atoms = np.concatenate(cand_atoms_list)
+            cand_xyz = np.concatenate(cand_xyz_list, axis=0)
+
+            # Distances from each atom in this cell to all candidates
+            # shape: (len(atoms_a), len(cand_atoms))
+            diff = xyz_a[:, None, :] - cand_xyz[None, :, :]
+            dist = np.sqrt((diff * diff).sum(axis=-1))
+
+            for li, ai in enumerate(atoms_a):
+                d = dist[li]
+                # Mask self
+                self_mask = cand_atoms == ai
+                d[self_mask] = np.inf
+
+                if len(d) <= k:
+                    top_k_idx = np.argsort(d)[:k]
+                else:
+                    top_k_idx = np.argpartition(d, k)[:k]
+                    # Sort the top-k for deterministic order
+                    sub_order = np.argsort(d[top_k_idx])
+                    top_k_idx = top_k_idx[sub_order]
+
+                n_valid = min(k, len(top_k_idx))
+                all_neighbor_idx[ai, :n_valid] = cand_atoms[top_k_idx[:n_valid]]
+                all_neighbor_dist[ai, :n_valid] = d[top_k_idx[:n_valid]]
+
+        self._neighbor_indices = torch.from_numpy(all_neighbor_idx).to(device)
+        self._neighbor_distances = torch.from_numpy(all_neighbor_dist).to(device)
 
         if self.verbose > 1:
-            mean_dist = distances.mean().item()
-            min_dist = distances.min().item()
-            max_dist = distances[:, -1].mean().item()  # Farthest of k neighbors
+            mean_dist = float(all_neighbor_dist[all_neighbor_dist < np.inf].mean())
             print(
-                f"    Built K-NN list: k={k}, mean dist={mean_dist:.2f}A, "
-                f"min={min_dist:.2f}A, max (kth)={max_dist:.2f}A"
+                f"    Built K-NN list (spatial hash): k={k}, "
+                f"mean dist={mean_dist:.2f}A"
             )
 
     def forward(self, recompute_neighbors: bool = False) -> torch.Tensor:
         """
-        Compute weighted MSE on log(B) differences with exponential decay.
+        Compute weighted MSE on log(B) differences with inverse-distance weights.
 
         loss = scale * mean_ij [w_ij * (log(B_i) - log(B_j))^2]
-        where w_ij = exp(-d_ij / correlation_length)
+        where w_ij = 1 / (d_ij + eps)
         """
-        # Check if cached tensors are on wrong device and need rebuilding
         model_device = self.model.xyz().device
         cache_stale = (
             self._neighbor_indices is not None
@@ -186,23 +240,16 @@ class ADPLocalityTarget(ADPTarget):
 
         log_adp = torch.log(adp.clamp(min=1e-3))
 
-        indices = self._neighbor_indices  # (N, k)
-        distances = self._neighbor_distances  # (N, k)
+        indices = self._neighbor_indices
+        distances = self._neighbor_distances
 
-        # Gather neighbor log(ADP) values
-        neighbor_log_adp = log_adp[indices]  # (N, k)
+        neighbor_log_adp = log_adp[indices]
+        diff = log_adp.unsqueeze(1) - neighbor_log_adp
 
-        # Compute pairwise differences: diff_ij = log(ADP_i) - log(ADP_j)
-        diff = log_adp.unsqueeze(1) - neighbor_log_adp  # (N, k)
+        weights = 1 / (distances + 1e-6)
+        weights = weights / (weights.mean() + 1e-8)
 
-        weights = 1 / (distances + 1e-6)  # Avoid div by zero
-
-        weights = weights / (weights.mean() + 1e-8)  # Normalize weights per atom
-
-        # Weighted MSE
-        weighted_sq_diff = weights * (diff / 0.5) ** 2  # (N, k)
-
-        # Normalize by sum of weights to get weighted average
+        weighted_sq_diff = weights * (diff / 0.5) ** 2
         loss = weighted_sq_diff.mean()
 
         return loss
@@ -223,10 +270,8 @@ class ADPLocalityTarget(ADPTarget):
         neighbor_log_adp = log_adp[indices]
         diff = log_adp.unsqueeze(1) - neighbor_log_adp
 
-        # Exponential weights
         weights = torch.exp(-distances / self.correlation_length)
 
-        # Weighted RMS
         weighted_sq_diff = weights * (diff**2)
         weighted_rms = torch.sqrt(weighted_sq_diff.sum() / weights.sum()).item()
         loss = self.forward()

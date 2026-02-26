@@ -780,11 +780,13 @@ class RestraintsNew(DebugMixin, Module):
 
     def _find_nearby_pairs_spatial_hash(self, xyz, cutoff=6.0):
         """
-        Find all atom pairs within cutoff distance.
+        Find all atom pairs within cutoff distance using spatial cell lists.
 
-        Uses torch.cdist for vectorized distance computation, which is
-        faster than spatial hashing for typical protein structures where
-        atoms are densely packed.
+        Divides space into cubic cells of side length = cutoff and only checks
+        atom pairs in the same or adjacent cells (14 unique offsets: self + 13
+        forward neighbours).  This gives O(N) memory and O(N*k) time where k
+        is the average number of neighbours, compared to O(N^2) for a full
+        distance matrix.
 
         Parameters
         ----------
@@ -796,7 +798,7 @@ class RestraintsNew(DebugMixin, Module):
         Returns
         -------
         torch.Tensor
-            Pairs of atom indices, shape (M, 2).
+            Pairs of atom indices, shape (M, 2), each row (i, j) with i < j.
         """
         device = xyz.device
         n_atoms = xyz.shape[0]
@@ -804,15 +806,123 @@ class RestraintsNew(DebugMixin, Module):
         if n_atoms == 0:
             return torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
 
-        # Use cdist for vectorized distance computation
-        dist_matrix = torch.cdist(xyz, xyz)
+        # Work on CPU to avoid per-iteration GPU kernel launch overhead
+        coords = xyz.detach().cpu()
+        cell_size = cutoff
 
-        # Find close pairs (upper triangle only to avoid duplicates)
-        mask = (dist_matrix < cutoff) & (dist_matrix > 0)
-        mask = torch.triu(mask, diagonal=1)
+        # Assign each atom to a cubic cell
+        xyz_min = coords.min(dim=0).values
+        cell_idx = ((coords - xyz_min) / cell_size).long()  # (N, 3)
 
-        pairs = torch.stack(torch.where(mask), dim=1)
-        return pairs
+        grid_dims = cell_idx.max(dim=0).values + 1
+        gx, gy, gz = grid_dims[0].item(), grid_dims[1].item(), grid_dims[2].item()
+        gyz = gy * gz
+
+        # Flat cell index per atom
+        flat = cell_idx[:, 0] * gyz + cell_idx[:, 1] * gz + cell_idx[:, 2]
+
+        # Sort atoms by cell so each cell's atoms are contiguous
+        order = flat.argsort()
+        sorted_flat = flat[order]
+
+        unique_cells, counts = torch.unique_consecutive(
+            sorted_flat, return_counts=True
+        )
+        n_unique = len(unique_cells)
+        starts = torch.zeros(n_unique + 1, dtype=torch.long)
+        starts[1:] = counts.cumsum(0)
+
+        # Lookup: flat_cell -> index in unique_cells (-1 if empty)
+        n_grid = gx * gyz
+        cell_lookup = torch.full((n_grid,), -1, dtype=torch.long)
+        cell_lookup[unique_cells] = torch.arange(n_unique)
+
+        # 14 unique neighbour offsets: self (0,0,0) + 13 forward neighbours.
+        # "Forward" = first non-zero component is positive, avoiding double counting.
+        offsets_list = []
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                for dz in range(-1, 2):
+                    if (
+                        dx > 0
+                        or (dx == 0 and dy > 0)
+                        or (dx == 0 and dy == 0 and dz >= 0)
+                    ):
+                        offsets_list.append(
+                            (dx, dy, dz, dx * gyz + dy * gz + dz)
+                        )
+
+        cutoff_sq = cutoff * cutoff
+        pair_chunks = []
+
+        # Move to numpy for tight loop (faster item access than torch on CPU)
+        unique_np = unique_cells.numpy()
+        starts_np = starts.numpy()
+        order_np = order.numpy()
+        coords_np = coords.numpy()
+
+        for ci in range(n_unique):
+            cell_flat = int(unique_np[ci])
+            sa, ea = int(starts_np[ci]), int(starts_np[ci + 1])
+            atoms_a = order_np[sa:ea]
+            xyz_a = coords_np[atoms_a]  # (na, 3)
+
+            cx = cell_flat // gyz
+            cy = (cell_flat % gyz) // gz
+            cz = cell_flat % gz
+
+            for dx, dy, dz, off_flat in offsets_list:
+                ncx, ncy, ncz = cx + dx, cy + dy, cz + dz
+                if (
+                    ncx < 0 or ncx >= gx
+                    or ncy < 0 or ncy >= gy
+                    or ncz < 0 or ncz >= gz
+                ):
+                    continue
+
+                nb_flat = ncx * gyz + ncy * gz + ncz
+                nb_ci = int(cell_lookup[nb_flat])
+                if nb_ci < 0:
+                    continue
+
+                sb, eb = int(starts_np[nb_ci]), int(starts_np[nb_ci + 1])
+                atoms_b = order_np[sb:eb]
+                xyz_b = coords_np[atoms_b]  # (nb, 3)
+
+                # Vectorised distance² via broadcasting: (na, nb, 3)
+                diff = xyz_a[:, None, :] - xyz_b[None, :, :]
+                dist_sq = (diff * diff).sum(axis=-1)  # (na, nb)
+
+                if off_flat == 0:
+                    # Self-cell: upper triangle only
+                    na = len(atoms_a)
+                    if na < 2:
+                        continue
+                    ii, jj = np.triu_indices(na, k=1)
+                    mask = dist_sq[ii, jj] < cutoff_sq
+                    if mask.any():
+                        ai = atoms_a[ii[mask]]
+                        aj = atoms_a[jj[mask]]
+                        pairs = np.stack(
+                            [np.minimum(ai, aj), np.maximum(ai, aj)], axis=1
+                        )
+                        pair_chunks.append(pairs)
+                else:
+                    # Inter-cell: all pairs
+                    ii, jj = np.where(dist_sq < cutoff_sq)
+                    if len(ii) > 0:
+                        ai = atoms_a[ii]
+                        bj = atoms_b[jj]
+                        pairs = np.stack(
+                            [np.minimum(ai, bj), np.maximum(ai, bj)], axis=1
+                        )
+                        pair_chunks.append(pairs)
+
+        if pair_chunks:
+            all_pairs = np.concatenate(pair_chunks, axis=0)
+            return torch.from_numpy(all_pairs).to(dtype=torch.long, device=device)
+        else:
+            return torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
 
     def _build_vdw_restraints(
         self, cutoff=5.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True

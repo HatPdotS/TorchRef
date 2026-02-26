@@ -117,9 +117,9 @@ Examples:
     parser.add_argument(
         "--device",
         type=str,
-        default="cpu",
-        choices=["cpu", "cuda"],
-        help="Computation device (default: cpu)",
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Computation device (default: auto, uses CUDA if available)",
     )
 
     parser.add_argument(
@@ -132,6 +132,10 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    from torchref.utils.timing import register_timing
+
+    register_timing()
 
     # Validate inputs
     structure_path = Path(args.structure)
@@ -177,13 +181,16 @@ Examples:
         sys.stdout.flush()
 
     # Setup device
-    device = torch.device(args.device)
-    if args.device == "cuda" and not torch.cuda.is_available():
-        print(
-            "Warning: CUDA requested but not available, falling back to CPU",
-            file=sys.stderr,
-        )
-        device = torch.device("cpu")
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+        if args.device == "cuda" and not torch.cuda.is_available():
+            print(
+                "Warning: CUDA requested but not available, falling back to CPU",
+                file=sys.stderr,
+            )
+            device = torch.device("cpu")
 
     if args.verbose > 0:
         print("Initializing refinement...")

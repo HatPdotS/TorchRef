@@ -237,6 +237,7 @@ class Scaler(ScalerBase):
             verbose=self.verbose,
         )
         self.solvent.update_solvent()
+        self._f_sol_raw = None  # Invalidate cached raw solvent SFs
 
     def fit_all_scales(self, fcalc: torch.Tensor = None):
         """

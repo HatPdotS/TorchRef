@@ -11,7 +11,8 @@ operations that the fused kernel requires.
 
 Forward + backward kernels with full autograd support for xyz, b, occ.
 
-Litters Nan in strcuture factor duirng first evaluation. 
+For non-orthogonal cells, uses combined exponent exp(-alpha*r²) to avoid
+numerical overflow from separate diagonal × cross-term exp() products.
 """
 
 import math
@@ -139,60 +140,68 @@ def _separable_fwd_kernel(
     sub_y = frac_y - ciy.to(tl.float32) * inv_grid_y
     sub_z = frac_z - ciz.to(tl.float32) * inv_grid_z
 
-    # ---- Stage 2: Build 1D diagonal tables ----
+    # ---- Stage 2: Build 1D tables ----
     # Scratch layout: [diag_x(5*N), diag_y(5*N), diag_z(5*N),
     #                  delta_x(N), delta_y(N), delta_z(N)]
+    # When using combined-exponent path (a), only deltas are read per voxel;
+    # skip the 15 1D exp-table computations (saves 15*N_AXIS exp() calls).
+    _USE_COMBINED: tl.constexpr = (
+        not STORE_CROSS_TABLES and (COMPUTE_XY or COMPUTE_XZ or COMPUTE_YZ)
+    )
     base = atom * SCRATCH_PER_ATOM
     axis_idx = tl.arange(0, N_AXIS)
     half_n_f: tl.constexpr = half_n  # float version
 
     # --- Axis X ---
     delta_x = (axis_idx.to(tl.float32) - half_n_f) * inv_grid_x - sub_x
-    dx2 = delta_x * delta_x
     tl.store(scratch_ptr + base + 15 * N_AXIS + axis_idx, delta_x)  # store deltas
 
-    diag_x0 = tl.exp(-al0 * G11 * dx2)
-    diag_x1 = tl.exp(-al1 * G11 * dx2)
-    diag_x2 = tl.exp(-al2 * G11 * dx2)
-    diag_x3 = tl.exp(-al3 * G11 * dx2)
-    diag_x4 = tl.exp(-al4 * G11 * dx2)
-    tl.store(scratch_ptr + base + 0 * N_AXIS + axis_idx, diag_x0)
-    tl.store(scratch_ptr + base + 1 * N_AXIS + axis_idx, diag_x1)
-    tl.store(scratch_ptr + base + 2 * N_AXIS + axis_idx, diag_x2)
-    tl.store(scratch_ptr + base + 3 * N_AXIS + axis_idx, diag_x3)
-    tl.store(scratch_ptr + base + 4 * N_AXIS + axis_idx, diag_x4)
+    if not _USE_COMBINED:
+        dx2 = delta_x * delta_x
+        diag_x0 = tl.exp(-al0 * G11 * dx2)
+        diag_x1 = tl.exp(-al1 * G11 * dx2)
+        diag_x2 = tl.exp(-al2 * G11 * dx2)
+        diag_x3 = tl.exp(-al3 * G11 * dx2)
+        diag_x4 = tl.exp(-al4 * G11 * dx2)
+        tl.store(scratch_ptr + base + 0 * N_AXIS + axis_idx, diag_x0)
+        tl.store(scratch_ptr + base + 1 * N_AXIS + axis_idx, diag_x1)
+        tl.store(scratch_ptr + base + 2 * N_AXIS + axis_idx, diag_x2)
+        tl.store(scratch_ptr + base + 3 * N_AXIS + axis_idx, diag_x3)
+        tl.store(scratch_ptr + base + 4 * N_AXIS + axis_idx, diag_x4)
 
     # --- Axis Y ---
     delta_y = (axis_idx.to(tl.float32) - half_n_f) * inv_grid_y - sub_y
-    dy2 = delta_y * delta_y
     tl.store(scratch_ptr + base + 16 * N_AXIS + axis_idx, delta_y)
 
-    diag_y0 = tl.exp(-al0 * G22 * dy2)
-    diag_y1 = tl.exp(-al1 * G22 * dy2)
-    diag_y2 = tl.exp(-al2 * G22 * dy2)
-    diag_y3 = tl.exp(-al3 * G22 * dy2)
-    diag_y4 = tl.exp(-al4 * G22 * dy2)
-    tl.store(scratch_ptr + base + 5 * N_AXIS + axis_idx, diag_y0)
-    tl.store(scratch_ptr + base + 6 * N_AXIS + axis_idx, diag_y1)
-    tl.store(scratch_ptr + base + 7 * N_AXIS + axis_idx, diag_y2)
-    tl.store(scratch_ptr + base + 8 * N_AXIS + axis_idx, diag_y3)
-    tl.store(scratch_ptr + base + 9 * N_AXIS + axis_idx, diag_y4)
+    if not _USE_COMBINED:
+        dy2 = delta_y * delta_y
+        diag_y0 = tl.exp(-al0 * G22 * dy2)
+        diag_y1 = tl.exp(-al1 * G22 * dy2)
+        diag_y2 = tl.exp(-al2 * G22 * dy2)
+        diag_y3 = tl.exp(-al3 * G22 * dy2)
+        diag_y4 = tl.exp(-al4 * G22 * dy2)
+        tl.store(scratch_ptr + base + 5 * N_AXIS + axis_idx, diag_y0)
+        tl.store(scratch_ptr + base + 6 * N_AXIS + axis_idx, diag_y1)
+        tl.store(scratch_ptr + base + 7 * N_AXIS + axis_idx, diag_y2)
+        tl.store(scratch_ptr + base + 8 * N_AXIS + axis_idx, diag_y3)
+        tl.store(scratch_ptr + base + 9 * N_AXIS + axis_idx, diag_y4)
 
     # --- Axis Z ---
     delta_z = (axis_idx.to(tl.float32) - half_n_f) * inv_grid_z - sub_z
-    dz2 = delta_z * delta_z
     tl.store(scratch_ptr + base + 17 * N_AXIS + axis_idx, delta_z)
 
-    diag_z0 = tl.exp(-al0 * G33 * dz2)
-    diag_z1 = tl.exp(-al1 * G33 * dz2)
-    diag_z2 = tl.exp(-al2 * G33 * dz2)
-    diag_z3 = tl.exp(-al3 * G33 * dz2)
-    diag_z4 = tl.exp(-al4 * G33 * dz2)
-    tl.store(scratch_ptr + base + 10 * N_AXIS + axis_idx, diag_z0)
-    tl.store(scratch_ptr + base + 11 * N_AXIS + axis_idx, diag_z1)
-    tl.store(scratch_ptr + base + 12 * N_AXIS + axis_idx, diag_z2)
-    tl.store(scratch_ptr + base + 13 * N_AXIS + axis_idx, diag_z3)
-    tl.store(scratch_ptr + base + 14 * N_AXIS + axis_idx, diag_z4)
+    if not _USE_COMBINED:
+        dz2 = delta_z * delta_z
+        diag_z0 = tl.exp(-al0 * G33 * dz2)
+        diag_z1 = tl.exp(-al1 * G33 * dz2)
+        diag_z2 = tl.exp(-al2 * G33 * dz2)
+        diag_z3 = tl.exp(-al3 * G33 * dz2)
+        diag_z4 = tl.exp(-al4 * G33 * dz2)
+        tl.store(scratch_ptr + base + 10 * N_AXIS + axis_idx, diag_z0)
+        tl.store(scratch_ptr + base + 11 * N_AXIS + axis_idx, diag_z1)
+        tl.store(scratch_ptr + base + 12 * N_AXIS + axis_idx, diag_z2)
+        tl.store(scratch_ptr + base + 13 * N_AXIS + axis_idx, diag_z3)
+        tl.store(scratch_ptr + base + 14 * N_AXIS + axis_idx, diag_z4)
 
     # ---- Stage 3: 2D cross-term tables (conditional) ----
     # cross_base starts after the 1D tables + deltas  (18 * N_AXIS)
@@ -285,106 +294,94 @@ def _separable_fwd_kernel(
         tj = sj + half_n
         tk = sk + half_n
 
-        # Gather 1D diagonal values for all 5 components and multiply
-        # Component 0
-        vx0 = tl.load(scratch_ptr + base + 0 * N_AXIS + ti, mask=mask, other=0.0)
-        vy0 = tl.load(scratch_ptr + base + 5 * N_AXIS + tj, mask=mask, other=0.0)
-        vz0 = tl.load(scratch_ptr + base + 10 * N_AXIS + tk, mask=mask, other=0.0)
-        c0 = An0 * vx0 * vy0 * vz0
-
-        # Component 1
-        vx1 = tl.load(scratch_ptr + base + 1 * N_AXIS + ti, mask=mask, other=0.0)
-        vy1 = tl.load(scratch_ptr + base + 6 * N_AXIS + tj, mask=mask, other=0.0)
-        vz1 = tl.load(scratch_ptr + base + 11 * N_AXIS + tk, mask=mask, other=0.0)
-        c1 = An1 * vx1 * vy1 * vz1
-
-        # Component 2
-        vx2 = tl.load(scratch_ptr + base + 2 * N_AXIS + ti, mask=mask, other=0.0)
-        vy2 = tl.load(scratch_ptr + base + 7 * N_AXIS + tj, mask=mask, other=0.0)
-        vz2 = tl.load(scratch_ptr + base + 12 * N_AXIS + tk, mask=mask, other=0.0)
-        c2 = An2 * vx2 * vy2 * vz2
-
-        # Component 3
-        vx3 = tl.load(scratch_ptr + base + 3 * N_AXIS + ti, mask=mask, other=0.0)
-        vy3 = tl.load(scratch_ptr + base + 8 * N_AXIS + tj, mask=mask, other=0.0)
-        vz3 = tl.load(scratch_ptr + base + 13 * N_AXIS + tk, mask=mask, other=0.0)
-        c3 = An3 * vx3 * vy3 * vz3
-
-        # Component 4
-        vx4 = tl.load(scratch_ptr + base + 4 * N_AXIS + ti, mask=mask, other=0.0)
-        vy4 = tl.load(scratch_ptr + base + 9 * N_AXIS + tj, mask=mask, other=0.0)
-        vz4 = tl.load(scratch_ptr + base + 14 * N_AXIS + tk, mask=mask, other=0.0)
-        c4 = An4 * vx4 * vy4 * vz4
-
-        # Apply cross-term corrections
-        if STORE_CROSS_TABLES:
-            # Cross-term tables are stored after the 1D block
-            ct_base = cross_off_first
-            if COMPUTE_XY:
-                idx_xy = ti * N_AXIS + tj
-                c0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_xy,
-                              mask=mask, other=1.0)
-                c1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_xy,
-                              mask=mask, other=1.0)
-                c2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_xy,
-                              mask=mask, other=1.0)
-                c3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_xy,
-                              mask=mask, other=1.0)
-                c4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_xy,
-                              mask=mask, other=1.0)
-                ct_base = ct_base + 5 * N_AXIS * N_AXIS
-            if COMPUTE_XZ:
-                idx_xz = ti * N_AXIS + tk
-                c0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_xz,
-                              mask=mask, other=1.0)
-                c1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_xz,
-                              mask=mask, other=1.0)
-                c2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_xz,
-                              mask=mask, other=1.0)
-                c3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_xz,
-                              mask=mask, other=1.0)
-                c4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_xz,
-                              mask=mask, other=1.0)
-                ct_base = ct_base + 5 * N_AXIS * N_AXIS
-            if COMPUTE_YZ:
-                idx_yz = tj * N_AXIS + tk
-                c0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_yz,
-                              mask=mask, other=1.0)
-                c1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_yz,
-                              mask=mask, other=1.0)
-                c2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_yz,
-                              mask=mask, other=1.0)
-                c3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_yz,
-                              mask=mask, other=1.0)
-                c4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_yz,
-                              mask=mask, other=1.0)
-        else:
-            # Triclinic: recompute cross-terms on-the-fly from delta arrays
+        # Compute per-component density contributions c0-c4.
+        #
+        # Two paths:
+        # (a) Combined exponent: compute full r²=d^T G d from stored deltas
+        #     and use a single exp(-alpha*r²) per component.
+        #     Avoids exp(-big_diag)*exp(+big_cross) = 0*inf = NaN.
+        # (b) Pure separable or stored cross tables: load 1D diag values
+        #     and (optionally) multiply by pre-stored cross-term tables.
+        if _USE_COMBINED:
+            # Path (a): combined exponent from stored deltas
             dxi = tl.load(scratch_ptr + base + 15 * N_AXIS + ti, mask=mask, other=0.0)
             dyj = tl.load(scratch_ptr + base + 16 * N_AXIS + tj, mask=mask, other=0.0)
             dzk = tl.load(scratch_ptr + base + 17 * N_AXIS + tk, mask=mask, other=0.0)
-
+            r2 = G11 * dxi * dxi + G22 * dyj * dyj + G33 * dzk * dzk
             if COMPUTE_XY:
-                pxy = dxi * dyj
-                c0 *= tl.exp(-al0 * 2.0 * G12 * pxy)
-                c1 *= tl.exp(-al1 * 2.0 * G12 * pxy)
-                c2 *= tl.exp(-al2 * 2.0 * G12 * pxy)
-                c3 *= tl.exp(-al3 * 2.0 * G12 * pxy)
-                c4 *= tl.exp(-al4 * 2.0 * G12 * pxy)
+                r2 = r2 + 2.0 * G12 * dxi * dyj
             if COMPUTE_XZ:
-                pxz = dxi * dzk
-                c0 *= tl.exp(-al0 * 2.0 * G13 * pxz)
-                c1 *= tl.exp(-al1 * 2.0 * G13 * pxz)
-                c2 *= tl.exp(-al2 * 2.0 * G13 * pxz)
-                c3 *= tl.exp(-al3 * 2.0 * G13 * pxz)
-                c4 *= tl.exp(-al4 * 2.0 * G13 * pxz)
+                r2 = r2 + 2.0 * G13 * dxi * dzk
             if COMPUTE_YZ:
-                pyz = dyj * dzk
-                c0 *= tl.exp(-al0 * 2.0 * G23 * pyz)
-                c1 *= tl.exp(-al1 * 2.0 * G23 * pyz)
-                c2 *= tl.exp(-al2 * 2.0 * G23 * pyz)
-                c3 *= tl.exp(-al3 * 2.0 * G23 * pyz)
-                c4 *= tl.exp(-al4 * 2.0 * G23 * pyz)
+                r2 = r2 + 2.0 * G23 * dyj * dzk
+            c0 = An0 * tl.exp(-al0 * r2)
+            c1 = An1 * tl.exp(-al1 * r2)
+            c2 = An2 * tl.exp(-al2 * r2)
+            c3 = An3 * tl.exp(-al3 * r2)
+            c4 = An4 * tl.exp(-al4 * r2)
+        else:
+            # Path (b): separable 1D diagonal tables
+            vx0 = tl.load(scratch_ptr + base + 0 * N_AXIS + ti, mask=mask, other=0.0)
+            vy0 = tl.load(scratch_ptr + base + 5 * N_AXIS + tj, mask=mask, other=0.0)
+            vz0 = tl.load(scratch_ptr + base + 10 * N_AXIS + tk, mask=mask, other=0.0)
+            c0 = An0 * vx0 * vy0 * vz0
+            vx1 = tl.load(scratch_ptr + base + 1 * N_AXIS + ti, mask=mask, other=0.0)
+            vy1 = tl.load(scratch_ptr + base + 6 * N_AXIS + tj, mask=mask, other=0.0)
+            vz1 = tl.load(scratch_ptr + base + 11 * N_AXIS + tk, mask=mask, other=0.0)
+            c1 = An1 * vx1 * vy1 * vz1
+            vx2 = tl.load(scratch_ptr + base + 2 * N_AXIS + ti, mask=mask, other=0.0)
+            vy2 = tl.load(scratch_ptr + base + 7 * N_AXIS + tj, mask=mask, other=0.0)
+            vz2 = tl.load(scratch_ptr + base + 12 * N_AXIS + tk, mask=mask, other=0.0)
+            c2 = An2 * vx2 * vy2 * vz2
+            vx3 = tl.load(scratch_ptr + base + 3 * N_AXIS + ti, mask=mask, other=0.0)
+            vy3 = tl.load(scratch_ptr + base + 8 * N_AXIS + tj, mask=mask, other=0.0)
+            vz3 = tl.load(scratch_ptr + base + 13 * N_AXIS + tk, mask=mask, other=0.0)
+            c3 = An3 * vx3 * vy3 * vz3
+            vx4 = tl.load(scratch_ptr + base + 4 * N_AXIS + ti, mask=mask, other=0.0)
+            vy4 = tl.load(scratch_ptr + base + 9 * N_AXIS + tj, mask=mask, other=0.0)
+            vz4 = tl.load(scratch_ptr + base + 14 * N_AXIS + tk, mask=mask, other=0.0)
+            c4 = An4 * vx4 * vy4 * vz4
+
+            if STORE_CROSS_TABLES:
+                ct_base = cross_off_first
+                if COMPUTE_XY:
+                    idx_xy = ti * N_AXIS + tj
+                    c0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_xy,
+                                  mask=mask, other=1.0)
+                    c1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_xy,
+                                  mask=mask, other=1.0)
+                    c2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_xy,
+                                  mask=mask, other=1.0)
+                    c3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_xy,
+                                  mask=mask, other=1.0)
+                    c4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_xy,
+                                  mask=mask, other=1.0)
+                    ct_base = ct_base + 5 * N_AXIS * N_AXIS
+                if COMPUTE_XZ:
+                    idx_xz = ti * N_AXIS + tk
+                    c0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_xz,
+                                  mask=mask, other=1.0)
+                    c1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_xz,
+                                  mask=mask, other=1.0)
+                    c2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_xz,
+                                  mask=mask, other=1.0)
+                    c3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_xz,
+                                  mask=mask, other=1.0)
+                    c4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_xz,
+                                  mask=mask, other=1.0)
+                    ct_base = ct_base + 5 * N_AXIS * N_AXIS
+                if COMPUTE_YZ:
+                    idx_yz = tj * N_AXIS + tk
+                    c0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_yz,
+                                  mask=mask, other=1.0)
+                    c1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_yz,
+                                  mask=mask, other=1.0)
+                    c2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_yz,
+                                  mask=mask, other=1.0)
+                    c3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_yz,
+                                  mask=mask, other=1.0)
+                    c4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_yz,
+                                  mask=mask, other=1.0)
 
         density = c0 + c1 + c2 + c3 + c4
 
@@ -513,40 +510,44 @@ def _separable_bwd_kernel(
     sub_y = frac_y - ciy.to(tl.float32) * inv_grid_y
     sub_z = frac_z - ciz.to(tl.float32) * inv_grid_z
 
-    # ---- Stage 2-3: Rebuild 1D tables (same as forward) ----
-    # We re-use the scratch buffer which was populated by the forward pass.
-    # However, if backward is called independently, we must rebuild.
-    # For safety, always rebuild.
+    # ---- Stage 2-3: Rebuild tables ----
+    # Combined-exponent path only reads deltas; skip 1D exp tables.
+    _USE_COMBINED: tl.constexpr = (
+        not STORE_CROSS_TABLES and (COMPUTE_XY or COMPUTE_XZ or COMPUTE_YZ)
+    )
     base = atom * SCRATCH_PER_ATOM
     axis_idx = tl.arange(0, N_AXIS)
     half_n_f: tl.constexpr = half_n
 
     delta_x_vec = (axis_idx.to(tl.float32) - half_n_f) * inv_grid_x - sub_x
     tl.store(scratch_ptr + base + 15 * N_AXIS + axis_idx, delta_x_vec)
-    dx2 = delta_x_vec * delta_x_vec
-    tl.store(scratch_ptr + base + 0 * N_AXIS + axis_idx, tl.exp(-al0 * G11 * dx2))
-    tl.store(scratch_ptr + base + 1 * N_AXIS + axis_idx, tl.exp(-al1 * G11 * dx2))
-    tl.store(scratch_ptr + base + 2 * N_AXIS + axis_idx, tl.exp(-al2 * G11 * dx2))
-    tl.store(scratch_ptr + base + 3 * N_AXIS + axis_idx, tl.exp(-al3 * G11 * dx2))
-    tl.store(scratch_ptr + base + 4 * N_AXIS + axis_idx, tl.exp(-al4 * G11 * dx2))
+    if not _USE_COMBINED:
+        dx2 = delta_x_vec * delta_x_vec
+        tl.store(scratch_ptr + base + 0 * N_AXIS + axis_idx, tl.exp(-al0 * G11 * dx2))
+        tl.store(scratch_ptr + base + 1 * N_AXIS + axis_idx, tl.exp(-al1 * G11 * dx2))
+        tl.store(scratch_ptr + base + 2 * N_AXIS + axis_idx, tl.exp(-al2 * G11 * dx2))
+        tl.store(scratch_ptr + base + 3 * N_AXIS + axis_idx, tl.exp(-al3 * G11 * dx2))
+        tl.store(scratch_ptr + base + 4 * N_AXIS + axis_idx, tl.exp(-al4 * G11 * dx2))
 
     delta_y_vec = (axis_idx.to(tl.float32) - half_n_f) * inv_grid_y - sub_y
     tl.store(scratch_ptr + base + 16 * N_AXIS + axis_idx, delta_y_vec)
-    dy2 = delta_y_vec * delta_y_vec
-    tl.store(scratch_ptr + base + 5 * N_AXIS + axis_idx, tl.exp(-al0 * G22 * dy2))
-    tl.store(scratch_ptr + base + 6 * N_AXIS + axis_idx, tl.exp(-al1 * G22 * dy2))
-    tl.store(scratch_ptr + base + 7 * N_AXIS + axis_idx, tl.exp(-al2 * G22 * dy2))
-    tl.store(scratch_ptr + base + 8 * N_AXIS + axis_idx, tl.exp(-al3 * G22 * dy2))
-    tl.store(scratch_ptr + base + 9 * N_AXIS + axis_idx, tl.exp(-al4 * G22 * dy2))
+    if not _USE_COMBINED:
+        dy2 = delta_y_vec * delta_y_vec
+        tl.store(scratch_ptr + base + 5 * N_AXIS + axis_idx, tl.exp(-al0 * G22 * dy2))
+        tl.store(scratch_ptr + base + 6 * N_AXIS + axis_idx, tl.exp(-al1 * G22 * dy2))
+        tl.store(scratch_ptr + base + 7 * N_AXIS + axis_idx, tl.exp(-al2 * G22 * dy2))
+        tl.store(scratch_ptr + base + 8 * N_AXIS + axis_idx, tl.exp(-al3 * G22 * dy2))
+        tl.store(scratch_ptr + base + 9 * N_AXIS + axis_idx, tl.exp(-al4 * G22 * dy2))
 
     delta_z_vec = (axis_idx.to(tl.float32) - half_n_f) * inv_grid_z - sub_z
     tl.store(scratch_ptr + base + 17 * N_AXIS + axis_idx, delta_z_vec)
-    dz2 = delta_z_vec * delta_z_vec
-    tl.store(scratch_ptr + base + 10 * N_AXIS + axis_idx, tl.exp(-al0 * G33 * dz2))
-    tl.store(scratch_ptr + base + 11 * N_AXIS + axis_idx, tl.exp(-al1 * G33 * dz2))
-    tl.store(scratch_ptr + base + 12 * N_AXIS + axis_idx, tl.exp(-al2 * G33 * dz2))
-    tl.store(scratch_ptr + base + 13 * N_AXIS + axis_idx, tl.exp(-al3 * G33 * dz2))
-    tl.store(scratch_ptr + base + 14 * N_AXIS + axis_idx, tl.exp(-al4 * G33 * dz2))
+    if not _USE_COMBINED:
+        dz2 = delta_z_vec * delta_z_vec
+        tl.store(scratch_ptr + base + 10 * N_AXIS + axis_idx, tl.exp(-al0 * G33 * dz2))
+        tl.store(scratch_ptr + base + 11 * N_AXIS + axis_idx, tl.exp(-al1 * G33 * dz2))
+        tl.store(scratch_ptr + base + 12 * N_AXIS + axis_idx, tl.exp(-al2 * G33 * dz2))
+        tl.store(scratch_ptr + base + 13 * N_AXIS + axis_idx, tl.exp(-al3 * G33 * dz2))
+        tl.store(scratch_ptr + base + 14 * N_AXIS + axis_idx, tl.exp(-al4 * G33 * dz2))
 
     # Rebuild cross-term tables (same as forward)
     cross_base = base + 18 * N_AXIS
@@ -632,95 +633,99 @@ def _separable_bwd_kernel(
         tj = sj + half_n
         tk = sk + half_n
 
-        # Gather 1D diagonal tables (same as forward Stage 4)
-        vx0 = tl.load(scratch_ptr + base + 0 * N_AXIS + ti, mask=mask, other=0.0)
-        vy0 = tl.load(scratch_ptr + base + 5 * N_AXIS + tj, mask=mask, other=0.0)
-        vz0 = tl.load(scratch_ptr + base + 10 * N_AXIS + tk, mask=mask, other=0.0)
-        vx1 = tl.load(scratch_ptr + base + 1 * N_AXIS + ti, mask=mask, other=0.0)
-        vy1 = tl.load(scratch_ptr + base + 6 * N_AXIS + tj, mask=mask, other=0.0)
-        vz1 = tl.load(scratch_ptr + base + 11 * N_AXIS + tk, mask=mask, other=0.0)
-        vx2 = tl.load(scratch_ptr + base + 2 * N_AXIS + ti, mask=mask, other=0.0)
-        vy2 = tl.load(scratch_ptr + base + 7 * N_AXIS + tj, mask=mask, other=0.0)
-        vz2 = tl.load(scratch_ptr + base + 12 * N_AXIS + tk, mask=mask, other=0.0)
-        vx3 = tl.load(scratch_ptr + base + 3 * N_AXIS + ti, mask=mask, other=0.0)
-        vy3 = tl.load(scratch_ptr + base + 8 * N_AXIS + tj, mask=mask, other=0.0)
-        vz3 = tl.load(scratch_ptr + base + 13 * N_AXIS + tk, mask=mask, other=0.0)
-        vx4 = tl.load(scratch_ptr + base + 4 * N_AXIS + ti, mask=mask, other=0.0)
-        vy4 = tl.load(scratch_ptr + base + 9 * N_AXIS + tj, mask=mask, other=0.0)
-        vz4 = tl.load(scratch_ptr + base + 14 * N_AXIS + tk, mask=mask, other=0.0)
+        # Load fractional deltas once (used for rho in path a, gradients always)
+        dxi = tl.load(scratch_ptr + base + 15 * N_AXIS + ti, mask=mask, other=0.0)
+        dyj = tl.load(scratch_ptr + base + 16 * N_AXIS + tj, mask=mask, other=0.0)
+        dzk = tl.load(scratch_ptr + base + 17 * N_AXIS + tk, mask=mask, other=0.0)
 
-        rho0 = An0 * vx0 * vy0 * vz0
-        rho1 = An1 * vx1 * vy1 * vz1
-        rho2 = An2 * vx2 * vy2 * vz2
-        rho3 = An3 * vx3 * vy3 * vz3
-        rho4 = An4 * vx4 * vy4 * vz4
-
-        # Cross-term corrections (same logic as forward)
-        if STORE_CROSS_TABLES:
-            ct_base = cross_off_first
+        # Compute rho0-rho4 (same two-path strategy as forward)
+        if _USE_COMBINED:
+            # Path (a): combined exponent — single exp(-alpha*r²) per component
+            r_sq = G11 * dxi * dxi + G22 * dyj * dyj + G33 * dzk * dzk
             if COMPUTE_XY:
-                idx_xy = ti * N_AXIS + tj
-                rho0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_xy,
-                                mask=mask, other=1.0)
-                rho1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_xy,
-                                mask=mask, other=1.0)
-                rho2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_xy,
-                                mask=mask, other=1.0)
-                rho3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_xy,
-                                mask=mask, other=1.0)
-                rho4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_xy,
-                                mask=mask, other=1.0)
-                ct_base = ct_base + 5 * N_AXIS * N_AXIS
+                r_sq = r_sq + 2.0 * G12 * dxi * dyj
             if COMPUTE_XZ:
-                idx_xz = ti * N_AXIS + tk
-                rho0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_xz,
-                                mask=mask, other=1.0)
-                rho1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_xz,
-                                mask=mask, other=1.0)
-                rho2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_xz,
-                                mask=mask, other=1.0)
-                rho3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_xz,
-                                mask=mask, other=1.0)
-                rho4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_xz,
-                                mask=mask, other=1.0)
-                ct_base = ct_base + 5 * N_AXIS * N_AXIS
+                r_sq = r_sq + 2.0 * G13 * dxi * dzk
             if COMPUTE_YZ:
-                idx_yz = tj * N_AXIS + tk
-                rho0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_yz,
-                                mask=mask, other=1.0)
-                rho1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_yz,
-                                mask=mask, other=1.0)
-                rho2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_yz,
-                                mask=mask, other=1.0)
-                rho3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_yz,
-                                mask=mask, other=1.0)
-                rho4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_yz,
-                                mask=mask, other=1.0)
+                r_sq = r_sq + 2.0 * G23 * dyj * dzk
+            rho0 = An0 * tl.exp(-al0 * r_sq)
+            rho1 = An1 * tl.exp(-al1 * r_sq)
+            rho2 = An2 * tl.exp(-al2 * r_sq)
+            rho3 = An3 * tl.exp(-al3 * r_sq)
+            rho4 = An4 * tl.exp(-al4 * r_sq)
         else:
-            dxi = tl.load(scratch_ptr + base + 15 * N_AXIS + ti, mask=mask, other=0.0)
-            dyj = tl.load(scratch_ptr + base + 16 * N_AXIS + tj, mask=mask, other=0.0)
-            dzk = tl.load(scratch_ptr + base + 17 * N_AXIS + tk, mask=mask, other=0.0)
+            # Path (b): separable 1D diagonal tables
+            vx0 = tl.load(scratch_ptr + base + 0 * N_AXIS + ti, mask=mask, other=0.0)
+            vy0 = tl.load(scratch_ptr + base + 5 * N_AXIS + tj, mask=mask, other=0.0)
+            vz0 = tl.load(scratch_ptr + base + 10 * N_AXIS + tk, mask=mask, other=0.0)
+            vx1 = tl.load(scratch_ptr + base + 1 * N_AXIS + ti, mask=mask, other=0.0)
+            vy1 = tl.load(scratch_ptr + base + 6 * N_AXIS + tj, mask=mask, other=0.0)
+            vz1 = tl.load(scratch_ptr + base + 11 * N_AXIS + tk, mask=mask, other=0.0)
+            vx2 = tl.load(scratch_ptr + base + 2 * N_AXIS + ti, mask=mask, other=0.0)
+            vy2 = tl.load(scratch_ptr + base + 7 * N_AXIS + tj, mask=mask, other=0.0)
+            vz2 = tl.load(scratch_ptr + base + 12 * N_AXIS + tk, mask=mask, other=0.0)
+            vx3 = tl.load(scratch_ptr + base + 3 * N_AXIS + ti, mask=mask, other=0.0)
+            vy3 = tl.load(scratch_ptr + base + 8 * N_AXIS + tj, mask=mask, other=0.0)
+            vz3 = tl.load(scratch_ptr + base + 13 * N_AXIS + tk, mask=mask, other=0.0)
+            vx4 = tl.load(scratch_ptr + base + 4 * N_AXIS + ti, mask=mask, other=0.0)
+            vy4 = tl.load(scratch_ptr + base + 9 * N_AXIS + tj, mask=mask, other=0.0)
+            vz4 = tl.load(scratch_ptr + base + 14 * N_AXIS + tk, mask=mask, other=0.0)
+
+            rho0 = An0 * vx0 * vy0 * vz0
+            rho1 = An1 * vx1 * vy1 * vz1
+            rho2 = An2 * vx2 * vy2 * vz2
+            rho3 = An3 * vx3 * vy3 * vz3
+            rho4 = An4 * vx4 * vy4 * vz4
+
+            if STORE_CROSS_TABLES:
+                ct_base = cross_off_first
+                if COMPUTE_XY:
+                    idx_xy = ti * N_AXIS + tj
+                    rho0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_xy,
+                                    mask=mask, other=1.0)
+                    rho1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_xy,
+                                    mask=mask, other=1.0)
+                    rho2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_xy,
+                                    mask=mask, other=1.0)
+                    rho3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_xy,
+                                    mask=mask, other=1.0)
+                    rho4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_xy,
+                                    mask=mask, other=1.0)
+                    ct_base = ct_base + 5 * N_AXIS * N_AXIS
+                if COMPUTE_XZ:
+                    idx_xz = ti * N_AXIS + tk
+                    rho0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_xz,
+                                    mask=mask, other=1.0)
+                    rho1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_xz,
+                                    mask=mask, other=1.0)
+                    rho2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_xz,
+                                    mask=mask, other=1.0)
+                    rho3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_xz,
+                                    mask=mask, other=1.0)
+                    rho4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_xz,
+                                    mask=mask, other=1.0)
+                    ct_base = ct_base + 5 * N_AXIS * N_AXIS
+                if COMPUTE_YZ:
+                    idx_yz = tj * N_AXIS + tk
+                    rho0 *= tl.load(scratch_ptr + ct_base + 0 * N_AXIS * N_AXIS + idx_yz,
+                                    mask=mask, other=1.0)
+                    rho1 *= tl.load(scratch_ptr + ct_base + 1 * N_AXIS * N_AXIS + idx_yz,
+                                    mask=mask, other=1.0)
+                    rho2 *= tl.load(scratch_ptr + ct_base + 2 * N_AXIS * N_AXIS + idx_yz,
+                                    mask=mask, other=1.0)
+                    rho3 *= tl.load(scratch_ptr + ct_base + 3 * N_AXIS * N_AXIS + idx_yz,
+                                    mask=mask, other=1.0)
+                    rho4 *= tl.load(scratch_ptr + ct_base + 4 * N_AXIS * N_AXIS + idx_yz,
+                                    mask=mask, other=1.0)
+
+            # r² from deltas (path b only — path a already has r_sq)
+            r_sq = G11 * dxi * dxi + G22 * dyj * dyj + G33 * dzk * dzk
             if COMPUTE_XY:
-                pxy = dxi * dyj
-                rho0 *= tl.exp(-al0 * 2.0 * G12 * pxy)
-                rho1 *= tl.exp(-al1 * 2.0 * G12 * pxy)
-                rho2 *= tl.exp(-al2 * 2.0 * G12 * pxy)
-                rho3 *= tl.exp(-al3 * 2.0 * G12 * pxy)
-                rho4 *= tl.exp(-al4 * 2.0 * G12 * pxy)
+                r_sq = r_sq + 2.0 * G12 * dxi * dyj
             if COMPUTE_XZ:
-                pxz = dxi * dzk
-                rho0 *= tl.exp(-al0 * 2.0 * G13 * pxz)
-                rho1 *= tl.exp(-al1 * 2.0 * G13 * pxz)
-                rho2 *= tl.exp(-al2 * 2.0 * G13 * pxz)
-                rho3 *= tl.exp(-al3 * 2.0 * G13 * pxz)
-                rho4 *= tl.exp(-al4 * 2.0 * G13 * pxz)
+                r_sq = r_sq + 2.0 * G13 * dxi * dzk
             if COMPUTE_YZ:
-                pyz = dyj * dzk
-                rho0 *= tl.exp(-al0 * 2.0 * G23 * pyz)
-                rho1 *= tl.exp(-al1 * 2.0 * G23 * pyz)
-                rho2 *= tl.exp(-al2 * 2.0 * G23 * pyz)
-                rho3 *= tl.exp(-al3 * 2.0 * G23 * pyz)
-                rho4 *= tl.exp(-al4 * 2.0 * G23 * pyz)
+                r_sq = r_sq + 2.0 * G23 * dyj * dzk
 
         # ---- Gather upstream gradient ----
         gi = (cix + si) % nx
@@ -731,11 +736,6 @@ def _separable_bwd_kernel(
         gk = tl.where(gk < 0, gk + nz, gk)
         flat_idx = (gi.to(tl.int64) * ny + gj.to(tl.int64)) * nz + gk.to(tl.int64)
         grad_out = tl.load(grad_density_map_ptr + flat_idx, mask=mask, other=0.0)
-
-        # ---- Fractional deltas for this voxel ----
-        dxi = tl.load(scratch_ptr + base + 15 * N_AXIS + ti, mask=mask, other=0.0)
-        dyj = tl.load(scratch_ptr + base + 16 * N_AXIS + tj, mask=mask, other=0.0)
-        dzk = tl.load(scratch_ptr + base + 17 * N_AXIS + tk, mask=mask, other=0.0)
 
         # ---- Position gradient (fractional) ----
         # d(rho_c)/d(frac_x) = rho_c * 2*alpha_c * (G11*dx + G12*dy + G13*dz)
@@ -762,14 +762,7 @@ def _separable_bwd_kernel(
         g_fz += tl.sum(tl.where(mask, scale_pos * dr_dz, 0.0), axis=0)
 
         # ---- B-factor gradient ----
-        # r² = G11*dx² + G22*dy² + G33*dz² + 2*G12*dx*dy + 2*G13*dx*dz + 2*G23*dy*dz
-        r_sq = G11 * dxi * dxi + G22 * dyj * dyj + G33 * dzk * dzk
-        if COMPUTE_XY:
-            r_sq = r_sq + 2.0 * G12 * dxi * dyj
-        if COMPUTE_XZ:
-            r_sq = r_sq + 2.0 * G13 * dxi * dzk
-        if COMPUTE_YZ:
-            r_sq = r_sq + 2.0 * G23 * dyj * dzk
+        # r_sq already computed above (in path a: during rho, in path b: after rho)
 
         db0 = rho0 * (-1.5 / Bt0 + al0 * r_sq / Bt0) * clamp0
         db1 = rho1 * (-1.5 / Bt1 + al1 * r_sq / Bt1) * clamp1

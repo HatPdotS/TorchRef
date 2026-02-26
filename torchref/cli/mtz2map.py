@@ -96,8 +96,31 @@ def main():
         default='True',
         help="Normalize amplitudes to unit variance. Default: True.",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Computation device (default: auto, uses CUDA if available)",
+    )
 
     args = parser.parse_args()
+
+    from torchref.utils.timing import register_timing
+
+    register_timing()
+
+    # --- Device ---
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+        if args.device == "cuda" and not torch.cuda.is_available():
+            print(
+                "Warning: CUDA requested but not available, falling back to CPU",
+                file=sys.stderr,
+            )
+            device = torch.device("cpu")
 
     # --- Read MTZ ---
     import reciprocalspaceship as rs
@@ -181,9 +204,9 @@ def main():
               f"{d_spacings.max():.2f} - {d_spacings.min():.2f} A")
 
     # --- Convert to torch ---
-    hkl_t = torch.tensor(hkl, dtype=torch.int32)
-    amp_t = torch.tensor(amplitudes, dtype=torch.float32)
-    phi_t = torch.tensor(phases_deg, dtype=torch.float32) * (np.pi / 180.0)
+    hkl_t = torch.tensor(hkl, dtype=torch.int32, device=device)
+    amp_t = torch.tensor(amplitudes, dtype=torch.float32, device=device)
+    phi_t = torch.tensor(phases_deg, dtype=torch.float32, device=device) * (np.pi / 180.0)
 
     # --- Expand to P1 ---
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
