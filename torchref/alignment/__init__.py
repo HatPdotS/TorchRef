@@ -94,7 +94,7 @@ except ImportError:
     _BALL_TRANSFORM_MSG = (
         "The alignment pipeline and rotation search require jax, s2fft, "
         "s2ball, spherical, and quaternionic. "
-        "Install with:  pip install torchref[dev]"
+        "Install with:  pip install torchref[alignment]"
     )
 
     def _missing_dep_factory(name):

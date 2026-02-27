@@ -96,6 +96,13 @@ class ForceFieldTarget(ModelTarget):
         if self._nn_potential is not None:
             return
 
+        # Validate model path
+        if self._model_path is None:
+            raise ValueError(
+                "model_path is required. Provide path to a TorchMD-Net checkpoint (.ckpt).\n"
+                "Pre-trained models: https://github.com/torchmd/torchmd-net/tree/main/examples"
+            )
+
         # Import TorchMD-Net
         try:
             from torchmdnet.models.model import load_model
@@ -105,13 +112,6 @@ class ForceFieldTarget(ModelTarget):
                 "Install with: pip install torchref[forcefield]\n"
                 "Pre-trained models: https://github.com/torchmd/torchmd-net/tree/main/examples"
             ) from None
-
-        # Validate model path
-        if self._model_path is None:
-            raise ValueError(
-                "model_path is required. Provide path to a TorchMD-Net checkpoint (.ckpt).\n"
-                "Pre-trained models: https://github.com/torchmd/torchmd-net/tree/main/examples"
-            )
 
         # Load model
         self._nn_potential = load_model(self._model_path)

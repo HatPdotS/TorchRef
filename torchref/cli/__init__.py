@@ -5,6 +5,7 @@ Command-line interface for torchref.
 __all__ = [
     "difference_refine",
     "mtz2map",
+    "phased_difference_map",
     "refine",
     "refine_everything_hyperparameters",
     "refine_everything_policy",
