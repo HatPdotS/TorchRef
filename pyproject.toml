@@ -7,7 +7,7 @@ name = "torchref"
 version = "0.4.1"
 description = "Pytorch based crystallographic refinement"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
 authors = [
     {name = "HansPeterSeidel"},
@@ -88,7 +88,7 @@ torchref = ["data/*.csv", "data/*.json", "data/*.pt", "data/monomer_library/**/*
 
 [tool.black]
 line-length = 88
-target-version = ["py39"]
+target-version = ["py310"]
 
 [tool.isort]
 profile = "black"
