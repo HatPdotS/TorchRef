@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Version 0.4.1
+-------------
+
+- fixed weird pytorch numpy compatability issues
+
 Version 0.4.0
 -------------
 
