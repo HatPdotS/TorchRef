@@ -54,9 +54,9 @@ pip install -e ".[dev]"
 
 ## Dependencies
 
-- Python ≥ 3.8
-- PyTorch ≥ 1.9
-- NumPy ≥ 1.20
+- Python ≥ 3.10
+- PyTorch ≥ 2.40
+- NumPy ≥ 2.0
 - Gemmi ≥ 0.5
 - reciprocalspaceship ≥ 0.9
 - SciPy ≥ 1.7
