@@ -10,10 +10,13 @@ import torch.nn as nn
 import numpy as np
 from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
+import importlib
 
 
 # Path to test files
 TEST_FILES_DIR = Path(__file__).parent.parent.parent / "files"
+
+_has_torchmdnet = importlib.util.find_spec("torchmdnet") is not None
 TEST_CHECKPOINT = TEST_FILES_DIR / "torchmdnet_test.ckpt"
 TEST_PDB_WITH_H = TEST_FILES_DIR / "pdb" / "1AK5_with_H.pdb"
 
@@ -247,8 +250,8 @@ class TestForceFieldTargetWithMock:
 
 
 @pytest.mark.skipif(
-    not TEST_CHECKPOINT.exists(),
-    reason="Test checkpoint not found"
+    not _has_torchmdnet or not TEST_CHECKPOINT.exists(),
+    reason="torchmd-net not installed or test checkpoint not found"
 )
 class TestForceFieldTargetIntegration:
     """Integration tests with real TorchMD-Net model."""
@@ -283,8 +286,8 @@ class TestForceFieldTargetIntegration:
 
 
 @pytest.mark.skipif(
-    not TEST_CHECKPOINT.exists() or not TEST_PDB_WITH_H.exists(),
-    reason="Test checkpoint or PDB with hydrogens not found"
+    not _has_torchmdnet or not TEST_CHECKPOINT.exists() or not TEST_PDB_WITH_H.exists(),
+    reason="torchmd-net not installed, test checkpoint or PDB with hydrogens not found"
 )
 class TestForceFieldTargetWithRealModel:
     """Integration tests with real Model and TorchMD-Net checkpoint."""

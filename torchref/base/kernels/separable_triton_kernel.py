@@ -16,6 +16,7 @@ numerical overflow from separate diagonal × cross-term exp() products.
 """
 
 import math
+from typing import Optional
 
 import torch
 import triton
@@ -913,7 +914,7 @@ def _warmup_kernel(cfg, grid_shape, device):
 
 
 # Scratch buffer cache: reuse if large enough
-_scratch_buf: torch.Tensor | None = None
+_scratch_buf: Optional[torch.Tensor] = None
 
 # =============================================================================
 # Autograd wrapper
