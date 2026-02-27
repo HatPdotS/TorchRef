@@ -30,12 +30,12 @@ Basic Usage
        device=torch.device("cuda")
    )
 
-   # Run refinement xyz and B-factors separate
+   # Run refinement with xyz and B-factors/occupancies in separate cycles
    refinement.refine(
        macro_cycles=5,
    )
 
-   # Or refine all parameters together (recommended currently)
+   # Or refine all parameters together
    refinement.refine_everything(
        macro_cycles=5,
    )

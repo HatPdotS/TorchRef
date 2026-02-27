@@ -7,6 +7,10 @@ build:
   os: ubuntu-22.04
   tools:
     python: "3.11"
+  jobs:
+    pre_build:
+      # Generate API documentation before building
+      - sphinx-apidoc -o docs/api torchref -f -e -M
 
 sphinx:
   configuration: docs/conf.py
