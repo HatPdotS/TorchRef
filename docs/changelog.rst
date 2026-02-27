@@ -1,6 +1,27 @@
 Changelog
 =========
 
+Version 0.4.0
+-------------
+
+- Added cli tool for running difference refinement
+- Refactored targets
+- Cleaned up and refactored dispatch in Structure factor calculation
+- Added fast cpu scatter c++ implementation for structure factor calculation
+- Added 2 custom triton kernels for structure factor calculation, one for the general case and one optimized for the common case of isotropic B factors and orthogonal cells
+- Added difference target
+- Added dataset scaling to DatasetCollection
+- Added Ramachandran restraints
+- Added partial compilation support for loss states
+- Added map module for calculating and writing maps
+- Added real space targets for refinement
+- Finetuned default hyperparameters for LBFGSRefinement
+- Switched from downloaded entire monomer library to lazy downloading of required monomers
+
+- Added basic Langevin thermostat based SA refinement implementation, needs testing and validation
+- Added 2 dev implementations of internal coordinate parametrisations, need more testing
+- Added a Amber loss target function, needs valdiation
+
 
 Version 0.3.2
 -------------
