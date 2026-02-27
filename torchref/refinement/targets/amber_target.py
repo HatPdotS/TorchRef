@@ -266,6 +266,15 @@ class AmberTarget(ModelTarget):
         residue_charges: Optional[Dict[str, int]] = None,
         verbose: int = 0,
     ):
+        try:
+            import openmm  # noqa: F401, PLC0415
+        except ImportError:
+            raise ImportError(
+                "AmberTarget requires OpenMM.\n"
+                "Install with:  pip install torchref[amber]\n"
+                "Or via conda:  conda install -c conda-forge openmm"
+            ) from None
+
         super().__init__(model=model, verbose=verbose)
 
         self._normalize = normalize_by_atoms

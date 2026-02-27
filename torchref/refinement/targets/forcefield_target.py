@@ -102,9 +102,9 @@ class ForceFieldTarget(ModelTarget):
         except ImportError:
             raise ImportError(
                 "ForceFieldTarget requires torchmd-net package.\n"
-                "Install with: pip install torchmd-net\n"
+                "Install with: pip install torchref[forcefield]\n"
                 "Pre-trained models: https://github.com/torchmd/torchmd-net/tree/main/examples"
-            )
+            ) from None
 
         # Validate model path
         if self._model_path is None:

@@ -49,6 +49,21 @@ dev = [
     "black>=21.5b2",
     "isort>=5.9.0",
     "flake8>=3.9.0",
+    # Alignment module (ball transform / molecular replacement)
+    "jax>=0.4.0",
+    "s2fft>=1.0.0",
+    "s2ball>=0.0.2",
+    "spherical>=1.0.0",
+    "quaternionic>=1.0.0",
+]
+
+forcefield = [
+    "torchmd-net>=2.0.0",
+]
+
+amber = [
+    "openmm>=8.0.0",
+    "pdbfixer",
 ]
 
 # Optional CCTBX/iotbx functionality (requires conda, not pip)

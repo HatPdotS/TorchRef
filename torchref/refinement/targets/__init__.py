@@ -65,17 +65,21 @@ from .sampled_ml_phase_target import (
     create_sampled_ml_difference_target,
 )
 
-# Force field target (optional dependency)
+# Force field target (optional dependency: torchmd-net)
+# Note: torchmd-net is imported lazily inside ForceFieldTarget.__init__
+# and raises a clear ImportError there if missing.
 try:
     from .forcefield_target import ForceFieldTarget
 except ImportError:
-    ForceFieldTarget = None  # torchmd-net not installed
+    ForceFieldTarget = None
 
-# AMBER target (optional dependency: openmm, pdbfixer)
+# AMBER target (optional dependency: openmm)
+# Note: openmm is imported lazily inside AmberTarget methods
+# and raises a clear ImportError there if missing.
 try:
     from .amber_target import AmberTarget, AMBER14_STANDARD
 except ImportError:
-    AmberTarget = None  # openmm / pdbfixer not installed
+    AmberTarget = None
     AMBER14_STANDARD = None
 
 __all__ = [

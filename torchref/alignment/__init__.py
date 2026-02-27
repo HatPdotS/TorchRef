@@ -57,39 +57,61 @@ warnings.warn(
 )
 
 # =============================================================================
-# Pipeline (main entry point)
+# Pipeline & Rotation search require JAX + s2fft (dev dependencies)
 # =============================================================================
-from .pipeline import (
-    MolecularReplacementPipeline,
-    MRSolution,
-    cluster_rotation_peaks,
-    rotation_angular_distance,
-    euler_angular_distance,
-)
+try:
+    from .pipeline import (
+        MolecularReplacementPipeline,
+        MRSolution,
+        cluster_rotation_peaks,
+        rotation_angular_distance,
+        euler_angular_distance,
+    )
+    from .ball_transform import (
+        ball_rotation_search,
+        ball_rotation_search_torch,
+        rotation_matrix_from_euler_zyz,
+        rotation_matrix_to_euler_zyz,
+        rotation_matrix_to_quaternion,
+        check_rotation_recovery,
+        BallHarmonicCoefficients,
+        splat_evalues_to_ball,
+        compute_ball_harmonic_coefficients,
+        compute_ball_cross_correlation_coefficients,
+        evaluate_rotation_function,
+        find_rotation_peaks,
+        reduce_rotation_by_symmetry,
+        reduce_peaks_by_symmetry,
+        reduce_peaks_by_symmetry_torch,
+        cluster_rotation_peaks,
+        cluster_rotation_peaks_torch,
+        RotationCluster,
+    )
+    _HAS_BALL_TRANSFORM = True
+except ImportError:
+    _HAS_BALL_TRANSFORM = False
 
-# =============================================================================
-# Rotation search (Ball Transform)
-# =============================================================================
-from .ball_transform import (
-    ball_rotation_search,
-    ball_rotation_search_torch,
-    rotation_matrix_from_euler_zyz,
-    rotation_matrix_to_euler_zyz,
-    rotation_matrix_to_quaternion,
-    check_rotation_recovery,
-    BallHarmonicCoefficients,
-    splat_evalues_to_ball,
-    compute_ball_harmonic_coefficients,
-    compute_ball_cross_correlation_coefficients,
-    evaluate_rotation_function,
-    find_rotation_peaks,
-    reduce_rotation_by_symmetry,
-    reduce_peaks_by_symmetry,
-    reduce_peaks_by_symmetry_torch,
-    cluster_rotation_peaks,
-    cluster_rotation_peaks_torch,
-    RotationCluster,
-)
+    _BALL_TRANSFORM_MSG = (
+        "The alignment pipeline and rotation search require jax, s2fft, "
+        "s2ball, spherical, and quaternionic. "
+        "Install with:  pip install torchref[dev]"
+    )
+
+    def _missing_dep_factory(name):
+        """Create a callable stub that raises ImportError with install hint."""
+        def _stub(*args, **kwargs):
+            raise ImportError(
+                f"{name} is not available. {_BALL_TRANSFORM_MSG}"
+            )
+        _stub.__name__ = name
+        _stub.__qualname__ = name
+        return _stub
+
+    # Provide stubs so that attribute access works but calling raises
+    MolecularReplacementPipeline = _missing_dep_factory("MolecularReplacementPipeline")
+    MRSolution = _missing_dep_factory("MRSolution")
+    ball_rotation_search = _missing_dep_factory("ball_rotation_search")
+    ball_rotation_search_torch = _missing_dep_factory("ball_rotation_search_torch")
 
 # =============================================================================
 # Translation search
@@ -151,35 +173,6 @@ from .sampling import VectorSampler, get_rotation_sampling_range
 
 __all__ = [
     # -------------------------------------------------------------------------
-    # Pipeline (main entry point)
-    # -------------------------------------------------------------------------
-    "MolecularReplacementPipeline",
-    "MRSolution",
-    "cluster_rotation_peaks",
-    "rotation_angular_distance",
-    "euler_angular_distance",
-    # -------------------------------------------------------------------------
-    # Rotation search
-    # -------------------------------------------------------------------------
-    "ball_rotation_search",
-    "ball_rotation_search_torch",
-    "rotation_matrix_from_euler_zyz",
-    "rotation_matrix_to_euler_zyz",
-    "rotation_matrix_to_quaternion",
-    "check_rotation_recovery",
-    "BallHarmonicCoefficients",
-    "splat_evalues_to_ball",
-    "compute_ball_harmonic_coefficients",
-    "compute_ball_cross_correlation_coefficients",
-    "evaluate_rotation_function",
-    "find_rotation_peaks",
-    "reduce_rotation_by_symmetry",
-    "reduce_peaks_by_symmetry",
-    "reduce_peaks_by_symmetry_torch",
-    "cluster_rotation_peaks",
-    "cluster_rotation_peaks_torch",
-    "RotationCluster",
-    # -------------------------------------------------------------------------
     # Translation search
     # -------------------------------------------------------------------------
     "fft_translation_search",
@@ -230,3 +223,32 @@ __all__ = [
     "VectorSampler",
     "get_rotation_sampling_range",
 ]
+
+if _HAS_BALL_TRANSFORM:
+    __all__ += [
+        # Pipeline (main entry point)
+        "MolecularReplacementPipeline",
+        "MRSolution",
+        "cluster_rotation_peaks",
+        "rotation_angular_distance",
+        "euler_angular_distance",
+        # Rotation search
+        "ball_rotation_search",
+        "ball_rotation_search_torch",
+        "rotation_matrix_from_euler_zyz",
+        "rotation_matrix_to_euler_zyz",
+        "rotation_matrix_to_quaternion",
+        "check_rotation_recovery",
+        "BallHarmonicCoefficients",
+        "splat_evalues_to_ball",
+        "compute_ball_harmonic_coefficients",
+        "compute_ball_cross_correlation_coefficients",
+        "evaluate_rotation_function",
+        "find_rotation_peaks",
+        "reduce_rotation_by_symmetry",
+        "reduce_peaks_by_symmetry",
+        "reduce_peaks_by_symmetry_torch",
+        "cluster_rotation_peaks",
+        "cluster_rotation_peaks_torch",
+        "RotationCluster",
+    ]
