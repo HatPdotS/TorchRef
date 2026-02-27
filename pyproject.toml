@@ -13,15 +13,15 @@ authors = [
     {name = "HansPeterSeidel"},
 ]
 # Version requirements validated via tox compatibility testing (2026-01-13)
+# Bumped to numpy>=2.0, torch>=2.4 to avoid NumPy 1.x/2.x binary incompatibility
 # Tested combinations:
-#   - Python 3.9:  numpy 1.24-1.26, pandas 2.0.x, torch 2.0-2.4, numba 0.59-0.60, scipy 1.10-1.13
-#   - Python 3.11: numpy 1.24-2.3,  pandas 2.0-2.3, torch 2.0-2.9, numba 0.59-0.63, scipy 1.10-1.17
-#   - Python 3.12: numpy 2.0-2.3,   pandas 2.2-2.3, torch 2.4-2.9, numba 0.61-0.63, scipy 1.13-1.17
+#   - Python 3.11: numpy 2.0-2.3, pandas 2.0-2.3, torch 2.4-2.9, numba 0.59-0.63, scipy 1.10-1.17
+#   - Python 3.12: numpy 2.0-2.3, pandas 2.2-2.3, torch 2.4-2.9, numba 0.61-0.63, scipy 1.13-1.17
 # Upper bounds set to next minor version above tested maximum
 dependencies = [
-    "numpy>=1.24.0,<2.4.0",
+    "numpy>=2.0.0,<2.4.0",
     "pandas>=2.0.0,<2.4.0",
-    "torch>=2.0.0,<2.10.0",
+    "torch>=2.4.0,<2.10.0",
     "tqdm>=4.61.0,<4.68.0",
     "numba>=0.59.0,<0.64.0",
     "gemmi>=0.5.0,<0.8.0",
