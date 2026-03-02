@@ -13,8 +13,7 @@ References
 ----------
 Long, F., et al. (2017). AceDRG: a stereochemical description generator
     for ligands. Acta Cryst. D73, 112-122.
-Sherri, L.N., et al. (2018). Updated CCP4 Monomer Library.
-    Acta Cryst. D74, 641-655.
+
 """
 
 import os

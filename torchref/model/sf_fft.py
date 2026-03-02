@@ -533,7 +533,8 @@ class SfFFT(DeviceMovementMixin, nn.Module):
                 from torchref.base.reciprocal import ReciprocalSymmetryExtractor
                 grid_shape = tuple(int(x) for x in self.gridsize)
                 self._sym_extractor = ReciprocalSymmetryExtractor(
-                    hkl, self.spacegroup, grid_shape, device=hkl.device,
+                    hkl, self.spacegroup, grid_shape,
+                    device=reciprocal_space_grid.device,
                 )
                 self._sym_extractor_hkl_id = id(hkl)
             return self._sym_extractor.extract_from_grid(reciprocal_space_grid)

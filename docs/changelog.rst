@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Version 0.4.2
+-------------
+
+- Fixed bug where reflection data object in the refinement was not created on cuda when specified. 
+
 Version 0.4.1
 -------------
 

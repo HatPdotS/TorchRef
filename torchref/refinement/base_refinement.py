@@ -142,7 +142,7 @@ class Refinement(DebugMixin, nnModule):
         try:
             self.to(self.device)
             if isinstance(data_file, str):
-                self.reflection_data = ReflectionData(verbose=self.verbose)
+                self.reflection_data = ReflectionData(verbose=self.verbose, device=self.device)
                 if data_file.endswith(".mtz"):
                     self.reflection_data.load_mtz(data_file)
                 elif data_file.endswith(".cif"):
