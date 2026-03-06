@@ -322,14 +322,16 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
     """Write difference / extrapolated map coefficients to an MTZ file."""
     import reciprocalspaceship as rs
     from torchref import ReflectionData, Scaler
-    hkl, Fobs_dark_mt, sig_Fobs_dark_mt, _ = data_dark()
+    hkl_all, Fobs_dark_mt, sig_Fobs_dark_mt, _ = data_dark()
     _, Fobs_light_mt, sig_Fobs_light_mt, _ = data_light()
 
     mask = Fobs_dark_mt.get_mask() & Fobs_light_mt.get_mask()
-    Fobs_dark_vals = Fobs_dark_mt.get_data()
-    Fobs_light_vals = Fobs_light_mt.get_data()
-    sig_dark_vals = sig_Fobs_dark_mt.get_data()
-    sig_light_vals = sig_Fobs_light_mt.get_data()
+    hkl = hkl_all[mask]
+    Fobs_dark_vals = Fobs_dark_mt.get_data()[mask]
+    Fobs_light_vals = Fobs_light_mt.get_data()[mask]
+    sig_dark_vals = sig_Fobs_dark_mt.get_data()[mask]
+    sig_light_vals = sig_Fobs_light_mt.get_data()[mask]
+    rfree_flags_masked = data_light.rfree_flags[mask] if data_light.rfree_flags is not None else None
 
     fractions = mixed_model.fractions.detach()
     w_dark = fractions[0]
@@ -359,7 +361,7 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
         F_sigma=sig_light_extra,
         cell=data_light.cell,
         spacegroup=data_light.spacegroup,
-        rfree_flags=data_light.rfree_flags,
+        rfree_flags=rfree_flags_masked,
         device=str(hkl.device),
         verbose=0,
     )
@@ -387,7 +389,7 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
         F_sigma=sig_extra_classic,
         cell=data_light.cell,
         spacegroup=data_light.spacegroup,
-        rfree_flags=data_light.rfree_flags,
+        rfree_flags=rfree_flags_masked,
         device=str(hkl.device),
         verbose=0,
     )
@@ -419,7 +421,7 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
         F_sigma=sig_ext_bayes,
         cell=data_light.cell,
         spacegroup=data_light.spacegroup,
-        rfree_flags=data_light.rfree_flags,
+        rfree_flags=rfree_flags_masked,
         device=str(hkl.device),
         verbose=0,
     )
@@ -437,28 +439,27 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
     print("Classic extrapolation rfactors:", scaler_light_extra_classic.rfactor())
     print("Bayes extrapolation rfactors:", scaler_light_extra_bayes.rfactor())
     print(f"  Bayes extrapolation: tau^2 = {tau_sq:.4f}, "
-          f"mean w(h) = {w_shrinkage[mask].mean().item():.3f}")
+          f"mean w(h) = {w_shrinkage.mean().item():.3f}")
 
-    m = mask
-    hkl_np = hkl[m].cpu().numpy()
-    Fobs_dark = Fobs_dark_vals[m].cpu().numpy()
-    Fobs_light = Fobs_light_vals[m].cpu().numpy()
-    sig_dark = sig_dark_vals[m].cpu().numpy()
-    sig_light = sig_light_vals[m].cpu().numpy()
+    hkl_np = hkl.cpu().numpy()
+    Fobs_dark = Fobs_dark_vals.cpu().numpy()
+    Fobs_light = Fobs_light_vals.cpu().numpy()
+    sig_dark = sig_dark_vals.cpu().numpy()
+    sig_light = sig_light_vals.cpu().numpy()
 
-    Fcalc_dark = torch.abs(fcalc_dark[m]).detach().cpu().numpy()
-    Fcalc_light = torch.abs(fcalc_mixed[m]).detach().cpu().numpy()
-    phases_dark = torch.angle(fcalc_dark[m]).detach().rad2deg().cpu().numpy()
-    phases_mixed = torch.angle(fcalc_mixed[m]).detach().rad2deg().cpu().numpy()
+    Fcalc_dark = torch.abs(fcalc_dark).detach().cpu().numpy()
+    Fcalc_light = torch.abs(fcalc_mixed).detach().cpu().numpy()
+    phases_dark = torch.angle(fcalc_dark).detach().rad2deg().cpu().numpy()
+    phases_mixed = torch.angle(fcalc_mixed).detach().rad2deg().cpu().numpy()
 
-    Fcalc_diff_amp = torch.abs(fcalc_diff[m]).detach().detach().cpu().numpy()
+    Fcalc_diff_amp = torch.abs(fcalc_diff).detach().cpu().numpy()
     Fcalc_diff_scalar = Fcalc_light - Fcalc_dark
-    phases_diff = torch.angle(fcalc_diff[m]).detach().rad2deg().cpu().numpy()
+    phases_diff = torch.angle(fcalc_diff).detach().rad2deg().cpu().numpy()
 
     # Complex observed difference: |F_obs_light·exp(iφ_mixed) - F_obs_dark·exp(iφ_dark)|
     # Pairs with phases_diff for a proper DED map
     Fobs_diff_phased = torch.abs(
-        F_obs_light_phased[m] - F_obs_dark_phased[m]
+        F_obs_light_phased - F_obs_dark_phased
     ).detach().cpu().numpy()
 
     diff_Fobs = Fobs_light - Fobs_dark
@@ -492,17 +493,17 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
             "phase_dark": phases_dark,
             "phase_mixed": phases_mixed,
             "phase_diff": phases_diff,
-            "phase_light": phi_light_calc[m].detach().rad2deg().cpu().numpy(),
-            "2FextFc_light": amp_2fofc_light[m].detach().cpu().numpy(),
-            "FextFc": amp_fextfc[m].detach().cpu().numpy(),
-            "Fext_classic": amp_extra_classic[m].detach().cpu().numpy(),
-            "sig_Fext_classic": sig_extra_classic[m].detach().cpu().numpy(),
-            "2Fext_classic_Fc": amp_2fofc_classic[m].detach().cpu().numpy(),
-            "Fext_classic_Fc": amp_fofc_classic[m].detach().cpu().numpy(),
-            "Fext_bayes": F_ext_bayes[m].detach().cpu().numpy(),
-            "sig_Fext_bayes": sig_ext_bayes[m].detach().cpu().numpy(),
-            "2Fext_bayes_Fc": amp_2fofc_bayes[m].detach().cpu().numpy(),
-            "Fext_bayes_Fc": amp_fofc_bayes[m].detach().cpu().numpy(),
+            "phase_light": phi_light_calc.detach().rad2deg().cpu().numpy(),
+            "2FextFc_light": amp_2fofc_light.detach().cpu().numpy(),
+            "FextFc": amp_fextfc.detach().cpu().numpy(),
+            "Fext_classic": amp_extra_classic.detach().cpu().numpy(),
+            "sig_Fext_classic": sig_extra_classic.detach().cpu().numpy(),
+            "2Fext_classic_Fc": amp_2fofc_classic.detach().cpu().numpy(),
+            "Fext_classic_Fc": amp_fofc_classic.detach().cpu().numpy(),
+            "Fext_bayes": F_ext_bayes.detach().cpu().numpy(),
+            "sig_Fext_bayes": sig_ext_bayes.detach().cpu().numpy(),
+            "2Fext_bayes_Fc": amp_2fofc_bayes.detach().cpu().numpy(),
+            "Fext_bayes_Fc": amp_fofc_bayes.detach().cpu().numpy(),
         },
         cell=data_dark.cell.data.cpu().tolist(),
         spacegroup=data_dark.spacegroup.hm,
