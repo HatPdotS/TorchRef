@@ -5,6 +5,7 @@ Version 0.4.2
 -------------
 
 - Fixed bug where reflection data object in the refinement was not created on cuda when specified. 
+- Fixed macos crash not catching compilation error in c++ extension for scatter add
 
 Version 0.4.1
 -------------

@@ -165,15 +165,27 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 # First process compiles; all others (same node or different) reuse cache.
 # ---------------------------------------------------------------------------
 _module = None
+_module_failed = False
 
 
 def _get_module():
-    global _module
-    if _module is None:
-        import fcntl
-        import os
-        import sys
+    global _module, _module_failed
+    if _module is not None:
+        return _module
+    if _module_failed:
+        return None
 
+    import os
+    import sys
+
+    try:
+        import fcntl
+    except ImportError:
+        # fcntl is not available on non-POSIX platforms (e.g. Windows)
+        _module_failed = True
+        return None
+
+    try:
         # Ensure ninja (installed via pip) is on PATH for compute nodes
         bin_dir = os.path.dirname(sys.executable)
         if bin_dir not in os.environ.get("PATH", ""):
@@ -233,6 +245,10 @@ def _get_module():
         finally:
             fcntl.lockf(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
+    except Exception:
+        _module_failed = True
+        return None
+
     return _module
 
 
@@ -257,6 +273,8 @@ class _StructuredScatterAdd(torch.autograd.Function):
         ctx.cube_shape = density_cube.shape
 
         mod = _get_module()
+        if mod is None:
+            raise RuntimeError("C++ cpu_scatter module not available")
         result = torch.zeros(map_size, dtype=density_cube.dtype,
                              device=density_cube.device)
         mod.structured_scatter_add(
@@ -273,6 +291,8 @@ class _StructuredScatterAdd(torch.autograd.Function):
         wa, wbwc = ctx.saved_tensors
         C, nx, ny, nz = ctx.cube_shape
         mod = _get_module()
+        if mod is None:
+            raise RuntimeError("C++ cpu_scatter module not available")
         grad_cube = mod.structured_gather(
             grad_output.contiguous(),
             wa.contiguous(),

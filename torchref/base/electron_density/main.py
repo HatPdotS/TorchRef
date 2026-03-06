@@ -83,12 +83,18 @@ _cpp_scatter_checked = False
 
 
 def _get_cpp_scatter():
-    """Return the C++ parallel scatter_add, or None if unavailable."""
+    """Return the C++ parallel scatter_add, or None if unavailable.
+
+    Eagerly triggers the C++ compilation so that failures (missing ninja,
+    unsupported compiler flags, etc.) are caught here rather than mid-calculation.
+    """
     global _cpp_scatter_fn, _cpp_scatter_checked
     if not _cpp_scatter_checked:
         try:
-            from torchref.base.kernels.cpu_scatter import structured_scatter_add
-            _cpp_scatter_fn = structured_scatter_add
+            from torchref.base.kernels.cpu_scatter import structured_scatter_add, _get_module
+            # Trigger compilation now — _get_module returns None on failure
+            if _get_module() is not None:
+                _cpp_scatter_fn = structured_scatter_add
         except Exception:
             pass
         _cpp_scatter_checked = True
