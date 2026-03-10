@@ -236,7 +236,8 @@ def run_validation(args):
     """Run the DED validation pipeline."""
     import gemmi
 
-    from torchref import DatasetCollection, ModelFT, ReflectionData
+    from torchref import DatasetCollection, ModelFT, ReflectionData, Scaler
+    from torchref.model import MixedModel
     from torchref.base.fourier.grid import get_real_grid
     from torchref.symmetry.grid_utils import calculate_optimal_grid_size
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
@@ -353,6 +354,31 @@ def run_validation(args):
         print(f"  Light model: {len(model_light.pdb)} atoms")
         print(f"  Fraction: {args.fraction}")
 
+    # Build mixed model (same as difference_refine)
+    f = args.fraction
+    mixed_model = MixedModel(
+        [model_dark, model_light],
+        initial_fractions=[1.0 - f, f],
+    )
+
+    # ------------------------------------------------------------------
+    # 2b. Setup scaler (single dark scaler for both models)
+    # ------------------------------------------------------------------
+    # Use ONE scaler fitted to the dark state for both dark and mixed Fcalc.
+    # The bulk solvent is the same crystal, so using a shared scaler ensures
+    # the solvent contribution cancels in the difference DFcalc = |Fc_mixed| - |Fc_dark|.
+    if args.verbose >= 1:
+        print(f"\n--- Setting up scaler ---")
+
+    scaler = Scaler(model_dark, data_dark, device=device)
+    scaler.calc_initial_scale()
+    scaler.setup_anisotropy_correction()
+    scaler.refine_lbfgs()
+
+    if args.verbose >= 1:
+        r_work_d, r_free_d = scaler.rfactor()
+        print(f"  R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
+
     # ------------------------------------------------------------------
     # 3. P1 expansion and grid setup
     # ------------------------------------------------------------------
@@ -380,24 +406,22 @@ def run_validation(args):
     if args.verbose >= 1:
         print(f"\n--- Computing structure factors ---")
 
-    # Compute Fcalc at ASU level (deterministic, avoids FFT scatter_add_ jitter)
+    # Compute scaled Fcalc at ASU level using the shared dark scaler.
+    # Both models are scaled identically so bulk solvent cancels in the difference.
     with torch.no_grad():
-        fcalc_dark_asu = model_dark.get_structure_factor(hkl, recalc=True)
-        fcalc_light_asu = model_light.get_structure_factor(hkl, recalc=True)
+        fcalc_dark_asu = scaler(model_dark.get_structure_factor(hkl_all, recalc=True))[mask]
+        fcalc_mixed_asu = scaler(mixed_model(hkl_all, recalc=True))[mask]
 
     # Expand to P1 using symmetry phase shifts (exact, no FFT needed)
     phase_factors = torch.exp(1j * phase_shifts.to(fcalc_dark_asu.dtype))
-    fcalc_dark = fcalc_dark_asu[orig_idx] * phase_factors
-    fcalc_light = fcalc_light_asu[orig_idx] * phase_factors
+    fcalc_dark_p1 = fcalc_dark_asu[orig_idx] * phase_factors
+    fcalc_mixed_p1 = fcalc_mixed_asu[orig_idx] * phase_factors
 
-    f = args.fraction
-    fcalc_mixed = f * fcalc_light + (1.0 - f) * fcalc_dark
-
-    delta_fcalc = fcalc_mixed.abs() - fcalc_dark.abs()
+    delta_fcalc = fcalc_mixed_p1.abs() - fcalc_dark_p1.abs()
     w_delta_fcalc = delta_fcalc * weights_p1
 
-    # Dark-state phases
-    phi_dark_p1 = torch.angle(fcalc_dark)
+    # Dark-state phases (from scaled Fcalc)
+    phi_dark_p1 = torch.angle(fcalc_dark_p1)
 
     if args.verbose >= 1:
         print(f"  |DFcalc| mean: {delta_fcalc.abs().mean():.3f}")
@@ -486,8 +510,7 @@ def run_validation(args):
     if args.verbose >= 1:
         print(f"\n--- Resolution-binned amplitude correlation ---")
 
-    # Reuse ASU-level Fcalc from step 4
-    fcalc_mixed_asu = f * fcalc_light_asu + (1.0 - f) * fcalc_dark_asu
+    # Reuse ASU-level scaled Fcalc from step 4
     delta_fcalc_asu = fcalc_mixed_asu.abs() - fcalc_dark_asu.abs()
     w_delta_fcalc_asu = delta_fcalc_asu * weights
 

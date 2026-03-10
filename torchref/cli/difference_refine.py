@@ -198,12 +198,15 @@ def setup_loss_state(mixed_model, model_dark, model_light,
 
     state = LossState(device=device)
 
+    # Use the SAME (dark) scaler for both sides of the difference target.
+    # The bulk solvent is identical (same crystal), so a shared scaler ensures
+    # the solvent contribution cancels in DFcalc = |Fc_mixed| - |Fc_dark|.
     diff_target = DiffClass(
         dataset_collection=dataset_collection,
         model_dark=model_dark,
         model_light=mixed_model,
         scaler_dark=scaler_dark,
-        scaler_light=scaler_mixed,
+        scaler_light=scaler_dark,
     )
     geom_target_light = TotalGeometryTarget(model_light)
     adp_target_light = TotalADPTarget(model_light)
