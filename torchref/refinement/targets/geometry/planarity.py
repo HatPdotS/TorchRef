@@ -78,6 +78,9 @@ class PlanarityTarget(GeometryTarget):
             # through the eigendecomposition, avoids NaN at degenerate eigenvalues)
             with torch.no_grad():
                 cov = torch.bmm(centered.transpose(1, 2), centered)
+                # Regularize to prevent ill-conditioning (atoms nearly collinear)
+                jitter = 1e-6 * torch.eye(3, device=device, dtype=cov.dtype).unsqueeze(0)
+                cov = cov + jitter
                 _eigenvalues, eigenvectors = torch.linalg.eigh(cov)
                 normals = eigenvectors[:, :, 0]  # smallest eigenvalue
 
@@ -118,6 +121,8 @@ class PlanarityTarget(GeometryTarget):
             centered = positions - centroids
 
             cov = torch.bmm(centered.transpose(1, 2), centered)
+            jitter = 1e-6 * torch.eye(3, device=xyz.device, dtype=cov.dtype).unsqueeze(0)
+            cov = cov + jitter
             _eigenvalues, eigenvectors = torch.linalg.eigh(cov)
             normals = eigenvectors[:, :, 0]
 

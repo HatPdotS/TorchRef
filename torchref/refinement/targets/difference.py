@@ -1268,3 +1268,393 @@ class TaylorCorrectedDifferenceTarget(Target):
 
     def __repr__(self) -> str:
         return "TaylorCorrectedDifferenceTarget()"
+
+
+class RiceDifferenceTarget(Target):
+    """
+    Rice-distribution difference target for time-resolved crystallography.
+
+    Works in complex space by grafting detached model phases onto observed
+    amplitudes, then taking the complex difference. The magnitude of this
+    complex difference is always non-negative, enabling a proper Rice
+    distribution likelihood.
+
+    The procedure:
+
+    1. Reconstruct complex observed structure factors using detached model phases::
+
+        F_obs_light_complex = F_obs_light * exp(i * φ_calc_light)
+        F_obs_dark_complex  = F_obs_dark  * exp(i * φ_calc_dark)
+
+    2. Form complex differences::
+
+        ΔF_obs_complex = F_obs_light_complex - F_obs_dark_complex
+        ΔF_calc        = F_calc_light - F_calc_dark
+
+    3. Compute strictly positive amplitudes::
+
+        A_obs = |ΔF_obs_complex|   (always ≥ 0)
+        ν     = |ΔF_calc|          (always ≥ 0)
+
+    4. Apply Rice distribution NLL::
+
+        NLL = -log(A) + log(σ²) + (A² + ν²)/(2σ²)
+              - log(I₀(A·ν/σ²))
+
+    The Rice distribution naturally models the magnitude of a complex signal
+    plus Gaussian noise, making it statistically appropriate for comparing
+    amplitudes that are always positive by construction.
+
+    Parameters
+    ----------
+    dataset_collection : DatasetCollection
+        Collection containing 'dark' and 'light' datasets.
+    model_light : ModelFT or MixedModel
+        Model for the light/excited state.
+    model_dark : ModelFT
+        Model for the dark/ground state.
+    scaler_light : Scaler, optional
+        Scaler for light state F_calc.
+    scaler_dark : Scaler, optional
+        Scaler for dark state F_calc.
+    use_work_set : bool, optional
+        If True, compute loss on work set only. Default is True.
+    verbose : int, optional
+        Verbosity level. Default is 0.
+
+    Examples
+    --------
+    Basic usage::
+
+        target = RiceDifferenceTarget(
+            dataset_collection=collection,
+            model_light=mixed_model,
+            model_dark=model_dark,
+        )
+
+    With scalers::
+
+        target = RiceDifferenceTarget(
+            dataset_collection=collection,
+            model_light=mixed_model,
+            model_dark=model_dark,
+            scaler_light=scaler_light,
+            scaler_dark=scaler_dark,
+        )
+    """
+
+    name: str = "rice_difference"
+
+    def __init__(
+        self,
+        dataset_collection: "DatasetCollection",
+        model_light: "ModelFT" = None,
+        model_dark: "ModelFT" = None,
+        scaler_light: "Scaler" = None,
+        scaler_dark: "Scaler" = None,
+        use_work_set: bool = True,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose=verbose)
+
+        if "dark" not in dataset_collection:
+            raise ValueError("DatasetCollection must contain a 'dark' dataset")
+        if "light" not in dataset_collection:
+            raise ValueError("DatasetCollection must contain a 'light' dataset")
+
+        self._dataset_collection = dataset_collection
+        self._data_dark = dataset_collection["dark"]
+        self._data_light = dataset_collection["light"]
+
+        self.add_module("_model_light", model_light)
+        self.add_module("_model_dark", model_dark)
+        self.add_module("_scaler_light", scaler_light)
+        self.add_module("_scaler_dark", scaler_dark)
+
+        self.use_work_set = use_work_set
+
+        self._setup_data()
+
+    def _setup_data(self):
+        """Setup observed data and masks."""
+        _, F_light, sigma_light, rfree_light = self._data_light()
+        _, F_dark, sigma_dark, rfree_dark = self._data_dark()
+
+        # Handle MaskedTensor — extract data AND validity masks
+        valid_light = valid_dark = None
+        if hasattr(F_light, "get_mask"):
+            valid_light = F_light.get_mask()
+            F_light = F_light.get_data()
+            sigma_light = sigma_light.get_data()
+        if hasattr(F_dark, "get_mask"):
+            valid_dark = F_dark.get_mask()
+            F_dark = F_dark.get_data()
+            sigma_dark = sigma_dark.get_data()
+
+        # Build validity mask
+        valid_mask = torch.ones_like(rfree_light, dtype=torch.bool)
+        if valid_light is not None:
+            valid_mask = valid_mask & valid_light
+        if valid_dark is not None:
+            valid_mask = valid_mask & valid_dark
+
+        # Clean invalid values to avoid NaN propagation in torch.where path
+        sigma_diff = torch.sqrt(sigma_light**2 + sigma_dark**2)
+        F_light = torch.where(valid_mask, F_light, torch.zeros_like(F_light))
+        F_dark = torch.where(valid_mask, F_dark, torch.zeros_like(F_dark))
+        sigma_diff = torch.where(valid_mask, sigma_diff, torch.ones_like(sigma_diff))
+
+        self.register_buffer("_F_obs_light", F_light)
+        self.register_buffer("_F_obs_dark", F_dark)
+        self.register_buffer("_sigma_diff", sigma_diff)
+
+        work_mask = rfree_light.bool() & rfree_dark.bool() & valid_mask
+        free_mask = ~rfree_light.bool() & ~rfree_dark.bool() & valid_mask
+
+        if self.use_work_set:
+            mask = work_mask
+        else:
+            mask = free_mask
+        self.register_buffer("_mask", mask)
+        self.register_buffer("_work_mask", work_mask)
+        self.register_buffer("_free_mask", free_mask)
+
+    @property
+    def hkl(self) -> torch.Tensor:
+        """Common HKL indices."""
+        return self._dataset_collection.hkl
+
+    def forward(
+        self,
+        fcalc_light: torch.Tensor = None,
+        fcalc_dark: torch.Tensor = None,
+        recalc: bool = True,
+    ) -> torch.Tensor:
+        """
+        Compute Rice distribution NLL loss for difference structure factors.
+
+        Parameters
+        ----------
+        fcalc_light : torch.Tensor, optional
+            Pre-computed light state structure factors.
+        fcalc_dark : torch.Tensor, optional
+            Pre-computed dark state structure factors.
+        recalc : bool, optional
+            Force recalculation if True. Default is True.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean Rice NLL loss value.
+        """
+        hkl = self.hkl
+
+        # Compute F_calc for light/mixed
+        if fcalc_light is None:
+            if self._model_light is None:
+                raise RuntimeError("No model_light set")
+            fcalc_light = self._model_light(hkl, recalc=recalc)
+
+        if self._scaler_light is not None:
+            fcalc_light = self._scaler_light(fcalc_light)
+
+        # Compute F_calc for dark
+        if fcalc_dark is None:
+            if self._model_dark is None:
+                raise RuntimeError("No model_dark set")
+            fcalc_dark = self._model_dark(hkl, recalc=recalc)
+
+        if self._scaler_dark is not None:
+            fcalc_dark = self._scaler_dark(fcalc_dark)
+
+        # Graft detached phases onto observed amplitudes
+        phi_light = torch.angle(fcalc_light).detach()
+        phi_dark = torch.angle(fcalc_dark).detach()
+
+        F_obs_light_complex = self._F_obs_light * torch.exp(1j * phi_light)
+        F_obs_dark_complex = self._F_obs_dark * torch.exp(1j * phi_dark)
+
+        # Complex differences
+        delta_F_obs_complex = F_obs_light_complex - F_obs_dark_complex
+        delta_F_calc = fcalc_light - fcalc_dark
+
+        # Strictly positive amplitudes
+        A_obs = torch.abs(delta_F_obs_complex)
+        nu = torch.abs(delta_F_calc)
+
+        # Rice NLL: -log P(A | ν, σ)
+        #   = -log(A/σ²) + (A² + ν²)/(2σ²) - log(I₀(A·ν/σ²))
+        # Using i0e for numerical stability: log(I₀(x)) = log(i0e(x)) + x
+        sigma_sq = self._sigma_diff**2
+        sigma_sq_safe = torch.clamp(sigma_sq, min=1e-8)
+
+        # Clamp A_obs to avoid log(0)
+        A_safe = torch.clamp(A_obs, min=1e-12)
+
+        term1 = -torch.log(A_safe / sigma_sq_safe)
+        term2 = (A_obs**2 + nu**2) / (2 * sigma_sq_safe)
+
+        arg_bessel = A_obs * nu / sigma_sq_safe
+        arg_bessel = torch.clamp(arg_bessel, max=1e6)
+        term3 = -(torch.log(torch.special.i0e(arg_bessel) + 1e-12) + arg_bessel)
+
+        nll = term1 + term2 + term3
+
+        # Replace NaN/Inf with large finite value to maintain gradient signal
+        nll = torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
+
+        # Apply mask using torch.where (no nonzero sync)
+        nll = torch.where(self._mask, nll, torch.zeros_like(nll))
+
+        return (nll * self._mask).sum() / self._mask.sum()
+
+    def compute_free_metrics(
+        self,
+        fcalc_light: torch.Tensor = None,
+        fcalc_dark: torch.Tensor = None,
+    ) -> Dict[str, float]:
+        """
+        Compute loss and correlation on the FREE (test) set.
+
+        Returns
+        -------
+        dict
+            Dictionary with 'free_loss' and 'free_correlation'.
+        """
+        hkl = self.hkl
+
+        if fcalc_light is None:
+            fcalc_light = self._model_light(hkl, recalc=True)
+            if self._scaler_light is not None:
+                fcalc_light = self._scaler_light(fcalc_light)
+
+        if fcalc_dark is None:
+            fcalc_dark = self._model_dark(hkl, recalc=True)
+            if self._scaler_dark is not None:
+                fcalc_dark = self._scaler_dark(fcalc_dark)
+
+        with torch.no_grad():
+            # Amplitude difference correlation on free set
+            delta_F_obs_amp = (self._F_obs_light - self._F_obs_dark)[self._free_mask]
+            delta_F_calc_amp = (
+                torch.abs(fcalc_light) - torch.abs(fcalc_dark)
+            )[self._free_mask]
+
+            obs_centered = delta_F_obs_amp - delta_F_obs_amp.mean()
+            calc_centered = delta_F_calc_amp - delta_F_calc_amp.mean()
+
+            free_correlation = (
+                (obs_centered * calc_centered).sum()
+                / (
+                    torch.sqrt(
+                        (obs_centered**2).sum() * (calc_centered**2).sum()
+                    )
+                    + 1e-8
+                )
+            ).item()
+
+            # Free loss via Rice NLL
+            phi_light = torch.angle(fcalc_light).detach()
+            phi_dark = torch.angle(fcalc_dark).detach()
+
+            F_obs_light_c = self._F_obs_light * torch.exp(1j * phi_light)
+            F_obs_dark_c = self._F_obs_dark * torch.exp(1j * phi_dark)
+
+            delta_obs_c = (F_obs_light_c - F_obs_dark_c)[self._free_mask]
+            delta_calc = (fcalc_light - fcalc_dark)[self._free_mask]
+            sigma_sq = self._sigma_diff[self._free_mask] ** 2
+            sigma_sq_safe = torch.clamp(sigma_sq, min=1e-8)
+
+            A_obs = torch.abs(delta_obs_c)
+            nu = torch.abs(delta_calc)
+            A_safe = torch.clamp(A_obs, min=1e-12)
+
+            arg_bessel = A_obs * nu / sigma_sq_safe
+            arg_bessel = torch.clamp(arg_bessel, max=1e6)
+
+            nll = (
+                -torch.log(A_safe / sigma_sq_safe)
+                + (A_obs**2 + nu**2) / (2 * sigma_sq_safe)
+                - (torch.log(torch.special.i0e(arg_bessel) + 1e-12) + arg_bessel)
+            )
+            nll = torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
+            free_loss = nll.mean().item()
+
+        return {
+            "free_loss": free_loss,
+            "free_correlation": free_correlation,
+            "n_free": self._free_mask.sum().item(),
+        }
+
+    def stats(
+        self,
+        fcalc_light: torch.Tensor = None,
+        fcalc_dark: torch.Tensor = None,
+    ) -> Dict[str, StatEntry]:
+        """
+        Get statistics for the Rice difference refinement.
+
+        Returns
+        -------
+        dict
+            Dictionary with loss, correlation, R_diff, etc.
+        """
+        hkl = self.hkl
+
+        if fcalc_light is None:
+            fcalc_light = self._model_light(hkl, recalc=True)
+            if self._scaler_light is not None:
+                fcalc_light = self._scaler_light(fcalc_light)
+
+        if fcalc_dark is None:
+            fcalc_dark = self._model_dark(hkl, recalc=True)
+            if self._scaler_dark is not None:
+                fcalc_dark = self._scaler_dark(fcalc_dark)
+
+        with torch.no_grad():
+            loss = self.forward(fcalc_light, fcalc_dark, recalc=False)
+
+            # Amplitude difference correlation
+            delta_F_obs = (self._F_obs_light - self._F_obs_dark)[self._mask]
+            delta_F_calc_amp = (
+                torch.abs(fcalc_light) - torch.abs(fcalc_dark)
+            )[self._mask]
+
+            obs_centered = delta_F_obs - delta_F_obs.mean()
+            calc_centered = delta_F_calc_amp - delta_F_calc_amp.mean()
+
+            correlation = (
+                (obs_centered * calc_centered).sum()
+                / (
+                    torch.sqrt(
+                        (obs_centered**2).sum() * (calc_centered**2).sum()
+                    )
+                    + 1e-8
+                )
+            ).item()
+
+            # R_diff
+            r_diff = (
+                torch.abs(delta_F_obs - delta_F_calc_amp).sum()
+                / (torch.abs(delta_F_obs).sum() + 1e-8)
+            ).item()
+
+            # Phase difference statistics
+            phi_dark = torch.angle(fcalc_dark)[self._mask]
+            phi_light = torch.angle(fcalc_light)[self._mask]
+            dphi = phi_light - phi_dark
+            dphi = torch.atan2(torch.sin(dphi), torch.cos(dphi))
+            mean_abs_dphi = torch.abs(dphi).mean().item()
+
+        return {
+            "loss": stat(loss.item(), VERBOSITY_STANDARD),
+            "n": stat(self._mask.sum().item(), VERBOSITY_DETAILED),
+            "correlation": stat(correlation, VERBOSITY_STANDARD),
+            "r_diff": stat(r_diff, VERBOSITY_STANDARD),
+            "mean_abs_dphi_deg": stat(
+                mean_abs_dphi * 180 / 3.14159, VERBOSITY_DETAILED
+            ),
+        }
+
+    def __repr__(self) -> str:
+        return "RiceDifferenceTarget()"

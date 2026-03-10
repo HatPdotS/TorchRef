@@ -916,6 +916,12 @@ def _warmup_kernel(cfg, grid_shape, device):
 # Scratch buffer cache: reuse if large enough
 _scratch_buf: Optional[torch.Tensor] = None
 
+# Track whether the forward kernel has been JIT-compiled.
+# The first Triton JIT compilation can produce different results
+# (likely due to uninitialized state during compilation), so we
+# discard the first call and re-run.
+_fwd_kernel_warmed_up: bool = False
+
 # =============================================================================
 # Autograd wrapper
 # =============================================================================
@@ -1079,7 +1085,7 @@ def separable_density_gpu(
     -------
     torch.Tensor — updated density map
     """
-    global _scratch_buf
+    global _scratch_buf, _fwd_kernel_warmed_up
 
     device = density_map.device
     grid_shape = density_map.shape
@@ -1096,12 +1102,21 @@ def separable_density_gpu(
         _scratch_buf = torch.zeros(needed, device=device, dtype=torch.float32)
     scratch = _scratch_buf[:needed].view(N_atoms, cfg["base_scratch"])
 
-    return _SeparableDensityFunction.apply(
-        density_map, xyz, b, A, B, occ, inv_frac_matrix,
-        cfg["sphere_offsets"], cfg["G_flat"], cfg["inv_grid"], scratch,
-        cfg["N_AXIS"], cfg["half_n"],
-        cfg["compute_xy"], cfg["compute_xz"], cfg["compute_yz"],
-        cfg["store_cross_tables"],
-        cfg["G_vals"], cfg["inv_grid_vals"], cfg["BLOCK_V"],
-        cfg["bwd_num_warps"], cfg["bwd_BLOCK_V"],
-    )
+    def _run():
+        return _SeparableDensityFunction.apply(
+            density_map, xyz, b, A, B, occ, inv_frac_matrix,
+            cfg["sphere_offsets"], cfg["G_flat"], cfg["inv_grid"], scratch,
+            cfg["N_AXIS"], cfg["half_n"],
+            cfg["compute_xy"], cfg["compute_xz"], cfg["compute_yz"],
+            cfg["store_cross_tables"],
+            cfg["G_vals"], cfg["inv_grid_vals"], cfg["BLOCK_V"],
+            cfg["bwd_num_warps"], cfg["bwd_BLOCK_V"],
+        )
+
+    if not _fwd_kernel_warmed_up:
+        # First Triton JIT compilation produces unreliable results.
+        # Run once to compile, discard, then re-run for correct output.
+        _run()
+        _fwd_kernel_warmed_up = True
+
+    return _run()

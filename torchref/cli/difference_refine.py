@@ -24,13 +24,13 @@ Examples
     torchref.difference-refine \\
         --dark-pdb dark.pdb --light-pdb light.pdb \\
         --dark-mtz dark.mtz --light-mtz light.mtz \\
-        --fractions 0.63,0.37 -o output/
+        --fraction 0.37 -o output/
 
     # Custom weight schedule
     torchref.difference-refine \\
         --dark-pdb dark.pdb --light-pdb light.pdb \\
         --dark-mtz dark.mtz --light-mtz light.mtz \\
-        --fractions 0.63,0.37 --weight-schedule 10,5,3,1 -o output/
+        --fraction 0.37 --weight-schedule 10,5,3,1 -o output/
 """
 
 import argparse
@@ -69,12 +69,12 @@ DEFAULT_TARGET_WEIGHTS = {
     "light/maximum_likelihood_xray": 1.0,
     # Geometry (7 components)
     "light/model_target/geometry/bond": 1.0,
-    "light/model_target/geometry/angle": 0.5,
-    "light/model_target/geometry/torsion": 0.5,
-    "light/model_target/geometry/planarity": 2.0,
-    "light/model_target/geometry/chiral": 3.0,
+    "light/model_target/geometry/angle": 0.3,
+    "light/model_target/geometry/torsion": 0.3,
+    "light/model_target/geometry/planarity": 1.0,
+    "light/model_target/geometry/chiral": 2.0,
     "light/model_target/geometry/nonbonded": 0.5,
-    "light/model_target/geometry/ramachandran": 1.0,
+    "light/model_target/geometry/ramachandran": 0.5,
     # ADP (3 components)
     "light/model_target/adp/simu": 0.5,
     "light/model_target/adp/locality": 0.2,
@@ -151,9 +151,17 @@ def setup_scaler(model, dataset, device):
     return scaler
 
 
+_DIFF_TARGET_CHOICES = {
+    "amplitude": "DifferenceXrayTarget",
+    "phase_informed": "PhaseInformedDifferenceTarget",
+    "taylor": "TaylorCorrectedDifferenceTarget",
+    "rice": "RiceDifferenceTarget",
+}
+
+
 def setup_loss_state(mixed_model, model_dark, model_light,
                      dataset_collection, scaler_dark, scaler_mixed,
-                     target_weights, device):
+                     target_weights, device, diff_target_type="amplitude"):
     """Build LossState with all targets and apply *target_weights*.
 
     Parameters
@@ -162,10 +170,16 @@ def setup_loss_state(mixed_model, model_dark, model_light,
         Merged dictionary of target weights (DEFAULT_TARGET_WEIGHTS updated
         with any user overrides).  The difference-target weight is included
         as a starting value but will be overridden each schedule step.
+    diff_target_type : str
+        Which difference target to use. One of 'amplitude', 'phase_informed',
+        'taylor', or 'rice'.
     """
     from torchref.refinement import LossState
     from torchref.refinement.targets import (
         DifferenceXrayTarget,
+        PhaseInformedDifferenceTarget,
+        TaylorCorrectedDifferenceTarget,
+        RiceDifferenceTarget,
         TotalADPTarget,
         TotalGeometryTarget,
         MaximumLikelihoodXrayTarget,
@@ -173,9 +187,18 @@ def setup_loss_state(mixed_model, model_dark, model_light,
         RealSpaceExtrapolatedTarget,
     )
 
+    diff_target_classes = {
+        "amplitude": DifferenceXrayTarget,
+        "phase_informed": PhaseInformedDifferenceTarget,
+        "taylor": TaylorCorrectedDifferenceTarget,
+        "rice": RiceDifferenceTarget,
+    }
+
+    DiffClass = diff_target_classes[diff_target_type]
+
     state = LossState(device=device)
 
-    diff_target = DifferenceXrayTarget(
+    diff_target = DiffClass(
         dataset_collection=dataset_collection,
         model_dark=model_dark,
         model_light=mixed_model,
@@ -337,9 +360,11 @@ def write_results_mtz(data_dark, data_light, mixed_model, model_dark,
     w_dark = fractions[0]
     w_light = fractions[1]
 
-    # Calulate different types of extrapolated amplitudes for comparison, all using the same phases from the mixed model to ensure a fair comparison of amplitude estimates and resulting maps.
-    fcalc_dark = scaler_dark(model_dark(hkl))
-    fcalc_mixed = scaler_mixed(mixed_model(hkl))
+    # Calculate different types of extrapolated amplitudes for comparison, all using the same phases from the mixed model to ensure a fair comparison of amplitude estimates and resulting maps.
+    # Compute on full HKL set then mask, because scalers were fitted on full datasets
+    # and their internal bins/masks won't match an externally-masked HKL subset.
+    fcalc_dark = scaler_dark(model_dark(hkl_all))[mask]
+    fcalc_mixed = scaler_mixed(mixed_model(hkl_all))[mask]
     fcalc_diff = fcalc_mixed - fcalc_dark
 
     phi_dark = torch.angle(fcalc_dark)
@@ -558,27 +583,27 @@ Examples:
   torchref.difference-refine \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --dark-mtz dark.mtz --light-mtz light.mtz \\
-      --fractions 0.63,0.37 -o output/
+      --fraction 0.37 -o output/
 
   # Custom weight schedule (anneal from 10 down to 1)
   torchref.difference-refine \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --dark-mtz dark.mtz --light-mtz light.mtz \\
-      --fractions 0.63,0.37 \\
+      --fraction 0.37 \\
       --weight-schedule 10,5,3,1 --n-cycles 2 -o output/
 
   # With custom restraints and resolution cutoff
   torchref.difference-refine \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --dark-mtz dark.mtz --light-mtz light.mtz \\
-      --fractions 0.63,0.37 \\
+      --fraction 0.37 \\
       --restraints-cif ligand.cif --max-res 1.7 -o output/
 
   # Override specific regularisation weights
   torchref.difference-refine \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --dark-mtz dark.mtz --light-mtz light.mtz \\
-      --fractions 0.63,0.37 \\
+      --fraction 0.37 \\
       --target-weights '{"light/model_target/geometry/chiral": 5,
                          "light/model_target/adp/KL": 0.1}' -o output/
         """,
@@ -610,17 +635,30 @@ Examples:
         help="MTZ file with light / triggered reflection data",
     )
     parser.add_argument(
-        "--fractions",
+        "--fraction",
         required=True,
-        type=str,
-        help="Comma-separated dark,light occupancy fractions "
-             "(e.g. '0.63,0.37')",
+        type=float,
+        help="Occupancy fraction of the light/excited state "
+             "(e.g. 0.37). Dark fraction is computed as 1 - fraction.",
     )
     parser.add_argument(
         "-o", "--outdir",
         required=True,
         type=str,
         help="Output directory for refined structures and maps",
+    )
+
+    # --- Difference target ---
+    parser.add_argument(
+        "--diff-target",
+        type=str,
+        default="amplitude",
+        choices=list(_DIFF_TARGET_CHOICES.keys()),
+        help="Difference target function: 'amplitude' (Gaussian NLL on "
+             "|F_light|-|F_dark|), 'phase_informed' (complex with grafted "
+             "phases, MSE), 'taylor' (Taylor-corrected complex, MSE), "
+             "'rice' (Rice distribution NLL on complex difference "
+             "amplitudes) (default: amplitude)",
     )
 
     # --- Weight schedule ---
@@ -709,17 +747,14 @@ Examples:
     register_timing()
 
     # --- Parse fractions ---
-    try:
-        fractions = [float(x) for x in args.fractions.split(",")]
-        if len(fractions) != 2:
-            raise ValueError
-    except ValueError:
+    if not (0.0 < args.fraction < 1.0):
         print(
-            "Error: --fractions must be two comma-separated floats, "
-            "e.g. '0.63,0.37'",
+            "Error: --fraction must be between 0 and 1 "
+            f"(got {args.fraction})",
             file=sys.stderr,
         )
         return 1
+    fractions = [1.0 - args.fraction, args.fraction]
 
     # --- Parse weight schedule ---
     try:
@@ -734,11 +769,27 @@ Examples:
         )
         return 1
 
+    # --- Resolve difference target name ---
+    # Import the target classes to get the .name attribute
+    from torchref.refinement.targets import (
+        DifferenceXrayTarget,
+        PhaseInformedDifferenceTarget,
+        TaylorCorrectedDifferenceTarget,
+        RiceDifferenceTarget,
+    )
+    _diff_name_map = {
+        "amplitude": DifferenceXrayTarget.name,
+        "phase_informed": PhaseInformedDifferenceTarget.name,
+        "taylor": TaylorCorrectedDifferenceTarget.name,
+        "rice": RiceDifferenceTarget.name,
+    }
+    diff_target_name = _diff_name_map[args.diff_target]
+
     # --- Parse and merge target weights ---
     target_weights = dict(DEFAULT_TARGET_WEIGHTS)
     # Include the difference target with an initial value (will be
     # overridden each schedule step, but needs a key in the dict).
-    target_weights["difference_xray"] = weight_schedule[0]
+    target_weights[diff_target_name] = weight_schedule[0]
 
     if args.target_weights is not None:
         try:
@@ -810,6 +861,7 @@ Examples:
             print(f"Resolution cutoff: {args.max_res:.2f} A")
         if args.restraints_cif:
             print(f"Restraints CIF:    {', '.join(args.restraints_cif)}")
+        print(f"Diff target:       {args.diff_target} ({diff_target_name})")
         print(f"Weight schedule:   {weight_schedule} x {args.n_cycles} cycles")
         print(f"LBFGS steps/weight: {args.n_steps}  (max_iter={args.max_iter})")
         print()
@@ -870,6 +922,7 @@ Examples:
     state = setup_loss_state(
         mixed, dark, light, collection,
         scaler_dark, scaler_mixed, target_weights, device,
+        diff_target_type=args.diff_target,
     )
 
     if args.verbose > 0:
@@ -889,6 +942,11 @@ Examples:
         params = light.parameters()
     params = list(params)
 
+    # Track fraction history for plotting
+    fraction_history = []
+    if args.refine_fractions:
+        fraction_history.append(mixed.fractions[1].detach().cpu().item())
+
     for cycle in range(args.n_cycles):
         for t_weight in weight_schedule:
             round_idx += 1
@@ -903,7 +961,7 @@ Examples:
                 )
                 sys.stdout.flush()
 
-            state.set_weights({"difference_xray": t_weight})
+            state.set_weights({diff_target_name: t_weight})
             optimize_lbfgs(
                 state, params,
                 max_iter=args.max_iter,
@@ -912,6 +970,9 @@ Examples:
                 verbose=args.verbose,
             )
             scaler_mixed.refine_lbfgs()
+
+            if args.refine_fractions:
+                fraction_history.append(mixed.fractions[1].detach().cpu().item())
 
             if args.verbose > 1:
                 state.summary()
@@ -964,6 +1025,7 @@ Examples:
             "max_res": args.max_res,
         },
         "parameters": {
+            "diff_target": args.diff_target,
             "weight_schedule": weight_schedule,
             "n_cycles": args.n_cycles,
             "n_steps": args.n_steps,
@@ -987,6 +1049,26 @@ Examples:
     with open(summary_path, "w") as f:
         json.dump(convert_to_serializable(summary), f, indent=2)
 
+    # --- Plot light fraction vs cycle ---
+    if args.refine_fractions and fraction_history:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(range(len(fraction_history)), fraction_history, "o-", color="C0")
+        ax.set_xlabel("Refinement step")
+        ax.set_ylabel("Light fraction")
+        ax.set_title("Light fraction vs refinement step")
+        ax.axhline(fractions[1], ls="--", color="gray", label=f"initial ({fractions[1]:.3f})")
+        ax.legend()
+        fig.tight_layout()
+        frac_plot_path = str(outdir / f"{prefix}_fraction_vs_cycle.png")
+        fig.savefig(frac_plot_path, dpi=150)
+        plt.close(fig)
+        if args.verbose > 0:
+            print(f"  Fraction plot: {frac_plot_path}")
+
     if args.verbose > 0:
         print()
         print("Output files:")
@@ -995,6 +1077,8 @@ Examples:
         print(f"  - {light_mtz_out}")
         print(f"  - {diff_mtz_out}")
         print(f"  - {summary_path}")
+        if args.refine_fractions and fraction_history:
+            print(f"  - {frac_plot_path}")
         print()
         print("Done.")
         sys.stdout.flush()

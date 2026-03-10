@@ -17,10 +17,15 @@ Examples
     torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
         --dark-pdb dark.pdb --light-pdb light.pdb
 
-    # With light fraction and ligand masking
+    # With light fraction and ligand masking (both models, default)
     torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
         --dark-pdb dark.pdb --light-pdb light.pdb \\
         --fraction 0.20 --selection "chain B and resname IBL" --mask-radius 2.5
+
+    # Mask from light model only
+    torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
+        --dark-pdb dark.pdb --light-pdb light.pdb \\
+        --fraction 0.20 --selection "resname IBL" --mask-source light
 
     # Full output with plots and CCP4 maps
     torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
@@ -235,7 +240,7 @@ def run_validation(args):
     from torchref.base.fourier.grid import get_real_grid
     from torchref.symmetry.grid_utils import calculate_optimal_grid_size
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
-
+    
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -276,6 +281,15 @@ def run_validation(args):
     collection.add_dataset("dark", data_dark)
     collection.add_dataset("light", data_light)
     collection.scale()
+
+    if args.verbose >= 1:
+        print(f"  Scale parameters after optimization:")
+        for name, ds in collection:
+            if hasattr(ds, "log_scale") and ds.log_scale is not None:
+                print(f"    {name}: log_scale={ds.log_scale.item():.6f} "
+                      f"(scale={torch.exp(ds.log_scale).item():.6f})")
+            if hasattr(ds, "U_aniso") and ds.U_aniso is not None:
+                print(f"    {name}: U_aniso={ds.U_aniso.detach().cpu().tolist()}")
 
     # Extract matched F and sigma
     hkl_all, F_dark_mt, sig_dark_mt, _ = data_dark()
@@ -361,14 +375,20 @@ def run_validation(args):
         print(f"  P1 reflections: {len(hkl_p1)}")
 
     # ------------------------------------------------------------------
-    # 4. Compute Fcalc, apply same weights, get dark phases
+    # 4. Compute Fcalc at ASU level, then expand to P1 via symmetry
     # ------------------------------------------------------------------
     if args.verbose >= 1:
         print(f"\n--- Computing structure factors ---")
 
+    # Compute Fcalc at ASU level (deterministic, avoids FFT scatter_add_ jitter)
     with torch.no_grad():
-        fcalc_dark = model_dark.get_structure_factor(hkl_p1, recalc=True)
-        fcalc_light = model_light.get_structure_factor(hkl_p1, recalc=True)
+        fcalc_dark_asu = model_dark.get_structure_factor(hkl, recalc=True)
+        fcalc_light_asu = model_light.get_structure_factor(hkl, recalc=True)
+
+    # Expand to P1 using symmetry phase shifts (exact, no FFT needed)
+    phase_factors = torch.exp(1j * phase_shifts.to(fcalc_dark_asu.dtype))
+    fcalc_dark = fcalc_dark_asu[orig_idx] * phase_factors
+    fcalc_light = fcalc_light_asu[orig_idx] * phase_factors
 
     f = args.fraction
     fcalc_mixed = f * fcalc_light + (1.0 - f) * fcalc_dark
@@ -416,18 +436,29 @@ def run_validation(args):
         if args.verbose >= 1:
             print(f'\n--- Building masks for "{args.selection}" ---')
 
-        atom_mask = model_light.get_selection_mask(args.selection)
-        xyz_light = model_light.xyz()
-        selected_xyz = xyz_light[atom_mask]
+        # Build atom positions for mask based on --mask-source
+        xyz_parts = []
+        if args.mask_source in ("dark", "both"):
+            dark_atom_mask = model_dark.get_selection_mask(args.selection)
+            xyz_parts.append(model_dark.xyz()[dark_atom_mask])
+            if args.verbose >= 1:
+                print(f"  Selected atoms (dark):  {dark_atom_mask.sum().item()}")
+        if args.mask_source in ("light", "both"):
+            light_atom_mask = model_light.get_selection_mask(args.selection)
+            xyz_parts.append(model_light.xyz()[light_atom_mask])
+            if args.verbose >= 1:
+                print(f"  Selected atoms (light): {light_atom_mask.sum().item()}")
+        selected_xyz = torch.cat(xyz_parts, dim=0)
 
         if args.verbose >= 1:
-            print(f"  Selected atoms: {atom_mask.sum().item()}")
+            print(f"  Mask source: {args.mask_source}")
+            print(f"  Total atoms for mask: {len(selected_xyz)}")
 
         real_space_grid = get_real_grid(
             cell_t, max_res=d_min, gridsize=torch.tensor(gridsize), device=device
         )
 
-        # Selection mask
+        # Selection mask from combined dark + light positions
         mask_sel = build_atom_mask(
             selected_xyz, real_space_grid, cell_t, args.mask_radius, device
         )
@@ -455,10 +486,7 @@ def run_validation(args):
     if args.verbose >= 1:
         print(f"\n--- Resolution-binned amplitude correlation ---")
 
-    # Compute weighted DFcalc at ASU level for binned correlation
-    with torch.no_grad():
-        fcalc_dark_asu = model_dark.get_structure_factor(hkl, recalc=True)
-        fcalc_light_asu = model_light.get_structure_factor(hkl, recalc=True)
+    # Reuse ASU-level Fcalc from step 4
     fcalc_mixed_asu = f * fcalc_light_asu + (1.0 - f) * fcalc_dark_asu
     delta_fcalc_asu = fcalc_mixed_asu.abs() - fcalc_dark_asu.abs()
     w_delta_fcalc_asu = delta_fcalc_asu * weights
@@ -593,10 +621,15 @@ Examples:
   torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
       --dark-pdb dark.pdb --light-pdb light.pdb
 
-  # With fraction and ligand masking
+  # With fraction and ligand masking (mask from both models by default)
   torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
       --dark-pdb dark.pdb --light-pdb light.pdb \\
       --fraction 0.20 --selection "chain B and resname IBL" --mask-radius 2.5
+
+  # Mask from light model only
+  torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
+      --dark-pdb dark.pdb --light-pdb light.pdb \\
+      --fraction 0.20 --selection "resname IBL" --mask-source light
 
   # Full output
   torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
@@ -652,6 +685,16 @@ Examples:
         default=None,
         help='Phenix-style atom selection for masking '
         '(e.g., "chain B and resname IBL")',
+    )
+    parser.add_argument(
+        "--mask-source",
+        type=str,
+        default="both",
+        choices=["light", "dark", "both"],
+        help="Which model(s) to use for building the atom selection mask. "
+        "'light' uses only the light/triggered model, 'dark' uses only the "
+        "dark/reference model, 'both' combines atoms from both models "
+        "(default: both).",
     )
     parser.add_argument(
         "--mask-radius",

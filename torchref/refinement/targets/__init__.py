@@ -44,6 +44,7 @@ from .adp import (
 from .difference import (
     DifferenceXrayTarget,
     PhaseInformedDifferenceTarget,
+    RiceDifferenceTarget,
     TaylorCorrectedDifferenceTarget,
 )
 from .realspace import (
@@ -100,6 +101,7 @@ __all__ = [
     # Difference targets
     "DifferenceXrayTarget",
     "PhaseInformedDifferenceTarget",
+    "RiceDifferenceTarget",
     "TaylorCorrectedDifferenceTarget",
     # Geometry targets
     "GeometryTarget",
