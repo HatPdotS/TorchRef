@@ -22,40 +22,45 @@ Examples
 
     # Basic difference refinement
     torchref.difference-refine \\
-        --dark-pdb dark.pdb --light-pdb light.pdb \\
-        --dark-mtz dark.mtz --light-mtz light.mtz \\
+        -dm dark.pdb -lm light.pdb \\
+        -dsf dark.mtz -lsf light.mtz \\
         --fraction 0.37 -o output/
 
     # Custom weight schedule
     torchref.difference-refine \\
-        --dark-pdb dark.pdb --light-pdb light.pdb \\
-        --dark-mtz dark.mtz --light-mtz light.mtz \\
+        -dm dark.pdb -lm light.pdb \\
+        -dsf dark.mtz -lsf light.mtz \\
         --fraction 0.37 --weight-schedule 10,5,3,1 -o output/
 """
 
 import argparse
 import itertools
 import json
-import os
 import sys
 from pathlib import Path
 
 import torch
 
+from torchref.cli._common import (
+    add_dual_model_args,
+    add_dmin_arg,
+    add_general_args,
+    add_outdir_arg,
+    add_scaler_mode_arg,
+    add_weights_arg,
+    build_dual_column_names,
+    configure_unbuffered_output,
+    load_model,
+    load_reflection_data,
+    parse_weights,
+    register_timing,
+    resolve_device,
+    validate_cif_files,
+    validate_files,
+)
 from torchref.utils.serialization import convert_to_serializable
 
-# Force unbuffered output for batch systems like SLURM
-(
-    sys.stdout.reconfigure(line_buffering=True)
-    if hasattr(sys.stdout, "reconfigure")
-    else None
-)
-(
-    sys.stderr.reconfigure(line_buffering=True)
-    if hasattr(sys.stderr, "reconfigure")
-    else None
-)
-os.environ["PYTHONUNBUFFERED"] = "1"
+configure_unbuffered_output()
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +94,102 @@ DEFAULT_TARGET_WEIGHTS = {
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+def compute_rfactors(model, data, scaler):
+    """Compute R-work/R-free for any model-data-scaler combination.
+
+    Scales Fcalc through *scaler* and compares against Fobs from *data*,
+    so it works correctly even when the scaler was not initialised with
+    this particular data (shared-scaler mode).
+    """
+    from torchref.base.metrics import get_rfactors
+
+    with torch.no_grad():
+        hkl, fobs, _, rfree = data()
+        fcalc_scaled = scaler(model(hkl))
+        return get_rfactors(
+            torch.abs(fobs), torch.abs(fcalc_scaled), rfree
+        )
+
+
+def refine_scaler_ml(scaler, ml_targets, nsteps=3, lr=1.0, max_iter=200,
+                     history_size=10, verbose=0):
+    """Refine scaler parameters by minimising one or more ML targets.
+
+    Unlike ``scaler.refine_lbfgs()`` which minimises a Gaussian NLL,
+    this optimises the scaler's scale, anisotropy and solvent parameters
+    against the proper ML negative log-likelihood used during refinement.
+
+    When multiple targets are provided (e.g. ML dark + ML light in shared
+    scaler mode), the combined loss is their sum so that the scaler
+    simultaneously fits both datasets.
+
+    Parameters
+    ----------
+    scaler : Scaler
+        The scaler whose parameters will be refined.
+    ml_targets : MaximumLikelihoodXrayTarget or list thereof
+        One or more ML targets that reference *scaler* internally.
+    nsteps : int
+        Number of LBFGS optimisation steps.
+    lr, max_iter, history_size : float, int, int
+        LBFGS hyper-parameters.
+    verbose : int
+        Verbosity (0 = quiet, 1 = summary, 2+ = per-step).
+    """
+    if not isinstance(ml_targets, (list, tuple)):
+        ml_targets = [ml_targets]
+
+    was_frozen = scaler.frozen
+    if was_frozen:
+        scaler.unfreeze()
+
+    params = list(scaler.parameters())
+    if not params:
+        if was_frozen:
+            scaler.freeze()
+        return
+
+    optimizer = torch.optim.LBFGS(
+        params,
+        lr=lr,
+        max_iter=max_iter,
+        history_size=history_size,
+        line_search_fn="strong_wolfe",
+    )
+
+    def closure():
+        optimizer.zero_grad()
+        loss = sum(t() for t in ml_targets)
+        if not torch.isfinite(loss):
+            return torch.tensor(
+                1e10, device=loss.device, dtype=loss.dtype, requires_grad=True
+            )
+        loss.backward(retain_graph=True)
+        return loss
+
+    for step in range(nsteps):
+        optimizer.step(closure)
+        if verbose > 1:
+            with torch.no_grad():
+                losses = [t().item() for t in ml_targets]
+                total = sum(losses)
+                rw, rf = scaler.rfactor()
+                print(
+                    f"    ML scaler step {step + 1}/{nsteps}: "
+                    f"ML_losses={losses}, total={total:.4f}, "
+                    f"Rwork={rw:.4f}, Rfree={rf:.4f}"
+                )
+
+    if was_frozen:
+        scaler.freeze()
+
+    if verbose > 0:
+        with torch.no_grad():
+            rw, rf = scaler.rfactor()
+            print(f"  ML scaler refinement: Rwork={rw:.4f}, Rfree={rf:.4f}")
+
+
 # ---------------------------------------------------------------------------
 # Core pipeline functions
 # ---------------------------------------------------------------------------
@@ -96,20 +197,16 @@ DEFAULT_TARGET_WEIGHTS = {
 def setup_mixed_model(pdb_dark, pdb_light, fractions, restraints_cif,
                       d_min, device, verbose):
     """Load dark and light ModelFT instances and combine into a MixedModel."""
-    from torchref import ModelFT
     from torchref.model import MixedModel
 
-    model_dark = (
-        ModelFT(max_res=d_min, device=device, verbose=verbose)
-        .load_pdb(pdb_dark)
+    model_dark = load_model(
+        pdb_dark, max_res=d_min, device=device, verbose=verbose,
+        cif=restraints_cif,
     )
-    model_light = (
-        ModelFT(max_res=d_min, device=device, verbose=verbose)
-        .load_pdb(pdb_light)
+    model_light = load_model(
+        pdb_light, max_res=d_min, device=device, verbose=verbose,
+        cif=restraints_cif,
     )
-    if restraints_cif:
-        model_dark.set_restraints_cif(restraints_cif)
-        model_light.set_restraints_cif(restraints_cif)
 
     mixed = MixedModel(
         [model_dark, model_light], initial_fractions=fractions
@@ -117,12 +214,15 @@ def setup_mixed_model(pdb_dark, pdb_light, fractions, restraints_cif,
     return mixed, model_dark, model_light
 
 
-def setup_data(mtz_dark, mtz_light, d_min, device):
+def setup_data(mtz_dark, mtz_light, d_min, device,
+               column_names_dark=None, column_names_light=None):
     """Load dark and light MTZ files into ReflectionData, with optional resolution cut."""
-    from torchref import ReflectionData
-
-    data_dark = ReflectionData(device=device).load_mtz(mtz_dark)
-    data_light = ReflectionData(device=device).load_mtz(mtz_light)
+    data_dark = load_reflection_data(
+        mtz_dark, device=device, column_names=column_names_dark,
+    )
+    data_light = load_reflection_data(
+        mtz_light, device=device, column_names=column_names_light,
+    )
     if d_min is not None:
         data_dark.cut_res(highres=d_min)
         data_light.cut_res(highres=d_min)
@@ -161,7 +261,8 @@ _DIFF_TARGET_CHOICES = {
 
 def setup_loss_state(mixed_model, model_dark, model_light,
                      dataset_collection, scaler_dark, scaler_mixed,
-                     target_weights, device, diff_target_type="amplitude"):
+                     target_weights, device, diff_target_type="amplitude",
+                     scaler_mode="shared"):
     """Build LossState with all targets and apply *target_weights*.
 
     Parameters
@@ -173,6 +274,11 @@ def setup_loss_state(mixed_model, model_dark, model_light,
     diff_target_type : str
         Which difference target to use. One of 'amplitude', 'phase_informed',
         'taylor', or 'rice'.
+    scaler_mode : str
+        'shared' uses scaler_dark everywhere (diff target, ML target,
+        real-space targets) so that the bulk-solvent contribution cancels.
+        'split' uses separate scalers: scaler_dark for the dark side and
+        scaler_mixed for the light/mixed side (including ML targets).
     """
     from torchref.refinement import LossState
     from torchref.refinement.targets import (
@@ -198,25 +304,36 @@ def setup_loss_state(mixed_model, model_dark, model_light,
 
     state = LossState(device=device)
 
-    # Use the SAME (dark) scaler for both sides of the difference target.
-    # The bulk solvent is identical (same crystal), so a shared scaler ensures
+    # In 'shared' mode, a single scaler (scaler_dark) is used everywhere:
+    # the bulk solvent is identical (same crystal), so a shared scaler ensures
     # the solvent contribution cancels in DFcalc = |Fc_mixed| - |Fc_dark|.
+    # In 'split' mode, each side gets its own scaler.
+    if scaler_mode == "shared":
+        scaler_light_diff = scaler_dark
+        scaler_light_ml = scaler_dark
+    else:
+        scaler_light_diff = scaler_mixed
+        scaler_light_ml = scaler_mixed
+
     diff_target = DiffClass(
         dataset_collection=dataset_collection,
         model_dark=model_dark,
         model_light=mixed_model,
         scaler_dark=scaler_dark,
-        scaler_light=scaler_dark,
+        scaler_light=scaler_light_diff,
     )
     geom_target_light = TotalGeometryTarget(model_light)
     adp_target_light = TotalADPTarget(model_light)
+    ml_target_dark = MaximumLikelihoodXrayTarget(
+        dataset_collection["dark"], model_dark, scaler=scaler_dark
+    )
     ml_target_light = MaximumLikelihoodXrayTarget(
-        dataset_collection["light"], mixed_model, scaler=scaler_mixed
+        dataset_collection["light"], mixed_model, scaler=scaler_light_ml
     )
     rs_mixed_target = RealSpaceCorrelationTarget(
         data=dataset_collection["light"],
         model=mixed_model,
-        scaler=scaler_mixed,
+        scaler=scaler_light_ml,
     )
     rs_extra_target = RealSpaceExtrapolatedTarget(
         dataset_collection,
@@ -224,7 +341,7 @@ def setup_loss_state(mixed_model, model_dark, model_light,
         model_light=model_light,
         model_mixed=mixed_model,
         scaler_dark=scaler_dark,
-        scaler_mixed=scaler_mixed,
+        scaler_mixed=scaler_light_ml,
     )
 
     state.register_target(diff_target.name, diff_target)
@@ -246,7 +363,7 @@ def setup_loss_state(mixed_model, model_dark, model_light,
 
     state.set_weights(target_weights)
 
-    return state
+    return state, ml_target_dark, ml_target_light
 
 
 def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
@@ -584,75 +701,43 @@ def main():
 Examples:
   # Basic difference refinement
   torchref.difference-refine \\
-      --dark-pdb dark.pdb --light-pdb light.pdb \\
-      --dark-mtz dark.mtz --light-mtz light.mtz \\
+      -dm dark.pdb -lm light.pdb \\
+      -dsf dark.mtz -lsf light.mtz \\
       --fraction 0.37 -o output/
 
   # Custom weight schedule (anneal from 10 down to 1)
   torchref.difference-refine \\
-      --dark-pdb dark.pdb --light-pdb light.pdb \\
-      --dark-mtz dark.mtz --light-mtz light.mtz \\
+      -dm dark.pdb -lm light.pdb \\
+      -dsf dark.mtz -lsf light.mtz \\
       --fraction 0.37 \\
       --weight-schedule 10,5,3,1 --n-cycles 2 -o output/
 
   # With custom restraints and resolution cutoff
   torchref.difference-refine \\
-      --dark-pdb dark.pdb --light-pdb light.pdb \\
-      --dark-mtz dark.mtz --light-mtz light.mtz \\
+      -dm dark.pdb -lm light.pdb \\
+      -dsf dark.mtz -lsf light.mtz \\
       --fraction 0.37 \\
-      --restraints-cif ligand.cif --max-res 1.7 -o output/
+      --cif ligand.cif --dmin 1.7 -o output/
 
   # Override specific regularisation weights
   torchref.difference-refine \\
-      --dark-pdb dark.pdb --light-pdb light.pdb \\
-      --dark-mtz dark.mtz --light-mtz light.mtz \\
+      -dm dark.pdb -lm light.pdb \\
+      -dsf dark.mtz -lsf light.mtz \\
       --fraction 0.37 \\
-      --target-weights '{"light/model_target/geometry/chiral": 5,
-                         "light/model_target/adp/KL": 0.1}' -o output/
+      --weights '{"light/model_target/geometry/chiral": 5,
+                  "light/model_target/adp/KL": 0.1}' -o output/
         """,
     )
 
-    # --- Required arguments ---
-    parser.add_argument(
-        "--dark-pdb",
-        required=True,
-        type=str,
-        help="PDB file for the dark / reference state",
-    )
-    parser.add_argument(
-        "--light-pdb",
-        required=True,
-        type=str,
-        help="PDB file for the light / triggered state",
-    )
-    parser.add_argument(
-        "--dark-mtz",
-        required=True,
-        type=str,
-        help="MTZ file with dark / reference reflection data",
-    )
-    parser.add_argument(
-        "--light-mtz",
-        required=True,
-        type=str,
-        help="MTZ file with light / triggered reflection data",
-    )
-    parser.add_argument(
-        "--fraction",
-        required=True,
-        type=float,
-        help="Occupancy fraction of the light/excited state "
-             "(e.g. 0.37). Dark fraction is computed as 1 - fraction.",
-    )
-    parser.add_argument(
-        "-o", "--outdir",
-        required=True,
-        type=str,
-        help="Output directory for refined structures and maps",
-    )
+    # --- Input files (creates "Input files" and "Column selection" groups) ---
+    add_dual_model_args(parser)
 
-    # --- Difference target ---
-    parser.add_argument(
+    output = parser.add_argument_group("Output")
+    add_outdir_arg(output, help="Output directory for refined structures and maps")
+
+    # --- Refinement ---
+    refine = parser.add_argument_group("Refinement")
+    refine.add_argument(
         "--diff-target",
         type=str,
         default="amplitude",
@@ -663,89 +748,54 @@ Examples:
              "'rice' (Rice distribution NLL on complex difference "
              "amplitudes) (default: amplitude)",
     )
-
-    # --- Weight schedule ---
-    parser.add_argument(
+    refine.add_argument(
         "--weight-schedule",
         type=str,
         default="5,3,2",
         help="Comma-separated difference-target weights applied in "
              "sequence each macro-cycle (default: '5,3,2')",
     )
-    parser.add_argument(
+    refine.add_argument(
         "--n-cycles",
         type=int,
         default=3,
         help="Number of macro-cycles (repeats of the weight schedule) "
              "(default: 3)",
     )
-    parser.add_argument(
+    refine.add_argument(
         "--n-steps",
         type=int,
         default=2,
         help="LBFGS optimisation rounds per weight step (default: 2)",
     )
-    parser.add_argument(
+    refine.add_argument(
         "--max-iter",
         type=int,
         default=100,
         help="Max line-search iterations per LBFGS step (default: 100)",
     )
-    parser.add_argument(
+    refine.add_argument(
         "--n-clean",
         type=int,
         default=2,
         help="Reset LBFGS history every N steps (default: 2)",
     )
-
-    # --- Optional arguments ---
-    parser.add_argument(
-        "--restraints-cif",
-        type=str,
-        nargs="+",
-        default=None,
-        help="One or more CIF restraint dictionaries",
-    )
-    parser.add_argument(
-        "--max-res",
-        type=float,
-        default=None,
-        help="High-resolution cutoff in Angstroms (uses data limit if not set)",
-    )
-    parser.add_argument(
-        "--target-weights",
-        type=str,
-        default=None,
-        help="JSON dictionary to override default regularisation weights. "
-             "Keys are the full LossState paths.  Only the keys you supply "
-             "are changed; the rest keep their defaults.  Defaults: "
-             + json.dumps(DEFAULT_TARGET_WEIGHTS, indent=None),
-    )
-    parser.add_argument(
+    add_scaler_mode_arg(refine)
+    add_weights_arg(refine, default_weights=DEFAULT_TARGET_WEIGHTS)
+    refine.add_argument(
         "--refine-fractions",
         action="store_true",
         default=False,
         help="Refine population fractions during optimisation "
              "(default: fractions are frozen at initial values)",
     )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "cuda"],
-        help="Computation device (default: auto, uses CUDA if available)",
-    )
-    parser.add_argument(
-        "-v", "--verbose",
-        type=int,
-        default=1,
-        choices=[0, 1, 2],
-        help="Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)",
-    )
+
+    res = parser.add_argument_group("Resolution")
+    add_dmin_arg(res)
+
+    add_general_args(parser)
 
     args = parser.parse_args()
-
-    from torchref.utils.timing import register_timing
 
     register_timing()
 
@@ -794,77 +844,49 @@ Examples:
     # overridden each schedule step, but needs a key in the dict).
     target_weights[diff_target_name] = weight_schedule[0]
 
-    if args.target_weights is not None:
-        try:
-            # Accept either a JSON file path or an inline JSON string
-            if Path(args.target_weights).is_file():
-                with open(args.target_weights) as f:
-                    user_weights = json.load(f)
-            else:
-                user_weights = json.loads(args.target_weights)
-            if not isinstance(user_weights, dict):
-                raise ValueError("must be a JSON object")
-            target_weights.update(user_weights)
-        except (json.JSONDecodeError, ValueError) as e:
-            print(
-                f"Error: Invalid JSON for --target-weights: {e}",
-                file=sys.stderr,
-            )
-            return 1
+    target_weights, err = parse_weights(args.weights, defaults=target_weights)
+    if err:
+        print(f"Error: {err}", file=sys.stderr)
+        return 1
 
     # --- Validate input files ---
-    for label, path in [
-        ("dark PDB", args.dark_pdb),
-        ("light PDB", args.light_pdb),
-        ("dark MTZ", args.dark_mtz),
-        ("light MTZ", args.light_mtz),
-    ]:
-        if not Path(path).exists():
-            print(f"Error: {label} file not found: {path}", file=sys.stderr)
-            return 1
-
-    if args.restraints_cif:
-        for cif_path in args.restraints_cif:
-            if not Path(cif_path).exists():
-                print(
-                    f"Error: Restraints CIF not found: {cif_path}",
-                    file=sys.stderr,
-                )
-                return 1
+    rc = validate_files([
+        (args.dark_model, "Dark model"),
+        (args.light_model, "Light model"),
+        (args.dark_structure_factor, "Dark structure factor"),
+        (args.light_structure_factor, "Light structure factor"),
+    ])
+    if rc:
+        return rc
+    rc = validate_cif_files(args.cif)
+    if rc:
+        return rc
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
     # --- Device ---
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
-        if args.device == "cuda" and not torch.cuda.is_available():
-            print(
-                "Warning: CUDA requested but not available, falling back to CPU",
-                file=sys.stderr,
-            )
-            device = torch.device("cpu")
+    device = resolve_device(args.device)
 
     # --- Header ---
     if args.verbose > 0:
         print("=" * 72)
         print("TorchRef Difference Refinement")
         print("=" * 72)
-        print(f"Dark PDB:          {args.dark_pdb}")
-        print(f"Light PDB:         {args.light_pdb}")
-        print(f"Dark MTZ:          {args.dark_mtz}")
-        print(f"Light MTZ:         {args.light_mtz}")
+        print(f"Dark model:        {args.dark_model}")
+        print(f"Light model:       {args.light_model}")
+        print(f"Dark structure factor:  {args.dark_structure_factor}")
+        print(f"Light structure factor: {args.light_structure_factor}")
         frac_mode = "refinable" if args.refine_fractions else "frozen"
         print(f"Fractions:         dark={fractions[0]}, light={fractions[1]} ({frac_mode})")
         print(f"Output:            {outdir}")
         print(f"Device:            {device}")
-        if args.max_res:
-            print(f"Resolution cutoff: {args.max_res:.2f} A")
-        if args.restraints_cif:
-            print(f"Restraints CIF:    {', '.join(args.restraints_cif)}")
+        if args.dmin:
+            print(f"Resolution cutoff: {args.dmin:.2f} A")
+        if args.cif:
+            print(f"CIF restraints:    {', '.join(args.cif)}")
         print(f"Diff target:       {args.diff_target} ({diff_target_name})")
+        print(f"Scaler mode:       {args.scaler_mode}")
         print(f"Weight schedule:   {weight_schedule} x {args.n_cycles} cycles")
         print(f"LBFGS steps/weight: {args.n_steps}  (max_iter={args.max_iter})")
         print()
@@ -876,7 +898,7 @@ Examples:
         sys.stdout.flush()
 
     # --- Resolution ---
-    d_min = args.max_res if args.max_res is not None else 1.0
+    d_min = args.dmin if args.dmin is not None else 1.0
 
     # --- Setup ---
     if args.verbose > 0:
@@ -884,8 +906,8 @@ Examples:
         sys.stdout.flush()
 
     mixed, dark, light = setup_mixed_model(
-        args.dark_pdb, args.light_pdb, fractions,
-        args.restraints_cif, d_min, device, args.verbose,
+        args.dark_model, args.light_model, fractions,
+        args.cif, d_min, device, args.verbose,
     )
 
     if args.refine_fractions:
@@ -897,8 +919,11 @@ Examples:
         print("Loading reflection data...")
         sys.stdout.flush()
 
+    col_dark, col_light = build_dual_column_names(args)
+
     data_dark, data_light = setup_data(
-        args.dark_mtz, args.light_mtz, args.max_res, device,
+        args.dark_structure_factor, args.light_structure_factor, args.dmin, device,
+        column_names_dark=col_dark, column_names_light=col_light,
     )
 
     if args.verbose > 0:
@@ -912,20 +937,24 @@ Examples:
         sys.stdout.flush()
 
     scaler_dark = setup_scaler(dark, data_dark, device)
-    scaler_mixed = setup_scaler(mixed, data_light, device)
+    if args.scaler_mode == "split":
+        scaler_mixed = setup_scaler(mixed, data_light, device)
+    else:
+        scaler_mixed = scaler_dark  # shared: one scaler for everything
 
     if args.verbose > 0:
-        r_work_d, r_free_d = scaler_dark.rfactor()
-        r_work_l, r_free_l = scaler_mixed.rfactor()
+        r_work_d, r_free_d = compute_rfactors(dark, data_dark, scaler_dark)
+        r_work_l, r_free_l = compute_rfactors(mixed, data_light, scaler_mixed)
         print(f"  Initial R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
         print(f"  Initial R-factor (light): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
         print()
         sys.stdout.flush()
 
-    state = setup_loss_state(
+    state, ml_target_dark, ml_target_light = setup_loss_state(
         mixed, dark, light, collection,
         scaler_dark, scaler_mixed, target_weights, device,
         diff_target_type=args.diff_target,
+        scaler_mode=args.scaler_mode,
     )
 
     if args.verbose > 0:
@@ -972,7 +1001,24 @@ Examples:
                 n_clean=args.n_clean,
                 verbose=args.verbose,
             )
-            scaler_mixed.refine_lbfgs()
+            # Refine scalers by minimising their respective ML targets.
+            # In shared mode scaler_dark serves both datasets, so we
+            # minimise the sum of both ML losses jointly.
+            if args.scaler_mode == "shared":
+                refine_scaler_ml(scaler_dark,
+                                 [ml_target_dark, ml_target_light],
+                                 verbose=args.verbose)
+            else:
+                refine_scaler_ml(scaler_dark, ml_target_dark,
+                                 verbose=args.verbose)
+                refine_scaler_ml(scaler_mixed, ml_target_light,
+                                 verbose=args.verbose)
+
+            if args.verbose > 0:
+                rw_d, rf_d = compute_rfactors(dark, data_dark, scaler_dark)
+                rw_l, rf_l = compute_rfactors(mixed, data_light, scaler_mixed)
+                print(f"  R-factor (dark):  Rwork={rw_d:.4f}, Rfree={rf_d:.4f}")
+                print(f"  R-factor (light): Rwork={rw_l:.4f}, Rfree={rf_l:.4f}")
 
             if args.refine_fractions:
                 fraction_history.append(mixed.fractions[1].detach().cpu().item())
@@ -987,8 +1033,8 @@ Examples:
         print("=" * 72)
         print("Refinement complete")
         print("=" * 72)
-        r_work_d, r_free_d = scaler_dark.rfactor()
-        r_work_l, r_free_l = scaler_mixed.rfactor()
+        r_work_d, r_free_d = compute_rfactors(dark, data_dark, scaler_dark)
+        r_work_l, r_free_l = compute_rfactors(mixed, data_light, scaler_mixed)
         print(f"  Final R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
         print(f"  Final R-factor (light): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
         print(
@@ -1019,25 +1065,26 @@ Examples:
     # --- JSON summary ---
     summary = {
         "input": {
-            "dark_pdb": args.dark_pdb,
-            "light_pdb": args.light_pdb,
-            "dark_mtz": args.dark_mtz,
-            "light_mtz": args.light_mtz,
+            "dark_model": args.dark_model,
+            "light_model": args.light_model,
+            "dark_structure_factor": args.dark_structure_factor,
+            "light_structure_factor": args.light_structure_factor,
             "fractions": fractions,
-            "restraints_cif": args.restraints_cif,
-            "max_res": args.max_res,
+            "cif": args.cif,
+            "dmin": args.dmin,
         },
         "parameters": {
             "diff_target": args.diff_target,
+            "scaler_mode": args.scaler_mode,
             "weight_schedule": weight_schedule,
             "n_cycles": args.n_cycles,
             "n_steps": args.n_steps,
             "max_iter": args.max_iter,
-            "target_weights": target_weights,
+            "weights": target_weights,
         },
         "results": {
-            "r_factor_dark": dict(zip(["r_work", "r_free"], scaler_dark.rfactor())),
-            "r_factor_light": dict(zip(["r_work", "r_free"], scaler_mixed.rfactor())),
+            "r_factor_dark": dict(zip(["r_work", "r_free"], compute_rfactors(dark, data_dark, scaler_dark))),
+            "r_factor_light": dict(zip(["r_work", "r_free"], compute_rfactors(mixed, data_light, scaler_mixed))),
             "fractions": mixed.fractions.detach().cpu().tolist(),
         },
         "output_files": {

@@ -79,6 +79,7 @@ class Refinement(DebugMixin, nnModule):
         nbins: int = 10,
         manual_weights: Dict[str, float] = None,
         component_weights: Dict[str, float] = None,
+        column_names: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize Refinement.
@@ -144,7 +145,7 @@ class Refinement(DebugMixin, nnModule):
             if isinstance(data_file, str):
                 self.reflection_data = ReflectionData(verbose=self.verbose, device=self.device)
                 if data_file.endswith(".mtz"):
-                    self.reflection_data.load_mtz(data_file)
+                    self.reflection_data.load_mtz(data_file, column_names=column_names)
                 elif data_file.endswith(".cif"):
                     self.reflection_data.load_cif(data_file)
                 else:

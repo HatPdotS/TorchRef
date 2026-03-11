@@ -14,48 +14,51 @@ Examples
 ::
 
     # Basic validation (full cell correlation)
-    torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
-        --dark-pdb dark.pdb --light-pdb light.pdb
+    torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
+        -dm dark.pdb -lm light.pdb
 
     # With light fraction and ligand masking (both models, default)
-    torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
-        --dark-pdb dark.pdb --light-pdb light.pdb \\
+    torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
+        -dm dark.pdb -lm light.pdb \\
         --fraction 0.20 --selection "chain B and resname IBL" --mask-radius 2.5
 
     # Mask from light model only
-    torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
-        --dark-pdb dark.pdb --light-pdb light.pdb \\
+    torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
+        -dm dark.pdb -lm light.pdb \\
         --fraction 0.20 --selection "resname IBL" --mask-source light
 
     # Full output with plots and CCP4 maps
-    torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
-        --dark-pdb dark.pdb --light-pdb light.pdb \\
+    torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
+        -dm dark.pdb -lm light.pdb \\
         --fraction 0.20 --selection "resname IBL" --plot --write-maps -o validation/
 """
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from torchref.cli._common import (
+    add_dual_model_args,
+    add_dmin_arg,
+    add_general_args,
+    add_outdir_arg,
+    add_scaler_mode_arg,
+    build_dual_column_names,
+    configure_unbuffered_output,
+    load_model,
+    load_reflection_data,
+    register_timing,
+    resolve_device,
+    validate_cif_files,
+    validate_files,
+)
 from torchref.utils.serialization import convert_to_serializable
 
-# Force unbuffered output for batch systems like SLURM
-(
-    sys.stdout.reconfigure(line_buffering=True)
-    if hasattr(sys.stdout, "reconfigure")
-    else None
-)
-(
-    sys.stderr.reconfigure(line_buffering=True)
-    if hasattr(sys.stderr, "reconfigure")
-    else None
-)
-os.environ["PYTHONUNBUFFERED"] = "1"
+configure_unbuffered_output()
 
 
 # ---------------------------------------------------------------------------
@@ -236,22 +239,15 @@ def run_validation(args):
     """Run the DED validation pipeline."""
     import gemmi
 
-    from torchref import DatasetCollection, ModelFT, ReflectionData, Scaler
+    from torchref import DatasetCollection, Scaler
     from torchref.model import MixedModel
+    from torchref.refinement.targets import MaximumLikelihoodXrayTarget
+    from torchref.cli.difference_refine import compute_rfactors, refine_scaler_ml
     from torchref.base.fourier.grid import get_real_grid
     from torchref.symmetry.grid_utils import calculate_optimal_grid_size
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
-    
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
-        if args.device == "cuda" and not torch.cuda.is_available():
-            print(
-                "Warning: CUDA requested but not available, falling back to CPU",
-                file=sys.stderr,
-            )
-            device = torch.device("cpu")
+
+    device = resolve_device(args.device)
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -265,14 +261,20 @@ def run_validation(args):
     # ------------------------------------------------------------------
     if args.verbose >= 1:
         print(f"\n--- Loading reflection data ---")
-        print(f"  Dark MTZ:  {args.dark_mtz}")
-        print(f"  Light MTZ: {args.light_mtz}")
+        print(f"  Dark SF:   {args.dark_structure_factor}")
+        print(f"  Light SF:  {args.light_structure_factor}")
 
-    data_dark = ReflectionData(device=str(device), verbose=0).load_mtz(args.dark_mtz)
-    data_light = ReflectionData(device=str(device), verbose=0).load_mtz(args.light_mtz)
+    col_dark, col_light = build_dual_column_names(args)
+
+    data_dark = load_reflection_data(
+        args.dark_structure_factor, device=device, column_names=col_dark, verbose=0
+    )
+    data_light = load_reflection_data(
+        args.light_structure_factor, device=device, column_names=col_light, verbose=0
+    )
 
     # Resolution cutoff
-    d_min = args.max_res
+    d_min = args.dmin
     if d_min is not None:
         data_dark.cut_res(highres=d_min)
         data_light.cut_res(highres=d_min)
@@ -339,15 +341,12 @@ def run_validation(args):
     if args.verbose >= 1:
         print(f"\n--- Loading models ---")
 
-    model_dark = ModelFT(max_res=d_min, device=device, verbose=0)
-    model_dark.load_pdb(args.dark_pdb)
-
-    model_light = ModelFT(max_res=d_min, device=device, verbose=0)
-    model_light.load_pdb(args.light_pdb)
-
-    if args.restraints_cif:
-        model_dark.set_restraints_cif(args.restraints_cif)
-        model_light.set_restraints_cif(args.restraints_cif)
+    model_dark = load_model(
+        args.dark_model, max_res=d_min, device=device, verbose=0, cif=args.cif
+    )
+    model_light = load_model(
+        args.light_model, max_res=d_min, device=device, verbose=0, cif=args.cif
+    )
 
     if args.verbose >= 1:
         print(f"  Dark model: {len(model_dark.pdb)} atoms")
@@ -362,22 +361,45 @@ def run_validation(args):
     )
 
     # ------------------------------------------------------------------
-    # 2b. Setup scaler (single dark scaler for both models)
+    # 2b. Setup scaler(s)
     # ------------------------------------------------------------------
-    # Use ONE scaler fitted to the dark state for both dark and mixed Fcalc.
-    # The bulk solvent is the same crystal, so using a shared scaler ensures
-    # the solvent contribution cancels in the difference DFcalc = |Fc_mixed| - |Fc_dark|.
+    # In 'shared' mode, a single scaler (dark) is used for both models so
+    # the bulk-solvent contribution cancels in DFcalc = |Fc_mixed| - |Fc_dark|.
+    # In 'split' mode, each side gets its own scaler.
     if args.verbose >= 1:
-        print(f"\n--- Setting up scaler ---")
+        print(f"\n--- Setting up scaler (mode={args.scaler_mode}) ---")
 
-    scaler = Scaler(model_dark, data_dark, device=device)
-    scaler.calc_initial_scale()
-    scaler.setup_anisotropy_correction()
-    scaler.refine_lbfgs()
+    scaler_dark = Scaler(model_dark, data_dark, device=device)
+    scaler_dark.calc_initial_scale()
+    scaler_dark.setup_anisotropy_correction()
+    scaler_dark.refine_lbfgs()
+
+    if args.scaler_mode == "split":
+        scaler_mixed = Scaler(mixed_model, data_light, device=device)
+        scaler_mixed.calc_initial_scale()
+        scaler_mixed.setup_anisotropy_correction()
+        scaler_mixed.refine_lbfgs()
+    else:
+        scaler_mixed = scaler_dark  # shared: one scaler for everything
+
+    # Refine scaler(s) against ML loss
+    ml_dark = MaximumLikelihoodXrayTarget(data_dark, model_dark, scaler=scaler_dark)
+    ml_mixed = MaximumLikelihoodXrayTarget(data_light, mixed_model, scaler=scaler_mixed)
+
+    if args.scaler_mode == "shared":
+        refine_scaler_ml(scaler_dark, [ml_dark, ml_mixed],
+                         nsteps=3, verbose=args.verbose)
+    else:
+        refine_scaler_ml(scaler_dark, ml_dark,
+                         nsteps=3, verbose=args.verbose)
+        refine_scaler_ml(scaler_mixed, ml_mixed,
+                         nsteps=3, verbose=args.verbose)
 
     if args.verbose >= 1:
-        r_work_d, r_free_d = scaler.rfactor()
+        r_work_d, r_free_d = compute_rfactors(model_dark, data_dark, scaler_dark)
+        r_work_m, r_free_m = compute_rfactors(mixed_model, data_light, scaler_mixed)
         print(f"  R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
+        print(f"  R-factor (mixed): R_work={r_work_m:.4f}  R_free={r_free_m:.4f}")
 
     # ------------------------------------------------------------------
     # 3. P1 expansion and grid setup
@@ -409,8 +431,8 @@ def run_validation(args):
     # Compute scaled Fcalc at ASU level using the shared dark scaler.
     # Both models are scaled identically so bulk solvent cancels in the difference.
     with torch.no_grad():
-        fcalc_dark_asu = scaler(model_dark.get_structure_factor(hkl_all, recalc=True))[mask]
-        fcalc_mixed_asu = scaler(mixed_model(hkl_all, recalc=True))[mask]
+        fcalc_dark_asu = scaler_dark(model_dark.get_structure_factor(hkl_all, recalc=True))[mask]
+        fcalc_mixed_asu = scaler_mixed(mixed_model(hkl_all, recalc=True))[mask]
 
     # Expand to P1 using symmetry phase shifts (exact, no FFT needed)
     phase_factors = torch.exp(1j * phase_shifts.to(fcalc_dark_asu.dtype))
@@ -561,14 +583,14 @@ def run_validation(args):
     # ------------------------------------------------------------------
     results = {
         "input": {
-            "dark_mtz": str(args.dark_mtz),
-            "light_mtz": str(args.light_mtz),
-            "dark_pdb": str(args.dark_pdb),
-            "light_pdb": str(args.light_pdb),
+            "dark_structure_factor": str(args.dark_structure_factor),
+            "light_structure_factor": str(args.light_structure_factor),
+            "dark_model": str(args.dark_model),
+            "light_model": str(args.light_model),
             "fraction": args.fraction,
             "selection": args.selection,
             "mask_radius": args.mask_radius,
-            "max_res": d_min,
+            "dmin": d_min,
         },
         "realspace_correlation": rs_corr,
         "reciprocal_cc_overall": round(cc_overall, 4),
@@ -641,75 +663,48 @@ def main():
         epilog="""
 Examples:
   # Basic validation
-  torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
-      --dark-pdb dark.pdb --light-pdb light.pdb
+  torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
+      -dm dark.pdb -lm light.pdb
 
   # With fraction and ligand masking (mask from both models by default)
-  torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
-      --dark-pdb dark.pdb --light-pdb light.pdb \\
+  torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
+      -dm dark.pdb -lm light.pdb \\
       --fraction 0.20 --selection "chain B and resname IBL" --mask-radius 2.5
 
   # Mask from light model only
-  torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
-      --dark-pdb dark.pdb --light-pdb light.pdb \\
+  torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
+      -dm dark.pdb -lm light.pdb \\
       --fraction 0.20 --selection "resname IBL" --mask-source light
 
   # Full output
-  torchref.validate-ded --dark-mtz dark.mtz --light-mtz light.mtz \\
-      --dark-pdb dark.pdb --light-pdb light.pdb \\
+  torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
+      -dm dark.pdb -lm light.pdb \\
       --fraction 0.20 --selection "resname IBL" --plot --write-maps -o validation/
         """,
     )
 
-    # --- Required arguments ---
-    parser.add_argument(
-        "--dark-mtz",
-        required=True,
-        type=str,
-        help="Dark / reference state MTZ file (with F and SIGF columns)",
-    )
-    parser.add_argument(
-        "--light-mtz",
-        required=True,
-        type=str,
-        help="Light / triggered state MTZ file (with F and SIGF columns)",
-    )
-    parser.add_argument(
-        "--dark-pdb",
-        required=True,
-        type=str,
-        help="Dark / reference state PDB file",
-    )
-    parser.add_argument(
-        "--light-pdb",
-        required=True,
-        type=str,
-        help="Light / triggered state PDB file",
+    # --- Input files (creates "Input files" and "Column selection" groups) ---
+    add_dual_model_args(parser, fraction_required=False, fraction_default=1.0)
+
+    output = parser.add_argument_group("Output")
+    add_outdir_arg(
+        output,
+        required=False,
+        default=".",
+        help="Output directory (default: current directory)",
     )
 
-    # --- Optional arguments ---
-    parser.add_argument(
-        "--fraction",
-        type=float,
-        default=1.0,
-        help="Light state fraction (default: 1.0). Mixed model: "
-        "fraction * Fcalc_light + (1-fraction) * Fcalc_dark",
-    )
-    parser.add_argument(
-        "--restraints-cif",
-        nargs="+",
-        type=str,
-        default=None,
-        help="CIF restraint files for non-standard ligands",
-    )
-    parser.add_argument(
+    # --- Validation options ---
+    analysis = parser.add_argument_group("Analysis")
+    add_scaler_mode_arg(analysis)
+    analysis.add_argument(
         "--selection",
         type=str,
         default=None,
         help='Phenix-style atom selection for masking '
         '(e.g., "chain B and resname IBL")',
     )
-    parser.add_argument(
+    analysis.add_argument(
         "--mask-source",
         type=str,
         default="both",
@@ -719,82 +714,49 @@ Examples:
         "dark/reference model, 'both' combines atoms from both models "
         "(default: both).",
     )
-    parser.add_argument(
+    analysis.add_argument(
         "--mask-radius",
         type=float,
         default=2.5,
         help="Mask sphere radius in Angstroms (default: 2.5)",
     )
-    parser.add_argument(
-        "--max-res",
-        type=float,
-        default=None,
-        help="High-resolution cutoff in Angstroms (default: from data)",
-    )
-    parser.add_argument(
+    analysis.add_argument(
         "--n-bins",
         type=int,
         default=20,
         help="Number of resolution bins (default: 20)",
     )
-    parser.add_argument(
-        "-o",
-        "--outdir",
-        type=str,
-        default=".",
-        help="Output directory (default: current directory)",
-    )
-    parser.add_argument(
+    analysis.add_argument(
         "--plot",
         action="store_true",
         help="Generate matplotlib validation plots (PNG + PDF)",
     )
-    parser.add_argument(
+    analysis.add_argument(
         "--write-maps",
         action="store_true",
         help="Write CCP4 map files for WDFo and WDFcalc",
     )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "cuda"],
-        help="Computation device (default: auto, uses CUDA if available)",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        type=int,
-        default=1,
-        choices=[0, 1, 2],
-        help="Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)",
-    )
+
+    res = parser.add_argument_group("Resolution")
+    add_dmin_arg(res)
+
+    add_general_args(parser)
 
     args = parser.parse_args()
-
-    from torchref.utils.timing import register_timing
 
     register_timing()
 
     # Validate input files exist
-    for path_arg, label in [
-        (args.dark_mtz, "--dark-mtz"),
-        (args.light_mtz, "--light-mtz"),
-        (args.dark_pdb, "--dark-pdb"),
-        (args.light_pdb, "--light-pdb"),
-    ]:
-        if not Path(path_arg).exists():
-            print(f"Error: {label} file not found: {path_arg}", file=sys.stderr)
-            return 1
+    if validate_files([
+        (args.dark_structure_factor, "--dark-structure-factor"),
+        (args.light_structure_factor, "--light-structure-factor"),
+        (args.dark_model, "--dark-model"),
+        (args.light_model, "--light-model"),
+    ]):
+        return 1
 
-    if args.restraints_cif:
-        for cif_path in args.restraints_cif:
-            if not Path(cif_path).exists():
-                print(
-                    f"Error: --restraints-cif file not found: {cif_path}",
-                    file=sys.stderr,
-                )
-                return 1
+    if validate_cif_files(args.cif):
+        return 1
 
     return run_validation(args)
 

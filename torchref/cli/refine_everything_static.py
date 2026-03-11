@@ -13,30 +13,33 @@ Examples
 --------
 ::
 
-    torchref.refine-static -s model.pdb -f reflections.mtz -o output_dir/
-    torchref.refine-static -s model.pdb -f reflections.mtz -o output/ -n 10
+    torchref.refine-static -m model.pdb -sf reflections.mtz -o output_dir/
+    torchref.refine-static -m model.pdb -sf reflections.mtz -o output/ -n 10
 """
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 import torch
 
-# Force unbuffered output for batch systems like SLURM
-(
-    sys.stdout.reconfigure(line_buffering=True)
-    if hasattr(sys.stdout, "reconfigure")
-    else None
+from torchref.cli._common import (
+    add_dmin_arg,
+    add_general_args,
+    add_n_cycles_arg,
+    add_outdir_arg,
+    add_single_model_args,
+    add_weights_arg,
+    build_column_names,
+    configure_unbuffered_output,
+    parse_weights,
+    register_timing,
+    resolve_device,
+    validate_files,
 )
-(
-    sys.stderr.reconfigure(line_buffering=True)
-    if hasattr(sys.stderr, "reconfigure")
-    else None
-)
-os.environ["PYTHONUNBUFFERED"] = "1"
+
+configure_unbuffered_output()
 
 # Import stats module early to patch json with StatEntry encoder
 import torchref.utils.stats  # noqa: F401
@@ -49,106 +52,40 @@ def main():
         epilog="""
 Examples:
   # Basic refinement with static weights
-  torchref.refine-static -s model.pdb -f reflections.mtz -o output_dir/
+  torchref.refine-static -m model.pdb -sf reflections.mtz -o output_dir/
 
   # With 10 refinement cycles
-  torchref.refine-static -s model.pdb -f reflections.mtz -o output/ -n 10
+  torchref.refine-static -m model.pdb -sf reflections.mtz -o output/ -n 10
         """,
     )
 
-    # Mandatory arguments
-    parser.add_argument(
-        "-s",
-        "--structure",
-        required=True,
-        type=str,
-        help="Input structure file (PDB or CIF format)",
-    )
+    add_single_model_args(parser)
 
-    parser.add_argument(
-        "-f",
-        "--structure-factors",
-        required=True,
-        type=str,
-        help="Input structure factors file (MTZ or CIF format)",
-    )
+    output = parser.add_argument_group("Output")
+    add_outdir_arg(output)
 
-    parser.add_argument(
-        "-o",
-        "--outdir",
-        required=True,
-        type=str,
-        help="Output directory for refined structure and results",
-    )
+    refine = parser.add_argument_group("Refinement")
+    add_n_cycles_arg(refine)
+    add_weights_arg(refine, default_weights={"xray": 1.0, "geometry": 10.0, "adp": 5.0})
 
-    # Optional arguments
-    parser.add_argument(
-        "-n",
-        "--n-cycles",
-        type=int,
-        default=5,
-        help="Number of refinement macro cycles (default: 5)",
-    )
+    res = parser.add_argument_group("Resolution")
+    add_dmin_arg(res)
 
-    parser.add_argument(
-        "-c",
-        "--cif-restraints",
-        type=str,
-        default=None,
-        help="CIF restraints dictionary (auto-detected if not provided)",
-    )
-
-    parser.add_argument(
-        "-w",
-        "--weights",
-        type=str,
-        default=None,
-        help="Path to JSON file with manual weights for components (overrides defaults) defaults: {xray:1.0, geometry:10.0, adp:5.0}\n \
-            Weights need to matcht the component names used in the refinement setup.",
-    )
-
-    parser.add_argument(
-        "--max-res",
-        type=float,
-        default=None,
-        help="Maximum resolution cutoff in Angstroms (optional)",
-    )
-
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "cuda"],
-        help="Computation device (default: auto, uses CUDA if available)",
-    )
-
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        type=int,
-        default=1,
-        choices=[0, 1, 2],
-        help="Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)",
-    )
+    add_general_args(parser)
 
     args = parser.parse_args()
-
-    from torchref.utils.timing import register_timing
 
     register_timing()
 
     # Validate inputs
-    structure_path = Path(args.structure)
-    sf_path = Path(args.structure_factors)
+    model_path = Path(args.model)
+    sf_path = Path(args.structure_factor)
     outdir = Path(args.outdir)
 
-    if not structure_path.exists():
-        print(f"Error: Structure file not found: {structure_path}", file=sys.stderr)
-        sys.exit(1)
-
-    if not sf_path.exists():
-        print(f"Error: Structure factors file not found: {sf_path}", file=sys.stderr)
-        sys.exit(1)
+    validate_files(
+        [(str(model_path), "Model"), (str(sf_path), "Structure factors")],
+        exit_on_error=True,
+    )
 
     # Create output directory
     outdir.mkdir(parents=True, exist_ok=True)
@@ -169,48 +106,45 @@ Examples:
         print(
             "Weighting scheme: ComponentWeighting (default, no hyperparameter tuning)"
         )
-        print(f"Structure:        {structure_path}")
-        print(f"Structure factors: {sf_path}")
+        print(f"Model:            {model_path}")
+        print(f"Structure factor: {sf_path}")
         print(f"Output directory: {outdir}")
         print(f"Refinement cycles: {args.n_cycles}")
         print(f"Device:           {args.device}")
-        if args.max_res:
-            print(f"Resolution cutoff: {args.max_res:.2f} A")
+        if args.dmin:
+            print(f"Resolution cutoff: {args.dmin:.2f} A")
         print("=" * 80)
         print()
         sys.stdout.flush()
 
     # Setup device
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
-        if args.device == "cuda" and not torch.cuda.is_available():
-            print(
-                "Warning: CUDA requested but not available, falling back to CPU",
-                file=sys.stderr,
-            )
-            device = torch.device("cpu")
+    device = resolve_device(args.device)
 
     if args.verbose > 0:
         print("Initializing refinement...")
         sys.stdout.flush()
 
+    # Build column_names for MTZ loading
+    column_names = build_column_names(args.column_structure_factor, args.column_sigma)
+
     refinement = LBFGSRefinement(
         data_file=str(sf_path),
-        pdb=str(structure_path),
-        cif=args.cif_restraints,
+        pdb=str(model_path),
+        cif=args.cif,
         verbose=args.verbose,
-        max_res=args.max_res,
+        max_res=args.dmin,
         device=device,
+        column_names=column_names,
     )
 
     from torchref.refinement.weighting import ManualWeighting
 
-    base_weights = {"xray": 1.0, "geometry": 10.0, "adp": 5.0}
-    if args.weights is not None:
-        with open(args.weights, "r") as f:
-            base_weights.update(json.load(f))
+    base_weights, weights_error = parse_weights(
+        args.weights, defaults={"xray": 1.0, "geometry": 10.0, "adp": 5.0}
+    )
+    if weights_error is not None:
+        print(f"Error: {weights_error}", file=sys.stderr)
+        return 1
 
     manual_weighting = ManualWeighting(weights=base_weights, device=device)
 
@@ -269,13 +203,13 @@ Examples:
     history_data = {
         "weighting_scheme": "static",
         "input_files": {
-            "structure": str(structure_path),
-            "structure_factors": str(sf_path),
-            "cif_restraints": args.cif_restraints,
+            "model": str(model_path),
+            "structure_factor": str(sf_path),
+            "cif": args.cif,
         },
         "parameters": {
             "n_cycles": args.n_cycles,
-            "max_resolution": args.max_res,
+            "dmin": args.dmin,
             "device": str(device),
         },
         "history": refinement.history if hasattr(refinement, "history") else {},

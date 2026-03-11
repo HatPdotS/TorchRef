@@ -12,13 +12,13 @@ Examples
 ::
 
     # 2mFo-DFc map from refinement output
-    torchref.mtz2map -f refined.mtz --amplitude FWT --phase PHWT -o 2fofc.ccp4
+    torchref.mtz2map -sf refined.mtz -csf FWT -cphi PHWT -o 2fofc.ccp4
 
     # mFo-DFc difference map
-    torchref.mtz2map -f refined.mtz --amplitude DELFWT --phase PHDELWT -o fofc.ccp4
+    torchref.mtz2map -sf refined.mtz -csf DELFWT -cphi PHDELWT -o fofc.ccp4
 
     # Custom columns with resolution cutoff
-    torchref.mtz2map -f data.mtz --amplitude 2FOFCWT --phase PH2FOFCWT --high-res 2.0 -o map.ccp4
+    torchref.mtz2map -sf data.mtz -csf 2FOFCWT -cphi PH2FOFCWT --dmin 2.0 -o map.ccp4
 """
 
 import argparse
@@ -27,51 +27,53 @@ import sys
 import numpy as np
 import torch
 
+from torchref.cli._common import (
+    add_general_args,
+    add_resolution_args,
+    register_timing,
+    resolve_device,
+)
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="Convert MTZ map coefficients to a CCP4 map.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  torchref.mtz2map -f refined.mtz --amplitude FWT --phase PHWT -o 2fofc.ccp4
-  torchref.mtz2map -f refined.mtz --amplitude DELFWT --phase PHDELWT -o fofc.ccp4
-  torchref.mtz2map -f data.mtz -F 2FOFCWT -P PH2FOFCWT --high-res 2.0 -o map.ccp4
+  torchref.mtz2map -sf refined.mtz -csf FWT -cphi PHWT -o 2fofc.ccp4
+  torchref.mtz2map -sf refined.mtz -csf DELFWT -cphi PHDELWT -o fofc.ccp4
+  torchref.mtz2map -sf data.mtz -csf 2FOFCWT -cphi PH2FOFCWT --dmin 2.0 -o map.ccp4
         """,
     )
 
-    parser.add_argument(
-        "-f", "--mtz", required=True, type=str, help="Input MTZ file."
+    inp = parser.add_argument_group("Input")
+    inp.add_argument(
+        "-sf", "--structure-factor", required=True, type=str, help="Input MTZ file."
     )
-    parser.add_argument(
-        "-F",
-        "--amplitude",
+    inp.add_argument(
+        "-csf",
+        "--column-structure-factor",
         required=True,
         type=str,
+        metavar="COL",
         help="Column name for amplitudes (e.g. FWT, DELFWT, 2FOFCWT).",
     )
-    parser.add_argument(
-        "-P",
-        "--phase",
+    inp.add_argument(
+        "-cphi",
+        "--column-phase",
         required=True,
         type=str,
+        metavar="COL",
         help="Column name for phases in degrees (e.g. PHWT, PHDELWT, PH2FOFCWT).",
     )
-    parser.add_argument(
+
+    output = parser.add_argument_group("Output")
+    output.add_argument(
         "-o", "--output", required=True, type=str, help="Output CCP4 map file."
     )
-    parser.add_argument(
-        "--high-res",
-        type=float,
-        default=None,
-        help="High-resolution cutoff in Angstroms. Default: use all data.",
-    )
-    parser.add_argument(
-        "--low-res",
-        type=float,
-        default=None,
-        help="Low-resolution cutoff in Angstroms. Default: use all data.",
-    )
-    parser.add_argument(
+
+    mapopts = parser.add_argument_group("Map options")
+    mapopts.add_argument(
         "--gridsize",
         type=int,
         nargs=3,
@@ -79,16 +81,7 @@ def main():
         metavar=("NX", "NY", "NZ"),
         help="Override grid dimensions. Default: auto from cell and resolution.",
     )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        type=int,
-        choices=[0, 1, 2],
-        default=1,
-        help="Verbosity (0=silent, 1=normal, 2=debug). Default: 1.",
-    )
-
-    parser.add_argument(
+    mapopts.add_argument(
         "-n",
         "--normalize",
         type=str,
@@ -96,53 +89,40 @@ def main():
         default='True',
         help="Normalize amplitudes to unit variance. Default: True.",
     )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "cuda"],
-        help="Computation device (default: auto, uses CUDA if available)",
-    )
+
+    res = parser.add_argument_group("Resolution")
+    add_resolution_args(res)
+
+    add_general_args(parser)
 
     args = parser.parse_args()
-
-    from torchref.utils.timing import register_timing
 
     register_timing()
 
     # --- Device ---
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
-        if args.device == "cuda" and not torch.cuda.is_available():
-            print(
-                "Warning: CUDA requested but not available, falling back to CPU",
-                file=sys.stderr,
-            )
-            device = torch.device("cpu")
+    device = resolve_device(args.device)
 
     # --- Read MTZ ---
     import reciprocalspaceship as rs
 
     if args.verbose >= 1:
-        print(f"Reading {args.mtz}")
+        print(f"Reading {args.structure_factor}")
 
-    mtz = rs.read_mtz(args.mtz)
+    mtz = rs.read_mtz(args.structure_factor)
     available = list(mtz.columns)
 
     normalize = args.normalize == 'True'
 
-    if args.amplitude not in available:
+    if args.column_structure_factor not in available:
         print(
-            f"Error: amplitude column '{args.amplitude}' not found.\n"
+            f"Error: amplitude column '{args.column_structure_factor}' not found.\n"
             f"Available columns: {available}",
             file=sys.stderr,
         )
         sys.exit(1)
-    if args.phase not in available:
+    if args.column_phase not in available:
         print(
-            f"Error: phase column '{args.phase}' not found.\n"
+            f"Error: phase column '{args.column_phase}' not found.\n"
             f"Available columns: {available}",
             file=sys.stderr,
         )
@@ -159,13 +139,13 @@ def main():
         print(f"  Cell: {cell[0]:.2f} {cell[1]:.2f} {cell[2]:.2f}  "
               f"{cell[3]:.1f} {cell[4]:.1f} {cell[5]:.1f}")
         print(f"  Spacegroup: {spacegroup}")
-        print(f"  Columns: {args.amplitude} (amplitude), {args.phase} (phase)")
+        print(f"  Columns: {args.column_structure_factor} (amplitude), {args.column_phase} (phase)")
 
     # Extract HKL, amplitudes, phases
     df = mtz.reset_index()
     hkl = df[["H", "K", "L"]].to_numpy().astype(np.int32)
-    amplitudes = df[args.amplitude].to_numpy().astype(np.float32)
-    phases_deg = df[args.phase].to_numpy().astype(np.float32)
+    amplitudes = df[args.column_structure_factor].to_numpy().astype(np.float32)
+    phases_deg = df[args.column_phase].to_numpy().astype(np.float32)
 
     # Drop NaN reflections
     valid = np.isfinite(amplitudes) & np.isfinite(phases_deg)
@@ -186,10 +166,10 @@ def main():
     )
 
     res_mask = np.ones(len(hkl), dtype=bool)
-    if args.high_res is not None:
-        res_mask &= d_spacings >= args.high_res
-    if args.low_res is not None:
-        res_mask &= d_spacings <= args.low_res
+    if args.dmin is not None:
+        res_mask &= d_spacings >= args.dmin
+    if args.dmax is not None:
+        res_mask &= d_spacings <= args.dmax
     if not res_mask.all():
         n_before = len(hkl)
         hkl = hkl[res_mask]

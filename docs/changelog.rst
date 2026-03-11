@@ -1,6 +1,13 @@
 Changelog
 =========
 
+Version 0.4.3
+-------------
+
+- Refactored and standardised cli args
+- Unified validation-ded and difference-refine sclaer logic and added flags for separate vs shared scalers
+- Added option for other difference targets mainly rice, Does not seem to make a difference 
+
 Version 0.4.2
 -------------
 

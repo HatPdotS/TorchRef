@@ -19,8 +19,8 @@ Examples
 --------
 ::
 
-    torchref.refine-hyper -s model.pdb -f reflections.mtz -o output_dir/
-    torchref.refine-hyper -s model.pdb -f reflections.mtz -o output/ --hyperparameters my_params.json
+    torchref.refine-hyper -m model.pdb -sf reflections.mtz -o output_dir/
+    torchref.refine-hyper -m model.pdb -sf reflections.mtz -o output/ --hyperparameters my_params.json
 """
 
 import argparse
@@ -31,18 +31,20 @@ from pathlib import Path
 
 import torch
 
-# Force unbuffered output for batch systems like SLURM
-(
-    sys.stdout.reconfigure(line_buffering=True)
-    if hasattr(sys.stdout, "reconfigure")
-    else None
+from torchref.cli._common import (
+    add_dmin_arg,
+    add_general_args,
+    add_n_cycles_arg,
+    add_outdir_arg,
+    add_single_model_args,
+    build_column_names,
+    configure_unbuffered_output,
+    register_timing,
+    resolve_device,
+    validate_files,
 )
-(
-    sys.stderr.reconfigure(line_buffering=True)
-    if hasattr(sys.stderr, "reconfigure")
-    else None
-)
-os.environ["PYTHONUNBUFFERED"] = "1"
+
+configure_unbuffered_output()
 
 # Import stats module early to patch json with StatEntry encoder
 import torchref.utils.stats  # noqa: F401
@@ -55,74 +57,24 @@ def main():
         epilog="""
 Examples:
   # Refinement with default optimized hyperparameters
-  torchref.refine-hyper -s model.pdb -f reflections.mtz -o output_dir/
+  torchref.refine-hyper -m model.pdb -sf reflections.mtz -o output_dir/
 
   # With custom hyperparameters file
-  torchref.refine-hyper -s model.pdb -f reflections.mtz -o output/ --hyperparameters my_params.json
+  torchref.refine-hyper -m model.pdb -sf reflections.mtz -o output/ --hyperparameters my_params.json
 
   # Skip hyperparameters (equivalent to static weighting)
-  torchref.refine-hyper -s model.pdb -f reflections.mtz -o output/ --hyperparameters none
+  torchref.refine-hyper -m model.pdb -sf reflections.mtz -o output/ --hyperparameters none
         """,
     )
 
-    # Mandatory arguments
-    parser.add_argument(
-        "-s",
-        "--structure",
-        required=True,
-        type=str,
-        help="Input structure file (PDB or CIF format)",
-    )
+    add_single_model_args(parser)
 
-    parser.add_argument(
-        "-f",
-        "--structure-factors",
-        required=True,
-        type=str,
-        help="Input structure factors file (MTZ or CIF format)",
-    )
+    output = parser.add_argument_group("Output")
+    add_outdir_arg(output)
 
-    parser.add_argument(
-        "-o",
-        "--outdir",
-        required=True,
-        type=str,
-        help="Output directory for refined structure and results",
-    )
-
-    # Optional arguments
-    parser.add_argument(
-        "-n",
-        "--n-cycles",
-        type=int,
-        default=5,
-        help="Number of refinement macro cycles (default: 5)",
-    )
-
-    parser.add_argument(
-        "-c",
-        "--cif-restraints",
-        type=str,
-        default=None,
-        help="CIF restraints dictionary (auto-detected if not provided)",
-    )
-
-    parser.add_argument(
-        "--max-res",
-        type=float,
-        default=None,
-        help="Maximum resolution cutoff in Angstroms (optional)",
-    )
-
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "cuda"],
-        help="Computation device (default: auto, uses CUDA if available)",
-    )
-
-    parser.add_argument(
+    refine = parser.add_argument_group("Refinement")
+    add_n_cycles_arg(refine)
+    refine.add_argument(
         "--hyperparameters",
         type=str,
         default="default",
@@ -130,8 +82,7 @@ Examples:
         'or "none" to skip. The JSON file can be edited to customize refinement behavior. '
         '(default: "default" uses Optuna-optimized hyperparameters)',
     )
-
-    parser.add_argument(
+    refine.add_argument(
         "--mode",
         type=str,
         default="everything",
@@ -140,33 +91,24 @@ Examples:
         '"refine" for separated XYZ then ADP cycles (default: "everything")',
     )
 
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        type=int,
-        default=1,
-        choices=[0, 1, 2],
-        help="Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)",
-    )
+    res = parser.add_argument_group("Resolution")
+    add_dmin_arg(res)
+
+    add_general_args(parser)
 
     args = parser.parse_args()
-
-    from torchref.utils.timing import register_timing
 
     register_timing()
 
     # Validate inputs
-    structure_path = Path(args.structure)
-    sf_path = Path(args.structure_factors)
+    model_path = Path(args.model)
+    sf_path = Path(args.structure_factor)
     outdir = Path(args.outdir)
 
-    if not structure_path.exists():
-        print(f"Error: Structure file not found: {structure_path}", file=sys.stderr)
-        sys.exit(1)
-
-    if not sf_path.exists():
-        print(f"Error: Structure factors file not found: {sf_path}", file=sys.stderr)
-        sys.exit(1)
+    validate_files(
+        [(str(model_path), "Model"), (str(sf_path), "Structure factors")],
+        exit_on_error=True,
+    )
 
     # Create output directory
     outdir.mkdir(parents=True, exist_ok=True)
@@ -186,42 +128,37 @@ Examples:
         print("=" * 80)
         print("Weighting scheme: ComponentWeighting with optimized hyperparameters")
         print(f"Hyperparameters:  {args.hyperparameters}")
-        print(f"Structure:        {structure_path}")
-        print(f"Structure factors: {sf_path}")
+        print(f"Model:            {model_path}")
+        print(f"Structure factor: {sf_path}")
         print(f"Output directory: {outdir}")
         print(f"Refinement mode:  {args.mode}")
         print(f"Refinement cycles: {args.n_cycles}")
         print(f"Device:           {args.device}")
-        if args.max_res:
-            print(f"Resolution cutoff: {args.max_res:.2f} A")
+        if args.dmin:
+            print(f"Resolution cutoff: {args.dmin:.2f} A")
         print("=" * 80)
         print()
         sys.stdout.flush()
 
     # Setup device
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
-        if args.device == "cuda" and not torch.cuda.is_available():
-            print(
-                "Warning: CUDA requested but not available, falling back to CPU",
-                file=sys.stderr,
-            )
-            device = torch.device("cpu")
+    device = resolve_device(args.device)
 
     if args.verbose > 0:
         print("Initializing refinement...")
         sys.stdout.flush()
 
+    # Build column_names for MTZ loading
+    column_names = build_column_names(args.column_structure_factor, args.column_sigma)
+
     # Initialize refinement
     refinement = LBFGSRefinement(
         data_file=str(sf_path),
-        pdb=str(structure_path),
-        cif=args.cif_restraints,
+        pdb=str(model_path),
+        cif=args.cif,
         verbose=args.verbose,
-        max_res=args.max_res,
+        max_res=args.dmin,
         device=device,
+        column_names=column_names,
     )
 
     if args.verbose > 0:
@@ -356,13 +293,13 @@ Examples:
     history_data = {
         "weighting_scheme": "hyperparameters",
         "input_files": {
-            "structure": str(structure_path),
-            "structure_factors": str(sf_path),
-            "cif_restraints": args.cif_restraints,
+            "model": str(model_path),
+            "structure_factor": str(sf_path),
+            "cif": args.cif,
         },
         "parameters": {
             "n_cycles": args.n_cycles,
-            "max_resolution": args.max_res,
+            "dmin": args.dmin,
             "device": str(device),
             "hyperparameters_source": hyperparams_source,
             "n_hyperparameters": n_hyperparams,
