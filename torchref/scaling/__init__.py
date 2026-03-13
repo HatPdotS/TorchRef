@@ -38,9 +38,11 @@ Example
 from torchref.scaling.scaler import Scaler
 from torchref.scaling.scaler_base import ScalerBase
 from torchref.scaling.solvent import SolventModel
+from torchref.scaling.collection_scaler import CollectionScaler
 
 __all__ = [
     "Scaler",
     "ScalerBase",
     "SolventModel",
+    "CollectionScaler",
 ]

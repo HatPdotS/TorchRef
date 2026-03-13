@@ -18,8 +18,7 @@ import gemmi
 import torch
 import torch.nn as nn
 
-import torchref.base.get_scattering_factor_torch as gsf
-import torchref.base.math_numpy as mnp
+
 from torchref.io import cif, pdb
 from torchref.base import math_torch
 from torchref.model.parameter_wrappers import (

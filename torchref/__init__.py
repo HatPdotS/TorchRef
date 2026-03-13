@@ -95,7 +95,7 @@ PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 
 
 # Data I/O
-from torchref.io import DatasetCollection, ReflectionData
+from torchref.io import DatasetCollection, ReflectionData, FcalcDataset
 
 # Model
 from torchref.model import Model, ModelFT

@@ -48,6 +48,7 @@ from .datasets import (
     CrystalDataset,
     DatasetCollection,
     ReflectionData,
+    FcalcDataset,
 )
 
 # Reader classes (from format modules)
