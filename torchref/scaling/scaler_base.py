@@ -848,7 +848,12 @@ class ScalerBase(DebugMixin, nn.Module):
             return []
         return super().parameters(recurse)
 
-    def forward(self, fcalc: torch.Tensor, use_mask: bool = True) -> torch.Tensor:
+    def forward(
+        self,
+        fcalc: torch.Tensor,
+        use_mask: bool = True,
+        f_sol_override: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Forward pass for the ScalerBase module.
 
@@ -859,6 +864,12 @@ class ScalerBase(DebugMixin, nn.Module):
             dimension for batch is possible. N should match the full HKL size.
         use_mask : bool, default True
             Deprecated parameter, kept for backward compatibility.
+        f_sol_override : torch.Tensor, optional
+            Pre-computed raw solvent structure factors.  When provided, these
+            replace the internally-cached ``_f_sol_raw``.  The scaler's
+            k_sol / B_sol / phase damping is still applied.  This is used by
+            ``CollectionScaler`` to supply mixed (fraction-weighted) solvent
+            contributions.
 
         Returns
         -------
@@ -888,6 +899,9 @@ class ScalerBase(DebugMixin, nn.Module):
             )
         else:
             aniso_correction = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
+
+        if f_sol_override is not None:
+            self._f_sol_raw = f_sol_override
 
         if hasattr(self, "solvent") and self.solvent is not None:
             # Lazily cache raw solvent SFs (FFT of mask) — only recomputed

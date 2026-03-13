@@ -84,7 +84,8 @@ class FcalcDataset(CrystalDataset):
     def from_cell_and_resolution(
         cell: Union[torch.Tensor, List[float], Cell],
         spacegroup: SpaceGroupLike,
-        d_min: float,
+        d_min: float = 2.0,
+        d_max: Optional[float] = None,
         device: torch.device = torch.device("cpu"),
         dtype: torch.dtype = torch.float32,
     ) -> "FcalcDataset":
@@ -97,8 +98,11 @@ class FcalcDataset(CrystalDataset):
             Unit cell [a, b, c, alpha, beta, gamma] or Cell object.
         spacegroup : SpaceGroupLike
             Space group (str, int, gemmi.SpaceGroup, or torchref.symmetry.SpaceGroup).
-        d_min : float
-            High resolution limit in Angstroms.
+        d_min : float, optional
+            High resolution limit in Angstroms. Default is 2.0.
+        d_max : float, optional
+            Low resolution limit in Angstroms. If provided, reflections
+            with d-spacing > d_max are removed.
         device : torch.device
             Target device.
         dtype : torch.dtype
@@ -113,11 +117,12 @@ class FcalcDataset(CrystalDataset):
         --------
         ::
 
+            from torchref.symmetry import Cell, SpaceGroup
+
+            cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
+            sg = SpaceGroup('P212121')
             dataset = FcalcDataset.from_cell_and_resolution(
-                cell=[50.0, 60.0, 70.0, 90.0, 90.0, 90.0],
-                spacegroup='P212121',
-                d_min=2.0,
-                device=torch.device('cuda'),
+                cell=cell, spacegroup=sg, d_min=2.0,
             )
             print(f"Generated {len(dataset)} reflections")
         """
@@ -157,13 +162,19 @@ class FcalcDataset(CrystalDataset):
         # Calculate resolution
         resolution = get_d_spacing(hkl.float(), cell_tensor)
 
+        # Apply low resolution cutoff if requested
+        if d_max is not None:
+            mask = resolution <= d_max
+            hkl = hkl[mask]
+            resolution = resolution[mask]
+
         print(f"Generated dataset with {len(hkl)} reflections.")
 
         return FcalcDataset(
             hkl=hkl,
             resolution=resolution,
             cell=cell_obj,
-            spacegroup=sg_obj,  # Store torchref.symmetry.SpaceGroup
+            spacegroup=sg_obj,
             device=device,
         )
 
@@ -254,6 +265,70 @@ class FcalcDataset(CrystalDataset):
         )
 
         # Write using existing mtz.write() - pass SpaceGroup wrapper
+        mtz.write(df, self.cell.data, self.spacegroup, filepath)
+
+    def write_mtz_as_fobs(
+        self,
+        filepath: str,
+        sigma_frac: float = 0.05,
+        f_column: str = "F-obs",
+        sigf_column: str = "SIGF-obs",
+        phase_column: str = "PHIF-model",
+    ) -> None:
+        """
+        Write Fcalc to MTZ as if it were observed data (F-obs columns).
+
+        Useful for creating simulated "experimental" MTZ files that can be
+        read back by ReflectionData.load_mtz() as observed amplitudes.
+
+        Parameters
+        ----------
+        filepath : str
+            Output MTZ filename.
+        sigma_frac : float, optional
+            Sigma as a fraction of |F|. Default is 0.05 (5%).
+        f_column : str, optional
+            Column name for amplitudes. Default is 'F-obs'.
+        sigf_column : str, optional
+            Column name for sigma. Default is 'SIGF-obs'.
+        phase_column : str, optional
+            Column name for model phases. Default is 'PHIF-model'.
+
+        Examples
+        --------
+        ::
+
+            dataset.set_fcalc(fcalc_values)
+            dataset.write_mtz_as_fobs('simulated_obs.mtz', sigma_frac=0.05)
+        """
+        from torchref.io import mtz
+
+        if self.fcalc_amp is None:
+            raise ValueError("No Fcalc values set. Call set_fcalc() first.")
+        if self.hkl is None:
+            raise ValueError("No HKL indices set.")
+        if self.cell is None:
+            raise ValueError("No cell set.")
+        if self.spacegroup is None:
+            raise ValueError("No spacegroup set.")
+
+        amp = self.fcalc_amp.cpu().numpy()
+        sigma = amp * sigma_frac
+
+        hkl_np = self.hkl.cpu().numpy()
+        columns = {
+            "H": hkl_np[:, 0],
+            "K": hkl_np[:, 1],
+            "L": hkl_np[:, 2],
+            f_column: amp,
+            sigf_column: sigma,
+        }
+        if self.fcalc_phase is not None:
+            columns[phase_column] = (
+                torch.rad2deg(self.fcalc_phase).cpu().numpy()
+            )
+
+        df = pd.DataFrame(columns)
         mtz.write(df, self.cell.data, self.spacegroup, filepath)
 
     # ========== SERIALIZATION OVERRIDES ==========
