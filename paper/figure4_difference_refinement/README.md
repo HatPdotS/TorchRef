@@ -3,7 +3,7 @@
 ## Overview
 
 This figure demonstrates TorchRef's difference refinement capability on a time-resolved
-crystallography dataset: light-induced *trans*-to-*cis* isomerization of the IBL ligand
+crystallography dataset: light-induced *cis*-to-*trans* isomerization of the IBL ligand
 in tubulin (PDB: 8QL2 dark, 7YYZ light).
 
 ## Method

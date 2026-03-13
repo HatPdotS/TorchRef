@@ -7,7 +7,7 @@ This folder contains the data, scripts, and figures for the TorchRef publication
 ### Figure 2: Validation Benchmark
 **Location:** `figure2_validation/`
 
-Comparison of TorchRef vs PHENIX refinement across ~940 PDB structures. Shows R-factors, geometry quality, structural deviations, and runtime comparison.
+Comparison of TorchRef vs PHENIX refinement across 1000 PDB structures. Not all refinements were successful between torchref and Phenix. Shows R-factors, geometry quality, structural deviations, and runtime comparison.
 
 See `figure2_validation/README.md` for the full data generation pipeline.
 
@@ -30,24 +30,3 @@ Time-resolved difference refinement of IBL isomerization in tubulin. Shows recov
 - `panels/` - PyMOL-rendered figure panels (manually positioned, not auto-regenerable)
 - `scripts/` - Refinement and validation scripts
 
-## Regenerating Figures
-
-Figures 2, 3a, and 3b can be regenerated from the bundled pre-computed data:
-
-```bash
-python generate_all_figures.py
-```
-
-Figure 4 panels are PyMOL renders that require manual positioning. The CCP4 maps needed for rendering can be regenerated via:
-
-```bash
-cd figure4_difference_refinement/validation
-bash run_validation.sh
-```
-
-## Dependencies
-
-- Python 3.10+
-- matplotlib, numpy, pandas (included with TorchRef)
-- TorchRef (for regenerating benchmark data or validation maps)
-- PyMOL (for Figure 4 panel rendering only)
