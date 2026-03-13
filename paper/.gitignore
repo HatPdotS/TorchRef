@@ -1,0 +1,7 @@
+# Override root .gitignore rules for paper assets
+!*.png
+!*.json
+!*.csv
+!*.mtz
+!*.pdb
+!*.cif
