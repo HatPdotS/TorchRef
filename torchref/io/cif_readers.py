@@ -1432,6 +1432,11 @@ class ModelCIFReader:
             atom_df, ["_atom_site.pdbx_formal_charge"], default=0
         )
 
+        # Model number (for multi-model structures / ensembles)
+        result["model_num"] = self._extract_int(
+            atom_df, ["_atom_site.pdbx_PDB_model_num"], default=1
+        )
+
         # Anisotropic displacement parameters
         aniso_cols = [
             "_atom_site.aniso_U[1][1]",
@@ -1475,6 +1480,26 @@ class ModelCIFReader:
         result["index"] = np.arange(len(result), dtype=int)
         result["element"] = result["element"].str.strip().str.capitalize()
         return result
+
+    def get_atom_data_by_model(self) -> Dict[int, pd.DataFrame]:
+        """
+        Split atom data by ``pdbx_PDB_model_num``.
+
+        For single-model files, returns ``{1: dataframe}``.
+        For multi-model files, returns one DataFrame per model number.
+
+        Returns
+        -------
+        dict of int -> pandas.DataFrame
+            Mapping of model number to atom DataFrame.
+        """
+        df = self.get_atom_data()
+        if "model_num" not in df.columns:
+            return {1: df}
+        return {
+            int(num): group.reset_index(drop=True)
+            for num, group in df.groupby("model_num")
+        }
 
     def _extract_string(
         self,

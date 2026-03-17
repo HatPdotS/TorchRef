@@ -55,6 +55,9 @@ from .datasets import (
 from .mtz import MTZReader
 from .pdb import PDBReader
 
+# IHM ensemble support (mapping always available; reader/writer need python-ihm)
+from .ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMStateInfo
+
 # Legacy aliases for backwards compatibility
 MTZ = MTZReader
 PDB = PDBReader
@@ -64,6 +67,7 @@ __all__ = [
     "CrystalDataset",
     "ReflectionData",
     "DatasetCollection",
+    "FcalcDataset",
     # Format modules
     "mtz",
     "pdb",
@@ -78,6 +82,10 @@ __all__ = [
     # Router
     "DataRouter",
     "DataRouterError",
+    # IHM ensemble support
+    "IHMEnsembleMapping",
+    "IHMStateInfo",
+    "IHMModelGroupInfo",
     # Legacy aliases
     "MTZ",
     "PDB",

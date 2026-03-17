@@ -33,3 +33,4 @@ claude
 .err
 # Sphinx build output
 docs/_build/
+docs/api/

@@ -439,6 +439,93 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         frozen_str = "frozen" if not self.fraction_params.requires_grad else "learnable"
         return f"MixedModel({len(self.models)} models, fractions=[{frac_str}], {frozen_str})"
 
+    def write_ihm(
+        self,
+        filepath: str,
+        state_names: Optional[List[str]] = None,
+        group_name: str = "ensemble",
+        datasets: Optional[dict] = None,
+    ) -> None:
+        """
+        Write this MixedModel to an IHM mmCIF file.
+
+        Creates a single model group with the current population fractions
+        over the constituent structural states.
+
+        Requires the optional ``python-ihm`` dependency.
+
+        Parameters
+        ----------
+        filepath : str
+            Output file path.
+        state_names : list of str, optional
+            Names for each constituent model / state.
+            Default: ``state_1``, ``state_2``, ...
+        group_name : str
+            Name for the model group. Default ``"ensemble"``.
+        datasets : dict of str -> ReflectionData, optional
+            Per-timepoint reflection data to embed in the CIF.
+        """
+        from torchref.io.ihm import IHMWriter
+        from torchref.io.ihm_mapping import (
+            IHMEnsembleMapping,
+            IHMModelGroupInfo,
+            IHMStateInfo,
+        )
+
+        n = len(self.models)
+        fracs = self.fractions.detach().cpu().tolist()
+
+        # Build states
+        states = []
+        for i in range(n):
+            name = state_names[i] if state_names and i < len(state_names) else f"state_{i + 1}"
+            states.append(
+                IHMStateInfo(state_id=i + 1, name=name, model_num=i + 1)
+            )
+
+        # Build single model group
+        state_ids = [s.state_id for s in states]
+        state_fractions = dict(zip(state_ids, fracs))
+        groups = [
+            IHMModelGroupInfo(
+                group_id=1,
+                name=group_name,
+                state_fractions=state_fractions,
+            )
+        ]
+
+        # Extract cell/spacegroup from first model
+        cell = None
+        spacegroup = None
+        model0 = self.models[0]
+        if hasattr(model0, "cell") and model0.cell is not None:
+            cell_obj = model0.cell
+            if hasattr(cell_obj, "tolist"):
+                cell = cell_obj.tolist()
+            elif hasattr(cell_obj, "parameters"):
+                cell = cell_obj.parameters.tolist()
+        if hasattr(model0, "spacegroup") and model0.spacegroup is not None:
+            sg = model0.spacegroup
+            if hasattr(sg, "hm"):
+                spacegroup = sg.hm
+            elif hasattr(sg, "xhm"):
+                spacegroup = sg.xhm()
+            else:
+                spacegroup = str(sg)
+
+        mapping = IHMEnsembleMapping(
+            states=states,
+            model_groups=groups,
+            cell=cell,
+            spacegroup=spacegroup,
+        )
+
+        # Create a temporary ModelCollection-like wrapper for the writer
+        writer = IHMWriter._from_mixed_model(self, mapping)
+        writer.datasets = datasets
+        writer.write(filepath)
+
     def get_vdw_radii(self) -> torch.Tensor:
         """
         Get van der Waals radii from the first model.

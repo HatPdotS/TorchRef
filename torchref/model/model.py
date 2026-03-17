@@ -12,7 +12,7 @@ Variable naming conventions:
 - f_calc/f_obs: Complex structure factors (lowercase = complex)
 """
 
-from typing import Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import gemmi
 import torch
@@ -30,6 +30,18 @@ from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.utils import sanitize_pdb_dataframe
+
+
+# Standard 3-letter to 1-letter amino acid code mapping
+_THREE_TO_ONE = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    "SEC": "U", "PYL": "O",
+    # Common modified residues
+    "MSE": "M", "CSE": "C", "SEP": "S", "TPO": "T", "PTR": "Y",
+}
 
 
 class Model(DeviceMovementMixin, DebugMixin, nn.Module):
@@ -705,6 +717,77 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         cif_reader = cif.ModelCIFReader(file)
 
         return self.load(cif_reader)
+
+    @property
+    def chain_sequences(self) -> List[Tuple[str, str]]:
+        """
+        Per-chain amino acid sequences as single-letter codes.
+
+        Excludes HETATM records. Gaps in residue numbering are filled
+        with ``?``. Non-standard residues are mapped to ``X``.
+
+        Returns
+        -------
+        list of (str, str)
+            Ordered list of ``(chain_id, sequence_string)``.
+            E.g. ``[("A", "MKVL??GAST"), ("B", "ACDEFG")]``.
+        """
+        if self.pdb is None:
+            return []
+
+        atom_df = self.pdb[self.pdb["ATOM"] == "ATOM"]
+        result = []
+
+        for chain in atom_df["chainid"].unique():
+            chain_df = atom_df[atom_df["chainid"] == chain]
+            residues = (
+                chain_df.drop_duplicates(subset=["resseq", "icode"])
+                .sort_values("resseq")
+            )
+            resseqs = residues["resseq"].values
+            resnames = residues["resname"].values
+
+            seq_chars = []
+            for i, (rseq, rname) in enumerate(zip(resseqs, resnames)):
+                if i > 0:
+                    gap = int(rseq) - int(resseqs[i - 1]) - 1
+                    if gap > 0:
+                        seq_chars.extend(["?"] * gap)
+                code = _THREE_TO_ONE.get(str(rname).strip(), "X")
+                seq_chars.append(code)
+
+            result.append((str(chain), "".join(seq_chars)))
+
+        return result
+
+    def get_chain_residues(self) -> List[Tuple[str, List[str]]]:
+        """
+        Per-chain residue names as 3-letter codes (for IHM/CIF writing).
+
+        Excludes HETATM records. Unlike :attr:`chain_sequences`, returns
+        the raw 3-letter codes without gap filling.
+
+        Returns
+        -------
+        list of (str, list of str)
+            Ordered list of ``(chain_id, [resname, ...])``.
+        """
+        if self.pdb is None:
+            return []
+
+        atom_df = self.pdb[self.pdb["ATOM"] == "ATOM"]
+        result = []
+
+        for chain in atom_df["chainid"].unique():
+            chain_df = atom_df[atom_df["chainid"] == chain]
+            residues = (
+                chain_df.drop_duplicates(subset=["resseq", "icode"])
+                .sort_values("resseq")
+            )
+            resnames = [str(r).strip() for r in residues["resname"].values]
+            result.append((str(chain), resnames))
+
+        return result
 
     def _create_occupancy_groups(self, pdb_df, initial_occ):
         """

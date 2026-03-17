@@ -409,6 +409,74 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         return collection
 
     # ------------------------------------------------------------------
+    # IHM I/O
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_ihm(
+        cls,
+        filepath: str,
+        max_res: float = 1.5,
+        radius_angstrom: float = 4.0,
+        device=None,
+        verbose: int = 0,
+    ) -> tuple:
+        """
+        Load a ModelCollection from an IHM mmCIF file.
+
+        Requires the optional ``python-ihm`` dependency.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to IHM mmCIF file.
+        max_res : float
+            Maximum resolution for FFT grid setup.
+        radius_angstrom : float
+            Radius for electron density calculation.
+        device : torch.device, optional
+            Device for model tensors.
+        verbose : int
+            Verbosity level.
+
+        Returns
+        -------
+        tuple of (ModelCollection, IHMEnsembleMapping)
+        """
+        from torchref.io.ihm import IHMReader
+
+        reader = IHMReader(filepath, verbose=verbose)
+        return reader(
+            max_res=max_res,
+            radius_angstrom=radius_angstrom,
+            device=device,
+        )
+
+    def write_ihm(self, filepath: str, mapping=None, datasets=None) -> None:
+        """
+        Write this ModelCollection to IHM mmCIF format.
+
+        Requires the optional ``python-ihm`` dependency.
+
+        Parameters
+        ----------
+        filepath : str
+            Output file path.
+        mapping : IHMEnsembleMapping, optional
+            Mapping with metadata for round-tripping. If ``None``,
+            a minimal mapping is created from the collection structure.
+        datasets : dict of str -> ReflectionData, optional
+            Per-timepoint reflection data to embed in the CIF.
+            Each key should match a timepoint name.
+        """
+        from torchref.io.ihm import IHMWriter
+
+        writer = IHMWriter(
+            self, mapping=mapping, datasets=datasets, verbose=self.verbose,
+        )
+        writer.write(filepath)
+
+    # ------------------------------------------------------------------
     # Dict-like access
     # ------------------------------------------------------------------
 

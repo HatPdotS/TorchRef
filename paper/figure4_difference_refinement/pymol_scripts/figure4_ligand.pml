@@ -26,9 +26,9 @@ set ray_trace_mode, 1
 set depth_cue, 0
 
 # Mesh/surface quality
-set mesh_quality, 15
-set mesh_grid_max, 1500
-set surface_quality, 15
+set mesh_quality, 3
+set mesh_grid_max, 200
+set surface_quality, 3
 
 # 1. LOAD STRUCTURES
 load figure4_difference_refinement/data/8QL2.pdb, dark
@@ -40,6 +40,36 @@ remove elem H
 load figure4_difference_refinement/validation/output/torchref_IBL/validate_WDFo.ccp4, wdfo_map
 map_double wdfo_map,
 map_double wdfo_map,
+
+# 2b. MOVE MODELS INTO UNIT CELL so they overlap with the map
+python
+import numpy as np
+from math import cos, sin, radians
+
+def frac_matrix(sym):
+    """Return Cartesian->fractional and fractional->Cartesian matrices from cell params."""
+    a, b, c, al, be, ga = sym[0:6]
+    al, be, ga = radians(al), radians(be), radians(ga)
+    v = a * b * c * np.sqrt(1 - cos(al)**2 - cos(be)**2 - cos(ga)**2 + 2*cos(al)*cos(be)*cos(ga))
+    cart2frac = np.array([
+        [1/a, -cos(ga)/(a*sin(ga)), (cos(al)*cos(ga)-cos(be))/(a*sin(ga)*v/(b*c))],
+        [0,   1/(b*sin(ga)),         (cos(be)*cos(ga)-cos(al))/(b*sin(ga)*v/(a*c))],
+        [0,   0,                      a*b*sin(ga)/v]
+    ])
+    frac2cart = np.linalg.inv(cart2frac)
+    return cart2frac, frac2cart
+
+for obj in ["dark", "extrapol", "torchref"]:
+    sym = cmd.get_symmetry(obj)
+    if not sym:
+        continue
+    cart2frac, frac2cart = frac_matrix(sym)
+    com = np.array(cmd.centerofmass(obj))
+    com_frac = cart2frac @ com
+    shift_frac = -np.floor(com_frac)
+    shift_cart = frac2cart @ shift_frac
+    cmd.translate(shift_cart.tolist(), obj)
+python end
 
 # 3. SELECTIONS
 # Note: 7YYZ has IBL at resi 502, dark/torchref at resi 501
@@ -78,65 +108,76 @@ color marine, IBL_torchref and elem C
 color blue, IBL_torchref and elem N
 color red, IBL_torchref and elem O
 
-# 7. MULTI-LEVEL DIFFERENCE MAP (Green/Red)
-set mesh_type, 1
+# 7. VOLUME RAMP DIFFERENCE MAP (Green/Red)
+# Define ramp first, then create volume with carve
+cmd.volume_ramp_new('ded_ramp', [\
+     -5.0, 0.6, 0.0, 0.0, 0.15, \
+     -4.0, 0.8, 0.0, 0.0, 0.12, \
+     -3.0, 1.0, 0.3, 0.3, 0.08, \
+     -2.5, 1.0, 0.3, 0.3, 0.0, \
+      2.5, 0.3, 1.0, 0.3, 0.0, \
+      3.0, 0.3, 1.0, 0.3, 0.08, \
+      4.0, 0.0, 0.8, 0.0, 0.12, \
+      5.0, 0.0, 0.6, 0.0, 0.15, \
+    ])
 
-python
-mesh_levels = [(3.0, 0.3), (4.0, 1.0), (5.0, 2.5)]
-carve = 1.5
-
-for sigma, width in mesh_levels:
-    neg_name = f"mesh_neg_{sigma}"
-    pos_name = f"mesh_pos_{sigma}"
-    cmd.isomesh(neg_name, "wdfo_map", -sigma, "IBL_combined", carve=carve)
-    cmd.isomesh(pos_name, "wdfo_map",  sigma, "IBL_combined", carve=carve)
-    cmd.color("tv_red", neg_name)
-    cmd.color("tv_green", pos_name)
-    cmd.set("mesh_width", width, neg_name)
-    cmd.set("mesh_width", width, pos_name)
-python end
+volume vol_wdfo, wdfo_map, ramp=ded_ramp, selection=IBL_combined, carve=1.5
 
 # 8. ORGANIZATION
 group Models, dark extrapol torchref
-group Maps, mesh_neg_* mesh_pos_*
+group Maps, vol_wdfo
 
-hide everything, IBL_combined
+hide dark extrapol torchref
 
 # 9. VIEW (IBL close-up)
-set_view (\
-     0.107359871,   -0.979589105,   -0.169923216,\
-     0.614946246,    0.199726403,   -0.762849510,\
-     0.781220913,   -0.022595137,    0.623840988,\
-     0.000018273,    0.000030073,  -29.184953690,\
-    13.772394180,  -17.207910538,   17.486206055,\
-    23.470010757,   34.864784241,  -20.000000000 )
+python
+com = cmd.centerofmass("IBL_combined")
+cmd.set_view([
+     0.107359871,   -0.979589105,   -0.169923216,
+     0.614946246,    0.199726403,   -0.762849510,
+     0.781220913,   -0.022595137,    0.623840988,
+     0.000000000,    0.000000000,  -29.184953690,
+     com[0],         com[1],         com[2],
+    23.470010757,   34.864784241,  -20.000000000
+])
+python end
 
 # ==========================================================
 # PANEL 11: WDFo + dark + extrapolated (7YYZ)
+# Z-order: dark (back) -> extrapol (front) -> volume (top)
 # ==========================================================
-disable torchref
-enable dark
-enable extrapol
-enable Maps
+hide everything
+show sticks, IBL_dark
+show spheres, IBL_dark
+show sticks, IBL_extrapol
+show spheres, IBL_extrapol
+show volume, vol_wdfo
 
 draw 2400, 1800
 png figure4_difference_refinement/panels/figure4_panel_11.png
 
 # ==========================================================
 # PANEL 12: WDFo + dark + TorchRef refined
+# Z-order: dark (back) -> volume -> torchref (front)
 # ==========================================================
-disable extrapol
-enable torchref
+hide everything
+show sticks, IBL_dark
+show spheres, IBL_dark
+show volume, vol_wdfo
+show sticks, IBL_torchref
+show spheres, IBL_torchref
 
 draw 2400, 1800
 png figure4_difference_refinement/panels/figure4_panel_12.png
 
 # ==========================================================
-# PANEL 13: TorchRef refined + extrapolated (7YYZ), no map
+# PANEL 13: extrapolated (back) + TorchRef refined (front), no map
 # ==========================================================
-enable extrapol
-disable dark
-disable Maps
+hide everything
+show sticks, IBL_extrapol
+show spheres, IBL_extrapol
+show sticks, IBL_torchref
+show spheres, IBL_torchref
 
 draw 2400, 1800
 png figure4_difference_refinement/panels/figure4_panel_13.png

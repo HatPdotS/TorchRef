@@ -25,6 +25,12 @@ import matplotlib.pyplot as plt
 plt.rcParams["font.family"] = "serif"
 plt.rcParams["font.serif"] = ["STIXGeneral"]
 plt.rcParams["mathtext.fontset"] = "stix"
+plt.rcParams["font.size"] = 14
+plt.rcParams["axes.labelsize"] = 16
+plt.rcParams["axes.titlesize"] = 17
+plt.rcParams["xtick.labelsize"] = 13
+plt.rcParams["ytick.labelsize"] = 13
+plt.rcParams["legend.fontsize"] = 12
 import numpy as np
 
 COLOR_TR = "#2563eb"       # blue       — TorchRef fwd no_grad (CPU)
@@ -182,10 +188,10 @@ def plot_execution_time(cpu: dict, gpu: dict | None, output_path: Path):
     )
 
     ax.set_yscale("log")
-    ax.set_xlabel("Number of CPU threads", fontsize=12)
-    ax.set_ylabel("Time per Fcalc (ms)", fontsize=12)
-    ax.set_title("Structure Factor Calculation — Execution Time", fontsize=13)
-    ax.legend(fontsize=9, bbox_to_anchor=(1.02, 1), loc="upper left")
+    ax.set_xlabel("Number of CPU threads")
+    ax.set_ylabel("Time per Fcalc (ms)")
+    ax.set_title("Structure Factor Calculation — Execution Time")
+    ax.legend(fontsize=12, bbox_to_anchor=(1.02, 1), loc="upper left")
     ax.grid(True, alpha=0.3, which="both")
     ax.set_xlim(0, threads.max() + 1)
 
@@ -255,10 +261,10 @@ def plot_speedup(cpu: dict, gpu: dict | None, output_path: Path):
             label=f"TorchRef fwd+bwd ({gpu_name})",
         )
 
-    ax.set_xlabel("Number of CPU threads", fontsize=12)
-    ax.set_ylabel("Speedup vs 1 CPU thread", fontsize=12)
-    ax.set_title("Structure Factor Calculation — Speedup", fontsize=13)
-    ax.legend(fontsize=9, bbox_to_anchor=(1.02, 1), loc="upper left")
+    ax.set_xlabel("Number of CPU threads")
+    ax.set_ylabel("Speedup vs 1 CPU thread")
+    ax.set_title("Structure Factor Calculation — Speedup")
+    ax.legend(fontsize=12, bbox_to_anchor=(1.02, 1), loc="upper left")
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, threads.max() + 1)
 
@@ -299,9 +305,9 @@ def plot_combined(cpu: dict, gpu: dict | None, output_path: Path):
     )
 
     ax1.set_yscale("log")
-    ax1.set_xlabel("Number of CPU threads", fontsize=12)
-    ax1.set_ylabel("Time per Fcalc (ms)", fontsize=12)
-    ax1.set_title("Execution Time", fontsize=13)
+    ax1.set_xlabel("Number of CPU threads")
+    ax1.set_ylabel("Time per Fcalc (ms)")
+    ax1.set_title("Execution Time")
     ax1.grid(True, alpha=0.3, which="both")
     ax1.set_xlim(0, threads.max() + 1)
 
@@ -339,18 +345,18 @@ def plot_combined(cpu: dict, gpu: dict | None, output_path: Path):
                      linestyle="-.", linewidth=1.5,
                      label=f"TorchRef fwd+bwd ({gpu_name})")
 
-    ax2.set_xlabel("Number of CPU threads", fontsize=12)
-    ax2.set_ylabel("Speedup vs 1 CPU thread", fontsize=12)
-    ax2.set_title("Speedup", fontsize=13)
+    ax2.set_xlabel("Number of CPU threads")
+    ax2.set_ylabel("Speedup vs 1 CPU thread")
+    ax2.set_title("Speedup")
     ax2.grid(True, alpha=0.3)
     ax2.set_xlim(0, threads.max() + 1)
 
     # Shared legend outside on the right
     handles, labels = ax2.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="center right", fontsize=9,
+    fig.legend(handles, labels, loc="center right", fontsize=12,
                bbox_to_anchor=(1.22, 0.5))
 
-    fig.suptitle("Structure Factor Calculation Benchmark", fontsize=14, y=1.02)
+    fig.suptitle("Structure Factor Calculation Benchmark", fontsize=17, y=1.02)
     plt.tight_layout()
     plt.savefig(output_path, dpi=500, bbox_inches="tight")
     print(f"Saved: {output_path}")
@@ -416,8 +422,8 @@ def plot_calc(cpu: dict, gpu: dict | None, output_path: Path):
             ax1.axhline(gpu_mean, color=color, linestyle="--", linewidth=1.5, alpha=0.7)
 
     ax1.set_yscale("log")
-    ax1.set_xlabel("Number of CPU threads", fontsize=12)
-    ax1.set_ylabel("Time (ms)", fontsize=12)
+    ax1.set_xlabel("Number of CPU threads")
+    ax1.set_ylabel("Time (ms)")
     ax1.grid(True, alpha=0.3, which="both")
     ax1.set_xlim(0, threads.max() + 1)
 
@@ -547,8 +553,8 @@ def plot_fwd_bwd_comparison(cpu: dict, gpu: dict | None, output_path: Path):
             ax1.axhline(gpu_mean, color=color, linestyle="--", linewidth=1.5, alpha=0.7)
 
     ax1.set_yscale("log")
-    ax1.set_xlabel("Number of CPU threads", fontsize=12)
-    ax1.set_ylabel("Time (ms)", fontsize=12)
+    ax1.set_xlabel("Number of CPU threads")
+    ax1.set_ylabel("Time (ms)")
     ax1.grid(True, alpha=0.3, which="both")
     ax1.set_xlim(0, threads.max() + 1)
 
@@ -556,7 +562,7 @@ def plot_fwd_bwd_comparison(cpu: dict, gpu: dict | None, output_path: Path):
     for ax, label in [(ax1, "A"), (ax2, "B")]:
         ax.text(
             0.03, 0.95, label, transform=ax.transAxes,
-            fontsize=16, fontweight="bold", va="top", ha="left",
+            fontsize=18, fontweight="bold", va="top", ha="left",
         )
 
     # ---- ax2: Forward / Backward / Combined bar chart ----
@@ -627,17 +633,17 @@ def plot_fwd_bwd_comparison(cpu: dict, gpu: dict | None, output_path: Path):
                 x[i] - bar_w / 2,
                 cpu_means[i] * 1000 + cpu_err_hi[i] * 1000 + 0.3,
                 f"{cpu_means[i] * 1000:.1f}",
-                ha="center", va="bottom", fontsize=8,
+                ha="center", va="bottom", fontsize=11,
             )
             ax2.text(
                 x[i] + bar_w / 2,
                 gpu_means[i] * 1000 + gpu_err_hi[i] * 1000 + 0.3,
                 f"{gpu_means[i] * 1000:.1f}",
-                ha="center", va="bottom", fontsize=8,
+                ha="center", va="bottom", fontsize=11,
             )
 
         ax2.set_xticks(x)
-        ax2.set_xticklabels(labels, fontsize=11)
+        ax2.set_xticklabels(labels, fontsize=14)
 
     ax2.grid(True, alpha=0.3, which="both", axis="y")
 
@@ -657,7 +663,7 @@ def plot_fwd_bwd_comparison(cpu: dict, gpu: dict | None, output_path: Path):
     fig.legend(
         handles=legend_handles,
         loc="upper center", ncol=len(legend_handles),
-        fontsize=13.5, framealpha=0.9,
+        fontsize=14, framealpha=0.9,
         bbox_to_anchor=(0.5, 1.05),
     )
 

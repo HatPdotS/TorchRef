@@ -56,7 +56,8 @@ class DataRouter:
     verbose : int
         Verbosity level for logging.
     data_type : str or None
-        Type of data detected ('reflections', 'structure', 'restraints', or None).
+        Type of data detected ('reflections', 'structure', 'restraints',
+        'ihm_ensemble', or None).
     file_format : str or None
         File format detected ('mtz', 'pdb', 'cif', or None).
     reader : object or None
@@ -153,6 +154,7 @@ class DataRouter:
             has_refln = False
             has_atom_site = False
             has_restraints = False
+            has_ihm = False
 
             for block in doc:
                 # Check for reflection data
@@ -179,7 +181,21 @@ class DataRouter:
                 ):
                     has_restraints = True
 
+                # Check for IHM ensemble data
+                if (
+                    block.find_loop("_ihm_model_list.model_id")
+                    or block.find(["_ihm_multi_state_modeling.state_id"])
+                ):
+                    has_ihm = True
+
             # Prioritize based on what we found
+            # IHM ensemble takes priority over plain structure
+            if has_ihm and has_atom_site:
+                self.data_type = "ihm_ensemble"
+                if self.verbose > 1:
+                    print("  Detected: IHM mmCIF ensemble (multi-state model)")
+                return
+
             if has_refln:
                 self.data_type = "reflections"
                 if self.verbose > 1:
@@ -248,6 +264,11 @@ class DataRouter:
                 raise DataRouterError(
                     f"Unknown format for structure: {self.file_format}"
                 )
+
+        elif self.data_type == "ihm_ensemble":
+            from torchref.io.ihm import IHMReader
+
+            self.reader = IHMReader(str(self.filepath), verbose=self.verbose)
 
         elif self.data_type == "restraints":
             if self.file_format == "cif":

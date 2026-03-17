@@ -25,6 +25,12 @@ import matplotlib.pyplot as plt
 plt.rcParams["font.family"] = "serif"
 plt.rcParams["font.serif"] = ["STIXGeneral"]
 plt.rcParams["mathtext.fontset"] = "stix"
+plt.rcParams["font.size"] = 14
+plt.rcParams["axes.labelsize"] = 16
+plt.rcParams["axes.titlesize"] = 17
+plt.rcParams["xtick.labelsize"] = 13
+plt.rcParams["ytick.labelsize"] = 13
+plt.rcParams["legend.fontsize"] = 12
 import numpy as np
 
 # --- Colors ---
@@ -230,10 +236,10 @@ def plot_aggregate_times(cpu: dict, gpu: dict | None, output_path: Path):
                "Forward+backward (CPU)", "Fwd+bwd")
 
     ax.set_yscale("log")
-    ax.set_xlabel("Number of CPU threads", fontsize=12)
-    ax.set_ylabel("Time per cycle (ms)", fontsize=12)
-    ax.set_title("Refinement Cycle — Execution Time", fontsize=13)
-    ax.legend(fontsize=9, bbox_to_anchor=(1.02, 1), loc="upper left")
+    ax.set_xlabel("Number of CPU threads")
+    ax.set_ylabel("Time per cycle (ms)")
+    ax.set_title("Refinement Cycle — Execution Time")
+    ax.legend(fontsize=12, bbox_to_anchor=(1.02, 1), loc="upper left")
     ax.grid(True, alpha=0.3, which="both")
     ax.set_xlim(0, threads.max() + 1)
 
@@ -273,10 +279,10 @@ def plot_aggregate_speedup(cpu: dict, gpu: dict | None, output_path: Path):
             ax.axhline(gpu[key], color=color, linestyle=ls,
                        linewidth=1.5, label=label)
 
-    ax.set_xlabel("Number of CPU threads", fontsize=12)
-    ax.set_ylabel("Speedup vs 1 CPU thread", fontsize=12)
-    ax.set_title("Refinement Cycle — Speedup", fontsize=13)
-    ax.legend(fontsize=9, bbox_to_anchor=(1.02, 1), loc="upper left")
+    ax.set_xlabel("Number of CPU threads")
+    ax.set_ylabel("Speedup vs 1 CPU thread")
+    ax.set_title("Refinement Cycle — Speedup")
+    ax.legend(fontsize=12, bbox_to_anchor=(1.02, 1), loc="upper left")
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, threads.max() + 1)
 
@@ -368,10 +374,10 @@ def plot_target_breakdown(results_dir: Path, output_path: Path):
     _stacked_barh(ax, bar_positions, all_targets, data_sets)
 
     ax.set_yticks(bar_positions)
-    ax.set_yticklabels(bar_labels, fontsize=10)
+    ax.set_yticklabels(bar_labels)
     ax.invert_yaxis()
-    ax.set_xlabel("Time (ms)", fontsize=12)
-    ax.set_title("Per-Target Time Breakdown", fontsize=13)
+    ax.set_xlabel("Time (ms)")
+    ax.set_title("Per-Target Time Breakdown")
 
     # De-duplicate legend entries
     handles, labels = ax.get_legend_handles_labels()
@@ -382,7 +388,7 @@ def plot_target_breakdown(results_dir: Path, output_path: Path):
             seen[l] = True
             unique_handles.append(h)
             unique_labels.append(l)
-    ax.legend(unique_handles, unique_labels, fontsize=9,
+    ax.legend(unique_handles, unique_labels, fontsize=12,
               bbox_to_anchor=(1.02, 1), loc="upper left", title="Target")
     ax.grid(True, alpha=0.3, axis="x")
 
@@ -448,9 +454,9 @@ def plot_target_forward_all_only(results_dir: Path, output_path: Path):
     _stacked_barh(ax, bar_positions, all_targets, data_sets)
 
     ax.set_yticks(bar_positions)
-    ax.set_yticklabels(bar_labels, fontsize=10)
+    ax.set_yticklabels(bar_labels)
     ax.invert_yaxis()
-    ax.set_xlabel("Time (ms)", fontsize=12)
+    ax.set_xlabel("Time (ms)")
 
     # De-duplicate legend entries
     handles, labels = ax.get_legend_handles_labels()
@@ -461,7 +467,7 @@ def plot_target_forward_all_only(results_dir: Path, output_path: Path):
             seen[l] = True
             unique_handles.append(h)
             unique_labels.append(l)
-    ax.legend(unique_handles, unique_labels, fontsize=9,
+    ax.legend(unique_handles, unique_labels, fontsize=12,
               bbox_to_anchor=(1.02, 1), loc="upper left", title="Target")
     ax.grid(True, alpha=0.3, axis="x")
 
@@ -487,11 +493,11 @@ def plot_combined(cpu: dict, gpu: dict | None, results_dir: Path, output_path: P
                "Bwd only (CPU)", "Bwd only")
 
     ax1.set_yscale("log")
-    ax1.set_xlabel("Number of CPU threads", fontsize=12)
-    ax1.set_ylabel("Time per cycle (ms)", fontsize=12)
+    ax1.set_xlabel("Number of CPU threads")
+    ax1.set_ylabel("Time per cycle (ms)")
     ax1.grid(True, alpha=0.3, which="both")
     ax1.set_xlim(0, threads.max() + 1)
-    ax1.legend(fontsize=9, loc="upper right")
+    ax1.legend(fontsize=12, loc="upper right")
 
     # ---- Panel B: Per-target fwd+bwd stacked bar ----
     cpu_pt, gpu_pt = load_per_target_from_json(results_dir, mode="fwd_bwd")
@@ -518,9 +524,9 @@ def plot_combined(cpu: dict, gpu: dict | None, results_dir: Path, output_path: P
         _stacked_barh(ax2, bar_positions, all_targets, data_sets)
 
         ax2.set_yticks(bar_positions)
-        ax2.set_yticklabels(bar_labels, fontsize=11)
+        ax2.set_yticklabels(bar_labels, fontsize=14)
         ax2.invert_yaxis()
-        ax2.set_xlabel("Time (ms)", fontsize=12)
+        ax2.set_xlabel("Time (ms)")
 
         # De-duplicate legend
         handles, labels = ax2.get_legend_handles_labels()
@@ -531,7 +537,7 @@ def plot_combined(cpu: dict, gpu: dict | None, results_dir: Path, output_path: P
                 seen[l] = True
                 uh.append(h)
                 ul.append(l)
-        ax2.legend(uh, ul, fontsize=8, bbox_to_anchor=(1.02, 1),
+        ax2.legend(uh, ul, fontsize=12, bbox_to_anchor=(1.02, 1),
                    loc="upper left", title="Target")
         ax2.grid(True, alpha=0.3, axis="x")
 
@@ -539,10 +545,10 @@ def plot_combined(cpu: dict, gpu: dict | None, results_dir: Path, output_path: P
     for ax, label in [(ax1, "A"), (ax2, "B")]:
         ax.text(
             0.03, 0.95, label, transform=ax.transAxes,
-            fontsize=16, fontweight="bold", va="top", ha="left",
+            fontsize=18, fontweight="bold", va="top", ha="left",
         )
 
-    fig.suptitle("Refinement Cycle Benchmark", fontsize=14, y=1.02)
+    fig.suptitle("Refinement Cycle Benchmark", fontsize=17, y=1.02)
     plt.tight_layout()
     plt.savefig(output_path, dpi=500, bbox_inches="tight")
     print(f"Saved: {output_path}")
@@ -610,14 +616,14 @@ def plot_total_eval_times(results_dir: Path, output_path: Path):
                 bar.get_x() + bar.get_width() / 2,
                 bar.get_height() + 1,
                 f"{val:.1f}",
-                ha="center", va="bottom", fontsize=9,
+                ha="center", va="bottom", fontsize=12,
             )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(mode_labels, fontsize=12)
-    ax.set_ylabel("Total evaluation time (ms)", fontsize=12)
-    ax.set_title("Total Cycle Evaluation Time", fontsize=13)
-    ax.legend(fontsize=10)
+    ax.set_xticklabels(mode_labels)
+    ax.set_ylabel("Total evaluation time (ms)")
+    ax.set_title("Total Cycle Evaluation Time")
+    ax.legend(fontsize=13)
     ax.grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()

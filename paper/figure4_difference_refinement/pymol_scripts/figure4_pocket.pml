@@ -20,18 +20,16 @@
 # ==========================================================
 
 reinitialize
-viewport 800, 600
 bg_color white
 set ray_opaque_background, on
-set depth_cue, 1
 set ray_trace_mode, 1
+set depth_cue, 1
 
 # Visual settings
 set cartoon_sidechain_helper, 1
-set mesh_quality, 15
-set mesh_grid_max, 1500
-set mesh_width, 0.3
-set surface_quality, 15
+set mesh_quality, 3
+set mesh_grid_max, 200
+set surface_quality, 3
 set stick_radius, 0.15
 
 # 1. LOAD MODELS
@@ -45,6 +43,36 @@ load figure4_difference_refinement/validation/output/torchref_IBL/validate_WDFo.
 map_double map_fo,
 map_double map_fo,
 
+# 2b. MOVE MODELS INTO UNIT CELL so they overlap with the map
+python
+import numpy as np
+from math import cos, sin, radians
+
+def frac_matrix(sym):
+    """Return Cartesian->fractional and fractional->Cartesian matrices from cell params."""
+    a, b, c, al, be, ga = sym[0:6]
+    al, be, ga = radians(al), radians(be), radians(ga)
+    v = a * b * c * np.sqrt(1 - cos(al)**2 - cos(be)**2 - cos(ga)**2 + 2*cos(al)*cos(be)*cos(ga))
+    cart2frac = np.array([
+        [1/a, -cos(ga)/(a*sin(ga)), (cos(al)*cos(ga)-cos(be))/(a*sin(ga)*v/(b*c))],
+        [0,   1/(b*sin(ga)),         (cos(be)*cos(ga)-cos(al))/(b*sin(ga)*v/(a*c))],
+        [0,   0,                      a*b*sin(ga)/v]
+    ])
+    frac2cart = np.linalg.inv(cart2frac)
+    return cart2frac, frac2cart
+
+for obj in ["dark", "extrapol", "torchref"]:
+    sym = cmd.get_symmetry(obj)
+    if not sym:
+        continue
+    cart2frac, frac2cart = frac_matrix(sym)
+    com = np.array(cmd.centerofmass(obj))
+    com_frac = cart2frac @ com
+    shift_frac = -np.floor(com_frac)
+    shift_cart = frac2cart @ shift_frac
+    cmd.translate(shift_cart.tolist(), obj)
+python end
+
 # 3. IDENTIFY UNION POCKET (all residues within 4.5A of IBL in any model)
 python
 resis = set()
@@ -55,7 +83,7 @@ cmd.select("ligand", "resn IBL and chain B")
 python end
 
 select pocket_sc, pocket_res and not (name N,C,O)
-create carve_target, pocket_res
+create carve_target, pocket_res or ligand
 
 # 4. DISPLAY
 hide everything
@@ -83,68 +111,89 @@ set stick_transparency, 0.2, dark
 set stick_transparency, 0.2, extrapol
 set stick_transparency, 0.7, ligand
 
-# 6. MULTI-LEVEL DIFFERENCE MAP (Green/Red)
-python
-levels = [(3.0, 1.0), (4.0, 2.0), (5.0, 3.0)]
-carve_dist = 2.0
-pos_col = "tv_green"
-neg_col = "tv_red"
+# 6. VOLUME RAMP DIFFERENCE MAP (Green/Red)
+cmd.volume_ramp_new('ded_ramp', [\
+     -4.5, 0.6, 0.0, 0.0, 0.15, \
+     -3.5, 0.8, 0.0, 0.0, 0.12, \
+     -2.5, 1.0, 0.3, 0.3, 0.08, \
+     -2.0, 1.0, 0.3, 0.3, 0.0, \
+      2.0, 0.3, 1.0, 0.3, 0.0, \
+      2.5, 0.3, 1.0, 0.3, 0.08, \
+      3.5, 0.0, 0.8, 0.0, 0.12, \
+      4.5, 0.0, 0.6, 0.0, 0.15, \
+    ])
 
-for sigma, width in levels:
-    p_name = f"mesh_fo_pos_{sigma}"
-    n_name = f"mesh_fo_neg_{sigma}"
-
-    cmd.isomesh(p_name, "map_fo",  sigma, "carve_target", carve=carve_dist)
-    cmd.isomesh(n_name, "map_fo", -sigma, "carve_target", carve=carve_dist)
-
-    cmd.color(pos_col, p_name)
-    cmd.color(neg_col, n_name)
-    cmd.set("mesh_width", width, p_name)
-    cmd.set("mesh_width", width, n_name)
-python end
+volume vol_fo, map_fo, ramp=ded_ramp, selection=carve_target, carve=2.0
 
 # 7. ORGANIZATION
 group Models, dark extrapol torchref
-group Maps_Fo, mesh_fo_*
+group Maps_Fo, vol_fo
 
 hide everything, carve_target
 
-# 8. VIEW (pocket view)
-set_view (\
-    -0.814730644,    0.331998408,   -0.475370347,\
-    -0.152427554,   -0.913648665,   -0.376847744,\
-    -0.559433341,   -0.234568968,    0.794983208,\
-     0.000254968,    0.000073881,  -38.551216125,\
-     9.442328453,  -21.226753235,   18.875190735,\
-    28.829362869,   48.246856689,  -20.000000000 )
+# 8. VIEW (pocket view — original view translated by same unit cell shift)
+python
+# Compute the same unit cell shift that was applied to models
+sym = cmd.get_symmetry("dark")
+cart2frac, frac2cart = frac_matrix(sym)
+# Use dark's original center (before translation) to get the shift
+# The shift was already applied, so recalculate it from the original view center
+orig_center = np.array([9.442328453, -21.226753235, 18.875190735])
+orig_frac = cart2frac @ orig_center
+shift_frac = -np.floor(orig_frac)
+shift_cart = frac2cart @ shift_frac
+new_center = orig_center + shift_cart
+
+cmd.set_view([
+    -0.814730644,    0.331998408,   -0.475370347,
+    -0.152427554,   -0.913648665,   -0.376847744,
+    -0.559433341,   -0.234568968,    0.794983208,
+     0.000254968,    0.000073881,  -38.551216125,
+     new_center[0],  new_center[1],  new_center[2],
+    28.829362869,   48.246856689,  -20.000000000
+])
+python end
 
 # ==========================================================
 # PANEL 21: WDFo + dark + extrapolated (7YYZ)
+# Z-order: dark (back) -> extrapol (front) -> volume (top)
 # ==========================================================
-disable torchref
-enable dark
-enable extrapol
-enable Maps_Fo
+hide everything
+show cartoon, dark
+show sticks, dark and (ligand or pocket_sc)
+show cartoon, extrapol
+show sticks, extrapol and (ligand or pocket_sc)
+show volume, vol_fo
 
+rebuild
 draw 2400, 1800
 png figure4_difference_refinement/panels/figure4_panel_21.png
 
 # ==========================================================
 # PANEL 22: WDFo + dark + TorchRef refined
+# Z-order: dark (back) -> volume -> torchref (front)
 # ==========================================================
-disable extrapol
-enable torchref
+hide everything
+show cartoon, dark
+show sticks, dark and (ligand or pocket_sc)
+show volume, vol_fo
+show cartoon, torchref
+show sticks, torchref and (ligand or pocket_sc)
 
+rebuild
 draw 2400, 1800
 png figure4_difference_refinement/panels/figure4_panel_22.png
 
 # ==========================================================
-# PANEL 23: TorchRef refined + extrapolated (7YYZ), no map
+# PANEL 23: extrapolated (back) + TorchRef refined (front), no map
 # ==========================================================
-enable extrapol
-disable dark
-disable Maps_Fo
+hide everything
+show cartoon, extrapol
+show sticks, extrapol and (ligand or pocket_sc)
+show cartoon, torchref
+show sticks, torchref and (ligand or pocket_sc)
 
+rebuild
 draw 2400, 1800
 png figure4_difference_refinement/panels/figure4_panel_23.png
 

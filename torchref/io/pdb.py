@@ -516,6 +516,111 @@ def write(df: pd.DataFrame, filepath: str, template: str = None) -> None:
         n.write("END")
 
 
+def write_multi_model(
+    dataframes: List[pd.DataFrame],
+    filepath: str,
+    model_names: Optional[List[str]] = None,
+) -> None:
+    """
+    Write multiple models to a single PDB file with MODEL/ENDMDL records.
+
+    Each DataFrame is wrapped in a MODEL/ENDMDL pair, producing a
+    multi-model PDB file suitable for ensemble or time-resolved data.
+
+    Parameters
+    ----------
+    dataframes : list of pandas.DataFrame
+        List of atom DataFrames (same format as ``write()`` expects).
+    filepath : str
+        Output PDB filename.
+    model_names : list of str, optional
+        Names for each model (written as REMARK before each MODEL record).
+        If None, models are numbered sequentially.
+    """
+    if not dataframes:
+        return
+
+    with open(filepath, "w") as f:
+        # Write CRYST1 from first model if available
+        first_df = dataframes[0]
+        try:
+            cell = first_df.attrs["cell"]
+            spacegroup = first_df.attrs["spacegroup"]
+            cell_abc = cell[:3]
+            cell_angles = cell[3:]
+            z = first_df.attrs.get("z", "")
+            try:
+                strz = str(int(z))
+            except Exception:
+                strz = ""
+            line = (
+                "CRYST1"
+                + "".join([f"{i:>9.3f}" for i in cell_abc])
+                + "".join([f"{i:>7.2f}" for i in cell_angles])
+                + " "
+                + f"{spacegroup:<14}"
+                + strz
+                + "\n"
+            )
+            f.write(line)
+        except Exception:
+            pass
+
+        for model_idx, df in enumerate(dataframes):
+            model_num = model_idx + 1
+            if model_names and model_idx < len(model_names):
+                f.write(f"REMARK   3  MODEL {model_num}: {model_names[model_idx]}\n")
+            f.write(f"MODEL     {model_num:>4}\n")
+
+            for i, row in df.iterrows():
+                ATOM = row.get("ATOM", "ATOM")
+                serial = row.get("serial", i + 1)
+                name = str(row.get("name", "CA"))
+                altloc = str(row.get("altloc", ""))
+                resname = str(row.get("resname", "UNK"))
+                chainid = str(row.get("chainid", ""))
+                resseq = int(row.get("resseq", 1))
+                icode = str(row.get("icode", ""))
+                x = float(row.get("x", 0.0))
+                y = float(row.get("y", 0.0))
+                z_coord = float(row.get("z", 0.0))
+                occupancy = float(row.get("occupancy", 1.0))
+                tempfactor = float(row.get("tempfactor", 20.0))
+                element = str(row.get("element", "C"))
+                charge = row.get("charge", 0)
+
+                if charge > 0:
+                    charge_str = "+" + str(charge)
+                elif charge == 0:
+                    charge_str = ""
+                else:
+                    charge_str = str(charge)
+
+                if len(name) > 3:
+                    name = name[-3:]
+                if len(name) < 3:
+                    name = name + " " * (3 - len(name))
+
+                if chainid is None or chainid == "nan":
+                    chainid = ""
+
+                try:
+                    s = (
+                        f"{str(ATOM):<6}{int(serial):>5}{name:>5}{altloc:>1}"
+                        f"{resname:>3}{chainid:>2}{resseq:>4}{icode:>4}"
+                        f"{round(x, 3):>8}{round(y, 3):>8}{round(z_coord, 3):>8}"
+                        f"{round(occupancy, 3):>6.2f}{round(tempfactor, 2):>6}"
+                        f"{element:>12}{charge_str:>2}\n"
+                    )
+                    f.write(s)
+                except Exception:
+                    pass
+
+            f.write("ENDMDL\n")
+
+        f.write("END\n")
+
+
 # Legacy aliases for backwards compatibility during transition
 PDB = PDBReader
 find_header_length_pdb_file = find_header_length
