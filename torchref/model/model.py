@@ -693,6 +693,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Model
             Self, for method chaining.
         """
+        self._input_file = str(file)
         reader = pdb.PDBReader(verbose=self.verbose).read(file)
         return self.load(reader)
 
@@ -710,6 +711,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Model
             Self, for method chaining.
         """
+        self._input_file = str(file)
         if self.verbose > 0:
             print(f"Loading CIF file: {file}")
 
@@ -1095,11 +1097,35 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         return model_copy
 
-    def write_pdb(self, filename):
+    def write_pdb(self, filename, metadata=None):
+        """Write model to PDB file with optional metadata header.
+
+        Parameters
+        ----------
+        filename : str
+            Output PDB file path.
+        metadata : RefinementMetadata, optional
+            Metadata to render as PDB header (REMARK 3, TITLE, etc.).
+        """
         self.update_pdb()
         self.pdb = sanitize_pdb_dataframe(self.pdb)
         self.pdb.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
-        pdb.write(self.pdb, filename)
+        pdb.write(self.pdb, filename, metadata=metadata)
+
+    def write_cif(self, filename, metadata=None):
+        """Write model to mmCIF file with optional metadata.
+
+        Parameters
+        ----------
+        filename : str
+            Output mmCIF file path.
+        metadata : RefinementMetadata, optional
+            Metadata to include (refinement statistics, title, etc.).
+        """
+        self.update_pdb()
+        self.pdb = sanitize_pdb_dataframe(self.pdb)
+        self.pdb.attrs["spacegroup"] = self.spacegroup.hm if self.spacegroup else "P 1"
+        cif.write_model(self.pdb, filename, metadata=metadata)
 
     def get_iso(self):
         # Use pre-computed integer indices to avoid boolean indexing GPU sync

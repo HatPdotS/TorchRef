@@ -37,6 +37,9 @@ from .cif import (
     RestraintCIFReader,
 )
 
+# Metadata
+from .metadata import RefinementMetadata
+
 # Data router
 from .data_router import (
     DataRouter,
@@ -86,6 +89,8 @@ __all__ = [
     "IHMEnsembleMapping",
     "IHMStateInfo",
     "IHMModelGroupInfo",
+    # Metadata
+    "RefinementMetadata",
     # Legacy aliases
     "MTZ",
     "PDB",

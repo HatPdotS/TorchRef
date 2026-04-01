@@ -1,18 +1,31 @@
 Changelog
 =========
 
+Version 0.4.4
+-------------
+- Migrated difference-refine script to the collection infrastructure, similarly migrated validate_ded and phased difference map
+- Deprecated scaler cli args as they are now always scaled together
+- Merged collection and basic kinetic infrastructure
+- Renamed column names in difference-refine output to be more concise and accurate
+- Fixed some bugs in collection architecture and 
+- Added PDB deposition headers (REMARK 3 with refinement statistics) and mmCIF coordinate writing
+- Added unified RefinementMetadata that renders to both PDB and mmCIF using PDBx/wwPDB field names
+- All refinement CLI scripts now write both PDB and mmCIF by default
+- Added torchref.add-metadata CLI tool for adding metadata to existing files
+- Added input file header pass-through for PDB and mmCIF
+
 Version 0.4.3
 -------------
 
 - Refactored and standardised cli args
-- Unified validation-ded and difference-refine sclaer logic and added flags for separate vs shared scalers
+- Unified validation-ded and difference-refine scaler logic and added flags for separate vs shared scalers
 - Added option for other difference targets mainly rice, Does not seem to make a difference 
 
 Version 0.4.2
 -------------
 
 - Fixed bug where reflection data object in the refinement was not created on cuda when specified. 
-- Fixed macos crash not catching compilation error in c++ extension for scatter add
+- Fixed macos crash, not catching compilation error in c++ extension for scatter add
 
 Version 0.4.1
 -------------

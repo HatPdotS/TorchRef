@@ -904,8 +904,72 @@ class Refinement(DebugMixin, nnModule):
             fcalc = self.scaler(self.get_fcalc(hkl), use_mask=False)
             self.reflection_data.write_mtz(out_mtz_path, fcalc)
 
-    def write_out_pdb(self, out_pdb_path="refined_output.pdb"):
-        self.model.write_pdb(out_pdb_path)
+    def collect_deposition_metadata(self, metadata=None):
+        """Collect refinement statistics into a RefinementMetadata object.
+
+        Reuses existing statistics from ``collect_metrics()``,
+        ``get_rfactor()``, and reflection data attributes.
+
+        Parameters
+        ----------
+        metadata : RefinementMetadata, optional
+            Existing metadata to merge with (e.g. from input file pass-through).
+            Refinement statistics take precedence over pass-through values.
+
+        Returns
+        -------
+        RefinementMetadata
+            Metadata populated with final refinement statistics.
+        """
+        from torchref.io.metadata import RefinementMetadata
+
+        refinement_meta = RefinementMetadata.from_refinement(self)
+
+        # Merge with input file metadata if available
+        if metadata is not None:
+            return metadata.merge(refinement_meta)
+
+        # Merge with pass-through headers from input file
+        if hasattr(self.model, "_input_file") and self.model._input_file:
+            input_file = self.model._input_file
+            if input_file.endswith(".pdb"):
+                input_meta = RefinementMetadata.from_pdb_file(input_file)
+            elif input_file.endswith((".cif", ".mmcif")):
+                input_meta = RefinementMetadata.from_cif_file(input_file)
+            else:
+                input_meta = None
+            if input_meta is not None:
+                return input_meta.merge(refinement_meta)
+
+        return refinement_meta
+
+    def write_out_pdb(self, out_pdb_path="refined_output.pdb", metadata=None):
+        """Write refined PDB with optional metadata header.
+
+        Parameters
+        ----------
+        out_pdb_path : str
+            Output PDB file path.
+        metadata : RefinementMetadata, optional
+            Metadata for PDB header. If None, auto-collected from refinement.
+        """
+        if metadata is None:
+            metadata = self.collect_deposition_metadata()
+        self.model.write_pdb(out_pdb_path, metadata=metadata)
+
+    def write_out_cif(self, out_cif_path="refined_output.cif", metadata=None):
+        """Write refined coordinates as mmCIF with metadata.
+
+        Parameters
+        ----------
+        out_cif_path : str
+            Output mmCIF file path.
+        metadata : RefinementMetadata, optional
+            Metadata for mmCIF categories. If None, auto-collected from refinement.
+        """
+        if metadata is None:
+            metadata = self.collect_deposition_metadata()
+        self.model.write_cif(out_cif_path, metadata=metadata)
 
     def save_state(self, path: str):
         """

@@ -32,12 +32,15 @@ from torchref.cli._common import (
     add_dmin_arg,
     add_weights_arg,
     add_outdir_arg,
+    add_output_format_args,
+    add_metadata_args,
     add_general_args,
     resolve_device,
     validate_files,
     build_column_names,
     parse_weights,
     register_timing,
+    write_refinement_outputs,
 )
 from torchref.utils.serialization import convert_to_serializable
 
@@ -58,6 +61,9 @@ Examples:
 
   # Using CIF files
   torchref.refine -m model.cif -sf reflections.cif -o output/
+
+  # Output mmCIF only
+  torchref.refine -m model.pdb -sf data.mtz -o output/ --output-format cif
         """,
     )
 
@@ -65,6 +71,8 @@ Examples:
 
     output = parser.add_argument_group("Output")
     add_outdir_arg(output)
+    add_output_format_args(output)
+    add_metadata_args(output)
 
     refine = parser.add_argument_group("Refinement")
     add_n_cycles_arg(refine)
@@ -171,20 +179,11 @@ Examples:
         print(f"\nSaving results to {outdir}...")
         sys.stdout.flush()
 
-    # Save refined structure
-    output_pdb = outdir / "refined.pdb"
-    refinement.model.write_pdb(str(output_pdb))
-    if args.verbose > 0:
-        print(f"  Refined structure: {output_pdb}")
-        sys.stdout.flush()
+    # Save refined structure(s) with metadata
+    outputs = write_refinement_outputs(refinement, outdir, args, verbose=args.verbose)
 
-    # Save refined structure factors (if available)
+    # Save refined structure factors
     output_mtz = outdir / "refined.mtz"
-    # Get calculated structure factors
-    hkl, fobs, sigma, rfree = refinement.reflection_data()
-    fcalc = refinement.get_F_calc_scaled(hkl, recalc=True)
-
-    # Write MTZ
     refinement.write_out_mtz(str(output_mtz))
 
     if args.verbose > 0:
@@ -263,7 +262,10 @@ Examples:
 
         print("=" * 80)
         print("\nOutput files:")
-        print(f"  - {output_pdb}")
+        if outputs["pdb"]:
+            print(f"  - {outputs['pdb']}")
+        if outputs["cif"]:
+            print(f"  - {outputs['cif']}")
         if (outdir / "refined.mtz").exists():
             print(f"  - {outdir / 'refined.mtz'}")
         print(f"  - {output_json}")

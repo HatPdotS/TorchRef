@@ -34,14 +34,17 @@ import torch
 from torchref.cli._common import (
     add_dmin_arg,
     add_general_args,
+    add_metadata_args,
     add_n_cycles_arg,
     add_outdir_arg,
+    add_output_format_args,
     add_single_model_args,
     build_column_names,
     configure_unbuffered_output,
     register_timing,
     resolve_device,
     validate_files,
+    write_refinement_outputs,
 )
 
 configure_unbuffered_output()
@@ -71,6 +74,8 @@ Examples:
 
     output = parser.add_argument_group("Output")
     add_outdir_arg(output)
+    add_output_format_args(output)
+    add_metadata_args(output)
 
     refine = parser.add_argument_group("Refinement")
     add_n_cycles_arg(refine)
@@ -269,12 +274,8 @@ Examples:
         print(f"\nSaving results to {outdir}...")
         sys.stdout.flush()
 
-    # Save refined structure
-    output_pdb = outdir / "refined.pdb"
-    refinement.model.write_pdb(str(output_pdb))
-    if args.verbose > 0:
-        print(f"  Refined structure: {output_pdb}")
-        sys.stdout.flush()
+    # Save refined structure(s) with metadata
+    outputs = write_refinement_outputs(refinement, outdir, args, verbose=args.verbose)
 
     # Save refined structure factors
     output_mtz = outdir / "refined.mtz"

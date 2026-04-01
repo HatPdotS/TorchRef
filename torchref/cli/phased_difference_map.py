@@ -126,11 +126,10 @@ Examples:
         print()
         sys.stdout.flush()
 
-    # --- Import pipeline helpers from difference_refine ---
-    from torchref.cli.difference_refine import (
-        setup_mixed_model,
-        setup_data,
-        setup_collection,
+    from torchref.cli.collection_difference_refine import (
+        compute_rfactors,
+        setup_model_collection,
+        setup_dataset_collection,
         setup_scaler,
         write_results_mtz,
     )
@@ -143,11 +142,11 @@ Examples:
         print("Setting up models...")
         sys.stdout.flush()
 
-    mixed, dark, light = setup_mixed_model(
+    mc = setup_model_collection(
         args.dark_model, args.light_model, fractions,
         args.cif, d_min, device, args.verbose,
     )
-    mixed.freeze_fractions()
+    mc["light"].freeze_fractions()
 
     # --- Load data ---
     if args.verbose > 0:
@@ -156,28 +155,21 @@ Examples:
 
     col_dark, col_light = build_dual_column_names(args)
 
-    data_dark, data_light = setup_data(
+    dc = setup_dataset_collection(
         args.dark_structure_factor, args.light_structure_factor, args.dmin, device,
         column_names_dark=col_dark, column_names_light=col_light,
     )
 
     # --- Scale ---
     if args.verbose > 0:
-        print("Scaling datasets...")
+        print("Setting up joint scaler...")
         sys.stdout.flush()
 
-    collection = setup_collection(data_dark, data_light, device)
+    scaler = setup_scaler(dc, mc, device, args.verbose)
 
     if args.verbose > 0:
-        print("Setting up scalers...")
-        sys.stdout.flush()
-
-    scaler_dark = setup_scaler(dark, data_dark, device)
-    scaler_mixed = setup_scaler(mixed, data_light, device)
-
-    if args.verbose > 0:
-        r_work_d, r_free_d = scaler_dark.rfactor()
-        r_work_l, r_free_l = scaler_mixed.rfactor()
+        r_work_d, r_free_d = compute_rfactors(mc.dark_model, dc["dark"], scaler)
+        r_work_l, r_free_l = compute_rfactors(mc["light"], dc["light"], scaler)
         print(f"  R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
         print(f"  R-factor (mixed): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
         print()
@@ -189,10 +181,7 @@ Examples:
         sys.stdout.flush()
 
     with torch.no_grad():
-        write_results_mtz(
-            data_dark, data_light, mixed, dark, light,
-            scaler_dark, scaler_mixed, str(out_path),
-        )
+        write_results_mtz(dc, mc, scaler, str(out_path))
 
     if args.verbose > 0:
         print()

@@ -385,7 +385,30 @@ def read(filepath: str, verbose: int = 0) -> PDBReader:
     return PDBReader(verbose=verbose).read(filepath)
 
 
-def write(df: pd.DataFrame, filepath: str, template: str = None) -> None:
+def extract_pdb_headers(filepath: str) -> list:
+    """Read all header lines (before first ATOM/HETATM) from a PDB file.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the PDB file.
+
+    Returns
+    -------
+    list of str
+        Header lines (without trailing newlines).
+    """
+    headers = []
+    with open(filepath, "r") as f:
+        for line in f:
+            record = line[:6].strip()
+            if record in ("ATOM", "HETATM"):
+                break
+            headers.append(line.rstrip("\n"))
+    return headers
+
+
+def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) -> None:
     """
     Write a DataFrame to a PDB file.
 
@@ -398,10 +421,24 @@ def write(df: pd.DataFrame, filepath: str, template: str = None) -> None:
     filepath : str
         Output PDB filename.
     template : str, optional
-        PDB template file to copy header from.
+        PDB template file to copy header from (deprecated, use metadata).
+    metadata : RefinementMetadata, optional
+        Metadata to render as PDB header (REMARK 3, TITLE, etc.).
     """
     with open(filepath, "w") as n:
-        # Write CRYST1 record if cell info available
+        # Write metadata header if provided (before CRYST1)
+        if metadata is not None:
+            n.write(metadata.render_pdb_header())
+
+        # Copy template header if provided (deprecated path)
+        if template is not None:
+            with open(template) as t:
+                for line in t:
+                    if "REMARK" not in line and "ATOM" in line:
+                        break
+                    n.write(line)
+
+        # Write CRYST1 record if cell info available (directly before atoms)
         try:
             cell = df.attrs["cell"]
             spacegroup = df.attrs["spacegroup"]
@@ -424,14 +461,6 @@ def write(df: pd.DataFrame, filepath: str, template: str = None) -> None:
             n.write(line)
         except:
             print("No cell information found, writing without cell and spacegroup")
-
-        # Copy template header if provided
-        if template is not None:
-            with open(template) as t:
-                for line in t:
-                    if "REMARK" not in line and "ATOM" in line:
-                        break
-                    n.write(line)
 
         # Write atom records
         for i, row in df.iterrows():

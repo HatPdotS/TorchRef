@@ -46,7 +46,7 @@ from torchref.cli._common import (
     add_dmin_arg,
     add_general_args,
     add_outdir_arg,
-    add_scaler_mode_arg,
+
     build_dual_column_names,
     configure_unbuffered_output,
     load_model,
@@ -239,10 +239,11 @@ def run_validation(args):
     """Run the DED validation pipeline."""
     import gemmi
 
-    from torchref import DatasetCollection, Scaler
-    from torchref.model import MixedModel
-    from torchref.refinement.targets import MaximumLikelihoodXrayTarget
-    from torchref.cli.difference_refine import compute_rfactors, refine_scaler_ml
+    from torchref import DatasetCollection
+    from torchref.model.model_collection import ModelCollection
+    from torchref.cli.collection_difference_refine import (
+        compute_rfactors, setup_scaler as setup_collection_scaler,
+    )
     from torchref.base.fourier.grid import get_real_grid
     from torchref.symmetry.grid_utils import calculate_optimal_grid_size
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
@@ -353,51 +354,22 @@ def run_validation(args):
         print(f"  Light model: {len(model_light.pdb)} atoms")
         print(f"  Fraction: {args.fraction}")
 
-    # Build mixed model (same as difference_refine)
+    # Build ModelCollection + CollectionScaler
     f = args.fraction
-    mixed_model = MixedModel(
-        [model_dark, model_light],
-        initial_fractions=[1.0 - f, f],
-    )
-
-    # ------------------------------------------------------------------
-    # 2b. Setup scaler(s)
-    # ------------------------------------------------------------------
-    # In 'shared' mode, a single scaler (dark) is used for both models so
-    # the bulk-solvent contribution cancels in DFcalc = |Fc_mixed| - |Fc_dark|.
-    # In 'split' mode, each side gets its own scaler.
-    if args.verbose >= 1:
-        print(f"\n--- Setting up scaler (mode={args.scaler_mode}) ---")
-
-    scaler_dark = Scaler(model_dark, data_dark, device=device)
-    scaler_dark.calc_initial_scale()
-    scaler_dark.setup_anisotropy_correction()
-    scaler_dark.refine_lbfgs()
-
-    if args.scaler_mode == "split":
-        scaler_mixed = Scaler(mixed_model, data_light, device=device)
-        scaler_mixed.calc_initial_scale()
-        scaler_mixed.setup_anisotropy_correction()
-        scaler_mixed.refine_lbfgs()
-    else:
-        scaler_mixed = scaler_dark  # shared: one scaler for everything
-
-    # Refine scaler(s) against ML loss
-    ml_dark = MaximumLikelihoodXrayTarget(data_dark, model_dark, scaler=scaler_dark)
-    ml_mixed = MaximumLikelihoodXrayTarget(data_light, mixed_model, scaler=scaler_mixed)
-
-    if args.scaler_mode == "shared":
-        refine_scaler_ml(scaler_dark, [ml_dark, ml_mixed],
-                         nsteps=3, verbose=args.verbose)
-    else:
-        refine_scaler_ml(scaler_dark, ml_dark,
-                         nsteps=3, verbose=args.verbose)
-        refine_scaler_ml(scaler_mixed, ml_mixed,
-                         nsteps=3, verbose=args.verbose)
+    mc = ModelCollection([model_dark, model_light], dark_key="dark")
+    mc.add_dark()
+    mc.add_timepoint("light", fractions=[1.0 - f, f])
+    dark_model = mc.dark_model
+    mixed_model = mc["light"]
 
     if args.verbose >= 1:
-        r_work_d, r_free_d = compute_rfactors(model_dark, data_dark, scaler_dark)
-        r_work_m, r_free_m = compute_rfactors(mixed_model, data_light, scaler_mixed)
+        print(f"\n--- Setting up joint scaler ---")
+
+    scaler = setup_collection_scaler(collection, mc, device, verbose=args.verbose)
+
+    if args.verbose >= 1:
+        r_work_d, r_free_d = compute_rfactors(dark_model, data_dark, scaler)
+        r_work_m, r_free_m = compute_rfactors(mixed_model, data_light, scaler)
         print(f"  R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
         print(f"  R-factor (mixed): R_work={r_work_m:.4f}  R_free={r_free_m:.4f}")
 
@@ -428,11 +400,14 @@ def run_validation(args):
     if args.verbose >= 1:
         print(f"\n--- Computing structure factors ---")
 
-    # Compute scaled Fcalc at ASU level using the shared dark scaler.
-    # Both models are scaled identically so bulk solvent cancels in the difference.
+    # Compute scaled Fcalc at ASU level using joint scaler with per-model solvent.
     with torch.no_grad():
-        fcalc_dark_asu = scaler_dark(model_dark.get_structure_factor(hkl_all, recalc=True))[mask]
-        fcalc_mixed_asu = scaler_mixed(mixed_model(hkl_all, recalc=True))[mask]
+        fcalc_dark_asu = scaler.forward_mixed(
+            dark_model(hkl_all, recalc=True), dark_model.fractions
+        )[mask]
+        fcalc_mixed_asu = scaler.forward_mixed(
+            mixed_model(hkl_all, recalc=True), mixed_model.fractions
+        )[mask]
 
     # Expand to P1 using symmetry phase shifts (exact, no FFT needed)
     phase_factors = torch.exp(1j * phase_shifts.to(fcalc_dark_asu.dtype))
@@ -696,7 +671,6 @@ Examples:
 
     # --- Validation options ---
     analysis = parser.add_argument_group("Analysis")
-    add_scaler_mode_arg(analysis)
     analysis.add_argument(
         "--selection",
         type=str,

@@ -20,7 +20,7 @@ KineticPriorTarget
     Regularizes per-timepoint fractions towards a kinetic model.
 """
 
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -30,6 +30,7 @@ from torchref.refinement.targets.base import Target
 
 if TYPE_CHECKING:
     from torchref.io.datasets.collection import DatasetCollection
+    from torchref.io.datasets.reflection_data import ReflectionData
     from torchref.model.model_collection import ModelCollection
     from torchref.scaling.scaler_base import ScalerBase
 
@@ -38,72 +39,38 @@ if TYPE_CHECKING:
 # Utility functions
 # =========================================================================
 
+_LOG_2PI = np.log(2.0 * np.pi)
 
-def nll_difference_amplitude(
-    delta_F_obs: torch.Tensor,
-    delta_F_calc: torch.Tensor,
-    sigma_diff: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Gaussian NLL for difference amplitudes.
 
-    NLL = 0.5 * ((ΔF_obs - ΔF_calc) / σ_diff)^2 + log(σ_diff)
-
-    Parameters
-    ----------
-    delta_F_obs : torch.Tensor
-        Observed difference amplitudes.
-    delta_F_calc : torch.Tensor
-        Calculated difference amplitudes.
-    sigma_diff : torch.Tensor
-        Propagated uncertainty on the differences.
+def _unpack_masked_data(
+    data: "ReflectionData",
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    """Extract plain tensors + validity mask from a ReflectionData call.
 
     Returns
     -------
-    torch.Tensor
-        Mean NLL over reflections (scalar).
+    F_obs, sigma, rfree_bool, validity, centric
+        All as plain tensors (not MaskedTensors).  *rfree_bool* has
+        True = work, False = free.  *centric* may be None.
     """
-    residual = (delta_F_obs - delta_F_calc) / sigma_diff
-    nll = 0.5 * residual**2 + torch.log(sigma_diff)
-    return nll.mean()
+    _, F_obs, sigma, rfree = data()
+    if hasattr(F_obs, "get_mask"):
+        validity = F_obs.get_mask()
+        F_obs = F_obs.get_data()
+        sigma = sigma.get_data() if hasattr(sigma, "get_mask") else sigma
+    else:
+        validity = torch.ones(len(F_obs), dtype=torch.bool, device=F_obs.device)
+    centric = data.centric if hasattr(data, "centric") else None
+    return F_obs, sigma, rfree.bool(), validity, centric
 
 
-def nll_xray_amplitude(
-    F_obs: torch.Tensor,
-    F_calc: torch.Tensor,
-    sigma: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Gaussian NLL for X-ray amplitudes.
-
-    Parameters
-    ----------
-    F_obs : torch.Tensor
-        Observed structure factor amplitudes.
-    F_calc : torch.Tensor
-        Calculated structure factor amplitudes.
-    sigma : torch.Tensor
-        Experimental uncertainties.
-
-    Returns
-    -------
-    torch.Tensor
-        Mean NLL (scalar).
-    """
-    residual = (F_obs - F_calc) / sigma
-    nll = 0.5 * residual**2 + torch.log(sigma)
-    return nll.mean()
-
-
-def propagate_sigma_difference(
-    sigma_t: torch.Tensor, sigma_ref: torch.Tensor
-) -> torch.Tensor:
-    """
-    Propagate uncertainties for difference amplitudes.
-
-    σ_diff = sqrt(σ_t² + σ_ref²)
-    """
-    return torch.sqrt(sigma_t**2 + sigma_ref**2)
+def _scale_fcalc(scaler, fcalc, model):
+    """Apply scaler, using forward_mixed when available."""
+    if scaler is None:
+        return fcalc
+    if hasattr(scaler, "forward_mixed") and hasattr(model, "fractions"):
+        return scaler.forward_mixed(fcalc, model.fractions)
+    return scaler(fcalc)
 
 
 # =========================================================================
@@ -113,32 +80,36 @@ def propagate_sigma_difference(
 
 class CollectionDifferenceTarget(Target):
     """
-    Multi-timepoint difference target using DatasetCollection + ModelCollection.
+    Mean-based difference target using DatasetCollection + ModelCollection.
 
-    For each timepoint name present in both collections::
+    Computes differences relative to the **mean** across all N datasets
+    (dark + timepoints), with proper error propagation accounting for the
+    covariance between each dataset and the mean::
 
-        ΔF_obs  = F_obs(dark) - F_obs(timepoint)
-        ΔF_calc = |F_calc_scaled(dark_model)| - |F_calc_scaled(mixed_model)|
-        NLL    += nll_difference(ΔF_obs, ΔF_calc, σ_diff)
+        F_mean(h) = (1/N) Σ_i F_obs_i(h)
+        ΔF_obs_i  = F_obs_i - F_mean
+        ΔF_calc_i = |F_calc_i| - F_calc_mean
 
-    Pairs are matched automatically by key name.
+        Var(F_i - F_mean) = σ_i²·(1 - 2/N) + (Σ_j σ_j²)/N²
 
-    A single scaler is used for both dark and mixed F_calc.  This avoids
-    artificial scale differences that corrupt the difference signal and
-    confuse kinetic refinement.
+    For N=2 (dark + one timepoint) this gives identical gradients to the
+    direct dark-reference subtraction.  For N>2 the mean reference has
+    lower noise.
+
+    All computation is vectorized on stacked (N, n_hkl) tensors — no
+    Python loops over datasets.
 
     Parameters
     ----------
     dataset_collection : DatasetCollection
-        Collection of reflection datasets (keyed by timepoint name).
     model_collection : ModelCollection
-        Collection of mixed models (keyed by timepoint name).
     scaler : ScalerBase
-        Single scaler applied to both dark and mixed F_calc.
+        Single scaler applied to all F_calc (uses ``forward_mixed``
+        with per-model fractions when available).
     normalize : bool
-        If True, divide total NLL by number of matched timepoints.
+        If True, divide total NLL by number of datasets.
     use_work_set : bool
-        If True, compute loss only on the work set (non-free reflections).
+        If True, compute loss only on the work set (rfree_flags=True).
     verbose : int
         Verbosity level.
     """
@@ -164,66 +135,73 @@ class CollectionDifferenceTarget(Target):
     def forward(self) -> torch.Tensor:
         dc = self._dataset_collection
         mc = self._model_collection
+        hkl = dc.hkl
 
-        dark_data = dc[mc.dark_key]
-        dark_model = mc.dark_model
+        # Collect all matched dataset keys (dark + timepoints)
+        all_keys = [mc.dark_key] + [n for n in mc.timepoint_names if n in dc]
+        N = len(all_keys)
+        if N < 2:
+            return torch.tensor(0.0, device=hkl.device)
 
-        hkl = dark_data.hkl
-        F_obs_dark = dark_data.F
-        sigma_dark = dark_data.F_sigma
+        # --- Gather per-dataset tensors ---
+        F_obs_list, sigma_list, mask_list, F_calc_list = [], [], [], []
 
-        # Dark F_calc (scaled with fraction-weighted solvent if available)
-        f_calc_dark = dark_model(hkl)
-        if self._scaler is not None:
-            if hasattr(self._scaler, "forward_mixed"):
-                f_calc_dark = self._scaler.forward_mixed(f_calc_dark, dark_model.fractions)
-            else:
-                f_calc_dark = self._scaler(f_calc_dark)
-        F_calc_dark = torch.abs(f_calc_dark)
+        for key in all_keys:
+            data = dc[key]
+            model = mc[key]
 
-        # Work-set mask for dark
-        if self.use_work_set and hasattr(dark_data, "rfree_flags"):
-            mask_dark = ~dark_data.rfree_flags  # work set = non-free
-        else:
-            mask_dark = torch.ones(len(hkl), dtype=torch.bool, device=hkl.device)
+            F_obs, sigma, rfree, validity, _ = _unpack_masked_data(data)
+            F_calc = torch.abs(_scale_fcalc(self._scaler, model(hkl), model))
 
-        total_nll = torch.tensor(0.0, device=hkl.device)
-        n_timepoints = 0
+            mask = validity & rfree if self.use_work_set else validity
 
-        for tp_name in mc.timepoint_names:
-            if tp_name not in dc:
-                continue
+            F_obs_list.append(F_obs)
+            sigma_list.append(sigma)
+            mask_list.append(mask)
+            F_calc_list.append(F_calc)
 
-            data = dc[tp_name]
-            model = mc[tp_name]
+        # --- Stack into (N, n_hkl) tensors ---
+        F_obs_stack = torch.stack(F_obs_list)       # (N, n_hkl)
+        sigma_stack = torch.stack(sigma_list)       # (N, n_hkl)
+        mask_stack = torch.stack(mask_list)         # (N, n_hkl)
+        F_calc_stack = torch.stack(F_calc_list)     # (N, n_hkl)
 
-            # Timepoint F_calc (same scaler, fraction-weighted solvent)
-            f_calc = model(hkl)
-            if self._scaler is not None:
-                if hasattr(self._scaler, "forward_mixed"):
-                    f_calc = self._scaler.forward_mixed(f_calc, model.fractions)
-                else:
-                    f_calc = self._scaler(f_calc)
-            F_calc = torch.abs(f_calc)
+        # Combined mask: reflection must be valid + work-set in ALL datasets
+        mask_all = mask_stack.all(dim=0)            # (n_hkl,)
 
-            # Differences
-            delta_F_obs = F_obs_dark - data.F
-            delta_F_calc = F_calc_dark - F_calc
-            sigma_diff = propagate_sigma_difference(data.F_sigma, sigma_dark)
+        # --- Mean across datasets ---
+        F_mean_obs = F_obs_stack.mean(dim=0)        # (n_hkl,)
+        F_calc_mean = F_calc_stack.mean(dim=0)      # (n_hkl,)
 
-            # Combined work-set mask
-            if self.use_work_set and hasattr(data, "rfree_flags"):
-                mask = mask_dark & (~data.rfree_flags)
-            else:
-                mask = mask_dark
+        # --- Differences from mean: (N, n_hkl) ---
+        delta_F_obs = F_obs_stack - F_mean_obs
+        delta_F_calc = F_calc_stack - F_calc_mean
 
-            total_nll = total_nll + nll_difference_amplitude(
-                delta_F_obs[mask], delta_F_calc[mask], sigma_diff[mask]
-            )
-            n_timepoints += 1
+        # --- Error propagation: Var(F_i - F_mean) ---
+        # = σ_i²·(1 - 2/N) + (Σ_j σ_j²) / N²
+        sum_sigma_sq = (sigma_stack ** 2).sum(dim=0)                # (n_hkl,)
+        sigma_diff_sq = sigma_stack ** 2 * (1 - 2.0 / N) + sum_sigma_sq / (N ** 2)
+        sigma_diff = torch.sqrt(sigma_diff_sq.clamp(min=1e-12))    # (N, n_hkl)
 
-        if self.normalize and n_timepoints > 0:
-            total_nll = total_nll / n_timepoints
+        # --- Apply mask via torch.where ---
+        delta_F_obs = torch.where(mask_all, delta_F_obs, torch.zeros_like(delta_F_obs))
+        delta_F_calc = torch.where(mask_all, delta_F_calc, torch.zeros_like(delta_F_calc))
+        sigma_diff = torch.where(mask_all, sigma_diff, torch.ones_like(sigma_diff))
+
+        # Safe sigma clamping
+        eps = torch.median(sigma_diff[:, mask_all].reshape(-1)) * 1e-1 if mask_all.any() else 1e-3
+        sigma_safe = sigma_diff.clamp(min=eps)
+
+        # --- Gaussian NLL: (N, n_hkl) ---
+        diff = delta_F_obs - delta_F_calc
+        nll = 0.5 * (diff / sigma_safe) ** 2 + torch.log(sigma_safe) + 0.5 * _LOG_2PI
+
+        # NaN/Inf protection
+        nll = torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
+
+        # Sum over all datasets and reflections, normalise by total valid count
+        n_valid = mask_all.sum().clamp(min=1) * N
+        total_nll = (nll * mask_all).sum() / n_valid
 
         return total_nll
 
@@ -237,8 +215,9 @@ class CollectionMLTarget(Target):
     """
     Multi-timepoint maximum-likelihood amplitude target.
 
-    For each timepoint, computes Gaussian NLL between observed and
-    calculated structure factor amplitudes.
+    Computes Rice-distribution NLL (acentric) and the corresponding
+    centric NLL for each timepoint, with proper validity masking and
+    NaN/Inf protection.  Vectorized on stacked (N_tp, n_hkl) tensors.
 
     Parameters
     ----------
@@ -276,38 +255,72 @@ class CollectionMLTarget(Target):
         dc = self._dataset_collection
         mc = self._model_collection
 
-        total_nll = torch.tensor(0.0, device=mc.device)
-        n = 0
+        tp_names = [n for n in mc.timepoint_names if n in dc]
+        if not tp_names:
+            return torch.tensor(0.0, device=mc.device)
 
-        for tp_name in mc.timepoint_names:
-            if tp_name not in dc:
-                continue
+        # --- Gather per-timepoint tensors ---
+        F_obs_list, F_calc_list, sigma_list = [], [], []
+        mask_list, centric_list = [], []
 
+        for tp_name in tp_names:
             data = dc[tp_name]
             model = mc[tp_name]
             hkl = data.hkl
 
-            f_calc = model(hkl)
-            if self._scaler is not None:
-                if hasattr(self._scaler, "forward_mixed"):
-                    f_calc = self._scaler.forward_mixed(f_calc, model.fractions)
-                else:
-                    f_calc = self._scaler(f_calc)
-            F_calc = torch.abs(f_calc)
+            F_obs, sigma, rfree, validity, centric = _unpack_masked_data(data)
+            F_calc_amp = torch.abs(_scale_fcalc(self._scaler, model(hkl), model))
 
-            # Work-set mask
-            if self.use_work_set and hasattr(data, "rfree_flags"):
-                mask = ~data.rfree_flags
-            else:
-                mask = torch.ones(len(hkl), dtype=torch.bool, device=hkl.device)
+            mask = validity & rfree if self.use_work_set else validity
+            if centric is None:
+                centric = torch.zeros(len(hkl), dtype=torch.bool, device=hkl.device)
 
-            total_nll = total_nll + nll_xray_amplitude(
-                data.F[mask], F_calc[mask], data.F_sigma[mask]
-            )
-            n += 1
+            F_obs_list.append(F_obs)
+            F_calc_list.append(F_calc_amp)
+            sigma_list.append(sigma)
+            mask_list.append(mask)
+            centric_list.append(centric)
 
-        if self.normalize and n > 0:
-            total_nll = total_nll / n
+        # --- Stack into (N_tp, n_hkl) ---
+        F_obs = torch.stack(F_obs_list)
+        F_calc = torch.stack(F_calc_list)
+        sigma = torch.stack(sigma_list)
+        mask = torch.stack(mask_list)
+        centric = torch.stack(centric_list)
+
+        # --- Apply mask via torch.where ---
+        F_obs = torch.where(mask, F_obs, torch.zeros_like(F_obs))
+        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
+        sigma = torch.where(mask, sigma, torch.ones_like(sigma))
+
+        # ML parameters (defaults)
+        beta = sigma ** 2
+        eb = beta.clamp(min=1e-6)
+
+        # --- Acentric Rice NLL ---
+        term1 = -torch.log(2 * F_obs / eb + 1e-12)
+        term2 = F_obs ** 2 / eb
+        term3 = F_calc ** 2 / eb
+        arg_bessel = (2 * F_obs * F_calc / eb).clamp(max=1e6)
+        term4 = -(torch.log(torch.special.i0e(arg_bessel) + 1e-12) + arg_bessel)
+        loss_acentric = term1 + term2 + term3 + term4
+
+        # --- Centric NLL ---
+        term1_c = -0.5 * torch.log(2 / (np.pi * eb) + 1e-12)
+        term2_c = F_obs ** 2 / (2 * eb)
+        term3_c = F_calc ** 2 / (2 * eb)
+        term4_c = -(F_obs * F_calc) / eb
+        arg_exp = (-2 * F_obs * F_calc / eb).clamp(min=-80.0, max=80.0)
+        term5_c = -torch.log((1 + torch.exp(arg_exp)) / 2 + 1e-12)
+        loss_centric = term1_c + term2_c + term3_c + term4_c + term5_c
+
+        # Combine
+        loss = torch.where(centric, loss_centric, loss_acentric)
+        loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
+
+        # Mean over valid reflections across all timepoints
+        n_valid = mask.sum().clamp(min=1)
+        total_nll = (loss * mask).sum() / n_valid
 
         return total_nll
 

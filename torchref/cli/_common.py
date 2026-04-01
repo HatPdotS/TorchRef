@@ -277,6 +277,40 @@ def add_dual_model_args(
     add_dual_column_args(col)
 
 
+def add_output_format_args(parser: argparse.ArgumentParser) -> None:
+    """Add ``--output-format`` argument for coordinate file format."""
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        default="both",
+        choices=["pdb", "cif", "both"],
+        help="Output coordinate file format (default: both PDB and mmCIF)",
+    )
+
+
+def add_metadata_args(parser: argparse.ArgumentParser) -> None:
+    """Add metadata-related CLI arguments for deposition headers."""
+    parser.add_argument(
+        "--title",
+        type=str,
+        default=None,
+        help="Title for the output file header",
+    )
+    parser.add_argument(
+        "--authors",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Author names for the output file header",
+    )
+    parser.add_argument(
+        "--no-header",
+        action="store_true",
+        default=False,
+        help="Suppress metadata headers in output files",
+    )
+
+
 def add_general_args(parser: argparse.ArgumentParser) -> None:
     """Add a *General* argument group with ``--device`` and ``-v``/``--verbose``."""
     gen = parser.add_argument_group("General")
@@ -587,3 +621,70 @@ def register_timing():
     """Register torchref timing hooks (call after parse_args)."""
     from torchref.utils.timing import register_timing as _register
     _register()
+
+
+# ---------------------------------------------------------------------------
+# Metadata + output format helpers
+# ---------------------------------------------------------------------------
+
+
+def write_refinement_outputs(
+    refinement,
+    outdir: Path,
+    args,
+    verbose: int = 1,
+) -> dict:
+    """Write refined structure in the requested format(s) with metadata.
+
+    Parameters
+    ----------
+    refinement : Refinement
+        Completed refinement object.
+    outdir : Path
+        Output directory.
+    args : argparse.Namespace
+        Parsed CLI arguments (expects ``output_format``, ``title``,
+        ``authors``, ``no_header``).
+    verbose : int
+        Verbosity level.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys ``"pdb"``, ``"cif"`` mapping to output paths
+        (or None if not written).
+    """
+    from torchref.io.metadata import RefinementMetadata
+
+    output_format = getattr(args, "output_format", "both")
+    no_header = getattr(args, "no_header", False)
+
+    # Collect metadata
+    metadata = None
+    if not no_header:
+        metadata = refinement.collect_deposition_metadata()
+        # Apply CLI overrides
+        if getattr(args, "title", None):
+            metadata.title = args.title
+        if getattr(args, "authors", None):
+            metadata.authors = args.authors
+
+    outputs = {"pdb": None, "cif": None}
+
+    if output_format in ("pdb", "both"):
+        output_pdb = outdir / "refined.pdb"
+        refinement.write_out_pdb(str(output_pdb), metadata=metadata)
+        outputs["pdb"] = output_pdb
+        if verbose > 0:
+            print(f"  Refined structure (PDB): {output_pdb}")
+            sys.stdout.flush()
+
+    if output_format in ("cif", "both"):
+        output_cif = outdir / "refined.cif"
+        refinement.write_out_cif(str(output_cif), metadata=metadata)
+        outputs["cif"] = output_cif
+        if verbose > 0:
+            print(f"  Refined structure (mmCIF): {output_cif}")
+            sys.stdout.flush()
+
+    return outputs
