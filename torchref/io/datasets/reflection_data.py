@@ -1166,12 +1166,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if d_max is not None:
             mask &= self.resolution <= d_max
 
+        self.masks["resolution"] = mask
+
+        valid = self.masks().sum().item()
         print(
             f"Filtering: {mask.sum()}/{len(mask)} reflections in range "
-            f"[{d_max if d_max else 'inf'} - {d_min if d_min else 'inf'}] Å"
+            f"[{d_max if d_max else 'inf'} - {d_min if d_min else 'inf'}] "
+            f"\u00c5 ({valid} valid after all masks)"
         )
-
-        self.masks["resolution"] = mask
 
         return self
 

@@ -1,26 +1,28 @@
-/var/spool/slurmd/job703055/slurm_script:3: UserWarning: TorchRef auto-configured 16 threads. Set TORCHREF_NUM_THREADS to override.
+/var/spool/slurmd/job742799/slurm_script:3: UserWarning: TorchRef auto-configured 16 threads. Set TORCHREF_NUM_THREADS to override.
   from torchref.cli.validate_ded import main
 ======================================================================
 DED Validation: WDFo vs WDFcalc
 ======================================================================
 
 --- Loading reflection data ---
-  Dark SF:   /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/dark-phenix.mtz
+  Dark SF:   /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/8QL2-sf.cif
   Light SF:  /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/7YYZ-light.mtz
-Filtering: 57575/124404 reflections in range [inf - 2.2] Å
-Filtering: 56820/123649 reflections in range [inf - 2.2] Å
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/io/cif_readers.py:695: RuntimeWarning: invalid value encountered in cast
+  self.data["R-free-flags"] = rfree_characters.to_numpy().astype(np.int32)
+Filtering: 57575/124404 reflections in range [inf - 2.2] Å (56814 valid after all masks)
+Filtering: 56820/123649 reflections in range [inf - 2.2] Å (56796 valid after all masks)
 Added dataset 'dark' (124404 reflections)
 Added dataset 'light' (124404 reflections)
   Scale parameters after optimization:
     dark: log_scale=0.000000 (scale=1.000000)
     dark: U_aniso=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    light: log_scale=-0.035661 (scale=0.964967)
-    light: U_aniso=[0.011483877897262573, 0.020553072914481163, 0.016146745532751083, -0.0006543394993059337, 0.005481556989252567, 0.0017599710263311863]
-  Matched reflections: 56796
+    light: log_scale=-0.035216 (scale=0.965397)
+    light: U_aniso=[0.01172621175646782, 0.02080288529396057, 0.01632261648774147, -0.000587910006288439, 0.005393745843321085, 0.0017781364731490612]
+  Matched reflections: 56790
   Cell: [74.53 92.58 83.99 90.   96.71 90.  ]
   Spacegroup: P 1 21 1
   Resolution cutoff: 2.20 A
-  DFo: 56796 reflections (29593 negative)
+  DFo: 56790 reflections (29608 negative)
   Weight range: 0.033 - 4.626
 
 --- Loading models ---
@@ -28,31 +30,27 @@ Added dataset 'light' (124404 reflections)
   Light model: 8228 atoms
   Fraction: 0.22
 
---- Setting up scaler (mode=shared) ---
+--- Setting up joint scaler ---
 Initialized ScalerBase with 20 bins.
-Calculating initial scale factors using 20 bins.
-Refining scales with LBFGS...
-Scale refinement complete. rwork: 0.1736, rfree: 0.1923
-
-Final Scale Parameters: 
-  log_scale: tensor([-1.8534, -1.8450, -1.8498, -1.8340, -1.8235, -1.8024, -1.8038, -1.7823,
-        -1.7390, -1.7430, -1.7188, -1.7133, -1.6755, -1.6484, -1.6180, -1.6140,
-        -1.6083, -1.6153, -1.6643, -1.8408])
-  U: tensor([-1.4516e-01, -4.8896e-02, -1.6712e-01,  2.0458e-04,  8.7182e-02,
-         9.5434e-05])
-  ML scaler refinement: Rwork=0.1737, Rfree=0.1918
-  R-factor (dark):  R_work=0.1737  R_free=0.1918
-  R-factor (mixed): R_work=0.1801  R_free=0.1932
+Joint initial scale from 2 data-model pairs (20 bins).
+  Created 2 component solvent models.
+/das/work/p17/p17490/CONDA/torchref/lib/python3.11/site-packages/torch/masked/maskedtensor/core.py:247: UserWarning: It is not recommended to create a MaskedTensor with a tensor that requires_grad. To avoid this, you can use data.detach().clone()
+  return MaskedTensor(data, mask)
+Joint solvent screening: k_sol=0.3596, B_sol=55.0, NLL=48.7991
+Refining scales jointly with LBFGS...
+Joint scale refinement complete. rwork: 0.1537, rfree: 0.1687
+  R-factor (dark):  R_work=0.1537  R_free=0.1687
+  R-factor (mixed): R_work=0.1627  R_free=0.1733
 
 --- Setting up P1 expansion and grid ---
   Grid size: (108, 128, 120)
-  ASU reflections: 56796
-  P1 reflections: 113575
+  ASU reflections: 56790
+  P1 reflections: 113563
 
 --- Computing structure factors ---
-  |DFcalc| mean: 3.291
-  |WDFcalc| mean: 2.980
-  WDFo mean: -0.374, std: 4.260
+  |DFcalc| mean: 3.131
+  |WDFcalc| mean: 2.896
+  WDFo mean: -0.378, std: 4.259
 
 --- Computing maps ---
   WDFo map: shape=torch.Size([108, 128, 120]) (sigma-normalized)
@@ -66,31 +64,31 @@ Final Scale Parameters:
   Selection voxels: 1996
 
 --- Real-space correlations ---
-        full_cell: CC = 0.3006  (n_vox = 1658880)
-        selection: CC = 0.7369  (n_vox = 1996)
+        full_cell: CC = 0.3111  (n_vox = 1658880)
+        selection: CC = 0.7472  (n_vox = 1996)
 
 --- Resolution-binned amplitude correlation ---
-  Bin  0:  9.49- 5.59 A  n= 2839  CC=0.1501
-  Bin  1:  5.59- 4.60 A  n= 2839  CC=0.2680
-  Bin  2:  4.60- 4.06 A  n= 2839  CC=0.2823
-  Bin  3:  4.06- 3.71 A  n= 2839  CC=0.3681
-  Bin  4:  3.71- 3.46 A  n= 2839  CC=0.2970
-  Bin  5:  3.46- 3.26 A  n= 2839  CC=0.3294
-  Bin  6:  3.26- 3.10 A  n= 2839  CC=0.2876
-  Bin  7:  3.10- 2.97 A  n= 2839  CC=0.3356
-  Bin  8:  2.97- 2.86 A  n= 2839  CC=0.3027
-  Bin  9:  2.86- 2.76 A  n= 2839  CC=0.3385
-  Bin 10:  2.76- 2.68 A  n= 2839  CC=0.3276
-  Bin 11:  2.68- 2.60 A  n= 2839  CC=0.3085
-  Bin 12:  2.60- 2.54 A  n= 2839  CC=0.3247
-  Bin 13:  2.54- 2.48 A  n= 2839  CC=0.3963
-  Bin 14:  2.48- 2.42 A  n= 2839  CC=0.3120
-  Bin 15:  2.42- 2.37 A  n= 2839  CC=0.3117
-  Bin 16:  2.37- 2.32 A  n= 2839  CC=0.3382
-  Bin 17:  2.32- 2.28 A  n= 2839  CC=0.3436
-  Bin 18:  2.28- 2.24 A  n= 2839  CC=0.3402
-  Bin 19:  2.24- 2.20 A  n= 2855  CC=0.3207
-  Overall CC(WDFo, WDFcalc) = 0.3082
+  Bin  0:  9.49- 5.59 A  n= 2839  CC=0.2073
+  Bin  1:  5.59- 4.60 A  n= 2839  CC=0.2842
+  Bin  2:  4.60- 4.06 A  n= 2839  CC=0.3132
+  Bin  3:  4.06- 3.71 A  n= 2839  CC=0.3675
+  Bin  4:  3.71- 3.46 A  n= 2839  CC=0.3367
+  Bin  5:  3.46- 3.26 A  n= 2839  CC=0.3342
+  Bin  6:  3.26- 3.10 A  n= 2839  CC=0.2903
+  Bin  7:  3.10- 2.97 A  n= 2839  CC=0.3361
+  Bin  8:  2.97- 2.86 A  n= 2839  CC=0.3051
+  Bin  9:  2.86- 2.76 A  n= 2839  CC=0.3359
+  Bin 10:  2.76- 2.68 A  n= 2839  CC=0.3240
+  Bin 11:  2.68- 2.60 A  n= 2839  CC=0.3080
+  Bin 12:  2.60- 2.54 A  n= 2839  CC=0.3226
+  Bin 13:  2.54- 2.48 A  n= 2839  CC=0.3939
+  Bin 14:  2.48- 2.42 A  n= 2839  CC=0.3105
+  Bin 15:  2.42- 2.37 A  n= 2839  CC=0.3112
+  Bin 16:  2.37- 2.32 A  n= 2839  CC=0.3367
+  Bin 17:  2.32- 2.28 A  n= 2839  CC=0.3418
+  Bin 18:  2.28- 2.24 A  n= 2839  CC=0.3397
+  Bin 19:  2.24- 2.20 A  n= 2849  CC=0.3186
+  Overall CC(WDFo, WDFcalc) = 0.3195
 
 Results saved to /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/output/extrapol_IBL/validate_ded_results.json
   WDFo map: /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/output/extrapol_IBL/validate_WDFo.ccp4
@@ -99,9 +97,9 @@ Results saved to /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_diffe
 
 ======================================================================
 Summary:
-  full_cell: CC = 0.3006
-  selection: CC = 0.7369
-  Reciprocal-space CC (overall): 0.3082
+  full_cell: CC = 0.3111
+  selection: CC = 0.7472
+  Reciprocal-space CC (overall): 0.3195
 ======================================================================
 
-Timing: 81.2s wall, 296.2s CPU
+Timing: 19.8s wall, 60.6s CPU

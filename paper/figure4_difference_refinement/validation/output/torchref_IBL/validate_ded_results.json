@@ -1,6 +1,6 @@
 {
   "input": {
-    "dark_structure_factor": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/dark-phenix.mtz",
+    "dark_structure_factor": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/8QL2-sf.cif",
     "light_structure_factor": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/7YYZ-light.mtz",
     "dark_model": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/8QL2.pdb",
     "light_model": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/torchref_0p18.pdb",
@@ -11,155 +11,155 @@
   },
   "realspace_correlation": {
     "full_cell": {
-      "cc": 0.3745076358318329,
+      "cc": 0.3852367103099823,
       "n_voxels": 1658880
     },
     "selection": {
-      "cc": 0.789027750492096,
-      "n_voxels": 1994
+      "cc": 0.7803012728691101,
+      "n_voxels": 2006
     }
   },
-  "reciprocal_cc_overall": 0.37,
+  "reciprocal_cc_overall": 0.3797,
   "resolution_bins": [
     {
       "bin": 0,
       "d_min": 5.594,
       "d_max": 9.495,
       "n_refl": 2839,
-      "cc": 0.2651
+      "cc": 0.2803
     },
     {
       "bin": 1,
       "d_min": 4.596,
       "d_max": 5.594,
       "n_refl": 2839,
-      "cc": 0.3355
+      "cc": 0.3891
     },
     {
       "bin": 2,
-      "d_min": 4.063,
+      "d_min": 4.062,
       "d_max": 4.596,
       "n_refl": 2839,
-      "cc": 0.3957
+      "cc": 0.4037
     },
     {
       "bin": 3,
-      "d_min": 3.714,
+      "d_min": 3.713,
       "d_max": 4.062,
       "n_refl": 2839,
-      "cc": 0.3979
+      "cc": 0.4277
     },
     {
       "bin": 4,
       "d_min": 3.46,
       "d_max": 3.713,
       "n_refl": 2839,
-      "cc": 0.448
+      "cc": 0.4514
     },
     {
       "bin": 5,
       "d_min": 3.263,
       "d_max": 3.46,
       "n_refl": 2839,
-      "cc": 0.4178
+      "cc": 0.4263
     },
     {
       "bin": 6,
       "d_min": 3.105,
       "d_max": 3.263,
       "n_refl": 2839,
-      "cc": 0.3944
+      "cc": 0.402
     },
     {
       "bin": 7,
       "d_min": 2.972,
       "d_max": 3.105,
       "n_refl": 2839,
-      "cc": 0.4146
+      "cc": 0.3852
     },
     {
       "bin": 8,
       "d_min": 2.861,
       "d_max": 2.972,
       "n_refl": 2839,
-      "cc": 0.4255
+      "cc": 0.4249
     },
     {
       "bin": 9,
       "d_min": 2.764,
       "d_max": 2.861,
       "n_refl": 2839,
-      "cc": 0.4274
+      "cc": 0.4445
     },
     {
       "bin": 10,
       "d_min": 2.68,
       "d_max": 2.764,
       "n_refl": 2839,
-      "cc": 0.3838
+      "cc": 0.3837
     },
     {
       "bin": 11,
       "d_min": 2.605,
       "d_max": 2.68,
       "n_refl": 2839,
-      "cc": 0.4046
+      "cc": 0.4047
     },
     {
       "bin": 12,
       "d_min": 2.537,
       "d_max": 2.605,
       "n_refl": 2839,
-      "cc": 0.4105
+      "cc": 0.3879
     },
     {
       "bin": 13,
       "d_min": 2.475,
       "d_max": 2.537,
       "n_refl": 2839,
-      "cc": 0.4147
+      "cc": 0.4089
     },
     {
       "bin": 14,
       "d_min": 2.42,
       "d_max": 2.475,
       "n_refl": 2839,
-      "cc": 0.3238
+      "cc": 0.3178
     },
     {
       "bin": 15,
       "d_min": 2.369,
       "d_max": 2.42,
       "n_refl": 2839,
-      "cc": 0.37
+      "cc": 0.3344
     },
     {
       "bin": 16,
       "d_min": 2.322,
       "d_max": 2.369,
       "n_refl": 2839,
-      "cc": 0.3585
+      "cc": 0.3333
     },
     {
       "bin": 17,
       "d_min": 2.279,
       "d_max": 2.322,
       "n_refl": 2839,
-      "cc": 0.3446
+      "cc": 0.3196
     },
     {
       "bin": 18,
       "d_min": 2.238,
       "d_max": 2.279,
       "n_refl": 2839,
-      "cc": 0.2802
+      "cc": 0.2612
     },
     {
       "bin": 19,
       "d_min": 2.2,
       "d_max": 2.238,
-      "n_refl": 2855,
-      "cc": 0.2876
+      "n_refl": 2849,
+      "cc": 0.2811
     }
   ],
   "map_statistics": {
@@ -172,6 +172,6 @@
       "mean": 0.0
     }
   },
-  "n_reflections_asu": 56796,
-  "n_reflections_p1": 113575
+  "n_reflections_asu": 56790,
+  "n_reflections_p1": 113563
 }

@@ -59,19 +59,23 @@ Classic (amplitude-only) extrapolation:
     2Fextc-Fc, Fextc-Fc       Map coefficients
 
 Empirical Bayes extrapolation:
-    Starts from the phase-aware extrapolation, then applies per-reflection
-    shrinkage towards Fo_dark to regularise noisy high-resolution and
-    weakly-measured reflections::
+    Starts from the phase-aware complex extrapolation, then applies
+    per-reflection shrinkage **in the complex domain** towards the
+    dark-state structure factor.  This regularises both amplitude and
+    phase for noisy / weakly-measured reflections::
 
-        F_ext_noisy = |Fo_dark*exp(i*phi_dark) + dF/f|     (phase-aware)
+        F_ext       = Fo_dark*exp(i*phi_dark) + dF/f        (complex)
         sig_ext^2   = (sig_light^2 + sig_dark^2) / f^2
-        tau^2       = max(<(F_ext - Fo_dark)^2> - <sig_ext^2>, floor)
+        tau^2       = max(<(|F_ext| - Fo_dark)^2> - <sig_ext^2>, floor)
         w(h)        = tau^2 / (tau^2 + sig_ext^2(h))
-        F_extb(h)   = w(h) * F_ext_noisy(h) + (1 - w(h)) * Fo_dark(h)
+        F_shrunk(h) = w(h) * F_ext(h) + (1-w(h)) * Fo_dark*exp(i*phi_dark)
+        F_extb(h)   = |F_shrunk(h)|
 
     tau^2 is the estimated global signal variance; w(h) is the
     per-reflection shrinkage weight (high for strong/well-measured
-    reflections, low for noisy ones).
+    reflections, low for noisy ones).  Complex-domain shrinkage pulls
+    noisy phases towards the dark model, reducing phase noise in the
+    extrapolated maps.
 
     Fextb, SIGFextb           Shrinkage-regularised amplitude and sigma
     2Fextb-Fc, Fextb-Fc       Map coefficients
@@ -251,20 +255,66 @@ def compute_bayes_extrapolated_amplitudes(
     Fobs_dark, Fobs_light, sig_dark, sig_light, phi_dark, phi_mixed, f,
     *, tau_sq_floor=1e-4,
 ):
-    """Empirical Bayes shrinkage estimator for extrapolated SF amplitudes."""
+    """Empirical Bayes shrinkage estimator with complex-domain regularisation.
+
+    Shrinkage is applied in the complex plane *before* taking the amplitude,
+    so that noisy reflections have both their amplitude damped and their
+    phase pulled towards the dark-model phase::
+
+        F_ext     = F_dark*e^(iφ_d) + ΔF/f           (complex extrapolation)
+        w(h)      = τ² / (τ² + σ_ext²(h))            (per-reflection weight)
+        F_shrunk  = w(h)·F_ext + (1-w(h))·F_dark*e^(iφ_d)   (complex shrinkage)
+        F_extb    = |F_shrunk|
+
+    Parameters
+    ----------
+    Fobs_dark, Fobs_light : Tensor (N,)
+        Observed amplitudes.
+    sig_dark, sig_light : Tensor (N,)
+        Measurement uncertainties.
+    phi_dark, phi_mixed : Tensor (N,)
+        Calculated phases (radians) for dark and mixed models.
+    f : float or Tensor (scalar)
+        Excited-state population fraction.
+    tau_sq_floor : float
+        Minimum signal variance.
+
+    Returns
+    -------
+    F_ext_bayes : Tensor (N,)
+        Posterior-mean extrapolated amplitudes.
+    var_ext_bayes : Tensor (N,)
+        Posterior variance per reflection.
+    w_shrinkage : Tensor (N,)
+        Per-reflection shrinkage weights.
+    tau_sq : float
+        Estimated global signal variance.
+    """
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
     delta_F = F_light_phased - F_dark_phased
+
+    # Propagated variance
     sig_sq_dF = sig_light**2 + sig_dark**2
-    F_ext_complex = F_dark_phased + delta_F / f
-    F_ext_obs = torch.abs(F_ext_complex)
     sig_sq_ext = sig_sq_dF / f**2
-    residuals_sq = (F_ext_obs - Fobs_dark) ** 2
+
+    # Complex extrapolation
+    F_ext_complex = F_dark_phased + delta_F / f
+
+    # Estimate signal variance τ²
+    residuals_sq = (torch.abs(F_ext_complex) - Fobs_dark) ** 2
     tau_sq = max((residuals_sq.mean() - sig_sq_ext.mean()).item(), tau_sq_floor)
+
+    # Per-reflection shrinkage weight (unnormalised, in [0, 1])
     w = tau_sq / (tau_sq + sig_sq_ext)
-    w = w / w.mean()
-    F_ext_bayes = w * F_ext_obs + (1 - w) * Fobs_dark
+
+    # Complex-domain shrinkage: pull noisy reflections towards dark phase + amplitude
+    F_ext_shrunk = w * F_ext_complex + (1 - w) * F_dark_phased
+    F_ext_bayes = torch.abs(F_ext_shrunk)
+
+    # Posterior variance
     var_ext_bayes = (tau_sq * sig_sq_ext) / (tau_sq + sig_sq_ext)
+
     return F_ext_bayes, var_ext_bayes, w, tau_sq
 
 
@@ -279,6 +329,7 @@ def write_results_mtz(dc, mc, scaler, filename):
     filename : str
         Output MTZ path.
     """
+    import numpy as np
     import reciprocalspaceship as rs
     from torchref import ReflectionData, Scaler
 
@@ -443,6 +494,17 @@ def write_results_mtz(dc, mc, scaler, filename):
             "SIGFextb": sig_ext_bayes.detach().cpu().numpy(),
             "2Fextb-Fc": amp_2fofc_bayes.detach().cpu().numpy(),
             "Fextb-Fc": amp_fofc_bayes.detach().cpu().numpy(),
+            # R-free flags (1=work, 0=free)
+            "FreeR_flag_dark": (
+                data_dark.rfree_flags[mask].cpu().numpy().astype(int)
+                if data_dark.rfree_flags is not None
+                else np.ones(len(hkl_np), dtype=int)
+            ),
+            "FreeR_flag_light": (
+                data_light.rfree_flags[mask].cpu().numpy().astype(int)
+                if data_light.rfree_flags is not None
+                else np.ones(len(hkl_np), dtype=int)
+            ),
         },
         cell=data_dark.cell.data.cpu().tolist(),
         spacegroup=data_dark.spacegroup.hm,
@@ -462,6 +524,8 @@ def write_results_mtz(dc, mc, scaler, filename):
     df[sig_cols] = df[sig_cols].astype("Q")
     phase_cols = ["PHIC_dark", "PHIC_mixed", "PHIC_diff", "PHIC_light"]
     df[phase_cols] = df[phase_cols].astype("P")
+    df["FreeR_flag_dark"] = df["FreeR_flag_dark"].astype("I")
+    df["FreeR_flag_light"] = df["FreeR_flag_light"].astype("I")
     df.set_index(["H", "K", "L"], inplace=True)
     df.write_mtz(filename)
     print(f"  Results MTZ written to {filename}")
@@ -774,33 +838,79 @@ Examples:
         from torchref import __version__
         from torchref.io.metadata import RefinementMetadata
 
-        dark_meta = RefinementMetadata(
-            program_version=__version__,
-            refinement_method="collection-difference-refine",
-            r_work=float(r_work_d), r_free=float(r_free_d),
-        )
-        light_meta = RefinementMetadata(
-            program_version=__version__,
-            refinement_method="collection-difference-refine",
-            r_work=float(r_work_l), r_free=float(r_free_l),
-        )
-        if data_dark.resolution is not None:
-            dark_meta.resolution_high = float(data_dark.resolution.min())
-            dark_meta.resolution_low = float(data_dark.resolution.max())
-        if data_light.resolution is not None:
-            light_meta.resolution_high = float(data_light.resolution.min())
-            light_meta.resolution_low = float(data_light.resolution.max())
-        for meta, m in [(dark_meta, model_dark), (light_meta, model_light)]:
-            meta.n_atoms_total = len(m.pdb)
-            if m.cell is not None:
-                meta.cell = [float(x) for x in m.cell.data.tolist()]
-            if m.spacegroup is not None:
-                meta.spacegroup = m.spacegroup.hm
-        for meta in (dark_meta, light_meta):
+        def _build_metadata(model, data, r_work, r_free):
+            """Build RefinementMetadata for a model/data pair."""
+            meta = RefinementMetadata(
+                program_version=__version__,
+                refinement_method="difference-refine",
+                r_work=float(r_work), r_free=float(r_free),
+            )
+            # Resolution (from masks, respects cutoff)
+            if data.resolution is not None:
+                valid = data.masks().to(torch.bool)
+                res_valid = data.resolution[valid]
+                if len(res_valid) > 0:
+                    meta.resolution_high = float(res_valid.min())
+                    meta.resolution_low = float(res_valid.max())
+
+            # Reflection counts
+            with torch.no_grad():
+                _, _, _, rfree_flags = data()
+                if rfree_flags is not None:
+                    rfree_bool = rfree_flags.bool()
+                    valid_mask = data.masks().to(torch.bool)
+                    n_work = int((valid_mask & rfree_bool).sum().item())
+                    n_test = int((valid_mask & ~rfree_bool).sum().item())
+                    n_all = n_work + n_test
+                    meta.n_reflections_work = n_work
+                    meta.n_reflections_test = n_test
+                    meta.n_reflections_all = n_all
+                    meta.percent_free = 100.0 * n_test / n_all if n_all > 0 else None
+
+            # B-factor statistics
+            pdb = model.pdb
+            bvals = pdb["tempfactor"]
+            meta.b_mean_overall = float(bvals.mean())
+            meta.b_min = float(bvals.min())
+            meta.b_max = float(bvals.max())
+
+            # Atom counts
+            meta.n_atoms_total = len(pdb)
+            meta.n_atoms_protein = int((pdb["ATOM"] == "ATOM").sum())
+            meta.n_atoms_solvent = int((pdb["ATOM"] == "HETATM").sum())
+
+            # Geometry deviations
+            if model.initialized and model._restraints is not None:
+                restraints = model.restraints
+                with torch.no_grad():
+                    if hasattr(restraints, "bond_deviations"):
+                        bond_devs, _ = restraints.bond_deviations()
+                        meta.rmsd_bond_lengths = float(torch.sqrt((bond_devs**2).mean()))
+                    if hasattr(restraints, "angle_deviations"):
+                        angle_devs, _ = restraints.angle_deviations()
+                        meta.rmsd_bond_angles = float(torch.sqrt((angle_devs**2).mean()))
+
+            # Solvent model from CollectionScaler
+            if hasattr(scaler, "solvent") and scaler.solvent is not None:
+                sm = scaler.solvent
+                meta.solvent_model_ksol = float(torch.exp(sm.log_k_solvent).item())
+                meta.solvent_model_bsol = float(sm.b_solvent.item())
+
+            # Cell and spacegroup
+            if model.cell is not None:
+                meta.cell = [float(x) for x in model.cell.data.tolist()]
+            if model.spacegroup is not None:
+                meta.spacegroup = model.spacegroup.hm
+
+            # CLI overrides / defaults
             if getattr(args, "title", None):
                 meta.title = args.title
-            if getattr(args, "authors", None):
-                meta.authors = args.authors
+            meta.authors = getattr(args, "authors", None) or ["AUTHOR NAME"]
+
+            return meta
+
+        dark_meta = _build_metadata(model_dark, data_dark, r_work_d, r_free_d)
+        light_meta = _build_metadata(model_light, data_light, r_work_l, r_free_l)
 
     if output_format in ("pdb", "both"):
         model_dark.write_pdb(dark_pdb_out, metadata=dark_meta)
@@ -810,6 +920,38 @@ Examples:
         light_cif_out = str(outdir / f"{prefix}_light.cif")
         model_dark.write_cif(dark_cif_out, metadata=dark_meta)
         model_light.write_cif(light_cif_out, metadata=light_meta)
+
+    # --- Write per-dataset structure factor files (MTZ + CIF) ---
+    dark_sf_mtz = str(outdir / f"{prefix}_dark-sf.mtz")
+    light_sf_mtz = str(outdir / f"{prefix}_light-sf.mtz")
+    dark_sf_cif = str(outdir / f"{prefix}_dark-sf.cif")
+    light_sf_cif = str(outdir / f"{prefix}_light-sf.cif")
+
+    with torch.no_grad():
+        fcalc_dark_full = scaler.forward_mixed(
+            dark.models[0](data_dark.hkl), dark.fractions
+        )
+        fcalc_light_full = scaler.forward_mixed(
+            mixed(data_light.hkl), mixed.fractions
+        )
+    data_dark.write_mtz(dark_sf_mtz, fcalc=fcalc_dark_full)
+    data_light.write_mtz(light_sf_mtz, fcalc=fcalc_light_full)
+
+    def _mtz_to_cif(mtz_path, cif_path):
+        """Convert MTZ to mmCIF structure factor file via gemmi."""
+        import gemmi
+        mtz = gemmi.read_mtz_file(mtz_path)
+        m2c = gemmi.MtzToCif()
+        cif_str = m2c.write_cif_to_string(mtz)
+        with open(cif_path, "w") as f:
+            f.write(cif_str)
+
+    _mtz_to_cif(dark_sf_mtz, dark_sf_cif)
+    _mtz_to_cif(light_sf_mtz, light_sf_cif)
+
+    if args.verbose > 0:
+        print(f"  Dark SF written to {dark_sf_mtz}, {dark_sf_cif}")
+        print(f"  Light SF written to {light_sf_mtz}, {light_sf_cif}")
 
     write_results_mtz(dc, mc, scaler, diff_mtz_out)
 
@@ -845,6 +987,10 @@ Examples:
         "output_files": {
             "dark_pdb": dark_pdb_out,
             "light_pdb": light_pdb_out,
+            "dark_sf_mtz": dark_sf_mtz,
+            "dark_sf_cif": dark_sf_cif,
+            "light_sf_mtz": light_sf_mtz,
+            "light_sf_cif": light_sf_cif,
             "difference_mtz": diff_mtz_out,
             "summary": summary_path,
         },
@@ -857,6 +1003,8 @@ Examples:
         print("Output files:")
         print(f"  - {dark_pdb_out}")
         print(f"  - {light_pdb_out}")
+        print(f"  - {dark_sf_mtz} / {dark_sf_cif}")
+        print(f"  - {light_sf_mtz} / {light_sf_cif}")
         print(f"  - {diff_mtz_out}")
         print(f"  - {summary_path}")
         print()
