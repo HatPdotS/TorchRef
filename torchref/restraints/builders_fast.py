@@ -1251,8 +1251,8 @@ class InterResidueBondBuilder:
             pdb = pdb[pdb["ATOM"] == filter_atom_type]
         pp_pdb = PreprocessedPDB(pdb)
 
-        # Build name-to-index maps for each residue
-        residue_maps = self._build_residue_maps(pp_pdb)
+        # Build per-conformation maps for each residue (altloc-aware)
+        conf_maps = self._build_residue_conformation_maps(pp_pdb)
 
         # Find consecutive residue pairs
         pairs = self._find_consecutive_pairs(pp_pdb)
@@ -1266,23 +1266,23 @@ class InterResidueBondBuilder:
         n_bonds = len(bonds["atom1"])
 
         for res_i_idx, res_next_idx in pairs:
-            map_i = residue_maps[res_i_idx]
-            map_next = residue_maps[res_next_idx]
+            # Iterate over all conformer pairs (Cartesian product)
+            for map_i in conf_maps[res_i_idx]:
+                for map_next in conf_maps[res_next_idx]:
 
-            for b in range(n_bonds):
-                comp1, comp2 = bonds["comp1"][b], bonds["comp2"][b]
-                atom1_name, atom2_name = bonds["atom1"][b], bonds["atom2"][b]
+                    for b in range(n_bonds):
+                        comp1, comp2 = bonds["comp1"][b], bonds["comp2"][b]
+                        atom1_name, atom2_name = bonds["atom1"][b], bonds["atom2"][b]
 
-                # Select residue based on comp_id
-                map1 = map_i if comp1 == "1" else map_next
-                map2 = map_i if comp2 == "1" else map_next
+                        map1 = map_i if comp1 == "1" else map_next
+                        map2 = map_i if comp2 == "1" else map_next
 
-                if atom1_name in map1 and atom2_name in map2:
-                    idx1 = map1[atom1_name]
-                    idx2 = map2[atom2_name]
-                    all_indices.append([idx1, idx2])
-                    all_refs.append(bonds["value"][b])
-                    all_sigmas.append(bonds["sigma"][b])
+                        if atom1_name in map1 and atom2_name in map2:
+                            idx1 = map1[atom1_name]
+                            idx2 = map2[atom2_name]
+                            all_indices.append([idx1, idx2])
+                            all_refs.append(bonds["value"][b])
+                            all_sigmas.append(bonds["sigma"][b])
 
         if not all_indices:
             return None
@@ -1305,22 +1305,28 @@ class InterResidueBondBuilder:
             "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
         }
 
-    def _build_residue_maps(self, pp_pdb: PreprocessedPDB) -> List[Dict[str, int]]:
-        """Build atom name to global index map for each residue."""
-        maps = []
-        for res_idx in range(pp_pdb.n_residues):
-            start = pp_pdb.residue_starts[res_idx]
-            end = pp_pdb.residue_ends[res_idx]
+    def _build_residue_conformation_maps(
+        self, pp_pdb: PreprocessedPDB,
+    ) -> List[List[Dict[str, int]]]:
+        """Build per-conformation atom-name-to-index maps for each residue.
 
-            name_to_idx = {}
-            for i in range(start, end):
-                name = pp_pdb.atom_names[i]
-                altloc = pp_pdb.altlocs[i]
-                # Prefer no altloc, then 'A', then first
-                if name not in name_to_idx or altloc in [" ", "", "A"]:
-                    name_to_idx[name] = pp_pdb.atom_indices[i]
-            maps.append(name_to_idx)
-        return maps
+        For residues without altlocs, returns a single map.
+        For residues with altlocs A, B, returns one map per conformer,
+        each containing common atoms + that conformer's atoms.
+
+        Returns
+        -------
+        List[List[Dict[str, int]]]
+            Outer list indexed by residue, inner list by conformer.
+        """
+        all_maps = []
+        for res_idx in range(pp_pdb.n_residues):
+            res_maps = []
+            for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
+                name_to_idx = dict(zip(atom_names, atom_indices))
+                res_maps.append(name_to_idx)
+            all_maps.append(res_maps)
+        return all_maps
 
     def _find_consecutive_pairs(self, pp_pdb: PreprocessedPDB) -> List[Tuple[int, int]]:
         """Find pairs of consecutive residues within each chain."""
@@ -1491,7 +1497,7 @@ class InterResidueAngleBuilder:
         if filter_atom_type:
             pdb = pdb[pdb["ATOM"] == filter_atom_type]
         pp_pdb = PreprocessedPDB(pdb)
-        residue_maps = self._build_residue_maps(pp_pdb)
+        conf_maps = self._build_residue_conformation_maps(pp_pdb)
         pairs = self._find_consecutive_pairs(pp_pdb)
 
         all_indices = []
@@ -1502,30 +1508,30 @@ class InterResidueAngleBuilder:
         n_angles = len(angles["atom1"])
 
         for res_i_idx, res_next_idx in pairs:
-            map_i = residue_maps[res_i_idx]
-            map_next = residue_maps[res_next_idx]
+            for map_i in conf_maps[res_i_idx]:
+                for map_next in conf_maps[res_next_idx]:
 
-            for a in range(n_angles):
-                comp1, comp2, comp3 = (
-                    angles["comp1"][a],
-                    angles["comp2"][a],
-                    angles["comp3"][a],
-                )
-                atom1, atom2, atom3 = (
-                    angles["atom1"][a],
-                    angles["atom2"][a],
-                    angles["atom3"][a],
-                )
+                    for a in range(n_angles):
+                        comp1, comp2, comp3 = (
+                            angles["comp1"][a],
+                            angles["comp2"][a],
+                            angles["comp3"][a],
+                        )
+                        atom1, atom2, atom3 = (
+                            angles["atom1"][a],
+                            angles["atom2"][a],
+                            angles["atom3"][a],
+                        )
 
-                map1 = map_i if comp1 == "1" else map_next
-                map2 = map_i if comp2 == "1" else map_next
-                map3 = map_i if comp3 == "1" else map_next
+                        map1 = map_i if comp1 == "1" else map_next
+                        map2 = map_i if comp2 == "1" else map_next
+                        map3 = map_i if comp3 == "1" else map_next
 
-                if atom1 in map1 and atom2 in map2 and atom3 in map3:
-                    idx1, idx2, idx3 = map1[atom1], map2[atom2], map3[atom3]
-                    all_indices.append([idx1, idx2, idx3])
-                    all_refs.append(angles["value"][a])
-                    all_sigmas.append(angles["sigma"][a])
+                        if atom1 in map1 and atom2 in map2 and atom3 in map3:
+                            idx1, idx2, idx3 = map1[atom1], map2[atom2], map3[atom3]
+                            all_indices.append([idx1, idx2, idx3])
+                            all_refs.append(angles["value"][a])
+                            all_sigmas.append(angles["sigma"][a])
 
         if not all_indices:
             return None
@@ -1548,20 +1554,18 @@ class InterResidueAngleBuilder:
             "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
         }
 
-    def _build_residue_maps(self, pp_pdb: PreprocessedPDB) -> List[Dict[str, int]]:
-        """Build atom name to global index map for each residue."""
-        maps = []
+    def _build_residue_conformation_maps(
+        self, pp_pdb: PreprocessedPDB,
+    ) -> List[List[Dict[str, int]]]:
+        """Build per-conformation atom-name-to-index maps for each residue."""
+        all_maps = []
         for res_idx in range(pp_pdb.n_residues):
-            start = pp_pdb.residue_starts[res_idx]
-            end = pp_pdb.residue_ends[res_idx]
-            name_to_idx = {}
-            for i in range(start, end):
-                name = pp_pdb.atom_names[i]
-                altloc = pp_pdb.altlocs[i]
-                if name not in name_to_idx or altloc in [" ", "", "A"]:
-                    name_to_idx[name] = pp_pdb.atom_indices[i]
-            maps.append(name_to_idx)
-        return maps
+            res_maps = []
+            for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
+                name_to_idx = dict(zip(atom_names, atom_indices))
+                res_maps.append(name_to_idx)
+            all_maps.append(res_maps)
+        return all_maps
 
     def _find_consecutive_pairs(self, pp_pdb: PreprocessedPDB) -> List[Tuple[int, int]]:
         """Find pairs of consecutive residues within each chain."""
@@ -1760,7 +1764,7 @@ class InterResidueTorsionBuilder:
         if filter_atom_type:
             pdb = pdb[pdb["ATOM"] == filter_atom_type]
         pp_pdb = PreprocessedPDB(pdb)
-        residue_maps = self._build_residue_maps(pp_pdb)
+        conf_maps = self._build_residue_conformation_maps(pp_pdb)
         pairs = self._find_consecutive_pairs(pp_pdb)
 
         # Build coordinate array for omega angle computation (cis/trans PRO)
@@ -1793,86 +1797,85 @@ class InterResidueTorsionBuilder:
         from torchref.restraints.ramachandran import classify_residue
 
         for res_i_idx, res_next_idx in pairs:
-            map_i = residue_maps[res_i_idx]
-            map_next = residue_maps[res_next_idx]
             resname_i = pp_pdb.residue_resnames[res_i_idx]
             resname_next = pp_pdb.residue_resnames[res_next_idx]
             is_proline = resname_next == "PRO"
 
-            # Track which residue each phi/psi belongs to
-            pair_phi = None   # phi from this pair belongs to res_next_idx
-            pair_psi = None   # psi from this pair belongs to res_i_idx
+            for map_i in conf_maps[res_i_idx]:
+                for map_next in conf_maps[res_next_idx]:
 
-            for t in range(n_torsions):
-                comp1 = torsions["comp1"][t]
-                comp2 = torsions["comp2"][t]
-                comp3 = torsions["comp3"][t]
-                comp4 = torsions["comp4"][t]
-                atom1 = torsions["atom1"][t]
-                atom2 = torsions["atom2"][t]
-                atom3 = torsions["atom3"][t]
-                atom4 = torsions["atom4"][t]
-                torsion_id = torsions["id"][t]
+                    # Track which residue each phi/psi belongs to
+                    pair_phi = None   # phi from this pair belongs to res_next_idx
+                    pair_psi = None   # psi from this pair belongs to res_i_idx
 
-                map1 = map_i if comp1 == "1" else map_next
-                map2 = map_i if comp2 == "1" else map_next
-                map3 = map_i if comp3 == "1" else map_next
-                map4 = map_i if comp4 == "1" else map_next
+                    for t in range(n_torsions):
+                        comp1 = torsions["comp1"][t]
+                        comp2 = torsions["comp2"][t]
+                        comp3 = torsions["comp3"][t]
+                        comp4 = torsions["comp4"][t]
+                        atom1 = torsions["atom1"][t]
+                        atom2 = torsions["atom2"][t]
+                        atom3 = torsions["atom3"][t]
+                        atom4 = torsions["atom4"][t]
+                        torsion_id = torsions["id"][t]
 
-                if not (
-                    atom1 in map1 and atom2 in map2 and atom3 in map3 and atom4 in map4
-                ):
-                    continue
+                        map1 = map_i if comp1 == "1" else map_next
+                        map2 = map_i if comp2 == "1" else map_next
+                        map3 = map_i if comp3 == "1" else map_next
+                        map4 = map_i if comp4 == "1" else map_next
 
-                idx1, idx2, idx3, idx4 = (
-                    map1[atom1],
-                    map2[atom2],
-                    map3[atom3],
-                    map4[atom4],
-                )
-                period = int(torsions["period"][t])
+                        if not (
+                            atom1 in map1 and atom2 in map2
+                            and atom3 in map3 and atom4 in map4
+                        ):
+                            continue
 
-                if torsion_id == "phi":
-                    phi_data["indices"].append([idx1, idx2, idx3, idx4])
-                    phi_data["periods"].append(period)
-                    pair_phi = [idx1, idx2, idx3, idx4]
-                elif torsion_id == "psi":
-                    psi_data["indices"].append([idx1, idx2, idx3, idx4])
-                    psi_data["periods"].append(period)
-                    pair_psi = [idx1, idx2, idx3, idx4]
-                elif torsion_id == "omega":
-                    omega_data["indices"].append([idx1, idx2, idx3, idx4])
-                    omega_data["references"].append(float(torsions["value"][t]))
-                    omega_data["sigmas"].append(float(torsions["sigma"][t]))
-                    omega_data["periods"].append(period)
-                    omega_data["is_proline"].append(is_proline)
+                        idx1, idx2, idx3, idx4 = (
+                            map1[atom1],
+                            map2[atom2],
+                            map3[atom3],
+                            map4[atom4],
+                        )
+                        period = int(torsions["period"][t])
 
-            # Store phi/psi by the residue they actually belong to:
-            # phi: C(i) - N(j) - CA(j) - C(j)  → belongs to residue j
-            # psi: N(i) - CA(i) - C(i)  - N(j)  → belongs to residue i
-            if pair_phi is not None:
-                phi_by_residue[res_next_idx] = pair_phi
-            if pair_psi is not None:
-                psi_by_residue[res_i_idx] = pair_psi
-            # Track residue names and next-residue names for classification
-            resname_by_residue[res_i_idx] = resname_i
-            resname_by_residue[res_next_idx] = resname_next
-            next_resname_by_residue[res_i_idx] = resname_next
-            # Compute omega for PRO cis/trans detection
-            if resname_next == "PRO" and pair_psi is not None:
-                # omega belongs to the same peptide bond as psi(i)
-                # We need omega for residue j (the PRO), which is from this pair
-                omega_idx = [idx1, idx2, idx3, idx4] if omega_data["indices"] else None
-                # Actually use the omega from the torsion loop if available
-                pass
-            # For omega: it defines the peptide bond between i and j.
-            # The residue that "is PRO" is j (resname_next).
-            # We store omega keyed by the PRO residue (res_next_idx).
-            if is_proline and omega_data["indices"]:
-                omega_deg = self._torsion_angle_np(
-                    coords_np, *omega_data["indices"][-1]
-                )
-                omega_by_residue[res_next_idx] = omega_deg
+                        if torsion_id == "phi":
+                            phi_data["indices"].append([idx1, idx2, idx3, idx4])
+                            phi_data["periods"].append(period)
+                            pair_phi = [idx1, idx2, idx3, idx4]
+                        elif torsion_id == "psi":
+                            psi_data["indices"].append([idx1, idx2, idx3, idx4])
+                            psi_data["periods"].append(period)
+                            pair_psi = [idx1, idx2, idx3, idx4]
+                        elif torsion_id == "omega":
+                            omega_data["indices"].append([idx1, idx2, idx3, idx4])
+                            omega_data["references"].append(float(torsions["value"][t]))
+                            omega_data["sigmas"].append(float(torsions["sigma"][t]))
+                            omega_data["periods"].append(period)
+                            omega_data["is_proline"].append(is_proline)
+
+                    # Store phi/psi by the residue they actually belong to:
+                    # phi: C(i) - N(j) - CA(j) - C(j)  → belongs to residue j
+                    # psi: N(i) - CA(i) - C(i)  - N(j)  → belongs to residue i
+                    if pair_phi is not None:
+                        phi_by_residue[res_next_idx] = pair_phi
+                    if pair_psi is not None:
+                        psi_by_residue[res_i_idx] = pair_psi
+                    # Track residue names and next-residue names for classification
+                    resname_by_residue[res_i_idx] = resname_i
+                    resname_by_residue[res_next_idx] = resname_next
+                    next_resname_by_residue[res_i_idx] = resname_next
+                    # Compute omega for PRO cis/trans detection
+                    if resname_next == "PRO" and pair_psi is not None:
+                        omega_idx = [idx1, idx2, idx3, idx4] if omega_data["indices"] else None
+                        pass
+                    # For omega: it defines the peptide bond between i and j.
+                    # The residue that "is PRO" is j (resname_next).
+                    # We store omega keyed by the PRO residue (res_next_idx).
+                    if is_proline and omega_data["indices"]:
+                        omega_deg = self._torsion_angle_np(
+                            coords_np, *omega_data["indices"][-1]
+                        )
+                        omega_by_residue[res_next_idx] = omega_deg
 
         result = {}
 
@@ -1968,20 +1971,18 @@ class InterResidueTorsionBuilder:
 
         return result if result else None
 
-    def _build_residue_maps(self, pp_pdb: PreprocessedPDB) -> List[Dict[str, int]]:
-        """Build atom name to global index map for each residue."""
-        maps = []
+    def _build_residue_conformation_maps(
+        self, pp_pdb: PreprocessedPDB,
+    ) -> List[List[Dict[str, int]]]:
+        """Build per-conformation atom-name-to-index maps for each residue."""
+        all_maps = []
         for res_idx in range(pp_pdb.n_residues):
-            start = pp_pdb.residue_starts[res_idx]
-            end = pp_pdb.residue_ends[res_idx]
-            name_to_idx = {}
-            for i in range(start, end):
-                name = pp_pdb.atom_names[i]
-                altloc = pp_pdb.altlocs[i]
-                if name not in name_to_idx or altloc in [" ", "", "A"]:
-                    name_to_idx[name] = pp_pdb.atom_indices[i]
-            maps.append(name_to_idx)
-        return maps
+            res_maps = []
+            for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
+                name_to_idx = dict(zip(atom_names, atom_indices))
+                res_maps.append(name_to_idx)
+            all_maps.append(res_maps)
+        return all_maps
 
     def _find_consecutive_pairs(self, pp_pdb: PreprocessedPDB) -> List[Tuple[int, int]]:
         """Find pairs of consecutive residues within each chain."""
@@ -2035,17 +2036,17 @@ class InterResiduePlaneBuilder:
         if filter_atom_type:
             pdb = pdb[pdb["ATOM"] == filter_atom_type]
         pp_pdb = PreprocessedPDB(pdb)
-        residue_maps = self._build_residue_maps(pp_pdb)
+        conf_maps = self._build_residue_conformation_maps(pp_pdb)
         pairs = self._find_consecutive_pairs(pp_pdb)
 
         # Group planes by atom count
         planes_by_size: Dict[int, List[Tuple[np.ndarray, np.ndarray]]] = {}
 
         for res_i_idx, res_next_idx in pairs:
-            map_i = residue_maps[res_i_idx]
-            map_next = residue_maps[res_next_idx]
+          for map_i in conf_maps[res_i_idx]:
+            for map_next in conf_maps[res_next_idx]:
 
-            for plane_data in link_data.planes:
+              for plane_data in link_data.planes:
                 comp_ids = plane_data["comp_ids"]
                 atom_names = plane_data["atoms"]
                 sigmas = plane_data["sigmas"]
@@ -2099,20 +2100,18 @@ class InterResiduePlaneBuilder:
 
         return result
 
-    def _build_residue_maps(self, pp_pdb: PreprocessedPDB) -> List[Dict[str, int]]:
-        """Build atom name to global index map for each residue."""
-        maps = []
+    def _build_residue_conformation_maps(
+        self, pp_pdb: PreprocessedPDB,
+    ) -> List[List[Dict[str, int]]]:
+        """Build per-conformation atom-name-to-index maps for each residue."""
+        all_maps = []
         for res_idx in range(pp_pdb.n_residues):
-            start = pp_pdb.residue_starts[res_idx]
-            end = pp_pdb.residue_ends[res_idx]
-            name_to_idx = {}
-            for i in range(start, end):
-                name = pp_pdb.atom_names[i]
-                altloc = pp_pdb.altlocs[i]
-                if name not in name_to_idx or altloc in [" ", "", "A"]:
-                    name_to_idx[name] = pp_pdb.atom_indices[i]
-            maps.append(name_to_idx)
-        return maps
+            res_maps = []
+            for atom_names, atom_indices, _ in pp_pdb.get_altloc_conformations(res_idx):
+                name_to_idx = dict(zip(atom_names, atom_indices))
+                res_maps.append(name_to_idx)
+            all_maps.append(res_maps)
+        return all_maps
 
     def _find_consecutive_pairs(self, pp_pdb: PreprocessedPDB) -> List[Tuple[int, int]]:
         """Find pairs of consecutive residues within each chain."""

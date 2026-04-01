@@ -131,8 +131,8 @@ DEFAULT_TARGET_WEIGHTS = {
     "geometry/angle": 0.3,
     "geometry/torsion": 0.3,
     "geometry/planarity": 1.0,
-    "geometry/chiral": 2.0,
-    "geometry/nonbonded": 0.5,
+    "geometry/chiral": 0.5,
+    "geometry/nonbonded": 2.0,
     "geometry/ramachandran": 0.5,
     "adp/simu": 0.5,
     "adp/locality": 0.2,
@@ -725,6 +725,19 @@ Examples:
     data_dark = dc["dark"]
     data_light = dc["light"]
 
+    if args.verbose > 0:
+        # Compare R-free flags between datasets
+        if data_dark.rfree_flags is not None and data_light.rfree_flags is not None:
+            rfree_d = data_dark.rfree_flags.bool()
+            rfree_l = data_light.rfree_flags.bool()
+            n_agree = (rfree_d == rfree_l).sum().item()
+            n_total = len(rfree_d)
+            n_free_d = (~rfree_d).sum().item()
+            n_free_l = (~rfree_l).sum().item()
+            print(f"  R-free flags: dark={n_free_d} free, light={n_free_l} free, "
+                  f"agreement={n_agree}/{n_total} ({100*n_agree/n_total:.1f}%)")
+        sys.stdout.flush()
+
     # --- Setup scaler ---
     if args.verbose > 0:
         print("Setting up joint scaler...")
@@ -735,8 +748,10 @@ Examples:
     if args.verbose > 0:
         r_work_d, r_free_d = compute_rfactors(dark, data_dark, scaler)
         r_work_l, r_free_l = compute_rfactors(mixed, data_light, scaler)
-        print(f"  Initial R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
-        print(f"  Initial R-factor (light): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
+        r_work_dl, r_free_dl = compute_rfactors(dark, data_light, scaler)
+        print(f"  Initial R-factor (dark  vs dark data):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
+        print(f"  Initial R-factor (mixed vs light data): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
+        print(f"  Initial R-factor (dark  vs light data): R_work={r_work_dl:.4f}  R_free={r_free_dl:.4f}")
         print()
         sys.stdout.flush()
 
@@ -813,8 +828,10 @@ Examples:
         print("=" * 72)
         r_work_d, r_free_d = compute_rfactors(dark, data_dark, scaler)
         r_work_l, r_free_l = compute_rfactors(mixed, data_light, scaler)
-        print(f"  Final R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
-        print(f"  Final R-factor (light): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
+        r_work_dl, r_free_dl = compute_rfactors(dark, data_light, scaler)
+        print(f"  Final R-factor (dark  vs dark data):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
+        print(f"  Final R-factor (mixed vs light data): R_work={r_work_l:.4f}  R_free={r_free_l:.4f}")
+        print(f"  Final R-factor (dark  vs light data): R_work={r_work_dl:.4f}  R_free={r_free_dl:.4f}")
         print(f"  Refined fractions:      {mixed.fractions.detach().cpu().numpy()}")
         print()
         sys.stdout.flush()
