@@ -1,9 +1,13 @@
 Changelog
 =========
 
-Version 0.4.4
+Version 0.5.0
 -------------
+- Fixed missing angle in Proline geometry
+- Fixed restraint issues where peptide bonds were not being recognized accross altlocs
+- Implemented VDW restraints between symmetry mates, and vectorized spatial hashing for gpu friendly neighbor search
 - Migrated difference-refine script to the collection infrastructure, similarly migrated validate_ded and phased difference map
+- Added free CC calculation to validation_ded in reciprocal space
 - Deprecated scaler cli args as they are now always scaled together
 - Merged collection and basic kinetic infrastructure
 - Renamed column names in difference-refine output to be more concise and accurate

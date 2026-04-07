@@ -156,7 +156,8 @@ class _RestraintTypeAccessor:
         if self._rtype in self._FLAT_TYPES:
             # Return property names for flat types
             result = []
-            for prop in ["indices", "references", "sigmas", "periods", "min_distances"]:
+            for prop in ["indices", "references", "sigmas", "periods", "min_distances",
+                         "symop_indices", "cell_offsets"]:
                 if self._parent._get_restraint_tensor(self._rtype, "", prop) is not None:
                     result.append(prop)
             return result
@@ -223,6 +224,8 @@ class RestraintsNew(DebugMixin, Module):
         xyz_fn: Callable[[], torch.Tensor] = None,
         adp_fn: Callable[[], torch.Tensor] = None,
         vdw_radii_fn: Callable[[], torch.Tensor] = None,
+        cell=None,
+        spacegroup=None,
         verbose: int = 1,
     ):
         """Initialize the Restraints handler."""
@@ -234,6 +237,10 @@ class RestraintsNew(DebugMixin, Module):
         self._xyz_fn = xyz_fn
         self._adp_fn = adp_fn
         self._vdw_radii_fn = vdw_radii_fn
+
+        # Store crystallographic info for symmetry VDW restraints
+        self._cell = cell
+        self._spacegroup = spacegroup
 
         # Initialize TensorDict for restraint storage (registered as submodule)
         self._tensor_storage = TensorDict()
@@ -555,7 +562,13 @@ class RestraintsNew(DebugMixin, Module):
             raise
 
     def _build_peptide_restraints(self, device: torch.device):
-        """Build peptide bond restraints using fast inter-residue builders."""
+        """Build peptide bond restraints using fast inter-residue builders.
+
+        Uses TRANS/CIS links for standard peptide bonds and PTRANS/PCIS
+        links for peptide bonds to proline.  The proline-specific links
+        include the C(i-1)-N-CD angle that constrains the pyrrolidine
+        ring orientation, and use proline-specific angle target values.
+        """
         if "TRANS" not in self.link_dict:
             if self.verbose > 0:
                 print(
@@ -564,6 +577,7 @@ class RestraintsNew(DebugMixin, Module):
             return
 
         trans_link = self.link_dict["TRANS"]
+        ptrans_link = self.link_dict.get("PTRANS")
         pdb = self.pdb
 
         # Build peptide bonds using fast builder
@@ -577,10 +591,36 @@ class RestraintsNew(DebugMixin, Module):
                     f"Built {bond_result['indices'].shape[0]} peptide bond restraints"
                 )
 
-        # Build peptide angles
-        angle_result = InterResidueAngleBuilder(verbose=self.verbose).build(
-            pdb, trans_link, device, filter_atom_type="ATOM"
-        )
+        # Build peptide angles.
+        # If PTRANS is available, use it for proline pairs (excludes PRO
+        # from TRANS to avoid duplicate/conflicting restraints) and TRANS
+        # for non-proline pairs.  Otherwise fall back to TRANS for all.
+        angle_builder = InterResidueAngleBuilder(verbose=self.verbose)
+        if ptrans_link is not None:
+            # Non-proline pairs: TRANS angles
+            angle_result = angle_builder.build(
+                pdb, trans_link, device, filter_atom_type="ATOM",
+                exclude_next_resname="PRO",
+            )
+            # Proline pairs: PTRANS angles (includes C-N-CD)
+            pro_angle_result = angle_builder.build(
+                pdb, ptrans_link, device, filter_atom_type="ATOM",
+                next_resname_filter="PRO",
+            )
+            # Merge results
+            if angle_result and pro_angle_result:
+                angle_result = {
+                    "indices": torch.cat([angle_result["indices"], pro_angle_result["indices"]]),
+                    "references": torch.cat([angle_result["references"], pro_angle_result["references"]]),
+                    "sigmas": torch.cat([angle_result["sigmas"], pro_angle_result["sigmas"]]),
+                }
+            elif pro_angle_result:
+                angle_result = pro_angle_result
+        else:
+            angle_result = angle_builder.build(
+                pdb, trans_link, device, filter_atom_type="ATOM"
+            )
+
         if angle_result:
             self.restraints["angle"]["peptide"] = angle_result
             if self.verbose > 0:
@@ -924,29 +964,217 @@ class RestraintsNew(DebugMixin, Module):
         else:
             return torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
 
+    def _expand_with_symmetry_mates(self, xyz, cutoff):
+        """
+        Expand ASU coordinates with symmetry mate positions for neighbor search.
+
+        Generates Cartesian coordinates of symmetry-related copies that could
+        potentially have contacts with the ASU, using centroid-based pre-filtering
+        to skip distant mates.
+
+        Parameters
+        ----------
+        xyz : torch.Tensor
+            ASU Cartesian coordinates of shape (N, 3).
+        cutoff : float
+            Distance cutoff in Angstroms for contact search.
+
+        Returns
+        -------
+        combined_xyz : torch.Tensor
+            Concatenated coordinates (N_asu + N_mates, 3).
+        provenance : dict
+            Dictionary with arrays describing the origin of each atom:
+            - 'asu_source_indices': (N_total,) int array, ASU atom index
+            - 'symop_indices': (N_total,) int array, symmetry operation index
+            - 'cell_offsets': (N_total, 3) int array, unit cell offset
+        """
+        from torchref.config import dtypes
+        from torchref.symmetry import SpaceGroup
+
+        cell = self._cell
+        sg = self._spacegroup
+        if not isinstance(sg, SpaceGroup):
+            sg = SpaceGroup(sg)
+
+        n_asu = xyz.shape[0]
+        device = xyz.device
+        fdtype = dtypes.float
+
+        # Work on the model's device throughout
+        xyz_det = xyz.detach().to(fdtype)
+        xyz_frac = cell.cartesian_to_fractional(xyz_det)
+
+        # Compute centroid and molecule radius for pre-filtering
+        centroid_frac = xyz_frac.mean(dim=0)
+        centroid_cart = xyz_det.mean(dim=0)
+        molecule_radius = (xyz_det - centroid_cart).norm(dim=1).max().item()
+        threshold = 2 * molecule_radius + cutoff
+
+        B = cell.fractional_matrix.to(device=device, dtype=fdtype)
+        I_mat = torch.eye(3, dtype=fdtype, device=device)
+
+        # Phase 1: centroid pre-filter to find which (symop, offset) combos
+        # can produce contacts.  This is a small loop over scalar ops.
+        n_ops = sg.n_ops
+        matrices = sg.matrices.to(device=device, dtype=fdtype)
+        translations = sg.translations.to(device=device, dtype=fdtype)
+
+        valid_ops = []  # list of (op_idx, dx, dy, dz)
+        for op_idx in range(n_ops):
+            R = matrices[op_idx]
+            t = translations[op_idx]
+            for dx in range(-1, 2):
+                for dy in range(-1, 2):
+                    for dz in range(-1, 2):
+                        if op_idx == 0 and dx == 0 and dy == 0 and dz == 0:
+                            continue
+                        offset = torch.tensor([dx, dy, dz], dtype=fdtype,
+                                              device=device)
+                        d_frac = (R - I_mat) @ centroid_frac + t + offset
+                        d_cart = B @ d_frac
+                        if d_cart.norm().item() <= threshold:
+                            valid_ops.append((op_idx, dx, dy, dz))
+
+        if not valid_ops:
+            provenance = {
+                "asu_source_indices": np.arange(n_asu, dtype=np.int64),
+                "symop_indices": np.zeros(n_asu, dtype=np.int64),
+                "cell_offsets": np.zeros((n_asu, 3), dtype=np.int64),
+            }
+            if self.verbose > 0:
+                print("  Symmetry expansion: 0 mate(s) within range "
+                      f"({n_asu} total atoms for neighbor search)")
+            return xyz_det, provenance
+
+        # Phase 2: batch-generate all mate coordinates in one go
+        n_valid = len(valid_ops)
+        op_indices = [v[0] for v in valid_ops]
+        cell_offs = torch.tensor(
+            [[v[1], v[2], v[3]] for v in valid_ops], dtype=fdtype,
+            device=device,
+        )  # (n_valid, 3)
+
+        # Gather rotation matrices and translations for valid ops
+        R_batch = matrices[op_indices]          # (n_valid, 3, 3)
+        t_batch = translations[op_indices]      # (n_valid, 3)
+
+        # Batched transform: for each valid op, compute R @ xyz_frac.T + t + offset
+        # xyz_frac: (N, 3), R_batch: (n_valid, 3, 3)
+        # -> (n_valid, 3, N) via batched matmul, then transpose to (n_valid, N, 3)
+        xyz_frac_T = xyz_frac.T.unsqueeze(0).expand(n_valid, -1, -1)  # (n_valid, 3, N)
+        mate_frac_all = torch.bmm(R_batch, xyz_frac_T).permute(0, 2, 1)  # (n_valid, N, 3)
+        mate_frac_all = mate_frac_all + t_batch.unsqueeze(1) + cell_offs.unsqueeze(1)
+
+        # Convert all to Cartesian: (n_valid * N, 3)
+        mate_frac_flat = mate_frac_all.reshape(-1, 3)
+        mate_cart_flat = cell.fractional_to_cartesian(mate_frac_flat)
+
+        # Build combined coordinate array: ASU + all mates
+        combined_xyz = torch.cat(
+            [xyz_det, mate_cart_flat], dim=0
+        )
+
+        # Build provenance arrays
+        asu_source = np.arange(n_asu, dtype=np.int64)
+        # ASU block
+        all_asu_sources = [asu_source]
+        all_symops = [np.zeros(n_asu, dtype=np.int64)]
+        all_offsets = [np.zeros((n_asu, 3), dtype=np.int64)]
+        # Mate blocks (each has n_asu atoms)
+        for op_idx, dx, dy, dz in valid_ops:
+            all_asu_sources.append(asu_source)
+            all_symops.append(np.full(n_asu, op_idx, dtype=np.int64))
+            all_offsets.append(np.tile([dx, dy, dz], (n_asu, 1)).astype(np.int64))
+
+        provenance = {
+            "asu_source_indices": np.concatenate(all_asu_sources),
+            "symop_indices": np.concatenate(all_symops),
+            "cell_offsets": np.concatenate(all_offsets),
+        }
+
+        if self.verbose > 0:
+            print(f"  Symmetry expansion: {n_valid} mate(s) within range "
+                  f"({combined_xyz.shape[0]} total atoms for neighbor search)")
+
+        return combined_xyz, provenance
+
     def _build_vdw_restraints(
         self, cutoff=5.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True
     ):
-        """Build van der Waals (non-bonded contact) restraints."""
+        """Build van der Waals (non-bonded contact) restraints.
+
+        When cell and spacegroup are available, also includes contacts between
+        ASU atoms and symmetry-related copies in neighboring molecules.
+
+        Uses GPU-native periodic grid search when crystallographic symmetry
+        is available.  Falls back to the legacy spatial hash otherwise.
+        """
         if self.verbose > 0:
             print("\nBuilding VDW (non-bonded) restraints...")
+
+        has_symmetry = (
+            self._cell is not None
+            and self._spacegroup is not None
+        )
+
+        if has_symmetry:
+            from torchref.restraints.neighbor_search import build_vdw_restraints_gpu
+
+            exclusions = self._build_exclusion_set()
+            self.restraints["vdw"] = build_vdw_restraints_gpu(
+                xyz_fn=self.xyz,
+                vdw_radii_fn=self.get_vdw_radii,
+                cell=self._cell,
+                sg=self._spacegroup,
+                pdb=self.pdb,
+                exclusion_set=exclusions,
+                cutoff=cutoff,
+                sigma=sigma,
+                inter_residue_only=inter_residue_only,
+                verbose=self.verbose,
+            )
+            return
+
+        self._build_vdw_restraints_legacy(
+            cutoff=cutoff, sigma=sigma,
+            inter_residue_only=inter_residue_only,
+            use_spatial_hash=use_spatial_hash,
+        )
+
+    def _build_vdw_restraints_legacy(
+        self, cutoff=5.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True
+    ):
+        """Legacy VDW restraint builder (no symmetry or CPU fallback)."""
 
         exclusions = self._build_exclusion_set()
         vdw_radii = self.get_vdw_radii()
         xyz = self.xyz()
         device = xyz.device
         pdb = self.pdb
+        n_asu = xyz.shape[0]
 
-        # Find nearby pairs
-        if use_spatial_hash:
-            nearby_pairs = self._find_nearby_pairs_spatial_hash(xyz, cutoff)
+        # Expand with symmetry mates if crystallographic info is available
+        has_symmetry = (
+            self._cell is not None
+            and self._spacegroup is not None
+        )
+        if has_symmetry:
+            combined_xyz, provenance = self._expand_with_symmetry_mates(xyz, cutoff)
         else:
-            n_atoms = xyz.shape[0]
+            combined_xyz = xyz
+            provenance = None
+
+        # Find nearby pairs in the (potentially expanded) coordinate set
+        if use_spatial_hash:
+            nearby_pairs = self._find_nearby_pairs_spatial_hash(combined_xyz, cutoff)
+        else:
+            n_total = combined_xyz.shape[0]
             pairs_list = []
             cutoff_sq = cutoff**2
-            for i in range(n_atoms):
-                for j in range(i + 1, n_atoms):
-                    dist_sq = ((xyz[i] - xyz[j]) ** 2).sum()
+            for i in range(n_total):
+                for j in range(i + 1, n_total):
+                    dist_sq = ((combined_xyz[i] - combined_xyz[j]) ** 2).sum()
                     if dist_sq < cutoff_sq:
                         pairs_list.append([i, j])
             nearby_pairs = (
@@ -955,92 +1183,166 @@ class RestraintsNew(DebugMixin, Module):
                 else torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
             )
 
+        empty_result = {
+            "indices": torch.tensor([], dtype=torch.long, device=device).reshape(0, 2),
+            "min_distances": torch.tensor([], dtype=torch.float32, device=device),
+            "sigmas": torch.tensor([], dtype=torch.float32, device=device),
+            "symop_indices": torch.tensor([], dtype=torch.long, device=device),
+            "cell_offsets": torch.tensor([], dtype=torch.long, device=device).reshape(0, 3),
+        }
+
         if len(nearby_pairs) == 0:
-            self.restraints["vdw"] = {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(
-                    0, 2
-                ),
-                "min_distances": torch.tensor([], dtype=torch.float32, device=device),
-                "sigmas": torch.tensor([], dtype=torch.float32, device=device),
-            }
+            self.restraints["vdw"] = empty_result
             return
 
-        # Vectorized filtering
         pairs_np = nearby_pairs.cpu().numpy()
-        i1_arr = pairs_np[:, 0]
-        i2_arr = pairs_np[:, 1]
 
-        # Create exclusion mask efficiently using numpy
-        # Convert exclusion set to array for vectorized lookup
-        if exclusions:
-            exclusion_arr = np.array(list(exclusions), dtype=np.int64)
-            # Create a hash for fast lookup
-            max_idx = max(pdb["index"].max() + 1, i1_arr.max() + 1, i2_arr.max() + 1)
-            pair_hash = i1_arr * max_idx + i2_arr
-            excl_hash = exclusion_arr[:, 0] * max_idx + exclusion_arr[:, 1]
-            exclusion_mask = np.isin(pair_hash, excl_hash)
+        # Map indices through provenance to get ASU source atoms and symop info
+        if provenance is not None:
+            prov_asu = provenance["asu_source_indices"]
+            prov_sym = provenance["symop_indices"]
+            prov_off = provenance["cell_offsets"]
+
+            # Get provenance for each atom in each pair
+            idx0 = pairs_np[:, 0]
+            idx1 = pairs_np[:, 1]
+
+            asu_src_0 = prov_asu[idx0]
+            asu_src_1 = prov_asu[idx1]
+            sym_0 = prov_sym[idx0]
+            sym_1 = prov_sym[idx1]
+            off_0 = prov_off[idx0]
+            off_1 = prov_off[idx1]
+
+            is_asu_0 = (sym_0 == 0) & (off_0 == 0).all(axis=1)
+            is_asu_1 = (sym_1 == 0) & (off_1 == 0).all(axis=1)
+
+            # Keep only pairs where at least one atom is from the ASU
+            has_asu = is_asu_0 | is_asu_1
+            pairs_np = pairs_np[has_asu]
+            asu_src_0 = asu_src_0[has_asu]
+            asu_src_1 = asu_src_1[has_asu]
+            sym_0 = sym_0[has_asu]
+            sym_1 = sym_1[has_asu]
+            off_0 = off_0[has_asu]
+            off_1 = off_1[has_asu]
+            is_asu_0 = is_asu_0[has_asu]
+            is_asu_1 = is_asu_1[has_asu]
+
+            # Normalize: put the ASU atom in position 0, mate in position 1
+            # For intra-ASU pairs (both ASU), keep as-is (both are ASU anyway)
+            # For symmetry pairs: swap so ASU is first
+            swap = ~is_asu_0 & is_asu_1
+            if swap.any():
+                asu_src_0[swap], asu_src_1[swap] = asu_src_1[swap].copy(), asu_src_0[swap].copy()
+                sym_0[swap], sym_1[swap] = sym_1[swap].copy(), sym_0[swap].copy()
+                off_0[swap], off_1[swap] = off_1[swap].copy(), off_0[swap].copy()
+                is_asu_0[swap] = True
+                is_asu_1[swap] = False
+
+            # Final indices: ASU atom indices for both atoms in each pair
+            final_i1 = asu_src_0
+            final_i2 = asu_src_1
+            # Symmetry info comes from the mate atom (position 1)
+            final_symop = sym_1
+            final_offsets = off_1
+
+            is_both_asu = is_asu_0 & is_asu_1
         else:
-            exclusion_mask = np.zeros(len(pairs_np), dtype=bool)
+            # No symmetry: all pairs are intra-ASU
+            final_i1 = pairs_np[:, 0]
+            final_i2 = pairs_np[:, 1]
+            final_symop = np.zeros(len(pairs_np), dtype=np.int64)
+            final_offsets = np.zeros((len(pairs_np), 3), dtype=np.int64)
+            is_both_asu = np.ones(len(pairs_np), dtype=bool)
 
-        # Inter-residue mask
+        # --- Filtering ---
+        # Bonded exclusions, same-residue, and altloc filters apply only to
+        # intra-ASU pairs. Symmetry pairs cannot be bonded.
+
+        # Start with all pairs kept
+        keep_mask = np.ones(len(final_i1), dtype=bool)
+
+        # Exclusion mask (bonded 1-2, 1-3, 1-4) -- intra-ASU only
+        if exclusions and is_both_asu.any():
+            exclusion_arr = np.array(list(exclusions), dtype=np.int64)
+            max_idx = max(
+                pdb["index"].max() + 1,
+                final_i1[is_both_asu].max() + 1,
+                final_i2[is_both_asu].max() + 1,
+            )
+            # Normalize pair order for comparison
+            norm_i1 = np.minimum(final_i1, final_i2)
+            norm_i2 = np.maximum(final_i1, final_i2)
+            pair_hash = norm_i1 * max_idx + norm_i2
+            excl_hash = exclusion_arr[:, 0] * max_idx + exclusion_arr[:, 1]
+            is_excluded = np.isin(pair_hash, excl_hash)
+            # Only apply to intra-ASU pairs
+            keep_mask &= ~(is_excluded & is_both_asu)
+
+        # Inter-residue mask -- intra-ASU only
         if inter_residue_only:
             chainid_array = pdb["chainid"].values
             resseq_array = pdb["resseq"].values
-            same_residue = (chainid_array[i1_arr] == chainid_array[i2_arr]) & (
-                resseq_array[i1_arr] == resseq_array[i2_arr]
+            same_residue = (
+                (chainid_array[final_i1] == chainid_array[final_i2])
+                & (resseq_array[final_i1] == resseq_array[final_i2])
             )
-        else:
-            same_residue = np.zeros(len(pairs_np), dtype=bool)
+            keep_mask &= ~(same_residue & is_both_asu)
 
-        # Altloc compatibility: exclude pairs where both atoms have
-        # different non-empty altlocs (they don't physically coexist)
+        # Altloc compatibility -- intra-ASU only
         if "altloc" in pdb.columns:
             altloc_array = pdb["altloc"].values.astype(str)
             altloc_array = np.where(
                 np.isin(altloc_array, ["", " "]), " ", altloc_array
             )
-            altloc_i = altloc_array[i1_arr]
-            altloc_j = altloc_array[i2_arr]
+            altloc_i = altloc_array[final_i1]
+            altloc_j = altloc_array[final_i2]
             incompatible_altloc = (
                 (altloc_i != " ") & (altloc_j != " ") & (altloc_i != altloc_j)
             )
-        else:
-            incompatible_altloc = np.zeros(len(pairs_np), dtype=bool)
+            keep_mask &= ~(incompatible_altloc & is_both_asu)
 
-        # Combined mask: keep pairs that are not excluded, not same-residue,
-        # and have compatible altlocs
-        keep_mask = ~exclusion_mask & ~same_residue & ~incompatible_altloc
+        # Apply filter
+        final_i1 = final_i1[keep_mask]
+        final_i2 = final_i2[keep_mask]
+        final_symop = final_symop[keep_mask]
+        final_offsets = final_offsets[keep_mask]
 
-        # Filter pairs
-        filtered_pairs = pairs_np[keep_mask]
-
-        if len(filtered_pairs) == 0:
-            self.restraints["vdw"] = {
-                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(
-                    0, 2
-                ),
-                "min_distances": torch.tensor([], dtype=torch.float32, device=device),
-                "sigmas": torch.tensor([], dtype=torch.float32, device=device),
-            }
+        if len(final_i1) == 0:
+            self.restraints["vdw"] = empty_result
             return
 
-        # Compute min distances vectorized
+        # Compute min distances using VDW radii of ASU source atoms.
         vdw_np = vdw_radii.cpu().numpy()
-        min_distances = vdw_np[filtered_pairs[:, 0]] + vdw_np[filtered_pairs[:, 1]]
+        min_distances = vdw_np[final_i1] + vdw_np[final_i2]
 
+        # Store results
+        final_pairs = np.stack([final_i1, final_i2], axis=1)
         self.restraints["vdw"] = {
-            "indices": torch.tensor(filtered_pairs, dtype=torch.long, device=device),
+            "indices": torch.tensor(final_pairs, dtype=torch.long, device=device),
             "min_distances": torch.tensor(
                 min_distances, dtype=torch.float32, device=device
             ),
             "sigmas": torch.full(
-                (len(filtered_pairs),), sigma, dtype=torch.float32, device=device
+                (len(final_pairs),), sigma, dtype=torch.float32, device=device
+            ),
+            "symop_indices": torch.tensor(
+                final_symop, dtype=torch.long, device=device
+            ),
+            "cell_offsets": torch.tensor(
+                final_offsets, dtype=torch.long, device=device
             ),
         }
 
         if self.verbose > 0:
             scope = "inter-residue" if inter_residue_only else "all"
-            print(f"  Built {len(filtered_pairs)} VDW restraints ({scope} contacts)")
+            msg = f"  Built {len(final_pairs)} VDW restraints ({scope} contacts)"
+            if has_symmetry:
+                is_sym_pair = (final_symop != 0) | (final_offsets != 0).any(axis=1)
+                n_sym_count = int(is_sym_pair.sum())
+                msg += f", {n_sym_count} symmetry contacts"
+            print(msg)
 
     # Device movement is handled automatically by TensorDict (registered as _tensor_storage)
     # through PyTorch's Module.to(), cuda(), and cpu() methods
@@ -1104,10 +1406,21 @@ class RestraintsNew(DebugMixin, Module):
         print("VDW RESTRAINTS:")
         print("-" * 80)
         vdw_count = 0
+        vdw_sym_count = 0
         if "vdw" in self.restraints:
             indices = self.restraints["vdw"].get("indices")
             vdw_count = 0 if indices is None else indices.shape[0]
-        print(f"  Non-bonded contacts: {vdw_count}")
+            symop_indices = self.restraints["vdw"].get("symop_indices")
+            cell_offsets = self.restraints["vdw"].get("cell_offsets")
+            if symop_indices is not None and len(symop_indices) > 0:
+                import torch as _torch
+                is_sym = (symop_indices != 0) | (cell_offsets != 0).any(dim=-1)
+                vdw_sym_count = int(is_sym.sum().item())
+        vdw_asu_count = vdw_count - vdw_sym_count
+        if vdw_sym_count > 0:
+            print(f"  Non-bonded contacts: {vdw_count} ({vdw_asu_count} intra-ASU, {vdw_sym_count} symmetry)")
+        else:
+            print(f"  Non-bonded contacts: {vdw_count}")
 
         print("=" * 80)
 

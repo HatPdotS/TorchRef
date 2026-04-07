@@ -4,12 +4,15 @@ Installation
 Requirements
 ------------
 
-- Python ≥ 3.8
-- PyTorch ≥ 1.9
-- NumPy ≥ 1.20
+- Python ≥ 3.10
+- PyTorch ≥ 2.4
+- NumPy ≥ 2.0
 - Gemmi ≥ 0.5
-- reciprocalspaceship ≥ 0.9
-- SciPy ≥ 1.7
+- reciprocalspaceship ≥ 0.9.18
+- SciPy ≥ 1.10
+- Pandas ≥ 2.0
+- Numba ≥ 0.59
+- Matplotlib ≥ 3.7
 
 
 Installing via pip

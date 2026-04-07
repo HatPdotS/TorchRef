@@ -12,8 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${SCRIPT_DIR}/../data"
 OUTPUT_DIR="${SCRIPT_DIR}/output"
 
-BASEARGS="-dsf ${DATA_DIR}/8QL2-sf.cif -lsf ${DATA_DIR}/7YYZ-light.mtz -dm ${DATA_DIR}/8QL2.pdb --dmin 2.2 --plot --write-maps"
-TORCH_ARGS="-lm ${DATA_DIR}/torchref_0p18.pdb --fraction 0.18"
+BASEARGS="-dsf ${DATA_DIR}/8QL2-sf.cif -lsf ${DATA_DIR}/7YYZ-light.mtz -dm ${DATA_DIR}/8QL2_no_altloc.pdb --dmin 2.2 --plot --write-maps"
+TORCH_ARGS="-lm /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_light.pdb --fraction 0.18"
 EXTRAPOL_ARGS="-lm ${DATA_DIR}/7YYZ.pdb --fraction 0.22"
 
 IBL="resname IBL"

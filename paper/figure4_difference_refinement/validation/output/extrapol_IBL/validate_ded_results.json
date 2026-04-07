@@ -2,7 +2,7 @@
   "input": {
     "dark_structure_factor": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/8QL2-sf.cif",
     "light_structure_factor": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/7YYZ-light.mtz",
-    "dark_model": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/8QL2.pdb",
+    "dark_model": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/8QL2_no_altloc.pdb",
     "light_model": "/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/7YYZ.pdb",
     "fraction": 0.22,
     "selection": "resname IBL",
@@ -11,165 +11,167 @@
   },
   "realspace_correlation": {
     "full_cell": {
-      "cc": 0.31112873554229736,
+      "cc": 0.3013904094696045,
       "n_voxels": 1658880
     },
     "selection": {
-      "cc": 0.7471958994865417,
+      "cc": 0.7353670597076416,
       "n_voxels": 1996
     }
   },
-  "reciprocal_cc_overall": 0.3195,
+  "reciprocal_cc_overall": 0.3097,
+  "reciprocal_cc_work": 0.311,
+  "reciprocal_cc_free": 0.2299,
   "resolution_bins": [
     {
       "bin": 0,
       "d_min": 5.594,
       "d_max": 9.495,
       "n_refl": 2839,
-      "cc": 0.2073
+      "cc": 0.1825
     },
     {
       "bin": 1,
       "d_min": 4.596,
       "d_max": 5.594,
       "n_refl": 2839,
-      "cc": 0.2842
+      "cc": 0.24
     },
     {
       "bin": 2,
       "d_min": 4.062,
       "d_max": 4.596,
       "n_refl": 2839,
-      "cc": 0.3132
+      "cc": 0.3086
     },
     {
       "bin": 3,
       "d_min": 3.713,
       "d_max": 4.062,
       "n_refl": 2839,
-      "cc": 0.3675
+      "cc": 0.3565
     },
     {
       "bin": 4,
       "d_min": 3.46,
       "d_max": 3.713,
       "n_refl": 2839,
-      "cc": 0.3367
+      "cc": 0.3292
     },
     {
       "bin": 5,
       "d_min": 3.263,
       "d_max": 3.46,
       "n_refl": 2839,
-      "cc": 0.3342
+      "cc": 0.3225
     },
     {
       "bin": 6,
       "d_min": 3.105,
       "d_max": 3.263,
       "n_refl": 2839,
-      "cc": 0.2903
+      "cc": 0.285
     },
     {
       "bin": 7,
       "d_min": 2.972,
       "d_max": 3.105,
       "n_refl": 2839,
-      "cc": 0.3361
+      "cc": 0.3165
     },
     {
       "bin": 8,
       "d_min": 2.861,
       "d_max": 2.972,
       "n_refl": 2839,
-      "cc": 0.3051
+      "cc": 0.2995
     },
     {
       "bin": 9,
       "d_min": 2.764,
       "d_max": 2.861,
       "n_refl": 2839,
-      "cc": 0.3359
+      "cc": 0.3371
     },
     {
       "bin": 10,
       "d_min": 2.68,
       "d_max": 2.764,
       "n_refl": 2839,
-      "cc": 0.324
+      "cc": 0.3166
     },
     {
       "bin": 11,
       "d_min": 2.605,
       "d_max": 2.68,
       "n_refl": 2839,
-      "cc": 0.308
+      "cc": 0.3042
     },
     {
       "bin": 12,
       "d_min": 2.537,
       "d_max": 2.605,
       "n_refl": 2839,
-      "cc": 0.3226
+      "cc": 0.3169
     },
     {
       "bin": 13,
       "d_min": 2.475,
       "d_max": 2.537,
       "n_refl": 2839,
-      "cc": 0.3939
+      "cc": 0.3885
     },
     {
       "bin": 14,
       "d_min": 2.42,
       "d_max": 2.475,
       "n_refl": 2839,
-      "cc": 0.3105
+      "cc": 0.3068
     },
     {
       "bin": 15,
       "d_min": 2.369,
       "d_max": 2.42,
       "n_refl": 2839,
-      "cc": 0.3112
+      "cc": 0.3034
     },
     {
       "bin": 16,
       "d_min": 2.322,
       "d_max": 2.369,
       "n_refl": 2839,
-      "cc": 0.3367
+      "cc": 0.3301
     },
     {
       "bin": 17,
       "d_min": 2.279,
       "d_max": 2.322,
       "n_refl": 2839,
-      "cc": 0.3418
+      "cc": 0.3479
     },
     {
       "bin": 18,
       "d_min": 2.238,
       "d_max": 2.279,
       "n_refl": 2839,
-      "cc": 0.3397
+      "cc": 0.3305
     },
     {
       "bin": 19,
       "d_min": 2.2,
       "d_max": 2.238,
       "n_refl": 2849,
-      "cc": 0.3186
+      "cc": 0.3187
     }
   ],
   "map_statistics": {
     "WDFo": {
       "std": 1.0,
-      "mean": -0.0
+      "mean": 0.0
     },
     "WDFc": {
       "std": 1.0,
-      "mean": -0.0
+      "mean": 0.0
     }
   },
   "n_reflections_asu": 56790,

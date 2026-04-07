@@ -1485,8 +1485,31 @@ class InterResidueAngleBuilder:
         device: torch.device,
         filter_atom_type: str = "ATOM",
         sort_indices: bool = True,
+        next_resname_filter: Optional[str] = None,
+        exclude_next_resname: Optional[str] = None,
     ) -> Optional[Dict[str, torch.Tensor]]:
-        """Build all inter-residue angle restraints."""
+        """Build all inter-residue angle restraints.
+
+        Parameters
+        ----------
+        pdb : pd.DataFrame
+            Atom DataFrame.
+        link_dict : Dict
+            Link definition dictionary containing angle parameters.
+        device : torch.device
+            Target device for tensors.
+        filter_atom_type : str, optional
+            Filter to this ATOM type (default "ATOM").
+        sort_indices : bool, optional
+            Sort output by first atom index (default True).
+        next_resname_filter : str, optional
+            If set, only build angles for pairs where the second (next)
+            residue has this residue name (e.g. "PRO" for proline links).
+        exclude_next_resname : str, optional
+            If set, skip pairs where the second (next) residue has this
+            residue name.  Useful for excluding PRO from TRANS angles
+            when PTRANS is handled separately.
+        """
         if "angles" not in link_dict or link_dict["angles"] is None:
             return None
 
@@ -1508,6 +1531,14 @@ class InterResidueAngleBuilder:
         n_angles = len(angles["atom1"])
 
         for res_i_idx, res_next_idx in pairs:
+            # Filter by next residue name if requested
+            if next_resname_filter is not None:
+                if pp_pdb.residue_resnames[res_next_idx] != next_resname_filter:
+                    continue
+            if exclude_next_resname is not None:
+                if pp_pdb.residue_resnames[res_next_idx] == exclude_next_resname:
+                    continue
+
             for map_i in conf_maps[res_i_idx]:
                 for map_next in conf_maps[res_next_idx]:
 

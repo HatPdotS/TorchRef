@@ -291,8 +291,8 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
                 atom.pos = gemmi.Position(
                     float(row["x"]), float(row["y"]), float(row["z"])
                 )
-                atom.occ = float(row["occupancy"])
-                atom.b_iso = float(row["tempfactor"])
+                atom.occ = round(float(row["occupancy"]), 2)
+                atom.b_iso = round(float(row["tempfactor"]), 2)
 
                 altloc = str(row["altloc"]).strip()
                 if altloc and altloc != "nan" and altloc != ".":
@@ -319,6 +319,21 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
         model.add_chain(chain)
 
     st.add_model(model)
+
+    # Populate PDBx label columns from structure topology
+    st.setup_entities()
+    st.assign_subchains()
+
+    # Build entity sequences from residue names so label_seq_id can be assigned
+    for entity in st.entities:
+        if entity.entity_type == gemmi.EntityType.Polymer:
+            for subchain_name in entity.subchains:
+                subchain = st[0].get_subchain(subchain_name)
+                entity.full_sequence = [res.name for res in subchain]
+                break  # one subchain is enough
+
+    st.assign_label_seq_id()
+
     return st
 
 
@@ -362,7 +377,7 @@ def _add_refine_categories(doc, metadata):
         else:
             # Simple key-value pairs
             for key, val in items.items():
-                block.set_pair(key, str(val))
+                block.set_pair(key, gemmi.cif.quote(str(val)))
 
 
 def write_model(df, filepath: str, metadata=None) -> None:

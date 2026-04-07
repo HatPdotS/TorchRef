@@ -81,12 +81,39 @@ if TYPE_CHECKING:
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Full path to antechamber binary (dedicated conda env).
-ANTECHAMBER = "/das/work/units/LBR-FEL/p17490/CONDA/antechamber/bin/antechamber"
-#: Full path to parmchk2 binary.
-PARMCHK2 = "/das/work/units/LBR-FEL/p17490/CONDA/antechamber/bin/parmchk2"
-#: Full path to tleap binary (needed for GAFF2 path).
-TLEAP = "/das/work/units/LBR-FEL/p17490/CONDA/antechamber/bin/tleap"
+# AmberTools binaries — discovered lazily on first GAFF2 use so that
+# importing torchref never fails even when ambertools is absent.
+_AMBERTOOLS_BINARIES: Dict[str, Optional[str]] = {}
+
+
+def _find_ambertools_binary(name: str) -> str:
+    """Locate an AmberTools binary on PATH or via $AMBERHOME.
+
+    Raises FileNotFoundError with install instructions when not found.
+    """
+    if name in _AMBERTOOLS_BINARIES:
+        cached = _AMBERTOOLS_BINARIES[name]
+        if cached is not None:
+            return cached
+
+    path = shutil.which(name)
+    if path:
+        _AMBERTOOLS_BINARIES[name] = path
+        return path
+
+    for env_var in ("AMBERHOME", "AMBERTOOLS_HOME"):
+        home = os.environ.get(env_var)
+        if home:
+            candidate = os.path.join(home, "bin", name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                _AMBERTOOLS_BINARIES[name] = candidate
+                return candidate
+
+    raise FileNotFoundError(
+        f"'{name}' not found on PATH or in $AMBERHOME.\n"
+        f"Install AmberTools:  conda install -c conda-forge ambertools\n"
+        f"Or provide pre-computed mol2/frcmod files via gaff2_files=."
+    )
 
 #: Residue names covered by AMBER14 force field — antechamber not needed.
 AMBER14_STANDARD: frozenset = frozenset(
@@ -181,6 +208,15 @@ class _OpenMMAMBERFunction(torch.autograd.Function):
         model_forces = np.zeros((n_model, 3), dtype=np.float64)
         model_forces[valid] = forces_kJ_nm[model_to_omm[valid]] * 0.1
 
+        # Clamp per-atom force magnitude to prevent extreme LJ clashes
+        # from producing gradients that blow up the optimizer.
+        # 1000 kJ/mol/Å ≈ force from a ~0.3 Å LJ overlap.
+        max_force = 1000.0  # kJ/mol/Å
+        norms = np.linalg.norm(model_forces, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-10)
+        scale = np.minimum(max_force / norms, 1.0)
+        model_forces *= scale
+
         ctx.save_for_backward(
             torch.tensor(
                 model_forces, dtype=xyz_ang.dtype, device=xyz_ang.device
@@ -264,6 +300,7 @@ class AmberTarget(ModelTarget):
         cutoff: float = 5.0,
         normalize_by_atoms: bool = True,
         residue_charges: Optional[Dict[str, int]] = None,
+        gaff2_files: Optional[Dict[str, Tuple[str, str]]] = None,
         verbose: int = 0,
     ):
         try:
@@ -279,6 +316,7 @@ class AmberTarget(ModelTarget):
 
         self._normalize = normalize_by_atoms
         self._residue_charges = dict(residue_charges) if residue_charges else {}
+        self._gaff2_files = dict(gaff2_files) if gaff2_files else {}
 
         self.register_buffer("_cutoff_buf", torch.tensor(float(cutoff)))
 
@@ -304,6 +342,15 @@ class AmberTarget(ModelTarget):
 
     def _build(self, model: "Model") -> None:
         """Detect → antechamber → build OpenMM system → map atoms."""
+        # Reject models with alternate conformations — OpenMM only handles
+        # a single conformation.  Call model.strip_altlocs() first.
+        altlocs = model.pdb["altloc"].astype(str).str.strip()
+        if (altlocs != "").any():
+            raise ValueError(
+                "[AmberTarget] Model contains alternate conformations. "
+                "OpenMM requires a single conformation.\n"
+                "Fix: model = model.strip_altlocs() before creating AmberTarget."
+            )
         nonstandard = self._detect_nonstandard_residues()
         self._n_nonstandard = len(nonstandard)
 
@@ -476,7 +523,7 @@ class AmberTarget(ModelTarget):
             # antechamber
             r = subprocess.run(
                 [
-                    ANTECHAMBER,
+                    _find_ambertools_binary("antechamber"),
                     "-i", str(lig_pdb), "-fi", "pdb",
                     "-o", str(lig_mol2), "-fo", "mol2",
                     "-c", "bcc", "-nc", str(charge),
@@ -494,7 +541,7 @@ class AmberTarget(ModelTarget):
             # parmchk2
             r = subprocess.run(
                 [
-                    PARMCHK2,
+                    _find_ambertools_binary("parmchk2"),
                     "-i", str(lig_mol2), "-f", "mol2",
                     "-o", str(lig_frcmod), "-s", "gaff2",
                 ],
@@ -534,15 +581,34 @@ class AmberTarget(ModelTarget):
     def _run_antechamber_parallel(
         self, nonstandard: List[Tuple[str, int]]
     ) -> Dict[str, Tuple[Path, Path]]:
-        """Run antechamber for all non-standard residues in parallel (≤ 4)."""
+        """Resolve GAFF2 parameters for non-standard residues.
+
+        Checks (in order): user-supplied gaff2_files → cache → antechamber.
+        """
         if not nonstandard:
             return {}
 
         results: Dict[str, Tuple[Path, Path]] = {}
-        with ThreadPoolExecutor(max_workers=min(len(nonstandard), 4)) as pool:
+        need_antechamber: List[Tuple[str, int]] = []
+
+        for rn, charge in nonstandard:
+            # 1. User-supplied files
+            if rn in self._gaff2_files:
+                mol2, frcmod = self._gaff2_files[rn]
+                if self.verbose >= 1:
+                    print(f"[AmberTarget] Using supplied files for '{rn}'")
+                results[rn] = (Path(mol2), Path(frcmod))
+            else:
+                need_antechamber.append((rn, charge))
+
+        if not need_antechamber:
+            return results
+
+        # 2. Cache + antechamber for remaining residues
+        with ThreadPoolExecutor(max_workers=min(len(need_antechamber), 4)) as pool:
             futures = {
                 pool.submit(self._run_antechamber_one, rn, ch): rn
-                for rn, ch in nonstandard
+                for rn, ch in need_antechamber
             }
             for fut in as_completed(futures):
                 rn = futures[fut]
@@ -661,8 +727,14 @@ class AmberTarget(ModelTarget):
 
     def _build_standard(self, cutoff_A: float, app, unit) -> Tuple:
         """
-        AMBER14 standard-residue path using OpenMM Modeller (no tleap/pdbfixer).
+        AMBER14 standard-residue path using gemmi + pdbfixer + OpenMM.
+
+        gemmi writes proper chain termination / TER records so pdbfixer
+        can detect and fix missing terminal atoms (OXT).  pdbfixer also
+        handles missing sidechain atoms and non-standard residue names.
         """
+        import gemmi  # noqa: PLC0415
+        from pdbfixer import PDBFixer  # noqa: PLC0415
         from torchref.io import pdb as pdbio  # noqa: PLC0415
 
         # Standard path: Modeller preserves chain/resseq → use key-based mapping
@@ -671,15 +743,42 @@ class AmberTarget(ModelTarget):
         pdb_heavy = self._filter_pdb_for_omm(include_nonstandard=False)
 
         tmp = tempfile.NamedTemporaryFile(suffix=".pdb", delete=False)
+        tmp2 = tempfile.NamedTemporaryFile(suffix=".pdb", delete=False)
         tmp.close()
+        tmp2.close()
         try:
+            # Write via torchref, then re-read/write with gemmi to get
+            # proper chain breaks and TER records that pdbfixer needs.
             pdbio.write(pdb_heavy, tmp.name)
-            pdb_omm = app.PDBFile(tmp.name)
+            st = gemmi.read_structure(tmp.name)
+            st.setup_entities()
+            st.assign_subchains()
+            st.write_pdb(tmp2.name)
+
+            # pdbfixer: add missing terminal atoms and sidechain atoms
+            fixer = PDBFixer(filename=tmp2.name)
+            fixer.findMissingResidues()
+            fixer.missingResidues = {}  # don't fill gaps
+            fixer.findMissingAtoms()
+
+            if self.verbose >= 1:
+                n_missing = sum(len(v) for v in fixer.missingAtoms.values())
+                n_terminals = sum(
+                    1 for v in fixer.missingTerminals.values() if v
+                )
+                if n_missing or n_terminals:
+                    print(
+                        f"[AmberTarget] pdbfixer: {n_missing} missing atoms, "
+                        f"{n_terminals} terminal fixes"
+                    )
+
+            fixer.addMissingAtoms()
         finally:
             os.unlink(tmp.name)
+            os.unlink(tmp2.name)
 
         ff = app.ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
-        modeller = app.Modeller(pdb_omm.topology, pdb_omm.positions)
+        modeller = app.Modeller(fixer.topology, fixer.positions)
         modeller.addHydrogens(ff)
 
         system = ff.createSystem(
@@ -761,7 +860,7 @@ class AmberTarget(ModelTarget):
             (work_dir / "tleap.in").write_text(tleap_script + "\n")
 
             r = subprocess.run(
-                [TLEAP, "-f", str(work_dir / "tleap.in")],
+                [_find_ambertools_binary("tleap"), "-f", str(work_dir / "tleap.in")],
                 cwd=str(work_dir),
                 capture_output=True, text=True, timeout=300,
             )
@@ -826,6 +925,7 @@ class AmberTarget(ModelTarget):
 
         if self._tleap_residue_map is None:
             # ---- Standard path: match by (chain, resseq, icode, atom_name) ----
+            # No altlocs at this point (checked in _build).
             model_key_to_idx: Dict[Tuple, int] = {}
             for i in range(n_model):
                 row = pdb.iloc[i]

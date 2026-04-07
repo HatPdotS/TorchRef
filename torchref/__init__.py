@@ -47,7 +47,7 @@ utils
     General utilities and debugging tools.
 """
 
-__version__ = "0.4.4"
+__version__ = "0.5.0"
 
 
 import os

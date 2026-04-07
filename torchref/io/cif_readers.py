@@ -1392,13 +1392,13 @@ class ModelCIFReader:
 
         result["chainid"] = self._extract_string(
             atom_df,
-            ["_atom_site.label_asym_id", "_atom_site.auth_asym_id"],
+            ["_atom_site.auth_asym_id", "_atom_site.label_asym_id"],
             default="",
             replace_dot=True,
         )
 
         result["resseq"] = self._extract_int(
-            atom_df, ["_atom_site.label_seq_id", "_atom_site.auth_seq_id"], default=0
+            atom_df, ["_atom_site.auth_seq_id", "_atom_site.label_seq_id"], default=0
         )
 
         result["icode"] = self._extract_string(

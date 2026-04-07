@@ -1,45 +1,47 @@
-/var/spool/slurmd/job742801/slurm_script:3: UserWarning: TorchRef auto-configured 16 threads. Set TORCHREF_NUM_THREADS to override.
+/var/spool/slurmd/job767047/slurm_script:3: UserWarning: TorchRef auto-configured 16 threads. Set TORCHREF_NUM_THREADS to override.
   from torchref.cli.collection_difference_refine import main
 ========================================================================
 TorchRef Collection Difference Refinement
 ========================================================================
-Dark model:        /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/data/8QL2.pdb
-Light model:       /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/data/torchref_0p18.pdb
-Dark data:         /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/data/8QL2-sf.cif
-Light data:        /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/data/7YYZ-light.mtz
+Dark model:        figure4_difference_refinement/data/8QL2_no_altloc.pdb
+Light model:       /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/work_no_altloc.pdb
+Dark data:         figure4_difference_refinement/data/8QL2-sf.cif
+Light data:        figure4_difference_refinement/data/7YYZ-light.mtz
 Fractions:         dark=0.8200000000000001, light=0.18 (frozen)
-Output:            /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output
-Device:            cpu
-Resolution cutoff: 2.10 A
-CIF restraints:    /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/data/IBL_grade.cif
-Weight schedule:   [10.0, 5.0, 2.0] x 3 cycles
+Output:            figure4_difference_refinement/refinement_output
+Device:            cuda
+Resolution cutoff: 2.20 A
+CIF restraints:    figure4_difference_refinement/data/IBL_grade.cif
+Weight schedule:   [5.0] x 3 cycles
 LBFGS steps/weight: 2  (max_iter=100)
 
 Target weights:
   adp/KL: 0.2
   adp/locality: 0.2
   adp/simu: 0.5
-  geometry/angle: 0.3
-  geometry/bond: 1.0
-  geometry/chiral: 2.0
-  geometry/nonbonded: 0.5
-  geometry/planarity: 1.0
+  geometry/angle: 2.0
+  geometry/bond: 2.0
+  geometry/chiral: 0.5
+  geometry/nonbonded: 4.0
+  geometry/planarity: 2.0
   geometry/ramachandran: 0.5
-  geometry/torsion: 0.3
-  xray/difference: 10.0
-  xray/ml: 1.0
+  geometry/torsion: 2.0
+  similarity: 3.0
+  xray/difference: 5.0
+  xray/ml: 0.0
 ========================================================================
 
 Setting up models...
-Loaded 17224 atoms
-Loaded 8718 atoms
+Loaded 16157 atoms
+Loaded 8522 atoms
 Loading reflection data...
 /das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/io/cif_readers.py:695: RuntimeWarning: invalid value encountered in cast
   self.data["R-free-flags"] = rfree_characters.to_numpy().astype(np.int32)
-Filtering: 66200/124404 reflections in range [inf - 2.1] Å (65437 valid after all masks)
-Filtering: 65445/123649 reflections in range [inf - 2.1] Å (65421 valid after all masks)
+Filtering: 57575/124404 reflections in range [inf - 2.2] Å (56814 valid after all masks)
+Filtering: 56820/123649 reflections in range [inf - 2.2] Å (56796 valid after all masks)
 Added dataset 'dark' (124404 reflections)
 Added dataset 'light' (124404 reflections)
+  R-free flags: dark=2814 free, light=2000 free, agreement=123590/124404 (99.3%)
 Setting up joint scaler...
 Initialized ScalerBase with 20 bins.
 Parametrization built for 7 unique atom types
@@ -48,44 +50,47 @@ Joint initial scale from 2 data-model pairs (20 bins).
   Created 2 component solvent models.
 /das/work/p17/p17490/CONDA/torchref/lib/python3.11/site-packages/torch/masked/maskedtensor/core.py:247: UserWarning: It is not recommended to create a MaskedTensor with a tensor that requires_grad. To avoid this, you can use data.detach().clone()
   return MaskedTensor(data, mask)
-Joint solvent screening: k_sol=0.3596, B_sol=60.0, NLL=43.7243
+Joint solvent screening: k_sol=0.3596, B_sol=55.0, NLL=52.4357
 Refining scales jointly with LBFGS...
-Joint scale refinement complete. rwork: 0.1544, rfree: 0.1691
-  Initial R-factor (dark):  R_work=0.1544  R_free=0.1691
-  Initial R-factor (light): R_work=0.1547  R_free=0.1798
+Joint scale refinement complete. rwork: 0.1644, rfree: 0.1840
+  Initial R-factor (dark  vs dark data):  R_work=0.1646  R_free=0.1835
+  Initial R-factor (mixed vs light data): R_work=0.1648  R_free=0.1890
+  Initial R-factor (dark  vs light data): R_work=0.1767  R_free=0.1924
 
 Initializing TotalGeometryTarget with component targets...
 Initializing TotalADPTarget with component targets...
 Initial loss breakdown:
 LossState Summary:
 
-[1/9] cycle 1/3, diff_weight=10.0
+[1/3] cycle 1/3, diff_weight=5.0
 Building restraints...
 Found 109 link definitions
 Built 1013 peptide bond restraints
-Built 3039 peptide angle restraints
+Built 3082 peptide angle restraints
 Built 1013 peptide plane restraints
 
 Building VDW (non-bonded) restraints...
-  Built 82577 VDW restraints (all contacts)
+  Symmetry expansion: 45 valid (symop, offset) combos
+  Grid: [14, 18, 16], 2818/4032 cells occupied, max 432 entries/cell
+  Built 82663 VDW restraints, 2350 symmetry contacts
 ================================================================================
 Restraints Summary (New Implementation)
 ================================================================================
-CIF file: ['/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/data/IBL_grade.cif']
+CIF file: ['figure4_difference_refinement/data/IBL_grade.cif']
 Residue types in dictionary: 22
 
 INTRA-RESIDUE RESTRAINTS:
 --------------------------------------------------------------------------------
-  Bonds: 7452
-  Angles: 8341
-  Torsions: 2115
-  Planes: 2560
-  Chirals: 1290
+  Bonds: 7137
+  Angles: 7991
+  Torsions: 2011
+  Planes: 2488
+  Chirals: 1234
 
 INTER-RESIDUE RESTRAINTS:
 --------------------------------------------------------------------------------
   Peptide bonds: 1013
-  Peptide angles: 3039
+  Peptide angles: 3082
   Disulfide bonds: 0
   Disulfide angles: 0
   Disulfide torsions: 0
@@ -99,89 +104,56 @@ BACKBONE TORSIONS:
 
 VDW RESTRAINTS:
 --------------------------------------------------------------------------------
-  Non-bonded contacts: 82577
+  Non-bonded contacts: 82663 (80313 intra-ASU, 2350 symmetry)
 ================================================================================
-    LBFGS step 1/2, loss: 28.6621
-    LBFGS step 2/2, loss: 28.6621
+    LBFGS step 1/2, loss: 1.6269
+    LBFGS step 2/2, loss: 1.6269
   Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1544, Rfree=0.1691
-  R-factor (light): Rwork=0.1547, Rfree=0.1798
-[2/9] cycle 1/3, diff_weight=5.0
-    LBFGS step 1/2, loss: 16.1394
-    LBFGS step 2/2, loss: 16.1394
+  R-factor (dark):  Rwork=0.1644, Rfree=0.1837
+  R-factor (light): Rwork=0.1646, Rfree=0.1896
+[2/3] cycle 2/3, diff_weight=5.0
+    LBFGS step 1/2, loss: -0.9152
+    LBFGS step 2/2, loss: -1.0076
   Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1544, Rfree=0.1691
-  R-factor (light): Rwork=0.1547, Rfree=0.1798
-[3/9] cycle 1/3, diff_weight=2.0
-    LBFGS step 1/2, loss: 8.6258
-    LBFGS step 2/2, loss: 8.6258
+  R-factor (dark):  Rwork=0.1647, Rfree=0.1835
+  R-factor (light): Rwork=0.1738, Rfree=0.1923
+[3/3] cycle 3/3, diff_weight=5.0
+    LBFGS step 1/2, loss: -1.0144
+    LBFGS step 2/2, loss: -1.0648
   Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1544, Rfree=0.1691
-  R-factor (light): Rwork=0.1547, Rfree=0.1798
-[4/9] cycle 2/3, diff_weight=10.0
-    LBFGS step 1/2, loss: 28.6621
-    LBFGS step 2/2, loss: 28.6621
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1544, Rfree=0.1691
-  R-factor (light): Rwork=0.1547, Rfree=0.1798
-[5/9] cycle 2/3, diff_weight=5.0
-    LBFGS step 1/2, loss: 16.1394
-    LBFGS step 2/2, loss: 16.1394
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1544, Rfree=0.1691
-  R-factor (light): Rwork=0.1547, Rfree=0.1798
-[6/9] cycle 2/3, diff_weight=2.0
-    LBFGS step 1/2, loss: 8.6258
-    LBFGS step 2/2, loss: 8.6258
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1544, Rfree=0.1691
-  R-factor (light): Rwork=0.1547, Rfree=0.1798
-[7/9] cycle 3/3, diff_weight=10.0
-    LBFGS step 1/2, loss: 28.6621
-    LBFGS step 2/2, loss: 28.6621
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1544, Rfree=0.1691
-  R-factor (light): Rwork=0.1547, Rfree=0.1798
-[8/9] cycle 3/3, diff_weight=5.0
-    LBFGS step 1/2, loss: 16.1394
-    LBFGS step 2/2, loss: 16.1394
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1544, Rfree=0.1691
-  R-factor (light): Rwork=0.1547, Rfree=0.1798
-[9/9] cycle 3/3, diff_weight=2.0
-    LBFGS step 1/2, loss: 8.6258
-    LBFGS step 2/2, loss: 8.6258
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1544, Rfree=0.1691
-  R-factor (light): Rwork=0.1547, Rfree=0.1798
+  R-factor (dark):  Rwork=0.1647, Rfree=0.1833
+  R-factor (light): Rwork=0.1741, Rfree=0.1926
 
 ========================================================================
 Refinement complete
 ========================================================================
-  Final R-factor (dark):  R_work=0.1544  R_free=0.1691
-  Final R-factor (light): R_work=0.1547  R_free=0.1798
-  Refined fractions:      [0.82       0.17999999]
+  Final R-factor (dark  vs dark data):  R_work=0.1648  R_free=0.1842
+  Final R-factor (mixed vs light data): R_work=0.1741  R_free=0.1933
+  Final R-factor (dark  vs light data): R_work=0.1767  R_free=0.1925
+  Refined fractions:      [0.82       0.17999998]
 
-  Dark SF written to /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_dark-sf.mtz, /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_dark-sf.cif
-  Light SF written to /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_light-sf.mtz, /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_light-sf.cif
-/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/io/datasets/reflection_data.py:1651: UserWarning: Found 6574 non-positive F values, masking them out. This really should not happen!
+  Merged deposition CIF written to figure4_difference_refinement/refinement_output/fractions_82_18_merged.cif
+  Dark SF written to figure4_difference_refinement/refinement_output/fractions_82_18_dark-sf.mtz, figure4_difference_refinement/refinement_output/fractions_82_18_dark-sf.cif
+  Light SF written to figure4_difference_refinement/refinement_output/fractions_82_18_light-sf.mtz, figure4_difference_refinement/refinement_output/fractions_82_18_light-sf.cif
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/io/datasets/reflection_data.py:1651: UserWarning: Found 5182 non-positive F values, masking them out. This really should not happen!
   warnings.warn(
 /das/work/p17/p17490/CONDA/torchref/lib/python3.11/site-packages/torch/masked/maskedtensor/core.py:247: UserWarning: It is not recommended to create a MaskedTensor with a tensor that requires_grad. To avoid this, you can use data.detach().clone()
   return MaskedTensor(data, mask)
-Phase-aware extrapolation rfactors: (0.3582610487937927, 0.41595932841300964)
-Classic extrapolation rfactors: (0.4017367959022522, 0.4475781321525574)
-Bayes extrapolation rfactors: (0.29328492283821106, 0.3550344407558441)
-  Bayes extrapolation: tau^2 = 417.9764, mean w(h) = 0.540
-  Results MTZ written to /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_difference_data.mtz
+Phase-aware extrapolation rfactors: (0.36917516589164734, 0.4146856665611267)
+Classic extrapolation rfactors: (0.37195539474487305, 0.41354507207870483)
+Bayes extrapolation rfactors: (0.24588565528392792, 0.29023855924606323)
+  Bayes: tau^2 = 376.5269, mean w(h) = 0.510
+  Results MTZ written to figure4_difference_refinement/refinement_output/fractions_82_18_difference_data.mtz
   w_dark=0.820, w_light=0.180
 Output files:
-  - /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_dark.pdb
-  - /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_light.pdb
-  - /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_dark-sf.mtz / /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_dark-sf.cif
-  - /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_light-sf.mtz / /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_light-sf.cif
-  - /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_difference_data.mtz
-  - /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/refinement_output/fractions_82_18_summary.json
+  - figure4_difference_refinement/refinement_output/fractions_82_18_dark.pdb
+  - figure4_difference_refinement/refinement_output/fractions_82_18_light.pdb
+  - figure4_difference_refinement/refinement_output/fractions_82_18_merged.cif
+  - figure4_difference_refinement/refinement_output/fractions_82_18_dark-sf.mtz / figure4_difference_refinement/refinement_output/fractions_82_18_dark-sf.cif
+  - figure4_difference_refinement/refinement_output/fractions_82_18_light-sf.mtz / figure4_difference_refinement/refinement_output/fractions_82_18_light-sf.cif
+  - figure4_difference_refinement/refinement_output/fractions_82_18_difference_data.mtz
+  - figure4_difference_refinement/refinement_output/fractions_82_18_summary.json
 
 Done.
 
-Timing: 60.4s wall, 430.5s CPU
+Timing: 49.8s wall, 41.4s CPU

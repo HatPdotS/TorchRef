@@ -654,7 +654,7 @@ class ModelFT(CachedForwardMixin, Model):
         """
         Update PDB with current atomic parameters.
         """
-        super().update_pdb()
+        return super().update_pdb()
 
     def reset_cache(self):
         """Reset SF cache and all wrapper forward caches."""

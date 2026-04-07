@@ -1,153 +1,143 @@
-import pandas as pd
-from torchref.io import pdb
+#!/usr/bin/env python3
+"""Create a multi-conformer mmCIF for PDB deposition from difference refinement.
+
+Merges dark and light model mmCIF files into a single structure with
+alternate conformations (A=dark, B=light).  Uses gemmi to read and
+manipulate the structures directly, preserving all PDBx metadata
+(entity IDs, label_seq_id, auth columns, etc.) needed by the PDB
+deposition server.
+
+Input models must NOT contain alternate conformations — use
+``torchref.strip-altlocs`` first if needed.
+
+Usage
+-----
+::
+
+    python create_joined_model_for_deposition.py \\
+        --dark dark.cif --light light.cif \\
+        --occ-dark 0.82 --occ-light 0.18 \\
+        -o deposited.cif
+"""
+
+import argparse
+import sys
+
+import gemmi
 
 
-# Altloc labels assigned to each input PDB (up to 4)
-ALTLOC_LABELS = ["A", "B", "C", "D"]
+def validate_no_altlocs(st, label):
+    """Raise if the structure contains alternate conformations."""
+    for model in st:
+        for chain in model:
+            for res in chain:
+                for atom in res:
+                    if atom.altloc != "\0":
+                        raise ValueError(
+                            f"{label} model contains alternate conformations "
+                            f"(e.g. {chain.name} {res.name} {res.seqid} "
+                            f"{atom.name} altloc={atom.altloc}). "
+                            f"Use torchref.strip-altlocs to remove them first."
+                        )
 
-# Columns that define an atom's identity within a residue
-ID_COLS = ["name", "resname", "chainid", "resseq", "icode", "element"]
 
+def merge_structures(st_dark, st_light, occ_dark, occ_light):
+    """Merge two gemmi Structures into a multi-conformer model.
 
-def _expand_altlocs(df):
+    For each residue, atoms from the dark model get altloc A and
+    atoms from the light model get altloc B.  Occupancies are set
+    accordingly.
+
+    The dark structure is used as the base (preserving all metadata).
     """
-    Expand existing alternate conformations in a PDB dataframe.
+    model_dark = st_dark[0]
+    model_light = st_light[0]
 
-    If a PDB has altlocs (e.g. A/B for a residue), each altloc group is
-    expanded into its own full-atom copy. Atoms without altloc are shared
-    across all groups.
+    # Build lookup: (chain, seqid_str, resname) -> residue for light model
+    light_lookup = {}
+    for chain_l in model_light:
+        for res_l in chain_l:
+            key = (chain_l.name, str(res_l.seqid), res_l.name)
+            light_lookup[key] = res_l
 
-    Returns a dict mapping original altloc label -> DataFrame with altloc cleared.
-    If no altlocs exist, returns {"": df} unchanged.
-    """
-    altlocs = df["altloc"].unique()
-    altlocs = [a for a in altlocs if a != "" and pd.notna(a)]
+    for chain_d in model_dark:
+        for res_d in chain_d:
+            # Set dark atoms to altloc A
+            for atom in res_d:
+                atom.altloc = "A"
+                atom.occ = occ_dark
 
-    if len(altlocs) == 0:
-        return {"": df.copy()}
+            # Find matching light residue
+            key = (chain_d.name, str(res_d.seqid), res_d.name)
+            res_light = light_lookup.get(key)
+            if res_light is None:
+                continue
 
-    groups = {}
-    shared = df[df["altloc"] == ""]
-    for alt in sorted(altlocs):
-        alt_atoms = df[df["altloc"] == alt].copy()
-        alt_atoms["altloc"] = ""
-        # Combine: shared atoms + this altloc's atoms
-        combined = pd.concat([shared, alt_atoms], ignore_index=True)
-        combined = combined.sort_values(
-            ["chainid", "resseq", "icode", "name"]
-        ).reset_index(drop=True)
-        groups[alt] = combined
+            # Add light atoms as altloc B
+            for atom in res_light:
+                new_atom = atom.clone()
+                new_atom.altloc = "B"
+                new_atom.occ = occ_light
+                res_d.add_atom(new_atom)
 
-    return groups
+    return st_dark
 
 
-def merge_pdbs(pdb_paths, output_path, occupancies=None, template=None):
-    """
-    Merge multiple PDB files into a single model with alternate conformations.
+def main():
+    parser = argparse.ArgumentParser(
+        description="Create a multi-conformer mmCIF for PDB deposition "
+                    "from difference refinement dark/light models.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--dark", required=True, help="Dark model mmCIF file")
+    parser.add_argument("--light", required=True, help="Light model mmCIF file")
+    parser.add_argument("--occ-dark", type=float, default=0.82,
+                        help="Occupancy for dark conformer (default: 0.82)")
+    parser.add_argument("--occ-light", type=float, default=0.18,
+                        help="Occupancy for light conformer (default: 0.18)")
+    parser.add_argument("-o", "--output", required=True,
+                        help="Output mmCIF file path")
 
-    Each input PDB gets its own altloc label (A, B, C, D). Every atom from
-    every input is written as an alternate conformer. If an input PDB already
-    contains alternate conformations, these are expanded first - each existing
-    altloc group becomes its own conformer in the output.
+    args = parser.parse_args()
 
-    Parameters
-    ----------
-    pdb_paths : list of str
-        Paths to input PDB files (max 4).
-    output_path : str
-        Path for the output merged PDB file.
-    occupancies : list of float, optional
-        Occupancy for each input. If None, split equally (1/N).
-        Must sum to 1.0 and have same length as pdb_paths.
-    template : str, optional
-        PDB template file to copy header from.
+    if abs(args.occ_dark + args.occ_light - 1.0) > 0.01:
+        print(f"Warning: occupancies sum to {args.occ_dark + args.occ_light:.3f}, "
+              f"not 1.0", file=sys.stderr)
 
-    Returns
-    -------
-    pd.DataFrame
-        The merged dataframe.
-    """
-    n_inputs = len(pdb_paths)
-    if n_inputs > 4:
-        raise ValueError(f"Maximum 4 input PDBs supported, got {n_inputs}")
+    # Load structures with gemmi (preserves all PDBx metadata)
+    print(f"Loading dark model:  {args.dark}")
+    st_dark = gemmi.read_structure(args.dark)
+    n_dark = st_dark[0].count_atom_sites()
+    print(f"  {n_dark} atoms")
 
-    if occupancies is None:
-        occupancies = [1.0 / n_inputs] * n_inputs
-    if len(occupancies) != n_inputs:
-        raise ValueError(
-            f"Number of occupancies ({len(occupancies)}) must match "
-            f"number of PDB files ({n_inputs})"
-        )
+    print(f"Loading light model: {args.light}")
+    st_light = gemmi.read_structure(args.light)
+    n_light = st_light[0].count_atom_sites()
+    print(f"  {n_light} atoms")
 
-    # Load all PDBs and expand any existing altlocs
-    conformers = []  # list of (DataFrame, occupancy) tuples
-    label_idx = 0
-    attrs = None
+    # Validate no altlocs
+    validate_no_altlocs(st_dark, "Dark")
+    validate_no_altlocs(st_light, "Light")
 
-    for path, occ in zip(pdb_paths, occupancies):
-        df = pdb.load_as_dataframe(path)
-        if attrs is None:
-            attrs = df.attrs
+    # Merge
+    merged = merge_structures(st_dark, st_light, args.occ_dark, args.occ_light)
+    n_merged = merged[0].count_atom_sites()
 
-        groups = _expand_altlocs(df)
+    print(f"\nMerged: {n_merged} atoms")
+    print(f"  Occupancies: A={args.occ_dark:.2f} (dark), B={args.occ_light:.2f} (light)")
 
-        if len(groups) == 1:
-            # No altlocs - this PDB becomes one conformer
-            conformers.append((list(groups.values())[0], occ))
-        else:
-            # Has altlocs - each group becomes its own conformer,
-            # split this PDB's occupancy among its altloc groups
-            n_groups = len(groups)
-            for group_df in groups.values():
-                conformers.append((group_df, occ / n_groups))
+    # Add ensemble description to the structure name
+    merged.name = (
+        f"Mixed-state ensemble: A (dark, occ={args.occ_dark:.2f}), "
+        f"B (light, occ={args.occ_light:.2f})"
+    )
 
-    if len(conformers) > 4:
-        raise ValueError(
-            f"Total conformers after expanding altlocs is {len(conformers)}, "
-            f"maximum supported is 4"
-        )
+    # Write mmCIF — gemmi preserves all PDBx categories
+    merged.make_mmcif_document().write_file(args.output)
+    print(f"\nWritten to {args.output}")
 
-    # Print summary of what was found
-    print(f"Input PDBs: {n_inputs}")
-    print(f"Total conformers after altloc expansion: {len(conformers)}")
-    for i, (df, occ) in enumerate(conformers):
-        print(f"  Conformer {ALTLOC_LABELS[i]}: {len(df)} atoms, occupancy={occ:.3f}")
-
-    # Build merged dataframe - every atom gets an altloc
-    rows = []
-    for i, (df, occ) in enumerate(conformers):
-        label = ALTLOC_LABELS[i]
-        conf = df.copy()
-        conf["altloc"] = label
-        conf["occupancy"] = occ
-        rows.append(conf)
-
-    merged = pd.concat(rows, ignore_index=True)
-
-    # Sort: group altloc conformers together per atom
-    merged = merged.sort_values(
-        ["chainid", "resseq", "icode", "name", "altloc"]
-    ).reset_index(drop=True)
-    merged["serial"] = range(1, len(merged) + 1)
-
-    # Preserve cell/spacegroup info from first input
-    merged.attrs = attrs
-
-    pdb.write(merged, output_path, template=template)
-    return merged
+    return 0
 
 
 if __name__ == "__main__":
-    dark_path = '/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/data/8QL2.pdb'
-    light_path = '/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/data/torchref_0p18.pdb'
-    output_path = '/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/data/merged_dark_light.pdb'
-
-    merged = merge_pdbs(
-        [dark_path, light_path],
-        output_path,
-        occupancies=[0.5, 0.5],
-    )
-    n_total = len(merged)
-    for label in ALTLOC_LABELS[:2]:
-        n = (merged["altloc"] == label).sum()
-        print(f"  Altloc {label}: {n} atoms")
+    sys.exit(main() or 0)

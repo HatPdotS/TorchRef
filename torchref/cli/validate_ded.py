@@ -296,8 +296,8 @@ def run_validation(args):
                 print(f"    {name}: U_aniso={ds.U_aniso.detach().cpu().tolist()}")
 
     # Extract matched F and sigma
-    hkl_all, F_dark_mt, sig_dark_mt, _ = data_dark()
-    _, F_light_mt, sig_light_mt, _ = data_light()
+    hkl_all, F_dark_mt, sig_dark_mt, rfree_dark = data_dark()
+    _, F_light_mt, sig_light_mt, rfree_light = data_light()
     mask = F_dark_mt.get_mask() & F_light_mt.get_mask()
 
     F_dark = F_dark_mt.get_data()[mask]
@@ -305,6 +305,19 @@ def run_validation(args):
     sig_dark = sig_dark_mt.get_data()[mask]
     sig_light = sig_light_mt.get_data()[mask]
     hkl = hkl_all[mask]
+
+    # Build free/work masks
+    # Convention: rfree_flags True = work set, False = free (test) set
+    _has_rfree = rfree_dark is not None or rfree_light is not None
+    if _has_rfree:
+        if rfree_dark is not None:
+            rfree_flags = rfree_dark[mask].bool()
+        else:
+            rfree_flags = rfree_light[mask].bool()
+        work_mask = rfree_flags
+        free_mask = ~rfree_flags
+    else:
+        free_mask = work_mask = None
 
     # Compute weighted differences (same as difference_refine.py)
     dfo = F_light - F_dark
@@ -553,6 +566,19 @@ def run_validation(args):
     if args.verbose >= 1:
         print(f"  Overall CC(WDFo, WDFcalc) = {cc_overall:.4f}")
 
+    # Free-set and work-set reciprocal CC
+    cc_free = cc_work = None
+    if free_mask is not None and free_mask.sum() > 10:
+        cc_free = torch.corrcoef(
+            torch.stack([w_dfo[free_mask], w_delta_fcalc_asu[free_mask]])
+        )[0, 1].item()
+        cc_work = torch.corrcoef(
+            torch.stack([w_dfo[work_mask], w_delta_fcalc_asu[work_mask]])
+        )[0, 1].item()
+        if args.verbose >= 1:
+            print(f"  Work CC(WDFo, WDFcalc) = {cc_work:.4f}  (n={work_mask.sum().item()})")
+            print(f"  Free CC(WDFo, WDFcalc) = {cc_free:.4f}  (n={free_mask.sum().item()})")
+
     # ------------------------------------------------------------------
     # 9. Assemble results
     # ------------------------------------------------------------------
@@ -569,6 +595,8 @@ def run_validation(args):
         },
         "realspace_correlation": rs_corr,
         "reciprocal_cc_overall": round(cc_overall, 4),
+        "reciprocal_cc_work": round(cc_work, 4) if cc_work is not None else None,
+        "reciprocal_cc_free": round(cc_free, 4) if cc_free is not None else None,
         "resolution_bins": bin_results,
         "map_statistics": {
             "WDFo": {

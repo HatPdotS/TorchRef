@@ -128,6 +128,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.verbose = verbose
         self.device = device
         self.strip_H = strip_H
+        self._exclude_H_from_sf = False
 
         # State tracking
         self.initialized = False
@@ -154,6 +155,42 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def __bool__(self):
         """Return the initialization status when used in boolean context."""
         return self.initialized
+
+    @property
+    def exclude_H_from_sf(self) -> bool:
+        """Whether to exclude hydrogen atoms from structure factor calculation.
+
+        When True, H atoms are excluded from ``get_iso()`` / ``get_aniso()``
+        so they do not contribute to Fcalc.  They still participate in
+        geometry and VDW restraints.  Default is False.
+        """
+        return self._exclude_H_from_sf
+
+    @exclude_H_from_sf.setter
+    def exclude_H_from_sf(self, value: bool):
+        self._exclude_H_from_sf = bool(value)
+        # Rebuild cached SF indices to include/exclude H
+        if self.initialized and self.pdb is not None:
+            self._rebuild_sf_indices()
+
+    def _rebuild_sf_indices(self):
+        """Rebuild cached iso/aniso index arrays from aniso_flag and H mask."""
+        iso_mask = ~self.aniso_flag
+        aniso_mask = self.aniso_flag
+
+        if self._exclude_H_from_sf and self.pdb is not None:
+            if not hasattr(self, "_heavy_atom_mask"):
+                h_mask = torch.tensor(
+                    (self.pdb["element"].str.strip() != "H").values,
+                    dtype=torch.bool,
+                    device=self.device,
+                )
+                self.register_buffer("_heavy_atom_mask", h_mask)
+            iso_mask = iso_mask & self._heavy_atom_mask
+            aniso_mask = aniso_mask & self._heavy_atom_mask
+
+        self._iso_indices = iso_mask.nonzero(as_tuple=True)[0]
+        self._aniso_indices = aniso_mask.nonzero(as_tuple=True)[0]
 
     # =========================================================================
     # Cell, SpaceGroup, and Symmetry properties
@@ -549,6 +586,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             xyz_fn=self.xyz,
             adp_fn=self.adp,
             vdw_radii_fn=self.get_vdw_radii,
+            cell=self._cell,
+            spacegroup=self._spacegroup,
             verbose=self.verbose,
         )
 
@@ -635,9 +674,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 self.pdb["anisou_flag"].values, dtype=torch.bool, device=self.device
             )
         )
-        # Pre-compute integer indices from aniso_flag to avoid boolean indexing GPU sync
-        self._iso_indices = (~self.aniso_flag).nonzero(as_tuple=True)[0]
-        self._aniso_indices = self.aniso_flag.nonzero(as_tuple=True)[0]
+        # Pre-compute integer indices for SF calculation (respects exclude_H_from_sf)
+        self._rebuild_sf_indices()
 
         # Create MixedTensors for model parameters
         self.xyz = MixedTensor(
@@ -1023,10 +1061,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # Call parent to move all registered buffers and parameters
         result = super().to(device=device, dtype=dtype)
 
-        # Rebuild pre-computed aniso_flag indices on new device
+        # Rebuild pre-computed SF indices on new device
         if hasattr(self, "aniso_flag") and self.aniso_flag is not None:
-            self._iso_indices = (~self.aniso_flag).nonzero(as_tuple=True)[0]
-            self._aniso_indices = self.aniso_flag.nonzero(as_tuple=True)[0]
+            self._rebuild_sf_indices()
 
         if self.verbose > 0:
             print(f"Model moved to device: {self.device}")
@@ -1680,6 +1717,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         )
         if hasattr(new_model, "setup_grid"):
             new_model.setup_grid()
+        # Propagate CIF restraint paths so restraints are rebuilt correctly
+        if self._cif_path is not None:
+            new_model._cif_path = self._cif_path
         return new_model
 
     def strip_altlocs(self) -> "Model":
@@ -1724,6 +1764,29 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         filtered.attrs = pdb.attrs.copy()
 
         return self._new_model_from_df(filtered)
+
+    def strip_hydrogens(self) -> "Model":
+        """Return a new model with hydrogen atoms removed.
+
+        The returned model has consistent DataFrame and tensors (xyz, adp,
+        occupancy) with H atoms excluded.  The original model is not
+        modified.
+
+        Returns
+        -------
+        Model
+            New model without hydrogen atoms.
+        """
+        self.update_pdb()
+        pdb = self.pdb.copy()
+        h_mask = pdb["element"].str.strip() == "H"
+        if not h_mask.any():
+            return self._new_model_from_df(pdb, strip_H=True)
+
+        filtered = pdb[~h_mask].reset_index(drop=True)
+        filtered["index"] = range(len(filtered))
+        filtered.attrs = pdb.attrs.copy()
+        return self._new_model_from_df(filtered, strip_H=True)
 
     # Module-level cache for CIF monomer data (shared across calls)
     _hydrogenate_cif_cache = {}
@@ -2704,9 +2767,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                     "aniso_flag",
                     torch.tensor(pdb["anisou_flag"].values, dtype=torch.bool),
                 )
-            # Pre-compute integer indices from aniso_flag
-            instance._iso_indices = (~instance.aniso_flag).nonzero(as_tuple=True)[0]
-            instance._aniso_indices = instance.aniso_flag.nonzero(as_tuple=True)[0]
+            # Pre-compute SF indices (respects exclude_H_from_sf)
+            instance._rebuild_sf_indices()
 
             # Register mask buffers
             instance.register_buffer(
@@ -2909,9 +2971,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             selected_model.register_buffer(
                 "aniso_flag", self.aniso_flag[selection_mask].clone()
             )
-            # Pre-compute integer indices from aniso_flag
-            selected_model._iso_indices = (~selected_model.aniso_flag).nonzero(as_tuple=True)[0]
-            selected_model._aniso_indices = selected_model.aniso_flag.nonzero(as_tuple=True)[0]
+            # Pre-compute SF indices (respects exclude_H_from_sf)
+            selected_model._rebuild_sf_indices()
 
         # Create new MixedTensors with selected atoms
         selected_model.xyz = MixedTensor(

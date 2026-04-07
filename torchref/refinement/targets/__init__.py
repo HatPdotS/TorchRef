@@ -53,6 +53,7 @@ from .realspace import (
     RealSpaceDifferenceTarget,
     RealSpaceExtrapolatedTarget,
 )
+from .similarity import CoordinateSimilarityTarget
 from .occupancy_floor_diagnostic import (
     OccupancyFloorDiagnostic,
     NegativeDensityPenalty,
@@ -142,4 +143,6 @@ __all__ = [
     "RealSpaceCorrelationTarget",
     "RealSpaceDifferenceTarget",
     "RealSpaceExtrapolatedTarget",
+    # Similarity restraint
+    "CoordinateSimilarityTarget",
 ]

@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Tuple
 
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
@@ -40,9 +40,14 @@ class NonBondedTarget(GeometryTarget):
 
     Alternative modes:
 
-    - 'prolsq': E = c_rep * max(0, d_vdw - d)^r_exp (default)
+    - 'prolsq': E = c_rep * max(0, d_vdw + buffer - d)^r_exp (default)
     - 'gaussian': Gaussian NLL for violations
     - 'soft': Soft repulsion with linear core
+
+    When symmetry information is available (cell and spacegroup on the model),
+    also handles contacts between ASU atoms and symmetry-related copies.
+    Symmetry mate positions are recomputed on-the-fly from current ASU
+    coordinates so that gradients flow to both atoms in each pair.
 
     Reference: cctbx/geometry_restraints/nonbonded.h, PROLSQ documentation
 
@@ -56,6 +61,10 @@ class NonBondedTarget(GeometryTarget):
         Repulsion coefficient. Default is 16.0.
     r_exp : float, optional
         Repulsion exponent. Default is 4.0.
+    buffer : float, optional
+        Distance buffer in Angstroms added to VDW radii sum. Shifts the
+        repulsion onset outward so atoms feel repulsion before they clash.
+        Default is 0.0.
     verbose : int, optional
         Verbosity level. Default is 0.
     """
@@ -68,6 +77,7 @@ class NonBondedTarget(GeometryTarget):
         mode: str = "prolsq",
         c_rep: float = 16.0,
         r_exp: float = 4.0,
+        buffer: float = 0.0,
         verbose: int = 0,
     ):
         """
@@ -83,14 +93,17 @@ class NonBondedTarget(GeometryTarget):
             Repulsion coefficient. Default is 16.0.
         r_exp : float, optional
             Repulsion exponent. Default is 4.0.
+        buffer : float, optional
+            Distance buffer in Angstroms added to VDW radii sum. Default is 0.0.
         verbose : int, optional
             Verbosity level. Default is 0.
         """
         super().__init__(model, verbose, target_value=0.5, sigma=1.2)
         self.mode = mode
-        # Register c_rep and r_exp as buffers for state_dict access
+        # Register c_rep, r_exp, buffer as buffers for state_dict access
         self.register_buffer("_c_rep", torch.tensor(c_rep))
         self.register_buffer("_r_exp", torch.tensor(r_exp))
+        self.register_buffer("_buffer", torch.tensor(buffer))
 
     @property
     def c_rep(self) -> float:
@@ -112,6 +125,87 @@ class NonBondedTarget(GeometryTarget):
         """Set repulsion exponent."""
         self._r_exp.fill_(value)
 
+    @property
+    def buffer(self) -> float:
+        """Get distance buffer."""
+        return self._buffer.item()
+
+    @buffer.setter
+    def buffer(self, value: float):
+        """Set distance buffer."""
+        self._buffer.fill_(value)
+
+    def _compute_positions(
+        self, xyz: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Compute atom positions for all VDW pairs, handling symmetry mates.
+
+        For intra-ASU pairs (symop=0, offset=0), the identity transform is
+        applied which reduces to a direct lookup. For symmetry pairs, the mate
+        position is recomputed on-the-fly through the symmetry transformation
+        so that gradients flow to both atoms.
+
+        All pairs are processed in a single vectorized pass.
+
+        Parameters
+        ----------
+        xyz : torch.Tensor
+            Current ASU Cartesian coordinates of shape (N, 3).
+
+        Returns
+        -------
+        pos1 : torch.Tensor
+            Positions of first atom in each pair (N_pairs, 3).
+        pos2 : torch.Tensor
+            Positions of second atom in each pair (N_pairs, 3).
+        min_distances : torch.Tensor
+            VDW distance threshold for each pair (N_pairs,).
+        """
+        vdw_data = self.restraints.restraints["vdw"]
+        indices = vdw_data["indices"]
+        min_distances = vdw_data["min_distances"]
+        symop_indices = vdw_data.get("symop_indices")
+        cell_offsets = vdw_data.get("cell_offsets")
+
+        # pos1 is always a direct ASU lookup
+        pos1 = xyz[indices[:, 0]]
+
+        has_symmetry = (
+            symop_indices is not None
+            and len(symop_indices) > 0
+            and not (symop_indices == 0).all()
+        )
+
+        if not has_symmetry:
+            # Fast path: all pairs are intra-ASU
+            pos2 = xyz[indices[:, 1]]
+            return pos1, pos2, min_distances
+
+        # Unified path: apply symmetry transform to all pos2 atoms.
+        # For intra-ASU pairs (symop=0, offset=0) this is the identity.
+        cell = self.model.cell
+        sg = self.model.symmetry
+
+        # Gather mate source coordinates and convert to fractional
+        mate_source = xyz[indices[:, 1]]  # (N_pairs, 3) -- gradients flow
+        frac = cell.cartesian_to_fractional(mate_source)
+
+        # Gather per-pair rotation matrices and translations
+        R = sg.matrices[symop_indices].to(frac.dtype)       # (N_pairs, 3, 3)
+        t = sg.translations[symop_indices].to(frac.dtype)   # (N_pairs, 3)
+        offsets = cell_offsets.to(frac.dtype)                # (N_pairs, 3)
+
+        # Batched symmetry transform: R @ frac + t + offset
+        frac_transformed = (
+            torch.bmm(R, frac.unsqueeze(-1)).squeeze(-1) + t + offsets
+        )
+
+        # Convert back to Cartesian
+        pos2 = cell.fractional_to_cartesian(frac_transformed)
+
+        return pos1, pos2, min_distances
+
     def forward(self) -> torch.Tensor:
         xyz = self.model.xyz()
         device = xyz.device
@@ -125,26 +219,26 @@ class NonBondedTarget(GeometryTarget):
         if indices is None or len(indices) == 0:
             return torch.tensor(0.0, device=device)
 
-        min_distances = vdw_data["min_distances"]  # Sum of VDW radii
         sigmas = vdw_data["sigmas"]
 
-        # Get current positions
-        pos1 = xyz[indices[:, 0]]
-        pos2 = xyz[indices[:, 1]]
+        # Compute positions (handles symmetry transparently)
+        pos1, pos2, min_distances = self._compute_positions(xyz)
 
         # Compute actual distances with small epsilon to prevent gradient issues at d=0
         diff = pos2 - pos1
         actual_distances = torch.sqrt((diff**2).sum(dim=-1) + 1e-8)
 
-        # Violations: where actual distance is less than VDW sum
-        violations = torch.clamp(min_distances - actual_distances, min=0.0)
+        # Violations: where actual distance is less than VDW sum + buffer
+        violations = torch.clamp(min_distances + self._buffer - actual_distances, min=0.0)
 
         if self.mode == "prolsq":
             # PROLSQ repulsion: E = c_rep * violation^r_exp
-            # This is the standard crystallographic repulsion function
+            # This is the standard crystallographic repulsion function.
+            # Scale factor compensates for dilution: most contacts have
+            # zero violation, so the raw mean is very small.
             # Use buffer tensors directly to avoid .item() GPU sync
             energy = self._c_rep * (violations**self._r_exp)
-            return energy.mean()
+            return 10.0 * energy.mean()
 
         elif self.mode == "gaussian":
             # Gaussian NLL for violations
@@ -202,10 +296,18 @@ class NonBondedTarget(GeometryTarget):
 
         vdw_data = self.restraints.restraints["vdw"]
         indices = vdw_data["indices"]
-        min_distances = vdw_data["min_distances"]
 
-        pos1 = xyz[indices[:, 0]]
-        pos2 = xyz[indices[:, 1]]
+        if indices is None or len(indices) == 0:
+            return {
+                "indices": torch.tensor([], dtype=torch.long, device=device).reshape(
+                    0, 2
+                ),
+                "violations": torch.tensor([], device=device),
+                "distances": torch.tensor([], device=device),
+                "min_distances": torch.tensor([], device=device),
+            }
+
+        pos1, pos2, min_distances = self._compute_positions(xyz)
         actual_distances = torch.norm(pos2 - pos1, dim=-1)
         violations = torch.clamp(min_distances - actual_distances, min=0.0)
 
@@ -233,11 +335,9 @@ class NonBondedTarget(GeometryTarget):
         if indices is None or len(indices) == 0:
             return {}
 
-        min_distances = vdw_data["min_distances"]
         sigmas = vdw_data["sigmas"]
 
-        pos1 = xyz[indices[:, 0]]
-        pos2 = xyz[indices[:, 1]]
+        pos1, pos2, min_distances = self._compute_positions(xyz)
         actual_distances = torch.norm(pos2 - pos1, dim=-1)
 
         # Violations: where actual distance < VDW sum
@@ -255,7 +355,7 @@ class NonBondedTarget(GeometryTarget):
 
         loss = self.forward()
 
-        return {
+        result = {
             "loss": stat(loss.item(), VERBOSITY_STANDARD),
             "n": stat(len(indices), VERBOSITY_DEBUG),
             "n_violations": stat(n_violations, VERBOSITY_DETAILED),
@@ -263,3 +363,14 @@ class NonBondedTarget(GeometryTarget):
             "max_violation": stat(max_violation, VERBOSITY_DEBUG),
             "mean_sigma": stat(sigmas.mean().item(), VERBOSITY_DEBUG),
         }
+
+        # Report symmetry contact count if available
+        symop_indices = vdw_data.get("symop_indices")
+        cell_offsets = vdw_data.get("cell_offsets")
+        if symop_indices is not None and len(symop_indices) > 0:
+            is_sym = (symop_indices != 0) | (cell_offsets != 0).any(dim=-1)
+            n_sym = is_sym.sum().item()
+            if n_sym > 0:
+                result["n_symmetry"] = stat(n_sym, VERBOSITY_DETAILED)
+
+        return result

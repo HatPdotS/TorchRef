@@ -59,23 +59,19 @@ Classic (amplitude-only) extrapolation:
     2Fextc-Fc, Fextc-Fc       Map coefficients
 
 Empirical Bayes extrapolation:
-    Starts from the phase-aware complex extrapolation, then applies
-    per-reflection shrinkage **in the complex domain** towards the
-    dark-state structure factor.  This regularises both amplitude and
-    phase for noisy / weakly-measured reflections::
+    Starts from the phase-aware extrapolation, then applies per-reflection
+    amplitude shrinkage towards Fo_dark to regularise noisy high-resolution
+    and weakly-measured reflections::
 
-        F_ext       = Fo_dark*exp(i*phi_dark) + dF/f        (complex)
+        F_ext       = |Fo_dark*exp(i*phi_dark) + dF/f|      (phase-aware)
         sig_ext^2   = (sig_light^2 + sig_dark^2) / f^2
-        tau^2       = max(<(|F_ext| - Fo_dark)^2> - <sig_ext^2>, floor)
+        tau^2       = max(<(F_ext - Fo_dark)^2> - <sig_ext^2>, floor)
         w(h)        = tau^2 / (tau^2 + sig_ext^2(h))
-        F_shrunk(h) = w(h) * F_ext(h) + (1-w(h)) * Fo_dark*exp(i*phi_dark)
-        F_extb(h)   = |F_shrunk(h)|
+        F_extb(h)   = w(h) * F_ext(h) + (1-w(h)) * Fo_dark(h)
 
     tau^2 is the estimated global signal variance; w(h) is the
     per-reflection shrinkage weight (high for strong/well-measured
-    reflections, low for noisy ones).  Complex-domain shrinkage pulls
-    noisy phases towards the dark model, reducing phase noise in the
-    extrapolated maps.
+    reflections, low for noisy ones).
 
     Fextb, SIGFextb           Shrinkage-regularised amplitude and sigma
     2Fextb-Fc, Fextb-Fc       Map coefficients
@@ -126,17 +122,18 @@ configure_unbuffered_output()
 
 DEFAULT_TARGET_WEIGHTS = {
     "xray/difference": 5.0,
-    "xray/ml": 1.0,
-    "geometry/bond": 1.0,
-    "geometry/angle": 0.3,
-    "geometry/torsion": 0.3,
-    "geometry/planarity": 1.0,
+    "xray/ml": 0.0,
+    "geometry/bond": 2.0,
+    "geometry/angle": 2.0,
+    "geometry/torsion": 2.0,
+    "geometry/planarity": 2.0,
     "geometry/chiral": 0.5,
-    "geometry/nonbonded": 2.0,
+    "geometry/nonbonded": 4.0,
     "geometry/ramachandran": 0.5,
     "adp/simu": 0.5,
     "adp/locality": 0.2,
     "adp/KL": 0.2,
+    "similarity": 3.0,
 }
 
 
@@ -146,8 +143,16 @@ DEFAULT_TARGET_WEIGHTS = {
 
 
 def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min,
-                           device, verbose):
-    """Load models and create a ModelCollection."""
+                           device, verbose, hydrogenate=False):
+    """Load models and create a ModelCollection.
+
+    Parameters
+    ----------
+    hydrogenate : bool
+        If True, add explicit hydrogens to both models.  H atoms
+        participate in geometry/VDW restraints (preventing clashes)
+        but are excluded from structure factor calculations.
+    """
     from torchref.model.model_collection import ModelCollection
 
     model_dark = load_model(
@@ -156,6 +161,15 @@ def setup_model_collection(pdb_dark, pdb_light, fractions, cif, d_min,
     model_light = load_model(
         pdb_light, max_res=d_min, device=device, verbose=verbose, cif=cif,
     )
+
+    if hydrogenate:
+        if verbose > 0:
+            print("Adding hydrogens for VDW clash prevention...")
+            sys.stdout.flush()
+        model_dark = model_dark.hydrogenate(verbose=max(0, verbose - 1))
+        model_light = model_light.hydrogenate(verbose=max(0, verbose - 1))
+        model_dark.exclude_H_from_sf = True
+        model_light.exclude_H_from_sf = True
 
     mc = ModelCollection([model_dark, model_light], dark_key="dark")
     mc.add_dark()
@@ -215,7 +229,7 @@ def compute_rfactors(model, data, scaler):
 
 
 def setup_loss_state(dataset_collection, model_collection, scaler,
-                     target_weights, device):
+                     target_weights, device, similarity_alpha=2.0):
     """Build LossState with collection-aware targets.
 
     Geometry and ADP restraints are applied only to the light base model
@@ -227,10 +241,12 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
         CollectionMLTarget,
     )
     from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
+    from torchref.refinement.targets.similarity import CoordinateSimilarityTarget
 
     state = LossState(device=device)
 
     model_light = model_collection.base_models[1]
+    model_dark = model_collection.base_models[0]
 
     diff_target = CollectionDifferenceTarget(
         dataset_collection, model_collection, scaler=scaler,
@@ -241,10 +257,15 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     geom_target = TotalGeometryTarget(model_light)
     adp_target = TotalADPTarget(model_light)
 
+    similarity_target = CoordinateSimilarityTarget(
+        model_dark=model_dark, model_light=model_light, alpha=similarity_alpha,
+    )
+
     state.register_target("xray/difference", diff_target)
     state.register_target("xray/ml", ml_target)
     state.register_target("geometry", geom_target)
     state.register_target("adp", adp_target)
+    state.register_target("similarity", similarity_target)
 
     state.set_weights(target_weights)
 
@@ -255,16 +276,17 @@ def compute_bayes_extrapolated_amplitudes(
     Fobs_dark, Fobs_light, sig_dark, sig_light, phi_dark, phi_mixed, f,
     *, tau_sq_floor=1e-4,
 ):
-    """Empirical Bayes shrinkage estimator with complex-domain regularisation.
+    """Empirical Bayes shrinkage estimator for extrapolated SF amplitudes.
 
-    Shrinkage is applied in the complex plane *before* taking the amplitude,
-    so that noisy reflections have both their amplitude damped and their
-    phase pulled towards the dark-model phase::
+    Estimates per-reflection shrinkage weights from the propagated
+    variance of the extrapolation, then shrinks the phase-aware
+    extrapolated amplitude towards Fo_dark::
 
-        F_ext     = F_dark*e^(iφ_d) + ΔF/f           (complex extrapolation)
-        w(h)      = τ² / (τ² + σ_ext²(h))            (per-reflection weight)
-        F_shrunk  = w(h)·F_ext + (1-w(h))·F_dark*e^(iφ_d)   (complex shrinkage)
-        F_extb    = |F_shrunk|
+        F_ext     = |F_dark*e^(iφ_d) + ΔF/f|         (phase-aware amplitude)
+        σ_ext²    = (σ_light² + σ_dark²) / f²
+        τ²        = max(<(F_ext - Fo_dark)²> - <σ_ext²>, floor)
+        w(h)      = τ² / (τ² + σ_ext²(h))
+        F_extb    = w(h)·F_ext + (1-w(h))·Fo_dark    (amplitude shrinkage)
 
     Parameters
     ----------
@@ -282,7 +304,7 @@ def compute_bayes_extrapolated_amplitudes(
     Returns
     -------
     F_ext_bayes : Tensor (N,)
-        Posterior-mean extrapolated amplitudes.
+        Phase-aware extrapolated amplitudes (before shrinkage).
     var_ext_bayes : Tensor (N,)
         Posterior variance per reflection.
     w_shrinkage : Tensor (N,)
@@ -298,24 +320,21 @@ def compute_bayes_extrapolated_amplitudes(
     sig_sq_dF = sig_light**2 + sig_dark**2
     sig_sq_ext = sig_sq_dF / f**2
 
-    # Complex extrapolation
+    # Phase-aware extrapolated amplitude
     F_ext_complex = F_dark_phased + delta_F / f
+    F_ext = torch.abs(F_ext_complex)
 
     # Estimate signal variance τ²
-    residuals_sq = (torch.abs(F_ext_complex) - Fobs_dark) ** 2
+    residuals_sq = (F_ext - Fobs_dark) ** 2
     tau_sq = max((residuals_sq.mean() - sig_sq_ext.mean()).item(), tau_sq_floor)
 
-    # Per-reflection shrinkage weight (unnormalised, in [0, 1])
+    # Per-reflection shrinkage weight (in [0, 1])
     w = tau_sq / (tau_sq + sig_sq_ext)
-
-    # Complex-domain shrinkage: pull noisy reflections towards dark phase + amplitude
-    F_ext_shrunk = w * F_ext_complex + (1 - w) * F_dark_phased
-    F_ext_bayes = torch.abs(F_ext_shrunk)
 
     # Posterior variance
     var_ext_bayes = (tau_sq * sig_sq_ext) / (tau_sq + sig_sq_ext)
 
-    return F_ext_bayes, var_ext_bayes, w, tau_sq
+    return F_ext, var_ext_bayes, w, tau_sq
 
 
 def write_results_mtz(dc, mc, scaler, filename):
@@ -405,7 +424,7 @@ def write_results_mtz(dc, mc, scaler, filename):
     amp_2fofc_classic = 2 * amp_extra_classic - amp_light_calc_classic
     amp_fofc_classic = amp_extra_classic - amp_light_calc_classic
 
-    # --- Empirical Bayes extrapolation ---
+    # --- Empirical Bayes extrapolation (amplitude-only shrinkage) ---
     F_ext_bayes, var_ext_bayes, w_shrinkage, tau_sq = (
         compute_bayes_extrapolated_amplitudes(
             Fobs_dark_vals, Fobs_light_vals,
@@ -415,8 +434,12 @@ def write_results_mtz(dc, mc, scaler, filename):
     )
     sig_ext_bayes = torch.sqrt(var_ext_bayes)
 
+    # Shrink |F_ext| towards |Fo_dark| — scalar operation, no phase interference
+    F_ext_amp_only = torch.abs(F_light_extra)
+    F_ext_bayes_amp = w_shrinkage * F_ext_amp_only + (1 - w_shrinkage) * Fobs_dark_vals
+
     data_extra_bayes = ReflectionData.from_tensors(
-        hkl=hkl, F=F_ext_bayes, F_sigma=sig_ext_bayes,
+        hkl=hkl, F=F_ext_bayes_amp, F_sigma=sig_ext_bayes,
         cell=data_light.cell, spacegroup=data_light.spacegroup,
         rfree_flags=rfree_flags_masked, device=str(hkl.device), verbose=0,
     )
@@ -425,14 +448,13 @@ def write_results_mtz(dc, mc, scaler, filename):
     F_calc_bayes = scaler_bayes(model_light(hkl))
 
     amp_calc_bayes = torch.abs(F_calc_bayes)
-    amp_2fofc_bayes = 2 * F_ext_bayes - amp_calc_bayes
-    amp_fofc_bayes = F_ext_bayes - amp_calc_bayes
+    amp_2fofc_bayes = 2 * F_ext_bayes_amp - amp_calc_bayes
+    amp_fofc_bayes = F_ext_bayes_amp - amp_calc_bayes
 
     print("Phase-aware extrapolation rfactors:", scaler_extra.rfactor())
     print("Classic extrapolation rfactors:", scaler_classic.rfactor())
     print("Bayes extrapolation rfactors:", scaler_bayes.rfactor())
-    print(f"  Bayes extrapolation: tau^2 = {tau_sq:.4f}, "
-          f"mean w(h) = {w_shrinkage.mean().item():.3f}")
+    print(f"  Bayes: tau^2 = {tau_sq:.4f}, mean w(h) = {w_shrinkage.mean().item():.3f}")
 
     # --- Build MTZ ---
     hkl_np = hkl.cpu().numpy()
@@ -489,8 +511,8 @@ def write_results_mtz(dc, mc, scaler, filename):
             "SIGFextc": sig_extra_classic.detach().cpu().numpy(),
             "2Fextc-Fc": amp_2fofc_classic.detach().cpu().numpy(),
             "Fextc-Fc": amp_fofc_classic.detach().cpu().numpy(),
-            # Bayes extrapolation
-            "Fextb": F_ext_bayes.detach().cpu().numpy(),
+            # Bayes extrapolation (amplitude-only shrinkage)
+            "Fextb": F_ext_bayes_amp.detach().cpu().numpy(),
             "SIGFextb": sig_ext_bayes.detach().cpu().numpy(),
             "2Fextb-Fc": amp_2fofc_bayes.detach().cpu().numpy(),
             "Fextb-Fc": amp_fofc_bayes.detach().cpu().numpy(),
@@ -611,6 +633,16 @@ Examples:
         "--refine-fractions", action="store_true", default=False,
         help="Refine population fractions during optimisation (default: frozen)",
     )
+    refine.add_argument(
+        "--similarity-weight", type=float, default=3.0,
+        help="Weight for dark/light coordinate similarity restraint "
+             "(0 to disable, default: 3.0)",
+    )
+    refine.add_argument(
+        "--similarity-alpha", type=float, default=2.0,
+        help="Log prior odds for spike-and-slab similarity restraint. "
+             "Higher = stronger denoising (default: 2.0)",
+    )
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -640,6 +672,7 @@ Examples:
     # --- Parse and merge target weights ---
     target_weights = dict(DEFAULT_TARGET_WEIGHTS)
     target_weights["xray/difference"] = weight_schedule[0]
+    target_weights["similarity"] = args.similarity_weight
     target_weights, err = parse_weights(args.weights, defaults=target_weights)
     if err:
         print(f"Error: {err}", file=sys.stderr)
@@ -756,7 +789,8 @@ Examples:
         sys.stdout.flush()
 
     # --- Setup targets ---
-    state = setup_loss_state(dc, mc, scaler, target_weights, device)
+    state = setup_loss_state(dc, mc, scaler, target_weights, device,
+                             similarity_alpha=args.similarity_alpha)
 
     if args.verbose > 0:
         print("Initial loss breakdown:")
@@ -764,7 +798,6 @@ Examples:
         print()
         sys.stdout.flush()
 
-    # --- Refinement loop ---
     total_rounds = args.n_cycles * len(weight_schedule)
     round_idx = 0
 
@@ -813,6 +846,11 @@ Examples:
                 print(f"  R-factor (dark):  Rwork={rw_d:.4f}, Rfree={rf_d:.4f}")
                 print(f"  R-factor (light): Rwork={rw_l:.4f}, Rfree={rf_l:.4f}")
 
+            # Reset model caches after no_grad rfactor computation
+            # to ensure gradients flow in the next optimisation round.
+            model_light.reset_cache()
+            model_dark.reset_cache()
+
             if args.refine_fractions:
                 fraction_history.append(mixed.fractions[1].detach().cpu().item())
 
@@ -844,8 +882,10 @@ Examples:
     diff_mtz_out = str(outdir / f"{prefix}_difference_data.mtz")
     summary_path = str(outdir / f"{prefix}_summary.json")
 
-    model_dark.update_pdb()
-    model_light.update_pdb()
+    # Strip hydrogens for output (H were only needed for VDW restraints).
+    # strip_hydrogens() returns new models with consistent pdb + tensors.
+    model_dark = model_dark.strip_hydrogens()
+    model_light = model_light.strip_hydrogens()
 
     no_header = getattr(args, "no_header", False)
     output_format = getattr(args, "output_format", "both")
@@ -938,6 +978,74 @@ Examples:
         model_dark.write_cif(dark_cif_out, metadata=dark_meta)
         model_light.write_cif(light_cif_out, metadata=light_meta)
 
+    # --- Write merged deposition CIF (if no altlocs) ---
+    merged_cif_out = str(outdir / f"{prefix}_merged.cif")
+    has_altloc_dark = (model_dark.pdb["altloc"].astype(str).str.strip() != "").any()
+    has_altloc_light = (model_light.pdb["altloc"].astype(str).str.strip() != "").any()
+
+    if not has_altloc_dark and not has_altloc_light:
+        import pandas as pd
+        from torchref import __version__
+        from torchref.io.metadata import RefinementMetadata
+
+        dark_df = model_dark.pdb.copy()
+        dark_df["altloc"] = "A"
+        dark_df["occupancy"] = fractions[0]
+
+        light_df = model_light.pdb.copy()
+        light_df["altloc"] = "B"
+        light_df["occupancy"] = fractions[1]
+
+        merged_df = pd.concat([dark_df, light_df], ignore_index=True)
+        merged_df = merged_df.sort_values(
+            ["chainid", "resseq", "icode", "name", "altloc"]
+        ).reset_index(drop=True)
+        merged_df["serial"] = range(1, len(merged_df) + 1)
+        merged_df.attrs["cell"] = model_dark.cell.data.tolist()
+        merged_df.attrs["spacegroup"] = (
+            model_dark.spacegroup.hm if model_dark.spacegroup else "P 1"
+        )
+
+        merged_meta = RefinementMetadata(
+            program_version=__version__,
+            refinement_method="difference-refine",
+            r_work=float(r_work_l),
+            r_free=float(r_free_l),
+            authors=getattr(args, "authors", None) or ["AUTHOR NAME"],
+        )
+        if data_light.resolution is not None:
+            valid = data_light.masks().to(torch.bool)
+            res_valid = data_light.resolution[valid]
+            if len(res_valid) > 0:
+                merged_meta.resolution_high = float(res_valid.min())
+                merged_meta.resolution_low = float(res_valid.max())
+        merged_meta.b_mean_overall = float(merged_df["tempfactor"].mean())
+        merged_meta.n_atoms_total = len(merged_df)
+
+        if hasattr(scaler, "solvent") and scaler.solvent is not None:
+            sm = scaler.solvent
+            merged_meta.solvent_model_ksol = float(torch.exp(sm.log_k_solvent).item())
+            merged_meta.solvent_model_bsol = float(sm.b_solvent.item())
+
+        ensemble_note = (
+            f"Mixed-state ensemble from TorchRef difference refinement. "
+            f"Conformer A (occupancy {fractions[0]:.2f}): dark/ground state. "
+            f"Conformer B (occupancy {fractions[1]:.2f}): light/excited state. "
+            f"R-factors: mixed vs light data Rwork={r_work_l:.4f} Rfree={r_free_l:.4f}; "
+            f"dark vs dark data Rwork={r_work_d:.4f} Rfree={r_free_d:.4f}."
+        )
+        merged_meta.title = ensemble_note
+
+        from torchref.io import cif as cif_io
+        cif_io.write_model(merged_df, merged_cif_out, metadata=merged_meta)
+
+        if args.verbose > 0:
+            print(f"  Merged deposition CIF written to {merged_cif_out}")
+    else:
+        if args.verbose > 0:
+            print("  Skipping merged CIF: input models contain altlocs")
+        merged_cif_out = None
+
     # --- Write per-dataset structure factor files (MTZ + CIF) ---
     dark_sf_mtz = str(outdir / f"{prefix}_dark-sf.mtz")
     light_sf_mtz = str(outdir / f"{prefix}_light-sf.mtz")
@@ -1009,6 +1117,7 @@ Examples:
             "light_sf_mtz": light_sf_mtz,
             "light_sf_cif": light_sf_cif,
             "difference_mtz": diff_mtz_out,
+            "merged_cif": merged_cif_out,
             "summary": summary_path,
         },
     }
@@ -1020,6 +1129,8 @@ Examples:
         print("Output files:")
         print(f"  - {dark_pdb_out}")
         print(f"  - {light_pdb_out}")
+        if merged_cif_out:
+            print(f"  - {merged_cif_out}")
         print(f"  - {dark_sf_mtz} / {dark_sf_cif}")
         print(f"  - {light_sf_mtz} / {light_sf_cif}")
         print(f"  - {diff_mtz_out}")
