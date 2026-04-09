@@ -79,6 +79,7 @@ class NonBondedTarget(GeometryTarget):
         r_exp: float = 4.0,
         buffer: float = 0.0,
         verbose: int = 0,
+        scale: float = 10.0,
     ):
         """
         Initialize non-bonded target.
@@ -100,6 +101,7 @@ class NonBondedTarget(GeometryTarget):
         """
         super().__init__(model, verbose, target_value=0.5, sigma=1.2)
         self.mode = mode
+        self.scale = scale
         # Register c_rep, r_exp, buffer as buffers for state_dict access
         self.register_buffer("_c_rep", torch.tensor(c_rep))
         self.register_buffer("_r_exp", torch.tensor(r_exp))
@@ -231,38 +233,28 @@ class NonBondedTarget(GeometryTarget):
         # Violations: where actual distance is less than VDW sum + buffer
         violations = torch.clamp(min_distances + self._buffer - actual_distances, min=0.0)
 
+        # Normalize by number of atoms that participated in the clash
+        # search so the loss scales consistently across structure sizes.
+        n_atoms = float(xyz.shape[0])
+
         if self.mode == "prolsq":
-            # PROLSQ repulsion: E = c_rep * violation^r_exp
-            # This is the standard crystallographic repulsion function.
-            # Scale factor compensates for dilution: most contacts have
-            # zero violation, so the raw mean is very small.
-            # Use buffer tensors directly to avoid .item() GPU sync
             energy = self._c_rep * (violations**self._r_exp)
-            return 10.0 * energy.mean()
+            return self.scale * energy.sum() / n_atoms
 
         elif self.mode == "gaussian":
-            # Gaussian NLL for violations
             log_2pi = torch.log(
                 torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
             )
             nll = 0.5 * (violations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
-            return nll.mean()
+            return self.scale * nll.sum() / n_atoms
 
         elif self.mode == "soft":
-            # Soft repulsion with linear core to prevent gradient explosion
-            # Quadratic near boundary, linear for severe clashes
             threshold = 0.5  # Å - switch to linear below this
-
-            # Quadratic region
             quadratic_mask = violations <= threshold
             quadratic_energy = self._c_rep * (violations**2)
-
-            # Linear region (for severe clashes)
-            linear_mask = ~quadratic_mask
             linear_energy = self._c_rep * (2 * threshold * violations - threshold**2)
-
             energy = torch.where(quadratic_mask, quadratic_energy, linear_energy)
-            return energy.mean()
+            return self.scale * energy.sum() / n_atoms
 
         else:
             raise ValueError(f"Unknown non-bonded mode: {self.mode}")

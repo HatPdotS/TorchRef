@@ -1,32 +1,77 @@
-# Paper Figures
+# Paper Figures — TorchRef IUCrJ Publication
 
-This folder contains the data, scripts, and figures for the TorchRef publication.
+This folder contains scripts, data, and figures for the TorchRef paper.
+All paths are relative — no hardcoded absolute paths.
+
+## Prerequisites
+
+```bash
+pip install torchref[dev]          # TorchRef with dev dependencies
+module load ccp4                    # REFMAC5 for validation
+module load phenix/phenix-1.20-4459 # PHENIX for comparison refinement
+```
+
+## Data Layout
+
+The `paper/` directory expects two data sources linked as:
+
+```
+paper/
+├── data -> ../scientific_testing/data            # ~1000 benchmark structures
+│   └── {CODE}/{CODE}.mtz, {CODE}_shaken.pdb, ...
+├── phenix_refinements -> .../refinements         # PHENIX comparison results
+│   └── {CODE}/{CODE}_refined_001.pdb, .log, ...
+```
+
+**For reviewers:** if cloning fresh, create the data directory and populate it:
+
+```bash
+cd paper/
+
+# Step 1: Download 1000 structures (PDB + structure factors)
+python figure2_validation/scripts/get_pdb_and_data_files.py
+python figure2_validation/scripts/download_pdb_files.py
+
+# Step 2: Prepare input data
+python figure2_validation/scripts/make_standardized_mtzs.py   # CIF → MTZ
+python figure2_validation/scripts/convert_cifx.py              # CIF → PDB
+python figure2_validation/scripts/shake_cifs.py                # Shake coordinates + B-factors
+
+# Step 3: Create the data symlink (or copy)
+ln -s ../scientific_testing/data data
+```
 
 ## Figures
 
 ### Figure 2: Validation Benchmark
 **Location:** `figure2_validation/`
 
-Comparison of TorchRef vs PHENIX refinement across 1000 PDB structures. Not all refinements were successful between torchref and Phenix. Shows R-factors, geometry quality, structural deviations, and runtime comparison.
-
-See `figure2_validation/README.md` for the full data generation pipeline.
+Comparison of TorchRef vs PHENIX refinement across ~1000 PDB structures.
+See `figure2_validation/README.md` for the full reproduction pipeline.
 
 ### Figure 3: Performance Benchmarks
 **Location:** `figure3_performance/`
 
-- **Panel A** (`figure3a_fcalc.png`): Structure factor calculation (Fcalc) thread scaling and GPU performance, compared to cctbx.
-- **Panel B** (`figure3b_profiling.png`): Full refinement cycle profiling with per-target breakdown (X-ray, geometry, ADP targets).
+- **Panel A**: Structure factor (Fcalc) thread scaling and GPU performance vs cctbx.
+- **Panel B**: Full refinement cycle profiling with per-target breakdown.
 
-Benchmark scripts in `fcalc_benchmark/` and `refinement_cycle_benchmark/`. Test data: `data/1DAW.pdb` and `data/1DAW.mtz`.
+Benchmark scripts in `fcalc_benchmark/` and `refinement_cycle_benchmark/`.
+Test data: `data/1DAW.pdb` and `data/1DAW.mtz` (included in-tree).
 
 ### Figure 4: Difference Refinement
 **Location:** `figure4_difference_refinement/`
 
-Time-resolved difference refinement of IBL isomerization in tubulin. Shows recovery of the light-state (cis) conformation from dark-state observations using TorchRef's MixedModel framework.
+Time-resolved difference refinement of IBL isomerisation in tubulin.
+All input data and refinement outputs included in the directory.
 
-- `data/` - Input crystallographic data (dark/light PDB structures and reflections)
-- `refinement_output/` - TorchRef difference refinement results (82% dark, 18% light fractions)
-- `validation/` - DED validation results (TorchRef vs extrapolation method, IBL mask vs full chain)
-- `panels/` - PyMOL-rendered figure panels (manually positioned, not auto-regenerable)
-- `scripts/` - Refinement and validation scripts
+### Extended Figures
+**Location:** `extended_figures/`
 
+| Figure | Description | Data status |
+|--------|-------------|-------------|
+| ExtFig 1 | ΔR-factor vs resolution (1000 structures) | Plotting only — uses existing benchmark CSVs |
+| ExtFig 2 | Refinement convergence traces (3–5 structures) | Requires TorchRef + Phenix refinement runs |
+| ExtFig 3 | GPU memory scaling (~25 structures) | Requires GPU profiling |
+| ExtFig 4 | Splatting optimization breakdown (1DAW) | Requires CPU + GPU benchmarking |
+
+See `extended_figures/instructions.md` for the design document.

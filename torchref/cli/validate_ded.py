@@ -31,6 +31,19 @@ Examples
     torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
         -dm dark.pdb -lm light.pdb \\
         --fraction 0.20 --selection "resname IBL" --plot --write-maps -o validation/
+
+Programmatic usage
+------------------
+::
+
+    from torchref.cli.validate_ded import setup_ded_context, compute_ded_maps
+
+    ctx = setup_ded_context("dark.mtz", "light.mtz", dmin=2.2)
+    result = compute_ded_maps(
+        ctx, model_dark, model_light, fraction=0.18,
+        selection="resname IBL", mask_radius=2.5,
+    )
+    print(result["reciprocal_cc_overall"])
 """
 
 import argparse
@@ -231,22 +244,376 @@ def generate_plots(results, map_dfo, map_dfc, mask_dict, outdir, verbose):
 
 
 # ---------------------------------------------------------------------------
-# Core validation pipeline
+# Reusable core functions
+# ---------------------------------------------------------------------------
+
+
+def setup_ded_context(
+    dark_sf,
+    light_sf,
+    dmin=None,
+    device=None,
+    col_dark=None,
+    col_light=None,
+    n_bins=20,
+    verbose=0,
+):
+    """Load reflection data and prepare shared state for DED validation.
+
+    This sets up the observation side (weighted DFo, P1 expansion, resolution
+    bins, free/work masks) that is independent of any particular model.
+
+    Parameters
+    ----------
+    dark_sf, light_sf : str or Path
+        Paths to dark and light structure factor files.
+    dmin : float, optional
+        High-resolution cutoff in Angstroms.
+    device : torch.device, optional
+        Compute device. Defaults to CPU.
+    col_dark, col_light : dict, optional
+        Column name overrides for data loading.
+    n_bins : int
+        Number of resolution bins for reciprocal-space CC (default 20).
+    verbose : int
+        Verbosity level.
+
+    Returns
+    -------
+    dict
+        Context dictionary with keys: device, collection, data_dark,
+        data_light, hkl_all, hkl, refl_mask, w_dfo, weights, d_spacing,
+        cell_t, cell_np, sg_name, d_min, gridsize, hkl_p1, orig_idx,
+        phase_shifts, w_dfo_p1, weights_p1, work_mask, free_mask.
+    """
+    import gemmi
+
+    from torchref import DatasetCollection
+    from torchref.symmetry.grid_utils import calculate_optimal_grid_size
+    from torchref.symmetry.reciprocal_symmetry import expand_hkl
+
+    if device is None:
+        device = torch.device("cpu")
+
+    # Load and scale
+    data_dark = load_reflection_data(
+        str(dark_sf), device=device, column_names=col_dark, verbose=0
+    )
+    data_light = load_reflection_data(
+        str(light_sf), device=device, column_names=col_light, verbose=0
+    )
+    if dmin is not None:
+        data_dark.cut_res(highres=dmin)
+        data_light.cut_res(highres=dmin)
+
+    collection = DatasetCollection(device=str(device))
+    collection.add_dataset("dark", data_dark)
+    collection.add_dataset("light", data_light)
+    collection.scale()
+
+    if verbose >= 1:
+        print(f"Scale parameters after optimization:")
+        for name, ds in collection:
+            if hasattr(ds, "log_scale") and ds.log_scale is not None:
+                print(
+                    f"  {name}: log_scale={ds.log_scale.item():.6f} "
+                    f"(scale={torch.exp(ds.log_scale).item():.6f})"
+                )
+
+    # Extract matched reflections
+    hkl_all, F_dark_mt, sig_dark_mt, rfree_dark = data_dark()
+    _, F_light_mt, sig_light_mt, rfree_light = data_light()
+    refl_mask = F_dark_mt.get_mask() & F_light_mt.get_mask()
+
+    F_dark = F_dark_mt.get_data()[refl_mask]
+    F_light = F_light_mt.get_data()[refl_mask]
+    sig_dark = sig_dark_mt.get_data()[refl_mask]
+    sig_light = sig_light_mt.get_data()[refl_mask]
+    hkl = hkl_all[refl_mask]
+
+    # Free/work masks
+    _has_rfree = rfree_dark is not None or rfree_light is not None
+    if _has_rfree:
+        rfree_flags = (
+            rfree_dark[refl_mask].bool()
+            if rfree_dark is not None
+            else rfree_light[refl_mask].bool()
+        )
+        work_mask = rfree_flags
+        free_mask = ~rfree_flags
+    else:
+        free_mask = work_mask = None
+
+    # Weighted difference Fo
+    dfo = F_light - F_dark
+    sig_diff = (sig_dark**2 + sig_light**2) ** 0.5
+    weights = 1 / sig_diff**2
+    weights = weights / weights.mean()
+    w_dfo = dfo * weights
+
+    # Cell, spacegroup, d-spacings
+    cell_t = data_dark.cell.data.to(device)
+    cell_np = cell_t.cpu().numpy()
+    sg_name = data_dark.spacegroup.hm
+
+    gemmi_cell = gemmi.UnitCell(*cell_np.tolist())
+    hkl_np = hkl.cpu().numpy().astype(np.int32)
+    d_spacings = np.array(
+        [gemmi_cell.calculate_d(h) for h in hkl_np.tolist()], dtype=np.float32
+    )
+    if dmin is None:
+        dmin = float(d_spacings.min())
+    d_spacing = torch.tensor(d_spacings, dtype=torch.float32, device=device)
+
+    # P1 expansion and grid
+    gridsize = calculate_optimal_grid_size(cell_t, dmin, sg_name)
+    hkl_p1, orig_idx, phase_shifts = expand_hkl(
+        hkl, sg_name, include_friedel=False, remove_absences=True
+    )
+    w_dfo_p1 = w_dfo[orig_idx]
+    weights_p1 = weights[orig_idx]
+
+    if verbose >= 1:
+        print(f"Matched reflections: {len(hkl)}")
+        print(f"Cell: {cell_np}, Spacegroup: {sg_name}")
+        print(f"Resolution: {dmin:.2f} A, Grid: {gridsize}")
+        print(f"ASU: {len(hkl)}, P1: {len(hkl_p1)}")
+
+    return {
+        "device": device,
+        "collection": collection,
+        "data_dark": data_dark,
+        "data_light": data_light,
+        "hkl_all": hkl_all,
+        "hkl": hkl,
+        "refl_mask": refl_mask,
+        "w_dfo": w_dfo,
+        "weights": weights,
+        "d_spacing": d_spacing,
+        "cell_t": cell_t,
+        "cell_np": cell_np,
+        "sg_name": sg_name,
+        "d_min": dmin,
+        "gridsize": gridsize,
+        "hkl_p1": hkl_p1,
+        "orig_idx": orig_idx,
+        "phase_shifts": phase_shifts,
+        "w_dfo_p1": w_dfo_p1,
+        "weights_p1": weights_p1,
+        "work_mask": work_mask,
+        "free_mask": free_mask,
+        "n_bins": n_bins,
+    }
+
+
+def compute_ded_maps(
+    ctx,
+    model_dark,
+    model_light,
+    fraction,
+    selection=None,
+    mask_source="both",
+    mask_radius=2.5,
+    n_bins=None,
+    verbose=0,
+):
+    """Compute DED maps and correlations for one (dark, light) model pair.
+
+    Parameters
+    ----------
+    ctx : dict
+        Context from :func:`setup_ded_context`.
+    model_dark, model_light : ModelFT
+        Dark and light atomic models.
+    fraction : float
+        Activated fraction for the light state.
+    selection : str, optional
+        Phenix-style atom selection for masked correlation.
+    mask_source : str
+        Which model(s) build the selection mask: "dark", "light", or "both".
+    mask_radius : float
+        Mask sphere radius in Angstroms.
+    n_bins : int, optional
+        Number of resolution bins. Falls back to ``ctx["n_bins"]``.
+    verbose : int
+        Verbosity level.
+
+    Returns
+    -------
+    dict
+        Keys: map_dfo, map_dfc, mask_dict, realspace_correlation,
+        resolution_bins, reciprocal_cc_overall, reciprocal_cc_work,
+        reciprocal_cc_free, w_delta_fcalc_asu.
+    """
+    from torchref.model.model_collection import ModelCollection
+    from torchref.cli.collection_difference_refine import (
+        setup_scaler as setup_collection_scaler,
+    )
+    from torchref.base.fourier.grid import get_real_grid
+
+    device = ctx["device"]
+
+    # Build ModelCollection + scaler
+    mc = ModelCollection([model_dark, model_light], dark_key="dark")
+    mc.add_dark()
+    mc.add_timepoint("light", fractions=[1.0 - fraction, fraction])
+    dark_mm = mc.dark_model
+    mixed_mm = mc["light"]
+
+    scaler = setup_collection_scaler(ctx["collection"], mc, device, verbose=0)
+
+    # Fcalc at ASU level
+    with torch.no_grad():
+        fcalc_dark_asu = scaler.forward_mixed(
+            dark_mm(ctx["hkl_all"], recalc=True), dark_mm.fractions
+        )[ctx["refl_mask"]]
+        fcalc_mixed_asu = scaler.forward_mixed(
+            mixed_mm(ctx["hkl_all"], recalc=True), mixed_mm.fractions
+        )[ctx["refl_mask"]]
+
+    # Expand to P1
+    phase_factors = torch.exp(
+        1j * ctx["phase_shifts"].to(fcalc_dark_asu.dtype)
+    )
+    fcalc_dark_p1 = fcalc_dark_asu[ctx["orig_idx"]] * phase_factors
+    fcalc_mixed_p1 = fcalc_mixed_asu[ctx["orig_idx"]] * phase_factors
+
+    delta_fcalc = fcalc_mixed_p1.abs() - fcalc_dark_p1.abs()
+    w_delta_fcalc = delta_fcalc * ctx["weights_p1"]
+    phi_dark_p1 = torch.angle(fcalc_dark_p1)
+
+    # ASU-level weighted DFcalc
+    delta_fcalc_asu = fcalc_mixed_asu.abs() - fcalc_dark_asu.abs()
+    w_delta_fcalc_asu = delta_fcalc_asu * ctx["weights"]
+
+    if verbose >= 1:
+        print(f"  |DFcalc| mean: {delta_fcalc.abs().mean():.3f}")
+        print(f"  |WDFcalc| mean: {w_delta_fcalc.abs().mean():.3f}")
+
+    # Compute maps
+    with torch.no_grad():
+        map_dfo = compute_map_from_coefficients(
+            ctx["w_dfo_p1"], phi_dark_p1, ctx["hkl_p1"], ctx["gridsize"]
+        )
+        map_dfc = compute_map_from_coefficients(
+            w_delta_fcalc, phi_dark_p1, ctx["hkl_p1"], ctx["gridsize"]
+        )
+
+    map_dfo = (map_dfo - map_dfo.mean()) / (map_dfo.std() + 1e-12)
+    map_dfc = (map_dfc - map_dfc.mean()) / (map_dfc.std() + 1e-12)
+
+    # Build masks
+    mask_dict = {
+        "full_cell": torch.ones(map_dfo.shape, dtype=torch.bool, device=device)
+    }
+    if selection and selection.strip():
+        xyz_parts = []
+        if mask_source in ("dark", "both"):
+            sel = model_dark.get_selection_mask(selection)
+            xyz_parts.append(model_dark.xyz()[sel])
+        if mask_source in ("light", "both"):
+            sel = model_light.get_selection_mask(selection)
+            xyz_parts.append(model_light.xyz()[sel])
+        selected_xyz = torch.cat(xyz_parts, dim=0)
+
+        real_space_grid = get_real_grid(
+            ctx["cell_t"],
+            max_res=ctx["d_min"],
+            gridsize=torch.tensor(ctx["gridsize"]),
+            device=device,
+        )
+        mask_dict["selection"] = build_atom_mask(
+            selected_xyz, real_space_grid, ctx["cell_t"], mask_radius, device
+        )
+
+    # Real-space correlations
+    rs_corr = {}
+    for name, m in mask_dict.items():
+        cc = compute_correlation(map_dfo, map_dfc, m)
+        rs_corr[name] = {"cc": cc, "n_voxels": m.sum().item()}
+        if verbose >= 1:
+            print(f"  {name:>15s}: CC = {cc:.4f}  (n_vox = {m.sum().item()})")
+
+    # Resolution-binned CC
+    if n_bins is None:
+        n_bins = ctx.get("n_bins", 20)
+    d_sorted, sort_idx = ctx["d_spacing"].sort(descending=True)
+    bin_size = len(ctx["d_spacing"]) // n_bins
+    bin_results = []
+    for i in range(n_bins):
+        start = i * bin_size
+        end = (i + 1) * bin_size if i < n_bins - 1 else len(ctx["d_spacing"])
+        idx = sort_idx[start:end]
+
+        obs_bin = ctx["w_dfo"][idx]
+        calc_bin = w_delta_fcalc_asu[idx]
+        ao = obs_bin - obs_bin.mean()
+        ac = calc_bin - calc_bin.mean()
+        cc_amp = (ao * ac).sum() / (
+            torch.sqrt((ao**2).sum() * (ac**2).sum()) + 1e-12
+        )
+
+        bin_results.append({
+            "bin": i,
+            "d_min": round(ctx["d_spacing"][idx].min().item(), 3),
+            "d_max": round(ctx["d_spacing"][idx].max().item(), 3),
+            "n_refl": len(idx),
+            "cc": round(cc_amp.item(), 4),
+        })
+        if verbose >= 1:
+            d_lo = ctx["d_spacing"][idx].max().item()
+            d_hi = ctx["d_spacing"][idx].min().item()
+            print(
+                f"  Bin {i:2d}: {d_lo:5.2f}-{d_hi:5.2f} A  "
+                f"n={len(idx):5d}  CC={cc_amp.item():.4f}"
+            )
+
+    # Overall and free/work CC
+    cc_overall = torch.corrcoef(
+        torch.stack([ctx["w_dfo"], w_delta_fcalc_asu])
+    )[0, 1].item()
+
+    cc_free = cc_work = None
+    free_mask = ctx["free_mask"]
+    work_mask = ctx["work_mask"]
+    if free_mask is not None and free_mask.sum() > 10:
+        cc_free = torch.corrcoef(
+            torch.stack([ctx["w_dfo"][free_mask], w_delta_fcalc_asu[free_mask]])
+        )[0, 1].item()
+        cc_work = torch.corrcoef(
+            torch.stack([ctx["w_dfo"][work_mask], w_delta_fcalc_asu[work_mask]])
+        )[0, 1].item()
+
+    if verbose >= 1:
+        print(f"  Overall CC = {cc_overall:.4f}")
+        if cc_work is not None:
+            print(f"  Work CC = {cc_work:.4f}, Free CC = {cc_free:.4f}")
+
+    return {
+        "map_dfo": map_dfo,
+        "map_dfc": map_dfc,
+        "mask_dict": mask_dict,
+        "realspace_correlation": rs_corr,
+        "resolution_bins": bin_results,
+        "reciprocal_cc_overall": round(cc_overall, 4),
+        "reciprocal_cc_work": round(cc_work, 4) if cc_work is not None else None,
+        "reciprocal_cc_free": round(cc_free, 4) if cc_free is not None else None,
+        "w_delta_fcalc_asu": w_delta_fcalc_asu,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI validation pipeline (wraps the core functions above)
 # ---------------------------------------------------------------------------
 
 
 def run_validation(args):
     """Run the DED validation pipeline."""
-    import gemmi
-
-    from torchref import DatasetCollection
+    from torchref.cli.collection_difference_refine import compute_rfactors
     from torchref.model.model_collection import ModelCollection
     from torchref.cli.collection_difference_refine import (
-        compute_rfactors, setup_scaler as setup_collection_scaler,
+        setup_scaler as setup_collection_scaler,
     )
-    from torchref.base.fourier.grid import get_real_grid
-    from torchref.symmetry.grid_utils import calculate_optimal_grid_size
-    from torchref.symmetry.reciprocal_symmetry import expand_hkl
 
     device = resolve_device(args.device)
     outdir = Path(args.outdir)
@@ -256,102 +623,24 @@ def run_validation(args):
         print("=" * 70)
         print("DED Validation: WDFo vs WDFcalc")
         print("=" * 70)
-
-    # ------------------------------------------------------------------
-    # 1. Load dark and light MTZ, compute weighted differences
-    # ------------------------------------------------------------------
-    if args.verbose >= 1:
         print(f"\n--- Loading reflection data ---")
         print(f"  Dark SF:   {args.dark_structure_factor}")
         print(f"  Light SF:  {args.light_structure_factor}")
 
     col_dark, col_light = build_dual_column_names(args)
-
-    data_dark = load_reflection_data(
-        args.dark_structure_factor, device=device, column_names=col_dark, verbose=0
+    ctx = setup_ded_context(
+        args.dark_structure_factor,
+        args.light_structure_factor,
+        dmin=args.dmin,
+        device=device,
+        col_dark=col_dark,
+        col_light=col_light,
+        n_bins=args.n_bins,
+        verbose=args.verbose,
     )
-    data_light = load_reflection_data(
-        args.light_structure_factor, device=device, column_names=col_light, verbose=0
-    )
+    d_min = ctx["d_min"]
 
-    # Resolution cutoff
-    d_min = args.dmin
-    if d_min is not None:
-        data_dark.cut_res(highres=d_min)
-        data_light.cut_res(highres=d_min)
-
-    # Align HKL and scale datasets to a common scale
-    collection = DatasetCollection(device=str(device))
-    collection.add_dataset("dark", data_dark)
-    collection.add_dataset("light", data_light)
-    collection.scale()
-
-    if args.verbose >= 1:
-        print(f"  Scale parameters after optimization:")
-        for name, ds in collection:
-            if hasattr(ds, "log_scale") and ds.log_scale is not None:
-                print(f"    {name}: log_scale={ds.log_scale.item():.6f} "
-                      f"(scale={torch.exp(ds.log_scale).item():.6f})")
-            if hasattr(ds, "U_aniso") and ds.U_aniso is not None:
-                print(f"    {name}: U_aniso={ds.U_aniso.detach().cpu().tolist()}")
-
-    # Extract matched F and sigma
-    hkl_all, F_dark_mt, sig_dark_mt, rfree_dark = data_dark()
-    _, F_light_mt, sig_light_mt, rfree_light = data_light()
-    mask = F_dark_mt.get_mask() & F_light_mt.get_mask()
-
-    F_dark = F_dark_mt.get_data()[mask]
-    F_light = F_light_mt.get_data()[mask]
-    sig_dark = sig_dark_mt.get_data()[mask]
-    sig_light = sig_light_mt.get_data()[mask]
-    hkl = hkl_all[mask]
-
-    # Build free/work masks
-    # Convention: rfree_flags True = work set, False = free (test) set
-    _has_rfree = rfree_dark is not None or rfree_light is not None
-    if _has_rfree:
-        if rfree_dark is not None:
-            rfree_flags = rfree_dark[mask].bool()
-        else:
-            rfree_flags = rfree_light[mask].bool()
-        work_mask = rfree_flags
-        free_mask = ~rfree_flags
-    else:
-        free_mask = work_mask = None
-
-    # Compute weighted differences (same as difference_refine.py)
-    dfo = F_light - F_dark
-    sig_diff = (sig_dark**2 + sig_light**2) ** 0.5
-    weights = 1 / sig_diff**2
-    weights = weights / weights.mean()
-    w_dfo = dfo * weights
-
-    # Cell and spacegroup from dark dataset
-    cell_t = data_dark.cell.data.to(device)
-    cell_np = cell_t.cpu().numpy()
-    sg_name = data_dark.spacegroup.hm
-
-    # Determine resolution from data if not specified
-    gemmi_cell = gemmi.UnitCell(*cell_np.tolist())
-    hkl_np = hkl.cpu().numpy().astype(np.int32)
-    d_spacings = np.array(
-        [gemmi_cell.calculate_d(h) for h in hkl_np.tolist()], dtype=np.float32
-    )
-    if d_min is None:
-        d_min = float(d_spacings.min())
-
-    if args.verbose >= 1:
-        print(f"  Matched reflections: {len(hkl)}")
-        print(f"  Cell: {cell_np}")
-        print(f"  Spacegroup: {sg_name}")
-        print(f"  Resolution cutoff: {d_min:.2f} A")
-        n_neg = int((dfo < 0).sum().item())
-        print(f"  DFo: {len(dfo)} reflections ({n_neg} negative)")
-        print(f"  Weight range: {weights.min():.3f} - {weights.max():.3f}")
-
-    # ------------------------------------------------------------------
-    # 2. Load models
-    # ------------------------------------------------------------------
+    # Load models
     if args.verbose >= 1:
         print(f"\n--- Loading models ---")
 
@@ -367,221 +656,38 @@ def run_validation(args):
         print(f"  Light model: {len(model_light.pdb)} atoms")
         print(f"  Fraction: {args.fraction}")
 
-    # Build ModelCollection + CollectionScaler
-    f = args.fraction
-    mc = ModelCollection([model_dark, model_light], dark_key="dark")
-    mc.add_dark()
-    mc.add_timepoint("light", fractions=[1.0 - f, f])
-    dark_model = mc.dark_model
-    mixed_model = mc["light"]
-
+    # R-factors (verbose only, before DED computation)
     if args.verbose >= 1:
         print(f"\n--- Setting up joint scaler ---")
-
-    scaler = setup_collection_scaler(collection, mc, device, verbose=args.verbose)
-
-    if args.verbose >= 1:
-        r_work_d, r_free_d = compute_rfactors(dark_model, data_dark, scaler)
-        r_work_m, r_free_m = compute_rfactors(mixed_model, data_light, scaler)
+        f = args.fraction
+        mc = ModelCollection([model_dark, model_light], dark_key="dark")
+        mc.add_dark()
+        mc.add_timepoint("light", fractions=[1.0 - f, f])
+        scaler = setup_collection_scaler(
+            ctx["collection"], mc, device, verbose=args.verbose
+        )
+        r_work_d, r_free_d = compute_rfactors(mc.dark_model, ctx["data_dark"], scaler)
+        r_work_m, r_free_m = compute_rfactors(mc["light"], ctx["data_light"], scaler)
         print(f"  R-factor (dark):  R_work={r_work_d:.4f}  R_free={r_free_d:.4f}")
         print(f"  R-factor (mixed): R_work={r_work_m:.4f}  R_free={r_free_m:.4f}")
 
-    # ------------------------------------------------------------------
-    # 3. P1 expansion and grid setup
-    # ------------------------------------------------------------------
+    # Core computation
     if args.verbose >= 1:
-        print(f"\n--- Setting up P1 expansion and grid ---")
+        print(f"\n--- Computing DED maps and correlations ---")
 
-    gridsize = calculate_optimal_grid_size(cell_t, d_min, sg_name)
-    if args.verbose >= 1:
-        print(f"  Grid size: {gridsize}")
-
-    # Expand HKL to P1
-    hkl_p1, orig_idx, phase_shifts = expand_hkl(
-        hkl, sg_name, include_friedel=False, remove_absences=True
+    result = compute_ded_maps(
+        ctx,
+        model_dark,
+        model_light,
+        fraction=args.fraction,
+        selection=args.selection,
+        mask_source=args.mask_source,
+        mask_radius=args.mask_radius,
+        n_bins=args.n_bins,
+        verbose=args.verbose,
     )
-    w_dfo_p1 = w_dfo[orig_idx]
-    weights_p1 = weights[orig_idx]
 
-    if args.verbose >= 1:
-        print(f"  ASU reflections: {len(hkl)}")
-        print(f"  P1 reflections: {len(hkl_p1)}")
-
-    # ------------------------------------------------------------------
-    # 4. Compute Fcalc at ASU level, then expand to P1 via symmetry
-    # ------------------------------------------------------------------
-    if args.verbose >= 1:
-        print(f"\n--- Computing structure factors ---")
-
-    # Compute scaled Fcalc at ASU level using joint scaler with per-model solvent.
-    with torch.no_grad():
-        fcalc_dark_asu = scaler.forward_mixed(
-            dark_model(hkl_all, recalc=True), dark_model.fractions
-        )[mask]
-        fcalc_mixed_asu = scaler.forward_mixed(
-            mixed_model(hkl_all, recalc=True), mixed_model.fractions
-        )[mask]
-
-    # Expand to P1 using symmetry phase shifts (exact, no FFT needed)
-    phase_factors = torch.exp(1j * phase_shifts.to(fcalc_dark_asu.dtype))
-    fcalc_dark_p1 = fcalc_dark_asu[orig_idx] * phase_factors
-    fcalc_mixed_p1 = fcalc_mixed_asu[orig_idx] * phase_factors
-
-    delta_fcalc = fcalc_mixed_p1.abs() - fcalc_dark_p1.abs()
-    w_delta_fcalc = delta_fcalc * weights_p1
-
-    # Dark-state phases (from scaled Fcalc)
-    phi_dark_p1 = torch.angle(fcalc_dark_p1)
-
-    if args.verbose >= 1:
-        print(f"  |DFcalc| mean: {delta_fcalc.abs().mean():.3f}")
-        print(f"  |WDFcalc| mean: {w_delta_fcalc.abs().mean():.3f}")
-        print(f"  WDFo mean: {w_dfo_p1.mean():.3f}, std: {w_dfo_p1.std():.3f}")
-
-    # ------------------------------------------------------------------
-    # 5. Compute maps (both weighted)
-    # ------------------------------------------------------------------
-    if args.verbose >= 1:
-        print(f"\n--- Computing maps ---")
-
-    with torch.no_grad():
-        map_dfo = compute_map_from_coefficients(
-            w_dfo_p1, phi_dark_p1, hkl_p1, gridsize
-        )
-        map_dfc = compute_map_from_coefficients(
-            w_delta_fcalc, phi_dark_p1, hkl_p1, gridsize
-        )
-
-    # Normalize maps to sigma units (zero mean, unit variance)
-    map_dfo = (map_dfo - map_dfo.mean()) / (map_dfo.std() + 1e-12)
-    map_dfc = (map_dfc - map_dfc.mean()) / (map_dfc.std() + 1e-12)
-
-    if args.verbose >= 1:
-        print(f"  WDFo map: shape={map_dfo.shape} (sigma-normalized)")
-        print(f"  WDFc map: shape={map_dfc.shape} (sigma-normalized)")
-
-    # ------------------------------------------------------------------
-    # 6. Build masks
-    # ------------------------------------------------------------------
-    mask_dict = {}
-    mask_dict["full_cell"] = torch.ones(map_dfo.shape, dtype=torch.bool, device=device)
-
-    if args.selection and args.selection.strip():
-        if args.verbose >= 1:
-            print(f'\n--- Building masks for "{args.selection}" ---')
-
-        # Build atom positions for mask based on --mask-source
-        xyz_parts = []
-        if args.mask_source in ("dark", "both"):
-            dark_atom_mask = model_dark.get_selection_mask(args.selection)
-            xyz_parts.append(model_dark.xyz()[dark_atom_mask])
-            if args.verbose >= 1:
-                print(f"  Selected atoms (dark):  {dark_atom_mask.sum().item()}")
-        if args.mask_source in ("light", "both"):
-            light_atom_mask = model_light.get_selection_mask(args.selection)
-            xyz_parts.append(model_light.xyz()[light_atom_mask])
-            if args.verbose >= 1:
-                print(f"  Selected atoms (light): {light_atom_mask.sum().item()}")
-        selected_xyz = torch.cat(xyz_parts, dim=0)
-
-        if args.verbose >= 1:
-            print(f"  Mask source: {args.mask_source}")
-            print(f"  Total atoms for mask: {len(selected_xyz)}")
-
-        real_space_grid = get_real_grid(
-            cell_t, max_res=d_min, gridsize=torch.tensor(gridsize), device=device
-        )
-
-        # Selection mask from combined dark + light positions
-        mask_sel = build_atom_mask(
-            selected_xyz, real_space_grid, cell_t, args.mask_radius, device
-        )
-        mask_dict["selection"] = mask_sel
-        if args.verbose >= 1:
-            print(f"  Selection voxels: {mask_sel.sum().item()}")
-
-
-    # ------------------------------------------------------------------
-    # 7. Compute real-space correlations
-    # ------------------------------------------------------------------
-    if args.verbose >= 1:
-        print(f"\n--- Real-space correlations ---")
-
-    rs_corr = {}
-    for name, m in mask_dict.items():
-        cc = compute_correlation(map_dfo, map_dfc, m)
-        rs_corr[name] = {"cc": cc, "n_voxels": m.sum().item()}
-        if args.verbose >= 1:
-            print(f"  {name:>15s}: CC = {cc:.4f}  (n_vox = {m.sum().item()})")
-
-    # ------------------------------------------------------------------
-    # 8. Resolution-binned reciprocal-space correlation
-    # ------------------------------------------------------------------
-    if args.verbose >= 1:
-        print(f"\n--- Resolution-binned amplitude correlation ---")
-
-    # Reuse ASU-level scaled Fcalc from step 4
-    delta_fcalc_asu = fcalc_mixed_asu.abs() - fcalc_dark_asu.abs()
-    w_delta_fcalc_asu = delta_fcalc_asu * weights
-
-    d_spacing = torch.tensor(d_spacings, dtype=torch.float32, device=device)
-    n_bins = args.n_bins
-    d_sorted, sort_idx = d_spacing.sort(descending=True)
-    bin_size = len(d_spacing) // n_bins
-
-    bin_results = []
-    for i in range(n_bins):
-        start = i * bin_size
-        end = (i + 1) * bin_size if i < n_bins - 1 else len(d_spacing)
-        idx = sort_idx[start:end]
-
-        obs_bin = w_dfo[idx]
-        calc_bin = w_delta_fcalc_asu[idx]
-        ao = obs_bin - obs_bin.mean()
-        ac = calc_bin - calc_bin.mean()
-        cc_amp = (ao * ac).sum() / (
-            torch.sqrt((ao**2).sum() * (ac**2).sum()) + 1e-12
-        )
-
-        d_lo = d_spacing[idx].max().item()
-        d_hi = d_spacing[idx].min().item()
-
-        bin_results.append(
-            {
-                "bin": i,
-                "d_min": round(d_hi, 3),
-                "d_max": round(d_lo, 3),
-                "n_refl": len(idx),
-                "cc": round(cc_amp.item(), 4),
-            }
-        )
-        if args.verbose >= 1:
-            print(
-                f"  Bin {i:2d}: {d_lo:5.2f}-{d_hi:5.2f} A  "
-                f"n={len(idx):5d}  CC={cc_amp.item():.4f}"
-            )
-
-    # Overall reciprocal-space CC
-    cc_overall = torch.corrcoef(torch.stack([w_dfo, w_delta_fcalc_asu]))[0, 1].item()
-    if args.verbose >= 1:
-        print(f"  Overall CC(WDFo, WDFcalc) = {cc_overall:.4f}")
-
-    # Free-set and work-set reciprocal CC
-    cc_free = cc_work = None
-    if free_mask is not None and free_mask.sum() > 10:
-        cc_free = torch.corrcoef(
-            torch.stack([w_dfo[free_mask], w_delta_fcalc_asu[free_mask]])
-        )[0, 1].item()
-        cc_work = torch.corrcoef(
-            torch.stack([w_dfo[work_mask], w_delta_fcalc_asu[work_mask]])
-        )[0, 1].item()
-        if args.verbose >= 1:
-            print(f"  Work CC(WDFo, WDFcalc) = {cc_work:.4f}  (n={work_mask.sum().item()})")
-            print(f"  Free CC(WDFo, WDFcalc) = {cc_free:.4f}  (n={free_mask.sum().item()})")
-
-    # ------------------------------------------------------------------
-    # 9. Assemble results
-    # ------------------------------------------------------------------
+    # Assemble output JSON
     results = {
         "input": {
             "dark_structure_factor": str(args.dark_structure_factor),
@@ -593,23 +699,23 @@ def run_validation(args):
             "mask_radius": args.mask_radius,
             "dmin": d_min,
         },
-        "realspace_correlation": rs_corr,
-        "reciprocal_cc_overall": round(cc_overall, 4),
-        "reciprocal_cc_work": round(cc_work, 4) if cc_work is not None else None,
-        "reciprocal_cc_free": round(cc_free, 4) if cc_free is not None else None,
-        "resolution_bins": bin_results,
+        "realspace_correlation": result["realspace_correlation"],
+        "reciprocal_cc_overall": result["reciprocal_cc_overall"],
+        "reciprocal_cc_work": result["reciprocal_cc_work"],
+        "reciprocal_cc_free": result["reciprocal_cc_free"],
+        "resolution_bins": result["resolution_bins"],
         "map_statistics": {
             "WDFo": {
-                "std": round(float(map_dfo.std()), 6),
-                "mean": round(float(map_dfo.mean()), 6),
+                "std": round(float(result["map_dfo"].std()), 6),
+                "mean": round(float(result["map_dfo"].mean()), 6),
             },
             "WDFc": {
-                "std": round(float(map_dfc.std()), 6),
-                "mean": round(float(map_dfc.mean()), 6),
+                "std": round(float(result["map_dfc"].std()), 6),
+                "mean": round(float(result["map_dfc"].mean()), 6),
             },
         },
-        "n_reflections_asu": len(hkl),
-        "n_reflections_p1": len(hkl_p1),
+        "n_reflections_asu": len(ctx["hkl"]),
+        "n_reflections_p1": len(ctx["hkl_p1"]),
     }
 
     # Write JSON
@@ -619,35 +725,32 @@ def run_validation(args):
     if args.verbose >= 1:
         print(f"\nResults saved to {json_path}")
 
-    # ------------------------------------------------------------------
-    # 10. Optional: write maps
-    # ------------------------------------------------------------------
+    # Optional: write maps
     if args.write_maps:
         from torchref.io.cif import write_map
 
         dfo_path = outdir / "validate_WDFo.ccp4"
         dfc_path = outdir / "validate_WDFc.ccp4"
-        write_map(map_dfo, cell_np, str(dfo_path), spacegroup="P1")
-        write_map(map_dfc, cell_np, str(dfc_path), spacegroup="P1")
+        write_map(result["map_dfo"], ctx["cell_np"], str(dfo_path), spacegroup="P1")
+        write_map(result["map_dfc"], ctx["cell_np"], str(dfc_path), spacegroup="P1")
         if args.verbose >= 1:
             print(f"  WDFo map: {dfo_path}")
             print(f"  WDFc map: {dfc_path}")
 
-    # ------------------------------------------------------------------
-    # 11. Optional: plots
-    # ------------------------------------------------------------------
+    # Optional: plots
     if args.plot:
-        generate_plots(results, map_dfo, map_dfc, mask_dict, outdir, args.verbose)
+        generate_plots(
+            results, result["map_dfo"], result["map_dfc"],
+            result["mask_dict"], outdir, args.verbose,
+        )
 
-    # ------------------------------------------------------------------
     # Summary
-    # ------------------------------------------------------------------
     if args.verbose >= 1:
         print(f"\n{'=' * 70}")
         print("Summary:")
-        for name, corr in rs_corr.items():
+        for name, corr in result["realspace_correlation"].items():
             print(f"  {name}: CC = {corr['cc']:.4f}")
-        print(f"  Reciprocal-space CC (overall): {cc_overall:.4f}")
+        print(f"  Reciprocal-space CC (overall): {result['reciprocal_cc_overall']}")
         print(f"{'=' * 70}")
 
     return 0

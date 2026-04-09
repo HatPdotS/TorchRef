@@ -1,9 +1,11 @@
 from glob import glob
 import os
+from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR = SCRIPT_DIR.parent.parent / "data"   # paper/data (symlink)
 
-
-file_path = glob('/das/work/p17/p17490/Peter/Library/torchref/scientific_testing/data/*')
+file_path = glob(str(DATA_DIR / '*'))
 outfiles = []
 
 for file in file_path:

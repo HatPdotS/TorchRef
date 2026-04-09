@@ -56,21 +56,19 @@ os.environ["PYTHONUNBUFFERED"] = "1"
 # ──────────────────────────────────────────────────────────────────────────────
 
 BASE = Path(__file__).resolve().parent                     # figure2_validation/
+PAPER_ROOT = BASE.parent                                   # paper/
+REPO_ROOT = PAPER_ROOT.parent                              # torchref repo root
 EXPERIMENTS = BASE / "experiments"
 STRUCTURES_FILE = BASE / "structures.json"                 # 1000 PDB codes used in the paper
-PIPELINE_ROOT = BASE.parent                                # paper/ or scientific_testing/
-DATA = PIPELINE_ROOT / "data"
-PHENIX = PIPELINE_ROOT / "phenix_refinement_with_rama" / "refinements"
+DATA = PAPER_ROOT / "data"                                 # symlink → scientific_testing/data
+PHENIX = PAPER_ROOT / "phenix_refinements"                 # symlink → scientific_testing/.../refinements
 
-PYTHON = "/das/work/p17/p17490/CONDA/torchref/bin/python"
-REFINE_SCRIPT = str(
-    Path("/das/work/units/LBR-FEL/p17490/Peter/Library/torchref")
-    / "torchref" / "cli" / "refine_everything_hyperparameters.py"
-)
-DEFAULT_HYPERPARAMS = str(
-    Path("/das/work/units/LBR-FEL/p17490/Peter/Library/torchref")
-    / "torchref" / "data" / "default_hyperparameters.json"
-)
+PYTHON = sys.executable
+REFINE_SCRIPT = str(REPO_ROOT / "torchref" / "cli" / "refine_everything_hyperparameters.py")
+DEFAULT_HYPERPARAMS = str(REPO_ROOT / "torchref" / "data" / "default_hyperparameters.json")
+
+import shutil
+REFMAC5 = shutil.which("refmac5") or "/afs/psi.ch/sys/psi.ra/MX/ccp4/7.1/ccp4-7.1/bin/refmac5"
 
 
 def _phenix_pdb(code):
@@ -170,7 +168,7 @@ def submit_refinement_jobs(exp_dir, dry_run=False, force=False):
             f"-J ref_{code} "
             f"--wrap='"
             f"{PYTHON} -u {REFINE_SCRIPT} "
-            f"-s {pdb} -f {mtz} -o {outdir} "
+            f"-m {pdb} -sf {mtz} -o {outdir} "
             f"-n {exp['n_cycles']} "
             f"--mode {exp['mode']} "
             f"--hyperparameters {config}"
@@ -264,13 +262,12 @@ def submit_refmac_jobs(exp_dir, dry_run=False, force=False):
 #SBATCH --mem=1G
 #SBATCH --cpus-per-task=1
 
+source /afs/psi.ch/sys/psi.ra/MX/ccp4/7.1/ccp4-7.1/bin/ccp4.setup-sh
 TEMP_DIR=/tmp/refmac_{label}_${{SLURM_JOB_ID}}
 mkdir -p $TEMP_DIR && cd $TEMP_DIR
 export CCP4_SCR=$TEMP_DIR
 cp {pdb_path} input.pdb
 cp {mtz_path} input.mtz
-source /etc/profile.d/modules.sh
-module load ccp4
 refmac5 HKLIN input.mtz HKLOUT output.mtz XYZIN input.pdb XYZOUT output.pdb << EOF
 NCYCLES 0
 MAKE HYDR NO

@@ -31,7 +31,7 @@ set mesh_grid_max, 200
 set surface_quality, 3
 
 # 1. LOAD STRUCTURES
-load figure4_difference_refinement/data/8QL2.pdb, dark
+load figure4_difference_refinement/data/8QL2_no_altloc.pdb, dark
 load figure4_difference_refinement/data/7YYZ.pdb, extrapol
 load figure4_difference_refinement/data/torchref_0p18.pdb, torchref
 remove elem H
@@ -74,8 +74,8 @@ python end
 # 3. SELECTIONS
 # Note: 7YYZ has IBL at resi 502, dark/torchref at resi 501
 select IBL_dark, dark and resn IBL and chain B and resi 501 and not elem H
-select IBL_extrapol, extrapol and resn IBL and chain B and resi 502 and not elem H
-select IBL_torchref, torchref and resn IBL and chain B and resi 501 and not elem H
+select IBL_extrapol, extrapol and resn IBL and not elem H
+select IBL_torchref, torchref and resn IBL and not elem H
 create IBL_combined, IBL_dark or IBL_extrapol or IBL_torchref
 
 # 4. HIDE EVERYTHING

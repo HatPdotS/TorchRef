@@ -4,7 +4,7 @@
 BASEDIR=figure4_difference_refinement
 
 DM=$BASEDIR/data/8QL2_no_altloc.pdb
-LM=/das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/work_no_altloc.pdb
+LM=$BASEDIR/work_no_altloc.pdb
 LSF=$BASEDIR/data/7YYZ-light.mtz
 DSF=$BASEDIR/data/8QL2-sf.cif
 RES=$BASEDIR/data/IBL_grade.cif
@@ -16,6 +16,6 @@ sbatch -c 16 -p gpu --gres=gpu:1 -o "$OUTPATH/out.log" \
     torchref.difference-refine \
     -dm "$DM" -lm "$LM" \
     -dsf "$DSF" -lsf "$LSF" \
-    --fraction 0.18 --cif "$RES" \
+    --fraction 0.22 --cif "$RES" \
     -o "$OUTPATH" --dmin 2.2 \
-    --weight-schedule 5 --n-cycles 3
+    --weight-schedule 5 --n-cycles 10 

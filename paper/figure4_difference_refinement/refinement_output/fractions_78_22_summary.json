@@ -1,0 +1,64 @@
+{
+  "input": {
+    "dark_model": "figure4_difference_refinement/data/8QL2_no_altloc.pdb",
+    "light_model": "figure4_difference_refinement/work_no_altloc.pdb",
+    "dark_structure_factor": "figure4_difference_refinement/data/8QL2-sf.cif",
+    "light_structure_factor": "figure4_difference_refinement/data/7YYZ-light.mtz",
+    "fractions": [
+      0.78,
+      0.22
+    ],
+    "cif": [
+      "figure4_difference_refinement/data/IBL_grade.cif"
+    ],
+    "dmin": 2.2
+  },
+  "parameters": {
+    "weight_schedule": [
+      5.0
+    ],
+    "n_cycles": 10,
+    "n_steps": 2,
+    "max_iter": 100,
+    "weights": {
+      "xray/difference": 5.0,
+      "xray/ml": 0.0,
+      "geometry/bond": 2.0,
+      "geometry/angle": 2.0,
+      "geometry/torsion": 2.0,
+      "geometry/planarity": 2.0,
+      "geometry/chiral": 0.5,
+      "geometry/nonbonded": 1.0,
+      "geometry/ramachandran": 0.5,
+      "adp/simu": 0.5,
+      "adp/locality": 0.2,
+      "adp/KL": 0.2,
+      "similarity": 3.0
+    }
+  },
+  "results": {
+    "r_factor_dark": {
+      "r_work": 0.1644771546125412,
+      "r_free": 0.18321895599365234
+    },
+    "r_factor_light": {
+      "r_work": 0.17490744590759277,
+      "r_free": 0.19002477824687958
+    },
+    "fractions": [
+      0.7799999713897705,
+      0.2199999988079071
+    ]
+  },
+  "output_files": {
+    "dark_pdb": "figure4_difference_refinement/refinement_output/fractions_78_22_dark.pdb",
+    "light_pdb": "figure4_difference_refinement/refinement_output/fractions_78_22_light.pdb",
+    "dark_sf_mtz": "figure4_difference_refinement/refinement_output/fractions_78_22_dark-sf.mtz",
+    "dark_sf_cif": "figure4_difference_refinement/refinement_output/fractions_78_22_dark-sf.cif",
+    "light_sf_mtz": "figure4_difference_refinement/refinement_output/fractions_78_22_light-sf.mtz",
+    "light_sf_cif": "figure4_difference_refinement/refinement_output/fractions_78_22_light-sf.cif",
+    "difference_mtz": "figure4_difference_refinement/refinement_output/fractions_78_22_difference_data.mtz",
+    "merged_cif": "figure4_difference_refinement/refinement_output/fractions_78_22_merged.cif",
+    "summary": "figure4_difference_refinement/refinement_output/fractions_78_22_summary.json"
+  }
+}

@@ -33,7 +33,7 @@ set surface_quality, 3
 set stick_radius, 0.15
 
 # 1. LOAD MODELS
-load figure4_difference_refinement/data/8QL2.pdb, dark
+load figure4_difference_refinement/data/8QL2_no_altloc.pdb, dark
 load figure4_difference_refinement/data/7YYZ.pdb, extrapol
 load figure4_difference_refinement/data/torchref_0p18.pdb, torchref
 remove elem H

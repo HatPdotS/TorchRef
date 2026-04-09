@@ -15,7 +15,7 @@ from torch import nn
 from torchref.refinement.targets.base import Target, ModelTarget
 from torchref.refinement.targets.geometry import (
     BondTarget, AngleTarget, TorsionTarget, PlanarityTarget,
-    ChiralTarget, NonBondedTarget, RamachandranTarget,
+    ChiralTarget, NonBondedHTarget, RamachandranTarget,
 )
 from torchref.refinement.targets.adp import (
     ADPSimilarityTarget, ADPLocalityTarget, ADPEntropyTarget,
@@ -244,7 +244,7 @@ class TotalGeometryTarget(CombinedModelTargets):
     - 'torsion': TorsionTarget
     - 'planarity': PlanarityTarget
     - 'chiral': ChiralTarget
-    - 'nonbonded': NonBondedTarget
+    - 'nonbonded': NonBondedHTarget (includes riding hydrogen VDW)
 
     The torsion weight is reduced because:
 
@@ -294,7 +294,7 @@ class TotalGeometryTarget(CombinedModelTargets):
             "torsion": TorsionTarget(self.model, self.verbose),
             "planarity": PlanarityTarget(self.model, self.verbose),
             "chiral": ChiralTarget(self.model, self.verbose),
-            "nonbonded": NonBondedTarget(self.model, verbose=self.verbose),
+            "nonbonded": NonBondedHTarget(self.model, verbose=self.verbose),
             "ramachandran": RamachandranTarget(self.model, self.verbose),
         }
 

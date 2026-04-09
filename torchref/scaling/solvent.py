@@ -6,13 +6,13 @@ import torch
 import torch.nn as nn
 
 from torchref.base import (
-    add_to_phenix_mask,
     excise_angstrom_radius_around_coord,
     extract_structure_factor_from_grid,
     find_relevant_voxels,
     get_scattering_vectors,
     ifft,
 )
+from torchref.base.coordinates.periodic_boundary import smallest_diff
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorDict, ModuleReference
 
@@ -212,14 +212,13 @@ class SolventModel(DebugMixin, nn.Module):
 
         FULLY VECTORIZED - no loops over atoms or voxels.
 
-        Step 1: Create three-valued mask (dilation) - VECTORIZED
+        Step 1: Expand ASU atoms to P1 using symmetry operations on coordinates
+                (cheap: N_atoms × N_ops), then create three-valued mask (dilation)
             - 0: Inside atomic VdW radii (protein core)
             - -1: Between VdW and VdW+solvent_radius (accessible surface boundary)
             - 1: Beyond VdW+solvent_radius (bulk solvent)
 
-        Step 2: Apply symmetry to complete mask with all symmetry mates
-
-        Step 3: Erosion - smooth boundary using 3D convolution - VECTORIZED
+        Step 2: Erosion - smooth boundary using 3D convolution - VECTORIZED
             - For each boundary point (-1), check if any neighbor within
               shrink_truncation_radius is solvent (1)
             - If yes: point becomes solvent (1)
@@ -235,42 +234,97 @@ class SolventModel(DebugMixin, nn.Module):
             print(f"Solvent radius (dilation): {self.solvent_radius:.2f} Å")
             print(f"Shrink truncation radius (erosion): {self.erosion_radius:.2f} Å")
 
-        # Step 1: Create three-valued mask via vectorized dilation
+        # Step 1: Build mask using early symmetry on voxel indices.
+        # Run find_relevant_voxels + distance classification once for ASU
+        # atoms, then for each symop just transform the voxel indices
+        # (cheap integer arithmetic) and scatter into the mask.
+        # Memory: O(N_atoms × N_voxels_per_atom) total, independent of
+        # N_ops — vs O(N_ops × N_grid_voxels) for grid-level map_symmetry.
         xyz = self.model.xyz()  # Shape: (N_atoms, 3)
         vdw_radii = self.model.get_vdw_radii()  # Shape: (N_atoms,)
         self.real_space_grid = self.model.real_space_grid
         with torch.no_grad():
+            spacegroup = self.model.fft.spacegroup
+            n_ops = spacegroup.n_ops
+            grid_shape = self.real_space_grid.shape[:-1]
+            device = self.model.device
+
             if self.verbose > 2:
                 print(f"Processing {xyz.shape[0]} atoms (vectorized)...")
 
-            # Find relevant voxels for all atoms (search out to max radius)
+            # Find relevant voxels for ASU atoms (once)
             voxel_pos, voxel_coords = find_relevant_voxels(
                 self.real_space_grid,
                 xyz,
                 self.max_radius_angstrom,
                 inv_frac_matrix=self.model.inv_fractional_matrix,
             )
-            # Call vectorized function to create three-valued mask
-            protein_mask, boundary_mask = add_to_phenix_mask(
-                surrounding_coords=voxel_pos,
-                voxel_indices=voxel_coords,
-                xyz=xyz,
-                vdw_radii=vdw_radii,
-                solvent_radius=self.solvent_radius,
-                inv_frac_matrix=self.model.inv_fractional_matrix,
-                frac_matrix=self.model.fractional_matrix,
-                grid_shape=self.real_space_grid.shape[:-1],
-                device=self.model.device,
-            )
 
-            # Step 2: Apply symmetry operations
-            protein_mask = torch.round(
-                self.model.map_symmetry(protein_mask.to(self.model.dtype_float))
-            ).to(torch.bool)
-            boundary_mask = torch.round(
-                self.model.map_symmetry(boundary_mask.to(self.model.dtype_float))
-            ).to(torch.bool)
-            boundary_mask = boundary_mask & (~protein_mask)  # Ensure no overlap
+            # Classify voxels by distance (once): protein core vs boundary
+            diff = voxel_pos - xyz.unsqueeze(1)
+            diff_coords_squared = smallest_diff(
+                diff, self.model.inv_fractional_matrix, self.model.fractional_matrix
+            )
+            distances = torch.sqrt(diff_coords_squared)  # (N_atoms, N_voxels)
+
+            vdw_expanded = vdw_radii.unsqueeze(1)
+            r_cutoff = vdw_expanded + self.solvent_radius
+
+            is_protein = distances < vdw_expanded           # (N_atoms, N_voxels)
+            is_boundary = (distances >= vdw_expanded) & (distances < r_cutoff)
+
+            # Flatten for scatter: (N_atoms * N_voxels,)
+            protein_flat = is_protein.flatten()
+            boundary_flat = is_boundary.flatten()
+
+            # Keep only voxels that are actually marked (sparse)
+            protein_idx = protein_flat.nonzero(as_tuple=True)[0]
+            boundary_idx = boundary_flat.nonzero(as_tuple=True)[0]
+
+            # Base voxel indices flattened: (N_atoms * N_voxels, 3)
+            voxel_flat = voxel_coords.reshape(-1, 3).to(torch.long)
+            protein_voxels = voxel_flat[protein_idx]   # (N_protein, 3)
+            boundary_voxels = voxel_flat[boundary_idx]  # (N_boundary, 3)
+
+            # Free intermediates
+            del diff, diff_coords_squared, distances, voxel_pos, voxel_coords
+            del is_protein, is_boundary, protein_flat, boundary_flat, voxel_flat
+
+            # Pre-allocate output masks
+            protein_mask = torch.zeros(grid_shape, dtype=torch.bool, device=device)
+            boundary_mask = torch.zeros(grid_shape, dtype=torch.bool, device=device)
+
+            # Grid dimensions for index transform
+            grid_dims = torch.tensor(grid_shape, dtype=torch.long, device=device)
+
+            # For each symop, transform voxel indices and scatter into mask
+            for op_idx in range(n_ops):
+                if op_idx == 0:
+                    # Identity — use indices directly
+                    p_idx = protein_voxels
+                    b_idx = boundary_voxels
+                else:
+                    R = spacegroup.matrices[op_idx].to(device=device, dtype=torch.float64)
+                    t = spacegroup.translations[op_idx].to(device=device, dtype=torch.float64)
+                    gd = grid_dims.double()
+
+                    # Transform voxel indices through symop in fractional space
+                    p_frac = protein_voxels.double() / gd
+                    p_idx = (torch.round((p_frac @ R.T + t) * gd) % grid_dims).long()
+
+                    b_frac = boundary_voxels.double() / gd
+                    b_idx = (torch.round((b_frac @ R.T + t) * gd) % grid_dims).long()
+
+                protein_mask[p_idx[:, 0], p_idx[:, 1], p_idx[:, 2]] = True
+                boundary_mask[b_idx[:, 0], b_idx[:, 1], b_idx[:, 2]] = True
+
+            if self.verbose > 1 and n_ops > 1:
+                print(
+                    f"Built mask from {xyz.shape[0]} atoms × "
+                    f"{n_ops} symops (index transform)"
+                )
+
+            boundary_mask = boundary_mask & (~protein_mask)
             definitely_solvent = ~(protein_mask | boundary_mask)
             if self.verbose > 2:
                 n_protein_voxels = torch.sum(protein_mask).item()

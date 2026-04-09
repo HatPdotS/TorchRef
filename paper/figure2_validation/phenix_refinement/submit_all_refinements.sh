@@ -10,7 +10,8 @@
 ################################################################################
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-DATA_DIR="${SCRIPT_DIR}/../data"
+PAPER_DIR="$( cd "${SCRIPT_DIR}/.." && pwd )"
+DATA_DIR="$( cd "${PAPER_DIR}/../data" && pwd )"
 REFINE_SCRIPT="${SCRIPT_DIR}/phenix_refine.sh"
 
 # Check if refinement script exists

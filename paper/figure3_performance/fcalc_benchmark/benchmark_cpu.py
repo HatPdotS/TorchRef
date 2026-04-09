@@ -8,8 +8,10 @@ from time import time
 from iotbx import pdb
 
 
-mtz_file = '/das/work/p17/p17490/Peter/Library/torchref/Figure3_profiling_fcalc/data/1DAW.mtz'
-pdb_file = '/das/work/p17/p17490/Peter/Library/torchref/Figure3_profiling_fcalc/data/1DAW.pdb'
+import os
+_data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+mtz_file = os.path.join(_data_dir, '1DAW.mtz')
+pdb_file = os.path.join(_data_dir, '1DAW.pdb')
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -1,4 +1,4 @@
-#!/das/work/p17/p17490/CONDA/torchref/bin/python -u
+#!/usr/bin/env python -u
 """
 Compute per-structure coordinate and ADP deviations for a validation2 experiment.
 

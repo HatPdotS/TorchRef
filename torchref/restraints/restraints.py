@@ -1099,6 +1099,66 @@ class RestraintsNew(DebugMixin, Module):
 
         return combined_xyz, provenance
 
+    @property
+    def h_topo(self):
+        """Access riding hydrogen topology (None if not built)."""
+        return getattr(self, "_h_topo", None)
+
+    @property
+    def h_excl_hash(self):
+        """Access H-specific exclusion hash tensor (None if not built)."""
+        return getattr(self, "_h_excl_hash", None)
+
+    def _build_h_exclusion_hash(self, h_topo, device):
+        """Build sorted hash tensor for H-specific 1-2 and 1-3 exclusions.
+
+        Exclusions are stored as ``min(i, j) * max_idx + max(i, j)`` hashes,
+        sorted for O(log n) lookup via ``torch.searchsorted``.
+
+        Parameters
+        ----------
+        h_topo : HydrogenTopology
+        device : torch.device
+
+        Returns
+        -------
+        torch.Tensor
+            Sorted 1-D long tensor of exclusion hashes.
+        """
+        if h_topo is None or h_topo.n_hydrogens == 0:
+            return torch.tensor([], dtype=torch.long, device=device)
+
+        n_heavy = len(self.pdb)
+        n_h = h_topo.n_hydrogens
+        exclusions = set()
+
+        parent_idx = h_topo.h_parent_idx.cpu().numpy()
+        nb_idx = h_topo.parent_neighbor_idx.cpu().numpy()
+        nb_count = h_topo.parent_neighbor_count.cpu().numpy()
+
+        for hi in range(n_h):
+            # H index in the combined array is n_heavy + hi
+            h_combined = n_heavy + hi
+            p = int(parent_idx[hi])
+
+            # 1-2: H — parent
+            exclusions.add((min(h_combined, p), max(h_combined, p)))
+
+            # 1-3: H — parent's heavy neighbours
+            for ni in range(int(nb_count[hi])):
+                nb = int(nb_idx[hi, ni])
+                if nb >= 0:
+                    exclusions.add((min(h_combined, nb), max(h_combined, nb)))
+
+        if not exclusions:
+            return torch.tensor([], dtype=torch.long, device=device)
+
+        arr = np.array(list(exclusions), dtype=np.int64)
+        max_idx = max(n_heavy + n_h, int(arr.max()) + 1)
+        hashes = arr[:, 0] * max_idx + arr[:, 1]
+        hashes.sort()
+        return torch.tensor(hashes, dtype=torch.long, device=device)
+
     def _build_vdw_restraints(
         self, cutoff=5.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True
     ):
@@ -1109,6 +1169,8 @@ class RestraintsNew(DebugMixin, Module):
 
         Uses GPU-native periodic grid search when crystallographic symmetry
         is available.  Falls back to the legacy spatial hash otherwise.
+
+        Also builds the riding hydrogen topology for H-VDW evaluation.
         """
         if self.verbose > 0:
             print("\nBuilding VDW (non-bonded) restraints...")
@@ -1134,13 +1196,47 @@ class RestraintsNew(DebugMixin, Module):
                 inter_residue_only=inter_residue_only,
                 verbose=self.verbose,
             )
-            return
+        else:
+            self._build_vdw_restraints_legacy(
+                cutoff=cutoff, sigma=sigma,
+                inter_residue_only=inter_residue_only,
+                use_spatial_hash=use_spatial_hash,
+            )
 
-        self._build_vdw_restraints_legacy(
-            cutoff=cutoff, sigma=sigma,
-            inter_residue_only=inter_residue_only,
-            use_spatial_hash=use_spatial_hash,
+        # Build riding hydrogen topology and precompute candidate pairs
+        from torchref.restraints.hydrogen_topology import (
+            build_hydrogen_topology,
+            build_h_candidate_pairs,
         )
+
+        device = self.xyz().device if self._xyz_fn is not None else torch.device("cpu")
+        self._h_topo = build_hydrogen_topology(
+            pdb=self.pdb,
+            device=device,
+            verbose=self.verbose,
+        )
+        self._h_excl_hash = self._build_h_exclusion_hash(self._h_topo, device)
+
+        # Precompute H candidate pairs from heavy-atom VDW pair list
+        vdw_data = self.restraints.get("vdw")
+        if vdw_data is not None and self._h_topo.n_hydrogens > 0:
+            build_h_candidate_pairs(
+                h_topo=self._h_topo,
+                vdw_data=vdw_data,
+                pdb=self.pdb,
+                h_excl_hash=self._h_excl_hash,
+                device=device,
+                verbose=self.verbose,
+            )
+            # Fill in VDW min distances using combined radii array
+            if self._h_topo.has_candidates:
+                heavy_radii = self.get_vdw_radii()         # (N_heavy,)
+                h_radii = self._h_topo.h_vdw_radius        # (N_h,)
+                all_radii = torch.cat([heavy_radii, h_radii])
+                self._h_topo.cand_min_dist = (
+                    all_radii[self._h_topo.cand_idx_i]
+                    + all_radii[self._h_topo.cand_idx_j]
+                )
 
     def _build_vdw_restraints_legacy(
         self, cutoff=5.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True

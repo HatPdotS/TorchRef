@@ -32,6 +32,7 @@ from .geometry import (
     PlanarityTarget,
     ChiralTarget,
     NonBondedTarget,
+    NonBondedHTarget,
     RamachandranTarget,
 )
 from .adp import (
@@ -112,6 +113,7 @@ __all__ = [
     "PlanarityTarget",
     "ChiralTarget",
     "NonBondedTarget",
+    "NonBondedHTarget",
     "RamachandranTarget",
     # ADP targets
     "ADPTarget",

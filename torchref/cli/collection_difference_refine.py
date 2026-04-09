@@ -128,7 +128,7 @@ DEFAULT_TARGET_WEIGHTS = {
     "geometry/torsion": 2.0,
     "geometry/planarity": 2.0,
     "geometry/chiral": 0.5,
-    "geometry/nonbonded": 4.0,
+    "geometry/nonbonded": 1.0,
     "geometry/ramachandran": 0.5,
     "adp/simu": 0.5,
     "adp/locality": 0.2,

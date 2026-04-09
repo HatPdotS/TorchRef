@@ -26,20 +26,20 @@ fi
 
 PDB_ID=$1
 
-# Define paths
+# Define paths — all relative to this script's location
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-DATA_DIR="${SCRIPT_DIR}/../data"
-SOURCE_DIR="/das/work/p17/p17490/Peter/Library/torchref/scientific_testing/data"
-REFINE_DIR="${SCRIPT_DIR}/refinements/${PDB_ID}"
-RESTRAINTS_DIR="${REFINE_DIR}/restraints"
+PAPER_DIR="$( cd "${SCRIPT_DIR}/.." && pwd )"
+DATA_DIR="$( cd "${PAPER_DIR}/../data" && pwd )"
 
-# Input files - using MTZ with canonicalized R-free flags and shaken PDB
-PDB_FILE="${SOURCE_DIR}/${PDB_ID}/${PDB_ID}_shaken.pdb"
-DATA_FILE="${SOURCE_DIR}/${PDB_ID}/${PDB_ID}.mtz"
-SOURCE_RESTRAINTS_DIR="${SOURCE_DIR}/restraints"
+# Input files
+PDB_FILE="${DATA_DIR}/${PDB_ID}/${PDB_ID}_shaken.pdb"
+DATA_FILE="${DATA_DIR}/${PDB_ID}/${PDB_ID}.mtz"
+SOURCE_RESTRAINTS_DIR="${DATA_DIR}/restraints"
 
-# Output directory and files
-OUTPUT_DIR="/das/work/p17/p17490/Peter/Library/torchref/scientific_testing/phenix_refinement_with_rama/refinements/${PDB_ID}"
+# Output under paper/phenix_refinements/ (symlink)
+OUTPUT_DIR="$( cd "${PAPER_DIR}/../phenix_refinements" && pwd )/${PDB_ID}"
+REFINE_DIR="${OUTPUT_DIR}"
+RESTRAINTS_DIR="${OUTPUT_DIR}/restraints"
 OUTPUT_PREFIX="${OUTPUT_DIR}/${PDB_ID}_refined"
 
 # Log files

@@ -1,16 +1,18 @@
-#!/das/work/p17/p17490/CONDA/muticopy_refinement/bin/python -u
+#!/usr/bin/env python -u
 
 #SBATCH -c 32
 #SBATCH -p day
 #SBATCH -t 1-00:00:00
-#SBACTH -o /das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/scripts/make_standardized_mtzs.out
+
+from pathlib import Path
 from glob import glob
 import os
 from tqdm import tqdm
 
-cif_files = glob('/das/work/p17/p17490/Peter/Library/multicopy_refinement/scientific_testing/data/*/*-sf.cif')
+DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+cif_files = glob(str(DATA_DIR / '*/*-sf.cif'))
 
-from torchref.Data import ReflectionData
+from torchref.io import ReflectionData
 
 
 

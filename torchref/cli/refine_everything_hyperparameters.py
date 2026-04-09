@@ -364,7 +364,9 @@ Examples:
 
         print("=" * 80)
         print("\nOutput files:")
-        print(f"  - {output_pdb}")
+        for fmt in ("pdb", "cif"):
+            if outputs.get(fmt) is not None:
+                print(f"  - {outputs[fmt]}")
         if (outdir / "refined.mtz").exists():
             print(f"  - {outdir / 'refined.mtz'}")
         print(f"  - {output_json}")
