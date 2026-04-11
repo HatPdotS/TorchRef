@@ -3,8 +3,8 @@
 """
 Command-line script for LBFGS refinement with HYPERPARAMETER-TUNED weighting.
 
-This script uses ComponentWeighting (XrayScaleWeighting + TargetOffsetWeighting +
-OverfittingWeighting) with Optuna-optimized hyperparameters loaded from file.
+This script uses ComponentWeighting (ResolutionWeighting + OverfittingWeighting)
+with hyperparameters loaded from file.
 
 The hyperparameters were optimized to achieve the best R-free across a diverse
 set of protein structures at various resolutions.
@@ -95,6 +95,51 @@ Examples:
         help='Refinement mode: "everything" for joint XYZ+ADP+scaler LBFGS, '
         '"refine" for separated XYZ then ADP cycles (default: "everything")',
     )
+    refine.add_argument(
+        "--xray-mode",
+        type=str,
+        default="ml",
+        choices=["gaussian", "ls", "ml", "bhattacharyya"],
+        help="X-ray target function. 'bhattacharyya' uses the Bhattacharyya "
+        "overlap loss with first-principles model error estimation and does "
+        "not need manual weight tuning (default: 'ml')",
+    )
+    refine.add_argument(
+        "--sigma-m-scale",
+        type=float,
+        default=1.0,
+        help="Global multiplier applied to σ_m for the Bhattacharyya target. "
+        "Ignored for other targets. Default 1.0.",
+    )
+    refine.add_argument(
+        "--sigma-weighting",
+        type=str,
+        default="per_refl",
+        choices=["per_refl", "const"],
+        help="Bhattacharyya-only: Fisher-info weighting scheme. 'per_refl' "
+        "(default) weights by 1/σ²(h); 'const' weights uniformly by "
+        "1/<σ>² across valid reflections (v1-like, robust to σ_d variance).",
+    )
+    refine.add_argument(
+        "--info-sum-mode",
+        type=str,
+        default="g_w",
+        choices=["g_w", "n_eff"],
+        help="Bhattacharyya-only: how per-atom Fisher info is summed. "
+        "'g_w' (default) uses Σ_h (|s|²/σ²) exp(-2Bs²/4); 'n_eff' uses "
+        "Kish participation ratio (Σ exp)²/(Σ exp²) scaled by mean Fisher "
+        "weight — the v1-style.",
+    )
+    refine.add_argument(
+        "--scatterer-profile",
+        type=str,
+        default="unit",
+        choices=["unit", "protein_rep"],
+        help="Bhattacharyya-only: atomic scattering factor used in σ_m. "
+        "'unit' (default) assumes all atoms are unit scatterers (f=1); "
+        "'protein_rep' uses carbon ITC92 scattering factor as a "
+        "representative for proteins.",
+    )
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -164,6 +209,11 @@ Examples:
         max_res=args.dmin,
         device=device,
         column_names=column_names,
+        target_mode=args.xray_mode,
+        sigma_m_scale=args.sigma_m_scale,
+        sigma_weighting=args.sigma_weighting,
+        info_sum_mode=args.info_sum_mode,
+        scatterer_profile=args.scatterer_profile,
     )
 
     if args.verbose > 0:

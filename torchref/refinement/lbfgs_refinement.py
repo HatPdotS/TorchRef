@@ -63,14 +63,30 @@ class LBFGSRefinement(Refinement):
         refinement.refine(macro_cycles=2)
     """
 
-    def __init__(self, *args, target_mode: str = "ml", **kwargs):
+    def __init__(
+        self,
+        *args,
+        target_mode: str = "ml",
+        sigma_m_scale: float = 1.0,
+        sigma_weighting: str = "per_refl",
+        info_sum_mode: str = "g_w",
+        scatterer_profile: str = "unit",
+        **kwargs,
+    ):
         """
         Initialize LBFGS refinement.
 
         Parameters
         ----------
         target_mode : str, optional
-            X-ray target mode ('gaussian', 'ls', or 'ml'). Default is 'ml'.
+            X-ray target mode ('gaussian', 'ls', 'ml', 'bhattacharyya').
+            Default is 'ml'.
+        sigma_m_scale : float, optional
+            Global multiplier for σ_m in the Bhattacharyya target only.
+            Ignored for other target modes. Default 1.0.
+        sigma_weighting : str, optional
+            Bhattacharyya-only: 'per_refl' (default, weight Fisher info by
+            1/σ²(h)) or 'const' (weight by 1/<σ>² across all reflections).
         *args
             Passed to parent Refinement class.
         **kwargs
@@ -78,6 +94,10 @@ class LBFGSRefinement(Refinement):
         """
         super().__init__(*args, **kwargs)
 
+        self.sigma_m_scale = sigma_m_scale
+        self.sigma_weighting = sigma_weighting
+        self.info_sum_mode = info_sum_mode
+        self.scatterer_profile = scatterer_profile
         # Set the X-ray target mode (uses the new target system from base class)
         self.set_xray_target_mode(target_mode)
         self.target_mode = target_mode

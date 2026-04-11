@@ -22,9 +22,17 @@ class LeastSquaresXrayTarget(XrayTarget):
         scaler: "Scaler" = None,
         weighting: str = "sigma",
         use_work_set: bool = True,
+        sigma_mode: str = "raw",
         verbose: int = 0,
     ):
-        super().__init__(data=data, model=model, scaler=scaler, use_work_set=use_work_set, verbose=verbose)
+        super().__init__(
+            data=data,
+            model=model,
+            scaler=scaler,
+            use_work_set=use_work_set,
+            sigma_mode=sigma_mode,
+            verbose=verbose,
+        )
         self.weighting = weighting
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
@@ -57,4 +65,4 @@ class LeastSquaresXrayTarget(XrayTarget):
             raise ValueError(f"Unknown weighting scheme: {self.weighting}")
 
         loss = 0.5 * weights * (diff**2)
-        return (loss * mask).sum() / mask.sum()
+        return (loss * mask).sum()

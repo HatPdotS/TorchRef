@@ -92,7 +92,7 @@ class PlanarityTarget(GeometryTarget):
             all_nlls.append(nll.flatten())
 
         if all_nlls:
-            return torch.cat(all_nlls).mean()
+            return torch.cat(all_nlls).sum()
         return torch.tensor(0.0, device=device)
 
     def stats(self) -> Dict[str, any]:

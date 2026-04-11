@@ -247,12 +247,20 @@ class Refinement(DebugMixin, nnModule):
         mode : str
             X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
         """
+        sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
+        sigma_weighting = getattr(self, "sigma_weighting", "per_refl")
+        info_sum_mode = getattr(self, "info_sum_mode", "g_w")
+        scatterer_profile = getattr(self, "scatterer_profile", "unit")
         self.xray_target_work = create_xray_target(
             model=self.model,
             data=self.reflection_data,
             scaler=self.scaler,
             mode=mode,
             use_work_set=True,
+            sigma_m_scale=sigma_m_scale,
+            sigma_weighting=sigma_weighting,
+            info_sum_mode=info_sum_mode,
+            scatterer_profile=scatterer_profile,
             verbose=self.verbose,
         )
         self.xray_target_test = create_xray_target(
@@ -261,6 +269,10 @@ class Refinement(DebugMixin, nnModule):
             scaler=self.scaler,
             mode=mode,
             use_work_set=False,
+            sigma_m_scale=sigma_m_scale,
+            sigma_weighting=sigma_weighting,
+            info_sum_mode=info_sum_mode,
+            scatterer_profile=scatterer_profile,
             verbose=self.verbose,
         )
         # Reset loss state since targets changed
@@ -508,46 +520,17 @@ class Refinement(DebugMixin, nnModule):
 
     def setup_component_weighting(self):
         """
-
-        Set up component weighting.
-        Loads default hyperparameters and initializes ComponentWeighting.
-
+        Set up component weighting with ResolutionWeighting + OverfittingWeighting.
         """
         from torchref.refinement.weighting.component_weighting import ComponentWeighting
 
         self.get_scales()
 
-        # Get initial xray loss for XrayScaleWeighting
-        with torch.no_grad():
-            initial_xray_loss = self.xray_target_work().detach().item()
-
         self.component_weighting = ComponentWeighting(
             device=self.device,
             weights=self.manual_weights,
             component_weights=self.component_weights,
-            initial_xray_loss=initial_xray_loss,
         )
-
-        # Load default hyperparameters
-        from torchref import PATH_TORCHREF_DATA
-        import os
-        from torchref.utils.utils import json_to_state_dicts_separate
-
-        hyperparams_path = os.path.join(
-            PATH_TORCHREF_DATA, "default_hyperparameters.json"
-        )
-        (
-            component_weighting_state,
-            geometry_target_state,
-            adp_target_state,
-            unassigned_keys,
-        ) = json_to_state_dicts_separate(hyperparams_path)
-
-        self.component_weighting.load_state_dict(
-            component_weighting_state, strict=False
-        )
-        self.geometry_target.load_state_dict(geometry_target_state, strict=False)
-        self.adp_target.load_state_dict(adp_target_state, strict=False)
 
     def populate_state_meta(self, state: "LossState") -> "LossState":
         """
@@ -624,7 +607,7 @@ class Refinement(DebugMixin, nnModule):
     def update_weights(self, state: "LossState", multiply=False) -> "LossState":
         """
         Compute weights from component_weighting and update state.
-        Weights are clipped to 0.1, 10.0 to avoid extreme values.
+        Weights are clipped to [0.01, 100.0] to avoid extreme values.
 
         Parameters
         ----------
@@ -644,9 +627,9 @@ class Refinement(DebugMixin, nnModule):
         for name, weight in weights.items():
             current = state.get_weight(name, default=1.0)
             if multiply:
-                weight_effective = min(max(current * weight, 0.1), 10.0)
+                weight_effective = min(max(current * weight, 0.01), 100.0)
             else:
-                weight_effective = min(max(weight, 0.1), 10.0)
+                weight_effective = min(max(weight, 0.01), 100.0)
             state.set_weight(name, weight_effective)
 
         return state
@@ -728,7 +711,6 @@ class Refinement(DebugMixin, nnModule):
         """
         state = self.loss_state
         state = self.populate_state_meta(state)
-        state = self.add_target_info_to_state(state)
         state.cache_losses()
         state = self.update_weights(state)
         return state

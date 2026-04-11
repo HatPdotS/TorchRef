@@ -4,7 +4,7 @@
 Command-line script for LBFGS refinement with STATIC weighting.
 
 This script uses ``ManualWeighting`` with fixed component weights
-(default: xray=1.0, geometry=10.0, adp=5.0).  Weights can be overridden
+(default: xray=1.0, geometry=1.0, adp=1.0).  Weights can be overridden
 via a JSON file passed with ``--weights``.
 
 Use this as a baseline to compare against hyperparameter-tuned refinement.
@@ -71,7 +71,7 @@ Examples:
 
     refine = parser.add_argument_group("Refinement")
     add_n_cycles_arg(refine)
-    add_weights_arg(refine, default_weights={"xray": 1.0, "geometry": 10.0, "adp": 5.0})
+    add_weights_arg(refine, default_weights={"xray": 1.0, "geometry": 1.0, "adp": 1.0})
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -145,7 +145,7 @@ Examples:
     from torchref.refinement.weighting import ManualWeighting
 
     base_weights, weights_error = parse_weights(
-        args.weights, defaults={"xray": 1.0, "geometry": 10.0, "adp": 5.0}
+        args.weights, defaults={"xray": 1.0, "geometry": 1.0, "adp": 1.0}
     )
     if weights_error is not None:
         print(f"Error: {weights_error}", file=sys.stderr)
@@ -158,7 +158,7 @@ Examples:
     if args.verbose > 0:
         print("Refinement initialized successfully.")
         print(
-            "Using static ComponentWeighting (XrayScale + TargetOffset + Overfitting)"
+            "Using static ComponentWeighting (Resolution + Overfitting)"
         )
         print("No hyperparameters loaded - using default values.\n")
         sys.stdout.flush()

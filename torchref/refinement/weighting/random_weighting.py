@@ -42,7 +42,7 @@ from torch import nn
 from torchref.refinement.weighting.base_weighting import BaseWeighting
 from torchref.refinement.weighting.component_weighting import (
     ComponentWeighting,
-    XrayScaleWeighting,
+    ResolutionWeighting,
 )
 from torchref.utils.stats import (
     VERBOSITY_DETAILED,
@@ -421,11 +421,9 @@ class RandomComponentWeighting(ComponentWeighting):
         self.device = device or torch.device("cpu")
         self.resample_each_step = resample_each_step
 
-        # Build schemes dict with only xray_scale and random
+        # Build schemes dict with resolution weighting and random
         schemes_dict = {
-            "xray_scale": XrayScaleWeighting(
-                device, initial_xray_loss=initial_xray_loss
-            ),
+            "resolution": ResolutionWeighting(device),
             "random": RandomWeightingScheme(
                 device,
                 default_log_weights=default_log_weights,

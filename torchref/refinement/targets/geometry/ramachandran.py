@@ -72,7 +72,7 @@ class RamachandranTarget(GeometryTarget):
             + phi_frac * psi_frac * v11
         )
 
-        return nll.mean()
+        return nll.sum()
 
     def stats(self) -> Dict[str, StatEntry]:
         """Get Ramachandran restraint statistics."""

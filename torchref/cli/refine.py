@@ -76,7 +76,7 @@ Examples:
 
     refine = parser.add_argument_group("Refinement")
     add_n_cycles_arg(refine)
-    add_weights_arg(refine, default_weights={"xray": 1.0, "restraints": 5.0, "adp": 5.0})
+    add_weights_arg(refine, default_weights={"xray": 1.0, "restraints": 1.0, "adp": 1.0})
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -88,7 +88,7 @@ Examples:
     register_timing()
 
     # Parse weights argument
-    weights, err = parse_weights(args.weights, defaults={"xray": 1.0, "restraints": 5.0, "adp": 5.0})
+    weights, err = parse_weights(args.weights, defaults={"xray": 1.0, "restraints": 1.0, "adp": 1.0})
     if err:
         print(f"Error: {err}", file=sys.stderr)
         sys.exit(1)

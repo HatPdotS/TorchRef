@@ -13,26 +13,8 @@ from .component_weighting import (
     ComponentWeighting,
     ManualWeighting,
     OverfittingWeighting,
-    TargetOffsetWeighting,
+    ResolutionWeighting,
     WeightingScheme,
-    XrayScaleWeighting,
-)
-from .policy_weighting import (
-    COMPONENT_TO_LOSS_STATE,
-    COMPONENTS,
-    LOSS_STATE_TO_COMPONENT,
-    PolicyComponentWeighting,
-    StepRecord,
-    StepState,
-    TrajectoryData,
-    trajectory_to_dict,
-)
-from .random_weighting import (
-    DEFAULT_LOG_WEIGHTS,
-    DEFAULT_STEP_SIGMAS,
-    DEFAULT_TRAJECTORY_SIGMAS,
-    RandomComponentWeighting,
-    RandomWeightingScheme,
 )
 
 __all__ = [
@@ -40,24 +22,8 @@ __all__ = [
     "BaseWeighting",
     "WeightingScheme",  # Alias for backward compatibility
     # Weighting schemes
-    "TargetOffsetWeighting",
+    "ResolutionWeighting",
     "OverfittingWeighting",
     "ManualWeighting",
-    "XrayScaleWeighting",
     "ComponentWeighting",
-    # Policy weighting
-    "PolicyComponentWeighting",
-    "StepState",
-    "StepRecord",
-    "TrajectoryData",
-    "trajectory_to_dict",
-    "COMPONENTS",
-    "COMPONENT_TO_LOSS_STATE",
-    "LOSS_STATE_TO_COMPONENT",
-    # Random weighting
-    "RandomWeightingScheme",
-    "RandomComponentWeighting",
-    "DEFAULT_LOG_WEIGHTS",
-    "DEFAULT_TRAJECTORY_SIGMAS",
-    "DEFAULT_STEP_SIGMAS",
 ]

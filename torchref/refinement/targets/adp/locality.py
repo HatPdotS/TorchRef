@@ -250,7 +250,7 @@ class ADPLocalityTarget(ADPTarget):
         weights = weights / (weights.mean() + 1e-8)
 
         weighted_sq_diff = weights * (diff / 0.5) ** 2
-        loss = weighted_sq_diff.mean()
+        loss = weighted_sq_diff.sum()
 
         return loss
 

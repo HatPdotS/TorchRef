@@ -233,20 +233,16 @@ class NonBondedTarget(GeometryTarget):
         # Violations: where actual distance is less than VDW sum + buffer
         violations = torch.clamp(min_distances + self._buffer - actual_distances, min=0.0)
 
-        # Normalize by number of atoms that participated in the clash
-        # search so the loss scales consistently across structure sizes.
-        n_atoms = float(xyz.shape[0])
-
         if self.mode == "prolsq":
             energy = self._c_rep * (violations**self._r_exp)
-            return self.scale * energy.sum() / n_atoms
+            return energy.sum()
 
         elif self.mode == "gaussian":
             log_2pi = torch.log(
                 torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
             )
             nll = 0.5 * (violations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
-            return self.scale * nll.sum() / n_atoms
+            return nll.sum()
 
         elif self.mode == "soft":
             threshold = 0.5  # Å - switch to linear below this
@@ -254,7 +250,7 @@ class NonBondedTarget(GeometryTarget):
             quadratic_energy = self._c_rep * (violations**2)
             linear_energy = self._c_rep * (2 * threshold * violations - threshold**2)
             energy = torch.where(quadratic_mask, quadratic_energy, linear_energy)
-            return self.scale * energy.sum() / n_atoms
+            return energy.sum()
 
         else:
             raise ValueError(f"Unknown non-bonded mode: {self.mode}")

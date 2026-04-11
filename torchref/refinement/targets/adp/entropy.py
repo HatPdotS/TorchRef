@@ -28,7 +28,8 @@ class ADPEntropyTarget(ADPTarget):
         super().__init__(model, verbose, target_value=0.5, sigma=0.5)
 
     def forward(self) -> torch.Tensor:
-        return self.model.adp_kl_divergence_loss()
+        n_atoms = self.model.adp().shape[0]
+        return n_atoms * self.model.adp_kl_divergence_loss()
 
     def stats(self) -> Dict[str, any]:
         """Get KL divergence statistics."""

@@ -48,4 +48,4 @@ class GaussianXrayTarget(XrayTarget):
         )
         nll = 0.5 * (diff**2) / (sigma_safe**2) + torch.log(sigma_safe) + 0.5 * log_2pi
 
-        return (nll * mask).sum() / mask.sum()
+        return (nll * mask).sum()

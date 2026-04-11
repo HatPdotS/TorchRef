@@ -141,13 +141,9 @@ class NonBondedHTarget(NonBondedTarget):
 
         violations = torch.clamp(min_dist + self._buffer - actual_dist, min=0.0)
 
-        # Normalize by number of H atoms so the per-atom contribution
-        # stays constant regardless of structure size.
-        n_h = float(h_topo.n_hydrogens)
-
         if self.mode == "prolsq":
             energy = self._c_rep * (violations ** self._r_exp)
-            return energy.sum() / n_h
+            return energy.sum()
         elif self.mode == "gaussian":
             sigma_val = torch.tensor(0.2, device=device, dtype=xyz.dtype)
             log_2pi = torch.log(
@@ -155,7 +151,7 @@ class NonBondedHTarget(NonBondedTarget):
             )
             nll = (0.5 * (violations / sigma_val) ** 2
                    + torch.log(sigma_val) + 0.5 * log_2pi)
-            return nll.sum() / n_h
+            return nll.sum()
         elif self.mode == "soft":
             threshold = 0.5
             quadratic_mask = violations <= threshold
@@ -164,7 +160,7 @@ class NonBondedHTarget(NonBondedTarget):
                 2 * threshold * violations - threshold ** 2
             )
             energy = torch.where(quadratic_mask, quadratic_energy, linear_energy)
-            return energy.sum() / n_h
+            return energy.sum()
         else:
             raise ValueError(f"Unknown non-bonded mode: {self.mode}")
 
@@ -186,7 +182,7 @@ class NonBondedHTarget(NonBondedTarget):
 
         xyz = self.model.xyz()
         h_loss = self._compute_h_vdw_loss(xyz, h_topo)
-        return heavy_loss + self.scale * h_loss
+        return heavy_loss + h_loss
 
     def get_violations(self, threshold: float = 0.0) -> Dict[str, torch.Tensor]:
         """Get violations including H-involving contacts."""

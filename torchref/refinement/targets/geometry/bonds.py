@@ -40,7 +40,7 @@ class BondTarget(GeometryTarget):
         )
         nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
 
-        return nll.mean()
+        return nll.sum()
 
     def stats(self) -> Dict[str, StatEntry]:
         """Get bond restraint statistics."""

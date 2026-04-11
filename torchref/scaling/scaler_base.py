@@ -106,6 +106,8 @@ class ScalerBase(DebugMixin, nn.Module):
             self.register_buffer("s", None)
             self.register_buffer("bins", None)
             self.register_buffer("_s_half_sq", None)
+            self.register_buffer("sigma_eff", None)
+            self.register_buffer("sigma_eff_per_bin", None)
             self._f_sol_raw = None
             return
 
@@ -121,6 +123,16 @@ class ScalerBase(DebugMixin, nn.Module):
         self._f_sol_raw = None
         bins, self.nbins = self._data.get_bins(self.nbins)
         self.register_buffer("bins", bins)
+        # Effective sigma buffers (populated by estimate_sigma_eff after scaling)
+        # sigma_eff: per-reflection effective sigma, shape (N,)
+        # sigma_eff_per_bin: per-bin effective sigma, shape (nbins,)
+        # Initialized to raw sigmas; will be updated after scaling.
+        _, _, sigma_raw, _ = self._data(mask=False)
+        self.register_buffer("sigma_eff", sigma_raw.clone().to(self.device))
+        self.register_buffer(
+            "sigma_eff_per_bin",
+            torch.zeros(self.nbins, device=self.device, dtype=sigma_raw.dtype),
+        )
         if self.verbose > 0:
             print(f"Initialized ScalerBase with {self.nbins} bins.")
 
@@ -830,6 +842,10 @@ class ScalerBase(DebugMixin, nn.Module):
         if was_frozen:
             self.freeze()
 
+        # Estimate per-shell effective sigmas from residuals (SIGMAA-style)
+        # This makes the X-ray likelihood robust to miscalibrated experimental sigmas.
+        self.estimate_sigma_eff(fcalc)
+
         if verbose and self.verbose > 0:
             with torch.no_grad():
                 print(
@@ -841,6 +857,114 @@ class ScalerBase(DebugMixin, nn.Module):
                         print(f"  {name}: {param.data}")
 
         return metrics
+
+    def estimate_sigma_eff(
+        self,
+        fcalc: torch.Tensor,
+        max_inflation: float = 2.0,
+    ) -> torch.Tensor:
+        """
+        Estimate per-resolution-shell effective sigmas from current residuals.
+
+        Pannu & Read / SIGMAA-style correction: detects miscalibrated
+        experimental sigmas by comparing residual variance to the claimed
+        variance, per resolution bin.
+
+        For each resolution bin:
+
+            D_bin         = < (F_obs - k * |F_calc|)^2 >      (using work set)
+            ratio_bin     = sqrt(D_bin / <sigma_F^2>)
+            ratio_capped  = clamp(ratio_bin, 1.0, max_inflation)
+            sigma_eff     = sigma_F * ratio_capped
+
+        **Why the cap?** At the start of refinement the model is bad, so
+        residuals are dominated by *model error* (which is fixable by
+        refining), not noise. Uncapped inflation creates a vicious cycle:
+        bad model -> huge sigma_eff -> weak data gradient -> bad model.
+        Capping at ``max_inflation`` (default 2.0, i.e. sigmas can grow
+        at most 2x) prevents runaway while still correcting genuinely
+        under-estimated sigmas.
+
+        As the model improves, residuals shrink and the ratio drops toward
+        1, so sigma_eff converges to the raw sigma (good calibration).
+
+        Uses the work set only so the test set doesn't leak into
+        sigma estimation.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor
+            Calculated structure factors (complex, unscaled).
+        max_inflation : float, optional
+            Maximum allowed ratio sigma_eff / sigma_raw. Default 2.0.
+
+        Returns
+        -------
+        torch.Tensor
+            Per-reflection effective sigmas, shape (N,).
+        """
+        with torch.no_grad():
+            hkl, fobs_raw, sigma_raw, rfree_mask = self._data(mask=False)
+            # Apply scaling to F_calc
+            fcalc_scaled = self.forward(fcalc).squeeze(0) if fcalc.ndim == 1 else self.forward(fcalc)
+            if fcalc_scaled.ndim > 1:
+                fcalc_scaled = fcalc_scaled.squeeze(0)
+            fcalc_amp = torch.abs(fcalc_scaled).to(fobs_raw.dtype)
+
+            # Work set only (rfree=True = work in this codebase convention)
+            validity = self._data.masks().to(torch.bool)
+            work_mask = validity & rfree_mask.bool()
+
+            bins_work = self.bins[work_mask].to(torch.int64)
+            fobs_work = fobs_raw[work_mask]
+            fcalc_work = fcalc_amp[work_mask]
+            sigma_work = sigma_raw[work_mask]
+
+            # Residuals using F_calc directly (alpha=1 assumed post-scaling)
+            residuals_sq = (fobs_work - fcalc_work) ** 2
+
+            # Per-bin sums
+            sum_d = torch.zeros(self.nbins, device=self.device, dtype=fobs_raw.dtype)
+            sum_s2 = torch.zeros(self.nbins, device=self.device, dtype=fobs_raw.dtype)
+            counts = torch.zeros(self.nbins, device=self.device, dtype=fobs_raw.dtype)
+
+            sum_d = torch.scatter_add(sum_d, 0, bins_work, residuals_sq)
+            sum_s2 = torch.scatter_add(sum_s2, 0, bins_work, sigma_work ** 2)
+            counts = torch.scatter_add(
+                counts, 0, bins_work, torch.ones_like(fobs_work)
+            )
+
+            # Per-bin empirical residual variance and mean raw variance
+            d_per_bin = sum_d / counts.clamp(min=1.0)
+            mean_sigma2_per_bin = sum_s2 / counts.clamp(min=1.0)
+
+            # Ratio sigma_eff / sigma_raw, capped to [1, max_inflation]
+            ratio_per_bin = torch.sqrt(
+                (d_per_bin / mean_sigma2_per_bin.clamp(min=1e-12)).clamp(min=1e-12)
+            )
+            ratio_per_bin = torch.clamp(ratio_per_bin, 1.0, float(max_inflation))
+
+            # sigma_eff per reflection = sigma_raw * ratio_for_its_bin
+            all_bins = self.bins.to(torch.int64)
+            ratio_per_refl = ratio_per_bin[all_bins]
+            sigma_eff_all = sigma_raw * ratio_per_refl
+
+            # Store per-bin representative sigma_eff (using mean raw sigma in bin)
+            sigma_eff_per_bin = torch.sqrt(mean_sigma2_per_bin.clamp(min=1e-12)) * ratio_per_bin
+            self.sigma_eff_per_bin.copy_(sigma_eff_per_bin)
+            self.sigma_eff.copy_(sigma_eff_all)
+
+            if self.verbose > 1:
+                mean_raw = sigma_raw[work_mask].mean().item()
+                mean_eff = sigma_eff_all[work_mask].mean().item()
+                print(
+                    f"  sigma_eff estimation: mean raw={mean_raw:.3f}, "
+                    f"mean effective={mean_eff:.3f}, "
+                    f"ratio={mean_eff/max(mean_raw,1e-6):.2f}, "
+                    f"per-bin ratios={ratio_per_bin.cpu().tolist()}"
+                )
+
+            return sigma_eff_all
 
     def parameters(self, recurse=True):
         """Return parameters, respecting frozen state."""
