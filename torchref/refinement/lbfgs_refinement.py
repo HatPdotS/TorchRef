@@ -11,14 +11,14 @@ Weight optimization follows the Phenix approach:
 - Select best weight based on Rfree while respecting gap constraints
 """
 
-from typing import Optional
+from typing import Iterable, Optional
 
 import numpy as np
 import torch
+from torch import nn
 
 from torchref.refinement.base_refinement import Refinement
 from torchref.refinement.loss_state import LossState
-from torchref.utils.loss_validation import validate_loss
 
 
 class LBFGSRefinement(Refinement):
@@ -112,7 +112,7 @@ class LBFGSRefinement(Refinement):
     def _optimize_lbfgs(
         self,
         state: LossState,
-        params=None,
+        params: Optional[Iterable[nn.Parameter]] = None,
         lr: float = 1.0,
         max_iter: int = 20,
         nsteps: int = 1,
@@ -120,14 +120,17 @@ class LBFGSRefinement(Refinement):
         """
         Run LBFGS optimization on a LossState.
 
-        Logs initial state, runs optimization, logs final state.
+        Thin wrapper around :meth:`LossState.run`: builds the LBFGS optimizer
+        over ``params`` (defaulting to ``self.parameters()``) and lets
+        ``state.run`` handle the closure, NaN validation, and automatic
+        ``requires_grad`` toggling on loss-relevant leaves outside ``params``.
 
         Parameters
         ----------
         state : LossState
             Configured loss state with targets and weights.
-        params : iterable, optional
-            Parameters to optimize. Defaults to self.parameters().
+        params : iterable of nn.Parameter, optional
+            Parameters to optimize. Defaults to ``self.parameters()``.
         lr : float, optional
             Learning rate. Default is 1.0.
         max_iter : int, optional
@@ -141,11 +144,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         if params is None:
-            params = self.parameters()
-
-        # Log initial state
-        state.aggregate(log_values=True)
-
+            params = list(self.parameters())
         optimizer = torch.optim.LBFGS(
             params,
             lr=lr,
@@ -153,56 +152,30 @@ class LBFGSRefinement(Refinement):
             history_size=100,
             line_search_fn="strong_wolfe",
         )
-
-        params_list = list(params)
-
-        def closure():
-            optimizer.zero_grad()
-            loss = state.aggregate()
-            loss.backward()
-            ok = validate_loss(
-                loss,
-                state=state,
-                parameters=params_list,
-                context="lbfgs_refinement._optimize_lbfgs",
-                raise_on_fail=False,
-            )
-            if not ok:
-                for p in params_list:
-                    if p.grad is not None:
-                        p.grad.zero_()
-                return torch.full_like(loss.detach(), float("inf"))
-            return loss
-
-        for _ in range(nsteps):
-            optimizer.step(closure)
-
-        # Log final state
-        state.new_entry()
-        state.aggregate(log_values=True)
-
-        return state
+        return state.run(
+            optimizer, nsteps=nsteps, context="lbfgs_refinement._optimize_lbfgs"
+        )
 
     def _optimize_exploratory_lbfgs(
         self,
         state: LossState,
-        params=None,
+        params: Optional[Iterable[nn.Parameter]] = None,
         nsteps: int = 50,
         **exploration_kwargs,
     ) -> LossState:
         """
         Run ExploratoryLBFGS optimization on a LossState.
 
-        Same pattern as _optimize_lbfgs() but uses ExploratoryLBFGS which
-        adds automatic landscape exploration via Lanczos eigenanalysis after
-        convergence.
+        Thin wrapper around :meth:`LossState.run` using ``ExploratoryLBFGS``
+        which adds automatic landscape exploration via Lanczos eigenanalysis
+        after convergence.
 
         Parameters
         ----------
         state : LossState
             Configured loss state with targets and weights.
-        params : iterable, optional
-            Parameters to optimize. Defaults to self.parameters().
+        params : iterable of nn.Parameter, optional
+            Parameters to optimize. Defaults to ``self.parameters()``.
         nsteps : int, optional
             Number of optimizer steps. Default is 50.
         **exploration_kwargs
@@ -217,63 +190,36 @@ class LBFGSRefinement(Refinement):
         from torchref.refinement.optimizers import ExploratoryLBFGS
 
         if params is None:
-            params = self.parameters()
-
-        # Log initial state
-        state.aggregate(log_values=True)
-
-        optimizer = ExploratoryLBFGS(
-            params,
-            **exploration_kwargs,
+            params = list(self.parameters())
+        optimizer = ExploratoryLBFGS(params, **exploration_kwargs)
+        return state.run(
+            optimizer,
+            nsteps=nsteps,
+            context="lbfgs_refinement._optimize_exploratory_lbfgs",
         )
-
-        params_list = list(params)
-
-        def closure():
-            optimizer.zero_grad()
-            loss = state.aggregate()
-            loss.backward()
-            ok = validate_loss(
-                loss,
-                state=state,
-                parameters=params_list,
-                context="lbfgs_refinement._optimize_exploratory_lbfgs",
-                raise_on_fail=False,
-            )
-            if not ok:
-                for p in params_list:
-                    if p.grad is not None:
-                        p.grad.zero_()
-                return torch.full_like(loss.detach(), float("inf"))
-            return loss
-
-        for _ in range(nsteps):
-            optimizer.step(closure)
-
-        # Log final state
-        state.new_entry()
-        state.aggregate(log_values=True)
-
-        return state
 
     def _optimize_adamw(
         self,
         state: LossState,
-        params=None,
+        params: Optional[Iterable[nn.Parameter]] = None,
         lr: float = 1e-3,
         steps: int = 100,
     ) -> LossState:
         """
         Run AdamW optimization on a LossState.
 
-        Logs initial state, runs optimization, logs final state.
+        Thin wrapper around :meth:`LossState.run`. AdamW handles ``None``
+        gradients fine (skips parameters without grads), and ``state.run``
+        will auto-disable ``requires_grad`` on loss-relevant leaves the
+        optimizer was not constructed with — giving the same wasted-work
+        savings as the LBFGS path.
 
         Parameters
         ----------
         state : LossState
             Configured loss state with targets and weights.
-        params : iterable, optional
-            Parameters to optimize. Defaults to self.parameters().
+        params : iterable of nn.Parameter, optional
+            Parameters to optimize. Defaults to ``self.parameters()``.
         lr : float, optional
             Learning rate. Default is 1e-3.
         steps : int, optional
@@ -285,26 +231,11 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         if params is None:
-            params = self.parameters()
-
-        # Log initial state
-        state.aggregate(log_values=True)
-
+            params = list(self.parameters())
         optimizer = torch.optim.AdamW(params, lr=lr)
-
-        for step in range(steps):
-            optimizer.zero_grad()
-            loss = state.aggregate()
-            loss.backward()
-            if self.verbose > 1 and step % 10 == 0:
-                print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
-            optimizer.step()
-
-        # Log final state
-        state.new_entry()
-        state.aggregate(log_values=True)
-
-        return state
+        return state.run(
+            optimizer, nsteps=steps, context="lbfgs_refinement._optimize_adamw"
+        )
 
     # =========================================================================
     # Refinement Methods
@@ -314,47 +245,45 @@ class LBFGSRefinement(Refinement):
         """
         Refine B-factors (ADP) using LBFGS optimizer.
 
-        Freezes all parameters except B-factors and runs LBFGS optimization
-        with a combined ADP and X-ray loss.
+        Builds an LBFGS optimizer over the ADP, U, and occupancy leaves and
+        delegates to :meth:`LossState.run`. The X-ray target's gradient flow
+        through XYZ is automatically pruned by ``state.run`` (it disables
+        ``requires_grad`` on leaves the loss touches but the optimizer
+        wasn't constructed with), so no manual model freezing is needed.
 
         Returns
         -------
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.model.unfreeze("adp")
-        self.model.unfreeze("u")
-        self.model.unfreeze("occupancy")
-
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_lbfgs(state)
-
-        self.model.unfreeze_all()
+        params = self.model.parameters_of_types(("adp", "u", "occupancy"))
+        params += list(self.scaler.parameters())
+        self._optimize_lbfgs(state, params=params)
         return state
 
     def refine_xyz(self):
         """
         Refine coordinates (XYZ) using LBFGS optimizer.
 
-        Freezes all parameters except coordinates and runs LBFGS optimization
-        with a combined restraints and X-ray loss.
+        Builds an LBFGS optimizer over XYZ and scaler leaves and delegates
+        to :meth:`LossState.run`. Matches the pre-refactor behavior which
+        jointly optimised model XYZ and scaler parameters in a single
+        LBFGS call. ``state.run`` auto-disables ``requires_grad`` on
+        ADP / U / occupancy (in the loss graph but not in the optimizer's
+        intent) for the duration of each step.
 
         Returns
         -------
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.scaler.freeze()
-        self.model.unfreeze("xyz")
-
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_lbfgs(state)
-
-        self.model.unfreeze_all()
+        params = self.model.parameters_of_types(("xyz",))
+        params += list(self.scaler.parameters())
+        self._optimize_lbfgs(state, params=params)
         return state
 
     def regularize_adp(self, lr=0.1):
@@ -371,16 +300,11 @@ class LBFGSRefinement(Refinement):
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.model.unfreeze("adp")
-
         self.scaler.refine_lbfgs()
         state = LossState(self.device)
-        state.register_target('adp_target', self.adp_target)
-
-        self._optimize_lbfgs(state, lr=lr)
-
-        self.model.unfreeze_all()
+        state.register_target("adp_target", self.adp_target)
+        params = self.model.parameters_of_types(("adp",))
+        self._optimize_lbfgs(state, params=params, lr=lr)
         return state
 
     def refine_xyz_adamW(self, lr=1e-3, steps=100):
@@ -399,15 +323,10 @@ class LBFGSRefinement(Refinement):
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.scaler.freeze()
-        self.model.unfreeze("xyz")
-
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_adamw(state, lr=lr, steps=steps)
-
-        self.model.unfreeze_all()
+        params = self.model.parameters_of_types(("xyz",))
+        self._optimize_adamw(state, params=params, lr=lr, steps=steps)
         return state
 
     def refine_b_adamW(self, lr=1e-3, steps=100):
@@ -426,14 +345,10 @@ class LBFGSRefinement(Refinement):
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.model.unfreeze("adp")
-
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_adamw(state, lr=lr, steps=steps)
-
-        self.model.unfreeze_all()
+        params = self.model.parameters_of_types(("adp",))
+        self._optimize_adamw(state, params=params, lr=lr, steps=steps)
         return state
 
     def refine_everything_adamW(self, lr=1e-3, steps=100):
@@ -452,16 +367,10 @@ class LBFGSRefinement(Refinement):
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.scaler.unfreeze()
-        self.model.unfreeze("xyz")
-        self.model.unfreeze("adp")
-
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_adamw(state, lr=lr, steps=steps)
-
-        self.model.unfreeze_all()
+        params = self.model.parameters_of_types(("xyz", "adp", "u", "occupancy"))
+        self._optimize_adamw(state, params=params, lr=lr, steps=steps)
         return state
 
     def _refine_everything_lbfgs_single_cycle(self, nsteps=1):
@@ -478,9 +387,8 @@ class LBFGSRefinement(Refinement):
         """
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_lbfgs(state, nsteps=nsteps)
-
-        self.model.unfreeze_all()
+        params = self.model.parameters_of_types(("xyz", "adp", "u", "occupancy"))
+        self._optimize_lbfgs(state, params=params, nsteps=nsteps)
         return state
 
     # =========================================================================
@@ -661,9 +569,9 @@ class LBFGSRefinement(Refinement):
             # Initial scaling
             self.scaler.refine_lbfgs()
 
-            # Unfreeze all parameters for joint refinement
-            self.model.unfreeze("xyz")
-            self.model.unfreeze("adp")
+            joint_params = self.model.parameters_of_types(
+                ("xyz", "adp", "u", "occupancy")
+            )
 
             for step in range(n_steps):
                 if self.verbose > 1:
@@ -677,21 +585,20 @@ class LBFGSRefinement(Refinement):
                 # Apply policy weights (records the step)
                 policy_weighting.apply_to_state(state)
 
-                # Run LBFGS optimization
-                self._optimize_lbfgs(state, nsteps=1)
+                # Run LBFGS optimization over the joint parameter set.
+                # state.run handles the closure, NaN validation, and
+                # auto-disables requires_grad on any loss-relevant leaves
+                # the optimizer wasn't constructed with.
+                self._optimize_lbfgs(state, params=joint_params, nsteps=1)
 
                 # Increment step counter
                 policy_weighting.increment_step()
-
-            # Freeze everything back
-            self.model.freeze_all()
 
             trajectory = policy_weighting.stop_recording()
             trajectory.total_time = time.time() - start_time
             trajectory.success = True
 
         except Exception as e:
-            self.model.freeze_all()
             trajectory = policy_weighting.stop_recording()
             if trajectory is not None:
                 trajectory.success = False
@@ -705,22 +612,20 @@ class LBFGSRefinement(Refinement):
         """
         Refine occupancies using LBFGS optimizer.
 
-        Freezes all parameters except occupancies and runs LBFGS optimization
-        with a combined occupancy and X-ray loss.
+        Builds an LBFGS optimizer over the occupancy leaves and delegates to
+        :meth:`LossState.run`. Other parameter types in the loss graph have
+        their ``requires_grad`` automatically toggled off for the duration
+        of the call.
 
         Returns
         -------
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.model.unfreeze("occ")
-
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_lbfgs(state)
-
-        self.model.unfreeze_all()
+        params = self.model.parameters_of_types(("occupancy",))
+        self._optimize_lbfgs(state, params=params)
         return state
 
 

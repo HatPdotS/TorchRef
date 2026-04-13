@@ -20,13 +20,18 @@ Example:
     total = state.aggregate()  # Evaluates targets, applies hierarchical weights
 """
 
+import warnings
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set
 
 import torch
+from torch import nn
 
+from torchref.utils.autograd_introspection import collect_loss_leaves, _iter_roots
 from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.utils.loss_validation import validate_loss
 
 
 @dataclass
@@ -68,6 +73,20 @@ class LossState(DeviceMovementMixin):
 
     # Cached compiled callable; None until compile_aggregate() is called
     _compiled_aggregate: Optional[Callable] = field(default=None, repr=False)
+
+    # Union of leaf nn.Parameters that registered targets' backward will
+    # accumulate into. Populated incrementally during register_target via a
+    # one-shot probe forward + autograd graph walk. Used by step()/run() to
+    # diff against the optimizer's intent and disable requires_grad on the
+    # leaves the loss touches but the optimizer wasn't built to update.
+    _loss_leaves: Set[nn.Parameter] = field(default_factory=set, repr=False)
+
+    # Submodules attached to registered targets that expose a reset_cache
+    # method (e.g. ModelFT and its CachedForwardMixin wrappers). Collected
+    # once at registration time and reset after every step() so that
+    # validate_loss-rejected closures or stale forward-cache entries can't
+    # silently poison the next forward.
+    _resettable_modules: List[nn.Module] = field(default_factory=list, repr=False)
 
     # Model-level data for weighting schemes
     meta: Dict[str, Any] = field(default_factory=dict)
@@ -174,7 +193,12 @@ class LossState(DeviceMovementMixin):
     # =========================================================================
 
     def register_target(
-        self, name: str, target: Callable, prefix: str = None, compile: bool = False
+        self,
+        name: str,
+        target: Callable,
+        prefix: str = None,
+        compile: bool = False,
+        probe: bool = True,
     ) -> "LossState":
         """
         Register a target function.
@@ -195,6 +219,16 @@ class LossState(DeviceMovementMixin):
         compile : bool
             If True, mark this target (or all its sub-targets if combined) as
             eligible for the compiled aggregate closure built by compile_aggregate().
+        probe : bool
+            If True (default), run the target's forward once, walk the
+            autograd graph, and merge the resulting leaf set into
+            ``self._loss_leaves``. The target's dependencies (model loaded,
+            data attached, etc.) must therefore be in place before
+            registration. Set ``probe=False`` to skip — the leaf-set entry
+            for this target will be empty, so :meth:`step`/:meth:`run` will
+            not auto-disable any leaves on its account. Useful only for
+            targets whose forward genuinely cannot be called at registration
+            time.
 
         Returns
         -------
@@ -208,16 +242,93 @@ class LossState(DeviceMovementMixin):
         if hasattr(target, 'items') and callable(getattr(target, 'items', None)):
             # Use name as prefix to maintain hierarchy (e.g., "geometry" -> "geometry/bond")
             combined_prefix = f"{prefix}/{name}" if prefix else name
-            return self.register_targets(target, prefix=combined_prefix, compile=compile)
+            return self.register_targets(
+                target, prefix=combined_prefix, compile=compile, probe=probe
+            )
 
         # Normal single target registration
         key = f"{prefix}/{name}" if prefix else name
         self.targets[key] = target
         if compile:
             self._compilable.add(key)
+        if probe:
+            self._probe_and_merge_leaves(target)
+        self._collect_resettable_modules(target)
         return self
 
-    def register_targets(self, targets, prefix: str = None, compile: bool = False) -> "LossState":
+    def _collect_resettable_modules(self, target: Callable) -> None:
+        """Walk ``target``'s submodules and collect any that expose a
+        ``reset_cache`` method, deduplicating against modules already
+        captured from earlier registrations.
+
+        These modules are reset after every :meth:`step` call so that a
+        ``validate_loss``-rejected closure or a stale forward cache cannot
+        silently poison the next aggregate.
+        """
+        if not isinstance(target, nn.Module):
+            return
+        # Use object identity for dedup; nn.Modules aren't hashable by
+        # default in a way that matches identity, so iterate.
+        seen_ids = {id(m) for m in self._resettable_modules}
+        for module in target.modules():
+            method = getattr(module, "reset_cache", None)
+            if callable(method) and id(module) not in seen_ids:
+                self._resettable_modules.append(module)
+                seen_ids.add(id(module))
+
+    def _probe_and_merge_leaves(self, target: Callable) -> None:
+        """Run ``target()`` once with grad enabled, walk the autograd graph,
+        and union the resulting leaves into ``self._loss_leaves``.
+
+        ``target()`` may return a Tensor, a tuple/list of tensors, or a dict
+        of tensors — :func:`collect_loss_leaves` handles all three.
+
+        Convention: targets are expected to be probed while every parameter
+        the loss should track has ``requires_grad=True``. If the probe walks
+        the full graph and finds zero leaves — meaning every root is either
+        constant (``grad_fn is None``) or only depends on tensors with
+        ``requires_grad=False`` — emit a warning. This is almost never what
+        the caller intended (a target with no trainable parameters
+        contributes nothing to gradient-based optimization). It is *not*
+        an error: missing leaves only cost a bit of extra backward work
+        inside the optimization loop, never correctness.
+        """
+        with torch.enable_grad():
+            roots = target()
+        leaves_before = len(self._loss_leaves)
+        new_leaves = collect_loss_leaves(roots)
+        self._loss_leaves |= new_leaves
+        if not new_leaves:
+            any_grad_fn = any(
+                getattr(t, "grad_fn", None) is not None for t in _iter_roots(roots)
+            )
+            target_name = getattr(target, "name", type(target).__name__)
+            if not any_grad_fn:
+                warnings.warn(
+                    f"LossState.register_target: target {target_name!r} returned "
+                    "tensor(s) with no grad_fn — the loss does not track gradients. "
+                    "Register targets while every parameter the loss should depend on "
+                    "has requires_grad=True. The target is still registered; this is "
+                    "only a performance hint, not a correctness issue.",
+                    stacklevel=3,
+                )
+            else:
+                warnings.warn(
+                    f"LossState.register_target: target {target_name!r} has a non-empty "
+                    "autograd graph but no nn.Parameter leaves — none of the inputs are "
+                    "Parameters with requires_grad=True. Step()/run() will not be able "
+                    "to auto-disable any leaves on this target's account. This is only "
+                    "a performance hint, not a correctness issue.",
+                    stacklevel=3,
+                )
+
+    def register_targets(
+        self,
+        targets,
+        prefix: str = None,
+        compile: bool = False,
+        probe: bool = True,
+    ) -> "LossState":
         """Register multiple targets from a component target or dict.
 
         For targets with a .name attribute, uses target.name as the key.
@@ -231,10 +342,14 @@ class LossState(DeviceMovementMixin):
             Prefix to prepend to all target names.
         compile : bool
             If True, propagate the compile flag to all sub-targets.
+        probe : bool
+            Forwarded to :meth:`register_target`.
         """
         for name, target in targets.items():
             target_name = getattr(target, "name", name)
-            self.register_target(target_name, target, prefix=prefix, compile=compile)
+            self.register_target(
+                target_name, target, prefix=prefix, compile=compile, probe=probe
+            )
         return self
 
     # =========================================================================
@@ -494,6 +609,172 @@ class LossState(DeviceMovementMixin):
         return self._losses.get(name)
 
     # =========================================================================
+    # Optimization (step / run / active-parameter introspection)
+    # =========================================================================
+
+    def active_parameters(self) -> Set[nn.Parameter]:
+        """Return the set of leaf ``nn.Parameter``s that registered targets'
+        backward passes will accumulate gradient into.
+
+        Populated incrementally by :meth:`register_target` via a one-shot
+        probe forward + autograd graph walk — calling this method does not
+        run any forward, walk any graph, or evaluate any target. The result
+        is conservative: a target whose weight is later set to 0 still
+        contributes its leaves here, which is harmless for the freezing
+        logic in :meth:`step` (it can only over-freeze, never under-freeze).
+        """
+        return self._loss_leaves
+
+    def refresh_loss_leaves(self) -> "LossState":
+        """Re-probe every registered target and rebuild ``_loss_leaves``
+        and the resettable-modules cache.
+
+        Use this after external code has replaced parameter identity on the
+        underlying model — for example after :meth:`Model.freeze` /
+        :meth:`Model.unfreeze` (which rebuild ``refinable_params`` tensors).
+        Under normal :meth:`step`/:meth:`run` usage no parameter identity
+        ever changes, so this method is rarely needed.
+        """
+        self._loss_leaves = set()
+        self._resettable_modules = []
+        for target in self.targets.values():
+            self._probe_and_merge_leaves(target)
+            self._collect_resettable_modules(target)
+        return self
+
+    def reset_caches(self) -> None:
+        """Call ``reset_cache()`` on every registered target's submodules
+        that expose one. Invoked automatically at the end of :meth:`step`.
+        """
+        for module in self._resettable_modules:
+            module.reset_cache()
+
+    def restore_loss_leaf_grads(self) -> None:
+        """Unconditionally re-enable ``requires_grad`` on every leaf in
+        ``self._loss_leaves``. Called at the end of :meth:`step` so the
+        next call sees a clean, fully-differentiable model regardless of
+        what state the previous step (or external code) left things in.
+        """
+        for p in self._loss_leaves:
+            if not p.requires_grad:
+                p.requires_grad_(True)
+
+    def step(
+        self,
+        optimizer: torch.optim.Optimizer,
+        *,
+        context: str = "loss_state.step",
+    ) -> Optional[torch.Tensor]:
+        """Run a single ``optimizer.step(closure)``.
+
+        Builds the closure, validates each loss for finiteness via
+        :func:`torchref.utils.validate_loss`, and on failure zeros the
+        gradients and returns ``+inf`` so the strong-Wolfe line search
+        backtracks. Automatically disables ``requires_grad`` on any leaf
+        that the loss touches but the optimizer was not constructed with —
+        autograd then prunes those subgraphs from the backward pass.
+
+        Every collected ``reset_cache``-bearing submodule is reset
+        **before** the optimizer step so the closure's first forward sees
+        a clean cache (a previous rejected closure may have stored a
+        NaN/inf forward result that the fingerprint would happily serve
+        again if parameter values haven't changed).
+
+        On exit, ``requires_grad=True`` is unconditionally re-enabled on
+        every leaf in ``self._loss_leaves`` — defending against state
+        bleeding between successive refinement methods.
+
+        Parameters
+        ----------
+        optimizer : torch.optim.Optimizer
+            Optimizer to step. Its ``param_groups`` define the *intent* —
+            the leaves the caller actually wants to update.
+        context : str
+            Diagnostic label forwarded to ``validate_loss``.
+
+        Returns
+        -------
+        torch.Tensor or None
+            The loss tensor from the last accepted closure call, or ``None``
+            if no closure call succeeded (every call produced non-finite
+            loss).
+        """
+        params = list(_optimizer_param_set(optimizer))
+        last_loss: Dict[str, Optional[torch.Tensor]] = {"val": None}
+
+        def closure():
+            optimizer.zero_grad()
+            loss = self.aggregate()
+            loss.backward()
+            ok = validate_loss(
+                loss,
+                state=self,
+                parameters=params,
+                context=context,
+                raise_on_fail=False,
+            )
+            if not ok:
+                for p in params:
+                    if p.grad is not None:
+                        p.grad.zero_()
+                return torch.full_like(loss.detach(), float("inf"))
+            last_loss["val"] = loss
+            return loss
+
+        # Clear forward caches BEFORE the step so the closure's first
+        # forward starts from a known-clean state — a previous rejected
+        # closure may have left a NaN/inf cached fcalc that the fingerprint
+        # would otherwise serve again unchanged.
+        self.reset_caches()
+        try:
+            with _freeze_graph_extras(self, optimizer):
+                optimizer.step(closure)
+        finally:
+            # Re-enable grads on every loss leaf regardless of how the
+            # step exited. Defends against state bleeding between
+            # successive refinement methods.
+            self.restore_loss_leaf_grads()
+        return last_loss["val"]
+
+    def run(
+        self,
+        optimizer: torch.optim.Optimizer,
+        *,
+        nsteps: int = 1,
+        log: bool = True,
+        context: str = "loss_state.run",
+    ) -> "LossState":
+        """Convenience loop that calls :meth:`step` ``nsteps`` times.
+
+        Each :meth:`step` call performs its own freeze / restore / cache
+        invalidation cycle — there is no hoisting, because the post-step
+        unconditional cleanup would undo any hoisted state anyway. The
+        per-step cost of toggling ``requires_grad`` on a small set of
+        leaves and re-walking the optimizer's param groups is sub-millisecond
+        and negligible compared to the cost of the aggregate forward.
+
+        Parameters
+        ----------
+        optimizer : torch.optim.Optimizer
+            Optimizer to run.
+        nsteps : int
+            Number of ``optimizer.step(closure)`` calls.
+        log : bool
+            If True, log the initial and final aggregated loss to the
+            history.
+        context : str
+            Diagnostic label forwarded to ``validate_loss``.
+        """
+        if log:
+            self.aggregate(log_values=True)
+        for _ in range(nsteps):
+            self.step(optimizer, context=context)
+        if log:
+            self.new_entry()
+            self.aggregate(log_values=True)
+        return self
+
+    # =========================================================================
     # Breakdown / Analysis
     # =========================================================================
 
@@ -635,6 +916,31 @@ class LossState(DeviceMovementMixin):
         n_history = len(self.history)
         n_meta = len(self.meta)
         return f"LossState(device={self.device}, targets={n_targets}, weights={n_weights}, meta={n_meta}, history={n_history})"
+
+
+def _optimizer_param_set(optimizer: torch.optim.Optimizer) -> Set[nn.Parameter]:
+    """Flatten an optimizer's param_groups into a set."""
+    return {p for g in optimizer.param_groups for p in g["params"]}
+
+
+@contextmanager
+def _freeze_graph_extras(state: "LossState", optimizer: torch.optim.Optimizer):
+    """Disable ``requires_grad`` on leaves that ``state`` touches but
+    ``optimizer`` was not constructed with.
+
+    Reads the cached leaf union via :meth:`LossState.active_parameters` —
+    no probe forward is run here. Restoration is handled by the enclosing
+    :meth:`LossState.step`'s ``finally`` clause, which unconditionally
+    re-enables ``requires_grad`` on every leaf in ``self._loss_leaves``
+    (not just the ones we disabled here). That avoids subtle bugs where a
+    pre-frozen leaf or a leaf disabled by an unrelated code path leaks
+    into the next step.
+    """
+    intended = _optimizer_param_set(optimizer)
+    for p in state.active_parameters():
+        if p not in intended and p.requires_grad:
+            p.requires_grad_(False)
+    yield
 
 
 def create_loss_state(

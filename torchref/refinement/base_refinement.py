@@ -708,6 +708,15 @@ class Refinement(DebugMixin, nnModule):
         Updates the persistent LossState with current meta, target info,
         cached losses, and weights. The state is reused across cycles.
 
+        The cached active-parameter leaf set is *not* refreshed here. Stale
+        leaves are not a correctness hazard: a leaf that's in the set but
+        whose Parameter object was replaced externally (e.g. by
+        ``Model.freeze``) just gets ignored by ``_freeze_graph_extras``,
+        which costs a marginal amount of wasted backward work but never
+        produces wrong answers. If you do call ``Model.freeze`` /
+        ``Model.unfreeze`` between LossState creation and a refinement
+        step, call ``state.refresh_loss_leaves()`` explicitly.
+
         Returns
         -------
         LossState

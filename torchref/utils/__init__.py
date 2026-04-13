@@ -27,6 +27,9 @@ Example
     grad_norm = gradnorm(loss, model.parameters())
 """
 
+# Autograd introspection
+from .autograd_introspection import collect_loss_leaves
+
 # Caching
 from .caching import CachedForwardMixin, ParameterFingerprint
 
@@ -100,4 +103,6 @@ __all__ = [
     "validate_loss",
     "NonFiniteLossError",
     "reset_diagnostic_budget",
+    # Autograd introspection
+    "collect_loss_leaves",
 ]

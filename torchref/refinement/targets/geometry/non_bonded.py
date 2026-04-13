@@ -17,39 +17,52 @@ if TYPE_CHECKING:
 
 
 class NonBondedTarget(GeometryTarget):
-    """
-    Non-bonded (van der Waals) restraint target using PROLSQ-style repulsion.
+    r"""
+    Non-bonded (van der Waals) restraint target using PROLSQ-style repulsion,
+    parameterized as a generalized-Gaussian NLL on the overlap with
+    scale :math:`\sigma`.
 
-    Prevents atoms from clashing by penalizing distances shorter than the sum
-    of van der Waals radii. Uses the PROLSQ/CNS repulsion function:
+    Per-pair NLL (``mode='prolsq'``):
 
-        E_vdw = c_rep * max(0, d_vdw - d)^r_exp
+    .. math::
 
-    Default parameters (from Phenix/PROLSQ):
+       \mathrm{NLL}(v) \;=\;
+           \frac{v^{p}}{p\,\sigma^{p}}
+           \;+\; \log\sigma
+           \;+\; \tfrac{1}{2}\log(2\pi)
+       \qquad
+       v \;=\; \max\!\bigl(0,\, d_{\text{vdw}} + b - d\bigr)
 
-    - c_rep = 16.0 (repulsion coefficient)
-    - r_exp = 4.0 (repulsion exponent - makes it very steep near contact)
+    where :math:`p = r_\text{exp}` (default 4). The shape term
+    :math:`v^p/(p\sigma^p)` is algebraically identical to the classical PROLSQ
+    energy :math:`c_{\text{rep}}\,v^p` with :math:`c_{\text{rep}} =
+    1/(p\,\sigma^{p})`; exposing :math:`\sigma` makes the physics legible
+    (σ is an "effective tolerance" on the overlap) and puts the VDW loss on
+    the same NLL footing as bond / angle / planarity.
 
-    This gives: E = 16 * max(0, d_vdw - d)^4
-
-    The quartic (^4) function provides:
-
-    - Zero energy when d >= d_vdw (no overlap)
-    - Rapidly increasing energy as atoms approach
-    - Smooth gradients for optimization
+    **Default sigma = 0.13 Å.** Chosen so that MolProbity's clash threshold
+    of **0.4 Å overlap** corresponds to ~3σ — a clash is penalised at
+    ~20 NLL units under the :math:`p=4` shape, commensurate with a handful
+    of standard bond restraints. The classical PROLSQ strength
+    :math:`c_{\text{rep}}=16` at ``r_exp=4`` corresponds to the much looser
+    :math:`\sigma \approx 0.354\ \text{\AA}`, which made a 0.4 Å clash
+    contribute only ~4 NLL units — too weak against a
+    structure-factor loss of :math:`10^{5}` to pull clashes out. Set
+    ``sigma`` explicitly for deliberate tightening / loosening.
 
     Alternative modes:
 
-    - 'prolsq': E = c_rep * max(0, d_vdw + buffer - d)^r_exp (default)
-    - 'gaussian': Gaussian NLL for violations
-    - 'soft': Soft repulsion with linear core
+    - ``'prolsq'``: generalized-Gaussian NLL with exponent ``r_exp`` (default)
+    - ``'gaussian'``: Gaussian NLL on the overlap using per-pair sigmas
+    - ``'soft'``: soft repulsion with linear core outside ``threshold``
 
     When symmetry information is available (cell and spacegroup on the model),
     also handles contacts between ASU atoms and symmetry-related copies.
     Symmetry mate positions are recomputed on-the-fly from current ASU
     coordinates so that gradients flow to both atoms in each pair.
 
-    Reference: cctbx/geometry_restraints/nonbonded.h, PROLSQ documentation
+    Reference: cctbx/geometry_restraints/nonbonded.h, PROLSQ documentation,
+    MolProbity clash criterion (Davis et al., NAR 2007).
 
     Parameters
     ----------
@@ -57,10 +70,17 @@ class NonBondedTarget(GeometryTarget):
         Reference to Model object.
     mode : str, optional
         Repulsion function type ('prolsq', 'gaussian', 'soft'). Default is 'prolsq'.
-    c_rep : float, optional
-        Repulsion coefficient. Default is 16.0.
+    sigma : float, optional
+        Effective tolerance on the overlap in Angstroms. Default is 0.13,
+        calibrating a 0.4 Å MolProbity clash as a ~3-sigma event.
     r_exp : float, optional
-        Repulsion exponent. Default is 4.0.
+        Exponent of the repulsion term. Default is 4.0.
+    c_rep : float, optional
+        Back-door repulsion coefficient. If provided, overrides the
+        sigma-derived value and the NLL becomes
+        :math:`c_{\text{rep}} v^{r_\text{exp}} + \log\sigma + \tfrac{1}{2}\log(2\pi)`.
+        Useful for reproducing legacy PROLSQ weights. Default is None
+        (derive from ``sigma``).
     buffer : float, optional
         Distance buffer in Angstroms added to VDW radii sum. Shifts the
         repulsion onset outward so atoms feel repulsion before they clash.
@@ -75,8 +95,9 @@ class NonBondedTarget(GeometryTarget):
         self,
         model: "Model" = None,
         mode: str = "prolsq",
-        c_rep: float = 16.0,
+        sigma: float = 0.13,
         r_exp: float = 4.0,
+        c_rep: "float | None" = None,
         buffer: float = 0.0,
         verbose: int = 0,
         scale: float = 10.0,
@@ -90,10 +111,15 @@ class NonBondedTarget(GeometryTarget):
             Reference to Model object.
         mode : str, optional
             Repulsion function type ('prolsq', 'gaussian', 'soft'). Default is 'prolsq'.
-        c_rep : float, optional
-            Repulsion coefficient. Default is 16.0.
+        sigma : float, optional
+            Effective tolerance on the overlap (Å). Default 0.13 —
+            calibrates a 0.4 Å MolProbity clash as ~3σ. Only used when
+            ``c_rep`` is None.
         r_exp : float, optional
             Repulsion exponent. Default is 4.0.
+        c_rep : float or None, optional
+            Legacy coefficient override. If None (default), derived from
+            ``sigma`` as ``1 / (r_exp * sigma ** r_exp)``.
         buffer : float, optional
             Distance buffer in Angstroms added to VDW radii sum. Default is 0.0.
         verbose : int, optional
@@ -102,10 +128,17 @@ class NonBondedTarget(GeometryTarget):
         super().__init__(model, verbose, target_value=0.5, sigma=1.2)
         self.mode = mode
         self.scale = scale
-        # Register c_rep, r_exp, buffer as buffers for state_dict access
-        self.register_buffer("_c_rep", torch.tensor(c_rep))
-        self.register_buffer("_r_exp", torch.tensor(r_exp))
-        self.register_buffer("_buffer", torch.tensor(buffer))
+        # Register sigma / r_exp / buffer as buffers so .to(device) moves them.
+        self.register_buffer("_sigma_vdw", torch.tensor(float(sigma)))
+        self.register_buffer("_r_exp", torch.tensor(float(r_exp)))
+        self.register_buffer("_buffer", torch.tensor(float(buffer)))
+        # c_rep: back-door override; by default derived from sigma so that
+        # PROLSQ shape term equals v^p / (p * sigma^p).
+        if c_rep is None:
+            c_rep_val = 1.0 / (float(r_exp) * float(sigma) ** float(r_exp))
+        else:
+            c_rep_val = float(c_rep)
+        self.register_buffer("_c_rep", torch.tensor(c_rep_val))
 
     @property
     def c_rep(self) -> float:
@@ -114,8 +147,25 @@ class NonBondedTarget(GeometryTarget):
 
     @c_rep.setter
     def c_rep(self, value: float):
-        """Set repulsion coefficient."""
+        """Set repulsion coefficient.
+
+        Note: this breaks the internal link ``c_rep = 1 / (r_exp * sigma**r_exp)``.
+        After setting c_rep directly, ``sigma_vdw`` should be treated as
+        informational only for the log(sigma) term; the shape term uses c_rep.
+        """
         self._c_rep.fill_(value)
+
+    @property
+    def sigma_vdw(self) -> float:
+        """Get the effective overlap tolerance sigma (Å)."""
+        return self._sigma_vdw.item()
+
+    @sigma_vdw.setter
+    def sigma_vdw(self, value: float):
+        """Set sigma and recompute the linked ``c_rep``."""
+        self._sigma_vdw.fill_(value)
+        new_c_rep = 1.0 / (self._r_exp.item() * value ** self._r_exp.item())
+        self._c_rep.fill_(new_c_rep)
 
     @property
     def r_exp(self) -> float:
@@ -234,8 +284,19 @@ class NonBondedTarget(GeometryTarget):
         violations = torch.clamp(min_distances + self._buffer - actual_distances, min=0.0)
 
         if self.mode == "prolsq":
-            energy = self._c_rep * (violations**self._r_exp)
-            return energy.sum()
+            # Generalized-Gaussian NLL with shape r_exp and scale sigma_vdw:
+            #   NLL(v) = v^p / (p * sigma^p) + log(sigma) + 0.5 * log(2*pi)
+            # The leading (v^p / (p*sigma^p)) equals c_rep * v^p by construction
+            # (c_rep = 1/(p*sigma^p)). log(sigma) + 0.5*log(2*pi) is added
+            # *per candidate pair* so the loss is commensurate with the other
+            # geometry NLLs (bond, angle, planarity) — every pair contributes
+            # a density evaluation, not just the ones currently violating.
+            log_2pi = torch.log(
+                torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
+            )
+            shape_energy = self._c_rep * (violations**self._r_exp)
+            per_pair_const = torch.log(self._sigma_vdw) + 0.5 * log_2pi
+            return shape_energy.sum() + per_pair_const * violations.shape[0]
 
         elif self.mode == "gaussian":
             log_2pi = torch.log(

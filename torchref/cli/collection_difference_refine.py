@@ -113,7 +113,6 @@ from torchref.cli._common import (
     validate_files,
 )
 from torchref.utils.serialization import convert_to_serializable
-from torchref.utils.loss_validation import validate_loss
 
 configure_unbuffered_output()
 
@@ -124,16 +123,16 @@ configure_unbuffered_output()
 DEFAULT_TARGET_WEIGHTS = {
     "xray/difference": 1.0,
     "xray/ml": 0.0,
-    "geometry/bond": 1.0,
-    "geometry/angle": 1.0,
-    "geometry/torsion": 1.0,
-    "geometry/planarity": 1.0,
-    "geometry/chiral": 1.0,
-    "geometry/nonbonded": 1.0,
-    "geometry/ramachandran": 1.0,
-    "adp/simu": 1.0,
-    "adp/locality": 1.0,
-    "adp/KL": 1.0,
+    # "geometry/bond": 1.0, # geometry restraint should never require tuning, so leave at 1.0
+    # "geometry/angle": 1.0,
+    # "geometry/torsion": 1.0,
+    # "geometry/planarity": 1.0,
+    # "geometry/chiral": 1.0,
+    # "geometry/nonbonded": 1.0,
+    # "geometry/ramachandran": 1.0,
+    # "adp/simu": 1.0,
+    # "adp/locality": 1.0,
+    # "adp/KL": 1.0,
     "similarity": 1.0,
 }
 
@@ -556,38 +555,30 @@ def write_results_mtz(dc, mc, scaler, filename):
 
 
 def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
-    """Run a block of LBFGS optimisation steps."""
+    """Run a block of LBFGS optimisation steps via :meth:`LossState.step`.
+
+    ``state.step`` handles the closure, NaN validation, and automatically
+    disables ``requires_grad`` on any loss-relevant leaves outside
+    ``parameters`` — in particular the dark model's leaves, which appear in
+    the difference target's autograd graph but are intentionally not in the
+    optimizer's intent. The dark model effectively becomes a frozen
+    reference at the autograd level for the duration of each step.
+    """
     parameters = list(parameters)
-    optimizer = torch.optim.LBFGS(
-        parameters, max_iter=max_iter, line_search_fn="strong_wolfe"
-    )
 
-    def closure():
-        optimizer.zero_grad()
-        loss = state.aggregate()
-        loss.backward()
-        ok = validate_loss(
-            loss,
-            state=state,
-            parameters=parameters,
-            context="collection_difference_refine.optimize_lbfgs",
-            raise_on_fail=False,
+    def _make_optimizer():
+        return torch.optim.LBFGS(
+            parameters, max_iter=max_iter, line_search_fn="strong_wolfe"
         )
-        if not ok:
-            # Tell strong-Wolfe the probe failed: zero grads, return +inf.
-            # The line search will backtrack and try a smaller step.
-            for p in parameters:
-                if p.grad is not None:
-                    p.grad.zero_()
-            return torch.full_like(loss.detach(), float("inf"))
-        return loss
 
+    optimizer = _make_optimizer()
     for i in range(nsteps):
         if i > 0 and i % n_clean == 0:
-            optimizer = torch.optim.LBFGS(
-                parameters, max_iter=max_iter, line_search_fn="strong_wolfe"
-            )
-        optimizer.step(closure)
+            # Periodic LBFGS curvature-history reset.
+            optimizer = _make_optimizer()
+        state.step(
+            optimizer, context="collection_difference_refine.optimize_lbfgs"
+        )
         if verbose > 0:
             with torch.no_grad():
                 loss = state.aggregate()

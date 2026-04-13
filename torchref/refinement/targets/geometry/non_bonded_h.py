@@ -43,16 +43,22 @@ class NonBondedHTarget(NonBondedTarget):
     pair list.  At forward time, only H placement + vectorized distance
     computation is needed — no spatial hashing.
 
+    Uses the same generalized-Gaussian NLL as the parent class; see
+    :class:`NonBondedTarget` for the sigma calibration.
+
     Parameters
     ----------
     model : Model, optional
         Reference to Model object.
     mode : str, optional
         Repulsion function type. Default ``'prolsq'``.
-    c_rep : float, optional
-        Repulsion coefficient. Default 16.0.
+    sigma : float, optional
+        Effective tolerance on the overlap (Å). Default 0.13 — calibrates
+        a 0.4 Å MolProbity clash as ~3σ.
     r_exp : float, optional
         Repulsion exponent. Default 4.0.
+    c_rep : float or None, optional
+        Legacy coefficient override; derived from ``sigma`` when None.
     buffer : float, optional
         Distance buffer (Å). Default 0.0.
     verbose : int, optional
@@ -65,12 +71,21 @@ class NonBondedHTarget(NonBondedTarget):
         self,
         model: "Model" = None,
         mode: str = "prolsq",
-        c_rep: float = 16.0,
+        sigma: float = 0.13,
         r_exp: float = 4.0,
+        c_rep: "float | None" = None,
         buffer: float = 0.0,
         verbose: int = 0,
     ):
-        super().__init__(model, mode, c_rep, r_exp, buffer, verbose)
+        super().__init__(
+            model=model,
+            mode=mode,
+            sigma=sigma,
+            r_exp=r_exp,
+            c_rep=c_rep,
+            buffer=buffer,
+            verbose=verbose,
+        )
 
     # ------------------------------------------------------------------
     # H-VDW loss via precomputed candidates
@@ -142,8 +157,14 @@ class NonBondedHTarget(NonBondedTarget):
         violations = torch.clamp(min_dist + self._buffer - actual_dist, min=0.0)
 
         if self.mode == "prolsq":
-            energy = self._c_rep * (violations ** self._r_exp)
-            return energy.sum()
+            # Generalized-Gaussian NLL, same form as the parent (heavy-heavy)
+            # branch — see NonBondedTarget.forward for the full derivation.
+            log_2pi = torch.log(
+                torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
+            )
+            shape_energy = self._c_rep * (violations ** self._r_exp)
+            per_pair_const = torch.log(self._sigma_vdw) + 0.5 * log_2pi
+            return shape_energy.sum() + per_pair_const * violations.shape[0]
         elif self.mode == "gaussian":
             sigma_val = torch.tensor(0.2, device=device, dtype=xyz.dtype)
             log_2pi = torch.log(

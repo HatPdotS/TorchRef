@@ -738,10 +738,34 @@ class ScalerBase(DebugMixin, nn.Module):
             metrics = scaler.refine_lbfgs(fcalc, nsteps=5, verbose=True)
             scaler.freeze()
         """
+        from torchref.refinement.loss_state import LossState
+
         # Ensure scaler is unfrozen
         was_frozen = self.frozen
         if was_frozen:
             self.unfreeze()
+
+        hkl, fobs, sigma, rfree_mask = self._data()
+        fcalc = fcalc.detach()
+
+        # Wrap the scaler loss as a LossState target so this path uses the
+        # same closure/NaN-validation/auto-freeze infrastructure as the main
+        # refinement loop. Because fcalc is detached, the only leaves the
+        # loss touches are the scaler's own parameters — LossState's probe
+        # picks those up at register time. validate_loss inside state.step
+        # handles NaN/Inf rejection so no per-target try/except is needed.
+        scaler_self = self
+
+        class _ScalerXrayTarget(nn.Module):
+            name = "scaler/xray"
+
+            def forward(self):
+                fcalc_scaled = scaler_self.forward(fcalc)
+                u_penalty = torch.sum(scaler_self.U**2)
+                return nll_xray(fobs, fcalc_scaled, sigma) + u_penalty
+
+        state = LossState(device=self.device)
+        state.register_target("scaler/xray", _ScalerXrayTarget())
 
         # Create LBFGS optimizer for scaler parameters only
         optimizer = torch.optim.LBFGS(
@@ -751,46 +775,6 @@ class ScalerBase(DebugMixin, nn.Module):
             history_size=history_size,
             line_search_fn="strong_wolfe",
         )
-
-        hkl, fobs, sigma, rfree_mask = self._data()
-        fcalc = fcalc.detach()
-
-        def closure():
-            optimizer.zero_grad()
-            try:
-                fcalc_scaled = self.forward(fcalc)
-            except RuntimeError:
-                if self.verbose > 0:
-                    import warnings
-
-                    warnings.warn(
-                        "Non-finite loss encountered during scale optimization. "
-                        "LBFGS line search will reject this step and try a smaller step size.",
-                        RuntimeWarning,
-                    )
-                return torch.tensor(
-                    1e10, device=self.device, dtype=fobs.dtype, requires_grad=True
-                )
-
-            U_penalty = torch.sum(self.U**2)
-            loss = nll_xray(fobs, fcalc_scaled, sigma) + U_penalty
-
-            # Handle non-finite loss gracefully for LBFGS line search
-            if not torch.all(torch.isfinite(loss)):
-                if self.verbose > 0:
-                    import warnings
-
-                    warnings.warn(
-                        "Non-finite loss encountered during scale optimization. "
-                        "LBFGS line search will reject this step and try a smaller step size.",
-                        RuntimeWarning,
-                    )
-                return torch.tensor(
-                    1e10, device=loss.device, dtype=loss.dtype, requires_grad=True
-                )
-
-            loss.backward(retain_graph=True)
-            return loss
 
         # Track metrics
         metrics = {
@@ -812,7 +796,7 @@ class ScalerBase(DebugMixin, nn.Module):
 
         # Run optimization
         for step in range(nsteps):
-            optimizer.step(closure)
+            state.step(optimizer, context="scaler.refine_lbfgs")
 
             # Evaluate metrics
             with torch.no_grad():
