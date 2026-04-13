@@ -1,47 +1,50 @@
 """
 Bhattacharyya overlap X-ray target with first-principles model uncertainty.
 
-Implementation notes:
-- Reflection axis is kept fully resolved.
-- B-factors are histogrammed onto a LOG-SPACED grid (B follows a lognormal-
-  ish distribution per Wilson statistics, so log-space binning captures the
-  B distribution accurately at all magnitudes).
-- A precomputed (b_grid, N_refl) exp table lets every per-cycle operation
-  reduce to a matmul against ``exp_table``. No N_atoms × N_refl tensor is
-  ever materialised.
+Loss
+----
+For each reflection h:
 
-Computes the Bhattacharyya distance between two Gaussian distributions:
-- data:  N(F_obs, sigma_d^2)
-- model: N(|F_calc|, sigma_m^2)
+    L_h = (F_obs - |F_calc|)² / (4 · (σ_d² + σ_m²))
+        + 0.5 · log( (σ_d² + σ_m²) / (2 σ_d σ_m) )
+
+Total: L = Σ_h L_h. See ``design_doc_overlap_loss.md`` for the formulation.
 
 sigma_m derivation
 ------------------
-Per-atom variances from the diagonal data-only Fisher info, with the
-phase-averaging 1/2 factor included:
+σ_m is derived from per-atom positional and B-factor uncertainty under the
+diagonal data-only Fisher information. Atoms are binned on a 2-D grid of
+(element type k, B-factor b). Within each element type the ITC92 scattering
+factor f_k(s) is a 1-D function of resolution.
 
-    Var(x_j,k) = 6  / ( (2π)^2 * f_j^2 * g_w(B_j) )
-    Var(B_j)   = 32 / ( f_j^2 * g_4(B_j) )
-    g_w(B)     = Σ_h (|s_h|^2 / σ_d^2(h)) * exp(-2 B s_h^2/4)
-    g_4(B)     = Σ_h ( s_h^4  / σ_d^2(h)) * exp(-2 B s_h^2/4)
+Per-element Fisher-info sums (static — depend only on data and scattering):
 
-Propagating both into F_calc (the f_j^2 cancels between numerator and
-denominator in each term), one gets two additive contributions:
+    f_k²(s_h)  = ( Σ_m A_km · exp(-B_km · s_half_sq) )²
+    g_w(k, b)  = Σ_h (|s|² · f_k²(s_h) / <σ_d²>) · exp(-2 b · s_half_sq)
+    g_4(k, b)  = Σ_h (|s|⁴ · f_k²(s_h) / <σ_d²>) · exp(-2 b · s_half_sq)
 
-    σ_m²(h) = 3 · |s_h|² * Σ_j exp(-2 B_j s_h²/4) / g_w(B_j)   [position]
-            +     s_h⁴  * Σ_j exp(-2 B_j s_h²/4) / g_4(B_j)   [B-factor]
+Each refinement cycle, the current atomic B-factors are soft-histogrammed by
+element into ``hist[k, b]``. Then:
 
-The B-term has an extra s² weighting (s⁴ vs |s|²), so it is negligible
-at low resolution and dominant at high resolution — consistent with the
-Gaussian-fit intuition that the error on the width is ~1/√2 times the
-error on the mean, but with resolution-dependent weighting.
+    σ_m²(h) = scale² · Σ_k f_k²(s_h) · [
+        3 · |s|² · (hist[k] / g_w(k)) @ exp_table_shared[:, h]    (position)
+      +     s⁴  · (hist[k] / g_4(k)) @ exp_table_shared[:, h]    (B-factor)
+    ]
 
-A global multiplier ``sigma_m_scale`` is applied to σ_m for empirical
-tuning of the overall magnitude without changing the per-reflection
-structure:
+The outer f_k²(s_h) comes from forward propagation of Var(x_j, B_j) into
+F_calc. The f² inside g_w/g_4 cancels one of the two factors that arise from
+Var(x_j) ∝ 1/(f² · g), leaving the outer f_k² factor.
 
-    σ_m(h) → sigma_m_scale · σ_m(h)
-
-See paper/design_doc_overlap_loss.md for the Bhattacharyya formulation.
+Notes
+-----
+- Reflection axis is kept fully resolved on h; B-factor axis is discretised
+  on a log-spaced grid (B is approximately lognormal per Wilson statistics).
+- Constant σ_d weighting is used because per-reflection 1/σ²(h) suffers
+  error-in-variables bias (MTZ σ estimates are themselves shot-noise limited).
+- Only isotropic atoms contribute to σ_m. Anisotropic atoms are ignored.
+- Memory: one shared ``exp_table`` (b_grid_n × N_refl) plus per-element
+  ``f_sq_kh`` (K × N_refl). For K ≤ 6, b_grid_n = 100, N_refl = 100 k this
+  is ≈ 42 MB float32.
 """
 
 import math
@@ -49,7 +52,6 @@ import torch
 from typing import TYPE_CHECKING, Dict
 
 from torchref.utils.stats import (
-    VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
     StatEntry,
@@ -69,37 +71,6 @@ class BhattacharyyaXrayTarget(XrayTarget):
     X-ray target based on the Bhattacharyya overlap between data and
     model Gaussians.
 
-    For each reflection h:
-
-        L_h = (F_obs - |F_calc|)^2 / (4 * (sigma_d^2 + sigma_m^2))
-              + 0.5 * log( (sigma_d^2 + sigma_m^2) / (2 * sigma_d * sigma_m) )
-
-    Total loss: sum over reflections.
-
-    **Model variance (diagonal Fisher + global scale)**
-
-    Per-atom positional variance from the diagonal data-only LS:
-
-        Var(x_j) = 3 / ( (2π)^2 * g_w(B_j) )
-        g_w(B)   = Σ_h (|s_h|^2 / sigma_d^2(h)) * exp(-2 B s_h^2/4)
-
-    Propagated into F_calc (unit scatterer):
-
-        sigma_m^2(h) = scale^2 * 3 * |s_h|^2 *
-                       Σ_j exp(-2 B_j s_h^2/4) / g_w(B_j)
-
-    The diagonal formula under-estimates the absolute scale because the
-    true CRLB ignores parameter correlations. A global multiplier
-    ``sigma_m_scale`` is applied to σ_m (not σ_m²) so the per-reflection
-    shape is preserved and only the overall magnitude is tuned.
-
-    **Update schedule**
-
-    - exp_table[b, h]: precomputed once.
-    - g_w(B): precomputed once (static — depends only on data).
-    - sigma_m(h): recomputed each forward() call from the current B
-      histogram. Gradients flow only through F_calc.
-
     Parameters
     ----------
     data : ReflectionData, optional
@@ -108,16 +79,11 @@ class BhattacharyyaXrayTarget(XrayTarget):
     use_work_set : bool, optional
         Use work set (default) or test set for loss.
     sigma_m_scale : float, optional
-        Global multiplier applied to σ_m. Default 1.0 (bare formula).
+        Global multiplier applied to σ_m. Default 1.0.
     b_grid_min, b_grid_max, b_grid_n : float, int, optional
-        Grid for g_w(B) lookup (A^2). Default 1-200 A^2, 100 points.
+        Log-spaced B-factor grid for σ_m computation.
+        Default 1–200 Å², 100 points.
     verbose : int, optional
-
-    Notes
-    -----
-    Currently uses isotropic atoms only; aniso atoms are ignored.
-    Hydrogens follow the model's ``exclude_H_from_sf`` setting via
-    ``model._iso_indices``.
     """
 
     def __init__(
@@ -127,32 +93,12 @@ class BhattacharyyaXrayTarget(XrayTarget):
         scaler: "Scaler" = None,
         use_work_set: bool = True,
         sigma_m_scale: float = 1.0,
-        sigma_weighting: str = "per_refl",
-        info_sum_mode: str = "g_w",
-        scatterer_profile: str = "unit",
         b_grid_min: float = 1.0,
         b_grid_max: float = 200.0,
         b_grid_n: int = 100,
         verbose: int = 0,
         **kwargs,
     ):
-        if sigma_weighting not in ("per_refl", "const"):
-            raise ValueError(
-                f"sigma_weighting must be 'per_refl' or 'const', got "
-                f"{sigma_weighting!r}"
-            )
-        if info_sum_mode not in ("g_w", "n_eff"):
-            raise ValueError(
-                f"info_sum_mode must be 'g_w' or 'n_eff', got {info_sum_mode!r}"
-            )
-        if scatterer_profile not in ("unit", "protein_rep"):
-            raise ValueError(
-                f"scatterer_profile must be 'unit' or 'protein_rep', got "
-                f"{scatterer_profile!r}"
-            )
-        self._sigma_weighting = sigma_weighting
-        self._info_sum_mode = info_sum_mode
-        self._scatterer_profile = scatterer_profile
         kwargs.pop("sigma_mode", None)
         kwargs.pop("n_bins", None)  # legacy kwarg ignored
         super().__init__(
@@ -163,7 +109,7 @@ class BhattacharyyaXrayTarget(XrayTarget):
             sigma_mode="raw",
             verbose=verbose,
         )
-        # log-spaced B grid (B ~ lognormal per Wilson statistics)
+        # log-spaced B grid
         log_b_grid = torch.linspace(
             math.log(b_grid_min), math.log(b_grid_max), b_grid_n
         )
@@ -179,14 +125,11 @@ class BhattacharyyaXrayTarget(XrayTarget):
         # Populated by _initialize_cache() on first forward()
         self.register_buffer("exp_table", torch.empty(0))      # (b_grid_n, N_refl)
         self.register_buffer("s_sq_per_refl", torch.empty(0))  # (N_refl,)
-        self.register_buffer("s_4_per_refl", torch.empty(0))   # (N_refl,) |s|^4
-        # Per-reflection f²(s) for the scatterer profile (ones if 'unit').
-        self.register_buffer("f_sq_per_refl", torch.empty(0))  # (N_refl,)
-        # Static Fisher-info denominator tables:
-        #   g_w_table[b] = Σ_h (f²(s)·|s|²/σ²) · exp(-2 b s²/4)   (position term)
-        #   g_4_table[b] = Σ_h (f²(s)·|s|⁴/σ²) · exp(-2 b s²/4)   (B-factor term)
-        self.register_buffer("g_w_table", torch.empty(0))      # (b_grid_n,)
-        self.register_buffer("g_4_table", torch.empty(0))      # (b_grid_n,)
+        self.register_buffer("s_4_per_refl", torch.empty(0))   # (N_refl,)
+        self.register_buffer("f_sq_kh", torch.empty(0))        # (K, N_refl)
+        self.register_buffer("g_w_table", torch.empty(0))      # (K, b_grid_n)
+        self.register_buffer("g_4_table", torch.empty(0))      # (K, b_grid_n)
+        self.register_buffer("atom_to_element", torch.empty(0, dtype=torch.long))
         self.register_buffer("sigma_d_mean", torch.tensor(0.0))
         self._initialized = False
 
@@ -195,12 +138,11 @@ class BhattacharyyaXrayTarget(XrayTarget):
     # ------------------------------------------------------------------
 
     def _initialize_cache(self) -> None:
-        """Precompute the exp_table[b, h] and refl_info_weight[h].
+        """Precompute f_sq_kh, exp_table, g_w_table, g_4_table, atom_to_element.
 
-        Reflection axis is kept fully resolved (no resolution binning);
-        only the B-factor axis is discretised onto the log-spaced b_grid
-        (default 100 points). Memory cost: exp_table is (b_grid_n × N_refl).
-        For 100 b values and 100 k reflections that's 40 MB float32.
+        Reflection axis is kept fully resolved; B-factor axis is discretised
+        on the log-spaced b_grid. The element-type axis groups iso atoms by
+        unique (A, B) ITC92 rows.
         """
         if self._data is None or self._scaler is None or self._model is None:
             raise RuntimeError(
@@ -227,38 +169,33 @@ class BhattacharyyaXrayTarget(XrayTarget):
         self.sigma_d_mean = (sigma_data * valid_f).sum() / valid_f.sum().clamp(
             min=1.0
         )
+        mean_sigma_sq = (
+            (sigma_data ** 2 * valid_f).sum() / valid_f.sum().clamp(min=1.0)
+        ).clamp(min=1e-12)
 
-        # f²(s) per reflection from the scatterer profile. 'unit' gives 1;
-        # 'protein_rep' uses carbon ITC92 coefficients as a representative.
-        if self._scatterer_profile == "unit":
-            f_sq = torch.ones_like(s_sq)
-        else:  # "protein_rep": ITC92 for C
-            a_c = torch.tensor(
-                [2.31, 1.02, 1.5886, 0.865], device=device, dtype=dtype
-            )
-            b_c = torch.tensor(
-                [20.8439, 10.2075, 0.5687, 51.6512], device=device, dtype=dtype
-            )
-            c_c = 0.2156
-            # f(s) = Σ a_i · exp(-b_i · s_half_sq) + c, where s_half_sq = sin²θ/λ²
-            f_per_refl = c_c + (
-                a_c.view(-1, 1)
-                * torch.exp(-b_c.view(-1, 1) * s_half_sq.view(1, -1))
-            ).sum(dim=0)
-            f_sq = f_per_refl ** 2
-        self.f_sq_per_refl = f_sq
+        # --- element-type grid -----------------------------------------
+        A_iso, B_iso = self._model.get_scattering_params_iso()  # (n_iso, 5)
+        A_iso = A_iso.to(device=device, dtype=dtype)
+        B_iso = B_iso.to(device=device, dtype=dtype)
+        # Row-hash to identify unique element types (one row per atom).
+        ab_rows = torch.cat([A_iso, B_iso], dim=-1)              # (n_iso, 10)
+        unique_rows, atom_to_element = torch.unique(
+            ab_rows, dim=0, return_inverse=True
+        )                                                        # (K, 10), (n_iso,)
+        K = unique_rows.shape[0]
+        element_A = unique_rows[:, :5]                           # (K, 5)
+        element_B = unique_rows[:, 5:]                           # (K, 5)
+        self.atom_to_element = atom_to_element.to(device=device)
 
-        # Per-reflection Fisher weights with invalids zeroed out.
-        if self._sigma_weighting == "per_refl":
-            inv_sd2 = (1.0 / (sigma_data ** 2).clamp(min=1e-12)) * valid_f
-        else:  # "const": use constant 1/<σ_d>² for all valid reflections
-            mean_sigma_sq = (
-                (sigma_data ** 2 * valid_f).sum() / valid_f.sum().clamp(min=1.0)
-            )
-            inv_sd2 = valid_f / mean_sigma_sq.clamp(min=1e-12)
-        refl_info_weight_w = s_sq * f_sq * inv_sd2         # (N_refl,) — g_w
-        refl_info_weight_4 = s_sq * s_sq * f_sq * inv_sd2  # (N_refl,) — g_4
+        # f_k(s_h) = Σ_m A_km · exp(-B_km · s_half_sq)            (K, N_refl)
+        # Vectorised over (K, 5, N_refl)
+        expon_f = (
+            -element_B.unsqueeze(-1) * s_half_sq.view(1, 1, -1)
+        ).clamp(min=-80.0, max=80.0)
+        f_kh = (element_A.unsqueeze(-1) * torch.exp(expon_f)).sum(dim=1)  # (K, N_refl)
+        self.f_sq_kh = f_kh * f_kh
 
+        # --- shared exp_table (b_grid_n, N_refl) -----------------------
         b_grid = self.b_grid.to(device=device, dtype=dtype)
         b_grid_n = b_grid.shape[0]
         n_refl = s_sq.shape[0]
@@ -273,29 +210,22 @@ class BhattacharyyaXrayTarget(XrayTarget):
             ).clamp(min=-80.0, max=80.0)
             exp_table[start:end] = torch.exp(expon)
 
-        # Zero invalid reflections so they contribute 0 in every matmul.
         invalid = (~validity).nonzero(as_tuple=True)[0]
         if invalid.numel() > 0:
             exp_table[:, invalid] = 0.0
         self.exp_table = exp_table
 
-        if self._info_sum_mode == "g_w":
-            # Fisher-info sums: g_w(B) = Σ_h (|s|²/σ²)·exp(-2Bs²/4),
-            #                   g_4(B) = Σ_h (|s|⁴/σ²)·exp(-2Bs²/4).
-            self.g_w_table = torch.matmul(exp_table, refl_info_weight_w)
-            self.g_4_table = torch.matmul(exp_table, refl_info_weight_4)
-        else:  # "n_eff": Kish participation ratio × mean Fisher weight
-            # N_eff(B) = (Σ_h exp(-2Bs²/4))² / Σ_h exp(-4Bs²/4)
-            exp_sum = exp_table.sum(dim=-1)                      # (b_grid_n,)
-            exp_sq_sum = (exp_table ** 2).sum(dim=-1)            # (b_grid_n,)
-            n_eff = (exp_sum ** 2) / exp_sq_sum.clamp(min=1e-30) # (b_grid_n,)
-            # Scale N_eff by the mean per-reflection Fisher weight so σ_m
-            # has the same dimensional prefactor as in the g_w mode.
-            n_valid = valid_f.sum().clamp(min=1.0)
-            mean_w = refl_info_weight_w.sum() / n_valid
-            mean_4 = refl_info_weight_4.sum() / n_valid
-            self.g_w_table = n_eff * mean_w
-            self.g_4_table = n_eff * mean_4
+        # --- per-element Fisher-info tables: (K, b_grid_n) -------------
+        # w_w_k[h] = |s|²·f_k²(s_h)/<σ²> · valid_f
+        # w_4_k[h] = |s|⁴·f_k²(s_h)/<σ²> · valid_f
+        inv_sig_sq_valid = valid_f / mean_sigma_sq
+        w_w = s_sq.unsqueeze(0) * self.f_sq_kh * inv_sig_sq_valid.unsqueeze(0)   # (K, N_refl)
+        w_4 = (s_sq * s_sq).unsqueeze(0) * self.f_sq_kh * inv_sig_sq_valid.unsqueeze(0)
+        # g_?_table[k, b] = Σ_h w_?[k, h] · exp_table[b, h]
+        # Use matmul: (K, N_refl) @ (N_refl, b_grid_n) → (K, b_grid_n)
+        exp_table_T = exp_table.transpose(0, 1)                  # (N_refl, b_grid_n)
+        self.g_w_table = torch.matmul(w_w, exp_table_T)          # (K, b_grid_n)
+        self.g_4_table = torch.matmul(w_4, exp_table_T)          # (K, b_grid_n)
 
         self._initialized = True
 
@@ -303,12 +233,12 @@ class BhattacharyyaXrayTarget(XrayTarget):
             n_valid = valid_f.sum().item()
             print(
                 f"  BhattacharyyaXrayTarget cache: n_refl={int(n_valid)}, "
-                f"b_grid_n={b_grid_n}, "
+                f"K_elements={K}, b_grid_n={b_grid_n}, "
                 f"sigma_d_mean={self.sigma_d_mean.item():.3f}"
             )
 
     # ------------------------------------------------------------------
-    # B-histogram and sigma_m computation (Wilson-share / option 3)
+    # B-histogram and sigma_m computation
     # ------------------------------------------------------------------
 
     def _log_b_index(self, b: torch.Tensor):
@@ -321,48 +251,55 @@ class BhattacharyyaXrayTarget(XrayTarget):
         frac = (idx_f - idx_lo.to(idx_f.dtype)).clamp(0.0, 1.0)
         return idx_lo, frac
 
-    def _build_b_histogram(self, b: torch.Tensor) -> torch.Tensor:
+    def _build_element_b_histogram(self, b: torch.Tensor) -> torch.Tensor:
         """
-        Soft histogram of atomic B-factors over the LOG-spaced b_grid.
+        Soft 2-D histogram of iso atoms over (element_type, log_B).
 
-        Each atom contributes (1-frac) and (frac) to its two log-B
-        neighbours, so Σ_b hist[b]·f(b) reproduces Σ_atoms f(B_atom) with
-        sub-grid accuracy for smooth f.
+        Parameters
+        ----------
+        b : torch.Tensor
+            (n_iso,) B-factors of the iso atoms.
+
+        Returns
+        -------
+        hist : torch.Tensor
+            (K, b_grid_n) soft histogram. Each atom contributes (1-frac) and
+            (frac) to its two log-B neighbours.
         """
+        K = self.f_sq_kh.shape[0]
         n_b = self.b_grid.shape[0]
         idx_lo, frac = self._log_b_index(b)
-        hist = torch.zeros(n_b, device=b.device, dtype=b.dtype)
-        hist.scatter_add_(0, idx_lo, 1.0 - frac)
-        hist.scatter_add_(0, idx_lo + 1, frac)
-        return hist
+        elem = self.atom_to_element
+        # Flat index into (K, n_b) grid: elem * n_b + b_idx.
+        flat_lo = elem * n_b + idx_lo
+        flat_hi = elem * n_b + (idx_lo + 1)
+        hist = torch.zeros(K * n_b, device=b.device, dtype=b.dtype)
+        hist.scatter_add_(0, flat_lo, 1.0 - frac)
+        hist.scatter_add_(0, flat_hi, frac)
+        return hist.view(K, n_b)
 
     def _sigma_m_sq_per_refl(self) -> torch.Tensor:
         """
-        Per-reflection σ_m² with both position and B-factor error:
+        Per-reflection σ_m² — see module docstring for derivation.
 
-            σ_m²(h) = scale² · f²(s_h) · [
-                3 · |s_h|² · Σ_j exp(-2 B_j s_h²/4) / g_w(B_j)    (position)
-              +     s_h⁴  · Σ_j exp(-2 B_j s_h²/4) / g_4(B_j)    (B-factor)
-            ]
-
-        f²(s_h) is 1 for the 'unit' scatterer profile and the squared C
-        scattering factor for 'protein_rep'. g_w(B) and g_4(B) are static
-        precomputed 1-D tables whose sums include the f²(s) weight.
+        Returns
+        -------
+        torch.Tensor
+            (N_refl,) σ_m² with ``sigma_m_scale`` applied.
         """
-        model = self._model
-        iso_idx = model._iso_indices
-        b_iso = model.adp()[iso_idx]                              # (N_iso,)
-        hist = self._build_b_histogram(b_iso)                     # (b_grid_n,)
+        b_iso = self._model.adp()[self._model._iso_indices]       # (n_iso,)
+        hist = self._build_element_b_histogram(b_iso)             # (K, b_grid_n)
 
-        weighted_w = hist / self.g_w_table.clamp(min=1e-30)
+        weighted_w = hist / self.g_w_table.clamp(min=1e-30)       # (K, b_grid_n)
         weighted_4 = hist / self.g_4_table.clamp(min=1e-30)
-        atom_factor_w = torch.matmul(weighted_w, self.exp_table)  # (N_refl,)
-        atom_factor_4 = torch.matmul(weighted_4, self.exp_table)  # (N_refl,)
+        atom_factor_w = torch.matmul(weighted_w, self.exp_table)  # (K, N_refl)
+        atom_factor_4 = torch.matmul(weighted_4, self.exp_table)  # (K, N_refl)
 
-        sigma_m_sq = self.f_sq_per_refl * (
-            3.0 * self.s_sq_per_refl * atom_factor_w
-            + self.s_4_per_refl * atom_factor_4
-        ).clamp(min=1e-12)
+        per_type = self.f_sq_kh * (
+            3.0 * self.s_sq_per_refl.unsqueeze(0) * atom_factor_w
+            + self.s_4_per_refl.unsqueeze(0) * atom_factor_4
+        )                                                         # (K, N_refl)
+        sigma_m_sq = per_type.sum(dim=0).clamp(min=1e-12)         # (N_refl,)
         return (self.sigma_m_scale ** 2) * sigma_m_sq
 
     def _sigma_m_per_refl(self) -> torch.Tensor:
@@ -379,8 +316,8 @@ class BhattacharyyaXrayTarget(XrayTarget):
         F_obs, F_calc, sigma_d, _centric, mask = self.get_data(fcalc=fcalc)
         F_calc_amp = torch.abs(F_calc)
 
-        # sigma_m is non-differentiable: refreshed per call from the
-        # current atomic B distribution via the Wilson-share coupling.
+        # σ_m is non-differentiable — refreshed each call from the current
+        # atomic B distribution.
         with torch.no_grad():
             sigma_m = self._sigma_m_per_refl()
 
@@ -403,7 +340,7 @@ class BhattacharyyaXrayTarget(XrayTarget):
     # ------------------------------------------------------------------
 
     def stats(self, fcalc: torch.Tensor = None) -> Dict[str, StatEntry]:
-        """Add sigma_m/sigma_d diagnostics (per-reflection mean & max ratio)."""
+        """Add σ_m/σ_d diagnostics (mean and max ratio over all reflections)."""
         base = super().stats(fcalc=fcalc)
         if not self._initialized:
             return base

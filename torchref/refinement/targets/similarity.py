@@ -210,7 +210,7 @@ class CoordinateSimilarityTarget(Target):
         z_static = -0.5 * delta_sq / sigma_sq + self._alpha
         loss = -torch.logaddexp(z_static, torch.zeros_like(z_static))
 
-        return loss.mean()
+        return loss.sum()
 
     def stats(self) -> Dict[str, StatEntry]:
         """Get similarity restraint statistics."""

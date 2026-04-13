@@ -15,77 +15,29 @@ Standard Refinement
 ``torchref.refine``
 ~~~~~~~~~~~~~~~~~~~
 
-Basic LBFGS crystallographic refinement.
+LBFGS crystallographic refinement. Defaults to the Bhattacharyya overlap
+X-ray target with first-principles model uncertainty and joint
+XYZ+ADP+scaler optimisation.
 
 .. code-block:: bash
 
-   torchref.refine -s model.pdb -f data.mtz -o output/
+   torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
 
-Produces refined coordinates (PDB), structure factors (MTZ), and a
-``refinement_history.json`` log.
+Produces refined coordinates (PDB and/or mmCIF), structure factors (MTZ),
+and a ``refinement_history.json`` log.
 
-**Key options:** ``-n`` number of cycles, ``--max-res`` resolution cutoff,
-``--device`` (cpu/cuda), ``-w`` JSON weight file, ``-v`` verbose.
+**Key options:**
+
+* ``-n`` number of macro cycles (default 5)
+* ``--mode`` ``everything`` (joint, default) or ``refine`` (separated XYZ
+  then ADP)
+* ``--xray-mode`` ``bhattacharyya`` (default), ``ml``, ``ls``, ``gaussian``
+* ``--sigma-m-scale`` global multiplier on σ_m for the Bhattacharyya target
+* ``--dmin`` resolution cutoff
+* ``--device`` ``cpu`` / ``cuda``
+* ``-v`` verbose
 
 :API: :mod:`torchref.cli.refine`
-
-``torchref.refine-static``
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Refinement with fixed component weights (default: xray=1.0, geometry=10.0,
-adp=5.0).  Useful as a baseline for comparison.
-
-.. code-block:: bash
-
-   torchref.refine-static -s model.pdb -f data.mtz -o output/
-
-**Key options:** ``-w`` JSON file to override weights.
-
-:API: :mod:`torchref.cli.refine_everything_static`
-
-``torchref.refine-hyper``
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Refinement with user provided hyperparameters.  Uses
-``ComponentWeighting`` (XrayScaleWeighting + TargetOffsetWeighting +
-OverfittingWeighting) with pre-tuned parameters.
-
-.. code-block:: bash
-
-   torchref.refine-hyper -s model.pdb -f data.mtz -o output/
-
-**Key options:** ``-w`` path to custom hyperparameter JSON, or ``"none"``
-to skip.
-
-:API: :mod:`torchref.cli.refine_everything_hyperparameters`
-
-``torchref.refine-policy``
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Refinement with a trained neural-network policy that predicts component
-weights from the current refinement state (AWR-trained).
-
-.. code-block:: bash
-
-   torchref.refine-policy -s model.pdb -f data.mtz --policy policy.pt -o output/
-
-**Key options:** ``--policy`` path to checkpoint, ``--sample`` enable
-stochastic sampling, ``--temperature`` sampling temperature.
-
-:API: :mod:`torchref.cli.refine_everything_policy`
-
-``torchref.refine-random-weights``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Refinement with randomly sampled component weights (log-normal
-distributions).  Used to generate diverse training trajectories for
-policy-network training.
-
-.. code-block:: bash
-
-   torchref.refine-random-weights -s model.pdb -f data.mtz -o output/ --seed 42
-
-:API: :mod:`torchref.cli.refine_everything_random_weights`
 
 Difference Refinement
 ---------------------

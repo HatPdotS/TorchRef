@@ -3,19 +3,24 @@
 """
 Command-line script for LBFGS crystallographic refinement using torchref.
 
-Provides a simple interface to run structure refinement with reflection
-data, producing refined coordinates, structure factors, and refinement
-statistics.
+Supports the Bhattacharyya overlap target by default; Gaussian / least-squares
+/ maximum-likelihood targets remain available via ``--xray-mode``.
 
 Examples
 --------
 ::
 
-    # Basic refinement
+    # Default: Bhattacharyya target, joint XYZ+ADP+scaler LBFGS
     torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
 
-    # With 10 refinement cycles
+    # 10 refinement cycles
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
+
+    # Separated XYZ then ADP cycles
+    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode refine
+
+    # Legacy maximum-likelihood target
+    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
 """
 
 import argparse
@@ -26,44 +31,45 @@ from pathlib import Path
 import torch
 
 from torchref.cli._common import (
-    configure_unbuffered_output,
-    add_single_model_args,
-    add_n_cycles_arg,
     add_dmin_arg,
-    add_weights_arg,
+    add_general_args,
+    add_metadata_args,
+    add_n_cycles_arg,
     add_outdir_arg,
     add_output_format_args,
-    add_metadata_args,
-    add_general_args,
+    add_single_model_args,
+    build_column_names,
+    configure_unbuffered_output,
+    register_timing,
     resolve_device,
     validate_files,
-    build_column_names,
-    parse_weights,
-    register_timing,
     write_refinement_outputs,
 )
 from torchref.utils.serialization import convert_to_serializable
 
 configure_unbuffered_output()
 
+# Import stats module early to patch json with StatEntry encoder
+import torchref.utils.stats  # noqa: F401,E402
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run LBFGS crystallographic refinement",
+        description="Run LBFGS crystallographic refinement with torchref.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic refinement
+  # Default: Bhattacharyya target, joint XYZ+ADP+scaler LBFGS
   torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
 
-  # With 10 refinement cycles
+  # 10 refinement cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
 
-  # Using CIF files
-  torchref.refine -m model.cif -sf reflections.cif -o output/
+  # Separated XYZ then ADP cycles
+  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode refine
 
-  # Output mmCIF only
-  torchref.refine -m model.pdb -sf data.mtz -o output/ --output-format cif
+  # Legacy maximum-likelihood target
+  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
         """,
     )
 
@@ -74,9 +80,32 @@ Examples:
     add_output_format_args(output)
     add_metadata_args(output)
 
-    refine = parser.add_argument_group("Refinement")
-    add_n_cycles_arg(refine)
-    add_weights_arg(refine, default_weights={"xray": 1.0, "restraints": 1.0, "adp": 1.0})
+    refine_group = parser.add_argument_group("Refinement")
+    add_n_cycles_arg(refine_group)
+    refine_group.add_argument(
+        "--mode",
+        type=str,
+        default="everything",
+        choices=["everything", "refine"],
+        help='Refinement mode: "everything" for joint XYZ+ADP+scaler LBFGS, '
+        '"refine" for separated XYZ then ADP cycles (default: "everything")',
+    )
+    refine_group.add_argument(
+        "--xray-mode",
+        type=str,
+        default="bhattacharyya",
+        choices=["gaussian", "ls", "ml", "bhattacharyya"],
+        help="X-ray target function. 'bhattacharyya' (default) uses the "
+        "Bhattacharyya overlap loss with first-principles model error "
+        "estimation and needs no manual weight tuning.",
+    )
+    refine_group.add_argument(
+        "--sigma-m-scale",
+        type=float,
+        default=1.0,
+        help="Global multiplier applied to σ_m for the Bhattacharyya target. "
+        "Ignored for other targets. Default 1.0.",
+    )
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -87,23 +116,16 @@ Examples:
 
     register_timing()
 
-    # Parse weights argument
-    weights, err = parse_weights(args.weights, defaults={"xray": 1.0, "restraints": 1.0, "adp": 1.0})
-    if err:
-        print(f"Error: {err}", file=sys.stderr)
-        sys.exit(1)
-
     # Validate inputs
     model_path = Path(args.model)
     sf_path = Path(args.structure_factor)
     outdir = Path(args.outdir)
 
-    rc = validate_files([
-        (args.model, "Model"),
-        (args.structure_factor, "Structure factor"),
-    ], exit_on_error=True)
+    validate_files(
+        [(str(model_path), "Model"), (str(sf_path), "Structure factors")],
+        exit_on_error=True,
+    )
 
-    # Create output directory
     outdir.mkdir(parents=True, exist_ok=True)
 
     # Import here to avoid slow startup for --help
@@ -114,35 +136,33 @@ Examples:
         print("Please ensure torchref is properly installed.", file=sys.stderr)
         sys.exit(1)
 
-    # Print header
     if args.verbose > 0:
         print("=" * 80)
         print("TorchRef LBFGS Refinement")
         print("=" * 80)
-        print(f"Model:            {model_path}")
-        print(f"Structure factor: {sf_path}")
-        print(f"Output directory: {outdir}")
+        print(f"Model:             {model_path}")
+        print(f"Structure factor:  {sf_path}")
+        print(f"Output directory:  {outdir}")
+        print(f"Refinement mode:   {args.mode}")
+        print(f"X-ray target:      {args.xray_mode}")
+        if args.xray_mode == "bhattacharyya":
+            print(f"sigma_m scale:     {args.sigma_m_scale}")
         print(f"Refinement cycles: {args.n_cycles}")
-        print(f"Device:           {args.device}")
+        print(f"Device:            {args.device}")
         if args.dmin:
-            print(f"Resolution cutoff: {args.dmin:.2f} Å")
+            print(f"Resolution cutoff: {args.dmin:.2f} A")
         print("=" * 80)
         print()
         sys.stdout.flush()
 
-    # Setup device
     device = resolve_device(args.device)
 
     if args.verbose > 0:
         print("Initializing refinement...")
         sys.stdout.flush()
 
-    # Create weighting module
-
-    # Build column_names for MTZ loading
     column_names = build_column_names(args.column_structure_factor, args.column_sigma)
 
-    # Initialize refinement
     refinement = LBFGSRefinement(
         data_file=str(sf_path),
         pdb=str(model_path),
@@ -151,6 +171,8 @@ Examples:
         max_res=args.dmin,
         device=device,
         column_names=column_names,
+        target_mode=args.xray_mode,
+        sigma_m_scale=args.sigma_m_scale,
     )
 
     if args.verbose > 0:
@@ -163,7 +185,10 @@ Examples:
             print(f"Starting refinement with {args.n_cycles} macro cycles...\n")
             sys.stdout.flush()
 
-        refinement.refine(macro_cycles=args.n_cycles)
+        if args.mode == "everything":
+            refinement.refine_everything(macro_cycles=args.n_cycles)
+        else:
+            refinement.refine(macro_cycles=args.n_cycles)
 
         refinement.get_scales()
 
@@ -192,7 +217,6 @@ Examples:
 
     # Save refinement history as JSON
     output_json = outdir / "refinement_history.json"
-
     history_data = {
         "input_files": {
             "model": str(model_path),
@@ -201,6 +225,9 @@ Examples:
         },
         "parameters": {
             "n_cycles": args.n_cycles,
+            "mode": args.mode,
+            "xray_mode": args.xray_mode,
+            "sigma_m_scale": args.sigma_m_scale,
             "dmin": args.dmin,
             "device": str(device),
         },
@@ -249,7 +276,7 @@ Examples:
         print("Refinement Summary")
         print("=" * 80)
 
-        if "final_statistics" in history_data and history_data["final_statistics"]:
+        if history_data["final_statistics"]:
             stats = history_data["final_statistics"]
             print(
                 f"R-work:  {stats['R_work']:.4f} ({stats['n_reflections_work']} reflections)"
@@ -262,10 +289,9 @@ Examples:
 
         print("=" * 80)
         print("\nOutput files:")
-        if outputs["pdb"]:
-            print(f"  - {outputs['pdb']}")
-        if outputs["cif"]:
-            print(f"  - {outputs['cif']}")
+        for fmt in ("pdb", "cif"):
+            if outputs.get(fmt) is not None:
+                print(f"  - {outputs[fmt]}")
         if (outdir / "refined.mtz").exists():
             print(f"  - {outdir / 'refined.mtz'}")
         print(f"  - {output_json}")

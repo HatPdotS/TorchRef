@@ -113,6 +113,7 @@ from torchref.cli._common import (
     validate_files,
 )
 from torchref.utils.serialization import convert_to_serializable
+from torchref.utils.loss_validation import validate_loss
 
 configure_unbuffered_output()
 
@@ -121,19 +122,19 @@ configure_unbuffered_output()
 # ---------------------------------------------------------------------------
 
 DEFAULT_TARGET_WEIGHTS = {
-    "xray/difference": 5.0,
+    "xray/difference": 1.0,
     "xray/ml": 0.0,
-    "geometry/bond": 2.0,
-    "geometry/angle": 2.0,
-    "geometry/torsion": 2.0,
-    "geometry/planarity": 2.0,
-    "geometry/chiral": 0.5,
+    "geometry/bond": 1.0,
+    "geometry/angle": 1.0,
+    "geometry/torsion": 1.0,
+    "geometry/planarity": 1.0,
+    "geometry/chiral": 1.0,
     "geometry/nonbonded": 1.0,
-    "geometry/ramachandran": 0.5,
-    "adp/simu": 0.5,
-    "adp/locality": 0.2,
-    "adp/KL": 0.2,
-    "similarity": 3.0,
+    "geometry/ramachandran": 1.0,
+    "adp/simu": 1.0,
+    "adp/locality": 1.0,
+    "adp/KL": 1.0,
+    "similarity": 1.0,
 }
 
 
@@ -565,6 +566,20 @@ def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
         optimizer.zero_grad()
         loss = state.aggregate()
         loss.backward()
+        ok = validate_loss(
+            loss,
+            state=state,
+            parameters=parameters,
+            context="collection_difference_refine.optimize_lbfgs",
+            raise_on_fail=False,
+        )
+        if not ok:
+            # Tell strong-Wolfe the probe failed: zero grads, return +inf.
+            # The line search will backtrack and try a smaller step.
+            for p in parameters:
+                if p.grad is not None:
+                    p.grad.zero_()
+            return torch.full_like(loss.detach(), float("inf"))
         return loss
 
     for i in range(nsteps):

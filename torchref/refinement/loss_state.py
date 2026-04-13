@@ -551,12 +551,35 @@ class LossState(DeviceMovementMixin):
 
         return dict(totals)
     
-    def summary(self) -> str:
-        print("LossState Summary:")
+    def format_breakdown(self) -> str:
+        """Return per-target loss / weight / weighted / finite as a string.
+
+        One row per target currently in ``self._losses`` (populated by the
+        most recent eager ``aggregate()`` call). Used by both ``summary()``
+        and :func:`torchref.utils.validate_loss` so the diagnostic format
+        does not drift.
+        """
+        lines = []
         for name, loss in self._losses.items():
             weight = self.get_effective_weight(name)
-            weighted_loss = weight * loss
-            print(f"  {name}: loss={loss.item():.4f}, weight={weight:.4f}, weighted={weighted_loss.item():.4f}")
+            try:
+                loss_val = loss.item() if torch.is_tensor(loss) else float(loss)
+            except Exception:
+                loss_val = float("nan")
+            weighted_val = weight * loss_val
+            is_finite = loss_val == loss_val and abs(loss_val) != float("inf")
+            finite_flag = "yes" if is_finite else "NO "
+            lines.append(
+                f"  {name:<32} w={weight:>9.4g}  "
+                f"loss={loss_val:>14.6g}  "
+                f"weighted={weighted_val:>14.6g}  {finite_flag}"
+            )
+        return "\n".join(lines)
+
+    def summary(self) -> None:
+        """Print a per-target loss breakdown to stdout."""
+        print("LossState Summary:")
+        print(self.format_breakdown())
 
     # =========================================================================
     # Device Management

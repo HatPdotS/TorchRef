@@ -26,9 +26,9 @@ from torchref.io.pdb import load_as_dataframe
 # ── Paths ────────────────────────────────────────────────────────────────────
 BASE = Path(__file__).resolve().parent
 EXPERIMENTS = BASE / "experiments"
-SCIENTIFIC_TESTING = BASE.parent
-DATA = SCIENTIFIC_TESTING / "data"
-PHENIX = SCIENTIFIC_TESTING / "phenix_refinement" / "refinements"
+PAPER_ROOT = BASE.parent
+DATA = PAPER_ROOT / "data"
+PHENIX = PAPER_ROOT / "phenix_refinements"
 
 
 def original_pdb_path(code):
@@ -130,7 +130,7 @@ def main():
 
     with open(exp_dir / "experiment.json") as f:
         meta = json.load(f)
-    variant = meta["variant_labels"][0]
+    variant = meta.get("variant_labels", ["default"])[0]
     structures = meta["structures"]
 
     print(f"Computing deviations for {len(structures)} structures "

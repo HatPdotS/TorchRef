@@ -3,6 +3,7 @@ Changelog
 
 Version 0.5.0
 -------------
+- Fixed weighting necessity by moving to unscaled log likelihoods for all targetes, overfitting weights remain
 - Fixed missing angle in Proline geometry
 - Fixed restraint issues where peptide bonds were not being recognized accross altlocs
 - Implemented VDW restraints between symmetry mates, and vectorized spatial hashing for gpu friendly neighbor search

@@ -92,9 +92,6 @@ def create_xray_target(
     use_work_set: bool = True,
     sigma_mode: str = "raw",
     sigma_m_scale: float = 1.0,
-    sigma_weighting: str = "per_refl",
-    info_sum_mode: str = "g_w",
-    scatterer_profile: str = "unit",
     verbose: int = 0,
 ) -> XrayTarget:
     """
@@ -140,9 +137,6 @@ def create_xray_target(
 
         return BhattacharyyaXrayTarget(
             sigma_m_scale=sigma_m_scale,
-            sigma_weighting=sigma_weighting,
-            info_sum_mode=info_sum_mode,
-            scatterer_profile=scatterer_profile,
             **kwargs,
         )
     else:

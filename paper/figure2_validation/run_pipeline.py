@@ -64,8 +64,7 @@ DATA = PAPER_ROOT / "data"                                 # symlink → scienti
 PHENIX = PAPER_ROOT / "phenix_refinements"                 # symlink → scientific_testing/.../refinements
 
 PYTHON = sys.executable
-REFINE_SCRIPT = str(REPO_ROOT / "torchref" / "cli" / "refine_everything_hyperparameters.py")
-DEFAULT_HYPERPARAMS = str(REPO_ROOT / "torchref" / "data" / "default_hyperparameters.json")
+REFINE_SCRIPT = str(REPO_ROOT / "torchref" / "cli" / "refine.py")
 
 import shutil
 REFMAC5 = shutil.which("refmac5") or "/afs/psi.ch/sys/psi.ra/MX/ccp4/7.1/ccp4-7.1/bin/refmac5"
@@ -88,21 +87,14 @@ def _mtz_file(code):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def setup_experiment(name, structures, n_cycles):
-    """Create experiment directory with default config."""
+    """Create experiment directory."""
     exp_dir = EXPERIMENTS / name
 
     if (exp_dir / "experiment.json").exists():
         print(f"Experiment '{name}' already exists. Loading existing config.")
         return exp_dir
 
-    config_dir = exp_dir / "configs"
-    config_dir.mkdir(parents=True, exist_ok=True)
-
-    # Copy default config into experiment for reproducibility
-    with open(DEFAULT_HYPERPARAMS) as f:
-        cfg = json.load(f)
-    with open(config_dir / "default.json", "w") as f:
-        json.dump(cfg, f, indent=2)
+    exp_dir.mkdir(parents=True, exist_ok=True)
 
     meta = {
         "name": name,
@@ -110,6 +102,8 @@ def setup_experiment(name, structures, n_cycles):
         "structures": structures,
         "n_cycles": n_cycles,
         "mode": "refine",
+        "xray_mode": "bhattacharyya",
+        "sigma_m_scale": 1.0,
     }
     with open(exp_dir / "experiment.json", "w") as f:
         json.dump(meta, f, indent=2)
@@ -141,7 +135,8 @@ def submit_refinement_jobs(exp_dir, dry_run=False, force=False):
     with open(exp_dir / "experiment.json") as f:
         exp = json.load(f)
 
-    config = exp_dir / "configs" / "default.json"
+    xray_mode = exp.get("xray_mode", "bhattacharyya")
+    sigma_m_scale = exp.get("sigma_m_scale", 1.0)
     job_ids = {}
     submitted, skipped, missing = 0, 0, 0
 
@@ -171,7 +166,8 @@ def submit_refinement_jobs(exp_dir, dry_run=False, force=False):
             f"-m {pdb} -sf {mtz} -o {outdir} "
             f"-n {exp['n_cycles']} "
             f"--mode {exp['mode']} "
-            f"--hyperparameters {config}"
+            f"--xray-mode {xray_mode} "
+            f"--sigma-m-scale {sigma_m_scale}"
             f"'"
         )
 

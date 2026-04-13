@@ -36,6 +36,13 @@ from .debug_utils import DebugMixin, print_module_summary
 # Gradient utilities
 from .gradnorm import gradnorm
 
+# Loss finiteness validator
+from .loss_validation import (
+    NonFiniteLossError,
+    reset_diagnostic_budget,
+    validate_loss,
+)
+
 # Hyperparameters
 from .hyperparameters import HyperparameterMixin
 
@@ -89,4 +96,8 @@ __all__ = [
     "convert_to_serializable",
     # Gradients
     "gradnorm",
+    # Loss finiteness validator
+    "validate_loss",
+    "NonFiniteLossError",
+    "reset_diagnostic_budget",
 ]

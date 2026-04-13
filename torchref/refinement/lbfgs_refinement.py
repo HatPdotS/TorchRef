@@ -18,6 +18,7 @@ import torch
 
 from torchref.refinement.base_refinement import Refinement
 from torchref.refinement.loss_state import LossState
+from torchref.utils.loss_validation import validate_loss
 
 
 class LBFGSRefinement(Refinement):
@@ -68,9 +69,6 @@ class LBFGSRefinement(Refinement):
         *args,
         target_mode: str = "ml",
         sigma_m_scale: float = 1.0,
-        sigma_weighting: str = "per_refl",
-        info_sum_mode: str = "g_w",
-        scatterer_profile: str = "unit",
         **kwargs,
     ):
         """
@@ -84,9 +82,6 @@ class LBFGSRefinement(Refinement):
         sigma_m_scale : float, optional
             Global multiplier for σ_m in the Bhattacharyya target only.
             Ignored for other target modes. Default 1.0.
-        sigma_weighting : str, optional
-            Bhattacharyya-only: 'per_refl' (default, weight Fisher info by
-            1/σ²(h)) or 'const' (weight by 1/<σ>² across all reflections).
         *args
             Passed to parent Refinement class.
         **kwargs
@@ -95,9 +90,6 @@ class LBFGSRefinement(Refinement):
         super().__init__(*args, **kwargs)
 
         self.sigma_m_scale = sigma_m_scale
-        self.sigma_weighting = sigma_weighting
-        self.info_sum_mode = info_sum_mode
-        self.scatterer_profile = scatterer_profile
         # Set the X-ray target mode (uses the new target system from base class)
         self.set_xray_target_mode(target_mode)
         self.target_mode = target_mode
@@ -162,10 +154,24 @@ class LBFGSRefinement(Refinement):
             line_search_fn="strong_wolfe",
         )
 
+        params_list = list(params)
+
         def closure():
             optimizer.zero_grad()
             loss = state.aggregate()
             loss.backward()
+            ok = validate_loss(
+                loss,
+                state=state,
+                parameters=params_list,
+                context="lbfgs_refinement._optimize_lbfgs",
+                raise_on_fail=False,
+            )
+            if not ok:
+                for p in params_list:
+                    if p.grad is not None:
+                        p.grad.zero_()
+                return torch.full_like(loss.detach(), float("inf"))
             return loss
 
         for _ in range(nsteps):
@@ -221,10 +227,24 @@ class LBFGSRefinement(Refinement):
             **exploration_kwargs,
         )
 
+        params_list = list(params)
+
         def closure():
             optimizer.zero_grad()
             loss = state.aggregate()
             loss.backward()
+            ok = validate_loss(
+                loss,
+                state=state,
+                parameters=params_list,
+                context="lbfgs_refinement._optimize_exploratory_lbfgs",
+                raise_on_fail=False,
+            )
+            if not ok:
+                for p in params_list:
+                    if p.grad is not None:
+                        p.grad.zero_()
+                return torch.full_like(loss.detach(), float("inf"))
             return loss
 
         for _ in range(nsteps):

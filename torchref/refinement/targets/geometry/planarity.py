@@ -16,6 +16,32 @@ if TYPE_CHECKING:
     from torchref.model.model import Model
 
 
+def _plane_normals(centered: torch.Tensor) -> torch.Tensor:
+    """Compute unit plane normals from centered coordinates via SVD.
+
+    Uses SVD on the centered coordinates in float64. SVD is backward-stable
+    even for rank-deficient matrices and never raises on finite input, so no
+    jitter is needed. The right singular vector with the smallest singular
+    value is the plane normal (direction of minimum variance).
+
+    The result is detached — the caller is responsible for wrapping this in
+    ``torch.no_grad()``.
+
+    Parameters
+    ----------
+    centered : torch.Tensor
+        (P, N, 3) atoms of each plane group, mean-centred.
+
+    Returns
+    -------
+    torch.Tensor
+        (P, 3) float64 plane normals (smallest-variance direction).
+    """
+    centered64 = centered.detach().to(torch.float64)
+    _U, _S, Vh = torch.linalg.svd(centered64, full_matrices=False)
+    return Vh[:, -1, :]
+
+
 class PlanarityTarget(GeometryTarget):
     """
     Planarity restraint target (Gaussian NLL).
@@ -77,12 +103,7 @@ class PlanarityTarget(GeometryTarget):
             # Plane normal via eigh on 3x3 covariance (detached — no backward
             # through the eigendecomposition, avoids NaN at degenerate eigenvalues)
             with torch.no_grad():
-                cov = torch.bmm(centered.transpose(1, 2), centered)
-                # Regularize to prevent ill-conditioning (atoms nearly collinear)
-                jitter = 1e-6 * torch.eye(3, device=device, dtype=cov.dtype).unsqueeze(0)
-                cov = cov + jitter
-                _eigenvalues, eigenvectors = torch.linalg.eigh(cov)
-                normals = eigenvectors[:, :, 0]  # smallest eigenvalue
+                normals = _plane_normals(centered).to(xyz.dtype)
 
             # Deviations: gradient flows through centered only
             deviations = torch.einsum("paj,pj->pa", centered, normals)
@@ -120,11 +141,7 @@ class PlanarityTarget(GeometryTarget):
             centroids = positions.mean(dim=1, keepdim=True)
             centered = positions - centroids
 
-            cov = torch.bmm(centered.transpose(1, 2), centered)
-            jitter = 1e-6 * torch.eye(3, device=xyz.device, dtype=cov.dtype).unsqueeze(0)
-            cov = cov + jitter
-            _eigenvalues, eigenvectors = torch.linalg.eigh(cov)
-            normals = eigenvectors[:, :, 0]
+            normals = _plane_normals(centered).to(xyz.dtype)
 
             deviations = torch.abs(torch.einsum("paj,pj->pa", centered, normals))
 

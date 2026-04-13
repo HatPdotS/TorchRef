@@ -34,3 +34,4 @@ claude
 # Sphinx build output
 docs/_build/
 docs/api/
+paper/figure2_validation/experiments

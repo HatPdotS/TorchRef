@@ -36,6 +36,7 @@ import torch
 from torch import nn
 
 from torchref.refinement.loss_state import LossState, create_loss_state
+from torchref.utils.loss_validation import validate_loss
 from torchref.kinetic.targets import (
     CollectionDifferenceTarget,
     CollectionMLTarget,
@@ -302,11 +303,25 @@ class KineticRefinement(nn.Module):
             params, lr=lr, max_iter=max_iter, line_search_fn="strong_wolfe"
         )
 
+        params_list = list(params)
+
         for i in range(niter):
             def closure():
                 optimizer.zero_grad()
                 loss = self.get_loss()
                 loss.backward()
+                ok = validate_loss(
+                    loss,
+                    state=self.loss_state,
+                    parameters=params_list,
+                    context="kinetic.refinement._lbfgs_loop",
+                    raise_on_fail=False,
+                )
+                if not ok:
+                    for p in params_list:
+                        if p.grad is not None:
+                            p.grad.zero_()
+                    return torch.full_like(loss.detach(), float("inf"))
                 return loss
 
             loss = optimizer.step(closure)

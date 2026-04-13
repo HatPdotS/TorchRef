@@ -248,9 +248,6 @@ class Refinement(DebugMixin, nnModule):
             X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
         """
         sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
-        sigma_weighting = getattr(self, "sigma_weighting", "per_refl")
-        info_sum_mode = getattr(self, "info_sum_mode", "g_w")
-        scatterer_profile = getattr(self, "scatterer_profile", "unit")
         self.xray_target_work = create_xray_target(
             model=self.model,
             data=self.reflection_data,
@@ -258,9 +255,6 @@ class Refinement(DebugMixin, nnModule):
             mode=mode,
             use_work_set=True,
             sigma_m_scale=sigma_m_scale,
-            sigma_weighting=sigma_weighting,
-            info_sum_mode=info_sum_mode,
-            scatterer_profile=scatterer_profile,
             verbose=self.verbose,
         )
         self.xray_target_test = create_xray_target(
@@ -270,9 +264,6 @@ class Refinement(DebugMixin, nnModule):
             mode=mode,
             use_work_set=False,
             sigma_m_scale=sigma_m_scale,
-            sigma_weighting=sigma_weighting,
-            info_sum_mode=info_sum_mode,
-            scatterer_profile=scatterer_profile,
             verbose=self.verbose,
         )
         # Reset loss state since targets changed
@@ -672,16 +663,29 @@ class Refinement(DebugMixin, nnModule):
         applied from component_weighting.
 
         Usage:
+            from torchref.utils import validate_loss
+
             state = refinement.create_loss_state()
+            params = list(refinement.parameters())
 
             # Log initial state
             state.aggregate(log_values=True)
 
-            # In LBFGS closure:
+            # In an LBFGS closure, wrap with validate_loss so non-finite
+            # losses warn + reject the step instead of poisoning the run.
             def closure():
                 optimizer.zero_grad()
                 loss = state.aggregate()
                 loss.backward()
+                ok = validate_loss(
+                    loss, state=state, parameters=params,
+                    context="my_refinement", raise_on_fail=False,
+                )
+                if not ok:
+                    for p in params:
+                        if p.grad is not None:
+                            p.grad.zero_()
+                    return torch.full_like(loss.detach(), float("inf"))
                 return loss
 
             optimizer.step(closure)

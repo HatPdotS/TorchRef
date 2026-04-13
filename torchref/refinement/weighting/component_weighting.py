@@ -134,10 +134,10 @@ class OverfittingWeighting(BaseWeighting):
     applied to geometry, keeping most of the effect on ADP.
 
     Tunable parameters (as buffers):
-    - target_gap: R-factor gap threshold. Default 0.04 (4%).
+    - target_gap: R-factor gap threshold. Default 0.05 (5%).
     - min_weight: base correction factor. Default 1.0.
     - sharpness: exponential response steepness. Default 30.0.
-    - geom_share: fraction of correction applied to geometry. Default 0.2.
+    - geom_share: fraction of correction applied to geometry. Default 1.0.
     - smoothing: EMA smoothing factor (0-1). Default 0.8.
     """
 
@@ -146,10 +146,10 @@ class OverfittingWeighting(BaseWeighting):
     def __init__(
         self,
         device: torch.device = None,
-        target_gap: float = 0.04,
+        target_gap: float = 0.05,
         min_weight: float = 1.0,
         sharpness: float = 30.0,
-        geom_share: float = 0.2,
+        geom_share: float = 1.0,
         smoothing: float = 0.8,
     ):
         super().__init__(device)
@@ -270,7 +270,7 @@ class ComponentWeighting(nn.Module):
         self.device = device or torch.device("cpu")
 
         schemes_dict = {
-            "resolution": ResolutionWeighting(device),
+            # "resolution": ResolutionWeighting(device),
             "overfitting": OverfittingWeighting(device),
         }
 
