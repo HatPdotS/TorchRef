@@ -7,6 +7,10 @@ from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
 from torchref.refinement.loss_state import LossState
+from torchref.refinement.targets.adp.scaler_log_scale import (
+    ScalerLogScaleTrendTarget,
+)
+from torchref.refinement.targets.adp.scaler_u import ScalerURegularizationTarget
 from torchref.refinement.targets.combined import (
     TotalADPTarget,
     TotalGeometryTarget,
@@ -502,6 +506,15 @@ class Refinement(DebugMixin, nnModule):
         state.register_target("xray_work", lambda: self.xray_target_work())
         state.register_targets(self.geometry_target)
         state.register_targets(self.adp_target)
+        n_ref = int(self.reflection_data.hkl.shape[0])
+        state.register_target(
+            "adp/scaler_U",
+            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+        )
+        state.register_target(
+            "adp/scaler_log_scale",
+            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+        )
 
         # Populate meta and update weights
         state = self.populate_state_meta(state)
@@ -647,6 +660,15 @@ class Refinement(DebugMixin, nnModule):
 
         # Register ADP targets
         state.register_targets(self.adp_target)
+        n_ref = int(self.reflection_data.hkl.shape[0])
+        state.register_target(
+            "adp/scaler_U",
+            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+        )
+        state.register_target(
+            "adp/scaler_log_scale",
+            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+        )
 
         return state
 

@@ -40,15 +40,16 @@ class NonBondedTarget(GeometryTarget):
     (σ is an "effective tolerance" on the overlap) and puts the VDW loss on
     the same NLL footing as bond / angle / planarity.
 
-    **Default sigma = 0.13 Å.** Chosen so that MolProbity's clash threshold
-    of **0.4 Å overlap** corresponds to ~3σ — a clash is penalised at
-    ~20 NLL units under the :math:`p=4` shape, commensurate with a handful
-    of standard bond restraints. The classical PROLSQ strength
-    :math:`c_{\text{rep}}=16` at ``r_exp=4`` corresponds to the much looser
-    :math:`\sigma \approx 0.354\ \text{\AA}`, which made a 0.4 Å clash
-    contribute only ~4 NLL units — too weak against a
-    structure-factor loss of :math:`10^{5}` to pull clashes out. Set
-    ``sigma`` explicitly for deliberate tightening / loosening.
+    **Default sigma = 0.3 Å.** A practical middle ground: stiff enough
+    to reliably pull medium-large clashes (~0.4–0.5 Å) out of the
+    refinement but loose enough that starting from a shaken or rough
+    model doesn't generate LBFGS-destabilising gradients. A 0.4 Å
+    MolProbity clash sits at ~1.3σ and contributes ~0.8 NLL units; a
+    0.5 Å severe clash sits at ~1.7σ and contributes ~1.9 NLL units.
+    The classical PROLSQ strength ``c_rep=16, r_exp=4`` is equivalent
+    to :math:`\sigma \approx 0.354\ \text{\AA}`, very close to this
+    default. Set ``sigma`` explicitly for deliberate tightening (e.g.
+    0.13 Å → 3σ clash, ~20 NLL units) or loosening.
 
     Alternative modes:
 
@@ -71,8 +72,7 @@ class NonBondedTarget(GeometryTarget):
     mode : str, optional
         Repulsion function type ('prolsq', 'gaussian', 'soft'). Default is 'prolsq'.
     sigma : float, optional
-        Effective tolerance on the overlap in Angstroms. Default is 0.13,
-        calibrating a 0.4 Å MolProbity clash as a ~3-sigma event.
+        Effective tolerance on the overlap in Angstroms. Default is 0.3.
     r_exp : float, optional
         Exponent of the repulsion term. Default is 4.0.
     c_rep : float, optional
@@ -95,10 +95,11 @@ class NonBondedTarget(GeometryTarget):
         self,
         model: "Model" = None,
         mode: str = "prolsq",
-        sigma: float = 0.13,
+        sigma: float = 0.3,
         r_exp: float = 4.0,
         c_rep: "float | None" = None,
         buffer: float = 0.0,
+        rebuild_threshold: float = 1.0,
         verbose: int = 0,
         scale: float = 10.0,
     ):
@@ -112,9 +113,8 @@ class NonBondedTarget(GeometryTarget):
         mode : str, optional
             Repulsion function type ('prolsq', 'gaussian', 'soft'). Default is 'prolsq'.
         sigma : float, optional
-            Effective tolerance on the overlap (Å). Default 0.13 —
-            calibrates a 0.4 Å MolProbity clash as ~3σ. Only used when
-            ``c_rep`` is None.
+            Effective tolerance on the overlap (Å). Default 0.3. Only
+            used when ``c_rep`` is None.
         r_exp : float, optional
             Repulsion exponent. Default is 4.0.
         c_rep : float or None, optional
@@ -122,6 +122,12 @@ class NonBondedTarget(GeometryTarget):
             ``sigma`` as ``1 / (r_exp * sigma ** r_exp)``.
         buffer : float, optional
             Distance buffer in Angstroms added to VDW radii sum. Default is 0.0.
+        rebuild_threshold : float, optional
+            Maximum ASU atom displacement in Angstroms since the last
+            VDW pair-list build before :meth:`maintenance` triggers a
+            rebuild. Default is 1.0 Å — well inside the ~2.4 Å safety
+            margin of the default 6.0 Å cutoff, so newly-formed contacts
+            cannot slip through the list.
         verbose : int, optional
             Verbosity level. Default is 0.
         """
@@ -132,6 +138,9 @@ class NonBondedTarget(GeometryTarget):
         self.register_buffer("_sigma_vdw", torch.tensor(float(sigma)))
         self.register_buffer("_r_exp", torch.tensor(float(r_exp)))
         self.register_buffer("_buffer", torch.tensor(float(buffer)))
+        self.register_buffer(
+            "_rebuild_threshold", torch.tensor(float(rebuild_threshold))
+        )
         # c_rep: back-door override; by default derived from sigma so that
         # PROLSQ shape term equals v^p / (p * sigma^p).
         if c_rep is None:
@@ -186,6 +195,52 @@ class NonBondedTarget(GeometryTarget):
     def buffer(self, value: float):
         """Set distance buffer."""
         self._buffer.fill_(value)
+
+    def maintenance(self) -> None:
+        """Rebuild the VDW pair list if any ASU atom drifted too far.
+
+        Fast path: one ``max().item()`` sync on the per-atom displacement
+        norm between the current ASU coordinates and the snapshot taken
+        at the last VDW build. If the max displacement stays within
+        ``_rebuild_threshold`` we return immediately.
+
+        Slow path (only when triggered): delegate to
+        ``restraints.rebuild_vdw_restraints`` which refreshes the pair
+        list using the original build kwargs and updates the snapshot.
+        See :meth:`Target.maintenance` for the general contract.
+
+        Safety invariant: the default build cutoff (6.0 Å) leaves roughly
+        ``cutoff - max_vdw_sum ≈ 2.4 Å`` of slack before a previously-
+        non-contact atom pair could form a new clash. Setting
+        ``rebuild_threshold < 2.4 / 2 = 1.2 Å`` guarantees that no such
+        pair can slip through the list — that is, a rebuild fires
+        before the slack is consumed.
+        """
+        if self._model is None:
+            return
+        r = self.restraints
+        if r is None:
+            return
+        snapshot = getattr(r, "_last_vdw_build_xyz", None)
+        if snapshot is None:
+            return
+
+        with torch.no_grad():
+            delta = self._model.xyz() - snapshot
+            max_disp_sq = (delta * delta).sum(dim=-1).max()
+
+        thresh_sq = self._rebuild_threshold * self._rebuild_threshold
+        if max_disp_sq.item() <= thresh_sq.item():
+            return  # within slack — nothing to do
+
+        if self.verbose > 0:
+            max_disp = float(max_disp_sq.item()) ** 0.5
+            thresh = float(self._rebuild_threshold.item())
+            print(
+                f"  VDW rebuild: max drift {max_disp:.2f} Å > "
+                f"threshold {thresh:.2f} Å"
+            )
+        r.rebuild_vdw_restraints()
 
     def _compute_positions(
         self, xyz: torch.Tensor

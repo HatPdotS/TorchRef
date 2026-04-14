@@ -97,7 +97,6 @@ class ScalerBase(DebugMixin, nn.Module):
         self.device = device
         self.verbose = verbose
         self.nbins = nbins
-        self.frozen = False
 
         # Empty initialization - just set up configuration
         if data is None:
@@ -176,14 +175,6 @@ class ScalerBase(DebugMixin, nn.Module):
     def hkl(self):
         """Get HKL indices from data."""
         return self._data.hkl
-
-    def freeze(self):
-        """Freeze scaler parameters (exclude from optimization)."""
-        self.frozen = True
-
-    def unfreeze(self):
-        """Unfreeze scaler parameters (include in optimization)."""
-        self.frozen = False
 
     def calc_initial_scale(self, fcalc: torch.Tensor):
         """
@@ -729,21 +720,8 @@ class ScalerBase(DebugMixin, nn.Module):
         dict
             Dictionary with refinement metrics including steps, xray_work,
             xray_test, rwork, rfree.
-
-        Examples
-        --------
-        ::
-
-            scaler.unfreeze()
-            metrics = scaler.refine_lbfgs(fcalc, nsteps=5, verbose=True)
-            scaler.freeze()
         """
         from torchref.refinement.loss_state import LossState
-
-        # Ensure scaler is unfrozen
-        was_frozen = self.frozen
-        if was_frozen:
-            self.unfreeze()
 
         hkl, fobs, sigma, rfree_mask = self._data()
         fcalc = fcalc.detach()
@@ -821,10 +799,6 @@ class ScalerBase(DebugMixin, nn.Module):
                         f"Rwork={rwork:.4f}, Rfree={rfree_val:.4f}, "
                         f"NLL_work={xray_work.item():.2f}, NLL_test={xray_test.item():.2f}"
                     )
-
-        # Restore frozen state
-        if was_frozen:
-            self.freeze()
 
         # Estimate per-shell effective sigmas from residuals (SIGMAA-style)
         # This makes the X-ray likelihood robust to miscalibrated experimental sigmas.
@@ -949,12 +923,6 @@ class ScalerBase(DebugMixin, nn.Module):
                 )
 
             return sigma_eff_all
-
-    def parameters(self, recurse=True):
-        """Return parameters, respecting frozen state."""
-        if self.frozen:
-            return []
-        return super().parameters(recurse)
 
     def forward(
         self,
@@ -1099,7 +1067,6 @@ class ScalerBase(DebugMixin, nn.Module):
 
         state[prefix + "nbins"] = self.nbins
         state[prefix + "verbose"] = self.verbose
-        state[prefix + "frozen"] = self.frozen
 
         if hasattr(self, "solvent") and self.solvent is not None:
             state[prefix + "solvent"] = self.solvent.state_dict()
@@ -1121,7 +1088,8 @@ class ScalerBase(DebugMixin, nn.Module):
         """
         self.nbins = state_dict.pop("nbins", 20)
         self.verbose = state_dict.pop("verbose", 1)
-        self.frozen = state_dict.pop("frozen", False)
+        # Legacy state dicts may contain a "frozen" entry; drop it silently.
+        state_dict.pop("frozen", None)
 
         solvent_state = state_dict.pop("solvent", None)
 

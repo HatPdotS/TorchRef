@@ -118,6 +118,28 @@ class Target(nn.Module):
         state.add_loss(self.name, loss)
         return state
 
+    def maintenance(self) -> None:
+        """Between-step housekeeping hook (no-op by default).
+
+        :class:`~torchref.refinement.loss_state.LossState` calls this on
+        every registered target after each successful outer optimizer
+        step returns. Targets override this to rebuild stale internal
+        state (VDW pair lists, solvent masks, etc.) based on how far
+        parameters have drifted since the last refresh.
+
+        Contract
+        --------
+        - Must be idempotent: calling it multiple times in a row on an
+          unchanged model should not mutate the target.
+        - Fast path first: cheap staleness check up front, expensive
+          rebuild only when strictly necessary. ``LossState`` calls
+          this every outer step — the happy-path cost is paid every
+          time.
+        - Must not raise on routine drift. If a rebuild fails, let the
+          exception propagate — that's a real bug.
+        """
+        pass
+
 
 # =============================================================================
 # Model-Only Target Base Class

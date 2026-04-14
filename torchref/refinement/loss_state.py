@@ -734,6 +734,17 @@ class LossState(DeviceMovementMixin):
             # step exited. Defends against state bleeding between
             # successive refinement methods.
             self.restore_loss_leaf_grads()
+
+        # Post-step maintenance hook: each target decides whether its
+        # internal state is stale (e.g. NonBondedTarget rebuilds the VDW
+        # pair list when atoms have drifted too far since the last
+        # build). Targets that don't care inherit the no-op default
+        # from ``Target.maintenance``.
+        for target in self.targets.values():
+            maint = getattr(target, "maintenance", None)
+            if callable(maint):
+                maint()
+
         return last_loss["val"]
 
     def run(

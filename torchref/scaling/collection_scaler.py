@@ -325,10 +325,6 @@ class CollectionScaler(ScalerBase):
         """
         from torchref.refinement.loss_state import LossState
 
-        was_frozen = self.frozen
-        if was_frozen:
-            self.unfreeze()
-
         dc = self._dataset_collection
         mc = self._model_collection
         all_keys = [mc.dark_key] + mc.timepoint_names
@@ -426,9 +422,6 @@ class CollectionScaler(ScalerBase):
                 metrics["steps"].append(nsteps)
                 metrics["rwork"].append(rwork)
                 metrics["rfree"].append(rfree_val)
-
-        if was_frozen:
-            self.freeze()
 
         if verbose and self.verbose > 0:
             if metrics["rwork"]:

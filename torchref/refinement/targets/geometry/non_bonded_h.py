@@ -53,8 +53,7 @@ class NonBondedHTarget(NonBondedTarget):
     mode : str, optional
         Repulsion function type. Default ``'prolsq'``.
     sigma : float, optional
-        Effective tolerance on the overlap (Å). Default 0.13 — calibrates
-        a 0.4 Å MolProbity clash as ~3σ.
+        Effective tolerance on the overlap (Å). Default 0.3.
     r_exp : float, optional
         Repulsion exponent. Default 4.0.
     c_rep : float or None, optional
@@ -71,10 +70,11 @@ class NonBondedHTarget(NonBondedTarget):
         self,
         model: "Model" = None,
         mode: str = "prolsq",
-        sigma: float = 0.13,
+        sigma: float = 0.3,
         r_exp: float = 4.0,
         c_rep: "float | None" = None,
         buffer: float = 0.0,
+        rebuild_threshold: float = 1.0,
         verbose: int = 0,
     ):
         super().__init__(
@@ -84,6 +84,7 @@ class NonBondedHTarget(NonBondedTarget):
             r_exp=r_exp,
             c_rep=c_rep,
             buffer=buffer,
+            rebuild_threshold=rebuild_threshold,
             verbose=verbose,
         )
 
