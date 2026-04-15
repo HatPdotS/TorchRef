@@ -81,7 +81,7 @@ class MaximumLikelihoodXrayTarget(XrayTarget):
         # Replace any NaN/Inf with large finite value to maintain gradient signal
         loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
 
-        return (loss * mask).sum() / mask.sum()
+        return (loss * mask).sum()
 
 
 def create_xray_target(
@@ -90,6 +90,8 @@ def create_xray_target(
     scaler: "Scaler" = None,
     mode: str = "gaussian",
     use_work_set: bool = True,
+    sigma_mode: str = "raw",
+    sigma_m_scale: float = 1.0,
     verbose: int = 0,
 ) -> XrayTarget:
     """
@@ -108,6 +110,10 @@ def create_xray_target(
         Target mode: 'gaussian', 'ls', or 'ml'. Default is 'gaussian'.
     use_work_set : bool, optional
         Use work set (True) or test set (False). Default is True.
+    sigma_mode : str, optional
+        'effective' (default) to use per-shell effective sigmas from the
+        scaler (SIGMAA-style, robust), or 'raw' to use raw experimental
+        sigmas from the data file.
     verbose : int, optional
         Verbosity level. Default is 0.
 
@@ -116,17 +122,22 @@ def create_xray_target(
     XrayTarget
         Appropriate XrayTarget instance.
     """
+    kwargs = dict(
+        data=data, model=model, scaler=scaler,
+        use_work_set=use_work_set, sigma_mode=sigma_mode, verbose=verbose,
+    )
     if mode == "gaussian":
-        return GaussianXrayTarget(
-            data=data, model=model, scaler=scaler, use_work_set=use_work_set, verbose=verbose
-        )
+        return GaussianXrayTarget(**kwargs)
     elif mode == "ls":
-        return LeastSquaresXrayTarget(
-            data=data, model=model, scaler=scaler, use_work_set=use_work_set, verbose=verbose
-        )
+        return LeastSquaresXrayTarget(**kwargs)
     elif mode == "ml":
-        return MaximumLikelihoodXrayTarget(
-            data=data, model=model, scaler=scaler, use_work_set=use_work_set, verbose=verbose
+        return MaximumLikelihoodXrayTarget(**kwargs)
+    elif mode == "bhattacharyya":
+        from .bhattacharyya import BhattacharyyaXrayTarget
+
+        return BhattacharyyaXrayTarget(
+            sigma_m_scale=sigma_m_scale,
+            **kwargs,
         )
     else:
         raise ValueError(f"Unknown X-ray target mode: {mode}")

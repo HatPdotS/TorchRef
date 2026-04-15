@@ -546,9 +546,13 @@ class RestraintsNew(DebugMixin, Module):
             self._build_peptide_restraints(device)
             self._build_disulfide_restraints(device)
 
-            # Build VDW restraints
+            # Build VDW restraints. Cutoff is held ~1 Å wider than the
+            # maximum heavy-atom VDW sum (~3.6 Å) plus the expected inter-
+            # build drift, so the maintenance-triggered rebuild can be
+            # driven by a displacement threshold well inside the cutoff
+            # margin without missing newly-formed contacts.
             self._build_vdw_restraints(
-                cutoff=5.0, sigma=0.05, inter_residue_only=False, use_spatial_hash=True
+                cutoff=6.0, sigma=0.05, inter_residue_only=False, use_spatial_hash=True
             )
 
             # Pre-compute concatenated 'all' groups so every buffer is registered
@@ -1160,7 +1164,7 @@ class RestraintsNew(DebugMixin, Module):
         return torch.tensor(hashes, dtype=torch.long, device=device)
 
     def _build_vdw_restraints(
-        self, cutoff=5.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True
+        self, cutoff=6.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True
     ):
         """Build van der Waals (non-bonded contact) restraints.
 
@@ -1171,7 +1175,23 @@ class RestraintsNew(DebugMixin, Module):
         is available.  Falls back to the legacy spatial hash otherwise.
 
         Also builds the riding hydrogen topology for H-VDW evaluation.
+
+        Caches the build kwargs and a detached snapshot of the ASU
+        coordinates at build time in ``_vdw_build_kwargs`` and
+        ``_last_vdw_build_xyz``. :meth:`rebuild_vdw_restraints` consults
+        those to refresh the pair list with the same parameters, and
+        ``NonBondedTarget.maintenance`` uses the snapshot to decide
+        whether a rebuild is needed.
         """
+        # Remember how we built so rebuild can call back with the same
+        # parameters without re-plumbing them through every caller.
+        self._vdw_build_kwargs = dict(
+            cutoff=cutoff,
+            sigma=sigma,
+            inter_residue_only=inter_residue_only,
+            use_spatial_hash=use_spatial_hash,
+        )
+
         if self.verbose > 0:
             print("\nBuilding VDW (non-bonded) restraints...")
 
@@ -1237,6 +1257,30 @@ class RestraintsNew(DebugMixin, Module):
                     all_radii[self._h_topo.cand_idx_i]
                     + all_radii[self._h_topo.cand_idx_j]
                 )
+
+        # Snapshot the ASU coordinates *at* build time so maintenance()
+        # callers can diff current positions against it and decide if a
+        # rebuild is needed. Detached clone lives on the same device as
+        # the model, so the compare is a single GPU op.
+        if self._xyz_fn is not None:
+            self._last_vdw_build_xyz = self.xyz().detach().clone()
+
+    def rebuild_vdw_restraints(self) -> None:
+        """Refresh the VDW pair list using the cached build kwargs.
+
+        Called by :meth:`NonBondedTarget.maintenance` after it detects
+        that the maximum atomic displacement since the last build has
+        exceeded the rebuild threshold. Uses the same ``cutoff``,
+        ``sigma``, ``inter_residue_only`` and ``use_spatial_hash`` that
+        the initial build was given, so behaviour is stable across the
+        run.
+        """
+        if not hasattr(self, "_vdw_build_kwargs"):
+            raise RuntimeError(
+                "rebuild_vdw_restraints called before initial build "
+                "— _vdw_build_kwargs is missing"
+            )
+        self._build_vdw_restraints(**self._vdw_build_kwargs)
 
     def _build_vdw_restraints_legacy(
         self, cutoff=5.0, sigma=0.2, inter_residue_only=True, use_spatial_hash=True

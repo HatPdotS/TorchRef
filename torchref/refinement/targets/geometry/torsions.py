@@ -51,7 +51,7 @@ class TorsionTarget(GeometryTarget):
         # NLL = -log P(theta)
         log_prob = kappa * torch.cos(deviations_rad) - log_i0_kappa - log_2pi
 
-        return (-log_prob).mean()
+        return (-log_prob).sum()
 
     def stats(self) -> Dict[str, StatEntry]:
         """Get torsion angle statistics."""

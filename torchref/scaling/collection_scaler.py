@@ -323,17 +323,7 @@ class CollectionScaler(ScalerBase):
         dict
             Refinement metrics (steps, rwork, rfree of dark dataset).
         """
-        was_frozen = self.frozen
-        if was_frozen:
-            self.unfreeze()
-
-        optimizer = torch.optim.LBFGS(
-            self.parameters(),
-            lr=lr,
-            max_iter=max_iter,
-            history_size=history_size,
-            line_search_fn="strong_wolfe",
-        )
+        from torchref.refinement.loss_state import LossState
 
         dc = self._dataset_collection
         mc = self._model_collection
@@ -355,41 +345,48 @@ class CollectionScaler(ScalerBase):
             fractions_cache[name] = model.fractions.detach()
             data_cache[name] = (fobs, sigma, rfree)
 
-        def closure():
-            optimizer.zero_grad()
-            total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
-            n = 0
-            for name in all_keys:
-                if name not in fcalc_cache:
-                    continue
-                fc = fcalc_cache[name]
-                fracs = fractions_cache[name]
-                fobs, sigma, rfree = data_cache[name]
+        # Wrap the joint NLL + U-penalty as a LossState target. fcalc is
+        # detached, so the only leaves in the autograd graph are the
+        # scaler's own parameters — LossState's probe picks them up at
+        # registration time, and validate_loss inside state.step handles
+        # NaN/Inf rejection so no per-target try/except is needed.
+        scaler_self = self
 
-                f_sol_raw = self.get_mixed_solvent_raw(fracs)
-                scaled = super(CollectionScaler, self).forward(
-                    fc, f_sol_override=f_sol_raw
-                )
+        class _CollectionScalerJointTarget(nn.Module):
+            name = "scaler/joint"
 
-                loss = nll_xray(fobs, scaled, sigma)
-                if torch.isfinite(loss):
-                    total_loss = total_loss + loss
-                    n += 1
+            def forward(self):
+                total = torch.tensor(0.0, device=scaler_self.device)
+                n = 0
+                for nm in all_keys:
+                    if nm not in fcalc_cache:
+                        continue
+                    fc = fcalc_cache[nm]
+                    fracs = fractions_cache[nm]
+                    fobs_n, sigma_n, _ = data_cache[nm]
+                    f_sol_raw = scaler_self.get_mixed_solvent_raw(fracs)
+                    scaled = super(CollectionScaler, scaler_self).forward(
+                        fc, f_sol_override=f_sol_raw
+                    )
+                    loss = nll_xray(fobs_n, scaled, sigma_n)
+                    if torch.isfinite(loss):
+                        total = total + loss
+                        n += 1
+                if n > 0:
+                    total = total / n
+                u_penalty = torch.sum(scaler_self.U ** 2)
+                return total + u_penalty
 
-            if n > 0:
-                total_loss = total_loss / n
+        state = LossState(device=self.device)
+        state.register_target("scaler/joint", _CollectionScalerJointTarget())
 
-            # U regularization
-            U_penalty = torch.sum(self.U ** 2)
-            total_loss = total_loss + U_penalty
-
-            if not torch.isfinite(total_loss):
-                return torch.tensor(
-                    1e10, device=self.device, dtype=total_loss.dtype, requires_grad=True
-                )
-
-            total_loss.backward(retain_graph=True)
-            return total_loss
+        optimizer = torch.optim.LBFGS(
+            self.parameters(),
+            lr=lr,
+            max_iter=max_iter,
+            history_size=history_size,
+            line_search_fn="strong_wolfe",
+        )
 
         metrics = {
             "target": "scales_joint",
@@ -401,35 +398,30 @@ class CollectionScaler(ScalerBase):
         if verbose and self.verbose > 0:
             print("Refining scales jointly with LBFGS...")
 
-        for step in range(nsteps):
-            optimizer.step(closure)
+        state.run(
+            optimizer,
+            nsteps=nsteps,
+            log=False,
+            context="collection_scaler.refine_lbfgs_joint",
+        )
 
-            with torch.no_grad():
-                # Evaluate on dark dataset for metrics
-                dark_name = mc.dark_key
-                if dark_name in fcalc_cache:
-                    fc = fcalc_cache[dark_name]
-                    fracs = fractions_cache[dark_name]
-                    fobs, sigma, rfree = data_cache[dark_name]
-                    f_sol_raw = self.get_mixed_solvent_raw(fracs)
-                    scaled = super(CollectionScaler, self).forward(
-                        fc, f_sol_override=f_sol_raw
-                    )
-                    rwork, rfree_val = get_rfactors(
-                        torch.abs(fobs), torch.abs(scaled), rfree
-                    )
-                    metrics["steps"].append(step + 1)
-                    metrics["rwork"].append(rwork)
-                    metrics["rfree"].append(rfree_val)
-
-                    if verbose and self.verbose > 2:
-                        print(
-                            f"  Step {step+1}/{nsteps}: "
-                            f"Rwork={rwork:.4f}, Rfree={rfree_val:.4f}"
-                        )
-
-        if was_frozen:
-            self.freeze()
+        # Evaluate metrics once on the dark dataset after refinement.
+        with torch.no_grad():
+            dark_name = mc.dark_key
+            if dark_name in fcalc_cache:
+                fc = fcalc_cache[dark_name]
+                fracs = fractions_cache[dark_name]
+                fobs, sigma, rfree = data_cache[dark_name]
+                f_sol_raw = self.get_mixed_solvent_raw(fracs)
+                scaled = super(CollectionScaler, self).forward(
+                    fc, f_sol_override=f_sol_raw
+                )
+                rwork, rfree_val = get_rfactors(
+                    torch.abs(fobs), torch.abs(scaled), rfree
+                )
+                metrics["steps"].append(nsteps)
+                metrics["rwork"].append(rwork)
+                metrics["rfree"].append(rfree_val)
 
         if verbose and self.verbose > 0:
             if metrics["rwork"]:

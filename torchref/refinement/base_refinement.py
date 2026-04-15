@@ -7,6 +7,10 @@ from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
 from torchref.refinement.loss_state import LossState
+from torchref.refinement.targets.adp.scaler_log_scale import (
+    ScalerLogScaleTrendTarget,
+)
+from torchref.refinement.targets.adp.scaler_u import ScalerURegularizationTarget
 from torchref.refinement.targets.combined import (
     TotalADPTarget,
     TotalGeometryTarget,
@@ -247,12 +251,14 @@ class Refinement(DebugMixin, nnModule):
         mode : str
             X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
         """
+        sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
         self.xray_target_work = create_xray_target(
             model=self.model,
             data=self.reflection_data,
             scaler=self.scaler,
             mode=mode,
             use_work_set=True,
+            sigma_m_scale=sigma_m_scale,
             verbose=self.verbose,
         )
         self.xray_target_test = create_xray_target(
@@ -261,6 +267,7 @@ class Refinement(DebugMixin, nnModule):
             scaler=self.scaler,
             mode=mode,
             use_work_set=False,
+            sigma_m_scale=sigma_m_scale,
             verbose=self.verbose,
         )
         # Reset loss state since targets changed
@@ -499,6 +506,15 @@ class Refinement(DebugMixin, nnModule):
         state.register_target("xray_work", lambda: self.xray_target_work())
         state.register_targets(self.geometry_target)
         state.register_targets(self.adp_target)
+        n_ref = int(self.reflection_data.hkl.shape[0])
+        state.register_target(
+            "adp/scaler_U",
+            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+        )
+        state.register_target(
+            "adp/scaler_log_scale",
+            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+        )
 
         # Populate meta and update weights
         state = self.populate_state_meta(state)
@@ -508,46 +524,17 @@ class Refinement(DebugMixin, nnModule):
 
     def setup_component_weighting(self):
         """
-
-        Set up component weighting.
-        Loads default hyperparameters and initializes ComponentWeighting.
-
+        Set up component weighting with ResolutionWeighting + OverfittingWeighting.
         """
         from torchref.refinement.weighting.component_weighting import ComponentWeighting
 
         self.get_scales()
 
-        # Get initial xray loss for XrayScaleWeighting
-        with torch.no_grad():
-            initial_xray_loss = self.xray_target_work().detach().item()
-
         self.component_weighting = ComponentWeighting(
             device=self.device,
             weights=self.manual_weights,
             component_weights=self.component_weights,
-            initial_xray_loss=initial_xray_loss,
         )
-
-        # Load default hyperparameters
-        from torchref import PATH_TORCHREF_DATA
-        import os
-        from torchref.utils.utils import json_to_state_dicts_separate
-
-        hyperparams_path = os.path.join(
-            PATH_TORCHREF_DATA, "default_hyperparameters.json"
-        )
-        (
-            component_weighting_state,
-            geometry_target_state,
-            adp_target_state,
-            unassigned_keys,
-        ) = json_to_state_dicts_separate(hyperparams_path)
-
-        self.component_weighting.load_state_dict(
-            component_weighting_state, strict=False
-        )
-        self.geometry_target.load_state_dict(geometry_target_state, strict=False)
-        self.adp_target.load_state_dict(adp_target_state, strict=False)
 
     def populate_state_meta(self, state: "LossState") -> "LossState":
         """
@@ -624,7 +611,7 @@ class Refinement(DebugMixin, nnModule):
     def update_weights(self, state: "LossState", multiply=False) -> "LossState":
         """
         Compute weights from component_weighting and update state.
-        Weights are clipped to 0.1, 10.0 to avoid extreme values.
+        Weights are clipped to [0.01, 100.0] to avoid extreme values.
 
         Parameters
         ----------
@@ -644,9 +631,9 @@ class Refinement(DebugMixin, nnModule):
         for name, weight in weights.items():
             current = state.get_weight(name, default=1.0)
             if multiply:
-                weight_effective = min(max(current * weight, 0.1), 10.0)
+                weight_effective = min(max(current * weight, 0.01), 100.0)
             else:
-                weight_effective = min(max(weight, 0.1), 10.0)
+                weight_effective = min(max(weight, 0.01), 100.0)
             state.set_weight(name, weight_effective)
 
         return state
@@ -673,6 +660,15 @@ class Refinement(DebugMixin, nnModule):
 
         # Register ADP targets
         state.register_targets(self.adp_target)
+        n_ref = int(self.reflection_data.hkl.shape[0])
+        state.register_target(
+            "adp/scaler_U",
+            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+        )
+        state.register_target(
+            "adp/scaler_log_scale",
+            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+        )
 
         return state
 
@@ -689,16 +685,29 @@ class Refinement(DebugMixin, nnModule):
         applied from component_weighting.
 
         Usage:
+            from torchref.utils import validate_loss
+
             state = refinement.create_loss_state()
+            params = list(refinement.parameters())
 
             # Log initial state
             state.aggregate(log_values=True)
 
-            # In LBFGS closure:
+            # In an LBFGS closure, wrap with validate_loss so non-finite
+            # losses warn + reject the step instead of poisoning the run.
             def closure():
                 optimizer.zero_grad()
                 loss = state.aggregate()
                 loss.backward()
+                ok = validate_loss(
+                    loss, state=state, parameters=params,
+                    context="my_refinement", raise_on_fail=False,
+                )
+                if not ok:
+                    for p in params:
+                        if p.grad is not None:
+                            p.grad.zero_()
+                    return torch.full_like(loss.detach(), float("inf"))
                 return loss
 
             optimizer.step(closure)
@@ -721,6 +730,15 @@ class Refinement(DebugMixin, nnModule):
         Updates the persistent LossState with current meta, target info,
         cached losses, and weights. The state is reused across cycles.
 
+        The cached active-parameter leaf set is *not* refreshed here. Stale
+        leaves are not a correctness hazard: a leaf that's in the set but
+        whose Parameter object was replaced externally (e.g. by
+        ``Model.freeze``) just gets ignored by ``_freeze_graph_extras``,
+        which costs a marginal amount of wasted backward work but never
+        produces wrong answers. If you do call ``Model.freeze`` /
+        ``Model.unfreeze`` between LossState creation and a refinement
+        step, call ``state.refresh_loss_leaves()`` explicitly.
+
         Returns
         -------
         LossState
@@ -728,7 +746,6 @@ class Refinement(DebugMixin, nnModule):
         """
         state = self.loss_state
         state = self.populate_state_meta(state)
-        state = self.add_target_info_to_state(state)
         state.cache_losses()
         state = self.update_weights(state)
         return state

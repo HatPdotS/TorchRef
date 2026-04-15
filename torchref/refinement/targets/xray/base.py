@@ -57,6 +57,7 @@ class XrayTarget(DataTarget):
         model: "Model" = None,
         scaler: "Scaler" = None,
         use_work_set: bool = True,
+        sigma_mode: str = "raw",
         verbose: int = 0,
     ):
         """
@@ -73,11 +74,30 @@ class XrayTarget(DataTarget):
             Reference to the Scaler object.
         use_work_set : bool, optional
             If True, compute loss on work set; if False, on test set. Default is True.
+        sigma_mode : str, optional
+            Which sigma to use in the likelihood. Options:
+
+            - ``'raw'`` (default): use the raw experimental sigmas from the
+              data file. Empirically gives the best Rfree across the
+              mid-resolution regime (1.5-3.0 A) when paired with appropriate
+              group weights.
+            - ``'effective'``: use per-shell effective sigmas estimated from
+              scaling residuals (capped SIGMAA-style correction). Opt-in for
+              high-resolution refinement (< 1.5 A) or datasets with known
+              sigma miscalibration. Note: ``Scaler.estimate_sigma_eff`` is
+              *always* called so the estimates are available regardless of
+              which mode the target uses.
+
         verbose : int, optional
             Verbosity level. Default is 0.
         """
         super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
         self.use_work_set = use_work_set
+        if sigma_mode not in ("effective", "raw"):
+            raise ValueError(
+                f"sigma_mode must be 'effective' or 'raw', got {sigma_mode!r}"
+            )
+        self.sigma_mode = sigma_mode
         # Set name based on work/test set
         self.name = "xray_work" if use_work_set else "xray_test"
 
@@ -104,6 +124,12 @@ class XrayTarget(DataTarget):
             If neither model nor fcalc is available.
         """
         hkl, F_obs, sigma_F_obs, rfree_mask = self._data()
+
+        # Sigma selection: use per-shell effective sigma from scaler if requested
+        if self.sigma_mode == "effective" and self._scaler is not None:
+            sigma_eff = getattr(self._scaler, "sigma_eff", None)
+            if sigma_eff is not None and sigma_eff.shape == sigma_F_obs.shape:
+                sigma_F_obs = sigma_eff
 
         # Get F_calc: either from argument or compute from model
         if fcalc is not None:

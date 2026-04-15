@@ -31,10 +31,9 @@ class GeometryTarget(ModelTarget):
         self,
         model: "Model" = None,
         verbose: int = 0,
-        target_value: float = -1.0,
-        sigma: float = 0.5,
+        **kwargs,
     ):
-        super().__init__(model, verbose, target_value=target_value, sigma=sigma)
+        super().__init__(model, verbose)
 
     def stats(self) -> Dict[str, StatEntry]:
         """

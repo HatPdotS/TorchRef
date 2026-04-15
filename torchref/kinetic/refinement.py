@@ -294,25 +294,24 @@ class KineticRefinement(nn.Module):
         return params
 
     def _lbfgs_loop(self, params, niter=10, max_iter=50, lr=1.0):
-        """Run L-BFGS optimization loop."""
+        """Run L-BFGS optimization loop via :meth:`LossState.run`.
+
+        ``LossState.run`` handles the closure, NaN validation, and
+        automatically disables ``requires_grad`` on loss-relevant leaves
+        outside ``params`` for the duration of the run.
+        """
         if not params:
             return
 
         optimizer = torch.optim.LBFGS(
             params, lr=lr, max_iter=max_iter, line_search_fn="strong_wolfe"
         )
-
-        for i in range(niter):
-            def closure():
-                optimizer.zero_grad()
-                loss = self.get_loss()
-                loss.backward()
-                return loss
-
-            loss = optimizer.step(closure)
-
-            if self.verbose > 1:
-                print(f"    LBFGS step {i+1}/{niter}: loss = {loss.item():.6f}")
+        self.loss_state.run(
+            optimizer,
+            nsteps=niter,
+            log=False,
+            context="kinetic.refinement._lbfgs_loop",
+        )
 
         if self.verbose > 0:
             final_loss = self.get_loss(log_values=True)

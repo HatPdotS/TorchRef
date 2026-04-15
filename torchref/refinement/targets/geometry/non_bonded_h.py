@@ -43,16 +43,21 @@ class NonBondedHTarget(NonBondedTarget):
     pair list.  At forward time, only H placement + vectorized distance
     computation is needed — no spatial hashing.
 
+    Uses the same generalized-Gaussian NLL as the parent class; see
+    :class:`NonBondedTarget` for the sigma calibration.
+
     Parameters
     ----------
     model : Model, optional
         Reference to Model object.
     mode : str, optional
         Repulsion function type. Default ``'prolsq'``.
-    c_rep : float, optional
-        Repulsion coefficient. Default 16.0.
+    sigma : float, optional
+        Effective tolerance on the overlap (Å). Default 0.3.
     r_exp : float, optional
         Repulsion exponent. Default 4.0.
+    c_rep : float or None, optional
+        Legacy coefficient override; derived from ``sigma`` when None.
     buffer : float, optional
         Distance buffer (Å). Default 0.0.
     verbose : int, optional
@@ -65,12 +70,23 @@ class NonBondedHTarget(NonBondedTarget):
         self,
         model: "Model" = None,
         mode: str = "prolsq",
-        c_rep: float = 16.0,
+        sigma: float = 0.3,
         r_exp: float = 4.0,
+        c_rep: "float | None" = None,
         buffer: float = 0.0,
+        rebuild_threshold: float = 1.0,
         verbose: int = 0,
     ):
-        super().__init__(model, mode, c_rep, r_exp, buffer, verbose)
+        super().__init__(
+            model=model,
+            mode=mode,
+            sigma=sigma,
+            r_exp=r_exp,
+            c_rep=c_rep,
+            buffer=buffer,
+            rebuild_threshold=rebuild_threshold,
+            verbose=verbose,
+        )
 
     # ------------------------------------------------------------------
     # H-VDW loss via precomputed candidates
@@ -141,13 +157,15 @@ class NonBondedHTarget(NonBondedTarget):
 
         violations = torch.clamp(min_dist + self._buffer - actual_dist, min=0.0)
 
-        # Normalize by number of H atoms so the per-atom contribution
-        # stays constant regardless of structure size.
-        n_h = float(h_topo.n_hydrogens)
-
         if self.mode == "prolsq":
-            energy = self._c_rep * (violations ** self._r_exp)
-            return energy.sum() / n_h
+            # Generalized-Gaussian NLL, same form as the parent (heavy-heavy)
+            # branch — see NonBondedTarget.forward for the full derivation.
+            log_2pi = torch.log(
+                torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
+            )
+            shape_energy = self._c_rep * (violations ** self._r_exp)
+            per_pair_const = torch.log(self._sigma_vdw) + 0.5 * log_2pi
+            return shape_energy.sum() + per_pair_const * violations.shape[0]
         elif self.mode == "gaussian":
             sigma_val = torch.tensor(0.2, device=device, dtype=xyz.dtype)
             log_2pi = torch.log(
@@ -155,7 +173,7 @@ class NonBondedHTarget(NonBondedTarget):
             )
             nll = (0.5 * (violations / sigma_val) ** 2
                    + torch.log(sigma_val) + 0.5 * log_2pi)
-            return nll.sum() / n_h
+            return nll.sum()
         elif self.mode == "soft":
             threshold = 0.5
             quadratic_mask = violations <= threshold
@@ -164,7 +182,7 @@ class NonBondedHTarget(NonBondedTarget):
                 2 * threshold * violations - threshold ** 2
             )
             energy = torch.where(quadratic_mask, quadratic_energy, linear_energy)
-            return energy.sum() / n_h
+            return energy.sum()
         else:
             raise ValueError(f"Unknown non-bonded mode: {self.mode}")
 
@@ -186,7 +204,7 @@ class NonBondedHTarget(NonBondedTarget):
 
         xyz = self.model.xyz()
         h_loss = self._compute_h_vdw_loss(xyz, h_topo)
-        return heavy_loss + self.scale * h_loss
+        return heavy_loss + h_loss
 
     def get_violations(self, threshold: float = 0.0) -> Dict[str, torch.Tensor]:
         """Get violations including H-involving contacts."""

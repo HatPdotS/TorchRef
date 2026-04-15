@@ -90,7 +90,7 @@ class ChiralTarget(GeometryTarget):
         log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
         nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
 
-        return nll.mean()
+        return nll.sum()
 
     def get_violations(self, threshold: float = 0.5) -> Dict[str, torch.Tensor]:
         """

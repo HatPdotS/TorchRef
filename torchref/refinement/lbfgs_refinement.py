@@ -5,10 +5,22 @@ This module provides an LBFGS optimizer-based refinement approach which has been
 shown to converge much faster than first-order optimizers (Adam, SGD, etc.).
 LBFGS typically reaches near-convergence in just 1-2 macro cycles.
 
-Weight optimization follows the Phenix approach:
-- Screen multiple weights on a log scale
-- Run complete LBFGS optimization for each weight
-- Select best weight based on Rfree while respecting gap constraints
+The refinement composes three pieces:
+
+- A persistent :class:`~torchref.refinement.loss_state.LossState` built once via
+  :meth:`~torchref.refinement.base_refinement.Refinement.complete_loss_state`.
+- Persistent LBFGS optimizers (one per parameter group — xyz, adp+u+occupancy,
+  and the joint set). These are created lazily on first use and reused across
+  macro cycles so the construction cost is paid once.
+- Scaler refinement, which runs its own local LossState + LBFGS step via
+  :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs` and is invoked
+  independently between body-parameter refinements.
+
+Each body step clears the LBFGS curvature history for its own optimizer before
+running. This is necessary because (a) the Hessian approximation does not
+transfer across mode transitions (xyz → adp) and (b) scaler updates between
+refine_xyz and refine_adp bump the parameters that feed the xray target, so
+prior curvature information is stale.
 """
 
 from typing import Optional
@@ -17,7 +29,6 @@ import numpy as np
 import torch
 
 from torchref.refinement.base_refinement import Refinement
-from torchref.refinement.loss_state import LossState
 
 
 class LBFGSRefinement(Refinement):
@@ -63,14 +74,40 @@ class LBFGSRefinement(Refinement):
         refinement.refine(macro_cycles=2)
     """
 
-    def __init__(self, *args, target_mode: str = "ml", **kwargs):
+    LBFGS_DEFAULTS = dict(
+        lr=1.0,
+        max_iter=20,
+        history_size=100,
+        line_search_fn="strong_wolfe",
+        
+    )
+
+    def __init__(
+        self,
+        *args,
+        target_mode: str = "ml",
+        sigma_m_scale: float = 1.0,
+        use_lossstate_scaler: bool = True,
+        **kwargs,
+    ):
         """
         Initialize LBFGS refinement.
 
         Parameters
         ----------
         target_mode : str, optional
-            X-ray target mode ('gaussian', 'ls', or 'ml'). Default is 'ml'.
+            X-ray target mode ('gaussian', 'ls', 'ml', 'bhattacharyya').
+            Default is 'ml'.
+        sigma_m_scale : float, optional
+            Global multiplier for σ_m in the Bhattacharyya target only.
+            Ignored for other target modes. Default 1.0.
+        use_lossstate_scaler : bool, optional
+            If True (default), :meth:`refine_scaler` uses the full
+            :class:`LossState` with the body's x-ray target — so scaler and
+            body steps share one consistent loss. If False, falls back to
+            ``Scaler.refine_lbfgs`` which minimises a standalone
+            ``nll_xray`` and can pull scales in a different direction than
+            the body optimization.
         *args
             Passed to parent Refinement class.
         **kwargs
@@ -78,9 +115,16 @@ class LBFGSRefinement(Refinement):
         """
         super().__init__(*args, **kwargs)
 
+        self.sigma_m_scale = sigma_m_scale
         # Set the X-ray target mode (uses the new target system from base class)
         self.set_xray_target_mode(target_mode)
         self.target_mode = target_mode
+        self.use_lossstate_scaler = use_lossstate_scaler
+
+        # Lazy persistent optimizers. Built on first access by
+        # _lbfgs_for_types so that LBFGSRefinement instances without a
+        # loaded model can still be constructed.
+        self._persistent_optimizers: dict = {}
 
     def xray_loss(self):
         """
@@ -94,353 +138,183 @@ class LBFGSRefinement(Refinement):
         return self.xray_loss_work()
 
     # =========================================================================
-    # Core Optimizer Functions
+    # Persistent optimizer machinery
     # =========================================================================
 
-    def _optimize_lbfgs(
-        self,
-        state: LossState,
-        params=None,
-        lr: float = 1.0,
-        max_iter: int = 20,
-        nsteps: int = 1,
-    ) -> LossState:
-        """
-        Run LBFGS optimization on a LossState.
+    def _lbfgs_for_types(self, types: tuple) -> torch.optim.LBFGS:
+        """Return a persistent LBFGS optimizer over the given parameter types.
 
-        Logs initial state, runs optimization, logs final state.
+        Optimizers are cached by the tuple of type names (e.g. ``("xyz",)``
+        or ``("adp", "u", "occupancy")``) and reused across refinement
+        calls. Curvature history must be cleared by the caller before each
+        use via :meth:`_reset_lbfgs_history`.
 
         Parameters
         ----------
-        state : LossState
-            Configured loss state with targets and weights.
-        params : iterable, optional
-            Parameters to optimize. Defaults to self.parameters().
-        lr : float, optional
-            Learning rate. Default is 1.0.
-        max_iter : int, optional
-            Maximum iterations per LBFGS step. Default is 20.
-        nsteps : int, optional
-            Number of LBFGS steps. Default is 1.
+        types : tuple of str
+            Parameter type names to include in the optimizer. Any of
+            ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
 
         Returns
         -------
-        LossState
-            State with history containing before/after loss values.
+        torch.optim.LBFGS
+            The cached optimizer, constructed on first call for this key.
         """
-        if params is None:
-            params = self.parameters()
+        key = tuple(types)
+        opt = self._persistent_optimizers.get(key)
+        if opt is None:
+            params = self.model.parameters_of_types(types)
+            if not params:
+                raise RuntimeError(
+                    f"No parameters found for types={types}; cannot build LBFGS."
+                )
+            opt = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
+            self._persistent_optimizers[key] = opt
+        return opt
 
-        # Log initial state
-        state.aggregate(log_values=True)
+    @staticmethod
+    def _reset_lbfgs_history(optimizer: torch.optim.Optimizer) -> None:
+        """Drop LBFGS curvature state so the next step starts from scratch.
 
-        optimizer = torch.optim.LBFGS(
-            params,
-            lr=lr,
-            max_iter=max_iter,
-            history_size=100,
-            line_search_fn="strong_wolfe",
-        )
-
-        def closure():
-            optimizer.zero_grad()
-            loss = state.aggregate()
-            loss.backward()
-            return loss
-
-        for _ in range(nsteps):
-            optimizer.step(closure)
-
-        # Log final state
-        state.new_entry()
-        state.aggregate(log_values=True)
-
-        return state
-
-    def _optimize_exploratory_lbfgs(
-        self,
-        state: LossState,
-        params=None,
-        nsteps: int = 50,
-        **exploration_kwargs,
-    ) -> LossState:
+        The LBFGS two-loop recursion depends on recent (s, y) pairs sampled
+        under the *same* loss landscape. Between a refine_xyz and refine_adp
+        call the active parameter set changes; between any two body calls
+        the scaler's separate LBFGS has updated parameters the xray target
+        reads from. Either way the stored curvature is stale and can produce
+        bad search directions. Clearing state forces a fresh steepest-descent
+        direction on the first inner iteration.
         """
-        Run ExploratoryLBFGS optimization on a LossState.
-
-        Same pattern as _optimize_lbfgs() but uses ExploratoryLBFGS which
-        adds automatic landscape exploration via Lanczos eigenanalysis after
-        convergence.
-
-        Parameters
-        ----------
-        state : LossState
-            Configured loss state with targets and weights.
-        params : iterable, optional
-            Parameters to optimize. Defaults to self.parameters().
-        nsteps : int, optional
-            Number of optimizer steps. Default is 50.
-        **exploration_kwargs
-            Forwarded to ExploratoryLBFGS constructor (e.g., m_modes,
-            scan_points, max_exploration_cycles, etc.).
-
-        Returns
-        -------
-        LossState
-            State with history containing before/after loss values.
-        """
-        from torchref.refinement.optimizers import ExploratoryLBFGS
-
-        if params is None:
-            params = self.parameters()
-
-        # Log initial state
-        state.aggregate(log_values=True)
-
-        optimizer = ExploratoryLBFGS(
-            params,
-            **exploration_kwargs,
-        )
-
-        def closure():
-            optimizer.zero_grad()
-            loss = state.aggregate()
-            loss.backward()
-            return loss
-
-        for _ in range(nsteps):
-            optimizer.step(closure)
-
-        # Log final state
-        state.new_entry()
-        state.aggregate(log_values=True)
-
-        return state
-
-    def _optimize_adamw(
-        self,
-        state: LossState,
-        params=None,
-        lr: float = 1e-3,
-        steps: int = 100,
-    ) -> LossState:
-        """
-        Run AdamW optimization on a LossState.
-
-        Logs initial state, runs optimization, logs final state.
-
-        Parameters
-        ----------
-        state : LossState
-            Configured loss state with targets and weights.
-        params : iterable, optional
-            Parameters to optimize. Defaults to self.parameters().
-        lr : float, optional
-            Learning rate. Default is 1e-3.
-        steps : int, optional
-            Number of optimization steps. Default is 100.
-
-        Returns
-        -------
-        LossState
-            State with history containing before/after loss values.
-        """
-        if params is None:
-            params = self.parameters()
-
-        # Log initial state
-        state.aggregate(log_values=True)
-
-        optimizer = torch.optim.AdamW(params, lr=lr)
-
-        for step in range(steps):
-            optimizer.zero_grad()
-            loss = state.aggregate()
-            loss.backward()
-            if self.verbose > 1 and step % 10 == 0:
-                print(f"Step {step+1}/{steps}, Loss: {loss.item():.4f}")
-            optimizer.step()
-
-        # Log final state
-        state.new_entry()
-        state.aggregate(log_values=True)
-
-        return state
+        optimizer.state.clear()
 
     # =========================================================================
     # Refinement Methods
     # =========================================================================
 
-    def refine_adp(self):
-        """
-        Refine B-factors (ADP) using LBFGS optimizer.
+    def refine_scaler(self):
+        """Refine scaler parameters against the full refinement loss.
 
-        Freezes all parameters except B-factors and runs LBFGS optimization
-        with a combined ADP and X-ray loss.
+        Builds the body :class:`LossState` via
+        :meth:`complete_loss_state`, constructs a fresh LBFGS optimizer
+        over ``list(self.scaler.parameters())``, and delegates to
+        :meth:`LossState.step`. Because ``state.step`` disables
+        ``requires_grad`` on every loss leaf outside the optimizer's
+        intent set, xyz / adp / u / occupancy are pinned for the duration
+        — only scaler parameters move.
+
+        The critical property is that the x-ray target used here is the
+        same one the body :meth:`refine_xyz` and :meth:`refine_adp` see.
+        The legacy :meth:`Scaler.refine_lbfgs` minimises a standalone
+        ``nll_xray`` + ``U^2`` penalty, which can pull scales in a
+        different direction than a ``bhattacharyya`` or ``ml`` body loss
+        and leaves the body to chase a scaler that disagrees with its own
+        objective.
+
+        When ``use_lossstate_scaler`` is False, fall back to the legacy
+        :meth:`Scaler.refine_lbfgs` path.
 
         Returns
         -------
-        LossState
-            State with history containing before/after loss values.
+        LossState or dict
+            ``LossState`` with history if ``use_lossstate_scaler`` is
+            True, otherwise the metrics dict from
+            :meth:`Scaler.refine_lbfgs`.
         """
-        self.model.freeze_all()
-        self.model.unfreeze("adp")
-        self.model.unfreeze("u")
-        self.model.unfreeze("occupancy")
+        if not self.use_lossstate_scaler:
+            return self.scaler.refine_lbfgs()
 
-        self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_lbfgs(state)
-
-        self.model.unfreeze_all()
+        scaler_params = list(self.scaler.parameters())
+        if not scaler_params:
+            return state
+        optimizer = torch.optim.LBFGS(scaler_params, **self.LBFGS_DEFAULTS)
+        state.step(optimizer, context="lbfgs_refinement.refine_scaler")
         return state
 
     def refine_xyz(self):
-        """
-        Refine coordinates (XYZ) using LBFGS optimizer.
+        """Refine Cartesian coordinates jointly with scaler parameters.
 
-        Freezes all parameters except coordinates and runs LBFGS optimization
-        with a combined restraints and X-ray loss.
+        Scaler parameters (``log_scale``, ``U``, solvent terms) are
+        included in the same LBFGS call as ``xyz``. The joint curvature
+        lets xyz steps see the scaler as an anchor — residuals the scaler
+        can absorb do not have to be chased by atomic motion — and the
+        ``adp/scaler_U`` and ``adp/scaler_log_scale`` priors bite on every
+        step, so nothing in the scaler drifts between refine_xyz and
+        refine_adp calls.
 
         Returns
         -------
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.scaler.freeze()
-        self.model.unfreeze("xyz")
-
-        self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_lbfgs(state)
-
-        self.model.unfreeze_all()
+        body = self.model.parameters_of_types(("xyz",))
+        params = body + list(self.scaler.parameters())
+        optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
+        state.step(optimizer, context="lbfgs_refinement.refine_xyz")
         return state
 
-    def regularize_adp(self, lr=0.1):
-        """
-        Apply regularization to B-factors (ADP) using LBFGS optimizer.
+    def refine_adp(self):
+        """Refine ADP / U / occupancy jointly with scaler parameters.
 
-        Parameters
-        ----------
-        lr : float, optional
-            Learning rate for LBFGS optimizer. Default is 0.1.
+        Scaler parameters (``log_scale``, ``U``, solvent terms) are
+        included in the same LBFGS call as the ADP-block body parameters
+        so the joint curvature can slide along the atomic-B / scaler-U
+        degeneracy ridge together with the ``adp/scaler_U`` regularizer.
+        XYZ is left frozen.
 
         Returns
         -------
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.model.unfreeze("adp")
-
-        self.scaler.refine_lbfgs()
-        state = LossState(self.device)
-        state.register_target('adp_target', self.adp_target)
-
-        self._optimize_lbfgs(state, lr=lr)
-
-        self.model.unfreeze_all()
-        return state
-
-    def refine_xyz_adamW(self, lr=1e-3, steps=100):
-        """
-        Refine coordinates (XYZ) using AdamW optimizer as an alternative.
-
-        Parameters
-        ----------
-        lr : float, optional
-            Learning rate for AdamW optimizer. Default is 1e-3.
-        steps : int, optional
-            Number of AdamW optimization steps. Default is 100.
-
-        Returns
-        -------
-        LossState
-            State with history containing before/after loss values.
-        """
-        self.model.freeze_all()
-        self.scaler.freeze()
-        self.model.unfreeze("xyz")
-
-        self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_adamw(state, lr=lr, steps=steps)
-
-        self.model.unfreeze_all()
+        body = self.model.parameters_of_types(("adp", "u", "occupancy"))
+        params = body + list(self.scaler.parameters())
+        optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
+        state.step(optimizer, context="lbfgs_refinement.refine_adp")
         return state
 
-    def refine_b_adamW(self, lr=1e-3, steps=100):
-        """
-        Refine B-factors (ADP) using AdamW optimizer as an alternative.
+    def refine_joint(self):
+        """Joint LBFGS over every refinable parameter in one step.
 
-        Parameters
-        ----------
-        lr : float, optional
-            Learning rate for AdamW optimizer. Default is 1e-3.
-        steps : int, optional
-            Number of AdamW optimization steps. Default is 100.
+        Optimizes ``xyz``, ``adp``, ``u``, ``occupancy``, and every
+        scaler parameter (``log_scale``, anisotropic ``U``, solvent
+        terms) in a single LBFGS call. The joint curvature couples all
+        of them through the same x-ray target and through the
+        ``adp/scaler_U`` / ``adp/scaler_log_scale`` priors — unlike
+        alternating refine_xyz → refine_adp, there's no "frozen partner"
+        in either half that could lock the step into a locally bad
+        direction.
 
         Returns
         -------
         LossState
             State with history containing before/after loss values.
         """
-        self.model.freeze_all()
-        self.model.unfreeze("adp")
-
-        self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_adamw(state, lr=lr, steps=steps)
-
-        self.model.unfreeze_all()
+        body = self.model.parameters_of_types(
+            ("xyz", "adp", "u", "occupancy")
+        )
+        params = body + list(self.scaler.parameters())
+        optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
+        state.step(optimizer, context="lbfgs_refinement.refine_joint")
         return state
 
-    def refine_everything_adamW(self, lr=1e-3, steps=100):
-        """
-        Refine both coordinates (XYZ) and B-factors (ADP) using AdamW optimizer.
+    def _refine_everything_lbfgs_single_cycle(self, nsteps: int = 1):
+        """Joint LBFGS over xyz + adp + u + occupancy for one macro cycle.
 
-        Parameters
-        ----------
-        lr : float, optional
-            Learning rate for AdamW optimizer. Default is 1e-3.
-        steps : int, optional
-            Number of AdamW optimization steps. Default is 100.
-
-        Returns
-        -------
-        LossState
-            State with history containing before/after loss values.
-        """
-        self.model.freeze_all()
-        self.scaler.unfreeze()
-        self.model.unfreeze("xyz")
-        self.model.unfreeze("adp")
-
-        self.scaler.refine_lbfgs()
-        state = self.complete_loss_state()
-        self._optimize_adamw(state, lr=lr, steps=steps)
-
-        self.model.unfreeze_all()
-        return state
-
-    def _refine_everything_lbfgs_single_cycle(self, nsteps=1):
-        """
-        Refine both coordinates (XYZ) and B-factors (ADP) using LBFGS optimizer.
-
-        Jointly optimizes all parameters with the combined restraints, ADP,
-        and X-ray loss.
-
-        Returns
-        -------
-        LossState
-            State with history containing before/after loss values.
+        Used by :meth:`refine_everything`. Scaler is refined separately
+        before the body step.
         """
         self.scaler.refine_lbfgs()
         state = self.complete_loss_state()
-        self._optimize_lbfgs(state, nsteps=nsteps)
-
-        self.model.unfreeze_all()
+        optimizer = self._lbfgs_for_types(("xyz", "adp", "u", "occupancy"))
+        self._reset_lbfgs_history(optimizer)
+        state.run(
+            optimizer,
+            nsteps=nsteps,
+            context="lbfgs_refinement._refine_everything_lbfgs_single_cycle",
+        )
         return state
 
     # =========================================================================
@@ -485,40 +359,15 @@ class LBFGSRefinement(Refinement):
         -------
         TrajectoryData
             Complete trajectory with state-action-reward tuples.
-
-        Example
-        -------
-        ::
-
-            from torchref.refinement.weighting import PolicyComponentWeighting
-
-            # Create policy in training mode (sampling enabled)
-            policy = PolicyComponentWeighting(
-                refinement, policy_path='policy.pt',
-                sample=True, temperature=1.0
-            )
-
-            # Run trajectory
-            trajectory = refinement.run_training_trajectory(
-                policy, n_steps=10, pdb_id='3GR5'
-            )
-
-            # Save trajectory for training
-            import json
-            from torchref.refinement.weighting import trajectory_to_dict
-            with open('trajectory.json', 'w') as f:
-                json.dump(trajectory_to_dict(trajectory), f)
         """
         import time
 
         start_time = time.time()
 
-        # Set random seed if provided
         if seed is not None:
             torch.manual_seed(seed)
             np.random.seed(seed)
 
-        # Start recording
         policy_weighting.start_recording(
             pdb_id=pdb_id,
             structure_path=structure_path,
@@ -528,36 +377,37 @@ class LBFGSRefinement(Refinement):
         )
 
         try:
-            # Initial scaling
             self.scaler.refine_lbfgs()
+            optimizer = self._lbfgs_for_types(("xyz",))
 
             for step in range(n_steps):
                 if self.verbose > 1:
                     print(f"Step {step + 1}/{n_steps}")
 
-                # Create LossState and apply policy weights
                 state = self.complete_loss_state()
 
-                # Evaluate once to populate loss cache (needed for feature extraction)
+                # Evaluate once to populate loss cache (feature extraction).
                 with torch.no_grad():
                     state.aggregate()
 
-                # Apply policy weights (this also records the step)
+                # Apply policy weights (this also records the step).
                 policy_weighting.apply_to_state(state)
 
-                # Run LBFGS optimization with policy weights
-                self._optimize_lbfgs(state, nsteps=1)
+                # Policy just rewrote the weights, so the old LBFGS
+                # curvature is for a different loss landscape — reset.
+                self._reset_lbfgs_history(optimizer)
+                state.step(
+                    optimizer,
+                    context="lbfgs_refinement.run_training_trajectory",
+                )
 
-                # Increment step counter
                 policy_weighting.increment_step()
 
-            # Stop recording and get trajectory
             trajectory = policy_weighting.stop_recording()
             trajectory.total_time = time.time() - start_time
             trajectory.success = True
 
         except Exception as e:
-            # Record failure
             trajectory = policy_weighting.stop_recording()
             if trajectory is not None:
                 trajectory.success = False
@@ -580,8 +430,10 @@ class LBFGSRefinement(Refinement):
         """
         Run a training trajectory with joint XYZ+ADP refinement.
 
-        Similar to run_training_trajectory but refines both XYZ and ADP
-        together in each step, which may be more efficient.
+        Similar to :meth:`run_training_trajectory` but refines xyz, adp,
+        u, and occupancy together in each step. The LBFGS curvature
+        history is reset at the start of each policy step because the
+        weight updates invalidate any prior Hessian approximation.
 
         Parameters
         ----------
@@ -618,40 +470,32 @@ class LBFGSRefinement(Refinement):
         )
 
         try:
-            # Initial scaling
             self.scaler.refine_lbfgs()
-
-            # Unfreeze all parameters for joint refinement
-            self.model.unfreeze("xyz")
-            self.model.unfreeze("adp")
+            optimizer = self._lbfgs_for_types(("xyz", "adp", "u", "occupancy"))
 
             for step in range(n_steps):
                 if self.verbose > 1:
                     print(f"Step {step + 1}/{n_steps}")
 
-                # Create LossState and evaluate to populate cache
                 state = self.complete_loss_state()
                 with torch.no_grad():
                     state.aggregate()
 
-                # Apply policy weights (records the step)
                 policy_weighting.apply_to_state(state)
 
-                # Run LBFGS optimization
-                self._optimize_lbfgs(state, nsteps=1)
+                self._reset_lbfgs_history(optimizer)
+                state.step(
+                    optimizer,
+                    context="lbfgs_refinement.run_training_trajectory_joint",
+                )
 
-                # Increment step counter
                 policy_weighting.increment_step()
-
-            # Freeze everything back
-            self.model.freeze_all()
 
             trajectory = policy_weighting.stop_recording()
             trajectory.total_time = time.time() - start_time
             trajectory.success = True
 
         except Exception as e:
-            self.model.freeze_all()
             trajectory = policy_weighting.stop_recording()
             if trajectory is not None:
                 trajectory.success = False
@@ -660,29 +504,6 @@ class LBFGSRefinement(Refinement):
             raise
 
         return trajectory
-    
-    def refine_occ(self):
-        """
-        Refine occupancies using LBFGS optimizer.
-
-        Freezes all parameters except occupancies and runs LBFGS optimization
-        with a combined occupancy and X-ray loss.
-
-        Returns
-        -------
-        LossState
-            State with history containing before/after loss values.
-        """
-        self.model.freeze_all()
-        self.model.unfreeze("occ")
-
-        self.scaler.refine_lbfgs()
-        state = self.complete_loss_state()
-        self._optimize_lbfgs(state)
-
-        self.model.unfreeze_all()
-        return state
-
 
     def refine(self, macro_cycles=5):
         """
@@ -698,7 +519,6 @@ class LBFGSRefinement(Refinement):
         dict
             History dictionary with all metrics per cycle (hierarchical structure).
         """
-        self.scaler.freeze()
         i = 0
 
         while True:
@@ -713,7 +533,6 @@ class LBFGSRefinement(Refinement):
         self.logger.clear()
 
         for cycle in range(macro_cycles):
-            # Hierarchical cycle dict structure
             cycle_dict = {
                 "cycle": cycle + 1,
                 "before_scaling": {},
@@ -727,30 +546,30 @@ class LBFGSRefinement(Refinement):
                 print(f"LBFGS Refinement - Cycle {cycle+1}/{macro_cycles}")
                 print(f"{'='*60}")
 
-            # Collect metrics before scaling
             with torch.no_grad():
                 before_scaling = self.collect_metrics()
                 cycle_dict["before_scaling"] = before_scaling
 
-            self.get_scales()
+            if getattr(self.scaler, "solvent", None) is not None:
+                self.scaler.solvent.update_solvent()
+            self.reflection_data.find_outliers(
+                self.model, self.scaler, z_threshold=5.0
+            )
 
-            # Collect metrics after scaling
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
                 cycle_dict["after_scaling"] = after_scaling
                 if self.verbose > 0:
                     print(
-                        f"After scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}"
+                        f"After scaling: Rwork={after_scaling['rwork']:.4f}, "
+                        f"Rfree={after_scaling['rfree']:.4f}"
                     )
 
-            # Record state before XYZ
             self.logger.record(label="before_xyz")
             cycle_dict["xyz"]["before"] = self.collect_metrics()
 
-            # XYZ refinement with cycle-aware weighting
             self.refine_xyz()
 
-            # Record state after XYZ and log comparison
             self.logger.record(label="after_xyz")
             cycle_dict["xyz"]["after"] = self.collect_metrics()
             if self.verbose > 0:
@@ -760,14 +579,11 @@ class LBFGSRefinement(Refinement):
                     title="XYZ Refinement",
                 )
 
-            # Record state before ADP
             self.logger.record(label="before_adp")
             cycle_dict["adp"]["before"] = self.collect_metrics()
 
-            # B-factor refinement with cycle-aware weighting
             self.refine_adp()
 
-            # Record state after ADP and log comparison
             self.logger.record(label="after_adp")
             cycle_dict["adp"]["after"] = self.collect_metrics()
             if self.verbose > 0:
@@ -776,6 +592,9 @@ class LBFGSRefinement(Refinement):
                     label_after="after_adp",
                     title="ADP Refinement",
                 )
+                
+            self.refine_scaler()
+            
 
             self.history[master_key].append(cycle_dict)
 
@@ -795,7 +614,6 @@ class LBFGSRefinement(Refinement):
         dict
             History dictionary with all metrics per cycle (hierarchical structure).
         """
-        self.scaler.unfreeze()
         self.model.unfreeze_all()
         i = 0
 
@@ -808,11 +626,9 @@ class LBFGSRefinement(Refinement):
         self.history[master_key] = []
         self.history["initial"] = self.collect_metrics()
 
-        # Clear logger history for fresh refinement
         self.logger.clear()
 
         for cycle in range(macro_cycles):
-            # Hierarchical cycle dict structure
             cycle_dict = {
                 "cycle": cycle + 1,
                 "before_scaling": {},
@@ -826,27 +642,26 @@ class LBFGSRefinement(Refinement):
 
             self.get_scales()
 
-            # Record state after scaling (before refinement)
             self.logger.record(label="after_scaling")
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
                 cycle_dict["after_scaling"] = after_scaling
                 if self.verbose > 0:
                     print(
-                        f"After scaling: Rwork={after_scaling['rwork']:.4f}, Rfree={after_scaling['rfree']:.4f}"
+                        f"After scaling: Rwork={after_scaling['rwork']:.4f}, "
+                        f"Rfree={after_scaling['rfree']:.4f}"
                     )
 
-            # Full refinement
             self._refine_everything_lbfgs_single_cycle()
 
-            # Record state after refinement and log comparison
             self.logger.record(label="after_refinement")
             with torch.no_grad():
                 after_refinement = self.collect_metrics()
                 cycle_dict["after_refinement"] = after_refinement
                 if self.verbose > 0:
                     print(
-                        f"After refinement: Rwork={after_refinement['rwork']:.4f}, Rfree={after_refinement['rfree']:.4f}"
+                        f"After refinement: Rwork={after_refinement['rwork']:.4f}, "
+                        f"Rfree={after_refinement['rfree']:.4f}"
                     )
                     self.logger.compare(
                         label_before="after_scaling",

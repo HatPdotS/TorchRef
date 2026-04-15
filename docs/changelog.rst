@@ -3,6 +3,8 @@ Changelog
 
 Version 0.5.0
 -------------
+- Moved closure infrastrcuture, pruning of parameters and iteration pruning to lossstate infrastructure, streamlined LBFGSRefinement layout
+- Fixed weighting necessity by moving to unscaled log likelihoods for all targetes, overfitting weights remain
 - Fixed missing angle in Proline geometry
 - Fixed restraint issues where peptide bonds were not being recognized accross altlocs
 - Fixed OOM errors in refinement caused by solvent map creation by explicitely handling symmetry

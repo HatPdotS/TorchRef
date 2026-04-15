@@ -62,7 +62,7 @@ class ADPSimilarityTarget(ADPTarget):
             + 0.5 * log_2pi
         )
 
-        return nll.mean()
+        return nll.sum()
 
     def stats(self) -> Dict[str, any]:
         """Get SIMU restraint statistics."""

@@ -12,7 +12,7 @@ Variable naming conventions:
 - f_calc/f_obs: Complex structure factors (lowercase = complex)
 """
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import gemmi
 import torch
@@ -1183,6 +1183,39 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.u.update_refinable_mask(self.u_mask)
         self.register_buffer("occupancy_mask", self.occupancy() < 0.999)
         self.occupancy.update_refinable_mask(self.occupancy_mask)
+
+    PARAM_TYPES: Tuple[str, ...] = ("xyz", "adp", "u", "occupancy")
+
+    def parameters_of_types(self, types: Iterable[str]) -> List[nn.Parameter]:
+        """Return the leaf ``nn.Parameter``s for the named parameter types.
+
+        Used by refinement entry points (``refine_xyz``, ``refine_adp``, ...)
+        to construct an optimizer over only the leaves the caller intends to
+        update. ``LossState.step`` then uses the optimizer's param groups as
+        intent and disables ``requires_grad`` on any other leaves the loss
+        also touches.
+
+        Parameters
+        ----------
+        types : Iterable[str]
+            Subset of ``Model.PARAM_TYPES``: ``"xyz"``, ``"adp"``, ``"u"``,
+            ``"occupancy"``. Unknown names are silently skipped.
+
+        Returns
+        -------
+        list of nn.Parameter
+            The ``refinable_params`` leaf for each requested type, in the
+            order the types were given.
+        """
+        out: List[nn.Parameter] = []
+        for t in types:
+            wrapper = getattr(self, t, None)
+            if wrapper is None:
+                continue
+            rp = getattr(wrapper, "refinable_params", None)
+            if rp is not None:
+                out.append(rp)
+        return out
 
     def freeze(self, target: str):
         if target == "xyz":

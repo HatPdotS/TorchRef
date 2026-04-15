@@ -133,7 +133,7 @@ class RigidBondTarget(ADPTarget):
         log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
         nll = 0.5 * (delta_z / self.sigma) ** 2 + np.log(self.sigma) + 0.5 * log_2pi
 
-        return nll.mean()
+        return nll.sum()
 
     def _compute_aniso_rigid_bond(self) -> torch.Tensor:
         """
@@ -212,7 +212,7 @@ class RigidBondTarget(ADPTarget):
         log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
         nll = 0.5 * (delta_z / self.sigma) ** 2 + np.log(self.sigma) + 0.5 * log_2pi
 
-        return nll.mean()
+        return nll.sum()
 
     def get_delta_z_stats(self) -> Dict[str, float]:
         """

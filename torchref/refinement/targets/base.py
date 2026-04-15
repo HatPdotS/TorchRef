@@ -63,10 +63,6 @@ class Target(nn.Module):
     ----------
     verbose : int, optional
         Verbosity level. Default is 0.
-    target_value : float, optional
-        Target value for this loss. Default is 0.0.
-    sigma : float, optional
-        Sigma parameter for weighting. Default is 0.5.
 
     Attributes
     ----------
@@ -74,10 +70,6 @@ class Target(nn.Module):
         Unique name for this target (used as loss key in LossState).
     verbose : int
         Verbosity level.
-    _target_value : torch.Tensor (buffer)
-        Target value for this loss. Used for computing weights based on deviation.
-    _sigma : torch.Tensor (buffer)
-        Sigma parameter for weighting. Subclasses should override defaults.
     """
 
     # Class attribute: unique name for this target type
@@ -87,8 +79,7 @@ class Target(nn.Module):
     def __init__(
         self,
         verbose: int = 0,
-        target_value: float = 0.0,
-        sigma: float = 0.5,
+        **kwargs,
     ):
         """
         Initialize target.
@@ -97,59 +88,9 @@ class Target(nn.Module):
         ----------
         verbose : int, optional
             Verbosity level. Default is 0.
-        target_value : float, optional
-            Target value for this loss. Default is 0.0.
-        sigma : float, optional
-            Sigma parameter for weighting. Default is 0.5.
         """
         super().__init__()
         self.verbose = verbose
-        # Register target_value and sigma as buffers for state_dict access
-        self.register_buffer("_target_value", torch.tensor(target_value))
-        self.register_buffer("_sigma", torch.tensor(sigma))
-
-    @property
-    def target_value(self) -> float:
-        """Get target value as float."""
-        return self._target_value.item()
-
-    @target_value.setter
-    def target_value(self, value: float):
-        """Set target value."""
-        self._target_value.fill_(value)
-
-    @property
-    def sigma(self) -> float:
-        """Get sigma as float."""
-        return self._sigma.item()
-
-    @sigma.setter
-    def sigma(self, value: float):
-        """Set sigma."""
-        self._sigma.fill_(value)
-
-    def get_deviation_weight(self, current_value: float = None) -> float:
-        """
-        Compute weight based on deviation from target value.
-
-        The weight increases with distance from the target value,
-        allowing targets that are far from their ideal to contribute
-        more to the optimization.
-
-        Parameters
-        ----------
-        current_value : float, optional
-            Current loss value. If None, forward() is called to compute it.
-
-        Returns
-        -------
-        float
-            Weight factor based on |current_value - target_value|.
-        """
-        if current_value is None:
-            with torch.no_grad():
-                current_value = self.forward().item()
-        return abs(current_value - self.target_value)
 
     def forward(self) -> torch.Tensor:
         """Compute and return the loss. Override in subclasses."""
@@ -176,6 +117,28 @@ class Target(nn.Module):
         loss = self.forward()
         state.add_loss(self.name, loss)
         return state
+
+    def maintenance(self) -> None:
+        """Between-step housekeeping hook (no-op by default).
+
+        :class:`~torchref.refinement.loss_state.LossState` calls this on
+        every registered target after each successful outer optimizer
+        step returns. Targets override this to rebuild stale internal
+        state (VDW pair lists, solvent masks, etc.) based on how far
+        parameters have drifted since the last refresh.
+
+        Contract
+        --------
+        - Must be idempotent: calling it multiple times in a row on an
+          unchanged model should not mutate the target.
+        - Fast path first: cheap staleness check up front, expensive
+          rebuild only when strictly necessary. ``LossState`` calls
+          this every outer step — the happy-path cost is paid every
+          time.
+        - Must not raise on routine drift. If a rebuild fails, let the
+          exception propagate — that's a real bug.
+        """
+        pass
 
 
 # =============================================================================
@@ -221,8 +184,7 @@ class ModelTarget(Target):
         self,
         model: "Model" = None,
         verbose: int = 0,
-        target_value: float = 0.0,
-        sigma: float = 0.5,
+        **kwargs,
     ):
         """
         Initialize model target.
@@ -233,12 +195,8 @@ class ModelTarget(Target):
             Reference to the Model object (optional for empty init).
         verbose : int, optional
             Verbosity level. Default is 0.
-        target_value : float, optional
-            Target value for this loss. Default is 0.0.
-        sigma : float, optional
-            Sigma parameter for weighting. Default is 0.5.
         """
-        super().__init__(verbose=verbose, target_value=target_value, sigma=sigma)
+        super().__init__(verbose=verbose)
         # Register model as a proper submodule (not in state_dict but handles device)
         # Use add_module to allow None values
         self.add_module("_model", model)
@@ -317,8 +275,7 @@ class DataTarget(Target):
         model: "Model" = None,
         scaler: "Scaler" = None,
         verbose: int = 0,
-        target_value: float = 0.0,
-        sigma: float = 0.5,
+        **kwargs,
     ):
         """
         Initialize data target.
@@ -334,12 +291,8 @@ class DataTarget(Target):
             Reference to the Scaler object.
         verbose : int, optional
             Verbosity level. Default is 0.
-        target_value : float, optional
-            Target value for this loss. Default is 0.0.
-        sigma : float, optional
-            Sigma parameter for weighting. Default is 0.5.
         """
-        super().__init__(verbose=verbose, target_value=target_value, sigma=sigma)
+        super().__init__(verbose=verbose)
         # Register as proper submodules (allows None values)
         self.add_module("_model", model)
         self._data = data

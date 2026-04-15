@@ -247,10 +247,9 @@ class ADPLocalityTarget(ADPTarget):
         diff = log_adp.unsqueeze(1) - neighbor_log_adp
 
         weights = 1 / (distances + 1e-6)
-        weights = weights / (weights.mean() + 1e-8)
 
         weighted_sq_diff = weights * (diff / 0.5) ** 2
-        loss = weighted_sq_diff.mean()
+        loss = weighted_sq_diff.sum()
 
         return loss
 

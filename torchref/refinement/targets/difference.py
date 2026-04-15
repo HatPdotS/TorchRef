@@ -547,7 +547,7 @@ class DifferenceXrayTarget(Target):
             + 0.5 * log_2pi
         )
 
-        return (nll * mask).sum() / mask.sum()
+        return (nll * mask).sum()
 
     def stats(
         self,
@@ -840,8 +840,8 @@ class PhaseInformedDifferenceTarget(Target):
         # Complex difference
         diff = delta_F_obs_complex - delta_F_calc
 
-        # Weighted MSE
-        loss = (torch.abs(diff)**2 / sigma_diff**2).mean()
+        # Weighted sum of squared residuals (χ²-style NLL, unnormalised)
+        loss = (torch.abs(diff)**2 / sigma_diff**2).sum()
 
         return loss
 
@@ -1128,7 +1128,7 @@ class TaylorCorrectedDifferenceTarget(Target):
         diff = delta_F_obs_complex - delta_F_calc
         loss = torch.abs(diff)**2 / self._sigma_diff**2
 
-        return (loss * self._mask).sum() / self._mask.sum()
+        return (loss * self._mask).sum()
 
     def compute_free_metrics(
         self,
@@ -1506,7 +1506,7 @@ class RiceDifferenceTarget(Target):
         # Apply mask using torch.where (no nonzero sync)
         nll = torch.where(self._mask, nll, torch.zeros_like(nll))
 
-        return (nll * self._mask).sum() / self._mask.sum()
+        return (nll * self._mask).sum()
 
     def compute_free_metrics(
         self,

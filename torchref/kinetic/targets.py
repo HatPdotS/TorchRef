@@ -199,9 +199,8 @@ class CollectionDifferenceTarget(Target):
         # NaN/Inf protection
         nll = torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
 
-        # Sum over all datasets and reflections, normalise by total valid count
-        n_valid = mask_all.sum().clamp(min=1) * N
-        total_nll = (nll * mask_all).sum() / n_valid
+        # Sum over all datasets and reflections (unnormalised NLL)
+        total_nll = (nll * mask_all).sum()
 
         return total_nll
 
@@ -318,9 +317,8 @@ class CollectionMLTarget(Target):
         loss = torch.where(centric, loss_centric, loss_acentric)
         loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
 
-        # Mean over valid reflections across all timepoints
-        n_valid = mask.sum().clamp(min=1)
-        total_nll = (loss * mask).sum() / n_valid
+        # Sum over valid reflections across all timepoints (unnormalised NLL)
+        total_nll = (loss * mask).sum()
 
         return total_nll
 
@@ -499,7 +497,6 @@ class KineticPriorTarget(Target):
         kinetic_occ = self._kinetic_model()
 
         total_loss = torch.tensor(0.0, device=mc.device)
-        n = 0
 
         for tp_name in mc.timepoint_names:
             if tp_name not in self.timepoints_map:
@@ -519,10 +516,6 @@ class KineticPriorTarget(Target):
             total_loss = total_loss + torch.sum(
                 (current[:n_match] - predicted[:n_match]) ** 2
             )
-            n += 1
-
-        if n > 0:
-            total_loss = total_loss / n
 
         return total_loss
 
