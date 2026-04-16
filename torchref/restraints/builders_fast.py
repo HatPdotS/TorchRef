@@ -1896,13 +1896,7 @@ class InterResidueTorsionBuilder:
                     resname_by_residue[res_next_idx] = resname_next
                     next_resname_by_residue[res_i_idx] = resname_next
                     # Compute omega for PRO cis/trans detection
-                    if resname_next == "PRO" and pair_psi is not None:
-                        omega_idx = [idx1, idx2, idx3, idx4] if omega_data["indices"] else None
-                        pass
-                    # For omega: it defines the peptide bond between i and j.
-                    # The residue that "is PRO" is j (resname_next).
-                    # We store omega keyed by the PRO residue (res_next_idx).
-                    if is_proline and omega_data["indices"]:
+                    if omega_data["indices"]:
                         omega_deg = self._torsion_angle_np(
                             coords_np, *omega_data["indices"][-1]
                         )

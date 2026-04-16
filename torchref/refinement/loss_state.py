@@ -8,6 +8,10 @@ Design:
 - Internal history logging for debugging/analysis
 - Aggregation handled directly in this class
 - Loss functions with zeroed weight are not evaluated at all. 
+- Implements optimization closures and data handling
+- Automatically detects parameter root tensors and disables requires_grad on any that the loss touches but the optimizer wasn't built to update, enabling dynamic caching. 
+
+
 
 Example:
     state = LossState(device)
@@ -18,6 +22,8 @@ Example:
     state.set_weight('geometry/bond', 1.0)
 
     total = state.aggregate()  # Evaluates targets, applies hierarchical weights
+
+    state.step(optimizer)  # Runs optimizer step with closure that validates loss and auto-freezes parameters depending on the loss graph.
 """
 
 import warnings
@@ -659,9 +665,11 @@ class LossState(DeviceMovementMixin):
             if not p.requires_grad:
                 p.requires_grad_(True)
 
-    def step(
+    def run(
         self,
         optimizer: torch.optim.Optimizer,
+        log=False,
+        nsteps: int = 1,
         *,
         context: str = "loss_state.step",
     ) -> Optional[torch.Tensor]:
@@ -674,11 +682,15 @@ class LossState(DeviceMovementMixin):
         that the loss touches but the optimizer was not constructed with —
         autograd then prunes those subgraphs from the backward pass.
 
+        Technically this should work with all optimzers in pytorch that support closures but it has only been tested for LBFGS so far. The closure is built to be as general as possible, so if you have a custom optimizer that supports closures it should "just work" with this method.
+
         Every collected ``reset_cache``-bearing submodule is reset
         **before** the optimizer step so the closure's first forward sees
         a clean cache (a previous rejected closure may have stored a
         NaN/inf forward result that the fingerprint would happily serve
         again if parameter values haven't changed).
+
+        After the the run we call maintenance on all targets. 
 
         On exit, ``requires_grad=True`` is unconditionally re-enabled on
         every leaf in ``self._loss_leaves`` — defending against state
@@ -689,6 +701,11 @@ class LossState(DeviceMovementMixin):
         optimizer : torch.optim.Optimizer
             Optimizer to step. Its ``param_groups`` define the *intent* —
             the leaves the caller actually wants to update.
+        log : bool
+            If True, calls ``aggregate(log_values=True)`` before and after the optimization loop
+        nsteps : int
+            Number of steps to run (default 1). Only the first step's closure caching is enabled between multiple steps.
+            If you want to run truly independent steps, call this method multiple times with nsteps=1. This adds overhead but might be desirable if the overhead is negligible anyway. 
         context : str
             Diagnostic label forwarded to ``validate_loss``.
 
@@ -699,6 +716,7 @@ class LossState(DeviceMovementMixin):
             if no closure call succeeded (every call produced non-finite
             loss).
         """
+
         params = list(_optimizer_param_set(optimizer))
         last_loss: Dict[str, Optional[torch.Tensor]] = {"val": None}
 
@@ -721,14 +739,18 @@ class LossState(DeviceMovementMixin):
             last_loss["val"] = loss
             return loss
 
+        if log:
+            self.aggregate(log_values=True)
+
         # Clear forward caches BEFORE the step so the closure's first
         # forward starts from a known-clean state — a previous rejected
         # closure may have left a NaN/inf cached fcalc that the fingerprint
-        # would otherwise serve again unchanged.
+        # would otherwise serve again unchanged. This helps with robustness but "should" not be necessary.
         self.reset_caches()
         try:
             with _freeze_graph_extras(self, optimizer):
-                optimizer.step(closure)
+                for i in range(nsteps):
+                    optimizer.step(closure)
         finally:
             # Re-enable grads on every loss leaf regardless of how the
             # step exited. Defends against state bleeding between
@@ -744,46 +766,28 @@ class LossState(DeviceMovementMixin):
             maint = getattr(target, "maintenance", None)
             if callable(maint):
                 maint()
+        
+        if log:
+            self.aggregate(log_values=True)
 
         return last_loss["val"]
 
-    def run(
+    def step(
         self,
         optimizer: torch.optim.Optimizer,
-        *,
-        nsteps: int = 1,
-        log: bool = True,
-        context: str = "loss_state.run",
+        *args, **kwargs
     ) -> "LossState":
-        """Convenience loop that calls :meth:`step` ``nsteps`` times.
+        """Convenience method that calls :meth:`run` with 1 step.
 
-        Each :meth:`step` call performs its own freeze / restore / cache
-        invalidation cycle — there is no hoisting, because the post-step
-        unconditional cleanup would undo any hoisted state anyway. The
-        per-step cost of toggling ``requires_grad`` on a small set of
-        leaves and re-walking the optimizer's param groups is sub-millisecond
-        and negligible compared to the cost of the aggregate forward.
 
         Parameters
         ----------
         optimizer : torch.optim.Optimizer
             Optimizer to run.
-        nsteps : int
-            Number of ``optimizer.step(closure)`` calls.
-        log : bool
-            If True, log the initial and final aggregated loss to the
-            history.
-        context : str
-            Diagnostic label forwarded to ``validate_loss``.
+        *args, **kwargs
+            Forwarded to :meth:`run`.
         """
-        if log:
-            self.aggregate(log_values=True)
-        for _ in range(nsteps):
-            self.step(optimizer, context=context)
-        if log:
-            self.new_entry()
-            self.aggregate(log_values=True)
-        return self
+        return self.run(optimizer, *args, nsteps=1, **kwargs)
 
     # =========================================================================
     # Breakdown / Analysis

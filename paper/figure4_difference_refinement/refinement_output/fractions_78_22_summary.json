@@ -15,37 +15,25 @@
   },
   "parameters": {
     "weight_schedule": [
-      5.0,
-      3.0,
       1.0
     ],
     "n_cycles": 10,
     "n_steps": 2,
     "max_iter": 100,
     "weights": {
-      "xray/difference": 5.0,
+      "xray/difference": 1.0,
       "xray/ml": 0.0,
-      "geometry/bond": 1.0,
-      "geometry/angle": 1.0,
-      "geometry/torsion": 1.0,
-      "geometry/planarity": 1.0,
-      "geometry/chiral": 1.0,
-      "geometry/nonbonded": 1.0,
-      "geometry/ramachandran": 1.0,
-      "adp/simu": 1.0,
-      "adp/locality": 1.0,
-      "adp/KL": 1.0,
       "similarity": 3.0
     }
   },
   "results": {
     "r_factor_dark": {
-      "r_work": 0.16444528102874756,
-      "r_free": 0.18356673419475555
+      "r_work": 0.164579376578331,
+      "r_free": 0.18370740115642548
     },
     "r_factor_light": {
-      "r_work": 0.17286409437656403,
-      "r_free": 0.1930115967988968
+      "r_work": 0.17300093173980713,
+      "r_free": 0.19111478328704834
     },
     "fractions": [
       0.7799999713897705,

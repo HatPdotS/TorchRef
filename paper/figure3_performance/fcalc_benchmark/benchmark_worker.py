@@ -23,7 +23,7 @@ n_threads = int(os.environ.get("TORCHREF_NUM_THREADS", 1))
 import torch
 from torchref import ModelFT, ReflectionData
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 MTZ_FILE = os.path.join(DATA_DIR, "1DAW.mtz")
 PDB_FILE = os.path.join(DATA_DIR, "1DAW.pdb")
 

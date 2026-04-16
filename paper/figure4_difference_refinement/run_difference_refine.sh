@@ -18,4 +18,4 @@ sbatch -c 16 -p gpu --gres=gpu:1 -o "$OUTPATH/out.log" \
     -dsf "$DSF" -lsf "$LSF" \
     --fraction 0.22 --cif "$RES" \
     -o "$OUTPATH" --dmin 2.2 \
-    --weight-schedule 5,3,1 --n-cycles 10 
+    --weight-schedule 1 --n-cycles 10 

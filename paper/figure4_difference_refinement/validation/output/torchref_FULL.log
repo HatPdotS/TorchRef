@@ -1,0 +1,81 @@
+/var/spool/slurmd/job890408/slurm_script:5: UserWarning: TorchRef auto-configured 16 threads. Set TORCHREF_NUM_THREADS to override.
+  from torchref.cli.validate_ded import main
+======================================================================
+DED Validation: WDFo vs WDFcalc
+======================================================================
+
+--- Loading reflection data ---
+  Dark SF:   /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/8QL2-sf.cif
+  Light SF:  /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/../data/7YYZ-light.mtz
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/io/cif_readers.py:695: RuntimeWarning: invalid value encountered in cast
+  self.data["R-free-flags"] = rfree_characters.to_numpy().astype(np.int32)
+Filtering: 57575/124404 reflections in range [inf - 2.2] Å (56814 valid after all masks)
+Filtering: 56820/123649 reflections in range [inf - 2.2] Å (56796 valid after all masks)
+Added dataset 'dark' (124404 reflections)
+Added dataset 'light' (124404 reflections)
+Scale parameters after optimization:
+  dark: log_scale=0.000000 (scale=1.000000)
+  light: log_scale=-0.035216 (scale=0.965397)
+Matched reflections: 56790
+Cell: [74.53 92.58 83.99 90.   96.71 90.  ], Spacegroup: P 1 21 1
+Resolution: 2.20 A, Grid: (108, 128, 120)
+ASU: 56790, P1: 113563
+
+--- Loading models ---
+  Dark model: 8523 atoms
+  Light model: 8204 atoms
+  Fraction: 0.22
+
+--- Setting up joint scaler ---
+Initialized ScalerBase with 20 bins.
+Joint initial scale from 2 data-model pairs (20 bins).
+  Created 2 component solvent models.
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/.dev/lib/python3.11/site-packages/torch/masked/maskedtensor/core.py:247: UserWarning: It is not recommended to create a MaskedTensor with a tensor that requires_grad. To avoid this, you can use data.detach().clone()
+  return MaskedTensor(data, mask)
+Joint solvent screening: k_sol=0.3596, B_sol=55.0, NLL=53.6882
+Refining scales jointly with LBFGS...
+Joint scale refinement complete. rwork: 0.1644, rfree: 0.1835
+  R-factor (dark):  R_work=0.1644  R_free=0.1835
+  R-factor (mixed): R_work=0.1729  R_free=0.1910
+
+--- Computing DED maps and correlations ---
+  |DFcalc| mean: 2.462
+  |WDFcalc| mean: 2.115
+        full_cell: CC = 0.5162  (n_vox = 1658880)
+        selection: CC = 0.5622  (n_vox = 443198)
+  Bin  0:  9.49- 5.59 A  n= 2839  CC=0.4597
+  Bin  1:  5.59- 4.60 A  n= 2839  CC=0.5731
+  Bin  2:  4.60- 4.06 A  n= 2839  CC=0.6316
+  Bin  3:  4.06- 3.71 A  n= 2839  CC=0.6186
+  Bin  4:  3.71- 3.46 A  n= 2839  CC=0.6130
+  Bin  5:  3.46- 3.26 A  n= 2839  CC=0.5679
+  Bin  6:  3.26- 3.10 A  n= 2839  CC=0.5243
+  Bin  7:  3.10- 2.97 A  n= 2839  CC=0.5240
+  Bin  8:  2.97- 2.86 A  n= 2839  CC=0.5498
+  Bin  9:  2.86- 2.76 A  n= 2839  CC=0.5423
+  Bin 10:  2.76- 2.68 A  n= 2839  CC=0.4952
+  Bin 11:  2.68- 2.60 A  n= 2839  CC=0.5152
+  Bin 12:  2.60- 2.54 A  n= 2839  CC=0.4784
+  Bin 13:  2.54- 2.48 A  n= 2839  CC=0.5077
+  Bin 14:  2.48- 2.42 A  n= 2839  CC=0.4028
+  Bin 15:  2.42- 2.37 A  n= 2839  CC=0.4354
+  Bin 16:  2.37- 2.32 A  n= 2839  CC=0.4580
+  Bin 17:  2.32- 2.28 A  n= 2839  CC=0.4328
+  Bin 18:  2.28- 2.24 A  n= 2839  CC=0.3759
+  Bin 19:  2.24- 2.20 A  n= 2849  CC=0.3597
+  Overall CC = 0.5114
+  Work CC = 0.5170, Free CC = 0.2251
+
+Results saved to /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/output/torchref_FULL/validate_ded_results.json
+  WDFo map: /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/output/torchref_FULL/validate_WDFo.ccp4
+  WDFc map: /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/output/torchref_FULL/validate_WDFc.ccp4
+  Plots saved to /das/work/p17/p17490/Peter/Library/torchref/paper/figure4_difference_refinement/validation/output/torchref_FULL/validate_ded.png
+
+======================================================================
+Summary:
+  full_cell: CC = 0.5162
+  selection: CC = 0.5622
+  Reciprocal-space CC (overall): 0.5114
+======================================================================
+
+Timing: 34.1s wall, 331.9s CPU

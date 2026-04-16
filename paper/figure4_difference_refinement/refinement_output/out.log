@@ -1,4 +1,4 @@
-/var/spool/slurmd/job864377/slurm_script:5: UserWarning: TorchRef auto-configured 16 threads. Set TORCHREF_NUM_THREADS to override.
+/var/spool/slurmd/job890405/slurm_script:5: UserWarning: TorchRef auto-configured 16 threads. Set TORCHREF_NUM_THREADS to override.
   from torchref.cli.collection_difference_refine import main
 ========================================================================
 TorchRef Collection Difference Refinement
@@ -12,22 +12,12 @@ Output:            figure4_difference_refinement/refinement_output
 Device:            cuda
 Resolution cutoff: 2.20 A
 CIF restraints:    figure4_difference_refinement/data/IBL_grade.cif
-Weight schedule:   [5.0, 3.0, 1.0] x 10 cycles
+Weight schedule:   [1.0] x 10 cycles
 LBFGS steps/weight: 2  (max_iter=100)
 
 Target weights:
-  adp/KL: 1.0
-  adp/locality: 1.0
-  adp/simu: 1.0
-  geometry/angle: 1.0
-  geometry/bond: 1.0
-  geometry/chiral: 1.0
-  geometry/nonbonded: 1.0
-  geometry/planarity: 1.0
-  geometry/ramachandran: 1.0
-  geometry/torsion: 1.0
   similarity: 3.0
-  xray/difference: 5.0
+  xray/difference: 1.0
   xray/ml: 0.0
 ========================================================================
 
@@ -35,7 +25,7 @@ Setting up models...
 Loaded 16157 atoms
 Loaded 8204 atoms
 Loading reflection data...
-/das/work/units/LBR-FEL/p17490/Peter/Library/torchref_standardize_restraints/torchref/io/cif_readers.py:695: RuntimeWarning: invalid value encountered in cast
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/io/cif_readers.py:695: RuntimeWarning: invalid value encountered in cast
   self.data["R-free-flags"] = rfree_characters.to_numpy().astype(np.int32)
 Filtering: 57575/124404 reflections in range [inf - 2.2] Å (56814 valid after all masks)
 Filtering: 56820/123649 reflections in range [inf - 2.2] Å (56796 valid after all masks)
@@ -48,21 +38,17 @@ Parametrization built for 7 unique atom types
 Parametrization built for 7 unique atom types
 Joint initial scale from 2 data-model pairs (20 bins).
   Created 2 component solvent models.
-/das/work/units/LBR-FEL/p17490/CONDA/torchref/lib/python3.11/site-packages/torch/masked/maskedtensor/core.py:247: UserWarning: It is not recommended to create a MaskedTensor with a tensor that requires_grad. To avoid this, you can use data.detach().clone()
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/.dev/lib/python3.11/site-packages/torch/masked/maskedtensor/core.py:247: UserWarning: It is not recommended to create a MaskedTensor with a tensor that requires_grad. To avoid this, you can use data.detach().clone()
   return MaskedTensor(data, mask)
-Joint solvent screening: k_sol=0.3596, B_sol=55.0, NLL=53.9146
+Joint solvent screening: k_sol=0.3596, B_sol=55.0, NLL=53.8148
 Refining scales jointly with LBFGS...
-Joint scale refinement complete. rwork: 0.1644, rfree: 0.1835
-  Initial R-factor (dark  vs dark data):  R_work=0.1644  R_free=0.1839
-  Initial R-factor (mixed vs light data): R_work=0.1749  R_free=0.1904
-  Initial R-factor (dark  vs light data): R_work=0.1765  R_free=0.1921
+Joint scale refinement complete. rwork: 0.1645, rfree: 0.1841
+  Initial R-factor (dark  vs dark data):  R_work=0.1646  R_free=0.1838
+  Initial R-factor (mixed vs light data): R_work=0.1749  R_free=0.1907
+  Initial R-factor (dark  vs light data): R_work=0.1766  R_free=0.1923
 
 Initializing TotalGeometryTarget with component targets...
 Initializing TotalADPTarget with component targets...
-Initial loss breakdown:
-LossState Summary:
-
-[1/30] cycle 1/10, diff_weight=5.0
 Building restraints...
 Found 109 link definitions
 Built 1014 peptide bond restraints
@@ -70,11 +56,11 @@ Built 3085 peptide angle restraints
 Built 1014 peptide plane restraints
 
 Building VDW (non-bonded) restraints...
-  Symmetry expansion: 45 valid (symop, offset) combos
-  Grid: [14, 18, 16], 2754/4032 cells occupied, max 405 entries/cell
-  Built 75427 VDW restraints, 1906 symmetry contacts
+  Symmetry expansion: 46 valid (symop, offset) combos
+  Grid: [12, 15, 13], 1755/2340 cells occupied, max 621 entries/cell
+  Built 146467 VDW restraints, 4496 symmetry contacts
   Hydrogen topology: 7688 riding H atoms
-  H candidate pairs: 149484 (33008 H-H, 116476 H-heavy, 3134 symmetry)
+  H candidate pairs: 332395 (78907 H-H, 253488 H-heavy, 7378 symmetry)
 ================================================================================
 Restraints Summary (New Implementation)
 ================================================================================
@@ -106,207 +92,114 @@ BACKBONE TORSIONS:
 
 VDW RESTRAINTS:
 --------------------------------------------------------------------------------
-  Non-bonded contacts: 75427 (73521 intra-ASU, 1906 symmetry)
+  Non-bonded contacts: 146467 (141971 intra-ASU, 4496 symmetry)
 ================================================================================
-    LBFGS step 1/2, loss: 1256612.3750
-    LBFGS step 2/2, loss: 1256612.3750
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'geometry/bond' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'geometry/angle' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'geometry/torsion' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'geometry/omega' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'geometry/planarity' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'geometry/chiral' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'geometry/nonbonded' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'geometry/ramachandran' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'adp/simu' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/refinement/loss_state.py:356: UserWarning: LossState.register_target: target 'adp/locality' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  self.register_target(
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/cli/collection_difference_refine.py:268: UserWarning: LossState.register_target: target 'similarity' returned tensor(s) with no grad_fn — the loss does not track gradients. Register targets while every parameter the loss should depend on has requires_grad=True. The target is still registered; this is only a performance hint, not a correctness issue.
+  state.register_target("similarity", similarity_target)
+Initial loss breakdown:
+LossState Summary:
+
+
+[1/10] cycle 1/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27706.8711
+    LBFGS step 2/2, loss: 27552.9375
+  Updated all component solvent masks.
+  R-factor (dark):  Rwork=0.1645, Rfree=0.1835
+  R-factor (light): Rwork=0.1730, Rfree=0.1908
+[2/10] cycle 2/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27894.3984
+    LBFGS step 2/2, loss: 27895.6016
+  Updated all component solvent masks.
+  R-factor (dark):  Rwork=0.1646, Rfree=0.1830
+  R-factor (light): Rwork=0.1730, Rfree=0.1907
+[3/10] cycle 3/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27885.5000
+    LBFGS step 2/2, loss: 27850.8672
+  Updated all component solvent masks.
+  R-factor (dark):  Rwork=0.1645, Rfree=0.1832
+  R-factor (light): Rwork=0.1729, Rfree=0.1907
+[4/10] cycle 4/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27867.3672
+    LBFGS step 2/2, loss: 27861.5352
+  Updated all component solvent masks.
+  R-factor (dark):  Rwork=0.1646, Rfree=0.1835
+  R-factor (light): Rwork=0.1730, Rfree=0.1914
+[5/10] cycle 5/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27847.7734
+    LBFGS step 2/2, loss: 27819.1953
+  Updated all component solvent masks.
+  R-factor (dark):  Rwork=0.1646, Rfree=0.1840
+  R-factor (light): Rwork=0.1730, Rfree=0.1915
+[6/10] cycle 6/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27827.2734
+    LBFGS step 2/2, loss: 27826.5430
+  Updated all component solvent masks.
+  R-factor (dark):  Rwork=0.1646, Rfree=0.1840
+  R-factor (light): Rwork=0.1730, Rfree=0.1912
+[7/10] cycle 7/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27857.2422
+    LBFGS step 2/2, loss: 27822.4180
+  Updated all component solvent masks.
+  R-factor (dark):  Rwork=0.1646, Rfree=0.1842
+  R-factor (light): Rwork=0.1730, Rfree=0.1913
+[8/10] cycle 8/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27767.8359
+    LBFGS step 2/2, loss: 27795.8359
   Updated all component solvent masks.
   R-factor (dark):  Rwork=0.1645, Rfree=0.1838
-  R-factor (light): Rwork=0.1749, Rfree=0.1906
-[2/30] cycle 1/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 654090.6250
-    LBFGS step 2/2, loss: 654060.7500
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1644, Rfree=0.1836
-  R-factor (light): Rwork=0.1716, Rfree=0.1912
-[3/30] cycle 1/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 165628.4844
-    LBFGS step 2/2, loss: 165084.1875
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1836
-  R-factor (light): Rwork=0.1729, Rfree=0.1920
-[4/30] cycle 2/10, diff_weight=5.0
-    LBFGS step 1/2, loss: 1127894.7500
-    LBFGS step 2/2, loss: 1125214.5000
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1644, Rfree=0.1836
-  R-factor (light): Rwork=0.1713, Rfree=0.1926
-[5/30] cycle 2/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 657743.6250
-    LBFGS step 2/2, loss: 657743.6250
+  R-factor (light): Rwork=0.1730, Rfree=0.1912
+[9/10] cycle 9/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27757.7422
+    LBFGS step 2/2, loss: 27757.0195
   Updated all component solvent masks.
   R-factor (dark):  Rwork=0.1645, Rfree=0.1835
-  R-factor (light): Rwork=0.1713, Rfree=0.1926
-[6/30] cycle 2/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 165060.1875
-    LBFGS step 2/2, loss: 165063.3125
+  R-factor (light): Rwork=0.1730, Rfree=0.1913
+[10/10] cycle 10/10, diff_weight=1.0
+    LBFGS step 1/2, loss: 27727.1680
+    LBFGS step 2/2, loss: 27757.9336
   Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1836
-  R-factor (light): Rwork=0.1729, Rfree=0.1926
-[7/30] cycle 3/10, diff_weight=5.0
-    LBFGS step 1/2, loss: 1125679.1250
-    LBFGS step 2/2, loss: 1125646.7500
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1835
-  R-factor (light): Rwork=0.1713, Rfree=0.1925
-[8/30] cycle 3/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 652878.2500
-    LBFGS step 2/2, loss: 652713.0000
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1837
-  R-factor (light): Rwork=0.1717, Rfree=0.1925
-[9/30] cycle 3/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 164787.7031
-    LBFGS step 2/2, loss: 164614.7344
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1835
-  R-factor (light): Rwork=0.1729, Rfree=0.1924
-[10/30] cycle 4/10, diff_weight=5.0
-    LBFGS step 1/2, loss: 1124622.3750
-    LBFGS step 2/2, loss: 1123902.6250
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1837
-  R-factor (light): Rwork=0.1713, Rfree=0.1929
-[11/30] cycle 4/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 652824.8125
-    LBFGS step 2/2, loss: 652363.0625
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1836
-  R-factor (light): Rwork=0.1717, Rfree=0.1926
-[12/30] cycle 4/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 164739.8281
-    LBFGS step 2/2, loss: 164561.0000
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1837
-  R-factor (light): Rwork=0.1729, Rfree=0.1927
-[13/30] cycle 5/10, diff_weight=5.0
-    LBFGS step 1/2, loss: 1124490.8750
-    LBFGS step 2/2, loss: 1124443.0000
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1836
-  R-factor (light): Rwork=0.1713, Rfree=0.1927
-[14/30] cycle 5/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 652260.1250
-    LBFGS step 2/2, loss: 652136.5625
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1834
-  R-factor (light): Rwork=0.1717, Rfree=0.1922
-[15/30] cycle 5/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 164569.3750
-    LBFGS step 2/2, loss: 164442.5156
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1837
-  R-factor (light): Rwork=0.1729, Rfree=0.1927
-[16/30] cycle 6/10, diff_weight=5.0
-    LBFGS step 1/2, loss: 1124554.0000
-    LBFGS step 2/2, loss: 1124487.7500
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1835
-  R-factor (light): Rwork=0.1713, Rfree=0.1926
-[17/30] cycle 6/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 656456.6250
-    LBFGS step 2/2, loss: 656456.6250
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1835
-  R-factor (light): Rwork=0.1713, Rfree=0.1926
-[18/30] cycle 6/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 164572.9375
-    LBFGS step 2/2, loss: 164485.7656
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1836
-  R-factor (light): Rwork=0.1729, Rfree=0.1927
-[19/30] cycle 7/10, diff_weight=5.0
-    LBFGS step 1/2, loss: 1124348.3750
-    LBFGS step 2/2, loss: 1124278.2500
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1834
-  R-factor (light): Rwork=0.1713, Rfree=0.1926
-[20/30] cycle 7/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 652314.6875
-    LBFGS step 2/2, loss: 652259.8750
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1837
-  R-factor (light): Rwork=0.1716, Rfree=0.1924
-[21/30] cycle 7/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 164569.0938
-    LBFGS step 2/2, loss: 164383.6250
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1834
-  R-factor (light): Rwork=0.1729, Rfree=0.1928
-[22/30] cycle 8/10, diff_weight=5.0
-    LBFGS step 1/2, loss: 1124545.8750
-    LBFGS step 2/2, loss: 1124510.0000
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1835
-  R-factor (light): Rwork=0.1713, Rfree=0.1927
-[23/30] cycle 8/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 652087.6250
-    LBFGS step 2/2, loss: 651903.9375
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1836
-  R-factor (light): Rwork=0.1717, Rfree=0.1926
-[24/30] cycle 8/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 164435.0000
-    LBFGS step 2/2, loss: 164332.0625
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1834
-  R-factor (light): Rwork=0.1729, Rfree=0.1929
-[25/30] cycle 9/10, diff_weight=5.0
-    LBFGS step 1/2, loss: 1124576.1250
-    LBFGS step 2/2, loss: 1124550.6250
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1835
-  R-factor (light): Rwork=0.1713, Rfree=0.1928
-[26/30] cycle 9/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 651947.8125
-    LBFGS step 2/2, loss: 651885.9375
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1838
-  R-factor (light): Rwork=0.1717, Rfree=0.1928
-[27/30] cycle 9/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 164537.3438
-    LBFGS step 2/2, loss: 164512.6250
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1835
-  R-factor (light): Rwork=0.1729, Rfree=0.1930
-[28/30] cycle 10/10, diff_weight=5.0
-    LBFGS step 1/2, loss: 1124696.5000
-    LBFGS step 2/2, loss: 1124655.7500
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1838
-  R-factor (light): Rwork=0.1713, Rfree=0.1931
-[29/30] cycle 10/10, diff_weight=3.0
-    LBFGS step 1/2, loss: 652043.4375
-    LBFGS step 2/2, loss: 652027.2500
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1835
-  R-factor (light): Rwork=0.1716, Rfree=0.1926
-[30/30] cycle 10/10, diff_weight=1.0
-    LBFGS step 1/2, loss: 164461.4062
-    LBFGS step 2/2, loss: 164457.0312
-  Updated all component solvent masks.
-  R-factor (dark):  Rwork=0.1645, Rfree=0.1837
-  R-factor (light): Rwork=0.1729, Rfree=0.1931
+  R-factor (dark):  Rwork=0.1645, Rfree=0.1840
+  R-factor (light): Rwork=0.1729, Rfree=0.1913
 
 ========================================================================
 Refinement complete
 ========================================================================
-  Final R-factor (dark  vs dark data):  R_work=0.1644  R_free=0.1836
-  Final R-factor (mixed vs light data): R_work=0.1729  R_free=0.1930
-  Final R-factor (dark  vs light data): R_work=0.1765  R_free=0.1919
+  Final R-factor (dark  vs dark data):  R_work=0.1646  R_free=0.1837
+  Final R-factor (mixed vs light data): R_work=0.1730  R_free=0.1912
+  Final R-factor (dark  vs light data): R_work=0.1766  R_free=0.1919
   Refined fractions:      [0.78 0.22]
 
   Merged deposition CIF written to figure4_difference_refinement/refinement_output/fractions_78_22_merged.cif
   Dark SF written to figure4_difference_refinement/refinement_output/fractions_78_22_dark-sf.mtz, figure4_difference_refinement/refinement_output/fractions_78_22_dark-sf.cif
   Light SF written to figure4_difference_refinement/refinement_output/fractions_78_22_light-sf.mtz, figure4_difference_refinement/refinement_output/fractions_78_22_light-sf.cif
-/das/work/units/LBR-FEL/p17490/Peter/Library/torchref_standardize_restraints/torchref/io/datasets/reflection_data.py:1651: UserWarning: Found 3622 non-positive F values, masking them out. This really should not happen!
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/torchref/io/datasets/reflection_data.py:1651: UserWarning: Found 3622 non-positive F values, masking them out. This really should not happen!
   warnings.warn(
-/das/work/units/LBR-FEL/p17490/CONDA/torchref/lib/python3.11/site-packages/torch/masked/maskedtensor/core.py:247: UserWarning: It is not recommended to create a MaskedTensor with a tensor that requires_grad. To avoid this, you can use data.detach().clone()
+/das/work/units/LBR-FEL/p17490/Peter/Library/torchref/.dev/lib/python3.11/site-packages/torch/masked/maskedtensor/core.py:247: UserWarning: It is not recommended to create a MaskedTensor with a tensor that requires_grad. To avoid this, you can use data.detach().clone()
   return MaskedTensor(data, mask)
-Phase-aware extrapolation rfactors: (0.32251131534576416, 0.3788156807422638)
-Classic extrapolation rfactors: (0.3275786340236664, 0.38025641441345215)
-Bayes extrapolation rfactors: (0.24064810574054718, 0.29258763790130615)
-  Bayes: tau^2 = 300.0472, mean w(h) = 0.548
+Phase-aware extrapolation rfactors: (0.3253207504749298, 0.3738180994987488)
+Classic extrapolation rfactors: (0.3289611041545868, 0.3739316165447235)
+Bayes extrapolation rfactors: (0.24026095867156982, 0.28087595105171204)
+  Bayes: tau^2 = 297.9886, mean w(h) = 0.546
   Results MTZ written to figure4_difference_refinement/refinement_output/fractions_78_22_difference_data.mtz
   w_dark=0.780, w_light=0.220
 Output files:
@@ -320,4 +213,4 @@ Output files:
 
 Done.
 
-Timing: 182.0s wall, 156.0s CPU
+Timing: 57.1s wall, 52.6s CPU

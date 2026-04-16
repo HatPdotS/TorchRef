@@ -26,7 +26,7 @@ n_threads = int(os.environ.get("TORCHREF_NUM_THREADS", 1))
 import torch
 from torchref.refinement import LBFGSRefinement
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 MTZ_FILE = os.path.join(DATA_DIR, "1DAW.mtz")
 PDB_FILE = os.path.join(DATA_DIR, "1DAW.pdb")
 
@@ -76,7 +76,12 @@ def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu") -> 
     # ---- SETUP (untimed) ----
     # Pass device at construction so all tensors (model, scaler, restraints)
     # are created on the correct device from the start.
-    refinement = LBFGSRefinement(data_file=MTZ_FILE, pdb=PDB_FILE, device=device)
+    refinement = LBFGSRefinement(
+        data_file=MTZ_FILE,
+        pdb=PDB_FILE,
+        device=device,
+        target_mode="bhattacharyya",
+    )
 
     # Create and configure loss state with default weights
     loss_state = refinement.complete_loss_state()
@@ -216,6 +221,7 @@ def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu") -> 
         "n_reflections": n_reflections,
         "d_min": d_min,
         "torch_threads": torch.get_num_threads(),
+        "xray_mode": refinement.target_mode,
         "target_names": target_names,
         "aggregate_fwd_no_grad": _summarize_times(fwd_no_grad_times),
         "aggregate_fwd_graph": _summarize_times(fwd_graph_times),

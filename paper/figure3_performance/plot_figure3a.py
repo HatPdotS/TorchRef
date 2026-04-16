@@ -412,14 +412,19 @@ def plot_calc(cpu: dict, gpu: dict | None, output_path: Path):
         capsize=3, capthick=1.2, markersize=5, linewidth=1.5,
     )
 
-    # GPU as dashed horizontal lines (no shading)
+    # GPU as dashed horizontal lines with labels
     if gpu:
-        for prefix, color in [
-            ("torchref_fwd_graph", color_fwd),
-            ("torchref_bwd_only", color_bwd),
-        ]:
-            gpu_mean = gpu[f"{prefix}_mean"] * 1000
-            ax1.axhline(gpu_mean, color=color, linestyle="--", linewidth=1.5, alpha=0.7)
+        gpu_fwd_mean = gpu["torchref_fwd_graph_mean"] * 1000
+        gpu_bwd_mean = gpu["torchref_bwd_only_mean"] * 1000
+        ax1.axhline(gpu_fwd_mean, color=color_fwd, linestyle="--", linewidth=1.5, alpha=0.7)
+        ax1.axhline(gpu_bwd_mean, color=color_bwd, linestyle="--", linewidth=1.5, alpha=0.7)
+        # Labels: gradient above its line, forward below its line
+        # Use multiplicative offset for log-scale y-axis
+        x_label = threads.max() + 0.3
+        ax1.text(x_label, gpu_bwd_mean * 1.25, "GPU", color=color_bwd,
+                 fontsize=11, va="bottom", ha="left", fontstyle="italic")
+        ax1.text(x_label, gpu_fwd_mean / 1.25, "GPU", color=color_fwd,
+                 fontsize=11, va="top", ha="left", fontstyle="italic")
 
     ax1.set_yscale("log")
     ax1.set_xlabel("Number of CPU threads")
@@ -427,51 +432,7 @@ def plot_calc(cpu: dict, gpu: dict | None, output_path: Path):
     ax1.grid(True, alpha=0.3, which="both")
     ax1.set_xlim(0, threads.max() + 1)
 
-    # ---- ax2: Forward / Backward / Combined bar chart ----
-    if gpu:
-        best_idx = int(np.argmin(cpu_plot["torchref_fwd_bwd_mean"]))
-        best_threads = int(cpu_plot["n_threads"][best_idx])
-
-        labels = [r"$F_{\mathrm{calc}}$", "Gradient", r"$F_{\mathrm{calc}}$" + " +\nGradient"]
-        bar_colors = [color_fwd, color_bwd, color_cmb]
-
-        cpu_means = np.array([
-            cpu_plot["torchref_fwd_graph_mean"][best_idx],
-            cpu_plot["torchref_bwd_only_mean"][best_idx],
-            cpu_plot["torchref_fwd_bwd_mean"][best_idx],
-        ])
-        cpu_mins = np.array([
-            cpu_plot["torchref_fwd_graph_min"][best_idx],
-            cpu_plot["torchref_bwd_only_min"][best_idx],
-            cpu_plot["torchref_fwd_bwd_min"][best_idx],
-        ])
-        cpu_maxs = np.array([
-            cpu_plot["torchref_fwd_graph_max"][best_idx],
-            cpu_plot["torchref_bwd_only_max"][best_idx],
-            cpu_plot["torchref_fwd_bwd_max"][best_idx],
-        ])
-        gpu_means = np.array([
-            gpu["torchref_fwd_graph_mean"],
-            gpu["torchref_bwd_only_mean"],
-            gpu["torchref_fwd_bwd_mean"],
-        ])
-        gpu_mins = np.array([
-            gpu["torchref_fwd_graph_min"],
-            gpu["torchref_bwd_only_min"],
-            gpu["torchref_fwd_bwd_min"],
-        ])
-        gpu_maxs = np.array([
-            gpu["torchref_fwd_graph_max"],
-            gpu["torchref_bwd_only_max"],
-            gpu["torchref_fwd_bwd_max"],
-        ])
-
-        x = np.arange(len(labels))
-        bar_w = 0.32
-
-        cpu_err_lo = cpu_means - cpu_mins
-        cpu_err_hi = cpu_maxs - cpu_means
-    # Shared y-limits (sharey syncs both axes)
+    # Shared y-limits
     ax1.set_ylim(0.1, 100)
 
     # Legend: color patches for categories + hatching for device

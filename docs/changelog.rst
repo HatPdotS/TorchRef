@@ -3,7 +3,10 @@ Changelog
 
 Version 0.5.0
 -------------
-- Moved closure infrastrcuture, pruning of parameters and iteration pruning to lossstate infrastructure, streamlined LBFGSRefinement layout
+- Fixed two bugs in restraints related to peptide bonds
+- Centralized closure infrastructure in Lossstate, added systematic parameter freezing and cache management to the optimization functions as well as step pruning
+- Switched main xray target to bhattacharyya distance between observed and calculated structure factor distributions.
+- Added model error estimation based on bfactor distribution and fischer information
 - Fixed weighting necessity by moving to unscaled log likelihoods for all targetes, overfitting weights remain
 - Fixed missing angle in Proline geometry
 - Fixed restraint issues where peptide bonds were not being recognized accross altlocs

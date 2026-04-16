@@ -85,7 +85,7 @@ class LBFGSRefinement(Refinement):
     def __init__(
         self,
         *args,
-        target_mode: str = "ml",
+        target_mode: str = "bhattacharyya",
         sigma_m_scale: float = 1.0,
         use_lossstate_scaler: bool = True,
         **kwargs,
@@ -97,7 +97,7 @@ class LBFGSRefinement(Refinement):
         ----------
         target_mode : str, optional
             X-ray target mode ('gaussian', 'ls', 'ml', 'bhattacharyya').
-            Default is 'ml'.
+            Default is 'bhattacharyya'.
         sigma_m_scale : float, optional
             Global multiplier for σ_m in the Bhattacharyya target only.
             Ignored for other target modes. Default 1.0.

@@ -27,13 +27,13 @@ SELECTION = "resname IBL"
 MASK_RADIUS = 2.5
 
 SOLUTION_A = {
-    "label": "TorchRef (Al=0.18)",
-    "light_model": DATA / "torchref_0p18.pdb",
-    "fraction": 0.18,
+    "label": "TorchRef",
+    "light_model": DATA / "torchref_0p22.pdb",
+    "fraction": 0.22,
 }
 
 SOLUTION_B = {
-    "label": "Extrapolation (Al=0.22)",
+    "label": "Extrapolation",
     "light_model": DATA / "7YYZ.pdb",
     "fraction": 0.22,
 }

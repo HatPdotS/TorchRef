@@ -1,0 +1,191 @@
+{
+  "138L": {
+    "code": "138L",
+    "n_atoms": 1420,
+    "n_reflections": 20140,
+    "d_min": 1.6936545372009277,
+    "trace": [
+      {
+        "label": "start",
+        "current_mb": 0.0,
+        "peak_mb": 0.0
+      },
+      {
+        "label": "after_init",
+        "current_mb": 78.45703125,
+        "peak_mb": 1145.498046875
+      },
+      {
+        "label": "after_scaling",
+        "current_mb": 79.03564453125,
+        "peak_mb": 1153.3701171875
+      },
+      {
+        "label": "after_loss_state_xyz",
+        "current_mb": 86.6591796875,
+        "peak_mb": 119.3857421875
+      },
+      {
+        "label": "after_forward_xyz",
+        "current_mb": 86.85302734375,
+        "peak_mb": 88.27783203125
+      },
+      {
+        "label": "after_backward_xyz",
+        "current_mb": 79.08203125,
+        "peak_mb": 111.99169921875
+      },
+      {
+        "label": "after_refine_xyz",
+        "current_mb": 79.1650390625,
+        "peak_mb": 125.765625
+      },
+      {
+        "label": "after_refine_adp",
+        "current_mb": 81.9443359375,
+        "peak_mb": 122.34326171875
+      },
+      {
+        "label": "cycle2_scaling",
+        "current_mb": 79.9091796875,
+        "peak_mb": 1157.5869140625
+      },
+      {
+        "label": "cycle2_xyz",
+        "current_mb": 82.107421875,
+        "peak_mb": 122.966796875
+      },
+      {
+        "label": "cycle2_adp",
+        "current_mb": 82.30078125,
+        "peak_mb": 122.69970703125
+      }
+    ]
+  },
+  "3K7M": {
+    "code": "3K7M",
+    "n_atoms": 4048,
+    "n_reflections": 55080,
+    "d_min": 1.9523898363113403,
+    "trace": [
+      {
+        "label": "start",
+        "current_mb": 65.4072265625,
+        "peak_mb": 65.4072265625
+      },
+      {
+        "label": "after_init",
+        "current_mb": 497.9375,
+        "peak_mb": 1062.15185546875
+      },
+      {
+        "label": "after_scaling",
+        "current_mb": 492.50439453125,
+        "peak_mb": 1067.7275390625
+      },
+      {
+        "label": "after_loss_state_xyz",
+        "current_mb": 517.53125,
+        "peak_mb": 813.341796875
+      },
+      {
+        "label": "after_forward_xyz",
+        "current_mb": 518.05810546875,
+        "peak_mb": 521.583984375
+      },
+      {
+        "label": "after_backward_xyz",
+        "current_mb": 495.00537109375,
+        "peak_mb": 754.20849609375
+      },
+      {
+        "label": "after_refine_xyz",
+        "current_mb": 495.900390625,
+        "peak_mb": 822.5244140625
+      },
+      {
+        "label": "after_refine_adp",
+        "current_mb": 501.1640625,
+        "peak_mb": 822.15478515625
+      },
+      {
+        "label": "cycle2_scaling",
+        "current_mb": 495.3427734375,
+        "peak_mb": 1066.455078125
+      },
+      {
+        "label": "cycle2_xyz",
+        "current_mb": 499.0634765625,
+        "peak_mb": 823.43408203125
+      },
+      {
+        "label": "cycle2_adp",
+        "current_mb": 499.60595703125,
+        "peak_mb": 821.2646484375
+      }
+    ]
+  },
+  "1AQ3": {
+    "code": "1AQ3",
+    "n_atoms": 3702,
+    "n_reflections": 159162,
+    "d_min": 2.8000166416168213,
+    "trace": [
+      {
+        "label": "start",
+        "current_mb": 392.779296875,
+        "peak_mb": 392.779296875
+      },
+      {
+        "label": "after_init",
+        "current_mb": 2118.939453125,
+        "peak_mb": 3561.9931640625
+      },
+      {
+        "label": "after_scaling",
+        "current_mb": 2121.24951171875,
+        "peak_mb": 3564.30322265625
+      },
+      {
+        "label": "after_loss_state_xyz",
+        "current_mb": 2153.11669921875,
+        "peak_mb": 3564.677734375
+      },
+      {
+        "label": "after_forward_xyz",
+        "current_mb": 2154.6357421875,
+        "peak_mb": 2159.9755859375
+      },
+      {
+        "label": "after_backward_xyz",
+        "current_mb": 2118.5673828125,
+        "peak_mb": 3281.2587890625
+      },
+      {
+        "label": "after_refine_xyz",
+        "current_mb": 2119.4951171875,
+        "peak_mb": 3578.10498046875
+      },
+      {
+        "label": "after_refine_adp",
+        "current_mb": 2134.6806640625,
+        "peak_mb": 3577.087890625
+      },
+      {
+        "label": "cycle2_scaling",
+        "current_mb": 2119.1044921875,
+        "peak_mb": 3562.158203125
+      },
+      {
+        "label": "cycle2_xyz",
+        "current_mb": 2132.03955078125,
+        "peak_mb": 3584.28076171875
+      },
+      {
+        "label": "cycle2_adp",
+        "current_mb": 2128.53076171875,
+        "peak_mb": 3585.02099609375
+      }
+    ]
+  }
+}

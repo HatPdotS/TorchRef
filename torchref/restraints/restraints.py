@@ -388,7 +388,8 @@ class RestraintsNew(DebugMixin, Module):
             return None
         result = {}
         # Common properties for different restraint types
-        for prop in ["indices", "references", "sigmas", "periods", "min_distances"]:
+        for prop in ["indices", "references", "sigmas", "periods", "min_distances",
+                     "is_proline"]:
             tensor = self._get_restraint_tensor(rtype, origin, prop)
             if tensor is not None:
                 result[prop] = tensor
@@ -1845,10 +1846,10 @@ class RestraintsNew(DebugMixin, Module):
             "sigmas": self._get_all_property("angle", "sigmas"),
         }
         # Note: phi/psi origins are excluded because they have no reference
-        # values or sigmas (conformationally free). Omega IS included — it
-        # has references (~180°) and sigmas and must be evaluated to maintain
-        # peptide bond planarity.
-        _torsion_origins = ["intra", "disulfide", "omega"]
+        # values or sigmas (conformationally free). Omega is excluded here
+        # because it is handled by a dedicated OmegaTarget that uses a
+        # cis/trans von Mises mixture model.
+        _torsion_origins = ["intra", "disulfide"]
         self.restraints["torsion"]["all"] = {
             "indices": self._get_all_indices("torsion", _torsion_origins),
             "references": self._get_all_property(

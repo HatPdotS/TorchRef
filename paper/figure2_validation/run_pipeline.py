@@ -86,7 +86,7 @@ def _mtz_file(code):
 # Experiment Setup
 # ──────────────────────────────────────────────────────────────────────────────
 
-def setup_experiment(name, structures, n_cycles):
+def setup_experiment(name, structures, n_cycles, weights=None):
     """Create experiment directory."""
     exp_dir = EXPERIMENTS / name
 
@@ -104,6 +104,7 @@ def setup_experiment(name, structures, n_cycles):
         "mode": "refine",
         "xray_mode": "bhattacharyya",
         "sigma_m_scale": 1.0,
+        "weights": weights,
     }
     with open(exp_dir / "experiment.json", "w") as f:
         json.dump(meta, f, indent=2)
@@ -137,8 +138,18 @@ def submit_refinement_jobs(exp_dir, dry_run=False, force=False):
 
     xray_mode = exp.get("xray_mode", "bhattacharyya")
     sigma_m_scale = exp.get("sigma_m_scale", 1.0)
+    weights = exp.get("weights")
     job_ids = {}
     submitted, skipped, missing = 0, 0, 0
+
+    # Build weights CLI fragment once
+    weights_line = ""
+    if weights:
+        weights_json = json.dumps(weights)
+        weights_line = f" \\\n    --weights '{weights_json}'"
+
+    tmp_dir = exp_dir / "tmp_scripts"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
 
     for code in exp["structures"]:
         pdb = _initial_pdb(code)
@@ -157,26 +168,33 @@ def submit_refinement_jobs(exp_dir, dry_run=False, force=False):
 
         outdir.mkdir(parents=True, exist_ok=True)
 
-        cmd = (
-            f"sbatch -p day -c 4 -t 04:00:00 --mem=8G "
-            f"-o {outdir / 'out.log'} -e {outdir / 'error.log'} "
-            f"-J ref_{code} "
-            f"--wrap='"
-            f"{PYTHON} -u {REFINE_SCRIPT} "
-            f"-m {pdb} -sf {mtz} -o {outdir} "
-            f"-n {exp['n_cycles']} "
-            f"--mode {exp['mode']} "
-            f"--xray-mode {xray_mode} "
-            f"--sigma-m-scale {sigma_m_scale}"
-            f"'"
-        )
+        script_content = f"""#!/bin/bash
+#SBATCH --job-name=ref_{code}
+#SBATCH --partition=day
+#SBATCH --cpus-per-task=4
+#SBATCH --time=04:00:00
+#SBATCH --mem=8G
+#SBATCH --output={outdir / 'out.log'}
+#SBATCH --error={outdir / 'error.log'}
+
+{PYTHON} -u {REFINE_SCRIPT} \\
+    -m {pdb} -sf {mtz} -o {outdir} \\
+    -n {exp['n_cycles']} \\
+    --mode {exp['mode']} \\
+    --xray-mode {xray_mode} \\
+    --sigma-m-scale {sigma_m_scale}{weights_line}
+"""
+        script_file = tmp_dir / f"ref_{code}.sh"
+        with open(script_file, "w") as f:
+            f.write(script_content)
 
         if dry_run:
-            print(f"  [DRY-RUN] {cmd}")
+            print(f"  [DRY-RUN] sbatch {script_file}")
         else:
             try:
                 result = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True, check=True
+                    ["sbatch", str(script_file)],
+                    capture_output=True, text=True, check=True,
                 )
                 job_id = result.stdout.strip().split()[-1]
                 job_ids[code] = job_id
@@ -184,6 +202,9 @@ def submit_refinement_jobs(exp_dir, dry_run=False, force=False):
                 submitted += 1
             except subprocess.CalledProcessError as e:
                 print(f"  FAILED {code}: {e.stderr.strip()}")
+
+        if script_file.exists() and not dry_run:
+            script_file.unlink()
 
     print(f"\nRefinement: submitted={submitted}, skipped={skipped}, missing={missing}")
 
@@ -477,26 +498,32 @@ def _parse_refmac_log(log_file):
     m = re.search(r"Free R factor\s+=\s+([\d.]+)", content)
     result["r_free"] = float(m.group(1)) if m else np.nan
 
+    # REFMAC "Rms Delta / Av(Sigma)" summary table. Group 2 is the RMSD, group
+    # 3 is the average target sigma used for that restraint class on this
+    # structure — their ratio is the RMSZ (how close to ideal the refinement
+    # landed, in units of the restraint's own sigma).
     geo_patterns = {
-        "BOND":  r"Bond distances:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
-        "ANGL":  r"Bond angles\s*:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
+        "BOND":   r"Bond distances:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
+        "ANGL":   r"Bond angles\s*:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
         "CHIRAL": r"Chiral centres:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
-        "PLANE": r"Planar groups:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
+        "PLANE":  r"Planar groups:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
     }
     for key, pat in geo_patterns.items():
         m = re.search(pat, content)
         result[f"rms{key}"] = float(m.group(2)) if m else np.nan
+        result[f"sig{key}"] = float(m.group(3)) if m else np.nan
 
     b_patterns = {
-        "B_mc_bond":   r"M\. chain bond B values:\s*refined atoms\s+(\d+)\s+([\d.]+)",
-        "B_mc_angle":  r"M\. chain angle B values:\s*refined atoms\s+(\d+)\s+([\d.]+)",
-        "B_sc_bond":   r"S\. chain bond B values:\s*refined atoms\s+(\d+)\s+([\d.]+)",
-        "B_sc_angle":  r"S\. chain angle B values:\s*refined atoms\s+(\d+)\s+([\d.]+)",
-        "B_longrange": r"Long range B values:\s*refined atoms\s+(\d+)\s+([\d.]+)",
+        "B_mc_bond":   r"M\. chain bond B values:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
+        "B_mc_angle":  r"M\. chain angle B values:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
+        "B_sc_bond":   r"S\. chain bond B values:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
+        "B_sc_angle":  r"S\. chain angle B values:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
+        "B_longrange": r"Long range B values:\s*refined atoms\s+(\d+)\s+([\d.]+)\s+([\d.]+)",
     }
     for key, pat in b_patterns.items():
         m = re.search(pat, content)
         result[f"rms{key}"] = float(m.group(2)) if m else np.nan
+        result[f"sig{key}"] = float(m.group(3)) if m else np.nan
 
     m = re.search(r"Overall\s+:\s+scale\s*=\s*([\d.]+),\s*B\s*=\s*([\d.-]+)", content)
     result["overall_B"] = float(m.group(2)) if m else np.nan
@@ -949,6 +976,8 @@ def main():
                         help="PDB codes (default: all 997 from structures.json)")
         p.add_argument("--n-cycles", type=int, default=10,
                         help="Refinement macro cycles (default: 10)")
+        p.add_argument("--weights", type=str, default=None,
+                        help='Target weights as JSON string, e.g. \'{"geometry": 4}\'')
         p.add_argument("--dry-run", action="store_true",
                         help="Print commands without submitting")
         p.add_argument("--force", action="store_true",
@@ -1023,8 +1052,18 @@ def main():
         structures = _load_default_structures()
         print(f"Using {len(structures)} structures from structures.json")
 
+    # Parse weights JSON string if provided
+    weights = None
+    if getattr(args, "weights", None):
+        try:
+            weights = json.loads(args.weights)
+        except json.JSONDecodeError as e:
+            print(f"Error: invalid --weights JSON: {e}", file=sys.stderr)
+            return
+
     exp_dir = setup_experiment(
         name=args.name, structures=structures, n_cycles=args.n_cycles,
+        weights=weights,
     )
 
     if args.command == "refine":

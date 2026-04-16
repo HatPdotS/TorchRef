@@ -18,8 +18,8 @@ loop_
 _audit_author.name
 AUTHOR NAME
 
-_refine.ls_R_factor_R_work 0.1644
-_refine.ls_R_factor_R_free 0.1836
+_refine.ls_R_factor_R_work 0.1646
+_refine.ls_R_factor_R_free 0.1837
 _refine.ls_d_res_high 2.20
 _refine.ls_d_res_low 9.49
 _refine.ls_number_reflns_all 56814

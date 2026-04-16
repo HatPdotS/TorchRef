@@ -2115,7 +2115,7 @@ class RestraintCIFReader:
         # Fill missing values with 0.01 Å default, then clip minimum to 0.001 Å
         # (avoid overly tight restraints while allowing looser ones)
         sigma = sigma.fillna(0.01)
-        result["sigma"] = sigma.clip(lower=0.001)  # Minimum 0.1 Å, no maximum
+        result["sigma"] = sigma.clip(lower=0.001)  # Minimum 0.001 Å, no maximum
 
         return result
 

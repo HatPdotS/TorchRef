@@ -38,8 +38,10 @@ from torchref.cli._common import (
     add_outdir_arg,
     add_output_format_args,
     add_single_model_args,
+    add_weights_arg,
     build_column_names,
     configure_unbuffered_output,
+    parse_weights,
     register_timing,
     resolve_device,
     validate_files,
@@ -106,6 +108,7 @@ Examples:
         help="Global multiplier applied to σ_m for the Bhattacharyya target. "
         "Ignored for other targets. Default 1.0.",
     )
+    add_weights_arg(refine_group)
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -115,6 +118,12 @@ Examples:
     args = parser.parse_args()
 
     register_timing()
+
+    # Parse weights
+    manual_weights, weights_err = parse_weights(args.weights)
+    if weights_err:
+        print(f"Error: {weights_err}", file=sys.stderr)
+        sys.exit(1)
 
     # Validate inputs
     model_path = Path(args.model)
@@ -151,6 +160,8 @@ Examples:
         print(f"Device:            {args.device}")
         if args.dmin:
             print(f"Resolution cutoff: {args.dmin:.2f} A")
+        if manual_weights:
+            print(f"Manual weights:    {json.dumps(manual_weights)}")
         print("=" * 80)
         print()
         sys.stdout.flush()
@@ -173,6 +184,7 @@ Examples:
         column_names=column_names,
         target_mode=args.xray_mode,
         sigma_m_scale=args.sigma_m_scale,
+        manual_weights=manual_weights or None,
     )
 
     if args.verbose > 0:
@@ -228,6 +240,7 @@ Examples:
             "mode": args.mode,
             "xray_mode": args.xray_mode,
             "sigma_m_scale": args.sigma_m_scale,
+            "weights": manual_weights if manual_weights else None,
             "dmin": args.dmin,
             "device": str(device),
         },

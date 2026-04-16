@@ -29,7 +29,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 WORKER_SCRIPT = SCRIPT_DIR / "benchmark_worker.py"
-PLOT_SCRIPT = SCRIPT_DIR / "plot_results.py"
+PLOT_SCRIPT = SCRIPT_DIR.parent / "plot_figure3b.py"
 PYTHON = sys.executable
 
 
@@ -382,7 +382,7 @@ def main():
     print("Generating plots...")
     try:
         subprocess.run(
-            [PYTHON, str(PLOT_SCRIPT), str(output_dir)],
+            [PYTHON, str(PLOT_SCRIPT), "--results-dir", str(output_dir)],
             timeout=60,
         )
     except Exception as e:

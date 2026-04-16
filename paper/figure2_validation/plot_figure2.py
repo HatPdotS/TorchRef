@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
+from matplotlib.offsetbox import AnnotationBbox, TextArea, VPacker
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -158,85 +159,138 @@ def plot_rfactor_scatter(ax, torchref, phenix, initial):
     ax.set_aspect("equal")
 
 
-# ── Panel B: Quality radar (box-whisker) ─────────────────────────────────────
-def _normalize(vals, vmin, vmax, invert=False):
-    normed = (vals - vmin) / (vmax - vmin + 1e-10)
-    normed = np.clip(normed, 0, 1)
-    if invert:
-        normed = 1 - normed
-    return normed
+# ── Panel B: Quality strip plot (parallel coordinates, stacked) ──────────────
+def plot_quality_strips(ax, torchref, phenix, initial):
+    """Parallel-coordinates style plot with one row per metric.
 
-
-def plot_quality_radar(ax, torchref, phenix, initial):
+    Each row has its own linear scale in real units. Per group we draw a
+    shaded 5-95 percentile band and an IQR band (as horizontal spans per
+    row), and connect each group's medians across rows with a line so the
+    reader can trace a single group's performance through all metrics.
+    """
     all_metrics = ["r_work", "r_free", "rmsBOND", "rmsANGL", "rmsCHIRAL", "rmsB_mc_bond"]
-    all_labels = [
-        "R-work", "R-free", "Bond\nRMSD (\u00c5)",
-        "Angle\nRMSD (\u00b0)", "Chiral\nRMSD", "MC B-factor\nRMSD (\u00c5\u00b2)",
-    ]
-    # Filter to columns that actually exist in all DataFrames
-    available = [c for c in all_metrics if c in torchref.columns and c in phenix.columns and c in initial.columns]
-    metrics = available
-    labels = [all_labels[all_metrics.index(m)] for m in metrics]
-    if len(metrics) < 3:
-        ax.text(0.5, 0.5, "Insufficient metrics\nfor radar plot",
-                transform=ax.transAxes, ha="center", va="center", fontsize=12, color="gray")
-        return
-    # All lower-is-better
-    invert = [True] * len(metrics)
-
-    data_dict = {
-        "PHENIX": phenix,
-        "TorchRef": torchref,
-        "Initial": initial,
+    bounds = {
+        "r_work": (0.15, 0.4),
+        "r_free": (0.15, 0.4),
+        "rmsBOND": (0.1, 20.0),
+        "rmsANGL": (0.1, 20.0),
+        "rmsCHIRAL": (0.1, 20.0),
+        "rmsB_mc_bond": (0.1, 20.0),
     }
-    colors = [COLOR_PHENIX, COLOR_TORCHREF, COLOR_INITIAL]
+
+    all_labels = [
+        "R-work", "R-free", "Bond RMSZ",
+        "Angle RMSZ", "Chiral RMSZ", "MC B-factor RMSZ",
+    ]
+    # For geometry / ADP RMSDs we divide by REFMAC's per-structure Av(Sigma)
+    # (stored in sig* columns) to get a true RMSZ. If the sigma column is
+    # missing the row is dropped from the plot.
+    sigma_col = {
+        "rmsBOND": "sigBOND",
+        "rmsANGL": "sigANGL",
+        "rmsCHIRAL": "sigCHIRAL",
+        "rmsB_mc_bond": "sigB_mc_bond",
+    }
+    fmt_map = {
+        "r_work": "{:.3f}",
+        "r_free": "{:.3f}",
+        "rmsBOND": "{:.2f}",
+        "rmsANGL": "{:.2f}",
+        "rmsCHIRAL": "{:.2f}",
+        "rmsB_mc_bond": "{:.2f}",
+    }
+
+    data_groups = [
+        ("PHENIX", phenix, COLOR_PHENIX),
+        ("TorchRef", torchref, COLOR_TORCHREF),
+        ("Initial", initial, COLOR_INITIAL),
+    ]
+
+    def metric_available(m):
+        if not all(m in df.columns for _, df, _ in data_groups):
+            return False
+        sig = sigma_col.get(m)
+        if sig is None:
+            return True
+        return all(sig in df.columns for _, df, _ in data_groups)
+
+    metrics = [c for c in all_metrics if metric_available(c)]
+    labels = [all_labels[all_metrics.index(m)] for m in metrics]
+    if len(metrics) < 2:
+        ax.text(0.5, 0.5, "Insufficient metrics",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=12, color="gray")
+        return
+
+    def get_vals(df, m):
+        """Return the metric values, converted to RMSZ when a sigma col exists."""
+        sig_name = sigma_col.get(m)
+        if sig_name is None:
+            return df[m].dropna().values
+        sub = df[[m, sig_name]].dropna()
+        sig = sub[sig_name].values
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = np.where(sig > 0, sub[m].values / sig, np.nan)
+        return out[~np.isnan(out)]  
+    
+    LOG_FLOOR = 1e-3  # for log-scaling metrics with long tails, to avoid outliers dominating the plot
+
+    def to_x(m, v):
+        lo, hi = bounds[m]
+        lo_l = np.log10(lo)
+        hi_l = np.log10(hi)
+        v_l = np.log10(np.maximum(v, LOG_FLOOR))
+        return np.clip((v_l - lo_l) / (hi_l - lo_l + 1e-12), 0.0, 1.0)
 
     n = len(metrics)
-    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    # Top row = first metric, so reverse y so it reads top-down.
+    y_positions = np.arange(n)[::-1].astype(float)
+    row_half = 0.32  # vertical half-height of each row's shaded band
 
-    # Compute global min/max per metric
-    global_min, global_max = {}, {}
-    for m in metrics:
-        all_vals = np.concatenate([df[m].dropna().values for df in data_dict.values()])
-        global_min[m] = np.percentile(all_vals, 1)
-        global_max[m] = np.percentile(all_vals, 99)
+    # Light guide rectangles per row
+    for y in y_positions:
+        ax.axhspan(y - row_half, y + row_half, color="0.96", zorder=0)
 
-    width = 2 * np.pi / n * 0.3
-    offsets = np.linspace(-width / 2, width / 2, len(data_dict))
+    # Draw each group: 5-95% band (light) + IQR band (darker) per row,
+    # median markers, and a line connecting the medians across all rows.
+    for gname, df, color in data_groups:
+        med_xs = []
+        for i, m in enumerate(metrics):
+            vals = get_vals(df, m)
+            q25, q50, q75 = np.percentile(vals, [25, 50, 75])
+            y = y_positions[i]
+            x25, x50, x75 = (to_x(m, v) for v in (q25, q50, q75))
 
-    for idx, (name, color) in enumerate(zip(data_dict, colors)):
-        df = data_dict[name]
-        medians, med_angles = [], []
-        for i, (m, inv) in enumerate(zip(metrics, invert)):
-            vals = _normalize(df[m].dropna().values, global_min[m], global_max[m], inv)
-            med = np.median(vals)
-            q25, q75 = np.percentile(vals, [25, 75])
-            q05, q95 = np.percentile(vals, [5, 95])
-            a = angles[i] + offsets[idx]
-            ax.plot([a, a], [q05, q25], color=color, lw=1, alpha=0.7)
-            ax.plot([a, a], [q75, q95], color=color, lw=1, alpha=0.7)
-            ax.plot([a, a], [q25, q75], color=color, lw=4, solid_capstyle="round", alpha=0.8)
-            ax.plot(a, med, "o", color=color, markersize=5, zorder=10)
-            medians.append(med)
-            med_angles.append(a)
+            ax.fill_between([x25, x75], y - row_half, y + row_half,
+                            color=color, alpha=0.25, linewidth=0, zorder=3)
+            med_xs.append(x50)
 
-        closed_m = medians + [medians[0]]
-        closed_a = med_angles + [med_angles[0]]
-        ax.plot(closed_a, closed_m, color=color, alpha=0.4, lw=1.5)
-        ax.fill(closed_a, closed_m, color=color, alpha=0.1)
+        # Connecting line through medians + markers on top
+        ax.plot(med_xs, y_positions, color=color, lw=1.8, alpha=0.9, zorder=5)
+        ax.plot(med_xs, y_positions, "o", color=color, markersize=6,
+                markeredgecolor="white", markeredgewidth=0.8, zorder=6)
 
-    ax.set_xticks(angles)
-    ax.set_xticklabels([])
-    ax.set_ylim(0, 1.0)
-    ax.set_yticks([0.25, 0.5, 0.75])
-    ax.set_yticklabels(["25%", "50%", "75%"], size=10, alpha=0.5)
-    ax.grid(True, alpha=0.3)
+    # Per-row metric label (left) and real-units scale markers (below row).
+    # Ticks are geometrically spaced because the x-axis is log10-normalized.
+    for i, (m, label) in enumerate(zip(metrics, labels)):
+        y = y_positions[i]
+        lo, hi = bounds[m]
+        geo_mid = np.sqrt(lo * hi)
+        fmt = fmt_map.get(m, "{:.3g}")
+        ax.text(-0.02, y, label, ha="right", va="center", fontsize=11)
+        tick_y = y - row_half - 0.04
+        for x_frac, val in [(0.0, lo), (0.5, geo_mid), (1.0, hi)]:
+            ax.plot([x_frac, x_frac], [y - row_half, y - row_half - 0.02],
+                    color="0.4", lw=0.6, clip_on=False)
+            ax.text(x_frac, tick_y, fmt.format(val),
+                    ha="center", va="top", fontsize=8, color="0.35")
 
-    for angle, label in zip(angles, labels):
-        deg = np.degrees(angle)
-        ha = "left" if (deg < 90 or deg > 270) else ("right" if 90 < deg < 270 else "center")
-        va = "bottom" if 45 < deg < 135 else ("top" if 225 < deg < 315 else "center")
-        ax.text(angle, 1.25, label, size=12, ha=ha, va=va)
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.8, n - 1 + 0.8)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
 
 
 # ── Panel C: RMSD from initial structure ─────────────────────────────────────
@@ -306,9 +360,9 @@ def create_publication_figure(data_dir: Path, outpath: str, dpi: int = 300):
     ax_a = fig.add_subplot(2, 2, 1)
     plot_rfactor_scatter(ax_a, torchref, phenix, initial)
 
-    # B: Quality radar
-    ax_b = fig.add_subplot(2, 2, 2, projection="polar")
-    plot_quality_radar(ax_b, torchref, phenix, initial)
+    # B: Quality strips (parallel-coordinates style)
+    ax_b = fig.add_subplot(2, 2, 2)
+    plot_quality_strips(ax_b, torchref, phenix, initial)
 
     # C: RMSD from initial
     ax_c = fig.add_subplot(2, 2, 3)
@@ -328,8 +382,8 @@ def create_publication_figure(data_dir: Path, outpath: str, dpi: int = 300):
                   ha="center", va="center", fontsize=14, color="gray")
 
     # Panel labels
-    for label, x, y in [("A", 0.08, 0.92), ("B", 0.52, 0.92),
-                          ("C", 0.08, 0.45), ("D", 0.52, 0.45)]:
+    for label, x, y in [("A", 0.08, 0.95), ("B", 0.52, 0.92),
+                          ("C", 0.08, 0.48), ("D", 0.52, 0.45)]:
         fig.text(x, y, label, fontsize=21, fontweight="bold")
 
     # Shared legend

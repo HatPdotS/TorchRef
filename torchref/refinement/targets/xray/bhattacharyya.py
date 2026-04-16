@@ -8,7 +8,7 @@ For each reflection h:
     L_h = (F_obs - |F_calc|)² / (4 · (σ_d² + σ_m²))
         + 0.5 · log( (σ_d² + σ_m²) / (2 σ_d σ_m) )
 
-Total: L = Σ_h L_h. See ``design_doc_overlap_loss.md`` for the formulation.
+Total: L = Σ_h L_h. 
 
 sigma_m derivation
 ------------------
@@ -35,16 +35,6 @@ The outer f_k²(s_h) comes from forward propagation of Var(x_j, B_j) into
 F_calc. The f² inside g_w/g_4 cancels one of the two factors that arise from
 Var(x_j) ∝ 1/(f² · g), leaving the outer f_k² factor.
 
-Notes
------
-- Reflection axis is kept fully resolved on h; B-factor axis is discretised
-  on a log-spaced grid (B is approximately lognormal per Wilson statistics).
-- Constant σ_d weighting is used because per-reflection 1/σ²(h) suffers
-  error-in-variables bias (MTZ σ estimates are themselves shot-noise limited).
-- Only isotropic atoms contribute to σ_m. Anisotropic atoms are ignored.
-- Memory: one shared ``exp_table`` (b_grid_n × N_refl) plus per-element
-  ``f_sq_kh`` (K × N_refl). For K ≤ 6, b_grid_n = 100, N_refl = 100 k this
-  is ≈ 42 MB float32.
 """
 
 import math

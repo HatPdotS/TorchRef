@@ -1,3 +1,7 @@
+"""
+Base class for crystallographic refinement.
+"""
+
 from typing import Any, Dict, Optional
 
 import torch
@@ -203,15 +207,15 @@ class Refinement(DebugMixin, nnModule):
                 self.debug_on_error(e)
             raise e
 
-    def _init_targets(self, xray_mode: str = "ml"):
+    def _init_targets(self, xray_mode: str = "bhattacharyya"):
         """
         Initialize target functions.
 
         Parameters
         ----------
         xray_mode : str, optional
-            X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
-            Default is 'ml'.
+            X-ray target mode. Options are 'gaussian', 'ls', 'ml', or
+            'bhattacharyya'. Default is 'bhattacharyya'.
         """
         # X-ray targets (now accept model, data, scaler directly)
         self.xray_target_work = create_xray_target(
@@ -823,6 +827,11 @@ class Refinement(DebugMixin, nnModule):
     def add_target_info_to_state(self, state: "LossState") -> "LossState":
         """
         Add target information from geometry and ADP targets to LossState.meta.
+
+        .. deprecated::
+            This method is no longer needed. Use :meth:`complete_loss_state`
+            instead, which handles all state setup in one call.
+
         Parameters
         ----------
         state : LossState
@@ -830,27 +839,16 @@ class Refinement(DebugMixin, nnModule):
         Returns
         -------
         LossState
-            Updated loss state with target info in meta.
+            Updated loss state (unchanged).
         """
+        import warnings
 
-        target_info = {}
-
-        for loss_object in self.geometry_target.values():
-            target_val, sigma = loss_object._target_value, loss_object._sigma
-            target_info[loss_object.name] = {
-                "target_value": target_val,
-                "sigma": sigma,
-            }
-
-        for loss_object in self.adp_target.values():
-            target_val, sigma = loss_object._target_value, loss_object._sigma
-            target_info[loss_object.name] = {
-                "target_value": target_val,
-                "sigma": sigma,
-            }
-
-        state.update_meta({"target_info": target_info})
-
+        warnings.warn(
+            "add_target_info_to_state is deprecated and is a no-op. "
+            "Use complete_loss_state() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return state
 
     def cuda(self):
