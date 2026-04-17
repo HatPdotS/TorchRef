@@ -259,6 +259,10 @@ class TestLossAggregatorFunctional:
         state.register_target('xray', counting_target)
         state.set_weight('xray', 1.0)
 
+        # register_target probes the target once to walk the autograd graph;
+        # reset the counter so we measure only aggregate() invocations.
+        call_count[0] = 0
+
         # First aggregation computes the loss
         total1 = state.aggregate()
         assert call_count[0] == 1

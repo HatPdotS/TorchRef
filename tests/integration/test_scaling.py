@@ -49,29 +49,6 @@ class TestScalerOperations:
     """Tests for Scaler operations."""
 
     @pytest.mark.integration
-    def test_scaler_freeze_unfreeze(self, sample_structure_pair):
-        """Test freezing and unfreezing the scaler."""
-        from torchref.model.model import Model
-        from torchref.io import ReflectionData
-        from torchref.scaling.scaler import Scaler
-        
-        model = Model()
-        model.load_cif(str(sample_structure_pair["model"]))
-        
-        data = ReflectionData()
-        data.load_mtz(str(sample_structure_pair["reflections"]))
-        
-        scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
-        
-        assert not scaler.frozen
-        
-        scaler.freeze()
-        assert scaler.frozen
-        
-        scaler.unfreeze()
-        assert not scaler.frozen
-
-    @pytest.mark.integration
     def test_scaler_set_model_and_data(self, sample_structure_pair):
         """Test setting model and data after empty init."""
         from torchref.model.model import Model

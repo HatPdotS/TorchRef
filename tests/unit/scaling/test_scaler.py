@@ -51,16 +51,6 @@ class TestScalerInitialization:
         
         assert scaler.nbins == 10
 
-    @pytest.mark.unit
-    def test_scaler_frozen_flag(self):
-        """Test frozen flag initialization."""
-        from torchref.scaling.scaler import Scaler
-        
-        scaler = Scaler()
-        
-        assert scaler.frozen == False
-
-
 class TestScalerDeviceHandling:
     """Tests for device handling in Scaler."""
 

@@ -72,6 +72,59 @@ def cpp_scatter():
 
 
 # ---------------------------------------------------------------------------
+# Compile-availability test
+# ---------------------------------------------------------------------------
+
+class TestCompilation:
+    """Verify the C++ extension can be compiled in the current environment.
+
+    This test does NOT skip on failure — failure here is the actual signal
+    we want from CI / SLURM jobs. The full diagnostic captured by
+    ``_get_module()`` is included in the assertion message.
+    """
+
+    def test_module_compiles(self):
+        """C++ cpu_scatter extension must build successfully."""
+        from torchref.base.kernels import cpu_scatter
+
+        # Reset any cached failure from a previous test in the same process so
+        # we get a fresh attempt with up-to-date diagnostics.
+        cpu_scatter._module_failed = False
+        cpu_scatter._module_error = None
+
+        mod = cpu_scatter._get_module()
+
+        if mod is None:
+            err_summary, err_tb = cpu_scatter._module_error or ("unknown", "")
+            # Surface environment context that commonly differs on SLURM nodes.
+            import os
+            import shutil
+            import sys
+            env_info = (
+                f"  python:    {sys.executable}\n"
+                f"  ninja:     {shutil.which('ninja')}\n"
+                f"  CXX env:   {os.environ.get('CXX', '<unset>')}\n"
+                f"  CC env:    {os.environ.get('CC', '<unset>')}\n"
+                f"  PATH head: {os.environ.get('PATH', '').split(':')[:5]}\n"
+                f"  HOME:      {os.environ.get('HOME', '<unset>')}\n"
+                f"  TORCH_EXTENSIONS_DIR: "
+                f"{os.environ.get('TORCH_EXTENSIONS_DIR', '<unset>')}\n"
+            )
+            pytest.fail(
+                "C++ cpu_scatter compilation failed.\n"
+                f"Error: {err_summary}\n\n"
+                f"Environment:\n{env_info}\n"
+                f"Full traceback:\n{err_tb}"
+            )
+
+        # Sanity-check the built module exposes both entry points.
+        assert hasattr(mod, "structured_scatter_add"), \
+            "compiled module is missing structured_scatter_add"
+        assert hasattr(mod, "structured_gather"), \
+            "compiled module is missing structured_gather"
+
+
+# ---------------------------------------------------------------------------
 # Correctness tests
 # ---------------------------------------------------------------------------
 

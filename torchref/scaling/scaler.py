@@ -66,8 +66,6 @@ class Scaler(ScalerBase):
         Current computation device.
     nbins : int
         Number of resolution bins.
-    frozen : bool
-        Whether the scaler parameters are frozen.
     """
 
     def __init__(
@@ -410,7 +408,7 @@ class Scaler(ScalerBase):
         This includes:
 
         - All registered buffers and parameters (via parent class)
-        - Scaler-specific metadata (nbins, frozen state, etc.)
+        - Scaler-specific metadata (nbins, etc.)
         - Solvent model state (if initialized)
 
         Note: Model and data references are NOT saved (managed separately).

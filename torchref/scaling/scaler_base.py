@@ -65,8 +65,6 @@ class ScalerBase(DebugMixin, nn.Module):
         Current computation device.
     nbins : int
         Number of resolution bins.
-    frozen : bool
-        Whether the scaler parameters are frozen.
     """
 
     def __init__(
@@ -1042,7 +1040,7 @@ class ScalerBase(DebugMixin, nn.Module):
         This includes:
 
         - All registered buffers and parameters (via parent class)
-        - Scaler-specific metadata (nbins, frozen state, etc.)
+        - Scaler-specific metadata (nbins, etc.)
         - Solvent model state (if set)
 
         Note: Data reference is NOT saved (managed separately).

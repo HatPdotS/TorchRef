@@ -40,6 +40,16 @@ from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.loss_validation import validate_loss
 
 
+class LossStateWarning(UserWarning):
+    """Performance hints emitted by :class:`LossState`.
+
+    Subclassed from ``UserWarning`` so it shows up by default, but exposed
+    as a distinct category so callers can silence/escalate it independently.
+    """
+
+
+
+
 @dataclass
 class LossState(DeviceMovementMixin):
     """
@@ -301,32 +311,9 @@ class LossState(DeviceMovementMixin):
         """
         with torch.enable_grad():
             roots = target()
-        leaves_before = len(self._loss_leaves)
         new_leaves = collect_loss_leaves(roots)
         self._loss_leaves |= new_leaves
-        if not new_leaves:
-            any_grad_fn = any(
-                getattr(t, "grad_fn", None) is not None for t in _iter_roots(roots)
-            )
-            target_name = getattr(target, "name", type(target).__name__)
-            if not any_grad_fn:
-                warnings.warn(
-                    f"LossState.register_target: target {target_name!r} returned "
-                    "tensor(s) with no grad_fn — the loss does not track gradients. "
-                    "Register targets while every parameter the loss should depend on "
-                    "has requires_grad=True. The target is still registered; this is "
-                    "only a performance hint, not a correctness issue.",
-                    stacklevel=3,
-                )
-            else:
-                warnings.warn(
-                    f"LossState.register_target: target {target_name!r} has a non-empty "
-                    "autograd graph but no nn.Parameter leaves — none of the inputs are "
-                    "Parameters with requires_grad=True. Step()/run() will not be able "
-                    "to auto-disable any leaves on this target's account. This is only "
-                    "a performance hint, not a correctness issue.",
-                    stacklevel=3,
-                )
+
 
     def register_targets(
         self,
