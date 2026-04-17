@@ -33,9 +33,6 @@ dependencies = [
 
 [project.scripts]
 "torchref.refine" = "torchref.cli.refine:main"
-"torchref.refine-random-weights" = "torchref.cli.refine_everything_random_weights:main"
-"torchref.refine-policy" = "torchref.cli.refine_everything_policy:main"
-"torchref.refine-static" = "torchref.cli.refine_everything_static:main"
 "torchref.difference-refine" = "torchref.cli.collection_difference_refine:main"
 "torchref.mtz2map" = "torchref.cli.mtz2map:main"
 "torchref.validate-ded" = "torchref.cli.validate_ded:main"
