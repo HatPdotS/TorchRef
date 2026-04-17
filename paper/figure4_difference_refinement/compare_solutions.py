@@ -65,7 +65,7 @@ def _plot_cc_by_resolution(ax, res_a, res_b, label_a, label_b):
                 label=f"{label} (CC={res['reciprocal_cc_overall']:.3f})")
     ax.set_xlabel("Resolution (Å)")
     ax.set_ylabel("CC(WDFo, WDFcalc)")
-    ax.set_title("Amplitude CC by Resolution")
+    ax.set_title("Amplitude CC by Resolution", fontsize=18)
     ax.invert_xaxis()
     ax.axhline(y=0, color="gray", ls="--", alpha=0.3)
     ax.set_ylim(-0.1, 0.7)
@@ -78,7 +78,7 @@ def _plot_scatter(ax, v_dfo, v_dfc, cc, label, color):
     ax.scatter(v_dfo, v_dfc, s=1, alpha=0.15, color=color)
     ax.set_xlabel("WDFo (σ)")
     ax.set_ylabel("WDFcalc (σ)")
-    ax.set_title(f"{label}\nCC = {cc:.3f}")
+    ax.set_title(f"{label}\nCC = {cc:.3f}", fontsize=18)
     lim = max(abs(v_dfo).max(), abs(v_dfc).max())
     ax.plot([-lim, lim], [-lim, lim], "k-", linewidth=1, alpha=0.4)
     ax.set_xlim(-lim, lim)
@@ -102,7 +102,7 @@ def plot_comparison(res_a, res_b, label_a, label_b, outdir):
 
     # ── Combined figure ──
     fig, axes = plt.subplots(1, 3, figsize=(3 * W, H))
-    fig.suptitle("DED Comparison: WDFo vs WDFcalc", fontsize=14, y=1.02)
+    fig.suptitle("DED Comparison: WDFo vs WDFcalc", fontsize=21, y=1.02)
     _plot_cc_by_resolution(axes[0], res_a, res_b, label_a, label_b)
     _plot_scatter(axes[1], *scatter_a, label_a, "tab:blue")
     _plot_scatter(axes[2], *scatter_b, label_b, "tab:red")

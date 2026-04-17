@@ -1,4 +1,4 @@
-#!/usr/bin/env python -u
+#!/usr/bin/env python 
 """
 Compute per-structure coordinate and ADP deviations for a validation2 experiment.
 

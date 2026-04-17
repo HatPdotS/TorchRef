@@ -1,4 +1,4 @@
-#!/usr/bin/env python -u
+#!/usr/bin/env python
 """
 Geometry weight screening pipeline for Extended Figure 1.
 

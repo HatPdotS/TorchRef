@@ -18,8 +18,8 @@ loop_
 _audit_author.name
 AUTHOR NAME
 
-_refine.ls_R_factor_R_work 0.1646
-_refine.ls_R_factor_R_free 0.1837
+_refine.ls_R_factor_R_work 0.1645
+_refine.ls_R_factor_R_free 0.1833
 _refine.ls_d_res_high 2.20
 _refine.ls_d_res_low 9.49
 _refine.ls_number_reflns_all 56814
@@ -29,7 +29,7 @@ _refine.ls_percent_reflns_R_free 1.6
 _refine.B_iso_mean 42.54
 _refine.B_iso_min 18.30
 _refine.B_iso_max 138.37
-_refine.solvent_model_param_ksol 0.3695
+_refine.solvent_model_param_ksol 0.3694
 _refine.solvent_model_param_bsol 54.98
 
 _refine_hist.number_atoms_total 8523
