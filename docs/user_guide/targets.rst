@@ -135,3 +135,9 @@ It is used to track targets during refinement and supplies information for weigh
     # Compute backward pass
     total_loss.backward()
 
+
+    # Example optimization step with LBFGS using the LossState
+    # This prunes loss evaluation and keeps track of what things need to be recomputed automatically
+    from torch.optim import LBFGS
+    optimizer = LBFGS(model.parameters(), lr=1.0, max_iter=100)
+    state.run(optimizer, n_steps=1) # equivalent to state.step(optimizer)

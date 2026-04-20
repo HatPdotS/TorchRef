@@ -13,9 +13,9 @@ sys.path.insert(0, os.path.abspath('..'))
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'TorchRef'
-copyright = '2024, Hans Peter Seidel'
+copyright = '2026, Hans Peter Seidel'
 author = 'Hans Peter Seidel'
-release = '0.2.0'
+release = '0.5.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

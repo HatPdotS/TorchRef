@@ -63,8 +63,8 @@ def _plot_cc_by_resolution(ax, res_a, res_b, label_a, label_b):
         cc = [b["cc"] for b in res["resolution_bins"]]
         ax.plot(d, cc, marker, color=color, markersize=4,
                 label=f"{label} (CC={res['reciprocal_cc_overall']:.3f})")
-    ax.set_xlabel("Resolution (Å)")
-    ax.set_ylabel("CC(WDFo, WDFcalc)")
+    ax.set_xlabel("Resolution (Å)", fontsize=14.4)
+    ax.set_ylabel("CC(WDFo, WDFcalc)", fontsize=14.4)
     ax.set_title("Amplitude CC by Resolution", fontsize=18)
     ax.invert_xaxis()
     ax.axhline(y=0, color="gray", ls="--", alpha=0.3)
@@ -76,8 +76,8 @@ def _plot_cc_by_resolution(ax, res_a, res_b, label_a, label_b):
 def _plot_scatter(ax, v_dfo, v_dfc, cc, label, color):
     """Plot WDFo vs WDFc scatter."""
     ax.scatter(v_dfo, v_dfc, s=1, alpha=0.15, color=color)
-    ax.set_xlabel("WDFo (σ)")
-    ax.set_ylabel("WDFcalc (σ)")
+    ax.set_xlabel("WDFo (σ)", fontsize=14.4)
+    ax.set_ylabel("WDFcalc (σ)", fontsize=14.4)
     ax.set_title(f"{label}\nCC = {cc:.3f}", fontsize=18)
     lim = max(abs(v_dfo).max(), abs(v_dfc).max())
     ax.plot([-lim, lim], [-lim, lim], "k-", linewidth=1, alpha=0.4)
