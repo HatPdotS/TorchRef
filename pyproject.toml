@@ -28,7 +28,7 @@ dependencies = [
     "scipy>=1.10.0,<1.18.0",
     "matplotlib>=3.7.0,<3.11.0",
     "reciprocalspaceship>=0.9.18,<1.1.0",
-    "pyarrow>=12.0.0,<23.0.0",
+    "pyarrow>=12.0.0,<25.0.0",
     # Required by torch.utils.cpp_extension.load_inline for the cpu_scatter
     # JIT-compiled C++ kernel. SLURM compute nodes don't ship a system-wide
     # ninja, so we install it as a Python dependency on every worker.
