@@ -459,6 +459,11 @@ class ScalerBase(DebugMixin, nn.Module):
         """
         hkl, fobs, _, rfree = self._data()
         fcalc_scaled = self.forward(fcalc)
+        if hasattr(fobs, "get_data"):
+            valid = fobs.get_mask()
+            fobs = fobs.get_data()[valid]
+            fcalc_scaled = fcalc_scaled[valid]
+            rfree = rfree[valid]
         return get_rfactors(torch.abs(fobs), torch.abs(fcalc_scaled), rfree)
 
     def bin_wise_rfactor(self, fcalc: torch.Tensor):
@@ -481,6 +486,11 @@ class ScalerBase(DebugMixin, nn.Module):
         """
         hkl, fobs, _, rfree = self._data()
         fcalc_scaled = self.forward(fcalc)
+        if hasattr(fobs, "get_data"):
+            valid = fobs.get_mask()
+            fobs = fobs.get_data()[valid]
+            fcalc_scaled = fcalc_scaled[valid]
+            rfree = rfree[valid]
         mean_res_per_bin = self._data.mean_res_per_bin()
         return mean_res_per_bin, *bin_wise_rfactors(
             torch.abs(fobs),

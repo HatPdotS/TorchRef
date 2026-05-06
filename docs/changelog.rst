@@ -1,6 +1,11 @@
 Changelog
 =========
 
+
+Version 0.5.1
+-------------
+- Fixed mask tensor probelm under torch 2.9
+
 Version 0.5.0
 -------------
 - Fixed two bugs in restraints related to peptide bonds
