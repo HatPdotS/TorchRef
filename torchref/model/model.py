@@ -136,6 +136,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # These will be set during load() or load_state_dict()
         self.pdb = None
+        self.links = None
         self._cell: Optional[Cell] = None
         self._spacegroup: Optional[SpaceGroup] = None
 
@@ -588,6 +589,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             vdw_radii_fn=self.get_vdw_radii,
             cell=self._cell,
             spacegroup=self._spacegroup,
+            links=self.links,
             verbose=self.verbose,
         )
 
@@ -653,6 +655,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def load(self, reader):
         self.pdb, cell, spacegroup = reader()
+        self.links = getattr(reader, "links", None)
 
         self.pdb = (
             self.pdb.loc[self.pdb["element"] != "H"].reset_index(drop=True)

@@ -556,18 +556,28 @@ def find_pairs_periodic_grid_v2(
     device = cart_sorted.device
     offsets14 = _get_canonical_offsets_14(device)
 
-    # Device-adaptive chunk size. GPU: single-cdist (kernel launches
-    # dominate at small chunks). CPU: cache-sized (~9 MB per cdist tile
-    # for max_per_cell=135). Override via ``chunk_size`` for tuning.
-    if chunk_size is None:
-        chunk_size = 1_000_000 if device.type == "cuda" else 128
-
     gy = grid_dims[1].item()
     gz = grid_dims[2].item()
 
     # ---- Precompute ----
     counts = starts[1:] - starts[:-1]
     max_per_cell = counts.max().item()
+
+    # Device-adaptive chunk size. The cdist tile per chunk is
+    # (chunk_size, max_per_cell, max_per_cell) float32 = chunk_size *
+    # max_per_cell**2 * 4 bytes. For sparsely-packed crystals
+    # (max_per_cell ~ 135) this stays well under a GB even with
+    # chunk_size=1M, but for densely-packed crystals (e.g. tubulin-like
+    # cells with max_per_cell > 600) a single 1M-cell tile blows up to
+    # multi-GB and dominates the LBFGS-step memory budget. Cap the tile
+    # at ~256 MB so the same call site stays bounded across cell sizes.
+    if chunk_size is None:
+        if device.type == "cuda":
+            max_tile_bytes = 256 * 1024 * 1024
+            per_chunk_bytes = max(1, max_per_cell * max_per_cell * 4)
+            chunk_size = max(64, max_tile_bytes // per_chunk_bytes)
+        else:
+            chunk_size = 128
 
     padded_xyz, valid_mask, asu_mask = _build_padded_cells(
         cart_sorted=cart_sorted,

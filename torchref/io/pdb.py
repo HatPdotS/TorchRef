@@ -322,6 +322,7 @@ class PDBReader:
         self.cell = None
         self.spacegroup = None
         self.z = None
+        self.links = None
 
     def read(self, filepath: str) -> "PDBReader":
         """
@@ -342,6 +343,7 @@ class PDBReader:
 
         self.dataframe = load_as_dataframe(filepath)
         self.cell, self.spacegroup, self.z = read_crystallographic_info(filepath)
+        self.links = extract_link_records(filepath, verbose=self.verbose)
 
         if self.verbose > 0:
             print(f"Loaded {len(self.dataframe)} atoms")
@@ -406,6 +408,88 @@ def extract_pdb_headers(filepath: str) -> list:
                 break
             headers.append(line.rstrip("\n"))
     return headers
+
+
+def extract_link_records(filepath: str, verbose: int = 0) -> pd.DataFrame:
+    """Parse LINK records from a PDB file (PDB v3.3 format).
+
+    Symmetry-mate links (sym1 or sym2 not blank/``1555``) are skipped with a
+    warning, since the asymmetric unit holds no copy of the symmetry mate
+    that the bond can attach to.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the PDB file.
+    verbose : int, optional
+        If ``> 0``, prints a one-line summary; if ``> 1``, also warns about
+        skipped symmetry-mate or malformed records.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per accepted LINK record with columns ``name1``, ``altloc1``,
+        ``resname1``, ``chainid1``, ``resseq1``, ``icode1`` (and the matching
+        ``*2`` set), plus ``length`` (NaN if blank). Empty DataFrame if none.
+    """
+    rows = []
+    skipped_sym = 0
+    skipped_bad = 0
+    with open(filepath, "r") as f:
+        for line in f:
+            if line[:6] != "LINK  ":
+                continue
+            try:
+                sym1 = line[59:65].strip() if len(line) >= 65 else ""
+                sym2 = line[66:72].strip() if len(line) >= 72 else ""
+                if sym1 not in ("", "1555") or sym2 not in ("", "1555"):
+                    skipped_sym += 1
+                    if verbose > 1:
+                        print(
+                            f"Warning: skipping symmetry-mate LINK "
+                            f"(sym1={sym1!r}, sym2={sym2!r}): {line.rstrip()}"
+                        )
+                    continue
+
+                length_str = line[73:78].strip() if len(line) >= 74 else ""
+                length = float(length_str) if length_str else float("nan")
+
+                rows.append(
+                    {
+                        "name1": line[12:16].strip(),
+                        "altloc1": line[16:17].strip(),
+                        "resname1": line[17:20].strip(),
+                        "chainid1": line[21:22].strip(),
+                        "resseq1": int(line[22:26]),
+                        "icode1": line[26:27].strip(),
+                        "name2": line[42:46].strip(),
+                        "altloc2": line[46:47].strip(),
+                        "resname2": line[47:50].strip(),
+                        "chainid2": line[51:52].strip(),
+                        "resseq2": int(line[52:56]),
+                        "icode2": line[56:57].strip(),
+                        "length": length,
+                    }
+                )
+            except (ValueError, IndexError):
+                skipped_bad += 1
+                if verbose > 1:
+                    print(f"Warning: skipping malformed LINK: {line.rstrip()}")
+
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "name1", "altloc1", "resname1", "chainid1", "resseq1", "icode1",
+            "name2", "altloc2", "resname2", "chainid2", "resseq2", "icode2",
+            "length",
+        ],
+    )
+    if verbose > 0 and (len(df) or skipped_sym or skipped_bad):
+        print(
+            f"LINK records: parsed {len(df)}, "
+            f"skipped {skipped_sym} symmetry-mate, {skipped_bad} malformed"
+        )
+    return df
 
 
 def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) -> None:

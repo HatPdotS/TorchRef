@@ -226,12 +226,14 @@ class RestraintsNew(DebugMixin, Module):
         vdw_radii_fn: Callable[[], torch.Tensor] = None,
         cell=None,
         spacegroup=None,
+        links: pd.DataFrame = None,
         verbose: int = 1,
     ):
         """Initialize the Restraints handler."""
         super().__init__()
         self.cif_path = cif_path
         self.verbose = verbose
+        self.links = links
 
         # Store callable functions for coordinate/ADP access
         self._xyz_fn = xyz_fn
@@ -546,6 +548,7 @@ class RestraintsNew(DebugMixin, Module):
             # Build inter-residue restraints
             self._build_peptide_restraints(device)
             self._build_disulfide_restraints(device)
+            self._build_link_restraints(device)
 
             # Build VDW restraints. Cutoff is held ~1 Å wider than the
             # maximum heavy-atom VDW sum (~3.6 Å) plus the expected inter-
@@ -792,6 +795,140 @@ class RestraintsNew(DebugMixin, Module):
                 print(
                     f"Built {torsion_result['indices'].shape[0]} disulfide torsion restraints"
                 )
+
+    def _build_link_restraints(self, device: torch.device):
+        """Build bond restraints from PDB LINK records.
+
+        Each accepted LINK contributes one bond restraint between the two
+        named atoms. The bond automatically becomes part of the VDW
+        exclusion set (via ``_build_exclusion_set``), preventing the
+        non-bonded term from pushing the linked atoms apart.
+
+        Behaviour:
+        - Distance/sigma source: ``length`` from the LINK record is used as
+          target distance with sigma=0.02 Å. If the field was blank we fall
+          back to a generic 1.5 Å bond.
+        - Symmetry-mate links are filtered out earlier in
+          ``extract_link_records``.
+        - LINKs that duplicate an auto-detected disulfide (CYS SG-SG pair)
+          are skipped, because the disulfide builder has already added a
+          bond + angles + torsions for that pair.
+        """
+        if self.links is None or len(self.links) == 0:
+            return
+
+        pdb = self.pdb
+
+        # Already-bonded SG-SG pairs from auto-disulfide detection.
+        disulf = self.restraints.get("bond", {}).get("disulfide")
+        existing_disulf_pairs = set()
+        if disulf is not None and "indices" in disulf:
+            for i, j in disulf["indices"].cpu().numpy():
+                existing_disulf_pairs.add((int(min(i, j)), int(max(i, j))))
+
+        bond_builder = InterResidueBondBuilder(verbose=self.verbose)
+        n_skipped_unresolved = 0
+        n_skipped_dedup = 0
+
+        for _, link in self.links.iterrows():
+            idx1 = self._lookup_link_atom(
+                pdb,
+                chainid=link["chainid1"],
+                resseq=int(link["resseq1"]),
+                icode=link["icode1"],
+                resname=link["resname1"],
+                name=link["name1"],
+                altloc=link["altloc1"],
+            )
+            idx2 = self._lookup_link_atom(
+                pdb,
+                chainid=link["chainid2"],
+                resseq=int(link["resseq2"]),
+                icode=link["icode2"],
+                resname=link["resname2"],
+                name=link["name2"],
+                altloc=link["altloc2"],
+            )
+
+            if idx1 is None or idx2 is None:
+                n_skipped_unresolved += 1
+                if self.verbose > 1:
+                    print(
+                        f"Warning: LINK atom not found "
+                        f"({link['chainid1']}/{link['resname1']}{link['resseq1']}/"
+                        f"{link['name1']} -- "
+                        f"{link['chainid2']}/{link['resname2']}{link['resseq2']}/"
+                        f"{link['name2']}); skipping."
+                    )
+                continue
+
+            if idx1 == idx2:
+                n_skipped_unresolved += 1
+                continue
+
+            pair = (min(idx1, idx2), max(idx1, idx2))
+            if pair in existing_disulf_pairs:
+                n_skipped_dedup += 1
+                continue
+
+            length = link["length"]
+            if not (isinstance(length, (int, float)) and length == length and length > 0):
+                length = 1.5
+            bond_builder.process_disulfide_bond(idx1, idx2, float(length), 0.02)
+
+        bond_result = bond_builder.finalize(device)
+        if bond_result:
+            self.restraints["bond"]["link"] = bond_result
+            if self.verbose > 0:
+                print(
+                    f"Built {bond_result['indices'].shape[0]} LINK bond restraints"
+                    + (
+                        f" (skipped {n_skipped_dedup} disulfide-dup,"
+                        f" {n_skipped_unresolved} unresolved)"
+                        if (n_skipped_dedup or n_skipped_unresolved)
+                        else ""
+                    )
+                )
+
+    @staticmethod
+    def _lookup_link_atom(
+        pdb: pd.DataFrame,
+        chainid: str,
+        resseq: int,
+        icode: str,
+        resname: str,
+        name: str,
+        altloc: str,
+    ):
+        """Resolve a LINK atom record to a row index in the model pdb.
+
+        Match on (chainid, resseq, icode, name); resname is used as a tie-
+        breaker if present. Altloc preference: requested altloc first, then
+        blank, then 'A', then any.
+        """
+        sel = pdb[
+            (pdb["chainid"].astype(str) == str(chainid))
+            & (pdb["resseq"].astype(int) == int(resseq))
+            & (pdb["icode"].astype(str) == str(icode))
+            & (pdb["name"].astype(str).str.strip() == str(name).strip())
+        ]
+        if len(sel) == 0:
+            return None
+        if resname:
+            tied = sel[sel["resname"].astype(str).str.strip() == str(resname).strip()]
+            if len(tied) > 0:
+                sel = tied
+
+        if altloc:
+            for cand in (altloc, ""):
+                hit = sel[sel["altloc"].astype(str) == cand]
+                if len(hit) > 0:
+                    return int(hit.iloc[0]["index"])
+        for cand in ("", "A"):
+            hit = sel[sel["altloc"].astype(str) == cand]
+            if len(hit) > 0:
+                return int(hit.iloc[0]["index"])
+        return int(sel.iloc[0]["index"])
 
     def _build_exclusion_set(self):
         """Build set of atom pairs to exclude from VDW calculations."""
@@ -1528,6 +1665,7 @@ class RestraintsNew(DebugMixin, Module):
         print(f"  Disulfide bonds: {get_count('bond', 'disulfide')}")
         print(f"  Disulfide angles: {get_count('angle', 'disulfide')}")
         print(f"  Disulfide torsions: {get_count('torsion', 'disulfide')}")
+        print(f"  LINK bonds: {get_count('bond', 'link')}")
 
         print()
         print("BACKBONE TORSIONS:")
