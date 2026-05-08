@@ -4,7 +4,9 @@ Changelog
 
 Version 0.5.1
 -------------
-- Fixed mask tensor probelm under torch 2.9
+- Fixed masked tensor problem under torch 2.9
+- Added Link parsing and restraint as bond 
+- Reduced memory usage during neighbor search for VDW target
 
 Version 0.5.0
 -------------
