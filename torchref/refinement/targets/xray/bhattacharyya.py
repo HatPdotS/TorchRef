@@ -41,6 +41,8 @@ import math
 import torch
 from typing import TYPE_CHECKING, Dict
 
+from torchref.base.targets._dispatch import use_triton
+from torchref.base.targets.xray_bhattacharyya import bhattacharyya_xray_loss_math
 from torchref.utils.stats import (
     VERBOSITY_DETAILED,
     VERBOSITY_STANDARD,
@@ -304,26 +306,22 @@ class BhattacharyyaXrayTarget(XrayTarget):
             self._initialize_cache()
 
         F_obs, F_calc, sigma_d, _centric, mask = self.get_data(fcalc=fcalc)
-        F_calc_amp = torch.abs(F_calc)
 
         # σ_m is non-differentiable — refreshed each call from the current
         # atomic B distribution.
         with torch.no_grad():
             sigma_m = self._sigma_m_per_refl()
 
-        eps = 1e-6
-        sigma_d_safe = torch.clamp(sigma_d, min=eps)
-        sigma_m_safe = torch.clamp(sigma_m, min=eps)
-
-        var_d = sigma_d_safe ** 2
-        var_m = sigma_m_safe ** 2
-        var_sum = var_d + var_m
-
-        diff = F_obs - F_calc_amp
-        l_mean = (diff ** 2) / (4.0 * var_sum)
-        l_var = 0.5 * torch.log(var_sum / (2.0 * sigma_d_safe * sigma_m_safe))
-
-        return ((l_mean + l_var) * mask).sum()
+        if use_triton(F_calc, F_obs, sigma_d, sigma_m):
+            from torchref.base.targets.triton.xray_bhattacharyya import (
+                bhattacharyya_xray_loss_math_triton,
+            )
+            return bhattacharyya_xray_loss_math_triton(
+                F_obs, F_calc, sigma_d, sigma_m, mask
+            )
+        return bhattacharyya_xray_loss_math(
+            F_obs, F_calc, sigma_d, sigma_m, mask
+        )
 
     # ------------------------------------------------------------------
     # Diagnostics

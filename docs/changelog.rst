@@ -5,8 +5,12 @@ Changelog
 Version 0.5.1
 -------------
 - Fixed masked tensor problem under torch 2.9
-- Added Link parsing and restraint as bond 
+- Added Link parsing and restraint as bond
 - Reduced memory usage during neighbor search for VDW target
+- Separated out loss functions from targets, logic moved to base/targets
+- Added Triton kernels with analytic backward for all four xray Targets and most other Targets
+- Cached XrayTarget.get_data constants across closures
+- Replaced slow tensor[indices] backwards (sort + dedup scatter) with index_add_ in the symmetry extractor, scaler bin gathers, and MixedTensor; skip the indexing in get_iso / get_aniso when it covers all atoms
 
 Version 0.5.0
 -------------

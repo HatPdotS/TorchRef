@@ -101,11 +101,98 @@ class XrayTarget(DataTarget):
         # Set name based on work/test set
         self.name = "xray_work" if use_work_set else "xray_test"
 
+        # Cache for the bookkeeping pieces of get_data: F_obs_sel, sigma_sel,
+        # mask, centric_sel. These depend only on the data (rfree, validity,
+        # centric) and the ReflectionData scaling parameters (log_scale,
+        # U_aniso). None of those change during xyz/adp refinement, so we
+        # recompute only when their fingerprint changes (see
+        # ``_data_fingerprint``).
+        self._cached_get_data = None
+        self._cached_get_data_fp = None
+        self._cached_sigma_mode = None
+
+    def _data_fingerprint(self):
+        """Fingerprint everything in ``self._data`` that get_data's
+        cached pieces depend on. Used to detect when the bookkeeping
+        cache (F_obs_sel / sigma_sel / mask / centric_sel) must be
+        rebuilt.
+
+        We probe the (data_ptr, _version) of any param/buffer the data
+        scale or anisotropy correction depends on. During typical
+        xyz/adp refinement these never change, so the cache stays warm
+        across every closure call.
+        """
+        d = self._data
+        entries = []
+        for attr in ("log_scale", "U_aniso"):
+            t = getattr(d, attr, None)
+            if isinstance(t, torch.Tensor):
+                entries.append((attr, t.data_ptr(), t._version))
+        # If sigma_mode flips, the cache also needs to be rebuilt.
+        # Tracked separately in self._cached_sigma_mode.
+        return tuple(entries)
+
+    def _build_get_data_cache(self):
+        """Recompute the bookkeeping tensors that don't depend on fcalc.
+
+        Returns ``(F_obs_sel, sigma_sel, mask, centric_sel)``.
+        """
+        _hkl, F_obs, sigma_F_obs, rfree_mask = self._data()
+
+        # Sigma selection: use per-shell effective sigma from scaler if requested
+        if self.sigma_mode == "effective" and self._scaler is not None:
+            sigma_eff = getattr(self._scaler, "sigma_eff", None)
+            if sigma_eff is not None and sigma_eff.shape == sigma_F_obs.shape:
+                sigma_F_obs = sigma_eff
+
+        centric_all = self._data.centric
+
+        if hasattr(F_obs, "get_mask"):
+            validity_mask = F_obs.get_mask()
+            F_obs_data = F_obs.get_data()
+            sigma_data = (
+                sigma_F_obs.get_data()
+                if hasattr(sigma_F_obs, "get_mask") else sigma_F_obs
+            )
+            rfree_bool = rfree_mask.bool()
+            mask = (
+                validity_mask & rfree_bool
+                if self.use_work_set
+                else validity_mask & ~rfree_bool
+            )
+        else:
+            F_obs_data = F_obs
+            sigma_data = sigma_F_obs
+            rfree_bool = rfree_mask.bool()
+            mask = rfree_bool if self.use_work_set else ~rfree_bool
+
+        F_obs_sel = torch.where(mask, F_obs_data, torch.zeros_like(F_obs_data))
+        sigma_sel = torch.where(mask, sigma_data, torch.ones_like(sigma_data))
+        centric_sel = (centric_all & mask) if centric_all is not None else None
+        return F_obs_sel, sigma_sel, mask, centric_sel
+
+    def reset_get_data_cache(self):
+        """Drop the cached bookkeeping tensors.
+
+        Call this if you mutate ``self._data.log_scale`` /
+        ``self._data.U_aniso`` in-place outside of the normal fingerprint-
+        tracked flow, or if you want to free the memory.
+        """
+        self._cached_get_data = None
+        self._cached_get_data_fp = None
+        self._cached_sigma_mode = None
+
     def get_data(
         self, fcalc: torch.Tensor = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Get F_obs, F_calc, sigma, and centric flags for the appropriate set.
+
+        Bookkeeping tensors (F_obs_sel, sigma_sel, mask, centric_sel) are
+        cached and reused as long as the upstream scaling parameters
+        (``log_scale``, ``U_aniso``) of the ReflectionData haven't been
+        mutated. Only ``F_calc_sel`` is recomputed from the live fcalc on
+        each call.
 
         Parameters
         ----------
@@ -116,59 +203,27 @@ class XrayTarget(DataTarget):
         Returns
         -------
         tuple
-            Tuple of (F_obs, F_calc, sigma_F_obs, centric_flags).
-
-        Raises
-        ------
-        RuntimeError
-            If neither model nor fcalc is available.
+            ``(F_obs_sel, F_calc_sel, sigma_sel, centric_sel, mask)``.
         """
-        hkl, F_obs, sigma_F_obs, rfree_mask = self._data()
+        fp = self._data_fingerprint()
+        if (
+            self._cached_get_data is None
+            or self._cached_get_data_fp != fp
+            or self._cached_sigma_mode != self.sigma_mode
+        ):
+            self._cached_get_data = self._build_get_data_cache()
+            self._cached_get_data_fp = fp
+            self._cached_sigma_mode = self.sigma_mode
+        F_obs_sel, sigma_sel, mask, centric_sel = self._cached_get_data
 
-        # Sigma selection: use per-shell effective sigma from scaler if requested
-        if self.sigma_mode == "effective" and self._scaler is not None:
-            sigma_eff = getattr(self._scaler, "sigma_eff", None)
-            if sigma_eff is not None and sigma_eff.shape == sigma_F_obs.shape:
-                sigma_F_obs = sigma_eff
-
-        # Get F_calc: either from argument or compute from model
+        # F_calc must always be computed fresh — depends on the live model
+        # state (xyz / adp / occ).
         if fcalc is not None:
             F_calc = self.get_F_calc_scaled(fcalc=fcalc)
         else:
-            F_calc = self.get_F_calc_scaled(hkl, recalc=False)
+            F_calc = self.get_F_calc_scaled(self._data.hkl, recalc=False)
 
-        # Get centric flags (full size, unfiltered)
-        centric_all = self._data.centric
-
-        # Build selection mask (validity + work/free set)
-        if hasattr(F_obs, "get_mask"):
-            # MaskedTensor case: F_obs and sigma have validity mask built-in
-            validity_mask = F_obs.get_mask()  # True = valid reflection
-            F_obs_data = F_obs.get_data()
-            sigma_data = (
-                sigma_F_obs.get_data()
-                if hasattr(sigma_F_obs, "get_mask")
-                else sigma_F_obs
-            )
-            rfree_bool = rfree_mask.bool()
-            if self.use_work_set:
-                mask = validity_mask & rfree_bool
-            else:
-                mask = validity_mask & ~rfree_bool
-        else:
-            F_obs_data = F_obs
-            sigma_data = sigma_F_obs
-            rfree_bool = rfree_mask.bool()
-            mask = rfree_bool if self.use_work_set else ~rfree_bool
-
-        # Use torch.where instead of boolean indexing to avoid
-        # nonzero() calls that force CPU-GPU synchronization.
-        # Invalid elements get safe defaults (0 for data, 1 for sigma).
-        F_obs_sel = torch.where(mask, F_obs_data, torch.zeros_like(F_obs_data))
         F_calc_sel = torch.where(mask, F_calc, torch.zeros_like(F_calc))
-        sigma_sel = torch.where(mask, sigma_data, torch.ones_like(sigma_data))
-        centric_sel = (centric_all & mask) if centric_all is not None else None
-
         return F_obs_sel, F_calc_sel, sigma_sel, centric_sel, mask
 
     def stats(self, fcalc: torch.Tensor = None) -> Dict[str, StatEntry]:

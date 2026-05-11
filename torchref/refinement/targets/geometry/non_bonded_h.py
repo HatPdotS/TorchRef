@@ -106,6 +106,15 @@ class NonBondedHTarget(NonBondedTarget):
         4. Compute PROLSQ repulsion energy
 
         Gradient flow: loss → H_pos → xyz[parent_idx] → model params
+
+        For ``mode == "prolsq"`` (the default), routes everything from
+        the gather through the prolsq energy to
+        :func:`torchref.base.targets.nonbonded_heavy_math`, which
+        dispatches to a Triton kernel on CUDA fp32. The candidate list
+        is already pre-sorted ASU-then-sym; passing ``cand_symop_idx``
+        directly lets the kernel apply the identity transform on the
+        ASU half and the real symmetry transform on the sym half in one
+        pass. Other modes keep the inline eager path.
         """
         from torchref.restraints.hydrogen_topology import place_riding_hydrogens
 
@@ -119,21 +128,35 @@ class NonBondedHTarget(NonBondedTarget):
         if n_cand == 0:
             return torch.tensor(0.0, device=device)
 
-        # 2. Gather positions — candidates use combined indices
-        pos_i = xyz_all[h_topo.cand_idx_i]  # (C, 3)
+        # --- Fast path: prolsq → routed dispatcher (Triton on CUDA fp32) ---
+        if self.mode == "prolsq":
+            from torchref.base.targets.nonbonded import nonbonded_heavy_math
+            indices = torch.stack(
+                [h_topo.cand_idx_i, h_topo.cand_idx_j], dim=1
+            ).contiguous()
+            return nonbonded_heavy_math(
+                xyz_all, indices, h_topo.cand_min_dist,
+                h_topo.cand_symop_idx, h_topo.cand_cell_offset,
+                self.model.symmetry.matrices,
+                self.model.symmetry.translations,
+                self.model.cell.fractional_matrix,
+                self.model.cell.inv_fractional_matrix,
+                self._c_rep, self._r_exp,
+                float(self._buffer), self._sigma_vdw,
+            )
 
-        # 3. Compute distances — candidates are pre-sorted [ASU | symmetry]
+        # --- Slow path: gaussian / soft modes keep the inline eager
+        # logic. Recompute positions and distances exactly as before.
+        pos_i = xyz_all[h_topo.cand_idx_i]
         n_asu = getattr(h_topo, 'n_asu_candidates', n_cand)
         n_sym = n_cand - n_asu
         min_dist = h_topo.cand_min_dist
 
-        # ASU path: direct lookup (first n_asu candidates)
         if n_asu > 0:
             pos_j_asu = xyz_all[h_topo.cand_idx_j[:n_asu]]
             diff_asu = pos_j_asu - pos_i[:n_asu]
             dist_asu = torch.sqrt((diff_asu ** 2).sum(dim=-1) + 1e-8)
 
-        # Symmetry path: transform (last n_sym candidates)
         if n_sym > 0:
             cell = self.model.cell
             sg = self.model.symmetry
@@ -147,7 +170,6 @@ class NonBondedHTarget(NonBondedTarget):
             diff_sym = pos_j_sym - pos_i[n_asu:]
             dist_sym = torch.sqrt((diff_sym ** 2).sum(dim=-1) + 1e-8)
 
-        # Combine
         if n_asu > 0 and n_sym > 0:
             actual_dist = torch.cat([dist_asu, dist_sym])
         elif n_asu > 0:
@@ -157,16 +179,7 @@ class NonBondedHTarget(NonBondedTarget):
 
         violations = torch.clamp(min_dist + self._buffer - actual_dist, min=0.0)
 
-        if self.mode == "prolsq":
-            # Generalized-Gaussian NLL, same form as the parent (heavy-heavy)
-            # branch — see NonBondedTarget.forward for the full derivation.
-            log_2pi = torch.log(
-                torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
-            )
-            shape_energy = self._c_rep * (violations ** self._r_exp)
-            per_pair_const = torch.log(self._sigma_vdw) + 0.5 * log_2pi
-            return shape_energy.sum() + per_pair_const * violations.shape[0]
-        elif self.mode == "gaussian":
+        if self.mode == "gaussian":
             sigma_val = torch.tensor(0.2, device=device, dtype=xyz.dtype)
             log_2pi = torch.log(
                 torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)

@@ -34,6 +34,8 @@ from typing import Optional, TYPE_CHECKING
 import numpy as np
 import torch
 
+from torchref.utils.autograd_ops import gather_with_index_add
+
 from .grid_operations import extract_structure_factor_from_grid
 
 if TYPE_CHECKING:
@@ -178,9 +180,13 @@ def extract_structure_factors_with_symmetry(
     # 1. Compute equivalent HKLs: (n_ops, N, 3)
     equiv_hkls = compute_symmetry_equivalent_hkls(hkl, rotation_matrices)
 
-    # 2. Vectorized extraction: single flat gather for all symops at once
+    # 2. Vectorized extraction: single flat gather for all symops at once.
+    # Use gather_with_index_add so the gradient back into reciprocal_grid
+    # is a single index_add_ (no radix-sort + dedup scatter).
     flat_indices = _equiv_hkls_to_flat_indices(equiv_hkls, Nx, Ny, Nz)
-    f_all = reciprocal_grid.reshape(-1)[flat_indices]  # (n_ops * N,)
+    f_all = gather_with_index_add(
+        reciprocal_grid.reshape(-1), flat_indices,
+    )  # (n_ops * N,)
     f_p1 = f_all.view(n_ops, N)
 
     # 3. Compute phase shifts: (n_ops, N)
@@ -316,7 +322,11 @@ class ReciprocalSymmetryExtractor:
         torch.Tensor, shape (N,)
             Complex structure factors with symmetry applied.
         """
-        f_all = reciprocal_grid.reshape(-1)[self._flat_indices]  # (n_ops * N,)
+        # Gather via custom autograd op so the backward is a single
+        # ``index_add_`` (atomic scatter, no radix sort + dedup).
+        f_all = gather_with_index_add(
+            reciprocal_grid.reshape(-1), self._flat_indices,
+        )  # (n_ops * N,)
         f_sym = (f_all.view(self.n_ops, self.N) * self.phases).sum(dim=0)
         return f_sym
 

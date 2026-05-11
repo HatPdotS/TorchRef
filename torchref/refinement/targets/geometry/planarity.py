@@ -71,50 +71,28 @@ class PlanarityTarget(GeometryTarget):
         super().__init__(model, verbose, target_value=-2.0, sigma=0.2)
 
     def forward(self) -> torch.Tensor:
+        from torchref.base.targets.planarity import planarity_math
         xyz = self.model.xyz()
         device = xyz.device
-
-        all_nlls = []
 
         if "plane" not in self.restraints.restraints:
             return torch.tensor(0.0, device=device)
 
-        log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
-
+        # Build (indices, sigmas) per plane-size bucket, skipping
+        # 3-atom planes (zero gradient signal by construction).
+        plane_groups = []
         for _key, plane_data in self.restraints.restraints["plane"].items():
             indices = plane_data.get("indices")
             sigmas = plane_data.get("sigmas")
-
             if indices is None or len(indices) == 0:
                 continue
-
-            # 3 atoms are always coplanar — zero deviations, no gradient signal
-            n_atoms = indices.shape[1]
-            if n_atoms <= 3:
+            if indices.shape[1] <= 3:
                 continue
+            plane_groups.append((indices, sigmas))
 
-            # Gather positions: (n_planes, n_atoms, 3)
-            positions = xyz[indices]
-
-            # Center: (n_planes, n_atoms, 3)
-            centroids = positions.mean(dim=1, keepdim=True)
-            centered = positions - centroids
-
-            # Plane normal via eigh on 3x3 covariance (detached — no backward
-            # through the eigendecomposition, avoids NaN at degenerate eigenvalues)
-            with torch.no_grad():
-                normals = _plane_normals(centered).to(xyz.dtype)
-
-            # Deviations: gradient flows through centered only
-            deviations = torch.einsum("paj,pj->pa", centered, normals)
-
-            # NLL (squaring handles sign — no abs needed)
-            nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
-            all_nlls.append(nll.flatten())
-
-        if all_nlls:
-            return torch.cat(all_nlls).sum()
-        return torch.tensor(0.0, device=device)
+        if not plane_groups:
+            return torch.tensor(0.0, device=device)
+        return planarity_math(xyz, plane_groups)
 
     def stats(self) -> Dict[str, any]:
         """Get planarity restraint statistics."""

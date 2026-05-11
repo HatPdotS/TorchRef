@@ -1,6 +1,9 @@
 import torch
 from typing import TYPE_CHECKING
 
+from torchref.base.targets._dispatch import use_triton
+from torchref.base.targets.xray_ls import ls_xray_loss_math
+
 from .base import XrayTarget
 
 if TYPE_CHECKING:
@@ -52,17 +55,13 @@ class LeastSquaresXrayTarget(XrayTarget):
         """
         F_obs, F_calc, sigma, _, mask = self.get_data(fcalc=fcalc)
 
-        F_calc_amp = torch.abs(F_calc)
-        diff = F_obs - F_calc_amp
-
-        if self.weighting == "sigma":
-            eps = torch.median(sigma) * 1e-1
-            sigma_safe = torch.clamp(sigma, min=eps)
-            weights = 1.0 / (sigma_safe**2)
-        elif self.weighting == "unit":
-            weights = torch.ones_like(F_obs)
-        else:
-            raise ValueError(f"Unknown weighting scheme: {self.weighting}")
-
-        loss = 0.5 * weights * (diff**2)
-        return (loss * mask).sum()
+        if use_triton(F_calc, F_obs, sigma):
+            from torchref.base.targets.triton.xray_ls import (
+                ls_xray_loss_math_triton,
+            )
+            return ls_xray_loss_math_triton(
+                F_obs, F_calc, sigma, mask, weighting=self.weighting
+            )
+        return ls_xray_loss_math(
+            F_obs, F_calc, sigma, mask, weighting=self.weighting
+        )

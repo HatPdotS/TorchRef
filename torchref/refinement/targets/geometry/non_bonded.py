@@ -314,6 +314,7 @@ class NonBondedTarget(GeometryTarget):
         return pos1, pos2, min_distances
 
     def forward(self) -> torch.Tensor:
+        from torchref.base.targets.nonbonded import nonbonded_heavy_math
         xyz = self.model.xyz()
         device = xyz.device
 
@@ -328,6 +329,23 @@ class NonBondedTarget(GeometryTarget):
 
         sigmas = vdw_data["sigmas"]
 
+        # The prolsq branch goes through the math dispatcher — Triton on
+        # CUDA fp32, eager otherwise. Other modes (gaussian, soft) keep
+        # the inline path below.
+        if self.mode == "prolsq":
+            return nonbonded_heavy_math(
+                xyz, indices,
+                vdw_data["min_distances"],
+                vdw_data.get("symop_indices"),
+                vdw_data.get("cell_offsets"),
+                self.model.symmetry.matrices,
+                self.model.symmetry.translations,
+                self.model.cell.fractional_matrix,
+                self.model.cell.inv_fractional_matrix,
+                self._c_rep, self._r_exp,
+                float(self._buffer), self._sigma_vdw,
+            )
+
         # Compute positions (handles symmetry transparently)
         pos1, pos2, min_distances = self._compute_positions(xyz)
 
@@ -338,22 +356,7 @@ class NonBondedTarget(GeometryTarget):
         # Violations: where actual distance is less than VDW sum + buffer
         violations = torch.clamp(min_distances + self._buffer - actual_distances, min=0.0)
 
-        if self.mode == "prolsq":
-            # Generalized-Gaussian NLL with shape r_exp and scale sigma_vdw:
-            #   NLL(v) = v^p / (p * sigma^p) + log(sigma) + 0.5 * log(2*pi)
-            # The leading (v^p / (p*sigma^p)) equals c_rep * v^p by construction
-            # (c_rep = 1/(p*sigma^p)). log(sigma) + 0.5*log(2*pi) is added
-            # *per candidate pair* so the loss is commensurate with the other
-            # geometry NLLs (bond, angle, planarity) — every pair contributes
-            # a density evaluation, not just the ones currently violating.
-            log_2pi = torch.log(
-                torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
-            )
-            shape_energy = self._c_rep * (violations**self._r_exp)
-            per_pair_const = torch.log(self._sigma_vdw) + 0.5 * log_2pi
-            return shape_energy.sum() + per_pair_const * violations.shape[0]
-
-        elif self.mode == "gaussian":
+        if self.mode == "gaussian":
             log_2pi = torch.log(
                 torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype)
             )

@@ -146,23 +146,45 @@ class TorsionTarget(GeometryTarget):
         return restraints["torsion"]["omega"]
 
     def forward(self) -> torch.Tensor:
-        device = self.model.xyz().device
+        from torchref.base.targets.torsion import torsion_omega_math
+        from torchref.base.targets._dispatch import use_triton
+        xyz = self.model.xyz()
+        device = xyz.device
         total = torch.tensor(0.0, device=device)
 
         # --- Intra-residue + disulfide torsions (unimodal von Mises) ---
-        deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas()
-        if len(deviations_rad) > 0:
-            total = total + _von_mises_nll(deviations_rad, sigmas_deg).sum()
+        # On CUDA fp32 the full dihedral + periodic wrap + von Mises NLL
+        # is one Triton kernel; otherwise we fall back to the eager
+        # Restraints.torsion_deviations_with_sigmas() + _von_mises_nll path.
+        if use_triton(xyz):
+            from torchref.base.targets.triton.torsion import (
+                torsion_unimodal_full_math_triton,
+            )
+            if "all" not in self.restraints.restraints["torsion"]:
+                self.restraints.cat_dict()
+            tdata = self.restraints.restraints["torsion"]["all"]
+            if len(tdata["indices"]) > 0:
+                total = total + torsion_unimodal_full_math_triton(
+                    xyz, tdata["indices"], tdata["references"],
+                    tdata["sigmas"], tdata["periods"],
+                )
+        else:
+            deviations_rad, sigmas_deg = self.restraints.torsion_deviations_with_sigmas()
+            if len(deviations_rad) > 0:
+                total = total + _von_mises_nll(deviations_rad, sigmas_deg).sum()
 
-        # --- Omega torsions (cis/trans mixture) ---
+        # --- Omega torsions (cis/trans mixture) — dispatch through
+        # torsion_omega_math, which routes to Triton on CUDA fp32.
         omega_data = self._get_omega_data()
         if omega_data is not None and len(omega_data["indices"]) > 0:
-            omega_deg = self.restraints.torsions(omega_data["indices"])
-            omega_rad = omega_deg * (np.pi / 180.0)
-            total = total + _omega_mixture_nll(
-                omega_rad, omega_data["sigmas"], omega_data["is_proline"],
-                self.w_cis_proline, self.w_cis_general,
-            ).sum()
+            total = total + torsion_omega_math(
+                self.model.xyz(),
+                omega_data["indices"],
+                omega_data["sigmas"],
+                omega_data["is_proline"],
+                self.w_cis_proline,
+                self.w_cis_general,
+            )
 
         return total
 

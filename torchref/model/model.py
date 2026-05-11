@@ -192,6 +192,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         self._iso_indices = iso_mask.nonzero(as_tuple=True)[0]
         self._aniso_indices = aniso_mask.nonzero(as_tuple=True)[0]
+        # Fast-path flags: when iso_mask is everywhere-True, ``get_iso()``
+        # can skip the ``[_iso_indices]`` gather entirely (saves an
+        # ``index_put_(accumulate)`` in backward — see A100 / 3GR5 profile).
+        # ``_aniso_is_empty`` lets ``get_aniso()`` short-circuit when there
+        # are no anisotropic atoms (the typical macromolecular case).
+        self._iso_covers_all = bool(iso_mask.all().item())
+        self._aniso_is_empty = int(self._aniso_indices.numel()) == 0
 
     # =========================================================================
     # Cell, SpaceGroup, and Symmetry properties
@@ -1168,7 +1175,41 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         cif.write_model(self.pdb, filename, metadata=metadata)
 
     def get_iso(self):
-        # Use pre-computed integer indices to avoid boolean indexing GPU sync
+        """
+        Return per-atom parameters for the isotropic atom subset.
+
+        Selects atoms whose ADP is a single scalar ``b`` (i.e. not
+        anisotropic). The subset is defined by ``~self.aniso_flag`` —
+        intersected with ``self._heavy_atom_mask`` when
+        ``_exclude_H_from_sf`` is enabled — and is precomputed as
+        ``self._iso_indices`` at init / whenever the mask changes.
+
+        Returns
+        -------
+        xyz : torch.Tensor, shape ``(n_iso, 3)``
+            Cartesian coordinates of the isotropic atoms (Å).
+        adp : torch.Tensor, shape ``(n_iso,)``
+            Isotropic B-factors (Å²).
+        occupancy : torch.Tensor, shape ``(n_iso,)``
+            Occupancies in ``[0, 1]``.
+
+        Notes
+        -----
+        When every atom is isotropic and no H exclusion is active —
+        ``self._iso_covers_all is True``, the common protein-refinement
+        case — the per-atom indexing is skipped and ``self.xyz()``,
+        ``self.adp()``, ``self.occupancy()`` are returned directly.
+
+        Motivation: ``self.xyz()[idx]`` is a no-op forward when
+        ``idx = arange(N)``, but its backward routes through PyTorch's
+        ``aten::_index_put_impl_(accumulate=True)``, which performs a
+        ``cub::DeviceRadixSortOnesweepKernel`` over ``len(idx)`` indices
+        followed by a deduplicated scatter (~50-150 µs/iter per gather
+        on A100 / 1DAW). Skipping the gather avoids that cost.
+        """
+        if self._iso_covers_all:
+            return self.xyz(), self.adp(), self.occupancy()
+        # Use pre-computed integer indices to avoid boolean indexing GPU sync.
         idx = self._iso_indices
         xyz = self.xyz()[idx]
         adp = self.adp()[idx]
@@ -1471,7 +1512,43 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.apply_mask_to_parameter(target)
 
     def get_aniso(self):
-        # Use pre-computed integer indices to avoid boolean indexing GPU sync
+        """
+        Return per-atom parameters for the anisotropic atom subset.
+
+        Selects atoms whose ADP is the 6-element anisotropic tensor
+        ``u = (u11, u22, u33, u12, u13, u23)``. The subset is defined by
+        ``self.aniso_flag`` — intersected with ``self._heavy_atom_mask``
+        when ``_exclude_H_from_sf`` is enabled — and is precomputed as
+        ``self._aniso_indices`` at init / whenever the mask changes.
+
+        Returns
+        -------
+        xyz : torch.Tensor, shape ``(n_aniso, 3)``
+            Cartesian coordinates of the anisotropic atoms (Å). Empty
+            tensor when there are no anisotropic atoms.
+        u : torch.Tensor, shape ``(n_aniso, 6)``
+            Anisotropic U components (Å²) in the order
+            ``(u11, u22, u33, u12, u13, u23)``. Empty when ``n_aniso == 0``.
+        occupancy : torch.Tensor, shape ``(n_aniso,)``
+            Occupancies in ``[0, 1]``. Empty when ``n_aniso == 0``.
+
+        Notes
+        -----
+        When there are no anisotropic atoms — ``self._aniso_is_empty is
+        True``, the common protein-refinement case — three empty
+        placeholder tensors are returned without calling the MixedTensors
+        at all. This avoids both the wrapped forward ``.clone()`` and the
+        slow ``aten::_index_put_impl_`` backward path that the
+        ``self.xyz()[idx]`` gather would otherwise generate (see
+        :meth:`get_iso` for the same rationale).
+        """
+        if self._aniso_is_empty:
+            xyz_buf = self.xyz.fixed_values
+            empty_xyz = xyz_buf.new_empty(0, 3)
+            empty_u = xyz_buf.new_empty(0, 6)
+            empty_occ = xyz_buf.new_empty(0)
+            return empty_xyz, empty_u, empty_occ
+        # Use pre-computed integer indices to avoid boolean indexing GPU sync.
         idx = self._aniso_indices
         xyz = self.xyz()[idx]
         u = self.u()[idx]

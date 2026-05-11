@@ -20,6 +20,7 @@ import torch.nn as nn
 from torchref.base.math_torch import U_to_matrix
 from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll_xray_lognormal
 from torchref.base.reciprocal import get_scattering_vectors
+from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import ModuleReference
 
@@ -514,7 +515,11 @@ class ScalerBase(DebugMixin, nn.Module):
         torch.Tensor
             B-factor correction factors for each reflection.
         """
-        b_expanded = self.bin_wise_bfactor[self.bins]
+        # Index-add-backward gather: ``bin_wise_bfactor`` is an O(nbins)
+        # learnable parameter; the default ``[bins]`` backward sorts all
+        # N_refl indices before scattering. ``gather_with_index_add`` skips
+        # the sort.
+        b_expanded = gather_with_index_add(self.bin_wise_bfactor, self.bins)
         s = torch.norm(self.s, dim=1)
         s_squared = s**2
         exp = -b_expanded * s_squared / 4
@@ -999,7 +1004,10 @@ class ScalerBase(DebugMixin, nn.Module):
                 kmask = torch.exp(self.log_kmask.clamp(min=-10.0, max=10.0))
                 kmask = torch.clamp(kmask, min=0.0, max=10.0)
                 bins_to_use = self.bins[mask] if apply_internal_mask else self.bins
-                kmask_per_refl = kmask[bins_to_use]
+                # Use index_add-backward gather so the gradient back into
+                # log_kmask is a single index_add_ rather than PyTorch's
+                # radix-sort + scatter index_put_ path.
+                kmask_per_refl = gather_with_index_add(kmask, bins_to_use)
                 f_sol = kmask_per_refl * f_sol_raw
             else:
                 # Inline solvent scaling: k_sol * exp(i*phase) * exp(-B*s²) * f_mask
@@ -1018,8 +1026,13 @@ class ScalerBase(DebugMixin, nn.Module):
 
         if hasattr(self, "log_scale") and self.log_scale is not None:
             bins_to_use = self.bins[mask] if apply_internal_mask else self.bins
+            # Use index_add-backward gather: log_scale is a tiny (~nbins)
+            # accumulator and the default index_put_ backward is bottlenecked
+            # by a cub::DeviceRadixSort over all ~N_refl indices (see profile
+            # data on A100/3GR5, ~370 us/iter pre-fix).
             K_overall = torch.exp(
-                self.log_scale[bins_to_use].clamp(min=-10.0, max=10.0)
+                gather_with_index_add(self.log_scale, bins_to_use)
+                .clamp(min=-10.0, max=10.0)
             )
         else:
             K_overall = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)

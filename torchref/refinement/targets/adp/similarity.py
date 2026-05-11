@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
+from torchref.base.targets.adp import adp_simu_math
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -47,22 +48,33 @@ class ADPSimilarityTarget(ADPTarget):
         """Set SIMU sigma value."""
         self._simu_sigma.fill_(value)
 
+    def _get_pair_indices(self) -> torch.Tensor:
+        """Concatenate non-"all" bond restraint origins into a single
+        (N, 2) tensor for the SIMU pair list. Cached after first build."""
+        cached = getattr(self, "_simu_pair_indices_cache", None)
+        if cached is not None:
+            return cached
+        chunks = []
+        for origin, group in self.restraints.restraints.get("bond", {}).items():
+            if origin == "all":
+                continue
+            idx_ = group.get("indices")
+            if idx_ is not None and len(idx_) > 0:
+                chunks.append(idx_)
+        if chunks:
+            cached = torch.cat(chunks, dim=0).contiguous()
+        else:
+            cached = torch.empty(0, 2, dtype=torch.long,
+                                 device=self.model.xyz().device)
+        self._simu_pair_indices_cache = cached
+        return cached
+
     def forward(self) -> torch.Tensor:
-        b_diffs = self.restraints.adp_b_differences()
-
-        if len(b_diffs) == 0:
+        # Use the adp_simu_math dispatcher (Triton on CUDA fp32).
+        pair_indices = self._get_pair_indices()
+        if pair_indices.shape[0] == 0:
             return torch.tensor(0.0, device=self.model.xyz().device)
-
-        log_2pi = torch.log(
-            torch.tensor(2.0 * np.pi, device=b_diffs.device, dtype=b_diffs.dtype)
-        )
-        nll = (
-            0.5 * (b_diffs / self._simu_sigma) ** 2
-            + torch.log(self._simu_sigma)
-            + 0.5 * log_2pi
-        )
-
-        return nll.sum()
+        return adp_simu_math(self.model.adp(), pair_indices, self._simu_sigma)
 
     def stats(self) -> Dict[str, any]:
         """Get SIMU restraint statistics."""

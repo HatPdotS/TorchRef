@@ -10,6 +10,37 @@ from torch import nn
 from torchref.utils.caching import CachedForwardMixin
 
 
+class _AssembleMixedTensor(torch.autograd.Function):
+    """Scatter refinable values into a clone of fixed_values, with a
+    cheap (index_select) backward.
+
+    PyTorch's default backward for ``result[idx] = refinable`` lowers to
+    ``aten::_index_put_impl_``, whose backward goes through a radix-sort
+    of the indices followed by an atomic scatter. Profiling on A100/1DAW
+    showed this dominating the model SF backward (~370 µs/iter across
+    six MixedTensors). The gradient w.r.t. ``refinable_params`` is just
+    ``grad_output[indices]`` — a single ``index_select`` — so we wrap the
+    assembly in a custom autograd op that returns exactly that.
+    """
+
+    @staticmethod
+    def forward(ctx, refinable, fixed, indices):
+        # fixed is a buffer; the .clone() is required so callers cannot
+        # mutate it. index_copy_ is the canonical fast scatter for dim=0.
+        result = fixed.clone()
+        result.index_copy_(0, indices, refinable)
+        ctx.save_for_backward(indices)
+        return result
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (indices,) = ctx.saved_tensors
+        # Only `refinable` (input 0) needs grad; fixed is a buffer and
+        # indices is integer-typed.
+        d_refinable = grad_output.index_select(0, indices)
+        return d_refinable, None, None
+
+
 class MixedTensor(CachedForwardMixin, nn.Module):
     """
     A wrapper class for tensors with mixed fixed and refinable elements.
@@ -153,8 +184,11 @@ class MixedTensor(CachedForwardMixin, nn.Module):
         self.register_buffer("refinable_mask", refinable_mask)
         self.register_buffer("fixed_mask", ~refinable_mask)
 
-        # Store fixed values as a buffer
-        fixed_values = initial_values.clone().detach()
+        # Store fixed values as a buffer. Force row-major contiguous layout:
+        # pandas DataFrame selections (used for xyz / u init) hand us
+        # column-major (..., 3) arrays whose stride is (1, N). Downstream
+        # consumers (e.g. Triton kernels) assume the canonical stride.
+        fixed_values = initial_values.clone().detach().contiguous()
         self.register_buffer("fixed_values", fixed_values)
 
         # Store refinable values as a parameter (will be optimized)
@@ -179,36 +213,60 @@ class MixedTensor(CachedForwardMixin, nn.Module):
         ):
             self._has_refinable = bool(self.refinable_mask.any().item())
             if self._has_refinable:
+                # Keep the legacy tuple form for callers that read
+                # ``_refinable_indices`` directly (used by ``__setitem__`` etc).
                 self._refinable_indices = self.refinable_mask.nonzero(as_tuple=True)
+                # Pre-compute a 1-D int64 index tensor for the fast path —
+                # ``index_copy_`` / ``index_select`` take a 1-D LongTensor.
+                self._refinable_idx_1d = self._refinable_indices[0]
+                self._all_refinable = bool(
+                    self.refinable_mask.numel()
+                    == int(self.refinable_params.shape[0])
+                )
             else:
                 self._refinable_indices = None
+                self._refinable_idx_1d = None
+                self._all_refinable = False
         else:
             self._has_refinable = False
             self._refinable_indices = None
+            self._refinable_idx_1d = None
+            self._all_refinable = False
 
     def forward(self) -> torch.Tensor:
         """
         Reconstruct and return the full tensor.
 
-        Combines fixed and refinable parts. For multi-dimensional tensors
-        (e.g., xyz with shape [N, 3]), the mask broadcasts correctly.
+        Three fast paths, in priority order:
 
-        Returns
-        -------
-        torch.Tensor
-            Full tensor with fixed values in non-refinable positions and
-            current refinable parameter values in refinable positions.
+        1. **All atoms refinable** — return ``refinable_params`` directly
+           (no clone, no scatter). Common in standard refinement where no
+           atoms are frozen. Saves a full-tensor clone + an ``index_put_``
+           per call and replaces the ``index_put`` backward (sort + atomic
+           scatter) with a no-op identity.
+        2. **No refinable atoms** — return ``fixed_values.clone()`` (the
+           clone preserves the caller-must-not-mutate contract even though
+           the result is detached from autograd).
+        3. **Mixed** — go through :class:`_AssembleMixedTensor`, whose
+           backward is a single ``index_select`` (gather) instead of
+           PyTorch's default ``index_put_`` backward (radix-sort + scatter).
         """
-        # Start with fixed values
-        result = self.fixed_values.clone()
+        if self._all_refinable:
+            # `.clone()` turns the Parameter into a plain Tensor (otherwise
+            # the CachedForwardMixin trips ``nn.Module.__setattr__`` when
+            # caching a Parameter under a non-Parameter attribute slot).
+            # The clone's backward is identity, which is exactly the cheap
+            # path we want — gradient flows straight to ``refinable_params``
+            # without going through PyTorch's index_put backward
+            # (sort + atomic scatter).
+            return self.refinable_params.clone()
 
-        # Insert refinable values using pre-computed integer indices
-        # (avoids boolean indexing which triggers nonzero + GPU sync)
-        # The numel() guard handles stale cache after load_state_dict()
-        if self._has_refinable and self.refinable_params.numel() > 0:
-            result[self._refinable_indices] = self.refinable_params
+        if not self._has_refinable or self.refinable_params.numel() == 0:
+            return self.fixed_values.clone()
 
-        return result
+        return _AssembleMixedTensor.apply(
+            self.refinable_params, self.fixed_values, self._refinable_idx_1d,
+        )
 
     def __getitem__(self, key) -> torch.Tensor:
         """
@@ -1662,7 +1720,7 @@ class OccupancyTensor(MixedTensor):
         # Expand to full space
         full_occs = self._expand_values(collapsed_occs)
 
-        return full_occs
+        return full_occs.contiguous()
 
     def _set_values(self, key, value: torch.Tensor) -> None:
         """

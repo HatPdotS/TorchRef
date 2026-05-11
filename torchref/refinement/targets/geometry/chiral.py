@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
+from torchref.base.targets.chiral import chiral_math
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -45,52 +46,17 @@ class ChiralTarget(GeometryTarget):
 
     def forward(self) -> torch.Tensor:
         xyz = self.model.xyz()
-        device = xyz.device
-
         if "chiral" not in self.restraints.restraints:
-            return torch.tensor(0.0, device=device)
-
+            return torch.tensor(0.0, device=xyz.device)
         chiral_data = self.restraints.restraints["chiral"]
         indices = chiral_data.get("indices")
-
         if indices is None or len(indices) == 0:
-            return torch.tensor(0.0, device=device)
-
-        ideal_volumes = chiral_data["ideal_volumes"]
-        sigmas = chiral_data["sigmas"]
-
-        # Get atom positions: indices is (N, 4) with [center, atom1, atom2, atom3]
-        pos_center = xyz[indices[:, 0]]  # (N, 3)
-        pos1 = xyz[indices[:, 1]]  # (N, 3)
-        pos2 = xyz[indices[:, 2]]  # (N, 3)
-        pos3 = xyz[indices[:, 3]]  # (N, 3)
-
-        # Compute vectors from center to neighbors
-        v1 = pos1 - pos_center  # (N, 3)
-        v2 = pos2 - pos_center  # (N, 3)
-        v3 = pos3 - pos_center  # (N, 3)
-
-        # Compute chiral volume: V = v1 · (v2 × v3)
-        cross_v2_v3 = torch.cross(v2, v3, dim=-1)  # (N, 3)
-        volumes = torch.sum(v1 * cross_v2_v3, dim=-1)  # (N,)
-
-        # Handle achiral centers (ideal_volume = 0) differently
-        # For achiral: restrain |V| to typical value (2.5 Å³)
-        # Use torch.where unconditionally to avoid .any() GPU sync
-        achiral_mask = ideal_volumes == 0
-        effective_ideal = torch.where(
-            achiral_mask,
-            torch.full_like(ideal_volumes, 2.5),
-            ideal_volumes,
+            return torch.tensor(0.0, device=xyz.device)
+        return chiral_math(
+            xyz, indices,
+            chiral_data["ideal_volumes"],
+            chiral_data["sigmas"],
         )
-        effective_volumes = torch.where(achiral_mask, torch.abs(volumes), volumes)
-        deviations = effective_volumes - effective_ideal
-
-        # Gaussian NLL
-        log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
-        nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
-
-        return nll.sum()
 
     def get_violations(self, threshold: float = 0.5) -> Dict[str, torch.Tensor]:
         """

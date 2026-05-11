@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
+from torchref.base.targets.angle import angle_math
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -30,17 +31,19 @@ class AngleTarget(GeometryTarget):
         super().__init__(model, verbose, target_value=-2.0, sigma=0.5)
 
     def forward(self) -> torch.Tensor:
-        deviations, sigmas = self.restraints.angle_deviations()
-
-        if len(deviations) == 0:
+        # Use the angle_math dispatcher (Triton on CUDA fp32).
+        if "all" not in self.restraints.restraints["angle"]:
+            self.restraints.cat_dict()
+        a = self.restraints.restraints["angle"]["all"]
+        idx = a["indices"]
+        if idx is None or len(idx) == 0:
             return torch.tensor(0.0, device=self.model.xyz().device)
-
-        log_2pi = torch.log(
-            torch.tensor(2.0 * np.pi, device=sigmas.device, dtype=sigmas.dtype)
+        deg2rad = float(torch.pi / 180.0)
+        return angle_math(
+            self.model.xyz(), idx,
+            a["references"] * deg2rad,
+            a["sigmas"] * deg2rad,
         )
-        nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
-
-        return nll.sum()
 
     def stats(self) -> Dict[str, StatEntry]:
         """Get angle restraint statistics."""

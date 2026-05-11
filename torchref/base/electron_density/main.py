@@ -245,19 +245,11 @@ def _add_isotropic_gpu(
         )
 
     if engine == "auto":
-        # Legacy fallback: try separable → fused → original
-        if _GPU_MODE not in ("jit", "simple"):
-            separable = _get_separable_triton()
-            if separable is not None:
-                try:
-                    return separable(
-                        density_map, xyz, adp,
-                        inv_frac_matrix, frac_matrix, A, B, occ,
-                        radius_angstrom,
-                    )
-                except Exception:
-                    pass
-
+        # Try fused → separable → original. Fused was ~0.26 ms faster fwd+bw
+        # than separable on A100/1DAW in profile_model_sf benchmarking
+        # because its larger per-launch kernel cost is more than offset by
+        # reduced downstream index_put traffic. Separable is kept as a
+        # robustness fallback for grid configurations where fused trips.
         if _GPU_MODE not in ("jit", "simple"):
             fused = _get_fused_triton()
             if fused is not None:
@@ -266,6 +258,18 @@ def _add_isotropic_gpu(
                         real_space_grid, density_map, xyz, adp,
                         inv_frac_matrix, frac_matrix, A, B, occ,
                         radius_angstrom, voxel_size,
+                    )
+                except Exception:
+                    pass
+
+        if _GPU_MODE not in ("jit", "simple"):
+            separable = _get_separable_triton()
+            if separable is not None:
+                try:
+                    return separable(
+                        density_map, xyz, adp,
+                        inv_frac_matrix, frac_matrix, A, B, occ,
+                        radius_angstrom,
                     )
                 except Exception:
                     pass

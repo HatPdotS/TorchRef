@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
+from torchref.base.targets.bond import bond_math
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -30,17 +31,17 @@ class BondTarget(GeometryTarget):
         super().__init__(model, verbose, target_value=-2.0, sigma=1.0)
 
     def forward(self) -> torch.Tensor:
-        deviations, sigmas = self.restraints.bond_deviations()
-
-        if len(deviations) == 0:
+        # Use the bond_math dispatcher (Triton on CUDA fp32, eager
+        # otherwise). Pulls inputs directly from the model + restraints
+        # instead of going through `Restraints.bond_deviations` so the
+        # Triton kernel can also own the gather + distance compute.
+        if "all" not in self.restraints.restraints["bond"]:
+            self.restraints.cat_dict()
+        bond = self.restraints.restraints["bond"]["all"]
+        idx = bond["indices"]
+        if idx is None or len(idx) == 0:
             return torch.tensor(0.0, device=self.model.xyz().device)
-
-        log_2pi = torch.log(
-            torch.tensor(2.0 * np.pi, device=sigmas.device, dtype=sigmas.dtype)
-        )
-        nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * log_2pi
-
-        return nll.sum()
+        return bond_math(self.model.xyz(), idx, bond["references"], bond["sigmas"])
 
     def stats(self) -> Dict[str, StatEntry]:
         """Get bond restraint statistics."""
