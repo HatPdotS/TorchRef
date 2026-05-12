@@ -168,6 +168,15 @@ def load_per_target_from_json(
             closest = min(cpu_runs.keys(), key=lambda t: abs(t - n_threads))
             cpu_selected = cpu_runs[closest]
 
+    # Map per-target mode → matching aggregate key, so the plot can
+    # overlay the true cycle time on top of the (inflated) per-target
+    # stack.
+    aggregate_key = {
+        "forward": "aggregate_fwd_no_grad",
+        "backward": "aggregate_bwd_only",
+        "fwd_bwd": "aggregate_fwd_bwd",
+    }.get(mode)
+
     cpu_per_target = None
     if cpu_selected and "per_target" in cpu_selected:
         cpu_per_target = {
@@ -175,6 +184,10 @@ def load_per_target_from_json(
             for name, stats in cpu_selected["per_target"].items()
         }
         cpu_per_target["_n_threads"] = cpu_selected["n_threads"]
+        if aggregate_key and aggregate_key in cpu_selected:
+            cpu_per_target["_aggregate_time"] = (
+                cpu_selected[aggregate_key]["mean_time"]
+            )
 
     gpu_per_target = None
     gpu_json_path = results_dir / "gpu.json"
@@ -187,6 +200,10 @@ def load_per_target_from_json(
                 for name, stats in data["per_target"].items()
             }
             gpu_per_target["_gpu_name"] = data.get("gpu_name", "GPU")
+            if aggregate_key and aggregate_key in data:
+                gpu_per_target["_aggregate_time"] = (
+                    data[aggregate_key]["mean_time"]
+                )
 
     return cpu_per_target, gpu_per_target
 
@@ -295,12 +312,23 @@ def plot_aggregate_speedup(cpu: dict, gpu: dict | None, output_path: Path):
 def _stacked_barh(ax, bar_positions, all_targets, data_sets, bar_height=0.6):
     """Draw stacked horizontal bars for per-target breakdown.
 
+    Per-target measurements pay setup costs (MixedTensor / SF cache
+    rebuilds, target-level get_data caches) that an aggregate
+    refinement cycle pays only once or amortizes across all targets.
+    The sum-of-stack therefore over-estimates a real cycle.
+
+    For each data_set we also draw a hollow red rectangle from x=0 to
+    the matching ``_aggregate_time`` (if present), so the reader can
+    see the true cycle time on top of the inflated per-target stack.
+
     Parameters
     ----------
     ax : matplotlib Axes
     bar_positions : np.array of y positions
     all_targets : list of target name strings
-    data_sets : list of dicts, one per bar, mapping target name → time (seconds)
+    data_sets : list of dicts, one per bar, mapping target name → time
+        (seconds). May also contain ``_aggregate_time`` (seconds) for
+        the red overlay.
     bar_height : float
     """
     lefts = np.zeros(len(bar_positions))
@@ -314,6 +342,22 @@ def _stacked_barh(ax, bar_positions, all_targets, data_sets, bar_height=0.6):
                 color=color, edgecolor="white", linewidth=0.5,
                 label=label)
         lefts += widths
+
+    # Overlay the actual aggregate cycle time as a hollow red rectangle
+    # on top of each bar. One legend entry shared across all bars.
+    overlay_label_done = False
+    for y_pos, ds in zip(bar_positions, data_sets):
+        agg_s = ds.get("_aggregate_time")
+        if agg_s is None:
+            continue
+        agg_ms = agg_s * 1000
+        ax.barh(
+            [y_pos], [agg_ms], left=0, height=bar_height,
+            facecolor="none", edgecolor="red", linewidth=2.0,
+            zorder=5,
+            label=("Full cycle (aggregate)" if not overlay_label_done else None),
+        )
+        overlay_label_done = True
 
 
 def plot_target_breakdown(results_dir: Path, output_path: Path):

@@ -66,12 +66,15 @@ def _bond_nll_fwd_kernel(
 
 @triton.jit
 def _bond_nll_bwd_kernel(
-    xyz_ptr,    # (N_atoms, 3) -- input
-    idx_ptr,    # (N, 2)
-    ref_ptr,    # (N,)
-    sig_ptr,    # (N,)
-    grad_out,   # scalar -- gradient of upstream loss w.r.t. sum(nll)
-    dxyz_ptr,   # (N_atoms, 3) -- gradient accumulator (atomic add)
+    xyz_ptr,         # (N_atoms, 3) -- input
+    idx_ptr,         # (N, 2)
+    ref_ptr,         # (N,)
+    sig_ptr,         # (N,)
+    grad_out_ptr,    # 0-D tensor -- gradient of upstream loss w.r.t. sum(nll).
+                     # Read in-kernel so the host doesn't need to ``.item()``
+                     # it (which would force a cuStreamSynchronize and block
+                     # the host from queuing subsequent kernel launches).
+    dxyz_ptr,        # (N_atoms, 3) -- gradient accumulator (atomic add)
     N: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
@@ -81,11 +84,15 @@ def _bond_nll_bwd_kernel(
         dNLL_i/dp2_i = (dev_i / sig_i^2) * (u_i / d_i)
         dNLL_i/dp1_i = -dNLL_i/dp2_i
 
-    Multiplied by grad_out (= dLoss/dNLL_summed = scalar).
+    Multiplied by grad_out (= dLoss/dNLL_summed = scalar, read from
+    ``grad_out_ptr`` at runtime).
     """
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
+
+    # One scalar load per block, broadcast across the threads.
+    grad_out = tl.load(grad_out_ptr)
 
     i = tl.load(idx_ptr + offs * 2 + 0, mask=mask, other=0)
     j = tl.load(idx_ptr + offs * 2 + 1, mask=mask, other=0)
@@ -153,8 +160,10 @@ class _BondMathTriton(torch.autograd.Function):
 
         BLOCK = 256
         grid = (triton.cdiv(N, BLOCK),)
+        # Pass grad_out as a 0-D device tensor (its data_ptr). The kernel
+        # ``tl.load``s it once per block — no ``.item()``, no host sync.
         _bond_nll_bwd_kernel[grid](
-            xyz, idx, references, sigmas, float(grad_out.item()), dxyz,
+            xyz, idx, references, sigmas, grad_out, dxyz,
             N=N, BLOCK=BLOCK,
         )
         return dxyz, None, None, None

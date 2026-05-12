@@ -1,23 +1,26 @@
 """Gaussian X-ray loss math.
 
-Mirrors :class:`GaussianXrayTarget.forward`. The caller is responsible for
-producing the post-:meth:`get_data` tensors.
+Caller is responsible for producing the post-``XrayTarget.get_data``
+tensors (F_obs, F_calc, sigma, mask).
+
+The public entry point ``gaussian_xray_loss_math`` dispatches to the
+Triton kernel on CUDA float32 and to the eager implementation
+otherwise, matching the pattern used by ``bond_math``, ``angle_math``,
+etc.
 """
 
 import numpy as np
 import torch
 
+from ._dispatch import use_triton
 
-def gaussian_xray_loss_math(
+
+def _gaussian_xray_loss_math_eager(
     F_obs: torch.Tensor,
     F_calc: torch.Tensor,
     sigma: torch.Tensor,
     mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Gaussian negative log-likelihood on already-scaled amplitudes.
-
-    Matches ``GaussianXrayTarget.forward`` lines 37-51.
-    """
     F_calc_amp = torch.abs(F_calc)
     diff = F_obs - F_calc_amp
 
@@ -29,3 +32,20 @@ def gaussian_xray_loss_math(
     )
     nll = 0.5 * (diff ** 2) / (sigma_safe ** 2) + torch.log(sigma_safe) + 0.5 * log_2pi
     return (nll * mask).sum()
+
+
+def gaussian_xray_loss_math(
+    F_obs: torch.Tensor,
+    F_calc: torch.Tensor,
+    sigma: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """Gaussian NLL on already-scaled amplitudes.
+
+    Dispatches to :func:`torchref.base.targets.triton.xray_gaussian.gaussian_xray_loss_math_triton`
+    on CUDA float32 inputs; falls back to the eager implementation otherwise.
+    """
+    if use_triton(F_calc, F_obs, sigma):
+        from .triton.xray_gaussian import gaussian_xray_loss_math_triton
+        return gaussian_xray_loss_math_triton(F_obs, F_calc, sigma, mask)
+    return _gaussian_xray_loss_math_eager(F_obs, F_calc, sigma, mask)

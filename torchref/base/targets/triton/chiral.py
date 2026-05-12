@@ -71,7 +71,7 @@ def _chiral_nll_bwd_kernel(
     idx_ptr,
     ideal_ptr,
     sig_ptr,
-    grad_out,
+    grad_out_ptr,  # 0-D tensor — loaded in-kernel (no host .item() sync)
     dxyz_ptr,
     N: tl.constexpr,
     BLOCK: tl.constexpr,
@@ -86,10 +86,14 @@ def _chiral_nll_bwd_kernel(
 
     eff_vol = |V|   if achiral else V    ⇒ ∂eff_vol/∂V = sign(V) or 1
     dNLL/d(eff_vol) = (eff_vol − eff_ideal) / σ²
+
+    ``grad_out_ptr`` is a 0-D tensor pointer; we load it once per block
+    so the host doesn't need a ``.item()`` synchronize.
     """
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
+    grad_out = tl.load(grad_out_ptr)
 
     c0 = tl.load(idx_ptr + offs * 4 + 0, mask=mask, other=0)
     i1 = tl.load(idx_ptr + offs * 4 + 1, mask=mask, other=0)
@@ -177,7 +181,7 @@ class _ChiralMathTriton(torch.autograd.Function):
         BLOCK = 256
         grid = (triton.cdiv(N, BLOCK),)
         _chiral_nll_bwd_kernel[grid](
-            xyz, idx, ideal, sigs, float(grad_out.item()), dxyz,
+            xyz, idx, ideal, sigs, grad_out, dxyz,
             N=N, BLOCK=BLOCK,
         )
         return dxyz, None, None, None

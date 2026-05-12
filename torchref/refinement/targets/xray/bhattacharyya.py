@@ -41,7 +41,6 @@ import math
 import torch
 from typing import TYPE_CHECKING, Dict
 
-from torchref.base.targets._dispatch import use_triton
 from torchref.base.targets.xray_bhattacharyya import bhattacharyya_xray_loss_math
 from torchref.utils.stats import (
     VERBOSITY_DETAILED,
@@ -312,13 +311,6 @@ class BhattacharyyaXrayTarget(XrayTarget):
         with torch.no_grad():
             sigma_m = self._sigma_m_per_refl()
 
-        if use_triton(F_calc, F_obs, sigma_d, sigma_m):
-            from torchref.base.targets.triton.xray_bhattacharyya import (
-                bhattacharyya_xray_loss_math_triton,
-            )
-            return bhattacharyya_xray_loss_math_triton(
-                F_obs, F_calc, sigma_d, sigma_m, mask
-            )
         return bhattacharyya_xray_loss_math(
             F_obs, F_calc, sigma_d, sigma_m, mask
         )

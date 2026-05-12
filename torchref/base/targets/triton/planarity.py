@@ -79,7 +79,7 @@ def _plan_nll_bwd_kernel(
     indices_ptr,
     normals_ptr,
     sigmas_ptr,
-    grad_out,
+    grad_out_ptr,  # 0-D tensor — loaded in-kernel (no host .item() sync)
     dxyz_ptr,
     P: tl.constexpr,
     N_ATOMS: tl.constexpr,
@@ -88,6 +88,7 @@ def _plan_nll_bwd_kernel(
     pid = tl.program_id(0)
     p_offs = pid * BLOCK_P + tl.arange(0, BLOCK_P)
     mask = p_offs < P
+    grad_out = tl.load(grad_out_ptr)
 
     nx = tl.load(normals_ptr + p_offs * 3 + 0, mask=mask, other=0.0)
     ny = tl.load(normals_ptr + p_offs * 3 + 1, mask=mask, other=0.0)
@@ -173,10 +174,13 @@ def _plane_normals_via_eigh(
 
     # Even when eigh succeeds it can emit NaN rows if a per-batch input
     # was finite but contained subnormals or extreme range. Same fix:
-    # zero-out non-finite rows.
+    # zero-out non-finite rows. We do the ``torch.where`` unconditionally
+    # — skipping the Python ``bool(...item())`` guard so this function
+    # is CUDA-Graph-capture-safe. The where is a single elementwise
+    # kernel that's a no-op on the (overwhelmingly common) all-finite
+    # path; cheaper than the previous host sync anyway.
     finite = torch.isfinite(normals).all(dim=-1, keepdim=True)
-    if not bool(finite.all().item()):
-        normals = torch.where(finite, normals, torch.zeros_like(normals))
+    normals = torch.where(finite, normals, torch.zeros_like(normals))
     return normals
 
 
@@ -231,7 +235,7 @@ class _PlanarityMathTriton(torch.autograd.Function):
     def backward(ctx, grad_out):
         xyz = ctx.saved_tensors[0]
         dxyz = torch.zeros_like(xyz)
-        go = float(grad_out.item())
+        # grad_out is a 0-D device tensor; passed by pointer.
         for (indices, sigmas), normals in zip(
             ctx.plane_groups, ctx.bucket_normals
         ):
@@ -240,7 +244,7 @@ class _PlanarityMathTriton(torch.autograd.Function):
             BLOCK_P = 64
             grid = (triton.cdiv(P, BLOCK_P),)
             _plan_nll_bwd_kernel[grid](
-                xyz, indices, normals, sigmas, go, dxyz,
+                xyz, indices, normals, sigmas, grad_out, dxyz,
                 P=P, N_ATOMS=int(N_atoms), BLOCK_P=BLOCK_P,
             )
         return dxyz, None

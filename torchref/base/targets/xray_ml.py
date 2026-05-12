@@ -10,32 +10,16 @@ unpacking ``ReflectionData``, running the ``Scaler`` forward to produce
 import numpy as np
 import torch
 
+from ._dispatch import use_triton
 
-def ml_xray_loss_math(
+
+def _ml_xray_loss_math_eager(
     F_obs: torch.Tensor,
     F_calc: torch.Tensor,
     sigma: torch.Tensor,
     centric_flags: torch.Tensor,
     mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Maximum-likelihood X-ray loss on already-scaled amplitudes.
-
-    Matches ``MaximumLikelihoodXrayTarget.forward`` lines 37-84.
-
-    Parameters
-    ----------
-    F_obs : torch.Tensor
-        (N,) observed amplitudes (zeros outside ``mask``).
-    F_calc : torch.Tensor
-        (N,) scaled calculated amplitudes (already real-valued, zeros
-        outside ``mask``).
-    sigma : torch.Tensor
-        (N,) per-reflection sigma (ones outside ``mask``).
-    centric_flags : torch.Tensor or None
-        (N,) bool, True for centric reflections. ``None`` is treated as all-acentric.
-    mask : torch.Tensor
-        (N,) bool work-set mask applied to the final sum.
-    """
     alpha = torch.ones_like(F_obs)
     beta = sigma ** 2
     epsilon = torch.ones_like(F_obs)
@@ -73,3 +57,37 @@ def ml_xray_loss_math(
     loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
 
     return (loss * mask).sum()
+
+
+def ml_xray_loss_math(
+    F_obs: torch.Tensor,
+    F_calc: torch.Tensor,
+    sigma: torch.Tensor,
+    centric_flags: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """Maximum-likelihood X-ray loss on already-scaled amplitudes.
+
+    Matches ``MaximumLikelihoodXrayTarget.forward`` lines 37-84.
+
+    Dispatches to :func:`torchref.base.targets.triton.xray_ml.ml_xray_loss_math_triton`
+    on CUDA float32; falls back to the eager implementation otherwise.
+
+    Parameters
+    ----------
+    F_obs : torch.Tensor
+        (N,) observed amplitudes (zeros outside ``mask``).
+    F_calc : torch.Tensor
+        (N,) scaled calculated amplitudes (already real-valued, zeros
+        outside ``mask``).
+    sigma : torch.Tensor
+        (N,) per-reflection sigma (ones outside ``mask``).
+    centric_flags : torch.Tensor or None
+        (N,) bool, True for centric reflections. ``None`` is treated as all-acentric.
+    mask : torch.Tensor
+        (N,) bool work-set mask applied to the final sum.
+    """
+    if use_triton(F_calc, F_obs, sigma):
+        from .triton.xray_ml import ml_xray_loss_math_triton
+        return ml_xray_loss_math_triton(F_obs, F_calc, sigma, centric_flags, mask)
+    return _ml_xray_loss_math_eager(F_obs, F_calc, sigma, centric_flags, mask)

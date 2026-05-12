@@ -1,7 +1,6 @@
 import torch
 from typing import TYPE_CHECKING
 
-from torchref.base.targets._dispatch import use_triton
 from torchref.base.targets.xray_ls import ls_xray_loss_math
 
 from .base import XrayTarget
@@ -54,14 +53,6 @@ class LeastSquaresXrayTarget(XrayTarget):
             Mean weighted least squares loss.
         """
         F_obs, F_calc, sigma, _, mask = self.get_data(fcalc=fcalc)
-
-        if use_triton(F_calc, F_obs, sigma):
-            from torchref.base.targets.triton.xray_ls import (
-                ls_xray_loss_math_triton,
-            )
-            return ls_xray_loss_math_triton(
-                F_obs, F_calc, sigma, mask, weighting=self.weighting
-            )
         return ls_xray_loss_math(
             F_obs, F_calc, sigma, mask, weighting=self.weighting
         )

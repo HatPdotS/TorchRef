@@ -68,7 +68,7 @@ def _angle_nll_bwd_kernel(
     idx_ptr,
     ref_ptr,
     sig_ptr,
-    grad_out,
+    grad_out_ptr,  # 0-D tensor — loaded in-kernel (avoid host .item() sync)
     dxyz_ptr,
     N: tl.constexpr,
     EPS: tl.constexpr,
@@ -85,11 +85,13 @@ def _angle_nll_bwd_kernel(
         ∂(cos θ)/∂v2 = v1/(n1 n2) − (cos θ / n2²) v2
 
     Then ∂NLL/∂a = ∂NLL/∂v1, ∂NLL/∂c = ∂NLL/∂v2,
-        ∂NLL/∂b = −(∂NLL/∂a + ∂NLL/∂c). Multiplied by grad_out.
+        ∂NLL/∂b = −(∂NLL/∂a + ∂NLL/∂c). Multiplied by grad_out
+        (loaded once per block from ``grad_out_ptr``).
     """
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
+    grad_out = tl.load(grad_out_ptr)
 
     a = tl.load(idx_ptr + offs * 3 + 0, mask=mask, other=0)
     b = tl.load(idx_ptr + offs * 3 + 1, mask=mask, other=0)
@@ -172,7 +174,7 @@ class _AngleMathTriton(torch.autograd.Function):
         BLOCK = 256
         grid = (triton.cdiv(N, BLOCK),)
         _angle_nll_bwd_kernel[grid](
-            xyz, idx, refs, sigs, float(grad_out.item()), dxyz,
+            xyz, idx, refs, sigs, grad_out, dxyz,
             N=N, EPS=_EPS, BLOCK=BLOCK,
         )
         return dxyz, None, None, None

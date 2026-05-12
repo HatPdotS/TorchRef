@@ -27,7 +27,29 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).parent.resolve()
+def _find_repo_root() -> Path:
+    """Walk up from this file to find the repo root (marker: pyproject.toml).
+
+    `__file__` can be relative or staged under sbatch; resolving against a
+    stable on-disk marker avoids those edge cases. Falls back to the
+    TORCHREF_REPO_ROOT env var if the marker isn't found (e.g. installed
+    package without a source tree).
+    """
+    env_root = os.environ.get("TORCHREF_REPO_ROOT")
+    if env_root:
+        return Path(env_root).resolve()
+    p = Path(os.path.abspath(__file__)).parent
+    for ancestor in [p, *p.parents]:
+        if (ancestor / "pyproject.toml").is_file():
+            return ancestor
+    raise RuntimeError(
+        "Could not locate repo root (no pyproject.toml found walking up "
+        f"from {p}). Set TORCHREF_REPO_ROOT explicitly."
+    )
+
+
+REPO_ROOT = _find_repo_root()
+SCRIPT_DIR = REPO_ROOT / "paper" / "figure3_performance" / "refinement_cycle_benchmark"
 WORKER_SCRIPT = SCRIPT_DIR / "benchmark_worker.py"
 PLOT_SCRIPT = SCRIPT_DIR.parent / "plot_figure3b.py"
 PYTHON = sys.executable
@@ -262,12 +284,17 @@ def main():
 
     has_gpu = False if args.no_gpu else check_gpu_available()
 
-    # Setup output directory
+    # Setup output directory — default to the canonical results location
+    # under paper/figure3_performance/data/refinement_cycle/ so runs are
+    # collected in one place regardless of which CWD the job ran from.
     if args.output_dir:
-        output_dir = Path(args.output_dir)
+        output_dir = Path(args.output_dir).resolve()
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = SCRIPT_DIR / f"results_{timestamp}"
+        output_dir = (
+            REPO_ROOT / "paper" / "figure3_performance" / "data"
+            / "refinement_cycle" / f"results_{timestamp}"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 78)

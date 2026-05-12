@@ -19,6 +19,7 @@ import os
 import sys
 import time
 import warnings
+from pathlib import Path
 
 # Verify TORCHREF_NUM_THREADS is set before any imports
 n_threads = int(os.environ.get("TORCHREF_NUM_THREADS", 1))
@@ -26,9 +27,29 @@ n_threads = int(os.environ.get("TORCHREF_NUM_THREADS", 1))
 import torch
 from torchref.refinement import LBFGSRefinement
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
-MTZ_FILE = os.path.join(DATA_DIR, "1DAW.mtz")
-PDB_FILE = os.path.join(DATA_DIR, "1DAW.pdb")
+
+def _find_repo_root() -> Path:
+    """Walk up from this file to find the repo root (marker: pyproject.toml).
+
+    See benchmark_thread_scaling.py for rationale — `__file__` can be
+    relative or staged under sbatch, so we anchor on a stable marker.
+    """
+    env_root = os.environ.get("TORCHREF_REPO_ROOT")
+    if env_root:
+        return Path(env_root).resolve()
+    p = Path(os.path.abspath(__file__)).parent
+    for ancestor in [p, *p.parents]:
+        if (ancestor / "pyproject.toml").is_file():
+            return ancestor
+    raise RuntimeError(
+        "Could not locate repo root (no pyproject.toml found walking up "
+        f"from {p}). Set TORCHREF_REPO_ROOT explicitly."
+    )
+
+
+DATA_DIR = _find_repo_root() / "paper" / "figure3_performance" / "data"
+MTZ_FILE = str(DATA_DIR / "1DAW.mtz")
+PDB_FILE = str(DATA_DIR / "1DAW.pdb")
 
 
 def _time_iterations(func, n_iterations: int) -> list[float]:

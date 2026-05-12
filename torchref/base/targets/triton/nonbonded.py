@@ -38,17 +38,22 @@ def _nb_fwd_kernel(
     cart_sym_off_ptr,       # (n_symops, 3)    -- M t
     cell_off_cart_ptr,      # (N_pairs, 3)     -- M @ cell_offsets
     out_ptr,                # (N_pairs,)
+    c_rep_ptr,              # 0-D tensor (was C_REP constexpr — see file docstring)
+    r_exp_ptr,              # 0-D tensor (was R_EXP constexpr)
+    log_sig_plus_ptr,       # 0-D tensor: log(sigma_vdw) + 0.5*log(2pi)
     has_symmetry: tl.constexpr,
     N: tl.constexpr,
     BUFFER: tl.constexpr,
-    C_REP: tl.constexpr,
-    R_EXP: tl.constexpr,
-    LOG_SIG_PLUS_HALF_LOG_2PI: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
+    # Load the constant scalars once per block instead of receiving them
+    # as kernel-arg-by-value (which forced a host ``.item()``).
+    C_REP = tl.load(c_rep_ptr)
+    R_EXP = tl.load(r_exp_ptr)
+    LOG_SIG_PLUS_HALF_LOG_2PI = tl.load(log_sig_plus_ptr)
 
     i = tl.load(idx_ptr + offs * 2 + 0, mask=mask, other=0)
     j = tl.load(idx_ptr + offs * 2 + 1, mask=mask, other=0)
@@ -102,13 +107,13 @@ def _nb_bwd_kernel(
     cart_sym_mat_ptr,
     cart_sym_off_ptr,
     cell_off_cart_ptr,
-    grad_out,                 # scalar
+    grad_out_ptr,             # 0-D tensor — loaded in-kernel
     dxyz_ptr,                 # (N_atoms, 3)
+    c_rep_ptr,                # 0-D tensor (was C_REP constexpr)
+    r_exp_ptr,                # 0-D tensor (was R_EXP constexpr)
     has_symmetry: tl.constexpr,
     N: tl.constexpr,
     BUFFER: tl.constexpr,
-    C_REP: tl.constexpr,
-    R_EXP: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     """Analytic backward for the prolsq nonbonded NLL.
@@ -122,6 +127,9 @@ def _nb_bwd_kernel(
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
+    grad_out = tl.load(grad_out_ptr)
+    C_REP = tl.load(c_rep_ptr)
+    R_EXP = tl.load(r_exp_ptr)
 
     i = tl.load(idx_ptr + offs * 2 + 0, mask=mask, other=0)
     j = tl.load(idx_ptr + offs * 2 + 1, mask=mask, other=0)
@@ -237,26 +245,36 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
             cell_off_cart = torch.zeros(N, 3, device=xyz.device, dtype=xyz.dtype)
             symop_i32 = torch.zeros(N, device=xyz.device, dtype=torch.int32)
 
-        log_sig = float(torch.log(sigma_vdw).item()) + 0.5 * _LOG_2PI
-        c_rep_f = float(c_rep.item())
-        r_exp_f = float(r_exp.item())
+        # Scalar parameters become 0-D *device* tensors so neither the
+        # forward nor backward needs a host ``.item()`` synchronize.
+        # Use a helper that skips .to() when device+dtype already match
+        # — calling .to() on a same-device tensor still allocates a new
+        # tensor (forbidden during CUDA Graph capture).
+        def _as_device_tensor(t, ref):
+            if t.device == ref.device and t.dtype == ref.dtype:
+                return t if t.is_contiguous() else t.contiguous()
+            return t.to(device=ref.device, dtype=ref.dtype).contiguous()
+
+        sigma_vdw_t = _as_device_tensor(sigma_vdw, xyz)
+        c_rep_t = _as_device_tensor(c_rep, xyz)
+        r_exp_t = _as_device_tensor(r_exp, xyz)
+        log_sig_plus = torch.log(sigma_vdw_t) + 0.5 * _LOG_2PI
         buf_f = float(buffer_)
         BLOCK = 256
         grid = (triton.cdiv(N, BLOCK),)
         _nb_fwd_kernel[grid](
             xyz, indices, min_distances, symop_i32, cart_mat, cart_off,
             cell_off_cart, nll,
+            c_rep_t, r_exp_t, log_sig_plus,
             has_symmetry=bool(has_sym),
-            N=N, BUFFER=buf_f, C_REP=c_rep_f, R_EXP=r_exp_f,
-            LOG_SIG_PLUS_HALF_LOG_2PI=log_sig, BLOCK=BLOCK,
+            N=N, BUFFER=buf_f, BLOCK=BLOCK,
         )
 
         ctx.save_for_backward(
             xyz, indices, min_distances,
             symop_i32, cart_mat, cart_off, cell_off_cart,
+            c_rep_t, r_exp_t,
         )
-        ctx.c_rep = c_rep_f
-        ctx.r_exp = r_exp_f
         ctx.buffer = buf_f
         ctx.has_sym = bool(has_sym)
         return nll.sum()
@@ -264,7 +282,7 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_out):
         (xyz, indices, min_distances, symop_i32,
-         cart_mat, cart_off, cell_off_cart) = ctx.saved_tensors
+         cart_mat, cart_off, cell_off_cart, c_rep_t, r_exp_t) = ctx.saved_tensors
         N = indices.shape[0]
         dxyz = torch.zeros_like(xyz)
         BLOCK = 256
@@ -272,9 +290,10 @@ class _NonbondedHeavyMathTriton(torch.autograd.Function):
         _nb_bwd_kernel[grid](
             xyz, indices, min_distances, symop_i32,
             cart_mat, cart_off, cell_off_cart,
-            float(grad_out.item()), dxyz,
+            grad_out, dxyz,
+            c_rep_t, r_exp_t,
             has_symmetry=ctx.has_sym,
-            N=N, BUFFER=ctx.buffer, C_REP=ctx.c_rep, R_EXP=ctx.r_exp,
+            N=N, BUFFER=ctx.buffer,
             BLOCK=BLOCK,
         )
         return (dxyz,) + (None,) * 12

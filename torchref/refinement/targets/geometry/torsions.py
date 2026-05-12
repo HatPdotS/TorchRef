@@ -150,7 +150,8 @@ class TorsionTarget(GeometryTarget):
         from torchref.base.targets._dispatch import use_triton
         xyz = self.model.xyz()
         device = xyz.device
-        total = torch.tensor(0.0, device=device)
+        # GPU-only scalar zero: capture-safe (no host→device copy).
+        total = torch.zeros((), device=device, dtype=xyz.dtype)
 
         # --- Intra-residue + disulfide torsions (unimodal von Mises) ---
         # On CUDA fp32 the full dihedral + periodic wrap + von Mises NLL

@@ -2674,10 +2674,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # KL divergence: KL(actual || target) for Gaussians with same mean
         # KL = log(σ_target/σ_data) + σ_data² / (2σ_target²) - 0.5
-        log_sigma_ratio = torch.log(
-            torch.tensor(sigma_target, dtype=self.dtype_float, device=self.device)
-            / sigma_data
-        )
+        # log_sigma_ratio = log(σ_target) − log(σ_data); compute the
+        # target term as a Python scalar so we don't synthesize a CUDA
+        # tensor from a host scalar each call (forbidden during CUDA
+        # Graph capture).
+        import math
+        log_sigma_target = math.log(float(sigma_target))
+        log_sigma_ratio = log_sigma_target - torch.log(sigma_data)
         variance_ratio = (sigma_data**2) / (2 * sigma_target**2)
 
         kl_divergence = log_sigma_ratio + variance_ratio - 0.5

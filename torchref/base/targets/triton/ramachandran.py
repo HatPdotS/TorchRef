@@ -117,7 +117,7 @@ def _rama_nll_bwd_kernel(
     psi_idx_ptr,
     surfaces_ptr,
     surface_type_ptr,
-    grad_out,
+    grad_out_ptr,  # 0-D tensor — loaded in-kernel (no host .item() sync)
     dxyz_ptr,
     N: tl.constexpr,
     RAD2DEG: tl.constexpr,
@@ -126,6 +126,7 @@ def _rama_nll_bwd_kernel(
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
+    grad_out = tl.load(grad_out_ptr)
 
     # --- phi: dihedral + gradient ---
     a = tl.load(phi_idx_ptr + offs * 4 + 0, mask=mask, other=0)
@@ -258,7 +259,7 @@ class _RamachandranMathTriton(torch.autograd.Function):
         grid = (triton.cdiv(N, BLOCK),)
         _rama_nll_bwd_kernel[grid](
             xyz, phi_idx, psi_idx, surfaces, s32,
-            float(grad_out.item()), dxyz,
+            grad_out, dxyz,
             N=N, RAD2DEG=_RAD2DEG, BLOCK=BLOCK,
         )
         return dxyz, None, None, None, None

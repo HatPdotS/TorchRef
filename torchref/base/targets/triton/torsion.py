@@ -98,7 +98,7 @@ def _omega_nll_bwd_kernel(
     idx_ptr,
     sig_deg_ptr,
     is_proline_ptr,
-    grad_out,
+    grad_out_ptr,  # 0-D tensor — loaded in-kernel (no host .item() sync)
     dxyz_ptr,
     w_cis_proline: tl.constexpr,
     w_cis_general: tl.constexpr,
@@ -109,6 +109,7 @@ def _omega_nll_bwd_kernel(
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
+    grad_out = tl.load(grad_out_ptr)
 
     a = tl.load(idx_ptr + offs * 4 + 0, mask=mask, other=0)
     b = tl.load(idx_ptr + offs * 4 + 1, mask=mask, other=0)
@@ -202,7 +203,7 @@ class _TorsionOmegaMathTriton(torch.autograd.Function):
         BLOCK = 128
         grid = (triton.cdiv(N, BLOCK),)
         _omega_nll_bwd_kernel[grid](
-            xyz, idx, sigs, is_pro_u8, float(grad_out.item()), dxyz,
+            xyz, idx, sigs, is_pro_u8, grad_out, dxyz,
             w_cis_proline=ctx.w_cis_proline,
             w_cis_general=ctx.w_cis_general,
             N=N, DEG2RAD=_DEG2RAD, BLOCK=BLOCK,
@@ -317,7 +318,7 @@ def _torsion_uni_bwd_kernel(
     ref_deg_ptr,
     sig_deg_ptr,
     period_ptr,
-    grad_out,
+    grad_out_ptr,  # 0-D tensor — loaded in-kernel (no host .item() sync)
     dxyz_ptr,
     N: tl.constexpr,
     MAX_PERIOD: tl.constexpr,
@@ -327,6 +328,7 @@ def _torsion_uni_bwd_kernel(
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
+    grad_out = tl.load(grad_out_ptr)
 
     a = tl.load(idx_ptr + offs * 4 + 0, mask=mask, other=0)
     b = tl.load(idx_ptr + offs * 4 + 1, mask=mask, other=0)
@@ -397,14 +399,21 @@ def _torsion_uni_bwd_kernel(
 
 
 class _TorsionUnimodalMathTriton(torch.autograd.Function):
+    # ``MAX_PERIOD`` is a Triton constexpr (compile-time loop bound).
+    # We fix it to 6 — the realistic upper bound for protein restraint
+    # libraries (covers 1-, 2-, 3-, 4-, 6-fold symmetries used by Monomer
+    # Library / cctbx geostd). Using a fixed value avoids reading
+    # ``periods.max().item()`` per call, which forced a host sync and
+    # blocked CUDA Graph capture. The kernel masks out unused period
+    # slots via ``i < period`` so any period ≤ 6 produces the correct
+    # answer with at most 6 candidates per restraint.
+    _FIXED_MAX_PERIOD = 6
+
     @staticmethod
     def forward(ctx, xyz, idx, references_deg, sigmas_deg, periods):
         assert xyz.is_cuda and xyz.dtype == torch.float32
         N = idx.shape[0]
-        # max_period is a constexpr (compile-time). 6 is the realistic
-        # upper bound for protein restraints (n-fold ring symmetries).
-        max_period = int(periods.max().item())
-        max_period = max(max_period, 1)
+        max_period = _TorsionUnimodalMathTriton._FIXED_MAX_PERIOD
         periods_i32 = periods.clamp(min=1).to(torch.int32).contiguous()
         nll = torch.empty(N, dtype=xyz.dtype, device=xyz.device)
         BLOCK = 128
@@ -426,7 +435,7 @@ class _TorsionUnimodalMathTriton(torch.autograd.Function):
         BLOCK = 128
         grid = (triton.cdiv(N, BLOCK),)
         _torsion_uni_bwd_kernel[grid](
-            xyz, idx, refs, sigs, periods_i32, float(grad_out.item()), dxyz,
+            xyz, idx, refs, sigs, periods_i32, grad_out, dxyz,
             N=N, MAX_PERIOD=ctx.max_period,
             DEG2RAD=_DEG2RAD, BLOCK=BLOCK,
         )

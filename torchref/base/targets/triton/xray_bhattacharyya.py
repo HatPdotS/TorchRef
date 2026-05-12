@@ -61,7 +61,7 @@ def _bhatt_bwd_kernel(
     sigma_d_ptr,
     sigma_m_ptr,
     mask_ptr,
-    grad_out,        # scalar
+    grad_out_ptr,    # 0-D tensor — loaded in-kernel (no host .item() sync)
     dF_calc_ptr,     # (N,) — written directly (not atomic, one program per range)
     N: tl.constexpr,
     EPS: tl.constexpr,
@@ -70,6 +70,7 @@ def _bhatt_bwd_kernel(
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     valid = offs < N
+    grad_out = tl.load(grad_out_ptr)
 
     F_obs = tl.load(F_obs_ptr + offs, mask=valid, other=0.0)
     F_calc = tl.load(F_calc_ptr + offs, mask=valid, other=0.0)
@@ -119,7 +120,7 @@ class _BhattXrayMathTriton(torch.autograd.Function):
         grid = (triton.cdiv(N, BLOCK),)
         _bhatt_bwd_kernel[grid](
             F_obs, F_calc, sigma_d, sigma_m, mask_u8,
-            float(grad_out.item()), dF_calc,
+            grad_out, dF_calc,
             N=N, EPS=_EPS, BLOCK=BLOCK,
         )
         return None, dF_calc, None, None, None

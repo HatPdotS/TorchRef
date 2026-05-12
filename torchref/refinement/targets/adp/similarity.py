@@ -72,9 +72,20 @@ class ADPSimilarityTarget(ADPTarget):
     def forward(self) -> torch.Tensor:
         # Use the adp_simu_math dispatcher (Triton on CUDA fp32).
         pair_indices = self._get_pair_indices()
+        adp_t = self.model.adp()
         if pair_indices.shape[0] == 0:
-            return torch.tensor(0.0, device=self.model.xyz().device)
-        return adp_simu_math(self.model.adp(), pair_indices, self._simu_sigma)
+            return torch.zeros((), device=adp_t.device, dtype=adp_t.dtype)
+        # Lazily move the ``_simu_sigma`` buffer onto the model's device
+        # the first time we reach here. Once moved, subsequent forwards
+        # (and CUDA-Graph captures) skip the device transfer — calling
+        # ``.to()`` on a CPU buffer inside a capture region triggers a
+        # ``cudaErrorStreamCaptureUnsupported``.
+        if (self._simu_sigma.device != adp_t.device
+                or self._simu_sigma.dtype != adp_t.dtype):
+            self._simu_sigma = self._simu_sigma.to(
+                device=adp_t.device, dtype=adp_t.dtype,
+            )
+        return adp_simu_math(adp_t, pair_indices, self._simu_sigma)
 
     def stats(self) -> Dict[str, any]:
         """Get SIMU restraint statistics."""

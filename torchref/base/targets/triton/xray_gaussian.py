@@ -18,8 +18,8 @@ def _gauss_fwd_kernel(
     F_calc_ptr,
     sigma_ptr,
     mask_ptr,
-    sigma_floor,        # scalar = median(sigma) * 1e-1
-    log_2pi,            # scalar
+    sigma_floor_ptr,    # 0-D tensor = median(sigma) * 1e-1, loaded in-kernel
+    log_2pi,            # scalar (compile-time constant — same every call)
     out_ptr,            # (N,)
     N: tl.constexpr,
     BLOCK: tl.constexpr,
@@ -27,6 +27,7 @@ def _gauss_fwd_kernel(
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     valid = offs < N
+    sigma_floor = tl.load(sigma_floor_ptr)
 
     F_obs = tl.load(F_obs_ptr + offs, mask=valid, other=0.0)
     F_calc = tl.load(F_calc_ptr + offs, mask=valid, other=0.0)
@@ -46,8 +47,8 @@ def _gauss_bwd_kernel(
     F_calc_ptr,
     sigma_ptr,
     mask_ptr,
-    sigma_floor,
-    grad_out,
+    sigma_floor_ptr,    # 0-D tensor
+    grad_out_ptr,       # 0-D tensor
     dF_calc_ptr,
     N: tl.constexpr,
     BLOCK: tl.constexpr,
@@ -55,6 +56,8 @@ def _gauss_bwd_kernel(
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     valid = offs < N
+    sigma_floor = tl.load(sigma_floor_ptr)
+    grad_out = tl.load(grad_out_ptr)
 
     F_obs = tl.load(F_obs_ptr + offs, mask=valid, other=0.0)
     F_calc = tl.load(F_calc_ptr + offs, mask=valid, other=0.0)
@@ -79,30 +82,30 @@ class _GaussXrayMathTriton(torch.autograd.Function):
         sigma = sigma.contiguous()
         mask_u8 = mask.to(torch.uint8).contiguous()
 
-        # Match eager: floor = median(sigma) * 1e-1
-        sigma_floor = float((torch.median(sigma) * 0.1).item())
+        # Match eager: floor = median(sigma) * 1e-1. Keep as 0-D device
+        # tensor — no .item() host sync.
+        sigma_floor_t = (torch.median(sigma) * 0.1).to(F_calc.dtype)
 
         out = torch.empty(N, dtype=F_calc.dtype, device=F_calc.device)
         BLOCK = 1024
         grid = (triton.cdiv(N, BLOCK),)
         _gauss_fwd_kernel[grid](
-            F_obs, F_calc, sigma, mask_u8, sigma_floor, _LOG_2PI, out,
+            F_obs, F_calc, sigma, mask_u8, sigma_floor_t, _LOG_2PI, out,
             N=N, BLOCK=BLOCK,
         )
-        ctx.save_for_backward(F_obs, F_calc, sigma, mask_u8)
-        ctx.sigma_floor = sigma_floor
+        ctx.save_for_backward(F_obs, F_calc, sigma, mask_u8, sigma_floor_t)
         return out.sum()
 
     @staticmethod
     def backward(ctx, grad_out):
-        F_obs, F_calc, sigma, mask_u8 = ctx.saved_tensors
+        F_obs, F_calc, sigma, mask_u8, sigma_floor_t = ctx.saved_tensors
         N = F_calc.shape[0]
         dF_calc = torch.empty_like(F_calc)
         BLOCK = 1024
         grid = (triton.cdiv(N, BLOCK),)
         _gauss_bwd_kernel[grid](
-            F_obs, F_calc, sigma, mask_u8, ctx.sigma_floor,
-            float(grad_out.item()), dF_calc,
+            F_obs, F_calc, sigma, mask_u8, sigma_floor_t,
+            grad_out, dF_calc,
             N=N, BLOCK=BLOCK,
         )
         return None, dF_calc, None, None
