@@ -1,7 +1,0 @@
-Loading MTZ file: /das/work/p17/p17490/Peter/Library/multicopy_refinement/tests/scaler/dark.mtz
-Could not find scattering factor for Ca 2 Exception that was raised: 'NoneType' object has no attribute 'a'
-Try without charge
-Could not find scattering factor for Mg 2 Exception that was raised: 'NoneType' object has no attribute 'a'
-Try without charge
-Anisotropy correction factors: [1. 1. 1. ... 1. 1. 1.]
-Anisotropy correction all equal 1: True
