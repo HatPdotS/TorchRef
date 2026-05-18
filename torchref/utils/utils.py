@@ -712,26 +712,39 @@ class TensorMasks(DeviceMovementMixin, dict):
         super().__setitem__(key, tensor)
         self._updated = True
 
-    def to(self, device) -> "TensorMasks":
-        """
-        Move all mask tensors to device.
+    def _apply(self, fn):
+        """Move mask tensors stored as ``dict`` items and invalidate the cache.
 
-        Parameters
-        ----------
-        device : str or torch.device
-            Target device.
-
-        Returns
-        -------
-        TensorMasks
-            Self, for method chaining.
+        ``TensorMasks`` is a ``dict`` subclass — its mask tensors live in the
+        dict's own storage, **not** in ``self.__dict__`` — so the standard
+        :class:`DeviceMixin` ``__dict__`` walk would otherwise miss them and
+        only move the cached combined mask, leaving the per-key masks on
+        the previous device.
         """
-        self.device = torch.device(device)
+        # Walk the dict storage and move each mask tensor.
         for k in list(self.keys()):
-            if self[k] is not None:
-                super().__setitem__(k, self[k].to(self.device))
+            v = self[k]
+            if isinstance(v, torch.Tensor):
+                dict.__setitem__(self, k, fn(v))
+
+        # Invalidate the combined-mask cache so the next call to ``self()``
+        # recomputes from the moved masks rather than returning the stale
+        # combined tensor.
+        self._cache = None
         self._updated = True
+
+        # Refresh the ``device`` tracker so future ``__setitem__`` calls
+        # (which migrate incoming tensors to ``self.device``) land correctly.
+        for v in self.values():
+            if isinstance(v, torch.Tensor):
+                self.device = v.device
+                break
         return self
+
+    def reset_cache(self) -> None:
+        """Invalidate the cached combined mask."""
+        self._cache = None
+        self._updated = True
 
     def __call__(self) -> torch.Tensor:
         """

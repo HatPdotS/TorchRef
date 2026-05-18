@@ -21,16 +21,13 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. By 
 
 - **FFT-based Structure Factors**: Efficient structure factor calculation using Fast Fourier Transform (FFT) methods, enabling rapid F_calc computation even for large unit cells.
 
-- **State Management**: Full `state_dict` support enables saving and loading complete refinement states, including model parameters, scaler settings, and restraints.
-
 # Getting Started
 
 | Notebook | Description |
 |----------|-------------|
-| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/basic_usage.ipynb) | Basic Usage - Getting started tutorial |
-| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/code_examples.ipynb) | Code Examples - Common patterns and recipes |
-| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/target_exploration.ipynb) | Target Exploration - Exploring refinement targets |
-| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factor_calculation.ipynb) | Structure Factor Calculation - FFT-based F_calc |
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/quickstart.ipynb) | Quickstart — MTZ + PDB to refined structure, refined MTZ and CCP4 map; selection- and parameter-type-based refinement |
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factors.ipynb) | Structure factors — one-liner, `FFT` class, and manual voxel pipeline; standalone scaling; autograd |
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/targets_and_weighting.ipynb) | Targets and weighting — standard targets, target-offset weighting, X-ray mode comparison, custom targets, driving an optimizer from a `LossState` |
 
 ## Installation
 

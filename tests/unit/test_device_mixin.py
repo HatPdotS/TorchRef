@@ -164,6 +164,70 @@ def test_shared_tensor_alias_both_attrs_move():
 
 
 @pytest.mark.unit
+def test_nested_module_in_dict_attribute_moves():
+    """An ``nn.Module`` reached only through a plain dict attribute must move.
+
+    Regression: a previous implementation added the module's ``id`` to the
+    visited set *before* calling its ``_apply``, so the inner call saw
+    itself in ``visited`` and short-circuited without moving any buffers.
+    This is the path used by ``LossState.targets`` — a plain ``dict``
+    holding ``Target`` modules that are not registered as submodules.
+    """
+
+    class _BufferModule(DeviceMixin, nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("payload", torch.zeros(3, dtype=torch.float32))
+
+    class _Container(DeviceMixin, nn.Module):
+        def __init__(self):
+            super().__init__()
+            # Dict attribute, not nn.ModuleDict — so the inner module is
+            # invisible to nn.Module._apply and must be moved via the
+            # mixin's __dict__ walk + _apply_to_obj dispatch.
+            self.unregistered = {"child": _BufferModule()}
+
+    c = _Container()
+    assert c.unregistered["child"].payload.dtype == torch.float32
+
+    c.to(dtype=torch.float64)
+    assert c.unregistered["child"].payload.dtype == torch.float64, (
+        "nested unregistered nn.Module did not move -- _apply_to_obj is "
+        "marking visited too eagerly and short-circuiting the inner call"
+    )
+
+
+@pytest.mark.unit
+def test_tensormasks_traversal_moves_dict_items():
+    """``TensorMasks`` stores masks as ``dict`` items, not in ``__dict__``.
+
+    When the mixin reaches a ``TensorMasks`` via traversal (e.g. from
+    ``ReflectionData.masks``), the per-key mask tensors must be moved and
+    the combined-mask cache invalidated; otherwise ``m()`` returns a stale
+    cached tensor while the underlying masks are still on the prior device.
+    """
+    from torchref.utils.utils import TensorMasks
+
+    m = TensorMasks(device="cpu")
+    m["valid"] = torch.tensor([True, True, False, True])
+    m["rfree"] = torch.tensor([True, False, True, True])
+    _ = m()  # populate combined-mask cache on cpu
+    assert m._cache is not None
+
+    # Simulate the mixin's traversal-driven call.
+    m._apply(lambda t: t.to(dtype=torch.bool))  # no device change, just trigger path
+    # _cache must be invalidated by _apply regardless of whether the move
+    # actually changed anything.
+    assert m._cache is None
+    assert m._updated is True
+
+    # Re-running m() must recompute from the per-key masks.
+    new = m()
+    assert new is not None
+    assert new.dtype == torch.bool
+
+
+@pytest.mark.unit
 def test_cell_cache_repopulates_on_target_dtype():
     """After .to(), cached derived quantities must recompute on the new dtype."""
     cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float32)
