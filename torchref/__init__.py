@@ -113,6 +113,9 @@ from torchref.scaling import Scaler, SolventModel, ScalerBase
 # Maps
 from torchref.maps import DifferenceMap, Map
 
+# Device movement mixin (public API for extension code)
+from torchref.utils.device_mixin import DeviceMixin
+
 __all__ = [
     # Version and paths
     "__version__",
@@ -140,4 +143,6 @@ __all__ = [
     # Maps
     "Map",
     "DifferenceMap",
+    # Device mixin
+    "DeviceMixin",
 ]

@@ -21,6 +21,7 @@ import torch
 from torch import nn
 from torch.special import i0
 
+from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
 # =============================================================================
 
 
-class Target(nn.Module):
+class Target(DeviceMixin, nn.Module):
     """
     Abstract base class for all target functions.
 

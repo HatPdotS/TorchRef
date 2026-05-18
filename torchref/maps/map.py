@@ -19,9 +19,10 @@ import torch
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.cif import write_map
 from torchref.symmetry.grid_utils import calculate_optimal_grid_size
+from torchref.utils.device_mixin import DeviceMixin
 
 
-class Map:
+class Map(DeviceMixin):
     """Crystallographic electron density map.
 
     Parameters
@@ -56,6 +57,10 @@ class Map:
         self.gridsize = gridsize
         self.map_type = map_type
         self._map: Optional[torch.Tensor] = None
+
+    def reset_cache(self) -> None:
+        """Invalidate the cached map tensor; recomputed on next access."""
+        self._map = None
 
     @property
     def map_data(self) -> Optional[torch.Tensor]:
@@ -121,9 +126,7 @@ class Map:
 
         # Place coefficients on reciprocal-space grid (adds F*(-h) for
         # Hermitian symmetry, ensuring real-valued output)
-        grid = place_on_grid(
-            hkl_p1, coefficients_p1, gridsize, enforce_hermitian=True
-        )
+        grid = place_on_grid(hkl_p1, coefficients_p1, gridsize, enforce_hermitian=True)
 
         # FFT to real space: ρ(r) = sum_h F(h) * exp(-2πi h·r)
         self._map = torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real

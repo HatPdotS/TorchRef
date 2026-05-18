@@ -37,6 +37,7 @@ from torch import nn
 
 from torchref.refinement.loss_state import LossState, create_loss_state
 from torchref.kinetic.targets import (
+from torchref.utils.device_mixin import DeviceMixin
     CollectionDifferenceTarget,
     CollectionMLTarget,
     MultiModelGeometryTarget,
@@ -50,7 +51,7 @@ if TYPE_CHECKING:
     from torchref.scaling import Scaler
 
 
-class KineticRefinement(nn.Module):
+class KineticRefinement(DeviceMixin, nn.Module):
     """
     Orchestrator for kinetic refinement of time-resolved data.
 

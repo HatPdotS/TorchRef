@@ -36,6 +36,9 @@ from .caching import CachedForwardMixin, ParameterFingerprint
 # Debugging
 from .debug_utils import DebugMixin, print_module_summary
 
+# Device movement
+from .device_mixin import DeviceMixin, DeviceMovementMixin
+
 # Gradient utilities
 from .gradnorm import gradnorm
 
@@ -76,6 +79,9 @@ __all__ = [
     # Caching
     "ParameterFingerprint",
     "CachedForwardMixin",
+    # Device movement
+    "DeviceMixin",
+    "DeviceMovementMixin",
     # Core utilities
     "TensorMasks",
     "TensorDict",

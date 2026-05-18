@@ -16,6 +16,7 @@ from torchref.base.coordinates import (
 )
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
+from torchref.utils.device_mixin import DeviceMixin
 
 from .transform import RigidTransform
 
@@ -85,7 +86,7 @@ class AtomSampler:
             )
 
 
-class ClashScoreCalculator(nn.Module):
+class ClashScoreCalculator(DeviceMixin, nn.Module):
     """
     Calculate clash scores between symmetry-related molecules.
 

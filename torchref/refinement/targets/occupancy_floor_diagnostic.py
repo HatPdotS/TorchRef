@@ -19,6 +19,8 @@ import torch
 from torch import nn
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
+from torchref.utils.device_mixin import DeviceMixin
+
 if TYPE_CHECKING:
     from torchref.model import ModelFT, MixedModel
 
@@ -279,7 +281,7 @@ class OccupancyFloorDiagnostic:
         }
 
 
-class NegativeDensityPenalty(nn.Module):
+class NegativeDensityPenalty(DeviceMixin, nn.Module):
     """
     Loss term that penalizes negative electron density in the MIXED model.
 
@@ -358,7 +360,7 @@ class NegativeDensityPenalty(nn.Module):
         return (negative_density ** 2).mean()
 
 
-class DisplacementRegularizer(nn.Module):
+class DisplacementRegularizer(DeviceMixin, nn.Module):
     """
     Regularizer that penalizes large atomic displacements from reference structure.
 
@@ -423,7 +425,7 @@ class DisplacementRegularizer(nn.Module):
         return dist_sq.mean()
 
 
-class DifferenceAmplitudeRegularizer(nn.Module):
+class DifferenceAmplitudeRegularizer(DeviceMixin, nn.Module):
     """
     Regularizer that encourages consistency between α and difference amplitudes.
 

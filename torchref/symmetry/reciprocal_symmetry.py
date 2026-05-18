@@ -25,6 +25,7 @@ import torch
 import torch.nn as nn
 
 from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
+from torchref.utils.device_mixin import DeviceMixin
 
 if TYPE_CHECKING:
     from torchref.io.datasets.reflection_data import ReflectionData
@@ -62,7 +63,7 @@ def ReciprocalSymmetry(
     return ReciprocalSymmetryGrid(space_group, grid_shape, dtype_float, verbose, device)
 
 
-class ReciprocalSymmetryGrid(nn.Module):
+class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
     """
     Reciprocal space symmetry operations for Miller index grids.
 
@@ -641,24 +642,6 @@ class ReciprocalSymmetryGrid(nn.Module):
     def __call__(self, F_grid, mode="average"):
         """Make the class callable."""
         return self.forward(F_grid, mode=mode)
-
-    def cuda(self):
-        """Move to GPU."""
-        super().cuda()
-        self.device = torch.device("cuda")
-        return self
-
-    def cpu(self):
-        """Move to CPU."""
-        super().cpu()
-        self.device = torch.device("cpu")
-        return self
-
-    def to(self, device):
-        """Move to specified device."""
-        super().to(device)
-        self.device = device
-        return self
 
     def get_symmetry_info(self):
         """

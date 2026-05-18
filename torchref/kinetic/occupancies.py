@@ -3,7 +3,10 @@ import torch
 from typing import Dict, List, Optional, Union, Tuple
 import numpy as np
 
-class occupancy_unrestrained(nn.Module):
+from torchref.utils.device_mixin import DeviceMixin
+
+
+class occupancy_unrestrained(DeviceMixin, nn.Module):
     """
     Unrestrained occupancy model where each state at each timepoint is independent.
     
@@ -53,7 +56,7 @@ class occupancy_unrestrained(nn.Module):
 from torchref.kinetic.kinetics import KineticModel
 
 
-class occupancies_kinetics(nn.Module):
+class occupancies_kinetics(DeviceMixin, nn.Module):
     """
     Kinetics-constrained occupancy model.
     
@@ -547,7 +550,7 @@ class occupancies_kinetics(nn.Module):
         return model
 
 
-class occupancies_kinetics_multiexperiment(nn.Module):
+class occupancies_kinetics_multiexperiment(DeviceMixin, nn.Module):
     """
     Kinetics-constrained occupancy model for multiple experiments.
     

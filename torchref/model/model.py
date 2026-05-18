@@ -1033,50 +1033,20 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ), f"vdW radii length mismatch with number of atoms {len(self.vdw_radii)} != {len(self.pdb)}"
         return self.vdw_radii
 
-    def to(self, device=None, dtype=None):
+    def to(self, *args, **kwargs):
+        """Move Model and rebuild device-specific SF indices.
+
+        Delegates to :class:`~torchref.utils.device_mixin.DeviceMixin`, which
+        walks ``self.__dict__`` (picking up ``self.cell``, ``self.altloc_pairs``,
+        ``self._restraints`` and all registered parameters / buffers), refreshes
+        the ``self.device`` tracker, and invalidates caches. Afterwards this
+        override rebuilds the precomputed SF indices on the new device.
         """
-        Move Model to specified device and/or dtype.
-
-        Parameters
-        ----------
-        device : torch.device or str, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target data type.
-
-        Returns
-        -------
-        Model
-            Self, for method chaining.
-        """
-        # Move Cell object
-        if self.cell is not None:
-            self.cell = self.cell.to(device=device, dtype=dtype)
-
-        # Move altloc_pairs tensors
-        if self.altloc_pairs:
-            self.altloc_pairs = [
-                tuple(tensor.to(device=device) for tensor in group)
-                for group in self.altloc_pairs
-            ]
-
-        # Update device tracking
-        if device is not None:
-            self.device = torch.device(device)
-
-        # Move restraints if they exist (not a registered submodule, so move explicitly)
-        if self._restraints is not None:
-            self._restraints.to(device=device, dtype=dtype)
-
-        # Call parent to move all registered buffers and parameters
-        result = super().to(device=device, dtype=dtype)
-
-        # Rebuild pre-computed SF indices on new device
-        if hasattr(self, "aniso_flag") and self.aniso_flag is not None:
-            self._rebuild_sf_indices()
-
-        if self.verbose > 0:
-            print(f"Model moved to device: {self.device}")
+        result = super().to(*args, **kwargs)
+        if hasattr(result, "aniso_flag") and result.aniso_flag is not None:
+            result._rebuild_sf_indices()
+        if result.verbose > 0:
+            print(f"Model moved to device: {result.device}")
         return result
 
     def copy(self):

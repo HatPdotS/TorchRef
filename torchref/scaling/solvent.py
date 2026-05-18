@@ -13,9 +13,10 @@ from torchref.base import (
 from torchref.base.electron_density.main import _get_radius_offsets
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorDict, ModuleReference
+from torchref.utils.device_mixin import DeviceMixin
 
 
-class SolventModel(DebugMixin, nn.Module):
+class SolventModel(DeviceMixin, DebugMixin, nn.Module):
     """
     SolventModel to compute solvent contribution to structure factors using Phenix-like approach.
 
@@ -187,22 +188,6 @@ class SolventModel(DebugMixin, nn.Module):
                 torch.tensor(0.0, dtype=self.float_type, device=self.device),
             )
         self._cache = TensorDict()
-
-    def cuda(self, device=None):
-        """Move solvent model to CUDA and update device attribute."""
-        super().cuda(device)
-        self.device = torch.device("cuda") if device is None else torch.device(device)
-        if self.verbose > 1:
-            print(f"SolventModel moved to device: {self.device}")
-        return self
-
-    def cpu(self):
-        """Move solvent model to CPU and update device attribute."""
-        super().cpu()
-        self.device = torch.device("cpu")
-        if self.verbose > 1:
-            print("SolventModel moved to cpu")
-        return self
 
     def get_solvent_mask(self):
         """

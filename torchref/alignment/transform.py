@@ -9,6 +9,7 @@ from typing import Optional, Union
 
 import torch
 import torch.nn as nn
+from torchref.utils.device_mixin import DeviceMixin
 
 
 # =============================================================================
@@ -492,7 +493,7 @@ def euler_zyz_to_quaternion(euler: torch.Tensor) -> torch.Tensor:
 # =============================================================================
 
 
-class RigidTransform(nn.Module):
+class RigidTransform(DeviceMixin, nn.Module):
     """
     Rigid body transformation with quaternion-based rotation storage.
 

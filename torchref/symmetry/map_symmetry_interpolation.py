@@ -11,9 +11,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torchref.symmetry.spacegroup import SpaceGroup
+from torchref.utils.device_mixin import DeviceMixin
 
 
-class MapSymmetry(nn.Module):
+class MapSymmetry(DeviceMixin, nn.Module):
     """
     Applies crystallographic symmetry operations to electron density maps.
 
@@ -303,23 +304,6 @@ class MapSymmetry(nn.Module):
             density_map, apply_symmetry=apply_symmetry, combine_mode=combine_mode
         )
 
-    def cuda(self):
-        """Move to GPU."""
-        super().cuda()
-        self.device = torch.device("cuda")
-        return self
-
-    def cpu(self):
-        """Move to CPU."""
-        super().cpu()
-        self.device = torch.device("cpu")
-        return self
-
-    def to(self, device):
-        """Move to specified device."""
-        super().to(device)
-        self.device = device
-        return self
 
     def get_symmetry_info(self):
         """

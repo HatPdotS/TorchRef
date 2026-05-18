@@ -38,6 +38,7 @@ from torchref.restraints.restraints_helper import (
 )
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorDict
+from torchref.utils.device_mixin import DeviceMixin
 
 
 class _RestraintsAccessor:
@@ -175,7 +176,7 @@ class _RestraintTypeAccessor:
         return iter(self.keys())
 
 
-class RestraintsNew(DebugMixin, Module):
+class RestraintsNew(DeviceMixin, DebugMixin, Module):
     """
     Refactored restraints handler for crystallographic model refinement.
 

@@ -24,9 +24,10 @@ from torchref.refinement.targets.combined import (
 from torchref.refinement.targets.xray import create_xray_target
 from torchref.scaling.scaler import Scaler
 from torchref.utils.debug_utils import DebugMixin
+from torchref.utils.device_mixin import DeviceMixin
 
 
-class Refinement(DebugMixin, nnModule):
+class Refinement(DeviceMixin, DebugMixin, nnModule):
     """
     Refinement class to handle the overall crystallographic refinement process.
 
@@ -850,38 +851,6 @@ class Refinement(DebugMixin, nnModule):
             stacklevel=2,
         )
         return state
-
-    def cuda(self):
-        super().cuda()
-        self.model.cuda()  # Explicitly call cuda on model (restraints moved via model)
-        self.reflection_data.cuda()
-        if hasattr(self, "scaler") and self.scaler is not None:
-            self.scaler.cuda()
-        # Note: restraints are now managed by model and moved via model.cuda()
-        if (
-            hasattr(self, "component_weighting")
-            and self.component_weighting is not None
-        ):
-            self.component_weighting.cuda()
-            self.component_weighting.device = torch.device("cuda")
-        self.device = torch.device("cuda")
-        return self
-
-    def cpu(self):
-        super().cpu()
-        self.model.cpu()  # Explicitly call cpu on model (restraints moved via model)
-        self.reflection_data.cpu()
-        if hasattr(self, "scaler") and self.scaler is not None:
-            self.scaler.cpu()
-        # Note: restraints are now managed by model and moved via model.cpu()
-        if (
-            hasattr(self, "component_weighting")
-            and self.component_weighting is not None
-        ):
-            self.component_weighting.cpu()
-            self.component_weighting.device = torch.device("cpu")
-        self.device = torch.device("cpu")
-        return self
 
     def get_rfactor(self):
         return self.scaler.rfactor()
