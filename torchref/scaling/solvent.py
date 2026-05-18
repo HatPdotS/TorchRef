@@ -413,6 +413,12 @@ class SolventModel(DebugMixin, nn.Module):
 
         # Convert mask to float for smoothing and ensure it's on the same device
         mask_float = self.solvent_mask.to(dtype=self.log_k_solvent.dtype)
+        # `self.device` was captured at __init__ and may not match where the
+        # mask actually lives (e.g. SolventModel constructed with device=cpu
+        # default but `get_solvent_mask` later used `self.model.device=cuda`).
+        # Use the mask's actual device for the kernel so conv3d doesn't
+        # fail with "Input type cuda, weight type cpu".
+        device = mask_float.device
 
         # Smooth the mask using 3D Gaussian convolution
         # This creates soft edges at protein-solvent boundary
@@ -425,7 +431,7 @@ class SolventModel(DebugMixin, nn.Module):
 
         # Generate 1D Gaussian
         x = torch.arange(
-            kernel_size, dtype=self.log_k_solvent.dtype, device=self.device
+            kernel_size, dtype=self.log_k_solvent.dtype, device=device
         )
         x = x - kernel_size // 2
         gauss_1d = torch.exp(-(x**2) / (2 * sigma**2))

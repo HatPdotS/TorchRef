@@ -245,11 +245,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Set the space group and update the symmetry object.
 
-        Parameters
-        ----------
-        value : gemmi.SpaceGroup or str or int
-            The space group to set. Can be a gemmi.SpaceGroup object,
-            a space group name string, or a space group number.
+        Accepts any input accepted by the SpaceGroup constructor — a
+        gemmi.SpaceGroup, an existing SpaceGroup module, a Hermann-Mauguin
+        string, or a space group number.
         """
         if value is not None:
             self._spacegroup = SpaceGroup(value)
@@ -282,6 +280,26 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             The space group object to set.
         """
         self._spacegroup = value
+
+    def __setattr__(self, name, value):
+        """
+        Route Module-typed assignments to property setters when one exists.
+
+        PyTorch's `nn.Module.__setattr__` intercepts any value that is itself
+        an `nn.Module` and registers it under `name` in `self._modules`,
+        bypassing class-level `@property` descriptors. We want our property
+        setters (e.g. `cell`, `spacegroup`) to take precedence — they perform
+        cache invalidation and other bookkeeping.
+        """
+        if isinstance(value, nn.Module):
+            for klass in type(self).__mro__:
+                descriptor = klass.__dict__.get(name)
+                if descriptor is not None:
+                    if isinstance(descriptor, property) and descriptor.fset is not None:
+                        descriptor.fset(self, value)
+                        return
+                    break
+        super().__setattr__(name, value)
 
     # =========================================================================
     # Crystallographic matrix properties (delegated to Cell)
@@ -1138,6 +1156,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ]
         else:
             model_copy.altloc_pairs = []
+
+        # Restore the iso/aniso indexing state. The aniso_flag buffer was copied
+        # above; `_rebuild_sf_indices` recomputes `_iso_indices`, `_aniso_indices`,
+        # `_iso_covers_all`, and `_aniso_is_empty` from it. Without this, a
+        # freshly-copied Model fails on the first `get_iso()` / `get_aniso()`.
+        if hasattr(self, "aniso_flag"):
+            model_copy._rebuild_sf_indices()
 
         if self.verbose > 0:
             print(f"✓ Model copied successfully ({len(model_copy.pdb)} atoms)")
@@ -3177,116 +3202,141 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return fractional_coords
 
     def rotate(
-        self, rotation_matrix: torch.Tensor, center: Optional[torch.Tensor] = None
+        self, rotation_matrix: torch.Tensor, center: Optional[torch.Tensor] = None,
     ) -> "Model":
         """
-        Apply rotation to atomic coordinates (in-place).
+        Return a new Model with atomic coordinates rotated by R.
 
-        Rotates all atoms around a specified center point. The rotation is
-        applied using the formula: xyz_new = R @ (xyz - center) + center
+        Column-vector convention: ``xyz_new = R · (xyz_old − center) + center``.
+        The anisotropic U tensor (if present) is also rotated:
+        ``U_new = R · U · Rᵀ`` per atom. The returned Model is a deep copy —
+        all other state (cell, spacegroup, ADP, occupancy, PDB metadata) is
+        cloned, and the input ``self`` is NOT modified.
 
         Parameters
         ----------
-        rotation_matrix : torch.Tensor
-            3x3 rotation matrix. Should be orthogonal (R^T @ R = I).
-        center : torch.Tensor, optional
-            Center of rotation with shape (3,). If None, uses the centroid
-            of all atomic coordinates.
+        rotation_matrix : torch.Tensor or array-like
+            3×3 rotation matrix (orthogonal, det = +1). Coerced to a torch
+            tensor on the model's device with the model's dtype.
+        center : torch.Tensor or array-like, optional
+            Rotation center (3,) in Cartesian Å. Default: centroid of the
+            current atomic coordinates (``self.xyz().mean(dim=0)``), which
+            preserves the centre of mass.
 
         Returns
         -------
         Model
-            Self, for method chaining.
+            A new, independent Model instance with rotated coordinates.
 
         Examples
         --------
         ::
 
-            # Rotate 90 degrees around Z-axis
-            import math
-            angle = math.pi / 2
-            R = torch.tensor([
-                [math.cos(angle), -math.sin(angle), 0],
-                [math.sin(angle), math.cos(angle), 0],
-                [0, 0, 1]
-            ])
-            model.rotate(R)
+            import math, torch
+            from torchref.model import Model
 
-            # Rotate around a specific point
-            center = torch.tensor([10.0, 20.0, 30.0])
-            model.rotate(R, center=center)
+            model = Model().load_pdb("structure.pdb")
+            angle = math.pi / 2
+            R = torch.tensor([[math.cos(angle), -math.sin(angle), 0.0],
+                              [math.sin(angle),  math.cos(angle), 0.0],
+                              [0.0, 0.0, 1.0]])
+            rotated = model.rotate(R)                          # around centroid
+            rotated_about_point = model.rotate(R, center=torch.tensor([10.0, 20.0, 30.0]))
         """
         if not self.initialized:
             raise RuntimeError("Model must be initialized to apply rotation.")
 
-        xyz = self.xyz()
+        # Coerce to torch tensors on the model's device/dtype.
+        R_t = rotation_matrix if isinstance(rotation_matrix, torch.Tensor) \
+            else torch.as_tensor(rotation_matrix)
+        R_t = R_t.to(device=self.device, dtype=self.dtype_float)
+        if R_t.shape != (3, 3):
+            raise ValueError(f"rotation_matrix must be (3, 3); got {tuple(R_t.shape)}")
+
+        xyz_curr = self.xyz()
         if center is None:
-            center = xyz.mean(dim=0)
+            center_t = xyz_curr.mean(dim=0)
+        else:
+            center_t = center if isinstance(center, torch.Tensor) \
+                else torch.as_tensor(center)
+            center_t = center_t.to(device=self.device, dtype=self.dtype_float)
 
-        # Ensure tensors are on the same device
-        rotation_matrix = rotation_matrix.to(device=xyz.device, dtype=xyz.dtype)
-        center = center.to(device=xyz.device, dtype=xyz.dtype)
+        # Column-vector rotation: xyz_new = R · (xyz_old − center) + center
+        # Row-vector form for (N, 3) data:  xyz_new = (xyz_old − center) @ Rᵀ + center
+        xyz_new = (xyz_curr - center_t) @ R_t.T + center_t
 
-        # Apply rotation: xyz_new = R @ (xyz - center) + center
-        xyz_centered = xyz - center
-        xyz_rotated = xyz_centered @ rotation_matrix.T + center
+        rotated = self.copy()
+        rotated.xyz[:] = xyz_new
 
-        # Update coordinates in-place
-        self.xyz[:] = xyz_rotated
+        # Rotate the anisotropic U tensor per atom if any are present.
+        # Layout in self.u is (N, 6) packed as (U11, U22, U33, U12, U13, U23).
+        if self.u is not None:
+            u_packed = self.u()
+            if u_packed.numel() > 0 and not torch.isnan(u_packed).all():
+                U = torch.stack([
+                    torch.stack([u_packed[:, 0], u_packed[:, 3], u_packed[:, 4]], dim=-1),
+                    torch.stack([u_packed[:, 3], u_packed[:, 1], u_packed[:, 5]], dim=-1),
+                    torch.stack([u_packed[:, 4], u_packed[:, 5], u_packed[:, 2]], dim=-1),
+                ], dim=-2)  # (N, 3, 3)
+                U_rot = R_t.unsqueeze(0) @ U @ R_t.T.unsqueeze(0)  # (N, 3, 3)
+                u_new = torch.stack([
+                    U_rot[:, 0, 0], U_rot[:, 1, 1], U_rot[:, 2, 2],
+                    U_rot[:, 0, 1], U_rot[:, 0, 2], U_rot[:, 1, 2],
+                ], dim=-1)  # (N, 6)
+                rotated.u[:] = u_new
 
-        return self
+        return rotated
 
     def translate(
         self, translation: torch.Tensor, fractional: bool = False
     ) -> "Model":
         """
-        Apply translation to atomic coordinates (in-place).
+        Return a new Model with atomic coordinates translated by ``translation``.
 
-        Translates all atoms by a specified vector. The translation can be
-        given in either Cartesian or fractional coordinates.
+        Translates all atoms by a vector. ``translation`` may be Cartesian
+        (default) or fractional. The returned Model is a deep copy — all other
+        state (cell, spacegroup, ADP, occupancy, PDB metadata) is cloned, and
+        the input ``self`` is NOT modified.
 
         Parameters
         ----------
-        translation : torch.Tensor
-            Translation vector with shape (3,).
-        fractional : bool, optional
-            If True, the translation is interpreted as fractional coordinates
-            and converted to Cartesian before applying. Default is False
-            (translation is in Cartesian Angstroms).
+        translation : torch.Tensor or array-like
+            Translation vector, shape (3,). Coerced to a torch tensor on the
+            model's device with the model's dtype.
+        fractional : bool, default False
+            If True, ``translation`` is fractional and is converted to Cartesian
+            via the unit cell's fractional matrix.
 
         Returns
         -------
         Model
-            Self, for method chaining.
+            A new, independent Model instance with translated coordinates.
 
         Examples
         --------
         ::
 
-            # Translate by 5 Angstroms along X
-            model.translate(torch.tensor([5.0, 0.0, 0.0]))
-
-            # Translate by half a unit cell along each axis
-            model.translate(torch.tensor([0.5, 0.5, 0.5]), fractional=True)
+            translated = model.translate(torch.tensor([5.0, 0.0, 0.0]))
+            translated_frac = model.translate(torch.tensor([0.5, 0.5, 0.5]),
+                                              fractional=True)
         """
         if not self.initialized:
             raise RuntimeError("Model must be initialized to apply translation.")
 
         xyz = self.xyz()
-        translation = translation.to(device=xyz.device, dtype=xyz.dtype)
+        t = translation if isinstance(translation, torch.Tensor) \
+            else torch.as_tensor(translation)
+        t = t.to(device=xyz.device, dtype=xyz.dtype)
 
         if fractional:
-            # Convert fractional to Cartesian using the fractional matrix
-            # fractional_matrix transforms fractional -> Cartesian
-            translation_cart = translation @ self.fractional_matrix
+            t_cart = self.cell.fractional_to_cartesian(t)
         else:
-            translation_cart = translation
+            t_cart = t
 
-        # Apply translation in-place
-        xyz_translated = xyz + translation_cart
-        self.xyz[:] = xyz_translated
-
-        return self
+        xyz_translated = xyz + t_cart
+        translated = self.copy()
+        translated.xyz[:] = xyz_translated
+        return translated
 
     def get_centroid(self) -> torch.Tensor:
         """

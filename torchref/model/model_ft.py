@@ -153,17 +153,13 @@ class ModelFT(CachedForwardMixin, Model):
     @spacegroup.setter
     def spacegroup(self, value):
         """
-        Set the space group and initialize FFT if cell is also set.
+        Set the space group and re-initialize the SfFFT submodule.
 
-        Parameters
-        ----------
-        value : SpaceGroup, gemmi.SpaceGroup, str, or int
-            The space group to set.
+        Accepts any input the SpaceGroup constructor accepts — a string,
+        space-group number, gemmi.SpaceGroup, or SpaceGroup module.
         """
         if value is not None:
-            self._spacegroup = SpaceGroup(
-                value, dtype=self.dtype_float, device=self.device
-            )
+            self._spacegroup = SpaceGroup(value, dtype=self.dtype_float, device=self.device)
         else:
             self._spacegroup = None
         self._maybe_initialize_fft()
@@ -978,10 +974,26 @@ class ModelFT(CachedForwardMixin, Model):
         # Reset cache on the copy (don't share cached structure factors)
         model_copy.reset_cache()
 
+        # Restore iso/aniso indexing (Model.copy() does this, but our override
+        # bypasses that path; aniso_flag was copied above as a buffer so we can
+        # rebuild from it).
+        if hasattr(model_copy, "aniso_flag") and model_copy.aniso_flag is not None:
+            model_copy._rebuild_sf_indices()
+
         if self.verbose > 0:
             print(f"✓ ModelFT copied successfully ({len(model_copy.pdb)} atoms)")
 
         return model_copy
+
+    def fit_to_data(self, data, **kwargs) -> "ModelFT":
+        """Align this model to observed data via MR.
+
+        Thin delegation to
+        :func:`torchref.alignment.align.align_model_to_data` — see that
+        function for the full kwargs list and behaviour.
+        """
+        from torchref.alignment.align import align_model_to_data
+        return align_model_to_data(self, data, **kwargs)
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         """

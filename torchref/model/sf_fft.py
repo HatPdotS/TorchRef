@@ -170,8 +170,16 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
     @cell.setter
     def cell(self, value: Cell):
-        """Set unit cell."""
+        """
+        Set the unit cell. Invalidates the grid (gridsize, real_space_grid,
+        voxel_size) and any cached symmetry state since both depend on the
+        cell. The grid is re-set up automatically if it was previously set up.
+        """
+        had_grid = self.real_space_grid is not None
         self._cell = value
+        self._invalidate_grid_caches()
+        if had_grid:
+            self.setup_grid()
 
     @property
     def spacegroup(self) -> Optional[SpaceGroup]:
@@ -180,13 +188,59 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
     @spacegroup.setter
     def spacegroup(self, value: SpaceGroupLike):
-        """Set space group."""
+        """
+        Set the space group. Invalidates `map_symmetry`, the reciprocal-space
+        symmetry extractor, and the late-symmetry-compatibility flag. The grid
+        is re-set up if it was previously set up (so the new map_symmetry is
+        built immediately).
+        """
         if value is not None:
-            self._spacegroup = SpaceGroup(
-                value, dtype=self.dtype_float, device=self.device
-            )
+            new_sg = SpaceGroup(value, dtype=self.dtype_float, device=self.device)
         else:
-            self._spacegroup = None
+            new_sg = None
+        had_grid = self.real_space_grid is not None
+        self._spacegroup = new_sg
+        self._invalidate_symmetry_caches()
+        if had_grid:
+            self.setup_grid()
+
+    def _invalidate_symmetry_caches(self):
+        """Clear cached symmetry-derived state. Safe to call repeatedly."""
+        self.map_symmetry = None
+        self._late_symmetry_compatible = None
+        self._sym_extractor = None
+        self._sym_extractor_hkl_id = None
+
+    def _invalidate_grid_caches(self):
+        """Clear cached grid-derived state plus symmetry state (which depends on grid shape)."""
+        # The grid buffers are registered via `register_buffer`. Reassigning to
+        # None goes through the module's __setattr__ but for buffers (not
+        # Modules) it does the right thing.
+        self.register_buffer("gridsize", None)
+        self.register_buffer("real_space_grid", None)
+        self.register_buffer("voxel_size", None)
+        self._invalidate_symmetry_caches()
+
+    def __setattr__(self, name, value):
+        """
+        Route Module-typed assignments to property setters when one exists.
+
+        PyTorch's `nn.Module.__setattr__` intercepts any value that is itself
+        an `nn.Module` and registers it under `name` in `self._modules`,
+        bypassing class-level `@property` descriptors. We want our property
+        setters (e.g. `cell`, `spacegroup`) to take precedence — they perform
+        cache invalidation and (for spacegroup) wrap the SpaceGroup with the
+        right dtype/device.
+        """
+        if isinstance(value, nn.Module):
+            for klass in type(self).__mro__:
+                descriptor = klass.__dict__.get(name)
+                if descriptor is not None:
+                    if isinstance(descriptor, property) and descriptor.fset is not None:
+                        descriptor.fset(self, value)
+                        return
+                    break  # found a non-property class attribute; fall through
+        super().__setattr__(name, value)
 
     @property
     def symmetry(self) -> Optional[SpaceGroup]:
@@ -601,6 +655,18 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             Electron density map with shape (nx, ny, nz).
             Note: When using late symmetry, this is the P1 map (without symmetry).
         """
+        # Ensure the grid is set up so `_late_symmetry_compatible` reflects
+        # the actual `MapSymmetry` instance instead of its `None` default.
+        # Without this, the very first `compute_structure_factors` call on a
+        # freshly-constructed SfFFT short-circuits to the early-symmetry
+        # path (`None and X → None → falsy`) and explodes on high-sym
+        # large-cell grids — `MapSymmetry.forward` allocates ~ n_ops × 3 ×
+        # grid index tensors plus the gradient-tracked density gathers,
+        # which on a 224³ P432 (n_ops=24) crystal blew past 35 GB on an
+        # A100 even when only a handful of HKLs were requested.
+        if self.real_space_grid is None:
+            self.setup_grid()
+
         # Decide symmetry strategy:
         # - Late symmetry: build P1 map, apply symmetry in reciprocal space
         # - Early symmetry: apply symmetry to density map before FFT

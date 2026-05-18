@@ -25,7 +25,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torchref.scaling import ScalerBase
+from torchref.scaling import Scaler
 from torchref.model import SfFFT
 from torchref.symmetry import spacegroup
 from torchref.refinement.targets import MaximumLikelihoodXrayTarget
@@ -130,10 +130,19 @@ class RigidBodyRefinement(nn.Module):
         centroid = torch.mean(self.xyz_initial, dim=0)
         self.register_buffer("centroid", centroid)
 
-        self.cell = data.cell
+        # Move Cell (which holds fractional_matrix etc.) to the target device
+        # so RigidBodyRefinement.get_transformed_xyz can mm a GPU tensor
+        # against fractional_matrix.T without "mat2 on cpu" crashes.
+        self.cell = data.cell.to(device=device) if hasattr(data.cell, "to") else data.cell
         self.spacegroup = data.spacegroup
 
-        self.fft = SfFFT(self.cell, self.spacegroup, max_res=max_res)
+        # Forward `device` to SfFFT — its `setup_grid` reads `self.device`
+        # to allocate the real-space grid; without this, the grid lands on
+        # CPU even when the surrounding RigidBodyRefinement is on cuda, and
+        # the joint refine crashes with "mat2 on cuda, others on cpu" at
+        # the first compute_structure_factors call.
+        self.fft = SfFFT(self.cell, self.spacegroup, max_res=max_res,
+                         device=device)
 
 
         self.verbose = verbose
@@ -170,10 +179,18 @@ class RigidBodyRefinement(nn.Module):
             initial_translation = initial_translation.to(device=device).clone()
         self.translation_frac = nn.Parameter(initial_translation)
 
-        self.scaler = ScalerBase(data=data, nbins=20, verbose=0, device=device)
+        # Use `Scaler` for per-bin scales + anisotropy correction, but skip
+        # the bulk-solvent setup. The solvent mask is computed once from
+        # `model.xyz()` and goes stale as the joint refine moves atoms; the
+        # mismatch then biases the LBFGS gradient. Better to leave solvent
+        # out of the joint refine — `fit_to_data` does a fresh
+        # solvent-aware Scaler refit on the final polished model for the
+        # user-facing R-work.
+        self.scaler = Scaler(model=model, data=data, nbins=20,
+                              verbose=0, device=device)
         fcalc_initial = self()
-
-        self.scaler.initialize(fcalc_initial)
+        self.scaler.calc_initial_scale(fcalc_initial)
+        self.scaler.setup_anisotropy_correction()
         self.scaler.refine_lbfgs(fcalc=fcalc_initial)
 
         self.xray_target = MaximumLikelihoodXrayTarget(data=self.data, scaler=self.scaler)
@@ -232,8 +249,9 @@ class RigidBodyRefinement(nn.Module):
         xyz_centered = self.xyz_initial - self.centroid
         xyz_rotated = xyz_centered @ R.T + self.centroid
 
-        # Apply translation (fractional -> Cartesian)
-        t_cart = self.translation_frac @ self.cell.fractional_matrix
+        # Apply translation (fractional → Cartesian via cell.fractional_matrix.T;
+        # see Cell.fractional_to_cartesian for the canonical convention).
+        t_cart = self.translation_frac @ self.cell.fractional_matrix.T
         return xyz_rotated + t_cart
 
     def get_scale(self) -> float:
@@ -273,7 +291,7 @@ class RigidBodyRefinement(nn.Module):
             R = self.get_rotation_matrix()
             xyz_aniso_centered = self.xyz_aniso_original - self.centroid
             xyz_aniso_rotated = xyz_aniso_centered @ R.T + self.centroid
-            t_cart = self.translation_frac @ self.cell.fractional_matrix
+            t_cart = self.translation_frac @ self.cell.fractional_matrix.T
             xyz_aniso = xyz_aniso_rotated + t_cart
 
         # Compute structure factors via FFT (bypasses MixedTensor!)

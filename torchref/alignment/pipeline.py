@@ -15,13 +15,24 @@ from typing import List, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 import torch
 
-from .ball_transform import (
-    ball_rotation_search_torch,
-    rotation_matrix_from_euler_zyz,
+from .ball_search import (
+    ball_rotation_search,
+    rotation_matrix_from_edmonds_euler,
+    RotationPeak,
 )
 from .translation import fft_translation_search_torch, TranslationPeak
 from .rigid_body import RigidBodyRefinement, RigidBodyResult
 from .clashscore import ClashScoreCalculator, AtomSampler
+
+
+def rotation_matrix_from_euler_zyz(alpha, beta, gamma) -> np.ndarray:
+    """
+    Build R = R_z(α) R_y(β) R_z(γ) (Edmonds active ZYZ) as a NumPy 3×3 matrix.
+
+    Compatibility wrapper around `rotation_matrix_from_edmonds_euler`.
+    """
+    R = rotation_matrix_from_edmonds_euler(float(alpha), float(beta), float(gamma))
+    return R.detach().cpu().numpy()
 
 if TYPE_CHECKING:
     from torchref.model import ModelFT
@@ -227,7 +238,7 @@ class MolecularReplacementPipeline:
 
     def run(
         self,
-        n_rotation_peaks: int = 100,
+        n_rotation_peaks: int = 200,
         n_translation_peaks: int = 5,
         min_tries: int = 3,
         max_tries: int = 10,
@@ -235,9 +246,9 @@ class MolecularReplacementPipeline:
         max_clash_score: float = 100.0,
         d_min: float = 4.0,
         d_max: float = 50.0,
-        L: int = 32,
-        P: int = 20,
-        cluster_threshold_deg: float = 6.0,
+        L: int = 48,
+        P: int = 24,
+        cluster_threshold_deg: Optional[float] = None,
     ) -> List[MRSolution]:
         """
         Run full MR pipeline with early stopping.
@@ -274,6 +285,10 @@ class MolecularReplacementPipeline:
         List[MRSolution]
             Solutions sorted by R-factor. Early stops if converged.
         """
+        # Auto cluster threshold: tied to grid voxel resolution.
+        if cluster_threshold_deg is None:
+            cluster_threshold_deg = max(6.0, 180.0 / L)
+
         # Step 1: Rotation search
         if self.verbose:
             print("Step 1: Rotation search...")
@@ -396,17 +411,20 @@ class MolecularReplacementPipeline:
         L: int,
         P: int,
     ) -> list:
-        """Run ball rotation search."""
+        """Run ball rotation search; return list of (α, β, γ, score, σ) tuples."""
         # Prepare E-values
         E_obs, s_obs = self._get_e_values_obs(d_min, d_max)
         E_calc, s_calc = self._get_e_values_calc(d_min, d_max)
 
-        _, _, peaks = ball_rotation_search_torch(
-            E_obs, s_obs, E_calc, s_calc,
-            L=L, P=P, d_min=d_min, d_max=d_max, n_peaks=n_peaks,
-            verbose=self.verbose > 1,
+        _C, _alphas, _betas, _gammas, peaks = ball_rotation_search(
+            s_obs, E_obs, s_calc, E_calc,
+            L=L, P=P, n_peaks=n_peaks,
+            d_min=d_min, d_max=d_max,
+            refine_subvoxel=True, n_refine=min(n_peaks, 50),
+            sigma_threshold=0.0,
         )
-        return peaks
+        # Convert dataclass to tuple form expected by the rest of the pipeline.
+        return [(p.alpha, p.beta, p.gamma, p.score, p.sigma) for p in peaks]
 
     def _translation_search(
         self,
