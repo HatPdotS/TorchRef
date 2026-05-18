@@ -29,9 +29,10 @@ import torch.nn as nn
 
 from torchref.base.alignment.rotation import rotation_matrix_euler_zyz
 from torchref.utils.caching import CachedForwardMixin
+from torchref.utils.device_mixin import DeviceMixin
 
 
-class SegmentedInternalCoordinateTensor(CachedForwardMixin, nn.Module):
+class SegmentedInternalCoordinateTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     """
     Parameter wrapper using segmented internal coordinates.
 
@@ -1843,28 +1844,6 @@ class SegmentedInternalCoordinateTensor(CachedForwardMixin, nn.Module):
     def n_fixed(self) -> int:
         """Return the number of fixed atoms."""
         return (~self.refinable_mask).sum().item()
-
-    def to(self, device=None, dtype=None):
-        """
-        Move tensor to specified device and/or dtype.
-
-        Parameters
-        ----------
-        device : torch.device, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target dtype.
-
-        Returns
-        -------
-        SegmentedInternalCoordinateTensor
-            Self for method chaining.
-        """
-        if device is not None:
-            self._device = torch.device(device)
-        if dtype is not None:
-            self._dtype = dtype
-        return super().to(device=device, dtype=dtype)
 
     def __repr__(self) -> str:
         n_secondary = self.secondary_root_indices.numel()

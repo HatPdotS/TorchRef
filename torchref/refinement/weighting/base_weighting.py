@@ -11,13 +11,14 @@ from typing import TYPE_CHECKING, Dict
 import torch
 from torch import nn
 
+from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.stats import StatEntry
 
 if TYPE_CHECKING:
     from torchref.refinement.loss_state import LossState
 
 
-class BaseWeighting(nn.Module, ABC):
+class BaseWeighting(DeviceMixin, nn.Module, ABC):
     """
     Abstract base class for weighting schemes using LossState.
 

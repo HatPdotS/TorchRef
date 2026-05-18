@@ -868,35 +868,18 @@ class LossState(DeviceMovementMixin):
     # Device Management
     # =========================================================================
 
-    def to(self, device) -> "LossState":
-        """
-        Move LossState to the specified device.
+    def to(self, *args, **kwargs):
+        """Move via :class:`DeviceMixin`; honour an explicit device when no tensors exist yet."""
+        result = super().to(*args, **kwargs)
+        # If no tensor was found to refresh ``self.device``, fall back to the
+        # explicit device argument so subsequent allocations land correctly.
+        if not isinstance(result.device, torch.device):
+            from torchref.utils.device_mixin import _parse_to_args
 
-        Updates device attribute and moves any cached tensors in _losses and meta.
-
-        Parameters
-        ----------
-        device : str or torch.device
-            Target device ('cpu', 'cuda', 'cuda:0', etc.)
-
-        Returns
-        -------
-        LossState
-            Self, for method chaining.
-        """
-        self.device = torch.device(device)
-
-        # Move cached losses
-        for name, loss in self._losses.items():
-            if isinstance(loss, torch.Tensor):
-                self._losses[name] = loss.to(self.device)
-
-        # Move tensors in meta
-        for key, value in self.meta.items():
-            if isinstance(value, torch.Tensor):
-                self.meta[key] = value.to(self.device)
-
-        return self
+            device, _ = _parse_to_args(args, kwargs)
+            if device is not None:
+                result.device = torch.device(device) if not isinstance(device, torch.device) else device
+        return result
 
     # =========================================================================
     # Utility

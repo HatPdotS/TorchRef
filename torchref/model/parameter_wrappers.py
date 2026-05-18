@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from torchref.utils.caching import CachedForwardMixin
+from torchref.utils.device_mixin import DeviceMixin
 
 
 class _AssembleMixedTensor(torch.autograd.Function):
@@ -41,7 +42,7 @@ class _AssembleMixedTensor(torch.autograd.Function):
         return d_refinable, None, None
 
 
-class MixedTensor(CachedForwardMixin, nn.Module):
+class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     """
     A wrapper class for tensors with mixed fixed and refinable elements.
 
@@ -614,44 +615,10 @@ class MixedTensor(CachedForwardMixin, nn.Module):
         )
         return new_mixed
 
-    def to(self, device=None, dtype=None) -> "MixedTensor":
-        """
-        Move tensor to a different device or dtype.
-
-        Parameters
-        ----------
-        device : torch.device or str, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target data type.
-
-        Returns
-        -------
-        MixedTensor
-            Self for method chaining.
-        """
-        # Explicitly move all internal tensors to ensure proper device placement
-        if device is not None or dtype is not None:
-            # Move buffers
-            if self.fixed_values is not None:
-                self.fixed_values = self.fixed_values.to(device=device, dtype=dtype)
-            if self.refinable_mask is not None:
-                self.refinable_mask = self.refinable_mask.to(device=device)
-            if self.fixed_mask is not None:
-                self.fixed_mask = self.fixed_mask.to(device=device)
-            if self._shape is not None:
-                self._shape = self._shape.to(device=device)
-
-            # Move refinable parameters
-            if self.refinable_params is not None and self.refinable_params.numel() > 0:
-                new_param = self.refinable_params.to(device=device, dtype=dtype)
-                self.refinable_params = nn.Parameter(
-                    new_param, requires_grad=self.refinable_params.requires_grad
-                )
-
-        result = super().to(device=device, dtype=dtype)
-        # Rebuild index cache after device move
-        self._build_index_cache()
+    def to(self, *args, **kwargs):
+        """Move via :class:`DeviceMixin` and rebuild the index cache."""
+        result = super().to(*args, **kwargs)
+        result._build_index_cache()
         return result
 
     def parameters(self):
@@ -2325,42 +2292,6 @@ class OccupancyTensor(MixedTensor):
         )
         return new_tensor
 
-    def to(self, device=None, dtype=None) -> "OccupancyTensor":
-        """
-        Move tensor to a different device or dtype.
-
-        Parameters
-        ----------
-        device : torch.device or str, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target data type.
-
-        Returns
-        -------
-        OccupancyTensor
-            Self for method chaining.
-        """
-        # Move OccupancyTensor-specific buffers
-        if device is not None or dtype is not None:
-            # Move expansion_mask and collapse_counts
-            if hasattr(self, "expansion_mask") and self.expansion_mask is not None:
-                self.expansion_mask = self.expansion_mask.to(device=device)
-            if hasattr(self, "collapse_counts") and self.collapse_counts is not None:
-                self.collapse_counts = self.collapse_counts.to(device=device)
-
-            # Move linked occupancy buffers
-            if hasattr(self, "linked_occ_sizes"):
-                for n_conf in self.linked_occ_sizes:
-                    buf_name = f"linked_occ_{n_conf}"
-                    if hasattr(self, buf_name):
-                        buf = getattr(self, buf_name)
-                        if buf is not None:
-                            setattr(self, buf_name, buf.to(device=device))
-
-        # Call parent's to() which handles the MixedTensor buffers
-        return super().to(device=device, dtype=dtype)
-
     def __repr__(self) -> str:
         name_str = f"'{self.name}', " if self.name is not None else ""
         n_groups = self._collapsed_shape
@@ -2372,7 +2303,7 @@ class OccupancyTensor(MixedTensor):
         )
 
 
-class PassThroughTensor(nn.Module):
+class PassThroughTensor(DeviceMixin, nn.Module):
     """
     A simple parameter wrapper that passes the parameter through unchanged.
 

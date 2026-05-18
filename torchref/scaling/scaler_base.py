@@ -23,13 +23,14 @@ from torchref.base.reciprocal import get_scattering_vectors
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import ModuleReference
+from torchref.utils.device_mixin import DeviceMixin
 
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
     from torchref.scaling.solvent import SolventModel
 
 
-class ScalerBase(DebugMixin, nn.Module):
+class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     """
     Base scaler class for crystallographic scaling without model dependency.
 
@@ -416,33 +417,6 @@ class ScalerBase(DebugMixin, nn.Module):
         if hasattr(self, "log_scale") and self.log_scale is not None:
             return torch.exp(self.log_scale.mean().clamp(-10, 10)).item()
         return 1.0
-
-    def cuda(self, device=None):
-        """
-        Move the ScalerBase module to GPU.
-
-        Parameters
-        ----------
-        device : torch.device, optional
-            The target device. If None, uses the default CUDA device.
-        """
-        super().cuda(device)
-        if hasattr(self, "solvent") and self.solvent is not None:
-            self.solvent.cuda(device)
-        self.device = torch.device("cuda" if device is None else device)
-        if self.verbose > 1:
-            print(f"ScalerBase moved to device: {self.device}")
-
-    def cpu(self):
-        """
-        Move the ScalerBase module to CPU.
-        """
-        super().cpu()
-        if hasattr(self, "solvent") and self.solvent is not None:
-            self.solvent.cpu()
-        self.device = next(self.parameters()).device
-        if self.verbose > 1:
-            print("ScalerBase moved to CPU")
 
     def rfactor(self, fcalc: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """

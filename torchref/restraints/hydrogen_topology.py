@@ -18,6 +18,7 @@ import torch
 from torch import nn
 
 from torchref.config import dtypes
+from torchref.utils.device_mixin import DeviceMixin
 
 # ---------------------------------------------------------------------------
 # Placement-type constants
@@ -45,7 +46,7 @@ MAX_HEAVY_NB = 4   # Maximum heavy-atom neighbours to store per parent
 # HydrogenTopology
 # ---------------------------------------------------------------------------
 
-class HydrogenTopology(nn.Module):
+class HydrogenTopology(DeviceMixin, nn.Module):
     """Static topology describing riding hydrogens for VDW evaluation.
 
     All data are stored as registered buffers so they move automatically

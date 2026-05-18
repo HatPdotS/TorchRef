@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from torchref.refinement.weighting.base_weighting import BaseWeighting
+from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_ESSENTIAL,
@@ -229,7 +230,7 @@ class ManualWeighting(BaseWeighting):
         return {k: v.item() for k, v in self.manual_weights.items()}
 
 
-class ComponentWeighting(nn.Module):
+class ComponentWeighting(DeviceMixin, nn.Module):
     """
     Combines multiple weighting schemes using nn.ModuleDict.
 

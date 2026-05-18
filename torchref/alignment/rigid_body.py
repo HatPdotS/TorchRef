@@ -30,6 +30,7 @@ from torchref.model import SfFFT
 from torchref.symmetry import spacegroup
 from torchref.refinement.targets import MaximumLikelihoodXrayTarget
 from torchref.base import rotation_matrix_euler_zyz
+from torchref.utils.device_mixin import DeviceMixin
 
 @dataclass
 class RigidBodyResult:
@@ -67,7 +68,7 @@ class RigidBodyResult:
 
 
 
-class RigidBodyRefinement(nn.Module):
+class RigidBodyRefinement(DeviceMixin, nn.Module):
     """
     Rigid body refinement using FFT directly (bypasses Model/MixedTensor).
 

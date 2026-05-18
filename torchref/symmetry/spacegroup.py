@@ -1003,14 +1003,6 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     # Device movement
     # =========================================================================
 
-    def to(self, device=None, dtype=None):
-        """Move SpaceGroup to specified device and/or dtype."""
-        result = super().to(device=device, dtype=dtype)
-        if device is not None:
-            self._device = torch.device(device)
-        if dtype is not None:
-            self._dtype = dtype
-        return result
 
     def copy(self) -> "SpaceGroup":
         """Create a deep copy of this SpaceGroup.

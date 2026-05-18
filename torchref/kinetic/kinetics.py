@@ -1,12 +1,13 @@
 import torch
 from torch.nn import Module as nnModule
 from torch.nn import Parameter
+from torchref.utils.device_mixin import DeviceMixin
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Optional, Union
 import numpy as np
 
 
-class KineticModel(nnModule):
+class KineticModel(DeviceMixin, nnModule):
     """
     Configurable PyTorch module for fitting kinetic behavior.
     
@@ -825,80 +826,6 @@ class KineticModel(nnModule):
                 params[f'baseline_{state}'] = getattr(self, param_name)
         
         return params
-    
-    def cuda(self, device: Optional[Union[int, str]] = None):
-        """
-        Move model to CUDA device.
-        
-        Parameters
-        ----------
-        device : int, str, or None, optional
-            CUDA device index or name (e.g., 0, 'cuda:0', 'cuda:1').
-            If None, uses the default CUDA device.
-        
-        Returns
-        -------
-        self : KineticModel
-            Returns self for method chaining
-        
-        Examples
-        --------
-        >>> model.cuda()  # Move to default CUDA device
-        >>> model.cuda(0)  # Move to cuda:0
-        >>> model.cuda('cuda:1')  # Move to cuda:1
-        """
-        if device is None:
-            device = 'cuda'
-        elif isinstance(device, int):
-            device = f'cuda:{device}'
-        
-        # Move all parameters and buffers
-        super().cuda(device)
-        
-        return self
-    
-    def cpu(self):
-        """
-        Move model to CPU.
-        
-        Returns
-        -------
-        self : KineticModel
-            Returns self for method chaining
-        
-        Examples
-        --------
-        >>> model.cpu()  # Move to CPU
-        >>> model.cuda().cpu()  # Move to CUDA and back to CPU
-        """
-        # Move all parameters and buffers
-        super().cpu()
-        
-        return self
-    
-    def to(self, device: Union[str, torch.device]):
-        """
-        Move model to specified device.
-        
-        Parameters
-        ----------
-        device : str or torch.device
-            Target device (e.g., 'cuda', 'cpu', 'cuda:0', torch.device('cuda:1'))
-        
-        Returns
-        -------
-        self : KineticModel
-            Returns self for method chaining
-        
-        Examples
-        --------
-        >>> model.to('cuda')
-        >>> model.to('cpu')
-        >>> model.to(torch.device('cuda:1'))
-        """
-        super().to(device)
-        
-        return self
     
     def print_parameters(self):
         """Print current model parameters."""

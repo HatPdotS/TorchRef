@@ -486,39 +486,9 @@ class SfDS(DeviceMovementMixin, nn.Module):
     # Device Movement
     # =========================================================================
 
-    def to(self, device=None, dtype=None):
-        """
-        Move SfDS module to specified device and/or dtype.
-
-        Parameters
-        ----------
-        device : torch.device or str, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target data type.
-
-        Returns
-        -------
-        SfDS
-            Self, for method chaining.
-        """
-        if device is not None:
-            self.device = torch.device(device)
-        if dtype is not None:
-            self.dtype_float = dtype
-
-        # Invalidate cached reciprocal basis matrix (will be recomputed on new device)
+    def reset_cache(self) -> None:
+        """Drop the cached reciprocal-basis matrix; recomputed on next use."""
         self._recB = None
-
-        # Move cell if it exists
-        if self._cell is not None:
-            self._cell = self._cell.to(device=device, dtype=dtype)
-
-        # Move spacegroup if it exists
-        if self._spacegroup is not None:
-            self._spacegroup = self._spacegroup.to(device=device, dtype=dtype)
-
-        return super().to(device=device, dtype=dtype)
 
     def copy(self) -> "SfDS":
         """Create a deep copy of this SfDS module.

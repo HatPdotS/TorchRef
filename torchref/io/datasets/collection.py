@@ -308,13 +308,6 @@ class DatasetCollection(CrystalDataset):
         [p.requires_grad_(False) for p in parameters]
 
 
-    def to(self, device) -> "DatasetCollection":
-        """Move collection and all datasets to device."""
-        super().to(device)
-        for ds in self._datasets.values():
-            ds.to(device)
-        return self
-
     def keys(self) -> List[str]:
         """Return list of dataset names."""
         return list(self._dataset_order)

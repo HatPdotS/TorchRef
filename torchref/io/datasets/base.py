@@ -130,31 +130,6 @@ class CrystalDataset(DeviceMovementMixin):
             if isinstance(val, torch.Tensor):
                 yield f.name, val
 
-    def to(self, device) -> "CrystalDataset":
-        """
-        Move all tensors to the specified device.
-
-        Parameters
-        ----------
-        device : str or torch.device
-            Target device ('cpu', 'cuda', 'cuda:0', etc.)
-
-        Returns
-        -------
-        CrystalDataset
-            Self, for method chaining.
-        """
-        self.device = torch.device(device)
-        for name, tensor in self._tensor_fields():
-            setattr(self, name, tensor.to(self.device))
-        # Move Cell object
-        if self.cell is not None:
-            self.cell = self.cell.to(device=self.device)
-        if hasattr(self, "masks") and self.masks is not None:
-            self.masks.to(self.device)
-        if self.verbose > 1:
-            print(f"{self.__class__.__name__} moved to device: {self.device}")
-        return self
 
     # ========== SERIALIZATION ==========
 

@@ -38,6 +38,7 @@ import torch.nn as nn
 
 from torchref.base import math_torch
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
+from torchref.utils.device_mixin import DeviceMixin
 
 # Acentric lookup tables from French-Wilson supplement (1978)
 AC_ZJ = torch.tensor(
@@ -1284,7 +1285,7 @@ def french_wilson_auto(
     return F, sigma_F, valid_mask
 
 
-class FrenchWilson(nn.Module):
+class FrenchWilson(DeviceMixin, nn.Module):
     """
     PyTorch module for French-Wilson conversion from intensities to structure factors.
 

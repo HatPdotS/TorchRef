@@ -209,7 +209,10 @@ def _equiv_hkls_to_flat_indices(
     return (hi * (Ny * Nz) + ki * Nz + li).to(torch.int64)
 
 
-class ReciprocalSymmetryExtractor:
+from torchref.utils.device_mixin import DeviceMixin
+
+
+class ReciprocalSymmetryExtractor(DeviceMixin):
     """
     Class-based interface for reciprocal space symmetry extraction.
 
@@ -330,11 +333,3 @@ class ReciprocalSymmetryExtractor:
         f_sym = (f_all.view(self.n_ops, self.N) * self.phases).sum(dim=0)
         return f_sym
 
-    def to(self, device: torch.device) -> "ReciprocalSymmetryExtractor":
-        """Move extractor to specified device."""
-        self.device = device
-        self.hkl = self.hkl.to(device=device)
-        self.equiv_hkls = self.equiv_hkls.to(device=device)
-        self.phases = self.phases.to(device=device)
-        self._flat_indices = self._flat_indices.to(device=device)
-        return self

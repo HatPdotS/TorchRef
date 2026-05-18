@@ -702,44 +702,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     # Device Movement
     # =========================================================================
 
-    def to(self, device=None, dtype=None):
-        """
-        Move SfFFT module to specified device and/or dtype.
-
-        Parameters
-        ----------
-        device : torch.device or str, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target data type.
-
-        Returns
-        -------
-        SfFFT
-            Self, for method chaining.
-        """
-        if device is not None:
-            self.device = torch.device(device)
-        if dtype is not None:
-            self.dtype_float = dtype
-
-        # Move cell if it exists (critical for inv_fractional_matrix)
-        if self._cell is not None:
-            self._cell = self._cell.to(device=device, dtype=dtype)
-
-        # Move spacegroup if it exists
-        if self._spacegroup is not None:
-            self._spacegroup = self._spacegroup.to(device=device, dtype=dtype)
-
-        # Move map_symmetry if it exists
-        if self.map_symmetry is not None:
-            self.map_symmetry = self.map_symmetry.to(device=device)
-
-        # Invalidate cached extractor (device changed, indices stale)
+    def reset_cache(self) -> None:
+        """Drop the cached symmetry extractor; recomputed on next use."""
         self._sym_extractor = None
         self._sym_extractor_hkl_id = None
-
-        return super().to(device=device, dtype=dtype)
 
     def copy(self) -> "SfFFT":
         """Create a deep copy of this SfFFT module.

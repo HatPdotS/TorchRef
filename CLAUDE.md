@@ -4,7 +4,7 @@ TorchRef is a PyTorch-based crystallographic refinement library that uses automa
 
 **Repository:** https://github.com/HatPdotS/TorchRef
 **Documentation:** https://torchref.readthedocs.io/
-**Version:** 0.4.1
+**Version:** 0.5.1
 **License:** MIT
 
 ## Quick Reference
@@ -23,15 +23,12 @@ rwork, rfree = refinement.get_rfactor()
 ## Environment Setup
 
 ```bash
-# Conda environment
-module load anaconda && conda activate /das/work/p17/p17490/CONDA/torchref
-
-# Python interpreter
-/das/work/units/LBR-FEL/p17490/CONDA/torchref/bin/python
-
-# Threading: auto-detected or override with
+# Threading: auto-detected from available cores; override with
 export TORCHREF_NUM_THREADS=4
 ```
+
+Requires Python >= 3.10. Install into a fresh virtual environment or conda
+environment of your choice (see `pyproject.toml` for full dependency pins).
 
 ## Building & Testing
 
@@ -41,22 +38,18 @@ pip install -e ".[dev]"
 
 # Run tests
 pytest tests/                        # all tests
-pytest tests/unit/                   # fast unit tests (~234 tests)
-pytest tests/integration/            # integration tests (~95 tests)
-pytest tests/functional/             # full workflow tests (~136 tests)
+pytest tests/unit/                   # fast unit tests
+pytest tests/integration/            # integration tests
+pytest tests/functional/             # full workflow tests
 pytest -m "not gpu and not slow"     # skip GPU/slow tests
 
 # Test with coverage
 pytest tests/ --cov=torchref
 
-# Compatibility testing (tox)
-tox -e py311-default                 # Python 3.11 default deps
-# See tox.ini for 27 environments (Python 3.10-3.13, various dep versions)
-
 # Linting and formatting
 black torchref/ --check              # check formatting (88 char line length)
 isort torchref/ --check              # check import order
-flake8 torchref/                     # lint (ignores F841, E741, E402, E722)
+ruff check torchref/                 # lint (ignores F841, E741, E402, E722)
 ```
 
 ## Building Documentation
@@ -124,6 +117,8 @@ torchref/
 ├── alignment/               # Patterson-based structure alignment
 ├── base/                    # Core math: coordinates, reciprocal, scattering, ED, FFT, kernels
 ├── utils/                   # Caching, device mixin, debugging, timing, serialization
+├── kinetic/                 # Time-resolved / kinetic refinement support
+├── scripts/                 # Helper scripts
 ├── cli/                     # 8 CLI entry points
 └── data/                    # Package data (scattering tables, monomer library CIFs)
 ```
@@ -279,14 +274,13 @@ diff = DifferenceMap(model, data, scaler)
 | Command | Description |
 |---------|-------------|
 | `torchref.refine` | Basic LBFGS refinement |
-| `torchref.refine-static` | Fixed weights (xray=1.0, geom=10.0, adp=5.0) |
 | `torchref.refine-hyper` | User-provided hyperparameters |
-| `torchref.refine-policy` | Neural network policy weights |
-| `torchref.refine-random-weights` | Random weight sampling (training data) |
 | `torchref.difference-refine` | Difference refinement (time-resolved) |
 | `torchref.mtz2map` | MTZ to CCP4 map conversion |
 | `torchref.validate-ded` | Validate difference electron density |
 | `torchref.phased-difference-map` | Phased difference maps |
+| `torchref.add-metadata` | Add metadata to MTZ/PDB outputs |
+| `torchref.strip-altlocs` | Strip alternate location indicators from PDB |
 
 Common CLI usage:
 ```bash
@@ -319,11 +313,16 @@ Example data in `example_notebooks/`: 1DAW.pdb, 1DAW.mtz.
 
 ## Dependencies
 
-**Core:** numpy>=2.0, torch>=2.4, pandas>=2.0, scipy>=1.10, gemmi>=0.5, reciprocalspaceship>=0.9.18, numba>=0.59, matplotlib>=3.7, tqdm, pyarrow
+**Core:** numpy>=2.0, torch>=2.4, pandas>=2.0, scipy>=1.10, gemmi>=0.5, reciprocalspaceship>=0.9.18, numba>=0.59, matplotlib>=3.7, tqdm, pyarrow, ninja
 
 **Optional:**
-- `pip install torchref[dev]` - pytest, black, isort, flake8
+- `pip install torchref[dev]` - pytest, pytest-cov, black, isort, flake8
 - `pip install torchref[alignment]` - JAX, s2fft, s2ball (Patterson alignment)
 - `pip install torchref[forcefield]` - torchmd-net
 - `pip install torchref[amber]` - OpenMM, pdbfixer
+- `pip install torchref[ihm]` - ihm (integrative/hybrid model I/O)
 - `pip install torchref[docs]` - Sphinx, RTD theme, numpydoc
+
+**CCTBX (conda-only, optional):** Some utilities in
+`torchref/math_functions/CCTBX_related.py` depend on `iotbx`. Install with
+`conda install -c conda-forge cctbx-base`.

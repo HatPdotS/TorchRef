@@ -39,11 +39,12 @@ from torchref.base.chain_closure import (
     AA_NAMES,
 )
 from torchref.utils.caching import CachedForwardMixin
+from torchref.utils.device_mixin import DeviceMixin
 
 logger = logging.getLogger(__name__)
 
 
-class ClosedSegmentedInternalCoordinateTensor(CachedForwardMixin, nn.Module):
+class ClosedSegmentedInternalCoordinateTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     """
     Parameter wrapper using segmented internal coordinates with chain closure.
 
@@ -2162,14 +2163,6 @@ class ClosedSegmentedInternalCoordinateTensor(CachedForwardMixin, nn.Module):
                         gap = torch.linalg.norm(c_pos - n_pos).item()
                         max_gap = max(max_gap, gap)
             return max_gap
-
-    def to(self, device=None, dtype=None):
-        """Move tensor to specified device and/or dtype."""
-        if device is not None:
-            self._device = torch.device(device)
-        if dtype is not None:
-            self._dtype = dtype
-        return super().to(device=device, dtype=dtype)
 
     def __repr__(self) -> str:
         n_secondary = self.secondary_root_indices.numel()

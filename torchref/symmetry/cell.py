@@ -12,11 +12,11 @@ from typing import Any
 
 import torch
 
-from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.utils.device_mixin import _NonModuleDeviceMixin
 
 
 @dataclass
-class Cell(DeviceMovementMixin):
+class Cell(_NonModuleDeviceMixin):
     """
     Dataclass for crystallographic unit cells with cached derived quantities.
 
@@ -98,34 +98,13 @@ class Cell(DeviceMovementMixin):
     # Device/dtype movement methods
     # =========================================================================
 
-    def to(
-        self,
-        device: torch.device | str | None = None,
-        dtype: torch.dtype | None = None,
-    ) -> "Cell":
-        """
-        Move Cell to specified device and/or dtype.
+    # ``to``, ``cuda``, ``cpu`` are inherited from ``_NonModuleDeviceMixin``
+    # and operate in place — they walk ``self.__dict__`` (moving ``_data``
+    # and any cached tensor values) and then call ``reset_cache`` below.
 
-        Returns a new Cell with the data on the target device/dtype.
-        The cache is cleared in the new Cell.
-
-        Parameters
-        ----------
-        device : torch.device or str, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target data type.
-
-        Returns
-        -------
-        Cell
-            New Cell on the target device/dtype.
-        """
-        new_data = self._data.to(device=device, dtype=dtype)
-        new_cell = Cell.__new__(Cell)
-        object.__setattr__(new_cell, "_data", new_data)
-        object.__setattr__(new_cell, "_cache", {})
-        return new_cell
+    def reset_cache(self) -> None:
+        """Clear cached derived quantities (fractional matrix, volume, etc.)."""
+        object.__setattr__(self, "_cache", {})
 
     def detach(self) -> "Cell":
         """
@@ -399,7 +378,7 @@ class Cell(DeviceMovementMixin):
             Tensor of Cartesian coordinates, shape (..., 3).
         """
         return torch.matmul(frac_coords, self.fractional_matrix.T)
-    
+
     def cartesian_to_fractional(self, cart_coords: torch.Tensor) -> torch.Tensor:
         """
         Convert Cartesian coordinates to fractional coordinates.

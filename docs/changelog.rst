@@ -2,6 +2,11 @@ Changelog
 =========
 
 
+Version 0.5.2
+-------------
+- Cleaned up build solvent mask calculation
+- Added DeviceMixin for centralizing device handling accross all classes
+
 Version 0.5.1
 -------------
 - Fixed masked tensor problem under torch 2.9

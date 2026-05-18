@@ -613,17 +613,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
                 print(f"  Wrote {path}")
 
     # ------------------------------------------------------------------
-    # Device movement
-    # ------------------------------------------------------------------
-
-    def to(self, device=None, dtype=None):
-        if device is not None or dtype is not None:
-            super().to(device=device, dtype=dtype)
-        for model in self._base_models:
-            model.to(device=device, dtype=dtype)
-        return self
-
-    # ------------------------------------------------------------------
     # Repr
     # ------------------------------------------------------------------
 

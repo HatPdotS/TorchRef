@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 
 from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
+from torchref.utils.device_mixin import DeviceMixin
 
 
 def MapSymmetry(
@@ -86,7 +87,7 @@ def MapSymmetry(
         )
 
 
-class MapSymmetryDirect(nn.Module):
+class MapSymmetryDirect(DeviceMixin, nn.Module):
     """
     Fast direct-indexing implementation of crystallographic symmetry operations.
 
@@ -209,24 +210,6 @@ class MapSymmetryDirect(nn.Module):
         return self.forward(
             density_map, apply_symmetry=apply_symmetry, combine_mode=combine_mode
         )
-
-    def cuda(self):
-        """Move to GPU."""
-        super().cuda()
-        self.device = torch.device("cuda")
-        return self
-
-    def cpu(self):
-        """Move to CPU."""
-        super().cpu()
-        self.device = torch.device("cpu")
-        return self
-
-    def to(self, device):
-        """Move to specified device."""
-        super().to(device)
-        self.device = device
-        return self
 
     def get_symmetry_info(self):
         """Get information about symmetry operations."""

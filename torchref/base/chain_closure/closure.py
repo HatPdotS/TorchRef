@@ -21,6 +21,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torchref.utils.device_mixin import DeviceMixin
 
 logger = logging.getLogger(__name__)
 
@@ -535,7 +536,7 @@ class JunctionClosure(torch.autograd.Function):
         )
 
 
-class JunctionSolver(nn.Module):
+class JunctionSolver(DeviceMixin, nn.Module):
     """
     Manages warm-start buffers and solves junction closures.
 

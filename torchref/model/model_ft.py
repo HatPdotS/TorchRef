@@ -622,30 +622,6 @@ class ModelFT(CachedForwardMixin, Model):
             print("Rebuilding density map from scratch...")
         return self.build_density_map(radius=radius)
 
-    def to(self, device=None, dtype=None):
-        """
-        Move model and FT-specific data to specified device and/or dtype.
-
-        Parameters
-        ----------
-        device : torch.device or str, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target data type.
-
-        Returns
-        -------
-        ModelFT
-            Self, for method chaining.
-        """
-        result = super().to(device=device, dtype=dtype)
-
-        # Explicitly move FFT submodule (ensures cell and spacegroup are moved)
-        if self._fft is not None:
-            self._fft.to(device=device, dtype=dtype)
-
-        return result
-
     def update_pdb(self):
         """
         Update PDB with current atomic parameters.
@@ -653,8 +629,12 @@ class ModelFT(CachedForwardMixin, Model):
         return super().update_pdb()
 
     def reset_cache(self):
-        """Reset SF cache and all wrapper forward caches."""
+        """Reset SF cache, anomalous cache, and all wrapper forward caches."""
         self.reset_forward_cache()
+        # Drop the anomalous scattering cache; it is recomputed on next use
+        # and would otherwise hold tensors on the previous device.
+        self._anomalous_cache = None
+        self._anomalous_elements_hash = None
         for module in self.children():
             if hasattr(module, "reset_forward_cache"):
                 module.reset_forward_cache()

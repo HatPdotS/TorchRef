@@ -21,9 +21,10 @@ import torch
 import torch.nn as nn
 
 from torchref.base.alignment.rotation import axis_angle_to_rotation_matrix
+from torchref.utils.device_mixin import DeviceMixin
 
 
-class InternalCoordinateTensor(nn.Module):
+class InternalCoordinateTensor(DeviceMixin, nn.Module):
     """
     Parameter wrapper using internal coordinates (Z-matrix style).
 
@@ -1446,28 +1447,6 @@ class InternalCoordinateTensor(nn.Module):
     def n_fixed(self) -> int:
         """Return the number of fixed (frozen) atoms."""
         return (~self.refinable_mask).sum().item()
-
-    def to(self, device=None, dtype=None):
-        """
-        Move tensor to specified device and/or dtype.
-
-        Parameters
-        ----------
-        device : torch.device, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target dtype.
-
-        Returns
-        -------
-        InternalCoordinateTensor
-            Self for method chaining.
-        """
-        if device is not None:
-            self._device = torch.device(device)
-        if dtype is not None:
-            self._dtype = dtype
-        return super().to(device=device, dtype=dtype)
 
     def __repr__(self) -> str:
         return (

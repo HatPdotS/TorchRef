@@ -406,32 +406,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
 
         return copied
 
-    def to(self, device=None, dtype=None):
-        """
-        Move MixedModel to specified device and/or dtype.
-
-        Parameters
-        ----------
-        device : torch.device or str, optional
-            Target device.
-        dtype : torch.dtype, optional
-            Target data type.
-
-        Returns
-        -------
-        MixedModel
-            Self, for method chaining.
-        """
-        # Move fraction parameters
-        if device is not None or dtype is not None:
-            super().to(device=device, dtype=dtype)
-
-        # Move all constituent models
-        for model in self.models:
-            model.to(device=device, dtype=dtype)
-
-        return self
-
     def __repr__(self) -> str:
         """String representation."""
         fracs = self.fractions.detach().tolist()
