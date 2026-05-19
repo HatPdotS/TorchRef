@@ -20,6 +20,7 @@ import torch.nn as nn
 from torchref.base.math_torch import U_to_matrix
 from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll_xray_lognormal
 from torchref.base.reciprocal import get_scattering_vectors
+from torchref.config import get_complex_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import ModuleReference
@@ -993,7 +994,10 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                     (-sol.b_solvent.clamp(min=-500.0, max=500.0) * s_half_sq).clamp(min=-10.0, max=10.0)
                 )
                 if sol.optimize_phase:
-                    f_sol_raw = f_sol_raw * torch.exp(1j * sol.phase_offset)
+                    # 1j is a Python complex literal -> promotes to complex128.
+                    # Build the phase factor in the configured complex dtype instead.
+                    j = torch.tensor(1j, dtype=get_complex_dtype(), device=self.device)
+                    f_sol_raw = f_sol_raw * torch.exp(j * sol.phase_offset)
                 f_sol = k_sol * f_sol_raw * b_factor
         else:
             f_sol = torch.tensor(0.0, device=self.device, dtype=fcalc.dtype)

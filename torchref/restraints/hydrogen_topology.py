@@ -854,12 +854,15 @@ def build_h_candidate_pairs(
             + (cand_off[:, 2] + 1)
         )
         _, first_idx = torch.unique(dedup_key, return_inverse=True)
-        perm = torch.arange(len(cand_i), device=device)
+        # MPS does not support int64 scatter_reduce; use configured int dtype.
+        _int_dtype = dtypes.int
+        first_idx_i = first_idx.to(_int_dtype)
+        perm = torch.arange(len(cand_i), device=device, dtype=_int_dtype)
         n_unique = first_idx.max().item() + 1
-        first_occ = torch.full((n_unique,), len(cand_i), dtype=torch.long, device=device)
-        first_occ.scatter_reduce_(0, first_idx, perm, reduce="amin")
+        first_occ = torch.full((n_unique,), len(cand_i), dtype=_int_dtype, device=device)
+        first_occ.scatter_reduce_(0, first_idx_i, perm, reduce="amin")
         mask = torch.zeros(len(cand_i), dtype=torch.bool, device=device)
-        mask[first_occ] = True
+        mask[first_occ.long()] = True
         cand_i = cand_i[mask]
         cand_j = cand_j[mask]
         cand_sym = cand_sym[mask]

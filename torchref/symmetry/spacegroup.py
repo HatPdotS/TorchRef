@@ -35,6 +35,7 @@ import gemmi
 import torch
 import torch.nn as nn
 
+from torchref.config import get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMovementMixin
 
@@ -206,7 +207,7 @@ def get_operations_as_tensors(spacegroup: SpaceGroupLike, dtype=None, device=Non
     import torch
 
     if dtype is None:
-        dtype = torch.float64
+        dtype = get_float_dtype()
     if device is None:
         device = torch.device("cpu")
 
@@ -680,10 +681,12 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     def __init__(
         self,
         space_group: SpaceGroupLike = None,
-        dtype: torch.dtype = torch.float64,
+        dtype: torch.dtype = None,
         device: torch.device = torch.device("cpu"),
     ):
         super(SpaceGroup, self).__init__()
+        if dtype is None:
+            dtype = get_float_dtype()
         self._device = device
         self._dtype = dtype
 

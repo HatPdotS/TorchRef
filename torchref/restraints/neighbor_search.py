@@ -953,12 +953,18 @@ def build_vdw_restraints_gpu(
     _, inverse, counts = torch.unique(
         dedup_hash, return_inverse=True, return_counts=True
     )
-    # First occurrence: for each unique hash, the minimum index
-    perm = torch.arange(len(inverse), device=device)
-    first_occ = torch.empty_like(counts).fill_(len(inverse))
-    first_occ.scatter_reduce_(0, inverse, perm, reduce="amin")
+    # First occurrence: for each unique hash, the minimum index.
+    # Use the configured int dtype (int32 by default) — MPS does not support
+    # int64 scatter_reduce and N_pairs fits comfortably in int32.
+    _int_dtype = dtypes.int
+    inverse_i = inverse.to(_int_dtype)
+    perm = torch.arange(len(inverse), device=device, dtype=_int_dtype)
+    first_occ = torch.full(
+        (counts.shape[0],), len(inverse), device=device, dtype=_int_dtype
+    )
+    first_occ.scatter_reduce_(0, inverse_i, perm, reduce="amin")
     first_mask = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-    first_mask[first_occ] = True
+    first_mask[first_occ.long()] = True
 
     pair_atom_i = pair_atom_i[first_mask]
     pair_atom_j = pair_atom_j[first_mask]
@@ -1204,10 +1210,15 @@ def find_h_vdw_pairs_gpu(
     _, inverse, counts = torch.unique(
         dedup_hash, return_inverse=True, return_counts=True
     )
-    perm = torch.arange(len(inverse), device=device)
-    first_occ = torch.empty_like(counts).fill_(len(inverse))
-    first_occ.scatter_reduce_(0, inverse, perm, reduce="amin")
+    # MPS does not support int64 scatter_reduce; use the configured int dtype.
+    _int_dtype = dtypes.int
+    inverse_i = inverse.to(_int_dtype)
+    perm = torch.arange(len(inverse), device=device, dtype=_int_dtype)
+    first_occ = torch.full(
+        (counts.shape[0],), len(inverse), device=device, dtype=_int_dtype
+    )
+    first_occ.scatter_reduce_(0, inverse_i, perm, reduce="amin")
     first_mask = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-    first_mask[first_occ] = True
+    first_mask[first_occ.long()] = True
 
     return pair_atom_i[first_mask], pair_atom_j[first_mask], pair_combo_j[first_mask]

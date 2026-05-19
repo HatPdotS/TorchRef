@@ -37,6 +37,7 @@ import torch
 import torch.nn as nn
 
 from torchref.base import math_torch
+from torchref.config import get_float_dtype
 from torchref.symmetry import SpaceGroup, SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -1033,10 +1034,11 @@ def is_centric_from_hkl(
     n_reflections = hkl_flat.shape[0]
 
     # Get symmetry operations from the SpaceGroup class
-    spacegroup = SpaceGroup(space_group, dtype=torch.float64, device=hkl.device)
+    float_dtype = get_float_dtype()
+    spacegroup = SpaceGroup(space_group, dtype=float_dtype, device=hkl.device)
 
-    # Convert HKL to float64 for symmetry operations
-    hkl_float = hkl_flat.to(torch.float64)  # Shape: (n_reflections, 3)
+    # Convert HKL to the configured float dtype for symmetry operations
+    hkl_float = hkl_flat.to(float_dtype)  # Shape: (n_reflections, 3)
 
     # Apply all spacegroup operations to all reflections at once
     # For reciprocal space (Miller indices), only rotation applies, not translation

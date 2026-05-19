@@ -8,13 +8,16 @@ from ._common import LOG_2PI
 from ._dispatch import use_triton
 
 
-def _plane_normals_detached(centered_f64: torch.Tensor) -> torch.Tensor:
+def _plane_normals_detached(centered: torch.Tensor) -> torch.Tensor:
     """SVD-derived plane normal (right singular vector at smallest σ).
 
     Caller must wrap in ``torch.no_grad()``; the result is intentionally
     detached so backward flows only through the deviation projection.
+
+    SVD is run in the input dtype — for small (P, N, 3) matrices over
+    O(Å) atom coordinates, float32 is numerically sufficient.
     """
-    _U, _S, Vh = torch.linalg.svd(centered_f64, full_matrices=False)
+    _U, _S, Vh = torch.linalg.svd(centered, full_matrices=False)
     return Vh[:, -1, :]
 
 
@@ -30,9 +33,7 @@ def _planarity_math_eager(
         centroids = positions.mean(dim=1, keepdim=True)
         centered = positions - centroids
         with torch.no_grad():
-            normals = _plane_normals_detached(
-                centered.detach().to(torch.float64)
-            ).to(xyz.dtype)
+            normals = _plane_normals_detached(centered.detach())
         deviations = torch.einsum("paj,pj->pa", centered, normals)
         nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * LOG_2PI
         all_nlls.append(nll.flatten())
