@@ -25,9 +25,9 @@ class TestCoordinateTransformations:
         assert np.isclose(B[0, 0], cell[0])  # a
         assert np.isclose(B[1, 1], cell[1])  # b
         assert np.isclose(B[2, 2], cell[2])  # c
-        # Off-diagonal should be ~0
-        assert np.allclose(B[0, 1:], 0, atol=1e-10)
-        assert np.isclose(B[1, 0], 0, atol=1e-10)
+        # Off-diagonal should be ~0 (tolerance accommodates float32 default dtype)
+        assert np.allclose(B[0, 1:], 0, atol=1e-5)
+        assert np.isclose(B[1, 0], 0, atol=1e-5)
 
     @pytest.mark.unit
     def test_get_inv_fractional_matrix(self, mock_cell):

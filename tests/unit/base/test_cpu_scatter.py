@@ -117,11 +117,15 @@ class TestCompilation:
                 f"Full traceback:\n{err_tb}"
             )
 
-        # Sanity-check the built module exposes both entry points.
-        assert hasattr(mod, "structured_scatter_add"), \
-            "compiled module is missing structured_scatter_add"
-        assert hasattr(mod, "structured_gather"), \
-            "compiled module is missing structured_gather"
+        # Sanity-check the built module exposes both entry points
+        # (one binding per index dtype: int32 fast path + int64 fallback).
+        for name in (
+            "structured_scatter_add_i32",
+            "structured_scatter_add_i64",
+            "structured_gather_i32",
+            "structured_gather_i64",
+        ):
+            assert hasattr(mod, name), f"compiled module is missing {name}"
 
 
 # ---------------------------------------------------------------------------

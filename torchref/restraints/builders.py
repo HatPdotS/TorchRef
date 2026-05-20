@@ -36,6 +36,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from torchref.config import get_float_dtype
+
 
 class ResidueIterator:
     """
@@ -340,8 +342,8 @@ class RestraintBuilder(ABC):
 
         return {
             "indices": torch.tensor(indices, dtype=torch.long, device=device),
-            "references": torch.tensor(references, dtype=torch.float32, device=device),
-            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
     @property
@@ -601,8 +603,8 @@ class TorsionRestraintBuilder(RestraintBuilder):
 
         return {
             "indices": torch.tensor(indices, dtype=torch.long, device=device),
-            "references": torch.tensor(references, dtype=torch.float32, device=device),
-            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             "periods": torch.tensor(periods, dtype=torch.long, device=device),
         }
 
@@ -747,7 +749,7 @@ class PlaneRestraintBuilder(RestraintBuilder):
             key = f"{atom_count}_atoms"
             result[key] = {
                 "indices": torch.tensor(indices, dtype=torch.long, device=device),
-                "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+                "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             }
 
         return result if result else None
@@ -922,9 +924,9 @@ class ChiralRestraintBuilder(RestraintBuilder):
         return {
             "indices": torch.tensor(indices, dtype=torch.long, device=device),
             "ideal_volumes": torch.tensor(
-                ideal_volumes, dtype=torch.float32, device=device
+                ideal_volumes, dtype=get_float_dtype(), device=device
             ),
-            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
 
@@ -1124,8 +1126,8 @@ class InterResidueBondBuilder:
 
         return {
             "indices": torch.tensor(indices, dtype=torch.long, device=device),
-            "references": torch.tensor(references, dtype=torch.float32, device=device),
-            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
     @property
@@ -1273,8 +1275,8 @@ class InterResidueAngleBuilder:
 
         return {
             "indices": torch.tensor(indices, dtype=torch.long, device=device),
-            "references": torch.tensor(references, dtype=torch.float32, device=device),
-            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
         }
 
     @property
@@ -1563,8 +1565,8 @@ class InterResidueTorsionBuilder:
 
         return {
             "indices": torch.tensor(indices, dtype=torch.long, device=device),
-            "references": torch.tensor(references, dtype=torch.float32, device=device),
-            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             "periods": torch.tensor(periods, dtype=torch.long, device=device),
             "is_proline": torch.tensor(is_proline, dtype=torch.bool, device=device),
         }
@@ -1590,8 +1592,8 @@ class InterResidueTorsionBuilder:
 
         return {
             "indices": torch.tensor(indices, dtype=torch.long, device=device),
-            "references": torch.tensor(references, dtype=torch.float32, device=device),
-            "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+            "references": torch.tensor(references, dtype=get_float_dtype(), device=device),
+            "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             "periods": torch.tensor(periods, dtype=torch.long, device=device),
         }
 
@@ -1726,7 +1728,7 @@ class InterResiduePlaneBuilder:
             key = f"{atom_count}_atoms"
             result[key] = {
                 "indices": torch.tensor(indices, dtype=torch.long, device=device),
-                "sigmas": torch.tensor(sigmas, dtype=torch.float32, device=device),
+                "sigmas": torch.tensor(sigmas, dtype=get_float_dtype(), device=device),
             }
 
         return result if result else None

@@ -29,7 +29,7 @@ class DatasetCollection(CrystalDataset):
     verbose : int, optional
         Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
     device : str, optional
-        Device for tensors ('cpu', 'cuda', etc.). Default is 'cpu'.
+        Device for tensors ('cpu', 'cuda', etc.). Defaults to the configured device.current.
 
     Attributes
     ----------
@@ -119,12 +119,10 @@ class DatasetCollection(CrystalDataset):
         if self._common_hkl is not None and dataset.hkl is not None:
             dataset.validate_hkl(self._common_hkl)
 
-        # Move dataset to same device as collection
-        if dataset.device != self.device:
-            if self.device.type == "cuda":
-                dataset.cuda(self.device)
-            else:
-                dataset.cpu()
+        # Move dataset to same device as collection. ``.to`` is a no-op when
+        # the dataset is already on this device (handles cuda/mps/cpu uniformly
+        # and avoids the ``mps`` vs ``mps:0`` index-mismatch edge case).
+        dataset.to(self.device)
 
         self._datasets[name] = dataset
         self._dataset_order.append(name)

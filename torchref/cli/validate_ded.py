@@ -293,7 +293,9 @@ def setup_ded_context(
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
 
     if device is None:
-        device = torch.device("cpu")
+        from torchref.config import get_default_device
+
+        device = get_default_device()
 
     # Load and scale
     data_dark = load_reflection_data(

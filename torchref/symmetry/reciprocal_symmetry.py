@@ -24,6 +24,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from torchref.config import get_default_device, get_float_dtype
 from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -34,9 +35,9 @@ if TYPE_CHECKING:
 def ReciprocalSymmetry(
     space_group: SpaceGroupLike,
     grid_shape,
-    dtype_float=torch.float32,
+    dtype_float=get_float_dtype(),
     verbose=1,
-    device=torch.device("cpu"),
+    device=get_default_device(),
 ):
     """
     Factory function to create the appropriate ReciprocalSymmetry implementation.
@@ -48,11 +49,11 @@ def ReciprocalSymmetry(
     grid_shape : tuple of int
         Shape of the reciprocal space grid (nh, nk, nl).
         The grid spans from -n//2 to n//2 for each dimension.
-    dtype_float : torch.dtype, default torch.float32
+    dtype_float : torch.dtype, default: configured dtypes.float
         Floating point precision to use.
     verbose : int, default 1
         Verbosity level (0=silent, 1=info, 2=debug).
-    device : torch.device, default torch.device('cpu')
+    device : torch.device, default: configured device.current
         Device to use for computation.
 
     Returns
@@ -103,9 +104,9 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         self,
         space_group,
         grid_shape,
-        dtype_float=torch.float32,
+        dtype_float=get_float_dtype(),
         verbose=1,
-        device=torch.device("cpu"),
+        device=get_default_device(),
     ):
         """
         Initialize reciprocal space symmetry operator.
@@ -116,11 +117,11 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
             Space group name.
         grid_shape : tuple of int
             Shape of the reciprocal space grid (nh, nk, nl).
-        dtype_float : torch.dtype, default torch.float32
+        dtype_float : torch.dtype, default: configured dtypes.float
             Floating point precision.
         verbose : int, default 1
             Verbosity level.
-        device : torch.device, default torch.device('cpu')
+        device : torch.device, default: configured device.current
             Computation device.
         """
         super().__init__()
@@ -734,7 +735,7 @@ def expand_hkl(
         device = hkl.device
 
     # Get symmetry operations
-    symmetry = SpaceGroup(spacegroup, dtype=torch.float32, device=device)
+    symmetry = SpaceGroup(spacegroup, dtype=get_float_dtype(), device=device)
     n_ops = symmetry.matrices.shape[0]
 
     # Reciprocal space matrices (transpose of real space)
@@ -742,7 +743,7 @@ def expand_hkl(
     translations = symmetry.translations
 
     # Convert hkl to float for matrix operations
-    hkl_float = hkl.to(dtype=torch.float32, device=device)
+    hkl_float = hkl.to(dtype=get_float_dtype(), device=device)
     n_orig = len(hkl_float)
 
     # Apply all symmetry operations
@@ -793,7 +794,7 @@ def expand_hkl(
     expanded_hkl = torch.tensor(
         [list(k) for k in unique_dict.keys()], dtype=torch.int32, device=device
     )
-    phase_shifts = torch.tensor(unique_phases, dtype=torch.float32, device=device)
+    phase_shifts = torch.tensor(unique_phases, dtype=get_float_dtype(), device=device)
     orig_idx_tensor = torch.tensor(orig_indices, dtype=torch.int64, device=device)
 
     # Remove systematic absences if requested
@@ -882,7 +883,7 @@ def complete_hkl(
     all_hkl = generate_possible_hkl(cell, d_min, device=device)
 
     # Get symmetry operations for absence check
-    symmetry = SpaceGroup(spacegroup, dtype=torch.float32, device=device)
+    symmetry = SpaceGroup(spacegroup, dtype=get_float_dtype(), device=device)
     translations = symmetry.translations
 
     # Remove systematic absences
@@ -976,7 +977,7 @@ def expand_reflections(
     n_orig = len(reflection_data.hkl)
 
     if verbose > 0:
-        symmetry = SpaceGroup(space_group, dtype=torch.float32, device=device)
+        symmetry = SpaceGroup(space_group, dtype=get_float_dtype(), device=device)
         print(f"Expanding reflections for {space_group}")
         print(f"  Original reflections: {n_orig}")
         print(f"  Symmetry operations: {symmetry.n_ops}")
@@ -1083,9 +1084,9 @@ def _check_systematic_absences(
     n_ops = matrices.shape[0]
     absent = torch.zeros(n_refl, dtype=torch.bool, device=device)
 
-    hkl_float = hkl.to(dtype=torch.float32, device=device)
-    recip_matrices = matrices.transpose(-2, -1).to(dtype=torch.float32, device=device)
-    translations = translations.to(dtype=torch.float32, device=device)
+    hkl_float = hkl.to(dtype=get_float_dtype(), device=device)
+    recip_matrices = matrices.transpose(-2, -1).to(dtype=get_float_dtype(), device=device)
+    translations = translations.to(dtype=get_float_dtype(), device=device)
 
     for i in range(n_ops):
         R = recip_matrices[i]
@@ -1182,7 +1183,7 @@ def reduce_hkl(
         device = hkl_p1.device
 
     # Get symmetry operations
-    symmetry = SpaceGroup(spacegroup, dtype=torch.float32, device=device)
+    symmetry = SpaceGroup(spacegroup, dtype=get_float_dtype(), device=device)
     n_ops = symmetry.matrices.shape[0]
 
     # Reciprocal space matrices (transpose of real space)
@@ -1193,7 +1194,7 @@ def reduce_hkl(
     n_equiv = n_ops * (2 if include_friedel else 1)
 
     # Convert hkl to float for matrix operations
-    hkl_float = hkl_p1.to(dtype=torch.float32, device=device)
+    hkl_float = hkl_p1.to(dtype=get_float_dtype(), device=device)
     n_p1 = len(hkl_float)
 
     # Build lookup from hkl tuple to index in P1 array
@@ -1271,7 +1272,7 @@ def reduce_hkl(
     reduction_indices = torch.full(
         (n_asu, n_equiv), -1, dtype=torch.int64, device=device
     )
-    phase_shifts = torch.zeros((n_asu, n_equiv), dtype=torch.float32, device=device)
+    phase_shifts = torch.zeros((n_asu, n_equiv), dtype=get_float_dtype(), device=device)
 
     # Fill in the indices and phase shifts
     for asu_idx, asu_hkl in enumerate(asu_list):
@@ -1390,13 +1391,13 @@ def canonicalize_hkl(
     n_refl = len(hkl)
     if n_refl == 0:
         empty_hkl = torch.empty((0, 3), dtype=hkl_dtype, device=device)
-        empty_f = torch.empty(0, dtype=torch.float32, device=device)
+        empty_f = torch.empty(0, dtype=get_float_dtype(), device=device)
         empty_b = torch.empty(0, dtype=torch.bool, device=device)
         empty_i = torch.empty(0, dtype=torch.int64, device=device)
         return empty_hkl, empty_f, empty_b, empty_i
 
-    # Normalize spacegroup
-    sg_obj = SpaceGroup(spacegroup, dtype=torch.float32, device=torch.device("cpu"))
+    # Normalize spacegroup (CPU-only: this branch builds numpy-backed lookup tables)
+    sg_obj = SpaceGroup(spacegroup, dtype=get_float_dtype(), device=torch.device("cpu"))
     sg_gemmi = sg_obj._gemmi
     asu = gemmi.ReciprocalAsu(sg_gemmi)
     condition_key = asu.condition_str()
@@ -1473,7 +1474,7 @@ def canonicalize_hkl(
 
     # --- Convert to tensors and sort ---
     canonical_hkl = torch.tensor(canonical_np, dtype=hkl_dtype, device=device)
-    phase_shifts = torch.tensor(phase_shifts_np, dtype=torch.float32, device=device)
+    phase_shifts = torch.tensor(phase_shifts_np, dtype=get_float_dtype(), device=device)
     friedel_flags = torch.tensor(friedel_np, dtype=torch.bool, device=device)
 
     # Lexicographic sort by (h, k, l) via composite key
@@ -1549,7 +1550,7 @@ def expand_reciprocal_grid(
         device = F_grid.device
 
     grid_shape = F_grid.shape
-    dtype = torch.float32 if not F_grid.is_complex() else F_grid.real.dtype
+    dtype = get_float_dtype() if not F_grid.is_complex() else F_grid.real.dtype
 
     # Create symmetry handler
     recip_sym = ReciprocalSymmetryGrid(

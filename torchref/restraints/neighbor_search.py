@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Set, Tuple
 import numpy as np
 import torch
 
-from torchref.config import dtypes
+from torchref.config import dtypes, get_float_dtype
 
 if TYPE_CHECKING:
     from torchref.symmetry.cell import Cell
@@ -846,8 +846,8 @@ def build_vdw_restraints_gpu(
 
     empty_result = {
         "indices": torch.zeros(0, 2, dtype=torch.long, device=device),
-        "min_distances": torch.zeros(0, dtype=torch.float32, device=device),
-        "sigmas": torch.zeros(0, dtype=torch.float32, device=device),
+        "min_distances": torch.zeros(0, dtype=get_float_dtype(), device=device),
+        "sigmas": torch.zeros(0, dtype=get_float_dtype(), device=device),
         "symop_indices": torch.zeros(0, dtype=torch.long, device=device),
         "cell_offsets": torch.zeros(0, 3, dtype=torch.long, device=device),
     }
@@ -983,9 +983,9 @@ def build_vdw_restraints_gpu(
 
     result = {
         "indices": indices,
-        "min_distances": min_distances.to(torch.float32),
+        "min_distances": min_distances.to(get_float_dtype()),
         "sigmas": torch.full(
-            (len(indices),), sigma, dtype=torch.float32, device=device
+            (len(indices),), sigma, dtype=get_float_dtype(), device=device
         ),
         "symop_indices": symop_indices,
         "cell_offsets": pair_cell_offsets,

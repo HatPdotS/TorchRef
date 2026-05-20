@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 import gemmi
 import torch
 
+from torchref.config import get_default_device
 from torchref.symmetry import Cell
 from torchref.utils.device_mixin import DeviceMovementMixin
 
@@ -37,7 +38,7 @@ class CrystalDataset(DeviceMovementMixin):
     Parameters
     ----------
     device : torch.device
-        Device for tensors ('cpu', 'cuda', etc.). Default is 'cpu'.
+        Device for tensors ('cpu', 'cuda', etc.). Defaults to the configured device.current.
     verbose : int
         Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
 
@@ -76,7 +77,7 @@ class CrystalDataset(DeviceMovementMixin):
     spacegroup: Optional[str] = None  # Space group name string
 
     # === Metadata ===
-    device: torch.device = field(default_factory=lambda: torch.device("cpu"))
+    device: torch.device = field(default_factory=get_default_device)
     verbose: int = 1
 
     # === Source tracking ===
@@ -166,7 +167,7 @@ class CrystalDataset(DeviceMovementMixin):
 
     @classmethod
     def _from_state(
-        cls, state: Dict[str, Any], device: str = "cpu"
+        cls, state: Dict[str, Any], device=get_default_device()
     ) -> "CrystalDataset":
         """
         Reconstruct from state dictionary.
@@ -231,7 +232,7 @@ class CrystalDataset(DeviceMovementMixin):
             print(f"Saved {self.__class__.__name__} to {path}")
 
     @classmethod
-    def load_state(cls, path: str, device: str = "cpu") -> "CrystalDataset":
+    def load_state(cls, path: str, device=get_default_device()) -> "CrystalDataset":
         """
         Load dataset state from file.
 

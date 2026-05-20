@@ -29,7 +29,8 @@ def pytest_configure(config):
     """Configure pytest markers."""
     config.addinivalue_line("markers", "unit: Unit tests (fast, no I/O)")
     config.addinivalue_line("markers", "integration: Integration tests (slower, real I/O)")
-    config.addinivalue_line("markers", "gpu: GPU-requiring tests (skipped by default)")
+    config.addinivalue_line("markers", "gpu: GPU-requiring tests (CUDA or MPS; skipped by default)")
+    config.addinivalue_line("markers", "cuda_only: Tests that specifically require CUDA (e.g. Triton)")
     config.addinivalue_line("markers", "slow: Slow tests (skipped by default)")
 
 
@@ -107,22 +108,45 @@ def cpu_device() -> torch.device:
     return torch.device("cpu")
 
 
+def _gpu_available() -> bool:
+    """Return True if any GPU backend (CUDA or MPS) is available."""
+    if torch.cuda.is_available():
+        return True
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return True
+    return False
+
+
 @pytest.fixture(scope="session")
 def gpu_device() -> torch.device:
-    """GPU torch device (only use with @pytest.mark.gpu)."""
+    """GPU torch device (only use with @pytest.mark.gpu).
+
+    Prefers CUDA, falls back to MPS; skips if neither is available.
+    """
     if torch.cuda.is_available():
         return torch.device("cuda")
-    pytest.skip("CUDA not available")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    pytest.skip("No GPU (CUDA or MPS) available")
 
 
 @pytest.fixture
 def device(request) -> torch.device:
-    """Default device - CPU unless in GPU-marked test."""
-    if "gpu" in [m.name for m in request.node.iter_markers()]:
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        pytest.skip("CUDA not available")
-    return torch.device("cpu")
+    """Default test device.
+
+    Uses the package-wide auto-detected default (``torchref.device.current``)
+    so tests run on whichever device the user's machine resolved to at
+    import time: cuda -> mps -> cpu. Tests marked ``@pytest.mark.cuda_only``
+    are skipped when CUDA is not available.
+    """
+    from torchref.config import get_default_device
+
+    markers = {m.name for m in request.node.iter_markers()}
+    if "cuda_only" in markers and not torch.cuda.is_available():
+        pytest.skip("Test requires CUDA")
+    if "gpu" in markers and not _gpu_available():
+        pytest.skip("No GPU (CUDA or MPS) available")
+    return get_default_device()
 
 
 # =============================================================================

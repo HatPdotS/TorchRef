@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 
 
+from torchref.config import get_default_device, get_float_dtype
 from torchref.io import cif, pdb
 from torchref.base import math_torch
 from torchref.model.parameter_wrappers import (
@@ -56,11 +57,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     Parameters
     ----------
     dtype_float : torch.dtype, optional
-        Data type for floating point tensors. Default is torch.float32.
+        Data type for floating point tensors. Defaults to the configured dtypes.float.
     verbose : int, optional
         Verbosity level for logging. Default is 1.
     device : torch.device, optional
-        Computation device. Default is torch.device('cpu').
+        Computation device. Defaults to the configured device.current.
     strip_H : bool, optional
         Whether to strip hydrogen atoms when loading. Default is True.
 
@@ -100,9 +101,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def __init__(
         self,
-        dtype_float=torch.float32,
+        dtype_float=get_float_dtype(),
         verbose=1,
-        device=torch.device("cpu"),
+        device=get_default_device(),
         strip_H: bool = True,
     ):
         """
@@ -114,11 +115,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Parameters
         ----------
         dtype_float : torch.dtype, optional
-            Data type for floating point tensors. Default is torch.float32.
+            Data type for floating point tensors. Defaults to the configured dtypes.float.
         verbose : int, optional
             Verbosity level for logging. Default is 1.
         device : torch.device, optional
-            Computation device. Default is torch.device('cpu').
+            Computation device. Defaults to the configured device.current.
         strip_H : bool, optional
             Whether to strip hydrogen atoms when loading. Default is True.
         """
@@ -2742,9 +2743,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def create_from_state_dict(
         cls,
         state_dict: dict,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
         verbose: int = 1,
-        dtype_float: torch.dtype = torch.float32,
+        dtype_float: torch.dtype = get_float_dtype(),
     ) -> "Model":
         """
         Create a fully initialized Model from a state dictionary.
@@ -2757,11 +2758,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         state_dict : dict
             State dictionary from torch.save(model.state_dict(), ...).
         device : torch.device, optional
-            Device to place tensors on. Default is torch.device('cpu').
+            Device to place tensors on. Defaults to the configured device.current.
         verbose : int, optional
             Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional
-            Float dtype for tensors. Default is torch.float32.
+            Float dtype for tensors. Defaults to the configured dtypes.float.
 
         Returns
         -------

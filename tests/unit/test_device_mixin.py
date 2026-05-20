@@ -75,7 +75,12 @@ class _SharedTensorParent(DeviceMixin, nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.cell = Cell([10.0, 20.0, 30.0, 90.0, 90.0, 90.0], dtype=torch.float32)
+        # Pin to CPU so float64 conversion test below works on MPS-default Macs.
+        self.cell = Cell(
+            [10.0, 20.0, 30.0, 90.0, 90.0, 90.0],
+            dtype=torch.float32,
+            device="cpu",
+        )
         # Alias the cell's data tensor as a plain attribute on a child
         self.alias_holder = _AliasModule(self.cell._data)
 
@@ -120,7 +125,10 @@ def test_cycle_does_not_recurse_forever():
 @pytest.mark.unit
 def test_cell_to_is_in_place():
     """Cell.to() now mutates self and returns self (no fresh instance)."""
-    cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float32)
+    # Pin to CPU so float64 conversion succeeds on MPS-default Macs.
+    cell = Cell(
+        [50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float32, device="cpu"
+    )
     moved = cell.to(dtype=torch.float64)
     assert moved is cell, "Cell.to should return self after the unified migration"
     assert cell._data.dtype == torch.float64
@@ -230,7 +238,9 @@ def test_tensormasks_traversal_moves_dict_items():
 @pytest.mark.unit
 def test_cell_cache_repopulates_on_target_dtype():
     """After .to(), cached derived quantities must recompute on the new dtype."""
-    cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float32)
+    cell = Cell(
+        [50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float32, device="cpu"
+    )
     _ = cell.volume  # populates _cache
     assert "volume" in cell._cache
 

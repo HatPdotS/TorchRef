@@ -56,12 +56,13 @@ class TestScalerDeviceHandling:
 
     @pytest.mark.unit
     def test_scaler_default_device(self):
-        """Test default device is CPU."""
+        """Test default device matches the package-wide configured default."""
+        from torchref.config import get_default_device
         from torchref.scaling.scaler import Scaler
-        
+
         scaler = Scaler()
-        
-        assert scaler.device == torch.device('cpu')
+
+        assert scaler.device == get_default_device()
 
     @pytest.mark.unit
     def test_scaler_custom_device(self):

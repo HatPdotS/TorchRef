@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import torch
 from torch.nn import Module as nnModule
 
+from torchref.config import get_default_device
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
@@ -55,7 +56,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     max_res : float, optional
         Maximum resolution for reflections.
     device : torch.device, optional
-        Computation device. Default is cpu.
+        Computation device. Defaults to the configured device.current.
     weighter : LossWeightingModule, optional
         Loss weighting module. Creates default if None.
     nbins : int, optional
@@ -84,7 +85,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         cif=None,
         verbose: int = 1,
         max_res: float = None,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
         nbins: int = 10,
         manual_weights: Dict[str, float] = None,
         component_weights: Dict[str, float] = None,
@@ -110,7 +111,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         max_res : float, optional
             Maximum resolution for reflections.
         device : torch.device, optional
-            Computation device. Default is cpu.
+            Computation device. Defaults to the configured device.current.
         weighter : LossWeightingModule, optional
             Loss weighting module. Creates default if None.
         nbins : int, optional
@@ -988,7 +989,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     def create_from_state_dict(
         cls,
         state_dict: dict,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
         verbose: int = 1,
     ) -> "Refinement":
         """
@@ -1004,7 +1005,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             State dictionary from torch.save(refinement.state_dict(), ...)
             or from loading a checkpoint file.
         device : torch.device, optional
-            Device to place tensors on. Default is cpu.
+            Device to place tensors on. Defaults to the configured device.current.
         verbose : int, optional
             Verbosity level. Default is 1.
 

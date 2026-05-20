@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from torchref.config import get_float_dtype
+
 
 def get_scattering_factors_unique(atoms, s):
     scattering_table = pd.read_feather(
@@ -166,11 +168,11 @@ def get_parametrization_atom(charge, atom):
 
     try:
         SF = gemmi.IT92_get_exact(gemmi.Element(atom), charge)
-        A = torch.tensor(SF.a, dtype=torch.float32)
-        B = torch.tensor(SF.b, dtype=torch.float32)
-        C = torch.tensor([SF.c], dtype=torch.float32)
+        A = torch.tensor(SF.a, dtype=get_float_dtype())
+        B = torch.tensor(SF.b, dtype=get_float_dtype())
+        C = torch.tensor([SF.c], dtype=get_float_dtype())
         A = torch.cat([A, C]).reshape(1, -1)
-        B = torch.cat([B, torch.tensor([0], dtype=torch.float32)]).reshape(1, -1)
+        B = torch.cat([B, torch.tensor([0], dtype=get_float_dtype())]).reshape(1, -1)
         parametrization = [A, B]
         return parametrization
     except Exception as e:
@@ -189,6 +191,6 @@ def get_parametrization_atom(charge, atom):
                 "could not find scattering factor for neutral atom either, setting to zero"
             )
             return [
-                torch.tensor([[0, 0, 0, 0, 0]], dtype=torch.float32),
-                torch.tensor([[0, 0, 0, 0, 0]], dtype=torch.float32),
+                torch.tensor([[0, 0, 0, 0, 0]], dtype=get_float_dtype()),
+                torch.tensor([[0, 0, 0, 0, 0]], dtype=get_float_dtype()),
             ]

@@ -35,7 +35,7 @@ import gemmi
 import torch
 import torch.nn as nn
 
-from torchref.config import get_float_dtype
+from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMovementMixin
 
@@ -184,7 +184,11 @@ def get_symmetry_operations(spacegroup: SpaceGroupLike):
     return list(sg.operations())
 
 
-def get_operations_as_tensors(spacegroup: SpaceGroupLike, dtype=None, device=None):
+def get_operations_as_tensors(
+    spacegroup: SpaceGroupLike,
+    dtype: torch.dtype = get_float_dtype(),
+    device: torch.device = get_default_device(),
+):
     """
     Get symmetry operations as PyTorch tensors.
 
@@ -193,9 +197,9 @@ def get_operations_as_tensors(spacegroup: SpaceGroupLike, dtype=None, device=Non
     spacegroup : SpaceGroupLike
         Space group in any supported format.
     dtype : torch.dtype, optional
-        Data type for tensors. Default is torch.float64.
+        Data type for tensors. Defaults to the configured ``dtypes.float``.
     device : torch.device, optional
-        Device for tensors. Default is CPU.
+        Device for tensors. Defaults to the configured ``device.current``.
 
     Returns
     -------
@@ -204,13 +208,6 @@ def get_operations_as_tensors(spacegroup: SpaceGroupLike, dtype=None, device=Non
     translations : torch.Tensor, shape (n_ops, 3)
         Translation vectors (in fractional coordinates).
     """
-    import torch
-
-    if dtype is None:
-        dtype = get_float_dtype()
-    if device is None:
-        device = torch.device("cpu")
-
     sg = _normalize_spacegroup(spacegroup)
 
     # Extract rotation matrices and translations from gemmi operations
@@ -642,7 +639,7 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         - None (defaults to P1)
     dtype : torch.dtype, default torch.float64
         Data type for rotation matrices and translations.
-    device : torch.device, default torch.device('cpu')
+    device : torch.device, default: configured device.current
         Device for computation.
 
     Attributes
@@ -681,12 +678,10 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     def __init__(
         self,
         space_group: SpaceGroupLike = None,
-        dtype: torch.dtype = None,
-        device: torch.device = torch.device("cpu"),
+        dtype: torch.dtype = get_float_dtype(),
+        device: torch.device = get_default_device(),
     ):
         super(SpaceGroup, self).__init__()
-        if dtype is None:
-            dtype = get_float_dtype()
         self._device = device
         self._dtype = dtype
 

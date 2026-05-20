@@ -16,6 +16,7 @@ from typing import Optional, Tuple, TYPE_CHECKING
 import torch
 import torch.nn as nn
 
+from torchref.config import get_default_device
 from torchref.io import ReflectionData
 from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll_xray_lognormal
 from torchref.base.reciprocal import get_scattering_vectors
@@ -57,7 +58,7 @@ class Scaler(ScalerBase):
         Number of resolution bins.
     verbose : int, default 1
         Verbosity level.
-    device : torch.device, default torch.device('cpu')
+    device : torch.device, default: configured device.current
         Computation device.
 
     Attributes
@@ -74,7 +75,7 @@ class Scaler(ScalerBase):
         data: Optional[ReflectionData] = None,
         nbins: int = 20,
         verbose: int = 1,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
     ):
         """
         Initialize Scaler.
@@ -92,7 +93,7 @@ class Scaler(ScalerBase):
             Number of resolution bins.
         verbose : int, default 1
             Verbosity level.
-        device : torch.device, default torch.device('cpu')
+        device : torch.device, default: configured device.current
             Computation device.
         """
         # Initialize base class with data

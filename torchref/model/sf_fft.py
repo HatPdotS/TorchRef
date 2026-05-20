@@ -19,7 +19,7 @@ import torch.nn as nn
 
 from torchref.base.fourier import get_real_grid, ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
-from torchref.config import dtypes
+from torchref.config import dtypes, get_default_device
 
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
@@ -49,7 +49,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     dtype_float : torch.dtype, optional
         Data type for floating point tensors. Default is dtypes.float.
     device : torch.device, optional
-        Computation device. Default is torch.device('cpu').
+        Computation device. Defaults to the configured device.current.
     verbose : int, optional
         Verbosity level for logging. Default is 0.
 
@@ -132,7 +132,13 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         self.radius_angstrom = radius_angstrom
         self.dtype_float = dtype_float
 
-        self.device = device if device is not None else cell.device if cell is not None else torch.device('cpu')
+        self.device = (
+            device
+            if device is not None
+            else cell.device
+            if cell is not None
+            else get_default_device()
+        )
 
         self.verbose = verbose
         self.use_late_symmetry = use_late_symmetry
@@ -281,7 +287,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     def compute_real_space_grid(
         fractional_matrix: torch.Tensor,
         gridsize: torch.Tensor,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
     ) -> torch.Tensor:
         """
         Generate the real-space coordinate grid.

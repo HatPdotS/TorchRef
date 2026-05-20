@@ -14,6 +14,7 @@ from typing import Optional, Tuple
 import torch
 
 from torchref.base.math_torch import U_to_matrix
+from torchref.config import get_default_device
 
 
 def compute_radial_shells(
@@ -46,7 +47,7 @@ def compute_radial_shells(
         Shell centers in Angstroms^-1, shape (n_shells,).
     """
     if device is None:
-        device = torch.device("cpu")
+        device = get_default_device()
 
     s_min = 1.0 / d_max  # Low resolution end
     s_max = 1.0 / d_min  # High resolution end

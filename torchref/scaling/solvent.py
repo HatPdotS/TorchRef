@@ -11,7 +11,7 @@ from torchref.base import (
     ifft,
 )
 from torchref.base.electron_density.main import _get_radius_offsets
-from torchref.config import get_float_dtype
+from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorDict, ModuleReference
 from torchref.utils.device_mixin import DeviceMixin
@@ -67,8 +67,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         optimize_phase=True,
         initial_phase_offset=0.0,
         verbose=1,
-        float_type=torch.float32,
-        device=torch.device("cpu"),
+        float_type=get_float_dtype(),
+        device=get_default_device(),
     ):
         """
         Initialize SolventModel.
@@ -98,7 +98,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             Verbosity level.
         float_type : torch.dtype, default torch.float32
             Floating point data type.
-        device : torch.device, default torch.device('cpu')
+        device : torch.device, default: configured device.current
             Device for tensor operations.
         """
         super(SolventModel, self).__init__()

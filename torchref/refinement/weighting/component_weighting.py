@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any, Dict, List
 import torch
 from torch import nn
 
+from torchref.config import get_default_device
 from torchref.refinement.weighting.base_weighting import BaseWeighting
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.stats import (
@@ -268,7 +269,7 @@ class ComponentWeighting(DeviceMixin, nn.Module):
         initial_xray_loss: float = None,
     ):
         super().__init__()
-        self.device = device or torch.device("cpu")
+        self.device = device or get_default_device()
 
         schemes_dict = {
             # "resolution": ResolutionWeighting(device),

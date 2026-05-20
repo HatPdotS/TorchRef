@@ -7,7 +7,7 @@ Functions for creating real-space and reciprocal-space grids.
 import numpy as np
 import torch
 
-from torchref.config import dtypes
+from torchref.config import dtypes, get_default_device
 from torchref.base.coordinates.transforms_torch import (
     fractional_to_cartesian_torch,
     get_fractional_matrix,
@@ -46,7 +46,7 @@ def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None,
         elif isinstance(cell, torch.Tensor):
             device = cell.device
         else:
-            device = torch.device("cpu")
+            device = get_default_device()
 
     if isinstance(gridsize, torch.Tensor):
         nsteps = gridsize.to(dtypes.int).to(device)

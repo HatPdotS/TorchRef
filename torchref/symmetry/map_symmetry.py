@@ -14,6 +14,7 @@ Space groups can be specified as strings, integers (1-230), or gemmi.SpaceGroup 
 import torch
 import torch.nn as nn
 
+from torchref.config import get_default_device, get_float_dtype
 from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -22,9 +23,9 @@ def MapSymmetry(
     space_group: SpaceGroupLike,
     map_shape,
     cell_params,
-    dtype_float=torch.float32,
+    dtype_float=get_float_dtype(),
     verbose=1,
-    device=torch.device("cpu"),
+    device=get_default_device(),
 ):
     """
     Factory function to create the appropriate MapSymmetry implementation.
@@ -45,7 +46,7 @@ def MapSymmetry(
         Floating point precision to use.
     verbose : int, default 1
         Verbosity level (0=silent, 1=info, 2=debug).
-    device : torch.device, default torch.device('cpu')
+    device : torch.device, default: configured device.current
         Device to use for computation.
 
     Returns
@@ -104,9 +105,9 @@ class MapSymmetryDirect(DeviceMixin, nn.Module):
         space_group,
         map_shape,
         cell_params,
-        dtype_float=torch.float32,
+        dtype_float=get_float_dtype(),
         verbose=1,
-        device=torch.device("cpu"),
+        device=get_default_device(),
     ):
         super().__init__()
         self.dtype_float = dtype_float

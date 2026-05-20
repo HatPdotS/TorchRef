@@ -183,7 +183,7 @@ class TestInternalCoordinateTensor:
         """Test with disconnected molecules."""
         # Create two copies far apart
         xyz1 = sample_model.xyz().detach().clone()
-        xyz2 = xyz1.clone() + torch.tensor([100.0, 0.0, 0.0])
+        xyz2 = xyz1.clone() + torch.tensor([100.0, 0.0, 0.0], device=xyz1.device)
         multi_xyz = torch.cat([xyz1, xyz2], dim=0)
 
         # First get the chain count of the original structure
@@ -434,8 +434,9 @@ class TestParallelForward:
 
     def test_forward_parallel_matches_forward(self, sample_model):
         """Test that forward_parallel() gives same result as forward()."""
-        original_xyz = sample_model.xyz().detach().clone()
-        # Use float64 for higher precision comparison
+        # Pin to CPU because this test deliberately uses float64 for higher
+        # precision comparison, which MPS does not support.
+        original_xyz = sample_model.xyz().detach().clone().to("cpu")
         ic_tensor = InternalCoordinateTensor(
             original_xyz, bond_cutoff=2.0, dtype=torch.float64
         )

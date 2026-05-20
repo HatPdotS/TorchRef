@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 import torch
 
+from torchref.config import get_default_device, get_float_dtype
 from torchref.symmetry import Cell, SpaceGroup, SpaceGroupLike
 
 from .base import CrystalDataset
@@ -86,8 +87,8 @@ class FcalcDataset(CrystalDataset):
         spacegroup: SpaceGroupLike,
         d_min: float = 2.0,
         d_max: Optional[float] = None,
-        device: torch.device = torch.device("cpu"),
-        dtype: torch.dtype = torch.float32,
+        device: torch.device = get_default_device(),
+        dtype: torch.dtype = get_float_dtype(),
     ) -> "FcalcDataset":
         """
         Create FcalcDataset with HKL generated to given resolution.
@@ -350,7 +351,7 @@ class FcalcDataset(CrystalDataset):
 
     @classmethod
     def _from_state(
-        cls, state: Dict[str, Any], device: str = "cpu"
+        cls, state: Dict[str, Any], device=get_default_device()
     ) -> "FcalcDataset":
         """
         Reconstruct from state, creating SpaceGroup wrapper.
@@ -384,7 +385,7 @@ class FcalcDataset(CrystalDataset):
         # Convert cell tensor back to Cell object
         if "cell" in state and state["cell"] is not None:
             if isinstance(state["cell"], torch.Tensor):
-                state["cell"] = Cell(state["cell"], dtype=torch.float32, device=device)
+                state["cell"] = Cell(state["cell"], dtype=get_float_dtype(), device=device)
 
         # Create object with remaining state
         obj = cls(**state)

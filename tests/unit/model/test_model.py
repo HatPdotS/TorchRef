@@ -76,12 +76,13 @@ class TestModelDeviceHandling:
 
     @pytest.mark.unit
     def test_model_default_device(self):
-        """Test default device is CPU."""
+        """Test default device matches the package-wide configured default."""
+        from torchref.config import get_default_device
         from torchref.model.model import Model
-        
+
         model = Model()
-        
-        assert model.device == torch.device('cpu')
+
+        assert model.device == get_default_device()
 
     @pytest.mark.unit
     def test_model_custom_device(self):

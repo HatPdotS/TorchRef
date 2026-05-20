@@ -69,13 +69,13 @@ class TestCoordinateTransformations:
             fractional_to_cartesian_torch
         )
 
-        coords = random_coordinates(n_atoms=10).to(torch.float64)
+        coords = random_coordinates(n_atoms=10)
         cell = mock_cell_triclinic
-        
+        # rtol relaxed slightly because default dtype may be float32.
         frac = cartesian_to_fractional_torch(coords, cell)
         cart_back = fractional_to_cartesian_torch(frac, cell)
-        
-        assert torch.allclose(coords, cart_back, rtol=1e-6)
+
+        assert torch.allclose(coords, cart_back, rtol=1e-5, atol=1e-5)
 
     @pytest.mark.unit
     @pytest.mark.gpu

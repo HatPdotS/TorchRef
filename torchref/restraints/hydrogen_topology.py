@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from torchref.config import dtypes
+from torchref.config import dtypes, get_default_device
 from torchref.utils.device_mixin import DeviceMixin
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ def _classify_placement(n_h_on_parent: int, n_heavy_nb: int, slot: int) -> int:
 
 def build_hydrogen_topology(
     pdb,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device = get_default_device(),
     verbose: int = 0,
 ) -> HydrogenTopology:
     """Build riding-hydrogen topology from the model's heavy-atom DataFrame.
@@ -665,7 +665,7 @@ def build_h_candidate_pairs(
     vdw_data: dict,
     pdb,
     h_excl_hash: torch.Tensor,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device = get_default_device(),
     verbose: int = 0,
 ) -> None:
     """Precompute candidate H-involving VDW pairs from heavy-atom pair list.

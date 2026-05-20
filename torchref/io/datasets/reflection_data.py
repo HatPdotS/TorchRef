@@ -9,7 +9,7 @@ intensities, and R-free flags.
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-from torchref.config import dtypes
+from torchref.config import dtypes, get_default_device
 from torch.nn import Parameter
 
 from torchref.symmetry import SpaceGroup
@@ -53,7 +53,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
     verbose : int, optional
         Verbosity level for logging (0=silent, 1=normal, 2=debug). Default is 1.
     device : str, optional
-        Device to store tensors on ('cpu', 'cuda', 'cuda:0', etc.). Default is 'cpu'.
+        Device to store tensors on ('cpu', 'cuda', 'cuda:0', etc.). Defaults to the configured device.current.
 
     Attributes
     ----------
@@ -302,7 +302,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         cell: "Cell",
         spacegroup: "SpaceGroup",
         rfree_flags: Optional[torch.Tensor] = None,
-        device: str = "cpu",
+        device=get_default_device(),
         verbose: int = 1,
     ) -> "ReflectionData":
         """
@@ -324,7 +324,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             R-free flags of shape (N,), dtype bool. If None, flags are
             generated automatically (2% free fraction).
         device : str, optional
-            Device for tensors. Default is 'cpu'.
+            Device for tensors. Defaults to the configured device.current.
         verbose : int, optional
             Verbosity level. Default is 1.
 

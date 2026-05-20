@@ -22,6 +22,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from torchref.config import get_default_device
+
 
 @dataclass
 class ESConfig:
@@ -94,7 +96,7 @@ class ESPolicyTrainer:
         self,
         policy: nn.Module,
         config: ESConfig = None,
-        device: str = "cpu",
+        device=get_default_device(),
     ):
         self.policy = policy
         self.config = config or ESConfig()

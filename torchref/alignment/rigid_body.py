@@ -25,6 +25,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from torchref.config import get_default_device
 from torchref.scaling import ScalerBase
 from torchref.model import SfFFT
 from torchref.symmetry import spacegroup
@@ -112,7 +113,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         expected_rotational_error: float = 0.1,
         initial_rotation: torch.Tensor = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32),
         initial_translation: Optional[torch.Tensor] = None,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
         rfactor_converged_threshold: float = 0.45,
         max_res: float = 4.0,
         verbose: int = 1,

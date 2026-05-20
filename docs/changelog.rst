@@ -2,6 +2,12 @@ Changelog
 =========
 
 
+Version 0.5.3
+-------------
+- Fixed dtype inconsistencies and centralized dtype handling
+- Centralized default device handling
+- Added compatability with Metal performance shaders
+
 Version 0.5.2
 -------------
 - Cleaned up build solvent mask calculation

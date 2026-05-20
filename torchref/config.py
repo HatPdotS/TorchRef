@@ -6,19 +6,27 @@ Default dtypes can be set via environment variables at import time:
 - TORCHREF_DTYPE_INT: int32 (default) or int64
 - TORCHREF_DTYPE_COMPLEX: complex64 (default) or complex128
 
-Users can also change dtypes at runtime via attribute assignment:
+Default device is auto-detected at import time using cuda -> mps -> cpu.
+Override with the TORCHREF_DEVICE environment variable
+('auto' (default), 'cuda', 'mps', 'cpu').
+
+Users can also change dtypes/device at runtime via attribute assignment:
     import torchref
     torchref.dtypes.float = torch.float64
-    torchref.dtypes.int = torch.int64
-    torchref.dtypes.complex = torch.complex128
+    torchref.device.current = torch.device('cpu')
 
 Or read current values:
     torchref.dtypes.float   # torch.float32
-    torchref.dtypes.int     # torch.int32
-    torchref.dtypes.complex # torch.complex64
+    torchref.device.current # torch.device('cuda')
+
+MPS caveat: Apple's MPS backend does not support float64 / complex128. If
+the resolved device is MPS and the configured float dtype is float64, a
+warning is emitted at import time. Either set TORCHREF_DTYPE_FLOAT=float32
+or TORCHREF_DEVICE=cpu to silence it.
 """
 
 import os
+import warnings
 
 import torch
 
@@ -145,3 +153,94 @@ def get_int_dtype() -> torch.dtype:
 def get_complex_dtype() -> torch.dtype:
     """Get the current default complex dtype."""
     return dtypes.complex
+
+
+# ---------------------------------------------------------------------------
+# Device configuration
+# ---------------------------------------------------------------------------
+
+_VALID_DEVICE_TYPES = ("cuda", "mps", "cpu")
+
+
+def _auto_detect_device() -> torch.device:
+    """Pick the best available device: cuda -> mps -> cpu."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+class DeviceConfig:
+    """
+    Device configuration with property-based access.
+
+    Resolved once at import time using cuda -> mps -> cpu, overridable via
+    the TORCHREF_DEVICE environment variable.
+
+        device.current              # get the active device
+        device.current = "cpu"      # set at runtime (string or torch.device)
+    """
+
+    def __init__(self):
+        override = os.environ.get("TORCHREF_DEVICE", "auto").lower()
+        if override == "auto":
+            self._device = _auto_detect_device()
+        else:
+            self._device = self._coerce(override)
+        self._warn_if_mps_dtype_mismatch()
+
+    @staticmethod
+    def _coerce(value) -> torch.device:
+        """Validate and convert a user-supplied device value."""
+        if isinstance(value, torch.device):
+            dev = value
+        elif isinstance(value, str):
+            dev = torch.device(value)
+        else:
+            raise TypeError(
+                f"device must be a torch.device or string, got {type(value).__name__}"
+            )
+        if dev.type not in _VALID_DEVICE_TYPES:
+            raise ValueError(
+                f"Invalid device type: {dev.type!r}. "
+                f"Valid types: {_VALID_DEVICE_TYPES}"
+            )
+        if dev.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA requested but not available on this system.")
+        if dev.type == "mps" and not (
+            hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+        ):
+            raise RuntimeError("MPS requested but not available on this system.")
+        return dev
+
+    def _warn_if_mps_dtype_mismatch(self) -> None:
+        if self._device.type == "mps" and dtypes.float == torch.float64:
+            warnings.warn(
+                "TorchRef default device is MPS but dtypes.float is float64; "
+                "MPS does not support float64. Set TORCHREF_DTYPE_FLOAT=float32 "
+                "or TORCHREF_DEVICE=cpu to silence this warning.",
+                stacklevel=2,
+            )
+
+    @property
+    def current(self) -> torch.device:
+        """Get the current default device."""
+        return self._device
+
+    @current.setter
+    def current(self, value) -> None:
+        """Set the default device for all future operations."""
+        self._device = self._coerce(value)
+        self._warn_if_mps_dtype_mismatch()
+
+    def __repr__(self) -> str:
+        return f"DeviceConfig(current={self._device})"
+
+
+device = DeviceConfig()
+
+
+def get_default_device() -> torch.device:
+    """Get the current default device."""
+    return device.current

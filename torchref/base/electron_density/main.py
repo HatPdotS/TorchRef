@@ -33,11 +33,22 @@ from typing import Optional
 
 import torch
 
+from torchref.config import dtypes, get_float_dtype
+
 # ---------------------------------------------------------------------------
 # Engine selection — set via env vars or overwrite at runtime
 # ---------------------------------------------------------------------------
 ISO_MAP_ENGINE_GPU: str = os.environ.get("TORCHREF_ISO_MAP_ENGINE_GPU", "auto")
 ISO_MAP_ENGINE_CPU: str = os.environ.get("TORCHREF_ISO_MAP_ENGINE_CPU", "separable")
+# MPS engines:
+#   "single"             — single-pass (no chunking), one math + one scatter call.
+#                          Default — avoids per-chunk autograd.Function overhead
+#                          and is required for the Metal scatter to win over
+#                          PyTorch scatter_add_ (chunking dilutes that win on
+#                          Apple Silicon, see profiling_mps/ANALYSIS.md).
+#   "separable_compiled" — CPU separable_compiled (multi-chunk, compiled math).
+#   "separable"          — CPU separable (multi-chunk, eager math).
+ISO_MAP_ENGINE_MPS: str = os.environ.get("TORCHREF_ISO_MAP_ENGINE_MPS", "single")
 
 # Legacy env var (backward compat) — only consulted when GPU engine is "auto"
 _GPU_MODE = os.environ.get("TORCHREF_ATOM_PLACEMENT_GPU_MODE", "triton")
@@ -101,6 +112,39 @@ def _get_cpp_scatter():
     return _cpp_scatter_fn
 
 
+def _do_structured_scatter(
+    density_cube: torch.Tensor,
+    wa: torch.Tensor,
+    wbwc: torch.Tensor,
+    density_flat: torch.Tensor,
+    map_size: int,
+) -> torch.Tensor:
+    """Pick the fastest structured scatter for the device.
+
+    On CPU, dispatches to the custom C++ kernel (``cpu_scatter``) when
+    available — partitioned, no atomics, ~2× faster than PyTorch's stock
+    ``scatter_add_``. On every other device (MPS, CUDA, CPU without the
+    extension built) falls back to PyTorch ``scatter_add_`` with int64
+    indices.
+
+    Returns the resulting flat density tensor. The C++ path accumulates
+    out-of-place; the ``scatter_add_`` fallback mutates ``density_flat``
+    in place. Both return the up-to-date tensor.
+    """
+    if density_cube.device.type == "cpu":
+        cpp_fn = _get_cpp_scatter()
+        if cpp_fn is not None:
+            return density_flat + cpp_fn(density_cube, wa, wbwc, map_size)
+    # Fallback: PyTorch scatter_add_ requires int64 indices.
+    idx_flat = wa[:, :, None, None] + wbwc[:, None, :, :]
+    density_flat.scatter_add_(
+        0,
+        idx_flat.reshape(-1).to(torch.int64),
+        density_cube.reshape(-1),
+    )
+    return density_flat
+
+
 def build_electron_density(
     real_space_grid: torch.Tensor,
     xyz_iso: torch.Tensor,
@@ -117,7 +161,7 @@ def build_electron_density(
     occ_aniso: Optional[torch.Tensor] = None,
     A_aniso: Optional[torch.Tensor] = None,
     B_aniso: Optional[torch.Tensor] = None,
-    dtype: torch.dtype = torch.float32,
+    dtype: torch.dtype = get_float_dtype(),
 ) -> torch.Tensor:
     """
     Build an electron density map from atomic parameters.
@@ -197,18 +241,130 @@ def _add_isotropic(
     inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
 ):
     """Add isotropic atoms using the backend selected by ISO_MAP_ENGINE_*."""
-    is_cuda = density_map.device.type == "cuda"
+    device_type = density_map.device.type
 
-    if is_cuda:
+    if device_type == "cuda":
         return _add_isotropic_gpu(
             real_space_grid, density_map, xyz, adp, occ, A, B,
             inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
         )
-    else:
-        return _add_isotropic_cpu(
+    if device_type == "mps":
+        return _add_isotropic_mps(
             real_space_grid, density_map, xyz, adp, occ, A, B,
             inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
         )
+    return _add_isotropic_cpu(
+        real_space_grid, density_map, xyz, adp, occ, A, B,
+        inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
+    )
+
+
+def _add_isotropic_mps(
+    real_space_grid, density_map, xyz, adp, occ, A, B,
+    inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
+):
+    """MPS dispatch — see ``ISO_MAP_ENGINE_MPS`` above for engine choices."""
+    engine = ISO_MAP_ENGINE_MPS
+    grid_shape_tuple = real_space_grid.shape[:3]
+
+    if engine == "single":
+        return _add_isotropic_mps_single(
+            density_map, xyz, adp, occ, A, B,
+            inv_frac_matrix, frac_matrix,
+            grid_shape_tuple, voxel_size, radius_angstrom,
+        )
+    if engine == "separable_compiled":
+        return _add_isotropic_cpu_separable_compiled(
+            density_map, xyz, adp, occ, A, B,
+            inv_frac_matrix, frac_matrix,
+            grid_shape_tuple, voxel_size, radius_angstrom,
+        )
+    if engine == "separable":
+        return _add_isotropic_cpu_separable(
+            density_map, xyz, adp, occ, A, B,
+            inv_frac_matrix, frac_matrix,
+            grid_shape_tuple, voxel_size, radius_angstrom,
+        )
+    raise ValueError(
+        f"Unknown ISO_MAP_ENGINE_MPS={engine!r}. "
+        f"Choose from: single, separable_compiled, separable"
+    )
+
+
+def _add_isotropic_mps_single(
+    density_map, xyz, adp, occ, A, B,
+    inv_frac_matrix, frac_matrix,
+    grid_shape_tuple, voxel_size, radius_angstrom,
+):
+    """Single-pass MPS splat: one math call, one scatter call.
+
+    The multi-chunk strategy in ``_add_isotropic_cpu_separable_compiled``
+    exists so torch.compile sees a small set of fixed shapes across
+    different protein sizes. Per refinement loop the atom count is
+    constant — one compile suffices. Eliminating the per-chunk PyTorch
+    op overhead saves ~10 ms / iter at 1DAW scale on MPS — and that's
+    the only thing that needs to be different from the CPU path here.
+    See profiling_mps/ANALYSIS.md for the breakdown.
+    """
+    device = density_map.device
+    grid_shape = torch.tensor(grid_shape_tuple, device=device)
+    grid_shape_float = grid_shape.float()
+
+    axis_offsets, n_axis = _get_box_radius(voxel_size, radius_angstrom, device)
+    axis_offsets = axis_offsets.to(dtypes.int)
+
+    pi = math.pi
+    pi_sq = pi * pi
+    pi_sqrt = math.sqrt(pi)
+    pi_1p5 = pi * pi_sqrt
+    G = frac_matrix.T @ frac_matrix
+    inv_grid = 1.0 / grid_shape_float
+
+    nx_val = grid_shape_tuple[0]
+    ny_val = grid_shape_tuple[1]
+    nz_val = grid_shape_tuple[2]
+    ny_nz = ny_val * nz_val
+    map_size = density_map.numel()
+
+    xyz_frac = xyz @ inv_frac_matrix.T
+    xyz_frac_wrapped = xyz_frac % 1.0
+    center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).to(dtypes.int)
+
+    B_total = ((B + adp[:, None]) * 0.25).clamp(min=0.1)
+    A_norm = A * occ[:, None] * pi_1p5 / (B_total * torch.sqrt(B_total))
+    alpha = pi_sq / B_total
+
+    tol = 1e-3 * torch.norm(torch.diagonal(G))
+    has_ab = bool(torch.abs(G[0, 1]) > tol)
+    has_ac = bool(torch.abs(G[0, 2]) > tol)
+    has_bc = bool(torch.abs(G[1, 2]) > tol)
+
+    axis_offsets_frac = axis_offsets.float().unsqueeze(0) * inv_grid.unsqueeze(1)
+
+    # Math for ALL atoms at once
+    center_frac = center_idx.float() * inv_grid
+    sub_grid_offset = xyz_frac - center_frac
+    d_frac = axis_offsets_frac.unsqueeze(0) - sub_grid_offset.unsqueeze(2)
+    d_frac = d_frac - torch.round(d_frac)
+
+    # Compiled separable density — one shape per structure, one compile
+    density_fn = _get_compiled_separable_density()
+    density_cube = density_fn(d_frac, alpha, A_norm, G, has_ab, has_ac, has_bc)
+
+    # Structured indices for all atoms
+    all_wa = (center_idx[:, 0:1] + axis_offsets.unsqueeze(0)) % nx_val * ny_nz
+    all_wb = (center_idx[:, 1:2] + axis_offsets.unsqueeze(0)) % ny_val * nz_val
+    all_wc = (center_idx[:, 2:3] + axis_offsets.unsqueeze(0)) % nz_val
+    all_wbwc = all_wb.unsqueeze(2) + all_wc.unsqueeze(1)
+
+    # Single scatter call into a flat view of density_map (zero-initialised
+    # by the caller in build_electron_density).
+    density_flat = density_map.view(-1)
+    density_flat = _do_structured_scatter(
+        density_cube, all_wa, all_wbwc, density_flat, map_size,
+    )
+
+    return density_flat.view(density_map.shape)
 
 
 def _add_isotropic_gpu(
@@ -578,6 +734,10 @@ def _add_isotropic_cpu_separable(
 
     # --- Box radius (cached) ---
     axis_offsets, n_axis = _get_box_radius(voxel_size, radius_angstrom, device)
+    # int32 indices: the cpu_scatter C++ kernel takes int32, and for any
+    # realistic crystallographic grid (nx*ny*nz < 2**31) all scatter indices
+    # fit in int32. Halving index bandwidth speeds up the inner loop.
+    axis_offsets = axis_offsets.to(dtypes.int)
 
     # --- Constants ---
     pi = math.pi
@@ -595,7 +755,7 @@ def _add_isotropic_cpu_separable(
     # --- Atom fractional coords & center indices ---
     xyz_frac = xyz @ inv_frac_matrix.T  # (N, 3) — unwrapped, preserves gradients
     xyz_frac_wrapped = xyz_frac % 1.0  # only used for index computation
-    center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).long()  # (N, 3)
+    center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).to(dtypes.int)  # (N, 3) int32
 
     # --- B_total, normalized amplitudes, and exponent coefficients ---
     B_total = ((B + adp[:, None]) * 0.25).clamp(min=0.1)  # (N, 5)
@@ -622,8 +782,8 @@ def _add_isotropic_cpu_separable(
     alpha = alpha[atom_order]
     A_norm = A_norm[atom_order]
 
-    # --- Precompute 1D scatter indices for ALL atoms ---
-    # (N, n_axis) each, ~0.4 MB per axis for 3k atoms — avoids recomputing per chunk
+    # --- Precompute 1D scatter indices for ALL atoms (int32) ---
+    # (N, n_axis) each, ~0.2 MB per axis for 3k atoms — avoids recomputing per chunk
     all_wa = (center_idx[:, 0:1] + axis_offsets.unsqueeze(0)) % nx_val * ny_nz
     all_wb = (center_idx[:, 1:2] + axis_offsets.unsqueeze(0)) % ny_val * nz_val
     all_wc = (center_idx[:, 2:3] + axis_offsets.unsqueeze(0)) % nz_val
@@ -635,9 +795,6 @@ def _add_isotropic_cpu_separable(
     CHUNK = 1024
     map_size = density_map.numel()
     density_flat = density_map.view(-1)
-
-    # Try C++ parallel scatter; fall back to PyTorch scatter_add_
-    use_cpp = _get_cpp_scatter() is not None
 
     for start in range(0, N, CHUNK):
         end = min(start + CHUNK, N)
@@ -659,21 +816,13 @@ def _add_isotropic_cpu_separable(
             has_ab, has_ac, has_bc,
         )
 
-        if use_cpp:
-            # Parallel partitioned scatter — no idx_flat materialized
-            chunk_result = _get_cpp_scatter()(
-                density_cube,
-                all_wa[start:end],
-                all_wbwc[start:end],
-                map_size,
-            )
-            density_flat = density_flat + chunk_result
-        else:
-            # Fallback: standard PyTorch scatter
-            idx_flat = (all_wa[start:end, :, None, None]
-                        + all_wbwc[start:end, None, :, :])
-            density_flat.scatter_add_(
-                0, idx_flat.reshape(-1), density_cube.reshape(-1))
+        density_flat = _do_structured_scatter(
+            density_cube,
+            all_wa[start:end],
+            all_wbwc[start:end],
+            density_flat,
+            map_size,
+        )
 
     return density_flat.view(density_map.shape)
 
@@ -696,6 +845,9 @@ def _add_isotropic_cpu_separable_compiled(
 
     # --- Box radius (cached) ---
     axis_offsets, n_axis = _get_box_radius(voxel_size, radius_angstrom, device)
+    # int32 indices to match _do_structured_scatter's MPS / CPU C++ kernels;
+    # the PyTorch scatter_add_ fallback casts to int64 inside the helper.
+    axis_offsets = axis_offsets.to(dtypes.int)
 
     # --- Constants ---
     pi = math.pi
@@ -709,11 +861,12 @@ def _add_isotropic_cpu_separable_compiled(
     ny_val = int(grid_shape[1])
     nz_val = int(grid_shape[2])
     ny_nz = ny_val * nz_val
+    map_size = density_map.numel()
 
     # --- Atom fractional coords & center indices ---
     xyz_frac = xyz @ inv_frac_matrix.T  # (N, 3) — unwrapped, preserves gradients
     xyz_frac_wrapped = xyz_frac % 1.0  # only used for index computation
-    center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).long()  # (N, 3)
+    center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).to(dtypes.int)  # (N, 3) int32
 
     # --- B_total, normalized amplitudes, and exponent coefficients ---
     B_total = ((B + adp[:, None]) * 0.25).clamp(min=0.1)  # (N, 5)
@@ -739,10 +892,10 @@ def _add_isotropic_cpu_separable_compiled(
     for chunk_size in _CHUNK_SIZES:
         while remaining >= chunk_size:
             end = offset + chunk_size
-            _splat_chunk(
+            density_flat = _splat_chunk(
                 offset, end, center_idx, xyz_frac, axis_offsets_frac, inv_grid,
                 alpha, A_norm, G, has_ab, has_ac, has_bc,
-                axis_offsets, nx_val, ny_val, nz_val, ny_nz,
+                axis_offsets, nx_val, ny_val, nz_val, ny_nz, map_size,
                 density_flat, compiled_fn,
             )
             offset = end
@@ -750,24 +903,29 @@ def _add_isotropic_cpu_separable_compiled(
 
     # --- Eager remainder (no recompilation for the tail) ---
     if remaining > 0:
-        _splat_chunk(
+        density_flat = _splat_chunk(
             offset, offset + remaining, center_idx, xyz_frac,
             axis_offsets_frac, inv_grid, alpha, A_norm, G,
             has_ab, has_ac, has_bc, axis_offsets,
-            nx_val, ny_val, nz_val, ny_nz,
+            nx_val, ny_val, nz_val, ny_nz, map_size,
             density_flat, _separable_density,
         )
 
-    return density_map
+    return density_flat.view(density_map.shape)
 
 
 def _splat_chunk(
     start, end, center_idx, xyz_frac, axis_offsets_frac, inv_grid,
     alpha, A_norm, G, has_ab, has_ac, has_bc,
-    axis_offsets, nx_val, ny_val, nz_val, ny_nz,
+    axis_offsets, nx_val, ny_val, nz_val, ny_nz, map_size,
     density_flat, density_fn,
 ):
-    """Compute separable density for one chunk and scatter into the map."""
+    """Compute separable density for one chunk and scatter into the map.
+
+    Returns the (possibly new) flat density tensor — the C++ and MPS
+    structured-scatter backends produce out-of-place results that we have
+    to rebind through the chunk loop.
+    """
     # Sub-grid offset: fractional displacement from atom to nearest grid point
     center_frac = center_idx[start:end].float() * inv_grid  # (C, 3)
     sub_grid_offset = xyz_frac[start:end] - center_frac  # (C, 3)
@@ -782,15 +940,17 @@ def _splat_chunk(
         G, has_ab, has_ac, has_bc,
     )
 
-    # Full-cube scatter: 1D wrapped indices combined via outer sum
+    # Structured (wa, wbwc) indices — int32; cast to int64 happens inside
+    # the helper's PyTorch fallback.
     chunk_center = center_idx[start:end]
     wa = (chunk_center[:, 0:1] + axis_offsets.unsqueeze(0)) % nx_val * ny_nz  # (C, n)
     wb = (chunk_center[:, 1:2] + axis_offsets.unsqueeze(0)) % ny_val * nz_val
     wc = (chunk_center[:, 2:3] + axis_offsets.unsqueeze(0)) % nz_val
-    idx_flat = (wa.unsqueeze(2).unsqueeze(3)
-                + wb.unsqueeze(1).unsqueeze(3)
-                + wc.unsqueeze(1).unsqueeze(2))  # (C, n, n, n)
-    density_flat.scatter_add_(0, idx_flat.reshape(-1), density_cube.reshape(-1))
+    wbwc = wb.unsqueeze(2) + wc.unsqueeze(1)  # (C, n, n)
+
+    return _do_structured_scatter(
+        density_cube, wa, wbwc, density_flat, map_size,
+    )
 
 
 def _add_isotropic_cpu_fused(

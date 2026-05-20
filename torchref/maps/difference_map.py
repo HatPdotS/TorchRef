@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 import torch
 
 from torchref.base.reciprocal.grid_operations import place_on_grid
+from torchref.config import get_default_device
 from torchref.io.datasets.collection import DatasetCollection
 from torchref.maps.map import Map
 from torchref.symmetry.reciprocal_symmetry import expand_hkl
@@ -41,7 +42,7 @@ class DifferenceMap(Map):
         self.data_perturbed = data
 
         # Build collection and scale
-        _device = str(data.hkl.device) if data.hkl is not None else "cpu"
+        _device = str(data.hkl.device) if data.hkl is not None else str(get_default_device())
         self._collection = DatasetCollection(verbose=0, device=_device)
         self._collection.add_dataset(
             "reference", data_reference, set_as_reference=True

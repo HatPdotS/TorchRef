@@ -675,7 +675,7 @@ class TensorMasks(DeviceMovementMixin, dict):
     data : dict, optional
         Initial mask data.
     device : str or torch.device, optional
-        Device for tensors. Default is 'cpu'.
+        Device for tensors. Defaults to the configured device.current.
 
     Examples
     --------
@@ -688,8 +688,12 @@ class TensorMasks(DeviceMovementMixin, dict):
         masks.cpu()  # Move all to CPU
     """
 
-    def __init__(self, data=None, device="cpu"):
+    def __init__(self, data=None, device=None):
         super().__init__()
+        if device is None:
+            from torchref.config import get_default_device
+
+            device = get_default_device()
         self.device = torch.device(device)
         self._cache = None
         self._updated = True

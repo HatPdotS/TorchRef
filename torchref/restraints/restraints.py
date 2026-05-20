@@ -36,6 +36,7 @@ from torchref.restraints.restraints_helper import (
     read_cif,
     read_link_definitions,
 )
+from torchref.config import get_default_device
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorDict
 from torchref.utils.device_mixin import DeviceMixin
@@ -1368,7 +1369,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             build_h_candidate_pairs,
         )
 
-        device = self.xyz().device if self._xyz_fn is not None else torch.device("cpu")
+        device = self.xyz().device if self._xyz_fn is not None else get_default_device()
         self._h_topo = build_hydrogen_topology(
             pdb=self.pdb,
             device=device,
@@ -1464,8 +1465,8 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
 
         empty_result = {
             "indices": torch.tensor([], dtype=torch.long, device=device).reshape(0, 2),
-            "min_distances": torch.tensor([], dtype=torch.float32, device=device),
-            "sigmas": torch.tensor([], dtype=torch.float32, device=device),
+            "min_distances": torch.tensor([], dtype=get_float_dtype(), device=device),
+            "sigmas": torch.tensor([], dtype=get_float_dtype(), device=device),
             "symop_indices": torch.tensor([], dtype=torch.long, device=device),
             "cell_offsets": torch.tensor([], dtype=torch.long, device=device).reshape(0, 3),
         }
@@ -1601,10 +1602,10 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         self.restraints["vdw"] = {
             "indices": torch.tensor(final_pairs, dtype=torch.long, device=device),
             "min_distances": torch.tensor(
-                min_distances, dtype=torch.float32, device=device
+                min_distances, dtype=get_float_dtype(), device=device
             ),
             "sigmas": torch.full(
-                (len(final_pairs),), sigma, dtype=torch.float32, device=device
+                (len(final_pairs),), sigma, dtype=get_float_dtype(), device=device
             ),
             "symop_indices": torch.tensor(
                 final_symop, dtype=torch.long, device=device

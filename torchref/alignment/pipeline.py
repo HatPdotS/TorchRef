@@ -15,6 +15,8 @@ from typing import List, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 import torch
 
+from torchref.config import get_default_device, get_float_dtype
+
 from .ball_transform import (
     ball_rotation_search_torch,
     rotation_matrix_from_euler_zyz,
@@ -215,7 +217,7 @@ class MolecularReplacementPipeline:
     ):
         self.data = data
         self.model = model
-        self.device = device or torch.device("cpu")
+        self.device = device or get_default_device()
         self.verbose = verbose
 
         # Lazy caches
@@ -419,7 +421,7 @@ class MolecularReplacementPipeline:
         # Apply rotation to model coordinates
         R = torch.tensor(
             rotation_matrix_from_euler_zyz(alpha, beta, gamma),
-            dtype=torch.float32,
+            dtype=get_float_dtype(),
             device=self.device,
         )
         xyz = self.model.xyz()
@@ -488,7 +490,7 @@ class MolecularReplacementPipeline:
         alpha, beta, gamma, _, _ = rotation_peak
         R = torch.tensor(
             rotation_matrix_from_euler_zyz(alpha, beta, gamma),
-            dtype=torch.float32,
+            dtype=get_float_dtype(),
             device=self.device,
         )
 
@@ -499,7 +501,7 @@ class MolecularReplacementPipeline:
         # Apply translation (fractional -> Cartesian)
         trans_frac = torch.tensor(
             trans_peak.translation,
-            dtype=torch.float32,
+            dtype=get_float_dtype(),
             device=self.device,
         )
         trans_cart = trans_frac @ self.data.cell.fractional_matrix.to(self.device)
@@ -525,9 +527,9 @@ class MolecularReplacementPipeline:
         rb = RigidBodyRefinement(
             model=self.model,
             data=self.data,
-            initial_rotation=torch.tensor([alpha, beta, gamma], dtype=torch.float32),
+            initial_rotation=torch.tensor([alpha, beta, gamma], dtype=get_float_dtype()),
             initial_translation=torch.tensor(
-                trans_peak.translation, dtype=torch.float32
+                trans_peak.translation, dtype=get_float_dtype()
             ),
             device=self.device,
             verbose=max(0, self.verbose - 1),

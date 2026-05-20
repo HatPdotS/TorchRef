@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 
 from torchref.base.metrics import nll_xray, get_rfactors
+from torchref.config import get_default_device
 from torchref.scaling.scaler_base import ScalerBase
 from torchref.scaling.solvent import SolventModel
 from torchref.utils.utils import ModuleReference
@@ -69,7 +70,7 @@ class CollectionScaler(ScalerBase):
         model_collection: "ModelCollection",
         nbins: int = 20,
         verbose: int = 1,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
     ):
         # Bind to the dark/reference dataset for bins and scattering vectors
         dark_data = dataset_collection[model_collection.dark_key]

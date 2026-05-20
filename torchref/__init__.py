@@ -77,8 +77,8 @@ import torch
 
 torch.set_num_threads(N_CPUS)
 
-# Dtype configuration (must be imported after torch)
-from torchref.config import dtypes
+# Dtype and device configuration (must be imported after torch)
+from torchref.config import device, dtypes
 
 
 # Project root path for referencing package files
@@ -122,8 +122,9 @@ __all__ = [
     "ROOT_TORCHREF",
     "PATH_TORCHREF",
     "N_CPUS",
-    # Dtype configuration
+    # Dtype and device configuration
     "dtypes",
+    "device",
     # Data I/O
     "ReflectionData",
     "DatasetCollection",
