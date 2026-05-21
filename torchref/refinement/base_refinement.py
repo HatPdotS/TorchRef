@@ -91,6 +91,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         manual_weights: Dict[str, float] = None,
         component_weights: Dict[str, float] = None,
         column_names: Optional[Dict[str, str]] = None,
+        wavelength: Optional[float] = 1.0,
+        anomalous_threshold: float = 0.5,
     ):
         """
         Initialize Refinement.
@@ -130,6 +132,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.max_res = max_res
         self.nbins = nbins
         self.lr = 1e-3
+        # Wavelength drives f'/f'' anomalous scattering corrections in ModelFT.
+        # Default 1.0 preserves prior behavior; set to the experimental wavelength
+        # for anomalous (Bijvoet) refinement, or None to disable entirely.
+        self.wavelength = wavelength
+        self.anomalous_threshold = anomalous_threshold
 
         # Persistent state and logger (created lazily)
         self._loss_state: Optional[LossState] = None
@@ -141,7 +148,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             self.reflection_data = ReflectionData(
                 verbose=self.verbose, device=self.device
             )
-            self.model = ModelFT(verbose=self.verbose, device=self.device)
+            self.model = ModelFT(
+                verbose=self.verbose,
+                device=self.device,
+                wavelength=self.wavelength,
+                anomalous_threshold=self.anomalous_threshold,
+            )
             self.scaler = Scaler(
                 verbose=self.verbose, device=self.device, nbins=self.nbins
             )
@@ -178,7 +190,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             else:
                 self.max_res = self.reflection_data.get_max_res()
             self.model = ModelFT(
-                verbose=self.verbose, max_res=self.max_res, device=self.device
+                verbose=self.verbose,
+                max_res=self.max_res,
+                device=self.device,
+                wavelength=self.wavelength,
+                anomalous_threshold=self.anomalous_threshold,
             )
             if pdb.endswith(".cif"):
                 self.model.load_cif(pdb)
@@ -389,7 +405,10 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     def get_fcalc(self, hkl=None, recalc=False):
         if hkl is None:
-            hkl, _, _, _ = self.reflection_data()
+            # Signed HKL so Bijvoet mates (which share a canonical ASU index)
+            # are evaluated at +h/-h and get distinct |F_calc| under anomalous
+            # scattering. Falls back to canonical hkl when unavailable.
+            hkl = self.reflection_data.hkl_for_sf()
         return self.model(hkl, recalc=recalc)
 
     def get_fcalc_scaled(self, hkl=None, recalc=False):
@@ -887,11 +906,25 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             plt.grid()
             plt.savefig(outpath)
 
-    def write_out_mtz(self, out_mtz_path="refined_output.mtz"):
+    def write_out_mtz(self, out_mtz_path="refined_output.mtz", anomalous=False):
+        """Write refined map coefficients to an MTZ file.
+
+        Parameters
+        ----------
+        out_mtz_path : str
+            Output MTZ path.
+        anomalous : bool, optional
+            If True, emit a phenix-style anomalous MTZ: display maps and merged
+            columns in the canonical ASU (Friedel mates merged by mean
+            amplitude) plus unstacked ``F-obs(+/-)`` / ``F-model(+/-)`` columns
+            on the same ASU index. Default False (legacy per-row layout).
+        """
         with torch.no_grad():
-            hkl, _, _, _ = self.reflection_data(mask=False)
+            # Signed HKL so the per-row fcalc carries the anomalous (Bijvoet)
+            # difference; write_mtz consumes it row-aligned with reflection_data.
+            hkl = self.reflection_data.hkl_for_sf()
             fcalc = self.scaler(self.get_fcalc(hkl), use_mask=False)
-            self.reflection_data.write_mtz(out_mtz_path, fcalc)
+            self.reflection_data.write_mtz(out_mtz_path, fcalc, anomalous=anomalous)
 
     def collect_deposition_metadata(self, metadata=None):
         """Collect refinement statistics into a RefinementMetadata object.

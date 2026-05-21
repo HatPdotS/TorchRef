@@ -452,7 +452,10 @@ def write(
     structure_factor_cols = ["F-obs", "Fobs", "FP", "2FOFCWT", "FOFCWT", "F-model", "FWT", "DELFWT"]
     intensity_cols = ["I-obs", "I"]
     sigma_cols = ["SIGF-obs", "SIGI-obs", "SIGFP", "SIGI"]
-    phase_cols = ["PH2FOFCWT", "PHFOFCWT", "PH-model", "PHWT", "PHDELWT"]
+    phase_cols = [
+        "PH2FOFCWT", "PHFOFCWT", "PH-model", "PHWT", "PHDELWT",
+        "PHIF-model(+)", "PHIF-model(-)", "PANOM",
+    ]
     flags = ["R-free-flags", "FreeR_flag", "FREE"]
 
 

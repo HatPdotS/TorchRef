@@ -157,6 +157,35 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if hasattr(self, "dataset") and self.dataset is not None:
             self.dataset = self.dataset.iloc[sort_indices.cpu().numpy()].copy()
 
+        # Record anomalous bookkeeping. friedel_flags is already returned in the
+        # sorted (canonical) order, matching self.hkl. hkl_anomalous carries the
+        # signed Miller index used for structure-factor evaluation: the canonical
+        # index for the (+) member and its negation for the conjugated (-) mate,
+        # so the model produces a genuine Bijvoet difference when anomalous
+        # scattering is present. See ReflectionData.hkl_for_sf.
+        self.friedel_flags = friedel_flags
+        self.hkl_anomalous = torch.where(
+            friedel_flags.unsqueeze(-1), -self.hkl, self.hkl
+        )
+
+    def hkl_for_sf(self) -> torch.Tensor:
+        """Signed Miller indices for structure-factor evaluation.
+
+        Returns ``hkl_anomalous`` when present so the two members of a Bijvoet
+        pair (which share a canonical ASU index in :attr:`hkl`) are evaluated at
+        their true ``+h``/``-h`` positions and therefore get distinct
+        ``|F_calc|`` under anomalous scattering. Falls back to the canonical
+        :attr:`hkl` when anomalous bookkeeping is unavailable (e.g. empty init).
+
+        Returns
+        -------
+        torch.Tensor
+            Miller indices of shape (N, 3), row-aligned with :attr:`hkl`.
+        """
+        if self.hkl_anomalous is not None:
+            return self.hkl_anomalous
+        return self.hkl
+
     def load(self, reader):
         """
         Load reflection data using a data reader.
@@ -2032,11 +2061,169 @@ class ReflectionData(CrystalDataset, DebugMixin):
             else:
                 print(f"  {key}: type={type(value)}, value={value}")
 
+    def _build_anomalous_dataframe(self, fcalc: torch.Tensor) -> pd.DataFrame:
+        """Build a phenix-style anomalous MTZ DataFrame on the canonical ASU.
+
+        Bijvoet mates share a canonical ASU index in :attr:`hkl`; here they are
+        (a) merged by mean amplitude for the display maps / ``F-obs`` / ``F-model``
+        and (b) unstacked into ``(+)/(-)`` columns. No negative-ASU Miller
+        indices are emitted, so the display maps render normally in Coot while
+        the anomalous columns are available for anomalous difference maps.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor
+            Complex per-row structure factors evaluated at the *signed* HKL
+            (``hkl_for_sf``), row-aligned with :attr:`hkl`.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per unique canonical ASU reflection.
+        """
+        if fcalc is None or not torch.is_complex(fcalc):
+            raise ValueError("anomalous=True requires a complex fcalc tensor")
+        if self.friedel_flags is None:
+            raise ValueError(
+                "anomalous output requires canonicalized data with friedel_flags; "
+                "load via load_mtz so Friedel bookkeeping is populated."
+            )
+
+        hkl = self.hkl.detach().cpu()
+        N = hkl.shape[0]
+        flag = self.friedel_flags.detach().cpu()
+
+        # Group rows by unique canonical ASU index; inverse maps row -> group.
+        uniq, inverse = torch.unique(hkl, dim=0, return_inverse=True)
+        M = uniq.shape[0]
+
+        # The (+) member is the unconjugated row, (-) is the Friedel-flagged row.
+        arange = torch.arange(N)
+        plus_idx = torch.full((M,), -1, dtype=torch.long)
+        minus_idx = torch.full((M,), -1, dtype=torch.long)
+        plus_idx[inverse[~flag]] = arange[~flag]
+        minus_idx[inverse[flag]] = arange[flag]
+        has_plus = (plus_idx >= 0).numpy()
+        has_minus = (minus_idx >= 0).numpy()
+        pi = plus_idx.clamp(min=0).numpy()
+        mi = minus_idx.clamp(min=0).numpy()
+
+        # Centric flags per ASU group (centrics obey Friedel's law: F(+)=F(-)).
+        cen_full = self.centric
+        centric = np.zeros(M, dtype=bool)
+        if cen_full is not None:
+            cen_full = cen_full.detach().cpu().numpy()
+            centric[has_plus] = cen_full[pi][has_plus]
+            centric[has_minus] = cen_full[mi][has_minus]
+
+        fc = fcalc.detach().cpu().numpy()
+        Fc_amp = np.abs(fc)
+        Fc_ph = np.angle(fc, deg=True)
+        F = self.F.detach().cpu().numpy()
+        Fsig = self.F_sigma.detach().cpu().numpy() if self.F_sigma is not None else None
+        rfree = (
+            self.rfree_flags.detach().cpu().numpy().astype(int)
+            if self.rfree_flags is not None
+            else None
+        )
+
+        def plus_of(src):
+            out = np.full(M, np.nan, dtype=np.float64)
+            out[has_plus] = src[pi][has_plus]
+            return out
+
+        def minus_of(src):
+            out = np.full(M, np.nan, dtype=np.float64)
+            out[has_minus] = src[mi][has_minus]
+            return out
+
+        # Raw (+/-) values before centric mirroring (used for the merged mean).
+        Fobs_p, Fobs_m = plus_of(F), minus_of(F)
+        Fmod_p, Fmod_m = plus_of(Fc_amp), minus_of(Fc_amp)
+        Phi_p, Phi_m = plus_of(Fc_ph), minus_of(Fc_ph)
+
+        def mirror_centric(plus, minus):
+            # For centrics, the absent mate equals the present one.
+            p = np.where(
+                centric & ~np.isfinite(plus) & np.isfinite(minus), minus, plus
+            )
+            m = np.where(
+                centric & ~np.isfinite(minus) & np.isfinite(plus), plus, minus
+            )
+            return p, m
+
+        Fobs_p_out, Fobs_m_out = mirror_centric(Fobs_p, Fobs_m)
+        Fmod_p_out, Fmod_m_out = mirror_centric(Fmod_p, Fmod_m)
+        Phi_p_out, Phi_m_out = mirror_centric(Phi_p, Phi_m)
+
+        # Merged display quantities: mean observed amplitude over present mates,
+        # and the ASU representative structure factor (the + member, else the
+        # conjugate of the - member).
+        with np.errstate(invalid="ignore"):
+            Fobs_disp = np.nanmean(np.vstack([Fobs_p, Fobs_m]), axis=0)
+        fc_disp = np.full(M, np.nan, dtype=complex)
+        fc_disp[has_plus] = fc[pi][has_plus]
+        only_minus = has_minus & ~has_plus
+        fc_disp[only_minus] = np.conj(fc[mi])[only_minus]
+
+        Fc_disp_amp = np.abs(fc_disp)
+        ph_disp = np.angle(fc_disp, deg=True)
+
+        # Map coefficients (same convention as the legacy per-row path).
+        two_mfo = np.abs(2.0 * Fobs_disp - Fc_disp_amp)
+        mfo_complex = Fobs_disp * np.exp(1j * np.deg2rad(ph_disp)) - fc_disp
+        delf = np.abs(mfo_complex)
+        delph = np.angle(mfo_complex, deg=True)
+
+        # Anomalous difference (Coot ANOM/PANOM convention).
+        anom = Fobs_p_out - Fobs_m_out
+        panom = np.where(anom < 0.0, ph_disp - 90.0, ph_disp - 270.0)
+
+        uniq_np = uniq.numpy()
+        data = {
+            "H": uniq_np[:, 0],
+            "K": uniq_np[:, 1],
+            "L": uniq_np[:, 2],
+            "F-obs": Fobs_disp,
+            "F-obs(+)": Fobs_p_out,
+            "F-obs(-)": Fobs_m_out,
+            "F-model": Fc_disp_amp,
+            "PH-model": ph_disp,
+            "F-model(+)": Fmod_p_out,
+            "PHIF-model(+)": Phi_p_out,
+            "F-model(-)": Fmod_m_out,
+            "PHIF-model(-)": Phi_m_out,
+            "FWT": two_mfo,
+            "PHWT": ph_disp,
+            "DELFWT": delf,
+            "PHDELWT": delph,
+            "ANOM": anom,
+            "PANOM": panom,
+        }
+        if Fsig is not None:
+            data["SIGF-obs(+)"], data["SIGF-obs(-)"] = mirror_centric(
+                plus_of(Fsig), minus_of(Fsig)
+            )
+        if rfree is not None:
+            rf = np.zeros(M, dtype=int)
+            rf[has_minus] = rfree[mi][has_minus]
+            rf[has_plus] = rfree[pi][has_plus]  # both mates share a flag
+            data["R-free-flags"] = rf
+
+        # The display-map / merged columns must be FFT-safe (no NaN); the
+        # anomalous (+/-) columns may legitimately carry NaN where a mate is
+        # absent (incomplete anomalous data), matching phenix output.
+        for key in ("F-obs", "F-model", "PH-model", "FWT", "PHWT", "DELFWT", "PHDELWT"):
+            data[key] = np.nan_to_num(data[key], nan=0.0)
+
+        return pd.DataFrame(data)
+
     def write_mtz(
         self,
         fname: str,
         fcalc: Optional[torch.Tensor] = None,
         model_ft: Optional["ModelFT"] = None,
+        anomalous: bool = False,
     ) -> None:
         """
         Write reflection data to MTZ file with optional map coefficients.
@@ -2050,6 +2237,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             If provided, computes phases and map coefficients.
         model_ft : ModelFT, optional
             ModelFT object to compute fcalc if not provided.
+        anomalous : bool, optional
+            If True, write a phenix-style anomalous MTZ on the canonical ASU:
+            display maps (FWT/PHWT, DELFWT/PHDELWT) and merged F-obs/F-model
+            with Friedel mates merged by mean amplitude, plus unstacked
+            F-obs(+/-), SIGF-obs(+/-), F-model(+/-), PHIF-model(+/-) and
+            ANOM/PANOM columns. No negative-ASU indices are emitted. Default
+            False (legacy per-row layout).
 
         Notes
         -----
@@ -2075,6 +2269,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
             data.write_mtz('output.mtz', fcalc=fcalc)
         """
         from torchref.io.mtz import write
+
+        if anomalous:
+            # Signed HKL preserves the anomalous/Bijvoet difference (see
+            # hkl_for_sf) so the two mates get distinct F-model.
+            if fcalc is None and model_ft is not None:
+                fcalc = model_ft.forward(self.hkl_for_sf())
+            df = self._build_anomalous_dataframe(fcalc)
+            write(df, self.cell.data, self.spacegroup, fname)
+            if self.verbose > 0:
+                print(f"✓ Wrote phenix-style anomalous MTZ: {fname}")
+                print(f"  ASU reflections: {len(df)}")
+                print(f"  Columns: {', '.join(df.columns)}")
+            return
 
         # Convert data to numpy for DataFrame creation
         hkl_np = self.hkl.detach().cpu().numpy()
@@ -2762,6 +2969,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Fix phases: phi_new = where(friedel, -phi_old, phi_old) + phase_shift
         if result.phase is not None:
             result.phase = torch.where(friedel_flags, -result.phase, result.phase) + phase_shifts
+
+        # Record anomalous bookkeeping for the canonical result (the stale values
+        # carried over by __select__ are recomputed here). See hkl_for_sf.
+        result.friedel_flags = friedel_flags
+        result.hkl_anomalous = torch.where(
+            friedel_flags.unsqueeze(-1), -canonical_hkl, canonical_hkl
+        )
 
         # Recalculate resolution from canonical HKL + cell
         if result.cell is not None:

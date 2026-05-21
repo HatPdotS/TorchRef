@@ -252,7 +252,10 @@ Examples:
     try:
         work_nll, test_nll = refinement.nll_xray()
         hkl, fobs, sigma, rfree = refinement.reflection_data()
-        fcalc = refinement.get_F_calc_scaled(hkl, recalc=True)
+        # Signed HKL so |F_calc| matches what refinement optimized (anomalous mates).
+        fcalc = refinement.get_F_calc_scaled(
+            refinement.reflection_data.hkl_for_sf(), recalc=True
+        )
 
         work_mask = rfree
         test_mask = ~rfree
