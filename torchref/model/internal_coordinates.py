@@ -100,15 +100,25 @@ class InternalCoordinateTensor(DeviceMixin, nn.Module):
             device = initial_xyz.device
 
         self._dtype = dtype
-        self._device = device
+        # Internal storage is permanently on CPU. The spanning-tree build,
+        # ring detection, per-atom dihedral extraction, and the parallel-scan
+        # forward pass are all dominated by sequential indexed tensor access
+        # which suffers from per-op MPS/CUDA dispatch overhead. Keeping the
+        # tensors on CPU makes them ~100x faster on Apple Silicon.
+        # ``_output_device`` is the device where forward()'s result is
+        # delivered; ``.to(device)`` updates it without migrating the
+        # internal state.
+        self._output_device = (
+            torch.device(device) if not isinstance(device, torch.device) else device
+        )
+        self._device = torch.device("cpu")
         self.n_atoms = initial_xyz.shape[0]
         self.bond_cutoff = bond_cutoff
 
-        # Move initial coordinates to specified device/dtype
-        initial_xyz = initial_xyz.to(dtype=dtype, device=device)
+        initial_xyz_cpu = initial_xyz.to(dtype=dtype, device=self._device)
 
         # Build molecular graph from distances
-        adjacency = self._build_molecular_graph(initial_xyz, bond_cutoff)
+        adjacency = self._build_molecular_graph(initial_xyz_cpu, bond_cutoff)
 
         # Build spanning trees for each connected component
         self._build_spanning_trees(adjacency)
@@ -117,7 +127,7 @@ class InternalCoordinateTensor(DeviceMixin, nn.Module):
         self._detect_rings(adjacency)
 
         # Extract internal coordinates from initial xyz
-        self._extract_internal_coords(initial_xyz, requires_grad)
+        self._extract_internal_coords(initial_xyz_cpu, requires_grad)
 
     @property
     def dtype(self):
@@ -126,8 +136,62 @@ class InternalCoordinateTensor(DeviceMixin, nn.Module):
 
     @property
     def device(self):
-        """Return the device of tensors."""
-        return self._device
+        """Logical device — where forward()'s result is delivered.
+
+        Internal parameters/buffers stay on CPU regardless; this is the
+        device requested by the caller (e.g. via ``.to('mps')``) and is
+        the device the forward output is migrated to.
+        """
+        return self._output_device
+
+    def to(self, *args, **kwargs):  # type: ignore[override]
+        """Update output device and optionally cast dtype.
+
+        Unlike ``DeviceMixin.to``, this does **not** move internal
+        parameters/buffers to ``device`` — they stay on CPU to avoid
+        the per-op dispatch overhead of MPS/CUDA on the sequential
+        spanning-tree + parallel-scan code. The ``device`` argument
+        only updates ``_output_device``; ``dtype`` still propagates
+        normally and recasts all CPU tensors.
+        """
+        device = kwargs.get("device", None)
+        dtype = kwargs.get("dtype", None)
+        for a in args:
+            if isinstance(a, torch.device):
+                device = a
+            elif isinstance(a, str):
+                device = a
+            elif isinstance(a, torch.dtype):
+                dtype = a
+
+        if device is not None:
+            self._output_device = (
+                torch.device(device) if not isinstance(device, torch.device) else device
+            )
+        if dtype is not None:
+            nn.Module.to(self, dtype=dtype)
+            self._dtype = dtype
+        return self
+
+    def cuda(self, device=None):  # type: ignore[override]
+        if device is None:
+            target = torch.device("cuda")
+        elif isinstance(device, int):
+            target = torch.device(f"cuda:{device}")
+        else:
+            target = torch.device(device)
+        self._output_device = target
+        return self
+
+    def cpu(self):  # type: ignore[override]
+        self._output_device = torch.device("cpu")
+        return self
+
+    def _to_output(self, xyz: torch.Tensor) -> torch.Tensor:
+        """Migrate a CPU result tensor to the configured output device."""
+        if xyz.device != self._output_device:
+            return xyz.to(self._output_device)
+        return xyz
 
     @staticmethod
     def _build_molecular_graph(
@@ -1160,7 +1224,7 @@ class InternalCoordinateTensor(DeviceMixin, nn.Module):
             frozen_mask = ~self.refinable_mask
             xyz[frozen_mask] = self.fixed_xyz[frozen_mask]
 
-        return xyz
+        return self._to_output(xyz)
 
     def forward(self) -> torch.Tensor:
         """
@@ -1171,7 +1235,8 @@ class InternalCoordinateTensor(DeviceMixin, nn.Module):
         Returns
         -------
         torch.Tensor
-            Reconstructed Cartesian coordinates of shape (N, 3).
+            Reconstructed Cartesian coordinates of shape (N, 3),
+            on the configured output device.
         """
         return self.forward_parallel()
 
@@ -1261,9 +1326,11 @@ class InternalCoordinateTensor(DeviceMixin, nn.Module):
             raise TypeError(f"selection must be Tensor, slice, or None, got {type(selection)}")
 
         if freeze_at_current:
-            # Compute current coordinates and store them
+            # Compute current coordinates and store them.
+            # ``forward()`` migrates output to ``_output_device``; ``fixed_xyz``
+            # lives on CPU, so move the snapshot back to CPU before assigning.
             with torch.no_grad():
-                current_xyz = self.forward()
+                current_xyz = self.forward().to(self.fixed_xyz.device)
                 self.fixed_xyz[mask] = current_xyz[mask]
 
         # Mark atoms as not refinable (frozen)
@@ -1951,4 +2018,4 @@ class InternalCoordinateTensor(DeviceMixin, nn.Module):
             frozen_mask = ~self.refinable_mask
             xyz[frozen_mask] = self.fixed_xyz[frozen_mask]
 
-        return xyz
+        return self._to_output(xyz)
