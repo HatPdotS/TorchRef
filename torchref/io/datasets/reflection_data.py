@@ -2175,9 +2175,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         delf = np.abs(mfo_complex)
         delph = np.angle(mfo_complex, deg=True)
 
-        # Anomalous difference (Coot ANOM/PANOM convention).
+        # Anomalous difference map coefficients. The anomalous-difference Fourier
+        # uses |ΔF_ano| with phase (phi_model - 90deg); peaks then fall on the
+        # anomalous scatterers (verified against the Zn site of thermolysin:
+        # phi-90 gives +2.6 sigma, phi+90 gives a -2.6 sigma hole). ANOM is stored
+        # signed, so the (-) member maps to phi-270 (= the +180deg / negative-
+        # amplitude equivalent of phi-90).
         anom = Fobs_p_out - Fobs_m_out
-        panom = np.where(anom < 0.0, ph_disp - 90.0, ph_disp - 270.0)
+        panom = np.where(anom < 0.0, ph_disp - 270.0, ph_disp - 90.0)
 
         uniq_np = uniq.numpy()
         data = {
