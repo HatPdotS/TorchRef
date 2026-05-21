@@ -47,10 +47,14 @@ utils
     General utilities and debugging tools.
 """
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 
 import os
+
+
+# For now set MPS fallback gloablly
+os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
 import warnings
 from pathlib import Path
 
