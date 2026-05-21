@@ -38,6 +38,7 @@ from .debug_utils import DebugMixin, print_module_summary
 
 # Device movement
 from .device_mixin import DeviceMixin, DeviceMovementMixin
+from .device_resolution import resolve_device
 
 # Gradient utilities
 from .gradnorm import gradnorm
@@ -82,6 +83,7 @@ __all__ = [
     # Device movement
     "DeviceMixin",
     "DeviceMovementMixin",
+    "resolve_device",
     # Core utilities
     "TensorMasks",
     "TensorDict",

@@ -31,7 +31,7 @@ from torchref.cli._common import (
     add_general_args,
     add_resolution_args,
     register_timing,
-    resolve_device,
+    parse_device_str,
 )
 
 
@@ -100,7 +100,7 @@ def main():
     register_timing()
 
     # --- Device ---
-    device = resolve_device(args.device)
+    device = parse_device_str(args.device)
 
     # --- Read MTZ ---
     import reciprocalspaceship as rs

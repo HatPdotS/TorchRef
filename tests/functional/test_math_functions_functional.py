@@ -22,11 +22,9 @@ class TestStructureFactorCalculations:
         hkl = data.hkl
         cell = model.cell
         
-        # Ensure compatible types
-        if hasattr(cell, 'double'):
-            cell_double = cell.double()
-        else:
-            cell_double = torch.tensor(cell, dtype=torch.float64)
+        # Cell is a dataclass wrapping a tensor; use cell.data to get the
+        # underlying tensor while preserving its device.
+        cell_double = cell.data.double()
         
         s_vectors = get_scattering_vectors(hkl.double(), cell_double)
         
@@ -43,11 +41,8 @@ class TestStructureFactorCalculations:
         hkl = data.hkl
         cell = model.cell
         
-        if hasattr(cell, 'double'):
-            cell_double = cell.double()
-        else:
-            cell_double = torch.tensor(cell, dtype=torch.float64)
-        
+        cell_double = cell.data.double()
+
         d = get_d_spacing(hkl.double(), cell_double)
         
         # d-spacing should be positive
@@ -64,11 +59,8 @@ class TestStructureFactorCalculations:
         model = model_and_data["model"]
         cell = model.cell
         
-        if hasattr(cell, 'double'):
-            cell_double = cell.double()
-        else:
-            cell_double = torch.tensor(cell, dtype=torch.float64)
-        
+        cell_double = cell.data.double()
+
         recB = reciprocal_basis_matrix(cell_double)
         
         assert recB.shape == (3, 3)
@@ -128,11 +120,8 @@ class TestCoordinateTransformations:
         xyz = model.xyz().double()
         cell = model.cell
         
-        if hasattr(cell, 'double'):
-            cell_double = cell.double()
-        else:
-            cell_double = torch.tensor(cell, dtype=torch.float64)
-        
+        cell_double = cell.data.double()
+
         # Convert to fractional and back
         frac = cartesian_to_fractional_torch(xyz, cell_double)
         xyz_back = fractional_to_cartesian_torch(frac, cell_double)

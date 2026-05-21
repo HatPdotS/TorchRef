@@ -22,6 +22,7 @@ from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll
 from torchref.base.reciprocal import get_scattering_vectors
 from torchref.scaling.scaler_base import ScalerBase
 from torchref.scaling.solvent import SolventModel
+from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
@@ -75,7 +76,7 @@ class Scaler(ScalerBase):
         data: Optional[ReflectionData] = None,
         nbins: int = 20,
         verbose: int = 1,
-        device: torch.device = get_default_device(),
+        device: Optional[torch.device] = None,
     ):
         """
         Initialize Scaler.
@@ -93,15 +94,22 @@ class Scaler(ScalerBase):
             Number of resolution bins.
         verbose : int, default 1
             Verbosity level.
-        device : torch.device, default: configured device.current
-            Computation device.
+        device : torch.device, optional
+            Computation device.  If ``None``, derived from ``model``
+            then ``data`` (model wins on mismatch); otherwise forces
+            both onto the explicit device.  See
+            :func:`torchref.utils.resolve_device`.
         """
+        # Pin model+data onto a single device before super().__init__
+        # registers buffers from ``data.hkl`` / ``data.cell``.
+        resolved_device = resolve_device(model, data, device=device)
+
         # Initialize base class with data
         super(Scaler, self).__init__(
             data=data,
             nbins=nbins,
             verbose=verbose,
-            device=device,
+            device=resolved_device,
         )
 
         # Wrap in ModuleReference to avoid registering the model as a

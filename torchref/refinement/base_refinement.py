@@ -26,6 +26,7 @@ from torchref.refinement.targets.xray import create_xray_target
 from torchref.scaling.scaler import Scaler
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.device_resolution import resolve_device
 
 
 class Refinement(DeviceMixin, DebugMixin, nnModule):
@@ -85,7 +86,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         cif=None,
         verbose: int = 1,
         max_res: float = None,
-        device: torch.device = get_default_device(),
+        device: Optional[torch.device] = None,
         nbins: int = 10,
         manual_weights: Dict[str, float] = None,
         component_weights: Dict[str, float] = None,
@@ -118,7 +119,10 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Number of resolution bins. Default is 10.
         """
         super().__init__()
-        self.device = device
+        # Refinement constructs its own submodules from file paths, so
+        # there is nothing to reconcile yet — ``resolve_device`` with no
+        # modules just normalises ``device`` (or returns the default).
+        self.device = resolve_device(device=device)
         self.verbose = verbose
         self.data_file = data_file
         self.pdb = pdb

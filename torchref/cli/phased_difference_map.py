@@ -42,7 +42,7 @@ from torchref.cli._common import (
     build_dual_column_names,
     configure_unbuffered_output,
     register_timing,
-    resolve_device,
+    parse_device_str,
     validate_cif_files,
     validate_files,
 )
@@ -104,7 +104,7 @@ Examples:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # --- Device ---
-    device = resolve_device(args.device)
+    device = parse_device_str(args.device)
 
     # --- Header ---
     if args.verbose > 0:

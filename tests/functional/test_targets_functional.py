@@ -126,9 +126,9 @@ class TestRfactorCalculationsFunctional:
         # Create bins based on resolution
         n_refl = fobs.shape[0]
         n_bins = 10
-        bins = torch.randint(0, n_bins, (n_refl,))
-        
-        rfree_mask = torch.rand(n_refl) > 0.05  # 95% work set
+        bins = torch.randint(0, n_bins, (n_refl,), device=fobs.device)
+
+        rfree_mask = torch.rand(n_refl, device=fobs.device) > 0.05  # 95% work set
         
         # Mask out NaN values
         valid = ~torch.isnan(fobs)
@@ -343,7 +343,7 @@ class TestMathFunctionsFunctional:
         model.load_cif(str(sample_cif_file))
         
         xyz = model.xyz().double()  # Ensure double precision for einsum
-        cell = model.cell.double() if hasattr(model.cell, 'double') else torch.tensor(model.cell, dtype=torch.float64)
+        cell = model.cell.data.double()
         
         # Convert to fractional
         frac = cartesian_to_fractional_torch(xyz, cell)
@@ -404,7 +404,7 @@ class TestSpaceGroupFunctional:
 
             # R * R^T should be identity
             product = torch.mm(rot.float(), rot.float().T)
-            identity = torch.eye(3, dtype=product.dtype)
+            identity = torch.eye(3, dtype=product.dtype, device=product.device)
 
             assert torch.allclose(product, identity, atol=1e-5)
 

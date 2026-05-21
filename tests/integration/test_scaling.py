@@ -167,19 +167,21 @@ class TestScalerDeviceHandling:
 
     @pytest.mark.integration
     def test_scaler_default_device(self, sample_structure_pair):
-        """Test that scaler defaults to CPU."""
+        """Test that Scaler buffers land on the configured default device."""
         from torchref.model.model import Model
         from torchref.io import ReflectionData
         from torchref.scaling.scaler import Scaler
-        
+        from torchref.config import get_default_device
+
         model = Model()
         model.load_cif(str(sample_structure_pair["model"]))
-        
+
         data = ReflectionData()
         data.load_mtz(str(sample_structure_pair["reflections"]))
-        
+
         scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
-        
-        assert scaler.device.type == 'cpu'
-        assert scaler.s.device.type == 'cpu'
-        assert scaler.bins.device.type == 'cpu'
+
+        expected = get_default_device().type
+        assert scaler.device.type == expected
+        assert scaler.s.device.type == expected
+        assert scaler.bins.device.type == expected

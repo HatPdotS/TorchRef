@@ -20,11 +20,12 @@ import torch.nn as nn
 from torchref.base.math_torch import U_to_matrix
 from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll_xray_lognormal
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.config import get_complex_dtype, get_default_device
+from torchref.config import get_complex_dtype, get_default_device, get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import ModuleReference
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.device_resolution import resolve_device
 
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
@@ -75,7 +76,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         data: Optional["ReflectionData"] = None,
         nbins: int = 20,
         verbose: int = 1,
-        device: torch.device = get_default_device(),
+        device: Optional[torch.device] = None,
     ):
         """
         Initialize ScalerBase.
@@ -91,11 +92,14 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Number of resolution bins.
         verbose : int, default 1
             Verbosity level.
-        device : torch.device, default: configured device.current
-            Computation device.
+        device : torch.device, optional
+            Computation device.  If ``None``, derived from ``data`` (if
+            given) or the configured default via
+            :func:`torchref.utils.resolve_device`.  An explicit value
+            forces ``data`` onto that device.
         """
         super(ScalerBase, self).__init__()
-        self.device = device
+        self.device = resolve_device(data, device=device)
         self.verbose = verbose
         self.nbins = nbins
 

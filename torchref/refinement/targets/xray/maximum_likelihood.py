@@ -1,7 +1,8 @@
 import torch
-from typing import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from torchref.base.targets.xray_ml import ml_xray_loss_math
+from torchref.utils.device_resolution import resolve_device
 
 from .base import XrayTarget
 from .gaussian import GaussianXrayTarget
@@ -45,6 +46,7 @@ def create_xray_target(
     sigma_mode: str = "raw",
     sigma_m_scale: float = 1.0,
     verbose: int = 0,
+    device: Optional[torch.device] = None,
 ) -> XrayTarget:
     """
     Factory function to create X-ray target.
@@ -74,6 +76,10 @@ def create_xray_target(
     XrayTarget
         Appropriate XrayTarget instance.
     """
+    # Pin model/data/scaler onto one device before constructing the
+    # target — its forward path mixes tensors from all three.
+    resolve_device(model, data, scaler, device=device)
+
     kwargs = dict(
         data=data, model=model, scaler=scaler,
         use_work_set=use_work_set, sigma_mode=sigma_mode, verbose=verbose,

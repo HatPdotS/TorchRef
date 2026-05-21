@@ -368,8 +368,8 @@ def add_weights_arg(
 # Device setup
 # ---------------------------------------------------------------------------
 
-def resolve_device(device_str: str) -> "torch.device":
-    """Resolve the ``--device`` argument to a :class:`torch.device`.
+def parse_device_str(device_str: str) -> "torch.device":
+    """Parse the ``--device`` CLI argument into a :class:`torch.device`.
 
     ``"auto"`` delegates to :data:`torchref.config.device` (cuda -> mps -> cpu).
     Explicit ``cuda``/``mps`` requests warn and fall back to CPU when unavailable.

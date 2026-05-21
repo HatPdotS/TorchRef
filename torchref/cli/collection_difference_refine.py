@@ -108,7 +108,7 @@ from torchref.cli._common import (
     load_reflection_data,
     parse_weights,
     register_timing,
-    resolve_device,
+    parse_device_str,
     validate_cif_files,
     validate_files,
 )
@@ -700,7 +700,7 @@ Examples:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    device = resolve_device(args.device)
+    device = parse_device_str(args.device)
     d_min = args.dmin if args.dmin is not None else 1.0
 
     # --- Header ---

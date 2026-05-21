@@ -65,7 +65,7 @@ from torchref.cli._common import (
     load_model,
     load_reflection_data,
     register_timing,
-    resolve_device,
+    parse_device_str,
     validate_cif_files,
     validate_files,
 )
@@ -617,7 +617,7 @@ def run_validation(args):
         setup_scaler as setup_collection_scaler,
     )
 
-    device = resolve_device(args.device)
+    device = parse_device_str(args.device)
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 

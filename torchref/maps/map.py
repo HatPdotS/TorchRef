@@ -20,6 +20,7 @@ from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.cif import write_map
 from torchref.symmetry.grid_utils import calculate_optimal_grid_size
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.device_resolution import resolve_device
 
 
 class Map(DeviceMixin):
@@ -47,11 +48,13 @@ class Map(DeviceMixin):
         model,
         gridsize: Optional[Tuple[int, int, int]] = None,
         map_type: str = "2mFo-DFc",
+        device: Optional[torch.device] = None,
     ):
         if map_type not in self.VALID_MAP_TYPES:
             raise ValueError(
                 f"map_type must be one of {self.VALID_MAP_TYPES}, got '{map_type}'"
             )
+        self.device = resolve_device(data, model, device=device)
         self.data = data
         self.model = model
         self.gridsize = gridsize

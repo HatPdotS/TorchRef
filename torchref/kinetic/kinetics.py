@@ -2,6 +2,7 @@ import torch
 from torch.nn import Module as nnModule
 from torch.nn import Parameter
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.config import get_float_dtype
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Optional, Union
 import numpy as np

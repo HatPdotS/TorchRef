@@ -7,10 +7,6 @@ for use in optimization and refinement.
 
 import torch
 
-from torchref.base.coordinates.transforms_numpy import (
-    get_inv_fractional_matrix as get_inv_fractional_matrix_numpy,
-)
-
 
 def cartesian_to_fractional_torch(xyz, cell, B_inv=None):
     """
@@ -31,8 +27,10 @@ def cartesian_to_fractional_torch(xyz, cell, B_inv=None):
         Fractional coordinates of shape (N, 3).
     """
     if B_inv is None:
-        B_inv = get_inv_fractional_matrix_numpy(cell)
-        B_inv = torch.tensor(B_inv, dtype=xyz.dtype, device=xyz.device)
+        # Stay in torch — falling back to numpy here breaks cuda inputs.
+        B_inv = get_inv_fractional_matrix_torch(cell).to(
+            dtype=xyz.dtype, device=xyz.device
+        )
     xyz_fractional = torch.einsum("ik,kj->ij", xyz, B_inv.T)
     return xyz_fractional
 

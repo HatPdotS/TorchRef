@@ -236,15 +236,16 @@ class TestModelDevice:
 
     @pytest.mark.integration
     def test_model_default_device(self, sample_cif_file):
-        """Test that model uses default CPU device."""
+        """Test that ``Model()`` places tensors on the configured default device."""
         from torchref.model.model import Model
-        
+        from torchref.config import get_default_device
+
         model = Model()
         model.load_cif(str(sample_cif_file))
-        
+
         xyz = model.xyz()
-        
-        assert xyz.device.type == 'cpu'
+
+        assert xyz.device.type == get_default_device().type
 
     @pytest.mark.integration
     def test_model_explicit_cpu_device(self, sample_cif_file, cpu_device):
@@ -464,9 +465,12 @@ class TestModelSetWithSelection:
         
         if n_selected > 0:
             # Set all CA ADPs to 30.0
-            new_adp = torch.ones(n_selected) * 30.0
+            new_adp = torch.ones(n_selected, device=model.device) * 30.0
             model.adp.set(new_adp, mask)
 
             # Verify the update
             updated_adp = model.adp()[mask]
-            assert torch.allclose(updated_adp, torch.ones(n_selected) * 30.0)
+            assert torch.allclose(
+                updated_adp,
+                torch.ones(n_selected, device=updated_adp.device) * 30.0,
+            )
