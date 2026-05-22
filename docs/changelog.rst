@@ -1,6 +1,9 @@
 Changelog
 =========
 
+Version 0.5.3.1
+-------------
+- Fixed problem where TorchRef defaults to old gpus and crashes, now checking if gpu is actually usable, before setting default device to cuda, if not it will default to cpu and print a warning.
 
 Version 0.5.3
 -------------

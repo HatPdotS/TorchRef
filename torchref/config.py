@@ -162,9 +162,61 @@ def get_complex_dtype() -> torch.dtype:
 _VALID_DEVICE_TYPES = ("cuda", "mps", "cpu")
 
 
+def _cuda_is_usable() -> bool:
+    """Check that CUDA is available *and* the detected GPU is supported by
+    this PyTorch build.
+
+    A GPU whose compute capability is older than the minimum architecture
+    compiled into the current PyTorch wheel will trigger runtime warnings
+    and fail at the first kernel launch. Treat such a GPU as unusable so
+    that auto-detection falls back to CPU instead of producing a broken
+    default device.
+    """
+    if not torch.cuda.is_available():
+        return False
+    try:
+        arch_list = torch.cuda.get_arch_list()
+    except Exception:
+        # If we cannot introspect supported archs, fall back to trusting
+        # is_available() (older torch versions).
+        return True
+    if not arch_list:
+        return True
+    # Parse e.g. "sm_70" -> (7, 0). Ignore non-sm entries like "compute_xx".
+    supported = []
+    for entry in arch_list:
+        if not entry.startswith("sm_"):
+            continue
+        try:
+            num = entry[3:]
+            major = int(num[:-1])
+            minor = int(num[-1])
+            supported.append((major, minor))
+        except (ValueError, IndexError):
+            continue
+    if not supported:
+        return True
+    min_supported = min(supported)
+    for idx in range(torch.cuda.device_count()):
+        try:
+            cap = torch.cuda.get_device_capability(idx)
+        except Exception:
+            continue
+        if cap >= min_supported:
+            return True
+    warnings.warn(
+        "TorchRef: CUDA is available but no detected GPU meets the minimum "
+        f"compute capability {min_supported[0]}.{min_supported[1]} required "
+        f"by this PyTorch build (supported sm_*: {arch_list}). Falling back "
+        "to CPU. Set TORCHREF_DEVICE=cuda explicitly to override.",
+        stacklevel=3,
+    )
+    return False
+
+
 def _auto_detect_device() -> torch.device:
     """Pick the best available device: cuda -> mps -> cpu."""
-    if torch.cuda.is_available():
+    if _cuda_is_usable():
         return torch.device("cuda")
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
