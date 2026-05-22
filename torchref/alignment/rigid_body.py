@@ -189,7 +189,13 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         # user-facing R-work.
         self.scaler = Scaler(model=model, data=data, nbins=20,
                               verbose=0, device=device)
-        fcalc_initial = self()
+        # Initial scaler fit only needs grad through scaler params, not
+        # through the rigid-body forward. Without detaching, the SfFFT
+        # density-build intermediates from the initial forward stay pinned
+        # by the autograd graph until `rb` is freed — and on multi-trial
+        # runs that adds ~5 GB of GPU residue per alignment.
+        with torch.no_grad():
+            fcalc_initial = self().detach()
         self.scaler.calc_initial_scale(fcalc_initial)
         self.scaler.setup_anisotropy_correction()
         self.scaler.refine_lbfgs(fcalc=fcalc_initial)

@@ -23,6 +23,7 @@ from .ball_search import (
 from .translation import fft_translation_search_torch, TranslationPeak
 from .rigid_body import RigidBodyRefinement, RigidBodyResult
 from .clashscore import ClashScoreCalculator, AtomSampler
+from torchref.utils.device_mixin import DeviceMixin
 
 
 def rotation_matrix_from_euler_zyz(alpha, beta, gamma) -> np.ndarray:
@@ -183,7 +184,7 @@ class MRSolution:
     refined_translation: Optional[np.ndarray] = None
 
 
-class MolecularReplacementPipeline:
+class MolecularReplacementPipeline(DeviceMixin):
     """
     Unified MR pipeline: Rotation -> Translation -> Rigid Body Refinement.
 

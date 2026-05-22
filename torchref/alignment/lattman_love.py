@@ -36,9 +36,10 @@ from torchref.base.reciprocal.interpolation import (
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
 from torchref.symmetry.cell import Cell
+from torchref.utils.device_mixin import DeviceMixin
 
 
-class LattmanLoveInterpolator:
+class LattmanLoveInterpolator(DeviceMixin):
     """
     Compute F_calc on a dense P1 reciprocal grid once; interpolate at arbitrary
     rotated reciprocal positions per query.
@@ -112,30 +113,37 @@ class LattmanLoveInterpolator:
         # search model — Phaser-style MR also approximates with isotropic ADP.
         # Caller is free to call evaluate after adding aniso atoms in a subclass.
 
-        # Build the dense F_calc on a P1 cubic grid.
-        sf = SfFFT(
-            cell=self.cubic_cell,
-            spacegroup=SpaceGroup("P 1"),
-            max_res=max_res_A,
-            radius_angstrom=radius_angstrom,
-            dtype_float=torch.float32,
-            device=device,
-            verbose=verbose,
-        )
-        sf.setup_grid()
-        density_map = sf.build_density_map(
-            xyz_iso=xyz_iso,
-            adp_iso=adp_iso,
-            occ_iso=occ_iso,
-            A_iso=A_iso,
-            B_iso=B_iso,
-            apply_symmetry=False,  # already P1
-        )
-        # IFFT to reciprocal space; gives a complex (Nx, Ny, Nz) tensor with
-        # crystallographic normalization. Layout: DC at index (0, 0, 0); negative
-        # HKL wraps to high indices. This matches the convention expected by
-        # `interpolate_structure_factor_from_grid`.
-        self.reciprocal_grid = ifft(density_map, self.cubic_cell.volume.item())
+        # Build the dense F_calc on a P1 cubic grid. Wrapped in no_grad because
+        # the alignment pipeline never differentiates through this grid — and
+        # without no_grad the resulting `self.reciprocal_grid` carries a grad_fn
+        # whose autograd graph pins the SfFFT internals (real_space_grid,
+        # voxel_xyz, per-atom kernel ≈ 5 GB on 4BX9) across trials.
+        with torch.no_grad():
+            sf = SfFFT(
+                cell=self.cubic_cell,
+                spacegroup=SpaceGroup("P 1"),
+                max_res=max_res_A,
+                radius_angstrom=radius_angstrom,
+                dtype_float=torch.float32,
+                device=device,
+                verbose=verbose,
+            )
+            sf.setup_grid()
+            density_map = sf.build_density_map(
+                xyz_iso=xyz_iso,
+                adp_iso=adp_iso,
+                occ_iso=occ_iso,
+                A_iso=A_iso,
+                B_iso=B_iso,
+                apply_symmetry=False,  # already P1
+            )
+            # IFFT to reciprocal space; gives a complex (Nx, Ny, Nz) tensor
+            # with crystallographic normalization. Layout: DC at (0, 0, 0);
+            # negative HKL wraps to high indices. Matches
+            # `interpolate_structure_factor_from_grid`'s expectation.
+            self.reciprocal_grid = ifft(
+                density_map, self.cubic_cell.volume.item(),
+            )
         self.cubic_cell_volume = float(self.cubic_cell.volume.item())
         self.device = device
         self.cubic_side = cubic_side

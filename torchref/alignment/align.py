@@ -160,10 +160,16 @@ def _external_rwork(model: "ModelFT", data: "ReflectionData") -> float:
     # crashes at refine_lbfgs.
     s = Scaler(model=model, data=data, nbins=20, verbose=0,
                device=model.xyz().device)
-    fc = model(data.hkl)
+    # Detach the model forward — the scaler only needs gradients through its
+    # own parameters; leaving `fc` attached to the model's autograd graph
+    # keeps SfFFT density-build intermediates alive after this function
+    # returns.
+    with torch.no_grad():
+        fc = model(data.hkl).detach()
     s.initialize(fc)
     s.refine_lbfgs(fcalc=fc)
-    rw, _ = s.rfactor(fc)
+    with torch.no_grad():
+        rw, _ = s.rfactor(fc)
     return rw.item() if hasattr(rw, "item") else float(rw)
 
 
