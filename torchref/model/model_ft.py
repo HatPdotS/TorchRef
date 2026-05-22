@@ -9,7 +9,7 @@ from torchref.model.sf_fft import SfFFT
 from torchref.model.model import Model
 from torchref.symmetry import SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
-from torchref.config import dtypes
+from torchref.config import dtypes, get_default_device, get_float_dtype
 from torchref.utils.caching import CachedForwardMixin
 
 
@@ -743,7 +743,7 @@ class ModelFT(CachedForwardMixin, Model):
         # Compute phase factors: exp(2πi h·r)
         # h·r is the dot product of hkl with fractional coordinates
         h_dot_r = torch.matmul(
-            hkl.to(dtype=self.dtype_float), xyz_frac.T
+            hkl.to(dtype=self.dtype_float, device=xyz_frac.device), xyz_frac.T
         )  # (n_refl, n_significant)
         phase = 2 * torch.pi * h_dot_r
 
@@ -1019,9 +1019,9 @@ class ModelFT(CachedForwardMixin, Model):
     def create_from_state_dict(
         cls,
         state_dict: dict,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
         verbose: int = 1,
-        dtype_float: torch.dtype = dtypes.float,
+        dtype_float: torch.dtype = get_float_dtype(),
     ) -> "ModelFT":
         """
         Create a fully initialized ModelFT from a state dictionary.
@@ -1034,7 +1034,7 @@ class ModelFT(CachedForwardMixin, Model):
         state_dict : dict
             State dictionary from torch.save(model.state_dict(), ...).
         device : torch.device, optional
-            Device to place tensors on. Default is torch.device('cpu').
+            Device to place tensors on. Defaults to the configured device.current.
         verbose : int, optional
             Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional

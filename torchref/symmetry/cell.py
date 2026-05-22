@@ -12,6 +12,7 @@ from typing import Any
 
 import torch
 
+from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.device_mixin import _NonModuleDeviceMixin
 
 
@@ -45,8 +46,8 @@ class Cell(_NonModuleDeviceMixin):
         self,
         data: Any,
         *,
-        dtype: torch.dtype | None = None,
-        device: torch.device | str | None = None,
+        dtype: torch.dtype = get_float_dtype(),
+        device: torch.device | str = get_default_device(),
         requires_grad: bool = False,
     ) -> None:
         """
@@ -58,9 +59,9 @@ class Cell(_NonModuleDeviceMixin):
             Unit cell parameters [a, b, c, alpha, beta, gamma].
             Can be a list, numpy array, or torch tensor.
         dtype : torch.dtype, optional
-            Desired data type. Defaults to torch.float32.
+            Desired data type. Defaults to the configured ``dtypes.float``.
         device : torch.device or str, optional
-            Desired device. Defaults to CPU.
+            Desired device. Defaults to the configured ``device.current``.
         requires_grad : bool, optional
             Whether to track gradients. Defaults to False.
 
@@ -69,9 +70,6 @@ class Cell(_NonModuleDeviceMixin):
         ValueError
             If data does not have exactly 6 elements.
         """
-        if dtype is None:
-            dtype = torch.float32
-
         # Convert to tensor first to get shape
         if isinstance(data, torch.Tensor):
             tensor = data.to(dtype=dtype, device=device)

@@ -368,21 +368,31 @@ def add_weights_arg(
 # Device setup
 # ---------------------------------------------------------------------------
 
-def resolve_device(device_str: str) -> "torch.device":
-    """Resolve the ``--device`` argument to a :class:`torch.device`.
+def parse_device_str(device_str: str) -> "torch.device":
+    """Parse the ``--device`` CLI argument into a :class:`torch.device`.
 
-    Handles ``"auto"`` (prefers CUDA), warns when CUDA is requested but
-    unavailable, and falls back to CPU.
+    ``"auto"`` delegates to :data:`torchref.config.device` (cuda -> mps -> cpu).
+    Explicit ``cuda``/``mps`` requests warn and fall back to CPU when unavailable.
     """
     import torch
 
+    from torchref.config import get_default_device
+
     if device_str == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return get_default_device()
 
     device = torch.device(device_str)
-    if device_str == "cuda" and not torch.cuda.is_available():
+    if device.type == "cuda" and not torch.cuda.is_available():
         print(
             "Warning: CUDA requested but not available, falling back to CPU",
+            file=sys.stderr,
+        )
+        device = torch.device("cpu")
+    elif device.type == "mps" and not (
+        hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    ):
+        print(
+            "Warning: MPS requested but not available, falling back to CPU",
             file=sys.stderr,
         )
         device = torch.device("cpu")
@@ -541,7 +551,7 @@ def parse_weights(
 def load_model(
     path: str,
     max_res: Optional[float] = None,
-    device: Union[str, "torch.device"] = "cpu",
+    device: Union[str, "torch.device", None] = None,
     verbose: int = 0,
     cif: Optional[Union[str, List[str]]] = None,
 ) -> "ModelFT":
@@ -565,7 +575,10 @@ def load_model(
     ModelFT
     """
     from torchref import ModelFT
+    from torchref.config import get_default_device
 
+    if device is None:
+        device = get_default_device()
     model = ModelFT(max_res=max_res, device=device, verbose=verbose)
     suffix = Path(path).suffix.lower()
     if suffix in (".cif", ".mmcif"):
@@ -581,7 +594,7 @@ def load_model(
 
 def load_reflection_data(
     path: str,
-    device: Union[str, "torch.device"] = "cpu",
+    device: Union[str, "torch.device", None] = None,
     column_names: Optional[Dict[str, str]] = None,
     verbose: int = 0,
 ) -> "ReflectionData":
@@ -603,7 +616,10 @@ def load_reflection_data(
     ReflectionData
     """
     from torchref import ReflectionData
+    from torchref.config import get_default_device
 
+    if device is None:
+        device = get_default_device()
     data = ReflectionData(device=str(device), verbose=verbose)
     suffix = Path(path).suffix.lower()
     if suffix in (".cif",):

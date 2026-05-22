@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Set, Tuple
 import numpy as np
 import torch
 
-from torchref.config import dtypes
+from torchref.config import dtypes, get_float_dtype
 
 if TYPE_CHECKING:
     from torchref.symmetry.cell import Cell
@@ -846,8 +846,8 @@ def build_vdw_restraints_gpu(
 
     empty_result = {
         "indices": torch.zeros(0, 2, dtype=torch.long, device=device),
-        "min_distances": torch.zeros(0, dtype=torch.float32, device=device),
-        "sigmas": torch.zeros(0, dtype=torch.float32, device=device),
+        "min_distances": torch.zeros(0, dtype=get_float_dtype(), device=device),
+        "sigmas": torch.zeros(0, dtype=get_float_dtype(), device=device),
         "symop_indices": torch.zeros(0, dtype=torch.long, device=device),
         "cell_offsets": torch.zeros(0, 3, dtype=torch.long, device=device),
     }
@@ -953,12 +953,18 @@ def build_vdw_restraints_gpu(
     _, inverse, counts = torch.unique(
         dedup_hash, return_inverse=True, return_counts=True
     )
-    # First occurrence: for each unique hash, the minimum index
-    perm = torch.arange(len(inverse), device=device)
-    first_occ = torch.empty_like(counts).fill_(len(inverse))
-    first_occ.scatter_reduce_(0, inverse, perm, reduce="amin")
+    # First occurrence: for each unique hash, the minimum index.
+    # Use the configured int dtype (int32 by default) — MPS does not support
+    # int64 scatter_reduce and N_pairs fits comfortably in int32.
+    _int_dtype = dtypes.int
+    inverse_i = inverse.to(_int_dtype)
+    perm = torch.arange(len(inverse), device=device, dtype=_int_dtype)
+    first_occ = torch.full(
+        (counts.shape[0],), len(inverse), device=device, dtype=_int_dtype
+    )
+    first_occ.scatter_reduce_(0, inverse_i, perm, reduce="amin")
     first_mask = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-    first_mask[first_occ] = True
+    first_mask[first_occ.long()] = True
 
     pair_atom_i = pair_atom_i[first_mask]
     pair_atom_j = pair_atom_j[first_mask]
@@ -977,9 +983,9 @@ def build_vdw_restraints_gpu(
 
     result = {
         "indices": indices,
-        "min_distances": min_distances.to(torch.float32),
+        "min_distances": min_distances.to(get_float_dtype()),
         "sigmas": torch.full(
-            (len(indices),), sigma, dtype=torch.float32, device=device
+            (len(indices),), sigma, dtype=get_float_dtype(), device=device
         ),
         "symop_indices": symop_indices,
         "cell_offsets": pair_cell_offsets,
@@ -1204,10 +1210,15 @@ def find_h_vdw_pairs_gpu(
     _, inverse, counts = torch.unique(
         dedup_hash, return_inverse=True, return_counts=True
     )
-    perm = torch.arange(len(inverse), device=device)
-    first_occ = torch.empty_like(counts).fill_(len(inverse))
-    first_occ.scatter_reduce_(0, inverse, perm, reduce="amin")
+    # MPS does not support int64 scatter_reduce; use the configured int dtype.
+    _int_dtype = dtypes.int
+    inverse_i = inverse.to(_int_dtype)
+    perm = torch.arange(len(inverse), device=device, dtype=_int_dtype)
+    first_occ = torch.full(
+        (counts.shape[0],), len(inverse), device=device, dtype=_int_dtype
+    )
+    first_occ.scatter_reduce_(0, inverse_i, perm, reduce="amin")
     first_mask = torch.zeros(len(pair_atom_i), dtype=torch.bool, device=device)
-    first_mask[first_occ] = True
+    first_mask[first_occ.long()] = True
 
     return pair_atom_i[first_mask], pair_atom_j[first_mask], pair_combo_j[first_mask]

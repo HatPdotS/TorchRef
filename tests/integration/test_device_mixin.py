@@ -17,14 +17,20 @@ CUDA_AVAILABLE = torch.cuda.is_available()
 
 
 def _load_model_ft(pdb_file, mtz_file):
-    """Helper: load a ModelFT and matching reflection data on CPU."""
+    """Helper: load a ModelFT and matching reflection data on CPU.
+
+    The round-trip tests in this file specifically check CPU placement
+    before moving to GPU, so the model and data are constructed on CPU
+    regardless of the configured default device.
+    """
     from torchref.io import ReflectionData
     from torchref.model.model_ft import ModelFT
 
-    model = ModelFT()
+    cpu = torch.device("cpu")
+    model = ModelFT(device=cpu)
     model.load_pdb(str(pdb_file))
 
-    data = ReflectionData()
+    data = ReflectionData(device=cpu)
     data.load_mtz(str(mtz_file))
     return model, data
 

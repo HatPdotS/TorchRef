@@ -34,6 +34,7 @@ from typing import Optional, TYPE_CHECKING
 import numpy as np
 import torch
 
+from torchref.config import get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 
 from .grid_operations import extract_structure_factor_from_grid
@@ -66,7 +67,7 @@ def compute_symmetry_equivalent_hkls(
         Equivalent HKLs for each symmetry operation.
     """
     device = hkl.device
-    dtype = torch.float32
+    dtype = get_float_dtype()
 
     # Ensure correct types
     hkl_float = hkl.to(dtype=dtype, device=device)  # (N, 3)
@@ -116,7 +117,7 @@ def compute_translation_phases(
         Complex phase factors exp(2*pi*i * h.t).
     """
     device = hkl.device
-    dtype = torch.float32
+    dtype = get_float_dtype()
 
     # Ensure correct types
     hkl_float = hkl.to(dtype=dtype, device=device)  # (N, 3)

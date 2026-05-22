@@ -39,6 +39,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from torchref.config import get_default_device
 from torchref.refinement.weighting.base_weighting import BaseWeighting
 from torchref.refinement.weighting.component_weighting import (
     ComponentWeighting,
@@ -121,7 +122,7 @@ class RandomWeightingScheme(BaseWeighting):
     Parameters
     ----------
     device : torch.device, optional
-        Computation device. Default is cpu.
+        Computation device. Defaults to the configured device.current.
     default_log_weights : dict, optional
         Default log-space weights for each component (mean of distribution).
         Default is DEFAULT_LOG_WEIGHTS.
@@ -377,7 +378,7 @@ class RandomComponentWeighting(ComponentWeighting):
     Parameters
     ----------
     device : torch.device, optional
-        Computation device. Default is cpu.
+        Computation device. Defaults to the configured device.current.
     default_log_weights : dict, optional
         Default log-space weights for each component.
     trajectory_sigmas : dict, optional
@@ -418,7 +419,7 @@ class RandomComponentWeighting(ComponentWeighting):
     ):
         # Don't call parent __init__ - we'll set up our own schemes
         nn.Module.__init__(self)
-        self.device = device or torch.device("cpu")
+        self.device = device or get_default_device()
         self.resample_each_step = resample_each_step
 
         # Build schemes dict with resolution weighting and random

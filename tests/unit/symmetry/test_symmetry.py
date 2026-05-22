@@ -78,7 +78,7 @@ class TestSpaceGroupMatrices:
 
         sg = SpaceGroup("P21")
 
-        identity = torch.eye(3, dtype=sg.matrices.dtype)
+        identity = torch.eye(3, dtype=sg.matrices.dtype, device=sg.matrices.device)
 
         # Check if identity is in the matrices
         has_identity = False
@@ -118,7 +118,9 @@ class TestSpaceGroupMatrices:
         for i in range(sg.matrices.shape[0]):
             R = sg.matrices[i]
             RtR = R.T @ R
-            assert torch.allclose(RtR, torch.eye(3, dtype=RtR.dtype), atol=1e-5)
+            assert torch.allclose(
+                RtR, torch.eye(3, dtype=RtR.dtype, device=RtR.device), atol=1e-5
+            )
 
     @pytest.mark.unit
     def test_rotation_matrices_determinant(self):
@@ -153,7 +155,11 @@ class TestSpaceGroupApplication:
         assert transformed.shape[1] == 3   # 3D coordinates
         assert transformed.shape[2] == 1   # 1 operation (identity)
         # First (and only) symmetry mate should match original
-        assert torch.allclose(transformed[:, :, 0], coords.to(transformed.dtype), atol=1e-5)
+        assert torch.allclose(
+            transformed[:, :, 0],
+            coords.to(device=transformed.device, dtype=transformed.dtype),
+            atol=1e-5,
+        )
 
     @pytest.mark.unit
     def test_spacegroup_generates_mates(self, random_fractional_coordinates):

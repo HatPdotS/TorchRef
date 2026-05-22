@@ -23,7 +23,7 @@ from torchref.base.reciprocal import (
     get_scattering_vectors,
     reciprocal_basis_matrix,
 )
-from torchref.config import dtypes
+from torchref.config import dtypes, get_default_device
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMovementMixin
@@ -50,7 +50,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
     dtype_float : torch.dtype, optional
         Data type for floating point tensors. Default is dtypes.float.
     device : torch.device, optional
-        Computation device. Default is torch.device('cpu').
+        Computation device. Defaults to the configured device.current.
     verbose : int, optional
         Verbosity level for logging. Default is 0.
     max_memory_gb : float, optional
@@ -95,7 +95,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         cell: Optional[Cell] = None,
         spacegroup: SpaceGroupLike = None,
         dtype_float: torch.dtype = dtypes.float,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
         verbose: int = 0,
         max_memory_gb: float = 2.0,
     ):
@@ -111,7 +111,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         dtype_float : torch.dtype, optional
             Data type for floating point tensors. Default is dtypes.float.
         device : torch.device, optional
-            Computation device. Default is torch.device('cpu').
+            Computation device. Defaults to the configured device.current.
         verbose : int, optional
             Verbosity level for logging. Default is 0.
         max_memory_gb : float, optional

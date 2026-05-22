@@ -20,10 +20,12 @@ import torch.nn as nn
 from torchref.base.math_torch import U_to_matrix
 from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll_xray_lognormal
 from torchref.base.reciprocal import get_scattering_vectors
+from torchref.config import get_complex_dtype, get_default_device, get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import ModuleReference
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.device_resolution import resolve_device
 
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
@@ -58,7 +60,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Number of resolution bins.
     verbose : int, default 1
         Verbosity level.
-    device : torch.device, default torch.device('cpu')
+    device : torch.device, default: configured device.current
         Computation device.
 
     Attributes
@@ -74,7 +76,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         data: Optional["ReflectionData"] = None,
         nbins: int = 20,
         verbose: int = 1,
-        device: torch.device = torch.device("cpu"),
+        device: Optional[torch.device] = None,
     ):
         """
         Initialize ScalerBase.
@@ -90,11 +92,14 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Number of resolution bins.
         verbose : int, default 1
             Verbosity level.
-        device : torch.device, default torch.device('cpu')
-            Computation device.
+        device : torch.device, optional
+            Computation device.  If ``None``, derived from ``data`` (if
+            given) or the configured default via
+            :func:`torchref.utils.resolve_device`.  An explicit value
+            forces ``data`` onto that device.
         """
         super(ScalerBase, self).__init__()
-        self.device = device
+        self.device = resolve_device(data, device=device)
         self.verbose = verbose
         self.nbins = nbins
 
@@ -246,7 +251,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     def setup_anisotropy_correction(self):
         """Initialize anisotropic correction parameters."""
         self.U = nn.Parameter(
-            torch.normal(0, 0.001, (6,), dtype=torch.float32, device=self.device)
+            torch.normal(0, 0.001, (6,), dtype=get_float_dtype(), device=self.device)
         )
 
     def anisotropy_correction(self):
@@ -278,12 +283,12 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         """
         if not hasattr(self, "U"):
             self.U = nn.Parameter(
-                torch.normal(0, 0.01, (6,), dtype=torch.float32, device=self.device)
+                torch.normal(0, 0.01, (6,), dtype=get_float_dtype(), device=self.device)
             )
         hkl, fobs, sigma, rfree = self._data()
 
-        fobs = fobs.to(torch.float32).detach()
-        fcalc = torch.abs(fcalc).to(torch.float32).detach()
+        fobs = fobs.to(get_float_dtype()).detach()
+        fcalc = torch.abs(fcalc).to(get_float_dtype()).detach()
 
         optimizer = torch.optim.Adam([self.U, self.log_scale], lr=1e-1)
         for i in range(nsteps):
@@ -343,7 +348,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Calculated structure factors (complex).
         """
         hkl, fobs, sigma, rfree = self._data()
-        fobs = fobs.to(torch.float32).detach()
+        fobs = fobs.to(get_float_dtype()).detach()
         fcalc = fcalc.detach()
 
         for lr in [1e-1, 5e-2, 1e-2]:
@@ -477,7 +482,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     def setup_bin_wise_bfactor(self):
         """Initialize bin-wise B-factor correction parameters."""
         self.bin_wise_bfactor = nn.Parameter(
-            torch.zeros(self.nbins, dtype=torch.float32, device=self.device)
+            torch.zeros(self.nbins, dtype=get_float_dtype(), device=self.device)
         )
 
     def bin_wise_bfactor_correction(self):
@@ -577,7 +582,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             raise RuntimeError("No solvent model set. Call set_solvent_model() first.")
 
         hkl, fobs, sigma, rfree = self._data()
-        fobs = fobs.to(torch.float32).detach()
+        fobs = fobs.to(get_float_dtype()).detach()
         fcalc = fcalc.detach()
 
         # Calculate resolution for weighting/filtering
@@ -993,7 +998,10 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                     (-sol.b_solvent.clamp(min=-500.0, max=500.0) * s_half_sq).clamp(min=-10.0, max=10.0)
                 )
                 if sol.optimize_phase:
-                    f_sol_raw = f_sol_raw * torch.exp(1j * sol.phase_offset)
+                    # 1j is a Python complex literal -> promotes to complex128.
+                    # Build the phase factor in the configured complex dtype instead.
+                    j = torch.tensor(1j, dtype=get_complex_dtype(), device=self.device)
+                    f_sol_raw = f_sol_raw * torch.exp(j * sol.phase_offset)
                 f_sol = k_sol * f_sol_raw * b_factor
         else:
             f_sol = torch.tensor(0.0, device=self.device, dtype=fcalc.dtype)

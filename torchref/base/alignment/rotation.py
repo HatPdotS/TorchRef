@@ -7,7 +7,7 @@ including axis-angle, quaternion, and Euler representations.
 
 import numpy as np
 import torch
-from torchref.config import dtypes
+from torchref.config import dtypes, get_default_device, get_float_dtype
 
 
 def rotate_coords_torch(coords, phi, rho):
@@ -232,7 +232,9 @@ def quaternion_to_rotation_matrix(q: torch.Tensor) -> torch.Tensor:
 
 
 def random_rotation_uniform(
-    n: int = 1, device: str = "cpu", dtype: torch.dtype = dtypes.float
+    n: int = 1,
+    device: str = get_default_device(),
+    dtype: torch.dtype = get_float_dtype(),
 ) -> torch.Tensor:
     """
     Generate uniform random rotations over SO(3).
@@ -244,7 +246,7 @@ def random_rotation_uniform(
     n : int, optional
         Number of rotations to generate. Default is 1.
     device : str, optional
-        Device for output tensor. Default is 'cpu'.
+        Device for output tensor. Defaults to the configured device.current.
     dtype : torch.dtype, optional
         Data type for output tensor. Default is dtypes.float.
 

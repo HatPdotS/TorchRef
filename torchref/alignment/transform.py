@@ -9,6 +9,8 @@ from typing import Optional, Union
 
 import torch
 import torch.nn as nn
+
+from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
 
@@ -531,9 +533,9 @@ class RigidTransform(DeviceMixin, nn.Module):
     ):
         super().__init__()
 
-        # Determine dtype and device from inputs
-        dtype = torch.float64
-        device = torch.device("cpu")
+        # Determine dtype and device from inputs (fallback to package defaults)
+        dtype = get_float_dtype()
+        device = get_default_device()
 
         if quaternion is not None:
             dtype, device = quaternion.dtype, quaternion.device
@@ -729,8 +731,8 @@ class RigidTransform(DeviceMixin, nn.Module):
     @classmethod
     def identity(
         cls,
-        device: Union[str, torch.device] = "cpu",
-        dtype: torch.dtype = torch.float64,
+        device: Union[str, torch.device] = get_default_device(),
+        dtype: torch.dtype = get_float_dtype(),
     ) -> "RigidTransform":
         """
         Create identity transformation.
@@ -824,8 +826,8 @@ class RigidTransform(DeviceMixin, nn.Module):
     @classmethod
     def random(
         cls,
-        device: Union[str, torch.device] = "cpu",
-        dtype: torch.dtype = torch.float64,
+        device: Union[str, torch.device] = get_default_device(),
+        dtype: torch.dtype = get_float_dtype(),
         translation_scale: float = 0.0,
     ) -> "RigidTransform":
         """

@@ -19,7 +19,7 @@ import torch.nn as nn
 
 from torchref.base.fourier import get_real_grid, ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
-from torchref.config import dtypes
+from torchref.config import dtypes, get_default_device
 
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
@@ -49,7 +49,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     dtype_float : torch.dtype, optional
         Data type for floating point tensors. Default is dtypes.float.
     device : torch.device, optional
-        Computation device. Default is torch.device('cpu').
+        Computation device. Defaults to the configured device.current.
     verbose : int, optional
         Verbosity level for logging. Default is 0.
 
@@ -99,7 +99,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         max_res: float = 1.5,
         radius_angstrom: float = 3.0,
         dtype_float: torch.dtype = dtypes.float,
-        device: torch.device = torch.device("cpu"),
+        device: Optional[torch.device] = None,
         verbose: int = 0,
         use_late_symmetry: bool = True,
     ):
@@ -119,7 +119,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         dtype_float : torch.dtype, optional
             Data type for floating point tensors. Default is dtypes.float.
         device : torch.device, optional
-            Computation device. Default is torch.device('cpu').
+            Computation device. Default is None (uses cell's device). If Cell is also None, defaults to CPU.
         verbose : int, optional
             Verbosity level for logging. Default is 0.
         use_late_symmetry : bool, optional
@@ -131,7 +131,15 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         self.max_res = max_res
         self.radius_angstrom = radius_angstrom
         self.dtype_float = dtype_float
-        self.device = device
+
+        self.device = (
+            device
+            if device is not None
+            else cell.device
+            if cell is not None
+            else get_default_device()
+        )
+
         self.verbose = verbose
         self.use_late_symmetry = use_late_symmetry
 
@@ -249,16 +257,20 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     
     @property
     def fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Get fractionalization matrix from cell."""
+        """Get fractionalization matrix from cell, on this module's device/dtype."""
         if self._cell is not None:
-            return self._cell.fractional_matrix
+            return self._cell.fractional_matrix.to(
+                device=self.device, dtype=self.dtype_float
+            )
         return None
-    
+
     @property
     def inv_fractional_matrix(self) -> Optional[torch.Tensor]:
-        """Get orthogonalization matrix from cell."""
+        """Get orthogonalization matrix from cell, on this module's device/dtype."""
         if self._cell is not None:
-            return self._cell.inv_fractional_matrix
+            return self._cell.inv_fractional_matrix.to(
+                device=self.device, dtype=self.dtype_float
+            )
         return None
 
     def set_cell_and_spacegroup(self, cell: Cell, spacegroup: SpaceGroupLike = None):
@@ -329,7 +341,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     def compute_real_space_grid(
         fractional_matrix: torch.Tensor,
         gridsize: torch.Tensor,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
     ) -> torch.Tensor:
         """
         Generate the real-space coordinate grid.

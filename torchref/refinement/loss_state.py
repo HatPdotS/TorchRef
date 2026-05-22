@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import torch
 from torch import nn
 
+from torchref.config import get_default_device
 from torchref.utils.autograd_introspection import collect_loss_leaves, _iter_roots
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.loss_validation import validate_loss
@@ -70,7 +71,7 @@ class LossState(DeviceMovementMixin):
         Model-level data (rwork, rfree, n_atoms, etc.) populated by refinement.
     """
 
-    device: torch.device = field(default_factory=lambda: torch.device("cpu"))
+    device: torch.device = field(default_factory=get_default_device)
 
     # Targets as callables - only evaluated on aggregate()
     targets: Dict[str, Callable] = field(default_factory=dict)

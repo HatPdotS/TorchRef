@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Dict
 import torch
 from torch import nn
 
+from torchref.config import get_default_device
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.stats import StatEntry
 
@@ -33,7 +34,7 @@ class BaseWeighting(DeviceMixin, nn.Module, ABC):
     Parameters
     ----------
     device : torch.device, optional
-        Computation device. Default is cpu.
+        Computation device. Defaults to the configured device.current.
 
     Attributes
     ----------
@@ -47,7 +48,7 @@ class BaseWeighting(DeviceMixin, nn.Module, ABC):
 
     def __init__(self, device: torch.device = None, **kwargs):
         super().__init__()
-        self.device = device or torch.device("cpu")
+        self.device = device or get_default_device()
 
     @abstractmethod
     def forward(self, state: "LossState") -> Dict[str, float]:

@@ -12,9 +12,11 @@ from typing import Optional, Tuple
 import torch
 
 from torchref.base.reciprocal.grid_operations import place_on_grid
+from torchref.config import get_default_device
 from torchref.io.datasets.collection import DatasetCollection
 from torchref.maps.map import Map
 from torchref.symmetry.reciprocal_symmetry import expand_hkl
+from torchref.utils.device_resolution import resolve_device
 
 
 class DifferenceMap(Map):
@@ -36,13 +38,18 @@ class DifferenceMap(Map):
         Grid dimensions (nx, ny, nz). If None, determined automatically.
     """
 
-    def __init__(self, data, data_reference, model, gridsize=None):
+    def __init__(self, data, data_reference, model, gridsize=None,
+                 device: Optional[torch.device] = None):
+        # Pin all three inputs onto one device before constructing the
+        # DatasetCollection / super().__init__ — both consume tensors
+        # from data.hkl / model and would otherwise inherit whichever
+        # device they happened to land on.
+        resolved = resolve_device(data, data_reference, model, device=device)
         self.data_reference = data_reference
         self.data_perturbed = data
 
         # Build collection and scale
-        _device = str(data.hkl.device) if data.hkl is not None else "cpu"
-        self._collection = DatasetCollection(verbose=0, device=_device)
+        self._collection = DatasetCollection(verbose=0, device=str(resolved))
         self._collection.add_dataset(
             "reference", data_reference, set_as_reference=True
         )
@@ -55,6 +62,7 @@ class DifferenceMap(Map):
             model=model,
             gridsize=gridsize,
             map_type="Fcalc",  # placeholder, calculate() is overridden
+            device=resolved,
         )
 
     def calculate(self) -> torch.Tensor:

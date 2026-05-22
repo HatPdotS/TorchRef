@@ -10,6 +10,8 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 
+from torchref.config import get_float_dtype
+
 
 class VectorSampler:
     """
@@ -89,7 +91,7 @@ class VectorSampler:
 
         Zs = torch.tensor(
             [PERIODIC_TABLE[el]["number"] for el in elements],
-            dtype=torch.float32,
+            dtype=get_float_dtype(),
             device=self.model.device,
         )
 
@@ -97,7 +99,7 @@ class VectorSampler:
         # Use 1/B so atoms with lower B-factors get higher weights
         B_factors = torch.tensor(
             self.model.pdb["tempfactor"].values,
-            dtype=torch.float32,
+            dtype=get_float_dtype(),
             device=self.model.device,
         )
         # Clamp B-factors to avoid division by zero or very small values

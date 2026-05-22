@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 import torch
 from torch import nn
 
+from torchref.config import get_default_device
 from torchref.utils.device_mixin import DeviceMovementMixin
 
 if TYPE_CHECKING:
@@ -65,7 +66,7 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         initial_fractions = [f / total for f in initial_fractions]
 
         if device is None:
-            device = base_models[0].device if hasattr(base_models[0], "device") else torch.device("cpu")
+            device = base_models[0].device if hasattr(base_models[0], "device") else get_default_device()
 
         fractions_tensor = torch.tensor(initial_fractions, dtype=torch.float32, device=device)
         theta = torch.log(fractions_tensor.clamp(min=1e-6))

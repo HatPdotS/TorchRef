@@ -134,7 +134,9 @@ def _apply_to_obj(val, fn, visited):
     if isinstance(val, nn.Module):
         if id(val) in visited:
             return val
-        visited.add(id(val))
+        # Do NOT add ``id(val)`` to ``visited`` here — ``val._apply`` does
+        # that itself. Adding it first would make the inner call short-circuit
+        # before it actually moves the module's tensors.
         val._apply(fn)
         return val
 

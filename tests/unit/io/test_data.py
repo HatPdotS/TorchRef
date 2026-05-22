@@ -37,12 +37,13 @@ class TestReflectionDataInitialization:
 
     @pytest.mark.unit
     def test_reflection_data_default_device(self):
-        """Test default device is CPU."""
+        """Test default device matches the package-wide configured default."""
+        from torchref.config import get_default_device
         from torchref.io import ReflectionData
-        
+
         data = ReflectionData()
-        
-        assert data.device == torch.device('cpu')
+
+        assert data.device == get_default_device()
 
     @pytest.mark.unit
     def test_reflection_data_custom_device(self):

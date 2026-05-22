@@ -18,6 +18,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from torchref.config import get_default_device, get_float_dtype
 from torchref.refinement.weighting.base_weighting import BaseWeighting
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
@@ -180,7 +181,7 @@ class PolicyComponentWeighting(BaseWeighting):
 
     def __init__(
         self,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = get_default_device(),
         policy_path: Optional[str] = None,
         sample: bool = False,
         temperature: float = 1.0,
@@ -503,7 +504,7 @@ class PolicyComponentWeighting(BaseWeighting):
                 mean_adp_normalized,  # 29: normalized mean ADP
                 adp_std_normalized,  # 30: normalized ADP spread
             ],
-            dtype=torch.float32,
+            dtype=get_float_dtype(),
             device=self.device,
         )
 

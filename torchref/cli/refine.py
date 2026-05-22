@@ -43,7 +43,7 @@ from torchref.cli._common import (
     configure_unbuffered_output,
     parse_weights,
     register_timing,
-    resolve_device,
+    parse_device_str,
     validate_files,
     write_refinement_outputs,
 )
@@ -166,7 +166,7 @@ Examples:
         print()
         sys.stdout.flush()
 
-    device = resolve_device(args.device)
+    device = parse_device_str(args.device)
 
     if args.verbose > 0:
         print("Initializing refinement...")

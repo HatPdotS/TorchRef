@@ -176,11 +176,13 @@ class TestBinwiseBfactorFunctional:
         
         scaler = Scaler(model=model, data=data, nbins=10, verbose=0)
         scaler.setup_bin_wise_bfactor()
-        
+
         assert hasattr(scaler, 'bin_wise_bfactor')
         assert scaler.bin_wise_bfactor.shape == (10,)
         # Initially should be zeros
-        assert torch.allclose(scaler.bin_wise_bfactor, torch.zeros(10))
+        assert torch.allclose(
+            scaler.bin_wise_bfactor, torch.zeros(10, device=scaler.device)
+        )
 
     @pytest.mark.integration
     def test_binwise_bfactor_correction(self, sample_structure_pair):
@@ -199,7 +201,7 @@ class TestBinwiseBfactorFunctional:
         scaler.setup_bin_wise_bfactor()
         
         # Set some non-zero B-factors
-        scaler.bin_wise_bfactor.data = torch.linspace(0, 20, 10)
+        scaler.bin_wise_bfactor.data = torch.linspace(0, 20, 10, device=scaler.device)
         
         correction = scaler.bin_wise_bfactor_correction()
         
@@ -232,8 +234,8 @@ class TestScalerStateDictFunctional:
         scaler1.setup_bin_wise_bfactor()
         
         # Modify parameters
-        scaler1.U.data = torch.randn(6)
-        scaler1.bin_wise_bfactor.data = torch.randn(10)
+        scaler1.U.data = torch.randn(6, device=scaler1.device)
+        scaler1.bin_wise_bfactor.data = torch.randn(10, device=scaler1.device)
         
         # Save state
         state_path = tmp_path / "scaler_state.pt"

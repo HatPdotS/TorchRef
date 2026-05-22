@@ -14,11 +14,12 @@ class TestLossStateBasic:
     @pytest.mark.unit
     def test_loss_state_creation(self):
         """Test LossState can be created with default values."""
+        from torchref.config import get_default_device
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
 
-        assert state.device == torch.device('cpu')
+        assert state.device == get_default_device()
         assert state.targets == {}
         assert state.weights == {}
         assert state.history == []

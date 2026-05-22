@@ -2,6 +2,7 @@ import torch
 from torch.nn import Module as nnModule
 from torch.nn import Parameter
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.config import get_float_dtype
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Optional, Union
 import numpy as np
@@ -80,7 +81,7 @@ class KineticModel(DeviceMixin, nnModule):
         
         # Convert timepoints to tensor
         if not isinstance(timepoints, torch.Tensor):
-            timepoints = torch.tensor(timepoints, dtype=torch.float32)
+            timepoints = torch.tensor(timepoints, dtype=get_float_dtype())
         self.register_buffer('timepoints', timepoints)
         
         # Parse flow chart to extract states and transitions
@@ -157,7 +158,7 @@ class KineticModel(DeviceMixin, nnModule):
         if instrument_function == 'gaussian':
             # Store log of width to ensure positivity (refinable)
             self.log_instrument_width = Parameter(
-                torch.tensor(np.log(instrument_width), dtype=torch.float32)
+                torch.tensor(np.log(instrument_width), dtype=get_float_dtype())
             )
         elif instrument_function == 'none':
             self.log_instrument_width = None
@@ -217,7 +218,7 @@ class KineticModel(DeviceMixin, nnModule):
                 # List of values in order
                 if len(values) != self.n_transitions:
                     raise ValueError(f"Expected {self.n_transitions} values, got {len(values)}")
-                init_values = torch.tensor(values, dtype=torch.float32)
+                init_values = torch.tensor(values, dtype=get_float_dtype())
             else:
                 raise ValueError("values must be dict, list, or None")
         
@@ -654,14 +655,14 @@ class KineticModel(DeviceMixin, nnModule):
             if not hasattr(self, param_name):
                 # Use logit transformation to keep baseline in (0, 1)
                 # baseline = sigmoid(logit_baseline)
-                init_val = torch.clamp(torch.tensor(occupancy, dtype=torch.float32), 0.01, 0.99)
+                init_val = torch.clamp(torch.tensor(occupancy, dtype=get_float_dtype()), 0.01, 0.99)
                 logit_val = torch.log(init_val / (1 - init_val))
                 setattr(self, param_name, Parameter(logit_val))
                 self._baseline_refinable[state] = param_name
             else:
                 # Update existing parameter
                 param = getattr(self, param_name)
-                init_val = torch.clamp(torch.tensor(occupancy, dtype=torch.float32), 0.01, 0.99)
+                init_val = torch.clamp(torch.tensor(occupancy, dtype=get_float_dtype()), 0.01, 0.99)
                 with torch.no_grad():
                     param.data = torch.log(init_val / (1 - init_val))
         else:
@@ -745,7 +746,7 @@ class KineticModel(DeviceMixin, nnModule):
         for idx, (f_state, t_state) in enumerate(self.transitions):
             if f_state == from_state and t_state == to_state:
                 with torch.no_grad():
-                    self.log_rate_constants[idx] = torch.log(torch.tensor(value, dtype=torch.float32))
+                    self.log_rate_constants[idx] = torch.log(torch.tensor(value, dtype=get_float_dtype()))
                 return
         
         raise ValueError(f"Transition '{transition}' not found in model.")

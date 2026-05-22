@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from torchref.config import get_default_device, get_float_dtype
 from torchref.symmetry.spacegroup import SpaceGroup
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -55,9 +56,9 @@ class MapSymmetry(DeviceMixin, nn.Module):
         space_group,
         map_shape,
         cell_params,
-        dtype_float=torch.float32,
+        dtype_float=get_float_dtype(),
         verbose=1,
-        device=torch.device("cpu"),
+        device=get_default_device(),
     ):
         """
         Initialize map symmetry operator.
@@ -74,7 +75,7 @@ class MapSymmetry(DeviceMixin, nn.Module):
             Floating point precision to use.
         verbose : int, default 1
             Verbosity level.
-        device : torch.device, default torch.device('cpu')
+        device : torch.device, default: configured device.current
             Device to use for computation.
         """
         super().__init__()

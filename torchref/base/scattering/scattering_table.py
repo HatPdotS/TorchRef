@@ -33,6 +33,8 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from torchref.config import get_float_dtype
+
 # Global cache for the loaded table
 _TABLE_CACHE: Optional[dict] = None
 
@@ -215,7 +217,7 @@ def get_scattering_params_by_z(
     if device is None:
         device = z_tensor.device
     if dtype is None:
-        dtype = torch.float32
+        dtype = get_float_dtype()
 
     table = load_scattering_table(device=device, dtype=dtype)
 
@@ -265,7 +267,7 @@ def get_scattering_params_for_ion(
         A, B = get_scattering_params_for_ion('O', -2)
     """
     if dtype is None:
-        dtype = torch.float32
+        dtype = get_float_dtype()
 
     table = load_scattering_table(device=device, dtype=dtype)
 

@@ -285,11 +285,8 @@ class TestModelFTCoordinateOperations:
         xyz = model.xyz().double()  # Convert to double
         cell = model.cell
         
-        # Ensure double dtype for cell
-        if hasattr(cell, 'double'):
-            cell_double = cell.double()
-        else:
-            cell_double = torch.tensor(cell, dtype=torch.float64)
+        # Cell wraps a tensor; use cell.data to preserve device.
+        cell_double = cell.data.double()
         
         # Convert to fractional
         frac = cartesian_to_fractional_torch(xyz, cell_double)
@@ -311,11 +308,8 @@ class TestModelFTCoordinateOperations:
         xyz = model.xyz().double()  # Convert to double
         cell = model.cell
         
-        # Ensure double dtype for cell
-        if hasattr(cell, 'double'):
-            cell_double = cell.double()
-        else:
-            cell_double = torch.tensor(cell, dtype=torch.float64)
+        # Cell wraps a tensor; use cell.data to preserve device.
+        cell_double = cell.data.double()
         
         # Round trip conversion
         frac = cartesian_to_fractional_torch(xyz, cell_double)

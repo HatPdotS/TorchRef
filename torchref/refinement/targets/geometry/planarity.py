@@ -19,10 +19,13 @@ if TYPE_CHECKING:
 def _plane_normals(centered: torch.Tensor) -> torch.Tensor:
     """Compute unit plane normals from centered coordinates via SVD.
 
-    Uses SVD on the centered coordinates in float64. SVD is backward-stable
-    even for rank-deficient matrices and never raises on finite input, so no
-    jitter is needed. The right singular vector with the smallest singular
-    value is the plane normal (direction of minimum variance).
+    SVD is backward-stable even for rank-deficient matrices and never raises
+    on finite input, so no jitter is needed. The right singular vector with
+    the smallest singular value is the plane normal (direction of minimum
+    variance).
+
+    SVD is run in the input dtype — for small (P, N, 3) matrices over
+    O(Å) atom coordinates, float32 is numerically sufficient.
 
     The result is detached — the caller is responsible for wrapping this in
     ``torch.no_grad()``.
@@ -35,10 +38,9 @@ def _plane_normals(centered: torch.Tensor) -> torch.Tensor:
     Returns
     -------
     torch.Tensor
-        (P, 3) float64 plane normals (smallest-variance direction).
+        (P, 3) plane normals (smallest-variance direction).
     """
-    centered64 = centered.detach().to(torch.float64)
-    _U, _S, Vh = torch.linalg.svd(centered64, full_matrices=False)
+    _U, _S, Vh = torch.linalg.svd(centered.detach(), full_matrices=False)
     return Vh[:, -1, :]
 
 

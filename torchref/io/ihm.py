@@ -471,7 +471,9 @@ class IHMReader:
             )
 
         if device is None:
-            device = torch.device("cpu")
+            from torchref.config import get_default_device
+
+            device = get_default_device()
 
         # Build one ModelFT per state
         base_models = []

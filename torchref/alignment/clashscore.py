@@ -14,6 +14,7 @@ from torchref.base.coordinates import (
     cartesian_to_fractional_torch,
     fractional_to_cartesian_torch,
 )
+from torchref.config import get_default_device, get_float_dtype
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMixin
@@ -138,19 +139,21 @@ class ClashScoreCalculator(DeviceMixin, nn.Module):
         self,
         symmetry: SpaceGroupLike,
         default_clash_radius: float = 5.0,
-        dtype: torch.dtype = torch.float32,
-        device: torch.device = torch.device("cpu"),
+        dtype: torch.dtype = get_float_dtype(),
+        device: torch.device = get_default_device(),
     ):
         super().__init__()
         self.default_clash_radius = default_clash_radius
         self.dtype = dtype
         self._device = device
 
-        # Initialize symmetry handler
+        # Initialize symmetry handler. Use the user-configured dtype so the
+        # SpaceGroup stays MPS-compatible; ``_get_valid_transforms`` casts to
+        # CPU+float64 internally where high-precision symmetry math is needed.
         if isinstance(symmetry, SpaceGroup):
             self.symmetry = symmetry
         else:
-            self.symmetry = SpaceGroup(symmetry, dtype=torch.float64, device=device)
+            self.symmetry = SpaceGroup(symmetry, dtype=self.dtype, device=device)
 
     def _get_valid_transforms(
         self,
@@ -178,11 +181,12 @@ class ClashScoreCalculator(DeviceMixin, nn.Module):
         List[RigidTransform]
             List of symmetry transforms that could produce clashes.
         """
-        # Compute fractionalization matrix using Cell
-        cell_obj = Cell(cell, dtype=torch.float64)
+        # Compute fractionalization matrix using Cell. Pin to CPU because the
+        # rest of this method does CPU-only float64 symmetry math.
+        cell_obj = Cell(cell, dtype=torch.float64, device="cpu")
         B = cell_obj.fractional_matrix
 
-        centroid_frac = centroid_frac.to(torch.float64)
+        centroid_frac = centroid_frac.to(device="cpu", dtype=torch.float64)
 
         # Threshold distance for filtering
         # Two molecules can clash if centroid distance < 2*radius + clash_radius

@@ -105,12 +105,13 @@ class TestSpaceGroupDevice:
 
     @pytest.mark.integration
     def test_spacegroup_default_device(self):
-        """Test SpaceGroup matrices default to CPU."""
+        """Test SpaceGroup matrices land on the configured default device."""
         from torchref.symmetry import SpaceGroup
+        from torchref.config import get_default_device
 
         sg = SpaceGroup("P 21 21 21")
 
-        assert sg.matrices.device.type == 'cpu'
+        assert sg.matrices.device.type == get_default_device().type
 
     @pytest.mark.integration
     def test_spacegroup_explicit_device(self, cpu_device):

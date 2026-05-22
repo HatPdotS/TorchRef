@@ -36,6 +36,7 @@ from torchref.restraints.restraints_helper import (
     read_cif,
     read_link_definitions,
 )
+from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorDict
 from torchref.utils.device_mixin import DeviceMixin
@@ -509,7 +510,8 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         internally with Numba-accelerated matching (~10x faster).
         """
         try:
-            device = self.xyz().device
+            target_device = self.xyz().device
+            device = torch.device("cpu")
             pdb = self.pdb
 
             # Build intra-residue restraints using fast builders
@@ -565,6 +567,12 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             # being called during a forward pass (which would break CUDA-graph
             # capture) and ensures model.to(device) moves ALL restraint tensors.
             self.cat_dict()
+
+            # Restraint construction (pair searches, CIF-driven topology) is
+            # built on CPU for predictability; move buffers to the model's
+            # device now so forward passes don't trigger H2D copies.
+            if target_device.type != "cpu":
+                self.to(target_device)
 
         except Exception as e:
             self.debug_on_error(e, context="RestraintsNew.build_restraints")
@@ -1339,15 +1347,44 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             and self._spacegroup is not None
         )
 
+        # Restraint build (neighbor search, H topology, exclusion hashing)
+        # runs on CPU: pair lists are O(N) integers with launch overhead
+        # that dominates any GPU benefit, and the underlying searches are
+        # only called at build time. Buffers are moved to the model device
+        # by ``build_restraints`` once the dict is registered.
+        cpu = torch.device("cpu")
+        target_device = self.xyz().device if self._xyz_fn is not None else cpu
+
+        def xyz_cpu():
+            return self.xyz().detach().to(cpu)
+
+        def vdw_radii_cpu():
+            return self.get_vdw_radii().detach().to(cpu)
+
+        # Construct fresh CPU copies — Cell/SpaceGroup ``.to()`` mutates
+        # in place, which would silently relocate the model's own Cell/SG.
+        if self._cell is not None:
+            from torchref.symmetry.cell import Cell
+            cell_cpu = Cell(self._cell._data.detach(), device=cpu,
+                            dtype=self._cell.dtype)
+        else:
+            cell_cpu = None
+        if self._spacegroup is not None:
+            from torchref.symmetry.spacegroup import SpaceGroup
+            sg_cpu = SpaceGroup(self._spacegroup, device=cpu,
+                                dtype=self._spacegroup._dtype)
+        else:
+            sg_cpu = None
+
         if has_symmetry:
             from torchref.restraints.neighbor_search import build_vdw_restraints_gpu
 
             exclusions = self._build_exclusion_set()
             self.restraints["vdw"] = build_vdw_restraints_gpu(
-                xyz_fn=self.xyz,
-                vdw_radii_fn=self.get_vdw_radii,
-                cell=self._cell,
-                sg=self._spacegroup,
+                xyz_fn=xyz_cpu,
+                vdw_radii_fn=vdw_radii_cpu,
+                cell=cell_cpu,
+                sg=sg_cpu,
                 pdb=self.pdb,
                 exclusion_set=exclusions,
                 cutoff=cutoff,
@@ -1368,13 +1405,12 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             build_h_candidate_pairs,
         )
 
-        device = self.xyz().device if self._xyz_fn is not None else torch.device("cpu")
         self._h_topo = build_hydrogen_topology(
             pdb=self.pdb,
-            device=device,
+            device=cpu,
             verbose=self.verbose,
         )
-        self._h_excl_hash = self._build_h_exclusion_hash(self._h_topo, device)
+        self._h_excl_hash = self._build_h_exclusion_hash(self._h_topo, cpu)
 
         # Precompute H candidate pairs from heavy-atom VDW pair list
         vdw_data = self.restraints.get("vdw")
@@ -1384,13 +1420,13 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
                 vdw_data=vdw_data,
                 pdb=self.pdb,
                 h_excl_hash=self._h_excl_hash,
-                device=device,
+                device=cpu,
                 verbose=self.verbose,
             )
             # Fill in VDW min distances using combined radii array
             if self._h_topo.has_candidates:
-                heavy_radii = self.get_vdw_radii()         # (N_heavy,)
-                h_radii = self._h_topo.h_vdw_radius        # (N_h,)
+                heavy_radii = vdw_radii_cpu()                 # (N_heavy,)
+                h_radii = self._h_topo.h_vdw_radius           # (N_h,) on CPU
                 all_radii = torch.cat([heavy_radii, h_radii])
                 self._h_topo.cand_min_dist = (
                     all_radii[self._h_topo.cand_idx_i]
@@ -1399,8 +1435,8 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
 
         # Snapshot the ASU coordinates *at* build time so maintenance()
         # callers can diff current positions against it and decide if a
-        # rebuild is needed. Detached clone lives on the same device as
-        # the model, so the compare is a single GPU op.
+        # rebuild is needed. Detached clone lives on the model's device so
+        # the compare is a single op on whatever device xyz() returns.
         if self._xyz_fn is not None:
             self._last_vdw_build_xyz = self.xyz().detach().clone()
 
@@ -1464,8 +1500,8 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
 
         empty_result = {
             "indices": torch.tensor([], dtype=torch.long, device=device).reshape(0, 2),
-            "min_distances": torch.tensor([], dtype=torch.float32, device=device),
-            "sigmas": torch.tensor([], dtype=torch.float32, device=device),
+            "min_distances": torch.tensor([], dtype=get_float_dtype(), device=device),
+            "sigmas": torch.tensor([], dtype=get_float_dtype(), device=device),
             "symop_indices": torch.tensor([], dtype=torch.long, device=device),
             "cell_offsets": torch.tensor([], dtype=torch.long, device=device).reshape(0, 3),
         }
@@ -1601,10 +1637,10 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         self.restraints["vdw"] = {
             "indices": torch.tensor(final_pairs, dtype=torch.long, device=device),
             "min_distances": torch.tensor(
-                min_distances, dtype=torch.float32, device=device
+                min_distances, dtype=get_float_dtype(), device=device
             ),
             "sigmas": torch.full(
-                (len(final_pairs),), sigma, dtype=torch.float32, device=device
+                (len(final_pairs),), sigma, dtype=get_float_dtype(), device=device
             ),
             "symop_indices": torch.tensor(
                 final_symop, dtype=torch.long, device=device

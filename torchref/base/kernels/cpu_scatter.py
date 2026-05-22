@@ -1,34 +1,60 @@
 """Parallel partitioned scatter_add for structured (wa + wbwc) indices.
 
-Uses a C++ OpenMP kernel compiled via torch.utils.cpp_extension.load_inline.
+This kernel is float32-only by design: the C++ kernel hardcodes
+``torch::kFloat32`` for the density/output buffers. The Python wrapper
+auto-casts non-float32 inputs to float32 and emits a one-time warning per
+input dtype — so callers running with ``dtypes.float = torch.float64`` keep
+working, just at float32 precision through this kernel.
+
+Uses a C++ kernel compiled via torch.utils.cpp_extension.load_inline.
 Each thread owns a contiguous output partition and only accumulates scatter
 elements that fall in its range.  With atoms sorted by 1D center, per-thread
 early-exit skips ~(T-1)/T of atoms — giving near-linear scaling.
+
+Threading backend is selected at compile time:
+  * OpenMP on Linux (and any compiler that accepts -fopenmp)
+  * std::thread fallback otherwise (notably Apple Clang on macOS, whose
+    -fopenmp is rejected because the OpenMP runtime is not bundled)
+
+Two index dtypes are exposed:
+  * int32  — default fast path. Fits any realistic crystallographic grid
+             (nx*ny*nz < 2**31, roughly 1300^3 voxels) and halves the
+             index bandwidth of the inner loop.
+  * int64  — fallback for the rare edge cases that exceed INT32_MAX
+             (e.g. very large cryo-EM grids).
+The Python wrapper picks the binding from wa.dtype.
 
 Autograd: forward is the custom C++ scatter, backward is a standard gather
 (embarrassingly parallel, no custom kernel needed).
 """
 
+import warnings
+
 import torch
 from torch.utils.cpp_extension import load_inline
+
+_WARNED_CAST_DTYPES: set = set()
 
 _CPP_SRC = r"""
 #include <torch/extension.h>
 #include <cstdint>
 
+#ifdef _OPENMP
+#include <omp.h>
+#else
+#include <thread>
+#include <vector>
+#endif
+
 // Parallel partitioned scatter_add from structured indices.
 //
-// Output space is divided among OpenMP threads.  Each thread only
-// writes to its own [lo, hi) segment — zero synchronization.
+// Output space is divided among threads.  Each thread only writes to its own
+// [lo, hi) segment — zero synchronization.
 // Atoms sorted by 1D center give efficient early-exit per thread.
 //
-// Args:
-//   output      (M,)            float32, accumulated into
-//   wa          (C, nx)         int64,   x-axis 1D indices
-//   wbwc        (C, ny * nz)   int64,   yz-plane 2D indices (flattened)
-//   values      (C, nx*ny*nz)  float32, density values (flattened cube)
-//   nx, ny, nz  axis sizes
-torch::Tensor structured_scatter_add(
+// IdxT is int32_t (default fast path) or int64_t (for huge grids).
+template <typename IdxT>
+torch::Tensor structured_scatter_add_impl(
     torch::Tensor output,
     torch::Tensor wa,
     torch::Tensor wbwc,
@@ -36,66 +62,82 @@ torch::Tensor structured_scatter_add(
     int64_t nx, int64_t ny, int64_t nz)
 {
     TORCH_CHECK(output.is_contiguous() && output.scalar_type() == torch::kFloat32);
-    TORCH_CHECK(wa.is_contiguous()     && wa.scalar_type() == torch::kInt64);
-    TORCH_CHECK(wbwc.is_contiguous()   && wbwc.scalar_type() == torch::kInt64);
     TORCH_CHECK(values.is_contiguous() && values.scalar_type() == torch::kFloat32);
+    TORCH_CHECK(wa.is_contiguous());
+    TORCH_CHECK(wbwc.is_contiguous());
 
     const int64_t M      = output.size(0);
     const int64_t C      = wa.size(0);
     const int64_t ny_nz  = ny * nz;
     const int64_t nxyz   = nx * ny_nz;
 
-    float*         __restrict__ out_p  = output.data_ptr<float>();
-    const int64_t* __restrict__ wa_p   = wa.data_ptr<int64_t>();
-    const int64_t* __restrict__ wbwc_p = wbwc.data_ptr<int64_t>();
-    const float*   __restrict__ val_p  = values.data_ptr<float>();
+    float*       __restrict__ out_p  = output.data_ptr<float>();
+    const IdxT*  __restrict__ wa_p   = wa.data_ptr<IdxT>();
+    const IdxT*  __restrict__ wbwc_p = wbwc.data_ptr<IdxT>();
+    const float* __restrict__ val_p  = values.data_ptr<float>();
 
     // Global wbwc bounds (for atom-level early exit)
-    int64_t wbwc_min = wbwc_p[0], wbwc_max = wbwc_p[0];
+    IdxT wbwc_min = wbwc_p[0], wbwc_max = wbwc_p[0];
     for (int64_t i = 1; i < C * ny_nz; i++) {
-        int64_t v = wbwc_p[i];
+        IdxT v = wbwc_p[i];
         if (v < wbwc_min) wbwc_min = v;
         if (v > wbwc_max) wbwc_max = v;
     }
 
-    #pragma omp parallel
-    {
-        int tid = omp_get_thread_num();
-        int nth = omp_get_num_threads();
-        int64_t lo = (int64_t)tid * M / nth;
-        int64_t hi = (int64_t)(tid + 1) * M / nth;
-
+    auto worker = [&](int64_t lo, int64_t hi) {
         for (int64_t c = 0; c < C; c++) {
-            const int64_t* wa_row = wa_p + c * nx;
+            const IdxT* wa_row = wa_p + c * nx;
 
             // Atom-level early exit: check wa range vs partition
-            int64_t amin = wa_row[0], amax = wa_row[0];
+            IdxT amin = wa_row[0], amax = wa_row[0];
             for (int64_t i = 1; i < nx; i++) {
-                int64_t v = wa_row[i];
+                IdxT v = wa_row[i];
                 if (v < amin) amin = v;
                 if (v > amax) amax = v;
             }
-            if (amax + wbwc_max < lo || amin + wbwc_min >= hi) continue;
+            if ((int64_t)amax + wbwc_max < lo || (int64_t)amin + wbwc_min >= hi) continue;
 
-            const int64_t* wbwc_row = wbwc_p + c * ny_nz;
-            const float*   val_base = val_p  + c * nxyz;
+            const IdxT*  wbwc_row = wbwc_p + c * ny_nz;
+            const float* val_base = val_p  + c * nxyz;
 
             for (int64_t ix = 0; ix < nx; ix++) {
-                int64_t wa_val = wa_row[ix];
+                IdxT wa_val = wa_row[ix];
                 // x-offset early exit
-                if (wa_val + wbwc_max < lo || wa_val + wbwc_min >= hi) continue;
+                if ((int64_t)wa_val + wbwc_max < lo || (int64_t)wa_val + wbwc_min >= hi) continue;
 
                 const float* val_ix = val_base + ix * ny_nz;
 
                 for (int64_t iyz = 0; iyz < ny_nz; iyz++) {
-                    int64_t idx = wa_val + wbwc_row[iyz];
+                    int64_t idx = (int64_t)wa_val + (int64_t)wbwc_row[iyz];
                     if (idx >= lo && idx < hi) {
                         out_p[idx] += val_ix[iyz];
                     }
                 }
             }
         }
+    };
+
+#ifdef _OPENMP
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        int nth = omp_get_num_threads();
+        int64_t lo = (int64_t)tid * M / nth;
+        int64_t hi = (int64_t)(tid + 1) * M / nth;
+        worker(lo, hi);
     }
+#else
+    int nth = (int)std::thread::hardware_concurrency();
+    if (nth < 1) nth = 1;
+    std::vector<std::thread> threads;
+    threads.reserve(nth);
+    for (int tid = 0; tid < nth; tid++) {
+        int64_t lo = (int64_t)tid * M / nth;
+        int64_t hi = (int64_t)(tid + 1) * M / nth;
+        threads.emplace_back(worker, lo, hi);
+    }
+    for (auto& t : threads) t.join();
+#endif
 
     return output;
 }
@@ -106,15 +148,16 @@ torch::Tensor structured_scatter_add(
 //
 // Each atom's output is independent — parallelize over atoms directly.
 // No index tensor allocation, no fancy indexing overhead.
-torch::Tensor structured_gather(
+template <typename IdxT>
+torch::Tensor structured_gather_impl(
     torch::Tensor grad_output,
     torch::Tensor wa,
     torch::Tensor wbwc,
     int64_t nx, int64_t ny, int64_t nz)
 {
     TORCH_CHECK(grad_output.is_contiguous() && grad_output.scalar_type() == torch::kFloat32);
-    TORCH_CHECK(wa.is_contiguous()   && wa.scalar_type() == torch::kInt64);
-    TORCH_CHECK(wbwc.is_contiguous() && wbwc.scalar_type() == torch::kInt64);
+    TORCH_CHECK(wa.is_contiguous());
+    TORCH_CHECK(wbwc.is_contiguous());
 
     const int64_t C      = wa.size(0);
     const int64_t ny_nz  = ny * nz;
@@ -122,35 +165,104 @@ torch::Tensor structured_gather(
 
     auto grad_cube = torch::empty({C, nxyz}, grad_output.options());
 
-    const float*   __restrict__ go_p   = grad_output.data_ptr<float>();
-    const int64_t* __restrict__ wa_p   = wa.data_ptr<int64_t>();
-    const int64_t* __restrict__ wbwc_p = wbwc.data_ptr<int64_t>();
-    float*         __restrict__ gc_p   = grad_cube.data_ptr<float>();
+    const float* __restrict__ go_p   = grad_output.data_ptr<float>();
+    const IdxT*  __restrict__ wa_p   = wa.data_ptr<IdxT>();
+    const IdxT*  __restrict__ wbwc_p = wbwc.data_ptr<IdxT>();
+    float*       __restrict__ gc_p   = grad_cube.data_ptr<float>();
 
+    auto worker_gather = [&](int64_t c_lo, int64_t c_hi) {
+        for (int64_t c = c_lo; c < c_hi; c++) {
+            const IdxT*  wa_row   = wa_p   + c * nx;
+            const IdxT*  wbwc_row = wbwc_p + c * ny_nz;
+            float*       out_row  = gc_p   + c * nxyz;
+
+            for (int64_t ix = 0; ix < nx; ix++) {
+                IdxT wa_val = wa_row[ix];
+                float* dst  = out_row + ix * ny_nz;
+
+                for (int64_t iyz = 0; iyz < ny_nz; iyz++) {
+                    dst[iyz] = go_p[(int64_t)wa_val + (int64_t)wbwc_row[iyz]];
+                }
+            }
+        }
+    };
+
+#ifdef _OPENMP
     #pragma omp parallel for schedule(static)
     for (int64_t c = 0; c < C; c++) {
-        const int64_t* wa_row   = wa_p   + c * nx;
-        const int64_t* wbwc_row = wbwc_p + c * ny_nz;
-        float*         out_row  = gc_p   + c * nxyz;
+        const IdxT*  wa_row   = wa_p   + c * nx;
+        const IdxT*  wbwc_row = wbwc_p + c * ny_nz;
+        float*       out_row  = gc_p   + c * nxyz;
 
         for (int64_t ix = 0; ix < nx; ix++) {
-            int64_t wa_val = wa_row[ix];
-            float*  dst    = out_row + ix * ny_nz;
+            IdxT wa_val = wa_row[ix];
+            float* dst  = out_row + ix * ny_nz;
 
             for (int64_t iyz = 0; iyz < ny_nz; iyz++) {
-                dst[iyz] = go_p[wa_val + wbwc_row[iyz]];
+                dst[iyz] = go_p[(int64_t)wa_val + (int64_t)wbwc_row[iyz]];
             }
         }
     }
+#else
+    int nth = (int)std::thread::hardware_concurrency();
+    if (nth < 1) nth = 1;
+    std::vector<std::thread> threads;
+    threads.reserve(nth);
+    for (int tid = 0; tid < nth; tid++) {
+        int64_t c_lo = (int64_t)tid * C / nth;
+        int64_t c_hi = (int64_t)(tid + 1) * C / nth;
+        threads.emplace_back(worker_gather, c_lo, c_hi);
+    }
+    for (auto& t : threads) t.join();
+#endif
 
     return grad_cube;
 }
 
+// Wrappers that enforce the matching dtype, so a wrong-dtype tensor gets a
+// clear error instead of being reinterpreted by data_ptr<IdxT>().
+torch::Tensor structured_scatter_add_i32(
+    torch::Tensor output, torch::Tensor wa, torch::Tensor wbwc, torch::Tensor values,
+    int64_t nx, int64_t ny, int64_t nz)
+{
+    TORCH_CHECK(wa.scalar_type()   == torch::kInt32, "wa must be int32");
+    TORCH_CHECK(wbwc.scalar_type() == torch::kInt32, "wbwc must be int32");
+    return structured_scatter_add_impl<int32_t>(output, wa, wbwc, values, nx, ny, nz);
+}
+torch::Tensor structured_scatter_add_i64(
+    torch::Tensor output, torch::Tensor wa, torch::Tensor wbwc, torch::Tensor values,
+    int64_t nx, int64_t ny, int64_t nz)
+{
+    TORCH_CHECK(wa.scalar_type()   == torch::kInt64, "wa must be int64");
+    TORCH_CHECK(wbwc.scalar_type() == torch::kInt64, "wbwc must be int64");
+    return structured_scatter_add_impl<int64_t>(output, wa, wbwc, values, nx, ny, nz);
+}
+torch::Tensor structured_gather_i32(
+    torch::Tensor grad_output, torch::Tensor wa, torch::Tensor wbwc,
+    int64_t nx, int64_t ny, int64_t nz)
+{
+    TORCH_CHECK(wa.scalar_type()   == torch::kInt32, "wa must be int32");
+    TORCH_CHECK(wbwc.scalar_type() == torch::kInt32, "wbwc must be int32");
+    return structured_gather_impl<int32_t>(grad_output, wa, wbwc, nx, ny, nz);
+}
+torch::Tensor structured_gather_i64(
+    torch::Tensor grad_output, torch::Tensor wa, torch::Tensor wbwc,
+    int64_t nx, int64_t ny, int64_t nz)
+{
+    TORCH_CHECK(wa.scalar_type()   == torch::kInt64, "wa must be int64");
+    TORCH_CHECK(wbwc.scalar_type() == torch::kInt64, "wbwc must be int64");
+    return structured_gather_impl<int64_t>(grad_output, wa, wbwc, nx, ny, nz);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("structured_scatter_add", &structured_scatter_add,
-          "Parallel partitioned scatter_add from structured (wa, wbwc) indices");
-    m.def("structured_gather", &structured_gather,
-          "Parallel structured gather (backward of scatter_add)");
+    m.def("structured_scatter_add_i32", &structured_scatter_add_i32,
+          "Partitioned scatter_add with int32 structured (wa, wbwc) indices");
+    m.def("structured_scatter_add_i64", &structured_scatter_add_i64,
+          "Partitioned scatter_add with int64 structured (wa, wbwc) indices");
+    m.def("structured_gather_i32", &structured_gather_i32,
+          "Structured gather (backward) with int32 indices");
+    m.def("structured_gather_i64", &structured_gather_i64,
+          "Structured gather (backward) with int64 indices");
 }
 """
 
@@ -227,6 +339,16 @@ def _get_module():
         )
         os.makedirs(build_dir, exist_ok=True)
 
+        # Apple Clang on macOS rejects -fopenmp (no bundled OpenMP runtime).
+        # Kernel falls back to std::thread via #ifndef _OPENMP — no libomp,
+        # no Homebrew, no external dependency required.
+        is_apple_clang = sys.platform == "darwin"
+        extra_cflags = ["-O3", "-march=native"]
+        extra_ldflags: list[str] = []
+        if not is_apple_clang:
+            extra_cflags.append("-fopenmp")
+            extra_ldflags.append("-fopenmp")
+
         # fcntl.lockf uses POSIX record locks (fcntl F_SETLKW) which are:
         #   1. filesystem-level → work across NFS/GPFS cluster nodes
         #   2. released by kernel on process death, even SIGKILL
@@ -243,8 +365,8 @@ def _get_module():
             _module = load_inline(
                 name="cpu_scatter",
                 cpp_sources=[_CPP_SRC],
-                extra_cflags=["-O3", "-fopenmp", "-march=native"],
-                extra_ldflags=["-fopenmp"],
+                extra_cflags=extra_cflags,
+                extra_ldflags=extra_ldflags,
                 build_directory=build_dir,
                 verbose=False,
             )
@@ -272,12 +394,42 @@ class _StructuredScatterAdd(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, density_cube, wa, wbwc, map_size):
-        # density_cube: (C, nx, ny, nz)  — requires grad
-        # wa:           (C, nx)           — int64, no grad
-        # wbwc:         (C, ny, nz)       — int64, no grad
+        # density_cube: (C, nx, ny, nz)  — requires grad, must be float32
+        # wa:           (C, nx)           — int32 or int64, no grad
+        # wbwc:         (C, ny, nz)       — same dtype as wa
+        if density_cube.dtype != torch.float32:
+            if density_cube.dtype not in _WARNED_CAST_DTYPES:
+                warnings.warn(
+                    f"cpu_scatter is float32-only; casting density_cube from "
+                    f"{density_cube.dtype} to float32 (precision will be reduced).",
+                    stacklevel=3,
+                )
+                _WARNED_CAST_DTYPES.add(density_cube.dtype)
+            density_cube = density_cube.to(torch.float32)
+        if wa.dtype != wbwc.dtype:
+            raise TypeError(
+                f"wa.dtype ({wa.dtype}) and wbwc.dtype ({wbwc.dtype}) must match"
+            )
+        if wa.dtype == torch.int32:
+            if map_size > _INT32_MAX:
+                raise RuntimeError(
+                    f"map_size {map_size} exceeds INT32_MAX ({_INT32_MAX}); "
+                    "pass int64 indices for grids this large."
+                )
+            scatter_fn_name = "structured_scatter_add_i32"
+            gather_fn_name = "structured_gather_i32"
+        elif wa.dtype == torch.int64:
+            scatter_fn_name = "structured_scatter_add_i64"
+            gather_fn_name = "structured_gather_i64"
+        else:
+            raise TypeError(
+                f"wa.dtype must be int32 or int64, got {wa.dtype}"
+            )
+
         C, nx, ny, nz = density_cube.shape
         ctx.save_for_backward(wa, wbwc)
         ctx.cube_shape = density_cube.shape
+        ctx.gather_fn_name = gather_fn_name
 
         mod = _get_module()
         if mod is None:
@@ -288,7 +440,7 @@ class _StructuredScatterAdd(torch.autograd.Function):
             )
         result = torch.zeros(map_size, dtype=density_cube.dtype,
                              device=density_cube.device)
-        mod.structured_scatter_add(
+        getattr(mod, scatter_fn_name)(
             result,
             wa.contiguous(),
             wbwc.reshape(C, ny * nz).contiguous(),
@@ -308,7 +460,7 @@ class _StructuredScatterAdd(torch.autograd.Function):
                 f"C++ cpu_scatter module not available ({err}). "
                 "See torchref.base.kernels.cpu_scatter._module_error for the full traceback."
             )
-        grad_cube = mod.structured_gather(
+        grad_cube = getattr(mod, ctx.gather_fn_name)(
             grad_output.contiguous(),
             wa.contiguous(),
             wbwc.reshape(C, ny * nz).contiguous(),
@@ -317,19 +469,27 @@ class _StructuredScatterAdd(torch.autograd.Function):
         return grad_cube.reshape(C, nx, ny, nz), None, None, None
 
 
+_INT32_MAX = 2**31 - 1
+
+
 def structured_scatter_add(density_cube, wa, wbwc, map_size):
     """Differentiable parallel scatter_add using structured indices.
+
+    Dispatches to the int32 or int64 kernel based on ``wa.dtype``. int32 is
+    the default fast path (halves index bandwidth); int64 is available for
+    grids larger than INT32_MAX voxels.
 
     Parameters
     ----------
     density_cube : Tensor (C, nx, ny, nz) float32
         Values to scatter (from _separable_density).
-    wa : Tensor (C, nx) int64
+    wa : Tensor (C, nx)  int32 or int64
         Precomputed x-axis scatter indices.
-    wbwc : Tensor (C, ny, nz) int64
+    wbwc : Tensor (C, ny, nz)  same dtype as wa
         Precomputed yz-plane scatter indices.
     map_size : int
-        Total number of voxels in flat density map.
+        Total number of voxels in flat density map. For int32 indices,
+        must be <= INT32_MAX.
 
     Returns
     -------

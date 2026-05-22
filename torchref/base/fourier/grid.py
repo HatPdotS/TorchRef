@@ -7,7 +7,7 @@ Functions for creating real-space and reciprocal-space grids.
 import numpy as np
 import torch
 
-from torchref.config import dtypes
+from torchref.config import dtypes, get_default_device
 from torchref.base.coordinates.transforms_torch import (
     fractional_to_cartesian_torch,
     get_fractional_matrix,
@@ -17,7 +17,7 @@ from torchref.base.coordinates.transforms_numpy import (
 )
 
 
-def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None, device="cpu"):
+def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None, device=None):
     """
     Generate a real space grid for electron density calculations.
 
@@ -31,14 +31,23 @@ def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None,
         Maximum resolution for automatic grid sizing. Default is 0.8.
     gridsize : torch.Tensor or array-like, optional
         Explicit grid dimensions [nx, ny, nz]. If None, calculated from max_res.
-    device : str, optional
-        Device for tensor placement. Default is 'cpu'.
+    device : torch.device or str, optional
+        Device for tensor placement. If None, inferred from ``fractional_matrix``
+        or ``cell`` (whichever tensor is provided); falls back to CPU.
 
     Returns
     -------
     torch.Tensor
         Real space grid of shape (nx, ny, nz, 3) containing Cartesian coordinates.
     """
+    if device is None:
+        if isinstance(fractional_matrix, torch.Tensor):
+            device = fractional_matrix.device
+        elif isinstance(cell, torch.Tensor):
+            device = cell.device
+        else:
+            device = get_default_device()
+
     if isinstance(gridsize, torch.Tensor):
         nsteps = gridsize.to(dtypes.int).to(device)
     elif gridsize is not None:
@@ -56,9 +65,15 @@ def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None,
     y = y.reshape((*y.shape, 1))
     z = z.reshape((*z.shape, 1))
     xyz = torch.cat((x, y, z), axis=3).reshape(-1, 3)
-    # Ensure consistent dtypes for fractional_to_cartesian_torch
-    cell_float = cell.to(dtype=dtypes.float) if cell is not None else None
-    frac_matrix_float = fractional_matrix.to(dtypes.float) if fractional_matrix is not None else None
+    # Ensure consistent dtype and device for fractional_to_cartesian_torch
+    cell_float = (
+        cell.to(device=device, dtype=dtypes.float) if cell is not None else None
+    )
+    frac_matrix_float = (
+        fractional_matrix.to(device=device, dtype=dtypes.float)
+        if fractional_matrix is not None
+        else None
+    )
     xyz_real_grid = fractional_to_cartesian_torch(xyz, cell_float, frac_matrix_float)
     xyz_real_grid = xyz_real_grid.reshape((*array_shape, 3))
     return xyz_real_grid
