@@ -440,7 +440,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             kernel_size += 1
 
         x = torch.arange(
-            kernel_size, dtype=self.log_k_solvent.dtype, device=device
+            kernel_size, dtype=self.log_k_solvent.dtype,
+            device=self.solvent_mask.device,
         )
         x = x - kernel_size // 2
         gauss_1d = torch.exp(-(x**2) / (2 * sigma**2))

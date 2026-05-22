@@ -52,14 +52,6 @@ dev = [
     "flake8>=3.9.0",
 ]
 
-alignment = [
-    "jax>=0.4.0",
-    "s2fft>=1.0.0",
-    "s2ball>=0.0.2",
-    "spherical>=1.0.0",
-    "quaternionic>=1.0.0",
-]
-
 forcefield = [
     "torchmd-net>=2.0.0",
 ]
