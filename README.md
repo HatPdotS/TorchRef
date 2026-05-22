@@ -2,6 +2,7 @@
 
 **A PyTorch-based crystallographic refinement library**
 
+[![Tests](https://github.com/HatPdotS/TorchRef/actions/workflows/tests.yml/badge.svg)](https://github.com/HatPdotS/TorchRef/actions/workflows/tests.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4+-ee4c2c.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
