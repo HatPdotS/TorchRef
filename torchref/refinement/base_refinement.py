@@ -93,6 +93,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         column_names: Optional[Dict[str, str]] = None,
         wavelength: Optional[float] = 1.0,
         anomalous_threshold: float = 0.5,
+        french_wilson: bool = True,
     ):
         """
         Initialize Refinement.
@@ -119,6 +120,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Loss weighting module. Creates default if None.
         nbins : int, optional
             Number of resolution bins. Default is 10.
+        french_wilson : bool, optional
+            Whether to derive amplitudes from intensities via French-Wilson.
+            Default True. Set False to use existing French-Wilson-corrected
+            ``F``/``SIGF`` columns directly when the MTZ also carries
+            intensities.
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -137,6 +143,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # for anomalous (Bijvoet) refinement, or None to disable entirely.
         self.wavelength = wavelength
         self.anomalous_threshold = anomalous_threshold
+        self.french_wilson = french_wilson
 
         # Persistent state and logger (created lazily)
         self._loss_state: Optional[LossState] = None
@@ -169,9 +176,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         try:
             self.to(self.device)
             if isinstance(data_file, str):
-                self.reflection_data = ReflectionData(verbose=self.verbose, device=self.device)
+                self.reflection_data = ReflectionData(
+                    verbose=self.verbose, device=self.device
+                )
                 if data_file.endswith(".mtz"):
-                    self.reflection_data.load_mtz(data_file, column_names=column_names)
+                    self.reflection_data.load_mtz(
+                        data_file,
+                        column_names=column_names,
+                        french_wilson=self.french_wilson,
+                    )
                 elif data_file.endswith(".cif"):
                     self.reflection_data.load_cif(data_file)
                 else:
@@ -842,8 +855,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 xray_test = self.xray_loss_test()
                 metrics["component_weighting"] = {
                     "xray": {
-                        "work_nll": xray_work.item() if hasattr(xray_work, "item") else float(xray_work),
-                        "test_nll": xray_test.item() if hasattr(xray_test, "item") else float(xray_test),
+                        "work_nll": (
+                            xray_work.item()
+                            if hasattr(xray_work, "item")
+                            else float(xray_work)
+                        ),
+                        "test_nll": (
+                            xray_test.item()
+                            if hasattr(xray_test, "item")
+                            else float(xray_test)
+                        ),
                     }
                 }
 
