@@ -31,13 +31,25 @@ def configure_unbuffered_output():
 # ---------------------------------------------------------------------------
 
 def add_device_arg(parser: argparse.ArgumentParser) -> None:
-    """Add ``--device`` argument."""
+    """Add ``--device`` argument.
+
+    The default ``auto`` defers to :data:`torchref.config.device`, which
+    only selects CUDA when a visible GPU meets this PyTorch build's
+    compute-capability requirement *and* has at least ~10 GB VRAM;
+    otherwise it falls back to MPS or CPU. Explicit ``cuda`` / ``cpu``
+    bypass the auto-selection gates and are pushed back into the global
+    config so the rest of TorchRef picks them up.
+    """
     parser.add_argument(
         "--device",
         type=str,
         default="auto",
         choices=["auto", "cpu", "cuda"],
-        help="Computation device (default: auto, uses CUDA if available)",
+        help=(
+            "Computation device (default: auto; uses CUDA only when a "
+            "visible GPU passes the capability + VRAM checks in "
+            "torchref.config, else MPS/CPU)"
+        ),
     )
 
 
@@ -371,32 +383,27 @@ def add_weights_arg(
 def parse_device_str(device_str: str) -> "torch.device":
     """Parse the ``--device`` CLI argument into a :class:`torch.device`.
 
-    ``"auto"`` delegates to :data:`torchref.config.device` (cuda -> mps -> cpu).
-    Explicit ``cuda``/``mps`` requests warn and fall back to CPU when unavailable.
+    ``"auto"`` returns the package default resolved at import time by
+    :data:`torchref.config.device` (cuda -> mps -> cpu, with capability and
+    VRAM checks). Explicit values are pushed back into the global config so
+    every TorchRef component picks up the user's CLI choice; if the request
+    cannot be satisfied (e.g. ``cuda`` on a CPU-only host) we warn and fall
+    back to CPU rather than crashing the run.
     """
-    import torch
-
-    from torchref.config import get_default_device
+    from torchref.config import device as device_config, get_default_device
 
     if device_str == "auto":
         return get_default_device()
 
-    device = torch.device(device_str)
-    if device.type == "cuda" and not torch.cuda.is_available():
+    try:
+        device_config.current = device_str
+    except (RuntimeError, ValueError) as exc:
         print(
-            "Warning: CUDA requested but not available, falling back to CPU",
+            f"Warning: {exc} Falling back to CPU.",
             file=sys.stderr,
         )
-        device = torch.device("cpu")
-    elif device.type == "mps" and not (
-        hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-    ):
-        print(
-            "Warning: MPS requested but not available, falling back to CPU",
-            file=sys.stderr,
-        )
-        device = torch.device("cpu")
-    return device
+        device_config.current = "cpu"
+    return device_config.current
 
 
 # ---------------------------------------------------------------------------
