@@ -6,171 +6,13 @@ the complete refinement pipeline works from command line to output files.
 """
 
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-
-
-class TestCLIRefineEverything:
-    """End-to-end tests for the refine_everything.py CLI script."""
-
-    @pytest.fixture
-    def cli_script(self, project_root):
-        """Path to the refine_everything.py CLI script."""
-        script = project_root / "torchref" / "cli" / "refine_everything.py"
-        if not script.exists():
-            pytest.skip(f"CLI script not found: {script}")
-        return script
-
-    @pytest.fixture
-    def small_structure_pair(self, test_files_dir):
-        """Get a small structure pair for fast testing (3GR5)."""
-        pdb_file = test_files_dir / "pdb" / "3GR5.pdb"
-        mtz_file = test_files_dir / "mtz" / "3GR5.mtz"
-
-        if not pdb_file.exists() or not mtz_file.exists():
-            pytest.skip("3GR5 test files not found")
-
-        return {"pdb": pdb_file, "mtz": mtz_file}
-
-    @pytest.mark.integration
-    def test_cli_help(self, cli_script):
-        """Test CLI --help works."""
-        result = subprocess.run(
-            [sys.executable, str(cli_script), "--help"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        assert result.returncode == 0
-        assert "refinement" in result.stdout.lower() or "refine" in result.stdout.lower()
-        assert "--structure" in result.stdout or "-s" in result.stdout
-
-    @pytest.mark.integration
-    def test_cli_missing_structure(self, cli_script, tmp_path):
-        """Test CLI handles missing structure file gracefully."""
-        outdir = tmp_path / "refine_missing"
-
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(cli_script),
-                "-s", "/nonexistent/file.pdb",
-                "-f", "/nonexistent/file.mtz",
-                "-o", str(outdir),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        # Should fail with non-zero exit code
-        assert result.returncode != 0
-        assert "not found" in result.stderr.lower() or "error" in result.stderr.lower()
-
-    @pytest.mark.integration
-    @pytest.mark.slow
-    def test_cli_refine_basic(self, cli_script, small_structure_pair, tmp_path):
-        """Test basic CLI refinement produces expected output files."""
-        outdir = tmp_path / "refine_output"
-
-        # Run CLI script
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(cli_script),
-                "-s", str(small_structure_pair["pdb"]),
-                "-f", str(small_structure_pair["mtz"]),
-                "-o", str(outdir),
-                "-n", "1",  # Single cycle for speed
-                "-v", "1",
-                "--hyperparameters", "none",  # Skip hyperparameter loading
-            ],
-            capture_output=True,
-            text=True,
-            timeout=600,  # 10 minute timeout
-        )
-
-        # Print output for debugging if test fails
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
-            print("STDERR:", result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr)
-
-        # Check output directory was created
-        assert outdir.exists(), f"Output directory not created. stderr: {result.stderr[:500]}"
-
-        # Check output files exist
-        refined_pdb = outdir / "refined.pdb"
-        refined_mtz = outdir / "refined.mtz"
-
-        assert refined_pdb.exists(), f"Refined PDB not created. stderr: {result.stderr[:500]}"
-        assert refined_mtz.exists(), f"Refined MTZ not created. stderr: {result.stderr[:500]}"
-
-        # Check PDB has content
-        pdb_content = refined_pdb.read_text()
-        assert "ATOM" in pdb_content, "Refined PDB has no ATOM records"
-        assert len(pdb_content) > 1000, "Refined PDB seems too small"
-
-    @pytest.mark.integration
-    @pytest.mark.slow
-    def test_cli_refine_with_history(self, cli_script, small_structure_pair, tmp_path):
-        """Test CLI refinement creates history JSON."""
-        outdir = tmp_path / "refine_history"
-
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(cli_script),
-                "-s", str(small_structure_pair["pdb"]),
-                "-f", str(small_structure_pair["mtz"]),
-                "-o", str(outdir),
-                "-n", "1",
-                "-v", "1",  # Verbose mode creates history JSON
-                "--hyperparameters", "none",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-
-        # Check history JSON exists and is valid
-        history_json = outdir / "refinement_history.json"
-        if history_json.exists():
-            with open(history_json) as f:
-                history = json.load(f)
-
-            assert "input_files" in history
-            assert "parameters" in history
-            assert history["parameters"]["n_cycles"] == 1
-
-    @pytest.mark.integration
-    @pytest.mark.slow
-    def test_cli_refine_multiple_cycles(self, cli_script, small_structure_pair, tmp_path):
-        """Test CLI refinement with multiple cycles."""
-        outdir = tmp_path / "refine_cycles"
-
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(cli_script),
-                "-s", str(small_structure_pair["pdb"]),
-                "-f", str(small_structure_pair["mtz"]),
-                "-o", str(outdir),
-                "-n", "2",  # Two cycles
-                "-v", "0",  # Quiet mode for speed
-                "--hyperparameters", "none",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=900,  # 15 minute timeout for 2 cycles
-        )
-
-        # Check output files
-        assert (outdir / "refined.pdb").exists(), f"No PDB. stderr: {result.stderr[:500]}"
-        assert (outdir / "refined.mtz").exists(), f"No MTZ. stderr: {result.stderr[:500]}"
+import torch
 
 
 class TestCLIRefine:
@@ -183,6 +25,15 @@ class TestCLIRefine:
         if not script.exists():
             pytest.skip(f"CLI script not found: {script}")
         return script
+
+    @pytest.fixture
+    def h_structure_pair(self, test_files_dir):
+        """Hydrogen-bearing structure pair used to exercise NonBondedHTarget."""
+        pdb_file = test_files_dir / "pdb" / "1AK5_with_H.pdb"
+        mtz_file = test_files_dir / "mtz" / "1AK5.mtz"
+        if not pdb_file.exists() or not mtz_file.exists():
+            pytest.skip("1AK5_with_H test files not found")
+        return {"pdb": pdb_file, "mtz": mtz_file}
 
     @pytest.mark.integration
     def test_cli_refine_help(self, cli_script):
@@ -197,27 +48,93 @@ class TestCLIRefine:
         assert result.returncode == 0
         assert "--structure" in result.stdout or "-s" in result.stdout
 
-
-class TestCLIRefineScreened:
-    """End-to-end tests for the refine_screened.py CLI script."""
-
-    @pytest.fixture
-    def cli_script(self, project_root):
-        """Path to the refine_screened.py CLI script."""
-        script = project_root / "torchref" / "cli" / "refine_screened.py"
-        if not script.exists():
-            pytest.skip(f"CLI script not found: {script}")
-        return script
-
     @pytest.mark.integration
-    def test_cli_refine_screened_help(self, cli_script):
-        """Test CLI --help works."""
+    def test_cli_refine_missing_inputs(self, cli_script, tmp_path):
+        """CLI fails gracefully when the model / structure-factor files don't exist."""
+        outdir = tmp_path / "refine_missing"
+
         result = subprocess.run(
-            [sys.executable, str(cli_script), "--help"],
+            [
+                sys.executable,
+                str(cli_script),
+                "-m", "/nonexistent/file.pdb",
+                "-sf", "/nonexistent/file.mtz",
+                "-o", str(outdir),
+            ],
             capture_output=True,
             text=True,
             timeout=30,
         )
 
-        assert result.returncode == 0
-        assert "--" in result.stdout  # Has options
+        assert result.returncode != 0
+        combined = (result.stderr + result.stdout).lower()
+        assert "not found" in combined or "error" in combined
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    @pytest.mark.gpu
+    def test_cli_refine_cuda_end_to_end(self, cli_script, h_structure_pair, tmp_path):
+        """Run the refine CLI on CUDA end-to-end on an H-bearing structure.
+
+        Exercises the full LBFGS pipeline with ``--device cuda`` against
+        1AK5_with_H so that ``NonBondedHTarget`` and its riding-hydrogen
+        VDW path are live. Two macro cycles give ``maintenance()`` a
+        chance to fire ``rebuild_vdw_restraints`` — the path that
+        previously crashed when VDW buffers were left on CPU after a
+        mid-refinement rebuild (PR #19).
+        """
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+
+        outdir = tmp_path / "refine_cuda"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(cli_script),
+                "-m", str(h_structure_pair["pdb"]),
+                "-sf", str(h_structure_pair["mtz"]),
+                "-o", str(outdir),
+                "-n", "2",
+                "-v", "1",
+                "--device", "cuda",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+
+        if result.returncode != 0:
+            print("STDOUT:", result.stdout[-3000:])
+            print("STDERR:", result.stderr[-3000:])
+
+        assert result.returncode == 0, (
+            f"CLI exited with {result.returncode}. "
+            f"stderr tail: {result.stderr[-500:]}"
+        )
+
+        refined_pdb = outdir / "refined.pdb"
+        assert refined_pdb.exists(), "Refined PDB not created"
+        pdb_text = refined_pdb.read_text()
+        assert "ATOM" in pdb_text, "Refined PDB has no ATOM records"
+
+        history_json = outdir / "refinement_history.json"
+        assert history_json.exists(), "refinement_history.json not created"
+        with open(history_json) as f:
+            history = json.load(f)
+
+        assert history["parameters"]["device"].startswith("cuda"), (
+            f"Refinement did not run on CUDA: device={history['parameters']['device']}"
+        )
+
+        stats = history.get("final_statistics") or {}
+        assert "R_work" in stats and "R_free" in stats, (
+            "Final R-factors missing from history JSON; refinement likely "
+            "failed mid-run (device mismatch?)"
+        )
+        for key in ("R_work", "R_free"):
+            val = stats[key]
+            assert math.isfinite(val), f"{key} is not finite: {val}"
+            assert 0.0 < val < 1.0, f"{key} outside plausible range: {val}"
+
+
