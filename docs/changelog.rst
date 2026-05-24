@@ -1,5 +1,10 @@
 Changelog
 =========
+Version 0.5.3.2
+-------------
+- Added 10GB Gram requirement for default gpu device selection
+- Slaved cli device detection to the default device selection
+- Fixed device mismatch crash on CUDA/MPS when the VDW pair list was refreshed mid-refinement: the maintenance-triggered rebuild now migrates the fresh VDW pair list, hydrogen topology, and exclusion hash to the model device (PR #19)
 
 Version 0.5.3.1
 -------------
