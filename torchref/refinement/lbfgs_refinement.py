@@ -230,6 +230,47 @@ class LBFGSRefinement(Refinement):
         state.step(optimizer, context="lbfgs_refinement.refine_scaler")
         return state
 
+    def refine_rigid_body(
+        self,
+        cutoffs=None,
+        iterations_per_step: int = 30,
+        commit: bool = True,
+    ):
+        """Multi-resolution per-chain rigid-body refinement.
+
+        Swaps the model for a :class:`RigidModelFT` whose ``xyz`` exposes
+        only per-chain ZYZ-Euler rotations and translations, then runs an
+        LBFGS step at each cutoff in a coarse → fine schedule. Only the
+        xray target and ``geometry/nonbonded`` (vdW) are active.
+
+        Parameters
+        ----------
+        cutoffs : list of float, optional
+            High-resolution cutoffs (Å), coarse → fine. Defaults to an
+            auto-generated schedule from the native data resolution.
+        iterations_per_step : int, optional
+            ``max_iter`` for each per-cutoff LBFGS step. Default 30.
+        commit : bool, optional
+            If True (default), bakes the final coordinates back into a
+            regular ``ModelFT`` so subsequent refinement uses per-atom xyz.
+
+        Returns
+        -------
+        list of (d_min, LossState)
+            Per-cutoff state.
+        """
+        from torchref.refinement.rigid_body_refinement import (
+            RigidBodyRefinementStep,
+        )
+
+        step = RigidBodyRefinementStep(
+            self,
+            cutoffs=cutoffs,
+            iterations_per_step=iterations_per_step,
+            commit=commit,
+        )
+        return step.run()
+
     def refine_xyz(self):
         """Refine Cartesian coordinates jointly with scaler parameters.
 

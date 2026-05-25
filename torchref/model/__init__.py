@@ -73,6 +73,7 @@ from torchref.model.closed_segmented_internal_coordinates import (
     ClosedSegmentedInternalCoordinateTensor,
 )
 from torchref.model.model_collection import ModelCollection, _SharedMixedModel
+from torchref.model.rigid_xyz import RigidXYZTensor
 
 __all__ = [
     "FFT",
@@ -90,4 +91,5 @@ __all__ = [
     "ClosedSegmentedInternalCoordinateTensor",
     "ModelCollection",
     "_SharedMixedModel",
+    "RigidXYZTensor",
 ]

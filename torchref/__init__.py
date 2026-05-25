@@ -103,9 +103,11 @@ from torchref.io import DatasetCollection, ReflectionData, FcalcDataset
 
 # Model
 from torchref.model import Model, ModelFT
+from torchref.model.rigid_xyz import RigidXYZTensor
 
 # Refinement
 from torchref.refinement import LBFGSRefinement, Refinement
+from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
 from torchref.symmetry import Cell, SpaceGroup
 
 # Restraints
@@ -135,9 +137,11 @@ __all__ = [
     # Model
     "Model",
     "ModelFT",
+    "RigidXYZTensor",
     # Refinement
     "Refinement",
     "LBFGSRefinement",
+    "RigidBodyRefinementStep",
     # Scaling
     "Scaler",
     "ScalerBase",
