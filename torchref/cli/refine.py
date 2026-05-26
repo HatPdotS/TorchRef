@@ -113,7 +113,7 @@ Examples:
         "--with-rigid-body",
         action="store_true",
         help="Run one multi-resolution rigid-body refinement step (per-chain "
-        "rotation + translation) after each macro cycle. Useful when the "
+        "rotation + translation) before each macro cycle. Useful when the "
         "starting model has small global misorientation/shift.",
     )
     refine_group.add_argument(
@@ -214,7 +214,7 @@ Examples:
             if args.with_rigid_body:
                 print(
                     "Rigid-body step enabled: one multi-resolution rigid-body "
-                    "pass will run after each macro cycle.\n"
+                    "pass will run before each macro cycle.\n"
                 )
             sys.stdout.flush()
 
@@ -227,16 +227,16 @@ Examples:
         if args.with_rigid_body:
             for cycle in range(args.n_cycles):
                 if args.verbose > 0:
-                    print(f"\n--- Macro cycle {cycle + 1}/{args.n_cycles} ---")
-                    sys.stdout.flush()
-                cycle_fn(macro_cycles=1)
-                if args.verbose > 0:
                     print(f"\n--- Rigid-body step (cycle {cycle + 1}) ---")
                     sys.stdout.flush()
                 refinement.refine_rigid_body(
                     iterations_per_step=args.rigid_body_iter,
                     commit=True,
                 )
+                if args.verbose > 0:
+                    print(f"\n--- Macro cycle {cycle + 1}/{args.n_cycles} ---")
+                    sys.stdout.flush()
+                cycle_fn(macro_cycles=1)
         else:
             cycle_fn(macro_cycles=args.n_cycles)
 
