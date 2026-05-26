@@ -2176,13 +2176,22 @@ class ReflectionData(CrystalDataset, DebugMixin):
         delph = np.angle(mfo_complex, deg=True)
 
         # Anomalous difference map coefficients. The anomalous-difference Fourier
-        # uses |ΔF_ano| with phase (phi_model - 90deg); peaks then fall on the
-        # anomalous scatterers (verified against the Zn site of thermolysin:
-        # phi-90 gives +2.6 sigma, phi+90 gives a -2.6 sigma hole). ANOM is stored
-        # signed, so the (-) member maps to phi-270 (= the +180deg / negative-
-        # amplitude equivalent of phi-90).
+        # uses the signed Bijvoet difference dF = |F(+)| - |F(-)| with phase
+        # (phi_model - 90deg); peaks then fall on the anomalous scatterers
+        # (verified against the Zn site of thermolysin: phi-90 gives +2.6 sigma,
+        # phi+90 gives a -2.6 sigma hole). We store this in the phenix convention:
+        # ANOM = |dF| (always positive) and the sign of dF is carried by a 180deg
+        # phase flip in PANOM, so the (-) member maps to phi-270 (= phi+90). The
+        # product ANOM*exp(i*PANOM) then reproduces the signed dF*exp(i(phi-90)).
         anom = Fobs_p_out - Fobs_m_out
         panom = np.where(anom < 0.0, ph_disp - 270.0, ph_disp - 90.0)
+        anom = np.abs(anom)
+        # Centrics obey Friedel's law even under anomalous scattering, so their
+        # Bijvoet difference is exactly zero; any measured value is noise that
+        # inflates the anomalous-map RMS and depresses peak sigma levels. Phenix
+        # omits centrics from ANOM/PANOM entirely -- match that.
+        anom[centric] = np.nan
+        panom[centric] = np.nan
 
         uniq_np = uniq.numpy()
         data = {

@@ -134,17 +134,28 @@ class TestAnomalousMtzOutput:
     def test_anomalous_map_phase_convention(self, anomalous_data, pdb_dir, tmp_path):
         """ANOM/PANOM must encode the standard anomalous-difference Fourier.
 
-        Coot builds the map as ANOM * exp(i*PANOM); the standard convention that
-        places positive peaks on anomalous scatterers is |ANOM| * exp(i*(phi-90)).
-        A 180-degree slip here (|ANOM| * exp(i*(phi+90))) negates the map and was
-        the cause of "poor"/empty anomalous maps. Verified empirically against the
-        Zn site of thermolysin (phi-90 -> +2.6 sigma, phi+90 -> -2.6 sigma hole).
+        Coot builds the map as ANOM * exp(i*PANOM). The canonical coefficient that
+        places positive peaks on anomalous scatterers is the *signed* Bijvoet
+        difference dF = |F(+)| - |F(-)| with phase (phi-90):
+
+            ANOM * exp(i*PANOM) == dF * exp(i*(phi-90))
+
+        We store ANOM = |dF| (phenix-style, always positive) and push the sign of
+        dF into a 180-degree flip of PANOM, so the product still reconstructs the
+        signed coefficient. (A previous bug kept ANOM signed *and* flipped PANOM,
+        which cancels to |dF|*exp(i(phi-90)) -- the rectified abs map, which buries
+        the peak in positively-biased noise.) Verified empirically against the Zn
+        site of thermolysin: phi-90 gives +2.6 sigma, phi+90 a -2.6 sigma hole.
         """
         out = self._write(anomalous_data, pdb_dir, tmp_path)
         anom = out["ANOM"].to_numpy("float32")
         panom = np.deg2rad(out["PANOM"].to_numpy("float32"))
         phi = np.deg2rad(out["PH-model"].to_numpy("float32"))
+        # Signed Bijvoet difference, recomputed from the unstacked observations.
+        dF = out["F-obs(+)"].to_numpy("float32") - out["F-obs(-)"].to_numpy("float32")
         lhs = anom * np.exp(1j * panom)
-        rhs = np.abs(anom) * np.exp(1j * (phi - np.pi / 2))
-        m = np.isfinite(anom) & (np.abs(anom) > 1e-3)
+        rhs = dF * np.exp(1j * (phi - np.pi / 2))
+        m = np.isfinite(anom) & (np.abs(dF) > 1e-3)
         assert np.allclose(lhs[m], rhs[m], atol=1e-2)
+        # Stored amplitudes are non-negative (phenix convention).
+        assert np.all(anom[np.isfinite(anom)] >= 0.0)
