@@ -453,8 +453,14 @@ def write(
     intensity_cols = ["I-obs", "I"]
     sigma_cols = ["SIGF-obs", "SIGI-obs", "SIGFP", "SIGI"]
     phase_cols = [
-        "PH2FOFCWT", "PHFOFCWT", "PH-model", "PHWT", "PHDELWT",
-        "PHIF-model(+)", "PHIF-model(-)", "PANOM",
+        "PH2FOFCWT",
+        "PHFOFCWT",
+        "PH-model",
+        "PHWT",
+        "PHDELWT",
+        "PHIF-model(+)",
+        "PHIF-model(-)",
+        "PANOM",
     ]
     flags = ["R-free-flags", "FreeR_flag", "FREE"]
 

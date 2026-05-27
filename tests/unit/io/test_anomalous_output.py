@@ -119,8 +119,16 @@ class TestAnomalousMtzOutput:
     def test_phenix_columns_present(self, anomalous_data, pdb_dir, tmp_path):
         out = self._write(anomalous_data, pdb_dir, tmp_path)
         for col in [
-            "F-obs(+)", "F-obs(-)", "F-model(+)", "F-model(-)",
-            "PHIF-model(+)", "PHIF-model(-)", "FWT", "PHWT", "DELFWT", "PHDELWT",
+            "F-obs(+)",
+            "F-obs(-)",
+            "F-model(+)",
+            "F-model(-)",
+            "PHIF-model(+)",
+            "PHIF-model(-)",
+            "FWT",
+            "PHWT",
+            "DELFWT",
+            "PHDELWT",
         ]:
             assert col in out.columns, f"missing {col}"
         # Friedel dtype inferred for the (+/-) amplitude columns.
