@@ -17,11 +17,15 @@ import numpy as np
 import pytest
 
 # Baseline recorded on the anomalous-refinement branch (CPU, deterministic
-# across repeated runs): the ten sulfur sites span 7.2 - 11.1 sigma in the
-# normalized ANOM map, with the maximum at A/CYS115. We guard the *maximum*
-# peak against regression (a one-sided floor); getting a stronger peak is fine.
-BASELINE_MAX_SIGMA = 11.06
-REGRESSION_FLOOR = BASELINE_MAX_SIGMA - 0.5  # ~5% tolerance for numerical drift
+# across repeated runs): the ten sulfur sites span ~13.8 - 19.9 sigma in the
+# normalized ANOM map, with the maximum at A/CYS115. For reference, phenix.refine
+# on the same data yields 20.4 sigma at the same site; torchref reproduces that
+# to ~2% once single-mate reflections are excluded from the Bijvoet difference
+# (see _build_anomalous_dataframe). We guard the *maximum* peak against
+# regression with a one-sided floor; a stronger peak is fine.
+BASELINE_MAX_SIGMA = 19.93
+REGRESSION_FLOOR = BASELINE_MAX_SIGMA - 1.0  # ~5% tolerance for numerical drift
+PER_SITE_FLOOR = 10.0  # every sulfur should carry a clear anomalous peak
 WAVELENGTH = 1.892
 N_SULFUR = 10
 
@@ -95,7 +99,7 @@ def test_7l84_sulfur_anomalous_peak_height(stacked_7l84_mtz, pdb_dir, tmp_path):
 
     assert len(peaks) == N_SULFUR, f"expected {N_SULFUR} sulfur sites, got {peaks}"
     # Each sulfur should carry a clear positive anomalous peak.
-    assert all(v > 4.0 for v in peaks.values()), peaks
+    assert all(v > PER_SITE_FLOOR for v in peaks.values()), peaks
 
     max_peak = max(peaks.values())
     assert max_peak >= REGRESSION_FLOOR, (

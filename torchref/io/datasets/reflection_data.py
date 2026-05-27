@@ -2138,8 +2138,22 @@ class ReflectionData(CrystalDataset, DebugMixin):
         arange = torch.arange(N)
         plus_idx = torch.full((M,), -1, dtype=torch.long)
         minus_idx = torch.full((M,), -1, dtype=torch.long)
-        plus_idx[inverse[~flag]] = arange[~flag]
-        minus_idx[inverse[flag]] = arange[flag]
+        # A Bijvoet mate only counts as present if it is a real, positive
+        # observation. Stacked anomalous input (rs.stack_anomalous) carries a
+        # row for every *absent* mate with a NaN intensity, which French-Wilson
+        # maps to F=0; pairing such a phantom with its observed mate would yield
+        # a spurious ANOM = |F_obs - 0| = |F_obs| -- the whole amplitude, not a
+        # Bijvoet difference. Gate membership on the same validity convention as
+        # sanitize_F (finite, positive F and finite sigma) so single-mate
+        # reflections drop to NaN ANOM/PANOM, matching phenix.
+        F_cpu = self.F.detach().cpu()
+        observed = torch.isfinite(F_cpu) & (F_cpu > 0)
+        if self.F_sigma is not None:
+            observed = observed & torch.isfinite(self.F_sigma.detach().cpu())
+        plus_sel = (~flag) & observed
+        minus_sel = flag & observed
+        plus_idx[inverse[plus_sel]] = arange[plus_sel]
+        minus_idx[inverse[minus_sel]] = arange[minus_sel]
         has_plus = (plus_idx >= 0).numpy()
         has_minus = (minus_idx >= 0).numpy()
         pi = plus_idx.clamp(min=0).numpy()
@@ -2191,8 +2205,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Merged display quantities: mean observed amplitude over present mates,
         # and the ASU representative structure factor (the + member, else the
-        # conjugate of the - member).
-        with np.errstate(invalid="ignore"):
+        # conjugate of the - member). Groups with neither mate observed average
+        # to NaN (an expected "empty slice"); they are nan_to_num'd below.
+        with warnings.catch_warnings(), np.errstate(invalid="ignore"):
+            warnings.simplefilter("ignore", category=RuntimeWarning)
             Fobs_disp = np.nanmean(np.vstack([Fobs_p, Fobs_m]), axis=0)
         fc_disp = np.full(M, np.nan, dtype=complex)
         fc_disp[has_plus] = fc[pi][has_plus]
