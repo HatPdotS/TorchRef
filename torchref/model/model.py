@@ -23,6 +23,7 @@ from torchref.config import get_default_device, get_float_dtype
 from torchref.io import cif, pdb
 from torchref.base import math_torch
 from torchref.model.parameter_wrappers import (
+    CholeskyMixedTensor,
     MixedTensor,
     OccupancyTensor,
     PositiveMixedTensor,
@@ -699,7 +700,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             name="adp",
             device=self.device,
         )
-        self.u = MixedTensor(
+        # Cholesky parametrization keeps the anisotropic U positive-definite by
+        # construction (U = L Lᵀ), so refinement can't drive it indefinite and
+        # blow up the structure-factor FFT. Anisotropic analogue of the
+        # PositiveMixedTensor used for the isotropic B above.
+        self.u = CholeskyMixedTensor(
             torch.tensor(
                 self.pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
                 dtype=self.dtype_float,
