@@ -225,3 +225,82 @@ class LattmanLoveInterpolator(DeviceMixin):
             interp = interpolate_complex_from_grid(self.reciprocal_grid, flat)
         out = interp.reshape(B, N)
         return out if batched else out.squeeze(0)
+
+
+def estimate_interp_var(
+    interpolator: "LattmanLoveInterpolator",
+    hkl_real: torch.Tensor,
+    real_cell: Cell,
+    shell_idx: torch.Tensor,
+    n_shells: int,
+    n_jitter: int = 4,
+    jitter_frac: float = 0.5,
+    seed: int = 0,
+) -> torch.Tensor:
+    """
+    Estimate per-reflection trilinear-interpolation variance in E-value units.
+
+    Phaser's totvar_search analogue. Inflates the Rice/Woolfson variance budget
+    so that interpolation noise in the search model doesn't make a slightly-
+    noisy true peak look worse than a noise-free wrong peak.
+
+    Method: evaluate the interpolator at the original HKLs and at `n_jitter`
+    sub-grid-cell perturbations of the HKLs, take the per-shell empirical
+    variance of |F| across the perturbations, and normalise by the per-shell
+    mean |F|² so the returned quantity adds correctly to ``(1 - D²)`` in the
+    Rice variance.
+
+    `jitter_frac` is the fraction of a cubic-cell grid spacing to jitter by;
+    0.5 sweeps half a Nyquist cell and gives a robust upper-bound estimate
+    of trilinear bias. n_jitter=4 keeps the cost negligible.
+
+    Returns
+    -------
+    interp_var : torch.Tensor, shape (N,)
+        Per-reflection interpolation variance in dimensionless E² units.
+    """
+    device = interpolator.device
+    dtype = torch.float32
+    R_eye = torch.eye(3, dtype=dtype, device=device)
+
+    F_ref = interpolator.evaluate(
+        R_eye, hkl_real, real_cell, return_amplitude=True,
+    ).to(dtype)                                                              # (N,)
+
+    # Map a Cartesian Å^-1 shift back to fractional HKL_real space. delta_s is
+    # the magnitude of the jitter in Cartesian reciprocal Å^-1.
+    delta_s = jitter_frac / float(interpolator.cubic_side)
+    rec_real_inv = torch.linalg.inv(
+        real_cell.reciprocal_basis_matrix.to(device).to(dtype),
+    )
+
+    g = torch.Generator(device="cpu").manual_seed(int(seed))
+    diffs_sq = torch.zeros_like(F_ref)
+    for _ in range(n_jitter):
+        direction = torch.randn(3, generator=g, dtype=torch.float64)
+        direction = (direction / direction.norm()).to(device).to(dtype)
+        delta_h_real = (delta_s * direction) @ rec_real_inv                  # (3,)
+        hkl_j = hkl_real.to(dtype) + delta_h_real
+        F_j = interpolator.evaluate(
+            R_eye, hkl_j, real_cell, return_amplitude=True,
+        ).to(dtype)
+        diffs_sq = diffs_sq + (F_j - F_ref) ** 2
+    diffs_sq = diffs_sq / max(n_jitter, 1)                                   # (N,)
+
+    # Per-shell aggregation. Cast to f64 for stable sums on large N.
+    shell_idx_l = shell_idx.to(device).long()
+    diffs_d = diffs_sq.to(torch.float64)
+    F_ref2_d = (F_ref.to(torch.float64)) ** 2
+
+    var_per_shell = torch.zeros(n_shells, dtype=torch.float64, device=device)
+    F2_per_shell = torch.zeros(n_shells, dtype=torch.float64, device=device)
+    cnt = torch.zeros(n_shells, dtype=torch.float64, device=device)
+    var_per_shell.scatter_add_(0, shell_idx_l, diffs_d)
+    F2_per_shell.scatter_add_(0, shell_idx_l, F_ref2_d)
+    cnt.scatter_add_(0, shell_idx_l, torch.ones_like(diffs_d))
+
+    mean_var = var_per_shell / cnt.clamp(min=1.0)                            # (n_shells,)
+    mean_F2 = (F2_per_shell / cnt.clamp(min=1.0)).clamp(min=1e-30)           # (n_shells,)
+    interp_var_E_per_shell = (mean_var / mean_F2).clamp(min=0.0, max=1.0)
+
+    return interp_var_E_per_shell.to(dtype).index_select(0, shell_idx_l)     # (N,)

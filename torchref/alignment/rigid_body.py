@@ -21,16 +21,14 @@ Uses ScalerBase for proper crystallographic scaling during optimization.
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+import math
+
 import numpy as np
 import torch
 import torch.nn as nn
 
-<<<<<<< HEAD
-from torchref.scaling import Scaler
-=======
 from torchref.config import get_default_device
-from torchref.scaling import ScalerBase
->>>>>>> main
+from torchref.scaling import Scaler
 from torchref.model import SfFFT
 from torchref.symmetry import spacegroup
 from torchref.refinement.targets import MaximumLikelihoodXrayTarget
@@ -121,10 +119,20 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         rfactor_converged_threshold: float = 0.45,
         max_res: float = 4.0,
         verbose: int = 1,
+        refine_b: bool = False,
+        sigma_rot_deg: float = 0.0,
+        sigma_trans_ang: float = 0.0,
+        sigma_b: float = 0.0,
     ):
         super().__init__()
         self.device = device
         self.data = data
+        # Phase C: B-refine + Phaser-style Gaussian restraints. All off by
+        # default so previously-passing trajectories are unaffected.
+        self.refine_b = bool(refine_b)
+        self.sigma_rot_rad = math.radians(float(sigma_rot_deg)) if sigma_rot_deg > 0 else 0.0
+        self.sigma_trans_ang = float(sigma_trans_ang)
+        self.sigma_b = float(sigma_b)
 
         xyz_iso, adp_iso, occ_iso, A_iso, B_iso = model.get_iso()
 
@@ -184,6 +192,14 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         else:
             initial_translation = initial_translation.to(device=device).clone()
         self.translation_frac = nn.Parameter(initial_translation)
+
+        # Phase C: per-atom B-factor perturbation. Held as nn.Parameter even
+        # when refine_b=False (gradient just won't flow); cost is negligible
+        # and the codepath stays uniform.
+        n_iso = int(self.adp_iso.shape[0])
+        self.delta_b_iso = nn.Parameter(
+            torch.zeros(n_iso, device=device, dtype=self.adp_iso.dtype),
+        )
 
         # Use `Scaler` for per-bin scales + anisotropy correction, but skip
         # the bulk-solvent setup. The solvent mask is computed once from
@@ -306,12 +322,20 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             t_cart = self.translation_frac @ self.cell.fractional_matrix.T
             xyz_aniso = xyz_aniso_rotated + t_cart
 
+        # Phase C: optionally perturb per-atom B-factors. Clamp at 0 so the
+        # density model stays physical even mid-refine; the Gaussian
+        # restraint on delta_b_iso prevents large excursions.
+        if self.refine_b:
+            adp_iso_eff = (self.adp_iso + self.delta_b_iso).clamp(min=0.0)
+        else:
+            adp_iso_eff = self.adp_iso
+
         # Compute structure factors via FFT (bypasses MixedTensor!)
         # Note: fractional matrices are now obtained from FFT's internal Cell object
         sf, _ = self.fft.compute_structure_factors(
             hkl=hkl,
             xyz_iso=xyz_transformed,
-            adp_iso=self.adp_iso,
+            adp_iso=adp_iso_eff,
             occ_iso=self.occ_iso,
             A_iso=self.A_iso,
             B_iso=self.B_iso,
@@ -366,15 +390,42 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             print(f"    Setting up LBFGS optimizer niter = {n_iter} and max tries = {n_tries}")
             sys.stdout.flush()
         parameters = [self.rotation_parameters, self.translation_frac, *self.scaler.parameters()]
+        if self.refine_b:
+            parameters.append(self.delta_b_iso)
 
         self.optimizer = torch.optim.LBFGS(
             parameters,
             lr=1, max_iter=100, line_search_fn='strong_wolfe'
         )
 
+        # Phaser-style Gaussian restraints (0 ⇒ disabled). Pre-square once.
+        sigma_rot_rad = self.sigma_rot_rad
+        sigma_trans_ang = self.sigma_trans_ang
+        sigma_b = self.sigma_b
+        restraints_active = (
+            sigma_rot_rad > 0 or sigma_trans_ang > 0
+            or (self.refine_b and sigma_b > 0)
+        )
+
+        def restraint_loss() -> torch.Tensor:
+            r = torch.zeros((), dtype=self.translation_frac.dtype,
+                            device=self.translation_frac.device)
+            if sigma_rot_rad > 0:
+                r = r + 0.5 * (self.rotation ** 2).sum() / (sigma_rot_rad ** 2)
+            if sigma_trans_ang > 0:
+                # Cartesian translation = T_frac @ fractional_matrix.T (Å).
+                t_cart = self.translation_frac @ self.cell.fractional_matrix.T
+                r = r + 0.5 * (t_cart ** 2).sum() / (sigma_trans_ang ** 2)
+            if self.refine_b and sigma_b > 0:
+                r = r + 0.5 * (self.delta_b_iso ** 2).sum() / (sigma_b ** 2)
+            return r
+
         def loss():
             fcalc = self()
-            return self.xray_target(fcalc)
+            ll = self.xray_target(fcalc)
+            if restraints_active:
+                ll = ll + restraint_loss()
+            return ll
 
         noise = 0
 

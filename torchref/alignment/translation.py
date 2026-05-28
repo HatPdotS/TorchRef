@@ -424,6 +424,115 @@ def amplitude_translation_search(
     return corr_map_np, best, peaks
 
 
+def llg_translation_rescore(
+    F_obs: torch.Tensor,
+    hkl: torch.Tensor,
+    centric: torch.Tensor,
+    shell_idx: torch.Tensor,
+    n_shells: int,
+    G: torch.Tensor,
+    h_R: torch.Tensor,
+    t_candidates: torch.Tensor,
+    sigma_a: torch.Tensor,
+    interp_var: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Per-translation Rice / Woolfson log-likelihood, using the symmetry-summed
+    interpolator contributions ``G`` (Phaser EM_search analogue) and a fixed
+    per-shell σA.
+
+    For each candidate t:
+        F_calc(h, t) = Σ_i G_i(h) · exp(2πi (h R_i) · t)
+        E_calc(h, t) = |F_calc(h, t)| / sqrt(<F²>_per_shell)
+        LLG(t) = Σ_shell [LL_Rice(E_obs, D·E_calc, var) − LL_Wilson(E_obs)]
+        where var = (1 − D²) + interp_var.
+
+    Phase B alignment likelihood-TF. Replaces the |F|² Pearson correlation
+    in `amplitude_translation_search` as the scoring rule when the caller
+    re-ranks the FFT-cheap pre-filter peaks.
+
+    Parameters
+    ----------
+    F_obs : (N,) real
+    hkl   : (N, 3) — unused here but kept for symmetry with the rest of the
+            module (and future extension to per-h variance models).
+    centric : (N,) bool
+    shell_idx : (N,) int64 — same binning as used to fit sigma_a / interp_var.
+    n_shells : int
+    G : (S, N) complex — per-sym F_p1 contributions × per-sym translation phase
+                          (output of `precompute_G_for_rotation`).
+    h_R : (S, N, 3) — per-sym rotated reciprocal indices.
+    t_candidates : (K, 3) fractional translations to score.
+    sigma_a : (n_shells,) — fixed per-shell σA (shared across candidates).
+    interp_var : (N,) optional — per-reflection variance inflation.
+
+    Returns
+    -------
+    llg : (K,) torch.Tensor — log-likelihood gain per candidate.
+    """
+    from .distributions import rice_log_likelihood, woolfson_log_likelihood
+
+    device = G.device
+    real_dtype = torch.float64
+    complex_dtype = G.dtype
+
+    K = t_candidates.shape[0]
+    S, N = G.shape
+
+    t_cand = t_candidates.to(device).to(real_dtype)               # (K, 3)
+    # Phase factor for each (k, i, n): exp(2πi · (h_R[i, n] · t[k]))
+    phase_arg = torch.einsum("ind,kd->kin", h_R.to(real_dtype), t_cand)
+    phase = torch.exp(2j * torch.pi * phase_arg.to(complex_dtype))  # (K, S, N)
+    # F_calc(k, n) = Σ_i G[i, n] · phase[k, i, n]
+    Fc_complex = (G.view(1, S, N) * phase).sum(dim=1)             # (K, N)
+    F_calc = Fc_complex.abs().to(real_dtype)                       # (K, N)
+
+    # Per-shell E normalisation of F_calc across the K-batch.
+    shell_idx_l = shell_idx.to(device).long()
+    cnt = torch.bincount(shell_idx_l, minlength=n_shells).to(real_dtype)
+    shell_idx_k = shell_idx_l.view(1, -1).expand(K, N)
+    F2 = F_calc * F_calc
+    sum_per_shell = torch.zeros((K, n_shells), dtype=real_dtype, device=device)
+    sum_per_shell.scatter_add_(1, shell_idx_k, F2)
+    mean_per_shell = (sum_per_shell / cnt.clamp(min=1.0).unsqueeze(0)).clamp(min=1e-30)
+    norm_per_refl = mean_per_shell.sqrt().gather(1, shell_idx_k)  # (K, N)
+    E_calc = F_calc / norm_per_refl                                 # (K, N)
+
+    F_obs_t = F_obs.to(device).to(real_dtype)
+    sum_F_obs2 = torch.zeros(n_shells, dtype=real_dtype, device=device)
+    sum_F_obs2.scatter_add_(0, shell_idx_l, F_obs_t * F_obs_t)
+    mean_F_obs2 = (sum_F_obs2 / cnt.clamp(min=1.0)).clamp(min=1e-30)
+    E_obs = F_obs_t / mean_F_obs2.sqrt().index_select(0, shell_idx_l)
+
+    sigma_a_d = sigma_a.to(device).to(real_dtype)                  # (n_shells,)
+    D_per_refl = sigma_a_d.index_select(0, shell_idx_l)            # (N,)
+    var_d = (1.0 - D_per_refl * D_per_refl).clamp(min=1e-4)        # (N,)
+    if interp_var is not None:
+        var_per_refl = (var_d + interp_var.to(device).to(real_dtype)).clamp(min=1e-4)
+    else:
+        var_per_refl = var_d
+
+    F_mean = D_per_refl.view(1, N) * E_calc                        # (K, N)
+    var_full = var_per_refl.view(1, N).expand(K, N)
+    E_obs_full = E_obs.view(1, N).expand(K, N)
+    cent_full = centric.to(device).to(torch.bool).view(1, N)
+
+    ll_acent = rice_log_likelihood(E_obs_full, F_mean, var_full)
+    ll_cent = woolfson_log_likelihood(E_obs_full, F_mean, var_full)
+    ll = torch.where(cent_full, ll_cent, ll_acent)                 # (K, N)
+
+    # Wilson reference (data only): F_mean = 0, var = 1.
+    var0 = torch.ones_like(E_obs)
+    F_mean0 = torch.zeros_like(E_obs)
+    ll_wil_acent = rice_log_likelihood(E_obs, F_mean0, var0)
+    ll_wil_cent = woolfson_log_likelihood(E_obs, F_mean0, var0)
+    ll_wil_per_refl = torch.where(centric.to(device).to(torch.bool),
+                                   ll_wil_cent, ll_wil_acent)
+    ll_wil_total = ll_wil_per_refl.sum()
+
+    return ll.sum(dim=1) - ll_wil_total                            # (K,)
+
+
 def precompute_G_for_rotation(
     interpolator,
     R_rotation: torch.Tensor,

@@ -62,9 +62,10 @@ warnings.warn(
 )
 
 # =============================================================================
-# Pure-PyTorch ball-harmonic rotation search (no JAX, s2fft, s2ball needed)
+# Fast Rotation Function engines (consolidated in the .frf sub-package)
 # =============================================================================
-from .ball_search import (
+# Ball-harmonic E-value rotation search (engine="ball").
+from .frf.ball_search import (
     BallHarmonicCoefficients,
     RotationPeak,
     ball_rotation_search,
@@ -76,6 +77,13 @@ from .ball_search import (
     edmonds_euler_from_rotation_matrix,
     rotation_angular_distance_deg,
 )
+# Phaser-faithful engine — the production default rotation search.
+from .frf.api import (
+    FastRotationFunction,
+    phaser_lmax_resolution,
+    phaser_rotation_search,
+)
+from .frf.dense_calc import dense_calc_via_box
 from .lattman_love import LattmanLoveInterpolator
 from .ml_rotation import sim_mlrf_rescore, brute_ml_rotation_search
 from .sh import (
@@ -172,6 +180,11 @@ __all__ = [
     "rotation_matrix_from_edmonds_euler",
     "edmonds_euler_from_rotation_matrix",
     "rotation_angular_distance_deg",
+    # Phaser-faithful engine (production default)
+    "FastRotationFunction",
+    "phaser_rotation_search",
+    "phaser_lmax_resolution",
+    "dense_calc_via_box",
     "LattmanLoveInterpolator",
     "sim_mlrf_rescore",
     "brute_ml_rotation_search",

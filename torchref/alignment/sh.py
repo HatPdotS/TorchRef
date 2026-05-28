@@ -199,6 +199,59 @@ def angular_density_weights(
     return w
 
 
+def get_axis_order(sym_mats: torch.Tensor, axis: int) -> int:
+    """
+    Order of the highest-multiplicity proper rotation about a principal axis.
+
+    `sym_mats` is the spacegroup rotation matrices (n_ops, 3, 3). `axis` is
+    0/1/2 for x/y/z. Returns the largest n such that some R in `sym_mats` is a
+    rotation by 2π/n around that axis. For non-rotational operations (or
+    rotations not aligned with the axis), the spacegroup element is skipped.
+    Returns 1 if no proper rotation around the axis exists.
+
+    Used by the Phaser-style m-symmetry filter on the spherical-harmonic
+    coefficients: the Patterson is invariant under the spacegroup rotations,
+    so m-values that violate the highest-order axis symmetry are pure noise.
+    """
+    a = torch.zeros(3, dtype=torch.float64, device=sym_mats.device)
+    a[axis] = 1.0
+    max_order = 1
+    n_ops = sym_mats.shape[0]
+    for k in range(n_ops):
+        R = sym_mats[k].to(torch.float64)
+        # Axis must be invariant under R (proper or improper rotation about it).
+        if (R @ a - a).norm().item() > 1e-3:
+            continue
+        # Trace of a rotation by angle θ about the preserved axis is 1+2cosθ.
+        tr = R.diagonal().sum().item()
+        cos_a = max(-1.0, min(1.0, (tr - 1.0) / 2.0))
+        # Identity (angle ~0) → order 1.
+        if cos_a >= 1.0 - 1e-6:
+            continue
+        angle = math.acos(cos_a)
+        n = round(2 * math.pi / angle)
+        if n > max_order:
+            max_order = n
+    return max_order
+
+
+def get_high_order_axis(sym_mats: torch.Tensor) -> Tuple[int, int]:
+    """
+    Return (axis, zsymm) where `axis` ∈ {0, 1, 2} (x/y/z) maximises
+    `get_axis_order`, with z preferred on ties (matches Phaser's
+    `highOrderAxis()` in SpaceGroup.cc).
+    """
+    orders = [get_axis_order(sym_mats, a) for a in (0, 1, 2)]
+    # Phaser: axis=3 (z); axis=2 if orderY > orderZ; axis=1 if orderX > both.
+    if orders[0] > orders[1] and orders[0] > orders[2]:
+        axis = 0
+    elif orders[1] > orders[2]:
+        axis = 1
+    else:
+        axis = 2
+    return axis, orders[axis]
+
+
 def sh_expand_ball(
     s_vectors: torch.Tensor,
     values: torch.Tensor,
@@ -208,6 +261,8 @@ def sh_expand_ball(
     enforce_friedel: bool = True,
     chunk_size: int = 2048,
     angular_weights: Optional[torch.Tensor] = None,
+    zsymm: int = 1,
+    skip_odd_l: bool = False,
 ) -> torch.Tensor:
     """
     Analytical spherical-harmonic expansion of a scattered-point real field
@@ -287,11 +342,21 @@ def sh_expand_ball(
         # scatter-add into shells
         f_plm.index_add_(0, shell_idx[start:stop], contrib)
 
-    if enforce_friedel:
-        # Zero odd-l rows explicitly (they should already be ~0; this kills FP drift).
+    if enforce_friedel or skip_odd_l:
+        # Zero odd-l rows explicitly (they should already be ~0; this kills FP drift
+        # and is the only required step when skip_odd_l is set without Friedel).
         l_vals = torch.arange(L, device=device)
         odd_mask = (l_vals % 2 == 1)
         f_plm[:, odd_mask, :] = 0.0
+
+    # F1: m-symmetry filter (Phaser DataMR.cc:1019 / 1117). The Patterson is
+    # invariant under the spacegroup rotation operators, so SH coefficients
+    # whose m-index violates the highest-order rotation axis are pure noise.
+    # Zero them out post-expansion. With `zsymm=1` (no filter) this is a no-op.
+    if zsymm > 1:
+        m_vals = torch.arange(-(L - 1), L, device=device)            # (2L-1,)
+        m_invalid = (m_vals.abs() % zsymm) != 0
+        f_plm[:, :, m_invalid] = 0.0
 
     return f_plm
 
@@ -417,6 +482,89 @@ def fit_overall_anisotropy(
         dtype=dtype, device=device,
     )
     return U
+
+
+def hkl_symops_to_cartesian(
+    sg_mats: torch.Tensor,
+    rec_basis: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Convert spacegroup symmetry operators that act on integer Miller indices
+    into the equivalent rotation operators acting on Cartesian reciprocal-
+    space vectors (`s = h @ rec_basis`, column-vector form: `s = M @ h` with
+    `M = rec_basis^T`).
+
+    For column vectors: `s' = M · S · M⁻¹ · s` so `P_cart = M · S · M⁻¹`.
+
+    For orthogonal cells (orthorhombic+) M is diagonal and `P_cart == S`
+    exactly. For non-orthogonal cells (monoclinic, hex/trig with γ=120°,
+    triclinic), the Cartesian form differs and matters for any operation
+    that mixes the axes (e.g. averaging tensors over the point group).
+
+    Parameters
+    ----------
+    sg_mats : torch.Tensor, shape (n_ops, 3, 3)
+        Integer Miller-index symops (data.spacegroup.matrices).
+    rec_basis : torch.Tensor, shape (3, 3)
+        Reciprocal basis matrix such that `s = h @ rec_basis` (row-vector
+        convention used throughout torchref).
+
+    Returns
+    -------
+    sym_mats_cart : torch.Tensor, shape (n_ops, 3, 3), real
+    """
+    dtype = torch.float64
+    M = rec_basis.to(dtype).transpose(-1, -2)            # (3, 3)
+    M_inv = torch.linalg.inv(M)
+    S = sg_mats.to(dtype)                                 # (n_ops, 3, 3)
+    return torch.einsum("ij,kjl,lm->kim", M, S, M_inv)
+
+
+def symmetrize_anisotropy(
+    U: torch.Tensor,
+    sym_mats_cart: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Project a symmetric 3×3 tensor `U` onto the point-group-invariant
+    subspace of the spacegroup by averaging over its Cartesian rotation
+    operators:
+
+        U_sym = (1/n) Σ_k  P_k · U · P_k^T
+
+    This mirrors Phaser's `site_symmetry.average_u_star()` and the
+    `RefineANO.cc:116-142` constraint construction. After symmetrisation the
+    tensor automatically satisfies the crystal's point-group symmetry:
+
+        - cubic:        U_sym = (trace U / 3) · I              (1 DOF)
+        - tetragonal:   U_sym = diag(λ, λ, μ)                  (2 DOF)
+        - orthorhombic: U_sym = diag(λ, μ, ν)                  (3 DOF)
+        - monoclinic:   diagonal + one off-diagonal             (4 DOF)
+        - triclinic:    unchanged                               (6 DOF)
+
+    This is the structural fix that prevents an unconstrained 6-component
+    regression from producing physically impossible anisotropy in
+    high-symmetry cells (e.g. fitting a 70 Å² eigenvalue on a cubic dataset
+    where every eigenvalue must be equal by symmetry).
+
+    Parameters
+    ----------
+    U : torch.Tensor, shape (3, 3), symmetric
+    sym_mats_cart : torch.Tensor, shape (n_ops, 3, 3)
+        Output of `hkl_symops_to_cartesian` — Cartesian-space rotation
+        operators of the spacegroup.
+
+    Returns
+    -------
+    U_sym : torch.Tensor, shape (3, 3), symmetric, same dtype/device as U
+    """
+    dtype = U.dtype
+    device = U.device
+    sym = sym_mats_cart.to(device=device, dtype=dtype)
+    # Vectorised: U_avg = mean_k  P_k · U · P_k^T
+    U_avg = torch.einsum("kij,jl,knl->in", sym, U, sym) / sym.shape[0]
+    # Enforce symmetry (numerical hygiene; pure rotation averaging preserves
+    # symmetry exactly, but FP drift can leave 1e-15 asymmetry).
+    return 0.5 * (U_avg + U_avg.transpose(-1, -2))
 
 
 def apply_overall_anisotropy(

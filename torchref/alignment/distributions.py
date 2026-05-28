@@ -315,3 +315,83 @@ def centric_pdf(
         Probability density for each reflection.
     """
     return torch.exp(woolfson_log_likelihood(F_obs, F_mean, variance))
+
+
+# =============================================================================
+# Phaser-faithful log-likelihood normalization (m_LETF1 / RiceWoolfson.cc)
+# =============================================================================
+#
+# These differ from `rice_log_likelihood` / `woolfson_log_likelihood` above in
+# their normalization convention: Phaser's V is twice the standard Rice variance
+# for acentric, equal to it for centric. Match the Phaser source exactly so the
+# m_letf1_rescore values are commensurable with Phaser's m_LETF1 LL.
+#
+# Source: phaser/lib/RiceWoolfson.cc:25-74.
+
+
+def phaser_log_rel_rice(
+    F1: torch.Tensor,
+    DF2: torch.Tensor,
+    V: torch.Tensor,
+) -> torch.Tensor:
+    """Phaser's ``logRelRice(F1, DF2, V)`` for acentric reflections.
+
+    Source ``phaser/lib/RiceWoolfson.cc:25-50``::
+
+        logRelRice(F1, DF2, V) = log I_0(2·F1·DF2/V) − log V − (F1² + DF2²)/V
+
+    Used by ``m_LETF1`` (DataMR.cc:1425) to score each acentric reflection's
+    contribution to the Rice log-likelihood at a candidate orientation.
+
+    Parameters
+    ----------
+    F1 : torch.Tensor
+        Observed Wilson-normalised amplitude ``E = F_eff / sqrt(ε·Σ_N)``.
+    DF2 : torch.Tensor
+        ``sqrt(eImove)`` — square-root of the expected moving-model intensity
+        ``Σ_isym σ_A²·|F_calc(R^T·S_isym·h)|²``.
+    V : torch.Tensor
+        Per-reflection variance budget from ``compute_v_budget`` (DataMR.cc:949,1411).
+
+    Returns
+    -------
+    torch.Tensor
+        Per-reflection acentric log-likelihood (same shape as inputs).
+    """
+    V_safe = V.clamp(min=1e-30)
+    arg = 2.0 * F1 * DF2 / V_safe
+    return stable_log_bessel_i0(arg) - V_safe.log() - (F1 * F1 + DF2 * DF2) / V_safe
+
+
+def phaser_log_rel_woolfson(
+    F1: torch.Tensor,
+    DF2: torch.Tensor,
+    V: torch.Tensor,
+) -> torch.Tensor:
+    """Phaser's ``logRelWoolfson(F1, DF2, V)`` for centric reflections.
+
+    Source ``phaser/lib/RiceWoolfson.cc:52-74``::
+
+        logRelWoolfson(F1, DF2, V) = log cosh(F1·DF2/V) − ½·log V
+                                   − (F1² + DF2²)/(2V)
+
+    Used by ``m_LETF1`` (DataMR.cc:1425) for centric reflections.
+
+    Numerically stable for large ``F1·DF2/V`` via the standard
+    ``log cosh(x) = |x| + log1p(exp(-2|x|)) − log 2`` reformulation.
+
+    Parameters
+    ----------
+    F1, DF2, V : torch.Tensor
+        Same meaning as ``phaser_log_rel_rice``.
+
+    Returns
+    -------
+    torch.Tensor
+        Per-reflection centric log-likelihood.
+    """
+    V_safe = V.clamp(min=1e-30)
+    arg = F1 * DF2 / V_safe
+    abs_arg = arg.abs()
+    log_cosh = abs_arg + torch.log1p(torch.exp(-2.0 * abs_arg)) - math.log(2.0)
+    return log_cosh - 0.5 * V_safe.log() - (F1 * F1 + DF2 * DF2) / (2.0 * V_safe)

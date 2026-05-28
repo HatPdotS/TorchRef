@@ -15,18 +15,12 @@ from typing import List, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 import torch
 
-<<<<<<< HEAD
-from .ball_search import (
+from torchref.config import get_default_device, get_float_dtype
+
+from .frf.ball_search import (
     ball_rotation_search,
     rotation_matrix_from_edmonds_euler,
     RotationPeak,
-=======
-from torchref.config import get_default_device, get_float_dtype
-
-from .ball_transform import (
-    ball_rotation_search_torch,
-    rotation_matrix_from_euler_zyz,
->>>>>>> main
 )
 from .translation import fft_translation_search_torch, TranslationPeak
 from .rigid_body import RigidBodyRefinement, RigidBodyResult
@@ -258,6 +252,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         L: int = 48,
         P: int = 24,
         cluster_threshold_deg: Optional[float] = None,
+        engine: str = "frf_separate",
     ) -> List[MRSolution]:
         """
         Run full MR pipeline with early stopping.
@@ -301,7 +296,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         # Step 1: Rotation search
         if self.verbose:
             print("Step 1: Rotation search...")
-        rotation_peaks = self._rotation_search(n_rotation_peaks, d_min, d_max, L, P)
+        rotation_peaks = self._rotation_search(
+            n_rotation_peaks, d_min, d_max, L, P, engine=engine
+        )
 
         if not rotation_peaks:
             if self.verbose:
@@ -419,9 +416,31 @@ class MolecularReplacementPipeline(DeviceMixin):
         d_max: float,
         L: int,
         P: int,
+        engine: str = "frf_separate",
     ) -> list:
-        """Run ball rotation search; return list of (α, β, γ, score, σ) tuples."""
-        # Prepare E-values
+        """Run the rotation search; return list of (α, β, γ, score, σ) tuples.
+
+        ``engine="frf_separate"`` (default) uses the validated Phaser-faithful
+        engine (dense calc + auto_lmax + obs-unroll + no_grad) via the shared
+        ``align`` helpers; ``engine="ball"`` uses the legacy E-value ball search.
+        """
+        if engine not in ("frf_separate", "ball"):
+            raise ValueError(
+                f"engine={engine!r}; expected 'frf_separate' (default) or 'ball'."
+            )
+        if engine == "frf_separate":
+            from .align import _prepare_frf_inputs, _run_frf_separate_rotation
+            frf = _prepare_frf_inputs(
+                self.model, self.data,
+                d_min=d_min, d_max=d_max, n_shells=20, verbose=self.verbose,
+            )
+            peaks = _run_frf_separate_rotation(
+                self.model, self.data, frf,
+                n_peaks=n_peaks, verbose=self.verbose,
+            )
+            return [(p.alpha, p.beta, p.gamma, p.score, p.sigma) for p in peaks]
+
+        # engine == "ball" — legacy ball-harmonic E-value search.
         E_obs, s_obs = self._get_e_values_obs(d_min, d_max)
         E_calc, s_calc = self._get_e_values_calc(d_min, d_max)
 

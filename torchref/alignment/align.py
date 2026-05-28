@@ -21,30 +21,37 @@ from __future__ import annotations
 import math
 import time
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import Optional, TYPE_CHECKING
 
+import numpy as np
 import torch
 
-from .ball_search import (
+from .frf.ball_search import (
     RotationPeak,
     ball_rotation_search,
     edmonds_euler_from_rotation_matrix,
     rotation_matrix_from_edmonds_euler,
 )
-from .lattman_love import LattmanLoveInterpolator
-from .ml_rotation import sim_mlrf_rescore
+from .lattman_love import LattmanLoveInterpolator, estimate_interp_var
+from .ml_rotation import compute_sigma_a_luzzati, m_letf1_rescore, sim_mlrf_rescore
 from .rigid_body import RigidBodyRefinement
 from .sh import (
     apply_overall_anisotropy,
     assign_shells,
+    compute_patterson_shell_variance,
     equal_count_shell_edges,
     fit_overall_anisotropy,
+    get_high_order_axis,
 )
 from .translation import (
+    TranslationPeak,
     amplitude_translation_search,
+    llg_translation_rescore,
     local_translation_refine,
     precompute_G_for_rotation,
 )
+from .ml_rotation import fit_sigma_a_per_shell
 
 if TYPE_CHECKING:
     from ..io.datasets.reflection_data import ReflectionData
@@ -229,6 +236,310 @@ def _rodrigues(omega: torch.Tensor) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
+# FRF input preparation (shared by the live pipeline and the rotation-ranking
+# benchmark in tests/integration/alignment/benchmark_rotation_ranking.py)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FRFInputs:
+    """Container for the spherical-harmonic rotation-search inputs.
+
+    `*_sym` arrays are symmetry-expanded across the spacegroup rotation
+    operators (so the Patterson SH expansion samples the full sphere).
+    Un-suffixed `F_obs / hkl / s_vec / s_mag / centric` are the resolution-
+    masked, anisotropy-corrected reflection arrays — used downstream by
+    the MLRF rescore, translation search and rigid-body polish.
+    """
+    # FRF (symmetry-expanded) inputs
+    s_vec_for_search: torch.Tensor   # (n_ops·N, 3)
+    s_mag_sym: torch.Tensor          # (n_ops·N,)
+    patt_obs: torch.Tensor           # (n_ops·N,) = |E_obs|² − 1
+    patt_calc: torch.Tensor          # (n_ops·N,) = |E_calc|² − 1
+    # Per-reflection inputs (un-expanded)
+    F_obs: torch.Tensor              # (N,) anisotropy-corrected? See `F_obs_aniso` flag
+    hkl: torch.Tensor                # (N, 3) integer Miller indices
+    s_vec: torch.Tensor              # (N, 3) reciprocal-space Cartesian
+    s_mag: torch.Tensor              # (N,) Å⁻¹
+    centric: torch.Tensor            # (N,) bool
+    # Other state used downstream
+    ll: "LattmanLoveInterpolator"
+    U_aniso: torch.Tensor            # (3, 3) Popov-Bourenkov U
+    device: torch.device
+
+
+def _prepare_frf_inputs(
+    model: "ModelFT",
+    data: "ReflectionData",
+    *,
+    d_min: float,
+    d_max: float,
+    n_shells: int,
+    ll_padding_factor: float = 2.0,
+    ll_max_res_A: float = 3.0,
+    verbose: int = 0,
+) -> FRFInputs:
+    """Build the symmetry-expanded SH-rotation-search inputs.
+
+    Encapsulates the data prep / anisotropy / symmetry-expansion logic
+    previously inlined in `align_model_to_data`. The returned dataclass
+    feeds both the live `ball_rotation_search` call and the benchmark.
+
+    `F_obs` on the returned dataclass is the *anisotropy-corrected* value
+    (matches what previously was the `F_obs_aniso` local variable).
+    """
+    device = model.xyz().device
+
+    F_obs = data.F.to(torch.float64).abs()
+    hkl_all = data.hkl
+    rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)
+    s_vec_all = hkl_all.to(torch.float64) @ rec_basis
+    s_mag_all = s_vec_all.norm(dim=-1)
+    keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
+    if keep.sum().item() < n_shells * 5:
+        raise ValueError(
+            f"Too few reflections ({keep.sum().item()}) in [{d_min},{d_max}] Å "
+            f"for {n_shells} shells; widen the resolution range."
+        )
+    F_obs = F_obs[keep].to(device)
+    hkl = hkl_all[keep].to(device)
+    s_vec = s_vec_all[keep].to(device)
+    s_mag = s_mag_all[keep].to(device)
+    centric = (
+        data.centric[keep].to(torch.bool).to(device)
+        if hasattr(data, "centric")
+        else torch.zeros_like(F_obs, dtype=torch.bool)
+    )
+
+    aniso_edges, _ = equal_count_shell_edges(s_mag, n_shells)
+    aniso_idx = assign_shells(s_mag, aniso_edges)
+    U_aniso = fit_overall_anisotropy(
+        F_obs, s_vec, aniso_idx, P=n_shells, min_count=20,
+    )
+    # Project U onto the spacegroup's point-group-invariant subspace
+    # (Phaser RefineANO.cc:116-142 via cctbx `site_symmetry.average_u_star`).
+    # Without this constraint a 6-component unconstrained regression can
+    # fit physically impossible anisotropy on high-symmetry cells — e.g.
+    # 3K7M (cubic) fits eigenvalues (0.8, 17, 70) Å² which then blows up
+    # the per-reflection exp(π²·s·U·s) multiplier and destroys the FRF.
+    # After projection, cubic → U = λI (1 DOF), tetragonal → diag(λ,λ,μ),
+    # orthorhombic → diag(λ,μ,ν), etc.
+    from .sh import hkl_symops_to_cartesian, symmetrize_anisotropy
+    _sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
+    _sym_mats_cart = hkl_symops_to_cartesian(_sg_mats, rec_basis.to(device))
+    U_aniso = symmetrize_anisotropy(U_aniso, _sym_mats_cart)
+    F_obs_aniso = apply_overall_anisotropy(F_obs, s_vec, U_aniso)
+
+    ll = LattmanLoveInterpolator(
+        model, padding_factor=ll_padding_factor, max_res_A=ll_max_res_A,
+        verbose=verbose,
+    )
+
+    # Symmetry-expand reciprocal-space points so the Patterson SH expansion
+    # samples the full sphere (spacegroup-invariant by construction). See
+    # the long comment in `align_model_to_data` for the rationale.
+    sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
+    n_ops_sg = int(sg_mats.shape[0])
+    hkl_sym = torch.einsum("kij,nj->kni", sg_mats, hkl.to(torch.float64))
+    hkl_sym_flat = hkl_sym.reshape(-1, 3)
+    s_vec_sym = hkl_sym_flat @ rec_basis.to(device)
+    s_mag_sym = s_vec_sym.norm(dim=-1)
+    F_obs_aniso_sym = F_obs_aniso.unsqueeze(0).expand(n_ops_sg, -1).reshape(-1)
+    E_obs_sym = _shellbin_norm_etrick(F_obs_aniso_sym, s_mag_sym, n_shells)
+    patt_obs = E_obs_sym ** 2 - 1.0
+
+    F_calc_sym = ll.evaluate(
+        torch.eye(3, dtype=torch.float32), hkl_sym_flat, data.cell,
+        return_amplitude=True,
+    ).to(torch.float64)
+    E_calc_sym = _shellbin_norm_etrick(F_calc_sym, s_mag_sym, n_shells)
+    patt_calc = E_calc_sym ** 2 - 1.0
+
+    return FRFInputs(
+        s_vec_for_search=s_vec_sym,
+        s_mag_sym=s_mag_sym,
+        patt_obs=patt_obs,
+        patt_calc=patt_calc,
+        F_obs=F_obs_aniso,
+        hkl=hkl,
+        s_vec=s_vec,
+        s_mag=s_mag,
+        centric=centric,
+        ll=ll,
+        U_aniso=U_aniso,
+        device=device,
+    )
+
+
+def _run_frf_separate_rotation(
+    model: "ModelFT",
+    data: "ReflectionData",
+    frf: "FRFInputs",
+    *,
+    lmax_cap: int = 48,
+    dense_pad: float = 2.0,
+    n_peaks: int = 500,
+    grid_sampling_deg: float = 3.0,
+    delta_vrms_A: float = 0.5,
+    verbose: int = 0,
+    _orbit_unroll: bool = False,
+    # --- Phaser model-prep knobs for the FRF calc side (default OFF) ---
+    apply_bulk_solvent: bool = False,
+    solvent_fsol: float = 0.95,
+    solvent_bsol: float = 300.0,
+    vrms_strategy: str = "fixed",
+    vrms_identity: float = 1.0,
+    apply_wilson_b: bool = False,
+):
+    """Phaser-faithful (validated) rotation search — the production default.
+
+    Reproduces the v19 benchmark config that solved the high-symmetry cases
+    (4BX9 342→4-7, 6G9X 77→1-4; see ``FRF_CONSOLIDATION.md``):
+
+    * obs taken at the **full data resolution** — ``auto_lmax`` coarsens the SH
+      bandwidth to ``cap`` internally (the resolution↔bandwidth coupling that
+      removes the aliasing background), so we do not pre-restrict resolution;
+    * Popov-Bourenkov **anisotropy correction** (reuses ``frf.U_aniso``);
+    * obs **symmetry-unroll** to the full reciprocal sphere (critical for
+      high-symmetry spacegroups — the SH invariant subspace is otherwise
+      under-sampled);
+    * **dense P1-box calc** (single molecular transform, not unrolled) at the
+      coarsened resolution — fixes high-l SH under-determination on large models;
+    * French-Wilson + shell-variance weights; stable Wigner-d; all under no_grad.
+
+    Returns the validated engine's peak list (``frf.types.RotationPeak``, whose
+    ``.score`` aliases ``.value`` so it is drop-in for the ball-search peaks).
+    """
+    from .frf.api import phaser_lmax_resolution, phaser_rotation_search
+    from .frf.dense_calc import dense_calc_via_box
+
+    device = frf.device
+    with torch.no_grad():
+        rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)
+        hkl_all = data.hkl.to(device)
+        s_vec_all = hkl_all.to(torch.float64) @ rec_basis
+        s_mag_all = s_vec_all.norm(dim=-1)
+        # Full data resolution window; auto_lmax coarsens d_min to match the cap.
+        # d_max ≈ no low-res cutoff (matches the validated config's d_max_mimic).
+        d_min_eff = float(1.0 / s_mag_all.max().item())
+        d_max_eff = 100.0
+        keep = (s_mag_all >= 1.0 / d_max_eff) & (s_mag_all <= 1.0 / d_min_eff)
+
+        s_obs = s_vec_all[keep]
+        # Anisotropy correction (reuse the tensor fitted in _prepare_frf_inputs).
+        F_obs = apply_overall_anisotropy(
+            data.F.to(torch.float64).abs().to(device)[keep], s_obs, frf.U_aniso,
+        )
+        sigF = (
+            data.F_sigma.to(torch.float64).to(device)[keep]
+            if getattr(data, "F_sigma", None) is not None
+            else None
+        )
+        centric = (
+            data.centric[keep].to(torch.bool).to(device)
+            if hasattr(data, "centric")
+            else torch.zeros_like(F_obs, dtype=torch.bool)
+        )
+
+        # Obs symmetry-unroll → full reciprocal space (each ASU reflection becomes
+        # n_ops entries carrying the same |F|², centric, σF — |F(Sh)|=|F(h)|).
+        #
+        # The `_orbit_unroll=True` path uses `epsilon_aware_unroll` (Phaser
+        # DataMR.cc:954-986's `!duplicate(isym, rhkl)` skip — keeps only unique
+        # orbit positions). It is OFF by default: as a standalone change it
+        # regressed the rebench (job 103409: 3K7M 18->189, 3GR5 47->204, 2DQ6
+        # 202->324). The dedup is correct only as part of a coordinated Phaser-
+        # faithful preprocessing chain (ε-Wilson + V(h) + σ_A), pending.
+        sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
+        if _orbit_unroll:
+            from .frf.preprocessing import epsilon_aware_unroll
+            hkl_keep_int = hkl_all.to(torch.long).to(device)[keep]
+            unrolled_hkl, asu_idx = epsilon_aware_unroll(hkl_keep_int, sg_mats)
+            s_obs = unrolled_hkl.to(torch.float64) @ rec_basis
+            F_obs = F_obs[asu_idx]
+            centric = centric[asu_idx]
+            if sigF is not None:
+                sigF = sigF[asu_idx]
+        else:
+            n_ops = int(sg_mats.shape[0])
+            hkl_keep = hkl_all.to(torch.float64)[keep]
+            hkl_unroll = torch.einsum("kij,nj->kni", sg_mats, hkl_keep).reshape(-1, 3)
+            s_obs = hkl_unroll @ rec_basis
+            F_obs = F_obs.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
+            centric = centric.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
+            if sigF is not None:
+                sigF = sigF.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
+
+        # Dense P1-box calc on the (un-rotated) search model at the coarsened res.
+        model_radius_A = float(
+            (model.xyz() - model.xyz().mean(0)).norm(dim=-1).mean().item()
+        )
+        dmin_dense = phaser_lmax_resolution(model_radius_A, d_min_eff, lmax_cap)[1]
+        s_calc, F_calc = dense_calc_via_box(
+            model, d_max_eff, dmin_dense, pad=dense_pad, verbose=verbose > 0,
+        )
+        s_calc = s_calc.to(device)
+        F_calc = F_calc.to(device)
+
+        # Optional Wilson-B match on the dense calc (EnsemblePDB.cc:793-851).
+        # Bin obs and calc into the same shells (defined by obs s-distribution),
+        # regress log(<F_obs²>/<F_calc²>) vs s², apply DW `exp(-B·s²/4)` to F_calc.
+        if apply_wilson_b:
+            from .frf.preprocessing import fit_relative_wilson_b
+            s_obs_mag = s_obs.norm(dim=-1)
+            s_calc_mag = s_calc.norm(dim=-1)
+            B_rel = fit_relative_wilson_b(
+                F_obs.to(torch.float64), F_calc.to(torch.float64),
+                s_obs_mag.to(torch.float64), n_shells=20,
+                s_mag_calc=s_calc_mag.to(torch.float64),
+            )
+            if abs(B_rel) > 1e-6:
+                F_calc = F_calc * torch.exp(-B_rel * (s_calc_mag * s_calc_mag) / 4.0)
+                if verbose > 0:
+                    print(f"  FRF Wilson-B applied: B_rel = {B_rel:+.2f} Å²", flush=True)
+
+        # Optional Oeffner vrms (rms_estimate.cc:37) — depends on n_residues
+        # estimated from atom count (≈ 8 heavy atoms / residue).
+        delta_vrms_for_frf = delta_vrms_A
+        if vrms_strategy == "oeffner":
+            from .frf.preprocessing import oeffner_vrms
+            n_residues_est = max(1, int(model.xyz().shape[0] / 8))
+            delta_vrms_for_frf = oeffner_vrms(n_residues_est, vrms_identity)
+            if verbose > 0:
+                print(
+                    f"  FRF Oeffner vrms = {delta_vrms_for_frf:.3f} Å "
+                    f"(n_res≈{n_residues_est}, ident={vrms_identity})",
+                    flush=True,
+                )
+        elif vrms_strategy != "fixed":
+            raise ValueError(
+                f"vrms_strategy={vrms_strategy!r}; expected 'fixed' or 'oeffner'."
+            )
+
+        _arf, peaks = phaser_rotation_search(
+            s_obs, F_obs, centric,
+            s_calc, F_calc,
+            sg_mats,
+            d_min=d_min_eff, d_max=d_max_eff, n_peaks=n_peaks,
+            delta_vrms_A=delta_vrms_for_frf,
+            sigma_threshold=-5.0,
+            use_lerf1_intensity=True,
+            use_m_symmetry_filter=True,
+            sig_F_obs=sigF,
+            use_french_wilson=(sigF is not None),
+            use_shell_variance_weights=True,
+            grid_sampling_deg=grid_sampling_deg,
+            model_radius_A=model_radius_A,
+            auto_lmax=True,
+            lmax_cap=lmax_cap,
+            apply_bulk_solvent=apply_bulk_solvent,
+            solvent_fsol=solvent_fsol,
+            solvent_bsol=solvent_bsol,
+        )
+    return peaks
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -255,6 +566,23 @@ def align_model_to_data(
     do_joint_refine: bool = True,
     joint_refine_max_res_A: float = 4.0,
     joint_refine_expected_rot_error: float = 0.1,
+    use_interp_var: bool = False,
+    use_llg_tf: bool = False,
+    refine_b: bool = False,
+    sigma_rot_deg: float = 0.0,
+    sigma_trans_ang: float = 0.0,
+    sigma_b: float = 0.0,
+    use_sigma_a_frf: bool = False,
+    frf_delta_vrms_A: float = 1.0,
+    frf_weight_combine: str = "sigma_a_only",
+    use_m_symmetry_filter: bool = False,
+    use_lerf1_intensity: bool = False,
+    use_fitted_delta_vrms: bool = False,
+    use_even_l_only: bool = False,
+    engine: str = "frf_separate",
+    frf_lmax_cap: int = 48,
+    frf_dense_pad: float = 2.0,
+    rescore_engine: str = "m_letf1",
 ) -> "ModelFT":
     """Run full MR alignment of ``model`` against ``data``.
 
@@ -275,129 +603,182 @@ def align_model_to_data(
 
     timer = _StageTimer(enabled=verbose >= 2)
 
-    # Device propagation: align_model_to_data runs on the model's device by
-    # default. Data tensors (data.F, data.hkl, etc.) often arrive on CPU and
-    # need to be moved to match — otherwise the very first hkl-derived
-    # quantity (s_mag) lives on CPU while F_calc from the GPU-resident LL
-    # interpolator lives on GPU, and _shellbin_norm_etrick crashes with
-    # "Expected all tensors to be on the same device".
-    device = model.xyz().device
-
-    # --- Prepare F_obs and shell-normalized E_obs in resolution range ---
-    # Do the masking on CPU (data tensors arrive there) then move the
-    # resolution-bounded slices to `device`. Avoids GPU-index-into-CPU
-    # crashes when `keep` is on a different device than `data.centric`.
     timer.start("0_data_prep")
-    F_obs = data.F.to(torch.float64).abs()
-    hkl_all = data.hkl
-    rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)
-    s_vec_all = hkl_all.to(torch.float64) @ rec_basis
-    s_mag_all = s_vec_all.norm(dim=-1)
-    keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
-    if keep.sum().item() < n_shells * 5:
-        raise ValueError(
-            f"Too few reflections ({keep.sum().item()}) in [{d_min},{d_max}] Å "
-            f"for {n_shells} shells; widen the resolution range."
-        )
-    # Index on CPU, then move slices to `device`. The model device is the
-    # canonical destination; downstream stages (LL.evaluate, ball_search,
-    # sim_mlrf_rescore) all infer device from their inputs.
-    F_obs = F_obs[keep].to(device)
-    hkl = hkl_all[keep].to(device)
-    s_vec = s_vec_all[keep].to(device)
-    s_mag = s_mag_all[keep].to(device)
-    centric = (
-        data.centric[keep].to(torch.bool).to(device)
-        if hasattr(data, "centric")
-        else torch.zeros_like(F_obs, dtype=torch.bool)
-    )
-
-    timer.stop("0_data_prep")
-
-    # Popov-Bourenkov overall anisotropy correction (full variance fix):
-    # Removes the direction-dependent Wilson-falloff in F_obs that otherwise
-    # biases the rotation function on anisotropic and high-symmetry crystals
-    # (P6522, etc.). Fitted from F_obs alone — no model dependence.
     timer.start("1_anisotropy_fit")
-    aniso_edges, _ = equal_count_shell_edges(s_mag, n_shells)
-    aniso_idx = assign_shells(s_mag, aniso_edges)
-    U_aniso = fit_overall_anisotropy(
-        F_obs, s_vec, aniso_idx, P=n_shells, min_count=20,
+    timer.start("2_ll_build")
+    frf = _prepare_frf_inputs(
+        model, data,
+        d_min=d_min, d_max=d_max, n_shells=n_shells,
+        ll_padding_factor=ll_padding_factor, ll_max_res_A=ll_max_res_A,
+        verbose=verbose,
     )
+    timer.stop("0_data_prep")
+    timer.stop("1_anisotropy_fit")
+    timer.stop("2_ll_build")
     if verbose > 0:
+        U_aniso = frf.U_aniso
         print(
             f"fit_to_data: overall U-aniso diag (Å²) = "
             f"({U_aniso[0, 0].item():+.2f}, {U_aniso[1, 1].item():+.2f}, "
             f"{U_aniso[2, 2].item():+.2f})",
             flush=True,
         )
-    F_obs_aniso = apply_overall_anisotropy(F_obs, s_vec, U_aniso)
-    timer.stop("1_anisotropy_fit")
-
-    # --- Build LL interpolator from a P1 view of the model ---
-    timer.start("2_ll_build")
-    if verbose > 0:
         print(
-            f"fit_to_data: building Lattman-Love interpolator "
-            f"(box={ll_padding_factor}·diam, max_res={ll_max_res_A} Å)…",
+            f"fit_to_data: built Lattman-Love interpolator "
+            f"(box={ll_padding_factor}·diam, max_res={ll_max_res_A} Å)",
             flush=True,
         )
-    ll = LattmanLoveInterpolator(
-        model, padding_factor=ll_padding_factor, max_res_A=ll_max_res_A,
-        verbose=verbose,
-    )
 
-    # --- Symmetry-expand reciprocal-space points for the Patterson SH expansion ---
-    # The MTZ stores only the spacegroup ASU (1 / n_ops of reciprocal space).
-    # The observed Patterson is spacegroup-invariant (|F(S_k h)| = |F(h)|),
-    # so the SH expansion of P_obs must sample the full sphere — otherwise
-    # the rotation function loses its spacegroup symmetry and the true
-    # orientation is no longer a global maximum. On 1AK5 (P432, 24 ops)
-    # the un-expanded rotation function picked maxima 5× higher than the
-    # value at R_true; expanding F_obs to all 24 symmetry mates makes
-    # C(R) = C(S_k R) by construction (and the calc-side LL evaluator
-    # is queried at the same expanded HKL set so the cross-correlation is
-    # consistent). For low-sym cells (P21, n_ops=2) this is a no-op factor;
-    # for P432 it makes 1AK5 / 3K7M find the right basin.
-    sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)  # (n_ops, 3, 3)
-    n_ops_sg = int(sg_mats.shape[0])
-    # h_sym[k, i, :] = S_k · hkl[i]  (rotation part of the symop)
-    hkl_sym = torch.einsum("kij,nj->kni", sg_mats, hkl.to(torch.float64))
-    hkl_sym_flat = hkl_sym.reshape(-1, 3)                        # (n_ops·N, 3)
-    s_vec_sym = hkl_sym_flat @ rec_basis.to(device)              # (n_ops·N, 3)
-    s_mag_sym = s_vec_sym.norm(dim=-1)
-    # |F_obs| is replicated across symmetry mates (Patterson invariance).
-    F_obs_aniso_sym = F_obs_aniso.unsqueeze(0).expand(n_ops_sg, -1).reshape(-1)
-    E_obs_sym = _shellbin_norm_etrick(F_obs_aniso_sym, s_mag_sym, n_shells)
-    patt_obs = E_obs_sym ** 2 - 1.0
-
-    # F_calc evaluated at the SAME symmetry-expanded HKL set so the cross-
-    # correlation between f_obs and f_calc samples the same directions.
-    F_calc_sym = ll.evaluate(
-        torch.eye(3, dtype=torch.float32), hkl_sym_flat, data.cell,
-        return_amplitude=True,
-    ).to(torch.float64)
-    E_calc_sym = _shellbin_norm_etrick(F_calc_sym, s_mag_sym, n_shells)
-    patt_calc = E_calc_sym ** 2 - 1.0
-    # Replace the un-expanded s_vec with the expanded one for ball_search.
-    s_vec_for_search = s_vec_sym
-    timer.stop("2_ll_build")
+    # Unpack into the local names the rest of this function uses.
+    device = frf.device
+    F_obs = frf.F_obs
+    hkl = frf.hkl
+    s_vec = frf.s_vec
+    s_mag = frf.s_mag
+    centric = frf.centric
+    ll = frf.ll
+    U_aniso = frf.U_aniso
+    s_vec_for_search = frf.s_vec_for_search
+    patt_obs = frf.patt_obs
+    patt_calc = frf.patt_calc
 
     # --- Stage 1: fast Patterson ball-search ---
-    timer.start("3_ball_search")
-    if verbose > 0:
-        print(
-            f"fit_to_data: ball-search (L={L}, P={n_shells}, "
-            f"n_peaks={n_rotation_peaks})…",
-            flush=True,
+    # F3: Fit ΔVRMS from the model's mean B-factor (runs FIRST so E3/F2
+    # downstream use the fitted value). ΔVRMS² = <B> / (8π²) converts
+    # Debye-Waller B to a 1-D RMS coordinate displacement.
+    effective_delta_vrms = frf_delta_vrms_A
+    if use_fitted_delta_vrms:
+        with torch.no_grad():
+            _, adp_iso, _, _, _ = model.get_iso()
+        b_mean = float(adp_iso.mean().item()) if adp_iso.numel() > 0 else 0.0
+        effective_delta_vrms = max(
+            math.sqrt(max(b_mean, 1e-6) / (8 * math.pi ** 2)), 0.1,
         )
-    _, _, _, _, peaks = ball_rotation_search(
-        s_vec_for_search, patt_obs, s_vec_for_search, patt_calc,
-        L=L, P=n_shells, n_peaks=n_rotation_peaks,
-        refine_subvoxel=True, n_refine=min(n_rotation_peaks, 50),
-        sigma_threshold=-5.0,
-        auto_variance_weights=auto_variance_weights,
-    )
+        if verbose > 0:
+            print(
+                f"fit_to_data: ΔVRMS fitted from <B> = {b_mean:.2f} Å² → "
+                f"{effective_delta_vrms:.3f} Å (was {frf_delta_vrms_A} Å).",
+                flush=True,
+            )
+
+    # Optional Phaser-style σA pre-weighting of the SH input (E3). Off by
+    # default — when on, replaces `auto_variance_weights`. The two can be
+    # combined explicitly via `frf_weight_combine="sigma_a_x_variance"`.
+    rotsearch_weights: Optional[torch.Tensor] = None
+    rotsearch_auto_var = auto_variance_weights
+    if use_sigma_a_frf:
+        shell_edges, _ = equal_count_shell_edges(frf.s_mag_sym, n_shells)
+        shell_mid = 0.5 * (shell_edges[:-1] + shell_edges[1:])  # (P,)
+        sigma_a_shell = compute_sigma_a_luzzati(
+            shell_mid, delta_vrms_A=effective_delta_vrms,
+        )
+        w = sigma_a_shell ** 2
+        if frf_weight_combine == "sigma_a_x_variance":
+            shell_idx_sym = assign_shells(frf.s_mag_sym, shell_edges)
+            var_shell = compute_patterson_shell_variance(
+                patt_obs.to(torch.float64), shell_idx_sym, P=n_shells,
+            )
+            w = w / var_shell.sqrt().clamp(min=1e-30)
+        elif frf_weight_combine != "sigma_a_only":
+            raise ValueError(
+                f"frf_weight_combine={frf_weight_combine!r}; "
+                "expected 'sigma_a_only' or 'sigma_a_x_variance'."
+            )
+        # Match ball_rotation_search's internal normalisation: sum-to-P.
+        w = w * (n_shells / w.sum().clamp(min=1e-30))
+        rotsearch_weights = w.to(patt_obs.dtype)
+        rotsearch_auto_var = False
+        if verbose > 0:
+            print(
+                f"fit_to_data: σA-weighted FRF (ΔVRMS={effective_delta_vrms}Å, "
+                f"combine={frf_weight_combine}, w[0]={rotsearch_weights[0]:.3f}, "
+                f"w[-1]={rotsearch_weights[-1]:.3f}).",
+                flush=True,
+            )
+
+    # F2: LERF1 likelihood intensity (Phaser DataMR.cc:947–951). Replace
+    # `E² − 1` on the OBSERVED side with the FRF likelihood intensity
+    #   intensity = cweight · (E² − 1) · DFAC²
+    # where cweight ∈ {1, 2} for centric/acentric and DFAC is a
+    # per-reflection Luzzati factor proxied here as the per-reflection
+    # σA(s) (same Luzzati formula as Eterm but evaluated on the actual
+    # per-reflection s_mag, not the per-shell mean).
+    if use_lerf1_intensity:
+        n_ops_sg = int(data.spacegroup.matrices.shape[0])
+        cweight_per = torch.where(
+            centric, torch.ones_like(F_obs), 2.0 * torch.ones_like(F_obs),
+        )
+        cweight_sym = cweight_per.unsqueeze(0).expand(n_ops_sg, -1).reshape(-1)
+        dfac_sym = compute_sigma_a_luzzati(
+            frf.s_mag_sym, delta_vrms_A=effective_delta_vrms,
+        ).to(patt_obs.dtype)
+        patt_obs = patt_obs * cweight_sym.to(patt_obs.dtype) * (dfac_sym ** 2)
+        if verbose > 0:
+            print(
+                f"fit_to_data: LERF1 intensity ON (mean(cweight·DFAC²) = "
+                f"{(cweight_sym * dfac_sym ** 2).mean().item():.3f}).",
+                flush=True,
+            )
+
+    # F1: m-symmetry filter (Phaser DataMR.cc:1019 / 1117). Compute ZSYMM
+    # from the spacegroup. Off-by-default for backwards compat.
+    rotsearch_zsymm = 1
+    if use_m_symmetry_filter:
+        sg_mats_cpu = data.spacegroup.matrices.to(torch.float64).cpu()
+        axis, zsymm = get_high_order_axis(sg_mats_cpu)
+        if axis != 2 and verbose > 0:
+            print(
+                f"fit_to_data: WARNING — highest-order axis is {axis} (x/y), "
+                f"but m-symmetry filter assumes z. Applying with potentially "
+                f"reduced effect; axis permutation not yet implemented.",
+                flush=True,
+            )
+        rotsearch_zsymm = int(zsymm)
+        if verbose > 0:
+            print(
+                f"fit_to_data: m-symmetry filter ON, ZSYMM={rotsearch_zsymm} "
+                f"(axis={axis}).",
+                flush=True,
+            )
+
+    timer.start("3_ball_search")
+    if engine not in ("frf_separate", "ball"):
+        raise ValueError(
+            f"engine={engine!r}; expected 'frf_separate' (default) or 'ball'."
+        )
+    if engine == "frf_separate":
+        # Validated Phaser-faithful default (dense calc + auto_lmax cap +
+        # obs-unroll + no_grad); solves the high-symmetry cases. The σA/LERF1/
+        # m-filter ball-prep above is ignored on this path.
+        if verbose > 0:
+            print(
+                f"fit_to_data: frf_separate rotation search "
+                f"(dense calc + auto_lmax cap={frf_lmax_cap}, "
+                f"n_peaks={n_rotation_peaks})…",
+                flush=True,
+            )
+        peaks = _run_frf_separate_rotation(
+            model, data, frf,
+            lmax_cap=frf_lmax_cap, dense_pad=frf_dense_pad,
+            n_peaks=n_rotation_peaks, verbose=verbose,
+        )
+    else:  # engine == "ball" — legacy ball-harmonic E-value search
+        if verbose > 0:
+            print(
+                f"fit_to_data: ball-search (L={L}, P={n_shells}, "
+                f"n_peaks={n_rotation_peaks})…",
+                flush=True,
+            )
+        _, _, _, _, peaks = ball_rotation_search(
+            s_vec_for_search, patt_obs, s_vec_for_search, patt_calc,
+            L=L, P=n_shells, n_peaks=n_rotation_peaks,
+            refine_subvoxel=True, n_refine=min(n_rotation_peaks, 50),
+            sigma_threshold=-5.0,
+            weights=rotsearch_weights,
+            auto_variance_weights=rotsearch_auto_var,
+            zsymm=rotsearch_zsymm,
+            skip_odd_l=use_even_l_only,
+        )
     timer.stop("3_ball_search")
 
     # --- Stage 2: Sim-MLRF rescore (per-shell σA fit per candidate) ---
@@ -408,14 +789,50 @@ def align_model_to_data(
             f"{min(len(peaks), n_ml_refine)} peaks…",
             flush=True,
         )
-    rescored = sim_mlrf_rescore(
-        peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
-        n_shells=max(n_shells // 2, 8),
-        n_refine=min(len(peaks), n_ml_refine),
-        batch_size=50,
-        verbose=verbose,
-        auto_variance_weights=auto_variance_weights,
-    )
+    interp_var_main: Optional[torch.Tensor] = None
+    if use_interp_var:
+        # Per-reflection interpolation variance (Phaser totvar_search analogue).
+        # Inflates the Rice variance budget so a noisy true peak isn't
+        # demoted below a noise-free wrong peak by the rescore.
+        rescore_n_shells = max(n_shells // 2, 8)
+        rescore_edges, _ = equal_count_shell_edges(s_mag, rescore_n_shells)
+        rescore_shell_idx = assign_shells(s_mag, rescore_edges)
+        interp_var_main = estimate_interp_var(
+            ll, hkl, data.cell, rescore_shell_idx, rescore_n_shells,
+        ).to(F_obs.dtype)
+        if verbose > 0:
+            print(
+                f"fit_to_data: interp_var enabled (mean={interp_var_main.mean().item():.3f}, "
+                f"max={interp_var_main.max().item():.3f}).",
+                flush=True,
+            )
+
+    if rescore_engine not in ("m_letf1", "sim"):
+        raise ValueError(
+            f"rescore_engine={rescore_engine!r}; expected 'm_letf1' (default) or 'sim'."
+        )
+    if rescore_engine == "m_letf1":
+        # Phaser-faithful: NSYMP calc sum + V(h) budget + Rice/Woolfson logRel.
+        # Cross-rotation case: no fixed model, so totvar_known=0 and the
+        # variance budget reduces to ε(h) - σ_A²(s)·n_mol in E-space.
+        rescored = m_letf1_rescore(
+            peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
+            data.spacegroup.matrices.to(torch.float64).to(device),
+            n_shells=max(n_shells // 2, 8),
+            n_refine=min(len(peaks), n_ml_refine),
+            batch_size=50,
+            verbose=verbose,
+        )
+    else:  # rescore_engine == "sim" — legacy Sim/Rice approximation
+        rescored = sim_mlrf_rescore(
+            peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
+            n_shells=max(n_shells // 2, 8),
+            n_refine=min(len(peaks), n_ml_refine),
+            batch_size=50,
+            verbose=verbose,
+            auto_variance_weights=auto_variance_weights,
+            interp_var=interp_var_main,
+        )
     timer.stop("4_sim_mlrf_rescore")
     if not rescored:
         raise RuntimeError("Rotation search produced no peaks.")
@@ -513,6 +930,101 @@ def align_model_to_data(
             if verbose > 0:
                 print("  no translation peaks; skipping", flush=True)
             continue
+
+        # Phase B: re-rank the cheap-correlation peaks by Rice/Woolfson LLG
+        # using a shared per-shell σA fitted at the top correlation peak.
+        # Mirrors Phaser's FTF — the correlation pre-filter is fast but its
+        # ranking is degraded for partial models; the LLG ranks consistently
+        # with the rotation rescore.
+        if use_llg_tf:
+            timer.start("6b_llg_tf_rescore")
+            rec_basis_keep = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)
+            s_mag_keep_tf = (hkl_keep.to(torch.float64) @ rec_basis_keep).norm(dim=-1)
+            tf_n_shells = max(n_shells // 2, 8)
+            tf_edges, _ = equal_count_shell_edges(s_mag_keep_tf, tf_n_shells)
+            tf_shell_idx = assign_shells(s_mag_keep_tf, tf_edges)
+            centric_keep_tf = (
+                data.centric[tmask].to(torch.bool).to(device)
+                if hasattr(data, "centric")
+                else torch.zeros_like(F_obs_amp, dtype=torch.bool)
+            )
+
+            # E_obs normalised on the validity-masked set.
+            cnt_tf = torch.bincount(
+                tf_shell_idx, minlength=tf_n_shells,
+            ).to(torch.float64)
+            sum_F2 = torch.zeros(tf_n_shells, dtype=torch.float64, device=device)
+            sum_F2.scatter_add_(0, tf_shell_idx, F_obs_amp * F_obs_amp)
+            mean_F2 = (sum_F2 / cnt_tf.clamp(min=1.0)).clamp(min=1e-30)
+            E_obs_tf = F_obs_amp / mean_F2.sqrt().index_select(0, tf_shell_idx)
+
+            # Compute |F_calc| at the top correlation peak's translation, use
+            # that to fit the per-shell σA. One-shot, no per-candidate refit.
+            t_top_np = t_peaks[0].translation
+            t_top_t = torch.as_tensor(t_top_np, dtype=torch.float64, device=device)
+            S_eff, N_eff = G_pre.shape
+            phase_top = torch.exp(
+                2j * torch.pi * torch.einsum(
+                    "ind,d->in",
+                    h_R_pre.to(torch.float64), t_top_t,
+                ).to(G_pre.dtype),
+            )
+            Fc_top = (G_pre * phase_top).sum(dim=0).abs().to(torch.float64)
+            # Per-shell E normalise
+            sum_Fc2 = torch.zeros(tf_n_shells, dtype=torch.float64, device=device)
+            sum_Fc2.scatter_add_(0, tf_shell_idx, Fc_top * Fc_top)
+            mean_Fc2 = (sum_Fc2 / cnt_tf.clamp(min=1.0)).clamp(min=1e-30)
+            E_calc_top = Fc_top / mean_Fc2.sqrt().index_select(0, tf_shell_idx)
+            sigma_a_tf = fit_sigma_a_per_shell(
+                E_obs_tf, E_calc_top, centric_keep_tf,
+                tf_shell_idx, tf_n_shells, n_grid=81,
+            )
+
+            # interp_var is only meaningful when the F_calc comes from a
+            # trilinear interpolator. The TF stage uses a direct-SF evaluator
+            # (`_DirectModelEvaluator`) with no interpolation noise, so the
+            # Phaser totvar_search analogue does not apply here.
+            interp_var_tf: Optional[torch.Tensor] = None
+
+            t_cands = torch.as_tensor(
+                np.stack([p.translation for p in t_peaks]),
+                dtype=torch.float64, device=device,
+            )
+            llg_tf = llg_translation_rescore(
+                F_obs=F_obs_amp, hkl=hkl_keep, centric=centric_keep_tf,
+                shell_idx=tf_shell_idx, n_shells=tf_n_shells,
+                G=G_pre, h_R=h_R_pre, t_candidates=t_cands,
+                sigma_a=sigma_a_tf, interp_var=interp_var_tf,
+            )
+            timer.stop("6b_llg_tf_rescore")
+            # Re-rank t_peaks by LLG (descending). Update the score to carry
+            # LLG so downstream picks correctly.
+            llg_list = llg_tf.detach().cpu().tolist()
+            corr_list = [p.score for p in t_peaks]  # original FFT-correlation scores
+            order = sorted(
+                range(len(t_peaks)), key=lambda i: llg_list[i], reverse=True,
+            )
+            # Record where the correlation top-1 ended up after LLG re-rank.
+            corr_top1_new_rank = order.index(0)
+            t_peaks = [
+                TranslationPeak(
+                    translation=t_peaks[i].translation,
+                    score=float(llg_list[i]),
+                    sigma=float(llg_list[i]),
+                )
+                for i in order
+            ]
+            if verbose > 0:
+                tt = tuple(round(float(x), 3) for x in t_peaks[0].translation.tolist())
+                llg_top1 = llg_list[order[0]]
+                corr_at_llg_top1 = corr_list[order[0]]
+                print(
+                    f"  LLG-TF rescore: top t={tt} LLG={t_peaks[0].score:.2f}  "
+                    f"(corr at LLG-top1: {corr_at_llg_top1:.4f}; "
+                    f"corr-top1 demoted to LLG-rank {corr_top1_new_rank}/{len(order)})",
+                    flush=True,
+                )
+
         if verbose > 0:
             tt = tuple(round(float(x), 3) for x in t_peaks[0].translation.tolist())
             print(
@@ -598,6 +1110,18 @@ def align_model_to_data(
         ]
         R_accumulated = torch.eye(3, dtype=torch.float64)
 
+        # Hoisted out of the per-pass loop: ll_refine is fixed across passes,
+        # so interp_var only needs to be estimated once.
+        interp_var_dense: Optional[torch.Tensor] = None
+        if use_interp_var:
+            dense_n_shells = max(n_shells // 2, 8)
+            dense_edges, _ = equal_count_shell_edges(s_mag_keep, dense_n_shells)
+            dense_shell_idx = assign_shells(s_mag_keep, dense_edges)
+            interp_var_dense = estimate_interp_var(
+                ll_refine, hkl_keep, data.cell,
+                dense_shell_idx, dense_n_shells,
+            ).to(F_obs_amp.dtype)
+
         for pass_idx, max_perturb_rad in enumerate(radii):
             n_per_axis = n_per_axis_pass[pass_idx]
             coords_r = torch.linspace(
@@ -637,13 +1161,24 @@ def align_model_to_data(
             # n_D_grid=11 (vs 41 default): we only need relative LLG
             # ranking across a tight rotation neighbourhood; the σA
             # optimum shifts negligibly. 4× fewer Bessel evals.
-            rescored_refine = sim_mlrf_rescore(
-                cand_peaks, F_obs_amp, hkl_keep, s_mag_keep, centric_keep,
-                ll_refine, data.cell,
-                n_shells=max(n_shells // 2, 8),
-                n_refine=len(cand_peaks), batch_size=rescore_batch,
-                verbose=0, n_D_grid=11,
-            )
+            if rescore_engine == "m_letf1":
+                rescored_refine = m_letf1_rescore(
+                    cand_peaks, F_obs_amp, hkl_keep, s_mag_keep, centric_keep,
+                    ll_refine, data.cell,
+                    data.spacegroup.matrices.to(torch.float64).to(device),
+                    n_shells=max(n_shells // 2, 8),
+                    n_refine=len(cand_peaks), batch_size=rescore_batch,
+                    verbose=0,
+                )
+            else:
+                rescored_refine = sim_mlrf_rescore(
+                    cand_peaks, F_obs_amp, hkl_keep, s_mag_keep, centric_keep,
+                    ll_refine, data.cell,
+                    n_shells=max(n_shells // 2, 8),
+                    n_refine=len(cand_peaks), batch_size=rescore_batch,
+                    verbose=0, n_D_grid=11,
+                    interp_var=interp_var_dense,
+                )
             timer.stop("9_dense_R_rescore")
             top = rescored_refine[0]
             best_idx = next(
@@ -681,6 +1216,10 @@ def align_model_to_data(
             max_res=joint_refine_max_res_A,
             device=refined.device,
             verbose=max(0, verbose - 1),
+            refine_b=refine_b,
+            sigma_rot_deg=sigma_rot_deg,
+            sigma_trans_ang=sigma_trans_ang,
+            sigma_b=sigma_b,
         )
         rb_result = rb.refine()
         with torch.no_grad():

@@ -21,7 +21,8 @@ k runs over the integers that keep every factorial non-negative:
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 import torch
 
@@ -342,6 +343,140 @@ def evaluate_rotation_function_grid(
     C = slice_C.permute(2, 0, 1).contiguous()         # (n_gamma, n_beta, n_alpha)
 
     return C, alpha_grid, beta_grid, gamma_grid
+
+
+@dataclass
+class AdaptiveRotationFunction:
+    """
+    Phaser-style ragged rotation-function grid.
+
+    On SO(3) the natural area element is `sin(β) dα dβ dγ`. A uniform Euler
+    cube oversamples the polar caps; this structure stores per-β slices of
+    variable `(qmax_k, pmax_k)` shape with sampling density matching
+    `pmax(β) = 720/Δ · cos(β/2)` and `qmax(β) = 360/Δ · sin(β/2)` (Phaser
+    FastRot.cc:92-96).
+
+    Attributes
+    ----------
+    betas : torch.Tensor
+        Shape `(n_β,)`, midpoint quadrature on `(0, π)`.
+    slices : list[torch.Tensor]
+        Length `n_β`. Slice `k` has shape `(qmax_k, pmax_k)` complex, indexed
+        as `slices[k][k_γ, k_α]` (matches dense convention `C[k_γ, k_β, k_α]`).
+    alpha_grids, gamma_grids : list[torch.Tensor]
+        Length `n_β`. Per-slice α and γ grid coordinates in radians.
+    grid_sampling_deg : float
+        Phaser's `grid_sampling` argument — target angular resolution in degrees.
+    """
+
+    betas: torch.Tensor
+    slices: List[torch.Tensor]
+    alpha_grids: List[torch.Tensor]
+    gamma_grids: List[torch.Tensor]
+    grid_sampling_deg: float
+
+    def total_samples(self) -> int:
+        return sum(s.numel() for s in self.slices)
+
+
+def evaluate_rotation_function_grid_adaptive(
+    xi_lmn: torch.Tensor,
+    L: int,
+    grid_sampling_deg: float = 3.0,
+    n_beta: Optional[int] = None,
+) -> AdaptiveRotationFunction:
+    """
+    Evaluate `C(α, β, γ)` on a Phaser-faithful adaptive Euler grid.
+
+    Per β, the (α, γ) sampling density follows
+
+        pmax(β) = max(1, round(720 / grid_sampling_deg · cos(β/2)))
+        qmax(β) = max(1, round(360 / grid_sampling_deg · sin(β/2)))
+
+    Total sample count ≈ `(720 · 360) / grid_sampling_deg²` — independent of L
+    and free of the polar duplication that a uniform `(2L)³` grid produces.
+
+    Computes `M_{m,n}(β_k) = Σ_l ξ_{l,m,n} d^l_{m,n}(β_k)` via the existing
+    batched `small_d_packed`, then for each β does a zero-padded scatter of
+    `M` into a `(pmax_k, qmax_k)` array and runs `torch.fft.fft2` on that
+    slice. The scatter is intentional: aliasing past the per-slice Nyquist
+    is the physically correct behaviour — those frequencies cannot be
+    resolved at that β.
+    """
+    if n_beta is None:
+        n_beta = 2 * L
+
+    device = xi_lmn.device
+    if xi_lmn.dtype == torch.complex128:
+        real_dtype = torch.float64
+    elif xi_lmn.dtype == torch.complex64:
+        real_dtype = torch.float32
+    else:
+        raise TypeError(f"xi_lmn must be complex, got {xi_lmn.dtype}")
+    complex_dtype = xi_lmn.dtype
+
+    # β: midpoint rule on (0, π).
+    beta_grid = (torch.pi * (torch.arange(n_beta, dtype=real_dtype, device=device) + 0.5)
+                 / n_beta)
+
+    # Batched M_{m,n}(β_k) = Σ_l ξ_{l,m,n} d^l_{m,n}(β_k).
+    d_all = small_d_packed(L, beta_grid).to(complex_dtype)        # (n_β, L, 2L-1, 2L-1)
+    M_all = (xi_lmn.unsqueeze(0) * d_all).sum(dim=1)              # (n_β, 2L-1, 2L-1)
+
+    # Per-β IFFT2 with adaptive shape.
+    half_beta = beta_grid * 0.5
+    cos_half = torch.cos(half_beta)
+    sin_half = torch.sin(half_beta)
+    pmax_all = torch.clamp(
+        (720.0 / grid_sampling_deg * cos_half).round().to(torch.long), min=1,
+    )
+    qmax_all = torch.clamp(
+        (360.0 / grid_sampling_deg * sin_half).round().to(torch.long), min=1,
+    )
+
+    m_vals = torch.arange(-(L - 1), L, dtype=torch.long, device=device)   # (2L-1,)
+    n_vals = m_vals.clone()
+
+    slices: List[torch.Tensor] = []
+    alpha_grids: List[torch.Tensor] = []
+    gamma_grids: List[torch.Tensor] = []
+
+    for k in range(n_beta):
+        pmax_k = int(pmax_all[k].item())
+        qmax_k = int(qmax_all[k].item())
+
+        # Scatter M_{m,n} into the (pmax_k, qmax_k) Fourier-coefficient grid.
+        m_idx = m_vals % pmax_k                                  # (2L-1,)
+        n_idx = n_vals % qmax_k                                  # (2L-1,)
+        m_grid = m_idx.unsqueeze(-1).expand(2 * L - 1, 2 * L - 1)
+        n_grid = n_idx.unsqueeze(0).expand(2 * L - 1, 2 * L - 1)
+        flat_idx = m_grid * qmax_k + n_grid                      # (2L-1, 2L-1)
+        Mhat = torch.zeros((pmax_k, qmax_k), dtype=complex_dtype, device=device)
+        Mhat.view(-1).index_add_(0, flat_idx.reshape(-1), M_all[k].reshape(-1))
+
+        # `torch.fft.fft2` uses exp(-2π i k n / N) so positive (m, n) frequencies
+        # at index (m, n) reconstruct e^{-i m α} e^{-i n γ} on the uniform grid.
+        C_slice = torch.fft.fft2(Mhat, dim=(-2, -1))              # (pmax_k, qmax_k)
+
+        alpha_grid_k = (2.0 * torch.pi / pmax_k) * torch.arange(
+            pmax_k, dtype=real_dtype, device=device,
+        )
+        gamma_grid_k = (2.0 * torch.pi / qmax_k) * torch.arange(
+            qmax_k, dtype=real_dtype, device=device,
+        )
+
+        # Transpose to (γ, α) layout to match the dense `C[k_γ, k_β, k_α]` convention.
+        slices.append(C_slice.transpose(0, 1).contiguous())
+        alpha_grids.append(alpha_grid_k)
+        gamma_grids.append(gamma_grid_k)
+
+    return AdaptiveRotationFunction(
+        betas=beta_grid,
+        slices=slices,
+        alpha_grids=alpha_grids,
+        gamma_grids=gamma_grids,
+        grid_sampling_deg=grid_sampling_deg,
+    )
 
 
 def evaluate_rotation_function_pointwise(

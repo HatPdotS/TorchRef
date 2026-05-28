@@ -35,13 +35,14 @@ from typing import List, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
-from .sh import (
+from ..sh import (
     assign_shells,
     compute_patterson_shell_variance,
     equal_count_shell_edges,
     sh_expand_ball,
 )
-from .wigner import (
+from ..wigner import (
+    AdaptiveRotationFunction,
     evaluate_rotation_function_grid,
     evaluate_rotation_function_pointwise,
 )
@@ -89,6 +90,8 @@ def compute_ball_harmonic_coefficients(
     d_min: Optional[float] = None,
     d_max: Optional[float] = None,
     enforce_friedel: bool = True,
+    zsymm: int = 1,
+    skip_odd_l: bool = False,
 ) -> BallHarmonicCoefficients:
     """
     Compute the ball-harmonic expansion of a real scattered-point field.
@@ -139,6 +142,7 @@ def compute_ball_harmonic_coefficients(
     f_plm = sh_expand_ball(
         s_vectors, values, shell_idx, P, L,
         enforce_friedel=enforce_friedel,
+        zsymm=zsymm, skip_odd_l=skip_odd_l,
     )
 
     return BallHarmonicCoefficients(
@@ -289,6 +293,321 @@ def find_rotation_peaks(
 
 
 # =============================================================================
+# Adaptive-grid peak finding
+# =============================================================================
+
+
+def _adaptive_global_stats(arf: AdaptiveRotationFunction) -> Tuple[float, float]:
+    """
+    Sample-weighted global mean and std across all β-slices.
+
+    Every voxel of every slice contributes equally — the adaptive grid is
+    already sample-uniform in SO(3) sense (each voxel covers a near-constant
+    `sin(β)/(pmax(β)·qmax(β))` solid angle), so simple mean/std is correct.
+    """
+    flat = torch.cat([s.real.reshape(-1) for s in arf.slices])
+    mean = float(flat.mean().item())
+    std = float(flat.std().clamp(min=1e-30).item())
+    return mean, std
+
+
+def _slice_nms_mask(slice_C: torch.Tensor, r_alpha: int, r_gamma: int) -> torch.Tensor:
+    """
+    2-D non-maximum-suppression for one β-slice, circular in both α and γ.
+
+    `slice_C` is real-valued (γ, α). Returns a boolean mask of local maxima.
+    """
+    if r_alpha <= 0 and r_gamma <= 0:
+        return torch.ones_like(slice_C, dtype=torch.bool)
+    n_gamma, n_alpha = slice_C.shape
+    r_a = max(r_alpha, 0)
+    r_g = max(r_gamma, 0)
+    # Clamp radii so we never wrap past the slice's own period — at β = 0 the
+    # γ axis has length 1, at β = π the α axis has length 1.
+    r_a = min(r_a, max(n_alpha - 1, 0))
+    r_g = min(r_g, max(n_gamma - 1, 0))
+    if r_a == 0 and r_g == 0:
+        return torch.ones_like(slice_C, dtype=torch.bool)
+    # Circular pad in γ (axis 0) then α (axis 1).
+    x = slice_C
+    if r_g > 0:
+        x = torch.cat([x[-r_g:], x, x[:r_g]], dim=0)
+    if r_a > 0:
+        x = torch.cat([x[:, -r_a:], x, x[:, :r_a]], dim=1)
+    pooled = F.max_pool2d(
+        x.unsqueeze(0).unsqueeze(0),
+        kernel_size=(2 * r_g + 1, 2 * r_a + 1),
+        stride=1, padding=0,
+    )[0, 0]
+    return slice_C >= pooled
+
+
+def _sample_slice_at(
+    slice_C: torch.Tensor,
+    alpha_grid: torch.Tensor,
+    gamma_grid: torch.Tensor,
+    alpha_q: float,
+    gamma_q: float,
+) -> float:
+    """
+    Nearest-neighbour sample of a β-slice at a query (α, γ) in radians.
+    """
+    n_gamma, n_alpha = slice_C.shape
+    two_pi = 2.0 * math.pi
+    a0 = float(alpha_grid[0].item())
+    g0 = float(gamma_grid[0].item())
+    da = two_pi / n_alpha
+    dg = two_pi / n_gamma
+    ia = int(round((alpha_q - a0) / da)) % n_alpha
+    ig = int(round((gamma_q - g0) / dg)) % n_gamma
+    return float(slice_C[ig, ia].item())
+
+
+def _so3_greedy_nms(
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    gamma: torch.Tensor,
+    values: torch.Tensor,
+    nms_radius_rad: float,
+    keep_at_most: int,
+) -> torch.Tensor:
+    """
+    Greedy SO(3) non-max suppression by angular distance between rotations.
+
+    Walks the candidates in descending `values` order; keeps a candidate iff
+    its angular distance `arccos((tr(R_cand · R_kept^T) − 1) / 2)` exceeds
+    `nms_radius_rad` from every already-kept rotation. Returns the indices
+    of the kept candidates in the order they were accepted (i.e. by
+    descending score).
+
+    Complexity: `O(N · K)` matrix-trace ops where `K = min(keep_at_most, N)`
+    — the inner loop runs entirely in PyTorch on the host device.
+    """
+    n = alpha.shape[0]
+    if n == 0:
+        return torch.zeros(0, dtype=torch.long, device=alpha.device)
+    R_all = rotation_matrix_from_edmonds_euler_batch(alpha, beta, gamma)  # (n, 3, 3)
+    order = torch.argsort(values, descending=True)
+
+    cos_thresh = math.cos(nms_radius_rad)
+    kept_indices: List[int] = []
+    kept_R = R_all.new_zeros((0, 3, 3))
+
+    for i in order.tolist():
+        Ri = R_all[i]                                                # (3, 3)
+        if kept_R.shape[0] > 0:
+            # tr(Ri · R_kept^T) over the batch of kept rotations.
+            tr = torch.einsum("ab,kab->k", Ri, kept_R)
+            # angular distance = arccos((tr − 1) / 2). Compare against
+            # cosine to avoid the acos call entirely.
+            cos_theta = ((tr - 1.0) * 0.5).clamp(-1.0, 1.0)
+            if (cos_theta > cos_thresh).any().item():
+                continue
+        kept_indices.append(i)
+        kept_R = torch.cat([kept_R, Ri.unsqueeze(0)], dim=0)
+        if len(kept_indices) >= keep_at_most:
+            break
+
+    return torch.tensor(kept_indices, dtype=torch.long, device=alpha.device)
+
+
+def find_rotation_peaks_adaptive(
+    arf: AdaptiveRotationFunction,
+    n_peaks: int = 200,
+    sigma_threshold: float = 0.0,
+    cluster_radius_deg: float = 6.0,
+    nms_radius_deg: float = 6.0,
+    candidate_cap: int = 10000,
+) -> List[RotationPeak]:
+    """
+    Local-maximum peak finder for the ragged adaptive Euler grid.
+
+    Algorithm:
+        1. Per-slice 2-D NMS (circular in α and γ, radius converted from
+           `cluster_radius_deg` to a per-slice voxel count).
+        2. Threshold + truncate to the top `candidate_cap` survivors across
+           all slices (bounds the cost of the next step).
+        3. Greedy SO(3) non-max suppression: walk candidates in descending
+           score; keep iff angular distance to every already-kept rotation
+           is > `nms_radius_deg`. This subsumes the role the dense path's
+           `max_pool3d` played and is geometry-aware — duplicate "polar"
+           peaks differing only in α+γ (β≈0) or α−γ (β≈π) have angular
+           distance ≈ 0 and are correctly collapsed.
+        4. Truncate to top `n_peaks` and attach Z-score using the
+           globally-pooled mean / std.
+    """
+    n_beta = arf.betas.shape[0]
+    mean, std = _adaptive_global_stats(arf)
+    threshold = mean + sigma_threshold * std
+
+    # Per-slice local maxima + threshold. Collect onto torch tensors directly
+    # to avoid per-candidate .item() round-trips.
+    alpha_chunks: List[torch.Tensor] = []
+    beta_chunks: List[torch.Tensor] = []
+    gamma_chunks: List[torch.Tensor] = []
+    value_chunks: List[torch.Tensor] = []
+    for k in range(n_beta):
+        slice_C = arf.slices[k].real
+        n_gamma_k, n_alpha_k = slice_C.shape
+        r_a = max(1, int(round(cluster_radius_deg * n_alpha_k / 360.0)))
+        r_g = max(1, int(round(cluster_radius_deg * n_gamma_k / 360.0)))
+
+        is_max = _slice_nms_mask(slice_C, r_alpha=r_a, r_gamma=r_g)
+        is_max = is_max & (slice_C >= threshold)
+        if not bool(is_max.any().item()):
+            continue
+        ig_idx, ia_idx = torch.nonzero(is_max, as_tuple=True)
+        vals = slice_C[ig_idx, ia_idx]
+        a_grid_k = arf.alpha_grids[k]
+        g_grid_k = arf.gamma_grids[k]
+        alpha_chunks.append(a_grid_k.index_select(0, ia_idx))
+        gamma_chunks.append(g_grid_k.index_select(0, ig_idx))
+        beta_chunks.append(arf.betas[k].expand_as(vals))
+        value_chunks.append(vals)
+
+    if not value_chunks:
+        return []
+
+    alpha_all = torch.cat(alpha_chunks)
+    beta_all = torch.cat(beta_chunks)
+    gamma_all = torch.cat(gamma_chunks)
+    value_all = torch.cat(value_chunks)
+
+    # Cap the candidate set by raw score before the O(N·K) SO(3) NMS.
+    if value_all.shape[0] > candidate_cap:
+        top_v, top_i = torch.topk(value_all, candidate_cap)
+        alpha_all = alpha_all.index_select(0, top_i)
+        beta_all = beta_all.index_select(0, top_i)
+        gamma_all = gamma_all.index_select(0, top_i)
+        value_all = top_v
+
+    # Greedy SO(3) NMS.
+    keep_idx = _so3_greedy_nms(
+        alpha_all, beta_all, gamma_all, value_all,
+        nms_radius_rad=math.radians(nms_radius_deg),
+        keep_at_most=int(n_peaks),
+    )
+
+    if keep_idx.numel() == 0:
+        return []
+
+    alpha_keep = alpha_all.index_select(0, keep_idx).tolist()
+    beta_keep = beta_all.index_select(0, keep_idx).tolist()
+    gamma_keep = gamma_all.index_select(0, keep_idx).tolist()
+    value_keep = value_all.index_select(0, keep_idx).tolist()
+
+    return [
+        RotationPeak(
+            alpha=a, beta=b, gamma=g, score=v,
+            sigma=(v - mean) / max(std, 1e-30),
+        )
+        for (a, b, g, v) in zip(alpha_keep, beta_keep, gamma_keep, value_keep)
+    ]
+
+
+def refine_peaks_subvoxel_adaptive(
+    peaks: List[RotationPeak],
+    arf: AdaptiveRotationFunction,
+) -> List[RotationPeak]:
+    """
+    Sub-voxel parabolic refinement for adaptive-grid peaks.
+
+    For each peak at (α, β_k, γ):
+        * α and γ refinement uses the per-slice spacing `2π / pmax_k`,
+          `2π / qmax_k`. Skipped at slices where the relevant axis has
+          length 1 (β ≈ 0 → no γ refinement; β ≈ π → no α refinement).
+        * β refinement fits a parabola through the values at the same
+          (α, γ) sampled into slices k-1 and k+1 by nearest-neighbour.
+          Boundary slices use db = 0.
+    """
+    if not peaks:
+        return list(peaks)
+
+    n_beta = arf.betas.shape[0]
+    beta_grid = arf.betas
+    # Beta is uniform in our construction, so a single dβ is correct.
+    if n_beta > 1:
+        dbeta = float((beta_grid[1] - beta_grid[0]).item())
+    else:
+        dbeta = 0.0
+
+    out: List[RotationPeak] = []
+    for p in peaks:
+        # Locate the host β-slice.
+        ib = int(round((p.beta - float(beta_grid[0].item())) / dbeta)) if dbeta > 0 else 0
+        ib = max(0, min(ib, n_beta - 1))
+        slice_C = arf.slices[ib].real
+        a_grid = arf.alpha_grids[ib]
+        g_grid = arf.gamma_grids[ib]
+        n_gamma_k, n_alpha_k = slice_C.shape
+        da = 2.0 * math.pi / n_alpha_k
+        dg = 2.0 * math.pi / n_gamma_k
+
+        # Integer voxel indices.
+        a0 = float(a_grid[0].item())
+        g0 = float(g_grid[0].item())
+        ia = int(round((p.alpha - a0) / da)) % n_alpha_k
+        ig = int(round((p.gamma - g0) / dg)) % n_gamma_k
+
+        y0 = float(slice_C[ig, ia].item())
+
+        # α refinement.
+        if n_alpha_k >= 3:
+            am = (ia - 1) % n_alpha_k
+            ap = (ia + 1) % n_alpha_k
+            yam = float(slice_C[ig, am].item())
+            yap = float(slice_C[ig, ap].item())
+            denom = yam - 2.0 * y0 + yap
+            if abs(denom) > 1e-30:
+                d_a = max(-1.0, min(1.0, 0.5 * (yam - yap) / denom))
+            else:
+                d_a = 0.0
+            alpha_new = (p.alpha + d_a * da) % (2.0 * math.pi)
+        else:
+            alpha_new = p.alpha
+
+        # γ refinement.
+        if n_gamma_k >= 3:
+            gm = (ig - 1) % n_gamma_k
+            gp = (ig + 1) % n_gamma_k
+            ygm = float(slice_C[gm, ia].item())
+            ygp = float(slice_C[gp, ia].item())
+            denom = ygm - 2.0 * y0 + ygp
+            if abs(denom) > 1e-30:
+                d_g = max(-1.0, min(1.0, 0.5 * (ygm - ygp) / denom))
+            else:
+                d_g = 0.0
+            gamma_new = (p.gamma + d_g * dg) % (2.0 * math.pi)
+        else:
+            gamma_new = p.gamma
+
+        # β refinement: sample neighbouring slices at (α, γ).
+        if 0 < ib < n_beta - 1 and dbeta > 0:
+            v_prev = _sample_slice_at(
+                arf.slices[ib - 1].real, arf.alpha_grids[ib - 1],
+                arf.gamma_grids[ib - 1], p.alpha, p.gamma,
+            )
+            v_next = _sample_slice_at(
+                arf.slices[ib + 1].real, arf.alpha_grids[ib + 1],
+                arf.gamma_grids[ib + 1], p.alpha, p.gamma,
+            )
+            denom = v_prev - 2.0 * y0 + v_next
+            if abs(denom) > 1e-30:
+                d_b = max(-1.0, min(1.0, 0.5 * (v_prev - v_next) / denom))
+            else:
+                d_b = 0.0
+            beta_new = max(0.0, min(math.pi, p.beta + d_b * dbeta))
+        else:
+            beta_new = p.beta
+
+        out.append(RotationPeak(
+            alpha=alpha_new, beta=beta_new, gamma=gamma_new,
+            score=p.score, sigma=p.sigma,
+        ))
+    return out
+
+
+# =============================================================================
 # Sub-voxel refinement (pointwise gradient ascent on C(R) using autograd)
 # =============================================================================
 
@@ -417,6 +736,8 @@ def ball_rotation_search(
     sigma_threshold: float = 1.0,
     weights: Optional[torch.Tensor] = None,
     auto_variance_weights: bool = True,
+    zsymm: int = 1,
+    skip_odd_l: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[RotationPeak]]:
     """
     End-to-end Patterson rotation search.
@@ -460,13 +781,21 @@ def ball_rotation_search(
         Grid coordinates.
     peaks : list of RotationPeak (sorted by descending score)
     """
+    # NOTE: `zsymm` is applied only to the OBSERVED side. The observed
+    # Patterson is spacegroup-invariant by physics, so SH coefficients with
+    # m not divisible by ZSYMM are noise. The calc Patterson comes from a
+    # rotated P1 ensemble that is NOT spacegroup-invariant — those m's
+    # carry real signal and must be kept. Phaser does the same asymmetric
+    # filtering (DataMR.cc applies the m-filter; Ensemble.cc does not).
     f_obs = compute_ball_harmonic_coefficients(
         s_obs, e_obs, L=L, P=P, d_min=d_min, d_max=d_max,
+        zsymm=zsymm, skip_odd_l=skip_odd_l,
     )
     # Share shell edges between obs and calc — required for the cross-correlation
     # to be meaningful (same radial binning on both sides).
     f_calc = compute_ball_harmonic_coefficients(
         s_calc, e_calc, L=L, P=P, shell_edges=f_obs.shell_edges,
+        zsymm=1, skip_odd_l=skip_odd_l,
     )
 
     if auto_variance_weights and weights is None:
