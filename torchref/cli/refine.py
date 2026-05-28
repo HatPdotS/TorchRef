@@ -109,6 +109,20 @@ Examples:
         "Ignored for other targets. Default 1.0.",
     )
     add_weights_arg(refine_group)
+    refine_group.add_argument(
+        "--with-rigid-body",
+        action="store_true",
+        help="Run one multi-resolution rigid-body refinement step (per-chain "
+        "rotation + translation) before each macro cycle. Useful when the "
+        "starting model has small global misorientation/shift.",
+    )
+    refine_group.add_argument(
+        "--rigid-body-iter",
+        type=int,
+        default=30,
+        help="LBFGS max_iter for each per-cutoff rigid-body step. "
+        "Only used when --with-rigid-body is set. Default 30.",
+    )
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -157,6 +171,8 @@ Examples:
         if args.xray_mode == "bhattacharyya":
             print(f"sigma_m scale:     {args.sigma_m_scale}")
         print(f"Refinement cycles: {args.n_cycles}")
+        if args.with_rigid_body:
+            print(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
         print(f"Device:            {args.device}")
         if args.dmin:
             print(f"Resolution cutoff: {args.dmin:.2f} A")
@@ -195,12 +211,34 @@ Examples:
     try:
         if args.verbose > 0:
             print(f"Starting refinement with {args.n_cycles} macro cycles...\n")
+            if args.with_rigid_body:
+                print(
+                    "Rigid-body step enabled: one multi-resolution rigid-body "
+                    "pass will run before each macro cycle.\n"
+                )
             sys.stdout.flush()
 
-        if args.mode == "everything":
-            refinement.refine_everything(macro_cycles=args.n_cycles)
+        cycle_fn = (
+            refinement.refine_everything
+            if args.mode == "everything"
+            else refinement.refine
+        )
+
+        if args.with_rigid_body:
+            for cycle in range(args.n_cycles):
+                if args.verbose > 0:
+                    print(f"\n--- Rigid-body step (cycle {cycle + 1}) ---")
+                    sys.stdout.flush()
+                refinement.refine_rigid_body(
+                    iterations_per_step=args.rigid_body_iter,
+                    commit=True,
+                )
+                if args.verbose > 0:
+                    print(f"\n--- Macro cycle {cycle + 1}/{args.n_cycles} ---")
+                    sys.stdout.flush()
+                cycle_fn(macro_cycles=1)
         else:
-            refinement.refine(macro_cycles=args.n_cycles)
+            cycle_fn(macro_cycles=args.n_cycles)
 
         refinement.get_scales()
 
@@ -243,6 +281,8 @@ Examples:
             "weights": manual_weights if manual_weights else None,
             "dmin": args.dmin,
             "device": str(device),
+            "with_rigid_body": args.with_rigid_body,
+            "rigid_body_iter": args.rigid_body_iter if args.with_rigid_body else None,
         },
         "history": refinement.history if hasattr(refinement, "history") else {},
         "final_statistics": {},
@@ -257,12 +297,12 @@ Examples:
         work_mask = rfree
         test_mask = ~rfree
 
-        r_work = torch.sum(
-            torch.abs(fobs[work_mask] - fcalc[work_mask])
-        ) / torch.sum(fobs[work_mask])
-        r_free = torch.sum(
-            torch.abs(fobs[test_mask] - fcalc[test_mask])
-        ) / torch.sum(fobs[test_mask])
+        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(
+            fobs[work_mask]
+        )
+        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(
+            fobs[test_mask]
+        )
 
         history_data["final_statistics"] = {
             "R_work": float(r_work.item()),
