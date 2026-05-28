@@ -133,7 +133,7 @@ DEFAULT_TARGET_WEIGHTS = {
     # "adp/simu": 1.0,
     # "adp/locality": 1.0,
     # "adp/KL": 1.0,
-    "similarity": 1.0,
+    "similarity": 0.0,
 }
 
 

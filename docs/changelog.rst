@@ -1,5 +1,11 @@
 Changelog
 =========
+
+Version 0.5.3.3
+-------------
+- Fixed kinetic module import 
+- Set default similarity weight in difference reifnement to 0
+
 Version 0.5.3.2
 -------------
 - Added 10GB Gram requirement for default gpu device selection

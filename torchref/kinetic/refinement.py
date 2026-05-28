@@ -37,13 +37,13 @@ from torch import nn
 
 from torchref.refinement.loss_state import LossState, create_loss_state
 from torchref.kinetic.targets import (
-from torchref.utils.device_mixin import DeviceMixin
     CollectionDifferenceTarget,
     CollectionMLTarget,
     MultiModelGeometryTarget,
     MultiModelADPTarget,
     KineticPriorTarget,
 )
+from torchref.utils.device_mixin import DeviceMixin
 
 if TYPE_CHECKING:
     from torchref.io.datasets.collection import DatasetCollection
