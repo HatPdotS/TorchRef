@@ -3,8 +3,9 @@ Changelog
 
 Version 0.5.3.3
 -------------
+- Fixed U_aniso parametrization and line search instability during refinement with anisotropic b-factor
 - Fixed kinetic module import 
-- Set default similarity weight in difference reifnement to 0
+- Set default similarity weight in difference refinement to 0
 
 Version 0.5.3.2
 -------------
