@@ -975,7 +975,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             # Lazily cache raw solvent SFs (FFT of mask) — only recomputed
             # when invalidated via _f_sol_raw = None (e.g. after update_solvent)
             if self._f_sol_raw is None:
-                self._f_sol_raw = self.solvent.get_rec_solvent(self.hkl)
+                # Signed HKL to match the (anomalous) fcalc so the complex sum
+                # k*(F_calc + F_sol) is consistent per Bijvoet mate.
+                self._f_sol_raw = self.solvent.get_rec_solvent(self._data.hkl_for_sf())
 
             f_sol_raw = self._f_sol_raw[mask] if apply_internal_mask else self._f_sol_raw
 

@@ -2642,7 +2642,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Compute statistics of actual distribution
         mu_data = torch.mean(log_adp).detach()  # Detached mean (adapts to data)
-        sigma_data = torch.std(log_adp)  # Current std (to be regularized)
+        # Clamp the std off zero. A degenerate (uniform) ADP distribution --
+        # e.g. right after resetting every B-factor to a constant -- has
+        # std(log_adp)=0, so log(sigma_data)=-inf makes KL=+inf. That silently
+        # kills the ADP refinement step (LBFGS rejects the non-finite loss, the
+        # B-factors stay uniform, and the divergence recurs every cycle).
+        sigma_data = torch.std(log_adp).clamp(min=1e-6)  # regularized std
 
         # Target distribution parameters
         mu_target = mu_data  # Same mean as data

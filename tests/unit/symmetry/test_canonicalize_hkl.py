@@ -226,6 +226,18 @@ class TestCanonicalizeHkl:
         _, _, _, si = canonicalize_hkl(hkl, "P21")
         assert set(si.tolist()) == set(range(len(hkl)))
 
+    def test_unmappable_reflection_raises(self):
+        """include_friedel=False on a Friedel-half reflection must fail loudly.
+
+        The CCP4 reciprocal ASU is Laue-based, so without Friedel mates the
+        "minus" half of reciprocal space has no pure-rotation representative.
+        Such rows were previously left as uninitialized ``np.empty`` memory
+        (silent garbage Miller indices); they must now raise instead.
+        """
+        hkl = torch.tensor([[-1, 0, 0]], dtype=torch.int32)
+        with pytest.raises(ValueError, match="could not map"):
+            canonicalize_hkl(hkl, "P1", include_friedel=False)
+
     def test_empty_input(self):
         """Empty input should return empty tensors without error."""
         hkl = torch.empty((0, 3), dtype=torch.int32)
