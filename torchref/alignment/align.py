@@ -27,12 +27,11 @@ from typing import Optional, TYPE_CHECKING
 import numpy as np
 import torch
 
-from .frf.ball_search import (
-    RotationPeak,
-    ball_rotation_search,
+from .frf.rotation_utils import (
     edmonds_euler_from_rotation_matrix,
     rotation_matrix_from_edmonds_euler,
 )
+from .frf.types import RotationPeak
 from .lattman_love import LattmanLoveInterpolator, estimate_interp_var
 from .ml_rotation import compute_sigma_a_luzzati, m_letf1_rescore, sim_mlrf_rescore
 from .rigid_body import RigidBodyRefinement
@@ -283,7 +282,7 @@ def _prepare_frf_inputs(
 
     Encapsulates the data prep / anisotropy / symmetry-expansion logic
     previously inlined in `align_model_to_data`. The returned dataclass
-    feeds both the live `ball_rotation_search` call and the benchmark.
+    feeds both the live FRF call and the benchmark scripts.
 
     `F_obs` on the returned dataclass is the *anisotropy-corrected* value
     (matches what previously was the `F_obs_aniso` local variable).
@@ -383,13 +382,33 @@ def _run_frf_separate_rotation(
     delta_vrms_A: float = 0.5,
     verbose: int = 0,
     _orbit_unroll: bool = False,
-    # --- Phaser model-prep knobs for the FRF calc side (default OFF) ---
-    apply_bulk_solvent: bool = False,
+    # --- Phaser model-prep knobs (defaults ON post v26 validation: see
+    # the SLURM v26 sweep in slurm_logs/rescore_v26_103820_*.csv). ---
+    apply_bulk_solvent: bool = True,
     solvent_fsol: float = 0.95,
     solvent_bsol: float = 300.0,
-    vrms_strategy: str = "fixed",
+    vrms_strategy: str = "oeffner",
     vrms_identity: float = 1.0,
-    apply_wilson_b: bool = False,
+    apply_wilson_b: bool = True,
+    use_epsilon: bool = False,
+    # obs-side term toggles (all default ON = production) for knockout bisection
+    frf_use_m_filter: bool = True,
+    frf_use_shell_variance: bool = True,
+    frf_use_french_wilson: bool = True,
+    frf_use_lerf1: bool = True,
+    frf_acentric_only: bool = False,
+    frf_d_max: float = 100.0,
+    frf_obs_lmax: Optional[int] = None,
+    frf_obs_solid_angle: bool = False,
+    frf_patterson_radius_scale: float = 1.0,
+    # Run the dominant SH-Bessel expansion (Legendre/Y_lm precompute + radial
+    # contraction) in single precision. The contraction is the FRF's bottleneck;
+    # FP64 is rate-limited on GPUs and SIMD-narrower on CPUs. The spherical-Bessel
+    # downward recurrence keeps its float64 internals and the cross-chunk
+    # accumulator stays full-precision, so only the contraction loses precision.
+    # `None` (default) → float32 on CUDA, full precision on CPU. Set explicitly
+    # to True/False to force single/double precision on either device.
+    frf_einsum_float32: Optional[bool] = None,
 ):
     """Phaser-faithful (validated) rotation search — the production default.
 
@@ -422,7 +441,7 @@ def _run_frf_separate_rotation(
         # Full data resolution window; auto_lmax coarsens d_min to match the cap.
         # d_max ≈ no low-res cutoff (matches the validated config's d_max_mimic).
         d_min_eff = float(1.0 / s_mag_all.max().item())
-        d_max_eff = 100.0
+        d_max_eff = float(frf_d_max)  # low-resolution cutoff (default 100 ≈ none)
         keep = (s_mag_all >= 1.0 / d_max_eff) & (s_mag_all <= 1.0 / d_min_eff)
 
         s_obs = s_vec_all[keep]
@@ -451,11 +470,23 @@ def _run_frf_separate_rotation(
         # 202->324). The dedup is correct only as part of a coordinated Phaser-
         # faithful preprocessing chain (ε-Wilson + V(h) + σ_A), pending.
         sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
+        # NOTE: centered lattices (I/C/F) list each point-group rotation once per
+        # centering op, so the raw matrices over-replicate the obs orbit (C2/I422
+        # → ×2). Deduping to unique rotations is the correct point group and saves
+        # that compute, BUT it is NOT result-neutral: the equal-COUNT Wilson shells
+        # rebin when the obs count changes, perturbing the normalisation (3A5V
+        # 3→4). Left as-is to keep FRF behaviour stable; tracked in
+        # GHOST_INVESTIGATION.md as a follow-up (fix needs count-independent shells).
+        # Integer unrolled Miller indices aligned with s_obs — needed for the
+        # ε(h) multiplicity correction (use_epsilon), which down-weights the
+        # axial/zonal reflections that otherwise over-weight the m=0 SH column
+        # and feed high-symmetry rotation-function ghosts (compute_epsilon docstring).
         if _orbit_unroll:
             from .frf.preprocessing import epsilon_aware_unroll
             hkl_keep_int = hkl_all.to(torch.long).to(device)[keep]
             unrolled_hkl, asu_idx = epsilon_aware_unroll(hkl_keep_int, sg_mats)
             s_obs = unrolled_hkl.to(torch.float64) @ rec_basis
+            hkl_obs_int = unrolled_hkl.to(torch.float64)
             F_obs = F_obs[asu_idx]
             centric = centric[asu_idx]
             if sigF is not None:
@@ -465,10 +496,29 @@ def _run_frf_separate_rotation(
             hkl_keep = hkl_all.to(torch.float64)[keep]
             hkl_unroll = torch.einsum("kij,nj->kni", sg_mats, hkl_keep).reshape(-1, 3)
             s_obs = hkl_unroll @ rec_basis
+            hkl_obs_int = hkl_unroll
             F_obs = F_obs.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
             centric = centric.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
             if sigF is not None:
                 sigF = sigF.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
+
+        # Optional: restrict the obs to ACENTRIC reflections before the SH
+        # expansion. Centric reflections lie on the reciprocal-space zones
+        # perpendicular to symmetry axes and carry concentrated symmetry-axis
+        # signal (and a heavier Wilson tail); pooling them into the obs over-
+        # weights the symmetry-axis channel that produces high-symmetry ghosts.
+        # Dropping them also makes the Wilson normalisation acentric-only.
+        if frf_acentric_only:
+            acen = ~centric
+            s_obs = s_obs[acen]
+            F_obs = F_obs[acen]
+            centric = centric[acen]
+            hkl_obs_int = hkl_obs_int[acen]
+            if sigF is not None:
+                sigF = sigF[acen]
+            if verbose > 0:
+                print(f"  FRF acentric-only: kept {int(acen.sum())}/{acen.numel()} obs",
+                      flush=True)
 
         # Dense P1-box calc on the (un-rotated) search model at the coarsened res.
         model_radius_A = float(
@@ -523,18 +573,32 @@ def _run_frf_separate_rotation(
             d_min=d_min_eff, d_max=d_max_eff, n_peaks=n_peaks,
             delta_vrms_A=delta_vrms_for_frf,
             sigma_threshold=-5.0,
-            use_lerf1_intensity=True,
-            use_m_symmetry_filter=True,
+            use_lerf1_intensity=frf_use_lerf1,
+            use_m_symmetry_filter=frf_use_m_filter,
             sig_F_obs=sigF,
-            use_french_wilson=(sigF is not None),
-            use_shell_variance_weights=True,
+            use_french_wilson=(frf_use_french_wilson and (sigF is not None)),
+            use_shell_variance_weights=frf_use_shell_variance,
+            use_epsilon=use_epsilon,
+            hkl_obs=hkl_obs_int,
             grid_sampling_deg=grid_sampling_deg,
             model_radius_A=model_radius_A,
             auto_lmax=True,
             lmax_cap=lmax_cap,
+            obs_lmax=frf_obs_lmax,
+            obs_solid_angle=frf_obs_solid_angle,
+            patterson_radius_scale=frf_patterson_radius_scale,
             apply_bulk_solvent=apply_bulk_solvent,
             solvent_fsol=solvent_fsol,
             solvent_bsol=solvent_bsol,
+            compute_dtype=(
+                torch.complex64
+                if (
+                    frf_einsum_float32
+                    if frf_einsum_float32 is not None
+                    else (device.type == "cuda")  # default: fp32 on GPU only
+                )
+                else None
+            ),
         )
     return peaks
 
@@ -579,7 +643,6 @@ def align_model_to_data(
     use_lerf1_intensity: bool = False,
     use_fitted_delta_vrms: bool = False,
     use_even_l_only: bool = False,
-    engine: str = "frf_separate",
     frf_lmax_cap: int = 48,
     frf_dense_pad: float = 2.0,
     rescore_engine: str = "m_letf1",
@@ -684,7 +747,7 @@ def align_model_to_data(
                 f"frf_weight_combine={frf_weight_combine!r}; "
                 "expected 'sigma_a_only' or 'sigma_a_x_variance'."
             )
-        # Match ball_rotation_search's internal normalisation: sum-to-P.
+        # Per-shell sum-to-P normalisation (matches the FRF's internal weighting).
         w = w * (n_shells / w.sum().clamp(min=1e-30))
         rotsearch_weights = w.to(patt_obs.dtype)
         rotsearch_auto_var = False
@@ -741,45 +804,22 @@ def align_model_to_data(
                 flush=True,
             )
 
-    timer.start("3_ball_search")
-    if engine not in ("frf_separate", "ball"):
-        raise ValueError(
-            f"engine={engine!r}; expected 'frf_separate' (default) or 'ball'."
+    timer.start("3_rotation_search")
+    # Phaser-faithful FRF (dense calc + auto_lmax cap + obs-unroll + no_grad);
+    # solves the high-symmetry cases. Single engine post-consolidation.
+    if verbose > 0:
+        print(
+            f"fit_to_data: frf_separate rotation search "
+            f"(dense calc + auto_lmax cap={frf_lmax_cap}, "
+            f"n_peaks={n_rotation_peaks})…",
+            flush=True,
         )
-    if engine == "frf_separate":
-        # Validated Phaser-faithful default (dense calc + auto_lmax cap +
-        # obs-unroll + no_grad); solves the high-symmetry cases. The σA/LERF1/
-        # m-filter ball-prep above is ignored on this path.
-        if verbose > 0:
-            print(
-                f"fit_to_data: frf_separate rotation search "
-                f"(dense calc + auto_lmax cap={frf_lmax_cap}, "
-                f"n_peaks={n_rotation_peaks})…",
-                flush=True,
-            )
-        peaks = _run_frf_separate_rotation(
-            model, data, frf,
-            lmax_cap=frf_lmax_cap, dense_pad=frf_dense_pad,
-            n_peaks=n_rotation_peaks, verbose=verbose,
-        )
-    else:  # engine == "ball" — legacy ball-harmonic E-value search
-        if verbose > 0:
-            print(
-                f"fit_to_data: ball-search (L={L}, P={n_shells}, "
-                f"n_peaks={n_rotation_peaks})…",
-                flush=True,
-            )
-        _, _, _, _, peaks = ball_rotation_search(
-            s_vec_for_search, patt_obs, s_vec_for_search, patt_calc,
-            L=L, P=n_shells, n_peaks=n_rotation_peaks,
-            refine_subvoxel=True, n_refine=min(n_rotation_peaks, 50),
-            sigma_threshold=-5.0,
-            weights=rotsearch_weights,
-            auto_variance_weights=rotsearch_auto_var,
-            zsymm=rotsearch_zsymm,
-            skip_odd_l=use_even_l_only,
-        )
-    timer.stop("3_ball_search")
+    peaks = _run_frf_separate_rotation(
+        model, data, frf,
+        lmax_cap=frf_lmax_cap, dense_pad=frf_dense_pad,
+        n_peaks=n_rotation_peaks, verbose=verbose,
+    )
+    timer.stop("3_rotation_search")
 
     # --- Stage 2: Sim-MLRF rescore (per-shell σA fit per candidate) ---
     timer.start("4_sim_mlrf_rescore")

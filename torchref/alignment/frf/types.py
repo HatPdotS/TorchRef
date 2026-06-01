@@ -73,21 +73,12 @@ class AdaptiveRotationFunction:
 class RotationPeak:
     """A single rotation function peak.
 
-    Identical to torchref.alignment.ball_search.RotationPeak so consumers
-    don't need to change. Convention: Edmonds ZYZ Euler in radians.
+    Single source of truth across the FRF, the rescore, and the tests.
+    Convention: Edmonds ZYZ Euler in radians.
     """
 
     alpha: float
     beta: float
     gamma: float
-    value: float
+    score: float
     sigma: float
-
-    @property
-    def score(self) -> float:
-        """Alias for ``value`` so this peak is drop-in for
-        ``ball_search.RotationPeak`` (whose primary field is ``score``).
-        Lets the production pipeline/align conversion
-        ``(p.alpha, p.beta, p.gamma, p.score, p.sigma)`` work for both engines.
-        """
-        return self.value

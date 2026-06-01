@@ -70,6 +70,34 @@ def small_d_stable(L: int, betas: torch.Tensor) -> torch.Tensor:
     return out
 
 
+# Cache of the J_y eigendecomposition per l. (w_l, V_l) depend only on l (and
+# device), not on β or the data, so they are computed once per (L, device) and
+# reused across every FRF call. Keyed on (L, device-str).
+_WIGNER_EIG_CACHE: dict = {}
+
+
+def _wigner_eig_table(L: int, device: torch.device):
+    """Return [(w_l, V_l)] for l ∈ [1, L) — the J_y eigendecomposition per l.
+
+    ``d^l(β) = Re(V_l · diag(e^{-iβ w_l}) · V_l^H)``. ``w_l ≈ [-l..l]`` and
+    ``V_l`` are independent of β and the data, so they are memoised.
+    """
+    key = (int(L), str(device))
+    cached = _WIGNER_EIG_CACHE.get(key)
+    if cached is not None:
+        return cached
+    table = []
+    for l in range(1, L):
+        sz = 2 * l + 1
+        p = torch.arange(sz - 1, dtype=torch.float64, device=device)
+        sup = 0.5 * torch.sqrt((2 * l - p) * (p + 1.0))
+        A = torch.diag(sup, 1) - torch.diag(sup, -1)           # A = -i J_y
+        w, V = torch.linalg.eigh(1j * A.to(torch.complex128))  # w∈[-l..l]
+        table.append((w, V))
+    _WIGNER_EIG_CACHE[key] = table
+    return table
+
+
 def wigner_contraction_per_beta(
     xi_lmn: torch.Tensor,
     betas: torch.Tensor,
@@ -111,12 +139,9 @@ def wigner_contraction_per_beta(
     S = torch.zeros((n_beta, dim, dim), dtype=torch.complex128, device=device)
     c = L - 1
     S[:, c, c] += xi[0, c, c]                                  # l=0: d^0 = 1
+    eig_table = _wigner_eig_table(L, device)                   # cached (w_l, V_l)
     for l in range(1, L):
-        sz = 2 * l + 1
-        p = torch.arange(sz - 1, dtype=torch.float64, device=device)
-        sup = 0.5 * torch.sqrt((2 * l - p) * (p + 1.0))
-        A = torch.diag(sup, 1) - torch.diag(sup, -1)           # A = -i J_y
-        w, V = torch.linalg.eigh(1j * A.to(torch.complex128))  # w∈[-l..l]
+        w, V = eig_table[l - 1]                                # data-independent
         phase = torch.exp(-1j * betas.unsqueeze(1) * w.unsqueeze(0))   # (n_beta, sz)
         VP = V.unsqueeze(0) * phase.unsqueeze(1)               # (n_beta, sz, sz) = (k,m,a)
         d_l = (VP @ V.conj().transpose(-1, -2)).real           # (n_beta, sz, sz)

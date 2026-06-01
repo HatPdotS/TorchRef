@@ -145,6 +145,13 @@ def _build_beta_grid(grid_sampling_deg: float) -> Tuple[torch.Tensor, int]:
     return betas_rad, bmax
 
 
+# Module-level memo for the data-independent sample list, keyed on
+# (grid_sampling_deg, device-str, dtype). The list depends only on geometry, so
+# repeat FRF calls at the same grid reuse it; a single cold call still pays the
+# (now vectorised, CPU-built) construction once.
+_SAMPLE_LIST_CACHE: dict = {}
+
+
 def build_adaptive_sample_list(
     grid_sampling_deg: float,
     dtype: torch.dtype = torch.float64,
@@ -160,17 +167,33 @@ def build_adaptive_sample_list(
         beta_starts: (bmax + 1,) int64    slice [beta_starts[b]:beta_starts[b+1]]
                                           is the samples at β = b · Δ
         beta_grid : (bmax,)              the β values in radians
+
+    The construction is purely geometric (independent of the data / ξ), so it is
+    memoised on ``(grid_sampling_deg, device, dtype)``. It is also built on the
+    CPU — the per-β tensors are tiny and the work is launch-latency-bound, so a
+    single host-side build + one device transfer is far cheaper than thousands of
+    small CUDA kernels. The per-key dedup is vectorised (no ``.tolist()`` /
+    Python scan), so there is no host sync inside the loop.
     """
-    betas_rad, bmax = _build_beta_grid(grid_sampling_deg)
-    betas_rad = betas_rad.to(device=device, dtype=dtype)
+    device = torch.device(device) if not isinstance(device, torch.device) else device
+    cache_key = (float(grid_sampling_deg), str(device), dtype)
+    cached = _SAMPLE_LIST_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    bmax = int(math.ceil(180.0 / grid_sampling_deg))
+    if bmax < 1:
+        raise ValueError(f"grid_sampling_deg={grid_sampling_deg} too coarse")
+    cpu = torch.device("cpu")
 
     alphas_list: List[torch.Tensor] = []
     gammas_list: List[torch.Tensor] = []
     betas_list: List[torch.Tensor] = []
     beta_starts: List[int] = [0]
 
+    deg2rad = math.pi / 180.0
     for b in range(bmax):
-        beta_rad = float(betas_rad[b].item())
+        beta_rad = b * grid_sampling_deg * deg2rad        # plain math: no sync
         cosb = math.cos(beta_rad / 2.0)
         sinb = math.sin(beta_rad / 2.0)
         pmax = max(1, int(720.0 / grid_sampling_deg * cosb))
@@ -178,7 +201,7 @@ def build_adaptive_sample_list(
 
         if b == 0:
             # β=0: only α = γ = p/pmax for p < pmax/2 (FastRot.cc:189-207).
-            p_idx = torch.arange(pmax, device=device)
+            p_idx = torch.arange(pmax, device=cpu)
             p_ratio = p_idx.to(torch.float64) / pmax
             keep = p_ratio < 0.5
             p_ratio = p_ratio[keep]
@@ -188,8 +211,8 @@ def build_adaptive_sample_list(
             # (p, q) ∈ [0, pmax) × [0, qmax), mapped to (α, γ) via
             # FastRot.cc:216-219 — with the negative branch for γ when
             # p_ratio < q_ratio (gives γ ∈ [0, 1) without negative values).
-            p_idx = torch.arange(pmax, device=device)
-            q_idx = torch.arange(qmax, device=device)
+            p_idx = torch.arange(pmax, device=cpu)
+            q_idx = torch.arange(qmax, device=cpu)
             p_ratio = (p_idx.to(torch.float64) / pmax).unsqueeze(1)  # (pmax, 1)
             q_ratio = (q_idx.to(torch.float64) / qmax).unsqueeze(0)  # (1, qmax)
             alpha_frac = torch.fmod(p_ratio + q_ratio, 1.0)
@@ -203,34 +226,44 @@ def build_adaptive_sample_list(
             gamma_frac = gamma_frac.reshape(-1)
 
             # Dedup: when p ≥ pmax/2, the (p, q) → (α, γ) map can collide
-            # with (p − pmax/2, q') for some q' (FastRot.cc:222-241). Phaser
-            # does an O(pmax·qmax²) loop; we do it via tuple-set in numpy
-            # which is O(N log N) — same result.
-            keys = torch.stack([alpha_frac, gamma_frac], dim=-1)
-            # Round to 1e-6 to match the epsilon comparison in the source.
-            key_round = (keys * 1_000_000).round().to(torch.int64)
-            _, uniq_idx = torch.unique(key_round, dim=0, return_inverse=True)
-            # Keep first occurrence of each unique key.
-            seen = {}
-            keep_mask = torch.zeros(alpha_frac.shape[0], dtype=torch.bool, device=device)
-            for i, k in enumerate(uniq_idx.tolist()):
-                if k not in seen:
-                    seen[k] = True
-                    keep_mask[i] = True
+            # with (p − pmax/2, q') for some q' (FastRot.cc:222-241). Keep the
+            # first occurrence (in original order) of each rounded (α, γ) key.
+            # Vectorised first-occurrence: stable-sort the unique-group labels,
+            # mark group boundaries, scatter back — same kept set & order as the
+            # original dict scan, but no host sync / Python loop.
+            # Hash the two rounded fracs (each in [0, 1e6]) into one int64 so we
+            # can use the fast 1-D unique instead of a 2-D row lexsort.
+            a_round = (alpha_frac * 1_000_000).round().to(torch.int64)
+            g_round = (gamma_frac * 1_000_000).round().to(torch.int64)
+            key_hash = a_round * 1_000_001 + g_round
+            _, uniq_idx = torch.unique(key_hash, return_inverse=True)
+            n = uniq_idx.shape[0]
+            order = torch.argsort(uniq_idx, stable=True)
+            sorted_u = uniq_idx[order]
+            first_in_sorted = torch.ones(n, dtype=torch.bool, device=cpu)
+            first_in_sorted[1:] = sorted_u[1:] != sorted_u[:-1]
+            keep_mask = torch.zeros(n, dtype=torch.bool, device=cpu)
+            keep_mask[order[first_in_sorted]] = True
             alpha_frac = alpha_frac[keep_mask]
             gamma_frac = gamma_frac[keep_mask]
 
         n_this = alpha_frac.shape[0]
         alphas_list.append((alpha_frac * (2.0 * math.pi)).to(dtype))
         gammas_list.append((gamma_frac * (2.0 * math.pi)).to(dtype))
-        betas_list.append(torch.full((n_this,), beta_rad, dtype=dtype, device=device))
+        betas_list.append(torch.full((n_this,), beta_rad, dtype=dtype, device=cpu))
         beta_starts.append(beta_starts[-1] + n_this)
 
-    alphas = torch.cat(alphas_list)
-    gammas = torch.cat(gammas_list)
-    betas_flat = torch.cat(betas_list)
+    # Concatenate on CPU, then move to the target device in one transfer each.
+    alphas = torch.cat(alphas_list).to(device)
+    gammas = torch.cat(gammas_list).to(device)
+    betas_flat = torch.cat(betas_list).to(device)
     beta_starts_t = torch.tensor(beta_starts, dtype=torch.int64, device=device)
-    return alphas, betas_flat, gammas, beta_starts_t, betas_rad
+    b = torch.arange(bmax, dtype=torch.float64, device=cpu)
+    betas_rad = (b * grid_sampling_deg * deg2rad).to(device=device, dtype=dtype)
+
+    result = (alphas, betas_flat, gammas, beta_starts_t, betas_rad)
+    _SAMPLE_LIST_CACHE[cache_key] = result
+    return result
 
 
 def _bilinear_interp_periodic(

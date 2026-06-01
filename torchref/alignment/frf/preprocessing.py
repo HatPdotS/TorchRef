@@ -18,18 +18,61 @@ from typing import Optional
 
 import torch
 
-# Re-exports from the validated legacy implementation.
-from .phaser_frf import (
-    _wilson_normalise as wilson_normalise,            # DataMR.cc:925
-    eterm_sigma_a,                                    # Ensemble.cc:42
-    french_wilson_preprocess,                         # math_FrenchWilson.cc + Dfactor.cc
-)
+from .french_wilson import french_wilson_preprocess      # math_FrenchWilson.cc + Dfactor.cc
 from ..sh import (
     get_high_order_axis,                              # phaser's highOrderAxis()
     compute_patterson_shell_variance,
     equal_count_shell_edges,
     assign_shells,
 )
+
+
+def wilson_normalise(
+    F: torch.Tensor,
+    s_mag: torch.Tensor,
+    n_shells: int = 20,
+):
+    """Per-shell Wilson normalisation of amplitudes.
+
+    Source: Phaser's ``Feff[r] / SIGMAN.sqrt_epsnSN[r]`` (``DataMR.cc:925``)
+    minus French-Wilson + explicit ε (``F`` is assumed anisotropy-corrected
+    by the caller).
+
+        E_h = F_h / sqrt(<F²>_p)    where p = shell containing h.
+
+    Returns ``(E_h, sqrt_mean_F2_per_h)``.
+    """
+    edges, _ = equal_count_shell_edges(s_mag, n_shells)
+    shell_idx = assign_shells(s_mag, edges)
+    valid = shell_idx >= 0
+    F_dtype = F.dtype
+    F2 = F * F
+    count = torch.zeros(n_shells, dtype=torch.int64, device=F.device)
+    sumF2 = torch.zeros(n_shells, dtype=F_dtype, device=F.device)
+    F2_v = F2[valid]
+    idx_v = shell_idx[valid]
+    count.index_add_(0, idx_v, torch.ones_like(idx_v))
+    sumF2.index_add_(0, idx_v, F2_v)
+    mean_F2 = sumF2 / count.clamp(min=1).to(F_dtype)
+    mean_F2 = mean_F2.clamp(min=1e-12)
+    sqrt_mean = mean_F2.sqrt()
+    per_h = torch.ones_like(F)
+    per_h[valid] = sqrt_mean[idx_v]
+    E = F / per_h
+    return E, per_h
+
+
+def eterm_sigma_a(s_mag: torch.Tensor, delta_vrms_A: float) -> torch.Tensor:
+    """Phaser's σA Eterm, literal port of ``Ensemble.cc:42``:
+
+        Eterm(s) = exp(-(2π²/3) · s² · ΔVRMS_var)
+
+    where ``ΔVRMS_var`` is the *coordinate variance* in Å². We accept the
+    RMS coordinate error ``delta_vrms_A`` (Å) per the standard σA
+    convention and square it internally: ``ΔVRMS_var = delta_vrms_A²``.
+    """
+    s2 = s_mag * s_mag
+    return torch.exp(-(2.0 / 3.0) * (math.pi ** 2) * s2 * (delta_vrms_A ** 2))
 
 __all__ = [
     "wilson_normalise",
@@ -205,6 +248,46 @@ def build_lerf1_intensity(
     return cw * (eEobs * eEobs - 1.0) * (dfac * dfac)
 
 
+def solid_angle_weights(
+    s_vec: torch.Tensor,
+    n_cos_theta: int = 16,
+    n_phi: int = 32,
+) -> torch.Tensor:
+    """Per-reflection angular quadrature weight to de-bias the SH expansion.
+
+    The obs SH coefficient is a discretised ``∫ Y*_lm I dΩ`` over the reciprocal
+    crystal lattice. The lattice points are NOT uniform on the sphere — they
+    cluster along the cell's symmetry directions — so the unweighted sum
+    over-represents those directions and amplifies the symmetry-axis (ghost)
+    channel. This returns a weight ``w_i = 1 / (count in i's equal-area angular
+    cell)`` (normalised so ``Σ w = N``), which equalises each direction's
+    contribution — a crude spherical-quadrature / inverse-density correction.
+
+    Bins are equal-area on the sphere (uniform in ``cos θ`` and ``φ``).
+
+    Parameters
+    ----------
+    s_vec : (N, 3) reciprocal-space Cartesian vectors.
+    n_cos_theta, n_phi : int — angular bin counts (equal-area cells).
+
+    Returns
+    -------
+    w : (N,) weights, dtype = s_vec.dtype, normalised to ``Σ w = N``.
+    """
+    s_mag = s_vec.norm(dim=-1).clamp(min=1e-30)
+    hat = s_vec / s_mag.unsqueeze(-1)
+    cos_t = hat[..., 2].clamp(-1.0, 1.0)
+    phi = torch.atan2(hat[..., 1], hat[..., 0])            # [-π, π]
+    ti = ((cos_t + 1.0) * 0.5 * n_cos_theta).floor().clamp(0, n_cos_theta - 1).to(torch.int64)
+    pi = ((phi + math.pi) / (2.0 * math.pi) * n_phi).floor().clamp(0, n_phi - 1).to(torch.int64)
+    cell = ti * n_phi + pi                                  # (N,)
+    n_cells = n_cos_theta * n_phi
+    count = torch.bincount(cell, minlength=n_cells).clamp(min=1)
+    w = 1.0 / count[cell].to(torch.float64)
+    w = w * (float(s_vec.shape[0]) / w.sum().clamp(min=1e-30))
+    return w.to(s_vec.dtype)
+
+
 def apply_shell_variance_weights(
     intensity: torch.Tensor,
     s_mag: torch.Tensor,
@@ -234,16 +317,28 @@ def apply_shell_variance_weights(
 
 
 def detect_zsymm(sym_mats: Optional[torch.Tensor]) -> int:
-    """Detect the high-order rotational axis order ``ZSYMM``.
+    """Detect ``ZSYMM`` for the **z-axis** m-symmetry filter.
 
-    Phaser source: ``highOrderAxis()`` in ``rotationgroup.h``. Used to
-    apply the m-symmetry filter to the obs-side SH coefficients: SH
-    coefficients with ``|m| mod ZSYMM != 0`` average to zero over the
-    spacegroup and are zeroed out (DataMR.cc:863-870, 1117).
+    Phaser source: ``highOrderAxis()`` in ``rotationgroup.h``. The m-filter
+    zeroes obs SH coefficients with ``|m| mod ZSYMM != 0`` — but ``m`` is the
+    azimuthal order **about the z axis of the SH basis**, so the filter is only
+    valid when the crystal's high-order rotation axis is actually along z
+    (cubic / tetragonal / hexagonal: principal axis = c ∥ z).
+
+    For spacegroups whose high-order axis is x or y — e.g. monoclinic C2 / P2₁
+    with the 2-fold along b ∥ y — applying a z-axis filter is WRONG (it filters
+    about the wrong axis and corrupts the obs coefficients). Phaser rotates the
+    high-order axis to z before the expansion (DataMR.cc:962-979); we do not, so
+    here we conservatively return ``ZSYMM=1`` (no filter) when the axis is not z,
+    rather than apply a wrong filter. Verified: for all benchmark cubic/tetra/hex
+    cases the axis is z (filter unchanged); only monoclinic 1DAW/3E98/3VRJ change
+    (they already rank 0-3, and a 2-fold m-filter is a weak constraint anyway).
     """
     if sym_mats is None:
         return 1
-    _, zsymm = get_high_order_axis(sym_mats.to(torch.float64).cpu())
+    axis, zsymm = get_high_order_axis(sym_mats.to(torch.float64).cpu())
+    if axis != 2:  # high-order axis not along z → don't apply a wrong filter
+        return 1
     return int(zsymm)
 
 

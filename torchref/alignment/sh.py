@@ -17,9 +17,14 @@ never form (2l)! explicitly.
 from __future__ import annotations
 
 import math
+import os
+import time
 from typing import Optional, Tuple
 
 import torch
+
+_PROFILE = bool(os.environ.get("FRF_PROFILE"))
+_YLM_PROF = {"recurrence": 0.0, "assembly": 0.0}
 
 
 def _bar_legendre_recurrence(
@@ -50,29 +55,43 @@ def _bar_legendre_recurrence(
     inv_sqrt_4pi = 1.0 / math.sqrt(4.0 * math.pi)
     bar_P[..., 0, 0] = inv_sqrt_4pi
 
-    # Sectoral recurrence on the diagonal m == l:
-    #   bar_P_m^m = sqrt((2m+1)/(2m)) · sinθ · bar_P_{m-1}^{m-1}
-    for m in range(1, L):
-        factor = math.sqrt((2.0 * m + 1.0) / (2.0 * m))
-        bar_P[..., m, m] = factor * sin_theta * bar_P[..., m - 1, m - 1]
+    # Precompute the recurrence coefficients as (L, L) tables, indexed [l, m]:
+    #   a_l^m = sqrt((2l-1)(2l+1)/((l-m)(l+m)))
+    #   b_l^m = sqrt((2l+1)(l+m-1)(l-m-1)/((l-m)(l+m)(2l-3)))   [0 when l = m+1]
+    # b vanishes at l = m+1 (factor l-m-1 = 0), so no special-casing is needed.
+    # Computed in float64 then cast to `dtype` (matches the original, which used
+    # float64 python scalars multiplied into the working-dtype tensors).
+    ll = torch.arange(L, dtype=torch.float64, device=device).view(L, 1)
+    mm = torch.arange(L, dtype=torch.float64, device=device).view(1, L)
+    valid = (ll > mm)  # l > m (vertical recurrence region)
+    denom = (ll - mm) * (ll + mm)
+    denom_safe = torch.where(valid, denom, torch.ones_like(denom))
+    a_coef = torch.sqrt((2.0 * ll - 1.0) * (2.0 * ll + 1.0) / denom_safe)
+    b_num = (2.0 * ll + 1.0) * (ll + mm - 1.0) * (ll - mm - 1.0)
+    b_den = denom_safe * (2.0 * ll - 3.0)
+    b_coef = torch.sqrt(torch.clamp(b_num / torch.where(b_den == 0, torch.ones_like(b_den), b_den), min=0.0))
+    a_coef = torch.where(valid, a_coef, torch.zeros_like(a_coef)).to(dtype)
+    b_coef = torch.where(valid, b_coef, torch.zeros_like(b_coef)).to(dtype)
+    # Sectoral diagonal factor sqrt((2m+1)/(2m)) for m = l.
+    m_arange = torch.arange(L, dtype=torch.float64, device=device)
+    sect = torch.sqrt((2.0 * m_arange + 1.0) / (2.0 * m_arange).clamp(min=1.0)).to(dtype)
 
-    # Vertical recurrence (l > m, fixed m):
-    #   bar_P_l^m = a_l^m · cosθ · bar_P_{l-1}^m - b_l^m · bar_P_{l-2}^m
-    # with a_l^m = sqrt((2l-1)(2l+1)/((l-m)(l+m)))
-    #      b_l^m = sqrt((2l+1)(l+m-1)(l-m-1)/((l-m)(l+m)(2l-3)))   [0 when l = m+1]
-    for m in range(0, L - 1):
-        # l = m+1 step (b term vanishes because l-m-1 = 0)
-        l = m + 1
-        a = math.sqrt((2.0 * l - 1.0) * (2.0 * l + 1.0) / ((l - m) * (l + m)))
-        bar_P[..., l, m] = a * cos_theta * bar_P[..., l - 1, m]
-        # l from m+2 to L-1
-        for l in range(m + 2, L):
-            a = math.sqrt((2.0 * l - 1.0) * (2.0 * l + 1.0) / ((l - m) * (l + m)))
-            b = math.sqrt(
-                (2.0 * l + 1.0) * (l + m - 1.0) * (l - m - 1.0)
-                / ((l - m) * (l + m) * (2.0 * l - 3.0))
-            )
-            bar_P[..., l, m] = a * cos_theta * bar_P[..., l - 1, m] - b * bar_P[..., l - 2, m]
+    cos_e = cos_theta.unsqueeze(-1)  # (..., 1)
+    # Single loop over l; at each l update all m ∈ [0, l] at once. The vertical
+    # recurrence (m < l) and the sectoral diagonal (m = l) both read only level
+    # l-1 (and l-2), already computed — so this is the same recurrence as the
+    # original double loop, just reordered to vectorise over m.
+    for l in range(1, L):
+        prev1 = bar_P[..., l - 1, :l]                       # (..., l)
+        if l >= 2:
+            prev2 = bar_P[..., l - 2, :l]                   # (..., l)
+        else:
+            prev2 = torch.zeros_like(prev1)
+        bar_P[..., l, :l] = (
+            a_coef[l, :l] * cos_e * prev1 - b_coef[l, :l] * prev2
+        )
+        # Sectoral m == l.
+        bar_P[..., l, l] = sect[l] * sin_theta * bar_P[..., l - 1, l - 1]
 
     return bar_P
 
@@ -81,6 +100,7 @@ def evaluate_ylm(
     theta: torch.Tensor,
     phi: torch.Tensor,
     L: int,
+    l_indices: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Evaluate Y_{l,m}(θ, φ) for all (l, m) with l ∈ [0, L), m ∈ [-(L-1), L-1].
@@ -93,12 +113,21 @@ def evaluate_ylm(
         Azimuthal angle, shape (...,), values in [0, 2π).
     L : int
         Maximum SH degree (exclusive: l_max = L - 1).
+    l_indices : torch.Tensor, optional
+        If given (1-D long tensor of l values), assemble and return Y only for
+        those degrees, shape ``(..., len(l_indices), 2L-1)`` with row ``i``
+        holding ``Y_{l_indices[i], m}``. The Legendre recurrence still runs over
+        the full degree range (it is a recurrence), but the costly complex Y
+        assembly is restricted to the requested rows. Used by the FRF expansion,
+        which only needs even degrees (the odd-l and l=0 rows are zeroed by
+        Patterson centrosymmetry) — halving the dominant assembly cost.
 
     Returns
     -------
     Y : torch.Tensor, complex
-        Shape (..., L, 2L-1).  Y[..., l, L-1+m] = Y_{l,m}(θ, φ) for |m| ≤ l,
-        zero otherwise. dtype is complex128 if input is float64, else complex64.
+        Shape (..., L, 2L-1) (or (..., len(l_indices), 2L-1) if l_indices given).
+        ``Y[..., l, L-1+m] = Y_{l,m}(θ, φ)`` for |m| ≤ l, zero otherwise. dtype is
+        complex128 if input is float64, else complex64.
     """
     assert theta.shape == phi.shape, "theta and phi must have the same shape"
 
@@ -114,29 +143,39 @@ def evaluate_ylm(
     cos_theta = torch.cos(theta)
     sin_theta = torch.sin(theta).clamp(min=0.0)  # numerical floor at the poles
 
+    if _PROFILE:
+        t0 = time.perf_counter()
     bar_P = _bar_legendre_recurrence(cos_theta, sin_theta, L)  # (..., L, L)
+    if l_indices is not None:
+        bar_P = bar_P[..., l_indices, :]               # (..., n_sel, L) — even rows only
+    n_rows = bar_P.shape[-2]
+    if _PROFILE:
+        _YLM_PROF["recurrence"] += time.perf_counter() - t0
+        t0 = time.perf_counter()
 
     # Y_{l,m}(θ,φ) = (-1)^m · bar_P_l^m(cosθ) · e^{i m φ}   for m ≥ 0
     # Y_{l,-m}    = (-1)^m · conj(Y_{l,m})                  for m > 0
-    Y = torch.zeros((*theta.shape, L, 2 * L - 1), dtype=complex_dtype, device=device)
+    Y = torch.zeros((*theta.shape, n_rows, 2 * L - 1), dtype=complex_dtype, device=device)
 
-    # Precompute e^{i m φ} for m = 0..L-1
-    # (use stacking to keep things vectorized)
+    # Precompute e^{i m φ} for m = 0..L-1 and the Condon-Shortley signs (-1)^m.
     m_vals = torch.arange(L, dtype=real_dtype, device=device)
     m_phi = phi.unsqueeze(-1) * m_vals  # (..., L)
     expo = torch.complex(torch.cos(m_phi), torch.sin(m_phi))  # (..., L), e^{i m φ}
+    signs = ((-1.0) ** m_vals).to(complex_dtype)  # (L,)
 
-    # Fill m ≥ 0 columns
-    for m in range(L):
-        sign = (-1.0) ** m
-        # bar_P[..., :, m] is (..., L); only entries l >= m are non-zero (others left at 0)
-        Y[..., :, L - 1 + m] = sign * bar_P[..., :, m].to(complex_dtype) * expo[..., m].unsqueeze(-1)
+    # Fill m ≥ 0 columns (L-1 .. 2L-2): Y_{l,m} = (-1)^m bar_P_l^m e^{imφ},
+    # vectorised over (l, m). phase = (-1)^m e^{imφ} broadcasts over l.
+    phase_pos = (signs * expo).unsqueeze(-2)            # (..., 1, L)
+    Y_pos = bar_P.to(complex_dtype) * phase_pos         # (..., n_rows, L)
+    Y[..., :, L - 1:] = Y_pos
 
-    # Fill m < 0 columns by hermitian symmetry: Y_{l,-m} = (-1)^m · conj(Y_{l,m})
-    for m in range(1, L):
-        sign = (-1.0) ** m
-        Y[..., :, L - 1 - m] = sign * torch.conj(Y[..., :, L - 1 + m])
+    # Fill m < 0 columns by hermitian symmetry: Y_{l,-m} = (-1)^m conj(Y_{l,m}).
+    # For m = 1..L-1 these land in columns L-2 .. 0, i.e. the reversed prefix.
+    neg = signs[1:] * torch.conj(Y_pos[..., :, 1:])     # (..., L, L-1), m = 1..L-1
+    Y[..., :, : L - 1] = torch.flip(neg, dims=(-1,))
 
+    if _PROFILE:
+        _YLM_PROF["assembly"] += time.perf_counter() - t0
     return Y
 
 

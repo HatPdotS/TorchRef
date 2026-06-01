@@ -77,22 +77,33 @@ def _so3_greedy_nms(
     n = values.shape[0]
     if n == 0:
         return torch.empty(0, dtype=torch.int64, device=values.device)
-    order = torch.argsort(values, descending=True)
-    R_all = _euler_to_matrix_edmonds_zyz(alphas, betas, gammas)  # (n, 3, 3)
-    R_all = R_all.to(torch.float64)
-
+    # The greedy walk is inherently sequential and latency-bound; on GPU a
+    # per-iteration `.item()` sync would dominate. Move the (tiny) candidate
+    # rotations to CPU once and run the loop there with no device syncs, a
+    # preallocated kept-buffer (no repeated torch.stack), and a cosine threshold
+    # (no per-iteration arccos). Result is identical to the original distance test.
+    order = torch.argsort(values, descending=True).cpu().tolist()
+    R_all = (
+        _euler_to_matrix_edmonds_zyz(alphas, betas, gammas)
+        .to(torch.float64).cpu()
+    )  # (n, 3, 3)
+    # angle > nms_radius  ⇔  cos(angle) < cos(nms_radius); cos(angle) from trace.
+    cos_thresh = math.cos(math.radians(nms_radius_deg))
     kept_idx: List[int] = []
-    kept_R: List[torch.Tensor] = []
-    for i_t in order.tolist():
+    kept_R = torch.empty((keep_at_most, 3, 3), dtype=torch.float64)
+    count = 0
+    for i_t in order:
         Ri = R_all[i_t]
-        if kept_R:
-            stack = torch.stack(kept_R, dim=0)  # (k, 3, 3)
-            dists = _so3_angular_distance_deg(Ri.unsqueeze(0), stack)
-            if dists.min().item() <= nms_radius_deg:
+        if count > 0:
+            trace = torch.einsum("kij,ij->k", kept_R[:count], Ri)
+            cos_theta = ((trace - 1.0) * 0.5).clamp(min=-1.0, max=1.0)
+            # Some kept rotation within nms_radius (cos_theta > cos_thresh) → skip.
+            if bool((cos_theta > cos_thresh).any()):
                 continue
-        kept_R.append(Ri)
+        kept_R[count] = Ri
         kept_idx.append(i_t)
-        if len(kept_idx) >= keep_at_most:
+        count += 1
+        if count >= keep_at_most:
             break
     return torch.tensor(kept_idx, dtype=torch.int64, device=values.device)
 
@@ -140,15 +151,15 @@ def find_rotation_peaks(
         keep_at_most=n_peaks,
     )
 
-    peaks: List[RotationPeak] = []
-    for k in kept.tolist():
-        peaks.append(
-            RotationPeak(
-                alpha=float(a[k].item()),
-                beta=float(b[k].item()),
-                gamma=float(g[k].item()),
-                value=float(v[k].item()),
-                sigma=float(((v[k] - mean) / std).item()),
-            )
-        )
+    # Gather kept peaks and move to CPU once (avoids a per-peak device sync).
+    a_k = a[kept].cpu().tolist()
+    b_k = b[kept].cpu().tolist()
+    g_k = g[kept].cpu().tolist()
+    v_k = v[kept]
+    s_k = ((v_k - mean) / std).cpu().tolist()
+    v_k = v_k.cpu().tolist()
+    peaks: List[RotationPeak] = [
+        RotationPeak(alpha=a_k[i], beta=b_k[i], gamma=g_k[i], score=v_k[i], sigma=s_k[i])
+        for i in range(len(a_k))
+    ]
     return peaks

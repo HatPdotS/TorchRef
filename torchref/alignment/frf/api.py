@@ -35,6 +35,7 @@ from .preprocessing import (
     detect_zsymm,
     eterm_sigma_a,
     french_wilson_preprocess,
+    solid_angle_weights,
     wilson_normalise,
     wilson_normalise_epsilon,
 )
@@ -171,9 +172,14 @@ class FastRotationFunction:
         model_radius_A: Optional[float] = None,
         auto_lmax: bool = False,
         lmax_cap: int = 48,  # sweet spot: higher L under-determines SH modes on sparse lattice
+        obs_lmax: Optional[int] = None,  # cap obs SH bandwidth below calc (determinacy test)
+        obs_solid_angle: bool = False,  # angular quadrature weight to de-bias the obs SH
+        patterson_radius_scale: float = 1.0,  # <1 tightens the Patterson integration sphere
+        compute_dtype: Optional[torch.dtype] = None,  # complex64 → faster einsum (GPU)
     ):
         self.device = s_obs.device
         self.real_dtype = s_obs.dtype
+        self.compute_dtype = compute_dtype
 
         # Phaser-faithful coupling of bandwidth to resolution (runMR_FRF.cc:408).
         # Overrides L and d_min so the SH expansion is not flooded with data
@@ -228,12 +234,20 @@ class FastRotationFunction:
             epsilon = compute_epsilon(hkl_obs, sym_mats)
 
         # 2. Bessel scaling default — Phaser's lmax · d_min (DataMR.cc:1107).
+        #    bessel_h_scale = 2π·R_patt is the Patterson integration radius (the
+        #    χ_Ω sphere): the Bessel argument is h = bessel_h_scale·|s|, so the
+        #    radial basis represents the Patterson out to R_patt = bessel_h_scale
+        #    /(2π). With auto_lmax this defaults to R_patt ≈ sphereOuter = 2·mean
+        #    radius. `patterson_radius_scale` < 1 tightens it toward the
+        #    short-range intra-molecular self-Patterson (excludes the noisy
+        #    long-vector / inter-molecular tail that carries crystal symmetry).
         if bessel_h_scale is None:
             if d_min is None:
                 raise ValueError("bessel_h_scale must be set when d_min is None")
             lmax = L - 1
             lmax_even = lmax if lmax % 2 == 0 else lmax - 1
             bessel_h_scale = float(lmax_even) * float(d_min)
+        bessel_h_scale = bessel_h_scale * float(patterson_radius_scale)
         self.bessel_h_scale = bessel_h_scale
 
         # 3. Wilson + optional FW + DFAC on obs. French-Wilson does its own
@@ -275,6 +289,13 @@ class FastRotationFunction:
                 intensity_obs, smag_obs, n_var_shells=n_var_shells,
             )
 
+        # 5b. Optional angular quadrature weight: de-bias the obs SH expansion
+        #     for the non-uniform reciprocal-lattice point distribution (denser
+        #     along symmetry directions → amplified symmetry-axis/ghost channel).
+        if obs_solid_angle:
+            w_ang = solid_angle_weights(s_obs).to(intensity_obs.dtype)
+            intensity_obs = intensity_obs * w_ang
+
         # 6. ZSYMM detection + m-symmetry filter on obs SH coefficients.
         zsymm = detect_zsymm(sym_mats) if use_m_symmetry_filter else 1
         self._zsymm = zsymm  # also reused on the calc side when enabled (score_model)
@@ -284,7 +305,21 @@ class FastRotationFunction:
             s_obs, intensity_obs.to(self.real_dtype),
             L=L, bessel_h_scale=bessel_h_scale,
             zsymm=zsymm, enforce_friedel=True,
+            compute_dtype=self.compute_dtype,
         )
+
+        # Optional: cap the obs SH bandwidth BELOW the calc's by zeroing high-l
+        # obs coefficients. The obs is expanded over the sparse, anisotropically-
+        # distributed reciprocal crystal lattice (denser along symmetry
+        # directions), so its high-l coefficients are aliased/under-determined
+        # and over-represent the symmetry-axis (ghost) channel. Truncating obs-l
+        # while keeping calc-l full tests whether that aliasing drives the
+        # high-symmetry ghosts. L (and the contraction) are unchanged; the rows
+        # l > obs_lmax just contribute nothing.
+        if obs_lmax is not None and obs_lmax < (L - 1):
+            l_idx = torch.arange(L, device=self.device)
+            self._c_obs.coeffs[:, l_idx > int(obs_lmax), :] = 0.0
+        self._obs_lmax = obs_lmax
 
     def score_model(
         self,
@@ -293,7 +328,6 @@ class FastRotationFunction:
         *,
         n_peaks: int = 500,
         sigma_threshold: float = -5.0,
-        calc_m_symmetry_filter: bool = False,
         apply_bulk_solvent: bool = False,
         solvent_fsol: float = 0.95,
         solvent_bsol: float = 300.0,
@@ -315,18 +349,16 @@ class FastRotationFunction:
             eterm = eterm * sol
         intensity_calc = (eterm * eterm) * (E_calc * E_calc - 1.0)
 
-        # Bessel-SH expand calc. The "ideal-arithmetic" math says calc-side
-        # m-filtering is a no-op when obs is exactly spacegroup-invariant
-        # (R_sym(g) = NSYMP·R_orig(g), a constant scale); but in practice obs
-        # invariance leaks at high l (discrete-Y_lm non-orthogonality, anisotropy
-        # residuals, axial-reflection counting), and calc is rich in non-invariant
-        # m. Projecting calc onto invariant m kills the spurious obs-leak ×
-        # calc-non-invariant product channel.
-        calc_zsymm = self._zsymm if calc_m_symmetry_filter else 1
+        # Bessel-SH expand calc. The calc is NEVER m-filtered (zsymm=1): the
+        # model carries no crystal symmetry, and projecting it onto the obs's
+        # invariant-m subspace destroys the orientation information that
+        # discriminates truth — a calc-side m-filter was tested and is strongly
+        # harmful on high-symmetry cases (3K7M rank 8→92), so the knob was removed.
         c_calc = bessel_sh_expand(
             s_calc, intensity_calc.to(self.real_dtype),
             L=self.L, bessel_h_scale=self.bessel_h_scale,
-            zsymm=calc_zsymm, enforce_friedel=True,
+            zsymm=1, enforce_friedel=True,
+            compute_dtype=self.compute_dtype,
         )
 
         # 8. Cross-correlate over the radial axis.
@@ -375,16 +407,15 @@ def phaser_rotation_search(
     model_radius_A: Optional[float] = None,
     auto_lmax: bool = False,
     lmax_cap: int = 48,  # sweet spot: higher L under-determines SH modes on sparse lattice
-    # NOTE: defaults to False — the standalone v20 calc-filter regressed the rebench
-    # (3K7M 18->189, 3GR5 47->204, 2DQ6 202->324; job 103409). Phaser's preprocessing
-    # pieces (eps-Wilson + V(h) + sigma_A) are mutually load-bearing; this knob will
-    # be flipped back on once the coordinated Phaser-faithful preprocessing chain lands.
-    calc_m_symmetry_filter: bool = False,
+    obs_lmax: Optional[int] = None,  # cap obs SH bandwidth below calc (determinacy test)
+    obs_solid_angle: bool = False,  # angular quadrature weight to de-bias the obs SH
+    patterson_radius_scale: float = 1.0,  # <1 tightens the Patterson integration sphere
     # Phaser bulk-solvent (Babinet) folded into σ_A on the calc side
     # (EnsemblePDB.cc:96-100; solTerm.h:9). Default OFF; flip after sweep.
     apply_bulk_solvent: bool = False,
     solvent_fsol: float = 0.95,
     solvent_bsol: float = 300.0,
+    compute_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[AdaptiveRotationFunction, List[RotationPeak]]:
     """Drop-in for ``torchref.alignment.phaser_frf.phaser_rotation_search``.
 
@@ -423,12 +454,15 @@ def phaser_rotation_search(
             model_radius_A=model_radius_A,
             auto_lmax=auto_lmax,
             lmax_cap=lmax_cap,
+            obs_lmax=obs_lmax,
+            obs_solid_angle=obs_solid_angle,
+            patterson_radius_scale=patterson_radius_scale,
+            compute_dtype=compute_dtype,
         )
         return frf.score_model(
             s_calc, F_calc,
             n_peaks=n_peaks,
             sigma_threshold=sigma_threshold,
-            calc_m_symmetry_filter=calc_m_symmetry_filter,
             apply_bulk_solvent=apply_bulk_solvent,
             solvent_fsol=solvent_fsol,
             solvent_bsol=solvent_bsol,

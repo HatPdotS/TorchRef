@@ -24,12 +24,12 @@ from typing import List, Optional
 
 import torch
 
-from .frf.ball_search import (
-    RotationPeak,
+from .frf.rotation_utils import (
     edmonds_euler_from_rotation_matrix,
     rotation_matrix_from_edmonds_euler,
     rotation_matrix_from_edmonds_euler_batch,
 )
+from .frf.types import RotationPeak
 from .distributions import (
     phaser_log_rel_rice,
     phaser_log_rel_woolfson,
@@ -417,7 +417,7 @@ def sim_mlrf_rescore(
     sigma_a: Optional[torch.Tensor] = None,
 ) -> List[RotationPeak]:
     """
-    Rescore a list of peaks from `ball_rotation_search` by the per-shell-fitted
+    Rescore a list of FRF peaks by the per-shell-fitted
     Sim Maximum-Likelihood Rotation Function (LLG). Returns a new list sorted by
     descending LLG with `score = LLG` and `sigma = Z-score(LLG)`.
 
@@ -461,7 +461,7 @@ def sim_mlrf_rescore(
 
     # Build all rotation matrices up front. The peak's Euler triple represents
     # "the rotation applied to the model coords" (synthetic-test convention of
-    # ball_rotation_search). For ML scoring, we need "the rotation to apply to
+    # FRF synthetic-test convention). For ML scoring, we need "the rotation to apply to
     # the current model to align it to obs" — which is R^T. We transpose here.
     # Vectorised over peaks: previously this list comprehension built M·9
     # small (3,3) tensors per dense-R pass.
@@ -762,186 +762,3 @@ def m_letf1_rescore(
     return rescored + tail
 
 
-# =============================================================================
-# Brute-force ML rotation search over a uniform SO(3) sample
-# =============================================================================
-
-
-def _uniform_random_rotations(n: int, seed: int = 0, dtype=torch.float64) -> torch.Tensor:
-    """
-    Generate `n` uniformly-distributed random rotation matrices via QR of
-    Gaussian matrices. Returns shape (n, 3, 3) with det = +1.
-    """
-    g = torch.Generator().manual_seed(int(seed))
-    A = torch.randn(n, 3, 3, generator=g, dtype=dtype)
-    Q, R = torch.linalg.qr(A)
-    # Make det = 1 (flip first column if needed)
-    diag_sign = torch.sign(torch.diagonal(R, dim1=-2, dim2=-1))  # (n, 3)
-    Q = Q * diag_sign.unsqueeze(-2)
-    det = torch.det(Q)
-    flip = det < 0
-    Q[flip, :, 0] = -Q[flip, :, 0]
-    return Q
-
-
-def brute_ml_rotation_search(
-    F_obs: torch.Tensor,
-    hkl_real: torch.Tensor,
-    s_mag: torch.Tensor,
-    centric: torch.Tensor,
-    interpolator: LattmanLoveInterpolator,
-    real_cell,
-    n_candidates: int = 5000,
-    n_shells: int = 15,
-    batch_size: int = 100,
-    seed: int = 0,
-    verbose: int = 0,
-) -> List[RotationPeak]:
-    """
-    Evaluate ML LLG on `n_candidates` uniformly-random SO(3) rotations.
-    Returns peaks sorted by descending LLG. Acts as a shortlist generator that
-    bypasses the fast ball-search (which has known sphere-sampling limitations
-    on real-cell HKL data).
-
-    Cost: ~10ms per candidate at default batch_size on CPU; ~50s for 5000 cands.
-
-    Returns
-    -------
-    list of RotationPeak (sorted by LLG descending)
-        `score = LLG`, `sigma = Z-score across the candidate set`.
-    """
-    R_all = _uniform_random_rotations(n_candidates, seed=seed)
-    peaks_in = []
-    for k in range(n_candidates):
-        a, b, g = edmonds_euler_from_rotation_matrix(R_all[k])
-        peaks_in.append(RotationPeak(a, b, g, score=0.0, sigma=0.0))
-    return sim_mlrf_rescore(
-        peaks_in, F_obs, hkl_real, s_mag, centric, interpolator, real_cell,
-        n_shells=n_shells, n_refine=n_candidates, batch_size=batch_size,
-        verbose=verbose,
-    )
-
-
-# =============================================================================
-# BRF — Brute Rotation Function (Phaser stage that refines top FRF peaks via a
-# denser local rotation sampling + full Rice/Woolfson LL).
-# =============================================================================
-
-
-def _random_rotation_in_cone(
-    n: int, radius_rad: float, generator: torch.Generator,
-) -> torch.Tensor:
-    """``n`` random rotation matrices uniformly inside an angular cone of given
-    radius from identity. Axis ∼ uniform-on-sphere, angle ∼ uniform on
-    ``[0, radius_rad]`` (proper Haar measure on the cone would weight angle by
-    sin²(θ/2); for small radii this approximation is essentially uniform).
-
-    Returns ``(n, 3, 3)`` float64 tensor.
-    """
-    # Random unit axes via Gaussian normalization.
-    axes = torch.randn(n, 3, generator=generator, dtype=torch.float64)
-    axes = axes / axes.norm(dim=-1, keepdim=True).clamp(min=1e-30)
-    angles = torch.rand(n, generator=generator, dtype=torch.float64) * radius_rad
-    # Rodrigues: R = I + sin(θ)·K + (1−cos(θ))·K²   with K skew of axis.
-    cos = angles.cos().view(-1, 1, 1)
-    sin = angles.sin().view(-1, 1, 1)
-    K = torch.zeros(n, 3, 3, dtype=torch.float64)
-    K[:, 0, 1] = -axes[:, 2]; K[:, 0, 2] = axes[:, 1]
-    K[:, 1, 0] = axes[:, 2];  K[:, 1, 2] = -axes[:, 0]
-    K[:, 2, 0] = -axes[:, 1]; K[:, 2, 1] = axes[:, 0]
-    I = torch.eye(3, dtype=torch.float64).expand(n, 3, 3)
-    K2 = K @ K
-    return I + sin * K + (1.0 - cos) * K2
-
-
-def brf_refine(
-    peaks: List[RotationPeak],
-    F_obs: torch.Tensor,
-    hkl_real: torch.Tensor,
-    s_mag: torch.Tensor,
-    centric: torch.Tensor,
-    interpolator: LattmanLoveInterpolator,
-    real_cell,
-    sym_mats: torch.Tensor,
-    *,
-    n_top: int = 100,
-    n_perturb: int = 10,
-    angular_radius_deg: float = 3.0,
-    seed: int = 42,
-    verbose: int = 0,
-    **m_letf1_kwargs,
-) -> List[RotationPeak]:
-    """Brute Rotation Function — Phaser's BRF stage (post-FRF rotation refinement).
-
-    For each of the top ``n_top`` FRF peaks, sample ``n_perturb`` random
-    rotations within an angular cone of radius ``angular_radius_deg`` from the
-    peak; score all (original + perturbations) via :func:`m_letf1_rescore`.
-    Returns the rescored set sorted by descending LL — the truth orientation
-    typically lurks ≤ FRF-grid-spacing degrees from the FRF peak nearest to it,
-    so this local refinement can recover peaks the coarse FRF grid missed.
-
-    Total LL evaluations: ``n_top · (n_perturb + 1)``. With defaults this is
-    ``100 × 11 = 1100`` — ~2× the cost of the standard top-500 rescore.
-
-    Parameters
-    ----------
-    peaks
-        FRF peak list (sorted by descending FRF score).
-    n_top
-        Refine around the top ``n_top`` FRF peaks. Should be ≥ the expected
-        rank of the truth peak — for hard cases (e.g., 2DQ6 FRF rank ≈50), use
-        ``n_top ≥ 100``.
-    n_perturb
-        Number of random rotations sampled per peak (in addition to the
-        peak itself, which is always included).
-    angular_radius_deg
-        Cone half-angle for perturbations. Match the FRF grid resolution
-        (~3° at ``grid_sampling_deg=3.0``).
-    seed
-        RNG seed for reproducibility.
-    **m_letf1_kwargs
-        Forwarded to :func:`m_letf1_rescore` — e.g. ``apply_bulk_solvent=True``,
-        ``vrms_strategy="oeffner"``, ``vrms_n_residues=...``, etc.
-    """
-    if not peaks:
-        return []
-    n_top = min(n_top, len(peaks))
-    top = peaks[:n_top]
-    g = torch.Generator().manual_seed(int(seed))
-    radius_rad = math.radians(float(angular_radius_deg))
-
-    # One big batch of perturbations: (n_top * n_perturb, 3, 3).
-    pert_R = _random_rotation_in_cone(n_top * n_perturb, radius_rad, g)
-    pert_R = pert_R.view(n_top, n_perturb, 3, 3)
-
-    out_peaks: List[RotationPeak] = []
-    for i, peak in enumerate(top):
-        # Include the original peak (perturbation theta=0).
-        out_peaks.append(RotationPeak(
-            alpha=peak.alpha, beta=peak.beta, gamma=peak.gamma,
-            score=peak.score, sigma=peak.sigma,
-        ))
-        R_orig = rotation_matrix_from_edmonds_euler(
-            peak.alpha, peak.beta, peak.gamma,
-        ).to(torch.float64)
-        for j in range(n_perturb):
-            R_pert = R_orig @ pert_R[i, j]
-            a, b, c = edmonds_euler_from_rotation_matrix(R_pert)
-            out_peaks.append(RotationPeak(
-                alpha=a, beta=b, gamma=c, score=peak.score, sigma=peak.sigma,
-            ))
-
-    if verbose > 0:
-        print(
-            f"  BRF: {len(out_peaks)} candidates "
-            f"({n_top} top × ({n_perturb}+1) perturbations, ±{angular_radius_deg}°)",
-            flush=True,
-        )
-
-    return m_letf1_rescore(
-        out_peaks, F_obs, hkl_real, s_mag, centric, interpolator, real_cell,
-        sym_mats,
-        n_refine=len(out_peaks),
-        verbose=verbose,
-        **m_letf1_kwargs,
-    )
