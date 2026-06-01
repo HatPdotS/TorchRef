@@ -145,6 +145,10 @@ class MTZReader:
         self.cell = None
         self.spacegroup = None
         self.mtz_data = None
+        # True when the loaded data are Friedel-merged (one row per ASU reflection);
+        # set False by _maybe_stack_anomalous when F(+)/F(-) (or I(+)/I(-)) columns
+        # are detected and stacked into explicit signed-HKL Bijvoet pairs.
+        self.friedel_merged = True
 
     def read(self, filepath: str) -> "MTZReader":
         """
@@ -165,6 +169,10 @@ class MTZReader:
             print(f"Reading MTZ file: {filepath}")
 
         self.mtz_data = rs.read_mtz(filepath)
+        # Auto-detect anomalous F(+)/F(-) (or I(+)/I(-)) columns and stack them into
+        # explicit signed-HKL Bijvoet pairs (one row per Friedel mate). Sets
+        # self.friedel_merged accordingly. No-op for ordinary merged data.
+        self._maybe_stack_anomalous()
         self.cell = np.array(
             [
                 self.mtz_data.cell.a,
@@ -183,7 +191,78 @@ class MTZReader:
         self._extract_amplitudes_and_intensities()
         self._extract_rfree_flags()
 
+        # Carry the merge state out to the caller (ReflectionData.load reads it).
+        self.data["friedel_merged"] = self.friedel_merged
+
         return self
+
+    def _maybe_stack_anomalous(self) -> None:
+        """Stack anomalous F(+)/F(-) (or I(+)/I(-)) columns into Bijvoet pairs.
+
+        When the MTZ carries two-column anomalous data and is merged, this converts
+        it to one-column form with separate rows for the Friedel-plus and
+        Friedel-minus members (the minus member carries the negated Miller index),
+        using :meth:`reciprocalspaceship.DataSet.stack_anomalous`. Centric
+        reflections are not split (handled by reciprocalspaceship). The chosen base
+        columns are pinned in ``column_names`` so the downstream priority search
+        does not pick a coexisting merged column (e.g. ``FMEAN``) instead of the
+        stacked one. On any failure the original merged data are kept.
+        """
+        cols = list(self.mtz_data.columns)
+        plus_cols = [c for c in cols if c.endswith("(+)")]
+        minus_cols = [c for c in cols if c.endswith("(-)")]
+        if not plus_cols or not minus_cols:
+            return  # no anomalous columns
+        if not getattr(self.mtz_data, "merged", True):
+            return  # stack_anomalous requires merged data
+
+        # Match plus/minus columns by their base name (suffix is exactly 3 chars).
+        plus_map = {c[:-3]: c for c in plus_cols}
+        minus_map = {c[:-3]: c for c in minus_cols}
+        bases = [b for b in plus_map if b in minus_map]
+        if not bases:
+            return
+
+        plus_labels = [plus_map[b] for b in bases]
+        minus_labels = [minus_map[b] for b in bases]
+
+        # Drop columns that would block stacking: coexisting merged columns whose
+        # name equals a base label (stack_anomalous raises on the collision), and
+        # any unmatched anomalous singletons that would otherwise ride along.
+        selected = set(plus_labels) | set(minus_labels)
+        to_drop = [b for b in bases if b in cols]
+        to_drop += [c for c in plus_cols + minus_cols if c not in selected]
+        try:
+            ds = self.mtz_data
+            if to_drop:
+                ds = ds.drop(columns=list(dict.fromkeys(to_drop)))
+            stacked = ds.stack_anomalous(
+                plus_labels=plus_labels, minus_labels=minus_labels
+            )
+        except Exception as e:  # keep merged data on any failure
+            if self.verbose > 0:
+                print(f"   Anomalous stacking skipped ({e}); using merged data.")
+            return
+
+        self.mtz_data = stacked
+        self.friedel_merged = False
+
+        # Pin the stacked data column so extraction uses it (and not a coexisting
+        # merged column via the priority search). Prefer intensities so French-Wilson
+        # runs per Bijvoet member. The matching sigma is auto-discovered by
+        # _extract_amplitudes_and_intensities. Respect any user-provided names.
+        intensity_bases = [b for b in bases if "Intensity" in str(stacked.dtypes[b])]
+        amplitude_bases = [b for b in bases if "SFAmplitude" in str(stacked.dtypes[b])]
+        if intensity_bases and "I" not in self.column_names:
+            self.column_names["I"] = intensity_bases[0]
+        elif amplitude_bases and "F" not in self.column_names:
+            self.column_names["F"] = amplitude_bases[0]
+
+        if self.verbose > 0:
+            print(
+                f"   Detected anomalous data; stacked Bijvoet pairs "
+                f"({len(self.mtz_data)} reflections, friedel_merged=False)."
+            )
 
     def __call__(self) -> Tuple[dict, np.ndarray, str]:
         """
@@ -250,7 +329,9 @@ class MTZReader:
             if "SIGI" in self.column_names:
                 scol = self.column_names["SIGI"]
                 if scol in available_cols:
-                    self.data["SIGI"] = self.mtz_data[scol].to_numpy().astype(np.float32)
+                    self.data["SIGI"] = (
+                        self.mtz_data[scol].to_numpy().astype(np.float32)
+                    )
                     self.data["SIGI_col"] = scol
             else:
                 sigma_col = self._find_sigma_column(intensity_col, is_intensity=True)
@@ -267,7 +348,9 @@ class MTZReader:
             if "SIGF" in self.column_names:
                 scol = self.column_names["SIGF"]
                 if scol in available_cols:
-                    self.data["SIGF"] = self.mtz_data[scol].to_numpy().astype(np.float32)
+                    self.data["SIGF"] = (
+                        self.mtz_data[scol].to_numpy().astype(np.float32)
+                    )
                     self.data["SIGF_col"] = scol
             else:
                 sigma_col = self._find_sigma_column(amplitude_col, is_intensity=False)
@@ -416,17 +499,16 @@ def write(
     """
     import gemmi
 
-
-
     if torch.is_tensor(cell):
         cell = cell.detach().cpu().numpy().tolist()
     elif isinstance(cell, np.ndarray):
         cell = cell.tolist()
-    
+
     cell = gemmi.UnitCell(*cell)
 
     # Handle spacegroup — normalize to gemmi.SpaceGroup for reciprocalspaceship
     from torchref.symmetry import SpaceGroup as TorchRefSpaceGroup
+
     if isinstance(spacegroup, TorchRefSpaceGroup):
         spacegroup = spacegroup._gemmi
     elif isinstance(spacegroup, gemmi.SpaceGroup):
@@ -449,7 +531,16 @@ def write(
     mtz_rs = rs.DataSet(df, cell=cell, spacegroup=spacegroup)
 
     # Assign MTZ data types
-    structure_factor_cols = ["F-obs", "Fobs", "FP", "2FOFCWT", "FOFCWT", "F-model", "FWT", "DELFWT"]
+    structure_factor_cols = [
+        "F-obs",
+        "Fobs",
+        "FP",
+        "2FOFCWT",
+        "FOFCWT",
+        "F-model",
+        "FWT",
+        "DELFWT",
+    ]
     intensity_cols = ["I-obs", "I"]
     sigma_cols = ["SIGF-obs", "SIGI-obs", "SIGFP", "SIGI"]
     phase_cols = [
@@ -464,13 +555,12 @@ def write(
     ]
     flags = ["R-free-flags", "FreeR_flag", "FREE"]
 
-
     if "H" in mtz_rs.columns and "K" in mtz_rs.columns and "L" in mtz_rs.columns:
-        mtz_rs['H'] = mtz_rs['H'].astype('H')
-        mtz_rs['K'] = mtz_rs['K'].astype('H')   
-        mtz_rs['L'] = mtz_rs['L'].astype('H')
+        mtz_rs["H"] = mtz_rs["H"].astype("H")
+        mtz_rs["K"] = mtz_rs["K"].astype("H")
+        mtz_rs["L"] = mtz_rs["L"].astype("H")
         mtz_rs = mtz_rs.set_index("H", "K", "L")
-        
+
     for col in structure_factor_cols:
         if col in mtz_rs.columns:
             mtz_rs[col] = mtz_rs[col].astype("F")

@@ -71,6 +71,10 @@ class CrystalDataset(DeviceMovementMixin):
     #     Bijvoet pair get distinct |F_calc|. self.hkl stays the canonical ASU index.
     friedel_flags: Optional[torch.Tensor] = None  # (N,), bool
     hkl_anomalous: Optional[torch.Tensor] = None  # (N, 3), int32
+    # Scalar merge state (NOT per-reflection): True when the data are Friedel-merged
+    # (one row per ASU reflection), False when anomalous F(+)/F(-) have been loaded as
+    # explicit Bijvoet pairs (separate signed-HKL rows). Gates the model's f'' term.
+    friedel_merged: bool = True
 
     # === E-value and anisotropy correction fields ===
     E: Optional[torch.Tensor] = None  # E-values (N,)
@@ -137,7 +141,6 @@ class CrystalDataset(DeviceMovementMixin):
             val = getattr(self, f.name)
             if isinstance(val, torch.Tensor):
                 yield f.name, val
-
 
     # ========== SERIALIZATION ==========
 

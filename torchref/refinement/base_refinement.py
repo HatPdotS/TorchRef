@@ -208,6 +208,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 device=self.device,
                 wavelength=self.wavelength,
                 anomalous_threshold=self.anomalous_threshold,
+                # Apply the f'' (Bijvoet) term only when the data were loaded as
+                # explicit Friedel pairs; merged data gate it off.
+                apply_bijvoet=not self.reflection_data.friedel_merged,
             )
             if pdb.endswith(".cif"):
                 self.model.load_cif(pdb)
@@ -927,7 +930,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             plt.grid()
             plt.savefig(outpath)
 
-    def write_out_mtz(self, out_mtz_path="refined_output.mtz", anomalous=False):
+    def write_out_mtz(self, out_mtz_path="refined_output.mtz", anomalous=None):
         """Write refined map coefficients to an MTZ file.
 
         Parameters
@@ -938,7 +941,10 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             If True, emit a phenix-style anomalous MTZ: display maps and merged
             columns in the canonical ASU (Friedel mates merged by mean
             amplitude) plus unstacked ``F-obs(+/-)`` / ``F-model(+/-)`` columns
-            on the same ASU index. Default False (legacy per-row layout).
+            on the same ASU index. If False, the legacy per-row layout is
+            written. If None (default), chosen automatically from the data:
+            anomalous output when the data were loaded as Bijvoet pairs
+            (``reflection_data.friedel_merged`` is False), legacy otherwise.
         """
         with torch.no_grad():
             # Signed HKL so the per-row fcalc carries the anomalous (Bijvoet)

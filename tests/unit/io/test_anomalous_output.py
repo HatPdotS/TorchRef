@@ -13,13 +13,12 @@ import collections
 
 import numpy as np
 import pytest
+import reciprocalspaceship as rs
 import torch
 
-import reciprocalspaceship as rs
-
+from torchref.base.french_wilson import is_centric_from_hkl
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model.model_ft import ModelFT
-from torchref.base.french_wilson import is_centric_from_hkl
 
 
 @pytest.fixture
@@ -80,19 +79,33 @@ class TestDualHklRepresentation:
 
 
 class TestBijvoetStructureFactors:
-    def _fcalc(self, data, pdb_dir, wavelength):
-        model = ModelFT(verbose=0, max_res=2.0, wavelength=wavelength)
+    def _fcalc(self, data, pdb_dir, wavelength, apply_bijvoet=True):
+        model = ModelFT(
+            verbose=0, max_res=2.0, wavelength=wavelength, apply_bijvoet=apply_bijvoet
+        )
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
             return model(data.hkl_for_sf())
 
     def test_anomalous_signal_present(self, anomalous_data, pdb_dir):
+        # apply_bijvoet=True (the unmerged-data setting) applies the f'' term.
         fc = torch.abs(self._fcalc(anomalous_data, pdb_dir, wavelength=1.54))
         pairs = _group_by_canonical(anomalous_data.hkl, anomalous_data.friedel_flags)
         assert len(pairs) > 0
         diffs = np.array([abs(fc[p].item() - fc[m].item()) for p, m in pairs])
-        # With a wavelength + anomalous scatterers, mates differ.
+        # With a wavelength + anomalous scatterers + f'' on, mates differ.
         assert (diffs > 1e-3).mean() > 0.5
+
+    def test_no_signal_when_bijvoet_gated_off(self, anomalous_data, pdb_dir):
+        # Merged default (apply_bijvoet=False): f' still applies but f'' is gated
+        # off, so Friedel's law holds and mates have equal amplitudes.
+        fc = torch.abs(
+            self._fcalc(anomalous_data, pdb_dir, wavelength=1.54, apply_bijvoet=False)
+        )
+        pairs = _group_by_canonical(anomalous_data.hkl, anomalous_data.friedel_flags)
+        assert len(pairs) > 0
+        diffs = np.array([abs(fc[p].item() - fc[m].item()) for p, m in pairs])
+        assert diffs.max() < 1e-1
 
     def test_no_signal_without_wavelength(self, anomalous_data, pdb_dir):
         fc = torch.abs(self._fcalc(anomalous_data, pdb_dir, wavelength=None))
@@ -104,7 +117,9 @@ class TestBijvoetStructureFactors:
 
 class TestAnomalousMtzOutput:
     def _write(self, data, pdb_dir, tmp_path, wavelength=1.54):
-        model = ModelFT(verbose=0, max_res=2.0, wavelength=wavelength)
+        model = ModelFT(
+            verbose=0, max_res=2.0, wavelength=wavelength, apply_bijvoet=True
+        )
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
             fcalc = model(data.hkl_for_sf())

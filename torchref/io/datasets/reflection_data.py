@@ -216,6 +216,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         data_dict, cell, spacegroup = reader()
 
+        # Merge state from the reader: False when anomalous F(+)/F(-) (or I(+)/I(-))
+        # were loaded as explicit signed-HKL Bijvoet pairs. Canonicalization below
+        # then sets friedel_flags / hkl_anomalous accordingly.
+        self.friedel_merged = bool(data_dict.get("friedel_merged", True))
+
         hkl = torch.tensor(
             data_dict["HKL"], dtype=dtypes.int, device=self.device, requires_grad=False
         )
@@ -352,6 +357,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         rfree_flags: Optional[torch.Tensor] = None,
         device=get_default_device(),
         verbose: int = 1,
+        friedel_merged: Optional[bool] = None,
+        detach: bool = True,
     ) -> "ReflectionData":
         """
         Construct ReflectionData directly from tensors.
@@ -375,6 +382,23 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Device for tensors. Defaults to the configured device.current.
         verbose : int, optional
             Verbosity level. Default is 1.
+        friedel_merged : bool, optional
+            Whether the input represents Friedel-merged data (one row per ASU
+            reflection). If False, ``hkl`` is taken to contain explicit Bijvoet
+            pairs (both ``+h`` and ``-h`` rows) and the model's f'' term is
+            enabled downstream. If None (default), this is inferred after
+            canonicalization: unmerged when any reflection had to be Friedel-
+            conjugated to reach the ASU (i.e. explicit ``-h`` mates are present),
+            merged otherwise.
+        detach : bool, optional
+            If True (default), inputs are detached before storing, matching
+            ``load()``'s constant-observation semantics (no caller autograd graph
+            retained, no aliasing). Set False to keep the autograd graph so
+            gradients flow from the stored ``F``/``F_sigma`` back to whatever
+            produced them -- e.g. differentiable/synthetic data or a learned data
+            model. Post-load cleanup is graph-safe: canonicalization reorders
+            ``F`` into a non-leaf tensor, so the in-place sanitation step is
+            allowed and the gradient path is preserved.
 
         Returns
         -------
@@ -382,9 +406,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Fully initialized reflection data with all cleanup applied.
         """
         data = cls(device=device, verbose=verbose)
-        data.hkl = hkl.to(device=data.device)
-        data.F = F.to(device=data.device)
-        data.F_sigma = F_sigma.to(device=data.device)
+
+        def _prep(t: torch.Tensor) -> torch.Tensor:
+            # Detach (constant data) unless the caller wants the graph preserved.
+            return t.detach() if detach else t
+
+        data.hkl = _prep(hkl).to(device=data.device)
+        data.F = _prep(F).to(device=data.device)
+        data.F_sigma = _prep(F_sigma).to(device=data.device)
         data.cell = (
             cell.to(device=data.device)
             if hasattr(cell, "to")
@@ -395,12 +424,25 @@ class ReflectionData(CrystalDataset, DebugMixin):
         )
 
         if rfree_flags is not None:
-            data.rfree_flags = rfree_flags.to(device=data.device, dtype=torch.bool)
+            data.rfree_flags = _prep(rfree_flags).to(
+                device=data.device, dtype=torch.bool
+            )
         else:
             data._calculate_resolution()
             data._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
 
         data._post_load_cleanup()
+
+        # Resolve merge state. Explicit arg wins; otherwise infer from whether
+        # canonicalization had to conjugate any Friedel mates (i.e. -h rows were
+        # supplied), which mirrors the reader's stacked-input detection.
+        if friedel_merged is None:
+            has_mates = data.friedel_flags is not None and bool(
+                data.friedel_flags.any()
+            )
+            data.friedel_merged = not has_mates
+        else:
+            data.friedel_merged = bool(friedel_merged)
         return data
 
     def load_mtz(
@@ -2286,7 +2328,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         fname: str,
         fcalc: Optional[torch.Tensor] = None,
         model_ft: Optional["ModelFT"] = None,
-        anomalous: bool = False,
+        anomalous: Optional[bool] = None,
     ) -> None:
         """
         Write reflection data to MTZ file with optional map coefficients.
@@ -2305,8 +2347,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
             display maps (FWT/PHWT, DELFWT/PHDELWT) and merged F-obs/F-model
             with Friedel mates merged by mean amplitude, plus unstacked
             F-obs(+/-), SIGF-obs(+/-), F-model(+/-), PHIF-model(+/-) and
-            ANOM/PANOM columns. No negative-ASU indices are emitted. Default
-            False (legacy per-row layout).
+            ANOM/PANOM columns. No negative-ASU indices are emitted. If False,
+            the legacy per-row layout is written. If None (default), this is
+            chosen automatically from the data: anomalous output when the data
+            were loaded as Bijvoet pairs (``friedel_merged`` is False), legacy
+            layout otherwise.
 
         Notes
         -----
@@ -2332,6 +2377,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
             data.write_mtz('output.mtz', fcalc=fcalc)
         """
         from torchref.io.mtz import write
+
+        # Auto: write anomalous (+)/(-) columns when the data are Friedel pairs.
+        if anomalous is None:
+            anomalous = not self.friedel_merged
 
         if anomalous:
             # Signed HKL preserves the anomalous/Bijvoet difference (see
