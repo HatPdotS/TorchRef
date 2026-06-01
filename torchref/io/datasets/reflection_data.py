@@ -9,20 +9,18 @@ intensities, and R-free flags.
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-from torchref.config import dtypes, get_default_device
-from torch.nn import Parameter
-
-from torchref.symmetry import SpaceGroup
 
 import numpy as np
 import pandas as pd
 import torch
+from torch.nn import Parameter
 
-from torchref.io import cif, mtz
-from torchref.io.datasets.base import CrystalDataset
 from torchref.base import math_torch
 from torchref.base.french_wilson import FrenchWilson
-from torchref.symmetry import Cell
+from torchref.config import dtypes, get_default_device
+from torchref.io import cif, mtz
+from torchref.io.datasets.base import CrystalDataset
+from torchref.symmetry import Cell, SpaceGroup
 from torchref.utils.debug_utils import DebugMixin
 
 if TYPE_CHECKING:
@@ -116,6 +114,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
     def _canonicalize_in_place(self) -> None:
         """Remap HKL to canonical CCP4 ASU form and reorder all data in-place."""
         from dataclasses import fields as dc_fields
+
         from torchref.symmetry.reciprocal_symmetry import canonicalize_hkl
 
         if self.hkl is None or self.spacegroup is None:
@@ -138,7 +137,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Apply phase correction
         if self.phase is not None:
-            self.phase = torch.where(friedel_flags, -self.phase, self.phase) + phase_shifts
+            self.phase = (
+                torch.where(friedel_flags, -self.phase, self.phase) + phase_shifts
+            )
 
         # Recalculate resolution from canonical HKL
         if self.cell is not None:
@@ -157,7 +158,36 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if hasattr(self, "dataset") and self.dataset is not None:
             self.dataset = self.dataset.iloc[sort_indices.cpu().numpy()].copy()
 
-    def load(self, reader):
+        # Record anomalous bookkeeping. friedel_flags is already returned in the
+        # sorted (canonical) order, matching self.hkl. hkl_anomalous carries the
+        # signed Miller index used for structure-factor evaluation: the canonical
+        # index for the (+) member and its negation for the conjugated (-) mate,
+        # so the model produces a genuine Bijvoet difference when anomalous
+        # scattering is present. See ReflectionData.hkl_for_sf.
+        self.friedel_flags = friedel_flags
+        self.hkl_anomalous = torch.where(
+            friedel_flags.unsqueeze(-1), -self.hkl, self.hkl
+        )
+
+    def hkl_for_sf(self) -> torch.Tensor:
+        """Signed Miller indices for structure-factor evaluation.
+
+        Returns ``hkl_anomalous`` when present so the two members of a Bijvoet
+        pair (which share a canonical ASU index in :attr:`hkl`) are evaluated at
+        their true ``+h``/``-h`` positions and therefore get distinct
+        ``|F_calc|`` under anomalous scattering. Falls back to the canonical
+        :attr:`hkl` when anomalous bookkeeping is unavailable (e.g. empty init).
+
+        Returns
+        -------
+        torch.Tensor
+            Miller indices of shape (N, 3), row-aligned with :attr:`hkl`.
+        """
+        if self.hkl_anomalous is not None:
+            return self.hkl_anomalous
+        return self.hkl
+
+    def load(self, reader, french_wilson: bool = True):
         """
         Load reflection data using a data reader.
 
@@ -166,6 +196,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         reader : callable
             Data reader object that returns (data_dict, cell, spacegroup) when called.
             Can be MTZ, ReflectionCIFReader, or other compatible reader.
+        french_wilson : bool, optional
+            Whether to derive amplitudes from intensities via French-Wilson.
+            Default True. When False, existing amplitude columns (``F``/``SIGF``)
+            are used directly and the French-Wilson step is skipped -- use this
+            when the input amplitudes are already French-Wilson corrected. If the
+            data contain only intensities, French-Wilson is applied regardless.
 
         Returns
         -------
@@ -197,7 +233,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
             self.spacegroup = SpaceGroup(spacegroup)
         self._calculate_resolution()
 
-        if "I" in data_dict:
+        # Prefer intensities (via French-Wilson) only when French-Wilson is
+        # enabled, or when no amplitude columns are present. With
+        # french_wilson=False and F columns available, use the amplitudes
+        # directly -- they are assumed already French-Wilson corrected.
+        use_intensities = "I" in data_dict and (french_wilson or "F" not in data_dict)
+        if "I" in data_dict and not use_intensities and self.verbose:
+            print(
+                "French-Wilson disabled; using existing F/SIGF columns directly "
+                "(ignoring intensity columns).",
+                flush=True,
+            )
+
+        if use_intensities:
             self.I = torch.tensor(
                 data_dict["I"],
                 dtype=dtypes.float,
@@ -337,8 +385,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         data.hkl = hkl.to(device=data.device)
         data.F = F.to(device=data.device)
         data.F_sigma = F_sigma.to(device=data.device)
-        data.cell = cell.to(device=data.device) if hasattr(cell, 'to') else Cell(cell, device=data.device)
-        data.spacegroup = spacegroup if isinstance(spacegroup, SpaceGroup) else SpaceGroup(spacegroup)
+        data.cell = (
+            cell.to(device=data.device)
+            if hasattr(cell, "to")
+            else Cell(cell, device=data.device)
+        )
+        data.spacegroup = (
+            spacegroup if isinstance(spacegroup, SpaceGroup) else SpaceGroup(spacegroup)
+        )
 
         if rfree_flags is not None:
             data.rfree_flags = rfree_flags.to(device=data.device, dtype=torch.bool)
@@ -350,7 +404,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
         return data
 
     def load_mtz(
-        self, path: str, column_names: Optional[dict] = None
+        self,
+        path: str,
+        column_names: Optional[dict] = None,
+        french_wilson: bool = True,
     ) -> "ReflectionData":
         """
         Load reflection data from MTZ file.
@@ -363,16 +420,21 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Explicit column name mapping to override automatic detection.
             Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
             Example: ``{"F": "DFo", "SIGF": "sig_DFo"}``.
+        french_wilson : bool, optional
+            Whether to derive amplitudes from intensities via French-Wilson.
+            Default True. Set False to use existing French-Wilson-corrected
+            ``F``/``SIGF`` columns directly when the file also carries
+            intensities. See :meth:`load`.
 
         Returns
         -------
         ReflectionData
             Self, for method chaining.
         """
-        reader = mtz.MTZReader(
-            verbose=self.verbose, column_names=column_names
-        ).read(path)
-        return self.load(reader)
+        reader = mtz.MTZReader(verbose=self.verbose, column_names=column_names).read(
+            path
+        )
+        return self.load(reader, french_wilson=french_wilson)
 
     def load_cif(self, path: str, data_block: Optional[str] = None) -> "ReflectionData":
         """
@@ -484,7 +546,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         print(f"  Created {actual_n_bins} resolution bins")
 
         # Initialize all flags as work set (1)
-        flags = torch.ones(n_refl, dtype=dtypes.int, device=self.device, requires_grad=False)
+        flags = torch.ones(
+            n_refl, dtype=dtypes.int, device=self.device, requires_grad=False
+        )
 
         # Sample free reflections from each bin
         total_free = 0
@@ -1312,7 +1376,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             self._calculate_resolution()
         mask = self.masks()
         return float(self.resolution[mask].min().item())
-    
+
     def get_min_res(self) -> Optional[float]:
         """
         Return minimum resolution (highest d-spacing).
@@ -1349,7 +1413,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Maximum resolution in Ångströms.
         """
         return self.get_max_res()
-
 
     def __repr__(self) -> str:
         """
@@ -1498,11 +1561,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
             F_values = F.get_data()[valid_mask]
         """
         from torch.masked import MaskedTensor
+
         hkl, F, F_sigma, rfree_flags = self.hkl, self.F, self.F_sigma, self.rfree_flags
 
         if scale:
             F, F_sigma = self.get_corrected_data()
-            
+
         if mask:
             to_mask = self.masks()
             if to_mask.sum() == 0:
@@ -1588,6 +1652,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             New ReflectionData object with selected reflections.
         """
         from dataclasses import fields as dc_fields
+
         from torchref.utils.utils import TensorMasks
 
         n_refl = len(self.hkl) if self.hkl is not None else 0
@@ -1649,7 +1714,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         neg_mask = self.F <= 0
         if torch.any(neg_mask):
             warnings.warn(
-                f"Found {neg_mask.sum().item()} non-positive F values, masking them out. This really should not happen!")
+                f"Found {neg_mask.sum().item()} non-positive F values, masking them out. This really should not happen!"
+            )
             mask |= neg_mask
         self.masks["sanity_F"] = ~mask
         # Zero out invalid values so they can't leak NaN through autograd
@@ -2032,11 +2098,195 @@ class ReflectionData(CrystalDataset, DebugMixin):
             else:
                 print(f"  {key}: type={type(value)}, value={value}")
 
+    def _build_anomalous_dataframe(self, fcalc: torch.Tensor) -> pd.DataFrame:
+        """Build a phenix-style anomalous MTZ DataFrame on the canonical ASU.
+
+        Bijvoet mates share a canonical ASU index in :attr:`hkl`; here they are
+        (a) merged by mean amplitude for the display maps / ``F-obs`` / ``F-model``
+        and (b) unstacked into ``(+)/(-)`` columns. No negative-ASU Miller
+        indices are emitted, so the display maps render normally in Coot while
+        the anomalous columns are available for anomalous difference maps.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor
+            Complex per-row structure factors evaluated at the *signed* HKL
+            (``hkl_for_sf``), row-aligned with :attr:`hkl`.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per unique canonical ASU reflection.
+        """
+        if fcalc is None or not torch.is_complex(fcalc):
+            raise ValueError("anomalous=True requires a complex fcalc tensor")
+        if self.friedel_flags is None:
+            raise ValueError(
+                "anomalous output requires canonicalized data with friedel_flags; "
+                "load via load_mtz so Friedel bookkeeping is populated."
+            )
+
+        hkl = self.hkl.detach().cpu()
+        N = hkl.shape[0]
+        flag = self.friedel_flags.detach().cpu()
+
+        # Group rows by unique canonical ASU index; inverse maps row -> group.
+        uniq, inverse = torch.unique(hkl, dim=0, return_inverse=True)
+        M = uniq.shape[0]
+
+        # The (+) member is the unconjugated row, (-) is the Friedel-flagged row.
+        arange = torch.arange(N)
+        plus_idx = torch.full((M,), -1, dtype=torch.long)
+        minus_idx = torch.full((M,), -1, dtype=torch.long)
+        # A Bijvoet mate only counts as present if it is a real, positive
+        # observation. Stacked anomalous input (rs.stack_anomalous) carries a
+        # row for every *absent* mate with a NaN intensity, which French-Wilson
+        # maps to F=0; pairing such a phantom with its observed mate would yield
+        # a spurious ANOM = |F_obs - 0| = |F_obs| -- the whole amplitude, not a
+        # Bijvoet difference. Gate membership on the same validity convention as
+        # sanitize_F (finite, positive F and finite sigma) so single-mate
+        # reflections drop to NaN ANOM/PANOM, matching phenix.
+        F_cpu = self.F.detach().cpu()
+        observed = torch.isfinite(F_cpu) & (F_cpu > 0)
+        if self.F_sigma is not None:
+            observed = observed & torch.isfinite(self.F_sigma.detach().cpu())
+        plus_sel = (~flag) & observed
+        minus_sel = flag & observed
+        plus_idx[inverse[plus_sel]] = arange[plus_sel]
+        minus_idx[inverse[minus_sel]] = arange[minus_sel]
+        has_plus = (plus_idx >= 0).numpy()
+        has_minus = (minus_idx >= 0).numpy()
+        pi = plus_idx.clamp(min=0).numpy()
+        mi = minus_idx.clamp(min=0).numpy()
+
+        # Centric flags per ASU group (centrics obey Friedel's law: F(+)=F(-)).
+        cen_full = self.centric
+        centric = np.zeros(M, dtype=bool)
+        if cen_full is not None:
+            cen_full = cen_full.detach().cpu().numpy()
+            centric[has_plus] = cen_full[pi][has_plus]
+            centric[has_minus] = cen_full[mi][has_minus]
+
+        fc = fcalc.detach().cpu().numpy()
+        Fc_amp = np.abs(fc)
+        Fc_ph = np.angle(fc, deg=True)
+        F = self.F.detach().cpu().numpy()
+        Fsig = self.F_sigma.detach().cpu().numpy() if self.F_sigma is not None else None
+        rfree = (
+            self.rfree_flags.detach().cpu().numpy().astype(int)
+            if self.rfree_flags is not None
+            else None
+        )
+
+        def plus_of(src):
+            out = np.full(M, np.nan, dtype=np.float64)
+            out[has_plus] = src[pi][has_plus]
+            return out
+
+        def minus_of(src):
+            out = np.full(M, np.nan, dtype=np.float64)
+            out[has_minus] = src[mi][has_minus]
+            return out
+
+        # Raw (+/-) values before centric mirroring (used for the merged mean).
+        Fobs_p, Fobs_m = plus_of(F), minus_of(F)
+        Fmod_p, Fmod_m = plus_of(Fc_amp), minus_of(Fc_amp)
+        Phi_p, Phi_m = plus_of(Fc_ph), minus_of(Fc_ph)
+
+        def mirror_centric(plus, minus):
+            # For centrics, the absent mate equals the present one.
+            p = np.where(centric & ~np.isfinite(plus) & np.isfinite(minus), minus, plus)
+            m = np.where(centric & ~np.isfinite(minus) & np.isfinite(plus), plus, minus)
+            return p, m
+
+        Fobs_p_out, Fobs_m_out = mirror_centric(Fobs_p, Fobs_m)
+        Fmod_p_out, Fmod_m_out = mirror_centric(Fmod_p, Fmod_m)
+        Phi_p_out, Phi_m_out = mirror_centric(Phi_p, Phi_m)
+
+        # Merged display quantities: mean observed amplitude over present mates,
+        # and the ASU representative structure factor (the + member, else the
+        # conjugate of the - member). Groups with neither mate observed average
+        # to NaN (an expected "empty slice"); they are nan_to_num'd below.
+        with warnings.catch_warnings(), np.errstate(invalid="ignore"):
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            Fobs_disp = np.nanmean(np.vstack([Fobs_p, Fobs_m]), axis=0)
+        fc_disp = np.full(M, np.nan, dtype=complex)
+        fc_disp[has_plus] = fc[pi][has_plus]
+        only_minus = has_minus & ~has_plus
+        fc_disp[only_minus] = np.conj(fc[mi])[only_minus]
+
+        Fc_disp_amp = np.abs(fc_disp)
+        ph_disp = np.angle(fc_disp, deg=True)
+
+        # Map coefficients (same convention as the legacy per-row path).
+        two_mfo = np.abs(2.0 * Fobs_disp - Fc_disp_amp)
+        mfo_complex = Fobs_disp * np.exp(1j * np.deg2rad(ph_disp)) - fc_disp
+        delf = np.abs(mfo_complex)
+        delph = np.angle(mfo_complex, deg=True)
+
+        # Anomalous difference map coefficients. The anomalous-difference Fourier
+        # uses the signed Bijvoet difference dF = |F(+)| - |F(-)| with phase
+        # (phi_model - 90deg); peaks then fall on the anomalous scatterers
+        # (verified against the Zn site of thermolysin: phi-90 gives +2.6 sigma,
+        # phi+90 gives a -2.6 sigma hole). We store this in the phenix convention:
+        # ANOM = |dF| (always positive) and the sign of dF is carried by a 180deg
+        # phase flip in PANOM, so the (-) member maps to phi-270 (= phi+90). The
+        # product ANOM*exp(i*PANOM) then reproduces the signed dF*exp(i(phi-90)).
+        anom = Fobs_p_out - Fobs_m_out
+        panom = np.where(anom < 0.0, ph_disp - 270.0, ph_disp - 90.0)
+        anom = np.abs(anom)
+        # Centrics obey Friedel's law even under anomalous scattering, so their
+        # Bijvoet difference is exactly zero; any measured value is noise that
+        # inflates the anomalous-map RMS and depresses peak sigma levels. Phenix
+        # omits centrics from ANOM/PANOM entirely -- match that.
+        anom[centric] = np.nan
+        panom[centric] = np.nan
+
+        uniq_np = uniq.numpy()
+        data = {
+            "H": uniq_np[:, 0],
+            "K": uniq_np[:, 1],
+            "L": uniq_np[:, 2],
+            "F-obs": Fobs_disp,
+            "F-obs(+)": Fobs_p_out,
+            "F-obs(-)": Fobs_m_out,
+            "F-model": Fc_disp_amp,
+            "PH-model": ph_disp,
+            "F-model(+)": Fmod_p_out,
+            "PHIF-model(+)": Phi_p_out,
+            "F-model(-)": Fmod_m_out,
+            "PHIF-model(-)": Phi_m_out,
+            "FWT": two_mfo,
+            "PHWT": ph_disp,
+            "DELFWT": delf,
+            "PHDELWT": delph,
+            "ANOM": anom,
+            "PANOM": panom,
+        }
+        if Fsig is not None:
+            data["SIGF-obs(+)"], data["SIGF-obs(-)"] = mirror_centric(
+                plus_of(Fsig), minus_of(Fsig)
+            )
+        if rfree is not None:
+            rf = np.zeros(M, dtype=int)
+            rf[has_minus] = rfree[mi][has_minus]
+            rf[has_plus] = rfree[pi][has_plus]  # both mates share a flag
+            data["R-free-flags"] = rf
+
+        # The display-map / merged columns must be FFT-safe (no NaN); the
+        # anomalous (+/-) columns may legitimately carry NaN where a mate is
+        # absent (incomplete anomalous data), matching phenix output.
+        for key in ("F-obs", "F-model", "PH-model", "FWT", "PHWT", "DELFWT", "PHDELWT"):
+            data[key] = np.nan_to_num(data[key], nan=0.0)
+
+        return pd.DataFrame(data)
+
     def write_mtz(
         self,
         fname: str,
         fcalc: Optional[torch.Tensor] = None,
         model_ft: Optional["ModelFT"] = None,
+        anomalous: bool = False,
     ) -> None:
         """
         Write reflection data to MTZ file with optional map coefficients.
@@ -2050,6 +2300,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             If provided, computes phases and map coefficients.
         model_ft : ModelFT, optional
             ModelFT object to compute fcalc if not provided.
+        anomalous : bool, optional
+            If True, write a phenix-style anomalous MTZ on the canonical ASU:
+            display maps (FWT/PHWT, DELFWT/PHDELWT) and merged F-obs/F-model
+            with Friedel mates merged by mean amplitude, plus unstacked
+            F-obs(+/-), SIGF-obs(+/-), F-model(+/-), PHIF-model(+/-) and
+            ANOM/PANOM columns. No negative-ASU indices are emitted. Default
+            False (legacy per-row layout).
 
         Notes
         -----
@@ -2075,6 +2332,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
             data.write_mtz('output.mtz', fcalc=fcalc)
         """
         from torchref.io.mtz import write
+
+        if anomalous:
+            # Signed HKL preserves the anomalous/Bijvoet difference (see
+            # hkl_for_sf) so the two mates get distinct F-model.
+            if fcalc is None and model_ft is not None:
+                fcalc = model_ft.forward(self.hkl_for_sf())
+            df = self._build_anomalous_dataframe(fcalc)
+            write(df, self.cell.data, self.spacegroup, fname)
+            if self.verbose > 0:
+                print(f"✓ Wrote phenix-style anomalous MTZ: {fname}")
+                print(f"  ASU reflections: {len(df)}")
+                print(f"  Columns: {', '.join(df.columns)}")
+            return
 
         # Convert data to numpy for DataFrame creation
         hkl_np = self.hkl.detach().cpu().numpy()
@@ -2263,7 +2533,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
 
         max_res = self.resolution.min().item()
-        possible_hkl = generate_possible_hkl(self.cell.data, max_res, device=self.device)
+        possible_hkl = generate_possible_hkl(
+            self.cell.data, max_res, device=self.device
+        )
 
         return possible_hkl
 
@@ -2754,14 +3026,25 @@ class ReflectionData(CrystalDataset, DebugMixin):
         )
 
         # Reorder all fields using __select__
-        result = self.__select__(sort_indices, op=f"canonicalize(include_friedel={include_friedel})")
+        result = self.__select__(
+            sort_indices, op=f"canonicalize(include_friedel={include_friedel})"
+        )
 
         # Overwrite HKL with canonical form (already sorted)
         result.hkl = canonical_hkl
 
         # Fix phases: phi_new = where(friedel, -phi_old, phi_old) + phase_shift
         if result.phase is not None:
-            result.phase = torch.where(friedel_flags, -result.phase, result.phase) + phase_shifts
+            result.phase = (
+                torch.where(friedel_flags, -result.phase, result.phase) + phase_shifts
+            )
+
+        # Record anomalous bookkeeping for the canonical result (the stale values
+        # carried over by __select__ are recomputed here). See hkl_for_sf.
+        result.friedel_flags = friedel_flags
+        result.hkl_anomalous = torch.where(
+            friedel_flags.unsqueeze(-1), -canonical_hkl, canonical_hkl
+        )
 
         # Recalculate resolution from canonical HKL + cell
         if result.cell is not None:
@@ -2933,12 +3216,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         self.U_aniso = U
 
         return U
-    
+
     def setup_anisotropy(
         self,
         U_aniso: Optional[torch.Tensor] = None,
     ) -> None:
-        
         """
         Setup anisotropy correction parameters.
         Parameters
@@ -2949,9 +3231,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
 
         if U_aniso is None:
-            U_aniso = torch.zeros(6, device=self.device, dtype=dtypes.float, requires_grad=False)
+            U_aniso = torch.zeros(
+                6, device=self.device, dtype=dtypes.float, requires_grad=False
+            )
         else:
-            U_aniso = U_aniso.to(device=self.device, dtype=dtypes.float, requires_grad=False)
+            U_aniso = U_aniso.to(
+                device=self.device, dtype=dtypes.float, requires_grad=False
+            )
         self.U_aniso = U_aniso
 
         return self
@@ -3001,9 +3287,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         sigma = self.F_sigma
         # Apply correction
         F_corrected = apply_anisotropy_correction(F, s_vectors, U_aniso)
-        sigma_F_corrected = apply_anisotropy_correction(
-            sigma, s_vectors, U_aniso
-        ) if sigma is not None else None
+        sigma_F_corrected = (
+            apply_anisotropy_correction(sigma, s_vectors, U_aniso)
+            if sigma is not None
+            else None
+        )
 
         return F_corrected, sigma_F_corrected
 
@@ -3082,7 +3370,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 self.fit_anisotropy(
                     n_shells=n_shells, d_min=d_min, d_max=d_max, verbose=verbose
                 )
-            F_squared = self.apply_anisotropy_correction()[0] ** 2 
+            F_squared = self.apply_anisotropy_correction()[0] ** 2
         else:
             F_squared = self.F**2
 
@@ -3108,7 +3396,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     def setup_scale(self, scale: Optional[float] = None) -> float:
         """
-        Set overall scale factor, parametrized in log space. 
+        Set overall scale factor, parametrized in log space.
 
         Parameters
         ----------
@@ -3122,9 +3410,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
             The scale factor applied.
         """
         if scale is None:
-            self.log_scale = torch.tensor(0.0, device=self.device, requires_grad=False, dtype=dtypes.float)
+            self.log_scale = torch.tensor(
+                0.0, device=self.device, requires_grad=False, dtype=dtypes.float
+            )
         else:
-            self.log_scale = torch.log(torch.tensor(scale, device=self.device, requires_grad=False, dtype=dtypes.float))
+            self.log_scale = torch.log(
+                torch.tensor(
+                    scale, device=self.device, requires_grad=False, dtype=dtypes.float
+                )
+            )
         return self
 
     def get_corrected_data(self) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -3149,7 +3443,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         F_sigma_scaled = F_sigma_corrected * scale_factor
 
         return F_scaled, F_sigma_scaled
-    
+
     def parameters(self) -> List[Parameter]:
         """
         Get list of learnable parameters for optimization.

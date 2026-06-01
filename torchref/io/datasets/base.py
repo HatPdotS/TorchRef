@@ -64,6 +64,13 @@ class CrystalDataset(DeviceMovementMixin):
     phase: Optional[torch.Tensor] = None  # Phases in radians (N,)
     fom: Optional[torch.Tensor] = None  # Figure of merit (N,)
     _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool
+    # Anomalous (Bijvoet) bookkeeping, populated during canonicalization:
+    #   friedel_flags: True where the canonical mapping conjugated a Friedel mate
+    #   hkl_anomalous: signed Miller indices (canonical for +, negated for flagged
+    #     mates) used for structure-factor evaluation so the two members of a
+    #     Bijvoet pair get distinct |F_calc|. self.hkl stays the canonical ASU index.
+    friedel_flags: Optional[torch.Tensor] = None  # (N,), bool
+    hkl_anomalous: Optional[torch.Tensor] = None  # (N, 3), int32
 
     # === E-value and anisotropy correction fields ===
     E: Optional[torch.Tensor] = None  # E-values (N,)

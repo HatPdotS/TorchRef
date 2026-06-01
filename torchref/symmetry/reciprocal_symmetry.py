@@ -1465,6 +1465,23 @@ def canonicalize_hkl(
                 friedel_np[global_idx_f] = True
                 remaining[global_idx_f] = False
 
+    # Every reflection must have been assigned a canonical representative.
+    # ``canonical_np``/``op_idx`` start as uninitialized ``np.empty`` buffers, so
+    # any unmapped row would otherwise propagate garbage Miller indices and phase
+    # shifts (silent corruption). This happens with ``include_friedel=False`` for
+    # the Friedel/"minus" half of reflections, which has no pure-rotation
+    # representative in the Laue-based CCP4 reciprocal ASU. Fail loudly instead.
+    if remaining.any():
+        n_unmapped = int(remaining.sum())
+        example = hkl_np[np.where(remaining)[0][0]].tolist()
+        raise ValueError(
+            f"canonicalize_hkl could not map {n_unmapped} reflection(s) to the "
+            f"reciprocal ASU of space group {sg_obj} "
+            f"(include_friedel={include_friedel}); e.g. hkl={example}. With "
+            f"include_friedel=False the Friedel half of reciprocal space has no "
+            f"pure-rotation representative in the Laue-based CCP4 ASU."
+        )
+
     # --- Compute phase shifts vectorially ---
     # phase_shift[i] = 2*pi * hkl_orig[i] . translations[op_idx[i]]
     t_selected = translations_np[op_idx]  # (N, 3)

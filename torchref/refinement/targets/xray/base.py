@@ -221,7 +221,7 @@ class XrayTarget(DataTarget):
         if fcalc is not None:
             F_calc = self.get_F_calc_scaled(fcalc=fcalc)
         else:
-            F_calc = self.get_F_calc_scaled(self._data.hkl, recalc=False)
+            F_calc = self.get_F_calc_scaled(self._data.hkl_for_sf(), recalc=False)
 
         F_calc_sel = torch.where(mask, F_calc, torch.zeros_like(F_calc))
         return F_obs_sel, F_calc_sel, sigma_sel, centric_sel, mask
