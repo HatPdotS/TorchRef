@@ -2140,7 +2140,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             else:
                 print(f"  {key}: type={type(value)}, value={value}")
 
-    def _build_anomalous_dataframe(self, fcalc: torch.Tensor) -> pd.DataFrame:
+    def _build_anomalous_dataframe(
+        self, fcalc: Optional[torch.Tensor] = None
+    ) -> pd.DataFrame:
         """Build a phenix-style anomalous MTZ DataFrame on the canonical ASU.
 
         Bijvoet mates share a canonical ASU index in :attr:`hkl`; here they are
@@ -2151,17 +2153,22 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Parameters
         ----------
-        fcalc : torch.Tensor
+        fcalc : torch.Tensor, optional
             Complex per-row structure factors evaluated at the *signed* HKL
-            (``hkl_for_sf``), row-aligned with :attr:`hkl`.
+            (``hkl_for_sf``), row-aligned with :attr:`hkl`. If None, only the
+            observation columns (``F-obs``, ``F-obs(+/-)``, ``SIGF-obs(+/-)``,
+            R-free) are written -- the model-derived columns (``F-model``,
+            ``PHIF-model``, display maps and ``ANOM``/``PANOM``, which need the
+            model phase) are omitted.
 
         Returns
         -------
         pandas.DataFrame
             One row per unique canonical ASU reflection.
         """
-        if fcalc is None or not torch.is_complex(fcalc):
-            raise ValueError("anomalous=True requires a complex fcalc tensor")
+        if fcalc is not None and not torch.is_complex(fcalc):
+            raise ValueError("anomalous fcalc, when provided, must be complex")
+        has_model = fcalc is not None
         if self.friedel_flags is None:
             raise ValueError(
                 "anomalous output requires canonicalized data with friedel_flags; "
@@ -2209,9 +2216,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
             centric[has_plus] = cen_full[pi][has_plus]
             centric[has_minus] = cen_full[mi][has_minus]
 
-        fc = fcalc.detach().cpu().numpy()
-        Fc_amp = np.abs(fc)
-        Fc_ph = np.angle(fc, deg=True)
+        if has_model:
+            fc = fcalc.detach().cpu().numpy()
+            Fc_amp = np.abs(fc)
+            Fc_ph = np.angle(fc, deg=True)
         F = self.F.detach().cpu().numpy()
         Fsig = self.F_sigma.detach().cpu().numpy() if self.F_sigma is not None else None
         rfree = (
@@ -2230,59 +2238,21 @@ class ReflectionData(CrystalDataset, DebugMixin):
             out[has_minus] = src[mi][has_minus]
             return out
 
-        # Raw (+/-) values before centric mirroring (used for the merged mean).
-        Fobs_p, Fobs_m = plus_of(F), minus_of(F)
-        Fmod_p, Fmod_m = plus_of(Fc_amp), minus_of(Fc_amp)
-        Phi_p, Phi_m = plus_of(Fc_ph), minus_of(Fc_ph)
-
         def mirror_centric(plus, minus):
             # For centrics, the absent mate equals the present one.
             p = np.where(centric & ~np.isfinite(plus) & np.isfinite(minus), minus, plus)
             m = np.where(centric & ~np.isfinite(minus) & np.isfinite(plus), plus, minus)
             return p, m
 
+        # Observed (+/-) amplitudes (always available, no model required).
+        Fobs_p, Fobs_m = plus_of(F), minus_of(F)
         Fobs_p_out, Fobs_m_out = mirror_centric(Fobs_p, Fobs_m)
-        Fmod_p_out, Fmod_m_out = mirror_centric(Fmod_p, Fmod_m)
-        Phi_p_out, Phi_m_out = mirror_centric(Phi_p, Phi_m)
 
-        # Merged display quantities: mean observed amplitude over present mates,
-        # and the ASU representative structure factor (the + member, else the
-        # conjugate of the - member). Groups with neither mate observed average
-        # to NaN (an expected "empty slice"); they are nan_to_num'd below.
+        # Merged observed amplitude: mean over present mates. Groups with neither
+        # mate observed average to NaN (expected "empty slice"); nan_to_num'd below.
         with warnings.catch_warnings(), np.errstate(invalid="ignore"):
             warnings.simplefilter("ignore", category=RuntimeWarning)
             Fobs_disp = np.nanmean(np.vstack([Fobs_p, Fobs_m]), axis=0)
-        fc_disp = np.full(M, np.nan, dtype=complex)
-        fc_disp[has_plus] = fc[pi][has_plus]
-        only_minus = has_minus & ~has_plus
-        fc_disp[only_minus] = np.conj(fc[mi])[only_minus]
-
-        Fc_disp_amp = np.abs(fc_disp)
-        ph_disp = np.angle(fc_disp, deg=True)
-
-        # Map coefficients (same convention as the legacy per-row path).
-        two_mfo = np.abs(2.0 * Fobs_disp - Fc_disp_amp)
-        mfo_complex = Fobs_disp * np.exp(1j * np.deg2rad(ph_disp)) - fc_disp
-        delf = np.abs(mfo_complex)
-        delph = np.angle(mfo_complex, deg=True)
-
-        # Anomalous difference map coefficients. The anomalous-difference Fourier
-        # uses the signed Bijvoet difference dF = |F(+)| - |F(-)| with phase
-        # (phi_model - 90deg); peaks then fall on the anomalous scatterers
-        # (verified against the Zn site of thermolysin: phi-90 gives +2.6 sigma,
-        # phi+90 gives a -2.6 sigma hole). We store this in the phenix convention:
-        # ANOM = |dF| (always positive) and the sign of dF is carried by a 180deg
-        # phase flip in PANOM, so the (-) member maps to phi-270 (= phi+90). The
-        # product ANOM*exp(i*PANOM) then reproduces the signed dF*exp(i(phi-90)).
-        anom = Fobs_p_out - Fobs_m_out
-        panom = np.where(anom < 0.0, ph_disp - 270.0, ph_disp - 90.0)
-        anom = np.abs(anom)
-        # Centrics obey Friedel's law even under anomalous scattering, so their
-        # Bijvoet difference is exactly zero; any measured value is noise that
-        # inflates the anomalous-map RMS and depresses peak sigma levels. Phenix
-        # omits centrics from ANOM/PANOM entirely -- match that.
-        anom[centric] = np.nan
-        panom[centric] = np.nan
 
         uniq_np = uniq.numpy()
         data = {
@@ -2292,19 +2262,69 @@ class ReflectionData(CrystalDataset, DebugMixin):
             "F-obs": Fobs_disp,
             "F-obs(+)": Fobs_p_out,
             "F-obs(-)": Fobs_m_out,
-            "F-model": Fc_disp_amp,
-            "PH-model": ph_disp,
-            "F-model(+)": Fmod_p_out,
-            "PHIF-model(+)": Phi_p_out,
-            "F-model(-)": Fmod_m_out,
-            "PHIF-model(-)": Phi_m_out,
-            "FWT": two_mfo,
-            "PHWT": ph_disp,
-            "DELFWT": delf,
-            "PHDELWT": delph,
-            "ANOM": anom,
-            "PANOM": panom,
         }
+        # Columns that must be FFT-safe (no NaN). Model/map columns are appended
+        # to this list only when a model is supplied.
+        fft_safe = ["F-obs"]
+
+        if has_model:
+            Fmod_p, Fmod_m = plus_of(Fc_amp), minus_of(Fc_amp)
+            Phi_p, Phi_m = plus_of(Fc_ph), minus_of(Fc_ph)
+            Fmod_p_out, Fmod_m_out = mirror_centric(Fmod_p, Fmod_m)
+            Phi_p_out, Phi_m_out = mirror_centric(Phi_p, Phi_m)
+
+            # ASU representative structure factor: the + member, else the
+            # conjugate of the - member.
+            fc_disp = np.full(M, np.nan, dtype=complex)
+            fc_disp[has_plus] = fc[pi][has_plus]
+            only_minus = has_minus & ~has_plus
+            fc_disp[only_minus] = np.conj(fc[mi])[only_minus]
+
+            Fc_disp_amp = np.abs(fc_disp)
+            ph_disp = np.angle(fc_disp, deg=True)
+
+            # Map coefficients (same convention as the legacy per-row path).
+            two_mfo = np.abs(2.0 * Fobs_disp - Fc_disp_amp)
+            mfo_complex = Fobs_disp * np.exp(1j * np.deg2rad(ph_disp)) - fc_disp
+            delf = np.abs(mfo_complex)
+            delph = np.angle(mfo_complex, deg=True)
+
+            # Anomalous difference map coefficients. The anomalous-difference
+            # Fourier uses the signed Bijvoet difference dF = |F(+)| - |F(-)| with
+            # phase (phi_model - 90deg); peaks then fall on the anomalous
+            # scatterers (verified against the Zn site of thermolysin: phi-90 gives
+            # +2.6 sigma, phi+90 gives a -2.6 sigma hole). Stored in the phenix
+            # convention: ANOM = |dF| (always positive) and the sign of dF is
+            # carried by a 180deg phase flip in PANOM, so the (-) member maps to
+            # phi-270 (= phi+90). The product ANOM*exp(i*PANOM) then reproduces the
+            # signed dF*exp(i(phi-90)).
+            anom = Fobs_p_out - Fobs_m_out
+            panom = np.where(anom < 0.0, ph_disp - 270.0, ph_disp - 90.0)
+            anom = np.abs(anom)
+            # Centrics obey Friedel's law even under anomalous scattering, so their
+            # Bijvoet difference is exactly zero; any measured value is noise that
+            # inflates the anomalous-map RMS. Phenix omits centrics -- match that.
+            anom[centric] = np.nan
+            panom[centric] = np.nan
+
+            data.update(
+                {
+                    "F-model": Fc_disp_amp,
+                    "PH-model": ph_disp,
+                    "F-model(+)": Fmod_p_out,
+                    "PHIF-model(+)": Phi_p_out,
+                    "F-model(-)": Fmod_m_out,
+                    "PHIF-model(-)": Phi_m_out,
+                    "FWT": two_mfo,
+                    "PHWT": ph_disp,
+                    "DELFWT": delf,
+                    "PHDELWT": delph,
+                    "ANOM": anom,
+                    "PANOM": panom,
+                }
+            )
+            fft_safe += ["F-model", "PH-model", "FWT", "PHWT", "DELFWT", "PHDELWT"]
+
         if Fsig is not None:
             data["SIGF-obs(+)"], data["SIGF-obs(-)"] = mirror_centric(
                 plus_of(Fsig), minus_of(Fsig)
@@ -2318,7 +2338,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # The display-map / merged columns must be FFT-safe (no NaN); the
         # anomalous (+/-) columns may legitimately carry NaN where a mate is
         # absent (incomplete anomalous data), matching phenix output.
-        for key in ("F-obs", "F-model", "PH-model", "FWT", "PHWT", "DELFWT", "PHDELWT"):
+        for key in fft_safe:
             data[key] = np.nan_to_num(data[key], nan=0.0)
 
         return pd.DataFrame(data)
