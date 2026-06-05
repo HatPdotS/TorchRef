@@ -908,13 +908,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     def get_rfactor(self):
         return self.scaler.rfactor()
 
-    def update_outliers(self, z_threshold=4.0):
-        with torch.no_grad():
-            self.reflection_data = self.reflection_data.update_outliers(
-                self.model, self.scaler, z_threshold=z_threshold
-            )
-            self.setup_scaler()
-
     def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
         import matplotlib.pyplot as plt
 

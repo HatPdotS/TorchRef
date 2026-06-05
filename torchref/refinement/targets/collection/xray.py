@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Dict
 import numpy as np
 import torch
 
-from torchref.base.targets.xray_ml_sigmaa import ml_xray_loss_alpha_beta_math
+from torchref.base.targets.xray_ml_sigmaa import ml_xray_loss_beta_math
 from torchref.refinement.targets.base import Target
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
@@ -301,22 +301,22 @@ class CollectionMLSigmaATarget(Target):
     The collection analogue of
     :class:`~torchref.refinement.targets.xray.maximum_likelihood_sigmaa.MaximumLikelihoodSigmaAXrayTarget`:
     instead of ``beta = sigma**2`` (plain Rice), it uses one **shared** Luzzati
-    α/β estimated by the (collection) scaler across all datasets
-    (``scaler.get_alpha_beta()``).  Because the datasets share the common HKL
-    set, the single per-reflection α/β applies to every dataset.
+    model-error variance ``beta`` estimated by the (collection) scaler across all
+    datasets (``scaler.get_beta()``).  Because the datasets share the common HKL
+    set, the single per-reflection ``beta`` applies to every dataset.
 
     The per-dataset loss is the Read MLF form
-    (``mean = alpha*|Fc|``, variance ``epsilon*beta``) from
-    :func:`torchref.base.targets.xray_ml_sigmaa.ml_xray_loss_alpha_beta_math`,
-    summed over datasets.  α/β are detached (constants in autograd); gradients
-    reach the models only through ``F_calc``.
+    (``mean = |Fc|``, variance ``epsilon*beta``) from
+    :func:`torchref.base.targets.xray_ml_sigmaa.ml_xray_loss_beta_math`,
+    summed over datasets.  ``beta`` is detached (a constant in autograd);
+    gradients reach the models only through ``F_calc``.
 
     Parameters
     ----------
     dataset_collection : DatasetCollection
     model_collection : ModelCollection
     scaler : ScalerBase
-        Must provide ``get_alpha_beta()`` (e.g. ``CollectionScaler``).
+        Must provide ``get_beta()`` (e.g. ``CollectionScaler``).
     normalize : bool
         Unused placeholder (kept for signature parity with CollectionMLTarget).
     use_work_set : bool
@@ -368,13 +368,13 @@ class CollectionMLSigmaATarget(Target):
             return torch.tensor(0.0, device=mc.device)
 
         scaler = self._scaler
-        if scaler is None or not hasattr(scaler, "get_alpha_beta"):
+        if scaler is None or not hasattr(scaler, "get_beta"):
             raise RuntimeError(
-                "CollectionMLSigmaATarget requires a scaler with get_alpha_beta(); "
+                "CollectionMLSigmaATarget requires a scaler with get_beta(); "
                 f"got {type(scaler).__name__}."
             )
-        # One shared (alpha, beta, epsilon) for all datasets (common HKL).
-        alpha, beta, eps = scaler.get_alpha_beta()
+        # One shared (beta, epsilon) for all datasets (common HKL).
+        beta, eps = scaler.get_beta()
 
         total = torch.tensor(0.0, device=mc.device)
         for key in all_keys:
@@ -388,12 +388,9 @@ class CollectionMLSigmaATarget(Target):
             if centric is None:
                 centric = torch.zeros(len(hkl), dtype=torch.bool, device=hkl.device)
 
-            a = alpha.to(F_obs.dtype)
             b = beta.to(F_obs.dtype)
             e = eps.to(F_obs.dtype) if eps is not None else None
-            total = total + ml_xray_loss_alpha_beta_math(
-                F_obs, F_calc, a, b, centric, mask, e
-            )
+            total = total + ml_xray_loss_beta_math(F_obs, F_calc, b, centric, mask, e)
 
         # Base weight drives refinement; applied on the work set only.
         if self.use_work_set:
@@ -401,19 +398,19 @@ class CollectionMLSigmaATarget(Target):
         return total
 
     def maintenance(self) -> None:
-        """Invalidate the scaler's shared α/β so it is re-estimated from the
+        """Invalidate the scaler's shared beta so it is re-estimated from the
         updated models on the next forward (``LossState`` calls this after each
         optimizer-step block)."""
         scaler = self._scaler
-        if scaler is not None and hasattr(scaler, "reset_alpha_beta_cache"):
-            scaler.reset_alpha_beta_cache()
+        if scaler is not None and hasattr(scaler, "reset_beta_cache"):
+            scaler.reset_beta_cache()
 
     def stats(self) -> Dict[str, StatEntry]:
-        """Report shared α diagnostics (low/high-resolution shell values)."""
+        """Report shared beta diagnostics (low/high-resolution shell values)."""
         out: Dict[str, StatEntry] = {}
         scaler = self._scaler
-        ab = getattr(scaler, "alpha_per_bin", None)
-        if ab is not None and ab.numel() > 0:
-            out["alpha_bin0"] = stat(ab[0].item(), VERBOSITY_STANDARD)
-            out["alpha_binN"] = stat(ab[-1].item(), VERBOSITY_STANDARD)
+        bb = getattr(scaler, "beta_per_bin", None)
+        if bb is not None and bb.numel() > 0:
+            out["beta_bin0"] = stat(bb[0].item(), VERBOSITY_STANDARD)
+            out["beta_binN"] = stat(bb[-1].item(), VERBOSITY_STANDARD)
         return out

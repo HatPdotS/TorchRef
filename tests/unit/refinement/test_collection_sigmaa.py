@@ -1,7 +1,7 @@
 """Integration test for the collection (multi-dataset) σ_A path.
 
 Builds a minimal 2-dataset collection (dark + one timepoint) from 1DAW and
-checks (a) CollectionScaler.get_alpha_beta() returns one shared finite α/β on
+checks (a) CollectionScaler.get_beta() returns one shared finite beta on
 the common HKL, caches, and resets; (b) CollectionMLSigmaATarget.forward() is
 finite and its gradient reaches the model.
 """
@@ -41,22 +41,21 @@ class TestCollectionSigmaA:
         scaler.initialize()
         return dc, mc, scaler
 
-    def test_shared_alpha_beta(self, collection):
+    def test_shared_beta(self, collection):
         dc, mc, scaler = collection
         n = dc.hkl.shape[0]
 
-        alpha, beta, eps = scaler.get_alpha_beta()
-        assert alpha.shape[0] == n and beta.shape[0] == n
-        assert torch.isfinite(alpha).all() and torch.isfinite(beta).all()
-        assert (alpha > 0).all() and (alpha <= 1.0 + 1e-6).all()
+        beta, eps = scaler.get_beta()
+        assert beta.shape[0] == n
+        assert torch.isfinite(beta).all()
         assert (beta > 0).all()
-        # detached (constants in autograd)
-        assert not alpha.requires_grad and not beta.requires_grad
+        # detached (constant in autograd)
+        assert not beta.requires_grad
 
         # cached, and reset clears it
-        assert scaler._alpha_beta_cache is not None
-        scaler.reset_alpha_beta_cache()
-        assert scaler._alpha_beta_cache is None
+        assert scaler._beta_cache is not None
+        scaler.reset_beta_cache()
+        assert scaler._beta_cache is None
 
     def test_forward_and_gradient(self, collection):
         from torchref.refinement.targets import CollectionMLSigmaATarget
@@ -76,7 +75,7 @@ class TestCollectionSigmaA:
 
         dc, mc, scaler = collection
         target = CollectionMLSigmaATarget(dc, mc, scaler=scaler, verbose=0)
-        scaler.get_alpha_beta()
-        assert scaler._alpha_beta_cache is not None
+        scaler.get_beta()
+        assert scaler._beta_cache is not None
         target.maintenance()
-        assert scaler._alpha_beta_cache is None
+        assert scaler._beta_cache is None

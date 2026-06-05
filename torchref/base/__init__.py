@@ -183,7 +183,6 @@ from .scattering import (
     calc_scattering_factors_paramtetrization,
 )
 
-
 # Legacy scattering factor imports (from get_scattering_factor_torch)
 from .get_scattering_factor_torch import (
     calc_scattering_factors_paramtetrization as calc_scattering_factors_paramtetrization_legacy,
@@ -215,7 +214,7 @@ from .alignment import (
     compute_shell_cv,
     fit_anisotropy_correction,
     apply_anisotropy_correction,
-    F_squared_to_E_values
+    F_squared_to_E_values,
 )
 
 # =============================================================================
@@ -229,6 +228,7 @@ from .metrics import (
     bin_wise_rfactors,
     calc_outliers,
     calc_outliers_numpy,
+    binwise_scale,
     nll_xray,
     nll_xray_sum,
     nll_xray_lognormal,
@@ -255,8 +255,6 @@ from .kernels import (
     CachedRadiusMask,
     get_cached_radius_offsets,
 )
-
-
 
 # =============================================================================
 # __all__ - Public API
@@ -392,6 +390,7 @@ __all__ = [
     "rfactor",
     "get_rfactors",
     "bin_wise_rfactors",
+    "binwise_scale",
     "calc_outliers",
     "calc_outliers_numpy",
     "nll_xray",

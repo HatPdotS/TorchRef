@@ -291,27 +291,27 @@ class CollectionScaler(ScalerBase):
         return super().forward(fcalc, f_sol_override=f_sol_raw_mixed)
 
     # ------------------------------------------------------------------
-    # Maximum-likelihood alpha/beta (sigma_A) — ONE shared estimate
+    # Maximum-likelihood model-error variance beta — ONE shared estimate
     # ------------------------------------------------------------------
 
-    def get_alpha_beta(self, fcalc: torch.Tensor = None):
-        """One shared ``(alpha, beta, epsilon)`` pooled across all datasets.
+    def get_beta(self, fcalc: torch.Tensor = None):
+        """One shared ``(beta, epsilon)`` pooled across all datasets.
 
-        Overrides :meth:`ScalerBase.get_alpha_beta`. All data–model pairs share
+        Overrides :meth:`ScalerBase.get_beta`. All data–model pairs share
         the common HKL set, so a single Phenix/Lunin-Skovoroda ML estimate is
         made on the **pooled** free reflections of every pair and the resulting
-        per-bin ``alpha``/``beta`` is mapped back onto the common HKL — one
-        shared per-reflection ``alpha``/``beta`` applied to every dataset. More
-        stable than per-dataset estimates (the datasets are the same
-        crystal/model). Detached; cached until :meth:`reset_alpha_beta_cache`.
+        per-bin ``beta`` is mapped back onto the common HKL — one shared
+        per-reflection ``beta`` applied to every dataset. More stable than
+        per-dataset estimates (the datasets are the same crystal/model).
+        Detached; cached until :meth:`reset_beta_cache`.
         """
-        if self._alpha_beta_cache is not None:
-            return self._alpha_beta_cache
+        if self._beta_cache is not None:
+            return self._beta_cache
 
         from torchref.base.targets.xray_ml_sigmaa import (
             _interp_in_dss,
             epsilon_from_hkl,
-            estimate_alpha_beta,
+            estimate_beta,
         )
 
         dc = self._dataset_collection
@@ -354,10 +354,9 @@ class CollectionScaler(ScalerBase):
                 free_parts.append(free)
 
             if not fo_parts:
-                alpha = torch.full_like(dss, 0.5)
                 beta = torch.full_like(dss, 1.0)
-                self._alpha_beta_cache = (alpha, beta, eps)
-                return self._alpha_beta_cache
+                self._beta_cache = (beta, eps)
+                return self._beta_cache
 
             fo_p = torch.cat(fo_parts)
             fc_p = torch.cat(fc_parts)
@@ -366,35 +365,30 @@ class CollectionScaler(ScalerBase):
             dss_p = torch.cat(dss_parts)
             free_p = torch.cat(free_parts)
 
-            _a, _b, abin, bbin, bin_dss = estimate_alpha_beta(
-                fo_p, fc_p, cen_p, eps_p, dss_p, free_p
-            )
-            self._alpha_per_bin = abin
+            _b, bbin, bin_dss = estimate_beta(fo_p, fc_p, cen_p, eps_p, dss_p, free_p)
             self._beta_per_bin = bbin
 
-            if abin is None or bin_dss is None:
+            if bbin is None or bin_dss is None:
                 finite = torch.isfinite(fo_p)
                 mean_fo2 = (
                     (fo_p[finite] ** 2).mean() if finite.any() else fo_p.new_ones(())
                 )
-                alpha = torch.full_like(dss, 0.5)
                 beta = torch.full_like(dss, float(mean_fo2))
             else:
                 # Map the pooled per-bin estimate back onto the common HKL.
-                alpha = _interp_in_dss(dss, bin_dss, abin)
                 beta = _interp_in_dss(dss, bin_dss, bbin)
 
             # The model forwards above ran under no_grad and populated the
             # shared base-model structure-factor cache with DETACHED tensors.
             # Reset it so the subsequent grad-enabled loss forward recomputes
             # F_calc with a live graph (otherwise gradients never reach the
-            # models). Cheap: get_alpha_beta runs once per optimizer-step block.
+            # models). Cheap: get_beta runs once per optimizer-step block.
             for bm in getattr(mc, "base_models", []):
                 if hasattr(bm, "reset_cache"):
                     bm.reset_cache()
 
-            self._alpha_beta_cache = (alpha.detach(), beta.detach(), eps.detach())
-        return self._alpha_beta_cache
+            self._beta_cache = (beta.detach(), eps.detach())
+        return self._beta_cache
 
     # ------------------------------------------------------------------
     # Joint LBFGS refinement
