@@ -63,7 +63,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Default: Bhattacharyya target, joint XYZ+ADP+scaler LBFGS
+  # Default: SigmaA target, separate XYZ and ADP+scaler LBFGS
   torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
 
   # 10 refinement cycles
@@ -89,10 +89,10 @@ Examples:
     refine_group.add_argument(
         "--mode",
         type=str,
-        default="everything",
-        choices=["everything", "refine"],
+        default="separate",
+        choices=["separate", "everything"],
         help='Refinement mode: "everything" for joint XYZ+ADP+scaler LBFGS, '
-        '"refine" for separated XYZ then ADP cycles (default: "everything")',
+        '"separate" for separated XYZ then ADP cycles (default: "separate")',
     )
     refine_group.add_argument(
         "--xray-mode",
@@ -221,12 +221,13 @@ Examples:
                     "pass will run before each macro cycle.\n"
                 )
             sys.stdout.flush()
-
-        cycle_fn = (
-            refinement.refine_everything
-            if args.mode == "everything"
-            else refinement.refine
-        )
+            
+        if args.mode == "separate":
+            cycle_fn = refinement.refine
+        elif args.mode == "everything":
+            cycle_fn = refinement.refine_everything
+        else:
+            raise ValueError(f"Invalid refinement mode: {args.mode}")
 
         if args.with_rigid_body:
             for cycle in range(args.n_cycles):
