@@ -28,6 +28,8 @@ from .loss import (
     gaussian_to_lognormal_mu,
 )
 
+from .binwise_scale import binwise_scale
+
 __all__ = [
     # R-factor
     "get_rfactor_torch",
@@ -37,6 +39,7 @@ __all__ = [
     "bin_wise_rfactors",
     "calc_outliers",
     "calc_outliers_numpy",
+    "binwise_scale",
     # Loss functions
     "nll_xray",
     "nll_xray_sum",

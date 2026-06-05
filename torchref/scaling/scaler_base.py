@@ -12,7 +12,7 @@ making it suitable for use cases like:
 - Custom model implementations
 """
 
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -20,18 +20,19 @@ import torch.nn as nn
 from torchref.base.math_torch import U_to_matrix
 from torchref.base.metrics import (
     bin_wise_rfactors,
+    binwise_scale,
     get_rfactors,
     nll_xray,
     nll_xray_lognormal,
 )
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.base.targets.xray_ml_sigmaa import estimate_alpha_beta, epsilon_from_hkl
+from torchref.base.targets.xray_ml_sigmaa import epsilon_from_hkl, estimate_beta
 from torchref.config import get_complex_dtype, get_default_device, get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.utils import ModuleReference
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
+from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
@@ -119,7 +120,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             self.register_buffer("sigma_eff", None)
             self.register_buffer("sigma_eff_per_bin", None)
             self._f_sol_raw = None
-            self._init_alpha_beta_cache()
+            self._init_beta_cache()
             return
 
         # Full initialization with data
@@ -144,53 +145,47 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             "sigma_eff_per_bin",
             torch.zeros(self.nbins, device=self.device, dtype=sigma_raw.dtype),
         )
-        self._init_alpha_beta_cache()
+        self._init_beta_cache()
         if self.verbose > 0:
             print(f"Initialized ScalerBase with {self.nbins} bins.")
 
     # ------------------------------------------------------------------
-    # Maximum-likelihood alpha/beta (sigma_A), lazily cached
+    # Maximum-likelihood model-error variance beta, lazily cached
     # ------------------------------------------------------------------
 
-    def _init_alpha_beta_cache(self):
-        """Initialise the lazy alpha/beta cache attributes."""
-        self._alpha_beta_cache = None  # (alpha_refl, beta_refl, epsilon) detached
+    def _init_beta_cache(self):
+        """Initialise the lazy beta cache attributes."""
+        self._beta_cache = None  # (beta_refl, epsilon) detached
         self._epsilon_per_refl = None  # cached once (multiplicity, model-independent)
-        self._alpha_per_bin = None  # diagnostics
-        self._beta_per_bin = None
-        # "Aspirational alpha" exponent: alpha_use = alpha**alpha_sharpen, with
-        # beta following on the alpha/beta manifold (Sigma_N held fixed). 1.0 =
-        # exact Phenix ML estimate; 0.5 = sqrt(alpha) (refine toward a more
-        # correlated model). Experimental lever; see get_alpha_beta.
-        self.alpha_sharpen = 1.0
+        self._beta_per_bin = None  # diagnostics
 
-    def reset_alpha_beta_cache(self):
-        """Invalidate the cached alpha/beta so they re-estimate on next access.
+    def reset_beta_cache(self):
+        """Invalidate the cached beta so it re-estimates on next access.
 
         Called from ``MaximumLikelihoodSigmaAXrayTarget.maintenance`` (which
         ``LossState`` invokes after each optimizer-step block). Epsilon is kept
         (it is model-independent). Mirrors the ``_f_sol_raw = None`` solvent-cache
         invalidation pattern.
         """
-        self._alpha_beta_cache = None
+        self._beta_cache = None
 
-    def get_alpha_beta(self, fcalc: torch.Tensor = None):
-        """Lazily estimate and cache per-reflection ML ``(alpha, beta, epsilon)``.
+    def get_beta(self, fcalc: torch.Tensor = None):
+        """Lazily estimate and cache per-reflection ML ``(beta, epsilon)``.
 
-        ``alpha`` (mean coupling, ~sigma_A) and ``beta`` (absolute model-error
-        variance) are estimated by the Phenix/Lunin-Skovoroda ML estimator on the
-        FREE set in ~140-reflection shells, using the **scaled** ``|F_calc|``
-        (``self.forward``). Returns detached tensors; gradients never flow through
-        them. Cached until :meth:`reset_alpha_beta_cache`.
+        ``beta`` (absolute per-shell model-error variance) is estimated by the
+        Phenix/Lunin-Skovoroda ML estimator on the FREE set in ~140-reflection
+        shells, using the **scaled** ``|F_calc|`` (``self.forward``). Returns
+        detached tensors; gradients never flow through them. Cached until
+        :meth:`reset_beta_cache`.
         """
-        if self._alpha_beta_cache is not None:
-            return self._alpha_beta_cache
+        if self._beta_cache is not None:
+            return self._beta_cache
 
         with torch.no_grad():
             if fcalc is None:
                 if not hasattr(self, "compute_fcalc"):
                     raise RuntimeError(
-                        "get_alpha_beta needs fcalc or a model-aware Scaler "
+                        "get_beta needs fcalc or a model-aware Scaler "
                         "(compute_fcalc)."
                     )
                 fcalc = self.compute_fcalc()
@@ -210,33 +205,15 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             eps = self._epsilon_per_refl
 
             dss = 4.0 * self._s_half_sq
-            alpha, beta, abin, bbin, _bdss = estimate_alpha_beta(
-                fobs, fc_amp, centric, eps, dss, free
-            )
-            self._alpha_per_bin = abin
+            beta, bbin, _bdss = estimate_beta(fobs, fc_amp, centric, eps, dss, free)
             self._beta_per_bin = bbin
 
-            # Aspirational-alpha sharpening: lift alpha toward 1 and let beta
-            # follow on the manifold beta = (1 - alpha**2) * Sigma_N (Sigma_N
-            # held fixed). g=1 is a no-op (exact Phenix estimate).
-            g = getattr(self, "alpha_sharpen", 1.0)
-            if g != 1.0:
-                a_use = torch.clamp(alpha.clamp(min=0.0) ** g, 0.0, 1.0 - 1e-4)
-                one_m = torch.clamp(1.0 - alpha**2, min=1e-6)
-                beta = beta * (1.0 - a_use**2) / one_m
-                alpha = a_use
-
-            self._alpha_beta_cache = (alpha.detach(), beta.detach(), eps.detach())
-        return self._alpha_beta_cache
-
-    @property
-    def alpha_per_bin(self):
-        """Last-estimated per-bin alpha (diagnostics); ``None`` until first call."""
-        return self._alpha_per_bin
+            self._beta_cache = (beta.detach(), eps.detach())
+        return self._beta_cache
 
     @property
     def beta_per_bin(self):
-        """Last-estimated per-bin beta (diagnostics)."""
+        """Last-estimated per-bin beta (diagnostics); ``None`` until first call."""
         return self._beta_per_bin
 
     def set_data(self, data: "ReflectionData"):
@@ -303,8 +280,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             torch.isfinite(fcalc)
         ), "Non-finite values found in fcalc during initial scale calculation."
 
-        scales = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
-        counts = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         fcalc_amp = torch.abs(fcalc).to(fobs.dtype)
 
         # Exclude reflections with negative intensities from scale calculation
@@ -319,26 +294,18 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         else:
             positive_mask = torch.ones_like(fobs, dtype=torch.bool)
 
-        # Calculate ratios only for positive intensity reflections
+        # Fit the scale on the work set, positive-intensity reflections only.
+        # binwise_scale returns the per-bin least-squares scale c_b (matching
+        # |Fc| -> |Fo|) via scatter_add; log_scale = log(c_b).
         mask = (self._data.masks() & rfree & positive_mask).to(torch.bool)
-        bins = self.bins[mask].to(torch.int64)
-
-        fobs = fobs.clamp(min=1e-3)[mask]
-        fcalc_amp = fcalc_amp.clamp(min=1e-3)[mask]
-
-        log_ratios = torch.log(fobs) - torch.log(fcalc_amp)
-        assert torch.all(
-            torch.isfinite(log_ratios)
-        ), f"Non-finite log ratios encountered in initial scale calculation {torch.sum(~torch.isfinite(log_ratios)).item()}"
-
-        # Ensure all tensors are on the same device for scatter_add
-        log_ratios = log_ratios.to(self.device)
-        bins = bins.to(self.device)
-        counts_vals = torch.ones_like(self.bins, device=self.device, dtype=fobs.dtype)
-        sum_log_scales = torch.scatter_add(scales, 0, bins, log_ratios)
-        counts = torch.scatter_add(counts, 0, bins, counts_vals)
-        log_scale = sum_log_scales / (counts + 1e-6)
-        initial_log_scale = log_scale
+        c = binwise_scale(
+            fcalc_amp,
+            fobs,
+            self.bins,
+            valid=mask,
+            nbins=self.nbins,
+        ).to(self.device)
+        initial_log_scale = torch.log(c.clamp(min=1e-6))
         if self.verbose > 1:
             print(
                 "Initial scale factors per bin:",
@@ -528,6 +495,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         """
         Calculate the R-factor between observed and calculated structure factors.
 
+        The R-factor is computed directly on the scaled amplitude
+        ``|self.forward(fcalc)|``. The scaler fits its per-bin ``log_scale`` so
+        that ``k*|Fc| ≈ Fo`` against the same loss the body sees (mean ``= |Fc|``,
+        no ``alpha`` mean-shift), so the scaled amplitude is already the
+        least-squares / REFMAC-consistent reporting scale -- no extra per-bin
+        correction is needed.
+
         Parameters
         ----------
         fcalc : torch.Tensor
@@ -545,7 +519,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             fobs = fobs.get_data()[valid]
             fcalc_scaled = fcalc_scaled[valid]
             rfree = rfree[valid]
-        return get_rfactors(torch.abs(fobs), torch.abs(fcalc_scaled), rfree)
+        F_obs = torch.abs(fobs)
+        F_calc = torch.abs(fcalc_scaled)
+        return get_rfactors(F_obs, F_calc, rfree)
 
     def bin_wise_rfactor(self, fcalc: torch.Tensor):
         """
