@@ -59,6 +59,24 @@ def test_anomalous_mtz_unstacked(anomalous_two_column_mtz):
     assert torch.equal(sf[~d.friedel_flags], d.hkl[~d.friedel_flags])
 
 
+def test_anomalous_opt_out_forces_merged(anomalous_two_column_mtz, mtz_dir):
+    """anomalous=False forces a merged load even when (+)/(-) columns are present."""
+    path, n_merged = anomalous_two_column_mtz
+
+    merged = ReflectionData(verbose=0)
+    merged.load_mtz(path, anomalous=False)
+    assert merged.friedel_merged is True
+    assert len(merged.hkl) == n_merged  # back to one row per ASU reflection
+    assert merged.F is not None and len(merged.F) == len(merged.hkl)
+    assert not bool(merged.friedel_flags.any())
+
+    # anomalous=True keeps the Bijvoet pairs (same as the auto default here).
+    forced = ReflectionData(verbose=0)
+    forced.load_mtz(path, anomalous=True)
+    assert forced.friedel_merged is False
+    assert len(forced.hkl) > n_merged
+
+
 def test_centrics_not_duplicated(anomalous_two_column_mtz):
     path, _ = anomalous_two_column_mtz
     d = ReflectionData(verbose=0)

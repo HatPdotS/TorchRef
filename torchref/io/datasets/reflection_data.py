@@ -450,6 +450,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         path: str,
         column_names: Optional[dict] = None,
         french_wilson: bool = True,
+        anomalous: Optional[bool] = None,
     ) -> "ReflectionData":
         """
         Load reflection data from MTZ file.
@@ -467,18 +468,28 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Default True. Set False to use existing French-Wilson-corrected
             ``F``/``SIGF`` columns directly when the file also carries
             intensities. See :meth:`load`.
+        anomalous : bool, optional
+            Anomalous (Bijvoet) handling. If None (default), ``F(+)/F(-)`` (or
+            ``I(+)/I(-)``) columns are auto-detected and loaded as explicit
+            Friedel pairs when present (anomalous preferred). True forces this;
+            False forces a merged load even when anomalous columns are present.
 
         Returns
         -------
         ReflectionData
             Self, for method chaining.
         """
-        reader = mtz.MTZReader(verbose=self.verbose, column_names=column_names).read(
-            path
-        )
+        reader = mtz.MTZReader(
+            verbose=self.verbose, column_names=column_names, anomalous=anomalous
+        ).read(path)
         return self.load(reader, french_wilson=french_wilson)
 
-    def load_cif(self, path: str, data_block: Optional[str] = None) -> "ReflectionData":
+    def load_cif(
+        self,
+        path: str,
+        data_block: Optional[str] = None,
+        anomalous: Optional[bool] = None,
+    ) -> "ReflectionData":
         """
         Load reflection data from CIF file.
 
@@ -489,6 +500,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         data_block : str, optional
             Specific data block name to read (e.g., 'r1vlmsf'). If None, reads
             the first data block. Useful for multi-dataset CIF files.
+        anomalous : bool, optional
+            Anomalous (Bijvoet) handling. If None (default), ``pdbx_F_plus/minus``
+            (or ``I``) columns are auto-detected and loaded as explicit Friedel
+            pairs when present (anomalous preferred). True forces this; False
+            forces a merged load (Bijvoet mates averaged) even when present.
 
         Returns
         -------
@@ -496,7 +512,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Self, for method chaining.
         """
         self.reader = cif.ReflectionCIFReader(
-            path, verbose=self.verbose, data_block=data_block
+            path, verbose=self.verbose, data_block=data_block, anomalous=anomalous
         )
         return self.load(self.reader)
 

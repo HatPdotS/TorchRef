@@ -94,6 +94,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         wavelength: Optional[float] = 1.0,
         anomalous_threshold: float = 0.5,
         french_wilson: bool = True,
+        anomalous: Optional[bool] = None,
     ):
         """
         Initialize Refinement.
@@ -125,6 +126,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Default True. Set False to use existing French-Wilson-corrected
             ``F``/``SIGF`` columns directly when the MTZ also carries
             intensities.
+        anomalous : bool, optional
+            Anomalous (Bijvoet) load preference. If None (default), anomalous
+            ``F(+)/F(-)`` (or ``I(+)/I(-)``) data are auto-detected and loaded as
+            Friedel pairs when present, enabling the model's f'' term. True forces
+            this; False forces a merged load (f'' disabled).
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -144,6 +150,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.wavelength = wavelength
         self.anomalous_threshold = anomalous_threshold
         self.french_wilson = french_wilson
+        # Anomalous (Bijvoet) load preference: None auto-detects and prefers
+        # anomalous data when present; True forces it; False forces a merged load.
+        self.anomalous = anomalous
 
         # Persistent state and logger (created lazily)
         self._loss_state: Optional[LossState] = None
@@ -184,9 +193,10 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                         data_file,
                         column_names=column_names,
                         french_wilson=self.french_wilson,
+                        anomalous=self.anomalous,
                     )
                 elif data_file.endswith(".cif"):
-                    self.reflection_data.load_cif(data_file)
+                    self.reflection_data.load_cif(data_file, anomalous=self.anomalous)
                 else:
                     raise ValueError(
                         f"Unsupported data file format: {data_file}. Supported formats are .mtz and .cif"

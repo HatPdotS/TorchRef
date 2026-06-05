@@ -126,7 +126,12 @@ class MTZReader:
         "Free",
     ]
 
-    def __init__(self, verbose: int = 0, column_names: Optional[dict] = None):
+    def __init__(
+        self,
+        verbose: int = 0,
+        column_names: Optional[dict] = None,
+        anomalous: Optional[bool] = None,
+    ):
         """
         Initialize MTZ reader.
 
@@ -138,9 +143,16 @@ class MTZReader:
             Explicit column name mapping to override automatic detection.
             Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
             Example: ``{"F": "DFo", "SIGF": "sig_DFo"}``.
+        anomalous : bool, optional
+            Controls anomalous (Bijvoet) handling. If None (default), anomalous
+            ``F(+)/F(-)`` (or ``I(+)/I(-)``) columns are auto-detected and stacked
+            into explicit Friedel pairs when present (preferring anomalous data).
+            True forces that behavior (warns if no anomalous columns exist); False
+            forces a merged load (anomalous columns, if any, are not stacked).
         """
         self.verbose = verbose
         self.column_names = column_names or {}
+        self.anomalous = anomalous
         self.data = None
         self.cell = None
         self.spacegroup = None
@@ -208,10 +220,22 @@ class MTZReader:
         does not pick a coexisting merged column (e.g. ``FMEAN``) instead of the
         stacked one. On any failure the original merged data are kept.
         """
+        if self.anomalous is False:
+            # Caller forced a merged load. If the file carries only anomalous
+            # columns (no coexisting merged column), average the pairs into merged
+            # base columns so extraction can read them.
+            self._merge_anomalous_columns()
+            return
+
         cols = list(self.mtz_data.columns)
         plus_cols = [c for c in cols if c.endswith("(+)")]
         minus_cols = [c for c in cols if c.endswith("(-)")]
         if not plus_cols or not minus_cols:
+            if self.anomalous is True and self.verbose > 0:
+                print(
+                    "   anomalous=True requested but no F(+)/F(-) columns found; "
+                    "loading merged."
+                )
             return  # no anomalous columns
         if not getattr(self.mtz_data, "merged", True):
             return  # stack_anomalous requires merged data
@@ -263,6 +287,48 @@ class MTZReader:
                 f"   Detected anomalous data; stacked Bijvoet pairs "
                 f"({len(self.mtz_data)} reflections, friedel_merged=False)."
             )
+
+    def _merge_anomalous_columns(self) -> None:
+        """Average F(+)/F(-) (and sigmas) into merged base columns (anomalous=False).
+
+        Only used when a merged load is forced. For each matched anomalous pair
+        whose stripped base name is not already a column, a merged column is
+        created: amplitudes/intensities by mean, sigmas in quadrature
+        (sqrt((s+^2 + s-^2)/4)), with the de-stacked (standard) MTZ dtype. The
+        anomalous (+)/(-) columns are then dropped. No-op when there is no
+        anomalous pair or a merged column already exists.
+        """
+        cols = list(self.mtz_data.columns)
+        plus_map = {c[:-3]: c for c in cols if c.endswith("(+)")}
+        minus_map = {c[:-3]: c for c in cols if c.endswith("(-)")}
+        bases = [b for b in plus_map if b in minus_map]
+        if not bases:
+            return
+
+        ds = self.mtz_data
+        dropped = []
+        for b in bases:
+            pcol, mcol = plus_map[b], minus_map[b]
+            dropped += [pcol, mcol]
+            if b in cols:
+                continue  # a merged column with this name already exists
+            p = ds[pcol].to_numpy(dtype="float32")
+            m = ds[mcol].to_numpy(dtype="float32")
+            mtztype = getattr(ds.dtypes[pcol], "mtztype", "")
+            with np.errstate(invalid="ignore"):
+                if mtztype in ("L", "M"):  # stddev -> quadrature combination
+                    both = np.isfinite(p) & np.isfinite(m)
+                    merged = np.where(np.isfinite(p), p, m)
+                    merged[both] = np.sqrt((p[both] ** 2 + m[both] ** 2) / 4.0)
+                else:  # amplitude / intensity -> mean over present mates
+                    merged = np.nanmean(np.vstack([p, m]), axis=0)
+            target_dtype = ds[pcol].from_friedel_dtype().dtype
+            ds[b] = merged.astype("float32")
+            ds[b] = ds[b].astype(target_dtype)
+
+        self.mtz_data = ds.drop(columns=list(dict.fromkeys(dropped)))
+        if self.verbose > 0:
+            print("   anomalous=False: averaged F(+)/F(-) into merged columns.")
 
     def __call__(self) -> Tuple[dict, np.ndarray, str]:
         """

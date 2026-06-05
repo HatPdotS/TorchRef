@@ -590,7 +590,11 @@ class ReflectionCIFReader:
     """
 
     def __init__(
-        self, filepath: str, verbose: int = 0, data_block: Optional[str] = None
+        self,
+        filepath: str,
+        verbose: int = 0,
+        data_block: Optional[str] = None,
+        anomalous: Optional[bool] = None,
     ):
         """
         Initialize and load structure factor CIF file.
@@ -605,9 +609,15 @@ class ReflectionCIFReader:
             Specific data block name to read (e.g., 'r1vlmsf').
             If None, reads the first data block. Useful for files with
             multiple datasets.
+        anomalous : bool, optional
+            Anomalous (Bijvoet) handling. If None (default), ``pdbx_F_plus/minus``
+            (or ``I``) columns are auto-detected and unstacked into explicit
+            Friedel pairs when present (anomalous preferred). True forces this;
+            False forces a merged load (Bijvoet mates averaged) even when present.
         """
         self.filepath = Path(filepath)
         self.verbose = verbose
+        self.anomalous = anomalous
         self.cif_reader = CIFReader(filepath, data_block=data_block)
         self.cif_reader.verbose = verbose
         self._validate()
@@ -1009,15 +1019,27 @@ class ReflectionCIFReader:
         result["free_flag_key"] = free_flag_key
 
         if not self._friedel_merged:
-            try:
-                result = self._expand_friedel_pairs(result)
-            except Exception as e:  # fall back to merged on any failure
-                if self.verbose > 0:
-                    print(
-                        f"Anomalous unstacking skipped ({e}); averaging F+/F- instead."
-                    )
+            # Anomalous columns were detected. Honor the caller's preference:
+            # anomalous=False forces a merged (averaged) load; otherwise unstack.
+            if self.anomalous is False:
                 result = self._merge_friedel_pairs(result)
                 self._friedel_merged = True
+            else:
+                try:
+                    result = self._expand_friedel_pairs(result)
+                except Exception as e:  # fall back to merged on any failure
+                    if self.verbose > 0:
+                        print(
+                            f"Anomalous unstacking skipped ({e}); "
+                            "averaging F+/F- instead."
+                        )
+                    result = self._merge_friedel_pairs(result)
+                    self._friedel_merged = True
+        elif self.anomalous is True and self.verbose > 0:
+            print(
+                "anomalous=True requested but no F(+)/F(-) columns found; "
+                "loading merged."
+            )
 
         return result
 
