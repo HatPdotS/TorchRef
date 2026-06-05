@@ -221,13 +221,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     f"Unsupported model file format: {pdb}. Supported formats are .pdb and .cif"
                 )
 
-            self.scaler = Scaler(
-                self.model,
-                self.reflection_data,
-                verbose=self.verbose,
-                device=self.device,
-                nbins=self.nbins,
-            )
+            self.setup_scaler()
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
             self.model._build_restraints()
@@ -245,15 +239,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 self.debug_on_error(e)
             raise e
 
-    def _init_targets(self, xray_mode: str = "bhattacharyya"):
+    def _init_targets(self, xray_mode: str = "ml_sigmaa"):
         """
         Initialize target functions.
 
         Parameters
         ----------
         xray_mode : str, optional
-            X-ray target mode. Options are 'gaussian', 'ls', 'ml', or
-            'bhattacharyya'. Default is 'bhattacharyya'.
+            X-ray target mode. Options are 'gaussian', 'ls', 'ml',
+            'ml_sigmaa', or 'bhattacharyya'. Default is 'ml_sigmaa'.
         """
         # X-ray targets (now accept model, data, scaler directly)
         self.xray_target_work = create_xray_target(
@@ -291,7 +285,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         mode : str
-            X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
+            X-ray target mode. Options: 'gaussian', 'ls', 'ml', 'ml_sigmaa', 'bhattacharyya'.
         """
         sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
         self.xray_target_work = create_xray_target(
@@ -382,7 +376,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
 
     def setup_scaler(self):
-        self.scaler = Scaler(
+        cls = getattr(self, "_scaler_class", None) or Scaler
+        self.scaler = cls(
             self.model,
             self.reflection_data,
             nbins=self.nbins,

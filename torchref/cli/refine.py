@@ -3,14 +3,15 @@
 """
 Command-line script for LBFGS crystallographic refinement using torchref.
 
-Supports the Bhattacharyya overlap target by default; Gaussian / least-squares
-/ maximum-likelihood targets remain available via ``--xray-mode``.
+Uses the maximum-likelihood σ_A (Read MLF) target by default; Bhattacharyya /
+Gaussian / least-squares / plain maximum-likelihood targets remain available
+via ``--xray-mode``.
 
 Examples
 --------
 ::
 
-    # Default: Bhattacharyya target, joint XYZ+ADP+scaler LBFGS
+    # Default: ml_sigmaa (maximum-likelihood Luzzati σ_A) target, joint XYZ+ADP+scaler LBFGS
     torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
 
     # 10 refinement cycles
@@ -19,7 +20,8 @@ Examples
     # Separated XYZ then ADP cycles
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode refine
 
-    # Legacy maximum-likelihood target
+    # Alternative targets
+    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode bhattacharyya
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
 """
 
@@ -41,9 +43,9 @@ from torchref.cli._common import (
     add_weights_arg,
     build_column_names,
     configure_unbuffered_output,
+    parse_device_str,
     parse_weights,
     register_timing,
-    parse_device_str,
     validate_files,
     write_refinement_outputs,
 )
@@ -95,11 +97,13 @@ Examples:
     refine_group.add_argument(
         "--xray-mode",
         type=str,
-        default="bhattacharyya",
-        choices=["gaussian", "ls", "ml", "bhattacharyya"],
-        help="X-ray target function. 'bhattacharyya' (default) uses the "
+        default="ml_sigmaa",
+        choices=["gaussian", "ls", "ml", "ml_sigmaa", "bhattacharyya"],
+        help="X-ray target function. 'ml_sigmaa' (default) is the "
+        "maximum-likelihood Read MLF target with a cross-validated Luzzati "
+        "sigma_A term (Phenix-style alpha/beta). 'bhattacharyya' uses the "
         "Bhattacharyya overlap loss with first-principles model error "
-        "estimation and needs no manual weight tuning.",
+        "estimation; 'ml'/'ls'/'gaussian' are simpler alternatives.",
     )
     refine_group.add_argument(
         "--sigma-m-scale",

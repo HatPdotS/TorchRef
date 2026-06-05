@@ -1,5 +1,6 @@
+from typing import TYPE_CHECKING, Optional
+
 import torch
-from typing import Optional, TYPE_CHECKING
 
 from torchref.base.targets.xray_ml import ml_xray_loss_math
 from torchref.utils.device_resolution import resolve_device
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from torchref.io import ReflectionData
     from torchref.model.model import Model
     from torchref.scaling.scaler_base import Scaler
+
 
 class MaximumLikelihoodXrayTarget(XrayTarget):
     """
@@ -41,7 +43,7 @@ def create_xray_target(
     data: "ReflectionData" = None,
     model: "Model" = None,
     scaler: "Scaler" = None,
-    mode: str = "gaussian",
+    mode: str = "ml_sigmaa",
     use_work_set: bool = True,
     sigma_mode: str = "raw",
     sigma_m_scale: float = 1.0,
@@ -61,7 +63,8 @@ def create_xray_target(
     scaler : Scaler, optional
         Reference to Scaler object.
     mode : str, optional
-        Target mode: 'gaussian', 'ls', or 'ml'. Default is 'gaussian'.
+        Target mode: 'gaussian', 'ls', 'ml', 'ml_sigmaa', or 'bhattacharyya'.
+        Default is 'ml_sigmaa' (maximum-likelihood Read MLF with Luzzati σ_A).
     use_work_set : bool, optional
         Use work set (True) or test set (False). Default is True.
     sigma_mode : str, optional
@@ -81,8 +84,12 @@ def create_xray_target(
     resolve_device(model, data, scaler, device=device)
 
     kwargs = dict(
-        data=data, model=model, scaler=scaler,
-        use_work_set=use_work_set, sigma_mode=sigma_mode, verbose=verbose,
+        data=data,
+        model=model,
+        scaler=scaler,
+        use_work_set=use_work_set,
+        sigma_mode=sigma_mode,
+        verbose=verbose,
     )
     if mode == "gaussian":
         return GaussianXrayTarget(**kwargs)
@@ -90,6 +97,10 @@ def create_xray_target(
         return LeastSquaresXrayTarget(**kwargs)
     elif mode == "ml":
         return MaximumLikelihoodXrayTarget(**kwargs)
+    elif mode == "ml_sigmaa":
+        from .maximum_likelihood_sigmaa import MaximumLikelihoodSigmaAXrayTarget
+
+        return MaximumLikelihoodSigmaAXrayTarget(**kwargs)
     elif mode == "bhattacharyya":
         from .bhattacharyya import BhattacharyyaXrayTarget
 

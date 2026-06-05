@@ -114,33 +114,34 @@ class ResolutionWeighting(BaseWeighting):
 
 class OverfittingWeighting(BaseWeighting):
     """
-    Dynamic overfitting correction based on Rfree - Rwork gap.
+    Two-sided cross-validated weight on the X-ray term, driven by the
+    Rfree - Rwork gap.
 
-    Uses R-factors (scale-invariant, per-reflection-normalized) rather
-    than NLL values, which are incomparable between work/test sets after
-    switching to summed NLLs.
+    The previous version was one-sided: it could only *add* regularization
+    (factor >= min_weight = 1) when the gap was large, so it down-weighted the
+    data on over-fit structures but did nothing on *under-fit* ones (small gap).
+    Maximum-likelihood targets like ``ml_sigmaa`` have a small gap and are
+    under-converged at w=1, which this could never fix.
 
-    When the Rfree-Rwork gap exceeds target_gap, exponentially increases
-    regularization. **The correction is applied primarily to ADP weights
-    and only weakly to geometry weights**: in crystallographic refinement,
-    overfitting is typically driven by B-factors (which have one parameter
-    per atom and relatively weak restraints) rather than coordinates
-    (which are held tightly by the geometry prior).
+    This version is **bidirectional** and acts on the **X-ray weight** (leaving
+    the geometry prior at its honest scale):
 
-    Effective correction:
-        factor = min_weight + exp(sharpness * (gap - target_gap))
-        w_adp      *= factor
-        w_geometry *= 1 + geom_share * (factor - 1)
+        w_xray = clamp( exp( sharpness * (target_gap - gap) ), w_min, w_max )
 
-    With geom_share = 0.2, only 20% of the overfitting correction is
-    applied to geometry, keeping most of the effect on ADP.
+    - ``gap < target_gap`` (under-fit)  -> ``w_xray > 1``  : fit the data harder
+    - ``gap > target_gap`` (over-fit)   -> ``w_xray < 1``  : regularize
+    - ``gap == target_gap``             -> ``w_xray == 1``
+
+    It is a feedback controller: up-weighting the data raises Rwork less than
+    Rfree, growing the gap toward ``target_gap``, so the system settles at the
+    weight whose cross-validated gap matches the target. EMA-smoothed for
+    stability and clamped to ``[w_min, w_max]``.
 
     Tunable parameters (as buffers):
-    - target_gap: R-factor gap threshold. Default 0.05 (5%).
-    - min_weight: base correction factor. Default 1.0.
-    - sharpness: exponential response steepness. Default 30.0.
-    - geom_share: fraction of correction applied to geometry. Default 1.0.
-    - smoothing: EMA smoothing factor (0-1). Default 0.8.
+    - target_gap: target Rfree-Rwork gap. Default 0.05.
+    - sharpness: exponential response steepness. Default 50.0.
+    - w_min, w_max: clamp range for the X-ray weight. Default 0.2, 15.0.
+    - smoothing: EMA smoothing factor (0-1). Default 0.5.
     """
 
     name = "overfitting_weighting"
@@ -149,21 +150,21 @@ class OverfittingWeighting(BaseWeighting):
         self,
         device: torch.device = None,
         target_gap: float = 0.05,
-        min_weight: float = 1.0,
-        sharpness: float = 30.0,
-        geom_share: float = 1.0,
-        smoothing: float = 0.8,
+        sharpness: float = 50.0,
+        w_min: float = 0.2,
+        w_max: float = 15.0,
+        smoothing: float = 0.5,
     ):
         super().__init__(device)
         self.register_buffer("target_gap", torch.tensor(target_gap))
-        self.register_buffer("min_weight", torch.tensor(min_weight))
         self.register_buffer("sharpness", torch.tensor(sharpness))
-        self.register_buffer("geom_share", torch.tensor(geom_share))
+        self.register_buffer("w_min", torch.tensor(w_min))
+        self.register_buffer("w_max", torch.tensor(w_max))
         self.register_buffer("smoothing", torch.tensor(smoothing))
         self.register_buffer("weight_reg", torch.tensor(1.0))
 
     def forward(self, state: "LossState") -> Dict[str, float]:
-        """Compute overfitting correction weights from R-factor gap."""
+        """Compute the two-sided X-ray weight from the R-factor gap."""
         rwork = state.get("rwork", 0.0)
         rfree = state.get("rfree", 0.0)
 
@@ -174,23 +175,17 @@ class OverfittingWeighting(BaseWeighting):
 
         gap = rfree - rwork
 
-        target_weight = self.min_weight + torch.exp(
-            self.sharpness * (gap - self.target_gap)
-        )
-        target_weight = target_weight.detach()
+        # Under-fit (gap < target) -> up-weight data; over-fit -> down-weight.
+        target_weight = torch.exp(
+            self.sharpness * (self.target_gap - gap)
+        ).detach()
+        target_weight = target_weight.clamp(self.w_min, self.w_max)
 
         self.weight_reg = (
             self.smoothing * self.weight_reg + (1 - self.smoothing) * target_weight
         )
 
-        adp_factor = self.weight_reg.detach().item()
-        # Apply only a share of the correction to geometry
-        geom_factor = 1.0 + self.geom_share.item() * (adp_factor - 1.0)
-
-        return {
-            "geometry": geom_factor,
-            "adp": adp_factor,
-        }
+        return {"xray": self.weight_reg.detach().item()}
 
     def stats(self, state: "LossState" = None) -> Dict[str, StatEntry]:
         if state is not None:
@@ -201,9 +196,8 @@ class OverfittingWeighting(BaseWeighting):
             rfree = 0.0
 
         return {
-            "overfitting_weight": stat(self.weight_reg.item(), VERBOSITY_ESSENTIAL),
+            "xray_weight": stat(self.weight_reg.item(), VERBOSITY_ESSENTIAL),
             "target_gap": stat(self.target_gap.item(), VERBOSITY_DEBUG),
-            "min_weight": stat(self.min_weight.item(), VERBOSITY_DEBUG),
             "sharpness": stat(self.sharpness.item(), VERBOSITY_DEBUG),
             "rwork": stat(rwork, VERBOSITY_STANDARD),
             "rfree": stat(rfree, VERBOSITY_STANDARD),
@@ -273,7 +267,8 @@ class ComponentWeighting(DeviceMixin, nn.Module):
 
         schemes_dict = {
             # "resolution": ResolutionWeighting(device),
-            "overfitting": OverfittingWeighting(device),
+            # "overfitting": OverfittingWeighting(device),  # disabled for now —
+            #   testing the corrected sigma_A estimator at pure w=1.
         }
 
         # Add manual weights if provided

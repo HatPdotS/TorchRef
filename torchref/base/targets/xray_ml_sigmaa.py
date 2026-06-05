@@ -1,0 +1,368 @@
+"""Maximum-likelihood (Read MLF) X-ray math with Luzzati ``alpha``/``beta``.
+
+This is a faithful PyTorch port of Phenix/cctbx's maximum-likelihood sigma_A
+treatment:
+
+* the **loss** (``cctbx/xray/targets/mlf.h``): per reflection the model mean is
+  ``alpha * |F_calc|`` and the conditional variance is ``epsilon * beta`` (the
+  experimental sigma is *not* added) -- ``alpha`` is the Luzzati/Read correlation
+  factor (~sigma_A when F_calc is properly scaled) and ``beta`` is the absolute
+  model-error variance in F^2 units.
+
+* the **estimator** (``mmtbx/max_lik/max_lik.h`` ``alpha_beta_est`` +
+  Lunin-Skovoroda ``solvm``): per resolution shell on the FREE set, estimate
+  ``alpha``/``beta`` by maximum likelihood (weighted moments + a root-find for the
+  ML parameter ``topt``), 3-point smooth, interpolate to every reflection.
+
+Acentric (with ``eb = epsilon * beta``)::
+
+    L = -log(2 F_o / eb) + F_o**2/eb + (alpha F_c)**2/eb - log I0(2 alpha F_o F_c / eb)
+
+Centric::
+
+    L = -0.5 log(2/(pi eb)) + F_o**2/(2eb) + (alpha F_c)**2/(2eb)
+        - log cosh(alpha F_o F_c / eb)
+
+With ``alpha=1, beta=1, epsilon=1`` (``eb=1``) this reduces to the unit-variance
+MLF (used as a reduction test). Numerical-stability tricks (``i0e`` exp-scaled
+Bessel, log-cosh shifted form, clamps) match :mod:`torchref.base.targets.xray_ml`.
+"""
+
+import math
+
+import numpy as np
+import torch
+
+# =====================================================================
+# Loss math (mean = alpha*|Fc|, variance = epsilon*beta)
+# =====================================================================
+
+
+def _ml_alpha_beta_nll_per_refl(
+    F_obs: torch.Tensor,
+    F_calc: torch.Tensor,
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    centric_flags: torch.Tensor,
+    epsilon: torch.Tensor = None,
+) -> torch.Tensor:
+    """Per-reflection NLL (NOT masked/summed). ``Sigma = epsilon * beta``."""
+    if centric_flags is None:
+        centric_flags = torch.zeros_like(F_obs, dtype=torch.bool)
+    if epsilon is None:
+        epsilon = torch.ones_like(F_obs)
+
+    F_calc_amp = torch.abs(F_calc)
+    alpha = torch.clamp(alpha, min=0.0, max=1.5)
+    beta = torch.clamp(beta, min=1e-10)
+
+    Sigma = torch.clamp(epsilon * beta, min=1e-10)
+    aFc = alpha * F_calc_amp
+
+    # --- acentric -----------------------------------------------------------
+    term1 = -torch.log(2 * F_obs / Sigma + 1e-12)
+    term2 = (F_obs**2) / Sigma
+    term3 = aFc**2 / Sigma
+    arg_bessel = torch.clamp(2 * aFc * F_obs / Sigma, max=1e6)
+    term4 = -(torch.log(torch.special.i0e(arg_bessel) + 1e-12) + arg_bessel)
+    loss_acentric = term1 + term2 + term3 + term4
+
+    # --- centric ------------------------------------------------------------
+    term1_c = -0.5 * torch.log(2 / (np.pi * Sigma) + 1e-12)
+    term2_c = (F_obs**2) / (2 * Sigma)
+    term3_c = aFc**2 / (2 * Sigma)
+    term4_c = -(aFc * F_obs) / Sigma
+    arg_exp = torch.clamp(-2 * aFc * F_obs / Sigma, min=-80.0, max=80.0)
+    term5_c = -torch.log((1 + torch.exp(arg_exp)) / 2 + 1e-12)
+    loss_centric = term1_c + term2_c + term3_c + term4_c + term5_c
+
+    return torch.where(centric_flags, loss_centric, loss_acentric)
+
+
+def ml_xray_loss_alpha_beta_math(
+    F_obs: torch.Tensor,
+    F_calc: torch.Tensor,
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    centric_flags: torch.Tensor,
+    mask: torch.Tensor,
+    epsilon: torch.Tensor = None,
+) -> torch.Tensor:
+    """Masked-sum Read-MLF loss; mean ``alpha*|Fc|``, variance ``epsilon*beta``."""
+    loss = _ml_alpha_beta_nll_per_refl(
+        F_obs, F_calc, alpha, beta, centric_flags, epsilon
+    )
+    loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
+    return (loss * mask).sum()
+
+
+# =====================================================================
+# Per-reflection epsilon (multiplicity)
+# =====================================================================
+
+
+def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
+    """Per-reflection epsilon: number of rotation symops mapping h -> +/-h.
+
+    Mirrors ``ReciprocalSymmetry.get_epsilon`` (Friedel-aware) but works directly
+    on the scattered HKL list. Returns ones if ``spacegroup`` is None or lacks
+    ``apply_to_hkl``.
+    """
+    n = hkl.shape[0]
+    ones = torch.ones(n, device=hkl.device)
+    if spacegroup is None or not hasattr(spacegroup, "apply_to_hkl"):
+        return ones
+    try:
+        with torch.no_grad():
+            Hs = spacegroup.apply_to_hkl(hkl.to(torch.float64))  # (N,3,ops)
+            h0 = hkl.to(torch.float64).unsqueeze(-1)  # (N,3,1)
+            same = (Hs == h0).all(dim=1)
+            friedel = (Hs == -h0).all(dim=1)
+            eps = (same | friedel).sum(dim=1).clamp(min=1).to(torch.get_default_dtype())
+        return eps.to(hkl.device)
+    except Exception:
+        return ones
+
+
+# =====================================================================
+# Phenix-style ML alpha/beta estimator (Lunin-Skovoroda)
+# =====================================================================
+
+
+def _fom_term(arg: torch.Tensor, centric: torch.Tensor) -> torch.Tensor:
+    """Rice figure of merit: I1/I0(2*arg) acentric, tanh(arg) centric.
+
+    Uses exp-scaled Bessel (i1e/i0e) so the exp factors cancel -> stable for
+    large arg. ``arg = topt_bin * b_j >= 0``.
+    """
+    z = torch.clamp(2.0 * arg, min=0.0, max=1e6)
+    rac = torch.special.i1e(z) / (torch.special.i0e(z) + 1e-30)
+    return torch.where(centric, torch.tanh(arg), rac)
+
+
+def estimate_alpha_beta(
+    F_obs: torch.Tensor,
+    F_calc: torch.Tensor,
+    centric: torch.Tensor,
+    epsilon: torch.Tensor,
+    d_star_sq: torch.Tensor,
+    free_mask: torch.Tensor,
+    per_bin: int = 140,
+    n_iter: int = 60,
+    sigma_a_max: float = 0.99,
+    alpha_floor: float = 0.05,
+    min_bins: int = 5,
+    min_per_bin: int = 40,
+):
+    """Maximum-likelihood per-reflection ``(alpha, beta)`` (Phenix port).
+
+    Estimates on the FREE set in equal-count resolution shells (~``per_bin``
+    reflections each), then interpolates linearly in ``d_star_sq`` to all
+    reflections. All inputs are 1-D length-N tensors; ``F_calc`` is the scaled
+    amplitude. Returns ``(alpha_per_refl, beta_per_refl, alpha_per_bin,
+    beta_per_bin, bin_dss)``. Intended to run under ``torch.no_grad()``.
+
+    Robustness over the raw Phenix recipe (per-bin moments are noisy at
+    ~140 reflections, which destabilises sparse free sets like 6A0C):
+
+    * ``min_bins``/``min_per_bin`` -- floor the bin count so sparse free sets
+      (e.g. 6A0C: ~200 free -> only 2 bins at ~140/bin, a binary
+      ``alpha=[1.2, 0.0]`` ramp with a dead high-res half) get enough shells for
+      ``alpha`` to decay smoothly. The per-bin moments are NOT smoothed: they
+      must stay mutually consistent (``C**2 <= A*B`` etc.) for the ML root-find,
+      and smoothing them independently collapses ``topt``. (Phenix smooths the
+      fitted ``topt`` afterwards, which we also do, never the moments.)
+    * ``sigma_a_max`` -- floor ``beta`` at ``(1 - sigma_a_max**2) * B`` instead
+      of letting it collapse to ~0 in (near-)saturated bins. A near-zero
+      conditional variance gives a near-infinite per-reflection weight and is
+      the source of the transient ``R_work`` blow-ups; physically the model is
+      never a perfect predictor, so ``sigma_A`` is capped just below 1.
+    """
+    device = F_obs.device
+    dtype = F_obs.dtype
+    fo_all = F_obs.reshape(-1)
+    fc_all = torch.abs(F_calc).reshape(-1)
+    cen_all = (
+        centric.reshape(-1).to(torch.bool)
+        if centric is not None
+        else torch.zeros_like(fo_all, dtype=torch.bool)
+    )
+    eps_all = (
+        epsilon.reshape(-1).to(dtype)
+        if epsilon is not None
+        else torch.ones_like(fo_all)
+    )
+    dss_all = d_star_sq.reshape(-1).to(dtype)
+
+    free_idx = torch.nonzero(free_mask.reshape(-1), as_tuple=True)[0]
+    n_free = int(free_idx.numel())
+    if n_free < 2:
+        # degenerate: no usable free set -> trivial alpha, beta=<Fo^2>
+        valid = torch.isfinite(fo_all)
+        b = (
+            (fo_all[valid] ** 2).mean()
+            if valid.any()
+            else torch.ones((), device=device, dtype=dtype)
+        )
+        alpha = torch.full_like(fo_all, 0.5)
+        beta = torch.full_like(fo_all, float(b))
+        return alpha, beta, None, None, None
+
+    # --- sort free reflections by resolution, equal-count chunks ----------
+    order = torch.argsort(dss_all[free_idx])
+    fo = fo_all[free_idx][order]
+    fc = fc_all[free_idx][order]
+    cen = cen_all[free_idx][order]
+    eps = eps_all[free_idx][order]
+    dss = dss_all[free_idx][order]
+
+    # Adaptive bin count. Aim for ~per_bin reflections/bin, but for sparse free
+    # sets (e.g. 6A0C: ~200 free) ~140/bin gives only 2 bins -> a binary
+    # alpha=[1.2, 0.0] ramp with a dead high-res half. Floor the bin count at
+    # min_bins (down to min_per_bin reflections/bin) so alpha can decay
+    # smoothly; moment smoothing keeps the smaller bins stable.
+    n_by_count = max(1, n_free // per_bin)
+    n_cap = max(1, n_free // min_per_bin)
+    n_bins = max(n_by_count, min(min_bins, n_cap))
+    seg = (torch.arange(n_free, device=device) * n_bins) // n_free  # (n_free,)
+
+    def segsum(x):
+        return torch.zeros(n_bins, device=device, dtype=dtype).scatter_add(0, seg, x)
+
+    w = torch.where(cen, torch.ones_like(fo), 2.0 * torch.ones_like(fo))
+    SUMw = segsum(w).clamp(min=1e-30)
+    fm2e = fc * fc / eps
+    fo2e = fo * fo / eps
+    bj = fo * fc / eps  # per-reflection "b_j"
+
+    A = segsum(w * fm2e) / SUMw
+    B = segsum(w * fo2e) / SUMw
+    C = segsum(w * bj) / SUMw
+    D = segsum(w * bj * bj) / SUMw
+    p = segsum(w * fm2e * fm2e) / SUMw
+    q = segsum(w * fo2e * fo2e) / SUMw
+
+    r = (p - A * A) * (q - B * B)
+    OMEGA = torch.where(
+        r > 0, (D - A * B) / torch.sqrt(r.clamp(min=1e-30)), torch.zeros_like(A)
+    )
+    wi = A * B - C * C
+    AB = (A * B).clamp(min=1e-30)
+
+    trivial = OMEGA <= 0.0
+    saturated = (wi / AB) <= 3.0e-7
+    need = (~trivial) & (~saturated)
+
+    bin_centric = cen  # per-free-reflection; FOM uses per-reflection centric
+
+    def blamm(t_bin):
+        arg = t_bin[seg] * bj
+        return segsum(w * bj * _fom_term(arg, bin_centric)) / SUMw
+
+    def funcgm(t_bin):
+        return (
+            torch.sqrt(1.0 + 4.0 * A * B * t_bin * t_bin)
+            - 1.0
+            - 2.0 * t_bin * blamm(t_bin)
+        )
+
+    # --- bracket + regula-falsi root-find for topt (vectorized over bins) ---
+    # funcgm(0)=0 and funcgm(t)>0 for large t (== at t=C/wi); the wanted root is
+    # the positive crossing in (0, C/wi) where funcgm dips negative. Mirror
+    # Phenix ``solvm``: start at t_hi=C/wi (funcgm>0), halve until funcgm<0 to
+    # bracket [t_lo (neg), t_up (pos)], then regula-falsi.
+    t_hi = (C / wi.clamp(min=1e-30)).clamp(min=1e-30)
+    t_lo = t_hi.clone()
+    t_up = t_hi.clone()
+    found = torch.zeros(n_bins, device=device, dtype=torch.bool)
+    for _ in range(n_iter):
+        still = need & (~found)
+        t_new = torch.where(still, t_lo * 0.5, t_lo)
+        f_new = funcgm(t_new)
+        now = still & (f_new < 0.0)
+        t_up = torch.where(now, t_lo, t_up)  # last positive point
+        t_lo = torch.where(still, t_new, t_lo)
+        found = found | now
+    no_root = need & (~found)  # funcgm never went negative -> topt=0
+
+    a = t_lo  # negative side
+    b = t_up  # positive side
+    topt_solved = b.clone()
+    for _ in range(n_iter):
+        fa = funcgm(a)
+        fb = funcgm(b)
+        denom = fb - fa
+        denom = torch.where(denom.abs() < 1e-30, torch.full_like(denom, 1e-30), denom)
+        t = (a * fb - b * fa) / denom
+        ft = funcgm(t)
+        pos = ft > 0.0
+        b = torch.where(found & pos, t, b)
+        a = torch.where(found & (~pos), t, a)
+        topt_solved = torch.where(found, t, topt_solved)
+
+    topt = torch.zeros(n_bins, device=device, dtype=dtype)
+    topt = torch.where(found, topt_solved, topt)  # found roots
+    topt = torch.where(no_root, torch.zeros_like(topt), topt)
+    topt = torch.where(saturated, torch.full_like(topt, 1e10), topt)
+    topt = torch.where(trivial, torch.zeros_like(topt), topt)
+
+    # 3-point smooth on topt (Phenix smooths topt before alpha/beta)
+    topt = _smooth3(topt)
+
+    # --- alpha/beta from topt (Phenix alpha_beta_in_zones) ------------------
+    tt = 2.0 * topt
+    ww = torch.sqrt(1.0 + A * B * tt * tt)
+    hbeta = B / (ww + 1.0)
+    alpha_bin = torch.sqrt((hbeta * (ww - 1.0) / A.clamp(min=1e-30)).clamp(min=0.0))
+    beta_bin = 2.0 * hbeta
+    # saturated bins: alpha -> sqrt(A/B); beta would collapse to ~0, so floor it
+    # (handled by the physical floor below) instead of the old 1e-10.
+    alpha_bin = torch.where(
+        topt >= 1e10, torch.sqrt((A / B.clamp(min=1e-30)).clamp(min=0.0)), alpha_bin
+    )
+    # trivial bins (genuinely uncorrelated shell): alpha=0, full variance beta=B.
+    alpha_bin = torch.where(topt <= 0.0, torch.zeros_like(alpha_bin), alpha_bin)
+    beta_bin = torch.where(topt <= 0.0, B, beta_bin)
+
+    # Physical model-error floor on beta: sigma_A < 1 means the conditional
+    # variance eps*beta is never ~0. beta >= (1 - sigma_a_max^2) * B caps the
+    # per-reflection weight and stops the (near-)saturated-bin blow-ups.
+    beta_floor = float(1.0 - sigma_a_max * sigma_a_max) * B
+    beta_bin = torch.maximum(beta_bin, beta_floor)
+
+    # alpha is a correlation: cap at sigma_a_max (drop the >1 regression-slope
+    # over-pull) and floor just above 0 so even an uncorrelated high-res shell
+    # keeps a weak gradient instead of going completely dead (mean=alpha*Fc=0).
+    alpha_bin = torch.nan_to_num(alpha_bin, nan=0.0).clamp(
+        min=float(alpha_floor), max=float(sigma_a_max)
+    )
+    beta_bin = torch.nan_to_num(beta_bin, nan=1.0).clamp(min=1e-10)
+
+    # bin-center resolution for interpolation
+    counts = segsum(torch.ones_like(fo)).clamp(min=1.0)
+    bin_dss = segsum(dss) / counts
+
+    alpha_refl = _interp_in_dss(dss_all, bin_dss, alpha_bin)
+    beta_refl = _interp_in_dss(dss_all, bin_dss, beta_bin)
+    return alpha_refl, beta_refl, alpha_bin, beta_bin, bin_dss
+
+
+def _smooth3(v: torch.Tensor) -> torch.Tensor:
+    """3-point moving average across bins (edge-padded)."""
+    if v.numel() < 3:
+        return v
+    pad = torch.cat([v[:1], v, v[-1:]])
+    return (pad[:-2] + pad[1:-1] + pad[2:]) / 3.0
+
+
+def _interp_in_dss(dss_all, bin_dss, vals):
+    """Linear interpolation of per-bin ``vals`` (at ``bin_dss``) to all
+    reflections by their ``d_star_sq``; clamp-to-edge outside the range."""
+    n_bins = bin_dss.numel()
+    if n_bins == 1:
+        return torch.full_like(dss_all, float(vals[0]))
+    idx = torch.searchsorted(bin_dss, dss_all).clamp(1, n_bins - 1)
+    x0 = bin_dss[idx - 1]
+    x1 = bin_dss[idx]
+    wlin = ((dss_all - x0) / (x1 - x0).clamp(min=1e-30)).clamp(0.0, 1.0)
+    return (1 - wlin) * vals[idx - 1] + wlin * vals[idx]

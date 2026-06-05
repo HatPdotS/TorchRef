@@ -149,6 +149,15 @@ class TestAnomalousMtzOutput:
         # Friedel dtype inferred for the (+/-) amplitude columns.
         assert out.dtypes["F-obs(+)"].mtztype == "G"
 
+    def test_write_without_fcalc_is_observation_only(self, anomalous_data, tmp_path):
+        """anomalous write with no model: F-obs(+/-) columns, no model/map cols."""
+        out = tmp_path / "anom_obs_only.mtz"
+        anomalous_data.write_mtz(str(out), anomalous=True)  # no fcalc/model_ft
+        cols = set(rs.read_mtz(str(out)).columns)
+        assert {"F-obs", "F-obs(+)", "F-obs(-)"} <= cols
+        for absent in ("F-model", "F-model(+)", "FWT", "DELFWT", "ANOM", "PANOM"):
+            assert absent not in cols
+
     def test_display_map_is_fft_safe(self, anomalous_data, pdb_dir, tmp_path):
         out = self._write(anomalous_data, pdb_dir, tmp_path)
         for col in ["FWT", "PHWT", "DELFWT", "PHDELWT", "F-model"]:

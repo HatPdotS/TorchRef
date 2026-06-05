@@ -15,9 +15,9 @@ Standard Refinement
 ``torchref.refine``
 ~~~~~~~~~~~~~~~~~~~
 
-LBFGS crystallographic refinement. Defaults to the Bhattacharyya overlap
-X-ray target with first-principles model uncertainty and joint
-XYZ+ADP+scaler optimisation.
+LBFGS crystallographic refinement. Defaults to the maximum-likelihood Read
+MLF X-ray target with a cross-validated Luzzati σ_A term (``ml_sigmaa``) and
+joint XYZ+ADP+scaler optimisation.
 
 .. code-block:: bash
 
@@ -31,7 +31,8 @@ and a ``refinement_history.json`` log.
 * ``-n`` number of macro cycles (default 5)
 * ``--mode`` ``everything`` (joint, default) or ``refine`` (separated XYZ
   then ADP)
-* ``--xray-mode`` ``bhattacharyya`` (default), ``ml``, ``ls``, ``gaussian``
+* ``--xray-mode`` ``ml_sigmaa`` (default; maximum-likelihood Read MLF with a
+  cross-validated Luzzati σ_A term), ``bhattacharyya``, ``ml``, ``ls``, ``gaussian``
 * ``--sigma-m-scale`` global multiplier on σ_m for the Bhattacharyya target
 * ``--dmin`` resolution cutoff
 * ``--device`` ``cpu`` / ``cuda``

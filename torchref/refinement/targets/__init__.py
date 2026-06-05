@@ -4,43 +4,32 @@ Refinement target functions for crystallographic structure refinement.
 This module provides target (loss) functions for X-ray, geometry, and ADP restraints.
 """
 
+from .adp import (
+    ADPEntropyTarget,
+    ADPLocalityTarget,
+    ADPSimilarityTarget,
+    ADPTarget,
+    RigidBondTarget,
+)
 from .base import (
-    Target,
-    ModelTarget,
     DataTarget,
+    ModelTarget,
+    Target,
+    adp_similarity_nll,
     gaussian_nll,
     von_mises_nll,
-    adp_similarity_nll,
+)
+from .collection import (
+    CollectionDifferenceTarget,
+    CollectionMLSigmaATarget,
+    CollectionMLTarget,
+    MultiModelADPTarget,
+    MultiModelGeometryTarget,
 )
 from .combined import (
     CombinedTargets,
     TotalADPTarget,
     TotalGeometryTarget,
-)
-from .xray import (
-    XrayTarget,
-    GaussianXrayTarget,
-    LeastSquaresXrayTarget,
-    MaximumLikelihoodXrayTarget,
-    create_xray_target,
-)
-from .geometry import (
-    GeometryTarget,
-    BondTarget,
-    AngleTarget,
-    TorsionTarget,
-    PlanarityTarget,
-    ChiralTarget,
-    NonBondedTarget,
-    NonBondedHTarget,
-    RamachandranTarget,
-)
-from .adp import (
-    ADPTarget,
-    ADPSimilarityTarget,
-    RigidBondTarget,
-    ADPEntropyTarget,
-    ADPLocalityTarget,
 )
 from .difference import (
     DifferenceXrayTarget,
@@ -48,24 +37,43 @@ from .difference import (
     RiceDifferenceTarget,
     TaylorCorrectedDifferenceTarget,
 )
+from .geometry import (
+    AngleTarget,
+    BondTarget,
+    ChiralTarget,
+    GeometryTarget,
+    NonBondedHTarget,
+    NonBondedTarget,
+    PlanarityTarget,
+    RamachandranTarget,
+    TorsionTarget,
+)
+from .occupancy_floor_diagnostic import (
+    DifferenceAmplitudeRegularizer,
+    DisplacementRegularizer,
+    NegativeDensityPenalty,
+    OccupancyFloorDiagnostic,
+)
 from .realspace import (
-    RealSpaceTarget,
     RealSpaceCorrelationTarget,
     RealSpaceDifferenceTarget,
     RealSpaceExtrapolatedTarget,
-)
-from .similarity import CoordinateSimilarityTarget
-from .occupancy_floor_diagnostic import (
-    OccupancyFloorDiagnostic,
-    NegativeDensityPenalty,
-    DisplacementRegularizer,
-    DifferenceAmplitudeRegularizer,
+    RealSpaceTarget,
 )
 from .sampled_ml_phase_target import (
-    SampledMLPhaseTarget,
     SampledMLDifferenceTarget,
-    create_sampled_ml_target,
+    SampledMLPhaseTarget,
     create_sampled_ml_difference_target,
+    create_sampled_ml_target,
+)
+from .similarity import CoordinateSimilarityTarget
+from .xray import (
+    GaussianXrayTarget,
+    LeastSquaresXrayTarget,
+    MaximumLikelihoodSigmaAXrayTarget,
+    MaximumLikelihoodXrayTarget,
+    XrayTarget,
+    create_xray_target,
 )
 
 # Force field target (optional dependency: torchmd-net)
@@ -80,7 +88,7 @@ except ImportError:
 # Note: openmm is imported lazily inside AmberTarget methods
 # and raises a clear ImportError there if missing.
 try:
-    from .amber_target import AmberTarget, AMBER14_STANDARD
+    from .amber_target import AMBER14_STANDARD, AmberTarget
 except ImportError:
     AmberTarget = None
     AMBER14_STANDARD = None
@@ -98,8 +106,15 @@ __all__ = [
     "XrayTarget",
     "GaussianXrayTarget",
     "MaximumLikelihoodXrayTarget",
+    "MaximumLikelihoodSigmaAXrayTarget",
     "LeastSquaresXrayTarget",
     "create_xray_target",
+    # Collection (multi-dataset) targets
+    "CollectionDifferenceTarget",
+    "CollectionMLTarget",
+    "CollectionMLSigmaATarget",
+    "MultiModelGeometryTarget",
+    "MultiModelADPTarget",
     # Difference targets
     "DifferenceXrayTarget",
     "PhaseInformedDifferenceTarget",

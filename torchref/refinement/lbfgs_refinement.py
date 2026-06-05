@@ -49,7 +49,7 @@ class LBFGSRefinement(Refinement):
     Parameters
     ----------
     target_mode : str, optional
-        X-ray target mode ('gaussian', 'ls', or 'ml'). Default is 'ml'.
+        X-ray target mode ('gaussian', 'ls', 'ml', 'ml_sigmaa', 'bhattacharyya'). Default is 'ml_sigmaa'.
     *args
         Passed to parent Refinement class.
     **kwargs
@@ -79,13 +79,12 @@ class LBFGSRefinement(Refinement):
         max_iter=20,
         history_size=100,
         line_search_fn="strong_wolfe",
-        
     )
 
     def __init__(
         self,
         *args,
-        target_mode: str = "bhattacharyya",
+        target_mode: str = "ml_sigmaa",
         sigma_m_scale: float = 1.0,
         use_lossstate_scaler: bool = True,
         **kwargs,
@@ -96,8 +95,8 @@ class LBFGSRefinement(Refinement):
         Parameters
         ----------
         target_mode : str, optional
-            X-ray target mode ('gaussian', 'ls', 'ml', 'bhattacharyya').
-            Default is 'bhattacharyya'.
+            X-ray target mode ('gaussian', 'ls', 'ml', 'ml_sigmaa', 'bhattacharyya').
+            Default is 'ml_sigmaa' (maximum-likelihood Read MLF with Luzzati σ_A).
         sigma_m_scale : float, optional
             Global multiplier for σ_m in the Bhattacharyya target only.
             Ignored for other target modes. Default 1.0.
@@ -333,9 +332,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         state = self.complete_loss_state()
-        body = self.model.parameters_of_types(
-            ("xyz", "adp", "u", "occupancy")
-        )
+        body = self.model.parameters_of_types(("xyz", "adp", "u", "occupancy"))
         params = body + list(self.scaler.parameters())
         optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
         state.step(optimizer, context="lbfgs_refinement.refine_joint")
@@ -593,9 +590,7 @@ class LBFGSRefinement(Refinement):
 
             if getattr(self.scaler, "solvent", None) is not None:
                 self.scaler.solvent.update_solvent()
-            self.reflection_data.find_outliers(
-                self.model, self.scaler, z_threshold=5.0
-            )
+            self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
 
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
@@ -633,9 +628,8 @@ class LBFGSRefinement(Refinement):
                     label_after="after_adp",
                     title="ADP Refinement",
                 )
-                
+
             self.refine_scaler()
-            
 
             self.history[master_key].append(cycle_dict)
 
