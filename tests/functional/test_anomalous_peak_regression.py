@@ -110,18 +110,13 @@ def test_7l84_sulfur_anomalous_peak_height(stacked_7l84_mtz, pdb_dir, tmp_path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    reason=(
-        "ReflectionCIFReader averages Bijvoet pairs (F+/F-, I+/I- -> mean) on "
-        "load, so friedel_flags come back all-False and the anomalous signal is "
-        "lost. Loading an SF-CIF directly should preserve the (+)/(-) members "
-        "the way rs.read_cif + stack_anomalous does. Remove the xfail once the "
-        "reader gains an anomalous (non-merging) mode."
-    ),
-    strict=True,
-)
 def test_7l84_load_cif_direct_preserves_anomalous(cif_sf_dir, pdb_dir, tmp_path):
-    """Loading the SF-CIF directly should reproduce the sulfur anomalous peaks."""
+    """Loading the SF-CIF directly should reproduce the sulfur anomalous peaks.
+
+    ReflectionCIFReader now unstacks Bijvoet pairs (F+/F-, I+/I-) into explicit
+    signed-HKL rows instead of averaging them, so friedel_flags are populated and
+    the anomalous signal is preserved on a direct SF-CIF load.
+    """
     pdb_path = pdb_dir / "7L84.pdb"
     out_mtz = _build_anomalous_mtz(
         cif_sf_dir / "7L84-sf.cif", pdb_path, tmp_path / "7l84_cifdirect_anom.mtz"
