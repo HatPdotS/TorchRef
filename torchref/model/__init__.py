@@ -73,6 +73,7 @@ from torchref.model.closed_segmented_internal_coordinates import (
     ClosedSegmentedInternalCoordinateTensor,
 )
 from torchref.model.model_collection import ModelCollection, _SharedMixedModel
+from torchref.model.ensemble_model import EnsembleModel
 
 __all__ = [
     "FFT",
@@ -82,6 +83,7 @@ __all__ = [
     "MixedModel",
     "Model",
     "ModelFT",
+    "EnsembleModel",
     "MixedTensor",
     "PositiveMixedTensor",
     "PassThroughTensor",

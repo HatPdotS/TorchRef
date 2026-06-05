@@ -35,10 +35,12 @@ from .base import CrystalDataset
 from .collection import DatasetCollection
 from .fcalc_data import FcalcDataset
 from .reflection_data import ReflectionData
+from .reflection_data_view import ReflectionDataView
 
 __all__ = [
     "CrystalDataset",
     "ReflectionData",
+    "ReflectionDataView",
     "FcalcDataset",
     "DatasetCollection",
 ]

@@ -110,6 +110,17 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         # Call parent __post_init__ to initialize masks
         super().__post_init__()
+        # Monotonic counter bumped whenever rfree_flags (or anything that
+        # affects the work/free/val split) changes. Subset views key their
+        # tensor caches off this counter for live invalidation.
+        object.__setattr__(self, "_flags_version", 0)
+        object.__setattr__(self, "_work_view", None)
+        object.__setattr__(self, "_free_view", None)
+        object.__setattr__(self, "_val_view", None)
+        object.__setattr__(self, "_work_idx_cache", None)
+        object.__setattr__(self, "_free_idx_cache", None)
+        object.__setattr__(self, "_val_idx_cache", None)
+        object.__setattr__(self, "_idx_cache_version", -1)
         self.setup_scale()
         self.setup_anisotropy()
 
@@ -156,6 +167,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Reorder DataFrame
         if hasattr(self, "dataset") and self.dataset is not None:
             self.dataset = self.dataset.iloc[sort_indices.cpu().numpy()].copy()
+
+        # Reflections were reordered: cached work/free/val indices into the
+        # parent are now stale. Bump the version so views recompute.
+        if hasattr(self, "_flags_version"):
+            self._bump_flags_version()
 
     def load(self, reader):
         """
@@ -252,6 +268,22 @@ class ReflectionData(CrystalDataset, DebugMixin):
             rfree = rfree.clip(min=0, max=1).to(torch.bool)
             self.rfree_flags = rfree
             self.masks["flagged_initial"] = ~flagged
+            # Two-class flags loaded from MTZ — bump the version so any sub-set
+            # views constructed afterward see fresh tensors. Generate validation
+            # set if a third column was present, otherwise leave flags 2-class
+            # (callers can invoke ``generate_validation_set`` explicitly).
+            if hasattr(self, "_flags_version"):
+                self._bump_flags_version()
+            if "Validation-flags" in data_dict:
+                val_flags = torch.tensor(
+                    data_dict["Validation-flags"],
+                    device=self.device,
+                    requires_grad=False,
+                )
+                # Promote rfree_flags to int8 so we can encode value 2 (validation).
+                flags_int = self.rfree_flags.to(torch.int8)
+                flags_int[val_flags.to(torch.bool)] = 2
+                self.set_rfree_flags(flags_int, source="MTZ FreeR+Validation")
         else:
             flagged = torch.zeros(
                 len(self.hkl), dtype=torch.bool, device=self.device, requires_grad=False
@@ -342,6 +374,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         if rfree_flags is not None:
             data.rfree_flags = rfree_flags.to(device=data.device, dtype=torch.bool)
+            data._bump_flags_version()
         else:
             data._calculate_resolution()
             data._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
@@ -514,6 +547,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         flags_tensor = flags.to(dtype=dtypes.int, device=self.device)
         self.rfree_flags = flags_tensor
         self.rfree_source = "Generated (resolution-binned)"
+        # Invalidate any cached sub-set views.
+        self._bump_flags_version()
 
         n_free = (flags == 0).sum().item()
         n_work = (flags != 0).sum().item()
@@ -2098,11 +2133,24 @@ class ReflectionData(CrystalDataset, DebugMixin):
             if self.I_sigma is not None:
                 data_dict["SIGI-obs"] = self.I_sigma.detach().cpu().numpy()
 
-        # Add R-free flags (canonical name: FreeR_flag)
+        # Add R-free flags (canonical name: FreeR_flag).
+        # Three-class flags (0=free, 1=work, 2=val) are split into two
+        # standard columns so external crystallography tools keep working:
+        #   FreeR_flag:      1 = work, 0 = anything else (validation OR free)
+        #                    (preserves classical "1 means refined against" convention)
+        #   Validation_flag: 1 = validation, 0 = anything else (optional column)
         if self.rfree_flags is not None:
-            data_dict["R-free-flags"] = (
-                self.rfree_flags.detach().cpu().numpy().astype(int)
-            )
+            flags_np = self.rfree_flags.detach().cpu().numpy()
+            if flags_np.dtype == bool:
+                # Legacy 2-class boolean: True = work, False = free.
+                data_dict["R-free-flags"] = flags_np.astype(int)
+            else:
+                flags_int = flags_np.astype(int)
+                # Encode work as 1, everything else as 0 in the classical FreeR_flag.
+                data_dict["R-free-flags"] = (flags_int == 1).astype(int)
+                # Emit Validation_flag column only if any validation reflections exist.
+                if (flags_int == 2).any():
+                    data_dict["Validation_flag"] = (flags_int == 2).astype(int)
 
         # Compute fcalc if model_ft is provided but fcalc is not
         if fcalc is None and model_ft is not None:
@@ -3150,6 +3198,210 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         return F_scaled, F_sigma_scaled
     
+    # ==========================================================
+    # Three-class flag accessors (work / free / validation)
+    # ==========================================================
+    #
+    # Encoding (additive — preserves existing 0=free, 1=work convention):
+    #     0 = free   (R-free reflection)
+    #     1 = work   (refined against)
+    #     2 = val    (held-out validation set, separate from R-free)
+    #
+    # The legacy ``get_work_set``, ``get_test_set``, ``get_rfree_masks`` and
+    # ``__call__`` methods are intentionally left untouched. New code should
+    # prefer the property-style accessors below.
+
+    def _bump_flags_version(self) -> None:
+        """Invalidate sub-set views by bumping the flags-version counter."""
+        object.__setattr__(self, "_flags_version", self._flags_version + 1)
+
+    def _ensure_idx_cache(self) -> None:
+        """Recompute work/free/val integer indices if rfree_flags changed."""
+        if self._idx_cache_version == self._flags_version:
+            return
+        if self.rfree_flags is None:
+            work_idx = free_idx = val_idx = None
+        else:
+            flags = self.rfree_flags
+            # Boolean rfree (legacy MTZ load path stores bool): True=work, False=free.
+            if flags.dtype == torch.bool:
+                flags_int = flags.to(torch.int8)
+            else:
+                flags_int = flags
+            work_idx = (flags_int == 1).nonzero(as_tuple=True)[0]
+            free_idx = (flags_int == 0).nonzero(as_tuple=True)[0]
+            val_idx = (flags_int == 2).nonzero(as_tuple=True)[0]
+        object.__setattr__(self, "_work_idx_cache", work_idx)
+        object.__setattr__(self, "_free_idx_cache", free_idx)
+        object.__setattr__(self, "_val_idx_cache", val_idx)
+        object.__setattr__(self, "_idx_cache_version", self._flags_version)
+
+    @property
+    def work_idx(self) -> Optional[torch.Tensor]:
+        """Integer indices of work-set reflections (cached)."""
+        self._ensure_idx_cache()
+        return self._work_idx_cache
+
+    @property
+    def free_idx(self) -> Optional[torch.Tensor]:
+        """Integer indices of free-set reflections (cached)."""
+        self._ensure_idx_cache()
+        return self._free_idx_cache
+
+    @property
+    def val_idx(self) -> Optional[torch.Tensor]:
+        """Integer indices of validation-set reflections (cached)."""
+        self._ensure_idx_cache()
+        return self._val_idx_cache
+
+    @property
+    def work_mask(self) -> Optional[torch.Tensor]:
+        """Boolean (N,) mask: True for work-set reflections."""
+        if self.rfree_flags is None:
+            return None
+        if self.rfree_flags.dtype == torch.bool:
+            return self.rfree_flags
+        return self.rfree_flags == 1
+
+    @property
+    def free_mask(self) -> Optional[torch.Tensor]:
+        """Boolean (N,) mask: True for free-set reflections."""
+        if self.rfree_flags is None:
+            return None
+        if self.rfree_flags.dtype == torch.bool:
+            return ~self.rfree_flags
+        return self.rfree_flags == 0
+
+    @property
+    def val_mask(self) -> Optional[torch.Tensor]:
+        """Boolean (N,) mask: True for validation-set reflections."""
+        if self.rfree_flags is None:
+            return None
+        if self.rfree_flags.dtype == torch.bool:
+            return torch.zeros_like(self.rfree_flags)
+        return self.rfree_flags == 2
+
+    @property
+    def work(self):
+        """Live view onto the work-set subset (cached, stable identity)."""
+        if self._work_view is None:
+            from torchref.io.datasets.reflection_data_view import ReflectionDataView
+            object.__setattr__(self, "_work_view", ReflectionDataView(self, "work"))
+        return self._work_view
+
+    @property
+    def free(self):
+        """Live view onto the free-set subset (cached, stable identity)."""
+        if self._free_view is None:
+            from torchref.io.datasets.reflection_data_view import ReflectionDataView
+            object.__setattr__(self, "_free_view", ReflectionDataView(self, "free"))
+        return self._free_view
+
+    @property
+    def val(self):
+        """Live view onto the validation-set subset (cached, stable identity)."""
+        if self._val_view is None:
+            from torchref.io.datasets.reflection_data_view import ReflectionDataView
+            object.__setattr__(self, "_val_view", ReflectionDataView(self, "val"))
+        return self._val_view
+
+    def set_rfree_flags(
+        self,
+        flags: torch.Tensor,
+        source: Optional[str] = None,
+    ) -> None:
+        """
+        Replace ``rfree_flags`` and notify all dependent sub-set views.
+
+        Use this in preference to ``self.rfree_flags = ...`` whenever the
+        flag values themselves change (not just dtype / device moves), so
+        that any held ``data.work`` / ``data.free`` / ``data.val`` views
+        see fresh tensors on next access.
+
+        Parameters
+        ----------
+        flags : torch.Tensor
+            New flag tensor; bool or integer. Length must match ``len(self)``.
+        source : str, optional
+            Provenance string stored in ``self.rfree_source``.
+        """
+        if self.hkl is not None and flags.shape[0] != len(self.hkl):
+            raise ValueError(
+                f"flags length {flags.shape[0]} does not match number of "
+                f"reflections {len(self.hkl)}"
+            )
+        self.rfree_flags = flags.to(device=self.device)
+        if source is not None:
+            self.rfree_source = source
+        self._bump_flags_version()
+
+    def generate_validation_set(
+        self,
+        val_fraction_of_free: float = 0.5,
+        seed: Optional[int] = None,
+    ) -> None:
+        """
+        Carve a validation set out of the existing free-set reflections.
+
+        Used when an MTZ file has only the standard ``FreeR_flag`` (two
+        classes) but downstream code (e.g. ensemble refinement) needs a
+        third held-out set. Free reflections are split resolution-stratified;
+        ``val_fraction_of_free`` of them become validation (flag 2),
+        the rest stay free (flag 0).
+
+        Parameters
+        ----------
+        val_fraction_of_free : float, optional
+            Fraction of *existing free* reflections to reassign as
+            validation. Default 0.5.
+        seed : int, optional
+            Random seed for reproducibility.
+        """
+        if self.rfree_flags is None:
+            raise ValueError("No rfree_flags present; cannot split into validation.")
+        if not 0.0 < val_fraction_of_free < 1.0:
+            raise ValueError(
+                f"val_fraction_of_free must be in (0, 1); got {val_fraction_of_free}"
+            )
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+
+        # Coerce to int8 working tensor so we can write the value 2.
+        if self.rfree_flags.dtype == torch.bool:
+            flags = self.rfree_flags.to(torch.int8)
+        else:
+            flags = self.rfree_flags.to(torch.int8).clone()
+
+        # Reuse get_bins for resolution-stratified sampling.
+        bin_indices, n_bins = self.get_bins(n_bins=20, min_per_bin=20)
+        free_mask_cpu = (flags == 0)
+        n_val_total = 0
+        for b in range(n_bins):
+            bin_free = (bin_indices == b) & free_mask_cpu
+            n_bin_free = int(bin_free.sum().item())
+            if n_bin_free == 0:
+                continue
+            n_val = max(1, int(n_bin_free * val_fraction_of_free))
+            bin_free_idx = bin_free.nonzero(as_tuple=True)[0]
+            perm = torch.randperm(n_bin_free, device=bin_free_idx.device)[:n_val]
+            flags[bin_free_idx[perm]] = 2
+            n_val_total += n_val
+
+        if self.verbose > 0:
+            n_work = int((flags == 1).sum().item())
+            n_free = int((flags == 0).sum().item())
+            n_val = int((flags == 2).sum().item())
+            total = len(flags)
+            print(
+                f"  Generated validation set: "
+                f"work={n_work} ({100*n_work/total:.1f}%), "
+                f"free={n_free} ({100*n_free/total:.1f}%), "
+                f"val={n_val} ({100*n_val/total:.1f}%)"
+            )
+
+        self.set_rfree_flags(flags, source=(self.rfree_source or "") + "+val_split")
+
     def parameters(self) -> List[Parameter]:
         """
         Get list of learnable parameters for optimization.

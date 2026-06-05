@@ -26,6 +26,7 @@ class LeastSquaresXrayTarget(XrayTarget):
         use_work_set: bool = True,
         sigma_mode: str = "raw",
         verbose: int = 0,
+        use_set: str = None,
     ):
         super().__init__(
             data=data,
@@ -34,6 +35,7 @@ class LeastSquaresXrayTarget(XrayTarget):
             use_work_set=use_work_set,
             sigma_mode=sigma_mode,
             verbose=verbose,
+            use_set=use_set,
         )
         self.weighting = weighting
 

@@ -47,6 +47,7 @@ def create_xray_target(
     sigma_m_scale: float = 1.0,
     verbose: int = 0,
     device: Optional[torch.device] = None,
+    use_set: str = None,
 ) -> XrayTarget:
     """
     Factory function to create X-ray target.
@@ -83,6 +84,7 @@ def create_xray_target(
     kwargs = dict(
         data=data, model=model, scaler=scaler,
         use_work_set=use_work_set, sigma_mode=sigma_mode, verbose=verbose,
+        use_set=use_set,
     )
     if mode == "gaussian":
         return GaussianXrayTarget(**kwargs)
@@ -94,6 +96,13 @@ def create_xray_target(
         from .bhattacharyya import BhattacharyyaXrayTarget
 
         return BhattacharyyaXrayTarget(
+            sigma_m_scale=sigma_m_scale,
+            **kwargs,
+        )
+    elif mode == "bhattacharyya_ensemble":
+        from .ensemble_bhattacharyya import EnsembleBhattacharyyaTarget
+
+        return EnsembleBhattacharyyaTarget(
             sigma_m_scale=sigma_m_scale,
             **kwargs,
         )

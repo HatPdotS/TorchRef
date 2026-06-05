@@ -55,6 +55,13 @@ from .realspace import (
     RealSpaceExtrapolatedTarget,
 )
 from .similarity import CoordinateSimilarityTarget
+from .wilson_prior import WilsonPriorTarget
+
+# Optional: requires openmm via amber_target import
+try:
+    from .ensemble_amber_kl import EnsembleAmberKLTarget
+except ImportError:
+    EnsembleAmberKLTarget = None
 from .occupancy_floor_diagnostic import (
     OccupancyFloorDiagnostic,
     NegativeDensityPenalty,
@@ -147,4 +154,8 @@ __all__ = [
     "RealSpaceExtrapolatedTarget",
     # Similarity restraint
     "CoordinateSimilarityTarget",
+    # Wilson prior
+    "WilsonPriorTarget",
+    # Ensemble Amber KL restraint
+    "EnsembleAmberKLTarget",
 ]

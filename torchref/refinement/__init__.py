@@ -29,6 +29,7 @@ Access targets and weighting schemes::
 from . import targets, weighting
 from .base_refinement import Refinement
 from .lbfgs_refinement import LBFGSRefinement
+from .ensemble_refinement import EnsembleRefinement
 from .logger import Logger
 from .loss_state import LossState
 from .targets import Target, DataTarget, ModelTarget
@@ -37,6 +38,7 @@ __all__ = [
     # Main refinement classes
     "Refinement",
     "LBFGSRefinement",
+    "EnsembleRefinement",
     # Loss handling
     "LossState",
     # Logging

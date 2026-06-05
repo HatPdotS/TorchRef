@@ -59,6 +59,7 @@ class XrayTarget(DataTarget):
         use_work_set: bool = True,
         sigma_mode: str = "raw",
         verbose: int = 0,
+        use_set: str = None,
     ):
         """
         Initialize X-ray target.
@@ -74,6 +75,11 @@ class XrayTarget(DataTarget):
             Reference to the Scaler object.
         use_work_set : bool, optional
             If True, compute loss on work set; if False, on test set. Default is True.
+            Ignored when ``use_set`` is provided.
+        use_set : {'work', 'free', 'val'}, optional
+            Three-class flag selector (added for ensemble refinement). When
+            provided, takes precedence over ``use_work_set``. Use ``'val'``
+            to target the validation set, distinct from the R-free test set.
         sigma_mode : str, optional
             Which sigma to use in the likelihood. Options:
 
@@ -92,14 +98,29 @@ class XrayTarget(DataTarget):
             Verbosity level. Default is 0.
         """
         super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
-        self.use_work_set = use_work_set
+        if use_set is not None:
+            if use_set not in ("work", "free", "val"):
+                raise ValueError(
+                    f"use_set must be 'work', 'free', or 'val'; got {use_set!r}"
+                )
+            self.use_set = use_set
+            # Keep use_work_set in sync for any legacy code that reads it.
+            self.use_work_set = (use_set == "work")
+        else:
+            self.use_set = "work" if use_work_set else "free"
+            self.use_work_set = use_work_set
         if sigma_mode not in ("effective", "raw"):
             raise ValueError(
                 f"sigma_mode must be 'effective' or 'raw', got {sigma_mode!r}"
             )
         self.sigma_mode = sigma_mode
-        # Set name based on work/test set
-        self.name = "xray_work" if use_work_set else "xray_test"
+        # Set name based on which set we target.
+        if self.use_set == "work":
+            self.name = "xray_work"
+        elif self.use_set == "free":
+            self.name = "xray_test"
+        else:
+            self.name = "xray_val"
 
         # Cache for the bookkeeping pieces of get_data: F_obs_sel, sigma_sel,
         # mask, centric_sel. These depend only on the data (rfree, validity,
@@ -147,6 +168,25 @@ class XrayTarget(DataTarget):
 
         centric_all = self._data.centric
 
+        # Select the boolean reflection mask for the requested class.
+        # rfree_mask returned from ``self._data()`` is the underlying
+        # ``rfree_flags`` tensor: bool with True=work for the legacy 2-class
+        # path, or int8 with values 0=free/1=work/2=val for the 3-class path.
+        if rfree_mask.dtype == torch.bool:
+            if self.use_set == "work":
+                set_mask = rfree_mask
+            elif self.use_set == "free":
+                set_mask = ~rfree_mask
+            else:  # 'val' — no validation reflections in 2-class data
+                set_mask = torch.zeros_like(rfree_mask)
+        else:
+            if self.use_set == "work":
+                set_mask = (rfree_mask == 1)
+            elif self.use_set == "free":
+                set_mask = (rfree_mask == 0)
+            else:  # 'val'
+                set_mask = (rfree_mask == 2)
+
         if hasattr(F_obs, "get_mask"):
             validity_mask = F_obs.get_mask()
             F_obs_data = F_obs.get_data()
@@ -154,17 +194,11 @@ class XrayTarget(DataTarget):
                 sigma_F_obs.get_data()
                 if hasattr(sigma_F_obs, "get_mask") else sigma_F_obs
             )
-            rfree_bool = rfree_mask.bool()
-            mask = (
-                validity_mask & rfree_bool
-                if self.use_work_set
-                else validity_mask & ~rfree_bool
-            )
+            mask = validity_mask & set_mask
         else:
             F_obs_data = F_obs
             sigma_data = sigma_F_obs
-            rfree_bool = rfree_mask.bool()
-            mask = rfree_bool if self.use_work_set else ~rfree_bool
+            mask = set_mask
 
         F_obs_sel = torch.where(mask, F_obs_data, torch.zeros_like(F_obs_data))
         sigma_sel = torch.where(mask, sigma_data, torch.ones_like(sigma_data))
