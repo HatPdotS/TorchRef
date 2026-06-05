@@ -117,8 +117,9 @@ Examples:
         "--with-rigid-body",
         action="store_true",
         help="Run one multi-resolution rigid-body refinement step (per-chain "
-        "rotation + translation) before each macro cycle. Useful when the "
-        "starting model has small global misorientation/shift.",
+        "rotation + translation) once at the start of refinement, before any "
+        "macro cycle. Useful when the starting model has small global "
+        "misorientation/shift. Combine with -n 0 to run rigid-body only.",
     )
     refine_group.add_argument(
         "--rigid-body-iter",
@@ -126,6 +127,32 @@ Examples:
         default=30,
         help="LBFGS max_iter for each per-cutoff rigid-body step. "
         "Only used when --with-rigid-body is set. Default 30.",
+    )
+    refine_group.add_argument(
+        "--rigid-body-cutoffs",
+        type=str,
+        default=None,
+        help="Comma-separated high-resolution cutoffs (A) for the rigid-body "
+        "schedule, coarse to fine, e.g. '10.15,8.80,5.89,4.10,3.00'. "
+        "If unset, an auto schedule is derived from native d_min. "
+        "Only used when --with-rigid-body is set.",
+    )
+    refine_group.add_argument(
+        "--rigid-body-optimizer",
+        choices=["lbfgs", "adam"],
+        default="lbfgs",
+        help="Optimizer for rigid-body LBFGS step. 'lbfgs' (default) uses "
+        "PyTorch's L-BFGS with strong-Wolfe line search. 'adam' uses "
+        "Adam with per-parameter adaptive learning rate — handles the "
+        "rotation/translation gradient-scale mismatch automatically. "
+        "Only used when --with-rigid-body is set.",
+    )
+    refine_group.add_argument(
+        "--rigid-body-adam-lr",
+        type=float,
+        default=0.01,
+        help="Learning rate for Adam (only used when "
+        "--rigid-body-optimizer=adam). Default 0.01.",
     )
 
     res = parser.add_argument_group("Resolution")
@@ -218,10 +245,10 @@ Examples:
             if args.with_rigid_body:
                 print(
                     "Rigid-body step enabled: one multi-resolution rigid-body "
-                    "pass will run before each macro cycle.\n"
+                    "pass will run once at the start of refinement.\n"
                 )
             sys.stdout.flush()
-            
+
         if args.mode == "separate":
             cycle_fn = refinement.refine
         elif args.mode == "everything":
@@ -230,19 +257,21 @@ Examples:
             raise ValueError(f"Invalid refinement mode: {args.mode}")
 
         if args.with_rigid_body:
-            for cycle in range(args.n_cycles):
-                if args.verbose > 0:
-                    print(f"\n--- Rigid-body step (cycle {cycle + 1}) ---")
-                    sys.stdout.flush()
-                refinement.refine_rigid_body(
-                    iterations_per_step=args.rigid_body_iter,
-                    commit=True,
-                )
-                if args.verbose > 0:
-                    print(f"\n--- Macro cycle {cycle + 1}/{args.n_cycles} ---")
-                    sys.stdout.flush()
-                cycle_fn(macro_cycles=1)
-        else:
+            if args.verbose > 0:
+                print("\n--- Rigid-body step (once, at start) ---")
+                sys.stdout.flush()
+            rb_cutoffs = None
+            if args.rigid_body_cutoffs:
+                rb_cutoffs = [float(x) for x in args.rigid_body_cutoffs.split(",")]
+            refinement.refine_rigid_body(
+                cutoffs=rb_cutoffs,
+                iterations_per_step=args.rigid_body_iter,
+                commit=True,
+                optimizer=args.rigid_body_optimizer,
+                adam_lr=args.rigid_body_adam_lr,
+            )
+
+        if args.n_cycles > 0:
             cycle_fn(macro_cycles=args.n_cycles)
 
         refinement.get_scales()
@@ -288,6 +317,9 @@ Examples:
             "device": str(device),
             "with_rigid_body": args.with_rigid_body,
             "rigid_body_iter": args.rigid_body_iter if args.with_rigid_body else None,
+            "rigid_body_cutoffs": (
+                args.rigid_body_cutoffs if args.with_rigid_body else None
+            ),
         },
         "history": refinement.history if hasattr(refinement, "history") else {},
         "final_statistics": {},

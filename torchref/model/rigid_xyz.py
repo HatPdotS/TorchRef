@@ -46,6 +46,7 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
         name: str = "xyz",
+        mobile_mask: Optional[torch.Tensor] = None,
     ):
         super().__init__()
         self._name = name
@@ -55,6 +56,7 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             self.register_buffer("original_xyz", torch.empty(0, 3))
             self.register_buffer("chain_indices", torch.empty(0, dtype=torch.long))
             self.register_buffer("chain_centers", torch.empty(0, 3))
+            self.register_buffer("mobile_mask", torch.empty(0, dtype=torch.bool))
             self.euler_angles = nn.Parameter(torch.empty(0, 3))
             self.translations = nn.Parameter(torch.empty(0, 3))
             self._n_chains = 0
@@ -72,34 +74,64 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
                 f"({original_xyz.shape[0]} atoms)"
             )
 
+        N = original_xyz.shape[0]
+        if mobile_mask is None:
+            mobile_arr = np.ones(N, dtype=bool)
+        else:
+            mobile_arr = (
+                mobile_mask.detach().cpu().numpy().astype(bool)
+                if isinstance(mobile_mask, torch.Tensor)
+                else np.asarray(mobile_mask, dtype=bool)
+            )
+            if mobile_arr.shape[0] != N:
+                raise ValueError(
+                    f"mobile_mask length {mobile_arr.shape[0]} != n_atoms {N}"
+                )
+
+        # Build chain index: -1 sentinel for fixed atoms.
         chain_id_order: list = []
         chain_id_to_idx: dict = {}
-        idx_list = np.empty(len(chain_ids), dtype=np.int64)
+        idx_list = np.empty(N, dtype=np.int64)
         for i, cid in enumerate(chain_ids):
+            if not mobile_arr[i]:
+                idx_list[i] = -1
+                continue
             if cid not in chain_id_to_idx:
                 chain_id_to_idx[cid] = len(chain_id_order)
                 chain_id_order.append(cid)
             idx_list[i] = chain_id_to_idx[cid]
 
-        chain_indices = torch.from_numpy(idx_list).to(device=device)
         n_chains = len(chain_id_order)
+        if n_chains == 0:
+            raise ValueError(
+                "No mobile atoms after filtering — every atom was masked out."
+            )
 
         original_xyz_t = original_xyz.to(dtype=dtype, device=device).detach().clone()
+        mobile_t = torch.from_numpy(mobile_arr).to(device=device)
+        # Safe chain index buffer: replace -1 with 0 (still gathers a valid
+        # entry; forward() blends with mobile_mask so the rotated/translated
+        # result is discarded for non-mobile atoms).
+        safe_idx_np = np.where(idx_list >= 0, idx_list, 0)
+        chain_indices = torch.from_numpy(safe_idx_np).to(device=device)
 
-        # Per-chain centroid via scatter-mean.
+        # Per-chain centroid: only over MOBILE atoms of each chain.
+        mobile_idx = torch.from_numpy(idx_list[mobile_arr]).to(device=device)
+        mobile_xyz = original_xyz_t[mobile_t]
         chain_centers = torch.zeros((n_chains, 3), dtype=dtype, device=device)
-        chain_centers.index_add_(0, chain_indices, original_xyz_t)
+        chain_centers.index_add_(0, mobile_idx, mobile_xyz)
         counts = torch.zeros(n_chains, dtype=dtype, device=device)
         counts.index_add_(
             0,
-            chain_indices,
-            torch.ones(original_xyz_t.shape[0], dtype=dtype, device=device),
+            mobile_idx,
+            torch.ones(mobile_xyz.shape[0], dtype=dtype, device=device),
         )
         chain_centers = chain_centers / counts.unsqueeze(1).clamp(min=1)
 
         self.register_buffer("original_xyz", original_xyz_t)
         self.register_buffer("chain_indices", chain_indices)
         self.register_buffer("chain_centers", chain_centers)
+        self.register_buffer("mobile_mask", mobile_t)
 
         self.euler_angles = nn.Parameter(
             torch.zeros((n_chains, 3), dtype=dtype, device=device)
@@ -124,7 +156,12 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
 
         centered = self.original_xyz - per_atom_center  # (N, 3)
         rotated = torch.einsum("nij,nj->ni", per_atom_R, centered)
-        return rotated + per_atom_center + per_atom_trans
+        transformed = rotated + per_atom_center + per_atom_trans
+        # Fixed atoms (mobile_mask == False) retain their original positions
+        # regardless of the chain's rigid-body parameters.
+        return torch.where(
+            self.mobile_mask.unsqueeze(1), transformed, self.original_xyz
+        )
 
     # -----------------------------------------------------------------------
     # Interface compatibility with MixedTensor
@@ -217,16 +254,20 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             )
         with torch.no_grad():
             self.original_xyz.copy_(new_values.to(dtype=self.dtype, device=self.device))
-            # Recompute chain centers.
+            # Recompute chain centers over MOBILE atoms only.
+            mobile = self.mobile_mask
+            mobile_idx = self.chain_indices[mobile]
+            mobile_xyz = self.original_xyz[mobile]
             counts = torch.zeros(self._n_chains, dtype=self.dtype, device=self.device)
-            ones = torch.ones(
-                self.original_xyz.shape[0], dtype=self.dtype, device=self.device
+            counts.index_add_(
+                0,
+                mobile_idx,
+                torch.ones(mobile_xyz.shape[0], dtype=self.dtype, device=self.device),
             )
-            counts.index_add_(0, self.chain_indices, ones)
             centers = torch.zeros(
                 (self._n_chains, 3), dtype=self.dtype, device=self.device
             )
-            centers.index_add_(0, self.chain_indices, self.original_xyz)
+            centers.index_add_(0, mobile_idx, mobile_xyz)
             self.chain_centers.copy_(centers / counts.unsqueeze(1).clamp(min=1))
             self.euler_angles.zero_()
             self.translations.zero_()
@@ -246,6 +287,7 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             dtype=self.dtype,
             device=self.device,
             name=self._name,
+            mobile_mask=self.mobile_mask.clone(),
         )
         with torch.no_grad():
             new.euler_angles.copy_(self.euler_angles)
@@ -254,8 +296,14 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
 
     def _chain_id_order_for_atoms(self) -> list:
         # Reconstruct per-atom chain ids from chain_indices + chain_id_order.
+        # Non-mobile atoms get a dummy "_FIXED_" tag so the constructor can
+        # reproduce the same mobile_mask via the mobile_mask kwarg.
         idx_cpu = self.chain_indices.detach().cpu().tolist()
-        return [self._chain_id_order[i] for i in idx_cpu]
+        mob_cpu = self.mobile_mask.detach().cpu().tolist()
+        return [
+            self._chain_id_order[i] if m else "_FIXED_"
+            for i, m in zip(idx_cpu, mob_cpu)
+        ]
 
     # -----------------------------------------------------------------------
     # Materialize back into a regular MixedTensor.

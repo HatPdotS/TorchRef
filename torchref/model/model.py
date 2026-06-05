@@ -3571,11 +3571,47 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         with torch.no_grad():
             current_xyz = self.xyz().detach().clone()
         chain_ids = list(self.pdb["chainid"].values)
+
+        # Phenix-style polymer filter: drop waters and single-atom non-peptide
+        # residues (ions). Keeps multi-atom HET ligands (ADP, GOL, ...) so they
+        # ride along with their parent chain. See
+        # cctbx_project/mmtbx/refinement/rigid_body.py rigid_groups_from_pdb_chains.
+        _WATERS = {"HOH", "WAT", "DOD", "H2O"}
+        _STD_POLYMER = {
+            "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
+            "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
+            "TYR", "VAL", "MSE", "SEC", "PYL",
+            "A", "C", "G", "T", "U", "I",
+            "DA", "DC", "DG", "DT", "DU", "DI",
+        }
+        resname = self.pdb["resname"].astype(str).str.strip()
+        is_water = resname.isin(_WATERS).values
+        is_std = resname.isin(_STD_POLYMER).values
+        residue_atom_count = (
+            self.pdb.groupby(["chainid", "resseq", "icode"])["serial"].transform("count").values
+        )
+        is_single_atom = residue_atom_count == 1
+        drop = is_water | (is_single_atom & ~is_std)
+        mobile_arr = ~drop
+        if mobile_arr.sum() == 0:
+            raise RuntimeError(
+                "Polymer filter removed every atom — cannot build rigid bodies."
+            )
+        mobile_mask = torch.from_numpy(mobile_arr).to(device=self.device)
+        if self.verbose > 0 and int(drop.sum()) > 0:
+            n_water = int(is_water.sum())
+            n_ion = int((is_single_atom & ~is_std & ~is_water).sum())
+            print(
+                f"Rigid-body filter: {n_water} water + {n_ion} ion atoms "
+                f"held fixed ({int(drop.sum())} total of {len(drop)})."
+            )
+
         rigid_xyz = RigidXYZTensor(
             original_xyz=current_xyz,
             chain_ids=chain_ids,
             dtype=self.dtype_float,
             device=self.device,
+            mobile_mask=mobile_mask,
         )
 
         # Stash original container under a private attribute so

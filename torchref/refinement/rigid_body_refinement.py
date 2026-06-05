@@ -51,11 +51,17 @@ class RigidBodyRefinementStep:
         cutoffs: Optional[List[float]] = None,
         iterations_per_step: int = 30,
         commit: bool = True,
+        optimizer: str = "lbfgs",
+        adam_lr: float = 0.01,
     ):
         self.refinement = refinement
         self.cutoffs = cutoffs
         self.iterations_per_step = int(iterations_per_step)
         self.commit = bool(commit)
+        if optimizer not in ("lbfgs", "adam"):
+            raise ValueError(f"optimizer must be 'lbfgs' or 'adam', got {optimizer!r}")
+        self.optimizer = optimizer
+        self.adam_lr = float(adam_lr)
 
     # -----------------------------------------------------------------------
     # Schedule
@@ -119,7 +125,7 @@ class RigidBodyRefinementStep:
     # -----------------------------------------------------------------------
     # Internal helpers
     # -----------------------------------------------------------------------
-    def _rebind_for_data(self, data, model=None):
+    def _rebind_for_data(self, data, model=None, xray_mode=None):
         """Point scaler + targets + loss-state at the given ReflectionData."""
         ref = self.refinement
         if model is None:
@@ -136,7 +142,8 @@ class RigidBodyRefinementStep:
         )
         ref.scaler.initialize()
 
-        xray_mode = getattr(ref, "target_mode", "ml_sigmaa")
+        if xray_mode is None:
+            xray_mode = getattr(ref, "target_mode", "ml_sigmaa")
         ref._init_targets(xray_mode=xray_mode)
         ref.reset_loss_state()
         # Clear cached LBFGS optimizers (they were built over the old model's
@@ -154,35 +161,54 @@ class RigidBodyRefinementStep:
         # Snapshot weights so we can restore after the step.
         original_weights = dict(state.weights)
         try:
-            # Active targets during rigid-body refinement: xray + non-bonded
-            # vdW. Internal bonded geometry is rigid by construction; ADP /
-            # occupancy are frozen. Zero every other registered target.
-            keep_names = {"xray", "geometry/nonbonded"}
+            # Active targets during rigid-body refinement: xray only. Internal
+            # bonded geometry is rigid by construction; ADP / occupancy are
+            # frozen. Inter-chain vdW is intentionally off — Phenix runs
+            # rigid-body without atomistic restraints and we've observed vdW
+            # has no effect on translations and breaks the coarsest cutoff.
+            keep_names = {"xray"}
             for name in list(state.targets.keys()):
                 if name not in keep_names:
                     state.set_weight(name, 0.0)
 
-            # Build LBFGS over the rigid leaves + scaler parameters.
             rigid_params = [
                 rigid_model.xyz.euler_angles,
                 rigid_model.xyz.translations,
             ]
-            params = rigid_params + list(ref.scaler.parameters())
-            optimizer = torch.optim.LBFGS(
-                params,
-                max_iter=self.iterations_per_step,
-                **self.DEFAULT_LBFGS_KWARGS,
-            )
+            # Refit the scaler before the rigid step so bulk solvent / overall
+            # scale don't absorb signal that should drive the rigid params.
             rigid_model.reset_cache()
-            state.step(
-                optimizer,
-                context=f"rigid_body[d_min={d_min:.2f}]",
-            )
+            ref.scaler.refine_lbfgs(nsteps=1, verbose=False)
+
+            rigid_model.reset_cache()
+            if self.optimizer == "adam":
+                # Adam's per-parameter adaptive learning rates handle the
+                # rotation/translation scale mismatch (rotation gradients are
+                # ~r× larger than translation gradients, r ≈ chain radius)
+                # automatically — each parameter gets normalized by its own
+                # running gradient variance.
+                opt = torch.optim.Adam(rigid_params, lr=self.adam_lr)
+                for _ in range(self.iterations_per_step):
+                    opt.zero_grad()
+                    loss = state.aggregate()
+                    loss.backward()
+                    opt.step()
+            else:
+                opt = torch.optim.LBFGS(
+                    rigid_params,
+                    max_iter=self.iterations_per_step,
+                    **self.DEFAULT_LBFGS_KWARGS,
+                )
+                state.step(
+                    opt,
+                    context=f"rigid_body[d_min={d_min:.2f}]",
+                )
             if ref.verbose > 0:
                 try:
                     rwork, rfree = ref.get_rfactor()
                     print(
-                        f"  rigid-body d_min={d_min:.2f}: "
+                        f"  rigid-body d_min={d_min:.2f} "
+                        f"({self.optimizer}, iters={self.iterations_per_step}): "
                         f"Rwork={rwork:.4f} Rfree={rfree:.4f}"
                     )
                 except Exception:

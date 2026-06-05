@@ -234,6 +234,8 @@ class LBFGSRefinement(Refinement):
         cutoffs=None,
         iterations_per_step: int = 30,
         commit: bool = True,
+        optimizer: str = "lbfgs",
+        adam_lr: float = 0.01,
     ):
         """Multi-resolution per-chain rigid-body refinement.
 
@@ -267,6 +269,8 @@ class LBFGSRefinement(Refinement):
             cutoffs=cutoffs,
             iterations_per_step=iterations_per_step,
             commit=commit,
+            optimizer=optimizer,
+            adam_lr=adam_lr,
         )
         return step.run()
 
