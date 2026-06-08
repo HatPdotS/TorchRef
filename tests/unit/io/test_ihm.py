@@ -1,5 +1,5 @@
 """
-Tests for IHM mmCIF reading, writing, and DataRouter integration.
+Tests for IHM mmCIF reading, writing, and CIF content detection.
 """
 
 import os
@@ -199,30 +199,28 @@ class TestModelCIFReaderMultiModel:
 
 
 # ======================================================================
-# DataRouter IHM detection tests
+# read_cif content-detection tests
 # ======================================================================
 
 
-class TestDataRouterIHM:
-    """Tests for IHM file detection in DataRouter."""
+class TestReadCifDetection:
+    """Tests for CIF content detection used by read_cif."""
 
     def test_detect_ihm_ensemble(self):
-        """Test that DataRouter identifies IHM files."""
-        from torchref.io.data_router import DataRouter
+        """Test that read_cif's detector identifies IHM files."""
+        from torchref.io.readers import _detect_cif_type
 
-        router = DataRouter(str(TEST_IHM_FILE), verbose=0)
-        assert router.data_type == "ihm_ensemble"
-        assert router.file_format == "cif"
+        assert _detect_cif_type(str(TEST_IHM_FILE)) == "ihm_ensemble"
 
     def test_regular_cif_not_ihm(self):
         """Test that regular CIF files are NOT detected as IHM."""
-        from torchref.io.data_router import DataRouter
+        from torchref.io.readers import _detect_cif_type
 
         regular_cif = TEST_IHM_FILE.parent / "3E98.cif"
         if regular_cif.exists():
-            router = DataRouter(str(regular_cif), verbose=0)
-            assert router.data_type == "structure"
-            assert router.data_type != "ihm_ensemble"
+            kind = _detect_cif_type(str(regular_cif))
+            assert kind == "structure"
+            assert kind != "ihm_ensemble"
 
 
 # ======================================================================
