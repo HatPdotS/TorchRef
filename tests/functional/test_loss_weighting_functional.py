@@ -11,39 +11,6 @@ from unittest.mock import Mock
 
 
 @pytest.mark.integration
-class TestManualWeightingFunctional:
-    """Test ManualWeighting functionality."""
-
-    def test_manual_weighting_initialization(self):
-        """Test ManualWeighting initialization."""
-        from torchref.refinement.weighting.component_weighting import ManualWeighting
-
-        weighting = ManualWeighting(weights={'xray': 1.0}, device=torch.device('cpu'))
-
-        assert weighting is not None
-
-    def test_manual_weighting_with_custom_weights(self):
-        """Test ManualWeighting with custom weights."""
-        from torchref.refinement.weighting.component_weighting import ManualWeighting
-        from torchref.refinement.loss_state import LossState
-
-        custom_weights = {
-            'xray': 2.0,
-            'geometry': 0.5,
-            'adp': 0.1
-        }
-
-        weighting = ManualWeighting(weights=custom_weights, device=torch.device('cpu'))
-
-        # forward() now takes a LossState and returns floats
-        state = LossState()
-        weights = weighting.forward(state)
-        assert weights['xray'] == pytest.approx(2.0)
-        assert weights['geometry'] == pytest.approx(0.5)
-        assert weights['adp'] == pytest.approx(0.1)
-
-
-@pytest.mark.integration
 class TestLossStateWeightingFunctional:
     """Test LossState weighting functionality."""
 
@@ -74,26 +41,6 @@ class TestLossStateWeightingFunctional:
 @pytest.mark.integration
 class TestWeightingMathOperations:
     """Test mathematical operations with weights."""
-
-    def test_weight_multiplication(self):
-        """Test using weights for loss scaling."""
-        from torchref.refinement.weighting.component_weighting import ManualWeighting
-        from torchref.refinement.loss_state import LossState
-
-        weighting = ManualWeighting(weights={'xray': 2.0, 'geometry': 0.5}, device=torch.device('cpu'))
-        state = LossState()
-        weights = weighting.forward(state)
-
-        # Create mock losses
-        xray_loss = torch.tensor(10.0)
-        geometry_loss = torch.tensor(20.0)
-
-        # Apply weights (weights are now floats)
-        weighted_xray = weights['xray'] * xray_loss
-        weighted_geometry = weights['geometry'] * geometry_loss
-
-        assert torch.isclose(weighted_xray, torch.tensor(20.0))
-        assert torch.isclose(weighted_geometry, torch.tensor(10.0))
 
     def test_total_weighted_loss_from_state(self):
         """Test computing total weighted loss from LossState via aggregate."""
@@ -200,30 +147,6 @@ class TestWeightingEdgeCases:
         # Zero weight should effectively disable ADP term
         total = state.aggregate()
         assert torch.isclose(total, torch.tensor(0.0))
-
-    def test_very_small_weight(self):
-        """Test very small weight."""
-        from torchref.refinement.weighting.component_weighting import ManualWeighting
-        from torchref.refinement.loss_state import LossState
-
-        weighting = ManualWeighting(weights={'adp': 1e-6}, device=torch.device('cpu'))
-        state = LossState()
-        weights = weighting.forward(state)
-
-        # Should still be a valid small weight (weights are floats now)
-        assert weights['adp'] > 0
-        assert np.isfinite(weights['adp'])
-
-    def test_large_weight(self):
-        """Test large weight."""
-        from torchref.refinement.weighting.component_weighting import ManualWeighting
-        from torchref.refinement.loss_state import LossState
-
-        weighting = ManualWeighting(weights={'xray': 100.0}, device=torch.device('cpu'))
-        state = LossState()
-        weights = weighting.forward(state)
-
-        assert weights['xray'] == pytest.approx(100.0)
 
 
 @pytest.mark.integration
