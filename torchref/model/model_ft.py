@@ -621,26 +621,6 @@ class ModelFT(CachedForwardMixin, Model):
         }
         return stats
 
-    def rebuild_map(self, radius=None):
-        """
-        Rebuild the density map from scratch.
-
-        Convenience method that clears and rebuilds everything.
-
-        Parameters
-        ----------
-        radius : int, optional
-            Radius in voxels around each atom. If None, uses self.radius.
-            If specified, overrides self.radius.
-
-        Returns
-        -------
-        torch.Tensor
-            Rebuilt electron density map.
-        """
-        if self.verbose > 1:
-            print("Rebuilding density map from scratch...")
-        return self.build_density_map(radius=radius)
 
     def update_pdb(self):
         """
@@ -1137,7 +1117,7 @@ class ModelFT(CachedForwardMixin, Model):
 
             # Create MixedTensors
             xyz_mask = state_dict.get("xyz.refinable_mask")
-            b_mask = state_dict.get("b.refinable_mask")
+            adp_mask = state_dict.get("adp.refinable_mask")
             u_mask = state_dict.get("u.refinable_mask")
 
             instance.xyz = MixedTensor(
@@ -1145,10 +1125,10 @@ class ModelFT(CachedForwardMixin, Model):
                 refinable_mask=xyz_mask,
                 name="xyz",
             )
-            instance.b = PositiveMixedTensor(
+            instance.adp = PositiveMixedTensor(
                 torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype),
-                refinable_mask=b_mask,
-                name="b_factor",
+                refinable_mask=adp_mask,
+                name="adp",
             )
             instance.u = MixedTensor(
                 torch.tensor(
@@ -1193,7 +1173,7 @@ class ModelFT(CachedForwardMixin, Model):
                 "xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
             )
             instance.register_buffer(
-                "b_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
+                "adp_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
             )
             instance.register_buffer(
                 "u_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
@@ -1236,7 +1216,7 @@ class ModelFT(CachedForwardMixin, Model):
         # Remap old-style A/B keys to new _A/_B keys
         filtered_state_dict = {}
         for k, v in state_dict.items():
-            if not hasattr(v, "shape") or v.shape[0] > 0:
+            if not hasattr(v, "shape") or v.numel() > 0:
                 # Remap old keys to new keys
                 if k == "A":
                     filtered_state_dict["_A"] = v

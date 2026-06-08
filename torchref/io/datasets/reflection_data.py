@@ -36,6 +36,116 @@ if TYPE_CHECKING:
     from torch.masked import MaskedTensor
 
 
+class _ReflectionSubset:
+    """
+    Lightweight view of one reflection subset (``work`` / ``free`` /
+    ``validation``) of a :class:`ReflectionData`.
+
+    Returns the **compact** (indexed) subset for any per-reflection field and
+    caches the integer index map on the parent (rebuilt when the masks or the
+    set selection change). Use :meth:`select` to align a full-size,
+    model-computed array (e.g. ``F_calc``) to the same subset.
+
+    Examples
+    --------
+    ::
+
+        F_obs   = data.work.F        # corrected amplitudes, work set only
+        sigma   = data.work.sigF
+        hkl     = data.work.hkl
+        F_calc  = data.work.select(scaler(model(data.hkl_for_sf())))
+    """
+
+    __slots__ = ("_parent", "_kind")
+
+    def __init__(self, parent: "ReflectionData", kind: str):
+        self._parent = parent
+        self._kind = kind
+
+    # -- index / mask -----------------------------------------------------
+    @property
+    def indices(self) -> torch.Tensor:
+        """Cached ``LongTensor`` of positions (into the full array) in this subset."""
+        return self._parent._subset_indices(self._kind)
+
+    @property
+    def mask(self) -> torch.Tensor:
+        """Full-size boolean mask for this subset (``valid & selection``)."""
+        n = len(self._parent.hkl)
+        m = torch.zeros(n, dtype=torch.bool, device=self._parent.device)
+        m[self.indices] = True
+        return m
+
+    def select(self, t: torch.Tensor) -> torch.Tensor:
+        """Index a full-size (per-reflection) tensor down to this subset."""
+        return t.index_select(0, self.indices)
+
+    def __len__(self) -> int:
+        return int(self.indices.numel())
+
+    @property
+    def n(self) -> int:
+        return int(self.indices.numel())
+
+    # -- amplitudes (scaled, matching the legacy ``data(scale=True)``) -----
+    @property
+    def F(self) -> torch.Tensor:
+        F_corr, _ = self._parent._corrected_or_raw()
+        return F_corr.index_select(0, self.indices)
+
+    @property
+    def sigF(self) -> torch.Tensor:
+        _, sig_corr = self._parent._corrected_or_raw()
+        return sig_corr.index_select(0, self.indices)
+
+    # -- raw (uncorrected) amplitudes -------------------------------------
+    @property
+    def F_raw(self) -> torch.Tensor:
+        return self._parent.F.index_select(0, self.indices)
+
+    @property
+    def sigF_raw(self) -> torch.Tensor:
+        return self._parent.F_sigma.index_select(0, self.indices)
+
+    # -- common aliases ---------------------------------------------------
+    @property
+    def hkl(self) -> torch.Tensor:
+        return self._parent.hkl.index_select(0, self.indices)
+
+    @property
+    def rfree(self) -> torch.Tensor:
+        return self._parent.rfree_flags.index_select(0, self.indices)
+
+    @property
+    def sigI(self):
+        si = self._parent.I_sigma
+        return si.index_select(0, self.indices) if si is not None else None
+
+    @property
+    def centric(self):
+        c = self._parent.centric
+        return c.index_select(0, self.indices) if c is not None else None
+
+    # -- generic per-reflection field forwarding --------------------------
+    def __getattr__(self, name: str):
+        # Only reached for names not found via __slots__/properties above.
+        parent = object.__getattribute__(self, "_parent")
+        val = getattr(parent, name, None)
+        if (
+            isinstance(val, torch.Tensor)
+            and val.dim() >= 1
+            and val.shape[0] == len(parent.hkl)
+        ):
+            idx = parent._subset_indices(object.__getattribute__(self, "_kind"))
+            return val.index_select(0, idx)
+        raise AttributeError(
+            f"{type(parent).__name__} subset has no per-reflection field {name!r}"
+        )
+
+    def __repr__(self) -> str:
+        return f"_ReflectionSubset(kind={self._kind!r}, n={self.n})"
+
+
 @dataclass
 class ReflectionData(CrystalDataset, DebugMixin):
     """
@@ -110,6 +220,106 @@ class ReflectionData(CrystalDataset, DebugMixin):
         super().__post_init__()
         self.setup_scale()
         self.setup_anisotropy()
+        # Cached integer index maps for the work/free/validation subsets and
+        # a cache of the scaled (F, F_sigma). Both are invalidated by
+        # fingerprints (see _subset_indices / _corrected_or_raw).
+        self._subset_cache = {"work": None, "free": None, "validation": None}
+        self._subset_fp = None
+        self._corrected_cache = None
+        self._corrected_fp = None
+
+    # ===================== work / free / validation =====================
+
+    @property
+    def work(self) -> "_ReflectionSubset":
+        """Working-set view (``rfree_flags != 0``, excluding validation)."""
+        return _ReflectionSubset(self, "work")
+
+    @property
+    def free(self) -> "_ReflectionSubset":
+        """Free/test-set view (``rfree_flags == 0``, excluding validation)."""
+        return _ReflectionSubset(self, "free")
+
+    @property
+    def validation(self) -> "_ReflectionSubset":
+        """Validation-set view (``validation_flags``). Empty unless populated."""
+        return _ReflectionSubset(self, "validation")
+
+    def _subset_fingerprint(self):
+        """Fingerprint of everything the subset index maps depend on:
+        reflection count, the rfree/validation selection, the combined
+        validity masks, and device. Rebuilds the index cache when any change.
+        """
+        def _tv(t):
+            return (t.data_ptr(), t._version) if isinstance(t, torch.Tensor) else None
+
+        masks = getattr(self, "masks", None)
+        mask_fp = (
+            tuple(sorted((k, _tv(v)) for k, v in masks.items()))
+            if masks is not None
+            else None
+        )
+        n = 0 if self.hkl is None else len(self.hkl)
+        return (
+            n,
+            _tv(self.rfree_flags),
+            _tv(self.validation_flags),
+            mask_fp,
+            str(self.device),
+        )
+
+    def _subset_indices(self, kind: str) -> torch.Tensor:
+        """Return cached integer indices for ``kind`` in {work, free, validation}.
+
+        The three sets are disjoint: validation is carved out of both work
+        and free. Rebuilt whenever :meth:`_subset_fingerprint` changes.
+        """
+        fp = self._subset_fingerprint()
+        if self._subset_fp != fp or self._subset_cache.get(kind) is None:
+            n = 0 if self.hkl is None else len(self.hkl)
+            device = self.device
+            if n == 0:
+                empty = torch.empty(0, dtype=torch.long, device=device)
+                self._subset_cache = {"work": empty, "free": empty, "validation": empty}
+                self._subset_fp = fp
+                return self._subset_cache[kind]
+
+            valid = self.masks().to(torch.bool)
+            if self.validation_flags is not None:
+                val_sel = valid & self.validation_flags.to(torch.bool)
+            else:
+                val_sel = torch.zeros(n, dtype=torch.bool, device=device)
+            not_val = ~val_sel
+            if self.rfree_flags is not None:
+                rwork = self.rfree_flags.to(torch.bool)
+            else:
+                rwork = torch.ones(n, dtype=torch.bool, device=device)
+            work_sel = valid & rwork & not_val
+            free_sel = valid & (~rwork) & not_val
+            self._subset_cache = {
+                "work": torch.nonzero(work_sel, as_tuple=False).squeeze(-1),
+                "free": torch.nonzero(free_sel, as_tuple=False).squeeze(-1),
+                "validation": torch.nonzero(val_sel, as_tuple=False).squeeze(-1),
+            }
+            self._subset_fp = fp
+        return self._subset_cache[kind]
+
+    def _corrected_or_raw(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return the scaled (F, F_sigma) (matching ``data(scale=True)``),
+        cached against the (log_scale, U_aniso) fingerprint. Falls back to the
+        raw (F, F_sigma) if scaling is not set up.
+        """
+        def _tv(t):
+            return (t.data_ptr(), t._version) if isinstance(t, torch.Tensor) else None
+
+        fp = (_tv(getattr(self, "log_scale", None)), _tv(getattr(self, "U_aniso", None)))
+        if self._corrected_fp != fp or self._corrected_cache is None:
+            try:
+                self._corrected_cache = self.get_corrected_data()
+            except Exception:
+                self._corrected_cache = (self.F, self.F_sigma)
+            self._corrected_fp = fp
+        return self._corrected_cache
 
     def _canonicalize_in_place(self) -> None:
         """Remap HKL to canonical CCP4 ASU form and reorder all data in-place."""
@@ -1362,7 +1572,17 @@ class ReflectionData(CrystalDataset, DebugMixin):
             if work_mask is not None:
                 F_work = data.F[work_mask]
                 F_test = data.F[test_mask]
+
+        .. deprecated::
+            Use ``data.work.mask`` / ``data.free.mask`` (which also apply the
+            validity masks), or ``data.work.indices`` / ``data.free.indices``.
         """
+        warnings.warn(
+            "ReflectionData.get_rfree_masks() is deprecated; use data.work.mask "
+            "/ data.free.mask (the work/free/validation accessor).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self.rfree_flags is None:
             return None, None
 
@@ -1385,7 +1605,17 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Notes
         -----
         Returns full dataset with warning if no R-free flags available.
+
+        .. deprecated::
+            Use ``data.work.F`` / ``data.work.sigF`` instead, which also apply
+            the validity masks and cache the subset indices.
         """
+        warnings.warn(
+            "ReflectionData.get_work_set() is deprecated; use data.work.F / "
+            "data.work.sigF (the work/free/validation accessor).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self.rfree_flags is None:
             print("WARNING: No R-free flags available, returning full dataset")
             return self.F, self.F_sigma
@@ -1411,7 +1641,16 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ------
         ValueError
             If no R-free flags are available.
+
+        .. deprecated::
+            Use ``data.free.F`` / ``data.free.sigF`` instead.
         """
+        warnings.warn(
+            "ReflectionData.get_test_set() is deprecated; use data.free.F / "
+            "data.free.sigF (the work/free/validation accessor).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self.rfree_flags is None:
             raise ValueError("No R-free flags available in dataset")
 
@@ -1617,6 +1856,32 @@ class ReflectionData(CrystalDataset, DebugMixin):
             # Access underlying data
             valid_mask = F.get_mask()
             F_values = F.get_data()[valid_mask]
+
+        .. deprecated::
+            Calling a ReflectionData (``data()``) is deprecated. Use the
+            work/free/validation accessor (``data.work.F``, ``data.free.F``,
+            ``data.work.sigF`` / ``.hkl`` / ``.select(...)``), or the public
+            ``data.get_corrected_data()`` for the full scaled (F, F_sigma).
+        """
+        warnings.warn(
+            "Calling ReflectionData (data()) is deprecated; use the "
+            "data.work / data.free / data.validation accessor, or "
+            "data.get_corrected_data() for the full scaled arrays.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._masked_unpack(mask=mask, scale=scale)
+
+    def _masked_unpack(
+        self, mask: bool = True, scale: bool = True
+    ) -> Tuple[torch.Tensor, "MaskedTensor", "MaskedTensor", torch.Tensor]:
+        """Internal, non-deprecated implementation of the legacy ``__call__``.
+
+        Returns ``(hkl, F, F_sigma, rfree_flags)`` with F/F_sigma as
+        MaskedTensors (when ``mask``). Used by the few internal methods that
+        still rely on the masked-tensor unpack (``data_fill_masked``,
+        ``find_outliers``, ``get_log_ratio``); external callers should use the
+        work/free/validation accessor instead.
         """
         from torch.masked import MaskedTensor
 
@@ -1647,7 +1912,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 'mean' : fill missing/flagged with mean of present data
                 'zero' : fill missing/flagged with zero
         """
-        hkl, F, F_sigma, rfree = self()
+        hkl, F, F_sigma, rfree = self._masked_unpack()
 
         if mode == "mean":
             mean_F = self.mean_F_per_bin()
@@ -1978,7 +2243,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         torch.Tensor
             Boolean mask where True indicates outliers.
         """
-        hkl, F_obs, _, _ = self(mask=False)
+        hkl, F_obs, _, _ = self._masked_unpack(mask=False)
         log_ratio = self.get_log_ratio(model, scaler)
         eps = 1e-10
 
@@ -2041,7 +2306,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         # Get observed and calculated structure factors
         eps = 1e-6
-        hkl, F_obs, _, _ = self(mask=False)
+        hkl, F_obs, _, _ = self._masked_unpack(mask=False)
         F_calc_complex = model.forward(hkl)  # Complex structure factors
         F_calc_scaled = torch.abs(
             scaler(F_calc_complex, use_mask=False)

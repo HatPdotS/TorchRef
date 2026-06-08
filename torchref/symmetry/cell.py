@@ -268,7 +268,7 @@ class Cell(_NonModuleDeviceMixin):
         """
         Compute the fractional-to-Cartesian transformation matrix.
 
-        Delegates to math_numpy.get_fractional_matrix for the computation.
+        Delegates to math_torch.get_fractional_matrix for the computation.
         """
         from torchref.base import math_torch
 

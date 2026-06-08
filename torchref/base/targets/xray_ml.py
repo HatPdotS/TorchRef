@@ -64,7 +64,7 @@ def ml_xray_loss_math(
     F_calc: torch.Tensor,
     sigma: torch.Tensor,
     centric_flags: torch.Tensor,
-    mask: torch.Tensor,
+    mask: torch.Tensor = None,
 ) -> torch.Tensor:
     """Maximum-likelihood X-ray loss on already-scaled amplitudes.
 
@@ -87,6 +87,8 @@ def ml_xray_loss_math(
     mask : torch.Tensor
         (N,) bool work-set mask applied to the final sum.
     """
+    if mask is None:
+        mask = torch.ones(F_obs.shape[0], dtype=torch.bool, device=F_obs.device)
     if use_triton(F_calc, F_obs, sigma):
         from .triton.xray_ml import ml_xray_loss_math_triton
         return ml_xray_loss_math_triton(F_obs, F_calc, sigma, centric_flags, mask)

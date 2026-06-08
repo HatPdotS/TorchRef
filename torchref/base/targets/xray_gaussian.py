@@ -38,13 +38,16 @@ def gaussian_xray_loss_math(
     F_obs: torch.Tensor,
     F_calc: torch.Tensor,
     sigma: torch.Tensor,
-    mask: torch.Tensor,
+    mask: torch.Tensor = None,
 ) -> torch.Tensor:
     """Gaussian NLL on already-scaled amplitudes.
 
+    ``mask`` defaults to all reflections (``None``); compact inputs need no mask.
     Dispatches to :func:`torchref.base.targets.triton.xray_gaussian.gaussian_xray_loss_math_triton`
     on CUDA float32 inputs; falls back to the eager implementation otherwise.
     """
+    if mask is None:
+        mask = torch.ones(F_obs.shape[0], dtype=torch.bool, device=F_obs.device)
     if use_triton(F_calc, F_obs, sigma):
         from .triton.xray_gaussian import gaussian_xray_loss_math_triton
         return gaussian_xray_loss_math_triton(F_obs, F_calc, sigma, mask)

@@ -19,16 +19,6 @@ from .jit_kernel_vectorized_add_to_map import (
     clear_cache,
 )
 
-from .optimized_ops import (
-    fused_gaussian_density,
-    fused_aniso_gaussian_density,
-    warmup_cuda_operations,
-    compute_smallest_diff_squared,
-    CachedRadiusMask,
-    get_cached_radius_offsets,
-    vectorized_add_to_map_optimized,
-)
-
 # Triton kernels are optional (require triton package)
 try:
     from .triton_kernel import fused_add_to_map_gpu, fused_find_and_place_atoms
@@ -51,14 +41,6 @@ __all__ = [
     "warmup",
     "get_cache_dir",
     "clear_cache",
-    # Optimized ops
-    "fused_gaussian_density",
-    "fused_aniso_gaussian_density",
-    "warmup_cuda_operations",
-    "compute_smallest_diff_squared",
-    "CachedRadiusMask",
-    "get_cached_radius_offsets",
-    "vectorized_add_to_map_optimized",
     # Triton kernels (if available)
     "fused_add_to_map_gpu",
     "fused_find_and_place_atoms",

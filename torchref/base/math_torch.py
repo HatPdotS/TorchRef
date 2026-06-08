@@ -20,7 +20,7 @@ functions from the new submodules.
 Example (new style - recommended)::
 
     from torchref.base.coordinates import cartesian_to_fractional_torch
-    from torchref.base.metrics import get_rfactor_torch
+    from torchref.base.metrics import get_rfactors
 
 Example (old style - still works)::
 
@@ -115,11 +115,8 @@ from torchref.base.alignment import (
 # Re-exports from metrics submodule
 # =============================================================================
 from torchref.base.metrics import (
-    get_rfactor_torch,
-    rfactor,
     get_rfactors,
     bin_wise_rfactors,
-    calc_outliers,
     nll_xray,
     nll_xray_sum,
     nll_xray_lognormal,
@@ -261,121 +258,6 @@ def hash_tensors(tensors) -> str:
     return h.hexdigest()
 
 
-def french_wilson_conversion(Iobs, sigma_I=None):
-    """
-    Convert intensities to structure factor amplitudes using French-Wilson method.
-
-    Also converts standard deviations.
-
-    Parameters
-    ----------
-    Iobs : torch.Tensor
-        Observed intensity values.
-    sigma_I : torch.Tensor, optional
-        Estimated standard deviations of intensities.
-
-    Returns
-    -------
-    F : torch.Tensor
-        Structure factor amplitudes.
-    sigma_F : torch.Tensor
-        Standard deviations of structure factor amplitudes.
-    """
-    # If no sigmas provided, estimate them
-    if sigma_I is None:
-        sigma_I = torch.sqrt(torch.clamp(Iobs, min=1e-6))
-
-    # Determine mean intensity for Wilson prior
-    mean_I = torch.mean(torch.clamp(Iobs[~torch.isnan(Iobs)], min=0))
-
-    # Strong reflections: simple square root
-    strong_mask = Iobs > 3.0 * sigma_I
-    F = torch.zeros_like(Iobs)
-    F[strong_mask] = torch.sqrt(Iobs[strong_mask])
-
-    # Weak/negative reflections: Bayesian approach
-    weak_mask = ~strong_mask
-    if weak_mask.any():
-        # For weak reflections, use Bayesian estimate
-        I_weak = Iobs[weak_mask]
-        sigma_weak = sigma_I[weak_mask]
-
-        # For negative intensities, we need a better prior estimate
-        # The global mean_I is biased toward strong reflections
-        # For negative I, use the uncertainty as a guide for the expected intensity
-        # Better prior: use sigma_I as a proxy for the true intensity scale
-
-        # Separate negative and weak positive
-        neg_local_mask = I_weak < 0
-        pos_local_mask = ~neg_local_mask
-
-        F_weak = torch.zeros_like(I_weak)
-
-        # For negative intensities: use sigma_I based correction
-        # The idea: if I < 0, the true intensity is likely ~sigma_I in magnitude
-        # So use a prior based on sigma_I rather than the global mean_I
-        if neg_local_mask.any():
-            I_neg = I_weak[neg_local_mask]
-            sigma_neg = sigma_weak[neg_local_mask]
-
-            # For negative intensities, use a correction proportional to sigma^2
-            # This gives F values that scale with the uncertainty
-            # Formula: F ≈ sqrt(sigma^2 / 2) for very negative
-            # Blend with the global prior for moderately negative
-
-            # Weight based on how negative: |I/sigma|
-            epsilon = torch.abs(I_neg / torch.clamp(sigma_neg, min=1e-10))
-
-            # For slightly negative (epsilon < 0.5): use small correction
-            # For very negative (epsilon > 1): use sigma-based prior
-            # Smooth transition with tanh
-            weight_sigma_prior = torch.tanh(epsilon)
-
-            # Sigma-based correction (for very negative)
-            F_sigma_prior = torch.sqrt(sigma_neg**2 / 2.0)
-
-            # Global prior correction (for slightly negative)
-            wilson_param_global = mean_I / 2.0
-            correction_global = sigma_neg**2 / (2.0 * wilson_param_global)
-            F_global = torch.sqrt(torch.clamp(I_neg + correction_global, min=0))
-
-            # Blend
-            F_weak[neg_local_mask] = (
-                weight_sigma_prior * F_sigma_prior + (1 - weight_sigma_prior) * F_global
-            )
-
-        # For weak positive intensities: use standard correction
-        if pos_local_mask.any():
-            I_pos = I_weak[pos_local_mask]
-            sigma_pos = sigma_weak[pos_local_mask]
-
-            # Simplified Bayesian estimate (posterior mean)
-            wilson_param = mean_I / 2.0
-            variance_correction = sigma_pos**2 / (2.0 * wilson_param)
-            F_weak[pos_local_mask] = torch.sqrt(
-                torch.clamp(I_pos + variance_correction, min=0)
-            )
-
-        F[weak_mask] = F_weak
-
-    # Convert sigmas using error propagation formula
-    # For F = sqrt(I), σ(F) = σ(I)/(2*F)
-    # Avoid division by zero
-    sigma_F = torch.zeros_like(sigma_I)
-    nonzero_F = F > 1e-6
-    sigma_F[nonzero_F] = sigma_I[nonzero_F] / (2.0 * F[nonzero_F])
-
-    # For very weak reflections where F approaches zero,
-    # use an upper bound approximation to avoid huge sigma values
-    tiny_F = (F <= 1e-6) & (sigma_I > 0)
-    if tiny_F.any():
-        # Approximate using the typical Wilson distribution variance
-        wilson_param = mean_I / 2.0
-        sigma_F[tiny_F] = torch.sqrt(wilson_param / 2.0)
-
-    return F, sigma_F
-
-
 # =============================================================================
 # __all__ - Public API
 # =============================================================================
@@ -432,11 +314,8 @@ __all__ = [
     "get_alignement_matrix",
     "apply_transformation",
     # Metrics
-    "get_rfactor_torch",
-    "rfactor",
     "get_rfactors",
     "bin_wise_rfactors",
-    "calc_outliers",
     "nll_xray",
     "nll_xray_sum",
     "nll_xray_lognormal",
@@ -449,5 +328,4 @@ __all__ = [
     "U_to_matrix",
     "deterministic_tensor_digest",
     "hash_tensors",
-    "french_wilson_conversion",
 ]

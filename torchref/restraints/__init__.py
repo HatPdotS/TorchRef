@@ -17,45 +17,11 @@ Sherri, L.N., et al. (2018). Updated CCP4 Monomer Library.
 Classes
 -------
 
-RestraintsNew
-    Refactored restraints handler using builder pattern (faster, more testable).
-ResidueIterator
-    Efficient iterator over residues with pre-grouped data.
-RestraintBuilder
-    Abstract base class for restraint builders.
-BondRestraintBuilder
-    Builder for bond length restraints.
-AngleRestraintBuilder
-    Builder for angle restraints.
-TorsionRestraintBuilder
-    Builder for torsion angle restraints.
-PlaneRestraintBuilder
-    Builder for planarity restraints.
-ChiralRestraintBuilder
-    Builder for chiral volume restraints.
-InterResidueBondBuilder
-    Builder for inter-residue bond restraints (peptide, disulfide).
-InterResidueAngleBuilder
-    Builder for inter-residue angle restraints.
-InterResidueTorsionBuilder
-    Builder for inter-residue torsion restraints (phi, psi, omega).
-InterResiduePlaneBuilder
-    Builder for inter-residue plane restraints.
+Restraints
+    Restraints handler (alias of ``RestraintsNew``); builds and manages all
+    geometry restraints from CIF dictionaries.
 """
 
-from torchref.restraints.builders import (
-    AngleRestraintBuilder,
-    BondRestraintBuilder,
-    ChiralRestraintBuilder,
-    InterResidueAngleBuilder,
-    InterResidueBondBuilder,
-    InterResiduePlaneBuilder,
-    InterResidueTorsionBuilder,
-    PlaneRestraintBuilder,
-    ResidueIterator,
-    RestraintBuilder,
-    TorsionRestraintBuilder,
-)
 from torchref.restraints.library import get_library_manager
 from torchref.restraints.restraints import RestraintsNew as Restraints
 
@@ -69,18 +35,6 @@ def __getattr__(name):
 
 __all__ = [
     "Restraints",
-    "RestraintsNew",
-    "ResidueIterator",
-    "RestraintBuilder",
-    "BondRestraintBuilder",
-    "AngleRestraintBuilder",
-    "TorsionRestraintBuilder",
-    "PlaneRestraintBuilder",
-    "ChiralRestraintBuilder",
-    "InterResidueBondBuilder",
-    "InterResidueAngleBuilder",
-    "InterResidueTorsionBuilder",
-    "InterResiduePlaneBuilder",
     "MONOMER_LIB_PATH",
     "get_library_manager",
 ]

@@ -233,8 +233,6 @@ class DatasetCollection(CrystalDataset):
         dict
             Dictionary mapping name to (hkl, F, F_sigma, rfree) tuples.
         """
-        data = {}
-
         return {name: ds(mask=mask, scale=True) for name, ds in self}
 
     def scale(self):

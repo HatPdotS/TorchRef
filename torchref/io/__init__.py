@@ -4,11 +4,17 @@ I/O module for crystallographic data files.
 This module provides:
 - Dataset classes for handling reflection data
 - Format-specific readers and writers (MTZ, PDB, CIF)
-- Automatic format detection via DataRouter
+- Top-level object-creation readers: read_mtz, read_cif, read_pdb
 
 High-level API
 --------------
-Load a single dataset::
+Load objects directly::
+
+    from torchref.io import read_mtz, read_cif, read_pdb
+    data = read_mtz('structure.mtz')   # -> ReflectionData
+    model = read_pdb('structure.pdb')  # -> ModelFT
+
+Or construct and load explicitly::
 
     from torchref.io import ReflectionData
     data = ReflectionData(verbose=1)
@@ -40,11 +46,8 @@ from .cif import (
 # Metadata
 from .metadata import RefinementMetadata
 
-# Data router
-from .data_router import (
-    DataRouter,
-    DataRouterError,
-)
+# Top-level object-creation readers
+from .readers import read_cif, read_mtz, read_pdb
 
 # Dataset classes (primary API)
 from .datasets import (
@@ -61,16 +64,16 @@ from .pdb import PDBReader
 # IHM ensemble support (mapping always available; reader/writer need python-ihm)
 from .ihm_mapping import IHMEnsembleMapping, IHMModelGroupInfo, IHMStateInfo
 
-# Legacy aliases for backwards compatibility
-MTZ = MTZReader
-PDB = PDBReader
-
 __all__ = [
     # Primary API - Datasets
     "CrystalDataset",
     "ReflectionData",
     "DatasetCollection",
     "FcalcDataset",
+    # Top-level readers
+    "read_mtz",
+    "read_cif",
+    "read_pdb",
     # Format modules
     "mtz",
     "pdb",
@@ -82,16 +85,10 @@ __all__ = [
     "ReflectionCIFReader",
     "ModelCIFReader",
     "RestraintCIFReader",
-    # Router
-    "DataRouter",
-    "DataRouterError",
     # IHM ensemble support
     "IHMEnsembleMapping",
     "IHMStateInfo",
     "IHMModelGroupInfo",
     # Metadata
     "RefinementMetadata",
-    # Legacy aliases
-    "MTZ",
-    "PDB",
 ]

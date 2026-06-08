@@ -621,11 +621,6 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         result._build_index_cache()
         return result
 
-    def parameters(self):
-        parameter = super().parameters()
-        parameter_valid = [param for param in parameter if param.numel() > 0]
-        yield from parameter_valid
-
     def refine(
         self, selection: Union[slice, torch.Tensor, tuple], reset_values: bool = False
     ):

@@ -88,8 +88,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         max_res: float = None,
         device: Optional[torch.device] = None,
         nbins: int = 10,
-        manual_weights: Dict[str, float] = None,
-        component_weights: Dict[str, float] = None,
         column_names: Optional[Dict[str, str]] = None,
         wavelength: Optional[float] = 1.0,
         anomalous_threshold: float = 0.5,
@@ -117,8 +115,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Maximum resolution for reflections.
         device : torch.device, optional
             Computation device. Defaults to the configured device.current.
-        weighter : LossWeightingModule, optional
-            Loss weighting module. Creates default if None.
         nbins : int, optional
             Number of resolution bins. Default is 10.
         french_wilson : bool, optional
@@ -175,10 +171,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             )
             # Restraints are now lazy-loaded via model.restraints property
             self.weighter = None
-            self.manual_weights = manual_weights if manual_weights is not None else {}
-            self.component_weights = (
-                component_weights if component_weights is not None else {}
-            )
             return
 
         # Full initialization with file paths
@@ -236,11 +228,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             self.model.set_restraints_cif(cif)
             self.model._build_restraints()
 
-            self.manual_weights = manual_weights if manual_weights is not None else {}
-            self.component_weights = (
-                component_weights if component_weights is not None else {}
-            )
-
             # Initialize target functions (instantiated once, evaluated each iteration)
             self._init_targets()
 
@@ -283,7 +270,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         self.adp_target = TotalADPTarget(self.model, verbose=self.verbose)
 
-        self.setup_component_weighting()
+        # Initialize scaler scales (overall scale, anisotropic U, bulk solvent)
+        # so the scaler-regularization targets have valid parameters to read.
+        self.get_scales()
 
         if self.verbose > 0:
             print(f"Initialized targets with xray_mode='{xray_mode}'")
@@ -566,127 +555,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
         )
 
-        # Populate meta and update weights
-        state = self.populate_state_meta(state)
-        state = self.update_weights(state)
-
         return state.aggregate()
-
-    def setup_component_weighting(self):
-        """
-        Set up component weighting with ResolutionWeighting + OverfittingWeighting.
-        """
-        from torchref.refinement.weighting.component_weighting import ComponentWeighting
-
-        self.get_scales()
-
-        self.component_weighting = ComponentWeighting(
-            device=self.device,
-            weights=self.manual_weights,
-            component_weights=self.component_weights,
-        )
-
-    def populate_state_meta(self, state: "LossState") -> "LossState":
-        """
-        Populate LossState.meta with all model-level data.
-
-        Called once per macro cycle before weighting schemes are applied.
-        This is the single location where refinement data is extracted into state.
-
-        Parameters
-        ----------
-        state : LossState
-            State to populate with meta data.
-
-        Returns
-        -------
-        LossState
-            State with meta populated.
-        """
-        with torch.no_grad():
-            # R-factors
-            rwork, rfree = self.get_rfactor()
-            rwork = float(rwork) if isinstance(rwork, torch.Tensor) else rwork
-            rfree = float(rfree) if isinstance(rfree, torch.Tensor) else rfree
-
-            # X-ray losses
-            xray_work = self.xray_target_work().detach().item()
-            xray_test = self.xray_target_test().detach().item()
-
-            # ADP statistics
-            adp_values = self.model.adp()
-            mean_adp = float(adp_values.mean())
-            adp_std = float(adp_values.std())
-
-            # Geometry deviations (restraints accessed via model.restraints)
-            bond_rmsd = 0.0
-            angle_rmsd = 0.0
-            if self.model.initialized and self.model._restraints is not None:
-                restraints = self.model.restraints
-                if hasattr(restraints, "bond_deviations"):
-                    bond_devs, _ = restraints.bond_deviations()
-                    bond_rmsd = float(torch.sqrt((bond_devs**2).mean()))
-                if hasattr(restraints, "angle_deviations"):
-                    angle_devs, _ = restraints.angle_deviations()
-                    angle_rmsd = float(torch.sqrt((angle_devs**2).mean()))
-
-        state.update_meta(
-            {
-                # Device
-                "device": self.device,
-                # Static structure/data properties
-                "n_atoms": len(self.model.pdb),
-                "n_hkl": self.reflection_data.hkl.shape[0],
-                "resolution_min": float(self.reflection_data.resolution.min()),
-                "wilson_b": (
-                    float(self.reflection_data.wilson_b)
-                    if self.reflection_data.wilson_b is not None
-                    else 45.0
-                ),
-                # Dynamic refinement state
-                "rwork": rwork,
-                "rfree": rfree,
-                "rfree_gap": rfree - rwork,
-                "xray_loss_work": xray_work,
-                "xray_loss_test": xray_test,
-                "mean_adp": mean_adp,
-                "adp_std": adp_std,
-                "bond_rmsd": bond_rmsd,
-                "angle_rmsd": angle_rmsd,
-            }
-        )
-
-        return state
-
-    def update_weights(self, state: "LossState", multiply=False) -> "LossState":
-        """
-        Compute weights from component_weighting and update state.
-        Weights are clipped to [0.01, 100.0] to avoid extreme values.
-
-        Parameters
-        ----------
-        state : LossState
-            State with meta populated.
-        multiply : bool, optional
-            If True, multiply existing weights by computed weights.
-            If False, replace existing weights with computed weights.
-
-        Returns
-        -------
-        LossState
-            State with weights updated.
-        """
-        weights = self.component_weighting(state)
-
-        for name, weight in weights.items():
-            current = state.get_weight(name, default=1.0)
-            if multiply:
-                weight_effective = min(max(current * weight, 0.01), 100.0)
-            else:
-                weight_effective = min(max(weight, 0.01), 100.0)
-            state.set_weight(name, weight_effective)
-
-        return state
 
     def _create_loss_state(self) -> LossState:
         """
@@ -731,8 +600,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             This method is kept for backwards compatibility.
 
         Sets up a LossState with all targets registered as callables with
-        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'). Weights are
-        applied from component_weighting.
+        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'). All targets
+        aggregate at uniform weight unless weights are set explicitly via
+        ``state.set_weight``.
 
         Usage:
             from torchref.utils import validate_loss
@@ -795,9 +665,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Complete LossState with targets, meta, losses, and weights.
         """
         state = self.loss_state
-        state = self.populate_state_meta(state)
         state.cache_losses()
-        state = self.update_weights(state)
         return state
 
     def xray_loss(self):
@@ -824,10 +692,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     def collect_metrics(self) -> Dict[str, Any]:
         """
-        Collect all metrics from component_weighting.stats().
+        Collect refinement metrics (R-factors, geometry, ADP) for logging.
 
         This is the standard method for gathering refinement metrics for logging.
-        Uses the centralized component_weighting module for all statistics.
         Returns full unfiltered stats - filtering is done at display time.
 
         Returns
@@ -856,25 +723,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 metrics["geometry"] = self.geometry_target.stats()
             if hasattr(self, "adp_target"):
                 metrics["adp"] = self.adp_target.stats()
-
-            # Add X-ray NLL stats for component_weighting
-            if hasattr(self, "component_weighting"):
-                xray_work = self.xray_loss_work()
-                xray_test = self.xray_loss_test()
-                metrics["component_weighting"] = {
-                    "xray": {
-                        "work_nll": (
-                            xray_work.item()
-                            if hasattr(xray_work, "item")
-                            else float(xray_work)
-                        ),
-                        "test_nll": (
-                            xray_test.item()
-                            if hasattr(xray_test, "item")
-                            else float(xray_test)
-                        ),
-                    }
-                }
 
         return metrics
 
@@ -912,7 +760,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         import matplotlib.pyplot as plt
 
         with torch.no_grad():
-            hkl, F_obs, sigma_F_obs, self.rfree_flags = self.reflection_data()
+            F_obs = self.reflection_data.get_corrected_data()[0]
+            self.rfree_flags = self.reflection_data.rfree_flags
             self.get_F_calc()
             F_calc = self.F_calc
             F_obs_amp = torch.abs(F_obs).cpu().numpy()
@@ -1130,6 +979,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         scaler = Scaler(model, reflection_data, verbose=verbose, device=device)
 
         # Create Restraints with model (required for proper setup)
+        from torchref.restraints import Restraints
+
         restraints = Restraints(model, verbose=verbose)
 
         # Create empty instance

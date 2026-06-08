@@ -56,7 +56,6 @@ Example
 
 from torchref.model.sf_fft import SfFFT, FFT
 from torchref.model.sf_ds import SfDS
-from torchref.model.internal_coordinates import InternalCoordinateTensor
 from torchref.model.mixed_model import MixedModel
 from torchref.model.model import Model
 from torchref.model.model_ft import ModelFT
@@ -66,12 +65,6 @@ from torchref.model.parameter_wrappers import (
     PassThroughTensor,
     PositiveMixedTensor,
 )
-from torchref.model.segmented_internal_coordinates import (
-    SegmentedInternalCoordinateTensor,
-)
-from torchref.model.closed_segmented_internal_coordinates import (
-    ClosedSegmentedInternalCoordinateTensor,
-)
 from torchref.model.model_collection import ModelCollection, _SharedMixedModel
 from torchref.model.rigid_xyz import RigidXYZTensor
 
@@ -79,7 +72,6 @@ __all__ = [
     "FFT",
     "SfFFT",
     "SfDS",
-    "InternalCoordinateTensor",
     "MixedModel",
     "Model",
     "ModelFT",
@@ -87,8 +79,6 @@ __all__ = [
     "PositiveMixedTensor",
     "PassThroughTensor",
     "OccupancyTensor",
-    "SegmentedInternalCoordinateTensor",
-    "ClosedSegmentedInternalCoordinateTensor",
     "ModelCollection",
     "_SharedMixedModel",
     "RigidXYZTensor",

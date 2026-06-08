@@ -231,8 +231,12 @@ Examples:
         column_names=column_names,
         target_mode=args.xray_mode,
         sigma_m_scale=args.sigma_m_scale,
-        manual_weights=manual_weights or None,
     )
+
+    # Apply any user-specified manual loss weights to the persistent LossState.
+    # (Default behavior is uniform weighting.)
+    if manual_weights:
+        refinement.loss_state.set_weights(manual_weights)
 
     if args.verbose > 0:
         print("Refinement initialized successfully.\n")
@@ -328,29 +332,24 @@ Examples:
     # Add final R-factors if available
     try:
         work_nll, test_nll = refinement.nll_xray()
-        hkl, fobs, sigma, rfree = refinement.reflection_data()
+        data = refinement.reflection_data
         # Signed HKL so |F_calc| matches what refinement optimized (anomalous mates).
-        fcalc = refinement.get_F_calc_scaled(
-            refinement.reflection_data.hkl_for_sf(), recalc=True
-        )
+        fcalc = refinement.get_F_calc_scaled(data.hkl_for_sf(), recalc=True)
 
-        work_mask = rfree
-        test_mask = ~rfree
+        work, free = data.work, data.free
+        fobs_w, fcalc_w = work.F, work.select(fcalc)
+        fobs_f, fcalc_f = free.F, free.select(fcalc)
 
-        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(
-            fobs[work_mask]
-        )
-        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(
-            fobs[test_mask]
-        )
+        r_work = torch.sum(torch.abs(fobs_w - fcalc_w)) / torch.sum(fobs_w)
+        r_free = torch.sum(torch.abs(fobs_f - fcalc_f)) / torch.sum(fobs_f)
 
         history_data["final_statistics"] = {
             "R_work": float(r_work.item()),
             "R_free": float(r_free.item()),
             "NLL_work": float(work_nll.item()),
             "NLL_test": float(test_nll.item()),
-            "n_reflections_work": int(work_mask.sum().item()),
-            "n_reflections_test": int(test_mask.sum().item()),
+            "n_reflections_work": work.n,
+            "n_reflections_test": free.n,
         }
     except Exception as e:
         if args.verbose > 1:

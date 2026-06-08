@@ -262,8 +262,8 @@ class DifferenceXrayTarget(Target):
             # Datasets are already aligned - no matching needed
             return
 
-        hkl_light, _, _, _ = self._data_light()
-        hkl_dark, _, _, _ = self._data_dark()
+        hkl_light = self._data_light.hkl
+        hkl_dark = self._data_dark.hkl
 
         # Compute hashes
         hash_light = self._hkl_to_hash(hkl_light)
@@ -335,25 +335,12 @@ class DifferenceXrayTarget(Target):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Get delta F_obs when using DatasetCollection (aligned HKL)."""
         # Get observed data - datasets are already aligned
-        _, F_obs_light, sigma_light, rfree_light = self._data_light()
-        _, F_obs_dark, sigma_dark, rfree_dark = self._data_dark()
-
-        # Handle MaskedTensor inputs and get validity masks
-        if hasattr(F_obs_light, "get_mask"):
-            validity_light = F_obs_light.get_mask()
-            F_obs_light = F_obs_light.get_data()
-            sigma_light = sigma_light.get_data()
-        else:
-            validity_light = torch.ones(len(F_obs_light), dtype=torch.bool,
-                                        device=F_obs_light.device)
-
-        if hasattr(F_obs_dark, "get_mask"):
-            validity_dark = F_obs_dark.get_mask()
-            F_obs_dark = F_obs_dark.get_data()
-            sigma_dark = sigma_dark.get_data()
-        else:
-            validity_dark = torch.ones(len(F_obs_dark), dtype=torch.bool,
-                                       device=F_obs_dark.device)
+        F_obs_light, sigma_light = self._data_light.get_corrected_data()
+        rfree_light = self._data_light.rfree_flags
+        validity_light = self._data_light.masks().to(torch.bool)
+        F_obs_dark, sigma_dark = self._data_dark.get_corrected_data()
+        rfree_dark = self._data_dark.rfree_flags
+        validity_dark = self._data_dark.masks().to(torch.bool)
 
         # Compute difference and propagated error
         delta_F_obs = F_obs_light - F_obs_dark
@@ -383,26 +370,13 @@ class DifferenceXrayTarget(Target):
         if self._matched_indices_light is None:
             self._match_reflections()
 
-        # Get observed data
-        _, F_obs_light, sigma_light, rfree_light = self._data_light()
-        _, F_obs_dark, sigma_dark, rfree_dark = self._data_dark()
-
-        # Handle MaskedTensor inputs and get validity masks
-        if hasattr(F_obs_light, "get_mask"):
-            validity_light = F_obs_light.get_mask()
-            F_obs_light = F_obs_light.get_data()
-            sigma_light = sigma_light.get_data()
-        else:
-            validity_light = torch.ones(len(F_obs_light), dtype=torch.bool,
-                                        device=F_obs_light.device)
-
-        if hasattr(F_obs_dark, "get_mask"):
-            validity_dark = F_obs_dark.get_mask()
-            F_obs_dark = F_obs_dark.get_data()
-            sigma_dark = sigma_dark.get_data()
-        else:
-            validity_dark = torch.ones(len(F_obs_dark), dtype=torch.bool,
-                                       device=F_obs_dark.device)
+        # Get observed data (corrected amplitudes + validity from masks)
+        F_obs_light, sigma_light = self._data_light.get_corrected_data()
+        rfree_light = self._data_light.rfree_flags
+        validity_light = self._data_light.masks().to(torch.bool)
+        F_obs_dark, sigma_dark = self._data_dark.get_corrected_data()
+        rfree_dark = self._data_dark.rfree_flags
+        validity_dark = self._data_dark.masks().to(torch.bool)
 
         # Extract matched reflections
         F_light = F_obs_light[self._matched_indices_light]
@@ -712,16 +686,10 @@ class PhaseInformedDifferenceTarget(Target):
 
     def _setup_data(self):
         """Setup observed data and masks."""
-        _, F_light, sigma_light, rfree_light = self._data_light()
-        _, F_dark, sigma_dark, rfree_dark = self._data_dark()
-
-        # Handle MaskedTensor
-        if hasattr(F_light, "get_data"):
-            F_light = F_light.get_data()
-            sigma_light = sigma_light.get_data()
-        if hasattr(F_dark, "get_data"):
-            F_dark = F_dark.get_data()
-            sigma_dark = sigma_dark.get_data()
+        F_light, sigma_light = self._data_light.get_corrected_data()
+        rfree_light = self._data_light.rfree_flags
+        F_dark, sigma_dark = self._data_dark.get_corrected_data()
+        rfree_dark = self._data_dark.rfree_flags
 
         self.register_buffer("_F_obs_light", F_light)
         self.register_buffer("_F_obs_dark", F_dark)
@@ -998,19 +966,12 @@ class TaylorCorrectedDifferenceTarget(Target):
 
     def _setup_data(self):
         """Setup observed data and masks."""
-        _, F_light, sigma_light, rfree_light = self._data_light()
-        _, F_dark, sigma_dark, rfree_dark = self._data_dark()
-
-        # Handle MaskedTensor — extract data AND validity masks
-        valid_light = valid_dark = None
-        if hasattr(F_light, "get_mask"):
-            valid_light = F_light.get_mask()
-            F_light = F_light.get_data()
-            sigma_light = sigma_light.get_data()
-        if hasattr(F_dark, "get_mask"):
-            valid_dark = F_dark.get_mask()
-            F_dark = F_dark.get_data()
-            sigma_dark = sigma_dark.get_data()
+        F_light, sigma_light = self._data_light.get_corrected_data()
+        rfree_light = self._data_light.rfree_flags
+        valid_light = self._data_light.masks().to(torch.bool)
+        F_dark, sigma_dark = self._data_dark.get_corrected_data()
+        rfree_dark = self._data_dark.rfree_flags
+        valid_dark = self._data_dark.masks().to(torch.bool)
 
         # Build validity mask first (needed for cleanup below)
         valid_mask = torch.ones_like(rfree_light, dtype=torch.bool)
@@ -1377,19 +1338,12 @@ class RiceDifferenceTarget(Target):
 
     def _setup_data(self):
         """Setup observed data and masks."""
-        _, F_light, sigma_light, rfree_light = self._data_light()
-        _, F_dark, sigma_dark, rfree_dark = self._data_dark()
-
-        # Handle MaskedTensor — extract data AND validity masks
-        valid_light = valid_dark = None
-        if hasattr(F_light, "get_mask"):
-            valid_light = F_light.get_mask()
-            F_light = F_light.get_data()
-            sigma_light = sigma_light.get_data()
-        if hasattr(F_dark, "get_mask"):
-            valid_dark = F_dark.get_mask()
-            F_dark = F_dark.get_data()
-            sigma_dark = sigma_dark.get_data()
+        F_light, sigma_light = self._data_light.get_corrected_data()
+        rfree_light = self._data_light.rfree_flags
+        valid_light = self._data_light.masks().to(torch.bool)
+        F_dark, sigma_dark = self._data_dark.get_corrected_data()
+        rfree_dark = self._data_dark.rfree_flags
+        valid_dark = self._data_dark.masks().to(torch.bool)
 
         # Build validity mask
         valid_mask = torch.ones_like(rfree_light, dtype=torch.bool)

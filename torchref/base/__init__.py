@@ -30,29 +30,25 @@ metrics
 kernels
     Optimized GPU/CPU kernels for performance-critical operations.
 
-Legacy Submodules (For Backward Compatibility)
-----------------------------------------------
+Legacy Submodule (For Backward Compatibility)
+---------------------------------------------
 math_torch
     PyTorch implementations (deprecated, use domain-specific submodules).
-math_numpy
-    NumPy implementations (deprecated, use domain-specific submodules).
 french_wilson
     French-Wilson treatment for negative intensities.
-get_scattering_factor_torch
-    Atomic scattering factor calculations (use scattering.itc92 instead).
 
 Example
 -------
 New-style imports (recommended)::
 
     from torchref.base.coordinates import cartesian_to_fractional_torch
-    from torchref.base.metrics import get_rfactor_torch
+    from torchref.base.metrics import get_rfactors
     from torchref.base.reciprocal import reciprocal_basis_matrix
 
 Legacy imports (still supported)::
 
     from torchref.base import cartesian_to_fractional_torch
-    from torchref.base import math_torch, math_numpy
+    from torchref.base import math_torch
 """
 
 # =============================================================================
@@ -71,11 +67,9 @@ from . import (
 )
 
 # =============================================================================
-# Legacy submodules (for backward compatibility)
+# Legacy submodule (for backward compatibility)
 # =============================================================================
 from . import (
-    get_scattering_factor_torch,
-    math_numpy,
     math_torch,
 )
 
@@ -176,18 +170,6 @@ from .fourier import (
 # =============================================================================
 # Scattering factors (from scattering submodule)
 # =============================================================================
-from .scattering import (
-    get_scattering_factors,
-    get_scattering_factors_unique,
-    get_parametrization_for_elements,
-    calc_scattering_factors_paramtetrization,
-)
-
-# Legacy scattering factor imports (from get_scattering_factor_torch)
-from .get_scattering_factor_torch import (
-    calc_scattering_factors_paramtetrization as calc_scattering_factors_paramtetrization_legacy,
-)
-
 # =============================================================================
 # alignment (from alignment submodule)
 # =============================================================================
@@ -221,13 +203,8 @@ from .alignment import (
 # Metrics (from metrics submodule)
 # =============================================================================
 from .metrics import (
-    get_rfactor_torch,
-    get_rfactor,
-    rfactor,
     get_rfactors,
     bin_wise_rfactors,
-    calc_outliers,
-    calc_outliers_numpy,
     binwise_scale,
     nll_xray,
     nll_xray_sum,
@@ -248,12 +225,6 @@ from .kernels import (
     warmup,
     get_cache_dir,
     clear_cache,
-    fused_gaussian_density,
-    fused_aniso_gaussian_density,
-    warmup_cuda_operations,
-    compute_smallest_diff_squared,
-    CachedRadiusMask,
-    get_cached_radius_offsets,
 )
 
 # =============================================================================
@@ -273,16 +244,13 @@ __all__ = [
     "metrics",
     "kernels",
     # -------------------------------------------------------------------------
-    # Legacy submodules (backward compatibility)
+    # Legacy submodule (backward compatibility)
     # -------------------------------------------------------------------------
     "math_torch",
-    "math_numpy",
-    "get_scattering_factor_torch",
     # -------------------------------------------------------------------------
     # Classes
     # -------------------------------------------------------------------------
     "FrenchWilson",
-    "CachedRadiusMask",
     "ReciprocalSymmetryExtractor",
     # -------------------------------------------------------------------------
     # Coordinate transforms
@@ -352,13 +320,6 @@ __all__ = [
     "get_grids",
     "put_hkl_on_grid",
     # -------------------------------------------------------------------------
-    # Scattering factors
-    # -------------------------------------------------------------------------
-    "get_scattering_factors",
-    "get_scattering_factors_unique",
-    "get_parametrization_for_elements",
-    "calc_scattering_factors_paramtetrization",
-    # -------------------------------------------------------------------------
     # alignment
     # -------------------------------------------------------------------------
     "compute_radial_shells",
@@ -385,14 +346,9 @@ __all__ = [
     # -------------------------------------------------------------------------
     # Metrics
     # -------------------------------------------------------------------------
-    "get_rfactor_torch",
-    "get_rfactor",
-    "rfactor",
     "get_rfactors",
     "bin_wise_rfactors",
     "binwise_scale",
-    "calc_outliers",
-    "calc_outliers_numpy",
     "nll_xray",
     "nll_xray_sum",
     "nll_xray_lognormal",
@@ -409,9 +365,4 @@ __all__ = [
     "warmup",
     "get_cache_dir",
     "clear_cache",
-    "fused_gaussian_density",
-    "fused_aniso_gaussian_density",
-    "warmup_cuda_operations",
-    "compute_smallest_diff_squared",
-    "get_cached_radius_offsets",
 ]
