@@ -1,5 +1,18 @@
 Changelog
 =========
+
+Vesion 0.6.0
+-------------
+- Implemented Phenix style sigma A weighting in the Maximum likelihood target (New default for refinement)
+- Added sigma A estimation to scaler objects
+- Added collection versions of the sigma A target
+
+Version 0.5.3.3
+-------------
+- Fixed U_aniso parametrization and line search instability during refinement with anisotropic b-factor
+- Fixed kinetic module import 
+- Set default similarity weight in difference refinement to 0
+
 Version 0.5.3.2
 -------------
 - Added 10GB Gram requirement for default gpu device selection

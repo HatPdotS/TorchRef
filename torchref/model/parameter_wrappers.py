@@ -621,11 +621,6 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         result._build_index_cache()
         return result
 
-    def parameters(self):
-        parameter = super().parameters()
-        parameter_valid = [param for param in parameter if param.numel() > 0]
-        yield from parameter_valid
-
     def refine(
         self, selection: Union[slice, torch.Tensor, tuple], reset_values: bool = False
     ):
@@ -1249,6 +1244,185 @@ class PositiveMixedTensor(MixedTensor):
             f"  Requires grad: {self.refinable_params.requires_grad}\n"
             f"  Parametrization: log space (output = exp(internal))\n"
             f"  Epsilon: {self.epsilon}"
+        )
+
+
+class CholeskyMixedTensor(MixedTensor):
+    """A MixedTensor for anisotropic ADPs (U tensors) kept positive-definite.
+
+    The six U components (u11, u22, u33, u12, u13, u23) are stored internally as
+    the six free parameters of a lower-triangular Cholesky factor ``L``, and the
+    public tensor is reconstructed as ``U = L Lᵀ``. With the diagonal of ``L``
+    mapped through ``exp(x) + epsilon`` (strictly positive), ``U`` is positive-
+    definite by construction for *any* value of the free parameters -- so
+    unconstrained optimisation (e.g. LBFGS line search) can never drive ``U``
+    indefinite. An indefinite ``U`` otherwise makes the per-atom anisotropic
+    B-matrix singular, so its inverse and the Gaussian exponent blow up and the
+    structure-factor FFT returns NaN. This is the anisotropic analogue of
+    :class:`PositiveMixedTensor`, which keeps isotropic B positive the same way.
+
+    Rows that are entirely non-finite (isotropic atoms carry ``U = NaN``) are
+    passed through unchanged in both directions, preserving the iso/aniso split.
+
+    Notes
+    -----
+    The eigen-decomposition / Cholesky needed to map ``U -> L`` runs only at
+    construction and on freeze/unfreeze; the forward (hot) path is just ``exp``
+    and a handful of products, so gradients flow cleanly to ``refinable_params``
+    with no matrix factorisation in the autograd graph.
+    """
+
+    def __init__(
+        self,
+        initial_values: torch.Tensor = None,
+        refinable_mask: Optional[torch.Tensor] = None,
+        requires_grad: bool = True,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
+        name: Optional[str] = None,
+        epsilon: float = 1e-3,
+    ):
+        self.epsilon = epsilon
+        if initial_values is None:
+            super().__init__(None, refinable_mask, requires_grad, dtype, device, name)
+            return
+        raw = self._u6_to_raw6(initial_values)
+        super().__init__(
+            initial_values=raw,
+            refinable_mask=refinable_mask,
+            requires_grad=requires_grad,
+            dtype=dtype,
+            device=device,
+            name=name,
+        )
+
+    # ------------------------------------------------------------------
+    # U (6-vector) <-> Cholesky free-parameter (6-vector) transforms.
+    # Both operate on (..., 6) tensors and pass NaN rows through untouched.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _u6_to_matrix(U: torch.Tensor) -> torch.Tensor:
+        M = U.new_zeros(*U.shape[:-1], 3, 3)
+        M[..., 0, 0] = U[..., 0]
+        M[..., 1, 1] = U[..., 1]
+        M[..., 2, 2] = U[..., 2]
+        M[..., 0, 1] = M[..., 1, 0] = U[..., 3]
+        M[..., 0, 2] = M[..., 2, 0] = U[..., 4]
+        M[..., 1, 2] = M[..., 2, 1] = U[..., 5]
+        return M
+
+    def _u6_to_raw6(self, U: torch.Tensor) -> torch.Tensor:
+        """U components -> Cholesky free parameters [log(L_ii - eps); L_offdiag]."""
+        eps = self.epsilon
+        finite = torch.isfinite(U).all(dim=-1)
+        M = self._u6_to_matrix(torch.nan_to_num(U, nan=0.0))
+        eye = torch.eye(3, dtype=M.dtype, device=M.device).expand_as(M)
+        M = torch.where(finite[..., None, None], M, eye)
+        # Project to positive-definite: symmetrise, clamp eigenvalues off zero.
+        # No-op for well-conditioned deposited U; rescues marginally non-PD input.
+        M = 0.5 * (M + M.transpose(-1, -2))
+        w, V = torch.linalg.eigh(M)
+        w = w.clamp(min=eps * eps)
+        M = (V * w.unsqueeze(-2)) @ V.transpose(-1, -2)
+        L = torch.linalg.cholesky(M)
+        diag = torch.stack([L[..., 0, 0], L[..., 1, 1], L[..., 2, 2]], dim=-1)
+        off = torch.stack([L[..., 1, 0], L[..., 2, 0], L[..., 2, 1]], dim=-1)
+        raw_diag = torch.log((diag - eps).clamp(min=1e-12))  # invert exp(x)+eps
+        raw = torch.cat([raw_diag, off], dim=-1)
+        nan = torch.full_like(raw, float("nan"))
+        return torch.where(finite.unsqueeze(-1), raw, nan)
+
+    def _raw6_to_u6(self, raw: torch.Tensor) -> torch.Tensor:
+        """Cholesky free parameters -> U components (U = L Lᵀ). PD by construction."""
+        eps = self.epsilon
+        diag, off = raw[..., :3], raw[..., 3:]
+        L11 = torch.exp(diag[..., 0]) + eps
+        L22 = torch.exp(diag[..., 1]) + eps
+        L33 = torch.exp(diag[..., 2]) + eps
+        L21, L31, L32 = off[..., 0], off[..., 1], off[..., 2]
+        U11 = L11 * L11
+        U22 = L21 * L21 + L22 * L22
+        U33 = L31 * L31 + L32 * L32 + L33 * L33
+        U12 = L21 * L11
+        U13 = L31 * L11
+        U23 = L31 * L21 + L32 * L22
+        return torch.stack([U11, U22, U33, U12, U13, U23], dim=-1)
+
+    def forward(self) -> torch.Tensor:
+        """Return the full U tensor (positive-definite per finite row)."""
+        return self._raw6_to_u6(super().forward())
+
+    def _set_values(self, key, value: torch.Tensor) -> None:
+        """Set U-space values at ``key``; stored internally as Cholesky params."""
+        current = self.forward().detach()
+        current[key] = value
+        raw = self._u6_to_raw6(current)
+        self.fixed_values = raw.clone()
+        if self.refinable_mask.any():
+            self.refinable_params = nn.Parameter(
+                raw[self.refinable_mask].clone(),
+                requires_grad=self.refinable_params.requires_grad,
+            )
+
+    def fix(self, mask: torch.Tensor, freeze_at_current: bool = True):
+        """Freeze rows, storing their current value in Cholesky space."""
+        if freeze_at_current:
+            with torch.no_grad():
+                raw = self._u6_to_raw6(self.forward())
+            self.fixed_values[mask] = raw[mask]
+        super().fix(mask, freeze_at_current=False)
+
+    def refine(self, mask: torch.Tensor):
+        """Make rows refinable, preserving their current value in Cholesky space."""
+        with torch.no_grad():
+            raw = self._u6_to_raw6(self.forward())
+        self.fixed_values[mask] = raw[mask]
+        super().refine(mask)
+
+    def set(self, values: torch.Tensor, mask: torch.Tensor) -> None:
+        """Set U-space values for masked rows (converted to Cholesky internally)."""
+        self._set_values(mask, values)
+
+    def update_refinable_mask(
+        self, new_mask: torch.Tensor, reset_refinable: bool = False
+    ):
+        """Repartition refinable/fixed elements, preserving values in U space.
+
+        The base implementation re-stores ``forward()`` output directly, which
+        would double-transform here (U written back into Cholesky-parameter
+        storage); convert to Cholesky parameters first, mirroring
+        :meth:`PositiveMixedTensor.update_refinable_mask`.
+        """
+        if new_mask.shape[0] != self.shape[0]:
+            raise ValueError(
+                f"new_mask shape {new_mask.shape} must match tensor shape {self.shape}"
+            )
+        with torch.no_grad():
+            current_raw = self._u6_to_raw6(self.forward())
+        self.refinable_mask = new_mask.to(device=self.device)
+        self.fixed_mask = ~new_mask
+        self.fixed_values = current_raw.clone()
+        new_refinable = current_raw[self.refinable_mask].clone()
+        self.refinable_params = nn.Parameter(
+            new_refinable, requires_grad=self.refinable_params.requires_grad
+        )
+        self._build_index_cache()
+
+    def copy(self) -> "CholeskyMixedTensor":
+        """Deep-copy, preserving the Cholesky parametrization.
+
+        Rebuilds from the U-space values (``__init__`` reconverts to Cholesky
+        parameters), so the copy stays positive-definite rather than degrading
+        to a plain unconstrained :class:`MixedTensor`.
+        """
+        return CholeskyMixedTensor(
+            initial_values=self.forward().detach(),
+            refinable_mask=self.refinable_mask.clone(),
+            requires_grad=self.refinable_params.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            name=self._name,
+            epsilon=self.epsilon,
         )
 
 

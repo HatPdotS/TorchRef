@@ -47,7 +47,7 @@ utils
     General utilities and debugging tools.
 """
 
-__version__ = "0.5.3.1"
+__version__ = "0.6.0-dev"
 
 
 import os
@@ -99,13 +99,22 @@ PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 
 
 # Data I/O
-from torchref.io import DatasetCollection, ReflectionData, FcalcDataset
+from torchref.io import (
+    DatasetCollection,
+    ReflectionData,
+    FcalcDataset,
+    read_mtz,
+    read_cif,
+    read_pdb,
+)
 
 # Model
 from torchref.model import Model, ModelFT
+from torchref.model.rigid_xyz import RigidXYZTensor
 
 # Refinement
 from torchref.refinement import LBFGSRefinement, Refinement
+from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
 from torchref.symmetry import Cell, SpaceGroup
 
 # Restraints
@@ -132,12 +141,17 @@ __all__ = [
     # Data I/O
     "ReflectionData",
     "DatasetCollection",
+    "read_mtz",
+    "read_cif",
+    "read_pdb",
     # Model
     "Model",
     "ModelFT",
+    "RigidXYZTensor",
     # Refinement
     "Refinement",
     "LBFGSRefinement",
+    "RigidBodyRefinementStep",
     # Scaling
     "Scaler",
     "ScalerBase",

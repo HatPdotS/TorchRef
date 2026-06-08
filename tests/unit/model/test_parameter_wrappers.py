@@ -336,3 +336,102 @@ class TestPositiveMixedTensor:
         # After set(), output should be close to 100.0
         result = t()
         assert torch.allclose(result[0], torch.tensor(100.0), rtol=0.01)
+
+
+def _u6_matrix(u6):
+    """(...,6) [u11,u22,u33,u12,u13,u23] -> symmetric (...,3,3)."""
+    import torch as _t
+
+    M = _t.zeros(*u6.shape[:-1], 3, 3, dtype=u6.dtype)
+    M[..., 0, 0], M[..., 1, 1], M[..., 2, 2] = u6[..., 0], u6[..., 1], u6[..., 2]
+    M[..., 0, 1] = M[..., 1, 0] = u6[..., 3]
+    M[..., 0, 2] = M[..., 2, 0] = u6[..., 4]
+    M[..., 1, 2] = M[..., 2, 1] = u6[..., 5]
+    return M
+
+
+class TestCholeskyMixedTensor:
+    """Tests for CholeskyMixedTensor (anisotropic U kept positive-definite)."""
+
+    @pytest.mark.unit
+    def test_roundtrip_preserves_pd_u(self):
+        """A positive-definite U should round-trip through the Cholesky form."""
+        from torchref.model.parameter_wrappers import CholeskyMixedTensor
+
+        U = torch.tensor(
+            [
+                [0.2319, 0.1627, 0.1717, -0.0464, 0.0254, -0.0834],
+                [0.30, 0.28, 0.25, 0.05, -0.02, 0.01],
+            ],
+            dtype=torch.float64,
+        )
+        out = CholeskyMixedTensor(U)().detach()
+        assert torch.allclose(out, U, atol=1e-6)
+
+    @pytest.mark.unit
+    def test_output_is_positive_definite_for_arbitrary_params(self):
+        """For ANY internal parameters, the reconstructed U must be PD."""
+        from torchref.model.parameter_wrappers import CholeskyMixedTensor
+
+        U = torch.tensor([[0.2, 0.2, 0.2, 0.0, 0.0, 0.0]], dtype=torch.float64)
+        t = CholeskyMixedTensor(U)
+        # Shove the raw Cholesky params to extreme/negative values (what an LBFGS
+        # line-search trial step would do); U must remain positive-definite.
+        with torch.no_grad():
+            t.refinable_params.copy_(
+                torch.tensor(
+                    [[-8.0, 5.0, -3.0, -50.0, 40.0, -30.0]], dtype=torch.float64
+                )
+            )
+        eigs = torch.linalg.eigvalsh(_u6_matrix(t().detach()))
+        assert torch.all(eigs > 0), eigs
+        assert torch.isfinite(t()).all()
+
+    @pytest.mark.unit
+    def test_nan_rows_pass_through(self):
+        """Isotropic atoms carry U = NaN; those rows must stay NaN, not error."""
+        from torchref.model.parameter_wrappers import CholeskyMixedTensor
+
+        U = torch.tensor(
+            [[0.2, 0.2, 0.2, 0.0, 0.0, 0.0], [float("nan")] * 6],
+            dtype=torch.float64,
+        )
+        out = CholeskyMixedTensor(U)().detach()
+        assert torch.isnan(out[1]).all()
+        assert torch.isfinite(out[0]).all()
+
+    @pytest.mark.unit
+    def test_update_refinable_mask_no_double_transform(self):
+        """Repartitioning must not double-apply the Cholesky transform."""
+        from torchref.model.parameter_wrappers import CholeskyMixedTensor
+
+        U = torch.tensor(
+            [[0.2319, 0.1627, 0.1717, -0.0464, 0.0254, -0.0834]] * 3,
+            dtype=torch.float64,
+        )
+        t = CholeskyMixedTensor(U)
+        before = t().detach().clone()
+        t.update_refinable_mask(torch.tensor([True, False, True]))
+        assert torch.allclose(t().detach(), before, atol=1e-6)
+
+    @pytest.mark.unit
+    def test_copy_preserves_type_and_values(self):
+        """copy() must stay a CholeskyMixedTensor with identical output."""
+        from torchref.model.parameter_wrappers import CholeskyMixedTensor
+
+        U = torch.tensor([[0.25, 0.22, 0.20, 0.03, -0.01, 0.02]], dtype=torch.float64)
+        t = CholeskyMixedTensor(U)
+        c = t.copy()
+        assert isinstance(c, CholeskyMixedTensor)
+        assert torch.allclose(c().detach(), t().detach(), atol=1e-6)
+
+    @pytest.mark.unit
+    def test_gradient_flows_to_refinable_params(self):
+        """forward() must be differentiable wrt the internal Cholesky params."""
+        from torchref.model.parameter_wrappers import CholeskyMixedTensor
+
+        U = torch.tensor([[0.25, 0.22, 0.20, 0.03, -0.01, 0.02]], dtype=torch.float64)
+        t = CholeskyMixedTensor(U)
+        t().sum().backward()
+        assert t.refinable_params.grad is not None
+        assert torch.isfinite(t.refinable_params.grad).all()

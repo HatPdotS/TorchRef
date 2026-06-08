@@ -346,7 +346,9 @@ class DataTarget(Target):
                 "Either provide a model or pass fcalc directly."
             )
         if hkl is None:
-            hkl, _, _, _ = self._data()
+            # Signed HKL so Bijvoet mates get distinct |F_calc| (see
+            # ReflectionData.hkl_for_sf).
+            hkl = self._data.hkl_for_sf()
         return self._model(hkl, recalc=recalc)
 
     def get_fcalc_scaled(self, hkl=None, recalc=False, fcalc=None):

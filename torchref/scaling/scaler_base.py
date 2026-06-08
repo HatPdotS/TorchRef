@@ -12,20 +12,27 @@ making it suitable for use cases like:
 - Custom model implementations
 """
 
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
 from torchref.base.math_torch import U_to_matrix
-from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll_xray_lognormal
+from torchref.base.metrics import (
+    bin_wise_rfactors,
+    binwise_scale,
+    get_rfactors,
+    nll_xray,
+    nll_xray_lognormal,
+)
 from torchref.base.reciprocal import get_scattering_vectors
+from torchref.base.targets.xray_ml_sigmaa import epsilon_from_hkl, estimate_beta
 from torchref.config import get_complex_dtype, get_default_device, get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.utils import ModuleReference
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
+from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
@@ -113,6 +120,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             self.register_buffer("sigma_eff", None)
             self.register_buffer("sigma_eff_per_bin", None)
             self._f_sol_raw = None
+            self._init_beta_cache()
             return
 
         # Full initialization with data
@@ -131,14 +139,80 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         # sigma_eff: per-reflection effective sigma, shape (N,)
         # sigma_eff_per_bin: per-bin effective sigma, shape (nbins,)
         # Initialized to raw sigmas; will be updated after scaling.
-        _, _, sigma_raw, _ = self._data(mask=False)
+        sigma_raw = self._data.get_corrected_data()[1]
         self.register_buffer("sigma_eff", sigma_raw.clone().to(self.device))
         self.register_buffer(
             "sigma_eff_per_bin",
             torch.zeros(self.nbins, device=self.device, dtype=sigma_raw.dtype),
         )
+        self._init_beta_cache()
         if self.verbose > 0:
             print(f"Initialized ScalerBase with {self.nbins} bins.")
+
+    # ------------------------------------------------------------------
+    # Maximum-likelihood model-error variance beta, lazily cached
+    # ------------------------------------------------------------------
+
+    def _init_beta_cache(self):
+        """Initialise the lazy beta cache attributes."""
+        self._beta_cache = None  # (beta_refl, epsilon) detached
+        self._epsilon_per_refl = None  # cached once (multiplicity, model-independent)
+        self._beta_per_bin = None  # diagnostics
+
+    def reset_beta_cache(self):
+        """Invalidate the cached beta so it re-estimates on next access.
+
+        Called from ``MaximumLikelihoodSigmaAXrayTarget.maintenance`` (which
+        ``LossState`` invokes after each optimizer-step block). Epsilon is kept
+        (it is model-independent). Mirrors the ``_f_sol_raw = None`` solvent-cache
+        invalidation pattern.
+        """
+        self._beta_cache = None
+
+    def get_beta(self, fcalc: torch.Tensor = None):
+        """Lazily estimate and cache per-reflection ML ``(beta, epsilon)``.
+
+        ``beta`` (absolute per-shell model-error variance) is estimated by the
+        Phenix/Lunin-Skovoroda ML estimator on the FREE set in ~140-reflection
+        shells, using the **scaled** ``|F_calc|`` (``self.forward``). Returns
+        detached tensors; gradients never flow through them. Cached until
+        :meth:`reset_beta_cache`.
+        """
+        if self._beta_cache is not None:
+            return self._beta_cache
+
+        with torch.no_grad():
+            if fcalc is None:
+                if not hasattr(self, "compute_fcalc"):
+                    raise RuntimeError(
+                        "get_beta needs fcalc or a model-aware Scaler "
+                        "(compute_fcalc)."
+                    )
+                fcalc = self.compute_fcalc()
+            fc_amp = torch.abs(self.forward(fcalc)).reshape(-1)
+
+            fobs = self._data.get_corrected_data()[0].to(fc_amp.dtype).reshape(-1)
+            free = self._data.free.mask  # valid & ~rfree (& ~validation)
+            centric = self._data.centric
+
+            if self._epsilon_per_refl is None:
+                sg = getattr(self._data, "spacegroup", None)
+                self._epsilon_per_refl = epsilon_from_hkl(self._data.hkl, sg).to(
+                    fc_amp.dtype
+                )
+            eps = self._epsilon_per_refl
+
+            dss = 4.0 * self._s_half_sq
+            beta, bbin, _bdss = estimate_beta(fobs, fc_amp, centric, eps, dss, free)
+            self._beta_per_bin = bbin
+
+            self._beta_cache = (beta.detach(), eps.detach())
+        return self._beta_cache
+
+    @property
+    def beta_per_bin(self):
+        """Last-estimated per-bin beta (diagnostics); ``None`` until first call."""
+        return self._beta_per_bin
 
     def set_data(self, data: "ReflectionData"):
         """
@@ -197,15 +271,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         torch.nn.Parameter
             The log scale parameter for each resolution bin.
         """
-        hkl, fobs, sigma, rfree = self._data(mask=False)
+        fobs = self._data.get_corrected_data()[0]
         if self.verbose > 0:
             print(f"Calculating initial scale factors using {self.nbins} bins.")
         assert torch.all(
             torch.isfinite(fcalc)
         ), "Non-finite values found in fcalc during initial scale calculation."
 
-        scales = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
-        counts = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         fcalc_amp = torch.abs(fcalc).to(fobs.dtype)
 
         # Exclude reflections with negative intensities from scale calculation
@@ -220,26 +292,18 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         else:
             positive_mask = torch.ones_like(fobs, dtype=torch.bool)
 
-        # Calculate ratios only for positive intensity reflections
-        mask = (self._data.masks() & rfree & positive_mask).to(torch.bool)
-        bins = self.bins[mask].to(torch.int64)
-
-        fobs = fobs.clamp(min=1e-3)[mask]
-        fcalc_amp = fcalc_amp.clamp(min=1e-3)[mask]
-
-        log_ratios = torch.log(fobs) - torch.log(fcalc_amp)
-        assert torch.all(
-            torch.isfinite(log_ratios)
-        ), f"Non-finite log ratios encountered in initial scale calculation {torch.sum(~torch.isfinite(log_ratios)).item()}"
-
-        # Ensure all tensors are on the same device for scatter_add
-        log_ratios = log_ratios.to(self.device)
-        bins = bins.to(self.device)
-        counts_vals = torch.ones_like(self.bins, device=self.device, dtype=fobs.dtype)
-        sum_log_scales = torch.scatter_add(scales, 0, bins, log_ratios)
-        counts = torch.scatter_add(counts, 0, bins, counts_vals)
-        log_scale = sum_log_scales / (counts + 1e-6)
-        initial_log_scale = log_scale
+        # Fit the scale on the work set, positive-intensity reflections only.
+        # binwise_scale returns the per-bin least-squares scale c_b (matching
+        # |Fc| -> |Fo|) via scatter_add; log_scale = log(c_b).
+        mask = (self._data.work.mask & positive_mask).to(torch.bool)
+        c = binwise_scale(
+            fcalc_amp,
+            fobs,
+            self.bins,
+            valid=mask,
+            nbins=self.nbins,
+        ).to(self.device)
+        initial_log_scale = torch.log(c.clamp(min=1e-6))
         if self.verbose > 1:
             print(
                 "Initial scale factors per bin:",
@@ -285,21 +349,23 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             self.U = nn.Parameter(
                 torch.normal(0, 0.01, (6,), dtype=get_float_dtype(), device=self.device)
             )
-        hkl, fobs, sigma, rfree = self._data()
-
-        fobs = fobs.to(get_float_dtype()).detach()
+        work = self._data.work
+        F_obs = work.F.to(get_float_dtype()).detach()
+        sigma_w = work.sigF.to(get_float_dtype()).detach()
         fcalc = torch.abs(fcalc).to(get_float_dtype()).detach()
 
         optimizer = torch.optim.Adam([self.U, self.log_scale], lr=1e-1)
         for i in range(nsteps):
             optimizer.zero_grad()
             scaled_fcalc = self.forward(fcalc)
-            loss = nll_xray(fobs[rfree], scaled_fcalc[rfree], sigma[rfree])
+            loss = nll_xray(F_obs, work.select(scaled_fcalc), sigma_w)
 
             loss.backward()
             optimizer.step()
             if self.verbose > 0 and (i % 10 == 0 or i == nsteps - 1):
-                print(f"Anisotropy fit iteration {i+1}/{nsteps}, Loss: {loss.item():.4f}")
+                print(
+                    f"Anisotropy fit iteration {i+1}/{nsteps}, Loss: {loss.item():.4f}"
+                )
 
     def set_solvent_model(self, solvent_model: "SolventModel") -> None:
         """
@@ -347,8 +413,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         fcalc : torch.Tensor
             Calculated structure factors (complex).
         """
-        hkl, fobs, sigma, rfree = self._data()
-        fobs = fobs.to(get_float_dtype()).detach()
+        work = self._data.work
+        F_obs = work.F.to(get_float_dtype()).detach()
+        sigma_w = work.sigF.to(get_float_dtype()).detach()
         fcalc = fcalc.detach()
 
         for lr in [1e-1, 5e-2, 1e-2]:
@@ -356,13 +423,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             for i in range(20):
                 optimizer.zero_grad()
                 scaled_fcalc = self.forward(fcalc)
-                nll_loss = nll_xray(fobs[rfree], scaled_fcalc[rfree], sigma[rfree])
+                nll_loss = nll_xray(F_obs, work.select(scaled_fcalc), sigma_w)
                 if torch.isnan(nll_loss):
                     raise ValueError(
                         "NaN encountered in NLL loss during scale fitting."
                     )
                 nll_log_loss_xray = nll_xray_lognormal(
-                    fobs[rfree], scaled_fcalc[rfree], sigma[rfree]
+                    F_obs, work.select(scaled_fcalc), sigma_w
                 )
                 loss = nll_loss
                 loss.backward()
@@ -427,6 +494,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         """
         Calculate the R-factor between observed and calculated structure factors.
 
+        The R-factor is computed directly on the scaled amplitude
+        ``|self.forward(fcalc)|``. The scaler fits its per-bin ``log_scale`` so
+        that ``k*|Fc| ≈ Fo`` against the same loss the body sees (mean ``= |Fc|``,
+        no ``alpha`` mean-shift), so the scaled amplitude is already the
+        least-squares / REFMAC-consistent reporting scale -- no extra per-bin
+        correction is needed.
+
         Parameters
         ----------
         fcalc : torch.Tensor
@@ -437,14 +511,12 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         tuple
             R-work and R-free values.
         """
-        hkl, fobs, _, rfree = self._data()
         fcalc_scaled = self.forward(fcalc)
-        if hasattr(fobs, "get_data"):
-            valid = fobs.get_mask()
-            fobs = fobs.get_data()[valid]
-            fcalc_scaled = fcalc_scaled[valid]
-            rfree = rfree[valid]
-        return get_rfactors(torch.abs(fobs), torch.abs(fcalc_scaled), rfree)
+        valid = self._data.masks().to(torch.bool)
+        F_obs = torch.abs(self._data.get_corrected_data()[0][valid])
+        F_calc = torch.abs(fcalc_scaled[valid])
+        rfree = self._data.rfree_flags[valid]
+        return get_rfactors(F_obs, F_calc, rfree)
 
     def bin_wise_rfactor(self, fcalc: torch.Tensor):
         """
@@ -464,19 +536,17 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         rfree_per_bin : torch.Tensor
             R-free per bin.
         """
-        hkl, fobs, _, rfree = self._data()
         fcalc_scaled = self.forward(fcalc)
-        if hasattr(fobs, "get_data"):
-            valid = fobs.get_mask()
-            fobs = fobs.get_data()[valid]
-            fcalc_scaled = fcalc_scaled[valid]
-            rfree = rfree[valid]
+        valid = self._data.masks().to(torch.bool)
+        fobs = self._data.get_corrected_data()[0][valid]
+        fcalc_scaled = fcalc_scaled[valid]
+        rfree = self._data.rfree_flags[valid]
         mean_res_per_bin = self._data.mean_res_per_bin()
         return mean_res_per_bin, *bin_wise_rfactors(
             torch.abs(fobs),
             torch.abs(fcalc_scaled),
             rfree,
-            self.bins[self._data.masks()],
+            self.bins[valid],
         )
 
     def setup_bin_wise_bfactor(self):
@@ -518,30 +588,25 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         tuple
             Mean observed intensity, mean calculated intensity, and mean resolution per bin.
         """
-        hkl, fobs, _, rfree = self._data()
         F_calc = torch.abs(self(fcalc))
-        intensities = torch.abs(fobs) ** 2
-        calc_intensities = torch.abs(F_calc) ** 2
+        fobs = self._data.get_corrected_data()[0]
+        valid = self._data.masks().to(torch.bool)
+        rfree = self._data.rfree_flags.to(torch.bool)
+        sel = valid & rfree  # valid work-set reflections
+        intensities = fobs ** 2
+        calc_intensities = F_calc ** 2
         mean_obs_intensity = torch.zeros(self.nbins, device=self.device)
         mean_calc_intensity = torch.zeros(self.nbins, device=self.device)
         counts = torch.zeros(self.nbins, device=self.device)
         counts_vals = torch.ones_like(F_calc, device=self.device, dtype=fobs.dtype)
-        mask = self._data.get_mask()
+        bins_sel = self.bins.to(torch.int64)[sel]
         mean_obs_intensity = torch.scatter_add(
-            mean_obs_intensity,
-            0,
-            self.bins.to(torch.int64)[mask][rfree],
-            intensities[rfree],
+            mean_obs_intensity, 0, bins_sel, intensities[sel]
         )
         mean_calc_intensity = torch.scatter_add(
-            mean_calc_intensity,
-            0,
-            self.bins.to(torch.int64)[mask][rfree],
-            calc_intensities[rfree],
+            mean_calc_intensity, 0, bins_sel, calc_intensities[sel]
         )
-        counts = torch.scatter_add(
-            counts, 0, self.bins.to(torch.int64)[mask][rfree], counts_vals[rfree]
-        )
+        counts = torch.scatter_add(counts, 0, bins_sel, counts_vals[sel])
         mean_obs_intensity = mean_obs_intensity / (counts + 1e-6)
         mean_calc_intensity = mean_calc_intensity / (counts + 1e-6)
         return mean_obs_intensity, mean_calc_intensity, self._data.mean_res_per_bin()
@@ -581,12 +646,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         if not hasattr(self, "solvent") or self.solvent is None:
             raise RuntimeError("No solvent model set. Call set_solvent_model() first.")
 
-        hkl, fobs, sigma, rfree = self._data()
+        fobs, sigma = self._data.get_corrected_data()
         fobs = fobs.to(get_float_dtype()).detach()
+        rfree = self._data.rfree_flags.to(torch.bool)
         fcalc = fcalc.detach()
 
         # Calculate resolution for weighting/filtering
-        s = torch.norm(get_scattering_vectors(hkl, self.cell), dim=1)
+        s = torch.norm(get_scattering_vectors(self._data.hkl, self.cell), dim=1)
         resolution = 1.0 / (s + 1e-6)
 
         # Create mask for low-resolution reflections
@@ -715,7 +781,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         """
         from torchref.refinement.loss_state import LossState
 
-        hkl, fobs, sigma, rfree_mask = self._data()
+        fobs, sigma = self._data.get_corrected_data()
         fcalc = fcalc.detach()
 
         # Wrap the scaler loss as a LossState target so this path uses the
@@ -770,13 +836,20 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
             # Evaluate metrics
             with torch.no_grad():
-                hkl, fobs, sigma, rfree_mask = self._data()
                 fcalc_scaled = self.forward(fcalc)
+                work, free = self._data.work, self._data.free
 
-                xray_work = nll_xray(fobs[rfree_mask], fcalc_scaled[rfree_mask], sigma[rfree_mask])
-                xray_test = nll_xray(fobs[~rfree_mask], fcalc_scaled[~rfree_mask], sigma[~rfree_mask])
+                xray_work = nll_xray(
+                    work.F, work.select(fcalc_scaled), work.sigF
+                )
+                xray_test = nll_xray(
+                    free.F, free.select(fcalc_scaled), free.sigF
+                )
+                valid = self._data.masks().to(torch.bool)
                 rwork, rfree_val = get_rfactors(
-                    torch.abs(fobs), torch.abs(fcalc_scaled), rfree_mask
+                    torch.abs(self._data.get_corrected_data()[0][valid]),
+                    torch.abs(fcalc_scaled[valid]),
+                    self._data.rfree_flags[valid],
                 )
 
                 metrics["steps"].append(step + 1)
@@ -854,16 +927,19 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Per-reflection effective sigmas, shape (N,).
         """
         with torch.no_grad():
-            hkl, fobs_raw, sigma_raw, rfree_mask = self._data(mask=False)
+            fobs_raw, sigma_raw = self._data.get_corrected_data()
             # Apply scaling to F_calc
-            fcalc_scaled = self.forward(fcalc).squeeze(0) if fcalc.ndim == 1 else self.forward(fcalc)
+            fcalc_scaled = (
+                self.forward(fcalc).squeeze(0)
+                if fcalc.ndim == 1
+                else self.forward(fcalc)
+            )
             if fcalc_scaled.ndim > 1:
                 fcalc_scaled = fcalc_scaled.squeeze(0)
             fcalc_amp = torch.abs(fcalc_scaled).to(fobs_raw.dtype)
 
-            # Work set only (rfree=True = work in this codebase convention)
-            validity = self._data.masks().to(torch.bool)
-            work_mask = validity & rfree_mask.bool()
+            # Work set only (rfree != 0 = work in this codebase convention)
+            work_mask = self._data.work.mask
 
             bins_work = self.bins[work_mask].to(torch.int64)
             fobs_work = fobs_raw[work_mask]
@@ -879,10 +955,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             counts = torch.zeros(self.nbins, device=self.device, dtype=fobs_raw.dtype)
 
             sum_d = torch.scatter_add(sum_d, 0, bins_work, residuals_sq)
-            sum_s2 = torch.scatter_add(sum_s2, 0, bins_work, sigma_work ** 2)
-            counts = torch.scatter_add(
-                counts, 0, bins_work, torch.ones_like(fobs_work)
-            )
+            sum_s2 = torch.scatter_add(sum_s2, 0, bins_work, sigma_work**2)
+            counts = torch.scatter_add(counts, 0, bins_work, torch.ones_like(fobs_work))
 
             # Per-bin empirical residual variance and mean raw variance
             d_per_bin = sum_d / counts.clamp(min=1.0)
@@ -900,7 +974,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             sigma_eff_all = sigma_raw * ratio_per_refl
 
             # Store per-bin representative sigma_eff (using mean raw sigma in bin)
-            sigma_eff_per_bin = torch.sqrt(mean_sigma2_per_bin.clamp(min=1e-12)) * ratio_per_bin
+            sigma_eff_per_bin = (
+                torch.sqrt(mean_sigma2_per_bin.clamp(min=1e-12)) * ratio_per_bin
+            )
             self.sigma_eff_per_bin.copy_(sigma_eff_per_bin)
             self.sigma_eff.copy_(sigma_eff_all)
 
@@ -975,9 +1051,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             # Lazily cache raw solvent SFs (FFT of mask) — only recomputed
             # when invalidated via _f_sol_raw = None (e.g. after update_solvent)
             if self._f_sol_raw is None:
-                self._f_sol_raw = self.solvent.get_rec_solvent(self.hkl)
+                # Signed HKL to match the (anomalous) fcalc so the complex sum
+                # k*(F_calc + F_sol) is consistent per Bijvoet mate.
+                self._f_sol_raw = self.solvent.get_rec_solvent(self._data.hkl_for_sf())
 
-            f_sol_raw = self._f_sol_raw[mask] if apply_internal_mask else self._f_sol_raw
+            f_sol_raw = (
+                self._f_sol_raw[mask] if apply_internal_mask else self._f_sol_raw
+            )
 
             if hasattr(self, "log_kmask"):
                 kmask = torch.exp(self.log_kmask.clamp(min=-10.0, max=10.0))
@@ -993,9 +1073,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 # Uses precomputed self._s_half_sq instead of recomputing scattering vectors
                 sol = self.solvent
                 k_sol = torch.exp(sol.log_k_solvent.clamp(min=-10.0, max=10.0))
-                s_half_sq = self._s_half_sq[mask] if apply_internal_mask else self._s_half_sq
+                s_half_sq = (
+                    self._s_half_sq[mask] if apply_internal_mask else self._s_half_sq
+                )
                 b_factor = torch.exp(
-                    (-sol.b_solvent.clamp(min=-500.0, max=500.0) * s_half_sq).clamp(min=-10.0, max=10.0)
+                    (-sol.b_solvent.clamp(min=-500.0, max=500.0) * s_half_sq).clamp(
+                        min=-10.0, max=10.0
+                    )
                 )
                 if sol.optimize_phase:
                     # 1j is a Python complex literal -> promotes to complex128.
@@ -1013,8 +1097,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             # by a cub::DeviceRadixSort over all ~N_refl indices (see profile
             # data on A100/3GR5, ~370 us/iter pre-fix).
             K_overall = torch.exp(
-                gather_with_index_add(self.log_scale, bins_to_use)
-                .clamp(min=-10.0, max=10.0)
+                gather_with_index_add(self.log_scale, bins_to_use).clamp(
+                    min=-10.0, max=10.0
+                )
             )
         else:
             K_overall = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
@@ -1098,7 +1183,11 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
         result = super().load_state_dict(state_dict, strict=strict)
 
-        if solvent_state is not None and hasattr(self, "solvent") and self.solvent is not None:
+        if (
+            solvent_state is not None
+            and hasattr(self, "solvent")
+            and self.solvent is not None
+        ):
             self.solvent.load_state_dict(solvent_state)
 
         return result

@@ -3,12 +3,14 @@ from .bhattacharyya import BhattacharyyaXrayTarget
 from .gaussian import GaussianXrayTarget
 from .least_squares import LeastSquaresXrayTarget
 from .maximum_likelihood import MaximumLikelihoodXrayTarget, create_xray_target
+from .maximum_likelihood_sigmaa import MaximumLikelihoodSigmaAXrayTarget
 
 __all__ = [
     "XrayTarget",
     "GaussianXrayTarget",
     "LeastSquaresXrayTarget",
     "MaximumLikelihoodXrayTarget",
+    "MaximumLikelihoodSigmaAXrayTarget",
     "BhattacharyyaXrayTarget",
     "create_xray_target",
 ]

@@ -54,7 +54,5 @@ class LeastSquaresXrayTarget(XrayTarget):
         torch.Tensor
             Mean weighted least squares loss.
         """
-        F_obs, F_calc, sigma, _, mask = self.get_data(fcalc=fcalc)
-        return ls_xray_loss_math(
-            F_obs, F_calc, sigma, mask, weighting=self.weighting
-        )
+        F_obs, F_calc, sigma, _, _ = self.get_data(fcalc=fcalc)
+        return ls_xray_loss_math(F_obs, F_calc, sigma, weighting=self.weighting)

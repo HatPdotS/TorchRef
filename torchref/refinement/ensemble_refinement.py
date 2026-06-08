@@ -377,10 +377,8 @@ class EnsembleRefinement(LBFGSRefinement):
         self.n_disorder = self.n_members // n_sym
 
         # Ensure the reflection data has a validation set.
-        if (self.reflection_data.val_idx is None
-                or self.reflection_data.val_idx.numel() == 0):
-            if (self.reflection_data.free_idx is not None
-                    and self.reflection_data.free_idx.numel() >= 4):
+        if self.reflection_data.validation.n == 0:
+            if self.reflection_data.free.n >= 4:
                 if verbose > 0:
                     print("EnsembleRefinement: generating validation set from R-free")
                 self.reflection_data.generate_validation_set(
@@ -1012,8 +1010,8 @@ class EnsembleRefinement(LBFGSRefinement):
         # In-loss counts (work/free flag AND valid), matching the X-ray mask.
         # Used only for per-reflection NLL reporting in the gap meter below;
         # the loss-state weights themselves are now per-ASU (no /n_work).
-        n_work = max(self._inloss_count(self.reflection_data.work_idx), 1)
-        n_free = self._inloss_count(self.reflection_data.free_idx)
+        n_work = max(self._inloss_count(self.reflection_data.work.indices), 1)
+        n_free = self._inloss_count(self.reflection_data.free.indices)
         # Arm/disarm ensemble dropout on the model for this refinement.
         self.model.configure_dropout(
             self.use_dropout, self.dropout_min, self.dropout_max
@@ -1516,9 +1514,9 @@ class EnsembleRefinement(LBFGSRefinement):
     def _inloss_count(self, idx) -> int:
         """Count reflections in ``idx`` that are also valid (in the loss).
 
-        ``work_idx``/``free_idx`` are built from the R-free flag alone over
-        all reflections, so they include reflections outside the resolution
-        cutoff that the X-ray target masks out. Intersecting with
+        The work/free subset indices already apply the validity masks, so
+        intersecting with ``ReflectionData.masks()`` here is idempotent; it is
+        retained to make the in-loss count explicit. Intersecting with
         ``ReflectionData.masks()`` (the validity/resolution mask the target
         applies) gives the count actually contributing to the loss.
         """

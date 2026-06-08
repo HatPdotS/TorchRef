@@ -5,11 +5,11 @@ import numpy as np
 import torch
 
 from torchref.base.fourier import fft, ifft
-from torchref.model.sf_fft import SfFFT
+from torchref.config import dtypes, get_default_device, get_float_dtype
 from torchref.model.model import Model
+from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
-from torchref.config import dtypes, get_default_device, get_float_dtype
 from torchref.utils.caching import CachedForwardMixin
 
 
@@ -84,6 +84,7 @@ class ModelFT(CachedForwardMixin, Model):
         gridsize: Optional[Tuple[int, int, int]] = None,
         wavelength: Optional[float] = 1.0,
         anomalous_threshold: float = 0.5,
+        apply_bijvoet: bool = False,
         **kwargs,
     ):
         """
@@ -108,6 +109,13 @@ class ModelFT(CachedForwardMixin, Model):
             Significance threshold for anomalous scattering in electrons.
             Atoms with |f'| > threshold or |f''| > threshold will have
             anomalous corrections applied. Default is 0.5.
+        apply_bijvoet : bool, optional
+            Whether to apply the imaginary f'' (Bijvoet) term, which breaks
+            Friedel's law and produces F(+h) != F(-h). Default is False (the
+            dispersive f' term is still applied whenever a wavelength is set).
+            Set True only for anomalous (Friedel-unmerged) data; for merged data
+            f'' has no observable effect on the Friedel-mean amplitude. Bound from
+            ``ReflectionData.friedel_merged`` by the refinement constructor.
         *args
             Passed to parent Model class.
         **kwargs
@@ -123,8 +131,16 @@ class ModelFT(CachedForwardMixin, Model):
         # Anomalous scattering configuration
         self.wavelength = wavelength
         self.anomalous_threshold = anomalous_threshold
+        # Whether to apply the imaginary f'' (Bijvoet) term. Registered as a buffer
+        # so it round-trips through state_dict and follows .to(device). f' is always
+        # applied when wavelength is set; f'' only when this is True (unmerged data).
+        self.register_buffer(
+            "anomalous_bijvoet", torch.tensor(bool(apply_bijvoet)), persistent=True
+        )
         self._anomalous_cache = None  # Will hold (mask, f_prime, f_double_prime)
-        self._anomalous_elements_hash = None  # Hash of element list for cache invalidation
+        self._anomalous_elements_hash = (
+            None  # Hash of element list for cache invalidation
+        )
         self._fft = None
 
     @property
@@ -605,26 +621,6 @@ class ModelFT(CachedForwardMixin, Model):
         }
         return stats
 
-    def rebuild_map(self, radius=None):
-        """
-        Rebuild the density map from scratch.
-
-        Convenience method that clears and rebuilds everything.
-
-        Parameters
-        ----------
-        radius : int, optional
-            Radius in voxels around each atom. If None, uses self.radius.
-            If specified, overrides self.radius.
-
-        Returns
-        -------
-        torch.Tensor
-            Rebuilt electron density map.
-        """
-        if self.verbose > 1:
-            print("Rebuilding density map from scratch...")
-        return self.build_density_map(radius=radius)
 
     def update_pdb(self):
         """
@@ -670,8 +666,8 @@ class ModelFT(CachedForwardMixin, Model):
             f'' values for significant atoms only (n_significant,)
         """
         from torchref.base.scattering.anomalous_table import (
-            get_significant_elements,
             get_anomalous_corrections_by_indices,
+            get_significant_elements,
         )
 
         # Get element list from PDB
@@ -703,8 +699,16 @@ class ModelFT(CachedForwardMixin, Model):
 
             # Pre-compute integer indices to avoid boolean indexing GPU sync
             has_anomalous = bool(mask.any().item())
-            anomalous_indices = mask.nonzero(as_tuple=True)[0] if has_anomalous else None
-            self._anomalous_cache = (mask, f_prime, f_double_prime, has_anomalous, anomalous_indices)
+            anomalous_indices = (
+                mask.nonzero(as_tuple=True)[0] if has_anomalous else None
+            )
+            self._anomalous_cache = (
+                mask,
+                f_prime,
+                f_double_prime,
+                has_anomalous,
+                anomalous_indices,
+            )
             self._anomalous_elements_hash = elements_hash
 
         return self._anomalous_cache
@@ -713,6 +717,7 @@ class ModelFT(CachedForwardMixin, Model):
         self,
         sf: torch.Tensor,
         hkl: torch.Tensor,
+        include_fdp: bool = True,
     ) -> torch.Tensor:
         """
         Apply anomalous scattering correction to structure factors.
@@ -728,13 +733,19 @@ class ModelFT(CachedForwardMixin, Model):
             Complex structure factors from FFT with shape (n_reflections,)
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3)
+        include_fdp : bool, optional
+            Whether to include the imaginary f'' (Bijvoet) term. When False, only
+            the dispersive f' contribution is applied (f'' zeroed), which leaves
+            Friedel's law intact. Default True.
 
         Returns
         -------
         torch.Tensor
             Corrected complex structure factors with shape (n_reflections,)
         """
-        mask, f_prime, f_double_prime, has_anomalous, anomalous_indices = self._get_anomalous_cache()
+        mask, f_prime, f_double_prime, has_anomalous, anomalous_indices = (
+            self._get_anomalous_cache()
+        )
 
         if not has_anomalous:
             return sf  # No significant anomalous scatterers
@@ -759,6 +770,10 @@ class ModelFT(CachedForwardMixin, Model):
         # f'' contributes with a phase shift (it's the imaginary part of f)
         f_prime_occ = f_prime * occ  # (n_significant,)
         f_double_prime_occ = f_double_prime * occ  # (n_significant,)
+        if not include_fdp:
+            # Drop the imaginary f'' term: keep only the dispersive f' contribution
+            # so Friedel's law is preserved (correct target for merged data).
+            f_double_prime_occ = torch.zeros_like(f_double_prime_occ)
 
         # For each reflection:
         # Real part: Σ [f'·cos(φ) - f''·sin(φ)] × occ
@@ -818,9 +833,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         return self._fft
 
-    def forward(
-        self, hkl, apply_anomalous: bool = True
-    ) -> torch.Tensor:
+    def forward(self, hkl, apply_anomalous: bool = True) -> torch.Tensor:
         """
         Compute structure factors for given hkl.
 
@@ -832,8 +845,10 @@ class ModelFT(CachedForwardMixin, Model):
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
         apply_anomalous : bool, optional
-            If True and wavelength is set, apply anomalous scattering
-            corrections (f' and f'') for heavy atoms. Default is True.
+            If True and wavelength is set, apply anomalous scattering corrections.
+            The dispersive f' term is always applied in that case; the imaginary
+            f'' (Bijvoet) term is applied only when ``self.anomalous_bijvoet`` is
+            True (i.e. for Friedel-unmerged data). Default is True.
 
         Returns
         -------
@@ -847,9 +862,12 @@ class ModelFT(CachedForwardMixin, Model):
             apply_symmetry=True,
         )
 
-        # Apply anomalous correction as post-processing
+        # Apply anomalous correction as post-processing. f' always applies when a
+        # wavelength is set; f'' only for unmerged (Bijvoet) data.
         if apply_anomalous and self.wavelength is not None:
-            sf = self._apply_anomalous_correction(sf, hkl)
+            sf = self._apply_anomalous_correction(
+                sf, hkl, include_fdp=bool(self.anomalous_bijvoet)
+            )
 
         if self.verbose > 2:
             assert torch.all(
@@ -922,7 +940,9 @@ class ModelFT(CachedForwardMixin, Model):
         for buffer_name, buffer_value in self._buffers.items():
             if buffer_value is not None:
                 if detach:
-                    model_copy.register_buffer(buffer_name, buffer_value.clone().detach())
+                    model_copy.register_buffer(
+                        buffer_name, buffer_value.clone().detach()
+                    )
                 else:
                     model_copy.register_buffer(buffer_name, buffer_value.clone())
 
@@ -946,6 +966,7 @@ class ModelFT(CachedForwardMixin, Model):
         # Copy FT-specific attributes: _parametrization dict
         if hasattr(self, "_parametrization") and self._parametrization is not None:
             import copy as copy_module
+
             model_copy._parametrization = copy_module.deepcopy(self._parametrization)
 
         # Copy FFT submodule using its copy() method
@@ -1080,6 +1101,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         # Create Cell object - setter will initialize FFT since spacegroup is already set
         from torchref.symmetry import Cell
+
         if cell_tensor is not None:
             instance.cell = Cell(cell_tensor, dtype=saved_dtype, device=device)
 
@@ -1095,7 +1117,7 @@ class ModelFT(CachedForwardMixin, Model):
 
             # Create MixedTensors
             xyz_mask = state_dict.get("xyz.refinable_mask")
-            b_mask = state_dict.get("b.refinable_mask")
+            adp_mask = state_dict.get("adp.refinable_mask")
             u_mask = state_dict.get("u.refinable_mask")
 
             instance.xyz = MixedTensor(
@@ -1103,10 +1125,10 @@ class ModelFT(CachedForwardMixin, Model):
                 refinable_mask=xyz_mask,
                 name="xyz",
             )
-            instance.b = PositiveMixedTensor(
+            instance.adp = PositiveMixedTensor(
                 torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype),
-                refinable_mask=b_mask,
-                name="b_factor",
+                refinable_mask=adp_mask,
+                name="adp",
             )
             instance.u = MixedTensor(
                 torch.tensor(
@@ -1151,7 +1173,7 @@ class ModelFT(CachedForwardMixin, Model):
                 "xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
             )
             instance.register_buffer(
-                "b_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
+                "adp_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
             )
             instance.register_buffer(
                 "u_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
@@ -1163,7 +1185,8 @@ class ModelFT(CachedForwardMixin, Model):
             # Register vdw_radii if present
             if "vdw_radii" in state_dict and state_dict["vdw_radii"] is not None:
                 instance.register_buffer(
-                    "vdw_radii", torch.zeros_like(state_dict["vdw_radii"], device=device)
+                    "vdw_radii",
+                    torch.zeros_like(state_dict["vdw_radii"], device=device),
                 )
 
             # Handle _A and _B buffers (scattering parameters)
@@ -1193,7 +1216,7 @@ class ModelFT(CachedForwardMixin, Model):
         # Remap old-style A/B keys to new _A/_B keys
         filtered_state_dict = {}
         for k, v in state_dict.items():
-            if not hasattr(v, 'shape') or v.shape[0] > 0:
+            if not hasattr(v, "shape") or v.numel() > 0:
                 # Remap old keys to new keys
                 if k == "A":
                     filtered_state_dict["_A"] = v

@@ -50,9 +50,6 @@ from .loss_validation import (
     validate_loss,
 )
 
-# Hyperparameters
-from .hyperparameters import HyperparameterMixin
-
 # Statistics
 from .stats import (
     StatEntry,
@@ -73,7 +70,6 @@ from .utils import (
     create_selection_mask,
     parse_phenix_selection,
     sanitize_pdb_dataframe,
-    save_map,
 )
 
 __all__ = [
@@ -88,7 +84,6 @@ __all__ = [
     "TensorMasks",
     "TensorDict",
     "ModuleReference",
-    "save_map",
     "sanitize_pdb_dataframe",
     "parse_phenix_selection",
     "create_selection_mask",
@@ -101,8 +96,6 @@ __all__ = [
     "filter_stats",
     "flatten_stats",
     "format_stats_table",
-    # Hyperparameters
-    "HyperparameterMixin",
     # Serialization
     "convert_to_serializable",
     # Gradients

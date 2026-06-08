@@ -144,18 +144,12 @@ class WilsonPriorTarget(DataTarget):
         """
         data = self._data
         # Pick the work set (refinement set). Fall back to all reflections
-        # if no work_idx is defined (rare; e.g. tests with synthetic data).
-        if hasattr(data, "work_idx") and data.work_idx is not None and len(data.work_idx) > 0:
-            refl_idx = data.work_idx
-            # work_idx is built from the R-free flag alone, so it can include
-            # reflections outside the resolution cutoff (whose F_calc is
-            # unreliable). Restrict to valid reflections, matching the X-ray
-            # target's mask.
-            try:
-                valid = data.masks().bool().to(refl_idx.device)
-                refl_idx = refl_idx[valid.index_select(0, refl_idx)]
-            except Exception:
-                pass
+        # if no work subset is available (rare; e.g. tests with synthetic data).
+        # The work subset already applies the validity masks, so the indices are
+        # restricted to valid reflections (matching the X-ray target's mask).
+        work = getattr(data, "work", None)
+        if work is not None and work.n > 0:
+            refl_idx = work.indices
         else:
             refl_idx = torch.arange(len(data.hkl), device=data.device)
         res = data.resolution.index_select(0, refl_idx)

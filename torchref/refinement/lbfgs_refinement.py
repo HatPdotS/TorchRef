@@ -49,7 +49,7 @@ class LBFGSRefinement(Refinement):
     Parameters
     ----------
     target_mode : str, optional
-        X-ray target mode ('gaussian', 'ls', or 'ml'). Default is 'ml'.
+        X-ray target mode ('gaussian', 'ls', 'ml', 'ml_sigmaa', 'bhattacharyya'). Default is 'ml_sigmaa'.
     *args
         Passed to parent Refinement class.
     **kwargs
@@ -79,13 +79,12 @@ class LBFGSRefinement(Refinement):
         max_iter=20,
         history_size=100,
         line_search_fn="strong_wolfe",
-        
     )
 
     def __init__(
         self,
         *args,
-        target_mode: str = "bhattacharyya",
+        target_mode: str = "ml_sigmaa",
         sigma_m_scale: float = 1.0,
         use_lossstate_scaler: bool = True,
         **kwargs,
@@ -96,8 +95,8 @@ class LBFGSRefinement(Refinement):
         Parameters
         ----------
         target_mode : str, optional
-            X-ray target mode ('gaussian', 'ls', 'ml', 'bhattacharyya').
-            Default is 'bhattacharyya'.
+            X-ray target mode ('gaussian', 'ls', 'ml', 'ml_sigmaa', 'bhattacharyya').
+            Default is 'ml_sigmaa' (maximum-likelihood Read MLF with Luzzati σ_A).
         sigma_m_scale : float, optional
             Global multiplier for σ_m in the Bhattacharyya target only.
             Ignored for other target modes. Default 1.0.
@@ -230,6 +229,47 @@ class LBFGSRefinement(Refinement):
         state.step(optimizer, context="lbfgs_refinement.refine_scaler")
         return state
 
+    def refine_rigid_body(
+        self,
+        cutoffs=None,
+        iterations_per_step: int = 30,
+        commit: bool = True,
+    ):
+        """Multi-resolution per-chain rigid-body refinement.
+
+        Swaps the model for a :class:`RigidModelFT` whose ``xyz`` exposes
+        only per-chain ZYZ-Euler rotations and translations, then runs an
+        LBFGS step at each cutoff in a coarse → fine schedule. Only the
+        xray target and ``geometry/nonbonded`` (vdW) are active.
+
+        Parameters
+        ----------
+        cutoffs : list of float, optional
+            High-resolution cutoffs (Å), coarse → fine. Defaults to an
+            auto-generated schedule from the native data resolution.
+        iterations_per_step : int, optional
+            ``max_iter`` for each per-cutoff LBFGS step. Default 30.
+        commit : bool, optional
+            If True (default), bakes the final coordinates back into a
+            regular ``ModelFT`` so subsequent refinement uses per-atom xyz.
+
+        Returns
+        -------
+        list of (d_min, LossState)
+            Per-cutoff state.
+        """
+        from torchref.refinement.rigid_body_refinement import (
+            RigidBodyRefinementStep,
+        )
+
+        step = RigidBodyRefinementStep(
+            self,
+            cutoffs=cutoffs,
+            iterations_per_step=iterations_per_step,
+            commit=commit,
+        )
+        return step.run()
+
     def refine_xyz(self):
         """Refine Cartesian coordinates jointly with scaler parameters.
 
@@ -292,9 +332,7 @@ class LBFGSRefinement(Refinement):
             State with history containing before/after loss values.
         """
         state = self.complete_loss_state()
-        body = self.model.parameters_of_types(
-            ("xyz", "adp", "u", "occupancy")
-        )
+        body = self.model.parameters_of_types(("xyz", "adp", "u", "occupancy"))
         params = body + list(self.scaler.parameters())
         optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
         state.step(optimizer, context="lbfgs_refinement.refine_joint")
@@ -316,194 +354,6 @@ class LBFGSRefinement(Refinement):
             context="lbfgs_refinement._refine_everything_lbfgs_single_cycle",
         )
         return state
-
-    # =========================================================================
-    # Training Loop for Policy Learning
-    # =========================================================================
-
-    def run_training_trajectory(
-        self,
-        policy_weighting,
-        n_steps: int = 10,
-        pdb_id: str = "",
-        structure_path: str = "",
-        sf_path: str = "",
-        seed: Optional[int] = None,
-        policy_version: Optional[str] = None,
-    ):
-        """
-        Run a training trajectory with policy-guided refinement.
-
-        This method runs a sequence of refinement steps using a policy
-        to select component weights. It records state-action-reward tuples
-        for training the policy with AWR or similar algorithms.
-
-        Parameters
-        ----------
-        policy_weighting : PolicyComponentWeighting
-            Policy weighting scheme (should be in training mode with sampling).
-        n_steps : int, optional
-            Number of refinement steps in the trajectory (default: 10).
-        pdb_id : str, optional
-            PDB identifier for recording.
-        structure_path : str, optional
-            Path to structure file for recording.
-        sf_path : str, optional
-            Path to structure factors file for recording.
-        seed : int, optional
-            Random seed for reproducibility.
-        policy_version : str, optional
-            Version identifier of the policy being used.
-
-        Returns
-        -------
-        TrajectoryData
-            Complete trajectory with state-action-reward tuples.
-        """
-        import time
-
-        start_time = time.time()
-
-        if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-
-        policy_weighting.start_recording(
-            pdb_id=pdb_id,
-            structure_path=structure_path,
-            sf_path=sf_path,
-            seed=seed,
-            policy_version=policy_version,
-        )
-
-        try:
-            self.scaler.refine_lbfgs()
-            optimizer = self._lbfgs_for_types(("xyz",))
-
-            for step in range(n_steps):
-                if self.verbose > 1:
-                    print(f"Step {step + 1}/{n_steps}")
-
-                state = self.complete_loss_state()
-
-                # Evaluate once to populate loss cache (feature extraction).
-                with torch.no_grad():
-                    state.aggregate()
-
-                # Apply policy weights (this also records the step).
-                policy_weighting.apply_to_state(state)
-
-                # Policy just rewrote the weights, so the old LBFGS
-                # curvature is for a different loss landscape — reset.
-                self._reset_lbfgs_history(optimizer)
-                state.step(
-                    optimizer,
-                    context="lbfgs_refinement.run_training_trajectory",
-                )
-
-                policy_weighting.increment_step()
-
-            trajectory = policy_weighting.stop_recording()
-            trajectory.total_time = time.time() - start_time
-            trajectory.success = True
-
-        except Exception as e:
-            trajectory = policy_weighting.stop_recording()
-            if trajectory is not None:
-                trajectory.success = False
-                trajectory.error_message = str(e)
-                trajectory.total_time = time.time() - start_time
-            raise
-
-        return trajectory
-
-    def run_training_trajectory_joint(
-        self,
-        policy_weighting,
-        n_steps: int = 10,
-        pdb_id: str = "",
-        structure_path: str = "",
-        sf_path: str = "",
-        seed: Optional[int] = None,
-        policy_version: Optional[str] = None,
-    ):
-        """
-        Run a training trajectory with joint XYZ+ADP refinement.
-
-        Similar to :meth:`run_training_trajectory` but refines xyz, adp,
-        u, and occupancy together in each step. The LBFGS curvature
-        history is reset at the start of each policy step because the
-        weight updates invalidate any prior Hessian approximation.
-
-        Parameters
-        ----------
-        policy_weighting : PolicyComponentWeighting
-            Policy weighting scheme (should be in training mode).
-        n_steps : int, optional
-            Number of refinement steps (default: 10).
-        pdb_id, structure_path, sf_path : str, optional
-            Identifiers for trajectory recording.
-        seed : int, optional
-            Random seed for reproducibility.
-        policy_version : str, optional
-            Policy version identifier.
-
-        Returns
-        -------
-        TrajectoryData
-            Complete trajectory with state-action-reward tuples.
-        """
-        import time
-
-        start_time = time.time()
-
-        if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-
-        policy_weighting.start_recording(
-            pdb_id=pdb_id,
-            structure_path=structure_path,
-            sf_path=sf_path,
-            seed=seed,
-            policy_version=policy_version,
-        )
-
-        try:
-            self.scaler.refine_lbfgs()
-            optimizer = self._lbfgs_for_types(("xyz", "adp", "u", "occupancy"))
-
-            for step in range(n_steps):
-                if self.verbose > 1:
-                    print(f"Step {step + 1}/{n_steps}")
-
-                state = self.complete_loss_state()
-                with torch.no_grad():
-                    state.aggregate()
-
-                policy_weighting.apply_to_state(state)
-
-                self._reset_lbfgs_history(optimizer)
-                state.step(
-                    optimizer,
-                    context="lbfgs_refinement.run_training_trajectory_joint",
-                )
-
-                policy_weighting.increment_step()
-
-            trajectory = policy_weighting.stop_recording()
-            trajectory.total_time = time.time() - start_time
-            trajectory.success = True
-
-        except Exception as e:
-            trajectory = policy_weighting.stop_recording()
-            if trajectory is not None:
-                trajectory.success = False
-                trajectory.error_message = str(e)
-                trajectory.total_time = time.time() - start_time
-            raise
-
-        return trajectory
 
     def refine(self, macro_cycles=5):
         """
@@ -552,9 +402,7 @@ class LBFGSRefinement(Refinement):
 
             if getattr(self.scaler, "solvent", None) is not None:
                 self.scaler.solvent.update_solvent()
-            self.reflection_data.find_outliers(
-                self.model, self.scaler, z_threshold=5.0
-            )
+            self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
 
             with torch.no_grad():
                 after_scaling = self.collect_metrics()
@@ -592,9 +440,8 @@ class LBFGSRefinement(Refinement):
                     label_after="after_adp",
                     title="ADP Refinement",
                 )
-                
+
             self.refine_scaler()
-            
 
             self.history[master_key].append(cycle_dict)
 
