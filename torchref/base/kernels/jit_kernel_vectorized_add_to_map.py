@@ -53,8 +53,9 @@ __all__ = [
 _jit_cpu_kernel = None
 _jit_gpu_kernel = None
 
-# GPU mode: "triton" (default), "jit", or "simple" (no compilation, for debugging)
-_GPU_MODE = os.environ.get("TORCHREF_ATOM_PLACEMENT_GPU_MODE", "triton")
+# GPU mode: "triton" (default), "jit", or "simple" (no compilation, for debugging).
+# Code-level knob (no env var); override at runtime via the module attribute.
+_GPU_MODE = "triton"
 
 # Triton kernel (lazy import, with fallback)
 _triton_kernel = None
@@ -373,7 +374,8 @@ def vectorized_add_to_map(
 
     Automatically selects the optimal implementation based on device.
     GPU default: Triton fused kernel (3-6x faster, falls back to JIT if
-    Triton is unavailable). Override with TORCHREF_ATOM_PLACEMENT_GPU_MODE=jit or simple.
+    Triton is unavailable). Override the module-level ``_GPU_MODE`` to
+    "jit" or "simple".
 
     Parameters
     ----------
