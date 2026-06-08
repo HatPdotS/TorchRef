@@ -73,7 +73,7 @@ class MaximumLikelihoodSigmaAXrayTarget(XrayTarget):
         )
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
-        F_obs, F_calc, sigma, centric, mask = self.get_data(fcalc=fcalc)
+        F_obs, F_calc, sigma, centric, sub = self.get_data(fcalc=fcalc)
 
         scaler = self._scaler
         if not hasattr(scaler, "get_beta"):
@@ -82,11 +82,12 @@ class MaximumLikelihoodSigmaAXrayTarget(XrayTarget):
                 f"{type(scaler).__name__}."
             )
         # beta/epsilon: lazily estimated + cached on the scaler, detached.
+        # They are full-size (per-reflection) — restrict to this subset.
         beta, eps = scaler.get_beta(fcalc)
-        beta = beta.to(F_obs.dtype)
-        eps = eps.to(F_obs.dtype) if eps is not None else None
+        beta = sub.select(beta).to(F_obs.dtype)
+        eps = sub.select(eps).to(F_obs.dtype) if eps is not None else None
 
-        loss = ml_xray_loss_beta_math(F_obs, F_calc, beta, centric, mask, eps)
+        loss = ml_xray_loss_beta_math(F_obs, F_calc, beta, centric, epsilon=eps)
         # TODO(weighting): base weight applied inside the target as a stopgap;
         # should live in LossState/component_weighting (see class docstring).
         # Only the work set drives refinement; leave the test instance (R-free /

@@ -441,7 +441,9 @@ class CollectionScaler(ScalerBase):
                 continue
             data = dc[name]
             model = mc[name]
-            hkl, fobs, sigma, rfree = data()
+            hkl = data.hkl
+            fobs, sigma = data.get_corrected_data()
+            rfree = data.rfree_flags
             with torch.no_grad():
                 fc = model(hkl)
             fcalc_cache[name] = fc.detach()
@@ -563,7 +565,9 @@ class CollectionScaler(ScalerBase):
                 continue
             data = dc[name]
             model = mc[name]
-            hkl, fobs, sigma, rfree = data()
+            hkl = data.hkl
+            fobs, sigma = data.get_corrected_data()
+            rfree = data.rfree_flags
             with torch.no_grad():
                 fc = model(hkl)
             pairs.append((fc.detach(), model.fractions.detach(), fobs, sigma, rfree))

@@ -99,7 +99,14 @@ PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 
 
 # Data I/O
-from torchref.io import DatasetCollection, ReflectionData, FcalcDataset
+from torchref.io import (
+    DatasetCollection,
+    ReflectionData,
+    FcalcDataset,
+    read_mtz,
+    read_cif,
+    read_pdb,
+)
 
 # Model
 from torchref.model import Model, ModelFT
@@ -134,6 +141,9 @@ __all__ = [
     # Data I/O
     "ReflectionData",
     "DatasetCollection",
+    "read_mtz",
+    "read_cif",
+    "read_pdb",
     # Model
     "Model",
     "ModelFT",

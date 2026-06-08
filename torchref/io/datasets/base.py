@@ -58,6 +58,10 @@ class CrystalDataset(DeviceMovementMixin):
     I: Optional[torch.Tensor] = None  # Intensities (N,)
     I_sigma: Optional[torch.Tensor] = None  # Intensity uncertainties (N,)
     rfree_flags: Optional[torch.Tensor] = None  # R-free test set flags (N,), int32
+    # Reserved validation set: per-reflection bool. None => no validation
+    # reflections (the validation subset is empty). When populated, these
+    # reflections are carved out of BOTH the work and free sets (disjoint).
+    validation_flags: Optional[torch.Tensor] = None  # (N,), bool
     resolution: Optional[torch.Tensor] = None  # Resolution per reflection (N,)
     bin_indices: Optional[torch.Tensor] = None  # Resolution bin assignments (N,), int32
     outlier_flags: Optional[torch.Tensor] = None  # Outlier flags (N,), bool

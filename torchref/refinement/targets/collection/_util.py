@@ -24,13 +24,9 @@ def _unpack_masked_data(
         All as plain tensors (not MaskedTensors).  *rfree_bool* has
         True = work, False = free.  *centric* may be None.
     """
-    _, F_obs, sigma, rfree = data()
-    if hasattr(F_obs, "get_mask"):
-        validity = F_obs.get_mask()
-        F_obs = F_obs.get_data()
-        sigma = sigma.get_data() if hasattr(sigma, "get_mask") else sigma
-    else:
-        validity = torch.ones(len(F_obs), dtype=torch.bool, device=F_obs.device)
+    F_obs, sigma = data.get_corrected_data()
+    rfree = data.rfree_flags
+    validity = data.masks().to(torch.bool)
     centric = data.centric if hasattr(data, "centric") else None
     return F_obs, sigma, rfree.bool(), validity, centric
 

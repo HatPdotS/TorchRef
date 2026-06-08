@@ -35,8 +35,8 @@ class MaximumLikelihoodXrayTarget(XrayTarget):
         torch.Tensor
             Mean ML loss value.
         """
-        F_obs, F_calc, sigma, centric_flags, mask = self.get_data(fcalc=fcalc)
-        return ml_xray_loss_math(F_obs, F_calc, sigma, centric_flags, mask)
+        F_obs, F_calc, sigma, centric_flags, _ = self.get_data(fcalc=fcalc)
+        return ml_xray_loss_math(F_obs, F_calc, sigma, centric_flags)
 
 
 def create_xray_target(

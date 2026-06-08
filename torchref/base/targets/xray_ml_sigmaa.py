@@ -88,10 +88,15 @@ def ml_xray_loss_beta_math(
     F_calc: torch.Tensor,
     beta: torch.Tensor,
     centric_flags: torch.Tensor,
-    mask: torch.Tensor,
+    mask: torch.Tensor = None,
     epsilon: torch.Tensor = None,
 ) -> torch.Tensor:
-    """Masked-sum Read-MLF loss; mean ``|Fc|``, variance ``epsilon*beta``."""
+    """Masked-sum Read-MLF loss; mean ``|Fc|``, variance ``epsilon*beta``.
+
+    ``mask`` defaults to all reflections (``None``); compact inputs need no mask.
+    """
+    if mask is None:
+        mask = torch.ones(F_obs.shape[0], dtype=torch.bool, device=F_obs.device)
     loss = _ml_beta_nll_per_refl(F_obs, F_calc, beta, centric_flags, epsilon)
     loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
     return (loss * mask).sum()
