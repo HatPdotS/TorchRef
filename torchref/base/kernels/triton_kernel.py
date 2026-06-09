@@ -902,3 +902,374 @@ def fused_find_and_place_atoms(
         real_space_grid, density_map, xyz, b,
         inv_frac_matrix, frac_matrix, A, B, occ, local_offsets,
     )
+
+
+# =============================================================================
+# Anisotropic fused voxel-finding + density (copy of the isotropic fused kernel
+# with the scalar Gaussian replaced by the full 3x3 anisotropic Gaussian).
+#
+# Per atom + ITC92 Gaussian g, with U = [U11,U22,U33,U12,U13,U23]:
+#   M_g    = (B_g * I + 8*pi^2 * U) / 4        (== eager B_total)
+#   An_g   = A_g * occ * pi^1.5 / sqrt(det M_g)   (== (pi^3/det)^0.5)
+#   q_g    = w^T M_g^-1 w ;  density = sum_g An_g * exp(-pi^2 * q_g)
+# Matches torchref.base.electron_density.map_building.vectorized_add_to_map_aniso.
+# Note: the off-diagonals of M_g are 2*pi^2*U12/U13/U23 and are independent of g;
+# only the diagonal carries B_g.
+# =============================================================================
+
+_TWO_PI_SQ = tl.constexpr(19.739208802178716)  # 8*pi^2 / 4 = 2*pi^2
+
+
+@triton.jit
+def _sym3_inv(a, b, c, d, e, f):
+    """Inverse (6 unique comps) + det of symmetric M=[[a,d,e],[d,b,f],[e,f,c]]."""
+    det = a * (b * c - f * f) - d * (d * c - e * f) + e * (d * f - e * b)
+    inv_det = 1.0 / det
+    mi00 = (b * c - f * f) * inv_det
+    mi11 = (a * c - e * e) * inv_det
+    mi22 = (a * b - d * d) * inv_det
+    mi01 = (e * f - d * c) * inv_det
+    mi02 = (d * f - e * b) * inv_det
+    mi12 = (d * e - a * f) * inv_det
+    return mi00, mi11, mi22, mi01, mi02, mi12, det
+
+
+@triton.jit
+def _aniso_voxel_fwd_kernel(
+    grid_ptr, density_map_ptr, xyz_ptr, u_ptr,
+    inv_frac_ptr, frac_ptr, A_ptr, B_ptr, occ_ptr, offsets_ptr,
+    nx: tl.constexpr, ny: tl.constexpr, nz: tl.constexpr,
+    N_offsets: tl.constexpr, BLOCK_V: tl.constexpr,
+):
+    """One program per atom. Fuses voxel-finding with anisotropic density."""
+    atom = tl.program_id(0)
+
+    occ = tl.load(occ_ptr + atom)
+    ax = tl.load(xyz_ptr + atom * 3 + 0)
+    ay = tl.load(xyz_ptr + atom * 3 + 1)
+    az = tl.load(xyz_ptr + atom * 3 + 2)
+
+    u11 = tl.load(u_ptr + atom * 6 + 0); u22 = tl.load(u_ptr + atom * 6 + 1)
+    u33 = tl.load(u_ptr + atom * 6 + 2); u12 = tl.load(u_ptr + atom * 6 + 3)
+    u13 = tl.load(u_ptr + atom * 6 + 4); u23 = tl.load(u_ptr + atom * 6 + 5)
+    # off-diagonals of M (same for all 5 Gaussians)
+    dd = _TWO_PI_SQ * u12
+    ee = _TWO_PI_SQ * u13
+    ff = _TWO_PI_SQ * u23
+
+    if0 = tl.load(inv_frac_ptr + 0); if1 = tl.load(inv_frac_ptr + 1); if2 = tl.load(inv_frac_ptr + 2)
+    if3 = tl.load(inv_frac_ptr + 3); if4 = tl.load(inv_frac_ptr + 4); if5 = tl.load(inv_frac_ptr + 5)
+    if6 = tl.load(inv_frac_ptr + 6); if7 = tl.load(inv_frac_ptr + 7); if8 = tl.load(inv_frac_ptr + 8)
+    f0 = tl.load(frac_ptr + 0); f1 = tl.load(frac_ptr + 1); f2 = tl.load(frac_ptr + 2)
+    f3 = tl.load(frac_ptr + 3); f4 = tl.load(frac_ptr + 4); f5 = tl.load(frac_ptr + 5)
+    f6 = tl.load(frac_ptr + 6); f7 = tl.load(frac_ptr + 7); f8 = tl.load(frac_ptr + 8)
+
+    pi_1p5: tl.constexpr = 5.568327996831708
+    pi_sq: tl.constexpr = 9.869604401089358
+
+    frac_x = ax * if0 + ay * if1 + az * if2
+    frac_y = ax * if3 + ay * if4 + az * if5
+    frac_z = ax * if6 + ay * if7 + az * if8
+    frac_x = frac_x - tl.extra.cuda.libdevice.floor(frac_x)
+    frac_y = frac_y - tl.extra.cuda.libdevice.floor(frac_y)
+    frac_z = frac_z - tl.extra.cuda.libdevice.floor(frac_z)
+    cix = tl.extra.cuda.libdevice.round(frac_x * nx).to(tl.int32)
+    ciy = tl.extra.cuda.libdevice.round(frac_y * ny).to(tl.int32)
+    ciz = tl.extra.cuda.libdevice.round(frac_z * nz).to(tl.int32)
+
+    v_offsets = tl.arange(0, BLOCK_V)
+
+    for v_start in range(0, N_offsets, BLOCK_V):
+        v = v_start + v_offsets
+        mask = v < N_offsets
+
+        ob = v * 3
+        off_x = tl.load(offsets_ptr + ob + 0, mask=mask, other=0)
+        off_y = tl.load(offsets_ptr + ob + 1, mask=mask, other=0)
+        off_z = tl.load(offsets_ptr + ob + 2, mask=mask, other=0)
+
+        vix = (cix + off_x) % nx;  vix = tl.where(vix < 0, vix + nx, vix)
+        viy = (ciy + off_y) % ny;  viy = tl.where(viy < 0, viy + ny, viy)
+        viz = (ciz + off_z) % nz;  viz = tl.where(viz < 0, viz + nz, viz)
+
+        gf = ((vix * ny + viy) * nz + viz).to(tl.int64) * 3
+        sx = tl.load(grid_ptr + gf + 0, mask=mask, other=0.0)
+        sy = tl.load(grid_ptr + gf + 1, mask=mask, other=0.0)
+        sz = tl.load(grid_ptr + gf + 2, mask=mask, other=0.0)
+
+        dx = sx - ax;  dy = sy - ay;  dz = sz - az
+        fx = dx * if0 + dy * if1 + dz * if2
+        fy = dx * if3 + dy * if4 + dz * if5
+        fz = dx * if6 + dy * if7 + dz * if8
+        tx = tl.extra.cuda.libdevice.round(fx)
+        ty = tl.extra.cuda.libdevice.round(fy)
+        tz = tl.extra.cuda.libdevice.round(fz)
+        cx = tx * f0 + ty * f1 + tz * f2
+        cy = tx * f3 + ty * f4 + tz * f5
+        cz = tx * f6 + ty * f7 + tz * f8
+        wx = dx - cx;  wy = dy - cy;  wz = dz - cz
+
+        density = tl.zeros([BLOCK_V], dtype=tl.float32)
+        for g in range(0, 5):
+            Ag = tl.load(A_ptr + atom * 5 + g)
+            Bg = tl.load(B_ptr + atom * 5 + g)
+            ag = Bg * 0.25 + _TWO_PI_SQ * u11
+            bg = Bg * 0.25 + _TWO_PI_SQ * u22
+            cg = Bg * 0.25 + _TWO_PI_SQ * u33
+            mi00, mi11, mi22, mi01, mi02, mi12, det = _sym3_inv(ag, bg, cg, dd, ee, ff)
+            det_safe = tl.maximum(det, 1e-10)
+            An = Ag * occ * pi_1p5 / tl.sqrt(det_safe)
+            q = (
+                mi00 * wx * wx + mi11 * wy * wy + mi22 * wz * wz
+                + 2.0 * (mi01 * wx * wy + mi02 * wx * wz + mi12 * wy * wz)
+            )
+            density += An * tl.exp(-pi_sq * q)
+
+        dm_flat = ((vix * ny + viy) * nz + viz).to(tl.int64)
+        tl.atomic_add(density_map_ptr + dm_flat, density, mask=mask)
+
+
+@triton.jit
+def _aniso_voxel_bwd_kernel(
+    grid_ptr, grad_density_map_ptr, xyz_ptr, u_ptr,
+    inv_frac_ptr, frac_ptr, A_ptr, B_ptr, occ_ptr, offsets_ptr,
+    grad_xyz_ptr, grad_u_ptr, grad_occ_ptr,
+    nx: tl.constexpr, ny: tl.constexpr, nz: tl.constexpr,
+    N_offsets: tl.constexpr, BLOCK_V: tl.constexpr,
+):
+    """Backward for anisotropic fused voxel kernel. One program per atom."""
+    atom = tl.program_id(0)
+
+    occ = tl.load(occ_ptr + atom)
+    ax = tl.load(xyz_ptr + atom * 3 + 0)
+    ay = tl.load(xyz_ptr + atom * 3 + 1)
+    az = tl.load(xyz_ptr + atom * 3 + 2)
+
+    u11 = tl.load(u_ptr + atom * 6 + 0); u22 = tl.load(u_ptr + atom * 6 + 1)
+    u33 = tl.load(u_ptr + atom * 6 + 2); u12 = tl.load(u_ptr + atom * 6 + 3)
+    u13 = tl.load(u_ptr + atom * 6 + 4); u23 = tl.load(u_ptr + atom * 6 + 5)
+    dd = _TWO_PI_SQ * u12
+    ee = _TWO_PI_SQ * u13
+    ff = _TWO_PI_SQ * u23
+
+    if0 = tl.load(inv_frac_ptr + 0); if1 = tl.load(inv_frac_ptr + 1); if2 = tl.load(inv_frac_ptr + 2)
+    if3 = tl.load(inv_frac_ptr + 3); if4 = tl.load(inv_frac_ptr + 4); if5 = tl.load(inv_frac_ptr + 5)
+    if6 = tl.load(inv_frac_ptr + 6); if7 = tl.load(inv_frac_ptr + 7); if8 = tl.load(inv_frac_ptr + 8)
+    f0 = tl.load(frac_ptr + 0); f1 = tl.load(frac_ptr + 1); f2 = tl.load(frac_ptr + 2)
+    f3 = tl.load(frac_ptr + 3); f4 = tl.load(frac_ptr + 4); f5 = tl.load(frac_ptr + 5)
+    f6 = tl.load(frac_ptr + 6); f7 = tl.load(frac_ptr + 7); f8 = tl.load(frac_ptr + 8)
+
+    pi_1p5: tl.constexpr = 5.568327996831708
+    pi_sq: tl.constexpr = 9.869604401089358
+
+    frac_x = ax * if0 + ay * if1 + az * if2
+    frac_y = ax * if3 + ay * if4 + az * if5
+    frac_z = ax * if6 + ay * if7 + az * if8
+    frac_x = frac_x - tl.extra.cuda.libdevice.floor(frac_x)
+    frac_y = frac_y - tl.extra.cuda.libdevice.floor(frac_y)
+    frac_z = frac_z - tl.extra.cuda.libdevice.floor(frac_z)
+    cix = tl.extra.cuda.libdevice.round(frac_x * nx).to(tl.int32)
+    ciy = tl.extra.cuda.libdevice.round(frac_y * ny).to(tl.int32)
+    ciz = tl.extra.cuda.libdevice.round(frac_z * nz).to(tl.int32)
+
+    g_ax = 0.0; g_ay = 0.0; g_az = 0.0; g_occ = 0.0
+    g_u0 = 0.0; g_u1 = 0.0; g_u2 = 0.0; g_u3 = 0.0; g_u4 = 0.0; g_u5 = 0.0
+
+    v_offsets = tl.arange(0, BLOCK_V)
+
+    for v_start in range(0, N_offsets, BLOCK_V):
+        v = v_start + v_offsets
+        mask = v < N_offsets
+
+        ob = v * 3
+        off_x = tl.load(offsets_ptr + ob + 0, mask=mask, other=0)
+        off_y = tl.load(offsets_ptr + ob + 1, mask=mask, other=0)
+        off_z = tl.load(offsets_ptr + ob + 2, mask=mask, other=0)
+
+        vix = (cix + off_x) % nx;  vix = tl.where(vix < 0, vix + nx, vix)
+        viy = (ciy + off_y) % ny;  viy = tl.where(viy < 0, viy + ny, viy)
+        viz = (ciz + off_z) % nz;  viz = tl.where(viz < 0, viz + nz, viz)
+
+        gf = ((vix * ny + viy) * nz + viz).to(tl.int64) * 3
+        sx = tl.load(grid_ptr + gf + 0, mask=mask, other=0.0)
+        sy = tl.load(grid_ptr + gf + 1, mask=mask, other=0.0)
+        sz = tl.load(grid_ptr + gf + 2, mask=mask, other=0.0)
+
+        dx = sx - ax;  dy = sy - ay;  dz = sz - az
+        fx = dx * if0 + dy * if1 + dz * if2
+        fy = dx * if3 + dy * if4 + dz * if5
+        fz = dx * if6 + dy * if7 + dz * if8
+        tx = tl.extra.cuda.libdevice.round(fx)
+        ty = tl.extra.cuda.libdevice.round(fy)
+        tz = tl.extra.cuda.libdevice.round(fz)
+        cx = tx * f0 + ty * f1 + tz * f2
+        cy = tx * f3 + ty * f4 + tz * f5
+        cz = tx * f6 + ty * f7 + tz * f8
+        wx = dx - cx;  wy = dy - cy;  wz = dz - cz
+
+        dm_flat = ((vix * ny + viy) * nz + viz).to(tl.int64)
+        grad_out = tl.load(grad_density_map_ptr + dm_flat, mask=mask, other=0.0)
+
+        # per-voxel accumulators summed over the 5 Gaussians
+        dens = tl.zeros([BLOCK_V], dtype=tl.float32)
+        gx = tl.zeros([BLOCK_V], dtype=tl.float32)
+        gy = tl.zeros([BLOCK_V], dtype=tl.float32)
+        gz = tl.zeros([BLOCK_V], dtype=tl.float32)
+        gu0 = tl.zeros([BLOCK_V], dtype=tl.float32)
+        gu1 = tl.zeros([BLOCK_V], dtype=tl.float32)
+        gu2 = tl.zeros([BLOCK_V], dtype=tl.float32)
+        gu3 = tl.zeros([BLOCK_V], dtype=tl.float32)
+        gu4 = tl.zeros([BLOCK_V], dtype=tl.float32)
+        gu5 = tl.zeros([BLOCK_V], dtype=tl.float32)
+
+        for g in range(0, 5):
+            Ag = tl.load(A_ptr + atom * 5 + g)
+            Bg = tl.load(B_ptr + atom * 5 + g)
+            ag = Bg * 0.25 + _TWO_PI_SQ * u11
+            bg = Bg * 0.25 + _TWO_PI_SQ * u22
+            cg = Bg * 0.25 + _TWO_PI_SQ * u33
+            mi00, mi11, mi22, mi01, mi02, mi12, det = _sym3_inv(ag, bg, cg, dd, ee, ff)
+            det_safe = tl.maximum(det, 1e-10)
+            An = Ag * occ * pi_1p5 / tl.sqrt(det_safe)
+            # v = Minv w
+            vx = mi00 * wx + mi01 * wy + mi02 * wz
+            vy = mi01 * wx + mi11 * wy + mi12 * wz
+            vz = mi02 * wx + mi12 * wy + mi22 * wz
+            q = wx * vx + wy * vy + wz * vz
+            dg = An * tl.exp(-pi_sq * q)            # density_g
+            dens += dg
+            # grad xyz: sum_g 2*pi^2 * dg * v_g
+            gx += 2.0 * pi_sq * dg * vx
+            gy += 2.0 * pi_sq * dg * vy
+            gz += 2.0 * pi_sq * dg * vz
+            # grad U: S = -0.5 Minv + pi^2 v v^T ; diag *2pi^2, offdiag *4pi^2
+            s00 = -0.5 * mi00 + pi_sq * vx * vx
+            s11 = -0.5 * mi11 + pi_sq * vy * vy
+            s22 = -0.5 * mi22 + pi_sq * vz * vz
+            s01 = -0.5 * mi01 + pi_sq * vx * vy
+            s02 = -0.5 * mi02 + pi_sq * vx * vz
+            s12 = -0.5 * mi12 + pi_sq * vy * vz
+            gu0 += 2.0 * pi_sq * dg * s00
+            gu1 += 2.0 * pi_sq * dg * s11
+            gu2 += 2.0 * pi_sq * dg * s22
+            gu3 += 4.0 * pi_sq * dg * s01
+            gu4 += 4.0 * pi_sq * dg * s02
+            gu5 += 4.0 * pi_sq * dg * s12
+
+        g_ax += tl.sum(tl.where(mask, grad_out * gx, 0.0), axis=0)
+        g_ay += tl.sum(tl.where(mask, grad_out * gy, 0.0), axis=0)
+        g_az += tl.sum(tl.where(mask, grad_out * gz, 0.0), axis=0)
+        g_occ += tl.sum(
+            tl.where(mask, grad_out * tl.where(occ != 0.0, dens / occ, 0.0), 0.0), axis=0
+        )
+        g_u0 += tl.sum(tl.where(mask, grad_out * gu0, 0.0), axis=0)
+        g_u1 += tl.sum(tl.where(mask, grad_out * gu1, 0.0), axis=0)
+        g_u2 += tl.sum(tl.where(mask, grad_out * gu2, 0.0), axis=0)
+        g_u3 += tl.sum(tl.where(mask, grad_out * gu3, 0.0), axis=0)
+        g_u4 += tl.sum(tl.where(mask, grad_out * gu4, 0.0), axis=0)
+        g_u5 += tl.sum(tl.where(mask, grad_out * gu5, 0.0), axis=0)
+
+    tl.store(grad_xyz_ptr + atom * 3 + 0, g_ax)
+    tl.store(grad_xyz_ptr + atom * 3 + 1, g_ay)
+    tl.store(grad_xyz_ptr + atom * 3 + 2, g_az)
+    tl.store(grad_occ_ptr + atom, g_occ)
+    tl.store(grad_u_ptr + atom * 6 + 0, g_u0)
+    tl.store(grad_u_ptr + atom * 6 + 1, g_u1)
+    tl.store(grad_u_ptr + atom * 6 + 2, g_u2)
+    tl.store(grad_u_ptr + atom * 6 + 3, g_u3)
+    tl.store(grad_u_ptr + atom * 6 + 4, g_u4)
+    tl.store(grad_u_ptr + atom * 6 + 5, g_u5)
+
+
+class _AnisoVoxelDensityFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, real_space_grid, density_map, xyz, u,
+                inv_frac_matrix, frac_matrix, A, B, occ, local_offsets):
+        N_atoms = xyz.shape[0]
+        nx, ny, nz = real_space_grid.shape[:3]
+        N_offsets = local_offsets.shape[0]
+
+        grid_flat = real_space_grid.contiguous().view(-1)
+        xyz = xyz.contiguous()
+        u = u.contiguous()
+        A = A.contiguous()
+        B = B.contiguous()
+        occ = occ.contiguous()
+        inv_frac_flat = inv_frac_matrix.contiguous().view(-1)
+        frac_flat = frac_matrix.contiguous().view(-1)
+        local_offsets = local_offsets.contiguous()
+
+        output = density_map.clone()
+        BLOCK_V = triton.next_power_of_2(min(N_offsets, 1024))
+
+        _aniso_voxel_fwd_kernel[(N_atoms,)](
+            grid_flat, output.view(-1),
+            xyz, u, inv_frac_flat, frac_flat, A, B, occ,
+            local_offsets,
+            nx=nx, ny=ny, nz=nz, N_offsets=N_offsets, BLOCK_V=BLOCK_V,
+        )
+
+        ctx.save_for_backward(
+            real_space_grid, xyz, u, inv_frac_matrix, frac_matrix,
+            A, B, occ, local_offsets,
+        )
+        ctx.density_map_shape = density_map.shape
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_density_map):
+        (real_space_grid, xyz, u, inv_frac_matrix, frac_matrix,
+         A, B, occ, local_offsets) = ctx.saved_tensors
+
+        N_atoms = xyz.shape[0]
+        nx, ny, nz = real_space_grid.shape[:3]
+        N_offsets = local_offsets.shape[0]
+
+        grid_flat = real_space_grid.contiguous().view(-1)
+        grad_density_map = grad_density_map.contiguous()
+        inv_frac_flat = inv_frac_matrix.contiguous().view(-1)
+        frac_flat = frac_matrix.contiguous().view(-1)
+
+        grad_xyz = torch.zeros_like(xyz)
+        grad_u = torch.zeros_like(u)
+        grad_occ = torch.zeros_like(occ)
+
+        BLOCK_V = triton.next_power_of_2(min(N_offsets, 1024))
+
+        _aniso_voxel_bwd_kernel[(N_atoms,)](
+            grid_flat, grad_density_map.view(-1),
+            xyz, u, inv_frac_flat, frac_flat, A, B, occ,
+            local_offsets,
+            grad_xyz, grad_u, grad_occ,
+            nx=nx, ny=ny, nz=nz, N_offsets=N_offsets, BLOCK_V=BLOCK_V,
+        )
+
+        # Grads for: real_space_grid, density_map, xyz, u,
+        #            inv_frac, frac, A, B, occ, local_offsets
+        return None, None, grad_xyz, grad_u, None, None, None, None, grad_occ, None
+
+
+def aniso_fused_find_and_place_atoms(
+    real_space_grid: torch.Tensor,
+    density_map: torch.Tensor,
+    xyz: torch.Tensor,
+    u: torch.Tensor,
+    inv_frac_matrix: torch.Tensor,
+    frac_matrix: torch.Tensor,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    occ: torch.Tensor,
+    radius_angstrom: float,
+    voxel_size: torch.Tensor,
+) -> torch.Tensor:
+    """Fused voxel-finding + anisotropic density (GPU Triton).
+
+    Anisotropic analogue of :func:`fused_find_and_place_atoms`. ``u`` is the
+    per-atom 6-component U tensor (N_atoms, 6) = [U11,U22,U33,U12,U13,U23];
+    all other arguments match the isotropic entry point.
+    """
+    local_offsets = _compute_local_offsets(voxel_size, radius_angstrom, xyz.device)
+    return _AnisoVoxelDensityFunction.apply(
+        real_space_grid, density_map, xyz, u,
+        inv_frac_matrix, frac_matrix, A, B, occ, local_offsets,
+    )
