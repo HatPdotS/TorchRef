@@ -10,6 +10,8 @@ from typing import Optional
 import numpy as np
 import torch
 
+from torchref.config import dtypes
+
 
 def _estimate_batch_size_aniso(n_refl: int, n_atoms: int, n_ops: int, max_memory_gb: float) -> int:
     """
@@ -92,7 +94,7 @@ def aniso_structure_factor_torched(
             scattering_factors = _compute_scattering_factors_batch(s_mag, A, B_coeff)
 
     # No batching - compute all at once
-    dot_product = torch.matmul(hkl.to(torch.float64), xyz_flat).reshape(
+    dot_product = torch.matmul(hkl.to(dtypes.float), xyz_flat).reshape(
         n_refl, n_atoms, -1
     )
     U_dot_s = torch.einsum("jik,li->jkl", U_matrix, s_vector)  # (3, N_atoms, N_refl)
@@ -167,7 +169,7 @@ def _aniso_sf_batched(
             sf_batch = _compute_scattering_factors_batch(s_mag, A, B_coeff)
 
         # Compute for this batch
-        dot_product = torch.matmul(hkl_batch.to(torch.float64), xyz_flat).reshape(
+        dot_product = torch.matmul(hkl_batch.to(dtypes.float), xyz_flat).reshape(
             end - start, n_atoms, -1
         )
         U_dot_s = torch.einsum("jik,li->jkl", U_matrix, s_batch)  # (3, N_atoms, batch)
@@ -215,7 +217,7 @@ def aniso_structure_factor_torched_no_complex(
     fractional_coords = space_group(fractional_coords.T)
     fractional_shape = fractional_coords.shape
     fractional_coords = fractional_coords.reshape(3, -1)
-    dot_product = torch.matmul(hkl.to(torch.float64), fractional_coords).reshape(
+    dot_product = torch.matmul(hkl.to(dtypes.float), fractional_coords).reshape(
         hkl.shape[0], fractional_shape[1], -1
     )
     U_row1 = torch.stack([U[:, 0], U[:, 3], U[:, 4]], dim=0)

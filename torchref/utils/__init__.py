@@ -62,6 +62,16 @@ from .stats import (
 # Serialization
 from .serialization import convert_to_serializable
 
+# Triton/eager backend dispatch
+from .triton_dispatch import (
+    Engine,
+    get_engine,
+    set_engine,
+    should_use_triton,
+    triton_available,
+    use_engine,
+)
+
 # Core utilities
 from .utils import (
     ModuleReference,
@@ -106,4 +116,11 @@ __all__ = [
     "reset_diagnostic_budget",
     # Autograd introspection
     "collect_loss_leaves",
+    # Triton/eager backend dispatch
+    "Engine",
+    "get_engine",
+    "set_engine",
+    "use_engine",
+    "triton_available",
+    "should_use_triton",
 ]

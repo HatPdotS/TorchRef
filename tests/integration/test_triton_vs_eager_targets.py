@@ -9,9 +9,8 @@ ADP), we run forward + backward twice on the same model state:
 and assert that loss values and parameter gradients agree to within a
 fp32 tolerance accounting for atomic-scatter non-determinism.
 
-Toggling is done via the module-level switch
-``torchref.base.targets._dispatch.TRITON_TARGETS_ENABLED`` (mirrors the
-``TORCHREF_DISABLE_TRITON_TARGETS`` env var). No process restart needed.
+Toggling is done with the shared ``torchref.utils.use_engine`` context manager
+(``Engine.EAGER`` vs ``Engine.TRITON``). No process restart needed.
 
 Markers: ``@pytest.mark.gpu`` (skipped by default) and
 ``@pytest.mark.integration``. Run on a CUDA box with
@@ -196,18 +195,15 @@ def test_triton_matches_eager_per_target(target_name, gpu_refinement, gpu_state)
         pytest.skip(f"target {target_name!r} not in this state")
     target = gpu_state.targets[target_name]
 
-    from torchref.base.targets import _dispatch
-    original = _dispatch.TRITON_TARGETS_ENABLED
-    try:
-        # ----- eager (Triton dispatch disabled) -----
-        _dispatch.TRITON_TARGETS_ENABLED = False
+    from torchref.utils import Engine, use_engine
+
+    # ----- eager (Triton dispatch disabled) -----
+    with use_engine(Engine.EAGER):
         eager = _run_target_capture_grads(target, gpu_refinement)
 
-        # ----- Triton (dispatch enabled) -----
-        _dispatch.TRITON_TARGETS_ENABLED = True
+    # ----- Triton (dispatch enabled) -----
+    with use_engine(Engine.TRITON):
         triton = _run_target_capture_grads(target, gpu_refinement)
-    finally:
-        _dispatch.TRITON_TARGETS_ENABLED = original
 
     atol, rtol = _tol_for(target_name)
     _assert_close(target_name, eager, triton, atol, rtol)
@@ -224,7 +220,7 @@ def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
     from torchref import LBFGSRefinement
-    from torchref.base.targets import _dispatch
+    from torchref.utils import Engine, use_engine
 
     device = torch.device("cuda")
     pdb, mtz = _1daw_pair
@@ -236,14 +232,10 @@ def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
     ref.scaler.refine_lbfgs()
     target = ref.xray_target_work
 
-    original = _dispatch.TRITON_TARGETS_ENABLED
-    try:
-        _dispatch.TRITON_TARGETS_ENABLED = False
+    with use_engine(Engine.EAGER):
         eager = _run_target_capture_grads(target, ref)
-        _dispatch.TRITON_TARGETS_ENABLED = True
+    with use_engine(Engine.TRITON):
         triton = _run_target_capture_grads(target, ref)
-    finally:
-        _dispatch.TRITON_TARGETS_ENABLED = original
 
     name = f"xray/{target_mode}"
     atol, rtol = _tol_for(name)

@@ -62,6 +62,11 @@ from .corrections import (
     multiplication_quasi_complex_tensor,
 )
 
+# Capability-based backend dispatch (Triton on CUDA+fp32, else checkpointed
+# eager). Keep ``triton_ds`` itself lazy (loaded inside dispatch) so a broken
+# Triton install never breaks ``import torchref``.
+from .dispatch import Engine, ds_aniso, ds_iso
+
 __all__ = [
     # Isotropic
     "iso_structure_factor_torched",
@@ -74,4 +79,8 @@ __all__ = [
     "anharmonic_correction_no_complex",
     "core_deformation",
     "multiplication_quasi_complex_tensor",
+    # Dispatch
+    "Engine",
+    "ds_iso",
+    "ds_aniso",
 ]
