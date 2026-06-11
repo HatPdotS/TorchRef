@@ -39,6 +39,16 @@ docs/api/
 paper/data
 paper/phenix_refinements
 
+# AlphaFold-start benchmark: large datasets + pipeline outputs (~18 GB).
+# Keep the scripts (*.py, run_*.sh) and analysis/ tracked; ignore the data.
+paper/figure2_alphafold_start/afdb/
+paper/figure2_alphafold_start/fasta/
+paper/figure2_alphafold_start/placed/
+paper/figure2_alphafold_start/search_models/
+paper/figure2_alphafold_start/runs/
+paper/figure2_alphafold_start/slurm/
+paper/figure2_alphafold_start/__pycache__/
+paper/figure2_validation/phenix_refinement
 # Validation pipeline experiment outputs
 paper/figure2_validation/experiments/
 
