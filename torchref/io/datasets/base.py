@@ -180,9 +180,7 @@ class CrystalDataset(DeviceMovementMixin):
         return state
 
     @classmethod
-    def _from_state(
-        cls, state: Dict[str, Any], device=get_default_device()
-    ) -> "CrystalDataset":
+    def _from_state(cls, state: Dict[str, Any], device=None) -> "CrystalDataset":
         """
         Reconstruct from state dictionary.
 
@@ -199,6 +197,9 @@ class CrystalDataset(DeviceMovementMixin):
             Reconstructed dataset.
         """
         from torchref.utils.utils import TensorMasks
+
+        if device is None:
+            device = get_default_device()
 
         # Extract masks before creating object
         masks_state = state.pop("masks", {})
@@ -246,7 +247,7 @@ class CrystalDataset(DeviceMovementMixin):
             print(f"Saved {self.__class__.__name__} to {path}")
 
     @classmethod
-    def load_state(cls, path: str, device=get_default_device()) -> "CrystalDataset":
+    def load_state(cls, path: str, device=None) -> "CrystalDataset":
         """
         Load dataset state from file.
 

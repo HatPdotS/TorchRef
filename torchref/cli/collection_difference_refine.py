@@ -122,7 +122,7 @@ configure_unbuffered_output()
 
 DEFAULT_TARGET_WEIGHTS = {
     "xray/difference": 1.0,
-    "xray/ml": 0.0,
+    "xray/rice": 0.0,
     # "geometry/bond": 1.0, # geometry restraint should never require tuning, so leave at 1.0
     # "geometry/angle": 1.0,
     # "geometry/torsion": 1.0,
@@ -238,9 +238,9 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     (the dark model is a frozen reference).
     """
     from torchref.refinement import LossState
-    from torchref.kinetic.targets import (
+    from torchref.experimental.kinetic.targets import (
         CollectionDifferenceTarget,
-        CollectionMLTarget,
+        CollectionRiceTarget,
     )
     from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
     from torchref.refinement.targets.similarity import CoordinateSimilarityTarget
@@ -253,7 +253,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     diff_target = CollectionDifferenceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
-    ml_target = CollectionMLTarget(
+    rice_target = CollectionRiceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
     geom_target = TotalGeometryTarget(model_light)
@@ -264,7 +264,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     )
 
     state.register_target("xray/difference", diff_target)
-    state.register_target("xray/ml", ml_target)
+    state.register_target("xray/rice", rice_target)
     state.register_target("geometry", geom_target)
     state.register_target("adp", adp_target)
     state.register_target("similarity", similarity_target)

@@ -9,10 +9,10 @@ Targets
 -------
 CollectionDifferenceTarget
     Mean-based difference target (primary optimization driver).
+CollectionRiceTarget
+    Multi-timepoint Rice maximum-likelihood amplitude target (beta = sigma^2).
 CollectionMLTarget
-    Multi-timepoint maximum-likelihood amplitude target (Rice, beta = sigma^2).
-CollectionMLSigmaATarget
-    Like CollectionMLTarget but with a Luzzati/Read sigma_A term: one shared
+    Like CollectionRiceTarget but with a Luzzati/Read sigma_A term: one shared
     alpha/beta estimated across all datasets in the (collection) scaler.
 """
 
@@ -172,13 +172,13 @@ class CollectionDifferenceTarget(Target):
 
 
 # =========================================================================
-# CollectionMLTarget
+# CollectionRiceTarget
 # =========================================================================
 
 
-class CollectionMLTarget(Target):
+class CollectionRiceTarget(Target):
     """
-    Multi-timepoint maximum-likelihood amplitude target.
+    Multi-timepoint Rice maximum-likelihood amplitude target.
 
     Computes Rice-distribution NLL (acentric) and the corresponding
     centric NLL for each timepoint, with proper validity masking and
@@ -198,7 +198,7 @@ class CollectionMLTarget(Target):
         Verbosity level.
     """
 
-    name: str = "collection_ml_xray"
+    name: str = "collection_rice_xray"
 
     def __init__(
         self,
@@ -290,16 +290,16 @@ class CollectionMLTarget(Target):
 
 
 # =========================================================================
-# CollectionMLSigmaATarget
+# CollectionMLTarget
 # =========================================================================
 
 
-class CollectionMLSigmaATarget(Target):
+class CollectionMLTarget(Target):
     """
     Multi-dataset maximum-likelihood σ_A (Read MLF) target.
 
     The collection analogue of
-    :class:`~torchref.refinement.targets.xray.maximum_likelihood_sigmaa.MaximumLikelihoodSigmaAXrayTarget`:
+    :class:`~torchref.refinement.targets.xray.maximum_likelihood.MaximumLikelihoodXrayTarget`:
     instead of ``beta = sigma**2`` (plain Rice), it uses one **shared** Luzzati
     model-error variance ``beta`` estimated by the (collection) scaler across all
     datasets (``scaler.get_beta()``).  Because the datasets share the common HKL
@@ -318,7 +318,7 @@ class CollectionMLSigmaATarget(Target):
     scaler : ScalerBase
         Must provide ``get_beta()`` (e.g. ``CollectionScaler``).
     normalize : bool
-        Unused placeholder (kept for signature parity with CollectionMLTarget).
+        Unused placeholder (kept for signature parity with CollectionRiceTarget).
     use_work_set : bool
         Compute loss only on the work set.
     verbose : int
@@ -328,9 +328,9 @@ class CollectionMLSigmaATarget(Target):
         ``DEFAULT_BASE_WEIGHT`` and is applied on the work set only.
     """
 
-    name: str = "collection_ml_sigmaa_xray"
+    name: str = "collection_ml_xray"
 
-    # Mirrors the single-dataset MaximumLikelihoodSigmaAXrayTarget: the
+    # Mirrors the single-dataset MaximumLikelihoodXrayTarget: the
     # correctly-calibrated σ_A likelihood is legitimately soft relative to the
     # geometry prior, so it carries an intrinsic up-weight.
     # TODO(weighting): stopgap — belongs in the weighting infrastructure, ideally
@@ -370,7 +370,7 @@ class CollectionMLSigmaATarget(Target):
         scaler = self._scaler
         if scaler is None or not hasattr(scaler, "get_beta"):
             raise RuntimeError(
-                "CollectionMLSigmaATarget requires a scaler with get_beta(); "
+                "CollectionMLTarget requires a scaler with get_beta(); "
                 f"got {type(scaler).__name__}."
             )
         # One shared (beta, epsilon) for all datasets (common HKL).

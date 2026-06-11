@@ -26,13 +26,15 @@ Usage:
 import os
 import torch
 
+from torchref.utils.triton_dispatch import should_use_triton
+
 # =============================================================================
 # Cache directory for JIT kernels
 # =============================================================================
 
 _CACHE_DIR = os.environ.get(
     "TORCHREF_COMPILE_CACHE",
-    os.path.join(os.path.expanduser("~"), ".cache", "torchref", "inductor")
+    os.path.join(os.path.expanduser("~"), ".cache", "torchref", "inductor"),
 )
 os.makedirs(_CACHE_DIR, exist_ok=True)
 
@@ -53,10 +55,6 @@ __all__ = [
 _jit_cpu_kernel = None
 _jit_gpu_kernel = None
 
-# GPU mode: "triton" (default), "jit", or "simple" (no compilation, for debugging).
-# Code-level knob (no env var); override at runtime via the module attribute.
-_GPU_MODE = "triton"
-
 # Triton kernel (lazy import, with fallback)
 _triton_kernel = None
 _triton_available = None  # None = not checked yet
@@ -68,6 +66,7 @@ def _get_triton_kernel():
     if _triton_available is None:
         try:
             from torchref.base.kernels.triton_kernel import fused_add_to_map_gpu
+
             _triton_kernel = fused_add_to_map_gpu
             _triton_available = True
         except ImportError:
@@ -78,6 +77,7 @@ def _get_triton_kernel():
 # =============================================================================
 # Helper functions
 # =============================================================================
+
 
 def compute_metric_tensor(frac_matrix: torch.Tensor) -> torch.Tensor:
     """
@@ -175,7 +175,9 @@ class _CpuDensityKernel(torch.nn.Module):
         # Scatter add to density map
         ny: int = density_map.shape[1]
         nz: int = density_map.shape[2]
-        strides = torch.tensor([ny * nz, nz, 1], device=voxel_indices.device, dtype=torch.long)
+        strides = torch.tensor(
+            [ny * nz, nz, 1], device=voxel_indices.device, dtype=torch.long
+        )
         index_flat = torch.sum(voxel_indices.to(torch.long) * strides, dim=-1).view(-1)
 
         density_map.view(-1).scatter_add_(0, index_flat, density.reshape(-1))
@@ -311,6 +313,7 @@ def _get_jit_gpu_kernel():
 # GPU simple implementation (fallback, no JIT)
 # =============================================================================
 
+
 def _add_to_map_gpu_simple(
     surrounding_coords: torch.Tensor,
     voxel_indices: torch.Tensor,
@@ -357,6 +360,7 @@ def _add_to_map_gpu_simple(
 # Main entry point
 # =============================================================================
 
+
 def vectorized_add_to_map(
     surrounding_coords: torch.Tensor,
     voxel_indices: torch.Tensor,
@@ -372,10 +376,10 @@ def vectorized_add_to_map(
     """
     Add atoms to density map using ITC92 Gaussian parameterization.
 
-    Automatically selects the optimal implementation based on device.
-    GPU default: Triton fused kernel (3-6x faster, falls back to JIT if
-    Triton is unavailable). Override the module-level ``_GPU_MODE`` to
-    "jit" or "simple".
+    Backend is chosen by the shared ``Engine`` via ``should_use_triton``: on
+    GPU it uses the Triton fused kernel when Triton is permitted (CUDA+float32,
+    engine AUTO/TRITON) and the pure-torch ``_add_to_map_gpu_simple`` otherwise
+    (Engine.EAGER, float64, or Triton unavailable). CPU uses the JIT kernel.
 
     Parameters
     ----------
@@ -406,38 +410,53 @@ def vectorized_add_to_map(
         Updated electron density map (modified in-place).
     """
     if density_map.device.type == "cuda":
-        if _GPU_MODE == "simple":
-            return _add_to_map_gpu_simple(
-                surrounding_coords, voxel_indices, density_map, xyz, b,
-                inv_frac_matrix, frac_matrix, A, B, occ
-            )
-        elif _GPU_MODE == "jit":
-            kernel = _get_jit_gpu_kernel()
-            return kernel(
-                surrounding_coords, voxel_indices, density_map, xyz, b,
-                inv_frac_matrix, frac_matrix, A, B, occ
-            )
-        else:
-            # Default: try Triton, fall back to JIT
+        # The shared Engine is the only switch: use the Triton kernel when it
+        # permits (CUDA + float32, engine AUTO/TRITON); otherwise — Engine.EAGER,
+        # float64, or Triton unavailable — the pure-torch, double-differentiable
+        # ``_add_to_map_gpu_simple``.
+        if should_use_triton(xyz):
             triton_fn = _get_triton_kernel()
             if triton_fn is not None:
                 return triton_fn(
-                    surrounding_coords, voxel_indices, density_map, xyz, b,
-                    inv_frac_matrix, frac_matrix, A, B, occ
+                    surrounding_coords,
+                    voxel_indices,
+                    density_map,
+                    xyz,
+                    b,
+                    inv_frac_matrix,
+                    frac_matrix,
+                    A,
+                    B,
+                    occ,
                 )
-            kernel = _get_jit_gpu_kernel()
-            return kernel(
-                surrounding_coords, voxel_indices, density_map, xyz, b,
-                inv_frac_matrix, frac_matrix, A, B, occ
-            )
+        return _add_to_map_gpu_simple(
+            surrounding_coords,
+            voxel_indices,
+            density_map,
+            xyz,
+            b,
+            inv_frac_matrix,
+            frac_matrix,
+            A,
+            B,
+            occ,
+        )
     else:
         # CPU: Convert to fractional coords and use metric tensor
         coords_frac = precompute_fractional_coords(surrounding_coords, inv_frac_matrix)
         G = compute_metric_tensor(frac_matrix)
         kernel = _get_jit_cpu_kernel()
         return kernel(
-            coords_frac, voxel_indices, density_map, xyz, b,
-            inv_frac_matrix, G, A, B, occ
+            coords_frac,
+            voxel_indices,
+            density_map,
+            xyz,
+            b,
+            inv_frac_matrix,
+            G,
+            A,
+            B,
+            occ,
         )
 
 
@@ -487,14 +506,23 @@ def build_electron_density(
         Updated electron density map.
     """
     return vectorized_add_to_map(
-        surrounding_coords, voxel_indices, density_map, xyz, b,
-        inv_frac_matrix, frac_matrix, A, B, occ
+        surrounding_coords,
+        voxel_indices,
+        density_map,
+        xyz,
+        b,
+        inv_frac_matrix,
+        frac_matrix,
+        A,
+        B,
+        occ,
     )
 
 
 # =============================================================================
 # Utilities
 # =============================================================================
+
 
 def warmup(device: str = "auto") -> None:
     """
@@ -519,7 +547,9 @@ def warmup(device: str = "auto") -> None:
     for dev in devices:
         torch_device = torch.device(dev)
         surrounding_coords = torch.randn(n_atoms, n_voxels, 3, device=torch_device)
-        voxel_indices = torch.randint(0, 64, (n_atoms, n_voxels, 3), device=torch_device)
+        voxel_indices = torch.randint(
+            0, 64, (n_atoms, n_voxels, 3), device=torch_device
+        )
         density_map = torch.zeros(grid_shape, device=torch_device)
         xyz = torch.randn(n_atoms, 3, device=torch_device)
         b = torch.rand(n_atoms, device=torch_device) * 50 + 10
@@ -530,8 +560,16 @@ def warmup(device: str = "auto") -> None:
         occ = torch.ones(n_atoms, device=torch_device)
 
         _ = vectorized_add_to_map(
-            surrounding_coords, voxel_indices, density_map, xyz, b,
-            inv_frac_matrix, frac_matrix, A, B, occ
+            surrounding_coords,
+            voxel_indices,
+            density_map,
+            xyz,
+            b,
+            inv_frac_matrix,
+            frac_matrix,
+            A,
+            B,
+            occ,
         )
 
 

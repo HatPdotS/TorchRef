@@ -319,6 +319,7 @@ def _get_module():
         # Per-microarchitecture build directory — prevents Illegal Instruction
         # when different cluster nodes have different CPUs (e.g., AMD vs Intel).
         import platform
+
         cpu_tag = platform.machine()
         try:
             # Use the CPU model to distinguish microarchitectures
@@ -385,6 +386,7 @@ def _get_module():
 # Autograd wrapper
 # ---------------------------------------------------------------------------
 
+
 class _StructuredScatterAdd(torch.autograd.Function):
     """scatter_add with structured (wa, wbwc) indices.
 
@@ -422,9 +424,7 @@ class _StructuredScatterAdd(torch.autograd.Function):
             scatter_fn_name = "structured_scatter_add_i64"
             gather_fn_name = "structured_gather_i64"
         else:
-            raise TypeError(
-                f"wa.dtype must be int32 or int64, got {wa.dtype}"
-            )
+            raise TypeError(f"wa.dtype must be int32 or int64, got {wa.dtype}")
 
         C, nx, ny, nz = density_cube.shape
         ctx.save_for_backward(wa, wbwc)
@@ -438,14 +438,17 @@ class _StructuredScatterAdd(torch.autograd.Function):
                 f"C++ cpu_scatter module not available ({err}). "
                 "See torchref.base.kernels.cpu_scatter._module_error for the full traceback."
             )
-        result = torch.zeros(map_size, dtype=density_cube.dtype,
-                             device=density_cube.device)
+        result = torch.zeros(
+            map_size, dtype=density_cube.dtype, device=density_cube.device
+        )
         getattr(mod, scatter_fn_name)(
             result,
             wa.contiguous(),
             wbwc.reshape(C, ny * nz).contiguous(),
             density_cube.reshape(C, nx * ny * nz).contiguous(),
-            nx, ny, nz,
+            nx,
+            ny,
+            nz,
         )
         return result
 
@@ -453,6 +456,37 @@ class _StructuredScatterAdd(torch.autograd.Function):
     def backward(ctx, grad_output):
         wa, wbwc = ctx.saved_tensors
         C, nx, ny, nz = ctx.cube_shape
+        # The scatter is linear, so its VJP is the adjoint gather. Routing
+        # through the ``_StructuredGather`` Function (rather than calling the
+        # C++ gather imperatively) keeps the operation in the autograd graph,
+        # so higher-order derivatives compose: gather's own backward is the
+        # scatter again (the two are mutual adjoints). Without this, a C++
+        # gather returns a graph-less tensor and ``create_graph=True`` silently
+        # drops the second-order term through the scatter transpose.
+        grad_cube = _StructuredGather.apply(grad_output, wa, wbwc, ctx.cube_shape)
+        return grad_cube, None, None, None
+
+
+class _StructuredGather(torch.autograd.Function):
+    """Adjoint of :class:`_StructuredScatterAdd` (structured gather).
+
+    ``gather(grid)[c] = grid[scatter_index(c)]``. Linear, so its VJP is the
+    scatter. Pairing the two as mutual adjoints makes both double-(and higher-)
+    differentiable with no Hessian math.
+    """
+
+    @staticmethod
+    def forward(ctx, grid, wa, wbwc, cube_shape):
+        if grid.dtype != torch.float32:
+            if grid.dtype not in _WARNED_CAST_DTYPES:
+                warnings.warn(
+                    f"cpu_scatter is float32-only; casting from {grid.dtype} to "
+                    f"float32 (precision will be reduced).",
+                    stacklevel=3,
+                )
+                _WARNED_CAST_DTYPES.add(grid.dtype)
+            grid = grid.to(torch.float32)
+        C, nx, ny, nz = cube_shape
         mod = _get_module()
         if mod is None:
             err = _module_error[0] if _module_error else "unknown reason"
@@ -460,13 +494,31 @@ class _StructuredScatterAdd(torch.autograd.Function):
                 f"C++ cpu_scatter module not available ({err}). "
                 "See torchref.base.kernels.cpu_scatter._module_error for the full traceback."
             )
-        grad_cube = getattr(mod, ctx.gather_fn_name)(
-            grad_output.contiguous(),
+        # int32 / int64 gather fn name matches the scatter's index dtype.
+        gather_fn_name = (
+            "structured_gather_i32"
+            if wa.dtype == torch.int32
+            else "structured_gather_i64"
+        )
+        grad_cube = getattr(mod, gather_fn_name)(
+            grid.contiguous(),
             wa.contiguous(),
             wbwc.reshape(C, ny * nz).contiguous(),
-            nx, ny, nz,
-        )
-        return grad_cube.reshape(C, nx, ny, nz), None, None, None
+            nx,
+            ny,
+            nz,
+        ).reshape(C, nx, ny, nz)
+        ctx.save_for_backward(wa, wbwc)
+        ctx.map_size = int(grid.numel())
+        return grad_cube
+
+    @staticmethod
+    def backward(ctx, grad_cube):
+        wa, wbwc = ctx.saved_tensors
+        # Adjoint of the gather is the scatter — reuse the differentiable
+        # Function so a third-order graph would also compose.
+        grad_grid = _StructuredScatterAdd.apply(grad_cube, wa, wbwc, ctx.map_size)
+        return grad_grid, None, None, None
 
 
 _INT32_MAX = 2**31 - 1

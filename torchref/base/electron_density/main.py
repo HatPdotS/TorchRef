@@ -1,32 +1,23 @@
 """
-Central electron density building with automatic backend selection.
+Central electron density building, dispatched solely by the shared ``Engine``.
 
-The coarse Triton-vs-eager decision is made by the shared, capability-based
-``Engine`` in :mod:`torchref.utils.triton_dispatch` (CUDA+float32+Triton ->
-Triton; otherwise eager). There is **no environment-variable dispatch** — force
-a path with ``with use_engine(Engine.EAGER): ...`` or ``set_engine(...)``.
+The capability-based ``Engine`` in :mod:`torchref.utils.triton_dispatch`
+(AUTO/TRITON/EAGER) is the *only* switch — there is no environment-variable
+dispatch and no parallel "tier" knobs:
 
-Which specific implementation runs within each coarse path is a local *tier*
-choice, set in code via the module-level constants below (no env vars):
+- ``Engine.AUTO`` — fastest available per device: CUDA+float32 -> the fused
+  Triton kernel; CUDA+float64 -> pure-torch; CPU -> the C++-scatter fast path;
+  MPS -> single-pass. (Falls back to the pure-torch splat if a Triton kernel
+  fails.)
+- ``Engine.EAGER`` — the pure-PyTorch (``scatter_add``) reference on every
+  device. Double-differentiable; use it for Hessians / debugging. Force it with
+  ``with use_engine(Engine.EAGER): ...``.
+- ``Engine.TRITON`` — force the fused Triton kernel (raises if not CUDA+float32).
 
-GPU Triton tiers (``GPU_TIER``):
-  "auto"             — try fused → separable → original fallback (default)
-  "fused_triton"     — fused Triton kernel
-  "separable_triton" — separable 1-D table lookups
-
-CPU eager tiers (``CPU_TIER``):
-  "separable"          — separable Gaussian splatting (default)
-  "separable_compiled" — torch.compile'd separable
-  "fused"              — fused fractional-space kernel
-  "original"           — find_relevant_voxels + vectorized_add_to_map
-
-MPS eager tiers (``MPS_TIER``): "single" (default), "separable_compiled", "separable".
-
-Override a tier at runtime by setting the module-level variable directly::
-
-    import torchref.base.electron_density.main as ed
-    ed.GPU_TIER = "fused_triton"
-    ed.CPU_TIER = "fused"
+The individual implementation functions below (``_add_isotropic_cpu_*``,
+``_add_isotropic_mps_single``, the separable-Triton / JIT kernels, …) remain
+callable directly for benchmarking, but are no longer selected by module-level
+tier strings.
 """
 
 import math
@@ -36,27 +27,6 @@ import torch
 
 from torchref.config import dtypes, get_float_dtype
 from torchref.utils.triton_dispatch import Engine, get_engine, should_use_triton
-
-# ---------------------------------------------------------------------------
-# Local tier selection — the coarse Triton/eager gate is the shared Engine
-# (see torchref.utils.triton_dispatch). These pick the specific impl within a
-# path and are code-level only (no env vars). Override at runtime via
-# ``ed.GPU_TIER = ...`` etc.
-# ---------------------------------------------------------------------------
-GPU_TIER: str = "auto"        # triton tier: auto | fused_triton | separable_triton
-CPU_TIER: str = "separable"   # eager: separable | separable_compiled | fused | original
-# MPS tiers:
-#   "single"             — single-pass (no chunking), one math + one scatter call.
-#                          Default — avoids per-chunk autograd.Function overhead
-#                          and is required for the Metal scatter to win over
-#                          PyTorch scatter_add_ (chunking dilutes that win on
-#                          Apple Silicon, see profiling_mps/ANALYSIS.md).
-#   "separable_compiled" — CPU separable_compiled (multi-chunk, compiled math).
-#   "separable"          — CPU separable (multi-chunk, eager math).
-MPS_TIER: str = "single"
-
-# Tier-2 ("original") GPU implementation mode: "triton" | "jit" | "simple".
-GPU_ORIGINAL_MODE: str = "triton"
 
 # Lazy-loaded Triton backends
 _fused_fn = None
@@ -71,6 +41,7 @@ def _get_fused_triton():
     if not _fused_checked:
         try:
             from torchref.base.kernels.triton_kernel import fused_find_and_place_atoms
+
             _fused_fn = fused_find_and_place_atoms
         except ImportError:
             pass
@@ -86,6 +57,7 @@ def _get_separable_triton():
             from torchref.base.kernels.separable_triton_kernel import (
                 separable_density_gpu,
             )
+
             _separable_fn = separable_density_gpu
         except ImportError:
             pass
@@ -105,6 +77,7 @@ def _get_aniso_fused_triton():
             from torchref.base.kernels.triton_kernel import (
                 aniso_fused_find_and_place_atoms,
             )
+
             _aniso_fused_fn = aniso_fused_find_and_place_atoms
         except ImportError:
             pass
@@ -126,7 +99,11 @@ def _get_cpp_scatter():
     global _cpp_scatter_fn, _cpp_scatter_checked
     if not _cpp_scatter_checked:
         try:
-            from torchref.base.kernels.cpu_scatter import structured_scatter_add, _get_module
+            from torchref.base.kernels.cpu_scatter import (
+                _get_module,
+                structured_scatter_add,
+            )
+
             # Trigger compilation now — _get_module returns None on failure
             if _get_module() is not None:
                 _cpp_scatter_fn = structured_scatter_add
@@ -185,7 +162,7 @@ def build_electron_density(
     occ_aniso: Optional[torch.Tensor] = None,
     A_aniso: Optional[torch.Tensor] = None,
     B_aniso: Optional[torch.Tensor] = None,
-    dtype: torch.dtype = get_float_dtype(),
+    dtype: torch.dtype = None,
 ) -> torch.Tensor:
     """
     Build an electron density map from atomic parameters.
@@ -230,27 +207,45 @@ def build_electron_density(
     torch.Tensor
         Electron density map, shape (nx, ny, nz).
     """
+    if dtype is None:
+        dtype = get_float_dtype()
     device = real_space_grid.device
     density_map = torch.zeros(
-        real_space_grid.shape[:-1], dtype=dtype, device=device,
+        real_space_grid.shape[:-1],
+        dtype=dtype,
+        device=device,
     )
 
     # --- isotropic atoms ---
     if len(xyz_iso) > 0:
         density_map = _add_isotropic(
-            real_space_grid, density_map,
-            xyz_iso, adp_iso, occ_iso, A_iso, B_iso,
-            inv_frac_matrix, frac_matrix,
-            radius_angstrom, voxel_size,
+            real_space_grid,
+            density_map,
+            xyz_iso,
+            adp_iso,
+            occ_iso,
+            A_iso,
+            B_iso,
+            inv_frac_matrix,
+            frac_matrix,
+            radius_angstrom,
+            voxel_size,
         )
 
     # --- anisotropic atoms ---
     if xyz_aniso is not None and len(xyz_aniso) > 0:
         density_map = _add_anisotropic(
-            real_space_grid, density_map,
-            xyz_aniso, u_aniso, occ_aniso, A_aniso, B_aniso,
-            inv_frac_matrix, frac_matrix,
-            radius_angstrom, voxel_size,
+            real_space_grid,
+            density_map,
+            xyz_aniso,
+            u_aniso,
+            occ_aniso,
+            A_aniso,
+            B_aniso,
+            inv_frac_matrix,
+            frac_matrix,
+            radius_angstrom,
+            voxel_size,
         )
 
     return density_map
@@ -260,78 +255,129 @@ def build_electron_density(
 # Internal dispatch helpers
 # =========================================================================
 
+
 def _add_isotropic(
-    real_space_grid, density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
+    real_space_grid,
+    density_map,
+    xyz,
+    adp,
+    occ,
+    A,
+    B,
+    inv_frac_matrix,
+    frac_matrix,
+    radius_angstrom,
+    voxel_size,
 ):
-    """Add isotropic atoms, gated by the shared Engine then the local tier.
+    """Add isotropic atoms. The shared ``Engine`` is the only switch.
 
-    The coarse Triton-vs-eager choice is the shared ``should_use_triton``
-    gate (CUDA+float32+Triton+engine). When it permits Triton we take the GPU
-    Triton tier ladder (``GPU_TIER``); otherwise we fall to the device-eager
-    path. ``Engine.EAGER`` or float64 inputs route a CUDA tensor to the eager
-    ``_add_isotropic_original`` rather than the CPU kernels.
+    - ``should_use_triton`` (CUDA + float32 + Triton, engine AUTO/TRITON) -> the
+      fused Triton kernel (the one GPU fast path). On kernel failure under AUTO
+      it falls through to the pure-torch eager splat; under ``Engine.TRITON`` it
+      raises (never silently degrade).
+    - Otherwise (``Engine.EAGER``, float64, no Triton): the pure-PyTorch,
+      double-differentiable splat for the device — CUDA ``_add_isotropic_original``
+      (``_add_to_map_gpu_simple``), MPS ``_add_isotropic_mps_single``, and on CPU
+      ``_add_isotropic_cpu_fused`` (plain ``scatter_add_``) for ``Engine.EAGER`` or
+      the faster C++-scatter ``_add_isotropic_cpu_separable`` otherwise.
     """
+    if should_use_triton(xyz):
+        fused = _get_fused_triton()
+        if fused is not None:
+            try:
+                return fused(
+                    real_space_grid,
+                    density_map,
+                    xyz,
+                    adp,
+                    inv_frac_matrix,
+                    frac_matrix,
+                    A,
+                    B,
+                    occ,
+                    radius_angstrom,
+                    voxel_size,
+                )
+            except Exception:
+                if get_engine() is Engine.TRITON:
+                    raise
+                # AUTO: fall through to the pure-torch eager splat
+        elif get_engine() is Engine.TRITON:
+            raise RuntimeError("Fused Triton kernel is unavailable")
+
     device_type = density_map.device.type
-
     if device_type == "cuda":
-        if should_use_triton(xyz):
-            return _add_isotropic_gpu(
-                real_space_grid, density_map, xyz, adp, occ, A, B,
-                inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
-            )
-        # eager on GPU (Engine.EAGER, no Triton, or non-float32 inputs)
+        # CUDA eager: Engine.EAGER, float64, Triton unavailable, or fused failed.
         return _add_isotropic_original(
-            real_space_grid, density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix, radius_angstrom,
+            real_space_grid,
+            density_map,
+            xyz,
+            adp,
+            occ,
+            A,
+            B,
+            inv_frac_matrix,
+            frac_matrix,
+            radius_angstrom,
         )
-    if device_type == "mps":
-        return _add_isotropic_mps(
-            real_space_grid, density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
-        )
-    return _add_isotropic_cpu(
-        real_space_grid, density_map, xyz, adp, occ, A, B,
-        inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
-    )
 
-
-def _add_isotropic_mps(
-    real_space_grid, density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
-):
-    """MPS dispatch — see ``MPS_TIER`` above for tier choices."""
-    engine = MPS_TIER
     grid_shape_tuple = real_space_grid.shape[:3]
-
-    if engine == "single":
+    if device_type == "mps":
         return _add_isotropic_mps_single(
-            density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix,
-            grid_shape_tuple, voxel_size, radius_angstrom,
+            density_map,
+            xyz,
+            adp,
+            occ,
+            A,
+            B,
+            inv_frac_matrix,
+            frac_matrix,
+            grid_shape_tuple,
+            voxel_size,
+            radius_angstrom,
         )
-    if engine == "separable_compiled":
-        return _add_isotropic_cpu_separable_compiled(
-            density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix,
-            grid_shape_tuple, voxel_size, radius_angstrom,
+    # CPU: EAGER -> pure scatter_add_; AUTO -> faster C++ scatter (both 2nd-diff).
+    if get_engine() is Engine.EAGER:
+        return _add_isotropic_cpu_fused(
+            density_map,
+            xyz,
+            adp,
+            occ,
+            A,
+            B,
+            inv_frac_matrix,
+            frac_matrix,
+            grid_shape_tuple,
+            voxel_size,
+            radius_angstrom,
         )
-    if engine == "separable":
-        return _add_isotropic_cpu_separable(
-            density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix,
-            grid_shape_tuple, voxel_size, radius_angstrom,
-        )
-    raise ValueError(
-        f"Unknown MPS_TIER={engine!r}. "
-        f"Choose from: single, separable_compiled, separable"
+    return _add_isotropic_cpu_separable(
+        density_map,
+        xyz,
+        adp,
+        occ,
+        A,
+        B,
+        inv_frac_matrix,
+        frac_matrix,
+        grid_shape_tuple,
+        voxel_size,
+        radius_angstrom,
     )
 
 
 def _add_isotropic_mps_single(
-    density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix,
-    grid_shape_tuple, voxel_size, radius_angstrom,
+    density_map,
+    xyz,
+    adp,
+    occ,
+    A,
+    B,
+    inv_frac_matrix,
+    frac_matrix,
+    grid_shape_tuple,
+    voxel_size,
+    radius_angstrom,
 ):
     """Single-pass MPS splat: one math call, one scatter call.
 
@@ -398,141 +444,49 @@ def _add_isotropic_mps_single(
     # by the caller in build_electron_density).
     density_flat = density_map.view(-1)
     density_flat = _do_structured_scatter(
-        density_cube, all_wa, all_wbwc, density_flat, map_size,
+        density_cube,
+        all_wa,
+        all_wbwc,
+        density_flat,
+        map_size,
     )
 
     return density_flat.view(density_map.shape)
 
 
-def _add_isotropic_gpu(
-    real_space_grid, density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
-):
-    """GPU Triton dispatch for isotropic atoms, controlled by ``GPU_TIER``.
-
-    Only reached when the shared ``should_use_triton`` gate has already
-    permitted Triton; this picks which Triton tier to run.
-    """
-    engine = GPU_TIER
-
-    if engine == "separable_triton":
-        fn = _get_separable_triton()
-        if fn is None:
-            raise RuntimeError("Separable Triton kernel not available")
-        return fn(
-            density_map, xyz, adp,
-            inv_frac_matrix, frac_matrix, A, B, occ,
-            radius_angstrom,
-        )
-
-    if engine == "fused_triton":
-        fn = _get_fused_triton()
-        if fn is None:
-            raise RuntimeError("Fused Triton kernel not available")
-        return fn(
-            real_space_grid, density_map, xyz, adp,
-            inv_frac_matrix, frac_matrix, A, B, occ,
-            radius_angstrom, voxel_size,
-        )
-
-    if engine == "auto":
-        # Try fused → separable → original. Fused was ~0.26 ms faster fwd+bw
-        # than separable on A100/1DAW in profile_model_sf benchmarking
-        # because its larger per-launch kernel cost is more than offset by
-        # reduced downstream index_put traffic. Separable is kept as a
-        # robustness fallback for grid configurations where fused trips.
-        if GPU_ORIGINAL_MODE not in ("jit", "simple"):
-            fused = _get_fused_triton()
-            if fused is not None:
-                try:
-                    return fused(
-                        real_space_grid, density_map, xyz, adp,
-                        inv_frac_matrix, frac_matrix, A, B, occ,
-                        radius_angstrom, voxel_size,
-                    )
-                except Exception:
-                    pass
-
-        if GPU_ORIGINAL_MODE not in ("jit", "simple"):
-            separable = _get_separable_triton()
-            if separable is not None:
-                try:
-                    return separable(
-                        density_map, xyz, adp,
-                        inv_frac_matrix, frac_matrix, A, B, occ,
-                        radius_angstrom,
-                    )
-                except Exception:
-                    pass
-
-        return _add_isotropic_original(
-            real_space_grid, density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix, radius_angstrom,
-        )
-
-    raise ValueError(
-        f"Unknown GPU_TIER={engine!r}. "
-        f"Choose from: auto, separable_triton, fused_triton"
-    )
-
-
 def _add_isotropic_original(
-    real_space_grid, density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix, radius_angstrom,
+    real_space_grid,
+    density_map,
+    xyz,
+    adp,
+    occ,
+    A,
+    B,
+    inv_frac_matrix,
+    frac_matrix,
+    radius_angstrom,
 ):
     """Tier 2+: find_relevant_voxels + vectorized_add_to_map."""
     from torchref.base.electron_density.voxel_utils import find_relevant_voxels
     from torchref.base.kernels import vectorized_add_to_map
 
     surrounding_coords, voxel_indices = find_relevant_voxels(
-        real_space_grid, xyz,
+        real_space_grid,
+        xyz,
         radius_angstrom=radius_angstrom,
         inv_frac_matrix=inv_frac_matrix,
     )
     return vectorized_add_to_map(
-        surrounding_coords, voxel_indices, density_map,
-        xyz, adp, inv_frac_matrix, frac_matrix, A, B, occ,
-    )
-
-
-def _add_isotropic_cpu(
-    real_space_grid, density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
-):
-    """CPU dispatch for isotropic atoms, controlled by ``CPU_TIER``."""
-    engine = CPU_TIER
-    grid_shape_tuple = real_space_grid.shape[:3]
-
-    if engine == "separable":
-        return _add_isotropic_cpu_separable(
-            density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix,
-            grid_shape_tuple, voxel_size, radius_angstrom,
-        )
-
-    if engine == "separable_compiled":
-        return _add_isotropic_cpu_separable_compiled(
-            density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix,
-            grid_shape_tuple, voxel_size, radius_angstrom,
-        )
-
-    if engine == "fused":
-        return _add_isotropic_cpu_fused(
-            density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix,
-            grid_shape_tuple, voxel_size, radius_angstrom,
-        )
-
-    if engine == "original":
-        return _add_isotropic_original(
-            real_space_grid, density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix, radius_angstrom,
-        )
-
-    raise ValueError(
-        f"Unknown CPU_TIER={engine!r}. "
-        f"Choose from: separable, separable_compiled, fused, original"
+        surrounding_coords,
+        voxel_indices,
+        density_map,
+        xyz,
+        adp,
+        inv_frac_matrix,
+        frac_matrix,
+        A,
+        B,
+        occ,
     )
 
 
@@ -682,8 +636,11 @@ def _separable_density(
         # Combined 2D exponent: -alpha*(da2 + db2 + 2*cos_gamma*da*db)
         # = -alpha * d_ab^T G_ab d_ab <= 0 (G_ab positive definite)
         prod_ab = da.unsqueeze(2) * db.unsqueeze(1)
-        log_ab = (log_a[:, :, :, None] + log_b[:, :, None, :]
-                  + (-2.0 * alpha_4d * cos_gamma * prod_ab[:, None, :, :]))
+        log_ab = (
+            log_a[:, :, :, None]
+            + log_b[:, :, None, :]
+            + (-2.0 * alpha_4d * cos_gamma * prod_ab[:, None, :, :])
+        )
         slice_ab = torch.exp(log_ab)  # (C, Nc, n, n), all in (0, 1]
         e_c = torch.exp(log_c)
         return torch.einsum("cg,cgij,cgk->cijk", A_norm, slice_ab, e_c)
@@ -693,8 +650,11 @@ def _separable_density(
         # Combined 2D exponent: -alpha*(da2 + dc2 + 2*cos_beta*da*dc)
         # = -alpha * d_ac^T G_ac d_ac <= 0 (G_ac positive definite)
         prod_ac = da.unsqueeze(2) * dc.unsqueeze(1)
-        log_ac = (log_a[:, :, :, None] + log_c[:, :, None, :]
-                  + (-2.0 * alpha_4d * cos_beta * prod_ac[:, None, :, :]))
+        log_ac = (
+            log_a[:, :, :, None]
+            + log_c[:, :, None, :]
+            + (-2.0 * alpha_4d * cos_beta * prod_ac[:, None, :, :])
+        )
         e_ac = torch.exp(log_ac)  # (C, Nc, n_a, n_c), all in (0, 1]
         e_b = torch.exp(log_b)
         return torch.einsum("cg,cgj,cgik->cijk", A_norm, e_b, e_ac)
@@ -711,24 +671,29 @@ def _separable_density(
     density_cube = d_frac.new_zeros(C, n, n, n)
     for g in range(alpha.shape[1]):
         # Full 3D exponent: -alpha * r^T G r  (always <= 0)
-        exp_3d = (log_a[:, g, :, None, None]
-                  + log_b[:, g, None, :, None]
-                  + log_c[:, g, None, None, :])
+        exp_3d = (
+            log_a[:, g, :, None, None]
+            + log_b[:, g, None, :, None]
+            + log_c[:, g, None, None, :]
+        )
         if has_ab:
             exp_3d = exp_3d + (
-                -2.0 * alpha[:, g, None, None] * cos_gamma
-                * prod_ab
-            ).unsqueeze(3)  # broadcast (C, n_a, n_b, 1)
+                -2.0 * alpha[:, g, None, None] * cos_gamma * prod_ab
+            ).unsqueeze(
+                3
+            )  # broadcast (C, n_a, n_b, 1)
         if has_ac:
             exp_3d = exp_3d + (
-                -2.0 * alpha[:, g, None, None] * cos_beta
-                * prod_ac
-            ).unsqueeze(2)  # broadcast (C, n_a, 1, n_c)
+                -2.0 * alpha[:, g, None, None] * cos_beta * prod_ac
+            ).unsqueeze(
+                2
+            )  # broadcast (C, n_a, 1, n_c)
         if has_bc:
             exp_3d = exp_3d + (
-                -2.0 * alpha[:, g, None, None] * cos_alpha
-                * prod_bc
-            ).unsqueeze(1)  # broadcast (C, 1, n_b, n_c)
+                -2.0 * alpha[:, g, None, None] * cos_alpha * prod_bc
+            ).unsqueeze(
+                1
+            )  # broadcast (C, 1, n_b, n_c)
         density_cube += A_norm[:, g, None, None, None] * torch.exp(exp_3d)
 
     return density_cube
@@ -749,9 +714,17 @@ _CHUNK_SIZES = (4096, 2048, 1024, 512)
 
 
 def _add_isotropic_cpu_separable(
-    density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix,
-    grid_shape_tuple, voxel_size, radius_angstrom,
+    density_map,
+    xyz,
+    adp,
+    occ,
+    A,
+    B,
+    inv_frac_matrix,
+    frac_matrix,
+    grid_shape_tuple,
+    voxel_size,
+    radius_angstrom,
 ):
     """Separable Gaussian splatting for isotropic atoms.
 
@@ -790,7 +763,9 @@ def _add_isotropic_cpu_separable(
     # --- Atom fractional coords & center indices ---
     xyz_frac = xyz @ inv_frac_matrix.T  # (N, 3) — unwrapped, preserves gradients
     xyz_frac_wrapped = xyz_frac % 1.0  # only used for index computation
-    center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).to(dtypes.int)  # (N, 3) int32
+    center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).to(
+        dtypes.int
+    )  # (N, 3) int32
 
     # --- B_total, normalized amplitudes, and exponent coefficients ---
     B_total = ((B + adp[:, None]) * 0.25).clamp(min=0.1)  # (N, 5)
@@ -805,12 +780,12 @@ def _add_isotropic_cpu_separable(
 
     # --- Precompute fractional axis offsets (shared across chunks) ---
     # axis_offsets_frac[dim, i] = axis_offsets[i] / grid_shape[dim]
-    axis_offsets_frac = axis_offsets.float().unsqueeze(0) * inv_grid.unsqueeze(1)  # (3, n_axis)
+    axis_offsets_frac = axis_offsets.float().unsqueeze(0) * inv_grid.unsqueeze(
+        1
+    )  # (3, n_axis)
 
     # --- Sort atoms by 1D voxel center for cache-friendly scatter ---
-    center_1d = (center_idx[:, 0] * ny_nz
-                 + center_idx[:, 1] * nz_val
-                 + center_idx[:, 2])
+    center_1d = center_idx[:, 0] * ny_nz + center_idx[:, 1] * nz_val + center_idx[:, 2]
     atom_order = torch.argsort(center_1d)
     xyz_frac = xyz_frac[atom_order]
     center_idx = center_idx[atom_order]
@@ -848,7 +823,9 @@ def _add_isotropic_cpu_separable(
             alpha[start:end],
             A_norm[start:end],
             G,
-            has_ab, has_ac, has_bc,
+            has_ab,
+            has_ac,
+            has_bc,
         )
 
         density_flat = _do_structured_scatter(
@@ -863,9 +840,17 @@ def _add_isotropic_cpu_separable(
 
 
 def _add_isotropic_cpu_separable_compiled(
-    density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix,
-    grid_shape_tuple, voxel_size, radius_angstrom,
+    density_map,
+    xyz,
+    adp,
+    occ,
+    A,
+    B,
+    inv_frac_matrix,
+    frac_matrix,
+    grid_shape_tuple,
+    voxel_size,
+    radius_angstrom,
 ):
     """Compiled variant of separable Gaussian splatting.
 
@@ -901,7 +886,9 @@ def _add_isotropic_cpu_separable_compiled(
     # --- Atom fractional coords & center indices ---
     xyz_frac = xyz @ inv_frac_matrix.T  # (N, 3) — unwrapped, preserves gradients
     xyz_frac_wrapped = xyz_frac % 1.0  # only used for index computation
-    center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).to(dtypes.int)  # (N, 3) int32
+    center_idx = torch.round(xyz_frac_wrapped * grid_shape_float).to(
+        dtypes.int
+    )  # (N, 3) int32
 
     # --- B_total, normalized amplitudes, and exponent coefficients ---
     B_total = ((B + adp[:, None]) * 0.25).clamp(min=0.1)  # (N, 5)
@@ -915,7 +902,9 @@ def _add_isotropic_cpu_separable_compiled(
     has_bc = bool(torch.abs(G[1, 2]) > tol)
 
     # --- Precompute fractional axis offsets (shared across chunks) ---
-    axis_offsets_frac = axis_offsets.float().unsqueeze(0) * inv_grid.unsqueeze(1)  # (3, n_axis)
+    axis_offsets_frac = axis_offsets.float().unsqueeze(0) * inv_grid.unsqueeze(
+        1
+    )  # (3, n_axis)
 
     # --- Process with decreasing fixed chunk sizes for stable compiled shapes ---
     N = xyz.shape[0]
@@ -928,10 +917,26 @@ def _add_isotropic_cpu_separable_compiled(
         while remaining >= chunk_size:
             end = offset + chunk_size
             density_flat = _splat_chunk(
-                offset, end, center_idx, xyz_frac, axis_offsets_frac, inv_grid,
-                alpha, A_norm, G, has_ab, has_ac, has_bc,
-                axis_offsets, nx_val, ny_val, nz_val, ny_nz, map_size,
-                density_flat, compiled_fn,
+                offset,
+                end,
+                center_idx,
+                xyz_frac,
+                axis_offsets_frac,
+                inv_grid,
+                alpha,
+                A_norm,
+                G,
+                has_ab,
+                has_ac,
+                has_bc,
+                axis_offsets,
+                nx_val,
+                ny_val,
+                nz_val,
+                ny_nz,
+                map_size,
+                density_flat,
+                compiled_fn,
             )
             offset = end
             remaining -= chunk_size
@@ -939,21 +944,52 @@ def _add_isotropic_cpu_separable_compiled(
     # --- Eager remainder (no recompilation for the tail) ---
     if remaining > 0:
         density_flat = _splat_chunk(
-            offset, offset + remaining, center_idx, xyz_frac,
-            axis_offsets_frac, inv_grid, alpha, A_norm, G,
-            has_ab, has_ac, has_bc, axis_offsets,
-            nx_val, ny_val, nz_val, ny_nz, map_size,
-            density_flat, _separable_density,
+            offset,
+            offset + remaining,
+            center_idx,
+            xyz_frac,
+            axis_offsets_frac,
+            inv_grid,
+            alpha,
+            A_norm,
+            G,
+            has_ab,
+            has_ac,
+            has_bc,
+            axis_offsets,
+            nx_val,
+            ny_val,
+            nz_val,
+            ny_nz,
+            map_size,
+            density_flat,
+            _separable_density,
         )
 
     return density_flat.view(density_map.shape)
 
 
 def _splat_chunk(
-    start, end, center_idx, xyz_frac, axis_offsets_frac, inv_grid,
-    alpha, A_norm, G, has_ab, has_ac, has_bc,
-    axis_offsets, nx_val, ny_val, nz_val, ny_nz, map_size,
-    density_flat, density_fn,
+    start,
+    end,
+    center_idx,
+    xyz_frac,
+    axis_offsets_frac,
+    inv_grid,
+    alpha,
+    A_norm,
+    G,
+    has_ab,
+    has_ac,
+    has_bc,
+    axis_offsets,
+    nx_val,
+    ny_val,
+    nz_val,
+    ny_nz,
+    map_size,
+    density_flat,
+    density_fn,
 ):
     """Compute separable density for one chunk and scatter into the map.
 
@@ -971,8 +1007,13 @@ def _splat_chunk(
 
     # Density computation → (C, n_axis, n_axis, n_axis)
     density_cube = density_fn(
-        d_frac, alpha[start:end], A_norm[start:end],
-        G, has_ab, has_ac, has_bc,
+        d_frac,
+        alpha[start:end],
+        A_norm[start:end],
+        G,
+        has_ab,
+        has_ac,
+        has_bc,
     )
 
     # Structured (wa, wbwc) indices — int32; cast to int64 happens inside
@@ -984,14 +1025,26 @@ def _splat_chunk(
     wbwc = wb.unsqueeze(2) + wc.unsqueeze(1)  # (C, n, n)
 
     return _do_structured_scatter(
-        density_cube, wa, wbwc, density_flat, map_size,
+        density_cube,
+        wa,
+        wbwc,
+        density_flat,
+        map_size,
     )
 
 
 def _add_isotropic_cpu_fused(
-    density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix,
-    grid_shape_tuple, voxel_size, radius_angstrom,
+    density_map,
+    xyz,
+    adp,
+    occ,
+    A,
+    B,
+    inv_frac_matrix,
+    frac_matrix,
+    grid_shape_tuple,
+    voxel_size,
+    radius_angstrom,
 ):
     """Fused CPU path for isotropic atoms.
 
@@ -1035,7 +1088,9 @@ def _add_isotropic_cpu_fused(
         end = min(start + CHUNK, N)
 
         # Voxel indices (wrapped for scatter and frac coord computation)
-        vi = (center_idx[start:end].unsqueeze(1) + local_offsets.unsqueeze(0)) % grid_shape
+        vi = (
+            center_idx[start:end].unsqueeze(1) + local_offsets.unsqueeze(0)
+        ) % grid_shape
         # shape: (C, R, 3)
 
         # Fractional voxel positions — direct from integer indices
@@ -1051,9 +1106,7 @@ def _add_isotropic_cpu_fused(
         # Gaussian density
         chunk_B = B_total[start:end]
         exponents = -pi_sq * r_sq.unsqueeze(2) / chunk_B.unsqueeze(1)
-        density = torch.einsum(
-            "ag,avg->av", A_norm[start:end], torch.exp(exponents)
-        )
+        density = torch.einsum("ag,avg->av", A_norm[start:end], torch.exp(exponents))
 
         # Scatter add to map
         idx_flat = (vi.to(torch.long) * strides).sum(-1).view(-1)
@@ -1102,16 +1155,29 @@ def _aniso_density_cube(d_frac, frac_matrix, Minv, A_norm):
         m02 = Minv[:, g, 0, 2][:, None, None, None]
         m12 = Minv[:, g, 1, 2][:, None, None, None]
         q = (
-            m00 * cx * cx + m11 * cy * cy + m22 * cz * cz
+            m00 * cx * cx
+            + m11 * cy * cy
+            + m22 * cz * cz
             + 2.0 * (m01 * cx * cy + m02 * cx * cz + m12 * cy * cz)
         )
-        density_cube = density_cube + A_norm[:, g, None, None, None] * torch.exp(-pi_sq * q)
+        density_cube = density_cube + A_norm[:, g, None, None, None] * torch.exp(
+            -pi_sq * q
+        )
     return density_cube
 
 
 def _add_anisotropic_cpu(
-    real_space_grid, density_map, xyz, u, occ, A, B,
-    inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
+    real_space_grid,
+    density_map,
+    xyz,
+    u,
+    occ,
+    A,
+    B,
+    inv_frac_matrix,
+    frac_matrix,
+    radius_angstrom,
+    voxel_size,
 ):
     """Optimized box-splat for anisotropic atoms (CPU/MPS).
 
@@ -1145,7 +1211,9 @@ def _add_anisotropic_cpu(
     N = xyz.shape[0]
     eye = torch.eye(3, dtype=xyz.dtype, device=device)
     U3 = xyz.new_zeros(N, 3, 3)
-    U3[:, 0, 0] = u[:, 0]; U3[:, 1, 1] = u[:, 1]; U3[:, 2, 2] = u[:, 2]
+    U3[:, 0, 0] = u[:, 0]
+    U3[:, 1, 1] = u[:, 1]
+    U3[:, 2, 2] = u[:, 2]
     U3[:, 0, 1] = U3[:, 1, 0] = u[:, 3]
     U3[:, 0, 2] = U3[:, 2, 0] = u[:, 4]
     U3[:, 1, 2] = U3[:, 2, 1] = u[:, 5]
@@ -1157,7 +1225,7 @@ def _add_anisotropic_cpu(
     axis_offsets_frac = axis_offsets.float().unsqueeze(0) * inv_grid.unsqueeze(1)
 
     # Sort atoms by 1D voxel center for cache-friendly scatter
-    center_1d = (center_idx[:, 0] * ny_nz + center_idx[:, 1] * nz_val + center_idx[:, 2])
+    center_1d = center_idx[:, 0] * ny_nz + center_idx[:, 1] * nz_val + center_idx[:, 2]
     atom_order = torch.argsort(center_1d)
     xyz_frac = xyz_frac[atom_order]
     center_idx = center_idx[atom_order]
@@ -1184,54 +1252,92 @@ def _add_anisotropic_cpu(
             d_frac, frac_matrix, Minv[start:end], A_norm[start:end]
         )
         density_flat = _do_structured_scatter(
-            density_cube, all_wa[start:end], all_wbwc[start:end],
-            density_flat, map_size,
+            density_cube,
+            all_wa[start:end],
+            all_wbwc[start:end],
+            density_flat,
+            map_size,
         )
 
     return density_flat.view(density_map.shape)
 
 
 def _add_anisotropic_original(
-    real_space_grid, density_map, xyz, u, occ, A, B,
-    inv_frac_matrix, frac_matrix, radius_angstrom,
+    real_space_grid,
+    density_map,
+    xyz,
+    u,
+    occ,
+    A,
+    B,
+    inv_frac_matrix,
+    frac_matrix,
+    radius_angstrom,
 ):
     """Eager two-step anisotropic splat (find_relevant_voxels + scatter).
 
     The reference implementation; also the CUDA-eager fallback (float64 /
     ``Engine.EAGER``).
     """
-    from torchref.base.electron_density.voxel_utils import find_relevant_voxels
     from torchref.base.electron_density.map_building import vectorized_add_to_map_aniso
+    from torchref.base.electron_density.voxel_utils import find_relevant_voxels
 
     surrounding_coords, voxel_indices = find_relevant_voxels(
-        real_space_grid, xyz,
+        real_space_grid,
+        xyz,
         radius_angstrom=radius_angstrom,
         inv_frac_matrix=inv_frac_matrix,
     )
     return vectorized_add_to_map_aniso(
-        surrounding_coords, voxel_indices, density_map,
-        xyz, u, inv_frac_matrix, frac_matrix, A, B, occ,
+        surrounding_coords,
+        voxel_indices,
+        density_map,
+        xyz,
+        u,
+        inv_frac_matrix,
+        frac_matrix,
+        A,
+        B,
+        occ,
     )
 
 
 def _add_anisotropic(
-    real_space_grid, density_map, xyz, u, occ, A, B,
-    inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
+    real_space_grid,
+    density_map,
+    xyz,
+    u,
+    occ,
+    A,
+    B,
+    inv_frac_matrix,
+    frac_matrix,
+    radius_angstrom,
+    voxel_size,
 ):
     """Add anisotropic atoms (mirrors the isotropic device dispatch).
 
-    CUDA+float32 (engine permitting) -> fused Triton kernel (voxels in-kernel,
-    no large intermediate). CUDA eager (float64 / ``Engine.EAGER``) -> the
-    two-step reference. CPU/MPS -> the optimized box-splat ``_add_anisotropic_cpu``.
+    CUDA+float32 (engine permitting) -> fused Triton kernel. Otherwise the
+    pure-torch ``_add_anisotropic_original`` (device-agnostic, double-diff) for
+    ``Engine.EAGER`` on any device and for CUDA float64; CPU/MPS under AUTO use
+    the optimized C++-scatter box-splat ``_add_anisotropic_cpu``.
     """
     if should_use_triton(xyz):
         fn = _get_aniso_fused_triton()
         if fn is not None:
             try:
                 return fn(
-                    real_space_grid, density_map, xyz, u,
-                    inv_frac_matrix, frac_matrix, A, B, occ,
-                    radius_angstrom, voxel_size,
+                    real_space_grid,
+                    density_map,
+                    xyz,
+                    u,
+                    inv_frac_matrix,
+                    frac_matrix,
+                    A,
+                    B,
+                    occ,
+                    radius_angstrom,
+                    voxel_size,
                 )
             except Exception:
                 if get_engine() is Engine.TRITON:
@@ -1240,13 +1346,32 @@ def _add_anisotropic(
         elif get_engine() is Engine.TRITON:
             raise RuntimeError("Anisotropic fused Triton kernel is unavailable")
 
-    if density_map.device.type == "cuda":
+    # Engine.EAGER -> pure-torch reference on every device; CUDA eager (float64)
+    # also uses it. CPU/MPS under AUTO use the faster C++-scatter box-splat.
+    if get_engine() is Engine.EAGER or density_map.device.type == "cuda":
         return _add_anisotropic_original(
-            real_space_grid, density_map, xyz, u, occ, A, B,
-            inv_frac_matrix, frac_matrix, radius_angstrom,
+            real_space_grid,
+            density_map,
+            xyz,
+            u,
+            occ,
+            A,
+            B,
+            inv_frac_matrix,
+            frac_matrix,
+            radius_angstrom,
         )
 
     return _add_anisotropic_cpu(
-        real_space_grid, density_map, xyz, u, occ, A, B,
-        inv_frac_matrix, frac_matrix, radius_angstrom, voxel_size,
+        real_space_grid,
+        density_map,
+        xyz,
+        u,
+        occ,
+        A,
+        B,
+        inv_frac_matrix,
+        frac_matrix,
+        radius_angstrom,
+        voxel_size,
     )

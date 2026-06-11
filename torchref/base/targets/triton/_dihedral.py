@@ -20,21 +20,41 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
+# Safe-divide floor (matches torchref.base.targets._common.EPS). Keeps the
+# 1/|b2|, b2_len/|n1|², b2_len/|n2|² and 1/c22 terms finite at degenerate
+# (collinear / zero-length-bond) dihedrals so the gradient is finite rather
+# than NaN — mirroring the eager guards in ``torsions_from_xyz``.
+_EPS = tl.constexpr(1e-6)
+
 
 @triton.jit
 def dihedral_and_grad(
-    p1x, p1y, p1z,
-    p2x, p2y, p2z,
-    p3x, p3y, p3z,
-    p4x, p4y, p4z,
+    p1x,
+    p1y,
+    p1z,
+    p2x,
+    p2y,
+    p2z,
+    p3x,
+    p3y,
+    p3z,
+    p4x,
+    p4y,
+    p4z,
 ):
     """Return (omega_rad, F1.., F2.., F3.., F4..) — 1 angle + 12 gradient comps.
 
     All inputs are SIMD lanes of float32 from a Triton block.
     """
-    b1x = p2x - p1x; b1y = p2y - p1y; b1z = p2z - p1z
-    b2x = p3x - p2x; b2y = p3y - p2y; b2z = p3z - p2z
-    b3x = p4x - p3x; b3y = p4y - p3y; b3z = p4z - p3z
+    b1x = p2x - p1x
+    b1y = p2y - p1y
+    b1z = p2z - p1z
+    b2x = p3x - p2x
+    b2y = p3y - p2y
+    b2z = p3z - p2z
+    b3x = p4x - p3x
+    b3y = p4y - p3y
+    b3z = p4z - p3z
 
     n1x = b1y * b2z - b1z * b2y
     n1y = b1z * b2x - b1x * b2z
@@ -45,11 +65,12 @@ def dihedral_and_grad(
     n2z = b2x * b3y - b2y * b3x
 
     c22 = b2x * b2x + b2y * b2y + b2z * b2z
+    c22_safe = c22 + _EPS
     b2_len = tl.sqrt(c22)
 
     # angle via the same atan2 form as the eager helper
     # m1 = n1 x (b2 / |b2|)
-    inv_b2 = 1.0 / b2_len
+    inv_b2 = 1.0 / tl.sqrt(c22_safe)
     m1x = (n1y * b2z - n1z * b2y) * inv_b2
     m1y = (n1z * b2x - n1x * b2z) * inv_b2
     m1z = (n1x * b2y - n1y * b2x) * inv_b2
@@ -64,10 +85,15 @@ def dihedral_and_grad(
     # atan2(m·n2, n1·n2). Finite-difference verification on a known case
     # (φ=+90°, p1.z perturbation → ∂φ/∂p1.z = -1) showed the canonical
     # Bekker formula is overall-negated relative to this convention, so:
-    f1c = b2_len / N1     # F1 = +(b2_len / N1) · n1
-    F1x = f1c * n1x; F1y = f1c * n1y; F1z = f1c * n1z
-    f4c = -b2_len / N2    # F4 = -(b2_len / N2) · n2
-    F4x = f4c * n2x; F4y = f4c * n2y; F4z = f4c * n2z
+    # Floor |n1|², |n2|² so collinear b1∥b2 / b2∥b3 give finite forces.
+    f1c = b2_len / (N1 + _EPS)  # F1 = +(b2_len / N1) · n1
+    F1x = f1c * n1x
+    F1y = f1c * n1y
+    F1z = f1c * n1z
+    f4c = -b2_len / (N2 + _EPS)  # F4 = -(b2_len / N2) · n2
+    F4x = f4c * n2x
+    F4y = f4c * n2y
+    F4z = f4c * n2z
 
     c12 = b1x * b2x + b1y * b2y + b1z * b2z
     c23 = b2x * b3x + b2y * b3y + b2z * b3z
@@ -76,8 +102,8 @@ def dihedral_and_grad(
     # (atan2(m·n2, n1·n2)). The canonical Bekker textbook form doesn't
     # match this sign convention; this one does:
     #   F2 = −(1 + c12/c22) · F1  +  (c23/c22) · F4
-    a = -(c12 / c22 + 1.0)
-    b = c23 / c22
+    a = -(c12 / c22_safe + 1.0)
+    b = c23 / c22_safe
 
     F2x = a * F1x + b * F4x
     F2y = a * F1y + b * F4y
@@ -87,8 +113,4 @@ def dihedral_and_grad(
     F3y = -F1y - F2y - F4y
     F3z = -F1z - F2z - F4z
 
-    return (omega,
-            F1x, F1y, F1z,
-            F2x, F2y, F2z,
-            F3x, F3y, F3z,
-            F4x, F4y, F4z)
+    return (omega, F1x, F1y, F1z, F2x, F2y, F2z, F3x, F3y, F3z, F4x, F4y, F4z)

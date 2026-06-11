@@ -250,6 +250,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         reflection count, the rfree/validation selection, the combined
         validity masks, and device. Rebuilds the index cache when any change.
         """
+
         def _tv(t):
             return (t.data_ptr(), t._version) if isinstance(t, torch.Tensor) else None
 
@@ -309,10 +310,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         cached against the (log_scale, U_aniso) fingerprint. Falls back to the
         raw (F, F_sigma) if scaling is not set up.
         """
+
         def _tv(t):
             return (t.data_ptr(), t._version) if isinstance(t, torch.Tensor) else None
 
-        fp = (_tv(getattr(self, "log_scale", None)), _tv(getattr(self, "U_aniso", None)))
+        fp = (
+            _tv(getattr(self, "log_scale", None)),
+            _tv(getattr(self, "U_aniso", None)),
+        )
         if self._corrected_fp != fp or self._corrected_cache is None:
             try:
                 self._corrected_cache = self.get_corrected_data()
@@ -565,7 +570,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         cell: "Cell",
         spacegroup: "SpaceGroup",
         rfree_flags: Optional[torch.Tensor] = None,
-        device=get_default_device(),
+        device=None,
         verbose: int = 1,
         friedel_merged: Optional[bool] = None,
         detach: bool = True,
@@ -615,6 +620,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             Fully initialized reflection data with all cleanup applied.
         """
+        if device is None:
+            device = get_default_device()
         data = cls(device=device, verbose=verbose)
 
         def _prep(t: torch.Tensor) -> torch.Tensor:

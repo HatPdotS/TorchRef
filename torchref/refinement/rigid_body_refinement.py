@@ -142,8 +142,7 @@ class RigidBodyRefinementStep:
         )
         ref.scaler.initialize()
 
-        if xray_mode is None:
-            xray_mode = getattr(ref, "target_mode", "ml_sigmaa")
+        xray_mode = getattr(ref, "target_mode", "ml")
         ref._init_targets(xray_mode=xray_mode)
         ref.reset_loss_state()
         # Clear cached LBFGS optimizers (they were built over the old model's

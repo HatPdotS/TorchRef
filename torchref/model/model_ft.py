@@ -621,7 +621,6 @@ class ModelFT(CachedForwardMixin, Model):
         }
         return stats
 
-
     def update_pdb(self):
         """
         Update PDB with current atomic parameters.
@@ -833,6 +832,38 @@ class ModelFT(CachedForwardMixin, Model):
 
         return self._fft
 
+    def _check_forward_dtype(self, hkl: torch.Tensor) -> None:
+        """Fail fast with a clear message on a model/input dtype mismatch.
+
+        The structure-factor path runs the electron-density build, FFT and
+        interpolation in the model's float dtype. A float64 input fed to a
+        float32 model (or a model whose parameters drifted from
+        ``self.dtype_float``) otherwise surfaces as a cryptic
+        ``mat1 and mat2 must have the same dtype`` matmul error — or, on CUDA,
+        a Triton kernel compile failure — deep in the kernels.
+
+        Integer ``hkl`` (the usual Miller-index dtype) is always fine: it is
+        cast to the model dtype internally. Only a *floating* ``hkl`` whose
+        dtype differs from the model's is rejected.
+        """
+        model_dtype = self.dtype_float
+        params = self.xyz.refinable_params
+        if params is not None and params.numel() and params.dtype != model_dtype:
+            raise TypeError(
+                f"ModelFT parameters are {params.dtype} but model.dtype_float is "
+                f"{model_dtype}. The model is in an inconsistent float dtype; "
+                f"rebuild it or call model.to(dtype=...) before computing "
+                f"structure factors."
+            )
+        if hkl.is_floating_point() and hkl.dtype != model_dtype:
+            raise TypeError(
+                f"hkl has dtype {hkl.dtype} but the model float dtype is "
+                f"{model_dtype}. Pass integer Miller indices, or cast with "
+                f"hkl.to(model.dtype_float). To run the model in float64, set "
+                f"torchref.dtypes.float = torch.float64 before constructing it "
+                f"(or TORCHREF_DTYPE_FLOAT=float64)."
+            )
+
     def forward(self, hkl, apply_anomalous: bool = True) -> torch.Tensor:
         """
         Compute structure factors for given hkl.
@@ -855,6 +886,7 @@ class ModelFT(CachedForwardMixin, Model):
         torch.Tensor
             Calculated complex structure factors with shape (n_reflections,).
         """
+        self._check_forward_dtype(hkl)
         sf, self.ed = self.fft.compute_structure_factors(
             hkl,
             *self.get_iso(),
@@ -1028,9 +1060,9 @@ class ModelFT(CachedForwardMixin, Model):
     def create_from_state_dict(
         cls,
         state_dict: dict,
-        device: torch.device = get_default_device(),
+        device: torch.device = None,
         verbose: int = 1,
-        dtype_float: torch.dtype = get_float_dtype(),
+        dtype_float: torch.dtype = None,
     ) -> "ModelFT":
         """
         Create a fully initialized ModelFT from a state dictionary.
@@ -1056,6 +1088,13 @@ class ModelFT(CachedForwardMixin, Model):
         """
         from torchref.symmetry import SpaceGroup
 
+        # Resolve dtype/device at call time so the fallback below uses the
+        # current config rather than an import-time default.
+        if device is None:
+            device = get_default_device()
+        if dtype_float is None:
+            dtype_float = get_float_dtype()
+
         # Extract ModelFT-specific metadata
         max_res = state_dict.pop("max_res", 1.0)
         radius_angstrom = state_dict.pop("radius_angstrom", 4.0)
@@ -1067,7 +1106,7 @@ class ModelFT(CachedForwardMixin, Model):
         spacegroup_str = state_dict.pop("spacegroup", None)
         cell_tensor = state_dict.pop("cell", None)
         initialized = state_dict.pop("initialized", False)
-        saved_dtype = state_dict.pop("dtype_float", dtypes.float)
+        saved_dtype = state_dict.pop("dtype_float", dtype_float)
         state_dict.pop("device", None)  # Remove but don't use (use provided device)
         strip_H = state_dict.pop("strip_H", True)
         altloc_pairs = state_dict.pop("altloc_pairs", [])

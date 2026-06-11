@@ -1,7 +1,7 @@
-"""Maximum-likelihood X-ray loss math.
+"""Rice maximum-likelihood X-ray loss math.
 
-Mirrors lines 47-84 of
-``torchref/refinement/targets/xray/maximum_likelihood.py`` verbatim. The
+Mirrors the Rice-distribution loss in
+``torchref/refinement/targets/xray/rice.py`` verbatim. The
 caller is responsible for everything ``XrayTarget.get_data`` does:
 unpacking ``ReflectionData``, running the ``Scaler`` forward to produce
 ``|F_calc|`` from a complex ``f_calc``, and building the work/free mask.
@@ -68,7 +68,7 @@ def ml_xray_loss_math(
 ) -> torch.Tensor:
     """Maximum-likelihood X-ray loss on already-scaled amplitudes.
 
-    Matches ``MaximumLikelihoodXrayTarget.forward`` lines 37-84.
+    Matches ``RiceXrayTarget.forward``.
 
     Dispatches to :func:`torchref.base.targets.triton.xray_ml.ml_xray_loss_math_triton`
     on CUDA float32; falls back to the eager implementation otherwise.

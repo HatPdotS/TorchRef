@@ -18,10 +18,9 @@ import gemmi
 import torch
 import torch.nn as nn
 
-
+from torchref.base import math_torch
 from torchref.config import get_default_device, get_float_dtype
 from torchref.io import cif, pdb
-from torchref.base import math_torch
 from torchref.model.parameter_wrappers import (
     CholeskyMixedTensor,
     MixedTensor,
@@ -122,9 +121,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def __init__(
         self,
-        dtype_float=get_float_dtype(),
+        dtype_float=None,
         verbose=1,
-        device=get_default_device(),
+        device=None,
         strip_H: bool = True,
     ):
         """
@@ -145,6 +144,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Whether to strip hydrogen atoms when loading. Default is True.
         """
         super().__init__()
+        # Resolve dtype/device at call time (not import time) so a runtime
+        # ``dtypes.float`` / ``device.current`` change is honored.
+        if dtype_float is None:
+            dtype_float = get_float_dtype()
+        if device is None:
+            device = get_default_device()
         # Configuration
         self.dtype_float = dtype_float
         self.verbose = verbose
@@ -970,8 +975,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Van der Waals radii for each atom with shape (n_atoms,).
         """
         import os
-        from torchref import PATH_TORCHREF_DATA
+
         import pandas as pd
+
+        from torchref import PATH_TORCHREF_DATA
 
         if hasattr(self, "vdw_radii"):
             return self.vdw_radii
@@ -1656,9 +1663,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         >>> model_with_h = model_no_h.generate_hydrogens()
         >>> print(model_with_h.Z.shape)   # more atoms than model_no_h
         """
-        import gemmi
         import os
         import tempfile
+
+        import gemmi
+
         from torchref import PATH_TORCHREF_DATA
 
         if mon_lib_path is None:
@@ -1694,8 +1703,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             tmp_with_h = f.name
 
         try:
-            from torchref.utils.utils import sanitize_pdb_dataframe
             from torchref.io import pdb as io_pdb
+            from torchref.utils.utils import sanitize_pdb_dataframe
 
             pdb_out = sanitize_pdb_dataframe(self.pdb.copy())
             pdb_out.attrs["spacegroup"] = (
@@ -2604,9 +2613,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def create_from_state_dict(
         cls,
         state_dict: dict,
-        device: torch.device = get_default_device(),
+        device: torch.device = None,
         verbose: int = 1,
-        dtype_float: torch.dtype = get_float_dtype(),
+        dtype_float: torch.dtype = None,
     ) -> "Model":
         """
         Create a fully initialized Model from a state dictionary.
@@ -2630,6 +2639,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Model
             Fully initialized instance with restored state.
         """
+        # Resolve dtype/device at call time so the fallbacks below use the
+        # current config, not the import-time default.
+        if device is None:
+            device = get_default_device()
+        if dtype_float is None:
+            dtype_float = get_float_dtype()
         # Extract metadata (non-tensor data that we handle specially)
         pdb = state_dict.pop("pdb", None)
         cell_tensor = state_dict.pop("cell", None)
