@@ -1,0 +1,71 @@
+================================================================================
+PHENIX Refinement (with Ramachandran restraints) for 1AK5
+================================================================================
+Start time: Tue Jun  9 09:23:02 CEST 2026
+Source directory: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/1AK5
+Output directory: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/phenix_refinements_af/1AK5
+
+Input files:
+  Model: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/figure2_alphafold_start/placed/1AK5_af.pdb
+  Data:  /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/1AK5/1AK5.mtz
+
+Loading PHENIX module...
+PHENIX version:
+-------------------------------------------------------------------------------
+  PHENIX: Python-based Hierarchical ENvironment for Integrated Xtallography
+  Version: 1.20
+  Release tag: 4459
+  Platform: intel-linux-2.6-x86_64
+  User: seidel_h
+-------------------------------------------------------------------------------
+
+
+================================================================================
+Checking and fixing PDB CRYST1 record...
+================================================================================
+CRYST1 record is OK
+
+================================================================================
+Extracting ligands and generating restraints...
+================================================================================
+
+Total ligand restraints prepared: 0
+No ligands found or all were filtered as solvents/ions
+
+================================================================================
+Running phenix.refine (10 cycles, nproc=4, Ramachandran restraints ON)...
+================================================================================
+Using PDB: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/figure2_alphafold_start/placed/1AK5_af.pdb
+Using MTZ with R-free flags: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/1AK5/1AK5.mtz
+
+Refinement strategy:
+  - 10 macro cycles
+  - 4 CPU cores (nproc=4)
+  - Coordinates (xyz) refinement
+  - Individual B-factors (ADP)
+  - Occupancy refinement
+  - Real-space refinement
+  - Ordered solvent update
+  - Ramachandran plot restraints: ENABLED
+
+Refinement strategy: rigid_body+individual_sites+individual_adp+occupancies
+
+================================================================================
+Refinement completed
+================================================================================
+Status: SUCCESS
+
+Output files in /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/phenix_refinements_af/1AK5:
+-rwxrwx---+ 1 seidel_h p17490 213K Jun  9 09:33 1AK5_refined_001.cif
+-rwxrwx---+ 1 seidel_h p17490 129K Jun  9 09:33 1AK5_refined_001.log
+-rwxrwx---+ 1 seidel_h p17490 1.9M Jun  9 09:33 1AK5_refined_001.mtz
+-rwxrwx---+ 1 seidel_h p17490 199K Jun  9 09:33 1AK5_refined_001.pdb
+
+Final R-factors:
+Final R-work = 0.2143, R-free = 0.2324
+wall clock time: 624.67 s
+
+wall clock time: 624.67 s
+
+End time: Tue Jun  9 09:33:32 CEST 2026
+================================================================================

@@ -25,19 +25,33 @@ if [ $# -eq 0 ]; then
 fi
 
 PDB_ID=$1
+# Starting model arm: 'shaken' (default) or 'af' (Phaser-placed AlphaFold model).
+START_MODEL=${2:-shaken}
+# Rigid-body toggle for the af arm: 'rb' (default) or 'norb'.
+RIGID=${3:-rb}
 
-# Define paths — all relative to this script's location
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PAPER_DIR="$( cd "${SCRIPT_DIR}/.." && pwd )"
-DATA_DIR="$( cd "${PAPER_DIR}/../data" && pwd )"
+# Absolute repo paths. BASH_SOURCE-based self-location is unreliable under SLURM
+# (the job runs from a spool copy under /var/spool/slurmd), which resolves DATA_DIR
+# to a bogus path — so hardcode the paper directory.
+PAPER_DIR="/das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper"
+DATA_DIR="${PAPER_DIR}/data"
 
-# Input files
-PDB_FILE="${DATA_DIR}/${PDB_ID}/${PDB_ID}_shaken.pdb"
+# Input files — start model + output location depend on the arm. Both arms use
+# the same MTZ; the AF arm keeps its outputs separate so it never clobbers the
+# shaken arm and both can be compared head-to-head.
 DATA_FILE="${DATA_DIR}/${PDB_ID}/${PDB_ID}.mtz"
 SOURCE_RESTRAINTS_DIR="${DATA_DIR}/restraints"
+SOURCE_DIR="${DATA_DIR}/${PDB_ID}"   # per-structure data dir (holds the MTZ)
 
-# Output under paper/phenix_refinements/ (symlink)
-OUTPUT_DIR="$( cd "${PAPER_DIR}/../phenix_refinements" && pwd )/${PDB_ID}"
+if [ "${START_MODEL}" = "af" ]; then
+    PDB_FILE="${PAPER_DIR}/figure2_alphafold_start/placed/${PDB_ID}_af.pdb"
+    OUT_BASE="${PAPER_DIR}/figure2_alphafold_start/runs/phenix_${RIGID}"
+else
+    PDB_FILE="${DATA_DIR}/${PDB_ID}/${PDB_ID}_shaken.pdb"
+    OUT_BASE="${PAPER_DIR}/phenix_refinements"
+fi
+mkdir -p "${OUT_BASE}/${PDB_ID}"
+OUTPUT_DIR="${OUT_BASE}/${PDB_ID}"
 REFINE_DIR="${OUTPUT_DIR}"
 RESTRAINTS_DIR="${OUTPUT_DIR}/restraints"
 OUTPUT_PREFIX="${OUTPUT_DIR}/${PDB_ID}_refined"
@@ -213,6 +227,15 @@ echo ""
 
 cd "${OUTPUT_DIR}"
 
+# Refinement strategy. The AF arm starts from Phaser-placed models that may carry
+# residual rigid-body misplacement, so run rigid-body refinement first to let each
+# body settle before individual-atom refinement.
+REFINE_STRATEGY="individual_sites+individual_adp+occupancies"
+if [ "${START_MODEL}" = "af" ] && [ "${RIGID}" = "rb" ]; then
+    REFINE_STRATEGY="rigid_body+${REFINE_STRATEGY}"
+fi
+echo "Refinement strategy: ${REFINE_STRATEGY}"
+
 # Run phenix.refine with Ramachandran restraints enabled
 phenix.refine \
     "${PDB_FILE}" \
@@ -222,7 +245,7 @@ phenix.refine \
     output.prefix="${PDB_ID}_refined" \
     refinement.main.number_of_macro_cycles=10 \
     refinement.main.nproc=4 \
-    refinement.refine.strategy=individual_sites+individual_adp+occupancies \
+    refinement.refine.strategy=${REFINE_STRATEGY} \
     refinement.main.simulated_annealing=false \
     refinement.target_weights.optimize_xyz_weight=false \
     refinement.target_weights.optimize_adp_weight=false \

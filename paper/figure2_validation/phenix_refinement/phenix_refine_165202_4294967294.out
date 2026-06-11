@@ -1,0 +1,87 @@
+================================================================================
+PHENIX Refinement (with Ramachandran restraints) for 1XQZ
+================================================================================
+Start time: Tue Jun  9 09:23:20 CEST 2026
+Source directory: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/1XQZ
+Output directory: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/phenix_refinements_af/1XQZ
+
+Input files:
+  Model: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/figure2_alphafold_start/placed/1XQZ_af.pdb
+  Data:  /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/1XQZ/1XQZ.mtz
+
+Loading PHENIX module...
+PHENIX version:
+-------------------------------------------------------------------------------
+  PHENIX: Python-based Hierarchical ENvironment for Integrated Xtallography
+  Version: 1.20
+  Release tag: 4459
+  Platform: intel-linux-2.6-x86_64
+  User: seidel_h
+-------------------------------------------------------------------------------
+
+
+================================================================================
+Checking and fixing PDB CRYST1 record...
+================================================================================
+CRYST1 record is OK
+
+================================================================================
+Extracting ligands and generating restraints...
+================================================================================
+
+Total ligand restraints prepared: 0
+No ligands found or all were filtered as solvents/ions
+
+================================================================================
+Running phenix.refine (10 cycles, nproc=4, Ramachandran restraints ON)...
+================================================================================
+Using PDB: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/figure2_alphafold_start/placed/1XQZ_af.pdb
+Using MTZ with R-free flags: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/1XQZ/1XQZ.mtz
+
+Refinement strategy:
+  - 10 macro cycles
+  - 4 CPU cores (nproc=4)
+  - Coordinates (xyz) refinement
+  - Individual B-factors (ADP)
+  - Occupancy refinement
+  - Real-space refinement
+  - Ordered solvent update
+  - Ramachandran plot restraints: ENABLED
+
+Refinement strategy: rigid_body+individual_sites+individual_adp+occupancies
+Traceback (most recent call last):
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/build/../modules/phenix/phenix/command_line/refine.py", line 11, in <module>
+    command_line.run(command_name="phenix.refine", args=sys.argv[1:])
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/modules/phenix/phenix/refinement/command_line.py", line 96, in run
+    dry_run                  = dry_run)
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/modules/phenix/phenix/refinement/driver.py", line 240, in run0
+    log                   = log)
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/modules/phenix/phenix/refinement/fsr/io.py", line 132, in __init__
+    self._xray_data    = self._get_xray_data()
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/modules/phenix/phenix/refinement/fsr/io.py", line 164, in _get_xray_data
+    log                      = self.log)
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/modules/cctbx_project/iotbx/extract_xtal_data.py", line 257, in __init__
+    self.raw_flags = self.extract_flags()
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/modules/cctbx_project/iotbx/extract_xtal_data.py", line 411, in extract_flags
+    parameter_scope          = self.flags_parameter_scope)
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/modules/cctbx_project/iotbx/reflection_file_utils.py", line 727, in get_r_free_flags
+    test_flag_value=test_flag_value)
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/modules/cctbx_project/iotbx/reflection_file_utils.py", line 356, in __init__
+    if (counts[0] >= data.size()*0.55):
+KeyError: 'Key not in C++ map.'
+
+================================================================================
+Refinement completed
+================================================================================
+Status: SUCCESS
+
+Output files in /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/phenix_refinements_af/1XQZ:
+-rwxrwx---+ 1 seidel_h p17490 5.8K Jun  9 09:23 1XQZ_refined_001.log
+
+Final R-factors:
+  File "/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/modules/cctbx_project/iotbx/reflection_file_utils.py", line 727, in get_r_free_flags
+
+Runtime: See log for details
+
+End time: Tue Jun  9 09:23:32 CEST 2026
+================================================================================

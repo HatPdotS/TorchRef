@@ -36,17 +36,11 @@ class MaximumLikelihoodSigmaAXrayTarget(XrayTarget):
     Luzzati model-error variance estimated on the FREE set.
     """
 
-    # The correctly-calibrated Read-MLF likelihood is legitimately "soft"
-    # relative to the geometry prior, so it needs an intrinsic up-weight to be on
-    # equal footing (empirically ~10x; the residual imbalance is a count/prior
-    # effect, not a beta error -- see the floor investigation). Carry that as a
-    # base weight on the target itself.
-    # TODO(weighting): this is a stopgap. The base weight belongs in the weighting
-    # infrastructure (LossState / component_weighting per-target base weight that
-    # used to exist), not multiplied inside the target's forward. Move it back
-    # once that infra is restored, ideally replaced by a principled per-cycle
-    # gradient-ratio (wxc-style) weight.
-    DEFAULT_BASE_WEIGHT = 10.0
+    # NOTE: the Read/sigma_A likelihood is legitimately "soft" relative to the
+    # geometry prior and needs ~10x to be on equal footing. That up-weight now
+    # lives as the transparent ``xray`` group base weight in
+    # ``base_refinement.DEFAULT_GROUP_WEIGHTS`` (LossState), NOT multiplied inside
+    # this target's forward — see that constant for the calibration rationale.
 
     def __init__(
         self,
@@ -55,7 +49,6 @@ class MaximumLikelihoodSigmaAXrayTarget(XrayTarget):
         scaler: "Scaler" = None,
         use_work_set: bool = True,
         verbose: int = 0,
-        base_weight: float = None,
         **kwargs,
     ):
         kwargs.pop("sigma_mode", None)
@@ -67,9 +60,6 @@ class MaximumLikelihoodSigmaAXrayTarget(XrayTarget):
             use_work_set=use_work_set,
             sigma_mode="raw",
             verbose=verbose,
-        )
-        self.base_weight = (
-            self.DEFAULT_BASE_WEIGHT if base_weight is None else float(base_weight)
         )
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
@@ -87,14 +77,9 @@ class MaximumLikelihoodSigmaAXrayTarget(XrayTarget):
         beta = sub.select(beta).to(F_obs.dtype)
         eps = sub.select(eps).to(F_obs.dtype) if eps is not None else None
 
-        loss = ml_xray_loss_beta_math(F_obs, F_calc, beta, centric, epsilon=eps)
-        # TODO(weighting): base weight applied inside the target as a stopgap;
-        # should live in LossState/component_weighting (see class docstring).
-        # Only the work set drives refinement; leave the test instance (R-free /
-        # NLL_test monitoring) unscaled so reported metrics stay comparable.
-        if self.use_work_set:
-            loss = self.base_weight * loss
-        return loss
+        # The data/prior balance (the ~10x x-ray up-weight) is applied by the
+        # LossState ``xray`` group weight, not here — see DEFAULT_GROUP_WEIGHTS.
+        return ml_xray_loss_beta_math(F_obs, F_calc, beta, centric, epsilon=eps)
 
     def maintenance(self) -> None:
         """Invalidate the scaler's cached beta so it is re-estimated from

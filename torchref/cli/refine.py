@@ -85,7 +85,9 @@ Examples:
     add_metadata_args(output)
 
     refine_group = parser.add_argument_group("Refinement")
-    add_n_cycles_arg(refine_group)
+    # Default 10 macro cycles — the validated AF-start benchmark setting
+    # (10 cycles ~ 25; converges fast with the separate scaler).
+    add_n_cycles_arg(refine_group, default=10)
     refine_group.add_argument(
         "--mode",
         type=str,
@@ -113,6 +115,27 @@ Examples:
         "Ignored for other targets. Default 1.0.",
     )
     add_weights_arg(refine_group)
+    refine_group.add_argument(
+        "--adp-weight",
+        type=float,
+        default=0.1,
+        help="Base weight for the 'adp' loss group (B-factor similarity/locality/"
+        "distribution restraints + scaler regularizers). Default 0.1 — the "
+        "transparent default in base_refinement.DEFAULT_GROUP_WEIGHTS; it "
+        "down-weights the ADP prior (~10x too tight) so B-factors reach their "
+        "data-supported spread. Set 1.0 for un-down-weighted; an explicit 'adp' "
+        "entry in --weights also overrides this.",
+    )
+    refine_group.add_argument(
+        "--corefine-scaler",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Co-refine the scaler (scale / anisotropic U / bulk solvent) jointly "
+        "with the xyz/adp body steps. Default off: the scaler is held fixed during "
+        "body steps and updated only by the separate per-cycle scaler step. "
+        "Co-refining is ill-conditioned (the few high-leverage scaler params drag "
+        "R-free up), so it is off by default; pass --corefine-scaler to re-enable.",
+    )
     refine_group.add_argument(
         "--with-rigid-body",
         action="store_true",
@@ -204,12 +227,28 @@ Examples:
         column_names=column_names,
         target_mode=args.xray_mode,
         sigma_m_scale=args.sigma_m_scale,
+        corefine_scaler=args.corefine_scaler,
     )
 
+    # The loss_state ships with the default group base weights
+    # (base_refinement.DEFAULT_GROUP_WEIGHTS: xray 10 / geometry 1 / adp 0.1).
+    # --adp-weight overrides the adp group; an explicit 'adp' in --weights wins.
+    refinement.loss_state.set_weight("adp", args.adp_weight)
+
     # Apply any user-specified manual loss weights to the persistent LossState.
-    # (Default behavior is uniform weighting.)
     if manual_weights:
         refinement.loss_state.set_weights(manual_weights)
+
+    if args.verbose > 0:
+        gw = refinement.loss_state.weights
+        print(
+            "Loss group base weights: "
+            + ", ".join(
+                f"{g}={gw.get(g, 1.0):g}" for g in ("xray", "geometry", "adp")
+            )
+        )
+        print(f"Co-refine scaler in body steps: {args.corefine_scaler}")
+        sys.stdout.flush()
 
     if args.verbose > 0:
         print("Refinement initialized successfully.\n")
@@ -287,6 +326,11 @@ Examples:
             "mode": args.mode,
             "xray_mode": args.xray_mode,
             "sigma_m_scale": args.sigma_m_scale,
+            "group_weights": {
+                g: refinement.loss_state.weights.get(g, 1.0)
+                for g in ("xray", "geometry", "adp")
+            },
+            "corefine_scaler": args.corefine_scaler,
             "weights": manual_weights if manual_weights else None,
             "dmin": args.dmin,
             "device": str(device),

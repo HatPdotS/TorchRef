@@ -1,0 +1,71 @@
+================================================================================
+PHENIX Refinement (with Ramachandran restraints) for 3G85
+================================================================================
+Start time: Tue Jun  9 09:26:50 CEST 2026
+Source directory: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/3G85
+Output directory: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/phenix_refinements_af/3G85
+
+Input files:
+  Model: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/figure2_alphafold_start/placed/3G85_af.pdb
+  Data:  /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/3G85/3G85.mtz
+
+Loading PHENIX module...
+PHENIX version:
+-------------------------------------------------------------------------------
+  PHENIX: Python-based Hierarchical ENvironment for Integrated Xtallography
+  Version: 1.20
+  Release tag: 4459
+  Platform: intel-linux-2.6-x86_64
+  User: seidel_h
+-------------------------------------------------------------------------------
+
+
+================================================================================
+Checking and fixing PDB CRYST1 record...
+================================================================================
+CRYST1 record is OK
+
+================================================================================
+Extracting ligands and generating restraints...
+================================================================================
+
+Total ligand restraints prepared: 0
+No ligands found or all were filtered as solvents/ions
+
+================================================================================
+Running phenix.refine (10 cycles, nproc=4, Ramachandran restraints ON)...
+================================================================================
+Using PDB: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/figure2_alphafold_start/placed/3G85_af.pdb
+Using MTZ with R-free flags: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/3G85/3G85.mtz
+
+Refinement strategy:
+  - 10 macro cycles
+  - 4 CPU cores (nproc=4)
+  - Coordinates (xyz) refinement
+  - Individual B-factors (ADP)
+  - Occupancy refinement
+  - Real-space refinement
+  - Ordered solvent update
+  - Ramachandran plot restraints: ENABLED
+
+Refinement strategy: rigid_body+individual_sites+individual_adp+occupancies
+
+================================================================================
+Refinement completed
+================================================================================
+Status: SUCCESS
+
+Output files in /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/phenix_refinements_af/3G85:
+-rwxrwx---+ 1 seidel_h p17490 166K Jun  9 09:31 3G85_refined_001.cif
+-rwxrwx---+ 1 seidel_h p17490 109K Jun  9 09:31 3G85_refined_001.log
+-rwxrwx---+ 1 seidel_h p17490 1.9M Jun  9 09:31 3G85_refined_001.mtz
+-rwxrwx---+ 1 seidel_h p17490 155K Jun  9 09:31 3G85_refined_001.pdb
+
+Final R-factors:
+Final R-work = 0.2919, R-free = 0.3436
+wall clock time: 268.61 s
+
+wall clock time: 268.61 s
+
+End time: Tue Jun  9 09:31:21 CEST 2026
+================================================================================

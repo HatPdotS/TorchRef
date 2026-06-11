@@ -86,6 +86,7 @@ class LBFGSRefinement(Refinement):
         *args,
         target_mode: str = "ml_sigmaa",
         sigma_m_scale: float = 1.0,
+        corefine_scaler: bool = False,
         use_lossstate_scaler: bool = True,
         **kwargs,
     ):
@@ -115,6 +116,12 @@ class LBFGSRefinement(Refinement):
         super().__init__(*args, **kwargs)
 
         self.sigma_m_scale = sigma_m_scale
+        # Default False: hold the scaler fixed during the xyz/adp body steps and
+        # only update it via the separate refine_scaler() step. Co-refining the
+        # few high-leverage scaler params (scale / aniso U / bulk solvent) in the
+        # same LBFGS as thousands of body params is ill-conditioned and drags
+        # R-free up (validated on the AF-start benchmark).
+        self.corefine_scaler = corefine_scaler
         # Set the X-ray target mode (uses the new target system from base class)
         self.set_xray_target_mode(target_mode)
         self.target_mode = target_mode
@@ -288,7 +295,7 @@ class LBFGSRefinement(Refinement):
         """
         state = self.complete_loss_state()
         body = self.model.parameters_of_types(("xyz",))
-        params = body + list(self.scaler.parameters())
+        params = body + self._scaler_body_params()
         optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
         state.step(optimizer, context="lbfgs_refinement.refine_xyz")
         return state
@@ -309,10 +316,25 @@ class LBFGSRefinement(Refinement):
         """
         state = self.complete_loss_state()
         body = self.model.parameters_of_types(("adp", "u", "occupancy"))
-        params = body + list(self.scaler.parameters())
+        params = body + self._scaler_body_params()
         optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
         state.step(optimizer, context="lbfgs_refinement.refine_adp")
         return state
+
+    def _scaler_body_params(self):
+        """Scaler parameters to co-refine inside the body (xyz/adp) steps.
+
+        Returns the scaler parameter list when ``corefine_scaler`` is True
+        (default, historical behaviour), else an empty list so the scaler
+        is held fixed during xyz/adp and only updated by the separate
+        :meth:`refine_scaler` step at each macro-cycle end. Co-refining the
+        few high-leverage scaler params (scale, anisotropic U, bulk solvent)
+        in the same LBFGS as thousands of xyz params is ill-conditioned and
+        can drive the ML-NLL down while R goes up.
+        """
+        if getattr(self, "corefine_scaler", True):
+            return list(self.scaler.parameters())
+        return []
 
     def refine_joint(self):
         """Joint LBFGS over every refinable parameter in one step.
@@ -333,7 +355,7 @@ class LBFGSRefinement(Refinement):
         """
         state = self.complete_loss_state()
         body = self.model.parameters_of_types(("xyz", "adp", "u", "occupancy"))
-        params = body + list(self.scaler.parameters())
+        params = body + self._scaler_body_params()
         optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
         state.step(optimizer, context="lbfgs_refinement.refine_joint")
         return state

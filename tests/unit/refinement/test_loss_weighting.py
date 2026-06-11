@@ -50,3 +50,14 @@ class TestTotalLossFromState:
         # Expected: 2.0 * 1.0 + 1.0 * 0.5 = 2.5
         expected = torch.tensor(2.5)
         assert torch.isclose(total, expected)
+
+
+class TestDefaultGroupWeights:
+    """The validated default base group weights (single source of truth)."""
+
+    @pytest.mark.unit
+    def test_default_group_weights_values(self):
+        """DEFAULT_GROUP_WEIGHTS is the documented xray 10 / geometry 1 / adp 0.1."""
+        from torchref.refinement.base_refinement import DEFAULT_GROUP_WEIGHTS
+
+        assert DEFAULT_GROUP_WEIGHTS == {"xray": 10.0, "geometry": 1.0, "adp": 0.1}

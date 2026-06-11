@@ -1,0 +1,71 @@
+================================================================================
+PHENIX Refinement (with Ramachandran restraints) for 4CKT
+================================================================================
+Start time: Tue Jun  9 09:30:20 CEST 2026
+Source directory: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/4CKT
+Output directory: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/phenix_refinements_af/4CKT
+
+Input files:
+  Model: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/figure2_alphafold_start/placed/4CKT_af.pdb
+  Data:  /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/4CKT/4CKT.mtz
+
+Loading PHENIX module...
+PHENIX version:
+-------------------------------------------------------------------------------
+  PHENIX: Python-based Hierarchical ENvironment for Integrated Xtallography
+  Version: 1.20
+  Release tag: 4459
+  Platform: intel-linux-2.6-x86_64
+  User: seidel_h
+-------------------------------------------------------------------------------
+
+
+================================================================================
+Checking and fixing PDB CRYST1 record...
+================================================================================
+CRYST1 record is OK
+
+================================================================================
+Extracting ligands and generating restraints...
+================================================================================
+
+Total ligand restraints prepared: 0
+No ligands found or all were filtered as solvents/ions
+
+================================================================================
+Running phenix.refine (10 cycles, nproc=4, Ramachandran restraints ON)...
+================================================================================
+Using PDB: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/figure2_alphafold_start/placed/4CKT_af.pdb
+Using MTZ with R-free flags: /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/data/4CKT/4CKT.mtz
+
+Refinement strategy:
+  - 10 macro cycles
+  - 4 CPU cores (nproc=4)
+  - Coordinates (xyz) refinement
+  - Individual B-factors (ADP)
+  - Occupancy refinement
+  - Real-space refinement
+  - Ordered solvent update
+  - Ramachandran plot restraints: ENABLED
+
+Refinement strategy: rigid_body+individual_sites+individual_adp+occupancies
+
+================================================================================
+Refinement completed
+================================================================================
+Status: SUCCESS
+
+Output files in /das/work/p17/p17490/Peter/Library/work_trees_torchref/review/paper/phenix_refinements_af/4CKT:
+-rwxrwx---+ 1 seidel_h p17490 177K Jun  9 09:33 4CKT_refined_001.cif
+-rwxrwx---+ 1 seidel_h p17490 112K Jun  9 09:33 4CKT_refined_001.log
+-rwxrwx---+ 1 seidel_h p17490 479K Jun  9 09:33 4CKT_refined_001.mtz
+-rwxrwx---+ 1 seidel_h p17490 166K Jun  9 09:33 4CKT_refined_001.pdb
+
+Final R-factors:
+Final R-work = 0.2753, R-free = 0.3208
+wall clock time: 207.40 s
+
+wall clock time: 207.40 s
+
+End time: Tue Jun  9 09:33:50 CEST 2026
+================================================================================
