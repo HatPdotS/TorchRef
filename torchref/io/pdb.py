@@ -100,24 +100,29 @@ def read_crystallographic_info(
     """
     with open(filepath, "r") as f:
         for line in f:
-            if "CRYST1" in line:
-                a = line[6:15]
-                b = line[15:24]
-                c = line[24:33]
-                alpha = line[33:40]
-                beta = line[40:47]
-                gamma = line[47:54]
-                spacegroup = line[55:68].strip()
-                z = line[68:].strip()
+            # Must be an actual CRYST1 record, not a header/REMARK line that
+            # merely mentions the word (e.g. "REVDAT ... EXPDTA CRYST1").
+            if not line.startswith("CRYST1"):
+                continue
+            # Fixed columns per the PDB spec (1-indexed):
+            #   a 7-15, b 16-24, c 25-33, alpha 34-40, beta 41-47, gamma 48-54,
+            #   sGroup 56-66, Z 67-70.
+            try:
                 cell = [
-                    float(a),
-                    float(b),
-                    float(c),
-                    float(alpha),
-                    float(beta),
-                    float(gamma),
+                    float(line[6:15]),
+                    float(line[15:24]),
+                    float(line[24:33]),
+                    float(line[33:40]),
+                    float(line[40:47]),
+                    float(line[47:54]),
                 ]
-                return cell, spacegroup, z
+            except ValueError:
+                # Malformed/short CRYST1 record: treat cell as unavailable
+                # rather than crashing the whole read.
+                return None, None, None
+            spacegroup = line[55:66].strip()
+            z = line[66:70].strip()
+            return cell, spacegroup, z
     return None, None, None
 
 

@@ -101,9 +101,7 @@ def setup_experiment(name, structures, n_cycles, weights=None):
         "created": datetime.now().isoformat(),
         "structures": structures,
         "n_cycles": n_cycles,
-        "mode": "refine",
-        "xray_mode": "bhattacharyya",
-        "sigma_m_scale": 1.0,
+        "mode": "separate",
         "weights": weights,
     }
     with open(exp_dir / "experiment.json", "w") as f:
@@ -136,7 +134,7 @@ def submit_refinement_jobs(exp_dir, dry_run=False, force=False):
     with open(exp_dir / "experiment.json") as f:
         exp = json.load(f)
 
-    xray_mode = exp.get("xray_mode", "bhattacharyya")
+    xray_mode = exp.get("xray_mode", "ml_sigmaa")
     sigma_m_scale = exp.get("sigma_m_scale", 1.0)
     weights = exp.get("weights")
     job_ids = {}

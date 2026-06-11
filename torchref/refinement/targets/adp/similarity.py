@@ -12,7 +12,6 @@ from torchref.utils.stats import (
 )
 
 from .base import ADPTarget
-from ..base import adp_similarity_nll
 
 if TYPE_CHECKING:
     from torchref.model.model import Model

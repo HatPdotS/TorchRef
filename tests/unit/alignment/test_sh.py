@@ -1,5 +1,5 @@
 """
-Unit tests for torchref.alignment.sh: spherical harmonic primitives.
+Unit tests for torchref.experimental.alignment.sh: spherical harmonic primitives.
 
 Conventions verified:
 - Y_{l,m} are fully orthonormal physics SH with Condon-Shortley phase.
@@ -15,7 +15,7 @@ import torch
 
 scipy_special = pytest.importorskip("scipy.special")
 
-from torchref.alignment.sh import (
+from torchref.experimental.alignment.sh import (
     _bar_legendre_recurrence,
     evaluate_ylm,
     sh_expand_ball,
@@ -25,9 +25,14 @@ from torchref.alignment.sh import (
 
 
 def _scipy_ylm(l, m, theta, phi):
-    """Reference: scipy uses Y(m, l, phi, theta) with C-S phase included."""
-    # scipy.special.sph_harm(m, l, phi, theta) returns Y_l^m(theta, phi)
-    # following the standard physics convention (with C-S phase).
+    """Reference: scipy spherical harmonics with C-S phase, physics convention.
+
+    scipy >= 1.15 replaced ``sph_harm(m, l, phi, theta)`` with
+    ``sph_harm_y(n, m, theta, phi)``; prefer the new API and fall back to the
+    old one for older scipy installs.
+    """
+    if hasattr(scipy_special, "sph_harm_y"):
+        return scipy_special.sph_harm_y(l, m, theta, phi)
     return scipy_special.sph_harm(m, l, phi, theta)
 
 

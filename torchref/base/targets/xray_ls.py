@@ -36,14 +36,18 @@ def ls_xray_loss_math(
     F_obs: torch.Tensor,
     F_calc: torch.Tensor,
     sigma: torch.Tensor,
-    mask: torch.Tensor,
+    mask: torch.Tensor = None,
     weighting: str = "sigma",
 ) -> torch.Tensor:
     """Weighted least-squares loss on already-scaled amplitudes.
 
-    Dispatches to :func:`torchref.base.targets.triton.xray_ls.ls_xray_loss_math_triton`
+    ``mask`` defaults to all reflections (``None``); pass it only for full-size
+    tensors — compact (already-subset) inputs need no mask. Dispatches to
+    :func:`torchref.base.targets.triton.xray_ls.ls_xray_loss_math_triton`
     on CUDA float32; falls back to the eager implementation otherwise.
     """
+    if mask is None:
+        mask = torch.ones(F_obs.shape[0], dtype=torch.bool, device=F_obs.device)
     if use_triton(F_calc, F_obs, sigma):
         from .triton.xray_ls import ls_xray_loss_math_triton
         return ls_xray_loss_math_triton(F_obs, F_calc, sigma, mask, weighting=weighting)

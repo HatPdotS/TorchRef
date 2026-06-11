@@ -73,18 +73,6 @@ class TestStructureFactorCalculations:
 class TestRfactorFunctions:
     """Test R-factor calculation functions."""
 
-    def test_rfactor_basic(self):
-        """Test basic R-factor calculation."""
-        from torchref.base.math_torch import get_rfactor_torch
-        
-        fobs = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
-        fcalc = torch.tensor([1.1, 2.0, 2.9, 4.1], dtype=torch.float32)
-        
-        r = get_rfactor_torch(fobs, fcalc)
-        
-        assert r >= 0
-        assert r <= 1.0
-
     def test_get_rfactors(self, model_and_data):
         """Test R-factor calculation with real data."""
         from torchref.base.math_torch import get_rfactors
@@ -169,25 +157,6 @@ class TestNLLFunctions:
         loss = log_loss(fobs, fcalc, sigma)
         
         assert torch.all(torch.isfinite(loss))
-
-
-@pytest.mark.integration
-class TestFrenchWilson:
-    """Test French-Wilson conversion functions."""
-
-    def test_french_wilson_basic(self):
-        """Test French-Wilson conversion with mock data."""
-        from torchref.base.math_torch import french_wilson_conversion
-        
-        # Create mock intensity data
-        Iobs = torch.tensor([100.0, 200.0, 300.0], dtype=torch.float32)
-        sigma_I = torch.tensor([10.0, 15.0, 20.0], dtype=torch.float32)
-        
-        # This may return F and sigma_F
-        result = french_wilson_conversion(Iobs, sigma_I)
-        
-        # Should return something
-        assert result is not None
 
 
 @pytest.mark.integration

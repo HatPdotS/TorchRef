@@ -133,7 +133,7 @@ DEFAULT_TARGET_WEIGHTS = {
     # "adp/simu": 1.0,
     # "adp/locality": 1.0,
     # "adp/KL": 1.0,
-    "similarity": 1.0,
+    "similarity": 0.0,
 }
 
 
@@ -220,7 +220,9 @@ def compute_rfactors(model, data, scaler):
     from torchref.base.metrics import get_rfactors
 
     with torch.no_grad():
-        hkl, fobs, _, rfree = data()
+        hkl = data.hkl
+        fobs = data.get_corrected_data()[0]
+        rfree = data.rfree_flags
         fcalc = model(hkl)
         fcalc_scaled = scaler.forward_mixed(fcalc, model.fractions)
         return get_rfactors(
@@ -236,9 +238,9 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     (the dark model is a frozen reference).
     """
     from torchref.refinement import LossState
-    from torchref.kinetic.targets import (
+    from torchref.experimental.kinetic.targets import (
         CollectionDifferenceTarget,
-        CollectionMLTarget,
+        CollectionRiceTarget,
     )
     from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
     from torchref.refinement.targets.similarity import CoordinateSimilarityTarget
@@ -251,7 +253,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     diff_target = CollectionDifferenceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
-    ml_target = CollectionMLTarget(
+    ml_target = CollectionRiceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
     geom_target = TotalGeometryTarget(model_light)
@@ -358,15 +360,16 @@ def write_results_mtz(dc, mc, scaler, filename):
     mixed_model = mc["light"]
     model_light = mc.base_models[1]
 
-    hkl_all, Fobs_dark_mt, sig_Fobs_dark_mt, _ = data_dark()
-    _, Fobs_light_mt, sig_Fobs_light_mt, _ = data_light()
+    hkl_all = data_dark.hkl
+    Fobs_dark_full, sig_dark_full = data_dark.get_corrected_data()
+    Fobs_light_full, sig_light_full = data_light.get_corrected_data()
 
-    mask = Fobs_dark_mt.get_mask() & Fobs_light_mt.get_mask()
+    mask = data_dark.masks().to(torch.bool) & data_light.masks().to(torch.bool)
     hkl = hkl_all[mask]
-    Fobs_dark_vals = Fobs_dark_mt.get_data()[mask]
-    Fobs_light_vals = Fobs_light_mt.get_data()[mask]
-    sig_dark_vals = sig_Fobs_dark_mt.get_data()[mask]
-    sig_light_vals = sig_Fobs_light_mt.get_data()[mask]
+    Fobs_dark_vals = Fobs_dark_full[mask]
+    Fobs_light_vals = Fobs_light_full[mask]
+    sig_dark_vals = sig_dark_full[mask]
+    sig_light_vals = sig_light_full[mask]
     rfree_flags_masked = (
         data_light.rfree_flags[mask] if data_light.rfree_flags is not None else None
     )
@@ -918,7 +921,7 @@ Examples:
 
             # Reflection counts
             with torch.no_grad():
-                _, _, _, rfree_flags = data()
+                rfree_flags = data.rfree_flags
                 if rfree_flags is not None:
                     rfree_bool = rfree_flags.bool()
                     valid_mask = data.masks().to(torch.bool)

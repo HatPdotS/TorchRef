@@ -13,7 +13,9 @@ import torch
 from torchref.config import dtypes
 
 
-def _estimate_batch_size(n_refl: int, n_atoms: int, n_ops: int, max_memory_gb: float) -> int:
+def _estimate_batch_size(
+    n_refl: int, n_atoms: int, n_ops: int, max_memory_gb: float
+) -> int:
     """
     Estimate optimal batch size based on memory constraints.
 
@@ -33,7 +35,13 @@ def _estimate_batch_size(n_refl: int, n_atoms: int, n_ops: int, max_memory_gb: f
 
 
 def iso_structure_factor_torched(
-    hkl, s, xyz_fractional, occ, scattering_factors, adp, spacegroup,
+    hkl,
+    s,
+    xyz_fractional,
+    occ,
+    scattering_factors,
+    adp,
+    spacegroup,
     max_memory_gb: Optional[float] = None,
     A: Optional[torch.Tensor] = None,
     B_coeff: Optional[torch.Tensor] = None,
@@ -90,12 +98,22 @@ def iso_structure_factor_torched(
         batch_size = _estimate_batch_size(n_refl, n_atoms, n_ops, max_memory_gb)
         if batch_size < n_refl:
             return _iso_sf_batched(
-                hkl, s, xyz_flat, fractional_shape, occ, scattering_factors,
-                adp_row, batch_size, A, B_coeff
+                hkl,
+                s,
+                xyz_flat,
+                fractional_shape,
+                occ,
+                scattering_factors,
+                adp_row,
+                batch_size,
+                A,
+                B_coeff,
             )
-        # Batching not needed but scattering_factors may be None - compute them
-        if scattering_factors is None and A is not None and B_coeff is not None:
-            scattering_factors = _compute_scattering_factors_batch(s, A, B_coeff)
+
+    # No batching: ensure scattering_factors are available. They may be None
+    # regardless of whether max_memory_gb was given, so compute from A/B here.
+    if scattering_factors is None and A is not None and B_coeff is not None:
+        scattering_factors = _compute_scattering_factors_batch(s, A, B_coeff)
 
     # No batching - compute all at once
     dot_product = torch.matmul(hkl.to(dtypes.float), xyz_flat).reshape(
@@ -116,8 +134,16 @@ from torchref.base.direct_summation import (
 
 
 def _iso_sf_batched(
-    hkl, s, xyz_flat, fractional_shape, occ, scattering_factors, adp_row, batch_size,
-    A=None, B_coeff=None
+    hkl,
+    s,
+    xyz_flat,
+    fractional_shape,
+    occ,
+    scattering_factors,
+    adp_row,
+    batch_size,
+    A=None,
+    B_coeff=None,
 ):
     """
     Compute isotropic structure factors in batches over reflections.

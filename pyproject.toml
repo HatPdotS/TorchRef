@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchref"
-version = "0.5.3"
+version = "0.6.0-dev"
 description = "Pytorch based crystallographic refinement"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,7 +37,6 @@ dependencies = [
 "torchref.difference-refine" = "torchref.cli.collection_difference_refine:main"
 "torchref.mtz2map" = "torchref.cli.mtz2map:main"
 "torchref.validate-ded" = "torchref.cli.validate_ded:main"
-"torchref.refine-hyper" = "torchref.cli.refine_everything_hyperparameters:main"
 "torchref.phased-difference-map" = "torchref.cli.phased_difference_map:main"
 "torchref.add-metadata" = "torchref.cli.add_metadata:main"
 "torchref.strip-altlocs" = "torchref.cli.strip_altlocs:main"

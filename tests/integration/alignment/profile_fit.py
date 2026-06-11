@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from torchref.alignment.ball_search import rotation_matrix_from_edmonds_euler
+from torchref.experimental.alignment.frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
 from torchref.symmetry import SpaceGroup
@@ -52,8 +52,8 @@ def _stage(name: str):
 
 def _patch_for_timing():
     """Wrap key fit_to_data stages so we get an inline breakdown."""
-    from torchref.alignment import ball_search, ml_rotation, translation
-    from torchref.alignment import lattman_love, rigid_body
+    from torchref.experimental.alignment import ml_rotation, translation
+    from torchref.experimental.alignment import lattman_love, rigid_body
     from torchref import scaling
 
     originals = {}
@@ -68,14 +68,12 @@ def _patch_for_timing():
 
         setattr(module, attr, wrapper)
 
-    wrap(ball_search, "ball_rotation_search", "ball_rotation_search")
-    wrap(ml_rotation, "sim_mlrf_rescore", "sim_mlrf_rescore")
+    wrap(ml_rotation, "m_letf1_rescore", "m_letf1_rescore")
     wrap(translation, "amplitude_translation_search", "amplitude_translation_search")
     wrap(translation, "local_translation_refine", "local_translation_refine")
     wrap(translation, "precompute_G_for_rotation", "precompute_G_for_rotation")
     wrap(lattman_love, "LattmanLoveInterpolator", "LL_interp_build")
     wrap(rigid_body, "RigidBodyRefinement", "RigidBodyRefinement_init")
-    # Scaler is heavy; track its calls
     return originals
 
 

@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import torch
 
-from torchref.alignment.translation import amplitude_translation_search
+from torchref.experimental.alignment.translation import amplitude_translation_search
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
 from torchref.symmetry import SpaceGroup

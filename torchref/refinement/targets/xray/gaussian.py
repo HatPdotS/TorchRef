@@ -35,5 +35,5 @@ class GaussianXrayTarget(XrayTarget):
         torch.Tensor
             Mean NLL loss value.
         """
-        F_obs, F_calc, sigma, _, mask = self.get_data(fcalc=fcalc)
-        return gaussian_xray_loss_math(F_obs, F_calc, sigma, mask)
+        F_obs, F_calc, sigma, _, _ = self.get_data(fcalc=fcalc)
+        return gaussian_xray_loss_math(F_obs, F_calc, sigma)

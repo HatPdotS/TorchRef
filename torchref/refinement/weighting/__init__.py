@@ -1,29 +1,15 @@
-"""
-Weighting schemes for loss component aggregation.
+"""Weighting schemes for loss-component aggregation.
 
-This module provides weighting schemes that adjust the relative
-importance of different loss components during refinement.
-
-All weighting schemes inherit from BaseWeighting and receive data
-through LossState rather than direct refinement references.
+A weighting scheme inherits :class:`BaseWeighting` and returns a
+``{component: weight}`` dict from a ``LossState`` (it does not mutate the state).
+Only the **static** scheme is provided — :class:`ManualWeighting`, which returns
+a fixed set of weights and is the canonical home for the default base weights
+(:data:`torchref.refinement.base_refinement.DEFAULT_GROUP_WEIGHTS`). The adaptive
+policy/random/ES schemes from the pre-Springclean package were removed and are
+not reinstated.
 """
 
 from .base_weighting import BaseWeighting
-from .component_weighting import (
-    ComponentWeighting,
-    ManualWeighting,
-    OverfittingWeighting,
-    ResolutionWeighting,
-    WeightingScheme,
-)
+from .static_weighting import ManualWeighting, WeightingScheme
 
-__all__ = [
-    # Base weighting class
-    "BaseWeighting",
-    "WeightingScheme",  # Alias for backward compatibility
-    # Weighting schemes
-    "ResolutionWeighting",
-    "OverfittingWeighting",
-    "ManualWeighting",
-    "ComponentWeighting",
-]
+__all__ = ["BaseWeighting", "WeightingScheme", "ManualWeighting"]

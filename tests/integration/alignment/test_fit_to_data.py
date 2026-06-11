@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from torchref.alignment.ball_search import rotation_angular_distance_deg
+from torchref.experimental.alignment.frf.rotation_utils import rotation_angular_distance_deg
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
 from torchref.symmetry import SpaceGroup

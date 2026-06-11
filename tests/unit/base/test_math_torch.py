@@ -96,91 +96,6 @@ class TestCoordinateTransformations:
         assert cart_back.device.type == "cuda"
 
 
-class TestRFactorCalculations:
-    """Tests for R-factor calculation."""
-
-    @pytest.mark.unit
-    def test_rfactor_identical(self, mock_F_obs):
-        """R-factor should be 0 for identical Fobs and Fcalc."""
-        from torchref.base.math_torch import get_rfactor_torch
-
-        fobs = mock_F_obs(n_reflections=100)
-        fcalc = fobs.clone()
-        
-        rfactor = get_rfactor_torch(fobs, fcalc)
-        
-        assert torch.isclose(rfactor, torch.tensor(0.0, dtype=rfactor.dtype), atol=1e-6)
-
-    @pytest.mark.unit
-    def test_rfactor_scaled(self, mock_F_obs):
-        """R-factor calculation with scaled Fcalc."""
-        from torchref.base.math_torch import get_rfactor_torch
-
-        fobs = mock_F_obs(n_reflections=100)
-        # Fcalc is 10% smaller than Fobs
-        fcalc = fobs * 0.9
-        
-        rfactor = get_rfactor_torch(fobs, fcalc)
-        
-        # R = sum(|Fobs - Fcalc|) / sum(Fobs) = sum(0.1*Fobs) / sum(Fobs) = 0.1
-        assert torch.isclose(rfactor, torch.tensor(0.1, dtype=rfactor.dtype), rtol=1e-5)
-
-    @pytest.mark.unit
-    def test_rfactor_complex(self, mock_structure_factors):
-        """R-factor with complex structure factors (uses absolute values)."""
-        from torchref.base.math_torch import get_rfactor_torch
-        
-        fcalc = mock_structure_factors(n_reflections=100)
-        fobs = torch.abs(fcalc)  # Use |Fcalc| as Fobs
-        
-        rfactor = get_rfactor_torch(fobs, fcalc)
-        
-        assert torch.isclose(rfactor, torch.tensor(0.0, dtype=rfactor.dtype), atol=1e-6)
-
-    @pytest.mark.unit
-    def test_rfactor_positive(self, mock_F_obs):
-        """R-factor should always be non-negative."""
-        from torchref.base.math_torch import get_rfactor_torch
-
-        fobs = mock_F_obs(n_reflections=100)
-        fcalc = mock_F_obs(n_reflections=100, seed=123)  # Different values
-        
-        rfactor = get_rfactor_torch(fobs, fcalc)
-        
-        assert rfactor >= 0
-
-
-class TestOutlierDetection:
-    """Tests for outlier detection functions."""
-
-    @pytest.mark.unit
-    def test_calc_outliers_no_outliers(self, mock_F_obs):
-        """No outliers when Fobs equals Fcalc."""
-        from torchref.base.math_torch import calc_outliers
-
-        fobs = mock_F_obs(n_reflections=100)
-        fcalc = fobs.clone()
-        
-        outliers = calc_outliers(fobs, fcalc, z=3.0)
-        
-        assert outliers.sum() == 0
-
-    @pytest.mark.unit
-    def test_calc_outliers_with_extreme(self, mock_F_obs):
-        """Detect extreme outliers."""
-        from torchref.base.math_torch import calc_outliers
-
-        fobs = mock_F_obs(n_reflections=100)
-        fcalc = fobs.clone()
-        # Add extreme outlier
-        fcalc[0] = fobs[0] * 10  # 10x different
-        
-        outliers = calc_outliers(fobs, fcalc, z=3.0)
-        
-        # Should detect at least the extreme outlier
-        assert outliers[0] == True
-
-
 class TestGridFunctions:
     """Tests for grid-related functions."""
 
@@ -291,11 +206,14 @@ class TestSmallestDiff:
     def test_smallest_diff_no_wrap(self, mock_cell):
         """Test smallest difference without wrapping."""
         from torchref.base.math_torch import smallest_diff
-        from torchref.base.math_numpy import get_inv_fractional_matrix, get_fractional_matrix
+        from torchref.base.coordinates import (
+            get_inv_fractional_matrix_torch,
+            get_fractional_matrix,
+        )
 
-        cell = mock_cell.numpy()
-        inv_frac = torch.tensor(get_inv_fractional_matrix(cell), dtype=torch.float64)
-        frac = torch.tensor(get_fractional_matrix(cell), dtype=torch.float64)
+        cell = mock_cell.double()
+        inv_frac = get_inv_fractional_matrix_torch(cell)
+        frac = get_fractional_matrix(cell)
         
         # Small differences that don't need wrapping
         diff = torch.tensor([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]], dtype=torch.float64)

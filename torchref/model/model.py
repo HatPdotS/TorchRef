@@ -18,11 +18,11 @@ import gemmi
 import torch
 import torch.nn as nn
 
-
+from torchref.base import math_torch
 from torchref.config import get_default_device, get_float_dtype
 from torchref.io import cif, pdb
-from torchref.base import math_torch
 from torchref.model.parameter_wrappers import (
+    CholeskyMixedTensor,
     MixedTensor,
     OccupancyTensor,
     PositiveMixedTensor,
@@ -32,16 +32,36 @@ from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.utils import sanitize_pdb_dataframe
 
-
 # Standard 3-letter to 1-letter amino acid code mapping
 _THREE_TO_ONE = {
-    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
-    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
-    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
-    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
-    "SEC": "U", "PYL": "O",
+    "ALA": "A",
+    "ARG": "R",
+    "ASN": "N",
+    "ASP": "D",
+    "CYS": "C",
+    "GLN": "Q",
+    "GLU": "E",
+    "GLY": "G",
+    "HIS": "H",
+    "ILE": "I",
+    "LEU": "L",
+    "LYS": "K",
+    "MET": "M",
+    "PHE": "F",
+    "PRO": "P",
+    "SER": "S",
+    "THR": "T",
+    "TRP": "W",
+    "TYR": "Y",
+    "VAL": "V",
+    "SEC": "U",
+    "PYL": "O",
     # Common modified residues
-    "MSE": "M", "CSE": "C", "SEP": "S", "TPO": "T", "PTR": "Y",
+    "MSE": "M",
+    "CSE": "C",
+    "SEP": "S",
+    "TPO": "T",
+    "PTR": "Y",
 }
 
 
@@ -101,9 +121,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def __init__(
         self,
-        dtype_float=get_float_dtype(),
+        dtype_float=None,
         verbose=1,
-        device=get_default_device(),
+        device=None,
         strip_H: bool = True,
     ):
         """
@@ -124,6 +144,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Whether to strip hydrogen atoms when loading. Default is True.
         """
         super().__init__()
+        # Resolve dtype/device at call time (not import time) so a runtime
+        # ``dtypes.float`` / ``device.current`` change is honored.
+        if dtype_float is None:
+            dtype_float = get_float_dtype()
+        if device is None:
+            device = get_default_device()
         # Configuration
         self.dtype_float = dtype_float
         self.verbose = verbose
@@ -392,67 +418,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             element_to_z.get(elem.strip().capitalize(), 0)
             for elem in self.pdb["element"]
         ]
-        self.register_buffer("_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device))
+        self.register_buffer(
+            "_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device)
+        )
         return self._Z
 
     # =========================================================================
     # Scattering Factor Parametrization
     # =========================================================================
-
-    def get_P1_parameters_iso(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Get model parameters transformed to P1 space for optimization.
-
-        This is useful for optimizers that do not handle symmetry directly or MD.
-
-        Returns
-        -------
-        xyz_p1 : torch.Tensor
-            Fractional coordinates expanded to P1 space.
-        adp_p1 : torch.Tensor
-            Isotropic ADPs expanded to P1 space.
-        occupancy_p1 : torch.Tensor
-            Occupancies expanded to P1 space.
-        A : torch.Tensor
-            Scattering factor A coefficients expanded to P1 space.
-        B : torch.Tensor
-            Scattering factor B coefficients expanded to P1 space.
-        """
-        Nops = self.spacegroup.n_ops
-        xyz_initial = self.xyz()
-        xyz_fractional = self.cell.cartesian_to_fractional(xyz_initial)
-        xyz_p1 = self.spacegroup.expand_coords_to_P1(xyz_fractional)
-        adp_p1 = self.adp().expand(Nops, -1).reshape(-1)
-        occupancy_p1 = self.occupancy().expand(Nops, -1).reshape(-1)
-        A = self._A.expand(Nops, -1).reshape(-1, 5)
-        B = self._B.expand(Nops, -1).reshape(-1, 5)
-        return xyz_p1, adp_p1, occupancy_p1, A, B
-
-    def get_MD_parameters(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Get model parameters prepared for molecular dynamics simulation.
-
-        Returns all P1-expanded parameters plus atomic numbers for MD engines.
-
-        Returns
-        -------
-        xyz_p1 : torch.Tensor
-            Fractional coordinates expanded to P1 space.
-        adp_p1 : torch.Tensor
-            Isotropic ADPs expanded to P1 space.
-        occupancy_p1 : torch.Tensor
-            Occupancies expanded to P1 space.
-        A : torch.Tensor
-            Scattering factor A coefficients expanded to P1 space.
-        B : torch.Tensor
-            Scattering factor B coefficients expanded to P1 space.
-        Z_p1 : torch.Tensor
-            Atomic numbers expanded to P1 space.
-        """
-        xyz_p1, adp_p1, occupancy_p1, A, B = self.get_P1_parameters_iso()
-        Nops = self.spacegroup.n_ops
-        Z_p1 = self.Z.expand(Nops, -1).reshape(-1)
-        return xyz_p1, adp_p1, occupancy_p1, A, B, Z_p1
 
     def _build_parametrization(self):
         """
@@ -699,9 +672,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Register aniso_flag buffer (crystallographic matrices are delegated to Cell)
         self.register_buffer(
-            "aniso_flag", torch.tensor(
+            "aniso_flag",
+            torch.tensor(
                 self.pdb["anisou_flag"].values, dtype=torch.bool, device=self.device
-            )
+            ),
         )
         # Pre-compute integer indices for SF calculation (respects exclude_H_from_sf)
         self._rebuild_sf_indices()
@@ -717,7 +691,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             name="adp",
             device=self.device,
         )
-        self.u = MixedTensor(
+        # Cholesky parametrization keeps the anisotropic U positive-definite by
+        # construction (U = L Lᵀ), so refinement can't drive it indefinite and
+        # blow up the structure-factor FFT. Anisotropic analogue of the
+        # PositiveMixedTensor used for the isotropic B above.
+        self.u = CholeskyMixedTensor(
             torch.tensor(
                 self.pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
                 dtype=self.dtype_float,
@@ -809,9 +787,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         for chain in atom_df["chainid"].unique():
             chain_df = atom_df[atom_df["chainid"] == chain]
-            residues = (
-                chain_df.drop_duplicates(subset=["resseq", "icode"])
-                .sort_values("resseq")
+            residues = chain_df.drop_duplicates(subset=["resseq", "icode"]).sort_values(
+                "resseq"
             )
             resseqs = residues["resseq"].values
             resnames = residues["resname"].values
@@ -849,9 +826,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         for chain in atom_df["chainid"].unique():
             chain_df = atom_df[atom_df["chainid"] == chain]
-            residues = (
-                chain_df.drop_duplicates(subset=["resseq", "icode"])
-                .sort_values("resseq")
+            residues = chain_df.drop_duplicates(subset=["resseq", "icode"]).sort_values(
+                "resseq"
             )
             resnames = [str(r).strip() for r in residues["resname"].values]
             result.append((str(chain), resnames))
@@ -1017,8 +993,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Van der Waals radii for each atom with shape (n_atoms,).
         """
         import os
-        from torchref import PATH_TORCHREF_DATA
+
         import pandas as pd
+
+        from torchref import PATH_TORCHREF_DATA
 
         if hasattr(self, "vdw_radii"):
             return self.vdw_radii
@@ -1710,14 +1688,17 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         >>> model_with_h = model_no_h.generate_hydrogens()
         >>> print(model_with_h.Z.shape)   # more atoms than model_no_h
         """
-        import gemmi
         import os
         import tempfile
+
+        import gemmi
+
         from torchref import PATH_TORCHREF_DATA
 
         if mon_lib_path is None:
             # Search candidate paths in priority order
             import os as _os
+
             candidates = [
                 # CCP4 standard environment variable
                 _os.environ.get("CLIBD_MON", ""),
@@ -1747,8 +1728,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             tmp_with_h = f.name
 
         try:
-            from torchref.utils.utils import sanitize_pdb_dataframe
             from torchref.io import pdb as io_pdb
+            from torchref.utils.utils import sanitize_pdb_dataframe
 
             pdb_out = sanitize_pdb_dataframe(self.pdb.copy())
             pdb_out.attrs["spacegroup"] = (
@@ -1774,9 +1755,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                         break
 
             # Place hydrogens
-            gemmi.prepare_topology(
-                st, monlib, h_change=gemmi.HydrogenChange.ReAdd
-            )
+            gemmi.prepare_topology(st, monlib, h_change=gemmi.HydrogenChange.ReAdd)
 
             # Write structure with hydrogens
             st.write_pdb(tmp_with_h)
@@ -1805,8 +1784,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         sh = self.strip_H if strip_H is None else strip_H
         ctor_kw = dict(
-            dtype_float=self.dtype_float, verbose=0,
-            device=self.device, strip_H=sh,
+            dtype_float=self.dtype_float,
+            verbose=0,
+            device=self.device,
+            strip_H=sh,
         )
         sig = inspect.signature(self.__class__.__init__)
         for pname, param in sig.parameters.items():
@@ -1821,9 +1802,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         new_model = self.__class__(**ctor_kw)
         sg_str = self.spacegroup.xhm if self.spacegroup else "P 1"
-        new_model.load(
-            lambda: (df, self.pdb.attrs.get("cell"), sg_str)
-        )
+        new_model.load(lambda: (df, self.pdb.attrs.get("cell"), sg_str))
         if hasattr(new_model, "setup_grid"):
             new_model.setup_grid()
         # Propagate CIF restraint paths so restraints are rebuilt correctly
@@ -1900,8 +1879,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     # Module-level cache for CIF monomer data (shared across calls)
     _hydrogenate_cif_cache = {}
 
-    def hydrogenate(self, verbose: int = 0, optimize: bool = False,
-                    lbfgs_steps: int = 3, max_iter: int = 20) -> "Model":
+    def hydrogenate(
+        self,
+        verbose: int = 0,
+        optimize: bool = False,
+        lbfgs_steps: int = 3,
+        max_iter: int = 20,
+    ) -> "Model":
         """
         Return a new model with hydrogen atoms placed via Kabsch alignment.
 
@@ -1954,10 +1938,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 continue
             try:
                 from torchref.io.cif_readers import RestraintCIFReader
+
                 reader = RestraintCIFReader(str(cif_path))
                 all_data = reader.get_all_restraints()
-                comp_data = (all_data.get(rn_str)
-                             or all_data.get(rn_str.upper()))
+                comp_data = all_data.get(rn_str) or all_data.get(rn_str.upper())
                 if comp_data is None:
                     cache[rn_str] = None
                     continue
@@ -1978,7 +1962,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
             # H→parent map + ideal bond lengths + heavy adjacency
             parent_map = {}  # h_name -> parent_name
-            ideal_bl = {}    # h_name -> ideal bond length (Angstrom)
+            ideal_bl = {}  # h_name -> ideal bond length (Angstrom)
             heavy_neighbor_map = {}  # heavy_name -> [bonded heavy names]
             if bond_df is not None and not bond_df.empty:
                 a1s = bond_df["atom1"].astype(str).str.strip().values
@@ -1997,23 +1981,36 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                             ideal_bl[b2] = float(vals[i])
                     # Heavy-atom adjacency for local Kabsch
                     i1, i2 = id_to_idx.get(b1), id_to_idx.get(b2)
-                    if (i1 is not None and i2 is not None
-                            and not is_h[i1] and not is_h[i2]):
+                    if (
+                        i1 is not None
+                        and i2 is not None
+                        and not is_h[i1]
+                        and not is_h[i2]
+                    ):
                         heavy_neighbor_map.setdefault(b1, []).append(b2)
                         heavy_neighbor_map.setdefault(b2, []).append(b1)
 
             cache[rn_str] = {
-                "ids": ids, "elems": elems, "coords": coords,
-                "is_h": is_h, "id_to_idx": id_to_idx,
-                "heavy_names": ids[~is_h], "heavy_coords": coords[~is_h],
-                "h_names": ids[is_h], "h_coords": coords[is_h],
-                "parent_map": parent_map, "ideal_bl": ideal_bl,
+                "ids": ids,
+                "elems": elems,
+                "coords": coords,
+                "is_h": is_h,
+                "id_to_idx": id_to_idx,
+                "heavy_names": ids[~is_h],
+                "heavy_coords": coords[~is_h],
+                "h_names": ids[is_h],
+                "h_coords": coords[is_h],
+                "parent_map": parent_map,
+                "ideal_bl": ideal_bl,
                 "heavy_neighbor_map": heavy_neighbor_map,
             }
 
         # Filter to available residue types
-        available = {rn: cache[rn] for rn in self.pdb["resname"].unique()
-                     if str(rn).strip() in cache and cache.get(str(rn).strip()) is not None}
+        available = {
+            rn: cache[rn]
+            for rn in self.pdb["resname"].unique()
+            if str(rn).strip() in cache and cache.get(str(rn).strip()) is not None
+        }
         if not available:
             if verbose > 0:
                 print("No monomer library data found; returning copy.")
@@ -2048,8 +2045,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Heavy-atom mask for distance-based neighbor detection
         model_elem_arr = self.pdb["element"].astype(str).str.strip().values
-        model_heavy_mask_full = np.array(
-            [e.upper() != "H" for e in model_elem_arr])
+        model_heavy_mask_full = np.array([e.upper() != "H" for e in model_elem_arr])
 
         for gi in range(len(group_starts)):
             s, e = group_starts[gi], group_ends[gi]
@@ -2073,7 +2069,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             # Altloc handling
             altlocs_in_res = set(model_altloc_arr[s:e])
             altloc_list = (
-                [""] if altlocs_in_res <= {""}
+                [""]
+                if altlocs_in_res <= {""}
                 else sorted(a for a in altlocs_in_res if a != "")
             )
 
@@ -2108,8 +2105,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 if n_common >= 3:
                     P = info["heavy_coords"][common_mask]
                     Q = np.array(
-                        [conf_xyz[name_to_idx[n]]
-                         for n in info["heavy_names"][common_mask]],
+                        [
+                            conf_xyz[name_to_idx[n]]
+                            for n in info["heavy_names"][common_mask]
+                        ],
                         dtype=np.float64,
                     )
                     cp, cq = P.mean(0), Q.mean(0)
@@ -2140,10 +2139,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                     # Heavy neighbors in the model (distance-based,
                     # includes cross-residue bonds like C-N peptide)
                     dvec = model_xyz_arr - model_xyz_arr[parent_full]
-                    dists_sq = (dvec ** 2).sum(1)
+                    dists_sq = (dvec**2).sum(1)
                     bonded = np.where(
-                        (dists_sq > 0.09) & (dists_sq < 3.61)
-                        & model_heavy_mask_full
+                        (dists_sq > 0.09) & (dists_sq < 3.61) & model_heavy_mask_full
                     )[0]
                     bonded = bonded[bonded != parent_full]
                     n_model_heavy = len(bonded)
@@ -2162,20 +2160,17 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                         for nb2 in hnm.get(nb, []):
                             local_set.add(nb2)
                     local_names = [
-                        n for n in local_set
-                        if n in name_to_idx and n in id2i
+                        n for n in local_set if n in name_to_idx and n in id2i
                     ]
 
                     if len(local_names) >= 3:
-                        Pl = np.array([all_coords[id2i[n]]
-                                       for n in local_names])
-                        Ql = np.array([conf_xyz[name_to_idx[n]]
-                                       for n in local_names])
+                        Pl = np.array([all_coords[id2i[n]] for n in local_names])
+                        Ql = np.array([conf_xyz[name_to_idx[n]] for n in local_names])
                         cpl, cql = Pl.mean(0), Ql.mean(0)
                         Hl = (Pl - cpl).T @ (Ql - cql)
                         Ul, _, Vtl = np.linalg.svd(Hl)
                         dl = np.linalg.det(Vtl.T @ Ul.T)
-                        sl = np.diag([1., 1., 1. if dl > 0 else -1.])
+                        sl = np.diag([1.0, 1.0, 1.0 if dl > 0 else -1.0])
                         R_use = Vtl.T @ sl @ Ul.T
                         t_use = cql - R_use @ cpl
                     elif R_global is not None:
@@ -2218,19 +2213,16 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                                 d_rot = d_rot * (bl / dn)
                             else:
                                 d_rot = np.array([bl, 0.0, 0.0])
-                            valid_h.append(
-                                (h_name, parent_pos + d_rot, bl))
+                            valid_h.append((h_name, parent_pos + d_rot, bl))
 
                     # Limit to expected count (removes terminal H)
                     if len(valid_h) > expected_h:
-                        valid_h.sort(
-                            key=lambda x: x[0])  # alphabetical
+                        valid_h.sort(key=lambda x: x[0])  # alphabetical
                         valid_h = valid_h[:expected_h]
 
                     # --- Step 2: geometric re-placement ---
                     if n_model_heavy >= 2:
-                        nvecs = (model_xyz_arr[bonded]
-                                 - model_xyz_arr[parent_full])
+                        nvecs = model_xyz_arr[bonded] - model_xyz_arr[parent_full]
                         svec = nvecs.sum(0)
                         snorm = np.linalg.norm(svec)
 
@@ -2240,9 +2232,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                             h_pos = parent_pos - bl * svec / snorm
                             valid_h[0] = (h_nm, h_pos, bl)
 
-                        elif (len(valid_h) == 2
-                              and n_model_heavy == 2
-                              and snorm > 1e-6):
+                        elif len(valid_h) == 2 and n_model_heavy == 2 and snorm > 1e-6:
                             # CH2-like: sp3 tetrahedral placement
                             v1, v2 = nvecs[0], nvecs[1]
                             base = -svec / snorm
@@ -2253,8 +2243,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                                 n1 = np.linalg.norm(v1)
                                 n2 = np.linalg.norm(v2)
                                 c12 = np.dot(v1, v2) / (n1 * n2)
-                                denom = 3.0 * np.sqrt(
-                                    max(1e-12, (1 + c12) / 2))
+                                denom = 3.0 * np.sqrt(max(1e-12, (1 + c12) / 2))
                                 a = min(1.0, 1.0 / denom)
                                 b = np.sqrt(max(0, 1 - a * a))
                                 d_up = a * base + b * perp
@@ -2265,31 +2254,27 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                                 g_up = parent_pos + bl0 * d_up
                                 g_dn = parent_pos + bl1 * d_dn
                                 if pos0 is not None and pos1 is not None:
-                                    d_same = (
-                                        np.linalg.norm(pos0 - g_up)
-                                        + np.linalg.norm(pos1 - g_dn))
-                                    d_swap = (
-                                        np.linalg.norm(pos0 - g_dn)
-                                        + np.linalg.norm(pos1 - g_up))
+                                    d_same = np.linalg.norm(
+                                        pos0 - g_up
+                                    ) + np.linalg.norm(pos1 - g_dn)
+                                    d_swap = np.linalg.norm(
+                                        pos0 - g_dn
+                                    ) + np.linalg.norm(pos1 - g_up)
                                     if d_swap < d_same:
                                         g_up, g_dn = g_dn, g_up
-                                valid_h[0] = (valid_h[0][0], g_up,
-                                              bl0)
-                                valid_h[1] = (valid_h[1][0], g_dn,
-                                              bl1)
+                                valid_h[0] = (valid_h[0][0], g_up, bl0)
+                                valid_h[1] = (valid_h[1][0], g_dn, bl1)
 
                     elif n_model_heavy == 1:
                         # One heavy neighbor: place H opposite to it
-                        nvec = (model_xyz_arr[bonded[0]]
-                                - model_xyz_arr[parent_full])
+                        nvec = model_xyz_arr[bonded[0]] - model_xyz_arr[parent_full]
                         nn = np.linalg.norm(nvec)
                         if nn > 1e-6:
                             d_opp = -nvec / nn
                             for vi in range(len(valid_h)):
                                 if valid_h[vi][1] is None:
                                     nm, _, bl = valid_h[vi]
-                                    valid_h[vi] = (
-                                        nm, parent_pos + bl * d_opp, bl)
+                                    valid_h[vi] = (nm, parent_pos + bl * d_opp, bl)
 
                     # Fill remaining None positions with random dirs
                     for vi in range(len(valid_h)):
@@ -2307,8 +2292,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                         for vj in range(len(valid_h)):
                             if vj == vi or valid_h[vj][1] is None:
                                 continue
-                            sep = (parent_pos + bl * d
-                                   - valid_h[vj][1])
+                            sep = parent_pos + bl * d - valid_h[vj][1]
                             if np.linalg.norm(sep) < 0.5 * bl:
                                 d = -d  # flip to other hemisphere
                                 break
@@ -2340,16 +2324,32 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             print(f"Placing {n_h_placed} hydrogen atoms...")
 
         # Build H DataFrame in one shot
-        h_df = pd.DataFrame({
-            "ATOM": h_atom_types, "serial": 0, "name": h_names_out,
-            "altloc": h_altlocs, "resname": h_resnames,
-            "chainid": h_chainids, "resseq": h_resseqs, "icode": h_icodes,
-            "x": h_x, "y": h_y, "z": h_z,
-            "occupancy": h_occ, "tempfactor": h_bfac,
-            "element": "H", "charge": 0, "anisou_flag": False,
-            "u11": 0.0, "u22": 0.0, "u33": 0.0,
-            "u12": 0.0, "u13": 0.0, "u23": 0.0,
-        })
+        h_df = pd.DataFrame(
+            {
+                "ATOM": h_atom_types,
+                "serial": 0,
+                "name": h_names_out,
+                "altloc": h_altlocs,
+                "resname": h_resnames,
+                "chainid": h_chainids,
+                "resseq": h_resseqs,
+                "icode": h_icodes,
+                "x": h_x,
+                "y": h_y,
+                "z": h_z,
+                "occupancy": h_occ,
+                "tempfactor": h_bfac,
+                "element": "H",
+                "charge": 0,
+                "anisou_flag": False,
+                "u11": 0.0,
+                "u22": 0.0,
+                "u33": 0.0,
+                "u12": 0.0,
+                "u13": 0.0,
+                "u23": 0.0,
+            }
+        )
         insert_after = np.array(h_insert_after)
 
         # Interleave: assign sort keys
@@ -2366,8 +2366,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             cumcount[i] = group_running[g]
             group_running[g] += 1
         sort_key[n_orig:] = (
-            insert_after + 0.5
-            + cumcount * (0.4 / np.maximum(counts[inv], 1))
+            insert_after + 0.5 + cumcount * (0.4 / np.maximum(counts[inv], 1))
         )
 
         augmented_df = pd.concat([self.pdb, h_df], ignore_index=True)
@@ -2377,8 +2376,19 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         augmented_df["serial"] = np.arange(1, len(augmented_df) + 1)
         augmented_df["index"] = np.arange(len(augmented_df))
 
-        for col in ("x", "y", "z", "occupancy", "tempfactor",
-                     "u11", "u22", "u33", "u12", "u13", "u23"):
+        for col in (
+            "x",
+            "y",
+            "z",
+            "occupancy",
+            "tempfactor",
+            "u11",
+            "u22",
+            "u33",
+            "u12",
+            "u13",
+            "u23",
+        ):
             augmented_df[col] = pd.to_numeric(
                 augmented_df[col], errors="coerce"
             ).astype(float)
@@ -2386,16 +2396,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         augmented_df["resseq"] = augmented_df["resseq"].astype(int)
         augmented_df["charge"] = augmented_df["charge"].fillna(0).astype(int)
         augmented_df["anisou_flag"] = augmented_df["anisou_flag"].astype(bool)
-        augmented_df[["altloc", "icode"]] = (
-            augmented_df[["altloc", "icode"]].fillna("")
-        )
+        augmented_df[["altloc", "icode"]] = augmented_df[["altloc", "icode"]].fillna("")
         augmented_df["element"] = (
             augmented_df["element"].astype(str).str.strip().str.capitalize()
         )
         augmented_df.attrs["cell"] = self.pdb.attrs.get("cell")
-        augmented_df.attrs["spacegroup"] = self.pdb.attrs.get(
-            "spacegroup", "P 1"
-        )
+        augmented_df.attrs["spacegroup"] = self.pdb.attrs.get("spacegroup", "P 1")
 
         new_model = self._new_model_from_df(augmented_df, strip_H=False)
 
@@ -2407,17 +2413,18 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if optimize:
             new_model.freeze_all()
             new_model.unfreeze_selection("element H", targets="xyz")
-            refinable_params = [
-                p for p in new_model.parameters() if p.numel() > 0
-            ]
+            refinable_params = [p for p in new_model.parameters() if p.numel() > 0]
             if refinable_params:
                 try:
                     from torchref.refinement.targets.combined import (
                         TotalGeometryTarget,
                     )
+
                     geom_target = TotalGeometryTarget(new_model, verbose=0)
-                    targets = {n: geom_target[n]
-                               for n in ("bond", "angle", "torsion", "chiral")}
+                    targets = {
+                        n: geom_target[n]
+                        for n in ("bond", "angle", "torsion", "chiral")
+                    }
 
                     def _geom_loss():
                         total = torch.tensor(0.0, device=self.device)
@@ -2436,8 +2443,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                                 m.reset_forward_cache()
 
                     opt = torch.optim.LBFGS(
-                        refinable_params, lr=0.1, max_iter=max_iter,
-                        history_size=100, line_search_fn="strong_wolfe",
+                        refinable_params,
+                        lr=0.1,
+                        max_iter=max_iter,
+                        history_size=100,
+                        line_search_fn="strong_wolfe",
                     )
                     best_loss = float("inf")
                     best_params = [p.data.clone() for p in refinable_params]
@@ -2449,8 +2459,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                             loss.backward()
                             for p in refinable_params:
                                 if p.grad is not None:
-                                    p.grad.nan_to_num_(
-                                        nan=0.0, posinf=0.0, neginf=0.0)
+                                    p.grad.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
                         return loss
 
                     for _ in range(lbfgs_steps):
@@ -2459,8 +2468,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                             cur = _geom_loss()
                         if torch.isfinite(cur) and cur.item() < best_loss:
                             best_loss = cur.item()
-                            best_params = [
-                                p.data.clone() for p in refinable_params]
+                            best_params = [p.data.clone() for p in refinable_params]
                     with torch.no_grad():
                         for p, bp in zip(refinable_params, best_params):
                             p.data.copy_(bp)
@@ -2478,146 +2486,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             print("  Hydrogenation complete.")
 
         return new_model
-
-    def adp_loss(self):
-        """
-        Compute the ADP regularization loss.
-
-        This loss encourages ADPs to have similar values across the
-        structure, helping to prevent overfitting during refinement.
-
-        Returns
-        -------
-        torch.Tensor
-            Scalar tensor representing the ADP loss.
-        """
-        adp_current = self.adp()
-        adp_mean = torch.mean(adp_current)
-        loss = torch.mean((adp_current - adp_mean) ** 2)
-        return loss
-
-    def adp_nll_loss(self, target_log_std: float = 0.2):
-        """
-        Compute negative log-likelihood of ADPs assuming Gaussian distribution in log-space.
-
-        This regularization penalizes ADPs that deviate from a target distribution
-        with a FIXED standard deviation (hyperparameter), avoiding circular dependency
-        on the current distribution's statistics.
-
-        The NLL for a Gaussian distribution in log-space is::
-
-            NLL = 0.5 * mean[(log_adp - mu)^2 / sigma^2 + log(2*pi*sigma^2)]
-
-        Where mu is the mean of log-space ADPs (computed from current data) and
-        sigma is the FIXED target standard deviation (hyperparameter).
-
-        Parameters
-        ----------
-        target_log_std : float, optional
-            Target standard deviation in log-space. Default is 0.2.
-            - 0.1 = very tight (ADPs within ~10% of mean)
-            - 0.2 = moderate spread (ADPs within ~20% of mean) [RECOMMENDED]
-            - 0.3 = looser spread (ADPs within ~30% of mean)
-
-        Returns
-        -------
-        torch.Tensor
-            Scalar tensor representing the NLL. Lower values indicate the distribution
-            is closer to the target Gaussian with fixed sigma.
-
-        Examples
-        --------
-        ::
-
-            # During refinement
-            structure_factor_loss = compute_structure_factor_loss()
-            nll_reg = model.adp_nll_loss(target_log_std=0.2)
-            total_loss = structure_factor_loss + 0.01 * nll_reg
-            total_loss.backward()
-
-        Notes
-        -----
-        Uses FIXED sigma (no circular dependency on current distribution).
-        Smaller target_log_std = stronger regularization (tighter distribution).
-        """
-        # Access the internal log-space values directly from the PositiveMixedTensor
-        # The parent MixedTensor.forward() returns log-space values before exp()
-        log_adp = super(PositiveMixedTensor, self.adp).forward()
-
-        # Compute mean in log-space (target center of distribution)
-        mu = torch.mean(log_adp).detach()
-
-        # Use FIXED target_log_std (not computed from data)
-        sigma = target_log_std
-
-        # Compute NLL for Gaussian distribution
-        # NLL = 0.5 * [(log_adp - μ)² / σ² + log(2πσ²)]
-        ln_2pi_sigma2 = torch.log(
-            torch.tensor(
-                2.0 * torch.pi * sigma**2, dtype=self.dtype_float, device=self.device
-            )
-        )
-
-        squared_deviations = (log_adp - mu) ** 2
-        nll_per_atom = 0.5 * (squared_deviations / (sigma**2) + ln_2pi_sigma2)
-
-        # Return mean NLL across all atoms
-        nll = torch.mean(nll_per_atom)
-
-        return nll
-
-    def adp_nll_loss_per_atom(self, target_log_std: float = 0.2):
-        """
-        Compute per-atom negative log-likelihood for ADPs in log-space.
-
-        Returns the NLL contribution for each individual atom, useful for
-        identifying outliers or applying atom-specific regularization weights.
-
-        The per-atom NLL is::
-
-            NLL_i = 0.5 * [(log_adp_i - mu)^2 / sigma^2 + log(2*pi*sigma^2)]
-
-        Parameters
-        ----------
-        target_log_std : float, optional
-            Fixed target standard deviation in log-space. Default is 0.2.
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (n_atoms,) with per-atom NLL values.
-            Higher values indicate atoms farther from the mean.
-
-        Examples
-        --------
-        ::
-
-            # Get per-atom NLL
-            atom_nll = model.adp_nll_loss_per_atom(target_log_std=0.2)
-            # Identify outlier atoms (high NLL)
-            threshold = atom_nll.mean() + 2 * atom_nll.std()
-            outliers = atom_nll > threshold
-        """
-        # Access the internal log-space values
-        log_adp = super(PositiveMixedTensor, self.adp).forward()
-
-        # Compute mean in log-space
-        mu = torch.mean(log_adp)
-
-        # Use FIXED target_log_std
-        sigma = target_log_std
-
-        # Compute per-atom NLL
-        ln_2pi_sigma2 = torch.log(
-            torch.tensor(
-                2.0 * torch.pi * sigma**2, dtype=self.dtype_float, device=self.device
-            )
-        )
-
-        squared_deviations = (log_adp - mu) ** 2
-        nll_per_atom = 0.5 * (squared_deviations / (sigma**2) + ln_2pi_sigma2)
-
-        return nll_per_atom
 
     def adp_kl_divergence_loss(self, target_log_std: float = 0.2):
         """
@@ -2662,7 +2530,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Compute statistics of actual distribution
         mu_data = torch.mean(log_adp).detach()  # Detached mean (adapts to data)
-        sigma_data = torch.std(log_adp)  # Current std (to be regularized)
+        # Clamp the std off zero. A degenerate (uniform) ADP distribution --
+        # e.g. right after resetting every B-factor to a constant -- has
+        # std(log_adp)=0, so log(sigma_data)=-inf makes KL=+inf. That silently
+        # kills the ADP refinement step (LBFGS rejects the non-finite loss, the
+        # B-factors stay uniform, and the divergence recurs every cycle).
+        sigma_data = torch.std(log_adp).clamp(min=1e-6)  # regularized std
 
         # Target distribution parameters
         mu_target = mu_data  # Same mean as data
@@ -2675,6 +2548,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # tensor from a host scalar each call (forbidden during CUDA
         # Graph capture).
         import math
+
         log_sigma_target = math.log(float(sigma_target))
         log_sigma_ratio = log_sigma_target - torch.log(sigma_data)
         variance_ratio = (sigma_data**2) / (2 * sigma_target**2)
@@ -2714,13 +2588,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.pdb.copy() if hasattr(self, "pdb") and self.pdb is not None else None
         )
         # Store Cell tensor data for serialization
-        state[prefix + "cell"] = (
-            self.cell.data.cpu() if self.cell is not None else None
-        )
+        state[prefix + "cell"] = self.cell.data.cpu() if self.cell is not None else None
         # Store spacegroup as string for serialization (gemmi.SpaceGroup is not picklable)
-        state[prefix + "spacegroup"] = (
-            self.spacegroup.xhm if self.spacegroup else None
-        )
+        state[prefix + "spacegroup"] = self.spacegroup.xhm if self.spacegroup else None
         state[prefix + "initialized"] = self.initialized
         state[prefix + "dtype_float"] = self.dtype_float
         state[prefix + "device"] = self.device
@@ -2768,9 +2638,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def create_from_state_dict(
         cls,
         state_dict: dict,
-        device: torch.device = get_default_device(),
+        device: torch.device = None,
         verbose: int = 1,
-        dtype_float: torch.dtype = get_float_dtype(),
+        dtype_float: torch.dtype = None,
     ) -> "Model":
         """
         Create a fully initialized Model from a state dictionary.
@@ -2794,6 +2664,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Model
             Fully initialized instance with restored state.
         """
+        # Resolve dtype/device at call time so the fallbacks below use the
+        # current config, not the import-time default.
+        if device is None:
+            device = get_default_device()
+        if dtype_float is None:
+            dtype_float = get_float_dtype()
         # Extract metadata (non-tensor data that we handle specially)
         pdb = state_dict.pop("pdb", None)
         cell_tensor = state_dict.pop("cell", None)
@@ -3258,9 +3134,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         return rotated
 
-    def translate(
-        self, translation: torch.Tensor, fractional: bool = False
-    ) -> "Model":
+    def translate(self, translation: torch.Tensor, fractional: bool = False) -> "Model":
         """
         Return a new Model with atomic coordinates translated by ``translation``.
 
@@ -3323,200 +3197,114 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         return self.xyz().mean(dim=0)
 
-    def use_internal_coordinates(
-        self,
-        n_aa_per_segment: int = 18,
-        junction_size: int = 3,
-        bond_cutoff: float = 2.0,
-        cif_dict: dict = None,
-        prefer_loops: bool = True,
-        requires_grad: bool = True,
-    ) -> "Model":
+    def use_rigid_xyz(self) -> "Model":
         """
-        Switch xyz to closed segmented internal coordinate parametrization.
+        Swap ``self.xyz`` for a per-chain :class:`RigidXYZTensor`.
 
-        Replaces the current xyz MixedTensor with a
-        ClosedSegmentedInternalCoordinateTensor that parametrizes atomic positions
-        using bond lengths, angles, torsion angles, and per-segment rigid body
-        parameters. Between segments, 3-residue junctions maintain chain continuity
-        via Newton-solved backbone torsions with IFT gradients.
+        Replaces the current
+        ``xyz`` container with one whose only refinable leaves are per-chain
+        ZYZ Euler angles and translations. Chains are auto-detected from
+        ``self.pdb["chainid"]``. The original container is stashed on
+        ``self._rigid_original_xyz_container`` so
+        :meth:`restore_xyz_from_rigid` can put it back (with
+        ``commit=False``) or bake the rigid coords into a fresh
+        ``MixedTensor`` (with ``commit=True``).
 
-        Parameters
-        ----------
-        n_aa_per_segment : int, optional
-            Number of amino acids per segment. Default is 18.
-        junction_size : int, optional
-            Number of residues per junction (slave DOFs). Default is 3.
-        bond_cutoff : float, optional
-            Distance cutoff for bond detection in Angstroms. Default is 2.0.
-            Only used when cif_dict is not provided.
-        cif_dict : dict, optional
-            CIF dictionary containing bond definitions per residue type.
-            If provided, bonds are determined from chemical definitions rather
-            than distances, which is more robust for structures with poor geometry.
-            Expected format: cif_dict[resname]['bonds'] DataFrame with 'atom1', 'atom2'.
-        prefer_loops : bool, optional
-            If True, slide junctions to prefer loop regions. Default is True.
-        requires_grad : bool, optional
-            Whether internal coordinate parameters should have gradients.
-            Default is True.
+        As a convenience, ``adp`` / ``u`` / ``occupancy`` are frozen — only
+        rigid-body parameters should refine. Call ``unfreeze(...)``
+        afterwards if you want to mix rigid-body and ADP refinement.
 
         Returns
         -------
         Model
             Self, for method chaining.
-
-        Examples
-        --------
-        ::
-
-            model = Model()
-            model.load_pdb('structure.pdb')
-            model.use_internal_coordinates(n_aa_per_segment=18)
-
-            # Now model.xyz() returns coordinates reconstructed from
-            # closed segmented internal coordinates
-
-            # Shake the structure using internal coordinates
-            new_xyz = model.xyz.shake(magnitude=0.1)
-
-            # Each segment has independent internal coordinates and
-            # rigid body parameters (position + orientation)
-            # Junctions maintain chain continuity between segments
-
-        Notes
-        -----
-        After calling this method, model.xyz will be a
-        ClosedSegmentedInternalCoordinateTensor instead of a MixedTensor. This provides:
-        - Shallow spanning trees within segments (depth ~10-30 vs ~1000)
-        - Independent segments that don't propagate changes to distant atoms
-        - Rigid body parameters (position + orientation) per segment
-        - Chain continuity via junction residues with Newton-solved torsions
-        - IFT-based exact gradients through the closure constraint
-        - forward() / __call__(): Reconstruct Cartesian coordinates
-        - shake(magnitude): Add noise to internal parameters
-        - Gradient flow through all internal coordinate parameters
         """
+        from torchref.model.rigid_xyz import RigidXYZTensor
+
         if not self.initialized:
             raise RuntimeError(
-                "Model must be initialized before switching to internal coordinates. "
+                "Model must be initialized before use_rigid_xyz(). "
                 "Load data first with load_pdb() or load_cif()."
             )
+        if isinstance(self.xyz, RigidXYZTensor):
+            return self
 
-        from torchref.model.segmented_internal_coordinates import (
-            SegmentedInternalCoordinateTensor
-        )
-
-        # Get current coordinates
-        current_xyz = self.xyz().detach()
-
-        # Create closed segmented internal coordinate tensor
-        self.xyz = SegmentedInternalCoordinateTensor(
-            current_xyz,
-            pdb=self.pdb,
-            n_aa_per_segment=n_aa_per_segment,
-            junction_size=junction_size,
-            bond_cutoff=bond_cutoff,
-            cif_dict=cif_dict,
-            prefer_loops=prefer_loops,
-            requires_grad=requires_grad,
+        with torch.no_grad():
+            current_xyz = self.xyz().detach().clone()
+        chain_ids = list(self.pdb["chainid"].values)
+        rigid_xyz = RigidXYZTensor(
+            original_xyz=current_xyz,
+            chain_ids=chain_ids,
             dtype=self.dtype_float,
             device=self.device,
         )
+
+        # Stash original container under a private attribute so
+        # restore_xyz_from_rigid() can put it back. Pop from _modules so the
+        # re-assignment below registers the new submodule cleanly.
+        self._rigid_original_xyz_container = self._modules.pop("xyz")
+        self.xyz = rigid_xyz
+
+        self.freeze("adp")
+        self.freeze("u")
+        self.freeze("occupancy")
+
+        if hasattr(self, "reset_cache"):
+            self.reset_cache()
 
         if self.verbose > 0:
-            print(f"Switched to internal coordinate parametrization: {self.xyz}")
-
+            print(
+                f"Switched to rigid-body parametrization: {rigid_xyz} "
+                f"({rigid_xyz.n_chains} chain(s))"
+            )
         return self
 
-    def use_internal_coordinates(
-        self,
-        n_aa_per_segment: int = 5,
-        bond_cutoff: float = 2.0,
-        cif_dict: dict = None,
-        requires_grad: bool = True,
-    ) -> "Model":
+    def restore_xyz_from_rigid(self, commit: bool = True) -> "Model":
         """
-        Switch xyz to segmented internal coordinate parametrization.
-
-        Replaces the current xyz MixedTensor with a SegmentedInternalCoordinateTensor
-        that parametrizes atomic positions using bond lengths, angles, torsion angles,
-        and per-segment rigid body parameters. The molecule is broken into independent
-        segments to avoid the "lever arm problem" where small torsion changes near
-        the root cause large displacements at distant atoms.
+        Inverse of :meth:`use_rigid_xyz`.
 
         Parameters
         ----------
-        n_aa_per_segment : int, optional
-            Number of amino acids per segment. Default is 5.
-            - Smaller values (1-2): More segments, shallower trees, less lever arm
-            - Larger values (5-10): Fewer segments, deeper trees, more lever arm
-        bond_cutoff : float, optional
-            Distance cutoff for bond detection in Angstroms. Default is 2.0.
-            Only used when cif_dict is not provided.
-        cif_dict : dict, optional
-            CIF dictionary containing bond definitions per residue type.
-            If provided, bonds are determined from chemical definitions rather
-            than distances, which is more robust for structures with poor geometry.
-            Expected format: cif_dict[resname]['bonds'] DataFrame with 'atom1', 'atom2'.
-        requires_grad : bool, optional
-            Whether internal coordinate parameters should have gradients.
-            Default is True.
+        commit : bool, optional
+            If ``True`` (default), bake the current rotated/translated
+            coordinates into a fresh :class:`MixedTensor` and install that
+            as ``self.xyz``. If ``False``, restore the original container
+            untouched (discarding the rigid transform).
 
         Returns
         -------
         Model
             Self, for method chaining.
-
-        Examples
-        --------
-        ::
-
-            model = Model()
-            model.load_pdb('structure.pdb')
-            model.use_internal_coordinates(n_aa_per_segment=3)
-
-            # Now model.xyz() returns coordinates reconstructed from
-            # segmented internal coordinates
-
-            # Shake the structure using internal coordinates
-            new_xyz = model.xyz.shake(magnitude=0.1)
-
-            # Each segment has independent internal coordinates and
-            # rigid body parameters (position + orientation)
-
-        Notes
-        -----
-        After calling this method, model.xyz will be a SegmentedInternalCoordinateTensor
-        instead of a MixedTensor. This provides:
-        - Shallow spanning trees within segments (depth ~10-30 vs ~1000)
-        - Independent segments that don't propagate changes to distant atoms
-        - Rigid body parameters (position + orientation) per segment
-        - forward() / __call__(): Reconstruct Cartesian coordinates
-        - shake(magnitude): Add noise to internal parameters
-        - Gradient flow through all internal coordinate parameters
         """
-        if not self.initialized:
-            raise RuntimeError(
-                "Model must be initialized before switching to internal coordinates. "
-                "Load data first with load_pdb() or load_cif()."
-            )
+        from torchref.model.parameter_wrappers import MixedTensor
+        from torchref.model.rigid_xyz import RigidXYZTensor
 
-        from torchref.model.segmented_internal_coordinates import (
-            SegmentedInternalCoordinateTensor
-        )
+        if not isinstance(self.xyz, RigidXYZTensor):
+            return self
 
-        # Get current coordinates
-        current_xyz = self.xyz().detach()
+        if commit:
+            with torch.no_grad():
+                current = self.xyz().detach().clone()
+            new_xyz = MixedTensor(current, name="xyz", device=self.device)
+            self._modules.pop("xyz", None)
+            self.xyz = new_xyz
+            xyz_mask = getattr(self, "xyz_mask", None)
+            if xyz_mask is not None and xyz_mask.shape[0] == new_xyz.shape[0]:
+                self.xyz.update_refinable_mask(xyz_mask)
+            self.pdb.loc[:, ["x", "y", "z"]] = current.cpu().numpy()
+        else:
+            original = getattr(self, "_rigid_original_xyz_container", None)
+            if original is None:
+                raise RuntimeError(
+                    "No stashed xyz container to restore. Did you call "
+                    "use_rigid_xyz() first?"
+                )
+            self._modules.pop("xyz", None)
+            self.xyz = original
 
-        # Create segmented internal coordinate tensor
-        self.xyz = SegmentedInternalCoordinateTensor(
-            current_xyz,
-            pdb=self.pdb,
-            n_aa_per_segment=n_aa_per_segment,
-            bond_cutoff=bond_cutoff,
-            cif_dict=cif_dict,
-            requires_grad=requires_grad,
-            dtype=self.dtype_float,
-            device=self.device,
-        )
+        if hasattr(self, "_rigid_original_xyz_container"):
+            del self._rigid_original_xyz_container
+
+        if hasattr(self, "reset_cache"):
+            self.reset_cache()
+        return self

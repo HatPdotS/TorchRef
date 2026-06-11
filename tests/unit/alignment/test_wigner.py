@@ -1,5 +1,5 @@
 """
-Unit tests for torchref.alignment.wigner.
+Unit tests for torchref.experimental.alignment.wigner.
 
 Conventions verified:
 - D^l_{m,n}(α,β,γ) = e^{-imα} d^l_{m,n}(β) e^{-inγ}                (Edmonds)
@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import torch
 
-from torchref.alignment.wigner import (
+from torchref.experimental.alignment.wigner import (
     small_d_block,
     small_d_packed,
     wigner_D_pointwise,

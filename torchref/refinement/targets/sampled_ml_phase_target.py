@@ -339,7 +339,7 @@ class SampledMLPhaseTarget(XrayTarget):
         if self._phi_ref is not None:
             # Need to select same reflections as F_obs
             # This assumes phi_ref was computed on full dataset
-            hkl, _, _, rfree_mask = self._data()
+            rfree_mask = self._data.rfree_flags
             # Note: rfree_mask may be int32 (0/1), must convert to bool for proper masking
             rfree_bool = rfree_mask.bool()
             if self.use_work_set:
@@ -552,16 +552,10 @@ class SampledMLDifferenceTarget(Target):
 
     def _setup_data(self):
         """Setup observed data and masks."""
-        _, F_light, sigma_light, rfree_light = self._data_light()
-        _, F_dark, sigma_dark, rfree_dark = self._data_dark()
-
-        # Handle MaskedTensor
-        if hasattr(F_light, "get_data"):
-            F_light = F_light.get_data()
-            sigma_light = sigma_light.get_data()
-        if hasattr(F_dark, "get_data"):
-            F_dark = F_dark.get_data()
-            sigma_dark = sigma_dark.get_data()
+        F_light, sigma_light = self._data_light.get_corrected_data()
+        rfree_light = self._data_light.rfree_flags
+        F_dark, sigma_dark = self._data_dark.get_corrected_data()
+        rfree_dark = self._data_dark.rfree_flags
 
         self.register_buffer("_F_obs_light", F_light)
         self.register_buffer("_F_obs_dark", F_dark)

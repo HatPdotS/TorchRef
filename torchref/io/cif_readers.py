@@ -590,7 +590,11 @@ class ReflectionCIFReader:
     """
 
     def __init__(
-        self, filepath: str, verbose: int = 0, data_block: Optional[str] = None
+        self,
+        filepath: str,
+        verbose: int = 0,
+        data_block: Optional[str] = None,
+        anomalous: Optional[bool] = None,
     ):
         """
         Initialize and load structure factor CIF file.
@@ -605,9 +609,15 @@ class ReflectionCIFReader:
             Specific data block name to read (e.g., 'r1vlmsf').
             If None, reads the first data block. Useful for files with
             multiple datasets.
+        anomalous : bool, optional
+            Anomalous (Bijvoet) handling. If None (default), ``pdbx_F_plus/minus``
+            (or ``I``) columns are auto-detected and unstacked into explicit
+            Friedel pairs when present (anomalous preferred). True forces this;
+            False forces a merged load (Bijvoet mates averaged) even when present.
         """
         self.filepath = Path(filepath)
         self.verbose = verbose
+        self.anomalous = anomalous
         self.cif_reader = CIFReader(filepath, data_block=data_block)
         self.cif_reader.verbose = verbose
         self._validate()
@@ -649,6 +659,9 @@ class ReflectionCIFReader:
         ).astype(np.int32)
         self.data["HKL"] = hkl
         self.data["HKL_key"] = refln_df["hkl_key"]
+        # Friedel merge state (set by get_reflection_data); False when F(+)/F(-) were
+        # expanded into explicit signed-HKL Bijvoet pairs.
+        self.data["friedel_merged"] = getattr(self, "_friedel_merged", True)
 
         # Store amplitudes if available (standardized keys matching MTZ reader)
         if refln_df["F_obs"].notna().any():
@@ -776,6 +789,10 @@ class ReflectionCIFReader:
         # Standardize column names
         result = pd.DataFrame()
 
+        # Friedel merge state: set False below if anomalous F(+)/F(-) (or I(+)/I(-))
+        # are detected, in which case rows are expanded into signed-HKL Bijvoet pairs.
+        self._friedel_merged = True
+
         # Miller indices (required)
         result["h"], hkey = self._extract_numeric(
             refln_df, ["_refln.index_h", "_refln.h"], required=True, target_type="int"
@@ -807,45 +824,32 @@ class ReflectionCIFReader:
         )
 
         if F_plus_col and F_minus_col:
-            # Average anomalous pairs since we're not doing phasing
-            F_plus = pd.to_numeric(
+            # Keep F(+)/F(-) separate for expansion into signed-HKL Bijvoet pairs
+            # (see _expand_friedel_pairs). Placeholder F_obs is filled there.
+            self._friedel_merged = False
+            result["_F_plus"] = pd.to_numeric(
                 refln_df[F_plus_col].replace(["?", "."], np.nan), errors="coerce"
             )
-            F_minus = pd.to_numeric(
+            result["_F_minus"] = pd.to_numeric(
                 refln_df[F_minus_col].replace(["?", "."], np.nan), errors="coerce"
             )
-
-            # Average where both are present, otherwise use whichever is available
-            result["F_obs"] = F_plus.combine(
-                F_minus,
-                lambda x, y: (
-                    (x + y) / 2
-                    if pd.notna(x) and pd.notna(y)
-                    else (x if pd.notna(x) else y)
-                ),
-                fill_value=np.nan,
-            )
-            result["F_obs_key"] = f"{F_plus_col}+{F_minus_col}_averaged"
+            result["F_obs"] = np.nan
+            result["F_obs_key"] = f"{F_plus_col}/{F_minus_col}_unstacked"
 
             if sigF_plus_col and sigF_minus_col:
-                # Propagate uncertainties: sigma_avg = sqrt((sigma1^2 + sigma2^2) / 4)
-                sigF_plus = pd.to_numeric(
+                result["_sigF_plus"] = pd.to_numeric(
                     refln_df[sigF_plus_col].replace(["?", "."], np.nan), errors="coerce"
                 )
-                sigF_minus = pd.to_numeric(
+                result["_sigF_minus"] = pd.to_numeric(
                     refln_df[sigF_minus_col].replace(["?", "."], np.nan),
                     errors="coerce",
                 )
-
-                # When averaging two measurements, uncertainty is sqrt((s1^2 + s2^2)/n^2) = sqrt((s1^2 + s2^2)/4)
-                combined_sigma = np.sqrt((sigF_plus**2 + sigF_minus**2) / 4)
-                # Use whichever sigma is available if only one measurement present
-                result["sigma_F_obs"] = combined_sigma.combine_first(
-                    sigF_plus
-                ).combine_first(sigF_minus)
-                result["sigma_F_obs_key"] = f"{sigF_plus_col}+{sigF_minus_col}_averaged"
+                result["sigma_F_obs"] = np.nan
+                result["sigma_F_obs_key"] = (
+                    f"{sigF_plus_col}/{sigF_minus_col}_unstacked"
+                )
             else:
-                result["sigma_F_obs"], sigma_F_obs_key = self._extract_numeric(
+                sigF, sigma_F_obs_key = self._extract_numeric(
                     refln_df,
                     [
                         "_refln.F_meas_sigma_au",
@@ -855,13 +859,18 @@ class ReflectionCIFReader:
                     ],
                     target_type="float",
                 )
+                # Same sigma for both mates when per-mate sigmas are unavailable.
+                result["_sigF_plus"] = sigF
+                result["_sigF_minus"] = sigF
+                result["sigma_F_obs"] = np.nan
                 result["sigma_F_obs_key"] = sigma_F_obs_key
 
             if self.verbose > 0:
+                F_plus, F_minus = result["_F_plus"], result["_F_minus"]
                 n_both = ((pd.notna(F_plus)) & (pd.notna(F_minus))).sum()
                 n_plus_only = ((pd.notna(F_plus)) & (pd.isna(F_minus))).sum()
                 n_minus_only = ((pd.isna(F_plus)) & (pd.notna(F_minus))).sum()
-                print("Anomalous data detected: averaging F+ and F-")
+                print("Anomalous data detected: unstacking F+ and F- into pairs")
                 print(f"  Reflections with both F+/F-: {n_both}")
                 print(f"  Reflections with F+ only: {n_plus_only}")
                 print(f"  Reflections with F- only: {n_minus_only}")
@@ -911,41 +920,31 @@ class ReflectionCIFReader:
         )
 
         if I_plus_col and I_minus_col:
-            # Average anomalous intensity pairs
-            I_plus = pd.to_numeric(
+            # Keep I(+)/I(-) separate for expansion into signed-HKL Bijvoet pairs.
+            self._friedel_merged = False
+            result["_I_plus"] = pd.to_numeric(
                 refln_df[I_plus_col].replace(["?", "."], np.nan), errors="coerce"
             )
-            I_minus = pd.to_numeric(
+            result["_I_minus"] = pd.to_numeric(
                 refln_df[I_minus_col].replace(["?", "."], np.nan), errors="coerce"
             )
-
-            result["I_obs"] = I_plus.combine(
-                I_minus,
-                lambda x, y: (
-                    (x + y) / 2
-                    if pd.notna(x) and pd.notna(y)
-                    else (x if pd.notna(x) else y)
-                ),
-                fill_value=np.nan,
-            )
-            result["I_obs_key"] = f"{I_plus_col}+{I_minus_col}_averaged"
+            result["I_obs"] = np.nan
+            result["I_obs_key"] = f"{I_plus_col}/{I_minus_col}_unstacked"
 
             if sigI_plus_col and sigI_minus_col:
-                sigI_plus = pd.to_numeric(
+                result["_sigI_plus"] = pd.to_numeric(
                     refln_df[sigI_plus_col].replace(["?", "."], np.nan), errors="coerce"
                 )
-                sigI_minus = pd.to_numeric(
+                result["_sigI_minus"] = pd.to_numeric(
                     refln_df[sigI_minus_col].replace(["?", "."], np.nan),
                     errors="coerce",
                 )
-
-                combined_sigma = np.sqrt((sigI_plus**2 + sigI_minus**2) / 4)
-                result["sigma_I_obs"] = combined_sigma.combine_first(
-                    sigI_plus
-                ).combine_first(sigI_minus)
-                result["sigma_I_obs_key"] = f"{sigI_plus_col}+{sigI_minus_col}_averaged"
+                result["sigma_I_obs"] = np.nan
+                result["sigma_I_obs_key"] = (
+                    f"{sigI_plus_col}/{sigI_minus_col}_unstacked"
+                )
             else:
-                result["sigma_I_obs"], sigIobskey = self._extract_numeric(
+                sigI, sigIobskey = self._extract_numeric(
                     refln_df,
                     [
                         "_refln.intensity_sigma",
@@ -955,13 +954,19 @@ class ReflectionCIFReader:
                     ],
                     target_type="float",
                 )
+                result["_sigI_plus"] = sigI
+                result["_sigI_minus"] = sigI
+                result["sigma_I_obs"] = np.nan
                 result["sigma_I_obs_key"] = sigIobskey
 
             if self.verbose > 0:
+                I_plus, I_minus = result["_I_plus"], result["_I_minus"]
                 n_both = ((pd.notna(I_plus)) & (pd.notna(I_minus))).sum()
                 n_plus_only = ((pd.notna(I_plus)) & (pd.isna(I_minus))).sum()
                 n_minus_only = ((pd.isna(I_plus)) & (pd.notna(I_minus))).sum()
-                print("Anomalous intensity data detected: averaging I+ and I-")
+                print(
+                    "Anomalous intensity data detected: unstacking I+ and I- into pairs"
+                )
                 print(f"  Reflections with both I+/I-: {n_both}")
                 print(f"  Reflections with I+ only: {n_plus_only}")
                 print(f"  Reflections with I- only: {n_minus_only}")
@@ -1013,7 +1018,131 @@ class ReflectionCIFReader:
         )
         result["free_flag_key"] = free_flag_key
 
+        if not self._friedel_merged:
+            # Anomalous columns were detected. Honor the caller's preference:
+            # anomalous=False forces a merged (averaged) load; otherwise unstack.
+            if self.anomalous is False:
+                result = self._merge_friedel_pairs(result)
+                self._friedel_merged = True
+            else:
+                try:
+                    result = self._expand_friedel_pairs(result)
+                except Exception as e:  # fall back to merged on any failure
+                    if self.verbose > 0:
+                        print(
+                            f"Anomalous unstacking skipped ({e}); "
+                            "averaging F+/F- instead."
+                        )
+                    result = self._merge_friedel_pairs(result)
+                    self._friedel_merged = True
+        elif self.anomalous is True and self.verbose > 0:
+            print(
+                "anomalous=True requested but no F(+)/F(-) columns found; "
+                "loading merged."
+            )
+
         return result
+
+    def _expand_friedel_pairs(self, result: pd.DataFrame) -> pd.DataFrame:
+        """Expand F(+)/F(-) (or I(+)/I(-)) into explicit signed-HKL Bijvoet rows.
+
+        The Friedel-plus members keep their Miller index; the Friedel-minus members
+        get the negated index. Centric reflections are not split (their mates are
+        equivalent), and rows whose chosen observation is missing are dropped. All
+        other per-reflection columns (phase, fom, free_flag, ...) are duplicated to
+        both mates. Temporary ``_F_plus``/``_F_minus``/... columns are removed.
+        """
+        hkl = result[["h", "k", "l"]].to_numpy().astype(np.int32)
+        gops = gemmi.SpaceGroup(self.get_space_group()).operations()
+        centric = np.asarray(gops.centric_flag_array(hkl), dtype=bool)
+
+        has_F = "_F_plus" in result.columns
+        has_I = "_I_plus" in result.columns
+
+        def member(df: pd.DataFrame, sign: str) -> pd.DataFrame:
+            out = df.copy()
+            if has_F:
+                out["F_obs"] = df[f"_F_{sign}"]
+                out["sigma_F_obs"] = df[f"_sigF_{sign}"]
+            if has_I:
+                out["I_obs"] = df[f"_I_{sign}"]
+                out["sigma_I_obs"] = df[f"_sigI_{sign}"]
+            # Keep only rows where the primary observation is present.
+            present = pd.Series(False, index=out.index)
+            if has_I:
+                present |= out["I_obs"].notna()
+            if has_F:
+                present |= out["F_obs"].notna()
+            return out[present]
+
+        plus = member(result, "plus")
+
+        minus = result.copy()
+        minus[["h", "k", "l"]] = -minus[["h", "k", "l"]].to_numpy()
+        minus = minus[~centric]  # centric mates are equivalent; do not duplicate
+        minus = member(minus, "minus")
+
+        combined = pd.concat([plus, minus], ignore_index=True)
+        temp_cols = [
+            c
+            for c in (
+                "_F_plus",
+                "_F_minus",
+                "_sigF_plus",
+                "_sigF_minus",
+                "_I_plus",
+                "_I_minus",
+                "_sigI_plus",
+                "_sigI_minus",
+            )
+            if c in combined.columns
+        ]
+        return combined.drop(columns=temp_cols)
+
+    def _merge_friedel_pairs(self, result: pd.DataFrame) -> pd.DataFrame:
+        """Fallback: average F(+)/F(-) (and I(+)/I(-)) into merged single rows."""
+
+        def avg(a: str, b: str) -> pd.Series:
+            return result[a].combine(
+                result[b],
+                lambda x, y: (
+                    (x + y) / 2
+                    if pd.notna(x) and pd.notna(y)
+                    else (x if pd.notna(x) else y)
+                ),
+                fill_value=np.nan,
+            )
+
+        out = result.copy()
+        if "_F_plus" in out.columns:
+            out["F_obs"] = avg("_F_plus", "_F_minus")
+            out["sigma_F_obs"] = (
+                np.sqrt((out["_sigF_plus"] ** 2 + out["_sigF_minus"] ** 2) / 4)
+                .combine_first(out["_sigF_plus"])
+                .combine_first(out["_sigF_minus"])
+            )
+        if "_I_plus" in out.columns:
+            out["I_obs"] = avg("_I_plus", "_I_minus")
+            out["sigma_I_obs"] = (
+                np.sqrt((out["_sigI_plus"] ** 2 + out["_sigI_minus"] ** 2) / 4)
+                .combine_first(out["_sigI_plus"])
+                .combine_first(out["_sigI_minus"])
+            )
+        temp_cols = [
+            c
+            for c in (
+                "_F_plus",
+                "_F_minus",
+                "_sigF_plus",
+                "_sigF_minus",
+                "_I_plus",
+                "_I_minus",
+                "_sigI_plus",
+                "_sigI_minus",
+            )
+            if c in out.columns
+        ]
+        return out.drop(columns=temp_cols)
 
     def _extract_numeric(
         self,

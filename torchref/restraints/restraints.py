@@ -1350,8 +1350,10 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         # Restraint build (neighbor search, H topology, exclusion hashing)
         # runs on CPU: pair lists are O(N) integers with launch overhead
         # that dominates any GPU benefit, and the underlying searches are
-        # only called at build time. Buffers are moved to the model device
-        # by ``build_restraints`` once the dict is registered.
+        # only called at build time. Newly-registered buffers, h_topo, and
+        # h_excl_hash are migrated to the model device at the end of this
+        # function so both the initial build and the maintenance-triggered
+        # rebuild path land on the right device.
         cpu = torch.device("cpu")
         target_device = self.xyz().device if self._xyz_fn is not None else cpu
 
@@ -1439,6 +1441,14 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         # the compare is a single op on whatever device xyz() returns.
         if self._xyz_fn is not None:
             self._last_vdw_build_xyz = self.xyz().detach().clone()
+
+        # Migrate the freshly-built VDW pair list, h_topo, and h_excl_hash
+        # from their CPU build device to the model's device. Required for
+        # both the initial build (the outer build_restraints also calls
+        # .to(target_device) — a no-op when already migrated) and for the
+        # maintenance-triggered rebuild, which has no surrounding migration.
+        if target_device.type != "cpu":
+            self.to(target_device)
 
     def rebuild_vdw_restraints(self) -> None:
         """Refresh the VDW pair list using the cached build kwargs.

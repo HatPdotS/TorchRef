@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 import torch
 import torch.nn as nn
 
-from torchref.base.metrics import nll_xray, get_rfactors
+from torchref.base.metrics import get_rfactors, nll_xray
 from torchref.config import get_default_device
 from torchref.scaling.scaler_base import ScalerBase
 from torchref.scaling.solvent import SolventModel
@@ -70,8 +70,10 @@ class CollectionScaler(ScalerBase):
         model_collection: "ModelCollection",
         nbins: int = 20,
         verbose: int = 1,
-        device: torch.device = get_default_device(),
+        device: torch.device = None,
     ):
+        if device is None:
+            device = get_default_device()
         # Bind to the dark/reference dataset for bins and scattering vectors
         dark_data = dataset_collection[model_collection.dark_key]
         super().__init__(
@@ -252,7 +254,9 @@ class CollectionScaler(ScalerBase):
         for i in range(len(self._component_solvent_models)):
             f_raw = self._get_component_f_sol_raw(i)
             contribution = fractions[i] * f_raw
-            f_sol_mixed = contribution if f_sol_mixed is None else f_sol_mixed + contribution
+            f_sol_mixed = (
+                contribution if f_sol_mixed is None else f_sol_mixed + contribution
+            )
         return f_sol_mixed
 
     # ------------------------------------------------------------------
@@ -287,6 +291,106 @@ class CollectionScaler(ScalerBase):
         """
         f_sol_raw_mixed = self.get_mixed_solvent_raw(fractions)
         return super().forward(fcalc, f_sol_override=f_sol_raw_mixed)
+
+    # ------------------------------------------------------------------
+    # Maximum-likelihood model-error variance beta — ONE shared estimate
+    # ------------------------------------------------------------------
+
+    def get_beta(self, fcalc: torch.Tensor = None):
+        """One shared ``(beta, epsilon)`` pooled across all datasets.
+
+        Overrides :meth:`ScalerBase.get_beta`. All data–model pairs share
+        the common HKL set, so a single Phenix/Lunin-Skovoroda ML estimate is
+        made on the **pooled** free reflections of every pair and the resulting
+        per-bin ``beta`` is mapped back onto the common HKL — one shared
+        per-reflection ``beta`` applied to every dataset. More stable than
+        per-dataset estimates (the datasets are the same crystal/model).
+        Detached; cached until :meth:`reset_beta_cache`.
+        """
+        if self._beta_cache is not None:
+            return self._beta_cache
+
+        from torchref.base.targets.xray_ml_sigmaa import (
+            _interp_in_dss,
+            epsilon_from_hkl,
+            estimate_beta,
+        )
+
+        dc = self._dataset_collection
+        mc = self._model_collection
+
+        with torch.no_grad():
+            # Per-reflection quantities on the common HKL (model-independent).
+            common_hkl = self._data.hkl
+            dss = (4.0 * self._s_half_sq).reshape(-1)
+            centric = self._data.centric
+            if centric is None:
+                centric = torch.zeros_like(dss, dtype=torch.bool)
+            centric = centric.reshape(-1)
+            if self._epsilon_per_refl is None:
+                sg = getattr(self._data, "spacegroup", None)
+                self._epsilon_per_refl = epsilon_from_hkl(common_hkl, sg).to(dss.dtype)
+            eps = self._epsilon_per_refl.reshape(-1)
+
+            fo_parts, fc_parts, cen_parts = [], [], []
+            eps_parts, dss_parts, free_parts = [], [], []
+            for name in [mc.dark_key] + mc.timepoint_names:
+                if name not in dc:
+                    continue
+                data = dc[name]
+                model = mc[name]
+                hkl, fobs, _sigma, rfree = data(mask=False)
+                fobs = fobs.to(dss.dtype).reshape(-1)
+                validity = data.masks().to(torch.bool).reshape(-1)
+                free = validity & (~rfree.to(torch.bool).reshape(-1))
+                if hasattr(self, "forward_mixed") and hasattr(model, "fractions"):
+                    fc = self.forward_mixed(model(hkl), model.fractions)
+                else:
+                    fc = self.forward(model(hkl))
+                fc_amp = torch.abs(fc).to(dss.dtype).reshape(-1)
+                fo_parts.append(fobs)
+                fc_parts.append(fc_amp)
+                cen_parts.append(centric)
+                eps_parts.append(eps)
+                dss_parts.append(dss)
+                free_parts.append(free)
+
+            if not fo_parts:
+                beta = torch.full_like(dss, 1.0)
+                self._beta_cache = (beta, eps)
+                return self._beta_cache
+
+            fo_p = torch.cat(fo_parts)
+            fc_p = torch.cat(fc_parts)
+            cen_p = torch.cat(cen_parts)
+            eps_p = torch.cat(eps_parts)
+            dss_p = torch.cat(dss_parts)
+            free_p = torch.cat(free_parts)
+
+            _b, bbin, bin_dss = estimate_beta(fo_p, fc_p, cen_p, eps_p, dss_p, free_p)
+            self._beta_per_bin = bbin
+
+            if bbin is None or bin_dss is None:
+                finite = torch.isfinite(fo_p)
+                mean_fo2 = (
+                    (fo_p[finite] ** 2).mean() if finite.any() else fo_p.new_ones(())
+                )
+                beta = torch.full_like(dss, float(mean_fo2))
+            else:
+                # Map the pooled per-bin estimate back onto the common HKL.
+                beta = _interp_in_dss(dss, bin_dss, bbin)
+
+            # The model forwards above ran under no_grad and populated the
+            # shared base-model structure-factor cache with DETACHED tensors.
+            # Reset it so the subsequent grad-enabled loss forward recomputes
+            # F_calc with a live graph (otherwise gradients never reach the
+            # models). Cheap: get_beta runs once per optimizer-step block.
+            for bm in getattr(mc, "base_models", []):
+                if hasattr(bm, "reset_cache"):
+                    bm.reset_cache()
+
+            self._beta_cache = (beta.detach(), eps.detach())
+        return self._beta_cache
 
     # ------------------------------------------------------------------
     # Joint LBFGS refinement
@@ -339,7 +443,9 @@ class CollectionScaler(ScalerBase):
                 continue
             data = dc[name]
             model = mc[name]
-            hkl, fobs, sigma, rfree = data()
+            hkl = data.hkl
+            fobs, sigma = data.get_corrected_data()
+            rfree = data.rfree_flags
             with torch.no_grad():
                 fc = model(hkl)
             fcalc_cache[name] = fc.detach()
@@ -375,7 +481,7 @@ class CollectionScaler(ScalerBase):
                         n += 1
                 if n > 0:
                     total = total / n
-                u_penalty = torch.sum(scaler_self.U ** 2)
+                u_penalty = torch.sum(scaler_self.U**2)
                 return total + u_penalty
 
         state = LossState(device=self.device)
@@ -461,7 +567,9 @@ class CollectionScaler(ScalerBase):
                 continue
             data = dc[name]
             model = mc[name]
-            hkl, fobs, sigma, rfree = data()
+            hkl = data.hkl
+            fobs, sigma = data.get_corrected_data()
+            rfree = data.rfree_flags
             with torch.no_grad():
                 fc = model(hkl)
             pairs.append((fc.detach(), model.fractions.detach(), fobs, sigma, rfree))
@@ -474,7 +582,9 @@ class CollectionScaler(ScalerBase):
         ksol_start = torch.log(torch.tensor(0.1, device=self.device))
         ksol_end = torch.log(torch.tensor(0.6, device=self.device))
 
-        for log_k in torch.linspace(ksol_start, ksol_end, steps=steps, device=self.device):
+        for log_k in torch.linspace(
+            ksol_start, ksol_end, steps=steps, device=self.device
+        ):
             for b in torch.linspace(30.0, 100.0, steps=steps, device=self.device):
                 sol.log_k_solvent.data = log_k.to(dtype=sol.log_k_solvent.dtype)
                 sol.b_solvent.data = b.to(dtype=sol.b_solvent.dtype)
@@ -487,7 +597,7 @@ class CollectionScaler(ScalerBase):
                     )
                     diff = fobs[rfree] - torch.abs(scaled[rfree])
                     sigma_safe = sigma[rfree].clamp(min=1e-3)
-                    total += (0.5 * (diff ** 2) / sigma_safe ** 2).mean().item()
+                    total += (0.5 * (diff**2) / sigma_safe**2).mean().item()
 
                 if total < best_loss:
                     best_loss = total

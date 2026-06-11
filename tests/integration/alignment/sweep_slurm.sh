@@ -16,7 +16,7 @@ PDB_KEY="${1:?need PDB key}"
 SEED="${2:?need seed}"
 
 REPO=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/fix_alignment
-PYTHON=/das/work/units/LBR-FEL/p17490/CONDA/torchref/bin/python
+PYTHON=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/fix_alignment/.venv/bin/python
 
 cd "$REPO"
 export PYTHONPATH="$REPO"

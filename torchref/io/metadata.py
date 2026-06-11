@@ -178,7 +178,6 @@ class RefinementMetadata:
             n_test = int(rfree_flags.sum().item()) if rfree_flags.dtype == torch.bool else int((~rfree_flags.bool()).sum().item())
             n_work = n_all - n_test
             # In torchref, rfree_flags=True means WORK set
-            # Let's use the same convention as populate_state_meta
             n_work = int(rfree_flags.sum().item())
             n_test = n_all - n_work
             meta.n_reflections_all = n_all

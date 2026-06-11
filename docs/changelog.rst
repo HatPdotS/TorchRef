@@ -1,6 +1,27 @@
 Changelog
 =========
 
+Vesion 0.6.0
+-------------
+- Implemented Phenix style sigma A weighting in the Maximum likelihood target (New default for refinement)
+- Added sigma A estimation to scaler objects
+- Added collection versions of the sigma A target
+
+Version 0.5.3.3
+-------------
+- Fixed U_aniso parametrization and line search instability during refinement with anisotropic b-factor
+- Fixed kinetic module import 
+- Set default similarity weight in difference refinement to 0
+
+Version 0.5.3.2
+-------------
+- Added 10GB Gram requirement for default gpu device selection
+- Slaved cli device detection to the default device selection
+- Fixed device mismatch crash on CUDA/MPS when the VDW pair list was refreshed mid-refinement: the maintenance-triggered rebuild now migrates the fresh VDW pair list, hydrogen topology, and exclusion hash to the model device (PR #19)
+
+Version 0.5.3.1
+-------------
+- Fixed problem where TorchRef defaults to old gpus and crashes, now checking if gpu is actually usable, before setting default device to cuda, if not it will default to cpu and print a warning.
 
 Version 0.5.3
 -------------

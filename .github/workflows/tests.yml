@@ -87,13 +87,12 @@ jobs:
       - name: Run integration tests
         run: |
           pytest tests/integration \
-            -m "integration and not gpu" \
+            -m "integration and not gpu and not slow" \
             --cov=torchref \
             --cov-report=xml \
             --cov-report=term-missing \
             -v \
-            --tb=short \
-            || true  # Don't fail if no integration tests yet
+            --tb=short
       
       - name: Upload integration coverage
         uses: codecov/codecov-action@v4

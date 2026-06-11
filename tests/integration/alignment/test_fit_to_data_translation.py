@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from torchref.alignment.ball_search import (
+from torchref.experimental.alignment.frf.rotation_utils import (
     rotation_angular_distance_deg,
     rotation_matrix_from_edmonds_euler,
 )

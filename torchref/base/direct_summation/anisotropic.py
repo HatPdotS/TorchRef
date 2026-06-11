@@ -10,8 +10,12 @@ from typing import Optional
 import numpy as np
 import torch
 
+from torchref.config import dtypes
 
-def _estimate_batch_size_aniso(n_refl: int, n_atoms: int, n_ops: int, max_memory_gb: float) -> int:
+
+def _estimate_batch_size_aniso(
+    n_refl: int, n_atoms: int, n_ops: int, max_memory_gb: float
+) -> int:
     """
     Estimate optimal batch size for anisotropic calculations.
 
@@ -25,7 +29,13 @@ def _estimate_batch_size_aniso(n_refl: int, n_atoms: int, n_ops: int, max_memory
 
 
 def aniso_structure_factor_torched(
-    hkl, s_vector, xyz_fractional, occ, scattering_factors, U, spacegroup,
+    hkl,
+    s_vector,
+    xyz_fractional,
+    occ,
+    scattering_factors,
+    U,
+    spacegroup,
     max_memory_gb: Optional[float] = None,
     A: Optional[torch.Tensor] = None,
     B_coeff: Optional[torch.Tensor] = None,
@@ -83,16 +93,26 @@ def aniso_structure_factor_torched(
         batch_size = _estimate_batch_size_aniso(n_refl, n_atoms, n_ops, max_memory_gb)
         if batch_size < n_refl:
             return _aniso_sf_batched(
-                hkl, s_vector, xyz_flat, fractional_shape, occ, scattering_factors,
-                U_matrix, batch_size, A, B_coeff
+                hkl,
+                s_vector,
+                xyz_flat,
+                fractional_shape,
+                occ,
+                scattering_factors,
+                U_matrix,
+                batch_size,
+                A,
+                B_coeff,
             )
-        # Batching not needed but scattering_factors may be None - compute them
-        if scattering_factors is None and A is not None and B_coeff is not None:
-            s_mag = torch.norm(s_vector, dim=1)
-            scattering_factors = _compute_scattering_factors_batch(s_mag, A, B_coeff)
+
+    # No batching: ensure scattering_factors are available. They may be None
+    # regardless of whether max_memory_gb was given, so compute from A/B here.
+    if scattering_factors is None and A is not None and B_coeff is not None:
+        s_mag = torch.norm(s_vector, dim=1)
+        scattering_factors = _compute_scattering_factors_batch(s_mag, A, B_coeff)
 
     # No batching - compute all at once
-    dot_product = torch.matmul(hkl.to(torch.float64), xyz_flat).reshape(
+    dot_product = torch.matmul(hkl.to(dtypes.float), xyz_flat).reshape(
         n_refl, n_atoms, -1
     )
     U_dot_s = torch.einsum("jik,li->jkl", U_matrix, s_vector)  # (3, N_atoms, N_refl)
@@ -111,8 +131,16 @@ from torchref.base.direct_summation import (
 
 
 def _aniso_sf_batched(
-    hkl, s_vector, xyz_flat, fractional_shape, occ, scattering_factors, U_matrix, batch_size,
-    A=None, B_coeff=None
+    hkl,
+    s_vector,
+    xyz_flat,
+    fractional_shape,
+    occ,
+    scattering_factors,
+    U_matrix,
+    batch_size,
+    A=None,
+    B_coeff=None,
 ):
     """
     Compute anisotropic structure factors in batches over reflections.
@@ -167,7 +195,7 @@ def _aniso_sf_batched(
             sf_batch = _compute_scattering_factors_batch(s_mag, A, B_coeff)
 
         # Compute for this batch
-        dot_product = torch.matmul(hkl_batch.to(torch.float64), xyz_flat).reshape(
+        dot_product = torch.matmul(hkl_batch.to(dtypes.float), xyz_flat).reshape(
             end - start, n_atoms, -1
         )
         U_dot_s = torch.einsum("jik,li->jkl", U_matrix, s_batch)  # (3, N_atoms, batch)
@@ -215,7 +243,7 @@ def aniso_structure_factor_torched_no_complex(
     fractional_coords = space_group(fractional_coords.T)
     fractional_shape = fractional_coords.shape
     fractional_coords = fractional_coords.reshape(3, -1)
-    dot_product = torch.matmul(hkl.to(torch.float64), fractional_coords).reshape(
+    dot_product = torch.matmul(hkl.to(dtypes.float), fractional_coords).reshape(
         hkl.shape[0], fractional_shape[1], -1
     )
     U_row1 = torch.stack([U[:, 0], U[:, 3], U[:, 4]], dim=0)
