@@ -21,8 +21,8 @@ from .base import (
 )
 from .collection import (
     CollectionDifferenceTarget,
-    CollectionMLSigmaATarget,
     CollectionMLTarget,
+    CollectionRiceTarget,
     MultiModelADPTarget,
     MultiModelGeometryTarget,
 )
@@ -70,8 +70,8 @@ from .similarity import CoordinateSimilarityTarget
 from .xray import (
     GaussianXrayTarget,
     LeastSquaresXrayTarget,
-    MaximumLikelihoodSigmaAXrayTarget,
     MaximumLikelihoodXrayTarget,
+    RiceXrayTarget,
     XrayTarget,
     create_xray_target,
 )
@@ -105,14 +105,14 @@ __all__ = [
     # X-ray targets
     "XrayTarget",
     "GaussianXrayTarget",
+    "RiceXrayTarget",
     "MaximumLikelihoodXrayTarget",
-    "MaximumLikelihoodSigmaAXrayTarget",
     "LeastSquaresXrayTarget",
     "create_xray_target",
     # Collection (multi-dataset) targets
     "CollectionDifferenceTarget",
+    "CollectionRiceTarget",
     "CollectionMLTarget",
-    "CollectionMLSigmaATarget",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
     # Difference targets

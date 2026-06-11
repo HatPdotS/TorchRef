@@ -26,7 +26,11 @@ from torchref.base.metrics import (
     nll_xray_lognormal,
 )
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.base.targets.xray_ml_sigmaa import epsilon_from_hkl, estimate_beta
+from torchref.base.targets.xray_ml_sigmaa import (
+    epsilon_from_hkl,
+    estimate_beta,
+    ml_xray_loss_beta_math,
+)
 from torchref.config import get_complex_dtype, get_default_device, get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
@@ -162,7 +166,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     def reset_beta_cache(self):
         """Invalidate the cached beta so it re-estimates on next access.
 
-        Called from ``MaximumLikelihoodSigmaAXrayTarget.maintenance`` (which
+        Called from ``MaximumLikelihoodXrayTarget.maintenance`` (which
         ``LossState`` invokes after each optimizer-step block). Epsilon is kept
         (it is model-independent). Mirrors the ``_f_sol_raw = None`` solvent-cache
         invalidation pattern.
@@ -796,9 +800,27 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             name = "scaler/xray"
 
             def forward(self):
+                # σ_A (Read/Rice MLF) target on the work set — the SAME
+                # likelihood the body refinement uses. beta/epsilon (model-error
+                # variance) come detached from get_beta (estimated on the free
+                # set), so they act as constants. This replaces the plain
+                # σ-weighted Gaussian nll_xray, whose minimum drove the per-bin
+                # log_scale toward zero in weak shells (R blow-up).
                 fcalc_scaled = scaler_self.forward(fcalc)
+                beta, eps = scaler_self.get_beta(fcalc)
+                work = scaler_self._data.work
+                F_obs = work.F.to(get_float_dtype())
+                Fc = work.select(torch.abs(fcalc_scaled).reshape(-1))
+                beta_w = work.select(beta).to(F_obs.dtype)
+                eps_w = work.select(eps).to(F_obs.dtype) if eps is not None else None
+                centric_w = work.select(scaler_self._data.centric)
                 u_penalty = torch.sum(scaler_self.U**2)
-                return nll_xray(fobs, fcalc_scaled, sigma) + u_penalty
+                return (
+                    ml_xray_loss_beta_math(
+                        F_obs, Fc, beta_w, centric_w, epsilon=eps_w
+                    )
+                    + u_penalty
+                )
 
         state = LossState(device=self.device)
         state.register_target("scaler/xray", _ScalerXrayTarget())

@@ -23,10 +23,30 @@ from torchref.refinement.targets.combined import (
 
 # Target system imports
 from torchref.refinement.targets.xray import create_xray_target
+from torchref.refinement.weighting import ManualWeighting
 from torchref.scaling.scaler import Scaler
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
+
+
+# Default LossState group base weights — the single, transparent source of truth
+# for how the data term and the priors are balanced. These are *calibration
+# offsets*: with a perfectly calibrated ML likelihood and geometry/ADP prior they
+# would all be 1.0 (the posterior is just -logL - logP). The offsets correct
+# known mis-calibrations, validated to match Phenix/Refmac on the AF-start
+# benchmark (REFMAC-validated median R-free ~ Phenix at n=10):
+#   xray = 10.0  -> the Read/sigma_A likelihood is "soft" (under-counts the data's
+#                   information, a reflection-correlation / effective-N effect), so
+#                   it needs ~10x to sit on equal footing with the geometry prior.
+#   geometry = 1.0 -> reference scale (geometry NLL with physical Engh-Huber sigmas).
+#   adp = 0.1    -> the ADP-restraint prior is ~10x too tight; down-weighting lets
+#                   B-factors spread to their data-supported values.
+# NOTE: gradient-ratio auto-weighting is circular (at the optimum the gradient
+# ratio equals the weight by stationarity); the principled future direction is
+# R-free cross-validation or fixing the sigma_A "softness" calibration so these
+# offsets converge to 1.0. See the cleanup plan for the full rationale.
+DEFAULT_GROUP_WEIGHTS = {"xray": 10.0, "geometry": 1.0, "adp": 0.1}
 
 
 class Refinement(DeviceMixin, DebugMixin, nnModule):
@@ -154,6 +174,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self._loss_state: Optional[LossState] = None
         self._logger: Optional[Logger] = None
 
+        # Static weighting scheme holding the default group base weights. This
+        # is the transparent, first-class home for the data/prior balance;
+        # _create_loss_state applies it to the LossState. Reassign self.weighting
+        # to a different BaseWeighting to change the scheme.
+        self.weighting = ManualWeighting(DEFAULT_GROUP_WEIGHTS)
+
         # Empty initialization - create empty submodules for state_dict loading
         if data_file is None and pdb is None:
             # Create empty submodules so state_dict keys exist
@@ -236,15 +262,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 self.debug_on_error(e)
             raise e
 
-    def _init_targets(self, xray_mode: str = "ml_sigmaa"):
+    def _init_targets(self, xray_mode: str = "ml"):
         """
         Initialize target functions.
 
         Parameters
         ----------
         xray_mode : str, optional
-            X-ray target mode. Options are 'gaussian', 'ls', 'ml',
-            'ml_sigmaa', or 'bhattacharyya'. Default is 'ml_sigmaa'.
+            X-ray target mode. Options are 'gaussian', 'ls', 'rice', 'ml',
+            or 'bhattacharyya'. Default is 'ml' (maximum-likelihood Read MLF
+            with Luzzati σ_A).
         """
         # X-ray targets (now accept model, data, scaler directly)
         self.xray_target_work = create_xray_target(
@@ -284,7 +311,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         mode : str
-            X-ray target mode. Options: 'gaussian', 'ls', 'ml', 'ml_sigmaa', 'bhattacharyya'.
+            X-ray target mode. Options: 'gaussian', 'ls', 'rice', 'ml', 'bhattacharyya'.
         """
         sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
         self.xray_target_work = create_xray_target(
@@ -562,12 +589,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Create a configured LossState for optimization (internal).
 
         Sets up a LossState with all targets registered as callables with
-        hierarchical naming (e.g., 'geometry/bond', 'adp/simu').
+        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'), then applies the
+        default group base weights ``DEFAULT_GROUP_WEIGHTS`` (xray 10 / geometry 1
+        / adp 0.1) — the single, transparent source of truth for the data/prior
+        balance (see that constant for the calibration rationale).
 
         Returns
         -------
         LossState
-            Configured LossState with targets registered.
+            Configured LossState with targets registered and default group
+            weights applied.
         """
         state = LossState(device=self.device)
 
@@ -588,6 +619,13 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             "adp/scaler_log_scale",
             ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
         )
+
+        # Apply the weighting scheme (default: ManualWeighting holding the
+        # DEFAULT_GROUP_WEIGHTS — xray 10 / geometry 1 / adp 0.1). The scheme
+        # returns a {component: weight} dict; we apply it to the state. This is
+        # the single, transparent place the data/prior balance lives — see
+        # DEFAULT_GROUP_WEIGHTS for the calibration-offset rationale.
+        state.set_weights(self.weighting(state))
 
         return state
 

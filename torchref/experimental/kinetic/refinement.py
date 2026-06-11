@@ -10,7 +10,7 @@ Example
 ::
 
     from torchref import ModelFT, ReflectionData, DatasetCollection
-    from torchref.kinetic import ModelCollection, KineticRefinement
+    from torchref.experimental.kinetic import ModelCollection, KineticRefinement
 
     # Base models
     model_dark = ModelFT(max_res=1.5).load_pdb("dark.pdb")
@@ -36,9 +36,9 @@ import torch
 from torch import nn
 
 from torchref.refinement.loss_state import LossState, create_loss_state
-from torchref.kinetic.targets import (
+from torchref.experimental.kinetic.targets import (
     CollectionDifferenceTarget,
-    CollectionMLTarget,
+    CollectionRiceTarget,
     MultiModelGeometryTarget,
     MultiModelADPTarget,
     KineticPriorTarget,
@@ -116,7 +116,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         self.loss_state: Optional[LossState] = None
         self.kinetic_prior_target: Optional[KineticPriorTarget] = None
         self._diff_target: Optional[CollectionDifferenceTarget] = None
-        self._ml_target: Optional[CollectionMLTarget] = None
+        self._ml_target: Optional[CollectionRiceTarget] = None
         self._kinetic_model = None
         self._timepoints_map: Optional[Dict[str, int]] = None
 
@@ -163,7 +163,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
             scaler=self.scaler,
             verbose=self.verbose,
         )
-        ml_target = CollectionMLTarget(
+        ml_target = CollectionRiceTarget(
             dc, mc,
             scaler=self.scaler,
             verbose=self.verbose,

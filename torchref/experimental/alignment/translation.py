@@ -78,7 +78,7 @@ def fft_translation_search(
     ::
 
         import numpy as np
-        from torchref.alignment.translation import fft_translation_search
+        from torchref.experimental.alignment.translation import fft_translation_search
 
         # Known translation test
         hkl = np.array([[1,0,0], [0,1,0], [1,1,0], [0,0,1]])

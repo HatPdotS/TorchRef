@@ -114,7 +114,7 @@ class ClashScoreCalculator(DeviceMixin, nn.Module):
     --------
     ::
 
-        from torchref.alignment.clashscore import ClashScoreCalculator, AtomSampler
+        from torchref.experimental.alignment.clashscore import ClashScoreCalculator, AtomSampler
         from torchref.model import Model
 
         model = Model().load_pdb('structure.pdb')
@@ -369,7 +369,7 @@ def compute_clash_score(
     ::
 
         from torchref.model import Model
-        from torchref.alignment.clashscore import compute_clash_score
+        from torchref.experimental.alignment.clashscore import compute_clash_score
         model = Model().load_pdb('structure.pdb')
         score = compute_clash_score(model)
         print(f"Clash score: {score.item():.4f}")

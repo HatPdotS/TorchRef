@@ -20,17 +20,17 @@ occupancies_kinetics
     Kinetics-constrained occupancy model wrapping KineticModel.
 """
 
-from torchref.kinetic.kinetics import KineticModel
-from torchref.kinetic.occupancies import (
+from torchref.experimental.kinetic.kinetics import KineticModel
+from torchref.experimental.kinetic.occupancies import (
     occupancy_unrestrained,
     occupancies_kinetics,
     occupancies_kinetics_multiexperiment,
 )
 from torchref.model.model_collection import ModelCollection
-from torchref.kinetic.refinement import KineticRefinement
-from torchref.kinetic.targets import (
+from torchref.experimental.kinetic.refinement import KineticRefinement
+from torchref.experimental.kinetic.targets import (
     CollectionDifferenceTarget,
-    CollectionMLTarget,
+    CollectionRiceTarget,
     MultiModelGeometryTarget,
     MultiModelADPTarget,
     KineticPriorTarget,
@@ -44,7 +44,7 @@ __all__ = [
     "ModelCollection",
     "KineticRefinement",
     "CollectionDifferenceTarget",
-    "CollectionMLTarget",
+    "CollectionRiceTarget",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
     "KineticPriorTarget",
