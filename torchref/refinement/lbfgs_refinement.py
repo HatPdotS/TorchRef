@@ -49,7 +49,8 @@ class LBFGSRefinement(Refinement):
     Parameters
     ----------
     target_mode : str, optional
-        X-ray target mode ('gaussian', 'ls', 'rice', 'ml', 'bhattacharyya'). Default is 'ml'.
+        X-ray target mode ('gaussian', 'ls', 'rice', 'ml', 'bhattacharyya',
+        'rice_sigma_m'). Default is 'ml'.
     *args
         Passed to parent Refinement class.
     **kwargs
@@ -96,7 +97,8 @@ class LBFGSRefinement(Refinement):
         Parameters
         ----------
         target_mode : str, optional
-            X-ray target mode ('gaussian', 'ls', 'rice', 'ml', 'bhattacharyya').
+            X-ray target mode ('gaussian', 'ls', 'rice', 'ml', 'bhattacharyya',
+            'rice_sigma_m').
             Default is 'ml' (maximum-likelihood Read MLF with Luzzati σ_A).
         sigma_m_scale : float, optional
             Global multiplier for σ_m in the Bhattacharyya target only.
@@ -174,6 +176,9 @@ class LBFGSRefinement(Refinement):
                 raise RuntimeError(
                     f"No parameters found for types={types}; cannot build LBFGS."
                 )
+            # Co-refine the differentiable error-model calibration (rice_sigma_m)
+            # alongside the body so the model-error variance tracks the model.
+            params = params + self._error_model_params()
             opt = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
             self._persistent_optimizers[key] = opt
         return opt
@@ -336,6 +341,22 @@ class LBFGSRefinement(Refinement):
             return list(self.scaler.parameters())
         return []
 
+    def _error_model_params(self):
+        """Co-refinable error-model parameters to include in every body step.
+
+        Currently the ``rice_sigma_m`` target's differentiable model-error
+        calibration ``scaler.log_sigma_m_scale`` (a single, well-conditioned
+        log-scale). Unlike the scaler's scale/U/solvent params — gated by
+        ``corefine_scaler`` because mixing them with thousands of xyz is
+        ill-conditioned — this 1-DOF error-model knob is always co-refined with
+        the body, so the model-error variance tracks the model in one monolithic
+        optimization (no macrocycle). Empty unless the rice_sigma_m target
+        registered it.
+        """
+        scaler = getattr(self, "scaler", None)
+        calib = getattr(scaler, "log_sigma_m_scale", None)
+        return [calib] if calib is not None else []
+
     def refine_joint(self):
         """Joint LBFGS over every refinable parameter in one step.
 
@@ -355,7 +376,7 @@ class LBFGSRefinement(Refinement):
         """
         state = self.complete_loss_state()
         body = self.model.parameters_of_types(("xyz", "adp", "u", "occupancy"))
-        params = body + self._scaler_body_params()
+        params = body + self._scaler_body_params() + self._error_model_params()
         optimizer = torch.optim.LBFGS(params, **self.LBFGS_DEFAULTS)
         state.step(optimizer, context="lbfgs_refinement.refine_joint")
         return state

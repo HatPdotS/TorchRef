@@ -218,6 +218,67 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         """Last-estimated per-bin beta (diagnostics); ``None`` until first call."""
         return self._beta_per_bin
 
+    # ------------------------------------------------------------------
+    # Differentiable, co-refined sigma_m calibration (rice_sigma_m target)
+    # ------------------------------------------------------------------
+
+    def ensure_sigma_m_calibration(self, n_bins: int = 1):
+        """Idempotently register the learnable ``log_sigma_m_scale`` parameter.
+
+        Used by :class:`RiceSigmaMXrayTarget` to calibrate the (too-small,
+        structure-dependent) Fisher model-error variance ``sigma_m**2`` onto the
+        true model-error scale. Unlike ``beta``, this is a *refinable* parameter
+        co-refined with the model/scaler in the monolithic ``refine_joint`` step
+        (it lands in ``scaler.parameters()``), and it is *not* detached.
+
+        Must be called before any optimizer is built (optimizers snapshot
+        ``scaler.parameters()`` up front), i.e. from the target ``__init__``.
+
+        Parameters
+        ----------
+        n_bins : int, optional
+            ``1`` (default) for a single global log-scale; ``> 1`` for a
+            per-resolution-bin calibration, forced to match the scaler's own
+            ``nbins`` so it can be gathered over ``self.bins``.
+        """
+        n = 1 if n_bins is None or n_bins <= 1 else int(self.nbins)
+        existing = getattr(self, "log_sigma_m_scale", None)
+        if existing is not None and existing.numel() == n:
+            return
+        self._sigma_m_calib_nbins = n
+        device = self._s_half_sq.device if self._s_half_sq is not None else self.device
+        self.log_sigma_m_scale = nn.Parameter(
+            torch.zeros(n, device=device, dtype=get_float_dtype())
+        )
+
+    def get_sigma_m_calibration(self) -> torch.Tensor:
+        """Per-reflection multiplier ``c(h) = exp(log_sigma_m_scale)`` (differentiable).
+
+        Returns a full-size (N_refl,) tensor: broadcast for the global (1-DOF)
+        calibration, or gathered over ``self.bins`` for the per-bin variant. The
+        gradient flows back into ``log_sigma_m_scale`` (NOT detached — the
+        contrast with :meth:`get_beta`).
+        """
+        if getattr(self, "log_sigma_m_scale", None) is None:
+            self.ensure_sigma_m_calibration(1)
+        c = torch.exp(self.log_sigma_m_scale.clamp(min=-15.0, max=15.0))
+        n_full = len(self.bins)
+        if c.numel() == 1:
+            return c.expand(n_full)
+        return gather_with_index_add(c, self.bins)
+
+    def get_epsilon(self) -> torch.Tensor:
+        """Per-reflection multiplicity ``epsilon`` (the same ``ε`` ``beta`` uses).
+
+        Lazily filled and cached (model-independent); detached/constant.
+        """
+        if self._epsilon_per_refl is None:
+            sg = getattr(self._data, "spacegroup", None)
+            self._epsilon_per_refl = epsilon_from_hkl(self._data.hkl, sg).to(
+                self._s_half_sq.dtype
+            )
+        return self._epsilon_per_refl
+
     def set_data(self, data: "ReflectionData"):
         """
         Set data reference after empty initialization.
@@ -597,8 +658,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         valid = self._data.masks().to(torch.bool)
         rfree = self._data.rfree_flags.to(torch.bool)
         sel = valid & rfree  # valid work-set reflections
-        intensities = fobs ** 2
-        calc_intensities = F_calc ** 2
+        intensities = fobs**2
+        calc_intensities = F_calc**2
         mean_obs_intensity = torch.zeros(self.nbins, device=self.device)
         mean_calc_intensity = torch.zeros(self.nbins, device=self.device)
         counts = torch.zeros(self.nbins, device=self.device)
@@ -816,9 +877,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 centric_w = work.select(scaler_self._data.centric)
                 u_penalty = torch.sum(scaler_self.U**2)
                 return (
-                    ml_xray_loss_beta_math(
-                        F_obs, Fc, beta_w, centric_w, epsilon=eps_w
-                    )
+                    ml_xray_loss_beta_math(F_obs, Fc, beta_w, centric_w, epsilon=eps_w)
                     + u_penalty
                 )
 
@@ -861,12 +920,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 fcalc_scaled = self.forward(fcalc)
                 work, free = self._data.work, self._data.free
 
-                xray_work = nll_xray(
-                    work.F, work.select(fcalc_scaled), work.sigF
-                )
-                xray_test = nll_xray(
-                    free.F, free.select(fcalc_scaled), free.sigF
-                )
+                xray_work = nll_xray(work.F, work.select(fcalc_scaled), work.sigF)
+                xray_test = nll_xray(free.F, free.select(fcalc_scaled), free.sigF)
                 valid = self._data.masks().to(torch.bool)
                 rwork, rfree_val = get_rfactors(
                     torch.abs(self._data.get_corrected_data()[0][valid]),

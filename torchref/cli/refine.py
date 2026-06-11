@@ -100,15 +100,25 @@ Examples:
         "--xray-mode",
         type=str,
         default=None,  # resolved to 'ml' below; None lets us detect explicit 'ml'
-        choices=["gaussian", "ls", "rice", "ml", "ml_sigmaa", "bhattacharyya"],
+        choices=[
+            "gaussian",
+            "ls",
+            "rice",
+            "ml",
+            "ml_sigmaa",
+            "bhattacharyya",
+            "rice_sigma_m",
+        ],
         help="X-ray target function. 'ml' (default) is the maximum-likelihood "
         "Read MLF target with a cross-validated Luzzati sigma_A term "
         "(Phenix-style alpha/beta). 'rice' is the simpler unit-variance Rice "
         "maximum-likelihood target. 'bhattacharyya' uses the Bhattacharyya "
-        "overlap loss with first-principles model error estimation; "
-        "'ls'/'gaussian' are simpler alternatives. NOTE: 'ml' previously "
-        "selected the Rice target (now 'rice'); 'ml_sigmaa' is a deprecated "
-        "alias for 'ml'.",
+        "overlap loss with first-principles model error estimation. "
+        "'rice_sigma_m' is the Read-MLF Rice likelihood driven by a "
+        "differentiable, co-refined model-error variance (c*sigma_m^2) instead "
+        "of the free-set beta. 'ls'/'gaussian' are simpler alternatives. NOTE: "
+        "'ml' previously selected the Rice target (now 'rice'); 'ml_sigmaa' is a "
+        "deprecated alias for 'ml'.",
     )
     refine_group.add_argument(
         "--sigma-m-scale",
@@ -218,7 +228,7 @@ Examples:
         print(f"Output directory:  {outdir}")
         print(f"Refinement mode:   {args.mode}")
         print(f"X-ray target:      {args.xray_mode}")
-        if args.xray_mode == "bhattacharyya":
+        if args.xray_mode in ("bhattacharyya", "rice_sigma_m"):
             print(f"sigma_m scale:     {args.sigma_m_scale}")
         print(f"Refinement cycles: {args.n_cycles}")
         if args.with_rigid_body:
@@ -266,9 +276,7 @@ Examples:
         gw = refinement.loss_state.weights
         print(
             "Loss group base weights: "
-            + ", ".join(
-                f"{g}={gw.get(g, 1.0):g}" for g in ("xray", "geometry", "adp")
-            )
+            + ", ".join(f"{g}={gw.get(g, 1.0):g}" for g in ("xray", "geometry", "adp"))
         )
         print(f"Co-refine scaler in body steps: {args.corefine_scaler}")
         sys.stdout.flush()
@@ -287,7 +295,7 @@ Examples:
                     "pass will run before each macro cycle.\n"
                 )
             sys.stdout.flush()
-            
+
         if args.mode == "separate":
             cycle_fn = refinement.refine
         elif args.mode == "everything":

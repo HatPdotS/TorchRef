@@ -114,6 +114,7 @@ def create_xray_target(
     use_work_set: bool = True,
     sigma_mode: str = "raw",
     sigma_m_scale: float = 1.0,
+    sigma_m_calib_bins: int = 1,
     verbose: int = 0,
     device: Optional[torch.device] = None,
 ) -> XrayTarget:
@@ -130,10 +131,12 @@ def create_xray_target(
     scaler : Scaler, optional
         Reference to Scaler object.
     mode : str, optional
-        Target mode: 'gaussian', 'ls', 'rice', 'ml', or 'bhattacharyya'.
-        Default is 'ml' (maximum-likelihood Read MLF with Luzzati σ_A). 'rice'
-        is the simpler unit-variance Rice maximum-likelihood target. The legacy
-        spelling 'ml_sigmaa' is accepted as a deprecated alias for 'ml'.
+        Target mode: 'gaussian', 'ls', 'rice', 'ml', 'bhattacharyya', or
+        'rice_sigma_m'. Default is 'ml' (maximum-likelihood Read MLF with Luzzati
+        σ_A). 'rice' is the simpler unit-variance Rice maximum-likelihood target.
+        'rice_sigma_m' is the Read-MLF Rice likelihood driven by a differentiable,
+        co-refined model-error variance ``c·σ_m²`` (no free-set ``beta``). The
+        legacy spelling 'ml_sigmaa' is accepted as a deprecated alias for 'ml'.
     use_work_set : bool, optional
         Use work set (True) or test set (False). Default is True.
     sigma_mode : str, optional
@@ -183,6 +186,14 @@ def create_xray_target(
 
         return BhattacharyyaXrayTarget(
             sigma_m_scale=sigma_m_scale,
+            **kwargs,
+        )
+    elif mode == "rice_sigma_m":
+        from .rice_sigma_m import RiceSigmaMXrayTarget
+
+        return RiceSigmaMXrayTarget(
+            sigma_m_scale=sigma_m_scale,
+            sigma_m_calib_bins=sigma_m_calib_bins,
             **kwargs,
         )
     else:
