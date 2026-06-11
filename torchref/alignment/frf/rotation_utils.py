@@ -81,6 +81,37 @@ def edmonds_euler_from_rotation_matrix(R: torch.Tensor) -> Tuple[float, float, f
     return alpha, beta, gamma
 
 
+def axis_angle_to_matrix(omega: torch.Tensor) -> torch.Tensor:
+    """Rodrigues axis-angle → SO(3). ``omega = θ · axis`` (radians).
+
+    Accepts ``(3,)`` for a single rotation or ``(..., 3)`` for a batched stack
+    and returns ``(3, 3)`` or ``(..., 3, 3)``. The small-θ limit is handled
+    implicitly (sin θ→0, (1−cos θ)→0 ⇒ R→I); ``clamp(min=1e-30)`` guards the
+    axis normalisation at θ=0. Mirrors ``align._rodrigues`` but lives here so
+    both the rescore and the alignment pipeline can share it without a circular
+    import.
+    """
+    if omega.dtype not in (torch.float32, torch.float64):
+        omega = omega.to(torch.float64)
+    single = omega.dim() == 1
+    if single:
+        omega = omega.unsqueeze(0)
+    th = omega.norm(dim=-1, keepdim=True)               # (..., 1)
+    axis = omega / th.clamp(min=1e-30)                  # (..., 3)
+    zeros = torch.zeros_like(axis[..., 0])
+    K = torch.stack([
+        torch.stack([zeros, -axis[..., 2], axis[..., 1]], dim=-1),
+        torch.stack([axis[..., 2], zeros, -axis[..., 0]], dim=-1),
+        torch.stack([-axis[..., 1], axis[..., 0], zeros], dim=-1),
+    ], dim=-2)                                          # (..., 3, 3)
+    th_b = th.unsqueeze(-1)                             # (..., 1, 1)
+    eye = torch.eye(3, dtype=omega.dtype, device=omega.device).expand(
+        *omega.shape[:-1], 3, 3
+    )
+    R = eye + torch.sin(th_b) * K + (1.0 - torch.cos(th_b)) * (K @ K)
+    return R.squeeze(0) if single else R
+
+
 def rotation_angular_distance_deg(R1: torch.Tensor, R2: torch.Tensor) -> float:
     """Geodesic distance on SO(3) in degrees: ``arccos((tr(R1 R2^T) − 1)/2)``."""
     R = R1.to(torch.float64) @ R2.to(torch.float64).T

@@ -617,7 +617,7 @@ def align_model_to_data(
     L: int = 48,
     n_shells: int = 20,
     n_rotation_peaks: int = 500,
-    n_ml_refine: int = 500,
+    n_ml_refine: int = 20,  # rescore only the top-20 FRF peaks (refinement use case)
     ll_max_res_A: float = 3.0,
     ll_padding_factor: float = 2.0,
     verbose: int = 0,
@@ -646,6 +646,12 @@ def align_model_to_data(
     frf_lmax_cap: int = 48,
     frf_dense_pad: float = 2.0,
     rescore_engine: str = "m_letf1",
+    rescore_scat_mode: str = "legacy",
+    subpeak_refine: bool = False,
+    subpeak_refine_k: int = -1,
+    subpeak_refine_step_deg: float = 1.5,
+    subpeak_refine_iters: int = 1,
+    subpeak_refine_max_move_deg: Optional[float] = 1.5,
 ) -> "ModelFT":
     """Run full MR alignment of ``model`` against ``data``.
 
@@ -862,7 +868,39 @@ def align_model_to_data(
             n_refine=min(len(peaks), n_ml_refine),
             batch_size=50,
             verbose=verbose,
+            scat_mode=rescore_scat_mode,
         )
+        if subpeak_refine:
+            # Sharpen the top candidate orientations on the (now-corrected)
+            # ML-LLG surface before the translation search — the FTF is sensitive
+            # to orientation error and the FRF grid leaves up to ~half a grid step
+            # (~1°). Rebuild the LLG context once (cheap: one identity interpolator
+            # eval) and take a quadratic tangent-space Newton step per top-K peak.
+            from .ml_rotation import _build_llg_context, quadratic_llg_refine
+            timer.start("4b_subpeak_refine")
+            _ctx = _build_llg_context(
+                F_obs, hkl, s_mag, centric, ll, data.cell,
+                data.spacegroup.matrices.to(torch.float64).to(device),
+                n_shells=max(n_shells // 2, 8), batch_size=50,
+                scat_mode=rescore_scat_mode,
+            )
+            _k = subpeak_refine_k if subpeak_refine_k > 0 else n_rotation_candidates
+            _k = min(_k, len(rescored))
+            rescored = quadratic_llg_refine(
+                rescored, _ctx,
+                k_refine=_k,
+                step_deg=subpeak_refine_step_deg,
+                iterations=subpeak_refine_iters,
+                max_move_deg=subpeak_refine_max_move_deg,
+                verbose=verbose,
+            )
+            timer.stop("4b_subpeak_refine")
+            if verbose > 0:
+                print(
+                    f"fit_to_data: sub-peak refined top {_k} orientations "
+                    f"on the ML-LLG surface (step={subpeak_refine_step_deg}°).",
+                    flush=True,
+                )
     else:  # rescore_engine == "sim" — legacy Sim/Rice approximation
         rescored = sim_mlrf_rescore(
             peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
