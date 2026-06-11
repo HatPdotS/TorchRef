@@ -2,7 +2,7 @@
 
 Builds a minimal 2-dataset collection (dark + one timepoint) from 1DAW and
 checks (a) CollectionScaler.get_beta() returns one shared finite beta on
-the common HKL, caches, and resets; (b) CollectionMLSigmaATarget.forward() is
+the common HKL, caches, and resets; (b) CollectionMLTarget.forward() is
 finite and its gradient reaches the model.
 """
 
@@ -58,10 +58,10 @@ class TestCollectionSigmaA:
         assert scaler._beta_cache is None
 
     def test_forward_and_gradient(self, collection):
-        from torchref.refinement.targets import CollectionMLSigmaATarget
+        from torchref.refinement.targets import CollectionMLTarget
 
         dc, mc, scaler = collection
-        target = CollectionMLSigmaATarget(dc, mc, scaler=scaler, verbose=0)
+        target = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
 
         loss = target.forward()
         assert torch.isfinite(loss)
@@ -71,10 +71,10 @@ class TestCollectionSigmaA:
         assert xyz.grad is not None and torch.isfinite(xyz.grad).all()
 
     def test_maintenance_resets_cache(self, collection):
-        from torchref.refinement.targets import CollectionMLSigmaATarget
+        from torchref.refinement.targets import CollectionMLTarget
 
         dc, mc, scaler = collection
-        target = CollectionMLSigmaATarget(dc, mc, scaler=scaler, verbose=0)
+        target = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
         scaler.get_beta()
         assert scaler._beta_cache is not None
         target.maintenance()

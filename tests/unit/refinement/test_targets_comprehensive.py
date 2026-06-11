@@ -105,14 +105,14 @@ class TestLeastSquaresXrayTarget:
 
 
 @pytest.mark.unit
-class TestMaximumLikelihoodXrayTarget:
-    """Test MaximumLikelihoodXrayTarget."""
+class TestRiceXrayTarget:
+    """Test RiceXrayTarget."""
 
-    def test_ml_target_initialization(self):
-        """Test MaximumLikelihoodXrayTarget initialization."""
-        from torchref.refinement.targets import MaximumLikelihoodXrayTarget
+    def test_rice_target_initialization(self):
+        """Test RiceXrayTarget initialization."""
+        from torchref.refinement.targets import RiceXrayTarget
 
-        target = MaximumLikelihoodXrayTarget()
+        target = RiceXrayTarget()
         assert target._model is None
         assert target._data is None
 

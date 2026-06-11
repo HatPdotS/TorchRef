@@ -122,7 +122,7 @@ configure_unbuffered_output()
 
 DEFAULT_TARGET_WEIGHTS = {
     "xray/difference": 1.0,
-    "xray/ml": 0.0,
+    "xray/rice": 0.0,
     # "geometry/bond": 1.0, # geometry restraint should never require tuning, so leave at 1.0
     # "geometry/angle": 1.0,
     # "geometry/torsion": 1.0,
@@ -253,7 +253,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     diff_target = CollectionDifferenceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
-    ml_target = CollectionRiceTarget(
+    rice_target = CollectionRiceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
     geom_target = TotalGeometryTarget(model_light)
@@ -264,7 +264,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     )
 
     state.register_target("xray/difference", diff_target)
-    state.register_target("xray/ml", ml_target)
+    state.register_target("xray/rice", rice_target)
     state.register_target("geometry", geom_target)
     state.register_target("adp", adp_target)
     state.register_target("similarity", similarity_target)
