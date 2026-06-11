@@ -12,7 +12,7 @@ Example - Full MR Pipeline
 --------------------------
 ::
 
-    from torchref.alignment import MolecularReplacementPipeline
+    from torchref.experimental.alignment import MolecularReplacementPipeline
     from torchref.model import ModelFT
     from torchref.io.datasets.reflection_data import ReflectionData
 
@@ -27,7 +27,7 @@ Example - Individual Components
 -------------------------------
 ::
 
-    from torchref.alignment import (
+    from torchref.experimental.alignment import (
         ball_rotation_search_torch,
         fft_translation_search_torch,
         RigidBodyRefinement,
@@ -52,7 +52,7 @@ Example - Individual Components
 import warnings
 
 warnings.warn(
-    "torchref.alignment is in development. APIs may change.",
+    "torchref.experimental.alignment is in development. APIs may change.",
     FutureWarning,
 )
 

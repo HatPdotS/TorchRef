@@ -197,7 +197,7 @@ class MolecularReplacementPipeline:
     --------
     ::
 
-        from torchref.alignment import MolecularReplacementPipeline
+        from torchref.experimental.alignment import MolecularReplacementPipeline
         from torchref.model import ModelFT
         from torchref.io.datasets import ReflectionData
 

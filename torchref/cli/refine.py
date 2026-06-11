@@ -4,14 +4,14 @@
 Command-line script for LBFGS crystallographic refinement using torchref.
 
 Uses the maximum-likelihood σ_A (Read MLF) target by default; Bhattacharyya /
-Gaussian / least-squares / plain maximum-likelihood targets remain available
+Gaussian / least-squares / Rice maximum-likelihood targets remain available
 via ``--xray-mode``.
 
 Examples
 --------
 ::
 
-    # Default: ml_sigmaa (maximum-likelihood Luzzati σ_A) target, joint XYZ+ADP+scaler LBFGS
+    # Default: ml (maximum-likelihood Luzzati σ_A) target, joint XYZ+ADP+scaler LBFGS
     torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
 
     # 10 refinement cycles
@@ -22,7 +22,7 @@ Examples
 
     # Alternative targets
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode bhattacharyya
-    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
+    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode rice
 """
 
 import argparse
@@ -72,8 +72,8 @@ Examples:
   # Separated XYZ then ADP cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode refine
 
-  # Legacy maximum-likelihood target
-  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
+  # Rice maximum-likelihood target
+  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode rice
         """,
     )
 
@@ -99,13 +99,16 @@ Examples:
     refine_group.add_argument(
         "--xray-mode",
         type=str,
-        default="ml_sigmaa",
-        choices=["gaussian", "ls", "ml", "ml_sigmaa", "bhattacharyya"],
-        help="X-ray target function. 'ml_sigmaa' (default) is the "
-        "maximum-likelihood Read MLF target with a cross-validated Luzzati "
-        "sigma_A term (Phenix-style alpha/beta). 'bhattacharyya' uses the "
-        "Bhattacharyya overlap loss with first-principles model error "
-        "estimation; 'ml'/'ls'/'gaussian' are simpler alternatives.",
+        default=None,  # resolved to 'ml' below; None lets us detect explicit 'ml'
+        choices=["gaussian", "ls", "rice", "ml", "ml_sigmaa", "bhattacharyya"],
+        help="X-ray target function. 'ml' (default) is the maximum-likelihood "
+        "Read MLF target with a cross-validated Luzzati sigma_A term "
+        "(Phenix-style alpha/beta). 'rice' is the simpler unit-variance Rice "
+        "maximum-likelihood target. 'bhattacharyya' uses the Bhattacharyya "
+        "overlap loss with first-principles model error estimation; "
+        "'ls'/'gaussian' are simpler alternatives. NOTE: 'ml' previously "
+        "selected the Rice target (now 'rice'); 'ml_sigmaa' is a deprecated "
+        "alias for 'ml'.",
     )
     refine_group.add_argument(
         "--sigma-m-scale",
@@ -157,6 +160,26 @@ Examples:
     add_general_args(parser)
 
     args = parser.parse_args()
+
+    # --xray-mode defaults to 'ml' (the σ_A maximum-likelihood target). The
+    # meaning of 'ml' changed: it used to select the Rice target (now 'rice').
+    # Warn once when 'ml' was passed explicitly so users relying on the old
+    # behaviour notice the swap; a bare default stays silent.
+    if args.xray_mode == "ml":
+        print(
+            "Note: '--xray-mode ml' now selects the maximum-likelihood Read MLF "
+            "σ_A target. The former 'ml' (plain Rice) target is now "
+            "'--xray-mode rice'.",
+            file=sys.stderr,
+        )
+    elif args.xray_mode == "ml_sigmaa":
+        print(
+            "Note: '--xray-mode ml_sigmaa' is deprecated; use '--xray-mode ml'.",
+            file=sys.stderr,
+        )
+        args.xray_mode = "ml"
+    elif args.xray_mode is None:
+        args.xray_mode = "ml"
 
     register_timing()
 

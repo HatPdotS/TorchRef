@@ -49,7 +49,7 @@ class LBFGSRefinement(Refinement):
     Parameters
     ----------
     target_mode : str, optional
-        X-ray target mode ('gaussian', 'ls', 'ml', 'ml_sigmaa', 'bhattacharyya'). Default is 'ml_sigmaa'.
+        X-ray target mode ('gaussian', 'ls', 'rice', 'ml', 'bhattacharyya'). Default is 'ml'.
     *args
         Passed to parent Refinement class.
     **kwargs
@@ -84,7 +84,7 @@ class LBFGSRefinement(Refinement):
     def __init__(
         self,
         *args,
-        target_mode: str = "ml_sigmaa",
+        target_mode: str = "ml",
         sigma_m_scale: float = 1.0,
         corefine_scaler: bool = False,
         use_lossstate_scaler: bool = True,
@@ -96,8 +96,8 @@ class LBFGSRefinement(Refinement):
         Parameters
         ----------
         target_mode : str, optional
-            X-ray target mode ('gaussian', 'ls', 'ml', 'ml_sigmaa', 'bhattacharyya').
-            Default is 'ml_sigmaa' (maximum-likelihood Read MLF with Luzzati σ_A).
+            X-ray target mode ('gaussian', 'ls', 'rice', 'ml', 'bhattacharyya').
+            Default is 'ml' (maximum-likelihood Read MLF with Luzzati σ_A).
         sigma_m_scale : float, optional
             Global multiplier for σ_m in the Bhattacharyya target only.
             Ignored for other target modes. Default 1.0.

@@ -166,7 +166,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     def reset_beta_cache(self):
         """Invalidate the cached beta so it re-estimates on next access.
 
-        Called from ``MaximumLikelihoodSigmaAXrayTarget.maintenance`` (which
+        Called from ``MaximumLikelihoodXrayTarget.maintenance`` (which
         ``LossState`` invokes after each optimizer-step block). Epsilon is kept
         (it is model-independent). Mirrors the ``_f_sol_raw = None`` solvent-cache
         invalidation pattern.

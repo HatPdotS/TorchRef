@@ -1039,7 +1039,7 @@ def refine_peaks_subvoxel_wrapper(
         List of (alpha, beta, gamma, score, sigma) tuples with refined positions.
     """
     import jax.numpy as jnp
-    from torchref.alignment.jax_subpixel_peaks import refine_peaks_subvoxel
+    from torchref.experimental.alignment.jax_subpixel_peaks import refine_peaks_subvoxel
 
     if not peaks:
         return peaks

@@ -262,15 +262,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 self.debug_on_error(e)
             raise e
 
-    def _init_targets(self, xray_mode: str = "ml_sigmaa"):
+    def _init_targets(self, xray_mode: str = "ml"):
         """
         Initialize target functions.
 
         Parameters
         ----------
         xray_mode : str, optional
-            X-ray target mode. Options are 'gaussian', 'ls', 'ml',
-            'ml_sigmaa', or 'bhattacharyya'. Default is 'ml_sigmaa'.
+            X-ray target mode. Options are 'gaussian', 'ls', 'rice', 'ml',
+            or 'bhattacharyya'. Default is 'ml' (maximum-likelihood Read MLF
+            with Luzzati σ_A).
         """
         # X-ray targets (now accept model, data, scaler directly)
         self.xray_target_work = create_xray_target(
@@ -310,7 +311,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         mode : str
-            X-ray target mode. Options: 'gaussian', 'ls', 'ml', 'ml_sigmaa', 'bhattacharyya'.
+            X-ray target mode. Options: 'gaussian', 'ls', 'rice', 'ml', 'bhattacharyya'.
         """
         sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
         self.xray_target_work = create_xray_target(

@@ -53,7 +53,7 @@ class occupancy_unrestrained(DeviceMixin, nn.Module):
         plt.close()
 
 
-from torchref.kinetic.kinetics import KineticModel
+from torchref.experimental.kinetic.kinetics import KineticModel
 
 
 class occupancies_kinetics(DeviceMixin, nn.Module):

@@ -29,7 +29,7 @@ from torchref.config import get_default_device
 from torchref.scaling import ScalerBase
 from torchref.model import SfFFT
 from torchref.symmetry import spacegroup
-from torchref.refinement.targets import MaximumLikelihoodXrayTarget
+from torchref.refinement.targets import RiceXrayTarget
 from torchref.base import rotation_matrix_euler_zyz
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -178,7 +178,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         self.scaler.initialize(fcalc_initial)
         self.scaler.refine_lbfgs(fcalc=fcalc_initial)
 
-        self.xray_target = MaximumLikelihoodXrayTarget(data=self.data, scaler=self.scaler)
+        self.xray_target = RiceXrayTarget(data=self.data, scaler=self.scaler)
 
     def get_rotation_matrix(self) -> torch.Tensor:
         """
