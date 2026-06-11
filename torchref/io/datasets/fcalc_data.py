@@ -87,8 +87,8 @@ class FcalcDataset(CrystalDataset):
         spacegroup: SpaceGroupLike,
         d_min: float = 2.0,
         d_max: Optional[float] = None,
-        device: torch.device = get_default_device(),
-        dtype: torch.dtype = get_float_dtype(),
+        device: torch.device = None,
+        dtype: torch.dtype = None,
     ) -> "FcalcDataset":
         """
         Create FcalcDataset with HKL generated to given resolution.
@@ -128,7 +128,13 @@ class FcalcDataset(CrystalDataset):
             print(f"Generated {len(dataset)} reflections")
         """
         import gemmi
+
         from torchref.base.reciprocal import get_d_spacing
+
+        if device is None:
+            device = get_default_device()
+        if dtype is None:
+            dtype = get_float_dtype()
 
         # Handle Cell input - convert to Cell object if needed
         if isinstance(cell, Cell):
@@ -151,8 +157,12 @@ class FcalcDataset(CrystalDataset):
         # This generates only unique reflections in the asymmetric unit
         cell_list = cell_tensor.cpu().tolist()
         gemmi_cell = gemmi.UnitCell(
-            cell_list[0], cell_list[1], cell_list[2],
-            cell_list[3], cell_list[4], cell_list[5]
+            cell_list[0],
+            cell_list[1],
+            cell_list[2],
+            cell_list[3],
+            cell_list[4],
+            cell_list[5],
         )
         gemmi_sg = sg_obj._gemmi  # Get underlying gemmi.SpaceGroup
 
@@ -325,9 +335,7 @@ class FcalcDataset(CrystalDataset):
             sigf_column: sigma,
         }
         if self.fcalc_phase is not None:
-            columns[phase_column] = (
-                torch.rad2deg(self.fcalc_phase).cpu().numpy()
-            )
+            columns[phase_column] = torch.rad2deg(self.fcalc_phase).cpu().numpy()
 
         df = pd.DataFrame(columns)
         mtz.write(df, self.cell.data, self.spacegroup, filepath)
@@ -350,9 +358,7 @@ class FcalcDataset(CrystalDataset):
         return state
 
     @classmethod
-    def _from_state(
-        cls, state: Dict[str, Any], device=get_default_device()
-    ) -> "FcalcDataset":
+    def _from_state(cls, state: Dict[str, Any], device=None) -> "FcalcDataset":
         """
         Reconstruct from state, creating SpaceGroup wrapper.
 
@@ -370,6 +376,9 @@ class FcalcDataset(CrystalDataset):
         """
         from torchref.utils.utils import TensorMasks
 
+        if device is None:
+            device = get_default_device()
+
         # Extract masks before creating object
         masks_state = state.pop("masks", {})
 
@@ -385,7 +394,9 @@ class FcalcDataset(CrystalDataset):
         # Convert cell tensor back to Cell object
         if "cell" in state and state["cell"] is not None:
             if isinstance(state["cell"], torch.Tensor):
-                state["cell"] = Cell(state["cell"], dtype=get_float_dtype(), device=device)
+                state["cell"] = Cell(
+                    state["cell"], dtype=get_float_dtype(), device=device
+                )
 
         # Create object with remaining state
         obj = cls(**state)

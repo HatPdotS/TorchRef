@@ -139,10 +139,14 @@ class ClashScoreCalculator(DeviceMixin, nn.Module):
         self,
         symmetry: SpaceGroupLike,
         default_clash_radius: float = 5.0,
-        dtype: torch.dtype = get_float_dtype(),
-        device: torch.device = get_default_device(),
+        dtype: torch.dtype = None,
+        device: torch.device = None,
     ):
         super().__init__()
+        if dtype is None:
+            dtype = get_float_dtype()
+        if device is None:
+            device = get_default_device()
         self.default_clash_radius = default_clash_radius
         self.dtype = dtype
         self._device = device
@@ -313,7 +317,9 @@ class ClashScoreCalculator(DeviceMixin, nn.Module):
             xyz_mate_frac = transform.apply(xyz_frac)
 
             # Convert back to Cartesian
-            xyz_mate_cart = fractional_to_cartesian_torch(xyz_mate_frac, cell_obj.data, B)
+            xyz_mate_cart = fractional_to_cartesian_torch(
+                xyz_mate_frac, cell_obj.data, B
+            )
 
             # Compute squared pairwise distances (more efficient, no sqrt)
             diff = xyz_selected.unsqueeze(1) - xyz_mate_cart.unsqueeze(0)  # (N, N, 3)

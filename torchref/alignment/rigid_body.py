@@ -25,13 +25,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device
-from torchref.scaling import ScalerBase
-from torchref.model import SfFFT
-from torchref.symmetry import spacegroup
-from torchref.refinement.targets import MaximumLikelihoodXrayTarget
 from torchref.base import rotation_matrix_euler_zyz
+from torchref.config import get_default_device
+from torchref.model import SfFFT
+from torchref.refinement.targets import MaximumLikelihoodXrayTarget
+from torchref.scaling import ScalerBase
+from torchref.symmetry import spacegroup
 from torchref.utils.device_mixin import DeviceMixin
+
 
 @dataclass
 class RigidBodyResult:
@@ -55,6 +56,7 @@ class RigidBodyResult:
     converged : bool
         Whether the refinement converged.
     """
+
     final_rotation: torch.Tensor
     final_translation_frac: torch.Tensor
     initial_r_factor: float
@@ -64,9 +66,6 @@ class RigidBodyResult:
     LBFGS_iterations: int
     LBFGS_function_evaluations: int
     converged: bool
-
-
-
 
 
 class RigidBodyRefinement(DeviceMixin, nn.Module):
@@ -111,14 +110,18 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         model,  # ModelFT
         data,  # ReflectionData
         expected_rotational_error: float = 0.1,
-        initial_rotation: torch.Tensor = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32),
+        initial_rotation: torch.Tensor = torch.tensor(
+            [0.0, 0.0, 0.0], dtype=torch.float32
+        ),
         initial_translation: Optional[torch.Tensor] = None,
-        device: torch.device = get_default_device(),
+        device: torch.device = None,
         rfactor_converged_threshold: float = 0.45,
         max_res: float = 4.0,
         verbose: int = 1,
     ):
         super().__init__()
+        if device is None:
+            device = get_default_device()
         self.device = device
         self.data = data
 
@@ -136,7 +139,6 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         self.spacegroup = data.spacegroup
 
         self.fft = SfFFT(self.cell, self.spacegroup, max_res=max_res)
-
 
         self.verbose = verbose
         self.rfactor_converged_threshold = rfactor_converged_threshold
@@ -156,11 +158,10 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             self.A_aniso = None
             self.B_aniso = None
 
-
-
-
         # Store initial rotation
-        self.register_buffer("initial_rotation", initial_rotation.to(device=device).clone())
+        self.register_buffer(
+            "initial_rotation", initial_rotation.to(device=device).clone()
+        )
 
         self.rotation_parameters = nn.Parameter(torch.zeros(3, device=device))
         self.expected_rotational_error = expected_rotational_error
@@ -178,7 +179,9 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         self.scaler.initialize(fcalc_initial)
         self.scaler.refine_lbfgs(fcalc=fcalc_initial)
 
-        self.xray_target = MaximumLikelihoodXrayTarget(data=self.data, scaler=self.scaler)
+        self.xray_target = MaximumLikelihoodXrayTarget(
+            data=self.data, scaler=self.scaler
+        )
 
     def get_rotation_matrix(self) -> torch.Tensor:
         """
@@ -203,7 +206,9 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         torch.Tensor
             Current (d_alpha, d_beta, d_gamma) in radians.
         """
-        return (2 * torch.sigmoid(self.rotation_parameters) - 1) * self.expected_rotational_error
+        return (
+            2 * torch.sigmoid(self.rotation_parameters) - 1
+        ) * self.expected_rotational_error
 
     def get_current_rotation_angles(self) -> torch.Tensor:
         """
@@ -266,7 +271,9 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         hkl = self.data.hkl
 
         if debug:
-            print(f"      xyz_transformed.requires_grad: {xyz_transformed.requires_grad}")
+            print(
+                f"      xyz_transformed.requires_grad: {xyz_transformed.requires_grad}"
+            )
             print(f"      xyz_transformed.grad_fn: {xyz_transformed.grad_fn}")
 
         # Transform anisotropic atoms if present
@@ -303,7 +310,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
     def refine(
         self,
         n_tries: int = 1,
-        n_iter: int = 100, 
+        n_iter: int = 100,
     ) -> RigidBodyResult:
         """
         Run rigid body refinement using least-squares loss with Adam optimizer.
@@ -335,13 +342,18 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         import sys
 
         if self.verbose > 2:
-            print(f"    Setting up LBFGS optimizer niter = {n_iter} and max tries = {n_tries}")
+            print(
+                f"    Setting up LBFGS optimizer niter = {n_iter} and max tries = {n_tries}"
+            )
             sys.stdout.flush()
-        parameters = [self.rotation_parameters, self.translation_frac, *self.scaler.parameters()]
+        parameters = [
+            self.rotation_parameters,
+            self.translation_frac,
+            *self.scaler.parameters(),
+        ]
 
         self.optimizer = torch.optim.LBFGS(
-            parameters,
-            lr=1, max_iter=100, line_search_fn='strong_wolfe'
+            parameters, lr=1, max_iter=100, line_search_fn="strong_wolfe"
         )
 
         def loss():
@@ -350,23 +362,29 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
 
         noise = 0
 
-
         def closure():
             self.optimizer.zero_grad()
             current_loss = loss()
             current_loss.backward()
-            gradnorm = self.optimizer.param_groups[0]['params'][0].norm().item()
+            gradnorm = self.optimizer.param_groups[0]["params"][0].norm().item()
             if noise > 0:
-                self.optimizer.param_groups[0]['params'][0].grad  += noise * torch.randn_like(self.optimizer.param_groups[0]['params'][0].grad) * gradnorm
+                self.optimizer.param_groups[0]["params"][0].grad += (
+                    noise
+                    * torch.randn_like(self.optimizer.param_groups[0]["params"][0].grad)
+                    * gradnorm
+                )
             return current_loss
-        
+
         rwork_initial, rfree_initial = self.scaler.rfactor(self())
 
         initial_loss = closure().item()
         if self.verbose > 0:
-            print(f"Initial R-work: {rwork_initial:.4f}, R-free: {rfree_initial:.4f}, ML loss: {initial_loss:.4f}")
+            print(
+                f"Initial R-work: {rwork_initial:.4f}, R-free: {rfree_initial:.4f}, ML loss: {initial_loss:.4f}"
+            )
 
         from time import time
+
         start_time = time()
 
         tries_needed = 0
@@ -386,37 +404,56 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             if converged or tries_needed >= n_tries:
                 if noise > 0:
                     noise = 0
-                    self.optimizer.step(closure) 
+                    self.optimizer.step(closure)
                 if self.verbose > 1:
-                    print(f"Converged at iteration {tries_needed} with R-work: {final_rwork:.4f}")
+                    print(
+                        f"Converged at iteration {tries_needed} with R-work: {final_rwork:.4f}"
+                    )
                 break
 
             else:
                 noise += 1e-2
                 self.optimizer = torch.optim.LBFGS(
-                    parameters,
-                    lr=1, max_iter=100, line_search_fn='strong_wolfe'
+                    parameters, lr=1, max_iter=100, line_search_fn="strong_wolfe"
                 )
 
         end_time = time()
 
         if self.verbose > 0:
-            print(f"\nRefinement complete after {tries_needed} steps in {end_time - start_time:.2f} seconds.")
-            print(f"  Final R-work: {final_rwork:.4f} (improved by {rwork_initial - final_rwork:.4f})")
-            print(f"  Final R-free: {final_rfree:.4f} (improved by {rfree_initial - final_rfree:.4f})")
-            print(f"  Final rotation angles (deg):", self.get_current_rotation_angles().rad2deg().detach().cpu().numpy())
-            print(f"  Final translation: {self.translation_frac.detach().cpu().numpy()}")
+            print(
+                f"\nRefinement complete after {tries_needed} steps in {end_time - start_time:.2f} seconds."
+            )
+            print(
+                f"  Final R-work: {final_rwork:.4f} (improved by {rwork_initial - final_rwork:.4f})"
+            )
+            print(
+                f"  Final R-free: {final_rfree:.4f} (improved by {rfree_initial - final_rfree:.4f})"
+            )
+            print(
+                f"  Final rotation angles (deg):",
+                self.get_current_rotation_angles().rad2deg().detach().cpu().numpy(),
+            )
+            print(
+                f"  Final translation: {self.translation_frac.detach().cpu().numpy()}"
+            )
 
         return RigidBodyResult(
-            final_rotation=self.get_current_rotation_angles().detach().cpu().numpy().tolist(),
-            final_translation_frac=self.translation_frac.detach().cpu().numpy().tolist(),
+            final_rotation=self.get_current_rotation_angles()
+            .detach()
+            .cpu()
+            .numpy()
+            .tolist(),
+            final_translation_frac=self.translation_frac.detach()
+            .cpu()
+            .numpy()
+            .tolist(),
             initial_r_factor=rwork_initial,
             final_r_factor=final_rwork,
             final_ml_loss=final_loss,
-            LBFGS_iterations=self.optimizer.state['n_iter'],
-            LBFGS_function_evaluations=self.optimizer.state['func_evals'],
+            LBFGS_iterations=self.optimizer.state["n_iter"],
+            LBFGS_function_evaluations=self.optimizer.state["func_evals"],
             n_steps=tries_needed,
-            converged=converged
+            converged=converged,
         )
 
     def get_final_parameters(self) -> dict:
@@ -432,12 +469,12 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         angles = self.get_current_rotation_angles().detach().cpu()
         rotation_perturbation = self.rotation.detach().cpu()
         return {
-            'alpha_deg': np.degrees(angles[0].item()),
-            'beta_deg': np.degrees(angles[1].item()),
-            'gamma_deg': np.degrees(angles[2].item()),
-            'translation_frac': self.translation_frac.detach().cpu().numpy(),
-            'scale': self.get_scale(),
-            'd_alpha_deg': np.degrees(rotation_perturbation[0].item()),
-            'd_beta_deg': np.degrees(rotation_perturbation[1].item()),
-            'd_gamma_deg': np.degrees(rotation_perturbation[2].item()),
+            "alpha_deg": np.degrees(angles[0].item()),
+            "beta_deg": np.degrees(angles[1].item()),
+            "gamma_deg": np.degrees(angles[2].item()),
+            "translation_frac": self.translation_frac.detach().cpu().numpy(),
+            "scale": self.get_scale(),
+            "d_alpha_deg": np.degrees(rotation_perturbation[0].item()),
+            "d_beta_deg": np.degrees(rotation_perturbation[1].item()),
+            "d_gamma_deg": np.degrees(rotation_perturbation[2].item()),
         }
