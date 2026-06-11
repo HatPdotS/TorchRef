@@ -70,8 +70,10 @@ class CollectionScaler(ScalerBase):
         model_collection: "ModelCollection",
         nbins: int = 20,
         verbose: int = 1,
-        device: torch.device = get_default_device(),
+        device: torch.device = None,
     ):
+        if device is None:
+            device = get_default_device()
         # Bind to the dark/reference dataset for bins and scattering vectors
         dark_data = dataset_collection[model_collection.dark_key]
         super().__init__(

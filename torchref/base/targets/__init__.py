@@ -17,7 +17,7 @@ Mapping
     refinement.targets.geometry.RamachandranTarget -> ramachandran.ramachandran_math
     refinement.targets.geometry.NonBondedTarget    -> nonbonded.nonbonded_heavy_math
     refinement.targets.adp.ADPSimilarityTarget     -> adp.adp_simu_math
-    refinement.targets.xray.MaximumLikelihoodXrayTarget -> xray_ml.ml_xray_loss_math
+    refinement.targets.xray.RiceXrayTarget          -> xray_ml.ml_xray_loss_math
     refinement.targets.xray.GaussianXrayTarget          -> xray_gaussian.gaussian_xray_loss_math
     refinement.targets.xray.LeastSquaresXrayTarget      -> xray_ls.ls_xray_loss_math
     refinement.targets.xray.BhattacharyyaXrayTarget     -> xray_bhattacharyya.bhattacharyya_xray_loss_math

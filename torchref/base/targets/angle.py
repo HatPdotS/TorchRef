@@ -2,7 +2,7 @@
 
 import torch
 
-from ._common import LOG_2PI
+from ._common import COS_CLAMP, EPS, LOG_2PI
 from ._dispatch import use_triton
 
 
@@ -17,10 +17,15 @@ def _angle_math_eager(
     pos_c = xyz[idx[:, 2]]
     v1 = pos_a - pos_b
     v2 = pos_c - pos_b
+    # Floor the norms (coincident atoms) and clamp cos to (-1, 1); both keep
+    # the ``acos`` backward (-1/sqrt(1-cos**2)) finite at collinearity so the
+    # eager gradient matches the Triton kernel instead of returning NaN.
+    n1 = torch.linalg.norm(v1, dim=-1).clamp_min(EPS)
+    n2 = torch.linalg.norm(v2, dim=-1).clamp_min(EPS)
     cos_angle = torch.clamp(
-        torch.sum(v1 * v2, dim=-1)
-        / (torch.linalg.norm(v1, dim=-1) * torch.linalg.norm(v2, dim=-1)),
-        -1.0, 1.0,
+        torch.sum(v1 * v2, dim=-1) / (n1 * n2),
+        -COS_CLAMP,
+        COS_CLAMP,
     )
     angles_rad = torch.acos(cos_angle)
     deviations = angles_rad - references_rad
@@ -53,5 +58,6 @@ def angle_math(
     """
     if use_triton(xyz):
         from .triton.angle import angle_math_triton
+
         return angle_math_triton(xyz, idx, references_rad, sigmas_rad)
     return _angle_math_eager(xyz, idx, references_rad, sigmas_rad)

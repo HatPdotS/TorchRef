@@ -35,9 +35,9 @@ if TYPE_CHECKING:
 def ReciprocalSymmetry(
     space_group: SpaceGroupLike,
     grid_shape,
-    dtype_float=get_float_dtype(),
+    dtype_float=None,
     verbose=1,
-    device=get_default_device(),
+    device=None,
 ):
     """
     Factory function to create the appropriate ReciprocalSymmetry implementation.
@@ -104,9 +104,9 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         self,
         space_group,
         grid_shape,
-        dtype_float=get_float_dtype(),
+        dtype_float=None,
         verbose=1,
-        device=get_default_device(),
+        device=None,
     ):
         """
         Initialize reciprocal space symmetry operator.
@@ -125,6 +125,10 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
             Computation device.
         """
         super().__init__()
+        if dtype_float is None:
+            dtype_float = get_float_dtype()
+        if device is None:
+            device = get_default_device()
         self.dtype_float = dtype_float
         self.space_group = space_group
         self.grid_shape = tuple(grid_shape)
@@ -1085,7 +1089,9 @@ def _check_systematic_absences(
     absent = torch.zeros(n_refl, dtype=torch.bool, device=device)
 
     hkl_float = hkl.to(dtype=get_float_dtype(), device=device)
-    recip_matrices = matrices.transpose(-2, -1).to(dtype=get_float_dtype(), device=device)
+    recip_matrices = matrices.transpose(-2, -1).to(
+        dtype=get_float_dtype(), device=device
+    )
     translations = translations.to(dtype=get_float_dtype(), device=device)
 
     for i in range(n_ops):
@@ -1302,35 +1308,34 @@ def _asu_condition_vectorized(h, k, l, condition_key):
     # Map the 10 distinct CCP4 ASU conditions (covers all 230 space groups).
     _conditions = {
         # Laue -1 (triclinic)
-        "l>0 or (l=0 and (h>0 or (h=0 and k>=0)))":
-            lambda h, k, l: (l > 0) | ((l == 0) & ((h > 0) | ((h == 0) & (k >= 0)))),
+        "l>0 or (l=0 and (h>0 or (h=0 and k>=0)))": lambda h, k, l: (l > 0)
+        | ((l == 0) & ((h > 0) | ((h == 0) & (k >= 0)))),
         # Laue 2/m (monoclinic)
-        "k>=0 and (l>0 or (l=0 and h>=0))":
-            lambda h, k, l: (k >= 0) & ((l > 0) | ((l == 0) & (h >= 0))),
+        "k>=0 and (l>0 or (l=0 and h>=0))": lambda h, k, l: (k >= 0)
+        & ((l > 0) | ((l == 0) & (h >= 0))),
         # Laue mmm (orthorhombic)
-        "h>=0 and k>=0 and l>=0":
-            lambda h, k, l: (h >= 0) & (k >= 0) & (l >= 0),
+        "h>=0 and k>=0 and l>=0": lambda h, k, l: (h >= 0) & (k >= 0) & (l >= 0),
         # Laue 4/m, 6/m (tetragonal, hexagonal)
-        "l>=0 and ((h>=0 and k>0) or (h=0 and k=0))":
-            lambda h, k, l: (l >= 0) & (((h >= 0) & (k > 0)) | ((h == 0) & (k == 0))),
+        "l>=0 and ((h>=0 and k>0) or (h=0 and k=0))": lambda h, k, l: (l >= 0)
+        & (((h >= 0) & (k > 0)) | ((h == 0) & (k == 0))),
         # Laue 4/mmm, 6/mmm
-        "h>=k and k>=0 and l>=0":
-            lambda h, k, l: (h >= k) & (k >= 0) & (l >= 0),
+        "h>=k and k>=0 and l>=0": lambda h, k, l: (h >= k) & (k >= 0) & (l >= 0),
         # Laue -3 (trigonal, no mirror)
-        "(h>=0 and k>0) or (h=0 and k=0 and l>=0)":
-            lambda h, k, l: ((h >= 0) & (k > 0)) | ((h == 0) & (k == 0) & (l >= 0)),
+        "(h>=0 and k>0) or (h=0 and k=0 and l>=0)": lambda h, k, l: ((h >= 0) & (k > 0))
+        | ((h == 0) & (k == 0) & (l >= 0)),
         # Laue -3m, P312 variant
-        "h>=k and k>=0 and (k>0 or l>=0)":
-            lambda h, k, l: (h >= k) & (k >= 0) & ((k > 0) | (l >= 0)),
+        "h>=k and k>=0 and (k>0 or l>=0)": lambda h, k, l: (h >= k)
+        & (k >= 0)
+        & ((k > 0) | (l >= 0)),
         # Laue -3m, P321 variant
-        "h>=k and k>=0 and (h>k or l>=0)":
-            lambda h, k, l: (h >= k) & (k >= 0) & ((h > k) | (l >= 0)),
+        "h>=k and k>=0 and (h>k or l>=0)": lambda h, k, l: (h >= k)
+        & (k >= 0)
+        & ((h > k) | (l >= 0)),
         # Laue m-3 (cubic)
-        "h>=0 and ((l>=h and k>h) or (l=h and k=h))":
-            lambda h, k, l: (h >= 0) & (((l >= h) & (k > h)) | ((l == h) & (k == h))),
+        "h>=0 and ((l>=h and k>h) or (l=h and k=h))": lambda h, k, l: (h >= 0)
+        & (((l >= h) & (k > h)) | ((l == h) & (k == h))),
         # Laue m-3m (cubic, full symmetry)
-        "k>=l and l>=h and h>=0":
-            lambda h, k, l: (k >= l) & (l >= h) & (h >= 0),
+        "k>=l and l>=h and h>=0": lambda h, k, l: (k >= l) & (l >= h) & (h >= 0),
     }
 
     fn = _conditions.get(condition_key)

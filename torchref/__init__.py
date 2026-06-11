@@ -52,9 +52,8 @@ __version__ = "0.6.0-dev"
 
 import os
 
-
 # For now set MPS fallback gloablly
-os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import warnings
 from pathlib import Path
 
@@ -83,7 +82,6 @@ torch.set_num_threads(N_CPUS)
 
 # Dtype and device configuration (must be imported after torch)
 from torchref.config import device, dtypes
-
 
 # Project root path for referencing package files
 ROOT_TORCHREF = Path(__file__).parent.parent.resolve()

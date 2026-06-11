@@ -238,9 +238,9 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     (the dark model is a frozen reference).
     """
     from torchref.refinement import LossState
-    from torchref.kinetic.targets import (
+    from torchref.experimental.kinetic.targets import (
         CollectionDifferenceTarget,
-        CollectionMLTarget,
+        CollectionRiceTarget,
     )
     from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
     from torchref.refinement.targets.similarity import CoordinateSimilarityTarget
@@ -253,7 +253,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     diff_target = CollectionDifferenceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
-    ml_target = CollectionMLTarget(
+    ml_target = CollectionRiceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
     geom_target = TotalGeometryTarget(model_light)
