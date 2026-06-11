@@ -1,5 +1,5 @@
 """
-Construction tests for :class:`~torchref.refinement.targets.quasi_crystal_amber.QuasiCrystalAmberTarget`.
+Construction tests for :class:`~torchref.experimental.ensemble.quasi_crystal_amber.QuasiCrystalAmberTarget`.
 
 This file covers only the *construction* path — verifying that the
 single-copy template build → sym + tile replication → supercell Context
@@ -18,8 +18,8 @@ import torch
 openmm = pytest.importorskip("openmm")
 
 from torchref.io.datasets import ReflectionData
-from torchref.model import EnsembleModel
-from torchref.refinement.targets.quasi_crystal_amber import (
+from torchref.experimental.ensemble import EnsembleModel
+from torchref.experimental.ensemble.quasi_crystal_amber import (
     QuasiCrystalAmberTarget,
 )
 

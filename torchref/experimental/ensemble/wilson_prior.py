@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
-from .base import DataTarget
+from torchref.refinement.targets.base import DataTarget
 
 if TYPE_CHECKING:
     from torchref.io import ReflectionData

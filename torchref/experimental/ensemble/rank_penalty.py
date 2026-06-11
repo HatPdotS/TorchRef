@@ -27,10 +27,10 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from .base import ModelTarget
+from torchref.refinement.targets.base import ModelTarget
 
 if TYPE_CHECKING:
-    from torchref.model.ensemble_model import EnsembleModel
+    from .ensemble_model import EnsembleModel
 
 
 class RankPenaltyTarget(ModelTarget):

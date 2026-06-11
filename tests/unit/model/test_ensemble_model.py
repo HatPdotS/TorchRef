@@ -1,5 +1,5 @@
 """
-Unit tests for :class:`~torchref.model.ensemble_model.EnsembleModel`.
+Unit tests for :class:`~torchref.experimental.ensemble.ensemble_model.EnsembleModel`.
 
 Covers replicate-and-perturb construction, per-member view layout,
 freeze semantics for B / occupancy, and multi-MODEL PDB round-trip.
@@ -10,7 +10,7 @@ import os
 import pytest
 import torch
 
-from torchref.model import EnsembleModel
+from torchref.experimental.ensemble import EnsembleModel
 
 
 TEST_PDB = os.path.join(

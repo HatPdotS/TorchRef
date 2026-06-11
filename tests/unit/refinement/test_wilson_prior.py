@@ -1,5 +1,5 @@
 """
-Unit tests for :class:`~torchref.refinement.targets.wilson_prior.WilsonPriorTarget`.
+Unit tests for :class:`~torchref.experimental.ensemble.wilson_prior.WilsonPriorTarget`.
 """
 
 import os
@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from torchref.io.datasets import ReflectionData
-from torchref.model import EnsembleModel
-from torchref.refinement.targets import WilsonPriorTarget
+from torchref.experimental.ensemble import EnsembleModel
+from torchref.experimental.ensemble import WilsonPriorTarget
 from torchref.scaling import Scaler
 
 

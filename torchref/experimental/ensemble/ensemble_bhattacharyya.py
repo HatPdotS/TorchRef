@@ -38,10 +38,10 @@ from typing import TYPE_CHECKING
 import torch
 
 from torchref.base.targets.xray_bhattacharyya import bhattacharyya_xray_loss_math
-from .bhattacharyya import BhattacharyyaXrayTarget
+from torchref.refinement.targets.xray.bhattacharyya import BhattacharyyaXrayTarget
 
 if TYPE_CHECKING:
-    from torchref.model.ensemble_model import EnsembleModel
+    from .ensemble_model import EnsembleModel
 
 
 class EnsembleBhattacharyyaTarget(BhattacharyyaXrayTarget):

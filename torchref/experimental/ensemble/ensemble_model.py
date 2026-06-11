@@ -635,7 +635,7 @@ class EnsembleModel(ModelFT):
         Computes a PCA of the current ensemble's per-member coordinates,
         freezes the mean ``mu`` and the top-``K`` principal modes ``V`` as
         buffers, and replaces the flat ``MixedTensor`` with a
-        :class:`~torchref.model.low_rank_ensemble.LowRankXYZ` whose only
+        :class:`~torchref.experimental.ensemble.low_rank_ensemble.LowRankXYZ` whose only
         refinable leaf is the per-member amplitudes ``A`` (shape ``(N, K)``).
         Degrees of freedom collapse from ``N·n_atoms·3`` to ``N·K``.
 
@@ -656,7 +656,7 @@ class EnsembleModel(ModelFT):
             Cumulative fraction of ensemble coordinate variance captured by
             the retained ``K`` modes.
         """
-        from torchref.model.low_rank_ensemble import LowRankXYZ
+        from .low_rank_ensemble import LowRankXYZ
 
         N = int(self.n_members)
         n_atoms = int(self.n_atoms_per_member)
@@ -708,12 +708,12 @@ class EnsembleModel(ModelFT):
 
         Like :meth:`enable_low_rank` but the mean ``mu``, basis ``V`` AND
         amplitudes ``A`` all refine (see
-        :class:`~torchref.model.pca_model.PCAEnsembleParam`). ``K=None`` → the
+        :class:`~torchref.experimental.ensemble.pca_model.PCAEnsembleParam`). ``K=None`` → the
         full rank ``N-1`` (complete reparameterization). Must be called after
         the ensemble carries real disorder (e.g. after a ``--branch-from``).
         Returns the cumulative explained-variance fraction at seed time.
         """
-        from torchref.model.pca_model import PCAEnsembleParam
+        from .pca_model import PCAEnsembleParam
 
         N = int(self.n_members)
         n_atoms = int(self.n_atoms_per_member)

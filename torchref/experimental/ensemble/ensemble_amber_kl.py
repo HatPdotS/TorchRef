@@ -42,10 +42,10 @@ import torch
 
 from torch import nn
 
-from .base import ModelTarget
+from torchref.refinement.targets.base import ModelTarget
 
 if TYPE_CHECKING:
-    from torchref.model.ensemble_model import EnsembleModel
+    from .ensemble_model import EnsembleModel
 
 
 class _SingleMemberShim(nn.Module):
@@ -195,7 +195,7 @@ class EnsembleAmberKLTarget(ModelTarget):
         if self._model is None:
             raise RuntimeError("EnsembleAmberKLTarget has no model attached.")
         # Local import: AmberTarget imports openmm at construction.
-        from .amber_target import AmberTarget, AMBER14_STANDARD
+        from torchref.refinement.targets.amber_target import AmberTarget, AMBER14_STANDARD
 
         atom_idx = None
         if self.restrict_to_standard:

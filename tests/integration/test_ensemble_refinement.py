@@ -11,8 +11,8 @@ import os
 import pytest
 import torch
 
-from torchref.model import EnsembleModel
-from torchref.refinement import EnsembleRefinement
+from torchref.experimental.ensemble import EnsembleModel
+from torchref.experimental.ensemble import EnsembleRefinement
 
 
 TEST_MTZ = os.path.join(

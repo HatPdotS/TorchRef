@@ -66,7 +66,6 @@ from torchref.model.parameter_wrappers import (
     PositiveMixedTensor,
 )
 from torchref.model.model_collection import ModelCollection, _SharedMixedModel
-from torchref.model.ensemble_model import EnsembleModel
 from torchref.model.rigid_xyz import RigidXYZTensor
 
 __all__ = [
@@ -76,7 +75,6 @@ __all__ = [
     "MixedModel",
     "Model",
     "ModelFT",
-    "EnsembleModel",
     "MixedTensor",
     "PositiveMixedTensor",
     "PassThroughTensor",

@@ -27,7 +27,6 @@ Access targets::
 from . import targets
 from .base_refinement import Refinement
 from .lbfgs_refinement import LBFGSRefinement
-from .ensemble_refinement import EnsembleRefinement
 from .rigid_body_refinement import RigidBodyRefinementStep
 from .logger import Logger
 from .loss_state import LossState
@@ -37,7 +36,6 @@ __all__ = [
     # Main refinement classes
     "Refinement",
     "LBFGSRefinement",
-    "EnsembleRefinement",
     "RigidBodyRefinementStep",
     # Loss handling
     "LossState",

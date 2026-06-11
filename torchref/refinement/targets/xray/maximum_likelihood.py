@@ -188,7 +188,9 @@ def create_xray_target(
             **kwargs,
         )
     elif mode == "bhattacharyya_ensemble":
-        from .ensemble_bhattacharyya import EnsembleBhattacharyyaTarget
+        from torchref.experimental.ensemble.ensemble_bhattacharyya import (
+            EnsembleBhattacharyyaTarget,
+        )
 
         return EnsembleBhattacharyyaTarget(
             sigma_m_scale=sigma_m_scale,

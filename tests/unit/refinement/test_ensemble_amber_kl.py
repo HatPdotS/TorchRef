@@ -1,6 +1,6 @@
 """
 Unit tests for the entropy-only branch of
-:class:`~torchref.refinement.targets.ensemble_amber_kl.EnsembleAmberKLTarget`.
+:class:`~torchref.experimental.ensemble.ensemble_amber_kl.EnsembleAmberKLTarget`.
 
 The Amber-energy branch is skipped because the underlying ``AmberTarget``
 has known blockers on real structures (template matching). The entropy
@@ -12,8 +12,8 @@ import os
 import pytest
 import torch
 
-from torchref.model import EnsembleModel
-from torchref.refinement.targets import EnsembleAmberKLTarget
+from torchref.experimental.ensemble import EnsembleModel
+from torchref.experimental.ensemble import EnsembleAmberKLTarget
 
 
 TEST_PDB = os.path.join(

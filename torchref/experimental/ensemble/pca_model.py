@@ -1,7 +1,7 @@
 """
 Fully-refinable PCA-space parameterization of an ensemble's coordinates.
 
-Where :class:`~torchref.model.low_rank_ensemble.LowRankXYZ` freezes the mean and
+Where :class:`~torchref.experimental.ensemble.low_rank_ensemble.LowRankXYZ` freezes the mean and
 basis (only amplitudes refine), this module refines **all three** factors of the
 low-rank decomposition::
 

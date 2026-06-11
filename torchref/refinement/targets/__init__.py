@@ -60,7 +60,6 @@ from .realspace import (
     RealSpaceExtrapolatedTarget,
     RealSpaceTarget,
 )
-from .wilson_prior import WilsonPriorTarget
 from .sampled_ml_phase_target import (
     SampledMLDifferenceTarget,
     SampledMLPhaseTarget,
@@ -93,12 +92,6 @@ try:
 except ImportError:
     AmberTarget = None
     AMBER14_STANDARD = None
-
-# Ensemble Amber KL restraint (optional: requires openmm via amber_target import)
-try:
-    from .ensemble_amber_kl import EnsembleAmberKLTarget
-except ImportError:
-    EnsembleAmberKLTarget = None
 
 __all__ = [
     # Base classes
@@ -169,8 +162,4 @@ __all__ = [
     "RealSpaceExtrapolatedTarget",
     # Similarity restraint
     "CoordinateSimilarityTarget",
-    # Wilson prior
-    "WilsonPriorTarget",
-    # Ensemble Amber KL restraint
-    "EnsembleAmberKLTarget",
 ]

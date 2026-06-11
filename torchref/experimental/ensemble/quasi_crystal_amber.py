@@ -51,13 +51,13 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from .amber_target import (
+from torchref.refinement.targets.amber_target import (
     AmberTarget,
     SupercellLayout,
     _OpenMMAMBERFunction,
     _replicate_to_supercell_system,
 )
-from .base import ModelTarget
+from torchref.refinement.targets.base import ModelTarget
 from .ensemble_amber_kl import _SingleMemberShim
 
 
@@ -114,7 +114,7 @@ def _detect_special_position_atoms(
     return keep
 
 if TYPE_CHECKING:
-    from torchref.model.ensemble_model import EnsembleModel
+    from .ensemble_model import EnsembleModel
     from torchref.symmetry import Cell, SpaceGroup
 
 

@@ -3,11 +3,11 @@ LBFGS refinement of an ~100-member ensemble against an X-ray dataset.
 
 Composes:
 
-- :class:`~torchref.model.ensemble_model.EnsembleModel` for the model
+- :class:`~torchref.experimental.ensemble.ensemble_model.EnsembleModel` for the model
   (B-factor-free, equal occupancy, ``n_members`` xyz copies).
-- :class:`~torchref.refinement.targets.wilson_prior.WilsonPriorTarget`
+- :class:`~torchref.experimental.ensemble.wilson_prior.WilsonPriorTarget`
   to keep ``<|F_calc|^2>`` on the Wilson curve.
-- Optional :class:`~torchref.refinement.targets.ensemble_amber_kl.EnsembleAmberKLTarget`
+- Optional :class:`~torchref.experimental.ensemble.ensemble_amber_kl.EnsembleAmberKLTarget`
   for Amber-Boltzmann KL restraints (enabled with ``kT > 0``).
 - A third ``xray/validation`` set distinct from R-free for tuning
   ``wilson_weight`` / ``amber_lambda`` without contaminating R-free.
@@ -26,21 +26,21 @@ from typing import Dict, Optional
 import torch
 
 from torchref.io.datasets import ReflectionData
-from torchref.model.ensemble_model import EnsembleModel
+from .ensemble_model import EnsembleModel
 from torchref.refinement.lbfgs_refinement import LBFGSRefinement
 from torchref.refinement.loss_state import LossState
-from torchref.refinement.targets.rank_penalty import RankPenaltyTarget
-from torchref.refinement.targets.wilson_prior import WilsonPriorTarget
+from .rank_penalty import RankPenaltyTarget
+from .wilson_prior import WilsonPriorTarget
 from torchref.refinement.targets.xray.maximum_likelihood import create_xray_target
 from torchref.scaling import Scaler
 
 try:
-    from torchref.refinement.targets.ensemble_amber_kl import EnsembleAmberKLTarget
+    from .ensemble_amber_kl import EnsembleAmberKLTarget
 except ImportError:
     EnsembleAmberKLTarget = None
 
 try:
-    from torchref.refinement.targets.quasi_crystal_amber import (
+    from .quasi_crystal_amber import (
         QuasiCrystalAmberTarget,
     )
 except ImportError:
@@ -633,7 +633,6 @@ class EnsembleRefinement(LBFGSRefinement):
         weighting step entirely.
         """
         state = self.loss_state
-        state = self.populate_state_meta(state)
         state.cache_losses()
         return state
 
@@ -794,7 +793,7 @@ class EnsembleRefinement(LBFGSRefinement):
         """
         # PCAEnsembleParam refines THREE leaves (μ, A, V); parameters_of_types
         # returns only the single `.refinable_params`, so collect all of them.
-        from torchref.model.pca_model import PCAEnsembleParam
+        from .pca_model import PCAEnsembleParam
         if isinstance(self.model.xyz, PCAEnsembleParam):
             xyz_params = [p for p in self.model.xyz.parameters() if p.requires_grad]
         else:
@@ -948,7 +947,7 @@ class EnsembleRefinement(LBFGSRefinement):
             """
             # Coordinate-space diagnostic; skip under the PCA reparameterization
             # (the leaves are amplitudes/basis, not Å coords).
-            from torchref.model.pca_model import PCAEnsembleParam
+            from .pca_model import PCAEnsembleParam
             if isinstance(self.model.xyz, PCAEnsembleParam):
                 return None
             p = self.model.xyz.refinable_params
@@ -1543,11 +1542,13 @@ class EnsembleRefinement(LBFGSRefinement):
     def _compute_rval(self) -> float:
         """R-factor on the validation set (monitoring only)."""
         with torch.no_grad():
-            F_obs, F_calc, _sigma, _centric, mask = (
+            # get_data() returns compact arrays already restricted to the set
+            # (the trailing element is the _ReflectionSubset view, not a mask).
+            F_obs, F_calc, _sigma, _centric, _sub = (
                 self.xray_target_validation.get_data()
             )
-            num = (F_obs[mask] - F_calc[mask].abs()).abs().sum()
-            den = F_obs[mask].abs().sum().clamp(min=1e-8)
+            num = (F_obs - F_calc.abs()).abs().sum()
+            den = F_obs.abs().sum().clamp(min=1e-8)
             return float((num / den).item())
 
     def _component_breakdown(self, state: LossState) -> Dict[str, Dict[str, float]]:
