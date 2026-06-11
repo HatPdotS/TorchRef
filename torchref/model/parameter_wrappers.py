@@ -1322,6 +1322,14 @@ class CholeskyMixedTensor(MixedTensor):
         # Project to positive-definite: symmetrise, clamp eigenvalues off zero.
         # No-op for well-conditioned deposited U; rescues marginally non-PD input.
         M = 0.5 * (M + M.transpose(-1, -2))
+        # Run the eigh + Cholesky PD-projection on CPU. This path executes only
+        # at load / refinable-mask change (never per optimizer step — U is frozen
+        # during refinement), so the host round-trip is negligible. cuSolver's
+        # *batched* eigh/cholesky return CUSOLVER_STATUS_INVALID_VALUE on the
+        # large, degenerate batches an isotropic ensemble produces (U ≡ 0 over
+        # ~N_members·N_atoms matrices); LAPACK handles the zero/degenerate batch.
+        src_device = M.device
+        M = M.cpu()
         w, V = torch.linalg.eigh(M)
         w = w.clamp(min=eps * eps)
         M = (V * w.unsqueeze(-2)) @ V.transpose(-1, -2)
@@ -1329,7 +1337,7 @@ class CholeskyMixedTensor(MixedTensor):
         diag = torch.stack([L[..., 0, 0], L[..., 1, 1], L[..., 2, 2]], dim=-1)
         off = torch.stack([L[..., 1, 0], L[..., 2, 0], L[..., 2, 1]], dim=-1)
         raw_diag = torch.log((diag - eps).clamp(min=1e-12))  # invert exp(x)+eps
-        raw = torch.cat([raw_diag, off], dim=-1)
+        raw = torch.cat([raw_diag, off], dim=-1).to(src_device)
         nan = torch.full_like(raw, float("nan"))
         return torch.where(finite.unsqueeze(-1), raw, nan)
 
