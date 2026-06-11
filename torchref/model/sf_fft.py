@@ -20,7 +20,6 @@ import torch.nn as nn
 from torchref.base.fourier import get_real_grid, ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
 from torchref.config import dtypes, get_default_device
-
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.symmetry.spacegroup import SpaceGroupLike
@@ -99,7 +98,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         spacegroup: SpaceGroupLike = None,
         max_res: float = 1.5,
         radius_angstrom: float = 3.0,
-        dtype_float: torch.dtype = dtypes.float,
+        dtype_float: torch.dtype = None,
         device: Optional[torch.device] = None,
         verbose: int = 0,
         use_late_symmetry: bool = True,
@@ -131,14 +130,14 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         super().__init__()
         self.max_res = max_res
         self.radius_angstrom = radius_angstrom
+        if dtype_float is None:
+            dtype_float = dtypes.float
         self.dtype_float = dtype_float
 
         self.device = (
             device
             if device is not None
-            else cell.device
-            if cell is not None
-            else get_default_device()
+            else cell.device if cell is not None else get_default_device()
         )
 
         self.verbose = verbose
@@ -149,9 +148,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         self._spacegroup = None
 
         if spacegroup is not None or cell is not None:
-            self._spacegroup = SpaceGroup(
-                spacegroup, dtype=dtype_float, device=device
-            )
+            self._spacegroup = SpaceGroup(spacegroup, dtype=dtype_float, device=device)
 
         # Buffers (registered during setup_grid)
         self.register_buffer("gridsize", None)
@@ -204,7 +201,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     def symmetry(self) -> Optional[SpaceGroup]:
         """Symmetry operations handler (alias for spacegroup)."""
         return self._spacegroup
-    
+
     @property
     def fractional_matrix(self) -> Optional[torch.Tensor]:
         """Get fractionalization matrix from cell, on this module's device/dtype."""
@@ -291,7 +288,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     def compute_real_space_grid(
         fractional_matrix: torch.Tensor,
         gridsize: torch.Tensor,
-        device: torch.device = get_default_device(),
+        device: torch.device = None,
     ) -> torch.Tensor:
         """
         Generate the real-space coordinate grid.
@@ -310,7 +307,11 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         torch.Tensor
             Real-space grid with shape (nx, ny, nz, 3).
         """
-        return get_real_grid(fractional_matrix=fractional_matrix, gridsize=gridsize, device=device)
+        if device is None:
+            device = get_default_device()
+        return get_real_grid(
+            fractional_matrix=fractional_matrix, gridsize=gridsize, device=device
+        )
 
     def setup_grid(
         self,
@@ -347,9 +348,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
         # Compute or use provided grid size
         if gridsize is not None:
-            self.gridsize = torch.tensor(
-                gridsize, dtype=dtypes.int, device=self.device
-            )
+            self.gridsize = torch.tensor(gridsize, dtype=dtypes.int, device=self.device)
         else:
             optimal_gridsize = self.compute_optimal_gridsize(self.max_res)
             self.gridsize = torch.tensor(
@@ -362,9 +361,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         )
 
         # Compute voxel size
-        self.voxel_size = (
-            self.real_space_grid[2, 2, 2] - self.real_space_grid[1, 1, 1]
-        )
+        self.voxel_size = self.real_space_grid[2, 2, 2] - self.real_space_grid[1, 1, 1]
 
         # Initialize map symmetry operator if space group is set
         if self._spacegroup is not None:
@@ -381,7 +378,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
             if self.use_late_symmetry and self._late_symmetry_compatible:
                 if self.verbose > 0:
-                    print("SfFFT: Using late symmetry (reciprocal space) for ~5x speedup")
+                    print(
+                        "SfFFT: Using late symmetry (reciprocal space) for ~5x speedup"
+                    )
             elif self.use_late_symmetry and not self._late_symmetry_compatible:
                 if self.verbose > 0:
                     print(
@@ -420,6 +419,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         # Check if using MapSymmetryDirect (not interpolation)
         # MapSymmetryDirect has the can_use_direct_indexing attribute set to True
         from torchref.symmetry.map_symmetry import MapSymmetryDirect
+
         return isinstance(self.map_symmetry, MapSymmetryDirect)
 
     # =========================================================================
@@ -550,9 +550,12 @@ class SfFFT(DeviceMovementMixin, nn.Module):
                 or not self._sym_extractor_hkl_fp.matches([hkl])
             ):
                 from torchref.base.reciprocal import ReciprocalSymmetryExtractor
+
                 grid_shape = tuple(int(x) for x in self.gridsize)
                 self._sym_extractor = ReciprocalSymmetryExtractor(
-                    hkl, self.spacegroup, grid_shape,
+                    hkl,
+                    self.spacegroup,
+                    grid_shape,
                     device=reciprocal_space_grid.device,
                 )
                 self._sym_extractor_hkl_fp = ParameterFingerprint([hkl])
@@ -624,9 +627,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         # - Late symmetry: build P1 map, apply symmetry in reciprocal space
         # - Early symmetry: apply symmetry to density map before FFT
         use_late = (
-            apply_symmetry
-            and self.use_late_symmetry
-            and self._late_symmetry_compatible
+            apply_symmetry and self.use_late_symmetry and self._late_symmetry_compatible
         )
 
         # Build density map (with or without early symmetry)
@@ -672,7 +673,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         new_cell = self._cell.clone() if self._cell is not None else None
 
         # Copy the spacegroup
-        new_spacegroup = self._spacegroup.copy() if self._spacegroup is not None else None
+        new_spacegroup = (
+            self._spacegroup.copy() if self._spacegroup is not None else None
+        )
 
         # Create new SfFFT with copied components
         new_fft = SfFFT(
@@ -693,6 +696,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 def FFT(*args, **kwargs):
     """Deprecated: use SfFFT instead."""
     import warnings
+
     warnings.warn(
         "FFT is deprecated, use SfFFT instead. "
         "FFT will be removed in a future release.",

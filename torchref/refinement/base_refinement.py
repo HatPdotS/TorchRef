@@ -938,7 +938,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     def create_from_state_dict(
         cls,
         state_dict: dict,
-        device: torch.device = get_default_device(),
+        device: torch.device = None,
         verbose: int = 1,
     ) -> "Refinement":
         """
@@ -978,6 +978,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             rwork, rfree = refinement.get_rfactor()
             print(f"Restored at R-work={rwork:.4f}, R-free={rfree:.4f}")
         """
+
+        if device is None:
+            device = get_default_device()
 
         # Helper to extract submodule state from flattened state_dict
         def extract_submodule_state(state_dict: dict, prefix: str) -> dict:

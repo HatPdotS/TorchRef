@@ -13,7 +13,6 @@ import torch.nn as nn
 from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.device_mixin import DeviceMixin
 
-
 # =============================================================================
 # Quaternion Helper Functions
 # =============================================================================
@@ -731,8 +730,8 @@ class RigidTransform(DeviceMixin, nn.Module):
     @classmethod
     def identity(
         cls,
-        device: Union[str, torch.device] = get_default_device(),
-        dtype: torch.dtype = get_float_dtype(),
+        device: Union[str, torch.device] = None,
+        dtype: torch.dtype = None,
     ) -> "RigidTransform":
         """
         Create identity transformation.
@@ -749,6 +748,10 @@ class RigidTransform(DeviceMixin, nn.Module):
         RigidTransform
             Identity transformation.
         """
+        if device is None:
+            device = get_default_device()
+        if dtype is None:
+            dtype = get_float_dtype()
         q = torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=dtype, device=device)
         t = torch.zeros(3, dtype=dtype, device=device)
         return cls(quaternion=q, translation=t)
@@ -826,8 +829,8 @@ class RigidTransform(DeviceMixin, nn.Module):
     @classmethod
     def random(
         cls,
-        device: Union[str, torch.device] = get_default_device(),
-        dtype: torch.dtype = get_float_dtype(),
+        device: Union[str, torch.device] = None,
+        dtype: torch.dtype = None,
         translation_scale: float = 0.0,
     ) -> "RigidTransform":
         """
@@ -849,6 +852,10 @@ class RigidTransform(DeviceMixin, nn.Module):
         RigidTransform
             Random transformation.
         """
+        if device is None:
+            device = get_default_device()
+        if dtype is None:
+            dtype = get_float_dtype()
         # Shoemake's uniform random quaternion
         u1, u2, u3 = torch.rand(3, dtype=dtype, device=device)
 

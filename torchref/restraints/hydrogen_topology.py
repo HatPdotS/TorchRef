@@ -23,28 +23,29 @@ from torchref.utils.device_mixin import DeviceMixin
 # ---------------------------------------------------------------------------
 # Placement-type constants
 # ---------------------------------------------------------------------------
-ANTI_SUM = 0       # 1 H, >=2 heavy neighbours → opposite to sum of vectors
-CH2_A = 1           # 2 H on 2-neighbour parent, slot 0 → +perp component
-CH2_B = 2           # 2 H on 2-neighbour parent, slot 1 → -perp component
-METHYL = 3          # 3 H on 1-neighbour parent → 120° staggered around axis
-OPPOSITE_1NB = 4    # 1 H, 1 heavy neighbour → directly opposite
-NH2_A = 5           # 2 H on 1-neighbour parent, slot 0
-NH2_B = 6           # 2 H on 1-neighbour parent, slot 1
+ANTI_SUM = 0  # 1 H, >=2 heavy neighbours → opposite to sum of vectors
+CH2_A = 1  # 2 H on 2-neighbour parent, slot 0 → +perp component
+CH2_B = 2  # 2 H on 2-neighbour parent, slot 1 → -perp component
+METHYL = 3  # 3 H on 1-neighbour parent → 120° staggered around axis
+OPPOSITE_1NB = 4  # 1 H, 1 heavy neighbour → directly opposite
+NH2_A = 5  # 2 H on 1-neighbour parent, slot 0
+NH2_B = 6  # 2 H on 1-neighbour parent, slot 1
 
 # Pre-computed tetrahedral geometry constants
-_COS_TET = -1.0 / 3.0                    # cos(180 - 109.47) from axis
-_SIN_TET = np.sqrt(8.0 / 9.0)            # sin(180 - 109.47)
-_COS_120 = np.cos(2.0 * np.pi / 3.0)     # -0.5
-_SIN_120 = np.sin(2.0 * np.pi / 3.0)     # √3/2
-_COS_240 = np.cos(4.0 * np.pi / 3.0)     # -0.5
-_SIN_240 = np.sin(4.0 * np.pi / 3.0)     # -√3/2
+_COS_TET = -1.0 / 3.0  # cos(180 - 109.47) from axis
+_SIN_TET = np.sqrt(8.0 / 9.0)  # sin(180 - 109.47)
+_COS_120 = np.cos(2.0 * np.pi / 3.0)  # -0.5
+_SIN_120 = np.sin(2.0 * np.pi / 3.0)  # √3/2
+_COS_240 = np.cos(4.0 * np.pi / 3.0)  # -0.5
+_SIN_240 = np.sin(4.0 * np.pi / 3.0)  # -√3/2
 
-MAX_HEAVY_NB = 4   # Maximum heavy-atom neighbours to store per parent
+MAX_HEAVY_NB = 4  # Maximum heavy-atom neighbours to store per parent
 
 
 # ---------------------------------------------------------------------------
 # HydrogenTopology
 # ---------------------------------------------------------------------------
+
 
 class HydrogenTopology(DeviceMixin, nn.Module):
     """Static topology describing riding hydrogens for VDW evaluation.
@@ -94,6 +95,7 @@ class HydrogenTopology(DeviceMixin, nn.Module):
 # Build-time topology construction
 # ---------------------------------------------------------------------------
 
+
 def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
     """Load per-residue-type H topology from the monomer library.
 
@@ -105,8 +107,8 @@ def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
         ``{resname: {ids, elems, coords, is_h, id_to_idx,
                      parent_map, ideal_bl, heavy_neighbor_map, ...} | None}``
     """
-    from torchref.restraints.library import MonomerLibraryManager
     from torchref.model.model import Model
+    from torchref.restraints.library import MonomerLibraryManager
 
     lib = MonomerLibraryManager(verbose=0)
     cache = Model._hydrogenate_cif_cache
@@ -126,8 +128,9 @@ def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
             continue
 
         try:
-            from torchref.io.cif_readers import RestraintCIFReader
             import pandas as pd
+
+            from torchref.io.cif_readers import RestraintCIFReader
 
             reader = RestraintCIFReader(str(cif_path))
             all_data = reader.get_all_restraints()
@@ -169,17 +172,22 @@ def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
                     if np.isfinite(vals[i]):
                         ideal_bl[b2] = float(vals[i])
                 i1, i2 = id_to_idx.get(b1), id_to_idx.get(b2)
-                if (i1 is not None and i2 is not None
-                        and not is_h[i1] and not is_h[i2]):
+                if i1 is not None and i2 is not None and not is_h[i1] and not is_h[i2]:
                     heavy_neighbor_map.setdefault(b1, []).append(b2)
                     heavy_neighbor_map.setdefault(b2, []).append(b1)
 
         cache[rn_str] = {
-            "ids": ids, "elems": elems, "coords": coords,
-            "is_h": is_h, "id_to_idx": id_to_idx,
-            "heavy_names": ids[~is_h], "heavy_coords": coords[~is_h],
-            "h_names": ids[is_h], "h_coords": coords[is_h],
-            "parent_map": parent_map, "ideal_bl": ideal_bl,
+            "ids": ids,
+            "elems": elems,
+            "coords": coords,
+            "is_h": is_h,
+            "id_to_idx": id_to_idx,
+            "heavy_names": ids[~is_h],
+            "heavy_coords": coords[~is_h],
+            "h_names": ids[is_h],
+            "h_coords": coords[is_h],
+            "parent_map": parent_map,
+            "ideal_bl": ideal_bl,
             "heavy_neighbor_map": heavy_neighbor_map,
         }
 
@@ -212,7 +220,7 @@ def _classify_placement(n_h_on_parent: int, n_heavy_nb: int, slot: int) -> int:
 
 def build_hydrogen_topology(
     pdb,
-    device: torch.device = get_default_device(),
+    device: torch.device = None,
     verbose: int = 0,
 ) -> HydrogenTopology:
     """Build riding-hydrogen topology from the model's heavy-atom DataFrame.
@@ -231,6 +239,8 @@ def build_hydrogen_topology(
     HydrogenTopology
         Module with registered buffer tensors.
     """
+    if device is None:
+        device = get_default_device()
     cache = _load_cif_hydrogen_info(pdb, verbose)
 
     model_names = pdb["name"].astype(str).str.strip().values
@@ -263,7 +273,7 @@ def build_hydrogen_topology(
     acc_bond_length = []
     acc_placement_type = []
     acc_slot = []
-    acc_nb_idx = []           # list of (MAX_HEAVY_NB,) arrays
+    acc_nb_idx = []  # list of (MAX_HEAVY_NB,) arrays
     acc_nb_count = []
     acc_chainid_enc = []
     acc_resseq = []
@@ -308,10 +318,10 @@ def build_hydrogen_topology(
 
             # Find heavy-atom neighbours of parent via distance
             dvec = model_xyz - model_xyz[pidx]
-            dists_sq = (dvec ** 2).sum(1)
-            bonded = np.where(
-                (dists_sq > 0.09) & (dists_sq < 3.61) & model_heavy_mask
-            )[0]
+            dists_sq = (dvec**2).sum(1)
+            bonded = np.where((dists_sq > 0.09) & (dists_sq < 3.61) & model_heavy_mask)[
+                0
+            ]
             bonded = bonded[bonded != pidx]
             n_model_heavy = len(bonded)
 
@@ -450,6 +460,7 @@ def build_hydrogen_topology(
 # Vectorized H placement (forward-time, differentiable)
 # ---------------------------------------------------------------------------
 
+
 def _safe_normalize(v: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Normalize vectors along last dimension with epsilon for stability."""
     return v / (v.norm(dim=-1, keepdim=True) + eps)
@@ -495,7 +506,7 @@ def _precompute_direction_coefficients(topo: HydrogenTopology) -> torch.Tensor:
     a_ch2 = 1.0 / np.sqrt(3.0)
     b_ch2 = np.sqrt(2.0 / 3.0)
 
-    tb = getattr(topo, 'type_bounds', None)
+    tb = getattr(topo, "type_bounds", None)
     if tb is None:
         return coeffs
 
@@ -554,8 +565,8 @@ def _place_h_jit(
     N_h = h_parent_idx.shape[0]
 
     # Gather
-    parent_pos = xyz_heavy[h_parent_idx]             # (N_h, 3)
-    nb_pos = xyz_heavy[nb_idx_clamped]               # (N_h, 4, 3)
+    parent_pos = xyz_heavy[h_parent_idx]  # (N_h, 3)
+    nb_pos = xyz_heavy[nb_idx_clamped]  # (N_h, 4, 3)
 
     # Neighbour vectors (masked)
     vecs = (nb_pos - parent_pos.unsqueeze(1)) * nb_valid
@@ -613,16 +624,14 @@ def place_riding_hydrogens(
         return torch.zeros(0, 3, dtype=xyz_heavy.dtype, device=xyz_heavy.device)
 
     # Precompute direction coefficients on first call
-    if not hasattr(topo, '_dir_coeffs') or topo._dir_coeffs is None:
+    if not hasattr(topo, "_dir_coeffs") or topo._dir_coeffs is None:
         topo._dir_coeffs = _precompute_direction_coefficients(topo)
 
     # Precompute static tensors on first call (avoid recomputing every step)
-    if not hasattr(topo, '_nb_idx_clamped'):
+    if not hasattr(topo, "_nb_idx_clamped"):
         topo._nb_idx_clamped = topo.parent_neighbor_idx.clamp(min=0)
         topo._nb_valid = (
-            (topo.parent_neighbor_idx >= 0)
-            .unsqueeze(-1)
-            .to(topo.h_bond_length.dtype)
+            (topo.parent_neighbor_idx >= 0).unsqueeze(-1).to(topo.h_bond_length.dtype)
         )
         topo._bond_len_col = topo.h_bond_length.unsqueeze(-1)
 
@@ -635,6 +644,7 @@ def place_riding_hydrogens(
             from torchref.base.targets.triton.place_hydrogens import (
                 place_riding_hydrogens_triton,
             )
+
             return place_riding_hydrogens_triton(
                 xyz_heavy,
                 topo.h_parent_idx,
@@ -660,12 +670,13 @@ def place_riding_hydrogens(
 # Build-time H candidate pair precomputation
 # ---------------------------------------------------------------------------
 
+
 def build_h_candidate_pairs(
     h_topo: HydrogenTopology,
     vdw_data: dict,
     pdb,
     h_excl_hash: torch.Tensor,
-    device: torch.device = get_default_device(),
+    device: torch.device = None,
     verbose: int = 0,
 ) -> None:
     """Precompute candidate H-involving VDW pairs from heavy-atom pair list.
@@ -696,12 +707,16 @@ def build_h_candidate_pairs(
     device : torch.device
     verbose : int
     """
+    if device is None:
+        device = get_default_device()
     n_h = h_topo.n_hydrogens
     n_heavy = len(pdb)
 
     if n_h == 0:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
-            h_topo.register_buffer(name, torch.zeros(0, dtype=torch.long, device=device))
+            h_topo.register_buffer(
+                name, torch.zeros(0, dtype=torch.long, device=device)
+            )
         h_topo.register_buffer(
             "cand_cell_offset", torch.zeros(0, 3, dtype=torch.long, device=device)
         )
@@ -710,14 +725,14 @@ def build_h_candidate_pairs(
         )
         return
 
-    heavy_indices = vdw_data["indices"]        # (P, 2)
-    heavy_symop = vdw_data["symop_indices"]    # (P,)
-    heavy_offsets = vdw_data["cell_offsets"]    # (P, 3)
+    heavy_indices = vdw_data["indices"]  # (P, 2)
+    heavy_symop = vdw_data["symop_indices"]  # (P,)
+    heavy_offsets = vdw_data["cell_offsets"]  # (P, 3)
 
-    parent_idx_np = h_topo.h_parent_idx.cpu().numpy()      # (N_h,)
-    h_vdw_np = h_topo.h_vdw_radius.cpu().numpy()           # (N_h,)
-    h_chain_np = h_topo.h_chainid_enc.cpu().numpy()         # (N_h,)
-    h_resseq_np = h_topo.h_resseq.cpu().numpy()             # (N_h,)
+    parent_idx_np = h_topo.h_parent_idx.cpu().numpy()  # (N_h,)
+    h_vdw_np = h_topo.h_vdw_radius.cpu().numpy()  # (N_h,)
+    h_chain_np = h_topo.h_chainid_enc.cpu().numpy()  # (N_h,)
+    h_resseq_np = h_topo.h_resseq.cpu().numpy()  # (N_h,)
 
     # Build parent → H index mapping
     parent_to_h = {}
@@ -729,7 +744,9 @@ def build_h_candidate_pairs(
     chain_vals = pdb["chainid"].values.astype(str)
     unique_chains = np.unique(chain_vals)
     chain_to_int = {c: i for i, c in enumerate(unique_chains)}
-    heavy_chain_np = np.array([chain_to_int.get(c, -1) for c in chain_vals], dtype=np.int64)
+    heavy_chain_np = np.array(
+        [chain_to_int.get(c, -1) for c in chain_vals], dtype=np.int64
+    )
     heavy_resseq_np = pdb["resseq"].values.astype(np.int64)
 
     idx_A = heavy_indices[:, 0].cpu().numpy()
@@ -756,8 +773,8 @@ def build_h_candidate_pairs(
     # Candidate pairs stored as indices into the combined array:
     #   [0 .. n_heavy-1] = heavy atoms,  [n_heavy .. n_heavy+n_h-1] = H atoms
     # This way both H-heavy AND H-H pairs use the same format.
-    acc_idx_i = []   # ASU atom (combined index)
-    acc_idx_j = []   # partner atom (combined index, may need symop)
+    acc_idx_i = []  # ASU atom (combined index)
+    acc_idx_j = []  # partner atom (combined index, may need symop)
     acc_symop = []
     acc_offset = []
 
@@ -776,8 +793,8 @@ def build_h_candidate_pairs(
         # --- H on A ↔ heavy B ---
         for hi in h_on_A:
             if is_intra_asu and _same_res(
-                    h_chain_np[hi], h_resseq_np[hi],
-                    heavy_chain_np[B], heavy_resseq_np[B]):
+                h_chain_np[hi], h_resseq_np[hi], heavy_chain_np[B], heavy_resseq_np[B]
+            ):
                 continue
             acc_idx_i.append(n_heavy + hi)
             acc_idx_j.append(B)
@@ -787,8 +804,8 @@ def build_h_candidate_pairs(
         # --- H on B ↔ heavy A ---
         for hi in h_on_B:
             if is_intra_asu and _same_res(
-                    h_chain_np[hi], h_resseq_np[hi],
-                    heavy_chain_np[A], heavy_resseq_np[A]):
+                h_chain_np[hi], h_resseq_np[hi], heavy_chain_np[A], heavy_resseq_np[A]
+            ):
                 continue
             acc_idx_i.append(n_heavy + hi)
             acc_idx_j.append(A)
@@ -799,8 +816,11 @@ def build_h_candidate_pairs(
         for hi_a in h_on_A:
             for hi_b in h_on_B:
                 if is_intra_asu and _same_res(
-                        h_chain_np[hi_a], h_resseq_np[hi_a],
-                        h_chain_np[hi_b], h_resseq_np[hi_b]):
+                    h_chain_np[hi_a],
+                    h_resseq_np[hi_a],
+                    h_chain_np[hi_b],
+                    h_resseq_np[hi_b],
+                ):
                     continue
                 # For intra-ASU, only keep hi_a < hi_b to avoid double-counting
                 if is_intra_asu and hi_a >= hi_b:
@@ -812,7 +832,9 @@ def build_h_candidate_pairs(
 
     if not acc_idx_i:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
-            h_topo.register_buffer(name, torch.zeros(0, dtype=torch.long, device=device))
+            h_topo.register_buffer(
+                name, torch.zeros(0, dtype=torch.long, device=device)
+            )
         h_topo.register_buffer(
             "cand_cell_offset", torch.zeros(0, 3, dtype=torch.long, device=device)
         )
@@ -834,7 +856,9 @@ def build_h_candidate_pairs(
             norm_i = torch.minimum(cand_i, cand_j)
             norm_j = torch.maximum(cand_i, cand_j)
             pair_hash = norm_i * max_idx + norm_j
-            ins = torch.searchsorted(h_excl_hash, pair_hash).clamp(max=len(h_excl_hash) - 1)
+            ins = torch.searchsorted(h_excl_hash, pair_hash).clamp(
+                max=len(h_excl_hash) - 1
+            )
             is_excluded = (h_excl_hash[ins] == pair_hash) & is_intra
             keep = ~is_excluded
             cand_i = cand_i[keep]
@@ -859,7 +883,9 @@ def build_h_candidate_pairs(
         first_idx_i = first_idx.to(_int_dtype)
         perm = torch.arange(len(cand_i), device=device, dtype=_int_dtype)
         n_unique = first_idx.max().item() + 1
-        first_occ = torch.full((n_unique,), len(cand_i), dtype=_int_dtype, device=device)
+        first_occ = torch.full(
+            (n_unique,), len(cand_i), dtype=_int_dtype, device=device
+        )
         first_occ.scatter_reduce_(0, first_idx_i, perm, reduce="amin")
         mask = torch.zeros(len(cand_i), dtype=torch.bool, device=device)
         mask[first_occ.long()] = True
@@ -891,5 +917,7 @@ def build_h_candidate_pairs(
     if verbose > 0:
         n_hh = ((cand_i >= n_heavy) & (cand_j >= n_heavy)).sum().item()
         n_sym = ((cand_sym != 0) | (cand_off != 0).any(dim=1)).sum().item()
-        print(f"  H candidate pairs: {len(cand_i)} "
-              f"({n_hh} H-H, {len(cand_i)-n_hh} H-heavy, {n_sym} symmetry)")
+        print(
+            f"  H candidate pairs: {len(cand_i)} "
+            f"({n_hh} H-H, {len(cand_i)-n_hh} H-heavy, {n_sym} symmetry)"
+        )
