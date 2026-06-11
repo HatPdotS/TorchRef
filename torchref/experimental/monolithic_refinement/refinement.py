@@ -100,6 +100,19 @@ class MonolithicRefinement(LBFGSRefinement):
         if hasattr(self, "reset_loss_state"):
             self.reset_loss_state()
 
+    def get_scales(self):
+        """Pre-scale, then drop the model's structure-factor cache.
+
+        ``scaler.refine_lbfgs`` (inside the base ``get_scales``) backprops and
+        frees graphs; with the *model-dependent* density solvent that leaves the
+        model SF cache holding tensors tied to a freed graph, so the first
+        co-refined ``forward().backward()`` raises "backward through the graph a
+        second time". Clearing the cache forces a fresh, in-graph recompute.
+        """
+        super().get_scales()
+        if hasattr(self.model, "reset_cache"):
+            self.model.reset_cache()
+
     def _error_model_params(self):
         """The co-refined model-error calibration (always in the joint optimizer)."""
         calib = getattr(self.xray_target_work, "log_sigma_m_scale", None)
