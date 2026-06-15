@@ -580,17 +580,12 @@ class RealSpaceExtrapolatedTarget(RealSpaceTarget):
 
     def _setup_data(self):
         """Extract and store observed data from datasets as buffers."""
-        hkl, F_light, sigma_light, rfree_light = self._data_light()
-        _, F_dark, sigma_dark, _ = self._data_dark()
-
-        # Handle MaskedTensor
-        valid_light = valid_dark = None
-        if hasattr(F_light, "get_mask"):
-            valid_light = F_light.get_mask()
-            F_light = F_light.get_data()
-        if hasattr(F_dark, "get_mask"):
-            valid_dark = F_dark.get_mask()
-            F_dark = F_dark.get_data()
+        hkl = self._data_light.hkl
+        F_light, sigma_light = self._data_light.get_corrected_data()
+        rfree_light = self._data_light.rfree_flags
+        valid_light = self._data_light.masks().to(torch.bool)
+        F_dark, sigma_dark = self._data_dark.get_corrected_data()
+        valid_dark = self._data_dark.masks().to(torch.bool)
 
         # Combined validity mask
         valid_mask = torch.ones_like(F_light, dtype=torch.bool)

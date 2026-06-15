@@ -323,14 +323,17 @@ def setup_ded_context(
                 )
 
     # Extract matched reflections
-    hkl_all, F_dark_mt, sig_dark_mt, rfree_dark = data_dark()
-    _, F_light_mt, sig_light_mt, rfree_light = data_light()
-    refl_mask = F_dark_mt.get_mask() & F_light_mt.get_mask()
+    hkl_all = data_dark.hkl
+    F_dark_full, sig_dark_full = data_dark.get_corrected_data()
+    rfree_dark = data_dark.rfree_flags
+    F_light_full, sig_light_full = data_light.get_corrected_data()
+    rfree_light = data_light.rfree_flags
+    refl_mask = data_dark.masks().to(torch.bool) & data_light.masks().to(torch.bool)
 
-    F_dark = F_dark_mt.get_data()[refl_mask]
-    F_light = F_light_mt.get_data()[refl_mask]
-    sig_dark = sig_dark_mt.get_data()[refl_mask]
-    sig_light = sig_light_mt.get_data()[refl_mask]
+    F_dark = F_dark_full[refl_mask]
+    F_light = F_light_full[refl_mask]
+    sig_dark = sig_dark_full[refl_mask]
+    sig_light = sig_light_full[refl_mask]
     hkl = hkl_all[refl_mask]
 
     # Free/work masks

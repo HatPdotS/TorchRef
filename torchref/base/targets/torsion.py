@@ -6,26 +6,6 @@ from ._common import DEG2RAD, LOG_2PI, torsions_from_xyz
 from ._dispatch import use_triton
 
 
-def torsion_unimodal_math(
-    deviations_rad: torch.Tensor,
-    sigmas_deg: torch.Tensor,
-) -> torch.Tensor:
-    """Unimodal von Mises NLL on already-wrapped deviations.
-
-    Mirrors ``targets.geometry.torsions._von_mises_nll``. The caller is
-    expected to compute wrapped angular deviations beforehand (currently
-    done inside ``Restraints.torsion_deviations_with_sigmas``).
-
-    No Triton dispatch yet — the periodic-wrap logic upstream is still
-    in eager Python.
-    """
-    sigmas_rad = sigmas_deg * DEG2RAD
-    kappa = torch.clamp(1.0 / (sigmas_rad ** 2), min=1e-3, max=1e4)
-    log_i0_kappa = torch.log(torch.special.i0e(kappa)) + kappa
-    log_prob = kappa * torch.cos(deviations_rad) - log_i0_kappa - LOG_2PI
-    return -log_prob.sum()
-
-
 def _torsion_omega_math_eager(
     xyz: torch.Tensor,
     idx: torch.Tensor,

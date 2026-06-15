@@ -11,7 +11,6 @@ from torchref.utils.stats import (
 )
 
 from .base import GeometryTarget
-from ..base import von_mises_nll
 
 if TYPE_CHECKING:
     from torchref.model.model import Model

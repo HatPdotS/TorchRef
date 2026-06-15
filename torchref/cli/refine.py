@@ -3,23 +3,22 @@
 """
 Command-line script for LBFGS crystallographic refinement using torchref.
 
-Supports the Bhattacharyya overlap target by default; Gaussian / least-squares
-/ maximum-likelihood targets remain available via ``--xray-mode``.
+Uses the maximum-likelihood σ_A (Read MLF) target by default; Bhattacharyya /
+Gaussian / least-squares / plain maximum-likelihood targets remain available
+via ``--xray-mode``.
 
 Examples
 --------
 ::
 
-    # Default: Bhattacharyya target, joint XYZ+ADP+scaler LBFGS
+    # Default: ml (maximum-likelihood Luzzati σ_A) target, joint XYZ+ADP+scaler LBFGS
     torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
 
     # 10 refinement cycles
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
 
-    # Separated XYZ then ADP cycles
-    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode refine
-
-    # Legacy maximum-likelihood target
+    # Alternative targets
+    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode bhattacharyya
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
 """
 
@@ -41,9 +40,9 @@ from torchref.cli._common import (
     add_weights_arg,
     build_column_names,
     configure_unbuffered_output,
+    parse_device_str,
     parse_weights,
     register_timing,
-    parse_device_str,
     validate_files,
     write_refinement_outputs,
 )
@@ -61,7 +60,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Default: Bhattacharyya target, joint XYZ+ADP+scaler LBFGS
+  # Default: SigmaA target, separate XYZ and ADP+scaler LBFGS
   torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
 
   # 10 refinement cycles
@@ -87,19 +86,21 @@ Examples:
     refine_group.add_argument(
         "--mode",
         type=str,
-        default="everything",
-        choices=["everything", "refine"],
+        default="separate",
+        choices=["separate", "everything"],
         help='Refinement mode: "everything" for joint XYZ+ADP+scaler LBFGS, '
-        '"refine" for separated XYZ then ADP cycles (default: "everything")',
+        '"separate" for separated XYZ then ADP cycles (default: "separate")',
     )
     refine_group.add_argument(
         "--xray-mode",
         type=str,
-        default="bhattacharyya",
-        choices=["gaussian", "ls", "ml", "bhattacharyya"],
-        help="X-ray target function. 'bhattacharyya' (default) uses the "
+        default="ml",
+        choices=["gaussian", "ls", "ls_wunit_k1", "ml", "bhattacharyya"],
+        help="X-ray target function. 'ml' (default) is the "
+        "maximum-likelihood Read MLF target with a cross-validated Luzzati "
+        "sigma_A term (Phenix-style alpha/beta). 'bhattacharyya' uses the "
         "Bhattacharyya overlap loss with first-principles model error "
-        "estimation and needs no manual weight tuning.",
+        "estimation; 'ls'/'gaussian' are simpler alternatives.",
     )
     refine_group.add_argument(
         "--sigma-m-scale",
@@ -109,6 +110,30 @@ Examples:
         "Ignored for other targets. Default 1.0.",
     )
     add_weights_arg(refine_group)
+    refine_group.add_argument(
+        "--with-rigid-body",
+        action="store_true",
+        help="Run one multi-resolution rigid-body refinement step (per-chain "
+        "rotation + translation) once at the start of refinement, before any "
+        "macro cycle. Useful when the starting model has small global "
+        "misorientation/shift. Combine with -n 0 to run rigid-body only.",
+    )
+    refine_group.add_argument(
+        "--rigid-body-iter",
+        type=int,
+        default=30,
+        help="LBFGS max_iter for each per-cutoff rigid-body step. "
+        "Only used when --with-rigid-body is set. Default 30.",
+    )
+    refine_group.add_argument(
+        "--rigid-body-cutoffs",
+        type=str,
+        default=None,
+        help="Comma-separated high-resolution cutoffs (A) for the rigid-body "
+        "schedule, coarse to fine, e.g. '10.15,8.80,5.89,4.10,3.00'. "
+        "If unset, an auto schedule is derived from native d_min. "
+        "Only used when --with-rigid-body is set.",
+    )
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -157,6 +182,8 @@ Examples:
         if args.xray_mode == "bhattacharyya":
             print(f"sigma_m scale:     {args.sigma_m_scale}")
         print(f"Refinement cycles: {args.n_cycles}")
+        if args.with_rigid_body:
+            print(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
         print(f"Device:            {args.device}")
         if args.dmin:
             print(f"Resolution cutoff: {args.dmin:.2f} A")
@@ -184,7 +211,6 @@ Examples:
         column_names=column_names,
         target_mode=args.xray_mode,
         sigma_m_scale=args.sigma_m_scale,
-        manual_weights=manual_weights or None,
     )
 
     if args.verbose > 0:
@@ -195,12 +221,35 @@ Examples:
     try:
         if args.verbose > 0:
             print(f"Starting refinement with {args.n_cycles} macro cycles...\n")
+            if args.with_rigid_body:
+                print(
+                    "Rigid-body step enabled: one multi-resolution rigid-body "
+                    "pass will run once at the start of refinement.\n"
+                )
             sys.stdout.flush()
 
-        if args.mode == "everything":
-            refinement.refine_everything(macro_cycles=args.n_cycles)
+        if args.mode == "separate":
+            cycle_fn = refinement.refine
+        elif args.mode == "everything":
+            cycle_fn = refinement.refine_everything
         else:
-            refinement.refine(macro_cycles=args.n_cycles)
+            raise ValueError(f"Invalid refinement mode: {args.mode}")
+
+        if args.with_rigid_body:
+            if args.verbose > 0:
+                print("\n--- Rigid-body step (once, at start) ---")
+                sys.stdout.flush()
+            rb_cutoffs = None
+            if args.rigid_body_cutoffs:
+                rb_cutoffs = [float(x) for x in args.rigid_body_cutoffs.split(",")]
+            refinement.refine_rigid_body(
+                cutoffs=rb_cutoffs,
+                iterations_per_step=args.rigid_body_iter,
+                commit=True,
+            )
+
+        if args.n_cycles > 0:
+            cycle_fn(macro_cycles=args.n_cycles)
 
         refinement.get_scales()
 
@@ -243,6 +292,11 @@ Examples:
             "weights": manual_weights if manual_weights else None,
             "dmin": args.dmin,
             "device": str(device),
+            "with_rigid_body": args.with_rigid_body,
+            "rigid_body_iter": args.rigid_body_iter if args.with_rigid_body else None,
+            "rigid_body_cutoffs": (
+                args.rigid_body_cutoffs if args.with_rigid_body else None
+            ),
         },
         "history": refinement.history if hasattr(refinement, "history") else {},
         "final_statistics": {},
@@ -252,17 +306,20 @@ Examples:
     try:
         work_nll, test_nll = refinement.nll_xray()
         hkl, fobs, sigma, rfree = refinement.reflection_data()
-        fcalc = refinement.get_F_calc_scaled(hkl, recalc=True)
+        # Signed HKL so |F_calc| matches what refinement optimized (anomalous mates).
+        fcalc = refinement.get_F_calc_scaled(
+            refinement.reflection_data.hkl_for_sf(), recalc=True
+        )
 
         work_mask = rfree
         test_mask = ~rfree
 
-        r_work = torch.sum(
-            torch.abs(fobs[work_mask] - fcalc[work_mask])
-        ) / torch.sum(fobs[work_mask])
-        r_free = torch.sum(
-            torch.abs(fobs[test_mask] - fcalc[test_mask])
-        ) / torch.sum(fobs[test_mask])
+        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(
+            fobs[work_mask]
+        )
+        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(
+            fobs[test_mask]
+        )
 
         history_data["final_statistics"] = {
             "R_work": float(r_work.item()),

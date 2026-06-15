@@ -8,13 +8,8 @@ This submodule provides functions for:
 """
 
 from .rfactor import (
-    get_rfactor_torch,
-    get_rfactor,
-    rfactor,
     get_rfactors,
     bin_wise_rfactors,
-    calc_outliers,
-    calc_outliers_numpy,
 )
 
 from .loss import (
@@ -28,15 +23,13 @@ from .loss import (
     gaussian_to_lognormal_mu,
 )
 
+from .binwise_scale import binwise_scale
+
 __all__ = [
     # R-factor
-    "get_rfactor_torch",
-    "get_rfactor",
-    "rfactor",
     "get_rfactors",
     "bin_wise_rfactors",
-    "calc_outliers",
-    "calc_outliers_numpy",
+    "binwise_scale",
     # Loss functions
     "nll_xray",
     "nll_xray_sum",

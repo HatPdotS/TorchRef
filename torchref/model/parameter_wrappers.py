@@ -2,6 +2,7 @@
 A file that contains wrapper classes for handling crystallographic parameters. (Occ, xyz, B, etc.)
 """
 
+import warnings
 from typing import Optional, Union
 
 import torch
@@ -621,11 +622,6 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         result._build_index_cache()
         return result
 
-    def parameters(self):
-        parameter = super().parameters()
-        parameter_valid = [param for param in parameter if param.numel() > 0]
-        yield from parameter_valid
-
     def refine(
         self, selection: Union[slice, torch.Tensor, tuple], reset_values: bool = False
     ):
@@ -934,8 +930,9 @@ class PositiveMixedTensor(MixedTensor):
         # Store epsilon as buffer (not parameter)
         self.epsilon = epsilon
 
+
         # Convert initial values to log space
-        log_initial_values = torch.log(initial_values.clamp(min=epsilon))
+        log_initial_values = torch.log(initial_values)
 
         # Initialize parent class with log-space values
         super().__init__(
@@ -1576,10 +1573,20 @@ class OccupancyTensor(MixedTensor):
         # Ensure initial_values is on the correct device and dtype
         initial_values = initial_values.to(device=device, dtype=dtype)
 
-        # Validate initial values are in valid range
+        # Validate initial values are in valid range. Some deposited PDBs carry
+        # occupancies slightly outside [0, 1] (e.g. waters/ligands refined above
+        # 1.0); clamp rather than reject so real structures load. The logit
+        # transform below independently clamps to [1e-6, 1 - 1e-6].
         if self.use_sigmoid:
             if torch.any(initial_values < 0) or torch.any(initial_values > 1):
-                raise ValueError("Initial occupancy values must be in range [0, 1]")
+                n_out = int(
+                    (torch.sum(initial_values < 0) + torch.sum(initial_values > 1)).item()
+                )
+                warnings.warn(
+                    f"{n_out} occupancy value(s) outside [0, 1]; clamping to range.",
+                    stacklevel=2,
+                )
+                initial_values = torch.clamp(initial_values, min=0.0, max=1.0)
 
         # Process sharing groups and altlocs, create expansion mask
         self._setup_sharing_groups_and_expansion(

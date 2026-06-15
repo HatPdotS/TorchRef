@@ -2,7 +2,7 @@
 
 import torch
 
-from ._common import LOG_2PI
+from ._common import EPS, LOG_2PI
 from ._dispatch import use_triton
 
 
@@ -14,7 +14,11 @@ def _bond_math_eager(
 ) -> torch.Tensor:
     pos1 = xyz[idx[:, 0]]
     pos2 = xyz[idx[:, 1]]
-    bond_lengths = torch.linalg.norm(pos2 - pos1, dim=-1)
+    # ``sqrt(sumsq + EPS)`` instead of ``norm`` so the d/dxyz = u/||u||
+    # backward is finite at zero distance (coincident atoms) — matches the
+    # Triton kernel's ``d_safe`` guard rather than returning NaN.
+    diff = pos2 - pos1
+    bond_lengths = (diff.pow(2).sum(dim=-1) + EPS).sqrt()
     deviations = bond_lengths - references
     nll = 0.5 * (deviations / sigmas) ** 2 + torch.log(sigmas) + 0.5 * LOG_2PI
     return nll.sum()
@@ -48,5 +52,6 @@ def bond_math(
     """
     if use_triton(xyz):
         from .triton.bond import bond_math_triton
+
         return bond_math_triton(xyz, idx, references, sigmas)
     return _bond_math_eager(xyz, idx, references, sigmas)

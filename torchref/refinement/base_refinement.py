@@ -23,10 +23,30 @@ from torchref.refinement.targets.combined import (
 
 # Target system imports
 from torchref.refinement.targets.xray import create_xray_target
+from torchref.refinement.weighting import ManualWeighting
 from torchref.scaling.scaler import Scaler
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
+
+
+# Default LossState group base weights — the single, transparent source of truth
+# for how the data term and the priors are balanced. These are *calibration
+# offsets*: with a perfectly calibrated ML likelihood and geometry/ADP prior they
+# would all be 1.0 (the posterior is just -logL - logP). The offsets correct
+# known mis-calibrations, validated to match Phenix/Refmac on the AF-start
+# benchmark (REFMAC-validated median R-free ~ Phenix at n=10):
+#   xray = 10.0  -> the Read/sigma_A likelihood is "soft" (under-counts the data's
+#                   information, a reflection-correlation / effective-N effect), so
+#                   it needs ~10x to sit on equal footing with the geometry prior.
+#   geometry = 1.0 -> reference scale (geometry NLL with physical Engh-Huber sigmas).
+#   adp = 0.1    -> the ADP-restraint prior is ~10x too tight; down-weighting lets
+#                   B-factors spread to their data-supported values.
+# NOTE: gradient-ratio auto-weighting is circular (at the optimum the gradient
+# ratio equals the weight by stationarity); the principled future direction is
+# R-free cross-validation or fixing the sigma_A "softness" calibration so these
+# offsets converge to 1.0. See the cleanup plan for the full rationale.
+DEFAULT_GROUP_WEIGHTS = {"xray": 10.0, "geometry": 1.0, "adp": 0.1}
 
 
 class Refinement(DeviceMixin, DebugMixin, nnModule):
@@ -88,9 +108,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         max_res: float = None,
         device: Optional[torch.device] = None,
         nbins: int = 10,
-        manual_weights: Dict[str, float] = None,
-        component_weights: Dict[str, float] = None,
         column_names: Optional[Dict[str, str]] = None,
+        wavelength: Optional[float] = 1.0,
+        anomalous_threshold: float = 0.5,
+        french_wilson: bool = True,
+        anomalous: Optional[bool] = None,
     ):
         """
         Initialize Refinement.
@@ -113,10 +135,18 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Maximum resolution for reflections.
         device : torch.device, optional
             Computation device. Defaults to the configured device.current.
-        weighter : LossWeightingModule, optional
-            Loss weighting module. Creates default if None.
         nbins : int, optional
             Number of resolution bins. Default is 10.
+        french_wilson : bool, optional
+            Whether to derive amplitudes from intensities via French-Wilson.
+            Default True. Set False to use existing French-Wilson-corrected
+            ``F``/``SIGF`` columns directly when the MTZ also carries
+            intensities.
+        anomalous : bool, optional
+            Anomalous (Bijvoet) load preference. If None (default), anomalous
+            ``F(+)/F(-)`` (or ``I(+)/I(-)``) data are auto-detected and loaded as
+            Friedel pairs when present, enabling the model's f'' term. True forces
+            this; False forces a merged load (f'' disabled).
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -130,10 +160,25 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.max_res = max_res
         self.nbins = nbins
         self.lr = 1e-3
+        # Wavelength drives f'/f'' anomalous scattering corrections in ModelFT.
+        # Default 1.0 preserves prior behavior; set to the experimental wavelength
+        # for anomalous (Bijvoet) refinement, or None to disable entirely.
+        self.wavelength = wavelength
+        self.anomalous_threshold = anomalous_threshold
+        self.french_wilson = french_wilson
+        # Anomalous (Bijvoet) load preference: None auto-detects and prefers
+        # anomalous data when present; True forces it; False forces a merged load.
+        self.anomalous = anomalous
 
         # Persistent state and logger (created lazily)
         self._loss_state: Optional[LossState] = None
         self._logger: Optional[Logger] = None
+
+        # Static weighting scheme holding the default group base weights. This
+        # is the transparent, first-class home for the data/prior balance;
+        # _create_loss_state applies it to the LossState. Reassign self.weighting
+        # to a different BaseWeighting to change the scheme.
+        self.weighting = ManualWeighting(DEFAULT_GROUP_WEIGHTS)
 
         # Empty initialization - create empty submodules for state_dict loading
         if data_file is None and pdb is None:
@@ -141,27 +186,35 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             self.reflection_data = ReflectionData(
                 verbose=self.verbose, device=self.device
             )
-            self.model = ModelFT(verbose=self.verbose, device=self.device)
+            self.model = ModelFT(
+                verbose=self.verbose,
+                device=self.device,
+                wavelength=self.wavelength,
+                anomalous_threshold=self.anomalous_threshold,
+            )
             self.scaler = Scaler(
                 verbose=self.verbose, device=self.device, nbins=self.nbins
             )
             # Restraints are now lazy-loaded via model.restraints property
             self.weighter = None
-            self.manual_weights = manual_weights if manual_weights is not None else {}
-            self.component_weights = (
-                component_weights if component_weights is not None else {}
-            )
             return
 
         # Full initialization with file paths
         try:
             self.to(self.device)
             if isinstance(data_file, str):
-                self.reflection_data = ReflectionData(verbose=self.verbose, device=self.device)
+                self.reflection_data = ReflectionData(
+                    verbose=self.verbose, device=self.device
+                )
                 if data_file.endswith(".mtz"):
-                    self.reflection_data.load_mtz(data_file, column_names=column_names)
+                    self.reflection_data.load_mtz(
+                        data_file,
+                        column_names=column_names,
+                        french_wilson=self.french_wilson,
+                        anomalous=self.anomalous,
+                    )
                 elif data_file.endswith(".cif"):
-                    self.reflection_data.load_cif(data_file)
+                    self.reflection_data.load_cif(data_file, anomalous=self.anomalous)
                 else:
                     raise ValueError(
                         f"Unsupported data file format: {data_file}. Supported formats are .mtz and .cif"
@@ -178,7 +231,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             else:
                 self.max_res = self.reflection_data.get_max_res()
             self.model = ModelFT(
-                verbose=self.verbose, max_res=self.max_res, device=self.device
+                verbose=self.verbose,
+                max_res=self.max_res,
+                device=self.device,
+                wavelength=self.wavelength,
+                anomalous_threshold=self.anomalous_threshold,
+                # Apply the f'' (Bijvoet) term only when the data were loaded as
+                # explicit Friedel pairs; merged data gate it off.
+                apply_bijvoet=not self.reflection_data.friedel_merged,
             )
             if pdb.endswith(".cif"):
                 self.model.load_cif(pdb)
@@ -189,21 +249,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     f"Unsupported model file format: {pdb}. Supported formats are .pdb and .cif"
                 )
 
-            self.scaler = Scaler(
-                self.model,
-                self.reflection_data,
-                verbose=self.verbose,
-                device=self.device,
-                nbins=self.nbins,
-            )
+            self._sync_model_cell_to_data()
+            self.setup_scaler()
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
             self.model._build_restraints()
-
-            self.manual_weights = manual_weights if manual_weights is not None else {}
-            self.component_weights = (
-                component_weights if component_weights is not None else {}
-            )
 
             # Initialize target functions (instantiated once, evaluated each iteration)
             self._init_targets()
@@ -213,15 +263,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 self.debug_on_error(e)
             raise e
 
-    def _init_targets(self, xray_mode: str = "bhattacharyya"):
+    def _init_targets(self, xray_mode: str = "ml"):
         """
         Initialize target functions.
 
         Parameters
         ----------
         xray_mode : str, optional
-            X-ray target mode. Options are 'gaussian', 'ls', 'ml', or
-            'bhattacharyya'. Default is 'bhattacharyya'.
+            X-ray target mode. Options are 'gaussian', 'ls', 'rice', 'ml',
+            or 'bhattacharyya'. Default is 'ml' (maximum-likelihood Read MLF
+            with Luzzati σ_A).
         """
         # X-ray targets (now accept model, data, scaler directly)
         self.xray_target_work = create_xray_target(
@@ -247,7 +298,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         self.adp_target = TotalADPTarget(self.model, verbose=self.verbose)
 
-        self.setup_component_weighting()
+        # Initialize scaler scales (overall scale, anisotropic U, bulk solvent)
+        # so the scaler-regularization targets have valid parameters to read.
+        self.get_scales()
 
         if self.verbose > 0:
             print(f"Initialized targets with xray_mode='{xray_mode}'")
@@ -259,7 +312,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         mode : str
-            X-ray target mode. Options are 'gaussian', 'ls', or 'ml'.
+            X-ray target mode. Options: 'gaussian', 'ls', 'rice', 'ml', 'bhattacharyya'.
         """
         sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
         self.xray_target_work = create_xray_target(
@@ -342,21 +395,82 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self._logger = None
 
     def get_scales(self):
-        if not hasattr(self, "scaler"):
-            self.setup_scaler()
+        if not hasattr(self, "scaler") or self.scaler is None:
+            # Targets that compute their own scale (e.g. ls_wunit_k1 in
+            # binwise_optimal mode) intentionally leave ref.scaler=None.
+            # Nothing to initialize or refit here.
+            return
         self.scaler.initialize()
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
         self.scaler.refine_lbfgs()
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
 
     def setup_scaler(self):
-        self.scaler = Scaler(
+        cls = getattr(self, "_scaler_class", None) or Scaler
+        self.scaler = cls(
             self.model,
             self.reflection_data,
             nbins=self.nbins,
             verbose=self.verbose,
             device=self.device,
         )
+
+    def _sync_model_cell_to_data(
+        self,
+        axis_rtol: float = 0.01,
+        angle_atol_deg: float = 1.0,
+    ) -> None:
+        """Always cast the reflection-data cell onto the model.
+
+        Mirrors cctbx's ``xrs.customized_copy(crystal_symmetry=data_sym)``:
+        the data cell is authoritative because HKL indices are defined
+        relative to it. Atoms keep their Cartesian coordinates and are
+        reinterpreted in the new cell — fractional coordinates implicitly
+        shift. Without this sync, ``F_calc`` is computed with the wrong
+        basis at HKLs that mean something else, producing a pose-dependent
+        phase bias that distorts the gradient (9RTS case: a 2.4% b-axis
+        mismatch was pulling rigid-body LBFGS into a worse local minimum).
+
+        The sync runs unconditionally. A warning is emitted only when the
+        disagreement is large enough to flag for the user:
+
+        - any axis differs by ≥ ``axis_rtol`` relative (default 1%)
+        - any angle differs by ≥ ``angle_atol_deg`` absolute (default 1°)
+        """
+        if self.model is None or self.model.cell is None:
+            return
+        if self.reflection_data is None or self.reflection_data.cell is None:
+            return
+        m_t = self.model.cell.data
+        d_t = self.reflection_data.cell.data
+        m = m_t.detach().cpu().tolist()
+        d = d_t.detach().cpu().tolist()
+        axes_m, angles_m = m[:3], m[3:]
+        axes_d, angles_d = d[:3], d[3:]
+        axis_off = any(
+            abs(am - ad) / max(abs(ad), 1e-12) >= axis_rtol
+            for am, ad in zip(axes_m, axes_d)
+        )
+        angle_off = any(
+            abs(gm - gd) >= angle_atol_deg
+            for gm, gd in zip(angles_m, angles_d)
+        )
+        if axis_off or angle_off:
+            import warnings
+            warnings.warn(
+                "PDB CRYST1 cell disagrees with reflection-data cell beyond "
+                f"tolerance (axes ≥ {axis_rtol * 100:g}% or angles ≥ "
+                f"{angle_atol_deg:g}°). Casting the data cell onto the model "
+                "(HKL indices are defined relative to it). Atoms keep "
+                "Cartesian coordinates; fractional coordinates implicitly "
+                "shift. Mirrors cctbx's "
+                "`xrs.customized_copy(crystal_symmetry=data_sym)`.\n"
+                f"  PDB  cell: {m}\n"
+                f"  data cell: {d}",
+                stacklevel=2,
+            )
+        self.model.cell = self.reflection_data.cell
+        self.model.reset_cache()
 
     def parameters(self, recurse: bool = True):
         """
@@ -389,7 +503,10 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     def get_fcalc(self, hkl=None, recalc=False):
         if hkl is None:
-            hkl, _, _, _ = self.reflection_data()
+            # Signed HKL so Bijvoet mates (which share a canonical ASU index)
+            # are evaluated at +h/-h and get distinct |F_calc| under anomalous
+            # scattering. Falls back to canonical hkl when unavailable.
+            hkl = self.reflection_data.hkl_for_sf()
         return self.model(hkl, recalc=recalc)
 
     def get_fcalc_scaled(self, hkl=None, recalc=False):
@@ -516,149 +633,37 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         state.register_target("xray_work", lambda: self.xray_target_work())
         state.register_targets(self.geometry_target)
         state.register_targets(self.adp_target)
-        n_ref = int(self.reflection_data.hkl.shape[0])
-        state.register_target(
-            "adp/scaler_U",
-            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
-        )
-        state.register_target(
-            "adp/scaler_log_scale",
-            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
-        )
-
-        # Populate meta and update weights
-        state = self.populate_state_meta(state)
-        state = self.update_weights(state)
+        if self.scaler is not None:
+            n_ref = int(self.reflection_data.hkl.shape[0])
+            if hasattr(self.scaler, "U"):
+                state.register_target(
+                    "adp/scaler_U",
+                    ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+                )
+            if (hasattr(self.scaler, "log_scale")
+                    and self.scaler.log_scale.requires_grad):
+                state.register_target(
+                    "adp/scaler_log_scale",
+                    ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+                )
 
         return state.aggregate()
-
-    def setup_component_weighting(self):
-        """
-        Set up component weighting with ResolutionWeighting + OverfittingWeighting.
-        """
-        from torchref.refinement.weighting.component_weighting import ComponentWeighting
-
-        self.get_scales()
-
-        self.component_weighting = ComponentWeighting(
-            device=self.device,
-            weights=self.manual_weights,
-            component_weights=self.component_weights,
-        )
-
-    def populate_state_meta(self, state: "LossState") -> "LossState":
-        """
-        Populate LossState.meta with all model-level data.
-
-        Called once per macro cycle before weighting schemes are applied.
-        This is the single location where refinement data is extracted into state.
-
-        Parameters
-        ----------
-        state : LossState
-            State to populate with meta data.
-
-        Returns
-        -------
-        LossState
-            State with meta populated.
-        """
-        with torch.no_grad():
-            # R-factors
-            rwork, rfree = self.get_rfactor()
-            rwork = float(rwork) if isinstance(rwork, torch.Tensor) else rwork
-            rfree = float(rfree) if isinstance(rfree, torch.Tensor) else rfree
-
-            # X-ray losses
-            xray_work = self.xray_target_work().detach().item()
-            xray_test = self.xray_target_test().detach().item()
-
-            # ADP statistics
-            adp_values = self.model.adp()
-            mean_adp = float(adp_values.mean())
-            adp_std = float(adp_values.std())
-
-            # Geometry deviations (restraints accessed via model.restraints)
-            bond_rmsd = 0.0
-            angle_rmsd = 0.0
-            if self.model.initialized and self.model._restraints is not None:
-                restraints = self.model.restraints
-                if hasattr(restraints, "bond_deviations"):
-                    bond_devs, _ = restraints.bond_deviations()
-                    bond_rmsd = float(torch.sqrt((bond_devs**2).mean()))
-                if hasattr(restraints, "angle_deviations"):
-                    angle_devs, _ = restraints.angle_deviations()
-                    angle_rmsd = float(torch.sqrt((angle_devs**2).mean()))
-
-        state.update_meta(
-            {
-                # Device
-                "device": self.device,
-                # Static structure/data properties
-                "n_atoms": len(self.model.pdb),
-                "n_hkl": self.reflection_data.hkl.shape[0],
-                "resolution_min": float(self.reflection_data.resolution.min()),
-                "wilson_b": (
-                    float(self.reflection_data.wilson_b)
-                    if self.reflection_data.wilson_b is not None
-                    else 45.0
-                ),
-                # Dynamic refinement state
-                "rwork": rwork,
-                "rfree": rfree,
-                "rfree_gap": rfree - rwork,
-                "xray_loss_work": xray_work,
-                "xray_loss_test": xray_test,
-                "mean_adp": mean_adp,
-                "adp_std": adp_std,
-                "bond_rmsd": bond_rmsd,
-                "angle_rmsd": angle_rmsd,
-            }
-        )
-
-        return state
-
-    def update_weights(self, state: "LossState", multiply=False) -> "LossState":
-        """
-        Compute weights from component_weighting and update state.
-        Weights are clipped to [0.01, 100.0] to avoid extreme values.
-
-        Parameters
-        ----------
-        state : LossState
-            State with meta populated.
-        multiply : bool, optional
-            If True, multiply existing weights by computed weights.
-            If False, replace existing weights with computed weights.
-
-        Returns
-        -------
-        LossState
-            State with weights updated.
-        """
-        weights = self.component_weighting(state)
-
-        for name, weight in weights.items():
-            current = state.get_weight(name, default=1.0)
-            if multiply:
-                weight_effective = min(max(current * weight, 0.01), 100.0)
-            else:
-                weight_effective = min(max(weight, 0.01), 100.0)
-            state.set_weight(name, weight_effective)
-
-        return state
 
     def _create_loss_state(self) -> LossState:
         """
         Create a configured LossState for optimization (internal).
 
         Sets up a LossState with all targets registered as callables with
-        hierarchical naming (e.g., 'geometry/bond', 'adp/simu').
+        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'), then applies the
+        default group base weights ``DEFAULT_GROUP_WEIGHTS`` (xray 10 / geometry 1
+        / adp 0.1) — the single, transparent source of truth for the data/prior
+        balance (see that constant for the calibration rationale).
 
         Returns
         -------
         LossState
-            Configured LossState with targets registered.
+            Configured LossState with targets registered and default group
+            weights applied.
         """
         state = LossState(device=self.device)
 
@@ -670,15 +675,29 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         # Register ADP targets
         state.register_targets(self.adp_target)
-        n_ref = int(self.reflection_data.hkl.shape[0])
-        state.register_target(
-            "adp/scaler_U",
-            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
-        )
-        state.register_target(
-            "adp/scaler_log_scale",
-            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
-        )
+        # Scaler regularization targets require the scaler to actually have
+        # the regularized parameters. Solvent-only scalers (rigid-body
+        # ls_wunit_k1) delete U and freeze log_scale.
+        if self.scaler is not None:
+            n_ref = int(self.reflection_data.hkl.shape[0])
+            if hasattr(self.scaler, "U"):
+                state.register_target(
+                    "adp/scaler_U",
+                    ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+                )
+            if (hasattr(self.scaler, "log_scale")
+                    and self.scaler.log_scale.requires_grad):
+                state.register_target(
+                    "adp/scaler_log_scale",
+                    ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+                )
+
+        # Apply the weighting scheme (default: ManualWeighting holding the
+        # DEFAULT_GROUP_WEIGHTS — xray 10 / geometry 1 / adp 0.1). The scheme
+        # returns a {component: weight} dict; we apply it to the state. This is
+        # the single, transparent place the data/prior balance lives — see
+        # DEFAULT_GROUP_WEIGHTS for the calibration-offset rationale.
+        state.set_weights(self.weighting(state))
 
         return state
 
@@ -691,8 +710,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             This method is kept for backwards compatibility.
 
         Sets up a LossState with all targets registered as callables with
-        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'). Weights are
-        applied from component_weighting.
+        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'). All targets
+        aggregate at uniform weight unless weights are set explicitly via
+        ``state.set_weight``.
 
         Usage:
             from torchref.utils import validate_loss
@@ -755,9 +775,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             Complete LossState with targets, meta, losses, and weights.
         """
         state = self.loss_state
-        state = self.populate_state_meta(state)
         state.cache_losses()
-        state = self.update_weights(state)
         return state
 
     def xray_loss(self):
@@ -784,10 +802,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     def collect_metrics(self) -> Dict[str, Any]:
         """
-        Collect all metrics from component_weighting.stats().
+        Collect refinement metrics (R-factors, geometry, ADP) for logging.
 
         This is the standard method for gathering refinement metrics for logging.
-        Uses the centralized component_weighting module for all statistics.
         Returns full unfiltered stats - filtering is done at display time.
 
         Returns
@@ -816,17 +833,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 metrics["geometry"] = self.geometry_target.stats()
             if hasattr(self, "adp_target"):
                 metrics["adp"] = self.adp_target.stats()
-
-            # Add X-ray NLL stats for component_weighting
-            if hasattr(self, "component_weighting"):
-                xray_work = self.xray_loss_work()
-                xray_test = self.xray_loss_test()
-                metrics["component_weighting"] = {
-                    "xray": {
-                        "work_nll": xray_work.item() if hasattr(xray_work, "item") else float(xray_work),
-                        "test_nll": xray_test.item() if hasattr(xray_test, "item") else float(xray_test),
-                    }
-                }
 
         return metrics
 
@@ -858,20 +864,53 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return state
 
     def get_rfactor(self):
-        return self.scaler.rfactor()
+        # If the xray target uses its own closed-form per-bin scale
+        # (scale_mode == "binwise_optimal", e.g. ls_wunit_k1), the external
+        # scaler — even a solvent-only one — does not provide the right
+        # overall scaling. Compute R via the closed-form c[bins] instead.
+        target_scale_mode = getattr(
+            getattr(self, "xray_target_work", None), "scale_mode", None
+        )
+        if target_scale_mode != "binwise_optimal" and self.scaler is not None:
+            return self.scaler.rfactor()
+        # Scaler-free / binwise-optimal path. Fit the per-bin scale on the
+        # work reflections, apply the same c[bins] to the test reflections
+        # for an apples-to-apples R_free.
+        from torchref.base.metrics import binwise_scale, rfactor
 
-    def update_outliers(self, z_threshold=4.0):
         with torch.no_grad():
-            self.reflection_data = self.reflection_data.update_outliers(
-                self.model, self.scaler, z_threshold=z_threshold
-            )
-            self.setup_scaler()
+            # get_data returns compact (already-subset) tensors plus the
+            # ``_ReflectionSubset`` view (5th element); we use the view to
+            # align full-size bins to the compact arrays.
+            Fo_w, Fc_w, _, _, sub_w = self.xray_target_work.get_data()
+            Fo_t, Fc_t, _, _, sub_t = self.xray_target_test.get_data()
+
+            if getattr(self.xray_target_work, "scale_mode", None) == "binwise_optimal":
+                full_bins = self.xray_target_work._get_bins_cached()
+                bins_w = sub_w.select(full_bins)
+                bins_t = sub_t.select(full_bins)
+                c = binwise_scale(
+                    Fc_w, Fo_w, bins_w,
+                    valid=None,
+                    nbins=self.xray_target_work.n_bins,
+                    weights=None,
+                )
+                Fc_w_s = c[bins_w] * Fc_w
+                Fc_t_s = c[bins_t] * Fc_t
+            else:
+                Fc_w_s = Fc_w
+                Fc_t_s = Fc_t
+
+            rwork = rfactor(Fo_w, Fc_w_s)
+            rfree = rfactor(Fo_t, Fc_t_s)
+        return rwork, rfree
 
     def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
         import matplotlib.pyplot as plt
 
         with torch.no_grad():
-            hkl, F_obs, sigma_F_obs, self.rfree_flags = self.reflection_data()
+            F_obs = self.reflection_data.get_corrected_data()[0]
+            self.rfree_flags = self.reflection_data.rfree_flags
             self.get_F_calc()
             F_calc = self.F_calc
             F_obs_amp = torch.abs(F_obs).cpu().numpy()
@@ -887,11 +926,28 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             plt.grid()
             plt.savefig(outpath)
 
-    def write_out_mtz(self, out_mtz_path="refined_output.mtz"):
+    def write_out_mtz(self, out_mtz_path="refined_output.mtz", anomalous=None):
+        """Write refined map coefficients to an MTZ file.
+
+        Parameters
+        ----------
+        out_mtz_path : str
+            Output MTZ path.
+        anomalous : bool, optional
+            If True, emit a phenix-style anomalous MTZ: display maps and merged
+            columns in the canonical ASU (Friedel mates merged by mean
+            amplitude) plus unstacked ``F-obs(+/-)`` / ``F-model(+/-)`` columns
+            on the same ASU index. If False, the legacy per-row layout is
+            written. If None (default), chosen automatically from the data:
+            anomalous output when the data were loaded as Bijvoet pairs
+            (``reflection_data.friedel_merged`` is False), legacy otherwise.
+        """
         with torch.no_grad():
-            hkl, _, _, _ = self.reflection_data(mask=False)
+            # Signed HKL so the per-row fcalc carries the anomalous (Bijvoet)
+            # difference; write_mtz consumes it row-aligned with reflection_data.
+            hkl = self.reflection_data.hkl_for_sf()
             fcalc = self.scaler(self.get_fcalc(hkl), use_mask=False)
-            self.reflection_data.write_mtz(out_mtz_path, fcalc)
+            self.reflection_data.write_mtz(out_mtz_path, fcalc, anomalous=anomalous)
 
     def collect_deposition_metadata(self, metadata=None):
         """Collect refinement statistics into a RefinementMetadata object.
@@ -993,7 +1049,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     def create_from_state_dict(
         cls,
         state_dict: dict,
-        device: torch.device = get_default_device(),
+        device: torch.device = None,
         verbose: int = 1,
     ) -> "Refinement":
         """
@@ -1034,6 +1090,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             print(f"Restored at R-work={rwork:.4f}, R-free={rfree:.4f}")
         """
 
+        if device is None:
+            device = get_default_device()
+
         # Helper to extract submodule state from flattened state_dict
         def extract_submodule_state(state_dict: dict, prefix: str) -> dict:
             """Extract keys starting with prefix and strip the prefix."""
@@ -1072,6 +1131,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         scaler = Scaler(model, reflection_data, verbose=verbose, device=device)
 
         # Create Restraints with model (required for proper setup)
+        from torchref.restraints import Restraints
+
         restraints = Restraints(model, verbose=verbose)
 
         # Create empty instance
