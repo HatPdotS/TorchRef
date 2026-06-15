@@ -109,16 +109,28 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         Occupancy function mapping density -> solvent fraction. ``"exp"`` uses
         ``M = exp(-rho/rho0)`` (single knob, clean Babinet/mask limits).
         ``"sigmoid"`` uses ``M = sigmoid((rho0 - rho)/w)`` (contour at ``rho0``,
-        fixed edge width ``sigmoid_width``). ``"shell"`` uses the complement of a
-        dilation, ``M = 1 - (P (*) K_sigma)`` with ``P = 1 - exp(-rho/rho0)``,
-        adding a refinable entropic depletion shell of width ``shell_sigma``
-        around the protein (``sigma=0`` reduces to ``"exp"``).
+        fixed edge width ``sigmoid_width``). ``"shell"`` is a morphological
+        erosion/dilation: smooth the density (Gaussian width ``shell_sigma``),
+        standardize, then threshold with a sigmoid at z-cutoff ``shell_tau``,
+        ``M = 1 - sigmoid((z - tau)/w)``. The threshold is the nonlinearity that
+        moves the solvent boundary (erosion = depletion shell, dilation), so it
+        is genuinely more than a solvent B-factor.
     sigmoid_width : float, default 0.5
         Edge width ``w`` (e/A^3) for the ``"sigmoid"`` occupancy; ignored for
-        ``"exp"``. Not refined (the edge is meant to come from ``rho``).
+        ``"exp"``/``"shell"``. Not refined (the edge is meant to come from ``rho``).
     shell_sigma : float, default 1.5
-        Initial depletion-shell width (A) for the ``"shell"`` occupancy; refinable
+        Initial smoothing width (A) for the ``"shell"`` occupancy; refinable
         (clamped to [0, 5] A). Ignored for the other modes.
+    shell_tau : float, optional
+        z-cutoff for the ``"shell"`` threshold (refinable). If None (default), it
+        is lazily initialised from the ``shell_quantile`` quantile of the
+        standardized smoothed density on the first build.
+    shell_quantile : float, default 0.5
+        Quantile used to initialise ``shell_tau`` (~ the starting solvent voxel
+        fraction). Ignored if ``shell_tau`` is given.
+    shell_edge : float, default 0.5
+        Sigmoid edge width ``w`` (in standardized-density / z units) for the
+        ``"shell"`` threshold. Not refined.
     residual_bsol : bool, default False
         If True, add a refinable scalar ``b_solvent`` (init 0) applying an
         ``exp(-B_sol * s^2)`` residual damping to F_sol.
@@ -142,6 +154,9 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         occupancy="exp",
         sigmoid_width=0.5,
         shell_sigma=1.5,
+        shell_tau=None,
+        shell_quantile=0.5,
+        shell_edge=0.5,
         residual_bsol=False,
         solvent_res=None,
         verbose=1,
@@ -158,6 +173,8 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         self.float_type = float_type
         self.occupancy = occupancy
         self.sigmoid_width = float(sigmoid_width)
+        self.shell_quantile = float(shell_quantile)
+        self.shell_edge = float(shell_edge)
         self.residual_bsol = residual_bsol
         # "shell" needs a finer grid than "exp"/"sigmoid" to resolve the ~1-2 A
         # depletion shell; fall back to the coarse default for the other modes.
@@ -183,12 +200,26 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
                 "b_solvent", torch.tensor(0.0, dtype=float_type, device=device)
             )
 
-        # "shell" mode adds the depletion-shell width sigma (Angstroms). Stored
-        # linearly (NOT log) so sigma=0 is representable -- at sigma=0 the kernel
-        # is the identity and M reduces exactly to the "exp" occupancy.
+        # "shell" mode is a morphological operator: smooth the density (width
+        # sigma, Angstroms; stored linearly so sigma=0 = no smoothing) then
+        # threshold the standardized smoothed density with a sigmoid at z-cutoff
+        # tau (the single erosion/dilation knob). tau is lazily initialised from
+        # a quantile of the standardized smoothed density on the first build,
+        # unless an explicit shell_tau is given.
         if occupancy == "shell":
             self.sigma_shell = nn.Parameter(
                 torch.tensor(float(shell_sigma), dtype=float_type, device=device)
+            )
+            self.tau_shell = nn.Parameter(
+                torch.tensor(
+                    0.0 if shell_tau is None else float(shell_tau),
+                    dtype=float_type,
+                    device=device,
+                )
+            )
+            self.register_buffer(
+                "_tau_initialized",
+                torch.tensor(shell_tau is not None, device=device),
             )
 
         # Empty init: shell ready for load_state_dict().
@@ -253,53 +284,79 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
 
         ``"exp"``: ``M = exp(-rho / rho0)`` -- 1 in bulk (rho=0), ->0 in cores.
         ``"sigmoid"``: ``M = sigmoid((rho0 - rho) / w)``.
-        ``"shell"``: complement of a dilation of the protein occupancy
-            ``P = 1 - exp(-rho / rho0)``: ``M = 1 - (P (*) K_sigma)``, where
-            ``K_sigma`` is a normalized Gaussian of width ``sigma_shell`` (A).
-            Produces an entropic depletion shell (``0 < M < 1``) of width ~sigma
-            around the protein, rising to flat bulk (``M = 1``). ``sigma=0``
-            recovers the ``"exp"`` occupancy exactly.
+        ``"shell"``: morphological erosion/dilation. The density is smoothed in
+            reciprocal space (Gaussian width ``sigma_shell`` A), standardized, and
+            thresholded by a sigmoid at z-cutoff ``tau_shell``:
+            ``M = 1 - sigmoid((z - tau) / w)`` with ``z = (rho_s - mu)/sd`` of the
+            smoothed density. Raising ``tau`` moves the boundary toward the protein
+            core (solvent dilates); lowering it pushes the boundary out into the
+            halo (solvent erodes -> entropic depletion shell). ``sigma`` sets the
+            reach, ``w`` (``shell_edge``) the edge sharpness. The sigmoid threshold
+            is the nonlinearity that makes this more than a solvent B-factor.
         """
         rho0 = torch.exp(self.log_rho0.clamp(min=-20.0, max=20.0))
         if self.occupancy == "exp":
             # rho >= 0 from real-space Gaussian accumulation; clamp guards ripples.
             return torch.exp(-(rho.clamp(min=0.0)) / rho0)
         if self.occupancy == "shell":
-            P = 1.0 - torch.exp(-(rho.clamp(min=0.0)) / rho0)
-            D = self._dilate(P)
-            # P in [0,1] convolved with a nonnegative, unit-DC kernel stays in
-            # [0,1]; clamp only guards FFT round-off (no-op at sigma=0).
-            return (1.0 - D).clamp(min=0.0, max=1.0)
+            rho_smooth = self._smooth(rho.clamp(min=0.0))
+            # Standardize (mu/sd detached: scale carried by rho_s / the scaler;
+            # gradients to coords flow through the numerator). z-cutoff makes tau
+            # and the edge width portable across structures (SFcalculator-style).
+            mu = rho_smooth.mean().detach()
+            sd = rho_smooth.std().detach().clamp(min=1e-6)
+            z = (rho_smooth - mu) / sd
+            tau = self._get_tau(z)
+            w = max(self.shell_edge, 1e-3)
+            return (1.0 - torch.sigmoid((z - tau) / w)).clamp(min=0.0, max=1.0)
         w = self.sigmoid_width
         return torch.sigmoid((rho0 - rho) / w)
 
-    def _dilate(self, P):
+    def _smooth(self, field):
         """
-        Dilate the protein occupancy ``P`` by a normalized Gaussian of width
+        Smooth a real-space ``field`` with a normalized Gaussian of width
         ``sigma_shell`` (Angstroms), via reciprocal-space convolution.
 
-        ``D = real(ifftn(fftn(P) * Khat))`` with
+        ``out = real(ifftn(fftn(field) * Khat))`` with
         ``Khat(f) = exp(-2*pi^2 * sigma^2 * |f|^2)`` on the full fft grid using
         physical frequencies ``fftfreq(N, d=voxel_spacing)`` per axis. ``Khat(0)
-        = 1`` so the kernel preserves the DC component (unit area). Differentiable
-        w.r.t. ``sigma_shell`` and -- through ``P`` -- w.r.t. atomic xyz/B.
+        = 1`` so the smoothing preserves the DC component (a free "B" multiply).
+        At ``sigma=0`` the kernel is the identity (no smoothing). Differentiable
+        w.r.t. ``sigma_shell`` and -- through ``field`` -- w.r.t. atomic xyz/B.
         """
         grid = self.solvent_fft.real_space_grid  # (nx, ny, nz, 3) Cartesian
         dx = float((grid[1, 0, 0] - grid[0, 0, 0]).norm())
         dy = float((grid[0, 1, 0] - grid[0, 0, 0]).norm())
         dz = float((grid[0, 0, 1] - grid[0, 0, 0]).norm())
         sigma = self.sigma_shell.clamp(min=0.0, max=5.0)
-        nx, ny, nz = P.shape
+        nx, ny, nz = field.shape
         two_pi2 = 2.0 * torch.pi**2
-        fx = torch.fft.fftfreq(nx, d=dx, device=P.device, dtype=P.dtype)
-        fy = torch.fft.fftfreq(ny, d=dy, device=P.device, dtype=P.dtype)
-        fz = torch.fft.fftfreq(nz, d=dz, device=P.device, dtype=P.dtype)
+        fx = torch.fft.fftfreq(nx, d=dx, device=field.device, dtype=field.dtype)
+        fy = torch.fft.fftfreq(ny, d=dy, device=field.device, dtype=field.dtype)
+        fz = torch.fft.fftfreq(nz, d=dz, device=field.device, dtype=field.dtype)
         gx = torch.exp(-two_pi2 * sigma**2 * fx**2)
         gy = torch.exp(-two_pi2 * sigma**2 * fy**2)
         gz = torch.exp(-two_pi2 * sigma**2 * fz**2)
         G = gx[:, None, None] * gy[None, :, None] * gz[None, None, :]
-        F = torch.fft.fftn(P)
+        F = torch.fft.fftn(field)
         return torch.real(torch.fft.ifftn(F * G.to(F.dtype)))
+
+    def _get_tau(self, z):
+        """
+        Return the z-cutoff ``tau_shell``, lazily initialising it on first use
+        from the ``shell_quantile`` quantile of the standardized smoothed density
+        ``z`` (so a fraction ~``shell_quantile`` of voxels start as solvent).
+        The init is a no-grad data write guarded by a persistent buffer, so a
+        value loaded via ``load_state_dict`` is never overwritten.
+        """
+        if not bool(self._tau_initialized):
+            with torch.no_grad():
+                flat = z.flatten()
+                stride = max(1, flat.numel() // 1_000_000)
+                q = torch.quantile(flat[::stride], self.shell_quantile)
+                self.tau_shell.copy_(q)
+                self._tau_initialized.fill_(True)
+        return self.tau_shell.clamp(min=-10.0, max=10.0)
 
     def _nyquist_mask(self, hkl):
         """True where |h|,|k|,|l| are within the coarse grid Nyquist limit."""
@@ -380,6 +437,7 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         leaves = [self.log_rho_s, self.log_rho0]
         if self.occupancy == "shell":
             leaves.append(self.sigma_shell)
+            leaves.append(self.tau_shell)
         if self.residual_bsol:
             leaves.append(self.b_solvent)
         return iter(leaves)

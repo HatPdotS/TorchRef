@@ -10,7 +10,7 @@ at each cutoff in a coarse → fine resolution schedule.
 At coarse resolutions (d > 6 Å) the xray target is Phenix-style
 ``ls_wunit_k1`` — least squares with unit weights and a per-bin optimal
 scale recomputed at every gradient call (no external scaler). At high
-resolutions (d ≤ 6 Å) the target switches to ``ml_sigmaa`` with the
+resolutions (d ≤ 6 Å) the target switches to ``ml`` with the
 normal Scaler module.
 """
 
@@ -91,7 +91,7 @@ class RigidBodyRefinementStep:
     @classmethod
     def _xray_mode_for_cutoff(cls, d_min: float) -> str:
         """Phenix-style target auto-switch."""
-        return "ls_wunit_k1" if d_min > cls.TARGET_SWITCH_RES else "ml_sigmaa"
+        return "ls_wunit_k1" if d_min > cls.TARGET_SWITCH_RES else "ml"
 
     # -----------------------------------------------------------------------
     # Run
@@ -141,7 +141,7 @@ class RigidBodyRefinementStep:
         For ``ls_wunit_k1`` cutoffs the Scaler is built with ``nbins=1``: the
         bulk-solvent term (mask-based, Phenix-style) is added to F_calc, and
         the closed-form per-bin scale ``c[bins]`` in the LS target owns the
-        overall scaling. For ``ml_sigmaa`` and other modes a fresh full
+        overall scaling. For ``ml`` and other modes a fresh full
         Scaler is built with ``ref.nbins`` bins.
         """
         ref = self.refinement
@@ -150,7 +150,7 @@ class RigidBodyRefinementStep:
         ref.reflection_data = data
 
         if xray_mode is None:
-            xray_mode = getattr(ref, "target_mode", "ml_sigmaa")
+            xray_mode = getattr(ref, "target_mode", "ml")
 
         ref.scaler = Scaler(
             model, data,
@@ -205,7 +205,7 @@ class RigidBodyRefinementStep:
             # Decide whether to use the inner-cycle (mask-refresh) loop.
             # Triggered when the scaler has a bulk-solvent component whose
             # mask depends on atom positions (ls_wunit_k1 path here). For
-            # the ml_sigmaa path the scaler is fully refit between cutoffs
+            # the ml path the scaler is fully refit between cutoffs
             # and co-optimized with rigid params in a single LBFGS.
             use_inner_cycles = (
                 ref.scaler is not None

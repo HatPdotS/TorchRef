@@ -111,6 +111,20 @@ class XrayTarget(DataTarget):
         """
         pass
 
+    def maintenance(self) -> None:
+        """Invalidate the scaler's shared ML model-error variance ``beta`` so
+        it is re-estimated from the updated model on the next forward.
+
+        ``LossState`` calls this after each optimizer-step block. ``beta`` is a
+        detached constant *within* a block (so gradients see it as fixed) but
+        must refresh *between* blocks as the model improves, otherwise the
+        likelihood stays calibrated to the early, worse model. Scalers without
+        a beta cache (e.g. the LS path) simply have nothing to reset.
+        """
+        scaler = self._scaler
+        if scaler is not None and hasattr(scaler, "reset_beta_cache"):
+            scaler.reset_beta_cache()
+
     def get_data(
         self, fcalc: torch.Tensor = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, object]:

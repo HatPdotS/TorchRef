@@ -11,7 +11,7 @@ Examples
 --------
 ::
 
-    # Default: ml_sigmaa (maximum-likelihood Luzzati σ_A) target, joint XYZ+ADP+scaler LBFGS
+    # Default: ml (maximum-likelihood Luzzati σ_A) target, joint XYZ+ADP+scaler LBFGS
     torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
 
     # 10 refinement cycles
@@ -97,13 +97,14 @@ Examples:
     refine_group.add_argument(
         "--xray-mode",
         type=str,
-        default="ml_sigmaa",
+        default="ml",
         choices=["gaussian", "ls", "ls_wunit_k1", "ml", "ml_sigmaa", "bhattacharyya"],
-        help="X-ray target function. 'ml_sigmaa' (default) is the "
+        help="X-ray target function. 'ml' (default) is the "
         "maximum-likelihood Read MLF target with a cross-validated Luzzati "
-        "sigma_A term (Phenix-style alpha/beta). 'bhattacharyya' uses the "
+        "sigma_A term (Phenix-style alpha/beta); 'ml_sigmaa' is a deprecated "
+        "alias for it. 'bhattacharyya' uses the "
         "Bhattacharyya overlap loss with first-principles model error "
-        "estimation; 'ml'/'ls'/'gaussian' are simpler alternatives.",
+        "estimation; 'ls'/'gaussian' are simpler alternatives.",
     )
     refine_group.add_argument(
         "--sigma-m-scale",

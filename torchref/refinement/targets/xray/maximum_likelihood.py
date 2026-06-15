@@ -1,3 +1,4 @@
+import warnings
 from typing import TYPE_CHECKING, Optional
 
 import torch
@@ -46,7 +47,7 @@ def create_xray_target(
     data: "ReflectionData" = None,
     model: "Model" = None,
     scaler: "Scaler" = None,
-    mode: str = "ml_sigmaa",
+    mode: str = "ml",
     use_work_set: bool = True,
     sigma_mode: str = "raw",
     sigma_m_scale: float = 1.0,
@@ -66,9 +67,10 @@ def create_xray_target(
     scaler : Scaler, optional
         Reference to Scaler object.
     mode : str, optional
-        Target mode: 'gaussian', 'ls', 'ls_wunit_k1', 'ml', 'ml_sigmaa', or
-        'bhattacharyya'. Default is 'ml_sigmaa' (maximum-likelihood Read MLF
-        with Luzzati σ_A). 'ls_wunit_k1' is Phenix-style least squares with
+        Target mode: 'gaussian', 'ls', 'ls_wunit_k1', 'ml', or
+        'bhattacharyya'. Default is 'ml' (maximum-likelihood Read MLF
+        with Luzzati σ_A). 'ml_sigmaa' is a deprecated alias for 'ml'.
+        'ls_wunit_k1' is Phenix-style least squares with
         unit weights and a per-bin closed-form optimal scale recomputed at
         every gradient call (does not use the external scaler).
     use_work_set : bool, optional
@@ -87,6 +89,12 @@ def create_xray_target(
     """
     # Legacy spelling — ``ml_sigmaa`` is the same as ``ml`` now.
     if mode == "ml_sigmaa":
+        warnings.warn(
+            "Target mode 'ml_sigmaa' is deprecated; use 'ml' instead. "
+            "It now resolves to the same MaximumLikelihoodXrayTarget.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         mode = "ml"
 
     # Pin model/data/scaler onto one device before constructing the
