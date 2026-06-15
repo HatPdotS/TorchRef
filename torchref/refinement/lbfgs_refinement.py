@@ -243,6 +243,7 @@ class LBFGSRefinement(Refinement):
         commit: bool = True,
         optimizer: str = "lbfgs",
         adam_lr: float = 0.01,
+        with_solvent: bool = True,
     ):
         """Multi-resolution per-chain rigid-body refinement.
 
@@ -278,6 +279,7 @@ class LBFGSRefinement(Refinement):
             commit=commit,
             optimizer=optimizer,
             adam_lr=adam_lr,
+            with_solvent=with_solvent,
         )
         return step.run()
 

@@ -3217,12 +3217,19 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 f"held fixed ({int(drop.sum())} total of {len(drop)})."
             )
 
+        # Atomic Z as a stand-in for mass: proportional to atomic mass for
+        # the elements that dominate biological structures (C/N/O/S/P), so
+        # the centroid becomes a center of mass — matching Phenix's use of
+        # atomic_weights() in apply_rigid_body_shift_obj.
+        atom_weights = self.Z.to(dtype=self.dtype_float)
+
         rigid_xyz = RigidXYZTensor(
             original_xyz=current_xyz,
             chain_ids=chain_ids,
             dtype=self.dtype_float,
             device=self.device,
             mobile_mask=mobile_mask,
+            atom_weights=atom_weights,
         )
 
         # Stash original container under a private attribute so
