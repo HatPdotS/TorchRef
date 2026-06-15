@@ -7,6 +7,7 @@ including axis-angle, quaternion, and Euler representations.
 
 import numpy as np
 import torch
+
 from torchref.config import dtypes, get_default_device, get_float_dtype
 
 
@@ -82,7 +83,6 @@ def rotate_coords_numpy(coords, phi, rho):
         dtype=np.float64,
     )
     return np.einsum("ij,kj->ki", rot_matrix, coords)
-
 
 
 def axis_angle_to_rotation_matrix(axis_angle: torch.Tensor) -> torch.Tensor:
@@ -233,8 +233,8 @@ def quaternion_to_rotation_matrix(q: torch.Tensor) -> torch.Tensor:
 
 def random_rotation_uniform(
     n: int = 1,
-    device: str = get_default_device(),
-    dtype: torch.dtype = get_float_dtype(),
+    device: str = None,
+    dtype: torch.dtype = None,
 ) -> torch.Tensor:
     """
     Generate uniform random rotations over SO(3).
@@ -255,6 +255,10 @@ def random_rotation_uniform(
     torch.Tensor
         Rotation matrices with shape (n, 3, 3) or (3, 3) if n=1.
     """
+    if device is None:
+        device = get_default_device()
+    if dtype is None:
+        dtype = get_float_dtype()
     # Sample uniform random numbers
     u = torch.rand(n, 3, device=device, dtype=dtype)
 
@@ -272,6 +276,7 @@ def random_rotation_uniform(
         R = R.squeeze(0)
 
     return R
+
 
 def rotation_matrix_euler_zyz(
     angles: torch.Tensor,
@@ -299,16 +304,23 @@ def rotation_matrix_euler_zyz(
         angles = angles.unsqueeze(0)
         batched = False
 
-    ca, sa = torch.cos(angles[:,0]), torch.sin(angles[:,0])
-    cb, sb = torch.cos(angles[:,1]), torch.sin(angles[:,1])
-    cg, sg = torch.cos(angles[:,2]), torch.sin(angles[:,2])
+    ca, sa = torch.cos(angles[:, 0]), torch.sin(angles[:, 0])
+    cb, sb = torch.cos(angles[:, 1]), torch.sin(angles[:, 1])
+    cg, sg = torch.cos(angles[:, 2]), torch.sin(angles[:, 2])
 
     # Build rotation matrix element by element
-    R = torch.stack([
-        torch.stack([ca*cb*cg - sa*sg, -ca*cb*sg - sa*cg, ca*sb], dim=1),
-        torch.stack([sa*cb*cg + ca*sg, -sa*cb*sg + ca*cg, sa*sb], dim=1),
-        torch.stack([-sb*cg,            sb*sg,             cb], dim=1)
-    ], dim=1)
+    R = torch.stack(
+        [
+            torch.stack(
+                [ca * cb * cg - sa * sg, -ca * cb * sg - sa * cg, ca * sb], dim=1
+            ),
+            torch.stack(
+                [sa * cb * cg + ca * sg, -sa * cb * sg + ca * cg, sa * sb], dim=1
+            ),
+            torch.stack([-sb * cg, sb * sg, cb], dim=1),
+        ],
+        dim=1,
+    )
 
     return R if batched else R.squeeze(0)
 

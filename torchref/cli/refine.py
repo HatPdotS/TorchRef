@@ -137,29 +137,6 @@ Examples:
         "If unset, an auto schedule is derived from native d_min. "
         "Only used when --with-rigid-body is set.",
     )
-    refine_group.add_argument(
-        "--rigid-body-optimizer",
-        choices=["lbfgs", "adam"],
-        default="lbfgs",
-        help="Optimizer for rigid-body LBFGS step. 'lbfgs' (default) uses "
-        "PyTorch's L-BFGS with strong-Wolfe line search. 'adam' uses "
-        "Adam with per-parameter adaptive learning rate — handles the "
-        "rotation/translation gradient-scale mismatch automatically. "
-        "Only used when --with-rigid-body is set.",
-    )
-    refine_group.add_argument(
-        "--rigid-body-adam-lr",
-        type=float,
-        default=0.01,
-        help="Learning rate for Adam (only used when "
-        "--rigid-body-optimizer=adam). Default 0.01.",
-    )
-    refine_group.add_argument(
-        "--rigid-body-no-solvent",
-        action="store_true",
-        help="Disable the bulk-solvent contribution during rigid-body "
-        "refinement. F_total = F_calc only (no F_mask added).",
-    )
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -272,9 +249,6 @@ Examples:
                 cutoffs=rb_cutoffs,
                 iterations_per_step=args.rigid_body_iter,
                 commit=True,
-                optimizer=args.rigid_body_optimizer,
-                adam_lr=args.rigid_body_adam_lr,
-                with_solvent=not args.rigid_body_no_solvent,
             )
 
         if args.n_cycles > 0:

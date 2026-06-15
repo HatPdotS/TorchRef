@@ -435,14 +435,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
 
     def update_solvent(self):
         self.get_solvent_mask()
-        if getattr(self, "smooth_mask", True):
-            self.smooth_solvent_mask()
-        else:
-            # Phenix-style: binary 0/1 mask, no Gaussian smoothing. Stored
-            # under the same buffer name so downstream get_rec_solvent
-            # works unchanged.
-            mask_float = self.solvent_mask.to(dtype=self.log_k_solvent.dtype)
-            self.register_buffer("mask_smoothed", mask_float)
+        self.smooth_solvent_mask()
 
     def smooth_solvent_mask(self):
         if not hasattr(self, "solvent_mask"):

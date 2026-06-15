@@ -241,16 +241,13 @@ class LBFGSRefinement(Refinement):
         cutoffs=None,
         iterations_per_step: int = 30,
         commit: bool = True,
-        optimizer: str = "lbfgs",
-        adam_lr: float = 0.01,
-        with_solvent: bool = True,
     ):
         """Multi-resolution per-chain rigid-body refinement.
 
         Swaps the model for a :class:`RigidModelFT` whose ``xyz`` exposes
-        only per-chain ZYZ-Euler rotations and translations, then runs an
+        only per-chain XYZ-Euler rotations and translations, then runs an
         LBFGS step at each cutoff in a coarse → fine schedule. Only the
-        xray target and ``geometry/nonbonded`` (vdW) are active.
+        xray target is active during the rigid-body LBFGS.
 
         Parameters
         ----------
@@ -277,9 +274,6 @@ class LBFGSRefinement(Refinement):
             cutoffs=cutoffs,
             iterations_per_step=iterations_per_step,
             commit=commit,
-            optimizer=optimizer,
-            adam_lr=adam_lr,
-            with_solvent=with_solvent,
         )
         return step.run()
 
