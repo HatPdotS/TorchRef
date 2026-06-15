@@ -249,6 +249,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     f"Unsupported model file format: {pdb}. Supported formats are .pdb and .cif"
                 )
 
+            self._sync_model_cell_to_data()
             self.setup_scaler()
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
@@ -413,6 +414,63 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             verbose=self.verbose,
             device=self.device,
         )
+
+    def _sync_model_cell_to_data(
+        self,
+        axis_rtol: float = 0.01,
+        angle_atol_deg: float = 1.0,
+    ) -> None:
+        """Always cast the reflection-data cell onto the model.
+
+        Mirrors cctbx's ``xrs.customized_copy(crystal_symmetry=data_sym)``:
+        the data cell is authoritative because HKL indices are defined
+        relative to it. Atoms keep their Cartesian coordinates and are
+        reinterpreted in the new cell — fractional coordinates implicitly
+        shift. Without this sync, ``F_calc`` is computed with the wrong
+        basis at HKLs that mean something else, producing a pose-dependent
+        phase bias that distorts the gradient (9RTS case: a 2.4% b-axis
+        mismatch was pulling rigid-body LBFGS into a worse local minimum).
+
+        The sync runs unconditionally. A warning is emitted only when the
+        disagreement is large enough to flag for the user:
+
+        - any axis differs by ≥ ``axis_rtol`` relative (default 1%)
+        - any angle differs by ≥ ``angle_atol_deg`` absolute (default 1°)
+        """
+        if self.model is None or self.model.cell is None:
+            return
+        if self.reflection_data is None or self.reflection_data.cell is None:
+            return
+        m_t = self.model.cell.data
+        d_t = self.reflection_data.cell.data
+        m = m_t.detach().cpu().tolist()
+        d = d_t.detach().cpu().tolist()
+        axes_m, angles_m = m[:3], m[3:]
+        axes_d, angles_d = d[:3], d[3:]
+        axis_off = any(
+            abs(am - ad) / max(abs(ad), 1e-12) >= axis_rtol
+            for am, ad in zip(axes_m, axes_d)
+        )
+        angle_off = any(
+            abs(gm - gd) >= angle_atol_deg
+            for gm, gd in zip(angles_m, angles_d)
+        )
+        if axis_off or angle_off:
+            import warnings
+            warnings.warn(
+                "PDB CRYST1 cell disagrees with reflection-data cell beyond "
+                f"tolerance (axes ≥ {axis_rtol * 100:g}% or angles ≥ "
+                f"{angle_atol_deg:g}°). Casting the data cell onto the model "
+                "(HKL indices are defined relative to it). Atoms keep "
+                "Cartesian coordinates; fractional coordinates implicitly "
+                "shift. Mirrors cctbx's "
+                "`xrs.customized_copy(crystal_symmetry=data_sym)`.\n"
+                f"  PDB  cell: {m}\n"
+                f"  data cell: {d}",
+                stacklevel=2,
+            )
+        self.model.cell = self.reflection_data.cell
+        self.model.reset_cache()
 
     def parameters(self, recurse: bool = True):
         """
