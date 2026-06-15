@@ -249,6 +249,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     f"Unsupported model file format: {pdb}. Supported formats are .pdb and .cif"
                 )
 
+            self._sync_model_cell_to_data()
             self.setup_scaler()
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
@@ -394,8 +395,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self._logger = None
 
     def get_scales(self):
-        if not hasattr(self, "scaler"):
-            self.setup_scaler()
+        if not hasattr(self, "scaler") or self.scaler is None:
+            # Targets that compute their own scale (e.g. ls_wunit_k1 in
+            # binwise_optimal mode) intentionally leave ref.scaler=None.
+            # Nothing to initialize or refit here.
+            return
         self.scaler.initialize()
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
         self.scaler.refine_lbfgs()
@@ -410,6 +414,63 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             verbose=self.verbose,
             device=self.device,
         )
+
+    def _sync_model_cell_to_data(
+        self,
+        axis_rtol: float = 0.01,
+        angle_atol_deg: float = 1.0,
+    ) -> None:
+        """Always cast the reflection-data cell onto the model.
+
+        Mirrors cctbx's ``xrs.customized_copy(crystal_symmetry=data_sym)``:
+        the data cell is authoritative because HKL indices are defined
+        relative to it. Atoms keep their Cartesian coordinates and are
+        reinterpreted in the new cell — fractional coordinates implicitly
+        shift. Without this sync, ``F_calc`` is computed with the wrong
+        basis at HKLs that mean something else, producing a pose-dependent
+        phase bias that distorts the gradient (9RTS case: a 2.4% b-axis
+        mismatch was pulling rigid-body LBFGS into a worse local minimum).
+
+        The sync runs unconditionally. A warning is emitted only when the
+        disagreement is large enough to flag for the user:
+
+        - any axis differs by ≥ ``axis_rtol`` relative (default 1%)
+        - any angle differs by ≥ ``angle_atol_deg`` absolute (default 1°)
+        """
+        if self.model is None or self.model.cell is None:
+            return
+        if self.reflection_data is None or self.reflection_data.cell is None:
+            return
+        m_t = self.model.cell.data
+        d_t = self.reflection_data.cell.data
+        m = m_t.detach().cpu().tolist()
+        d = d_t.detach().cpu().tolist()
+        axes_m, angles_m = m[:3], m[3:]
+        axes_d, angles_d = d[:3], d[3:]
+        axis_off = any(
+            abs(am - ad) / max(abs(ad), 1e-12) >= axis_rtol
+            for am, ad in zip(axes_m, axes_d)
+        )
+        angle_off = any(
+            abs(gm - gd) >= angle_atol_deg
+            for gm, gd in zip(angles_m, angles_d)
+        )
+        if axis_off or angle_off:
+            import warnings
+            warnings.warn(
+                "PDB CRYST1 cell disagrees with reflection-data cell beyond "
+                f"tolerance (axes ≥ {axis_rtol * 100:g}% or angles ≥ "
+                f"{angle_atol_deg:g}°). Casting the data cell onto the model "
+                "(HKL indices are defined relative to it). Atoms keep "
+                "Cartesian coordinates; fractional coordinates implicitly "
+                "shift. Mirrors cctbx's "
+                "`xrs.customized_copy(crystal_symmetry=data_sym)`.\n"
+                f"  PDB  cell: {m}\n"
+                f"  data cell: {d}",
+                stacklevel=2,
+            )
+        self.model.cell = self.reflection_data.cell
+        self.model.reset_cache()
 
     def parameters(self, recurse: bool = True):
         """
@@ -572,15 +633,19 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         state.register_target("xray_work", lambda: self.xray_target_work())
         state.register_targets(self.geometry_target)
         state.register_targets(self.adp_target)
-        n_ref = int(self.reflection_data.hkl.shape[0])
-        state.register_target(
-            "adp/scaler_U",
-            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
-        )
-        state.register_target(
-            "adp/scaler_log_scale",
-            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
-        )
+        if self.scaler is not None:
+            n_ref = int(self.reflection_data.hkl.shape[0])
+            if hasattr(self.scaler, "U"):
+                state.register_target(
+                    "adp/scaler_U",
+                    ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+                )
+            if (hasattr(self.scaler, "log_scale")
+                    and self.scaler.log_scale.requires_grad):
+                state.register_target(
+                    "adp/scaler_log_scale",
+                    ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+                )
 
         return state.aggregate()
 
@@ -610,15 +675,22 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         # Register ADP targets
         state.register_targets(self.adp_target)
-        n_ref = int(self.reflection_data.hkl.shape[0])
-        state.register_target(
-            "adp/scaler_U",
-            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
-        )
-        state.register_target(
-            "adp/scaler_log_scale",
-            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
-        )
+        # Scaler regularization targets require the scaler to actually have
+        # the regularized parameters. Solvent-only scalers (rigid-body
+        # ls_wunit_k1) delete U and freeze log_scale.
+        if self.scaler is not None:
+            n_ref = int(self.reflection_data.hkl.shape[0])
+            if hasattr(self.scaler, "U"):
+                state.register_target(
+                    "adp/scaler_U",
+                    ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+                )
+            if (hasattr(self.scaler, "log_scale")
+                    and self.scaler.log_scale.requires_grad):
+                state.register_target(
+                    "adp/scaler_log_scale",
+                    ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+                )
 
         # Apply the weighting scheme (default: ManualWeighting holding the
         # DEFAULT_GROUP_WEIGHTS — xray 10 / geometry 1 / adp 0.1). The scheme
@@ -792,7 +864,46 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return state
 
     def get_rfactor(self):
-        return self.scaler.rfactor()
+        # If the xray target uses its own closed-form per-bin scale
+        # (scale_mode == "binwise_optimal", e.g. ls_wunit_k1), the external
+        # scaler — even a solvent-only one — does not provide the right
+        # overall scaling. Compute R via the closed-form c[bins] instead.
+        target_scale_mode = getattr(
+            getattr(self, "xray_target_work", None), "scale_mode", None
+        )
+        if target_scale_mode != "binwise_optimal" and self.scaler is not None:
+            return self.scaler.rfactor()
+        # Scaler-free / binwise-optimal path. Fit the per-bin scale on the
+        # work reflections, apply the same c[bins] to the test reflections
+        # for an apples-to-apples R_free.
+        from torchref.base.metrics import binwise_scale, rfactor
+
+        with torch.no_grad():
+            # get_data returns compact (already-subset) tensors plus the
+            # ``_ReflectionSubset`` view (5th element); we use the view to
+            # align full-size bins to the compact arrays.
+            Fo_w, Fc_w, _, _, sub_w = self.xray_target_work.get_data()
+            Fo_t, Fc_t, _, _, sub_t = self.xray_target_test.get_data()
+
+            if getattr(self.xray_target_work, "scale_mode", None) == "binwise_optimal":
+                full_bins = self.xray_target_work._get_bins_cached()
+                bins_w = sub_w.select(full_bins)
+                bins_t = sub_t.select(full_bins)
+                c = binwise_scale(
+                    Fc_w, Fo_w, bins_w,
+                    valid=None,
+                    nbins=self.xray_target_work.n_bins,
+                    weights=None,
+                )
+                Fc_w_s = c[bins_w] * Fc_w
+                Fc_t_s = c[bins_t] * Fc_t
+            else:
+                Fc_w_s = Fc_w
+                Fc_t_s = Fc_t
+
+            rwork = rfactor(Fo_w, Fc_w_s)
+            rfree = rfactor(Fo_t, Fc_t_s)
+        return rwork, rfree
 
     def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
         import matplotlib.pyplot as plt

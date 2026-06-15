@@ -245,9 +245,9 @@ class LBFGSRefinement(Refinement):
         """Multi-resolution per-chain rigid-body refinement.
 
         Swaps the model for a :class:`RigidModelFT` whose ``xyz`` exposes
-        only per-chain ZYZ-Euler rotations and translations, then runs an
+        only per-chain XYZ-Euler rotations and translations, then runs an
         LBFGS step at each cutoff in a coarse → fine schedule. Only the
-        xray target and ``geometry/nonbonded`` (vdW) are active.
+        xray target is active during the rigid-body LBFGS.
 
         Parameters
         ----------
