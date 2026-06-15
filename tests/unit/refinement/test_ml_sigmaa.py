@@ -1,4 +1,4 @@
-"""Tests for the ml_sigmaa target (Read MLF with ML model-error variance beta).
+"""Tests for the 'ml' target (Read MLF with ML model-error variance beta).
 
 - factory dispatch / thin target
 - loss math: exact reduction to the unit-variance ML target at beta=eps=1
@@ -15,24 +15,35 @@ from torchref.base.targets.xray_ml_sigmaa import ml_xray_loss_beta_math
 
 
 @pytest.mark.unit
-class TestMaximumLikelihoodSigmaAXrayTarget:
+class TestMaximumLikelihoodXrayTarget:
     def test_init_thin(self):
-        from torchref.refinement.targets import MaximumLikelihoodSigmaAXrayTarget
+        from torchref.refinement.targets import MaximumLikelihoodXrayTarget
 
-        target = MaximumLikelihoodSigmaAXrayTarget()
+        target = MaximumLikelihoodXrayTarget()
         assert target._model is None and target._data is None and target._scaler is None
         # σ_A lives in the Scaler now — the target carries no estimation state.
         assert not hasattr(target, "sigma_a_params")
 
     def test_factory_dispatch(self):
         from torchref.refinement.targets import (
-            MaximumLikelihoodSigmaAXrayTarget,
+            MaximumLikelihoodXrayTarget,
             create_xray_target,
         )
 
         assert isinstance(
-            create_xray_target(mode="ml_sigmaa"), MaximumLikelihoodSigmaAXrayTarget
+            create_xray_target(mode="ml"), MaximumLikelihoodXrayTarget
         )
+
+    def test_factory_ml_sigmaa_alias_deprecated(self):
+        """'ml_sigmaa' still resolves to the 'ml' target, with a warning."""
+        from torchref.refinement.targets import (
+            MaximumLikelihoodXrayTarget,
+            create_xray_target,
+        )
+
+        with pytest.warns(DeprecationWarning):
+            target = create_xray_target(mode="ml_sigmaa")
+        assert isinstance(target, MaximumLikelihoodXrayTarget)
 
     def test_factory_unknown_mode_raises(self):
         from torchref.refinement.targets import create_xray_target
@@ -40,14 +51,14 @@ class TestMaximumLikelihoodSigmaAXrayTarget:
         with pytest.raises(ValueError):
             create_xray_target(mode="not_a_mode")
 
-    def test_factory_default_is_ml_sigmaa(self):
-        """ml_sigmaa is now the promoted default X-ray target."""
+    def test_factory_default_is_ml(self):
+        """'ml' (the σ_A Read MLF target) is the promoted default."""
         from torchref.refinement.targets import (
-            MaximumLikelihoodSigmaAXrayTarget,
+            MaximumLikelihoodXrayTarget,
             create_xray_target,
         )
 
-        assert isinstance(create_xray_target(), MaximumLikelihoodSigmaAXrayTarget)
+        assert isinstance(create_xray_target(), MaximumLikelihoodXrayTarget)
 
     def test_lbfgs_default_target_mode(self):
         import inspect
@@ -55,7 +66,7 @@ class TestMaximumLikelihoodSigmaAXrayTarget:
         from torchref import LBFGSRefinement
 
         sig = inspect.signature(LBFGSRefinement.__init__)
-        assert sig.parameters["target_mode"].default == "ml_sigmaa"
+        assert sig.parameters["target_mode"].default == "ml"
 
 
 @pytest.mark.unit
@@ -66,15 +77,15 @@ class TestCollectionTargetsRelocated:
     def test_exported_from_refinement_targets(self):
         from torchref.refinement.targets import (  # noqa: F401
             CollectionDifferenceTarget,
-            CollectionMLSigmaATarget,
             CollectionMLTarget,
+            CollectionRiceTarget,
             MultiModelADPTarget,
             MultiModelGeometryTarget,
         )
 
     def test_kinetic_backcompat_reexports(self):
         from torchref.experimental.kinetic.targets import (  # noqa: F401
-            CollectionMLSigmaATarget,
+            CollectionRiceTarget,
         )
         from torchref.experimental.kinetic.targets import CollectionMLTarget as KinCML
         from torchref.experimental.kinetic.targets import (  # noqa: F401
@@ -86,12 +97,12 @@ class TestCollectionTargetsRelocated:
 
         assert RefCML is KinCML
 
-    def test_collection_sigmaa_base_weight(self):
-        from torchref.refinement.targets import CollectionMLSigmaATarget
+    def test_collection_ml_base_weight(self):
+        from torchref.refinement.targets import CollectionMLTarget
 
-        assert CollectionMLSigmaATarget.DEFAULT_BASE_WEIGHT == 10.0
+        assert CollectionMLTarget.DEFAULT_BASE_WEIGHT == 10.0
         # maintenance hook present (resets the scaler's shared beta)
-        assert hasattr(CollectionMLSigmaATarget, "maintenance")
+        assert hasattr(CollectionMLTarget, "maintenance")
 
 
 @pytest.mark.unit
@@ -140,7 +151,7 @@ class TestSigmaAOnRealData:
         from torchref import LBFGSRefinement
 
         ref = LBFGSRefinement(
-            data_file=str(mtz), pdb=str(pdb), target_mode="ml_sigmaa", verbose=0
+            data_file=str(mtz), pdb=str(pdb), target_mode="ml", verbose=0
         )
         ref.scaler.initialize()
         ref.scaler.refine_lbfgs()

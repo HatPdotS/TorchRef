@@ -930,8 +930,9 @@ class PositiveMixedTensor(MixedTensor):
         # Store epsilon as buffer (not parameter)
         self.epsilon = epsilon
 
+
         # Convert initial values to log space
-        log_initial_values = torch.log(initial_values.clamp(min=epsilon))
+        log_initial_values = torch.log(initial_values)
 
         # Initialize parent class with log-space values
         super().__init__(

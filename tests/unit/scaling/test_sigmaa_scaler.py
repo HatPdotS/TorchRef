@@ -93,7 +93,7 @@ class TestScalerBeta:
         from torchref import LBFGSRefinement
 
         ref = LBFGSRefinement(
-            data_file=str(mtz), pdb=str(pdb), target_mode="ml_sigmaa", verbose=0
+            data_file=str(mtz), pdb=str(pdb), target_mode="ml", verbose=0
         )
         ref.scaler.initialize()
         ref.scaler.refine_lbfgs()
