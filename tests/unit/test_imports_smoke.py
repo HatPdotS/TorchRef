@@ -38,6 +38,7 @@ OPTIONAL_DEP_HINTS = (
     "openmm",
     "pdbfixer",
     "ihm",
+    "triton",  # CUDA-only; not installable on macOS / CPU-only environments
 )
 
 

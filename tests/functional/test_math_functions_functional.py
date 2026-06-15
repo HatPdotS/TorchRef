@@ -24,9 +24,7 @@ class TestStructureFactorCalculations:
         
         # Cell is a dataclass wrapping a tensor; use cell.data to get the
         # underlying tensor while preserving its device.
-        cell_double = cell.data.double()
-        
-        s_vectors = get_scattering_vectors(hkl.double(), cell_double)
+        s_vectors = get_scattering_vectors(hkl, cell.data)
         
         assert s_vectors.shape[0] == hkl.shape[0]
         assert s_vectors.shape[1] == 3
@@ -41,15 +39,13 @@ class TestStructureFactorCalculations:
         hkl = data.hkl
         cell = model.cell
         
-        cell_double = cell.data.double()
+        d = get_d_spacing(hkl, cell.data)
 
-        d = get_d_spacing(hkl.double(), cell_double)
-        
         # d-spacing should be positive
         assert torch.all(d > 0)
-        
+
         # d should be less than cell size
-        max_cell = cell_double[:3].max()
+        max_cell = cell.data[:3].max()
         assert torch.all(d <= max_cell + 1e-6)
 
     def test_reciprocal_basis_matrix(self, model_and_data):
@@ -59,9 +55,7 @@ class TestStructureFactorCalculations:
         model = model_and_data["model"]
         cell = model.cell
         
-        cell_double = cell.data.double()
-
-        recB = reciprocal_basis_matrix(cell_double)
+        recB = reciprocal_basis_matrix(cell.data)
         
         assert recB.shape == (3, 3)
         # Should be non-singular
@@ -105,17 +99,15 @@ class TestCoordinateTransformations:
         )
         
         model = model_and_data["model"]
-        xyz = model.xyz().double()
+        xyz = model.xyz()
         cell = model.cell
-        
-        cell_double = cell.data.double()
 
         # Convert to fractional and back
-        frac = cartesian_to_fractional_torch(xyz, cell_double)
-        xyz_back = fractional_to_cartesian_torch(frac, cell_double)
-        
-        # Should match original
-        assert torch.allclose(xyz, xyz_back, atol=1e-4)
+        frac = cartesian_to_fractional_torch(xyz, cell.data)
+        xyz_back = fractional_to_cartesian_torch(frac, cell.data)
+
+        # Should match original (float32 roundtrip on coords up to ~100 Å)
+        assert torch.allclose(xyz, xyz_back, atol=1e-3)
 
 
 @pytest.mark.integration

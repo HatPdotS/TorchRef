@@ -163,8 +163,9 @@ class TestSolventDeviceOperations:
         solvent32 = SolventModel(float_type=torch.float32)
         assert solvent32.log_k_solvent.dtype == torch.float32
         
-        # Float64
-        solvent64 = SolventModel(float_type=torch.float64)
+        # Float64 — pinned to CPU: MPS has no float64, so the default device
+        # cannot hold a float64 tensor on Apple silicon.
+        solvent64 = SolventModel(float_type=torch.float64, device=torch.device("cpu"))
         assert solvent64.log_k_solvent.dtype == torch.float64
 
 

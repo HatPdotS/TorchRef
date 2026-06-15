@@ -206,8 +206,11 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     def fractional_matrix(self) -> Optional[torch.Tensor]:
         """Get fractionalization matrix from cell, on this module's device/dtype."""
         if self._cell is not None:
-            return self._cell.fractional_matrix.to(
-                device=self.device, dtype=self.dtype_float
+            # Move device first, then cast: a combined ``.to(device=cpu,
+            # dtype=float64)`` from an MPS-resident cell raises because MPS
+            # rejects the transient float64 view (MPS has no float64).
+            return self._cell.fractional_matrix.to(device=self.device).to(
+                dtype=self.dtype_float
             )
         return None
 
@@ -215,8 +218,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     def inv_fractional_matrix(self) -> Optional[torch.Tensor]:
         """Get orthogonalization matrix from cell, on this module's device/dtype."""
         if self._cell is not None:
-            return self._cell.inv_fractional_matrix.to(
-                device=self.device, dtype=self.dtype_float
+            # Move device first, then cast (see ``fractional_matrix``).
+            return self._cell.inv_fractional_matrix.to(device=self.device).to(
+                dtype=self.dtype_float
             )
         return None
 
