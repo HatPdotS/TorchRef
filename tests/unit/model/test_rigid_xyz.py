@@ -194,3 +194,49 @@ class TestRigidXYZTensor:
         m.use_rigid_xyz()
         assert m.xyz.n_chains == len(chain_ids_pdb)
         assert m.xyz.chain_id_order == chain_ids_pdb
+
+
+class TestRigidFreezeRestore:
+    """use_rigid_xyz freezes adp/u/occupancy; restore must re-enable exactly
+    the groups that were refinable beforehand so per-atom / ADP refinement can
+    resume (regression: the handoff left them frozen → empty LBFGS param set →
+    ``max()`` crash in the next refine_adp)."""
+
+    @pytest.mark.unit
+    def test_use_rigid_freezes_then_restore_reenables(self, fresh_modelft):
+        m = fresh_modelft
+        adp0 = m.adp.refinable_params.numel()
+        occ0 = m.occupancy.refinable_params.numel()
+        assert adp0 > 0  # sanity: adp is refinable to start
+
+        m.use_rigid_xyz()
+        # Only rigid leaves refine during the step.
+        assert m.adp.refinable_params.numel() == 0
+        assert m.u.refinable_params.numel() == 0
+        assert m.occupancy.refinable_params.numel() == 0
+
+        m.restore_xyz_from_rigid(commit=True)
+        # Pre-rigid refinable state is restored.
+        assert m.adp.refinable_params.numel() == adp0
+        assert m.occupancy.refinable_params.numel() == occ0
+
+    @pytest.mark.unit
+    def test_restore_no_commit_also_reenables(self, fresh_modelft):
+        m = fresh_modelft
+        adp0 = m.adp.refinable_params.numel()
+        m.use_rigid_xyz()
+        m.restore_xyz_from_rigid(commit=False)
+        assert m.adp.refinable_params.numel() == adp0
+
+    @pytest.mark.unit
+    def test_pre_frozen_group_stays_frozen(self, fresh_modelft):
+        m = fresh_modelft
+        m.freeze("occupancy")
+        adp0 = m.adp.refinable_params.numel()
+        assert m.occupancy.refinable_params.numel() == 0
+
+        m.use_rigid_xyz()
+        m.restore_xyz_from_rigid(commit=True)
+        # adp (refinable before) comes back; occupancy (frozen before) stays frozen.
+        assert m.adp.refinable_params.numel() == adp0
+        assert m.occupancy.refinable_params.numel() == 0

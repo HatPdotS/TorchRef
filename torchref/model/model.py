@@ -3161,8 +3161,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ``MixedTensor`` (with ``commit=True``).
 
         As a convenience, ``adp`` / ``u`` / ``occupancy`` are frozen — only
-        rigid-body parameters should refine. Call ``unfreeze(...)``
-        afterwards if you want to mix rigid-body and ADP refinement.
+        rigid-body parameters should refine. :meth:`restore_xyz_from_rigid`
+        re-enables whichever of those groups were refinable beforehand, so
+        per-atom / ADP refinement can resume after the rigid-body step
+        without a manual ``unfreeze(...)``.
 
         Returns
         -------
@@ -3238,6 +3240,18 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self._rigid_original_xyz_container = self._modules.pop("xyz")
         self.xyz = rigid_xyz
 
+        # Snapshot which parameter groups were refinable *before* we freeze
+        # them for the rigid-body step, so restore_xyz_from_rigid() can
+        # re-enable exactly those — and leave any group the caller had
+        # already frozen frozen. Without this, the handoff back to per-atom
+        # refinement (e.g. the CLI's refine_adp after --with-rigid-body)
+        # builds an LBFGS over an empty parameter set and crashes.
+        self._rigid_frozen_targets = [
+            t
+            for t in ("adp", "u", "occupancy")
+            if getattr(self, t).refinable_params.numel() > 0
+        ]
+
         self.freeze("adp")
         self.freeze("u")
         self.freeze("occupancy")
@@ -3297,6 +3311,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         if hasattr(self, "_rigid_original_xyz_container"):
             del self._rigid_original_xyz_container
+
+        # Re-enable the parameter groups use_rigid_xyz() froze, restoring the
+        # caller's pre-rigid refinable state so subsequent per-atom / ADP
+        # refinement has parameters to optimize.
+        for target in getattr(self, "_rigid_frozen_targets", []):
+            self.unfreeze(target)
+        if hasattr(self, "_rigid_frozen_targets"):
+            del self._rigid_frozen_targets
 
         if hasattr(self, "reset_cache"):
             self.reset_cache()

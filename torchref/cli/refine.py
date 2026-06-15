@@ -17,9 +17,6 @@ Examples
     # 10 refinement cycles
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
 
-    # Separated XYZ then ADP cycles
-    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode refine
-
     # Alternative targets
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode bhattacharyya
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
@@ -98,11 +95,10 @@ Examples:
         "--xray-mode",
         type=str,
         default="ml",
-        choices=["gaussian", "ls", "ls_wunit_k1", "ml", "ml_sigmaa", "bhattacharyya"],
+        choices=["gaussian", "ls", "ls_wunit_k1", "ml", "bhattacharyya"],
         help="X-ray target function. 'ml' (default) is the "
         "maximum-likelihood Read MLF target with a cross-validated Luzzati "
-        "sigma_A term (Phenix-style alpha/beta); 'ml_sigmaa' is a deprecated "
-        "alias for it. 'bhattacharyya' uses the "
+        "sigma_A term (Phenix-style alpha/beta). 'bhattacharyya' uses the "
         "Bhattacharyya overlap loss with first-principles model error "
         "estimation; 'ls'/'gaussian' are simpler alternatives.",
     )
