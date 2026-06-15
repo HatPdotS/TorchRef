@@ -101,7 +101,8 @@ def run(pdb_key: str, seed: int, verbose: int = 1,
          use_m_symmetry_filter: bool = False,
          use_lerf1_intensity: bool = False,
          use_fitted_delta_vrms: bool = False,
-         use_even_l_only: bool = False) -> dict:
+         use_even_l_only: bool = False,
+         rescore_engine: str = "m_letf1") -> dict:
     pdb_path, mtz_path = PAIRS[pdb_key]
     print(f"\n=== {pdb_key}: {pdb_path.name} + {mtz_path.name} ===", flush=True)
 
@@ -175,6 +176,7 @@ def run(pdb_key: str, seed: int, verbose: int = 1,
         use_lerf1_intensity=use_lerf1_intensity,
         use_fitted_delta_vrms=use_fitted_delta_vrms,
         use_even_l_only=use_even_l_only,
+        rescore_engine=rescore_engine,
     )
     fit_time = time.time() - t1
     print(f"  fit_to_data took {fit_time:.1f}s", flush=True)

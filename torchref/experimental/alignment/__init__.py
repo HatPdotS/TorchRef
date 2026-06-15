@@ -5,12 +5,16 @@ Pure-PyTorch Patterson-based molecular replacement:
 
 1. Fast Rotation Function (``frf.phaser_rotation_search`` /
    ``frf.FastRotationFunction``) — Phaser-faithful Bessel-radial × SH
-   expansion, stable Wigner-d, dense P1-box calc.
-2. Translation Search (``translation.fft_translation_search_torch``).
+   expansion, stable Wigner-d, dense P1-box calc — then ML rescoring
+   (``ml_rotation.m_letf1_rescore``) to rank candidate orientations.
+2. Fast Translation Function (``translation.amplitude_translation_search`` +
+   ``local_translation_refine``) — run per rotation candidate.
 3. Rigid Body Refinement (``rigid_body.RigidBodyRefinement``) — LBFGS on
-   rotation and translation parameters with an ML target.
-4. Unified Pipeline (``pipeline.MolecularReplacementPipeline``) — end-to-end
-   workflow with early-stopping.
+   rotation and translation (and optional B-factors) with an ML target.
+4. Canonical Pipeline (``pipeline.MolecularReplacementPipeline``) — the
+   multi-candidate FRF → FTF → post-refine tree with early-stopping; the
+   implementation that ``align.align_model_to_data`` /
+   ``ModelFT.fit_to_data`` delegate to.
 
 Example — full MR pipeline
 --------------------------

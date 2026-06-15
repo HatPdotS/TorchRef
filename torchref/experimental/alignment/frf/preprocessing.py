@@ -129,7 +129,16 @@ def epsilon_aware_unroll(
     N, n_ops = hkl_int.shape[0], sym_mats.shape[0]
     # Orbits: (N, n_ops, 3) — S_k applied to each h (row-vector convention,
     # matching the existing `einsum("kij,nj->nki", ...)` unroll site).
-    orbits = torch.einsum("kij,nj->nki", sym_mats, hkl_int)
+    # Integer einsum dispatches to baddbmm, which CUDA does not implement for
+    # Long; compute in float64 (exact for symop 0/±1 × small Miller indices)
+    # and round back so the GPU path works.
+    orbits = (
+        torch.einsum(
+            "kij,nj->nki", sym_mats.to(torch.float64), hkl_int.to(torch.float64),
+        )
+        .round()
+        .to(torch.long)
+    )
     # Pack (h, k, l) into a single int64 key for per-row dedup.
     base = 2 * int(orbits.abs().max().item()) + 1
     key = (orbits[:, :, 0] * base + orbits[:, :, 1]) * base + orbits[:, :, 2]
