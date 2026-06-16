@@ -133,7 +133,11 @@ class MixedModel(DeviceMovementMixin, nn.Module):
 
         # Use inverse softmax to initialize parameters
         # softmax(theta) = fractions, so theta = log(fractions)
-        fractions_tensor = torch.tensor(initial_fractions, dtype=torch.float32, device=device)
+        # Match the base models' float dtype so the mixing weights stay
+        # consistent with the structure factors under a float64 config.
+        fractions_tensor = torch.tensor(
+            initial_fractions, dtype=models[0].dtype_float, device=device
+        )
         theta = torch.log(fractions_tensor.clamp(min=1e-6))
         self.fraction_params = nn.Parameter(theta, requires_grad=not frozen_fractions)
 

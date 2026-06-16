@@ -97,7 +97,9 @@ class OccupancyFloorDiagnostic:
             # Compute h·r for all position-reflection pairs
             # positions: (N, 3), hkl: (M, 3)
             # h_dot_r: (N, M)
-            h_dot_r = torch.matmul(positions, hkl.T.float())
+            # Match hkl to the positions' (configured) dtype so the matmul
+            # does not raise under a float64 config.
+            h_dot_r = torch.matmul(positions, hkl.T.to(dtype=positions.dtype))
 
             # Fourier sum: ρ(r) = Σ_h F(h) * exp(2πi * h·r)
             # For real density, this is: Σ_h |F(h)| * cos(2π*h·r + φ(h))
@@ -343,8 +345,11 @@ class NegativeDensityPenalty(DeviceMixin, nn.Module):
         # Get mixed model structure factors (includes the α weighting)
         fcalc_mixed = self.mixed_model(self.hkl, recalc=True)
 
-        # Compute density at dark atom positions
-        h_dot_r = torch.matmul(self.frac_positions, self.hkl.T.float())
+        # Compute density at dark atom positions (match hkl to the
+        # configured dtype of frac_positions so float64 does not raise)
+        h_dot_r = torch.matmul(
+            self.frac_positions, self.hkl.T.to(dtype=self.frac_positions.dtype)
+        )
         phase = torch.angle(fcalc_mixed)
         amplitude = torch.abs(fcalc_mixed)
 

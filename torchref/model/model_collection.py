@@ -68,7 +68,10 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         if device is None:
             device = base_models[0].device if hasattr(base_models[0], "device") else get_default_device()
 
-        fractions_tensor = torch.tensor(initial_fractions, dtype=torch.float32, device=device)
+        # Match base models' float dtype (consistent under a float64 config).
+        fractions_tensor = torch.tensor(
+            initial_fractions, dtype=base_models[0].dtype_float, device=device
+        )
         theta = torch.log(fractions_tensor.clamp(min=1e-6))
         self.fraction_params = nn.Parameter(theta, requires_grad=not frozen_fractions)
 

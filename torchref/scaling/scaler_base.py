@@ -460,9 +460,12 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         sel = valid & rfree  # valid work-set reflections
         intensities = fobs ** 2
         calc_intensities = F_calc ** 2
-        mean_obs_intensity = torch.zeros(self.nbins, device=self.device)
-        mean_calc_intensity = torch.zeros(self.nbins, device=self.device)
-        counts = torch.zeros(self.nbins, device=self.device)
+        # Accumulators must match the scatter source dtype (fobs.dtype, the
+        # configured float dtype); torch.scatter_add raises on a mismatch
+        # under a float64 config.
+        mean_obs_intensity = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
+        mean_calc_intensity = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
+        counts = torch.zeros(self.nbins, device=self.device, dtype=fobs.dtype)
         counts_vals = torch.ones_like(F_calc, device=self.device, dtype=fobs.dtype)
         bins_sel = self.bins.to(torch.int64)[sel]
         mean_obs_intensity = torch.scatter_add(

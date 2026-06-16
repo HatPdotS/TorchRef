@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 
 from torchref.base.metrics import get_rfactors, nll_xray
-from torchref.config import get_default_device
+from torchref.config import get_default_device, get_float_dtype
 from torchref.scaling.scaler_base import ScalerBase
 from torchref.scaling.solvent import SolventModel
 from torchref.utils.utils import ModuleReference
@@ -121,8 +121,10 @@ class CollectionScaler(ScalerBase):
         dc = self._dataset_collection
         mc = self._model_collection
 
-        scales = torch.zeros(self.nbins, device=self.device, dtype=torch.float32)
-        counts = torch.zeros(self.nbins, device=self.device, dtype=torch.float32)
+        # Use the configured float dtype so the scatter_add_ against
+        # fobs-derived log_ratios does not raise under a float64 config.
+        scales = torch.zeros(self.nbins, device=self.device, dtype=get_float_dtype())
+        counts = torch.zeros(self.nbins, device=self.device, dtype=get_float_dtype())
 
         all_keys = [mc.dark_key] + mc.timepoint_names
         n_pairs = 0

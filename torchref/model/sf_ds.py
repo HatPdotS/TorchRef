@@ -24,7 +24,7 @@ from torchref.base.reciprocal import (
     get_scattering_vectors,
     reciprocal_basis_matrix,
 )
-from torchref.config import dtypes, get_default_device
+from torchref.config import dtypes, get_complex_dtype, get_default_device
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMovementMixin
@@ -439,10 +439,12 @@ class SfDS(DeviceMovementMixin, nn.Module):
         phases = compute_translation_phases(hkl, translations)
 
         # Compute F_P1 at each equivalent HKL and combine
-        sf_total = torch.zeros(hkl.shape[0], dtype=torch.complex128, device=self.device)
+        sf_total = torch.zeros(
+            hkl.shape[0], dtype=get_complex_dtype(), device=self.device
+        )
 
         for i in range(n_ops):
-            equiv_hkl_i = equiv_hkls[i].float()  # (N, 3)
+            equiv_hkl_i = equiv_hkls[i].to(dtype=self.dtype_float)  # (N, 3)
 
             sf_p1_i = self._compute_p1_sf(
                 equiv_hkl_i,
@@ -489,7 +491,9 @@ class SfDS(DeviceMovementMixin, nn.Module):
         s_vectors = get_scattering_vectors(hkl, self._cell.data, recB)
         s = torch.norm(s_vectors, dim=1)
 
-        sf_total = torch.zeros(hkl.shape[0], dtype=torch.complex128, device=self.device)
+        sf_total = torch.zeros(
+            hkl.shape[0], dtype=get_complex_dtype(), device=self.device
+        )
 
         # Compute isotropic contribution
         if xyz_frac_iso is not None and len(xyz_frac_iso) > 0:
