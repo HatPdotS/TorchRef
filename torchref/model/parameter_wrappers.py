@@ -464,21 +464,13 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
                 f"for {n_selected} selected elements"
             )
 
-        # Get current full tensor
-        current_full = self.forward().detach()
-
-        # Update the full tensor at masked positions
-        current_full[mask] = values.to(dtype=self.dtype, device=self.device)
-
-        # Update fixed_values buffer with the new full tensor
-        self.fixed_values = current_full.clone()
-
-        # Re-extract refinable parameters (only those in refinable_mask)
-        if self.refinable_mask.any():
-            new_refinable = current_full[self.refinable_mask].clone()
-            self.refinable_params = nn.Parameter(
-                new_refinable, requires_grad=self.refinable_params.requires_grad
-            )
+        # Delegate the actual assignment to _set_values so subclass overrides
+        # are honored (PositiveMixedTensor's log-space, OccupancyTensor's
+        # collapsed-logit storage, ...). Inlining the base logic here used to
+        # bypass those overrides — e.g. it wrote per-atom occupancies straight
+        # into OccupancyTensor's collapsed-logit buffer, double-applying the
+        # sigmoid and corrupting the values.
+        self._set_values(mask, values.to(dtype=self.dtype, device=self.device))
 
     @property
     def shape(self):
