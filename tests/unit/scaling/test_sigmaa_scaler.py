@@ -1,8 +1,8 @@
-"""Tests for the ML model-error variance ``beta`` estimator and its Scaler integration.
+"""Tests for the ML model-error variance ``beta`` estimator.
 
 - estimate_beta recovers a known per-shell beta (Phenix port; alpha mean-shift dropped)
 - epsilon_from_hkl is sane
-- the base Scaler exposes get_beta / reset_beta_cache and caches lazily
+- the (target-owned) SigmaAEstimator caches lazily and resets
 """
 
 import pytest
@@ -82,34 +82,41 @@ class TestEpsilonFromHkl:
         assert torch.allclose(eps, torch.ones(50))
 
 
-@pytest.mark.integration
-class TestScalerBeta:
-    @pytest.fixture(scope="class")
-    def scaler(self, pdb_dir, mtz_dir):
-        pdb = pdb_dir / "1DAW.pdb"
-        mtz = mtz_dir / "1DAW.mtz"
-        if not (pdb.exists() and mtz.exists()):
-            pytest.skip("1DAW fixture not present")
-        from torchref import LBFGSRefinement
+@pytest.mark.unit
+class TestSigmaAEstimator:
+    """The stateful, target-owned beta estimator: lazy cache + reset contract."""
 
-        ref = LBFGSRefinement(
-            data_file=str(mtz), pdb=str(pdb), target_mode="ml_sigmaa", verbose=0
-        )
-        ref.scaler.initialize()
-        ref.scaler.refine_lbfgs()
-        return ref.scaler
+    def _inputs(self, n=4000, seed=1):
+        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator  # noqa: F401
 
-    def test_lazy_cache_and_reset(self, scaler):
-        scaler.reset_beta_cache()
-        assert scaler._beta_cache is None
-        b1, e1 = scaler.get_beta()
-        assert scaler._beta_cache is not None
-        b2, e2 = scaler.get_beta()  # cached: identical objects
+        g = torch.Generator().manual_seed(seed)
+        dt = torch.float64
+        F_obs = torch.rand(n, generator=g, dtype=dt) * 100 + 1
+        F_calc = torch.rand(n, generator=g, dtype=dt) * 80 + 1
+        centric = torch.zeros(n, dtype=torch.bool)
+        eps = torch.ones(n, dtype=dt)
+        dss = torch.rand(n, generator=g, dtype=dt) * 0.3 + 0.02
+        free = torch.rand(n, generator=g) < 0.5
+        return F_obs, F_calc, centric, eps, dss, free
+
+    def test_lazy_cache_and_reset(self):
+        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator
+
+        est = SigmaAEstimator()
+        assert est._cache is None
+        args = self._inputs()
+        b1, e1 = est.get(*args)
+        assert est._cache is not None
+        b2, e2 = est.get(*args)  # cached: identical objects (args ignored)
         assert b1 is b2 and e1 is e2
         assert not b1.requires_grad
+        est.reset()
+        assert est._cache is None
 
-    def test_beta_positive(self, scaler):
-        beta, eps = scaler.get_beta()
-        v = scaler._data.masks().to(torch.bool)
-        assert (beta[v] > 0).all()
-        assert torch.isfinite(beta[v]).all()
+    def test_beta_positive(self):
+        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator
+
+        est = SigmaAEstimator()
+        beta, eps = est.get(*self._inputs())
+        assert (beta > 0).all()
+        assert torch.isfinite(beta).all()

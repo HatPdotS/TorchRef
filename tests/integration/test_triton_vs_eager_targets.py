@@ -35,10 +35,10 @@ _DEFAULT_RTOL = 1e-3
 # (e.g. ML's polynomial Bessel) need looser bounds. The first entry is
 # atol, second is rtol.
 _TARGET_TOLERANCES: Dict[str, Tuple[float, float]] = {
-    "xray/ml": (1e-1, 5e-3),  # poly Bessel approx, log-amplified
-    "geometry/nonbonded": (5e-3, 5e-4),  # atomic-add scatter on N pairs
-    "geometry/planarity": (1e-2, 1e-3),  # SVD/eigh near-degenerate plane normals
-    "geometry/ramachandran": (5e-3, 5e-4),  # bilinear interp tolerance
+    "xray/rice": (1e-1, 5e-3),              # poly Bessel approx, log-amplified
+    "geometry/nonbonded": (5e-3, 5e-4),      # atomic-add scatter on N pairs
+    "geometry/planarity": (1e-2, 1e-3),      # SVD/eigh near-degenerate plane normals
+    "geometry/ramachandran": (5e-3, 5e-4),   # bilinear interp tolerance
 }
 
 
@@ -220,11 +220,12 @@ def test_triton_matches_eager_per_target(target_name, gpu_refinement, gpu_state)
 
 @pytest.mark.gpu
 @pytest.mark.integration
-@pytest.mark.parametrize("target_mode", ["bhattacharyya", "ml", "ls", "gaussian"])
+@pytest.mark.parametrize("target_mode", ["bhattacharyya", "rice", "ls", "gaussian"])
 def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
-    """Same comparison for the four xray loss modes (Bhattacharyya, ML,
+    """Same comparison for the four xray loss modes (Bhattacharyya, Rice,
     LS, Gaussian) — builds a fresh refinement per mode since the mode is
-    a constructor argument.
+    a constructor argument. (The default 'ml' σ_A target is eager-only, so
+    it has no Triton path to compare.)
     """
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")

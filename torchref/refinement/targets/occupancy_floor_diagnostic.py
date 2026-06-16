@@ -40,10 +40,12 @@ class OccupancyFloorDiagnostic:
     model_light : ModelFT
         The light/excited state model (the refined one, not MixedModel).
     grid_spacing : float, optional
-        Grid spacing in Angstroms for density calculation. Default is 0.5.
+        Stored but currently unused. Density is evaluated only at atom
+        positions via Fourier summation, not on a grid. Default is 0.5.
     negative_threshold : float, optional
-        Threshold below which density is considered "significantly negative".
-        Default is -0.5 (in sigma units after normalization).
+        Stored but currently unused. Negative-density detection uses a
+        hardcoded ``rho_light < 0`` test rather than this threshold.
+        Default is -0.5.
 
     Examples
     --------
@@ -97,7 +99,9 @@ class OccupancyFloorDiagnostic:
             # Compute h·r for all position-reflection pairs
             # positions: (N, 3), hkl: (M, 3)
             # h_dot_r: (N, M)
-            h_dot_r = torch.matmul(positions, hkl.T.float())
+            # Match hkl to the positions' (configured) dtype so the matmul
+            # does not raise under a float64 config.
+            h_dot_r = torch.matmul(positions, hkl.T.to(dtype=positions.dtype))
 
             # Fourier sum: ρ(r) = Σ_h F(h) * exp(2πi * h·r)
             # For real density, this is: Σ_h |F(h)| * cos(2π*h·r + φ(h))
@@ -343,8 +347,11 @@ class NegativeDensityPenalty(DeviceMixin, nn.Module):
         # Get mixed model structure factors (includes the α weighting)
         fcalc_mixed = self.mixed_model(self.hkl, recalc=True)
 
-        # Compute density at dark atom positions
-        h_dot_r = torch.matmul(self.frac_positions, self.hkl.T.float())
+        # Compute density at dark atom positions (match hkl to the
+        # configured dtype of frac_positions so float64 does not raise)
+        h_dot_r = torch.matmul(
+            self.frac_positions, self.hkl.T.to(dtype=self.frac_positions.dtype)
+        )
         phase = torch.angle(fcalc_mixed)
         amplitude = torch.abs(fcalc_mixed)
 

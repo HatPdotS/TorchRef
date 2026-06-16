@@ -1,16 +1,9 @@
-"""
-Restraints Class (Refactored) for Crystallographic Model Refinement
+"""Restraints handler for crystallographic model refinement.
 
-This module provides a refactored restraints handler using the builder pattern.
-It maintains the same interface as the original Restraints class but uses
-the more efficient and testable builder classes internally.
-
-Key improvements:
-- Single-pass iteration over residues (vs multiple passes in original)
-- Pre-grouped residue data for O(N log N) vs O(N×R) complexity
-- Sorted indices for cache-friendly tensor access
-- Separated builder classes for easier testing and maintenance
-- Decoupled from Model: accepts pdb DataFrame and callable functions for xyz/adp
+Provides :class:`RestraintsNew`, which builds geometry restraints (bonds,
+angles, torsions, planes, chirals, VDW) using dedicated builder classes.
+It is decoupled from :class:`~torchref.model.Model`: it accepts a pdb
+DataFrame and callable functions for accessing coordinates and ADPs.
 """
 
 from typing import Callable, Optional
@@ -200,6 +193,15 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
     vdw_radii_fn : callable, optional
         Function returning VDW radii as torch.Tensor.
         Required for VDW restraints.
+    cell : Cell, optional
+        Crystallographic unit cell. Together with ``spacegroup``, enables
+        symmetry-aware VDW restraints (contacts with symmetry mates).
+    spacegroup : SpaceGroup or str, optional
+        Space group. Together with ``cell``, enables symmetry-aware VDW
+        restraints.
+    links : pd.DataFrame, optional
+        Parsed PDB LINK records; each accepted record adds one bond
+        restraint between the two named atoms.
     verbose : int, default 1
         Verbosity level (0=silent, 1=normal, 2=detailed).
 
@@ -207,16 +209,13 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
     ----------
     pdb : pd.DataFrame
         DataFrame containing atomic structure data.
-    xyz_fn : callable
-        Function returning current xyz coordinates.
-    adp_fn : callable
-        Function returning current ADP values.
-    vdw_radii_fn : callable
-        Function returning VDW radii.
     cif_dict : dict
         Parsed CIF dictionary with restraints for each residue type.
-    restraints : dict
-        Hierarchical dictionary containing all restraints.
+    restraints : _RestraintsAccessor
+        Property returning a dict-like accessor over the underlying flat
+        TensorDict. It emulates the nested-dict interface
+        (``restraints["bond"]["intra"]["indices"]``) but is not itself a
+        plain dict.
     """
 
     def __init__(
@@ -1316,13 +1315,29 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         """Build van der Waals (non-bonded contact) restraints.
 
         When cell and spacegroup are available, also includes contacts between
-        ASU atoms and symmetry-related copies in neighboring molecules.
+        ASU atoms and symmetry-related copies in neighboring molecules. Uses
+        the GPU-native periodic grid search in that case, and falls back to
+        the legacy spatial hash otherwise. Also builds the riding hydrogen
+        topology for H-VDW evaluation.
 
-        Uses GPU-native periodic grid search when crystallographic symmetry
-        is available.  Falls back to the legacy spatial hash otherwise.
+        Parameters
+        ----------
+        cutoff : float, default 6.0
+            Distance cutoff in Angstroms for the contact search. The
+            production caller (:meth:`build_restraints`) holds this ~1 A
+            wider than the maximum heavy-atom VDW sum so the
+            maintenance-triggered rebuild has margin. Note the legacy
+            fallback :meth:`_build_vdw_restraints_legacy` defaults to 5.0.
+        sigma : float, default 0.2
+            Restraint sigma in Angstroms. The production caller passes 0.05.
+        inter_residue_only : bool, default True
+            If True, only build contacts between atoms in different residues.
+        use_spatial_hash : bool, default True
+            If True, use the spatial-hash neighbour search in the legacy
+            (no-symmetry) path.
 
-        Also builds the riding hydrogen topology for H-VDW evaluation.
-
+        Notes
+        -----
         Caches the build kwargs and a detached snapshot of the ASU
         coordinates at build time in ``_vdw_build_kwargs`` and
         ``_last_vdw_build_xyz``. :meth:`rebuild_vdw_restraints` consults
@@ -2015,10 +2030,13 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
 
     def cat_dict(self):
         """
-        Concatenate all restraint dictionaries into 'all' keys.
+        Concatenate restraint origins into combined 'all' keys.
 
-        Creates restraints['bond']['all'], restraints['angle']['all'],
-        and restraints['torsion']['all'] by concatenating all origins.
+        Creates restraints['bond']['all'], restraints['angle']['all'], and
+        restraints['torsion']['all']. Bond and angle 'all' include every
+        origin; torsion 'all' includes only the 'intra' and 'disulfide'
+        origins (phi/psi have no reference values or sigmas, and omega is
+        handled by a dedicated OmegaTarget).
         """
         self.restraints["bond"]["all"] = {
             "indices": self._get_all_indices("bond"),

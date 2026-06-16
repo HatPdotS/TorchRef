@@ -16,13 +16,11 @@ class _AssembleMixedTensor(torch.autograd.Function):
     """Scatter refinable values into a clone of fixed_values, with a
     cheap (index_select) backward.
 
-    PyTorch's default backward for ``result[idx] = refinable`` lowers to
-    ``aten::_index_put_impl_``, whose backward goes through a radix-sort
-    of the indices followed by an atomic scatter. Profiling on A100/1DAW
-    showed this dominating the model SF backward (~370 µs/iter across
-    six MixedTensors). The gradient w.r.t. ``refinable_params`` is just
-    ``grad_output[indices]`` — a single ``index_select`` — so we wrap the
-    assembly in a custom autograd op that returns exactly that.
+    The gradient w.r.t. ``refinable_params`` is just ``grad_output[indices]``
+    — a single ``index_select`` (gather) — so the assembly is wrapped in a
+    custom autograd op that returns exactly that, instead of PyTorch's default
+    ``index_put_`` backward (a radix-sort of the indices plus an atomic
+    scatter).
     """
 
     @staticmethod
@@ -464,21 +462,13 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
                 f"for {n_selected} selected elements"
             )
 
-        # Get current full tensor
-        current_full = self.forward().detach()
-
-        # Update the full tensor at masked positions
-        current_full[mask] = values.to(dtype=self.dtype, device=self.device)
-
-        # Update fixed_values buffer with the new full tensor
-        self.fixed_values = current_full.clone()
-
-        # Re-extract refinable parameters (only those in refinable_mask)
-        if self.refinable_mask.any():
-            new_refinable = current_full[self.refinable_mask].clone()
-            self.refinable_params = nn.Parameter(
-                new_refinable, requires_grad=self.refinable_params.requires_grad
-            )
+        # Delegate the actual assignment to _set_values so subclass overrides
+        # are honored (PositiveMixedTensor's log-space, OccupancyTensor's
+        # collapsed-logit storage, ...). Inlining the base logic here used to
+        # bypass those overrides — e.g. it wrote per-atom occupancies straight
+        # into OccupancyTensor's collapsed-logit buffer, double-applying the
+        # sigmoid and corrupting the values.
+        self._set_values(mask, values.to(dtype=self.dtype, device=self.device))
 
     @property
     def shape(self):
@@ -861,7 +851,9 @@ class PositiveMixedTensor(MixedTensor):
     name : str, optional
         Optional name for this parameter.
     epsilon : float, optional
-        Small value to add before taking log to avoid log(0). Default is 1e-1.
+        Clamp floor applied to values before taking the log; any input below
+        epsilon is raised to epsilon, which both avoids log(0) and bounds the
+        smallest representable value from below. Default is 1e-1.
 
     Examples
     --------
@@ -909,7 +901,9 @@ class PositiveMixedTensor(MixedTensor):
         name : str, optional
             Optional name for this parameter.
         epsilon : float, optional
-            Small value to add before taking log to avoid log(0). Default is 1e-1.
+            Clamp floor applied to values before taking the log; any input
+            below epsilon is raised to epsilon, which both avoids log(0) and
+            bounds the smallest representable value from below. Default is 1e-1.
 
         Raises
         ------
@@ -930,8 +924,9 @@ class PositiveMixedTensor(MixedTensor):
         # Store epsilon as buffer (not parameter)
         self.epsilon = epsilon
 
+
         # Convert initial values to log space
-        log_initial_values = torch.log(initial_values.clamp(min=epsilon))
+        log_initial_values = torch.log(initial_values)
 
         # Initialize parent class with log-space values
         super().__init__(
@@ -1479,11 +1474,14 @@ class OccupancyTensor(MixedTensor):
     Attributes
     ----------
     expansion_mask : torch.Tensor
-        Maps atoms to collapsed indices.
-    linked_occ_sizes : list
-        List of altloc group sizes present.
+        Registered buffer mapping atoms to collapsed indices.
     collapse_counts : torch.Tensor
-        Count of atoms per collapsed index.
+        Registered buffer holding the count of atoms per collapsed index.
+    linked_occ_sizes : list
+        Sorted list of altloc group sizes present (plain list, not a buffer).
+        Only set when altloc_groups are supplied; absent after empty
+        initialization, so consumers guard with
+        ``hasattr(self, "linked_occ_sizes")``.
 
     Examples
     --------
@@ -2409,7 +2407,11 @@ class OccupancyTensor(MixedTensor):
 
         n_atoms = len(initial_values)
         sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)
-        collapsed_idx = 0
+        # Singletons keep their arange ids (0..n_atoms-1); start multi-atom
+        # group ids past that range so a group id can never collide with a
+        # singleton's leftover arange id (the torch.unique compaction below
+        # would otherwise silently merge them into one sharing group).
+        collapsed_idx = n_atoms
 
         for (resname, resseq, chainid, altloc), group in grouped:
             indices = group["index"].tolist()

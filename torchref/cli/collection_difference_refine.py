@@ -122,7 +122,7 @@ configure_unbuffered_output()
 
 DEFAULT_TARGET_WEIGHTS = {
     "xray/difference": 1.0,
-    "xray/ml": 0.0,
+    "xray/rice": 0.0,
     # "geometry/bond": 1.0, # geometry restraint should never require tuning, so leave at 1.0
     # "geometry/angle": 1.0,
     # "geometry/torsion": 1.0,
@@ -253,7 +253,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     diff_target = CollectionDifferenceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
-    ml_target = CollectionRiceTarget(
+    rice_target = CollectionRiceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
     geom_target = TotalGeometryTarget(model_light)
@@ -264,7 +264,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     )
 
     state.register_target("xray/difference", diff_target)
-    state.register_target("xray/ml", ml_target)
+    state.register_target("xray/rice", rice_target)
     state.register_target("geometry", geom_target)
     state.register_target("adp", adp_target)
     state.register_target("similarity", similarity_target)
@@ -454,9 +454,22 @@ def write_results_mtz(dc, mc, scaler, filename):
     amp_2fofc_bayes = 2 * F_ext_bayes_amp - amp_calc_bayes
     amp_fofc_bayes = F_ext_bayes_amp - amp_calc_bayes
 
-    print("Phase-aware extrapolation rfactors:", scaler_extra.rfactor())
-    print("Classic extrapolation rfactors:", scaler_classic.rfactor())
-    print("Bayes extrapolation rfactors:", scaler_bayes.rfactor())
+    from torchref.base.metrics import get_rfactors
+
+    def _extrapolation_rfactors(data, fcalc_scaled):
+        valid = data.masks().to(torch.bool)
+        return get_rfactors(
+            torch.abs(data.get_corrected_data()[0][valid]),
+            torch.abs(fcalc_scaled[valid]),
+            data.rfree_flags[valid],
+        )
+
+    print("Phase-aware extrapolation rfactors:",
+          _extrapolation_rfactors(data_light_extra, F_calc_extra))
+    print("Classic extrapolation rfactors:",
+          _extrapolation_rfactors(data_extra_classic, F_calc_classic))
+    print("Bayes extrapolation rfactors:",
+          _extrapolation_rfactors(data_extra_bayes, F_calc_bayes))
     print(f"  Bayes: tau^2 = {tau_sq:.4f}, mean w(h) = {w_shrinkage.mean().item():.3f}")
 
     # --- Build MTZ ---

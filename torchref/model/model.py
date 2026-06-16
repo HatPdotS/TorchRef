@@ -528,8 +528,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ----------
         cif_path : str or list of str
             Path(s) to CIF restraints dictionary file(s).
-        return self
-            For method chaining
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
         """
         self._cif_path = cif_path
         # Reset restraints so they will be rebuilt on next access
@@ -1144,17 +1147,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Notes
         -----
-        When every atom is isotropic and no H exclusion is active —
-        ``self._iso_covers_all is True``, the common protein-refinement
-        case — the per-atom indexing is skipped and ``self.xyz()``,
-        ``self.adp()``, ``self.occupancy()`` are returned directly.
-
-        Motivation: ``self.xyz()[idx]`` is a no-op forward when
-        ``idx = arange(N)``, but its backward routes through PyTorch's
-        ``aten::_index_put_impl_(accumulate=True)``, which performs a
-        ``cub::DeviceRadixSortOnesweepKernel`` over ``len(idx)`` indices
-        followed by a deduplicated scatter (~50-150 µs/iter per gather
-        on A100 / 1DAW). Skipping the gather avoids that cost.
+        When every atom is isotropic and no H exclusion is active
+        (``self._iso_covers_all is True``, the common protein-refinement
+        case), the per-atom indexing is skipped and ``self.xyz()``,
+        ``self.adp()``, ``self.occupancy()`` are returned directly to
+        avoid the cost of a redundant gather and its backward scatter.
         """
         if self._iso_covers_all:
             return self.xyz(), self.adp(), self.occupancy()
@@ -3121,9 +3118,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         translation = translation.to(device=xyz.device, dtype=xyz.dtype)
 
         if fractional:
-            # Convert fractional to Cartesian using the fractional matrix
-            # fractional_matrix transforms fractional -> Cartesian
-            translation_cart = translation @ self.fractional_matrix
+            # Convert fractional -> Cartesian. The orthogonalization matrix B
+            # (fractional_matrix) follows the convention cart = frac @ B.T
+            # (see Cell.fractional_to_cartesian); the transpose matters for
+            # non-orthogonal (monoclinic/triclinic) cells.
+            translation_cart = translation @ self.fractional_matrix.T
         else:
             translation_cart = translation
 
@@ -3161,8 +3160,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ``MixedTensor`` (with ``commit=True``).
 
         As a convenience, ``adp`` / ``u`` / ``occupancy`` are frozen — only
-        rigid-body parameters should refine. Call ``unfreeze(...)``
-        afterwards if you want to mix rigid-body and ADP refinement.
+        rigid-body parameters should refine. :meth:`restore_xyz_from_rigid`
+        re-enables whichever of those groups were refinable beforehand, so
+        per-atom / ADP refinement can resume after the rigid-body step
+        without a manual ``unfreeze(...)``.
 
         Returns
         -------
@@ -3182,11 +3183,54 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         with torch.no_grad():
             current_xyz = self.xyz().detach().clone()
         chain_ids = list(self.pdb["chainid"].values)
+
+        # Phenix-style polymer filter: drop waters and single-atom non-peptide
+        # residues (ions). Keeps multi-atom HET ligands (ADP, GOL, ...) so they
+        # ride along with their parent chain. See
+        # cctbx_project/mmtbx/refinement/rigid_body.py rigid_groups_from_pdb_chains.
+        _WATERS = {"HOH", "WAT", "DOD", "H2O"}
+        _STD_POLYMER = {
+            "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
+            "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
+            "TYR", "VAL", "MSE", "SEC", "PYL",
+            "A", "C", "G", "T", "U", "I",
+            "DA", "DC", "DG", "DT", "DU", "DI",
+        }
+        resname = self.pdb["resname"].astype(str).str.strip()
+        is_water = resname.isin(_WATERS).values
+        is_std = resname.isin(_STD_POLYMER).values
+        residue_atom_count = (
+            self.pdb.groupby(["chainid", "resseq", "icode"])["serial"].transform("count").values
+        )
+        is_single_atom = residue_atom_count == 1
+        drop = is_water | (is_single_atom & ~is_std)
+        mobile_arr = ~drop
+        if mobile_arr.sum() == 0:
+            raise RuntimeError(
+                "Polymer filter removed every atom — cannot build rigid bodies."
+            )
+        mobile_mask = torch.from_numpy(mobile_arr).to(device=self.device)
+        if self.verbose > 0 and int(drop.sum()) > 0:
+            n_water = int(is_water.sum())
+            n_ion = int((is_single_atom & ~is_std & ~is_water).sum())
+            print(
+                f"Rigid-body filter: {n_water} water + {n_ion} ion atoms "
+                f"held fixed ({int(drop.sum())} total of {len(drop)})."
+            )
+
+        # Atomic Z as a stand-in for mass: proportional to atomic mass for
+        # the elements that dominate biological structures (C/N/O/S/P), so
+        # the centroid becomes a center of mass — matching Phenix's use of
+        # atomic_weights() in apply_rigid_body_shift_obj.
+        atom_weights = self.Z.to(dtype=self.dtype_float)
+
         rigid_xyz = RigidXYZTensor(
             original_xyz=current_xyz,
             chain_ids=chain_ids,
             dtype=self.dtype_float,
             device=self.device,
+            mobile_mask=mobile_mask,
+            atom_weights=atom_weights,
         )
 
         # Stash original container under a private attribute so
@@ -3194,6 +3238,18 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # re-assignment below registers the new submodule cleanly.
         self._rigid_original_xyz_container = self._modules.pop("xyz")
         self.xyz = rigid_xyz
+
+        # Snapshot which parameter groups were refinable *before* we freeze
+        # them for the rigid-body step, so restore_xyz_from_rigid() can
+        # re-enable exactly those — and leave any group the caller had
+        # already frozen frozen. Without this, the handoff back to per-atom
+        # refinement (e.g. the CLI's refine_adp after --with-rigid-body)
+        # builds an LBFGS over an empty parameter set and crashes.
+        self._rigid_frozen_targets = [
+            t
+            for t in ("adp", "u", "occupancy")
+            if getattr(self, t).refinable_params.numel() > 0
+        ]
 
         self.freeze("adp")
         self.freeze("u")
@@ -3254,6 +3310,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         if hasattr(self, "_rigid_original_xyz_container"):
             del self._rigid_original_xyz_container
+
+        # Re-enable the parameter groups use_rigid_xyz() froze, restoring the
+        # caller's pre-rigid refinable state so subsequent per-atom / ADP
+        # refinement has parameters to optimize.
+        for target in getattr(self, "_rigid_frozen_targets", []):
+            self.unfreeze(target)
+        if hasattr(self, "_rigid_frozen_targets"):
+            del self._rigid_frozen_targets
 
         if hasattr(self, "reset_cache"):
             self.reset_cache()

@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING, Dict, Tuple
 
 import torch
 
+from torchref.base.metrics.rfactor import rfactor_work_free
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -57,7 +58,6 @@ class XrayTarget(DataTarget):
         model: "Model" = None,
         scaler: "Scaler" = None,
         use_work_set: bool = True,
-        sigma_mode: str = "raw",
         verbose: int = 0,
         use_set: str = None,
     ):
@@ -75,52 +75,14 @@ class XrayTarget(DataTarget):
             Reference to the Scaler object.
         use_work_set : bool, optional
             If True, compute loss on work set; if False, on test set. Default is True.
-            Ignored when ``use_set`` is provided.
-        use_set : {'work', 'free', 'val'}, optional
-            Three-class flag selector (added for ensemble refinement). When
-            provided, takes precedence over ``use_work_set``. Use ``'val'``
-            to target the validation set, distinct from the R-free test set.
-        sigma_mode : str, optional
-            Which sigma to use in the likelihood. Options:
-
-            - ``'raw'`` (default): use the raw experimental sigmas from the
-              data file. Empirically gives the best Rfree across the
-              mid-resolution regime (1.5-3.0 A) when paired with appropriate
-              group weights.
-            - ``'effective'``: use per-shell effective sigmas estimated from
-              scaling residuals (capped SIGMAA-style correction). Opt-in for
-              high-resolution refinement (< 1.5 A) or datasets with known
-              sigma miscalibration. Note: ``Scaler.estimate_sigma_eff`` is
-              *always* called so the estimates are available regardless of
-              which mode the target uses.
 
         verbose : int, optional
             Verbosity level. Default is 0.
         """
         super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
-        if use_set is not None:
-            if use_set not in ("work", "free", "val"):
-                raise ValueError(
-                    f"use_set must be 'work', 'free', or 'val'; got {use_set!r}"
-                )
-            self.use_set = use_set
-            # Keep use_work_set in sync for any legacy code that reads it.
-            self.use_work_set = (use_set == "work")
-        else:
-            self.use_set = "work" if use_work_set else "free"
-            self.use_work_set = use_work_set
-        if sigma_mode not in ("effective", "raw"):
-            raise ValueError(
-                f"sigma_mode must be 'effective' or 'raw', got {sigma_mode!r}"
-            )
-        self.sigma_mode = sigma_mode
-        # Set name based on which set we target.
-        if self.use_set == "work":
-            self.name = "xray_work"
-        elif self.use_set == "free":
-            self.name = "xray_test"
-        else:
-            self.name = "xray_val"
+        self.use_work_set = use_work_set
+        # Set name based on work/test set
+        self.name = "xray_work" if use_work_set else "xray_test"
 
     def reset_get_data_cache(self):
         """Deprecated no-op.
@@ -169,10 +131,6 @@ class XrayTarget(DataTarget):
 
         # Sigma: scaled experimental, or per-shell effective from the scaler.
         sigma = sub.sigF
-        if self.sigma_mode == "effective" and self._scaler is not None:
-            sigma_eff = getattr(self._scaler, "sigma_eff", None)
-            if sigma_eff is not None and sigma_eff.shape[0] == len(self._data.hkl):
-                sigma = sub.select(sigma_eff)
 
         centric = sub.centric
 
@@ -185,6 +143,44 @@ class XrayTarget(DataTarget):
         F_calc = sub.select(F_calc_full)
 
         return F_obs, F_calc, sigma, centric, sub
+
+    def _scaled_F_calc_full(self, fcalc: torch.Tensor = None) -> torch.Tensor:
+        """Full-size ``|F_calc|`` under THIS target's objective scaling.
+
+        Default is the scaler's scaling (:meth:`get_F_calc_scaled`). Targets that
+        own their scale (e.g. :class:`LeastSquaresXrayTarget` in
+        ``binwise_optimal`` mode) override this so the reported R-factor uses the
+        very scale the loss sees.
+        """
+        if fcalc is not None:
+            return self.get_F_calc_scaled(fcalc=fcalc)
+        return self.get_F_calc_scaled(self._data.hkl_for_sf(), recalc=False)
+
+    def get_rfactor(self, fcalc: torch.Tensor = None):
+        """Compute ``(R_work, R_free)`` for this target.
+
+        Single source of truth for the X-ray R-factor: it uses exactly the
+        scaled ``|F_calc|`` this target's loss sees (the scaler's scaling by
+        default; the detached per-bin closed-form scale for ``binwise_optimal``).
+        ``R_work`` is computed on the work subset and ``R_free`` on the free
+        subset — the same subsets the loss uses, so any validation reflections
+        are excluded from both. All X-ray targets share this implementation;
+        only the *scale* (:meth:`_scaled_F_calc_full`) varies by target.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors. If provided, used instead of
+            computing from the model (e.g. rigid-body / model-less targets).
+
+        Returns
+        -------
+        tuple
+            ``(R_work, R_free)`` as Python floats.
+        """
+        with torch.no_grad():
+            F_calc_full = self._scaled_F_calc_full(fcalc=fcalc)
+            return rfactor_work_free(self._data, F_calc_full)
 
     def stats(self, fcalc: torch.Tensor = None) -> Dict[str, StatEntry]:
         """

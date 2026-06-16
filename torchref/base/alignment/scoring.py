@@ -2,14 +2,22 @@ import torch
 
 
 def binned_correlation(x, y, bins):
-    """
-    Compute binned correlation between x and y based on bins.
-    Args:
-        x (torch.Tensor): First set of values, shape (N,) or (B, N). The function will broadcast if one of x or y has shape (1, N) or (N,).
-        y (torch.Tensor): Second set of values, shape (N,) or (B, N).
-        bins (torch.Tensor): Bin indices for each value, shape (N,).
-    Returns:
-        torch.Tensor: Binned correlation coefficients, shape (num_bins,) or (B, num_bins).
+    """Compute the binned correlation between x and y.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        First set of values, shape (N,) or (B, N). Broadcasting is applied if
+        one of x or y has shape (1, N) or (N,).
+    y : torch.Tensor
+        Second set of values, shape (N,) or (B, N).
+    bins : torch.Tensor
+        Bin index for each value, shape (N,).
+
+    Returns
+    -------
+    torch.Tensor
+        Binned correlation coefficients, shape (num_bins,) or (B, num_bins).
     """
     num_bins = bins.max().item() + 1
 

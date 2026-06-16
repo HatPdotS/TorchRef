@@ -218,10 +218,23 @@ class ADPLocalityTarget(ADPTarget):
 
     def forward(self, recompute_neighbors: bool = False) -> torch.Tensor:
         """
-        Compute weighted MSE on log(B) differences with inverse-distance weights.
+        Compute the inverse-distance-weighted sum of squared log(B) differences.
 
-        loss = scale * mean_ij [w_ij * (log(B_i) - log(B_j))^2]
-        where w_ij = 1 / (d_ij + eps)
+        loss = sum_ij [w_ij * ((log(B_i) - log(B_j)) / 0.5)^2]
+        where w_ij = 1 / (d_ij + eps) and the inner sum runs over the k
+        nearest neighbors j of each atom i.
+
+        Parameters
+        ----------
+        recompute_neighbors : bool, optional
+            Rebuild the k-nearest-neighbor list before evaluating the loss.
+            Default is False; the list is also rebuilt automatically when no
+            cache exists or it lives on a different device than the model.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar loss (the summed weighted squared log-B differences).
         """
         model_device = self.model.xyz().device
         cache_stale = (

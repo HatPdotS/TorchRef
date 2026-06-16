@@ -1048,9 +1048,10 @@ class AmberTarget(ModelTarget):
         - Heavy atoms only (element != H or D)
         - Standard AMBER residues only (``AMBER14_STANDARD``) — non-standard
           HETATM residues are handled via antechamber / mol2 separately
-        - Waters excluded (``_TLEAP_EXCLUDE_RESIDUES``) — tleap reorders
-          waters, breaking sequential atom-map strategy; no gradient loss
-          since crystal waters are not primary refinement targets
+        - Waters (HOH/WAT) ARE included — ``_TLEAP_EXCLUDE_RESIDUES`` is
+          empty, so all ``AMBER14_STANDARD`` residues participate in the
+          LJ/Coulomb gradients (atom matching is position-based, so tleap's
+          water ordering does not break the map)
         - Monatomic ions (MG, ZN, CA, …) ARE included — covered by
           ``leaprc.water.tip3p`` (Li/Merz 12-6 set), appear in fixed PDB
           order, important for electrostatics near charged ligands
@@ -1065,7 +1066,8 @@ class AmberTarget(ModelTarget):
         mask = pdb["altloc"].astype(str).str.strip().isin(["", "A"])
         mask &= ~pdb["element"].astype(str).str.strip().isin(["H", "D"])
 
-        # Allow AMBER-standard residues; exclude HOH/WAT and non-standard HETATM
+        # Allow AMBER-standard residues (including HOH/WAT, since
+        # _TLEAP_EXCLUDE_RESIDUES is empty); non-standard HETATM are excluded
         res_col = pdb["resname"].astype(str).str.strip()
         tleap_allowed = AMBER14_STANDARD - _TLEAP_EXCLUDE_RESIDUES
         mask &= res_col.isin(tleap_allowed)

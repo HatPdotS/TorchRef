@@ -33,7 +33,9 @@ class ForceFieldTarget(ModelTarget):
     Parameters
     ----------
     model : Model, optional
-        Reference to the Model object. Must have hydrogens (load with strip_H=False).
+        Reference to the Model object. Should include hydrogens for accurate
+        energies (load with ``strip_H=False``); a hydrogen-less model is not
+        rejected, only flagged via a warning when ``verbose > 0``.
     model_path : str, optional
         Path to TorchMD-Net checkpoint file (.ckpt).
     cutoff : float, optional

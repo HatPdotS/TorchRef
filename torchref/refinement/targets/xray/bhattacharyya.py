@@ -90,7 +90,6 @@ class BhattacharyyaXrayTarget(XrayTarget):
         verbose: int = 0,
         **kwargs,
     ):
-        kwargs.pop("sigma_mode", None)
         kwargs.pop("n_bins", None)  # legacy kwarg ignored
         use_set = kwargs.pop("use_set", None)
         super().__init__(
@@ -98,7 +97,6 @@ class BhattacharyyaXrayTarget(XrayTarget):
             model=model,
             scaler=scaler,
             use_work_set=use_work_set,
-            sigma_mode="raw",
             verbose=verbose,
             use_set=use_set,
         )

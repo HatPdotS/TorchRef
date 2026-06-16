@@ -168,7 +168,9 @@ def woolfson_log_likelihood(
     F_mean : torch.Tensor
         Expected structure factor amplitudes D * |F_calc|.
     variance : torch.Tensor
-        Variance parameter (note: 2x larger than acentric due to phase restriction).
+        Variance parameter sigma^2. Used directly as supplied; this function
+        applies no factor-of-2 rescaling, so any centric/acentric scaling
+        convention must be handled by the caller.
 
     Returns
     -------
@@ -189,8 +191,6 @@ def woolfson_log_likelihood(
     F_obs_safe = torch.clamp(F_obs, min=1e-10)
     F_mean_safe = torch.clamp(F_mean, min=0.0)
 
-    # For centric, variance is 2x larger (sigma^2 / 2 for each component)
-    # The effective sigma for centric is sqrt(2 * variance)
     sigma = torch.sqrt(variance_safe)
 
     # Compute argument for cosh

@@ -130,9 +130,11 @@ def compute_translation_phases(
     # Then transpose to get (n_ops, N)
     h_dot_t = torch.matmul(hkl_float, translations.T).T  # (n_ops, N)
 
-    # Phase factor: exp(2*pi*i * h.t)
+    # Phase factor: exp(2*pi*i * h.t). `phase` already carries the configured
+    # float dtype (from hkl_float/translations above), so keep it rather than
+    # forcing float32 (which would give complex64 even under a float64 config).
     phase = 2.0 * np.pi * h_dot_t
-    phase_factor = torch.exp(1j * phase.to(torch.float32))
+    phase_factor = torch.exp(1j * phase)
 
     return phase_factor  # (n_ops, N) complex
 

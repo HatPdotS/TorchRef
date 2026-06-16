@@ -1,10 +1,10 @@
-"""Tests for the ml_sigmaa target (Read MLF with ML model-error variance beta).
+"""Tests for the 'ml' target (Read MLF with ML model-error variance beta).
 
 - factory dispatch / thin target
 - loss math: exact reduction to the unit-variance ML target at beta=eps=1
 - gradient isolation (beta is a detached constant)
-- end-to-end on 1DAW: beta owned by the base Scaler, maintenance resets the
-  cache, gradients reach the model.
+- end-to-end on 1DAW: beta owned by the target's SigmaAEstimator, maintenance
+  resets the cache, gradients reach the model.
 """
 
 import pytest
@@ -15,24 +15,38 @@ from torchref.base.targets.xray_ml_sigmaa import ml_xray_loss_beta_math
 
 
 @pytest.mark.unit
-class TestMaximumLikelihoodSigmaAXrayTarget:
+class TestMaximumLikelihoodXrayTarget:
     def test_init_thin(self):
-        from torchref.refinement.targets import MaximumLikelihoodSigmaAXrayTarget
+        from torchref.refinement.targets import MaximumLikelihoodXrayTarget
 
-        target = MaximumLikelihoodSigmaAXrayTarget()
+        target = MaximumLikelihoodXrayTarget()
         assert target._model is None and target._data is None and target._scaler is None
-        # σ_A lives in the Scaler now — the target carries no estimation state.
-        assert not hasattr(target, "sigma_a_params")
+        # σ_A (beta) is owned by the target via a SigmaAEstimator; the scaler
+        # owns scaling only.
+        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator
+
+        assert isinstance(target._sigma_a, SigmaAEstimator)
 
     def test_factory_dispatch(self):
         from torchref.refinement.targets import (
-            MaximumLikelihoodSigmaAXrayTarget,
+            MaximumLikelihoodXrayTarget,
             create_xray_target,
         )
 
         assert isinstance(
-            create_xray_target(mode="ml_sigmaa"), MaximumLikelihoodSigmaAXrayTarget
+            create_xray_target(mode="ml"), MaximumLikelihoodXrayTarget
         )
+
+    def test_factory_ml_sigmaa_alias_deprecated(self):
+        """'ml_sigmaa' still resolves to the 'ml' target, with a warning."""
+        from torchref.refinement.targets import (
+            MaximumLikelihoodXrayTarget,
+            create_xray_target,
+        )
+
+        with pytest.warns(DeprecationWarning):
+            target = create_xray_target(mode="ml_sigmaa")
+        assert isinstance(target, MaximumLikelihoodXrayTarget)
 
     def test_factory_unknown_mode_raises(self):
         from torchref.refinement.targets import create_xray_target
@@ -40,14 +54,14 @@ class TestMaximumLikelihoodSigmaAXrayTarget:
         with pytest.raises(ValueError):
             create_xray_target(mode="not_a_mode")
 
-    def test_factory_default_is_ml_sigmaa(self):
-        """ml_sigmaa is now the promoted default X-ray target."""
+    def test_factory_default_is_ml(self):
+        """'ml' (the σ_A Read MLF target) is the promoted default."""
         from torchref.refinement.targets import (
-            MaximumLikelihoodSigmaAXrayTarget,
+            MaximumLikelihoodXrayTarget,
             create_xray_target,
         )
 
-        assert isinstance(create_xray_target(), MaximumLikelihoodSigmaAXrayTarget)
+        assert isinstance(create_xray_target(), MaximumLikelihoodXrayTarget)
 
     def test_lbfgs_default_target_mode(self):
         import inspect
@@ -55,7 +69,7 @@ class TestMaximumLikelihoodSigmaAXrayTarget:
         from torchref import LBFGSRefinement
 
         sig = inspect.signature(LBFGSRefinement.__init__)
-        assert sig.parameters["target_mode"].default == "ml_sigmaa"
+        assert sig.parameters["target_mode"].default == "ml"
 
 
 @pytest.mark.unit
@@ -66,18 +80,18 @@ class TestCollectionTargetsRelocated:
     def test_exported_from_refinement_targets(self):
         from torchref.refinement.targets import (  # noqa: F401
             CollectionDifferenceTarget,
-            CollectionMLSigmaATarget,
             CollectionMLTarget,
+            CollectionRiceTarget,
             MultiModelADPTarget,
             MultiModelGeometryTarget,
         )
 
     def test_kinetic_backcompat_reexports(self):
-        from torchref.kinetic.targets import (  # noqa: F401
-            CollectionMLSigmaATarget,
+        from torchref.experimental.kinetic.targets import (  # noqa: F401
+            CollectionRiceTarget,
         )
-        from torchref.kinetic.targets import CollectionMLTarget as KinCML
-        from torchref.kinetic.targets import (  # noqa: F401
+        from torchref.experimental.kinetic.targets import CollectionMLTarget as KinCML
+        from torchref.experimental.kinetic.targets import (  # noqa: F401
             KineticPriorTarget,
             _scale_fcalc,
             _unpack_masked_data,
@@ -86,12 +100,12 @@ class TestCollectionTargetsRelocated:
 
         assert RefCML is KinCML
 
-    def test_collection_sigmaa_base_weight(self):
-        from torchref.refinement.targets import CollectionMLSigmaATarget
+    def test_collection_ml_base_weight(self):
+        from torchref.refinement.targets import CollectionMLTarget
 
-        assert CollectionMLSigmaATarget.DEFAULT_BASE_WEIGHT == 10.0
-        # maintenance hook present (resets the scaler's shared beta)
-        assert hasattr(CollectionMLSigmaATarget, "maintenance")
+        assert CollectionMLTarget.DEFAULT_BASE_WEIGHT == 10.0
+        # maintenance hook present (resets the target's own shared beta)
+        assert hasattr(CollectionMLTarget, "maintenance")
 
 
 @pytest.mark.unit
@@ -140,18 +154,22 @@ class TestSigmaAOnRealData:
         from torchref import LBFGSRefinement
 
         ref = LBFGSRefinement(
-            data_file=str(mtz), pdb=str(pdb), target_mode="ml_sigmaa", verbose=0
+            data_file=str(mtz), pdb=str(pdb), target_mode="ml", verbose=0
         )
         ref.scaler.initialize()
         ref.scaler.refine_lbfgs()
         return ref
 
-    def test_beta_owned_by_base_scaler(self, refinement):
+    def test_beta_owned_by_target(self, refinement):
+        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator
         from torchref.scaling import Scaler
 
-        # No subclass: beta lives in the base Scaler, shared by both targets.
+        # The scaler owns scaling only — no beta machinery.
         assert isinstance(refinement.scaler, Scaler)
-        assert hasattr(refinement.scaler, "get_beta")
+        assert not hasattr(refinement.scaler, "get_beta")
+        # beta lives in the target's own SigmaAEstimator.
+        assert isinstance(refinement.xray_target_work._sigma_a, SigmaAEstimator)
+        # both targets still share the one scaler (scaling layer).
         assert (
             refinement.xray_target_work._scaler
             is refinement.scaler
@@ -159,23 +177,41 @@ class TestSigmaAOnRealData:
         )
 
     def test_beta_physical_and_falls_with_resolution(self, refinement):
-        assert torch.isfinite(refinement.xray_target_work.forward())
-        beta, eps = refinement.scaler.get_beta()
+        from torchref.base.reciprocal import get_scattering_vectors
+        from torchref.base.targets.xray_ml_sigmaa import (
+            epsilon_from_hkl,
+            estimate_beta,
+        )
+
+        t = refinement.xray_target_work
+        assert torch.isfinite(t.forward())
+        beta, eps = t._sigma_a._cache
         v = refinement.reflection_data.masks().to(torch.bool)
         assert (beta[v] > 0).all() and torch.isfinite(beta[v]).all()
-        bbin = refinement.scaler.beta_per_bin
+
+        # The falling-with-resolution trend is an estimator-math property,
+        # checked in float64 so it is device-independent.
+        data = refinement.reflection_data
+        with torch.no_grad():
+            fc = torch.abs(t._scaled_F_calc_full()).double().reshape(-1)
+            fo = data.get_corrected_data()[0].double().reshape(-1)
+            epsd = epsilon_from_hkl(data.hkl, getattr(data, "spacegroup", None)).double()
+            s = get_scattering_vectors(data.hkl, data.cell)
+            dss = (torch.norm(s, dim=1) ** 2).double()
+            _b, bbin, _ = estimate_beta(fo, fc, data.centric, epsd, dss, data.free.mask)
+        assert (bbin > 0).all() and torch.isfinite(bbin).all()
         # beta is an absolute model-error variance in F^2 units (~(1-sigma_A^2)*
         # Sigma_N); Sigma_N ~= <F^2> decays steeply with resolution, so absolute
-        # beta falls: the low-resolution half exceeds the high-resolution half
-        # (robust to small bin-to-bin bumps and LBFGS-scale nondeterminism).
+        # beta falls: the low-resolution half exceeds the high-resolution half.
         h = bbin.numel() // 2
         assert bbin[:h].mean() > bbin[h:].mean()
 
     def test_maintenance_resets_cache(self, refinement):
-        refinement.scaler.get_beta()
-        assert refinement.scaler._beta_cache is not None
-        refinement.xray_target_work.maintenance()
-        assert refinement.scaler._beta_cache is None
+        t = refinement.xray_target_work
+        t.forward()  # populates the estimator cache
+        assert t._sigma_a._cache is not None
+        t.maintenance()
+        assert t._sigma_a._cache is None
 
     def test_gradient_reaches_model(self, refinement):
         refinement.xray_target_work.forward().backward()

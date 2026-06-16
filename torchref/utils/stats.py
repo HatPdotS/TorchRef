@@ -22,10 +22,20 @@ Usage
     filter_stats(stats, VERBOSITY_ESSENTIAL)
     # {'rwork': 0.20}
 
-    # StatEntry is JSON serializable - just use json.dumps directly:
+    # StatEntry is JSON serializable. Importing this module monkey-patches
+    # json.dumps / json.dump to use StatEntryEncoder by default, so a plain
+    # call already serializes StatEntry values (and torch/numpy objects):
     import json
-    json.dumps(stats, cls=StatEntryEncoder)
+    json.dumps(stats)
     # '{"rwork": 0.2, "bond_rmsd": 0.015}'
+
+Side Effects
+------------
+Importing this module replaces the standard-library ``json.dumps`` and
+``json.dump`` with wrappers that default the ``cls`` argument to
+:class:`StatEntryEncoder`. This is a global, process-wide patch: any
+``json.dumps``/``json.dump`` call without an explicit ``cls`` will use the
+custom encoder after this module is imported.
 """
 
 import json

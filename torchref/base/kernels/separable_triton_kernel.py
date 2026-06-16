@@ -878,10 +878,12 @@ def _get_cached_config(frac_matrix, grid_shape, radius_angstrom, device):
         "bwd_BLOCK_V": bwd_BLOCK_V,
     }
 
-    # Warmup: launch a 1-atom kernel to force Triton JIT compilation.
-    # The first compilation can produce incorrect results due to a known
-    # Triton JIT artifact; this disposable launch ensures the compiled
-    # kernel is correct before any real data is processed.
+    # Warmup: launch a 1-atom kernel to force Triton JIT compilation of the
+    # forward kernel only.  The first compilation can produce incorrect
+    # results due to a known Triton JIT artifact, so this disposable launch
+    # compiles the forward kernel ahead of real data.  Note this does NOT
+    # cover the backward kernel (_separable_bwd_kernel), which is compiled
+    # lazily on the first backward pass and is not separately warmed up.
     _warmup_kernel(config, grid_shape, device)
 
     _config_cache[key] = config

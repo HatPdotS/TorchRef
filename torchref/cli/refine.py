@@ -4,7 +4,7 @@
 Command-line script for LBFGS crystallographic refinement using torchref.
 
 Uses the maximum-likelihood σ_A (Read MLF) target by default; Bhattacharyya /
-Gaussian / least-squares / Rice maximum-likelihood targets remain available
+Gaussian / least-squares / plain maximum-likelihood targets remain available
 via ``--xray-mode``.
 
 Examples
@@ -17,12 +17,9 @@ Examples
     # 10 refinement cycles
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
 
-    # Separated XYZ then ADP cycles
-    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode refine
-
     # Alternative targets
     torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode bhattacharyya
-    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode rice
+    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
 """
 
 import argparse
@@ -72,8 +69,8 @@ Examples:
   # Separated XYZ then ADP cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode refine
 
-  # Rice maximum-likelihood target
-  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode rice
+  # Legacy maximum-likelihood target
+  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
         """,
     )
 
@@ -85,9 +82,7 @@ Examples:
     add_metadata_args(output)
 
     refine_group = parser.add_argument_group("Refinement")
-    # Default 10 macro cycles — the validated AF-start benchmark setting
-    # (10 cycles ~ 25; converges fast with the separate scaler).
-    add_n_cycles_arg(refine_group, default=10)
+    add_n_cycles_arg(refine_group)
     refine_group.add_argument(
         "--mode",
         type=str,
@@ -99,16 +94,13 @@ Examples:
     refine_group.add_argument(
         "--xray-mode",
         type=str,
-        default=None,  # resolved to 'ml' below; None lets us detect explicit 'ml'
-        choices=["gaussian", "ls", "rice", "ml", "ml_sigmaa", "bhattacharyya"],
-        help="X-ray target function. 'ml' (default) is the maximum-likelihood "
-        "Read MLF target with a cross-validated Luzzati sigma_A term "
-        "(Phenix-style alpha/beta). 'rice' is the simpler unit-variance Rice "
-        "maximum-likelihood target. 'bhattacharyya' uses the Bhattacharyya "
-        "overlap loss with first-principles model error estimation; "
-        "'ls'/'gaussian' are simpler alternatives. NOTE: 'ml' previously "
-        "selected the Rice target (now 'rice'); 'ml_sigmaa' is a deprecated "
-        "alias for 'ml'.",
+        default="ml",
+        choices=["gaussian", "ls", "ls_wunit_k1", "ml", "bhattacharyya"],
+        help="X-ray target function. 'ml' (default) is the "
+        "maximum-likelihood Read MLF target with a cross-validated Luzzati "
+        "sigma_A term (Phenix-style alpha/beta). 'bhattacharyya' uses the "
+        "Bhattacharyya overlap loss with first-principles model error "
+        "estimation; 'ls'/'gaussian' are simpler alternatives.",
     )
     refine_group.add_argument(
         "--sigma-m-scale",
@@ -119,32 +111,12 @@ Examples:
     )
     add_weights_arg(refine_group)
     refine_group.add_argument(
-        "--adp-weight",
-        type=float,
-        default=0.1,
-        help="Base weight for the 'adp' loss group (B-factor similarity/locality/"
-        "distribution restraints + scaler regularizers). Default 0.1 — the "
-        "transparent default in base_refinement.DEFAULT_GROUP_WEIGHTS; it "
-        "down-weights the ADP prior (~10x too tight) so B-factors reach their "
-        "data-supported spread. Set 1.0 for un-down-weighted; an explicit 'adp' "
-        "entry in --weights also overrides this.",
-    )
-    refine_group.add_argument(
-        "--corefine-scaler",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Co-refine the scaler (scale / anisotropic U / bulk solvent) jointly "
-        "with the xyz/adp body steps. Default off: the scaler is held fixed during "
-        "body steps and updated only by the separate per-cycle scaler step. "
-        "Co-refining is ill-conditioned (the few high-leverage scaler params drag "
-        "R-free up), so it is off by default; pass --corefine-scaler to re-enable.",
-    )
-    refine_group.add_argument(
         "--with-rigid-body",
         action="store_true",
         help="Run one multi-resolution rigid-body refinement step (per-chain "
-        "rotation + translation) before each macro cycle. Useful when the "
-        "starting model has small global misorientation/shift.",
+        "rotation + translation) once at the start of refinement, before any "
+        "macro cycle. Useful when the starting model has small global "
+        "misorientation/shift. Combine with -n 0 to run rigid-body only.",
     )
     refine_group.add_argument(
         "--rigid-body-iter",
@@ -153,6 +125,15 @@ Examples:
         help="LBFGS max_iter for each per-cutoff rigid-body step. "
         "Only used when --with-rigid-body is set. Default 30.",
     )
+    refine_group.add_argument(
+        "--rigid-body-cutoffs",
+        type=str,
+        default=None,
+        help="Comma-separated high-resolution cutoffs (A) for the rigid-body "
+        "schedule, coarse to fine, e.g. '10.15,8.80,5.89,4.10,3.00'. "
+        "If unset, an auto schedule is derived from native d_min. "
+        "Only used when --with-rigid-body is set.",
+    )
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -160,26 +141,6 @@ Examples:
     add_general_args(parser)
 
     args = parser.parse_args()
-
-    # --xray-mode defaults to 'ml' (the σ_A maximum-likelihood target). The
-    # meaning of 'ml' changed: it used to select the Rice target (now 'rice').
-    # Warn once when 'ml' was passed explicitly so users relying on the old
-    # behaviour notice the swap; a bare default stays silent.
-    if args.xray_mode == "ml":
-        print(
-            "Note: '--xray-mode ml' now selects the maximum-likelihood Read MLF "
-            "σ_A target. The former 'ml' (plain Rice) target is now "
-            "'--xray-mode rice'.",
-            file=sys.stderr,
-        )
-    elif args.xray_mode == "ml_sigmaa":
-        print(
-            "Note: '--xray-mode ml_sigmaa' is deprecated; use '--xray-mode ml'.",
-            file=sys.stderr,
-        )
-        args.xray_mode = "ml"
-    elif args.xray_mode is None:
-        args.xray_mode = "ml"
 
     register_timing()
 
@@ -250,28 +211,21 @@ Examples:
         column_names=column_names,
         target_mode=args.xray_mode,
         sigma_m_scale=args.sigma_m_scale,
-        corefine_scaler=args.corefine_scaler,
     )
 
-    # The loss_state ships with the default group base weights
-    # (base_refinement.DEFAULT_GROUP_WEIGHTS: xray 10 / geometry 1 / adp 0.1).
-    # --adp-weight overrides the adp group; an explicit 'adp' in --weights wins.
-    refinement.loss_state.set_weight("adp", args.adp_weight)
-
-    # Apply any user-specified manual loss weights to the persistent LossState.
+    # Apply manual group weights, if given. Merge onto DEFAULT_GROUP_WEIGHTS so
+    # unspecified groups keep their defaults (e.g. --weights '{"xray": 5}' sets
+    # xray=5 while geometry=1 / adp=0.1 stay). reset_loss_state() forces the lazy
+    # LossState to rebuild with the new weighting.
     if manual_weights:
-        refinement.loss_state.set_weights(manual_weights)
+        from torchref.refinement.base_refinement import DEFAULT_GROUP_WEIGHTS
+        from torchref.refinement.weighting import ManualWeighting
 
-    if args.verbose > 0:
-        gw = refinement.loss_state.weights
-        print(
-            "Loss group base weights: "
-            + ", ".join(
-                f"{g}={gw.get(g, 1.0):g}" for g in ("xray", "geometry", "adp")
-            )
-        )
-        print(f"Co-refine scaler in body steps: {args.corefine_scaler}")
-        sys.stdout.flush()
+        merged = {**DEFAULT_GROUP_WEIGHTS, **manual_weights}
+        refinement.weighting = ManualWeighting(merged)
+        refinement.reset_loss_state()
+        if args.verbose > 0:
+            print(f"Applied manual group weights: {merged}")
 
     if args.verbose > 0:
         print("Refinement initialized successfully.\n")
@@ -284,10 +238,10 @@ Examples:
             if args.with_rigid_body:
                 print(
                     "Rigid-body step enabled: one multi-resolution rigid-body "
-                    "pass will run before each macro cycle.\n"
+                    "pass will run once at the start of refinement.\n"
                 )
             sys.stdout.flush()
-            
+
         if args.mode == "separate":
             cycle_fn = refinement.refine
         elif args.mode == "everything":
@@ -296,19 +250,19 @@ Examples:
             raise ValueError(f"Invalid refinement mode: {args.mode}")
 
         if args.with_rigid_body:
-            for cycle in range(args.n_cycles):
-                if args.verbose > 0:
-                    print(f"\n--- Rigid-body step (cycle {cycle + 1}) ---")
-                    sys.stdout.flush()
-                refinement.refine_rigid_body(
-                    iterations_per_step=args.rigid_body_iter,
-                    commit=True,
-                )
-                if args.verbose > 0:
-                    print(f"\n--- Macro cycle {cycle + 1}/{args.n_cycles} ---")
-                    sys.stdout.flush()
-                cycle_fn(macro_cycles=1)
-        else:
+            if args.verbose > 0:
+                print("\n--- Rigid-body step (once, at start) ---")
+                sys.stdout.flush()
+            rb_cutoffs = None
+            if args.rigid_body_cutoffs:
+                rb_cutoffs = [float(x) for x in args.rigid_body_cutoffs.split(",")]
+            refinement.refine_rigid_body(
+                cutoffs=rb_cutoffs,
+                iterations_per_step=args.rigid_body_iter,
+                commit=True,
+            )
+
+        if args.n_cycles > 0:
             cycle_fn(macro_cycles=args.n_cycles)
 
         refinement.get_scales()
@@ -349,16 +303,14 @@ Examples:
             "mode": args.mode,
             "xray_mode": args.xray_mode,
             "sigma_m_scale": args.sigma_m_scale,
-            "group_weights": {
-                g: refinement.loss_state.weights.get(g, 1.0)
-                for g in ("xray", "geometry", "adp")
-            },
-            "corefine_scaler": args.corefine_scaler,
             "weights": manual_weights if manual_weights else None,
             "dmin": args.dmin,
             "device": str(device),
             "with_rigid_body": args.with_rigid_body,
             "rigid_body_iter": args.rigid_body_iter if args.with_rigid_body else None,
+            "rigid_body_cutoffs": (
+                args.rigid_body_cutoffs if args.with_rigid_body else None
+            ),
         },
         "history": refinement.history if hasattr(refinement, "history") else {},
         "final_statistics": {},
@@ -367,24 +319,29 @@ Examples:
     # Add final R-factors if available
     try:
         work_nll, test_nll = refinement.nll_xray()
-        data = refinement.reflection_data
+        hkl, fobs, sigma, rfree = refinement.reflection_data()
         # Signed HKL so |F_calc| matches what refinement optimized (anomalous mates).
-        fcalc = refinement.get_F_calc_scaled(data.hkl_for_sf(), recalc=True)
+        fcalc = refinement.get_F_calc_scaled(
+            refinement.reflection_data.hkl_for_sf(), recalc=True
+        )
 
-        work, free = data.work, data.free
-        fobs_w, fcalc_w = work.F, work.select(fcalc)
-        fobs_f, fcalc_f = free.F, free.select(fcalc)
+        work_mask = rfree
+        test_mask = ~rfree
 
-        r_work = torch.sum(torch.abs(fobs_w - fcalc_w)) / torch.sum(fobs_w)
-        r_free = torch.sum(torch.abs(fobs_f - fcalc_f)) / torch.sum(fobs_f)
+        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(
+            fobs[work_mask]
+        )
+        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(
+            fobs[test_mask]
+        )
 
         history_data["final_statistics"] = {
             "R_work": float(r_work.item()),
             "R_free": float(r_free.item()),
             "NLL_work": float(work_nll.item()),
             "NLL_test": float(test_nll.item()),
-            "n_reflections_work": work.n,
-            "n_reflections_test": free.n,
+            "n_reflections_work": int(work_mask.sum().item()),
+            "n_reflections_test": int(test_mask.sum().item()),
         }
     except Exception as e:
         if args.verbose > 1:

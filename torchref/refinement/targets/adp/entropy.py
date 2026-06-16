@@ -17,9 +17,14 @@ if TYPE_CHECKING:
 
 class ADPEntropyTarget(ADPTarget):
     """
-    ADP Entropy regularization target.
+    ADP distribution regularization target.
 
-    Uses the model's existing adp_kl_divergence_loss or similar.
+    Penalizes deviation of the B-factor (ADP) distribution from a target
+    spread. ``forward()`` returns ``model.adp_kl_divergence_loss()``, the KL
+    divergence between the distribution of log-ADPs and a Gaussian with the
+    same (detached) mean and a fixed target log-space standard deviation
+    (``target_log_std=0.2``). The loss is zero when the log-ADP spread matches
+    the target and grows as the distribution becomes tighter or broader.
     """
 
     name: str = "adp/KL"

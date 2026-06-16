@@ -5,7 +5,7 @@ This module provides efficient symmetry operations for reciprocal space data (h,
 analogous to map_symmetry.py for real space density maps.
 
 Key concepts:
-- Miller indices transform as h' = h @ R^T under rotation R
+- Miller indices transform as h' = h @ R = R^T @ h under rotation R
 - Systematic absences occur when translation causes destructive interference
 - Centric reflections have phases restricted to 0 or π
 - Friedel pairs: F(h,k,l) = F*(-h,-k,-l) for normal scattering
@@ -76,7 +76,7 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
     - Symmetry expansion/averaging of structure factors
 
     In reciprocal space, symmetry operations transform Miller indices as:
-        (h', k', l') = (h, k, l) @ R^T
+        (h', k', l') = (h, k, l) @ R = R^T @ (h, k, l)
 
     where R is the rotation matrix from real space symmetry.
 

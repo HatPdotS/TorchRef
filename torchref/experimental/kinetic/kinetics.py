@@ -18,10 +18,11 @@ class KineticModel(DeviceMixin, nnModule):
     - "A->B,A->C,B->D,C->D" (parallel pathways)
     - "A->B,B->C,D" (D is non-reactive state)
     
-    Each transition has TWO parameters:
-    - Reactivity constant k (rate)
-    - Reaction efficiency η (0 to 1, controls maximum conversion)
-    
+    Each transition has a single refinable parameter, the reactivity
+    constant k (rate). A per-transition reaction efficiency η also enters
+    the rate matrix, but it is frozen at 1.0 and is not refinable (it is
+    degenerate with the rate constants for sequential schemes).
+
     States can have baseline occupancy offsets (default: 0, not refined).
     
     The initial transfer is driven by photoabsorption with quasi-instant
@@ -41,8 +42,8 @@ class KineticModel(DeviceMixin, nnModule):
         - List of floats (same order as transitions in flow_chart)
         - None (random initialization)
     efficiencies : dict or list, optional
-        Initial reaction efficiencies (0-1). Same format as rate_constants.
-        Default: all 1.0 (100% efficient)
+        Accepted for API compatibility but currently ignored: efficiencies
+        are always frozen at 1.0 (100% efficient) and are not refinable.
     instrument_function : str, optional
         Type of instrument response function. Options: 'gaussian', 'none'
         Default: 'gaussian'
@@ -56,6 +57,10 @@ class KineticModel(DeviceMixin, nnModule):
         photoexcitation can only happen once. Products returning to the initial
         state become inactive (A*) and cannot undergo photoactivation again.
         Default: False
+    activation_level : float, optional
+        Fraction of the initial state that is reactive. The non-reactive
+        remainder (1 - activation_level) is set as a constant baseline
+        occupancy on the initial state. Default: 0.5.
     verbose : int, optional
         Verbosity level. Default: 1
     """

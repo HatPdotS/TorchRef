@@ -253,9 +253,9 @@ class LangevinSA(Optimizer):
         """Perform one BAOAB Langevin dynamics step.
 
         Tracks the best-loss configuration and rolls back to it when the
-        loss exceeds ``loss_rollback_factor`` times the best loss seen so
-        far.  This prevents the dynamics from permanently damaging the
-        structure while still allowing uphill exploration.
+        loss becomes non-finite or exceeds 3x the best loss seen so far.
+        This prevents the dynamics from permanently damaging the structure
+        while still allowing uphill exploration.
 
         Args:
             closure: A callable that re-evaluates the model and returns the

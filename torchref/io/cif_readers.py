@@ -7,8 +7,8 @@ This module provides 4 main classes:
 - ModelCIFReader: For reading atomic coordinate data (model structures)
 - RestraintCIFReader: For reading chemical restraint dictionaries
 
-Space groups are returned as gemmi.SpaceGroup objects for consistency
-throughout torchref.
+Space groups are returned as plain Python ``str`` Hermann-Mauguin names
+(e.g. ``"P 1"``), validated against gemmi.
 
 Specialized classes are typesave and should handle most edge cases in CIF files.
 """
@@ -681,6 +681,17 @@ class ReflectionCIFReader:
             self.data["SIGI"] = refln_df["sigma_I_obs"].to_numpy().astype(np.float32)
             self.data["SIGI_col"] = refln_df["sigma_I_obs_key"]
 
+        # A structure-factor CIF must carry observed amplitudes or intensities.
+        # Calculated columns (e.g. _refln.F_calc) are intentionally not used as
+        # observations, so a calc-only file lands here with neither F nor I.
+        if "F" not in self.data and "I" not in self.data:
+            raise ValueError(
+                f"No observed amplitudes or intensities found in {self.filepath} "
+                f"(data block '{self.cif_reader.data_block}'). The reflection loop "
+                f"has no measured F/I column; calculated columns such as "
+                f"_refln.F_calc are not used as observations."
+            )
+
         # Store R-free flags if available (standardized keys matching MTZ reader)
         if refln_df["free_flag"].notna().any():
             rfree_characters = (
@@ -750,14 +761,14 @@ class ReflectionCIFReader:
         -------
         data : dict
             Dictionary with extracted data arrays:
-            - 'h', 'k', 'l': Miller indices
+            - 'HKL': Nx3 int32 array of Miller indices (plus 'HKL_key')
             - 'F', 'SIGF': Amplitudes and sigmas (if available)
             - 'I', 'SIGI': Intensities and sigmas (if available)
             - 'R-free-flags': R-free test set flags (if available)
         cell : numpy.ndarray
             Cell parameters [a, b, c, alpha, beta, gamma].
-        spacegroup : gemmi.SpaceGroup
-            Space group object.
+        spacegroup : str
+            Space group Hermann-Mauguin name (e.g. "P 1").
         """
         try:
             return self.data, self.cell, self.spacegroup
@@ -876,13 +887,15 @@ class ReflectionCIFReader:
                 print(f"  Reflections with F- only: {n_minus_only}")
         else:
             # Standard non-anomalous data
+            # NOTE: do NOT include calculated columns (e.g. _refln.F_calc) here.
+            # Treating calc amplitudes as observations gives meaningless
+            # R-factors / refinement against the model's own F_calc.
             result["F_obs"], F_obs_key = self._extract_numeric(
                 refln_df,
                 [
                     "_refln.F_meas_au",
                     "_refln.F_meas",
                     "_refln.pdbx_F_plus",
-                    "_refln.F_calc",
                     "_refln.F-obs",
                     "_refln.F_squared_meas",
                 ],

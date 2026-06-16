@@ -30,22 +30,11 @@ from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
 
-# Default LossState group base weights — the single, transparent source of truth
-# for how the data term and the priors are balanced. These are *calibration
-# offsets*: with a perfectly calibrated ML likelihood and geometry/ADP prior they
-# would all be 1.0 (the posterior is just -logL - logP). The offsets correct
-# known mis-calibrations, validated to match Phenix/Refmac on the AF-start
-# benchmark (REFMAC-validated median R-free ~ Phenix at n=10):
-#   xray = 10.0  -> the Read/sigma_A likelihood is "soft" (under-counts the data's
-#                   information, a reflection-correlation / effective-N effect), so
-#                   it needs ~10x to sit on equal footing with the geometry prior.
-#   geometry = 1.0 -> reference scale (geometry NLL with physical Engh-Huber sigmas).
-#   adp = 0.1    -> the ADP-restraint prior is ~10x too tight; down-weighting lets
-#                   B-factors spread to their data-supported values.
-# NOTE: gradient-ratio auto-weighting is circular (at the optimum the gradient
-# ratio equals the weight by stationarity); the principled future direction is
-# R-free cross-validation or fixing the sigma_A "softness" calibration so these
-# offsets converge to 1.0. See the cleanup plan for the full rationale.
+# Default LossState group base weights balancing the data term against the
+# priors. These are calibration offsets relative to a unit-weight posterior
+# (-logL - logP): xray=10 compensates for the "soft" Read/sigma_A likelihood,
+# geometry=1 is the reference scale (Engh-Huber sigmas), and adp=0.1 loosens the
+# over-tight ADP-restraint prior so B-factors reach data-supported values.
 DEFAULT_GROUP_WEIGHTS = {"xray": 10.0, "geometry": 1.0, "adp": 0.1}
 
 
@@ -249,6 +238,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     f"Unsupported model file format: {pdb}. Supported formats are .pdb and .cif"
                 )
 
+            self._sync_model_cell_to_data()
             self.setup_scaler()
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
@@ -394,8 +384,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self._logger = None
 
     def get_scales(self):
-        if not hasattr(self, "scaler"):
-            self.setup_scaler()
+        if not hasattr(self, "scaler") or self.scaler is None:
+            # Targets that compute their own scale (e.g. ls_wunit_k1 in
+            # binwise_optimal mode) intentionally leave ref.scaler=None.
+            # Nothing to initialize or refit here.
+            return
         self.scaler.initialize()
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
         self.scaler.refine_lbfgs()
@@ -410,6 +403,63 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             verbose=self.verbose,
             device=self.device,
         )
+
+    def _sync_model_cell_to_data(
+        self,
+        axis_rtol: float = 0.01,
+        angle_atol_deg: float = 1.0,
+    ) -> None:
+        """Always cast the reflection-data cell onto the model.
+
+        Mirrors cctbx's ``xrs.customized_copy(crystal_symmetry=data_sym)``:
+        the data cell is authoritative because HKL indices are defined
+        relative to it. Atoms keep their Cartesian coordinates and are
+        reinterpreted in the new cell — fractional coordinates implicitly
+        shift. Without this sync, ``F_calc`` is computed with the wrong
+        basis at HKLs that mean something else, producing a pose-dependent
+        phase bias that distorts the gradient (9RTS case: a 2.4% b-axis
+        mismatch was pulling rigid-body LBFGS into a worse local minimum).
+
+        The sync runs unconditionally. A warning is emitted only when the
+        disagreement is large enough to flag for the user:
+
+        - any axis differs by ≥ ``axis_rtol`` relative (default 1%)
+        - any angle differs by ≥ ``angle_atol_deg`` absolute (default 1°)
+        """
+        if self.model is None or self.model.cell is None:
+            return
+        if self.reflection_data is None or self.reflection_data.cell is None:
+            return
+        m_t = self.model.cell.data
+        d_t = self.reflection_data.cell.data
+        m = m_t.detach().cpu().tolist()
+        d = d_t.detach().cpu().tolist()
+        axes_m, angles_m = m[:3], m[3:]
+        axes_d, angles_d = d[:3], d[3:]
+        axis_off = any(
+            abs(am - ad) / max(abs(ad), 1e-12) >= axis_rtol
+            for am, ad in zip(axes_m, axes_d)
+        )
+        angle_off = any(
+            abs(gm - gd) >= angle_atol_deg
+            for gm, gd in zip(angles_m, angles_d)
+        )
+        if axis_off or angle_off:
+            import warnings
+            warnings.warn(
+                "PDB CRYST1 cell disagrees with reflection-data cell beyond "
+                f"tolerance (axes ≥ {axis_rtol * 100:g}% or angles ≥ "
+                f"{angle_atol_deg:g}°). Casting the data cell onto the model "
+                "(HKL indices are defined relative to it). Atoms keep "
+                "Cartesian coordinates; fractional coordinates implicitly "
+                "shift. Mirrors cctbx's "
+                "`xrs.customized_copy(crystal_symmetry=data_sym)`.\n"
+                f"  PDB  cell: {m}\n"
+                f"  data cell: {d}",
+                stacklevel=2,
+            )
+        self.model.cell = self.reflection_data.cell
+        self.model.reset_cache()
 
     def parameters(self, recurse: bool = True):
         """
@@ -572,15 +622,19 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         state.register_target("xray_work", lambda: self.xray_target_work())
         state.register_targets(self.geometry_target)
         state.register_targets(self.adp_target)
-        n_ref = int(self.reflection_data.hkl.shape[0])
-        state.register_target(
-            "adp/scaler_U",
-            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
-        )
-        state.register_target(
-            "adp/scaler_log_scale",
-            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
-        )
+        if self.scaler is not None:
+            n_ref = int(self.reflection_data.hkl.shape[0])
+            if hasattr(self.scaler, "U"):
+                state.register_target(
+                    "adp/scaler_U",
+                    ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+                )
+            if (hasattr(self.scaler, "log_scale")
+                    and self.scaler.log_scale.requires_grad):
+                state.register_target(
+                    "adp/scaler_log_scale",
+                    ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+                )
 
         return state.aggregate()
 
@@ -610,15 +664,22 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         # Register ADP targets
         state.register_targets(self.adp_target)
-        n_ref = int(self.reflection_data.hkl.shape[0])
-        state.register_target(
-            "adp/scaler_U",
-            ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
-        )
-        state.register_target(
-            "adp/scaler_log_scale",
-            ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
-        )
+        # Scaler regularization targets require the scaler to actually have
+        # the regularized parameters. Solvent-only scalers (rigid-body
+        # ls_wunit_k1) delete U and freeze log_scale.
+        if self.scaler is not None:
+            n_ref = int(self.reflection_data.hkl.shape[0])
+            if hasattr(self.scaler, "U"):
+                state.register_target(
+                    "adp/scaler_U",
+                    ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
+                )
+            if (hasattr(self.scaler, "log_scale")
+                    and self.scaler.log_scale.requires_grad):
+                state.register_target(
+                    "adp/scaler_log_scale",
+                    ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
+                )
 
         # Apply the weighting scheme (default: ManualWeighting holding the
         # DEFAULT_GROUP_WEIGHTS — xray 10 / geometry 1 / adp 0.1). The scheme
@@ -634,50 +695,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Create a configured LossState for optimization.
 
         .. deprecated::
-            Use the `loss_state` property instead for the persistent state.
-            This method is kept for backwards compatibility.
-
-        Sets up a LossState with all targets registered as callables with
-        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'). All targets
-        aggregate at uniform weight unless weights are set explicitly via
-        ``state.set_weight``.
-
-        Usage:
-            from torchref.utils import validate_loss
-
-            state = refinement.create_loss_state()
-            params = list(refinement.parameters())
-
-            # Log initial state
-            state.aggregate(log_values=True)
-
-            # In an LBFGS closure, wrap with validate_loss so non-finite
-            # losses warn + reject the step instead of poisoning the run.
-            def closure():
-                optimizer.zero_grad()
-                loss = state.aggregate()
-                loss.backward()
-                ok = validate_loss(
-                    loss, state=state, parameters=params,
-                    context="my_refinement", raise_on_fail=False,
-                )
-                if not ok:
-                    for p in params:
-                        if p.grad is not None:
-                            p.grad.zero_()
-                    return torch.full_like(loss.detach(), float("inf"))
-                return loss
-
-            optimizer.step(closure)
-
-            # Log final state
-            state.new_entry()
-            state.aggregate(log_values=True)
+            Use the :attr:`loss_state` property instead for the persistent
+            state. This method is kept for backwards compatibility and simply
+            delegates to :meth:`_create_loss_state`.
 
         Returns
         -------
         LossState
-            Configured LossState with targets and weights.
+            Configured LossState with targets registered and the default group
+            weights applied.
         """
         return self._create_loss_state()
 
@@ -792,7 +818,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return state
 
     def get_rfactor(self):
-        return self.scaler.rfactor()
+        """``(R_work, R_free)`` for the current model.
+
+        Delegates to the work X-ray target, the single source of truth: R is
+        computed from exactly the scaled ``|F_calc|`` the target's loss sees
+        (the scaler's scaling, or the target's own closed-form per-bin scale for
+        ``binwise_optimal``). See :meth:`XrayTarget.get_rfactor`.
+        """
+        return self.xray_target_work.get_rfactor()
 
     def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
         import matplotlib.pyplot as plt

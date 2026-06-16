@@ -47,25 +47,7 @@ class AdamWithAdaptiveNoise(Adam):
     def __init__(
         self, params, lr=1e-3, alpha=0.1, eps=1e-8, update_weight=0.05, **kwargs
     ):
-        """
-        Initialize AdamWithAdaptiveNoise.
-
-        Parameters
-        ----------
-        params : iterable
-            Model parameters to optimize.
-        lr : float, optional
-            Learning rate. Default is 1e-3.
-        alpha : float, optional
-            Scaling factor for how much noise to inject per unit overfitting ratio.
-            Default is 0.1.
-        eps : float, optional
-            Small constant for numerical stability. Default is 1e-8.
-        update_weight : float, optional
-            Weight for exponential moving average of noise scale. Default is 0.05.
-        **kwargs
-            Additional arguments passed to Adam optimizer.
-        """
+        """Initialize the optimizer; see the class docstring for parameters."""
         super().__init__(params, lr=lr, **kwargs)
         self.alpha = alpha
         self.eps = eps

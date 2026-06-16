@@ -87,11 +87,17 @@ def test_checkpointed_aniso_matches_eager():
 
 
 def test_checkpointed_chunking_is_exact():
+    # Chunking slices the reflection dimension, so each reflection's atom sum is
+    # computed within a single chunk -- the result is mathematically identical
+    # regardless of chunk size. It is not, however, guaranteed bit-exact: the
+    # phase matmul dispatches to different BLAS kernels for (R,3)x(3,N) vs
+    # (1,3)x(3,N), and last-ULP rounding there is CPU/BLAS-dependent. Assert
+    # numerical equivalence, not bitwise equality.
     hkl, s, _, A, B = _inputs(R=11, dtype=torch.float64)
     xyz, occ, adp, _ = _leaves(dtype=torch.float64)
     F_full = D._checkpointed_iso(hkl, s, xyz, occ, adp, A, B, max_memory_gb=None)
     F_chunk = D._checkpointed_iso(hkl, s, xyz, occ, adp, A, B, max_memory_gb=1e-7)
-    assert torch.equal(F_full, F_chunk)
+    assert torch.allclose(F_full, F_chunk, rtol=1e-10, atol=1e-12)
 
 
 def test_checkpointed_iso_gradcheck():

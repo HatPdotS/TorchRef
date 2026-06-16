@@ -167,9 +167,10 @@ def build_electron_density(
     """
     Build an electron density map from atomic parameters.
 
-    Selects the fastest available backend automatically. On CUDA, tries
-    the fused Triton kernel first (eliminates find_relevant_voxels), then
-    falls back to two-step Triton or JIT. On CPU, uses the JIT kernel.
+    Dispatches the isotropic and anisotropic splats through the shared
+    ``Engine`` (see the module docstring): the fused Triton kernel on
+    CUDA+float32 under ``Engine.AUTO``/``Engine.TRITON``, and otherwise the
+    pure-torch / C++-scatter splat appropriate for the device.
 
     Parameters
     ----------
@@ -200,7 +201,8 @@ def build_electron_density(
     A_aniso, B_aniso : torch.Tensor, optional
         ITC92 coefficients for anisotropic atoms, shape (n_aniso, 5).
     dtype : torch.dtype, optional
-        Float dtype for the density map. Default torch.float32.
+        Float dtype for the density map. Defaults to the configured float
+        dtype (``get_float_dtype()``), which may be float64.
 
     Returns
     -------
@@ -379,15 +381,12 @@ def _add_isotropic_mps_single(
     voxel_size,
     radius_angstrom,
 ):
-    """Single-pass MPS splat: one math call, one scatter call.
+    """Single-pass separable Gaussian splat for isotropic atoms on MPS.
 
-    The multi-chunk strategy in ``_add_isotropic_cpu_separable_compiled``
-    exists so torch.compile sees a small set of fixed shapes across
-    different protein sizes. Per refinement loop the atom count is
-    constant — one compile suffices. Eliminating the per-chunk PyTorch
-    op overhead saves ~10 ms / iter at 1DAW scale on MPS — and that's
-    the only thing that needs to be different from the CPU path here.
-    See profiling_mps/ANALYSIS.md for the breakdown.
+    Evaluates the separable density for all atoms at once (via the
+    torch.compile'd ``_separable_density``) and scatters the result into the
+    map with a single structured scatter, avoiding the per-chunk op overhead
+    of the chunked CPU paths.
     """
     device = density_map.device
     grid_shape = torch.tensor(grid_shape_tuple, device=device)

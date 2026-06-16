@@ -42,6 +42,36 @@ import numpy as np
 import pandas as pd
 
 
+def _format_pdb_atom_name(name, element="") -> str:
+    """Format an atom name into the 4-character PDB atom-name field (cols 13-16).
+
+    Follows the PDB / gemmi convention: 4-character names (or atoms whose
+    element symbol is two letters, e.g. FE, MG) start in column 13; shorter
+    single-letter-element names are indented by one space (start in column 14).
+    Names are never truncated below 4 characters (the previous behaviour
+    silently dropped a character from 4-character names such as ``HD11``).
+
+    Parameters
+    ----------
+    name : str
+        Atom name (any length).
+    element : str, optional
+        Element symbol, used to decide indentation for short names.
+
+    Returns
+    -------
+    str
+        Exactly 4 characters, to be placed in columns 13-16.
+    """
+    name = str(name).strip()
+    element = str(element).strip()
+    if len(name) >= 4:
+        return name[:4]
+    if len(element) == 2:
+        return f"{name:<4}"
+    return f" {name:<3}"
+
+
 def find_header_length(filepath: str, max_header_length: int = 100000) -> int:
     """
     Find the number of header lines in a PDB file.
@@ -596,17 +626,16 @@ def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) 
             else:
                 charge = str(charge)
 
-            if len(name) > 3:
-                name = name[-3:]
-            if len(name) < 3:
-                name = name + " " * (3 - len(name))
+            # 4-character PDB atom-name field (cols 13-16); preceded by the
+            # blank col 12 in the format string below.
+            name_field = _format_pdb_atom_name(name, element)
 
             if chainid is None or str(chainid) == "nan":
                 chainid = ""
 
             try:
                 s = (
-                    f"{str(ATOM):<6}{int(serial):>5}{str(name):>5}{str(altloc):>1}"
+                    f"{str(ATOM):<6}{int(serial):>5} {name_field}{str(altloc):>1}"
                     f"{str(resname):>3}{str(chainid):>2}{int(resseq):>4}{str(icode):>4}"
                     f"{round(x, 3):>8}{round(y, 3):>8}{round(z_coord, 3):>8}"
                     f"{round(occupancy, 3):>6.2f}{round(tempfactor, 2):>6}"
@@ -623,7 +652,7 @@ def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) 
                     ["u11", "u22", "u33", "u12", "u13", "u23"]
                 ]
                 s = (
-                    f"ANISOU{int(serial):>5}{str(name):>5}{str(altloc):>1}"
+                    f"ANISOU{int(serial):>5} {name_field}{str(altloc):>1}"
                     f"{str(resname):>3}{str(chainid):>2}{int(resseq):>4}  "
                     f"{int(u11 * 1e4):>{7}}{int(u22 * 1e4):>{7}}{int(u33 * 1e4):>{7}}"
                     f"{int(u12 * 1e4):>{7}}{int(u13 * 1e4):>{7}}{int(u23 * 1e4):>{7}}"
@@ -714,17 +743,16 @@ def write_multi_model(
                 else:
                     charge_str = str(charge)
 
-                if len(name) > 3:
-                    name = name[-3:]
-                if len(name) < 3:
-                    name = name + " " * (3 - len(name))
+                # 4-character PDB atom-name field (cols 13-16); preceded by the
+                # blank col 12 in the format string below.
+                name_field = _format_pdb_atom_name(name, element)
 
                 if chainid is None or chainid == "nan":
                     chainid = ""
 
                 try:
                     s = (
-                        f"{str(ATOM):<6}{int(serial):>5}{name:>5}{altloc:>1}"
+                        f"{str(ATOM):<6}{int(serial):>5} {name_field}{altloc:>1}"
                         f"{resname:>3}{chainid:>2}{resseq:>4}{icode:>4}"
                         f"{round(x, 3):>8}{round(y, 3):>8}{round(z_coord, 3):>8}"
                         f"{round(occupancy, 3):>6.2f}{round(tempfactor, 2):>6}"

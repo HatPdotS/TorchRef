@@ -19,10 +19,11 @@ def rotate_coords_torch(coords, phi, rho):
     ----------
     coords : torch.Tensor
         Coordinates of shape (N, 3) to rotate.
-    phi : float
-        Rotation angle phi in degrees.
-    rho : float
-        Rotation angle rho in degrees.
+    phi : torch.Tensor
+        Rotation angle phi in degrees (scalar tensor; ``torch.cos``/``sin``
+        are applied to it, so a Python float is not accepted).
+    rho : torch.Tensor
+        Rotation angle rho in degrees (scalar tensor).
 
     Returns
     -------
@@ -321,5 +322,56 @@ def rotation_matrix_euler_zyz(
         ],
         dim=1,
     )
+
+    return R if batched else R.squeeze(0)
+
+
+def rotation_matrix_euler_xyz(
+    angles: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Create rotation matrix from XYZ Euler angles (differentiable PyTorch version).
+
+    R = Rz(gamma) @ Ry(beta) @ Rx(alpha)
+
+    Parameters
+    ----------
+    angles : torch.Tensor
+        Tensor of three rotation angles (alpha, beta, gamma) in radians,
+        applied as Rx(alpha), Ry(beta), Rz(gamma) — outer product Rz·Ry·Rx.
+        Shape (3,) or (B, 3); returns (3, 3) or (B, 3, 3) respectively.
+
+    Returns
+    -------
+    torch.Tensor
+        3x3 rotation matrix (or batched (B, 3, 3)).
+
+    Notes
+    -----
+    Rotating about distinct world axes avoids the gimbal-lock singularity at
+    the origin that ZYZ has when beta=0 (where alpha and gamma both rotate
+    about Z).
+    """
+    batched = True
+    if angles.dim() == 1:
+        angles = angles.unsqueeze(0)
+        batched = False
+
+    ca, sa = torch.cos(angles[:, 0]), torch.sin(angles[:, 0])
+    cb, sb = torch.cos(angles[:, 1]), torch.sin(angles[:, 1])
+    cg, sg = torch.cos(angles[:, 2]), torch.sin(angles[:, 2])
+
+    # R = Rz(g) @ Ry(b) @ Rx(a). Expansion of the product:
+    R = torch.stack([
+        torch.stack([cg * cb,
+                     cg * sb * sa - sg * ca,
+                     cg * sb * ca + sg * sa], dim=1),
+        torch.stack([sg * cb,
+                     sg * sb * sa + cg * ca,
+                     sg * sb * ca - cg * sa], dim=1),
+        torch.stack([-sb,
+                     cb * sa,
+                     cb * ca], dim=1),
+    ], dim=1)
 
     return R if batched else R.squeeze(0)

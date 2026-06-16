@@ -4,6 +4,7 @@ Root pytest configuration and shared fixtures for torchref tests.
 This module provides fixtures that are automatically available to all test files.
 """
 import pytest
+import torchref
 import torch
 import numpy as np
 from pathlib import Path

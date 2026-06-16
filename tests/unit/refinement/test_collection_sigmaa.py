@@ -1,9 +1,9 @@
 """Integration test for the collection (multi-dataset) σ_A path.
 
 Builds a minimal 2-dataset collection (dark + one timepoint) from 1DAW and
-checks (a) CollectionScaler.get_beta() returns one shared finite beta on
-the common HKL, caches, and resets; (b) CollectionMLSigmaATarget.forward() is
-finite and its gradient reaches the model.
+checks (a) CollectionMLTarget owns one shared finite beta on the common HKL
+(via its SigmaAEstimator), which caches and resets; (b)
+CollectionMLTarget.forward() is finite and its gradient reaches the model.
 """
 
 import pytest
@@ -42,10 +42,14 @@ class TestCollectionSigmaA:
         return dc, mc, scaler
 
     def test_shared_beta(self, collection):
+        from torchref.refinement.targets import CollectionMLTarget
+
         dc, mc, scaler = collection
         n = dc.hkl.shape[0]
 
-        beta, eps = scaler.get_beta()
+        target = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
+        target.forward()  # estimates + caches one shared beta on the common HKL
+        beta, eps = target._sigma_a._cache
         assert beta.shape[0] == n
         assert torch.isfinite(beta).all()
         assert (beta > 0).all()
@@ -53,15 +57,15 @@ class TestCollectionSigmaA:
         assert not beta.requires_grad
 
         # cached, and reset clears it
-        assert scaler._beta_cache is not None
-        scaler.reset_beta_cache()
-        assert scaler._beta_cache is None
+        assert target._sigma_a._cache is not None
+        target._sigma_a.reset()
+        assert target._sigma_a._cache is None
 
     def test_forward_and_gradient(self, collection):
-        from torchref.refinement.targets import CollectionMLSigmaATarget
+        from torchref.refinement.targets import CollectionMLTarget
 
         dc, mc, scaler = collection
-        target = CollectionMLSigmaATarget(dc, mc, scaler=scaler, verbose=0)
+        target = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
 
         loss = target.forward()
         assert torch.isfinite(loss)
@@ -71,11 +75,11 @@ class TestCollectionSigmaA:
         assert xyz.grad is not None and torch.isfinite(xyz.grad).all()
 
     def test_maintenance_resets_cache(self, collection):
-        from torchref.refinement.targets import CollectionMLSigmaATarget
+        from torchref.refinement.targets import CollectionMLTarget
 
         dc, mc, scaler = collection
-        target = CollectionMLSigmaATarget(dc, mc, scaler=scaler, verbose=0)
-        scaler.get_beta()
-        assert scaler._beta_cache is not None
+        target = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
+        target.forward()
+        assert target._sigma_a._cache is not None
         target.maintenance()
-        assert scaler._beta_cache is None
+        assert target._sigma_a._cache is None

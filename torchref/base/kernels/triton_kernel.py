@@ -340,7 +340,7 @@ class _FusedDensityFunction(torch.autograd.Function):
         ctx,
         surrounding_coords,  # (N_atoms, N_voxels, 3)
         voxel_indices,       # (N_atoms, N_voxels, 3)
-        density_map,         # (nx, ny, nz) — modified in-place
+        density_map,         # (nx, ny, nz) — cloned, not modified in-place
         xyz,                 # (N_atoms, 3)
         b,                   # (N_atoms,)
         inv_frac_matrix,     # (3, 3)
@@ -450,7 +450,8 @@ def fused_add_to_map_gpu(
     voxel_indices : torch.Tensor
         Grid indices of voxels, shape (N_atoms, N_voxels, 3).
     density_map : torch.Tensor
-        Electron density map to update in-place, shape (nx, ny, nz).
+        Base electron density map, shape (nx, ny, nz). Not modified in
+        place; a clone is taken and the atomic density is accumulated onto it.
     xyz : torch.Tensor
         Atom positions in Cartesian space, shape (N_atoms, 3).
     b : torch.Tensor
@@ -469,7 +470,8 @@ def fused_add_to_map_gpu(
     Returns
     -------
     torch.Tensor
-        Updated density map (modified in-place).
+        A new density map equal to ``density_map`` plus the accumulated
+        atomic density. The input ``density_map`` is left unchanged.
     """
     return _FusedDensityFunction.apply(
         surrounding_coords, voxel_indices, density_map,

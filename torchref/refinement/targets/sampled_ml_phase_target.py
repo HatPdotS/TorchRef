@@ -652,7 +652,10 @@ class SampledMLDifferenceTarget(Target):
         fcalc_dark : torch.Tensor, optional
             Pre-computed dark state structure factors.
         recalc : bool, optional
-            Force recalculation if True. Default is True.
+            Passed to the model when structure factors are computed
+            internally (i.e. when the corresponding ``fcalc_*`` argument is
+            None); ignored when pre-computed structure factors are supplied.
+            Default is True.
 
         Returns
         -------

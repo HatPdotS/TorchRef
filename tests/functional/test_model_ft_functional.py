@@ -282,15 +282,12 @@ class TestModelFTCoordinateOperations:
         model = ModelFT(max_res=2.0, verbose=0)
         model.load_cif(str(sample_cif_file))
         
-        xyz = model.xyz().double()  # Convert to double
+        xyz = model.xyz()
         cell = model.cell
-        
-        # Cell wraps a tensor; use cell.data to preserve device.
-        cell_double = cell.data.double()
-        
+
         # Convert to fractional
-        frac = cartesian_to_fractional_torch(xyz, cell_double)
-        
+        frac = cartesian_to_fractional_torch(xyz, cell.data)
+
         # Fractional coords should be bounded (mostly between 0 and 1)
         assert frac.shape == xyz.shape
 
@@ -305,18 +302,15 @@ class TestModelFTCoordinateOperations:
         model = ModelFT(max_res=2.0, verbose=0)
         model.load_cif(str(sample_cif_file))
         
-        xyz = model.xyz().double()  # Convert to double
+        xyz = model.xyz()
         cell = model.cell
-        
-        # Cell wraps a tensor; use cell.data to preserve device.
-        cell_double = cell.data.double()
-        
+
         # Round trip conversion
-        frac = cartesian_to_fractional_torch(xyz, cell_double)
-        xyz_back = fractional_to_cartesian_torch(frac, cell_double)
-        
-        # Should get back original coordinates
-        assert torch.allclose(xyz, xyz_back, atol=1e-4)
+        frac = cartesian_to_fractional_torch(xyz, cell.data)
+        xyz_back = fractional_to_cartesian_torch(frac, cell.data)
+
+        # Should get back original coordinates (float32 roundtrip)
+        assert torch.allclose(xyz, xyz_back, atol=1e-3)
 
 
 @pytest.mark.integration

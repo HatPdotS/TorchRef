@@ -3,64 +3,24 @@ Density-derived bulk-solvent model.
 
 A standalone, fully differentiable alternative to the vdW-sphere
 :class:`~torchref.scaling.solvent.SolventModel`. Instead of building a binary
-mask from atomic spheres (under ``torch.no_grad()`` and then detaching the
-result), this module derives the solvent occupancy directly from the model's
-real-space electron density ``rho(x)`` and returns a solvent structure factor on
-the same absolute (electron) scale as the protein structure factors.
+mask from atomic spheres, this module derives the solvent occupancy directly from
+the model's real-space electron density ``rho(x)`` and returns a solvent structure
+factor on the same absolute (electron) scale as the protein structure factors.
 
-Physical premise
-----------------
-Crystallographic B-factors mostly model *inter-copy disorder*, not thermal
-vibration, so the model density ``rho(x)`` is an ensemble-averaged density. The
-bulk solvent fills the complement of where the (disordered) protein is, and its
-boundary softness is *inherited* from ``rho`` itself -- fuzzy where the protein is
-disordered (high B), sharp where it is ordered. A single global B_sol cannot
-represent that; deriving the mask from ``rho`` does it for free, with spatially
-varying edge softness and no separate sharpness knob.
+With the natural exponential occupancy the solvent contribution is::
 
-Formulation
------------
-With the natural exponential occupancy the solvent mask is a one-liner::
+    M(x)       = exp(-rho(x) / rho0)          # solvent occupancy in (0, 1]
+    rho_sol(x) = rho_s * M(x)                 # solvent density field, e/A^3
+    F_sol(h)   = rho_s * ifft(M, V_cell)|_hkl # same FFT path as F_protein
 
-    M(x)      = exp(-rho(x) / rho0)          # solvent occupancy in (0, 1]
-    rho_sol(x)= rho_s * M(x)                 # solvent density field, e/A^3
-    F_sol(h)  = rho_s * ifft(M, V_cell)|_hkl # same FFT path as F_protein
+The ``rho0`` saturation level interpolates the Babinet/exponential limit
+(``rho0 -> inf``) and the flat-mask limit (``rho0 -> 0``). An optional residual
+``B_sol`` (default off) applies ``exp(-B_sol * s^2)`` damping to F_sol.
 
-Two owned, physical parameters:
-
-``rho_s``
-    Bulk solvent electron density / protein-solvent contrast (init ~0.34 e/A^3).
-    Scales solvent *relative* to protein, so it is identifiable and distinct from
-    the scaler's overall scale K (which stays shared between protein and solvent).
-
-``rho0``
-    Protein-density saturation level. A single master knob that continuously
-    interpolates the two classic bulk-solvent models:
-
-    * ``rho0 -> inf`` (``M ~ 1 - rho/rho0``):
-      ``F_sol = -(rho_s/rho0) * F_protein`` -- the Babinet / exponential model.
-    * ``rho0 -> 0`` (``M -> indicator of rho ~ 0``):
-      ``F_sol = -rho_s * FFT(envelope)`` -- the flat-mask model.
-
-An optional scalar residual ``B_sol`` (default off) damps F_sol with
-``exp(-B_sol * s^2)`` to absorb first-hydration-shell smearing the protein
-B-factors do not capture; it is now identifiable because the edge is otherwise
-pinned by ``rho``.
-
-Cost
-----
-The occupancy is nonlinear, so the full-cell density must be assembled in real
-space before the mask (reciprocal-space symmetry expansion does not commute with
-``exp``). But bulk solvent is a *low-resolution* object, so it does not need the
-atomic ``d_min/3`` grid: the module owns its own **coarse** ``SfFFT`` grid sized
-to ``solvent_res`` (~4 A) and builds the symmetry-expanded density there. Both the
-symmetry expansion and the FFT then cost ~(spacing ratio)^3 less than on the
-atomic grid. For hkl beyond the coarse Nyquist the solvent contribution is ~0 and
-is returned as exactly 0 (avoids modulo-aliasing in the SF extraction).
-
-This module is purely additive: it does not touch ``SolventModel``, ``Scaler`` or
-the refinement loop. It is intended to be A/B'd against the current solvent first
-(see ``paper/figure2_alphafold_start/analysis/solvent_density_probe.py``).
+The occupancy is nonlinear, so the full-cell density is assembled in real space
+before the mask. Bulk solvent is low-resolution, so the module owns a coarse
+``SfFFT`` grid sized to ``solvent_res`` (~4 A); for hkl beyond the coarse Nyquist
+the solvent contribution is returned as exactly 0.
 """
 
 import torch
@@ -101,23 +61,41 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         Atomic model providing the atoms, cell and spacegroup. Optional for
         empty init.
     rho_s : float, default 0.34
-        Initial bulk solvent electron density (e/A^3).
+        Initial bulk solvent electron density (e/A^3). Note: the
+        :class:`~torchref.experimental.monolithic_refinement.density_scaler.DensityDerivedSolvent`
+        wrapper freezes ``rho_s`` at 1.0 and uses ``rho0=0.016`` instead.
     rho0 : float, default 2.0
         Initial protein-density saturation level (e/A^3). Interpolates Babinet
         (large) <-> flat-mask (small).
-    occupancy : {"exp", "sigmoid"}, default "exp"
+    occupancy : {"exp", "sigmoid", "shell"}, default "exp"
         Occupancy function mapping density -> solvent fraction. ``"exp"`` uses
-        ``M = exp(-rho/rho0)`` (single knob, clean Babinet/mask limits).
-        ``"sigmoid"`` uses ``M = sigmoid((rho0 - rho)/w)`` (contour at ``rho0``,
-        fixed edge width ``sigmoid_width``).
+        ``M = exp(-rho/rho0)``. ``"sigmoid"`` uses ``M = sigmoid((rho0 - rho)/w)``
+        with fixed edge width ``sigmoid_width``. ``"shell"`` smooths the density
+        (Gaussian width ``shell_sigma``), standardizes it, and thresholds with a
+        sigmoid at z-cutoff ``shell_tau``: ``M = 1 - sigmoid((z - tau)/w)``.
     sigmoid_width : float, default 0.5
         Edge width ``w`` (e/A^3) for the ``"sigmoid"`` occupancy; ignored for
-        ``"exp"``. Not refined (the edge is meant to come from ``rho``).
+        ``"exp"``/``"shell"``. Not refined.
+    shell_sigma : float, default 1.5
+        Initial smoothing width (A) for the ``"shell"`` occupancy; refinable
+        (clamped to [0, 5] A). Ignored for the other modes.
+    shell_tau : float, optional
+        z-cutoff for the ``"shell"`` threshold (refinable). If None (default), it
+        is lazily initialised from the ``shell_quantile`` quantile of the
+        standardized smoothed density on the first build.
+    shell_quantile : float, default 0.5
+        Quantile used to initialise ``shell_tau`` (~ the starting solvent voxel
+        fraction). Ignored if ``shell_tau`` is given.
+    shell_edge : float, default 0.5
+        Sigmoid edge width ``w`` (in standardized-density / z units) for the
+        ``"shell"`` threshold. Not refined.
     residual_bsol : bool, default False
         If True, add a refinable scalar ``b_solvent`` (init 0) applying an
         ``exp(-B_sol * s^2)`` residual damping to F_sol.
-    solvent_res : float, default 4.0
+    solvent_res : float, optional
         Resolution (A) sizing the coarse solvent grid. Lower = finer/slower.
+        Defaults to 4.0 for ``"exp"``/``"sigmoid"`` and 2.0 for ``"shell"`` (the
+        finer grid resolves the depletion shell). Pass an explicit value to override.
     verbose : int, default 1
         Verbosity level.
     float_type : torch.dtype, default: configured float dtype
@@ -133,23 +111,33 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         rho0=2.0,
         occupancy="exp",
         sigmoid_width=0.5,
+        shell_sigma=1.5,
+        shell_tau=None,
+        shell_quantile=0.5,
+        shell_edge=0.5,
         residual_bsol=False,
-        solvent_res=4.0,
+        solvent_res=None,
         verbose=1,
         float_type=get_float_dtype(),
         device=get_default_device(),
     ):
         super(DensitySolventModel, self).__init__()
-        if occupancy not in ("exp", "sigmoid"):
+        if occupancy not in ("exp", "sigmoid", "shell"):
             raise ValueError(
-                f"occupancy must be 'exp' or 'sigmoid', got {occupancy!r}"
+                f"occupancy must be 'exp', 'sigmoid' or 'shell', got {occupancy!r}"
             )
         self.device = device
         self.verbose = verbose
         self.float_type = float_type
         self.occupancy = occupancy
         self.sigmoid_width = float(sigmoid_width)
+        self.shell_quantile = float(shell_quantile)
+        self.shell_edge = float(shell_edge)
         self.residual_bsol = residual_bsol
+        # "shell" needs a finer grid than "exp"/"sigmoid" to resolve the ~1-2 A
+        # depletion shell; fall back to the coarse default for the other modes.
+        if solvent_res is None:
+            solvent_res = 2.0 if occupancy == "shell" else 4.0
         self.solvent_res = float(solvent_res)
         self._cache = TensorDict()
 
@@ -168,6 +156,28 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         else:
             self.register_buffer(
                 "b_solvent", torch.tensor(0.0, dtype=float_type, device=device)
+            )
+
+        # "shell" mode is a morphological operator: smooth the density (width
+        # sigma, Angstroms; stored linearly so sigma=0 = no smoothing) then
+        # threshold the standardized smoothed density with a sigmoid at z-cutoff
+        # tau (the single erosion/dilation knob). tau is lazily initialised from
+        # a quantile of the standardized smoothed density on the first build,
+        # unless an explicit shell_tau is given.
+        if occupancy == "shell":
+            self.sigma_shell = nn.Parameter(
+                torch.tensor(float(shell_sigma), dtype=float_type, device=device)
+            )
+            self.tau_shell = nn.Parameter(
+                torch.tensor(
+                    0.0 if shell_tau is None else float(shell_tau),
+                    dtype=float_type,
+                    device=device,
+                )
+            )
+            self.register_buffer(
+                "_tau_initialized",
+                torch.tensor(shell_tau is not None, device=device),
             )
 
         # Empty init: shell ready for load_state_dict().
@@ -232,13 +242,76 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
 
         ``"exp"``: ``M = exp(-rho / rho0)`` -- 1 in bulk (rho=0), ->0 in cores.
         ``"sigmoid"``: ``M = sigmoid((rho0 - rho) / w)``.
+        ``"shell"``: smooth the density in reciprocal space (Gaussian width
+            ``sigma_shell`` A), standardize it, and threshold with a sigmoid at
+            z-cutoff ``tau_shell``: ``M = 1 - sigmoid((z - tau) / w)`` with
+            ``z = (rho - mu) / sd`` of the smoothed density. ``tau_shell`` moves the
+            boundary, ``sigma_shell`` sets the reach, and ``w`` (``shell_edge``) the
+            edge sharpness.
         """
         rho0 = torch.exp(self.log_rho0.clamp(min=-20.0, max=20.0))
         if self.occupancy == "exp":
             # rho >= 0 from real-space Gaussian accumulation; clamp guards ripples.
             return torch.exp(-(rho.clamp(min=0.0)) / rho0)
+        if self.occupancy == "shell":
+            rho_smooth = self._smooth(rho.clamp(min=0.0))
+            # Standardize (mu/sd detached: scale carried by rho_s / the scaler;
+            # gradients to coords flow through the numerator). z-cutoff makes tau
+            # and the edge width portable across structures (SFcalculator-style).
+            mu = rho_smooth.mean().detach()
+            sd = rho_smooth.std().detach().clamp(min=1e-6)
+            z = (rho_smooth - mu) / sd
+            tau = self._get_tau(z)
+            w = max(self.shell_edge, 1e-3)
+            return (1.0 - torch.sigmoid((z - tau) / w)).clamp(min=0.0, max=1.0)
         w = self.sigmoid_width
         return torch.sigmoid((rho0 - rho) / w)
+
+    def _smooth(self, field):
+        """
+        Smooth a real-space ``field`` with a normalized Gaussian of width
+        ``sigma_shell`` (Angstroms), via reciprocal-space convolution.
+
+        ``out = real(ifftn(fftn(field) * Khat))`` with
+        ``Khat(f) = exp(-2*pi^2 * sigma^2 * |f|^2)`` on the full fft grid using
+        physical frequencies ``fftfreq(N, d=voxel_spacing)`` per axis. ``Khat(0)
+        = 1`` so the smoothing preserves the DC component (a free "B" multiply).
+        At ``sigma=0`` the kernel is the identity (no smoothing). Differentiable
+        w.r.t. ``sigma_shell`` and -- through ``field`` -- w.r.t. atomic xyz/B.
+        """
+        grid = self.solvent_fft.real_space_grid  # (nx, ny, nz, 3) Cartesian
+        dx = float((grid[1, 0, 0] - grid[0, 0, 0]).norm())
+        dy = float((grid[0, 1, 0] - grid[0, 0, 0]).norm())
+        dz = float((grid[0, 0, 1] - grid[0, 0, 0]).norm())
+        sigma = self.sigma_shell.clamp(min=0.0, max=5.0)
+        nx, ny, nz = field.shape
+        two_pi2 = 2.0 * torch.pi**2
+        fx = torch.fft.fftfreq(nx, d=dx, device=field.device, dtype=field.dtype)
+        fy = torch.fft.fftfreq(ny, d=dy, device=field.device, dtype=field.dtype)
+        fz = torch.fft.fftfreq(nz, d=dz, device=field.device, dtype=field.dtype)
+        gx = torch.exp(-two_pi2 * sigma**2 * fx**2)
+        gy = torch.exp(-two_pi2 * sigma**2 * fy**2)
+        gz = torch.exp(-two_pi2 * sigma**2 * fz**2)
+        G = gx[:, None, None] * gy[None, :, None] * gz[None, None, :]
+        F = torch.fft.fftn(field)
+        return torch.real(torch.fft.ifftn(F * G.to(F.dtype)))
+
+    def _get_tau(self, z):
+        """
+        Return the z-cutoff ``tau_shell``, lazily initialising it on first use
+        from the ``shell_quantile`` quantile of the standardized smoothed density
+        ``z`` (so a fraction ~``shell_quantile`` of voxels start as solvent).
+        The init is a no-grad data write guarded by a persistent buffer, so a
+        value loaded via ``load_state_dict`` is never overwritten.
+        """
+        if not bool(self._tau_initialized):
+            with torch.no_grad():
+                flat = z.flatten()
+                stride = max(1, flat.numel() // 1_000_000)
+                q = torch.quantile(flat[::stride], self.shell_quantile)
+                self.tau_shell.copy_(q)
+                self._tau_initialized.fill_(True)
+        return self.tau_shell.clamp(min=-10.0, max=10.0)
 
     def _nyquist_mask(self, hkl):
         """True where |h|,|k|,|l| are within the coarse grid Nyquist limit."""
@@ -317,6 +390,9 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
     def parameters(self, recurse=True):
         """Owned refinable leaves, so a host optimizer can co-refine them."""
         leaves = [self.log_rho_s, self.log_rho0]
+        if self.occupancy == "shell":
+            leaves.append(self.sigma_shell)
+            leaves.append(self.tau_shell)
         if self.residual_bsol:
             leaves.append(self.b_solvent)
         return iter(leaves)

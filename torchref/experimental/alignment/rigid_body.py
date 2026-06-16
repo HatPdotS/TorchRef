@@ -91,6 +91,9 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         Model with atomic coordinates (tensors extracted, not stored).
     data : ReflectionData
         Observed reflection data.
+    expected_rotational_error : float, optional
+        Half-width (in radians) of the rotation perturbation; the refinable
+        angles are bounded to +/- this value. Default is 0.1.
     initial_rotation : torch.Tensor, optional
         Initial Euler angles (alpha, beta, gamma) in radians.
         Default is (0, 0, 0).
@@ -98,12 +101,21 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         Initial fractional translation vector (3,).
         Default is [0, 0, 0].
     device : torch.device, optional
-        Computation device. Default is CPU.
+        Computation device. Default is the configured default device.
+    rfactor_converged_threshold : float, optional
+        R-work value below which refinement is treated as converged.
+        Default is 0.45.
+    max_res : float, optional
+        High-resolution limit (Angstrom) for the FFT structure factors.
+        Default is 4.0.
+    verbose : int, optional
+        Verbosity level for progress printing. Default is 1.
 
     Attributes
     ----------
-    d_alpha, d_beta, d_gamma : nn.Parameter
-        Refinable rotation perturbations.
+    rotation_parameters : nn.Parameter
+        Unconstrained rotation perturbation parameters (3,); mapped to bounded
+        Euler-angle perturbations via the ``rotation`` property.
     translation_frac : nn.Parameter
         Refinable fractional translation.
     scaler : ScalerBase
@@ -242,8 +254,9 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         xyz_centered = self.xyz_initial - self.centroid
         xyz_rotated = xyz_centered @ R.T + self.centroid
 
-        # Apply translation (fractional -> Cartesian)
-        t_cart = self.translation_frac @ self.cell.fractional_matrix
+        # Apply translation (fractional -> Cartesian). Use the Cell helper
+        # (cart = frac @ B.T) so non-orthogonal cells are handled correctly.
+        t_cart = self.cell.fractional_to_cartesian(self.translation_frac)
         return xyz_rotated + t_cart
 
     def get_scale(self) -> float:
@@ -254,14 +267,13 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         """
         Compute unscaled structure factors using FFT directly.
 
-        Gradient flows: d_alpha/d_beta/d_gamma → R → xyz → density → SF
+        Gradient flows: rotation_parameters → R → xyz → density → SF.
+        Miller indices are read internally from ``self.data.hkl``.
 
         Parameters
         ----------
-        hkl : torch.Tensor
-            Miller indices with shape (n_reflections, 3).
-        debug : bool
-            If True, print gradient tracking info.
+        debug : bool, optional
+            If True, print gradient tracking info. Default is False.
 
         Returns
         -------
@@ -285,7 +297,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             R = self.get_rotation_matrix()
             xyz_aniso_centered = self.xyz_aniso_original - self.centroid
             xyz_aniso_rotated = xyz_aniso_centered @ R.T + self.centroid
-            t_cart = self.translation_frac @ self.cell.fractional_matrix
+            t_cart = self.cell.fractional_to_cartesian(self.translation_frac)
             xyz_aniso = xyz_aniso_rotated + t_cart
 
         # Compute structure factors via FFT (bypasses MixedTensor!)
@@ -316,26 +328,22 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         n_iter: int = 100,
     ) -> RigidBodyResult:
         """
-        Run rigid body refinement using least-squares loss with Adam optimizer.
+        Run rigid body refinement with an LBFGS optimizer and ML target.
 
-        Uses analytical scale fitting at each step rather than jointly optimizing
-        the scale parameter with rotation/translation.
+        Uses a strong-Wolfe line-search LBFGS optimizer and a Rice maximum-
+        likelihood X-ray target, jointly optimizing the rotation, translation,
+        and scaler parameters. If R-work has not dropped below
+        ``rfactor_converged_threshold``, the optimizer is restarted with added
+        gradient noise, up to ``n_tries`` times.
 
         Parameters
         ----------
-        n_steps : int, optional
-            Maximum number of optimization steps. Default is 100.
-        lr : float, optional
-            Learning rate for Adam optimizer. Default is 0.01.
-        convergence_threshold : float, optional
-            Stop if loss change is below this threshold. Default is 1e-6.
-        print_interval : int, optional
-            Print progress every N steps. Default is 5.
-        verbose : bool, optional
-            Print progress information. Default is True.
-        loss_type : str, optional
-            Loss function to use: "ls" for least-squares, "ml" for ML.
-            Default is "ls".
+        n_tries : int, optional
+            Maximum number of optimizer restarts (with gradient noise on
+            non-convergence). Default is 1.
+        n_iter : int, optional
+            Reported iteration budget; the underlying LBFGS uses max_iter=100
+            per restart. Default is 100.
 
         Returns
         -------
@@ -378,7 +386,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
                 )
             return current_loss
 
-        rwork_initial, rfree_initial = self.scaler.rfactor(self())
+        rwork_initial, rfree_initial = self.xray_target.get_rfactor(self())
 
         initial_loss = closure().item()
         if self.verbose > 0:
@@ -401,7 +409,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
                 if self.verbose > 1:
                     print(f"Iter {tries_needed}   Current ML loss: {current_loss:.4f}")
             final_loss = closure().item()
-            final_rwork, final_rfree = self.scaler.rfactor(self())
+            final_rwork, final_rfree = self.xray_target.get_rfactor(self())
             converged = final_rwork < self.rfactor_converged_threshold
 
             if converged or tries_needed >= n_tries:
