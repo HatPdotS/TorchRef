@@ -324,15 +324,18 @@ class LBFGSRefinement(Refinement):
     def _scaler_body_params(self):
         """Scaler parameters to co-refine inside the body (xyz/adp) steps.
 
-        Returns the scaler parameter list when ``corefine_scaler`` is True
-        (default, historical behaviour), else an empty list so the scaler
-        is held fixed during xyz/adp and only updated by the separate
-        :meth:`refine_scaler` step at each macro-cycle end. Co-refining the
-        few high-leverage scaler params (scale, anisotropic U, bulk solvent)
-        in the same LBFGS as thousands of xyz params is ill-conditioned and
-        can drive the ML-NLL down while R goes up.
+        Returns the scaler parameter list when ``corefine_scaler`` is True,
+        else an empty list so the scaler is held fixed during xyz/adp and
+        only updated by the separate :meth:`refine_scaler` step at each
+        macro-cycle end. ``corefine_scaler`` defaults to False (see the
+        constructor): co-refining the few high-leverage scaler params
+        (scale, anisotropic U, bulk solvent) in the same LBFGS as thousands
+        of xyz params is ill-conditioned and can drive the ML-NLL down while
+        R goes up. The getattr fallback matches that default so an instance
+        built without ``__init__`` (e.g. create_from_state_dict) behaves the
+        same as a normally-constructed one.
         """
-        if getattr(self, "corefine_scaler", True):
+        if getattr(self, "corefine_scaler", False):
             return list(self.scaler.parameters())
         return []
 
