@@ -2394,7 +2394,11 @@ class OccupancyTensor(MixedTensor):
 
         n_atoms = len(initial_values)
         sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)
-        collapsed_idx = 0
+        # Singletons keep their arange ids (0..n_atoms-1); start multi-atom
+        # group ids past that range so a group id can never collide with a
+        # singleton's leftover arange id (the torch.unique compaction below
+        # would otherwise silently merge them into one sharing group).
+        collapsed_idx = n_atoms
 
         for (resname, resseq, chainid, altloc), group in grouped:
             indices = group["index"].tolist()
