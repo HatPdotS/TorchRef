@@ -242,8 +242,9 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         xyz_centered = self.xyz_initial - self.centroid
         xyz_rotated = xyz_centered @ R.T + self.centroid
 
-        # Apply translation (fractional -> Cartesian)
-        t_cart = self.translation_frac @ self.cell.fractional_matrix
+        # Apply translation (fractional -> Cartesian). Use the Cell helper
+        # (cart = frac @ B.T) so non-orthogonal cells are handled correctly.
+        t_cart = self.cell.fractional_to_cartesian(self.translation_frac)
         return xyz_rotated + t_cart
 
     def get_scale(self) -> float:
@@ -285,7 +286,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             R = self.get_rotation_matrix()
             xyz_aniso_centered = self.xyz_aniso_original - self.centroid
             xyz_aniso_rotated = xyz_aniso_centered @ R.T + self.centroid
-            t_cart = self.translation_frac @ self.cell.fractional_matrix
+            t_cart = self.cell.fractional_to_cartesian(self.translation_frac)
             xyz_aniso = xyz_aniso_rotated + t_cart
 
         # Compute structure factors via FFT (bypasses MixedTensor!)

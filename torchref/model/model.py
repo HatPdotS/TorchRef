@@ -3121,9 +3121,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         translation = translation.to(device=xyz.device, dtype=xyz.dtype)
 
         if fractional:
-            # Convert fractional to Cartesian using the fractional matrix
-            # fractional_matrix transforms fractional -> Cartesian
-            translation_cart = translation @ self.fractional_matrix
+            # Convert fractional -> Cartesian. The orthogonalization matrix B
+            # (fractional_matrix) follows the convention cart = frac @ B.T
+            # (see Cell.fractional_to_cartesian); the transpose matters for
+            # non-orthogonal (monoclinic/triclinic) cells.
+            translation_cart = translation @ self.fractional_matrix.T
         else:
             translation_cart = translation
 
