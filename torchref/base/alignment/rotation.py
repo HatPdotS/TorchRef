@@ -19,10 +19,11 @@ def rotate_coords_torch(coords, phi, rho):
     ----------
     coords : torch.Tensor
         Coordinates of shape (N, 3) to rotate.
-    phi : float
-        Rotation angle phi in degrees.
-    rho : float
-        Rotation angle rho in degrees.
+    phi : torch.Tensor
+        Rotation angle phi in degrees (scalar tensor; ``torch.cos``/``sin``
+        are applied to it, so a Python float is not accepted).
+    rho : torch.Tensor
+        Rotation angle rho in degrees (scalar tensor).
 
     Returns
     -------
@@ -333,12 +334,6 @@ def rotation_matrix_euler_xyz(
 
     R = Rz(gamma) @ Ry(beta) @ Rx(alpha)
 
-    Three rotations about distinct world axes — no gimbal-lock singularity
-    at the origin (unlike ZYZ where alpha and gamma both rotate about Z when
-    beta=0). This is Phenix's default ``euler_angle_convention`` for
-    rigid-body refinement; using it avoids a rank-deficient Jacobian at the
-    macro-cycle reset point.
-
     Parameters
     ----------
     angles : torch.Tensor
@@ -350,6 +345,12 @@ def rotation_matrix_euler_xyz(
     -------
     torch.Tensor
         3x3 rotation matrix (or batched (B, 3, 3)).
+
+    Notes
+    -----
+    Rotating about distinct world axes avoids the gimbal-lock singularity at
+    the origin that ZYZ has when beta=0 (where alpha and gamma both rotate
+    about Z).
     """
     batched = True
     if angles.dim() == 1:

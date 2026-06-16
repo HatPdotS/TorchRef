@@ -51,9 +51,9 @@ def planarity_math(
     with ``n_atoms > 3`` (3-atom planes have zero deviation by
     construction and are skipped by the caller).
 
-    The plane normal is computed in float64 via SVD and detached — gradients
-    flow through the deviation projection but not through the
-    eigendecomposition.
+    The plane normal is computed via SVD (in the input dtype) and detached —
+    gradients flow through the deviation projection but not through the
+    SVD.
 
     Dispatches to
     :func:`torchref.base.targets.triton.planarity.planarity_math_triton`

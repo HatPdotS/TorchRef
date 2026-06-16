@@ -154,11 +154,15 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
     params : iterable
         Parameters to optimize.
     lr : float
-        LBFGS learning rate. Default: 1.0.
+        Learning rate used to construct the internal LBFGS. Default: 1.0.
+        Note: this only seeds the internal LBFGS at construction; it is not
+        re-read as a live per-group hyperparameter after that.
     max_iter : int
-        LBFGS max line search iterations per step. Default: 20.
+        Max line search iterations per step, used to construct the internal
+        LBFGS at initialization. Default: 20.
     history_size : int
-        LBFGS Hessian approximation memory. Default: 100.
+        Hessian approximation memory, used to construct the internal LBFGS
+        at initialization. Default: 100.
     m_modes : int
         Number of lowest eigenmodes to compute. Default: 10.
     m_lanczos_iter : int, optional

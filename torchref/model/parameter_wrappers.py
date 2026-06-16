@@ -16,13 +16,11 @@ class _AssembleMixedTensor(torch.autograd.Function):
     """Scatter refinable values into a clone of fixed_values, with a
     cheap (index_select) backward.
 
-    PyTorch's default backward for ``result[idx] = refinable`` lowers to
-    ``aten::_index_put_impl_``, whose backward goes through a radix-sort
-    of the indices followed by an atomic scatter. Profiling on A100/1DAW
-    showed this dominating the model SF backward (~370 µs/iter across
-    six MixedTensors). The gradient w.r.t. ``refinable_params`` is just
-    ``grad_output[indices]`` — a single ``index_select`` — so we wrap the
-    assembly in a custom autograd op that returns exactly that.
+    The gradient w.r.t. ``refinable_params`` is just ``grad_output[indices]``
+    — a single ``index_select`` (gather) — so the assembly is wrapped in a
+    custom autograd op that returns exactly that, instead of PyTorch's default
+    ``index_put_`` backward (a radix-sort of the indices plus an atomic
+    scatter).
     """
 
     @staticmethod
@@ -853,7 +851,9 @@ class PositiveMixedTensor(MixedTensor):
     name : str, optional
         Optional name for this parameter.
     epsilon : float, optional
-        Small value to add before taking log to avoid log(0). Default is 1e-1.
+        Clamp floor applied to values before taking the log; any input below
+        epsilon is raised to epsilon, which both avoids log(0) and bounds the
+        smallest representable value from below. Default is 1e-1.
 
     Examples
     --------
@@ -901,7 +901,9 @@ class PositiveMixedTensor(MixedTensor):
         name : str, optional
             Optional name for this parameter.
         epsilon : float, optional
-            Small value to add before taking log to avoid log(0). Default is 1e-1.
+            Clamp floor applied to values before taking the log; any input
+            below epsilon is raised to epsilon, which both avoids log(0) and
+            bounds the smallest representable value from below. Default is 1e-1.
 
         Raises
         ------
@@ -1464,11 +1466,14 @@ class OccupancyTensor(MixedTensor):
     Attributes
     ----------
     expansion_mask : torch.Tensor
-        Maps atoms to collapsed indices.
-    linked_occ_sizes : list
-        List of altloc group sizes present.
+        Registered buffer mapping atoms to collapsed indices.
     collapse_counts : torch.Tensor
-        Count of atoms per collapsed index.
+        Registered buffer holding the count of atoms per collapsed index.
+    linked_occ_sizes : list
+        Sorted list of altloc group sizes present (plain list, not a buffer).
+        Only set when altloc_groups are supplied; absent after empty
+        initialization, so consumers guard with
+        ``hasattr(self, "linked_occ_sizes")``.
 
     Examples
     --------

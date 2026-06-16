@@ -517,11 +517,17 @@ class MixedModel(DeviceMovementMixin, nn.Module):
     
     def xyz(self) -> torch.Tensor:
         """
-        Get atomic coordinates from the first model.
+        Get atomic coordinates from the first constituent model only.
+
+        This is a single-model compatibility accessor: it returns the
+        coordinates of ``self.models[0]`` and ignores every other state's
+        atoms. It does not concatenate or combine coordinates across the
+        mixed states, so callers that need all atoms in the mixture must
+        iterate over ``self.models`` instead.
 
         Returns
         -------
         torch.Tensor
-            Atomic coordinates tensor.
+            Atomic coordinates of the first model, shape (n_atoms_0, 3).
         """
         return self.models[0].xyz()

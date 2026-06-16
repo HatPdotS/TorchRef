@@ -528,8 +528,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ----------
         cif_path : str or list of str
             Path(s) to CIF restraints dictionary file(s).
-        return self
-            For method chaining
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
         """
         self._cif_path = cif_path
         # Reset restraints so they will be rebuilt on next access
@@ -1144,17 +1147,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Notes
         -----
-        When every atom is isotropic and no H exclusion is active —
-        ``self._iso_covers_all is True``, the common protein-refinement
-        case — the per-atom indexing is skipped and ``self.xyz()``,
-        ``self.adp()``, ``self.occupancy()`` are returned directly.
-
-        Motivation: ``self.xyz()[idx]`` is a no-op forward when
-        ``idx = arange(N)``, but its backward routes through PyTorch's
-        ``aten::_index_put_impl_(accumulate=True)``, which performs a
-        ``cub::DeviceRadixSortOnesweepKernel`` over ``len(idx)`` indices
-        followed by a deduplicated scatter (~50-150 µs/iter per gather
-        on A100 / 1DAW). Skipping the gather avoids that cost.
+        When every atom is isotropic and no H exclusion is active
+        (``self._iso_covers_all is True``, the common protein-refinement
+        case), the per-atom indexing is skipped and ``self.xyz()``,
+        ``self.adp()``, ``self.occupancy()`` are returned directly to
+        avoid the cost of a redundant gather and its backward scatter.
         """
         if self._iso_covers_all:
             return self.xyz(), self.adp(), self.occupancy()

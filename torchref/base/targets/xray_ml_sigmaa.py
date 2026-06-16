@@ -1,25 +1,16 @@
 """Maximum-likelihood (Read MLF) X-ray math with a per-shell model-error
 variance ``beta``.
 
-PyTorch port of Phenix/cctbx's maximum-likelihood sigma_A treatment, with the
-Luzzati ``alpha`` (mean-coupling) term removed: we showed empirically that the
-``alpha * |F_calc|`` mean-shift is gauge-absorbed by the co-refined scaler (the
-per-bin scale ``k`` re-sets to ``k_B = alpha * k_A``, cancelling ``alpha`` from
-the model gradient), so it does nothing. The genuine, overfit-controlling
-ingredient is ``beta`` -- the heteroscedastic conditional variance
-``epsilon * beta`` that down-weights poorly-phased / high-resolution shells.
+PyTorch port of the Phenix/cctbx maximum-likelihood sigma_A treatment with the
+Luzzati ``alpha`` (mean-coupling) term fixed at 1: the per-reflection model mean
+is ``|F_calc|`` and the conditional variance is ``epsilon * beta`` (the
+experimental sigma is not added). ``beta`` is the absolute model-error variance
+in F^2 units and is the overfit-controlling ingredient.
 
-* the **loss** (``cctbx/xray/targets/mlf.h`` with ``alpha=1``): per reflection
-  the model mean is ``|F_calc|`` and the conditional variance is
-  ``epsilon * beta`` (the experimental sigma is *not* added); ``beta`` is the
-  absolute model-error variance in F^2 units.
-
-* the **estimator** (``mmtbx/max_lik/max_lik.h`` ``alpha_beta_est`` +
-  Lunin-Skovoroda ``solvm``): per resolution shell on the FREE set, estimate
-  ``beta`` by maximum likelihood (weighted moments + a root-find for the ML
-  parameter ``topt``), 3-point smooth, interpolate to every reflection. The
-  root-find is retained (``beta`` is derived from ``topt``); only the ``alpha``
-  readout is dropped.
+The estimator (:func:`estimate_beta`) fits ``beta`` by maximum likelihood per
+resolution shell on the FREE set (weighted moments plus a root-find for the ML
+parameter ``topt``), 3-point smooths ``topt``, and interpolates ``beta`` to
+every reflection.
 
 Acentric (with ``eb = epsilon * beta``)::
 
@@ -159,31 +150,41 @@ def estimate_beta(
     min_bins: int = 5,
     min_per_bin: int = 40,
 ):
-    """Maximum-likelihood per-reflection model-error variance ``beta`` (Phenix port).
+    """Maximum-likelihood per-reflection model-error variance ``beta``.
 
-    Estimates on the FREE set in equal-count resolution shells (~``per_bin``
-    reflections each), then interpolates linearly in ``d_star_sq`` to all
-    reflections. All inputs are 1-D length-N tensors; ``F_calc`` is the scaled
-    amplitude. Returns ``(beta_per_refl, beta_per_bin, bin_dss)``. Intended to
-    run under ``torch.no_grad()``.
+    Estimates ``beta`` on the FREE set in equal-count resolution shells via the
+    Lunin-Skovoroda ML root-find for ``topt`` (``beta_bin = 2*hbeta``), 3-point
+    smooths ``topt``, then interpolates linearly in ``d_star_sq`` to all
+    reflections. Intended to run under ``torch.no_grad()``.
 
-    The Lunin-Skovoroda ML root-find (for ``topt``) is retained -- ``beta`` is
-    derived from it (``beta_bin = 2*hbeta``, independent of the Luzzati ``alpha``
-    readout, which is dropped). Robustness over the raw Phenix recipe (per-bin
-    moments are noisy at ~140 reflections, which destabilises sparse free sets
-    like 6A0C):
+    Parameters
+    ----------
+    F_obs, F_calc, centric, epsilon, d_star_sq, free_mask : torch.Tensor
+        1-D length-N tensors. ``F_calc`` is the scaled amplitude.
+    per_bin : int, optional
+        Target reflections per resolution shell. Default 140.
+    n_iter : int, optional
+        Iterations for the bracket and regula-falsi root-find. Default 60.
+    sigma_a_max : float, optional
+        Floors ``beta`` at ``(1 - sigma_a_max**2) * B`` so it cannot collapse to
+        ~0 in saturated bins (a near-zero variance gives a near-infinite
+        per-reflection weight). Default 0.99.
+    min_bins, min_per_bin : int, optional
+        Floor the bin count (down to ``min_per_bin`` reflections/bin) so sparse
+        free sets still get enough shells for ``beta`` to vary smoothly.
+        Defaults 5 and 40.
 
-    * ``min_bins``/``min_per_bin`` -- floor the bin count so sparse free sets
-      (e.g. 6A0C: ~200 free -> only 2 bins at ~140/bin) get enough shells for
-      ``beta`` to vary smoothly. The per-bin moments are NOT smoothed: they
-      must stay mutually consistent (``C**2 <= A*B`` etc.) for the ML root-find,
-      and smoothing them independently collapses ``topt``. (Phenix smooths the
-      fitted ``topt`` afterwards, which we also do, never the moments.)
-    * ``sigma_a_max`` -- floor ``beta`` at ``(1 - sigma_a_max**2) * B`` instead
-      of letting it collapse to ~0 in (near-)saturated bins. A near-zero
-      conditional variance gives a near-infinite per-reflection weight and is
-      the source of the transient ``R_work`` blow-ups; physically the model is
-      never a perfect predictor, so the variance floor keeps it bounded.
+    Returns
+    -------
+    tuple of torch.Tensor
+        ``(beta_per_refl, beta_per_bin, bin_dss)``. The latter two are ``None``
+        for a degenerate free set (fewer than 2 free reflections).
+
+    Notes
+    -----
+    The per-bin moments are not smoothed: they must stay mutually consistent
+    (``C**2 <= A*B`` etc.) for the ML root-find, so only the fitted ``topt`` is
+    3-point smoothed afterwards (matching Phenix).
     """
     device = F_obs.device
     dtype = F_obs.dtype
@@ -223,10 +224,9 @@ def estimate_beta(
     dss = dss_all[free_idx][order]
 
     # Adaptive bin count. Aim for ~per_bin reflections/bin, but for sparse free
-    # sets (e.g. 6A0C: ~200 free) ~140/bin gives only 2 bins -> a binary
-    # alpha=[1.2, 0.0] ramp with a dead high-res half. Floor the bin count at
-    # min_bins (down to min_per_bin reflections/bin) so alpha can decay
-    # smoothly; moment smoothing keeps the smaller bins stable.
+    # sets ~140/bin can give only 2 bins -> a dead high-res half. Floor the bin
+    # count at min_bins (down to min_per_bin reflections/bin) so beta can decay
+    # smoothly across enough shells.
     n_by_count = max(1, n_free // per_bin)
     n_cap = max(1, n_free // min_per_bin)
     n_bins = max(n_by_count, min(min_bins, n_cap))

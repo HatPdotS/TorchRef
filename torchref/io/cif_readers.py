@@ -7,8 +7,8 @@ This module provides 4 main classes:
 - ModelCIFReader: For reading atomic coordinate data (model structures)
 - RestraintCIFReader: For reading chemical restraint dictionaries
 
-Space groups are returned as gemmi.SpaceGroup objects for consistency
-throughout torchref.
+Space groups are returned as plain Python ``str`` Hermann-Mauguin names
+(e.g. ``"P 1"``), validated against gemmi.
 
 Specialized classes are typesave and should handle most edge cases in CIF files.
 """
@@ -761,14 +761,14 @@ class ReflectionCIFReader:
         -------
         data : dict
             Dictionary with extracted data arrays:
-            - 'h', 'k', 'l': Miller indices
+            - 'HKL': Nx3 int32 array of Miller indices (plus 'HKL_key')
             - 'F', 'SIGF': Amplitudes and sigmas (if available)
             - 'I', 'SIGI': Intensities and sigmas (if available)
             - 'R-free-flags': R-free test set flags (if available)
         cell : numpy.ndarray
             Cell parameters [a, b, c, alpha, beta, gamma].
-        spacegroup : gemmi.SpaceGroup
-            Space group object.
+        spacegroup : str
+            Space group Hermann-Mauguin name (e.g. "P 1").
         """
         try:
             return self.data, self.cell, self.spacegroup

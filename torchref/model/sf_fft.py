@@ -299,12 +299,13 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
         Parameters
         ----------
-        cell_data : torch.Tensor
-            Unit cell parameters [a, b, c, alpha, beta, gamma].
+        fractional_matrix : torch.Tensor
+            Fractionalization matrix mapping Cartesian to fractional
+            coordinates, with shape (3, 3).
         gridsize : torch.Tensor
             Grid dimensions (nx, ny, nz).
         device : torch.device, optional
-            Target device. Default is CPU.
+            Target device. Defaults to the configured default device.
 
         Returns
         -------
@@ -535,9 +536,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
         apply_symmetry : bool, optional
-            If True and late symmetry is enabled/compatible, apply symmetry
-            in reciprocal space. Default is False (assume map already has
-            symmetry applied or use early symmetry path).
+            If True (default) and late symmetry is enabled/compatible, apply
+            symmetry in reciprocal space. If False, the density map is assumed
+            to already have symmetry applied (early symmetry path).
 
         Returns
         -------

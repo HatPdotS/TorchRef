@@ -40,10 +40,12 @@ class OccupancyFloorDiagnostic:
     model_light : ModelFT
         The light/excited state model (the refined one, not MixedModel).
     grid_spacing : float, optional
-        Grid spacing in Angstroms for density calculation. Default is 0.5.
+        Stored but currently unused. Density is evaluated only at atom
+        positions via Fourier summation, not on a grid. Default is 0.5.
     negative_threshold : float, optional
-        Threshold below which density is considered "significantly negative".
-        Default is -0.5 (in sigma units after normalization).
+        Stored but currently unused. Negative-density detection uses a
+        hardcoded ``rho_light < 0`` test rather than this threshold.
+        Default is -0.5.
 
     Examples
     --------

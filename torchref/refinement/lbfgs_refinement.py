@@ -278,15 +278,13 @@ class LBFGSRefinement(Refinement):
         return step.run()
 
     def refine_xyz(self):
-        """Refine Cartesian coordinates jointly with scaler parameters.
+        """Refine Cartesian coordinates with the LBFGS optimizer.
 
-        Scaler parameters (``log_scale``, ``U``, solvent terms) are
-        included in the same LBFGS call as ``xyz``. The joint curvature
-        lets xyz steps see the scaler as an anchor — residuals the scaler
-        can absorb do not have to be chased by atomic motion — and the
-        ``adp/scaler_U`` and ``adp/scaler_log_scale`` priors bite on every
-        step, so nothing in the scaler drifts between refine_xyz and
-        refine_adp calls.
+        Optimizes the ``xyz`` body parameters. Scaler parameters
+        (``log_scale``, ``U``, solvent terms) are only included in the
+        same LBFGS call when ``corefine_scaler`` is True; by default
+        (``corefine_scaler=False``) the scaler is held fixed here and is
+        updated separately by :meth:`refine_scaler`.
 
         Returns
         -------
@@ -301,13 +299,14 @@ class LBFGSRefinement(Refinement):
         return state
 
     def refine_adp(self):
-        """Refine ADP / U / occupancy jointly with scaler parameters.
+        """Refine ADP / U / occupancy with the LBFGS optimizer.
 
-        Scaler parameters (``log_scale``, ``U``, solvent terms) are
-        included in the same LBFGS call as the ADP-block body parameters
-        so the joint curvature can slide along the atomic-B / scaler-U
-        degeneracy ridge together with the ``adp/scaler_U`` regularizer.
-        XYZ is left frozen.
+        Optimizes the ``adp``, ``u`` and ``occupancy`` body parameters;
+        XYZ is left frozen. Scaler parameters (``log_scale``, ``U``,
+        solvent terms) are only included in the same LBFGS call when
+        ``corefine_scaler`` is True; by default
+        (``corefine_scaler=False``) the scaler is held fixed here and is
+        updated separately by :meth:`refine_scaler`.
 
         Returns
         -------
@@ -324,8 +323,9 @@ class LBFGSRefinement(Refinement):
     def _scaler_body_params(self):
         """Scaler parameters to co-refine inside the body (xyz/adp) steps.
 
-        Returns the scaler parameter list when ``corefine_scaler`` is True,
-        else an empty list so the scaler is held fixed during xyz/adp and
+        Returns the scaler parameter list when ``corefine_scaler`` is True
+        (opt-in), else an empty list so the scaler is held fixed during
+        xyz/adp and
         only updated by the separate :meth:`refine_scaler` step at each
         macro-cycle end. ``corefine_scaler`` defaults to False (see the
         constructor): co-refining the few high-leverage scaler params
@@ -340,16 +340,16 @@ class LBFGSRefinement(Refinement):
         return []
 
     def refine_joint(self):
-        """Joint LBFGS over every refinable parameter in one step.
+        """Joint LBFGS over all body parameters in one step.
 
-        Optimizes ``xyz``, ``adp``, ``u``, ``occupancy``, and every
-        scaler parameter (``log_scale``, anisotropic ``U``, solvent
-        terms) in a single LBFGS call. The joint curvature couples all
-        of them through the same x-ray target and through the
-        ``adp/scaler_U`` / ``adp/scaler_log_scale`` priors — unlike
-        alternating refine_xyz → refine_adp, there's no "frozen partner"
-        in either half that could lock the step into a locally bad
-        direction.
+        Optimizes ``xyz``, ``adp``, ``u`` and ``occupancy`` in a single
+        LBFGS call, so the joint curvature couples them through the same
+        x-ray target — unlike alternating refine_xyz → refine_adp, there's
+        no "frozen partner" in either half that could lock the step into a
+        locally bad direction. Scaler parameters (``log_scale``,
+        anisotropic ``U``, solvent terms) are added to the same call only
+        when ``corefine_scaler`` is True; by default they are held fixed
+        and updated separately by :meth:`refine_scaler`.
 
         Returns
         -------

@@ -69,30 +69,7 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
     2. Reduced parameters: n_rates instead of n_states * n_timepoints
     3. Extrapolation: can predict occupancies at unmeasured timepoints
     4. Interpretability: rate constants have physical meaning
-    
-    Refinement Considerations
-    -------------------------
-    Kinetic refinement has unique challenges compared to normal refinement:
-    
-    1. **Parameter Scale Separation**: Rate constants can span many orders of magnitude
-       (e.g., ps to ms). Use log-parameterization and consider different learning rates.
-    
-    2. **Identifiability**: Some parameters may be correlated:
-       - Rate and efficiency can compensate for each other
-       - Back-reactions can create degenerate solutions
-       Consider using efficiency constraints or regularization.
-    
-    3. **Local Minima**: The optimization landscape can have multiple minima
-       corresponding to different kinetic interpretations. Initialize carefully.
-    
-    4. **Gradient Flow**: Matrix exponentials can have vanishing/exploding gradients.
-       The implementation clips extreme values for stability.
-    
-    5. **Regularization**: Consider adding priors on:
-       - Rate constants (log-normal centered on expected timescales)
-       - Efficiencies (Beta distribution favoring high efficiency)
-       - Smoothness of rate changes if doing temperature-dependent fitting
-    
+
     Parameters
     ----------
     flow_chart : str
@@ -102,7 +79,11 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
     rate_constants : dict or None, optional
         Initial rate constants as {"A->B": value, ...}. If None, uses smart initialization.
     efficiencies : dict or None, optional
-        Initial efficiencies as {"A->B": value, ...}. Default: all 1.0
+        Accepted for backward compatibility but ignored: efficiencies are frozen
+        at 1.0 (degenerate with rate constants) and are not refinable.
+    instrument_function : str, optional
+        Instrument response function model, either 'none' or 'gaussian'.
+        Default: 'none'.
     instrument_width : float, optional
         Instrument response function width (Gaussian sigma). Default: 10
     light_activated : bool, optional

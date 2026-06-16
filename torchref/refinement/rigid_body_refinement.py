@@ -258,9 +258,10 @@ class RigidBodyRefinementStep:
         2. Run a short LBFGS over the solvent parameters (``log_k_solvent``,
            ``b_solvent``, and ``phase_offset`` if it's a Parameter) to refit
            the solvent contribution against the current F_calc.
-        3. Run the rigid-body LBFGS for ``iterations_per_step // n_inner``
-           iterations over rigid params only (mask frozen here, matching
-           Phenix's per-inner-cycle locality assumption).
+        3. Run the rigid-body LBFGS for ``iterations_per_step`` iterations
+           over rigid params only (mask frozen here, matching Phenix's
+           per-inner-cycle locality assumption). The total rigid LBFGS work
+           per cutoff is therefore ``n_inner * iterations_per_step``.
         4. ``bake()`` the current rigid transform into ``original_xyz`` and
            zero the euler / translation params — matching Phenix's
            per-macro-cycle reset (mmtbx/refinement/rigid_body.py:344-370).

@@ -3,64 +3,24 @@ Density-derived bulk-solvent model.
 
 A standalone, fully differentiable alternative to the vdW-sphere
 :class:`~torchref.scaling.solvent.SolventModel`. Instead of building a binary
-mask from atomic spheres (under ``torch.no_grad()`` and then detaching the
-result), this module derives the solvent occupancy directly from the model's
-real-space electron density ``rho(x)`` and returns a solvent structure factor on
-the same absolute (electron) scale as the protein structure factors.
+mask from atomic spheres, this module derives the solvent occupancy directly from
+the model's real-space electron density ``rho(x)`` and returns a solvent structure
+factor on the same absolute (electron) scale as the protein structure factors.
 
-Physical premise
-----------------
-Crystallographic B-factors mostly model *inter-copy disorder*, not thermal
-vibration, so the model density ``rho(x)`` is an ensemble-averaged density. The
-bulk solvent fills the complement of where the (disordered) protein is, and its
-boundary softness is *inherited* from ``rho`` itself -- fuzzy where the protein is
-disordered (high B), sharp where it is ordered. A single global B_sol cannot
-represent that; deriving the mask from ``rho`` does it for free, with spatially
-varying edge softness and no separate sharpness knob.
+With the natural exponential occupancy the solvent contribution is::
 
-Formulation
------------
-With the natural exponential occupancy the solvent mask is a one-liner::
+    M(x)       = exp(-rho(x) / rho0)          # solvent occupancy in (0, 1]
+    rho_sol(x) = rho_s * M(x)                 # solvent density field, e/A^3
+    F_sol(h)   = rho_s * ifft(M, V_cell)|_hkl # same FFT path as F_protein
 
-    M(x)      = exp(-rho(x) / rho0)          # solvent occupancy in (0, 1]
-    rho_sol(x)= rho_s * M(x)                 # solvent density field, e/A^3
-    F_sol(h)  = rho_s * ifft(M, V_cell)|_hkl # same FFT path as F_protein
+The ``rho0`` saturation level interpolates the Babinet/exponential limit
+(``rho0 -> inf``) and the flat-mask limit (``rho0 -> 0``). An optional residual
+``B_sol`` (default off) applies ``exp(-B_sol * s^2)`` damping to F_sol.
 
-Two owned, physical parameters:
-
-``rho_s``
-    Bulk solvent electron density / protein-solvent contrast (init ~0.34 e/A^3).
-    Scales solvent *relative* to protein, so it is identifiable and distinct from
-    the scaler's overall scale K (which stays shared between protein and solvent).
-
-``rho0``
-    Protein-density saturation level. A single master knob that continuously
-    interpolates the two classic bulk-solvent models:
-
-    * ``rho0 -> inf`` (``M ~ 1 - rho/rho0``):
-      ``F_sol = -(rho_s/rho0) * F_protein`` -- the Babinet / exponential model.
-    * ``rho0 -> 0`` (``M -> indicator of rho ~ 0``):
-      ``F_sol = -rho_s * FFT(envelope)`` -- the flat-mask model.
-
-An optional scalar residual ``B_sol`` (default off) damps F_sol with
-``exp(-B_sol * s^2)`` to absorb first-hydration-shell smearing the protein
-B-factors do not capture; it is now identifiable because the edge is otherwise
-pinned by ``rho``.
-
-Cost
-----
-The occupancy is nonlinear, so the full-cell density must be assembled in real
-space before the mask (reciprocal-space symmetry expansion does not commute with
-``exp``). But bulk solvent is a *low-resolution* object, so it does not need the
-atomic ``d_min/3`` grid: the module owns its own **coarse** ``SfFFT`` grid sized
-to ``solvent_res`` (~4 A) and builds the symmetry-expanded density there. Both the
-symmetry expansion and the FFT then cost ~(spacing ratio)^3 less than on the
-atomic grid. For hkl beyond the coarse Nyquist the solvent contribution is ~0 and
-is returned as exactly 0 (avoids modulo-aliasing in the SF extraction).
-
-This module is purely additive: it does not touch ``SolventModel``, ``Scaler`` or
-the refinement loop. It is intended to be A/B'd against the current solvent first
-(see ``paper/figure2_alphafold_start/analysis/solvent_density_probe.py``).
+The occupancy is nonlinear, so the full-cell density is assembled in real space
+before the mask. Bulk solvent is low-resolution, so the module owns a coarse
+``SfFFT`` grid sized to ``solvent_res`` (~4 A); for hkl beyond the coarse Nyquist
+the solvent contribution is returned as exactly 0.
 """
 
 import torch
@@ -101,23 +61,21 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         Atomic model providing the atoms, cell and spacegroup. Optional for
         empty init.
     rho_s : float, default 0.34
-        Initial bulk solvent electron density (e/A^3).
+        Initial bulk solvent electron density (e/A^3). Note: the
+        :class:`~torchref.experimental.monolithic_refinement.density_scaler.DensityDerivedSolvent`
+        wrapper freezes ``rho_s`` at 1.0 and uses ``rho0=0.016`` instead.
     rho0 : float, default 2.0
         Initial protein-density saturation level (e/A^3). Interpolates Babinet
         (large) <-> flat-mask (small).
     occupancy : {"exp", "sigmoid", "shell"}, default "exp"
         Occupancy function mapping density -> solvent fraction. ``"exp"`` uses
-        ``M = exp(-rho/rho0)`` (single knob, clean Babinet/mask limits).
-        ``"sigmoid"`` uses ``M = sigmoid((rho0 - rho)/w)`` (contour at ``rho0``,
-        fixed edge width ``sigmoid_width``). ``"shell"`` is a morphological
-        erosion/dilation: smooth the density (Gaussian width ``shell_sigma``),
-        standardize, then threshold with a sigmoid at z-cutoff ``shell_tau``,
-        ``M = 1 - sigmoid((z - tau)/w)``. The threshold is the nonlinearity that
-        moves the solvent boundary (erosion = depletion shell, dilation), so it
-        is genuinely more than a solvent B-factor.
+        ``M = exp(-rho/rho0)``. ``"sigmoid"`` uses ``M = sigmoid((rho0 - rho)/w)``
+        with fixed edge width ``sigmoid_width``. ``"shell"`` smooths the density
+        (Gaussian width ``shell_sigma``), standardizes it, and thresholds with a
+        sigmoid at z-cutoff ``shell_tau``: ``M = 1 - sigmoid((z - tau)/w)``.
     sigmoid_width : float, default 0.5
         Edge width ``w`` (e/A^3) for the ``"sigmoid"`` occupancy; ignored for
-        ``"exp"``/``"shell"``. Not refined (the edge is meant to come from ``rho``).
+        ``"exp"``/``"shell"``. Not refined.
     shell_sigma : float, default 1.5
         Initial smoothing width (A) for the ``"shell"`` occupancy; refinable
         (clamped to [0, 5] A). Ignored for the other modes.
@@ -284,15 +242,12 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
 
         ``"exp"``: ``M = exp(-rho / rho0)`` -- 1 in bulk (rho=0), ->0 in cores.
         ``"sigmoid"``: ``M = sigmoid((rho0 - rho) / w)``.
-        ``"shell"``: morphological erosion/dilation. The density is smoothed in
-            reciprocal space (Gaussian width ``sigma_shell`` A), standardized, and
-            thresholded by a sigmoid at z-cutoff ``tau_shell``:
-            ``M = 1 - sigmoid((z - tau) / w)`` with ``z = (rho_s - mu)/sd`` of the
-            smoothed density. Raising ``tau`` moves the boundary toward the protein
-            core (solvent dilates); lowering it pushes the boundary out into the
-            halo (solvent erodes -> entropic depletion shell). ``sigma`` sets the
-            reach, ``w`` (``shell_edge``) the edge sharpness. The sigmoid threshold
-            is the nonlinearity that makes this more than a solvent B-factor.
+        ``"shell"``: smooth the density in reciprocal space (Gaussian width
+            ``sigma_shell`` A), standardize it, and threshold with a sigmoid at
+            z-cutoff ``tau_shell``: ``M = 1 - sigmoid((z - tau) / w)`` with
+            ``z = (rho - mu) / sd`` of the smoothed density. ``tau_shell`` moves the
+            boundary, ``sigma_shell`` sets the reach, and ``w`` (``shell_edge``) the
+            edge sharpness.
         """
         rho0 = torch.exp(self.log_rho0.clamp(min=-20.0, max=20.0))
         if self.occupancy == "exp":

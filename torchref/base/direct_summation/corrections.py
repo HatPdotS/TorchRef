@@ -44,9 +44,12 @@ def anharmonic_correction(hkl, c):
         Complex anharmonic correction factors of shape (N_reflections,).
     """
     h1, h2, h3 = hkl[:, 0], hkl[:, 1], hkl[:, 2]
-    # These third-order terms specifically address toroidal features
+    # Gram-Charlier third-order tensor: symmetric cubic in (h1, h2, h3) using
+    # all ten coefficients with their multiplicities (1 for diagonal terms, 3
+    # for two-index terms, 6 for C123). The (-8j*pi**3) prefactor is the
+    # Gram-Charlier (2*pi*i)**3 / 3! phase factor; the 6e7 divisor folds the
+    # 3! = 6 with a 1e7 coefficient scale.
     C111, C222, C333, C112, C122, C113, C133, C223, C233, C123 = c
-    # For toroidal features around z-axis, C111 and C222 are most important
     third_order = (
         (
             C111 * h1**3
@@ -85,9 +88,11 @@ def anharmonic_correction_no_complex(hkl, c):
         Correction factors as [cos, sin] of shape (2, N_reflections).
     """
     h1, h2, h3 = hkl[:, 0], hkl[:, 1], hkl[:, 2]
-    # These third-order terms specifically address toroidal features
+    # Same Gram-Charlier third-order tensor as anharmonic_correction, but the
+    # purely real phase argument is returned as (cos, sin) rows instead of a
+    # complex exponential. The (-8*pi**3)/6e7 factor matches the complex path
+    # (3! = 6 folded with a 1e7 coefficient scale); see anharmonic_correction.
     C111, C222, C333, C112, C122, C113, C133, C223, C233, C123 = c
-    # For toroidal features around z-axis, C111 and C222 are most important
     third_order = (
         (
             C111 * h1**3

@@ -13,7 +13,9 @@ CollectionRiceTarget
     Multi-timepoint Rice maximum-likelihood amplitude target (beta = sigma^2).
 CollectionMLTarget
     Like CollectionRiceTarget but with a Luzzati/Read sigma_A term: one shared
-    alpha/beta estimated across all datasets in the (collection) scaler.
+    model-error variance ``beta`` (Luzzati ``alpha`` fixed at 1), estimated by
+    maximum likelihood on the pooled free reflections of all datasets. The
+    estimator is owned by the target, not the scaler.
 """
 
 from typing import TYPE_CHECKING, Dict

@@ -30,22 +30,11 @@ from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
 
-# Default LossState group base weights — the single, transparent source of truth
-# for how the data term and the priors are balanced. These are *calibration
-# offsets*: with a perfectly calibrated ML likelihood and geometry/ADP prior they
-# would all be 1.0 (the posterior is just -logL - logP). The offsets correct
-# known mis-calibrations, validated to match Phenix/Refmac on the AF-start
-# benchmark (REFMAC-validated median R-free ~ Phenix at n=10):
-#   xray = 10.0  -> the Read/sigma_A likelihood is "soft" (under-counts the data's
-#                   information, a reflection-correlation / effective-N effect), so
-#                   it needs ~10x to sit on equal footing with the geometry prior.
-#   geometry = 1.0 -> reference scale (geometry NLL with physical Engh-Huber sigmas).
-#   adp = 0.1    -> the ADP-restraint prior is ~10x too tight; down-weighting lets
-#                   B-factors spread to their data-supported values.
-# NOTE: gradient-ratio auto-weighting is circular (at the optimum the gradient
-# ratio equals the weight by stationarity); the principled future direction is
-# R-free cross-validation or fixing the sigma_A "softness" calibration so these
-# offsets converge to 1.0. See the cleanup plan for the full rationale.
+# Default LossState group base weights balancing the data term against the
+# priors. These are calibration offsets relative to a unit-weight posterior
+# (-logL - logP): xray=10 compensates for the "soft" Read/sigma_A likelihood,
+# geometry=1 is the reference scale (Engh-Huber sigmas), and adp=0.1 loosens the
+# over-tight ADP-restraint prior so B-factors reach data-supported values.
 DEFAULT_GROUP_WEIGHTS = {"xray": 10.0, "geometry": 1.0, "adp": 0.1}
 
 
@@ -706,50 +695,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Create a configured LossState for optimization.
 
         .. deprecated::
-            Use the `loss_state` property instead for the persistent state.
-            This method is kept for backwards compatibility.
-
-        Sets up a LossState with all targets registered as callables with
-        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'). All targets
-        aggregate at uniform weight unless weights are set explicitly via
-        ``state.set_weight``.
-
-        Usage:
-            from torchref.utils import validate_loss
-
-            state = refinement.create_loss_state()
-            params = list(refinement.parameters())
-
-            # Log initial state
-            state.aggregate(log_values=True)
-
-            # In an LBFGS closure, wrap with validate_loss so non-finite
-            # losses warn + reject the step instead of poisoning the run.
-            def closure():
-                optimizer.zero_grad()
-                loss = state.aggregate()
-                loss.backward()
-                ok = validate_loss(
-                    loss, state=state, parameters=params,
-                    context="my_refinement", raise_on_fail=False,
-                )
-                if not ok:
-                    for p in params:
-                        if p.grad is not None:
-                            p.grad.zero_()
-                    return torch.full_like(loss.detach(), float("inf"))
-                return loss
-
-            optimizer.step(closure)
-
-            # Log final state
-            state.new_entry()
-            state.aggregate(log_values=True)
+            Use the :attr:`loss_state` property instead for the persistent
+            state. This method is kept for backwards compatibility and simply
+            delegates to :meth:`_create_loss_state`.
 
         Returns
         -------
         LossState
-            Configured LossState with targets and weights.
+            Configured LossState with targets registered and the default group
+            weights applied.
         """
         return self._create_loss_state()
 

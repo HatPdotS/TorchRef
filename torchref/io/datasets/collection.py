@@ -236,34 +236,26 @@ class DatasetCollection(CrystalDataset):
         return {name: ds(mask=mask, scale=True) for name, ds in self}
 
     def scale(self):
-        '''
-        Scale all datasets to a common reference scale.
-        This method optimizes the scaling parameters of all non-reference datasets
-        to minimize the mean squared error between their structure factors and
-        those of the reference dataset. The optimization corrects for both overall
-        scale differences and anisotropy.
-        The method uses the L-BFGS optimizer with strong Wolfe line search
-        to iteratively refine the scaling parameters over multiple optimization
-        steps.
-            The collection instance, allowing for method chaining.
+        """
+        Scale all non-reference datasets onto the reference dataset.
+
+        Optimizes the scaling parameters of every non-reference dataset to
+        minimize the summed squared error between their corrected structure
+        factors and those of the reference dataset, correcting for both
+        overall scale and anisotropy. Uses an L-BFGS optimizer with strong
+        Wolfe line search over a fixed number of optimization steps.
+
         Raises
         ------
         ValueError
-            If no reference dataset has been set prior to calling this method or only a reference dataset exists.
-            Make sure to have at least 2 datasets duh...
+            If no reference dataset has been set, or if the collection
+            contains only the reference dataset (nothing to scale).
+
         Notes
         -----
-        The reference dataset must be set before calling this method using
-        the appropriate setter. All datasets except the reference will have
-        their scaling parameters optimized.
+        Scaling parameters of the reference dataset are left untouched; only
+        the non-reference datasets are optimized.
         """
-        Scale all datasets to the same overall scale.
-        Corrects overall scale and anisotropy based on the reference dataset.
-        Returns
-        -------
-        self
-            for method chaining.
-        '''
         if self._reference_dataset is None:
             raise ValueError("No reference dataset set for scaling")
 

@@ -1133,14 +1133,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
         2. Estimate B_solvent from low-resolution data (d > 6 Å) where solvent dominates
         3. Refine both together with two-exponential fit across all data
 
-        Args:
-            n_bins: Number of resolution bins for averaging (default: 30)
+        Parameters
+        ----------
+        n_bins : int, optional
+            Number of resolution bins for averaging. Default is 30.
 
-        Sets:
-            self.wilson_b: Overall Wilson B-factor (weighted average) in Å²
-            self.wilson_b_structure: Structure B-factor from high-res in Å²
-            self.wilson_b_solvent: Solvent B-factor from low-res in Å²
-            self.wilson_k_sol: Relative solvent contribution (0-1)
+        Notes
+        -----
+        Sets the following attributes:
+
+        - ``self.wilson_b`` : Overall Wilson B-factor (structure B) in Å².
+        - ``self.wilson_b_structure`` : Structure B-factor from high-res in Å².
+        - ``self.wilson_b_solvent`` : Solvent B-factor from low-res in Å².
+        - ``self.wilson_k_sol`` : Relative solvent contribution (0-1).
         """
         if self.F is None or self.resolution is None:
             return
@@ -1226,14 +1231,21 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         Fit single-exponential Wilson plot to selected resolution range.
 
-        Args:
-            s_sq: s² values for bins
-            mean_F_sq: Mean F² values for bins
-            mask: Boolean mask selecting which bins to use
-            label: Label for error messages
+        Parameters
+        ----------
+        s_sq : torch.Tensor
+            s² values for bins.
+        mean_F_sq : torch.Tensor
+            Mean F² values for bins.
+        mask : torch.Tensor
+            Boolean mask selecting which bins to use.
+        label : str
+            Label for error messages.
 
-        Returns:
-            B-factor from fit (Å²)
+        Returns
+        -------
+        float
+            B-factor from fit (Å²).
         """
         if mask.sum() < 3:
             # Not enough data, return reasonable default
@@ -1518,12 +1530,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     def get_mask(self):
         """
-        Return combined mask from all active filters.
+        Placeholder for returning a combined mask from all active filters.
 
-        Returns
-        -------
-        torch.Tensor
-            Boolean mask combining all filter conditions.
+        Not implemented; the body is empty and this returns ``None``. Use
+        :meth:`masks` (the combined-validity callable) to obtain the boolean
+        mask combining all active filter conditions.
         """
 
     def cut_res(
@@ -2252,10 +2263,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         z_threshold : float, optional
             Z-score threshold to classify outliers. Default is 4.0.
 
-        Returns
-        -------
-        torch.Tensor
-            Boolean mask where True indicates outliers.
+        Notes
+        -----
+        Operates by side effect: stores ``~outlier_mask`` (True = keep) under
+        ``self.masks['outliers']``. The normal code path returns ``None``;
+        only the early no-valid-ratio branch returns a boolean tensor.
         """
         hkl, F_obs, _, _ = self._masked_unpack(mask=False)
         log_ratio = self.get_log_ratio(model, scaler)
@@ -3587,11 +3599,17 @@ class ReflectionData(CrystalDataset, DebugMixin):
     ) -> None:
         """
         Setup anisotropy correction parameters.
+
         Parameters
         ----------
         U_aniso : torch.Tensor, optional
             Anisotropic parameters [u11, u22, u33, u12, u13, u23], shape (6,).
-            If None, uses Initializes as zeros.
+            If None, U_aniso is initialized to a zero (6,) tensor.
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
         """
 
         if U_aniso is None:
@@ -3765,13 +3783,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Parameters
         ----------
         scale : float, optional
-            If provided, sets the scale factor directly.
-            If None, computes scale to make mean F equal to 1.0.
+            If provided, sets the scale factor directly (stored as its log).
+            If None (default), the scale defaults to 1.0 (``log_scale = 0.0``).
 
         Returns
         -------
-        float
-            The scale factor applied.
+        ReflectionData
+            Self, for method chaining.
         """
         if scale is None:
             self.log_scale = torch.tensor(
