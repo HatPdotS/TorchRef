@@ -681,6 +681,17 @@ class ReflectionCIFReader:
             self.data["SIGI"] = refln_df["sigma_I_obs"].to_numpy().astype(np.float32)
             self.data["SIGI_col"] = refln_df["sigma_I_obs_key"]
 
+        # A structure-factor CIF must carry observed amplitudes or intensities.
+        # Calculated columns (e.g. _refln.F_calc) are intentionally not used as
+        # observations, so a calc-only file lands here with neither F nor I.
+        if "F" not in self.data and "I" not in self.data:
+            raise ValueError(
+                f"No observed amplitudes or intensities found in {self.filepath} "
+                f"(data block '{self.cif_reader.data_block}'). The reflection loop "
+                f"has no measured F/I column; calculated columns such as "
+                f"_refln.F_calc are not used as observations."
+            )
+
         # Store R-free flags if available (standardized keys matching MTZ reader)
         if refln_df["free_flag"].notna().any():
             rfree_characters = (
@@ -876,13 +887,15 @@ class ReflectionCIFReader:
                 print(f"  Reflections with F- only: {n_minus_only}")
         else:
             # Standard non-anomalous data
+            # NOTE: do NOT include calculated columns (e.g. _refln.F_calc) here.
+            # Treating calc amplitudes as observations gives meaningless
+            # R-factors / refinement against the model's own F_calc.
             result["F_obs"], F_obs_key = self._extract_numeric(
                 refln_df,
                 [
                     "_refln.F_meas_au",
                     "_refln.F_meas",
                     "_refln.pdbx_F_plus",
-                    "_refln.F_calc",
                     "_refln.F-obs",
                     "_refln.F_squared_meas",
                 ],
