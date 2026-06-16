@@ -28,6 +28,7 @@ from torchref.config import dtypes, get_complex_dtype, get_default_device
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.utils.device_resolution import resolve_device
 
 
 class SfDS(DeviceMovementMixin, nn.Module):
@@ -394,6 +395,15 @@ class SfDS(DeviceMovementMixin, nn.Module):
         """
         if self._cell is None:
             raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
+
+        # Normalize the input hkl onto this module's device. The symmetry
+        # helpers derive equiv_hkls/phases from hkl.device while sf_total is
+        # allocated on self.device, so a caller passing hkl on another device
+        # would hit a cross-device add. resolve_device gives the module's
+        # canonical device; hkl is moved explicitly (resolve_device only moves
+        # modules in place, not plain tensors).
+        device = resolve_device(self)
+        hkl = hkl.to(device)
 
         # Cache atomic parameters for reuse
         xyz_frac_iso = (
