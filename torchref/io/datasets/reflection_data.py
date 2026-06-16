@@ -2032,15 +2032,22 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         mask = torch.zeros(len(self.F), dtype=torch.bool, device=self.device)
         if self.F is not None:
-            if self.verbose > 0:
-                print("found nan F values: ", torch.isnan(self.F).sum().item())
-            mask |= torch.isnan(self.F)
-        if self.F_sigma is not None:
+            # ~isfinite catches NaN AND +/-Inf (isnan alone let Inf through).
+            nonfinite = ~torch.isfinite(self.F)
             if self.verbose > 0:
                 print(
-                    "found nan F_sigma values: ", torch.isnan(self.F_sigma).sum().item()
+                    "found non-finite F values (NaN/Inf): ",
+                    nonfinite.sum().item(),
                 )
-            mask |= torch.isnan(self.F_sigma)
+            mask |= nonfinite
+        if self.F_sigma is not None:
+            nonfinite_sigma = ~torch.isfinite(self.F_sigma)
+            if self.verbose > 0:
+                print(
+                    "found non-finite F_sigma values (NaN/Inf): ",
+                    nonfinite_sigma.sum().item(),
+                )
+            mask |= nonfinite_sigma
         neg_mask = self.F <= 0
         if torch.any(neg_mask):
             warnings.warn(
