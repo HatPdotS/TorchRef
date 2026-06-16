@@ -322,8 +322,13 @@ class LossState(DeviceMovementMixin):
     ) -> "LossState":
         """Register multiple targets from a component target or dict.
 
-        For targets with a .name attribute, uses target.name as the key.
-        For plain callables, uses the dict key.
+        For plain callables, uses the dict key. For targets with a ``.name``
+        attribute, uses ``target.name`` as the key — EXCEPT when the dict key
+        itself is hierarchical (contains ``/``). A hierarchical dict key (e.g.
+        ``"model_0/bond"`` emitted by the MultiModel targets) encodes structure
+        the leaf ``.name`` cannot — without honoring it, every base model's leaf
+        targets collapse onto the same ``.name`` key and all but the last are
+        dropped — so it is treated as authoritative.
 
         Parameters
         ----------
@@ -337,7 +342,10 @@ class LossState(DeviceMovementMixin):
             Forwarded to :meth:`register_target`.
         """
         for name, target in targets.items():
-            target_name = getattr(target, "name", name)
+            # Honor hierarchical dict keys (from MultiModel expansion); they
+            # carry the per-model index that the leaf target's fixed .name
+            # would otherwise discard, causing model-to-model key collisions.
+            target_name = name if "/" in name else getattr(target, "name", name)
             self.register_target(
                 target_name, target, prefix=prefix, compile=compile, probe=probe
             )
