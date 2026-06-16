@@ -395,24 +395,6 @@ class DataTarget(Target):
         """
         return torch.abs(self.get_fcalc_scaled(hkl, recalc=recalc, fcalc=fcalc))
 
-    def get_rfactor(self):
-        """
-        Compute R-factors using scaler.
-
-        Returns
-        -------
-        tuple
-            (R_work, R_free) values.
-
-        Raises
-        ------
-        RuntimeError
-            If no scaler is set.
-        """
-        if self._scaler is None:
-            raise RuntimeError("Cannot compute R-factor: no scaler set.")
-        return self._scaler.rfactor()
-
 
 # =============================================================================
 # Utility Functions for NLL Computation

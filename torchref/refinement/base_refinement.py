@@ -864,46 +864,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return state
 
     def get_rfactor(self):
-        # If the xray target uses its own closed-form per-bin scale
-        # (scale_mode == "binwise_optimal", e.g. ls_wunit_k1), the external
-        # scaler — even a solvent-only one — does not provide the right
-        # overall scaling. Compute R via the closed-form c[bins] instead.
-        target_scale_mode = getattr(
-            getattr(self, "xray_target_work", None), "scale_mode", None
-        )
-        if target_scale_mode != "binwise_optimal" and self.scaler is not None:
-            return self.scaler.rfactor()
-        # Scaler-free / binwise-optimal path. Fit the per-bin scale on the
-        # work reflections, apply the same c[bins] to the test reflections
-        # for an apples-to-apples R_free.
-        from torchref.base.metrics import binwise_scale, rfactor
+        """``(R_work, R_free)`` for the current model.
 
-        with torch.no_grad():
-            # get_data returns compact (already-subset) tensors plus the
-            # ``_ReflectionSubset`` view (5th element); we use the view to
-            # align full-size bins to the compact arrays.
-            Fo_w, Fc_w, _, _, sub_w = self.xray_target_work.get_data()
-            Fo_t, Fc_t, _, _, sub_t = self.xray_target_test.get_data()
-
-            if getattr(self.xray_target_work, "scale_mode", None) == "binwise_optimal":
-                full_bins = self.xray_target_work._get_bins_cached()
-                bins_w = sub_w.select(full_bins)
-                bins_t = sub_t.select(full_bins)
-                c = binwise_scale(
-                    Fc_w, Fo_w, bins_w,
-                    valid=None,
-                    nbins=self.xray_target_work.n_bins,
-                    weights=None,
-                )
-                Fc_w_s = c[bins_w] * Fc_w
-                Fc_t_s = c[bins_t] * Fc_t
-            else:
-                Fc_w_s = Fc_w
-                Fc_t_s = Fc_t
-
-            rwork = rfactor(Fo_w, Fc_w_s)
-            rfree = rfactor(Fo_t, Fc_t_s)
-        return rwork, rfree
+        Delegates to the work X-ray target, the single source of truth: R is
+        computed from exactly the scaled ``|F_calc|`` the target's loss sees
+        (the scaler's scaling, or the target's own closed-form per-bin scale for
+        ``binwise_optimal``). See :meth:`XrayTarget.get_rfactor`.
+        """
+        return self.xray_target_work.get_rfactor()
 
     def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
         import matplotlib.pyplot as plt

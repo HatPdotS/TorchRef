@@ -378,7 +378,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
                 )
             return current_loss
 
-        rwork_initial, rfree_initial = self.scaler.rfactor(self())
+        rwork_initial, rfree_initial = self.xray_target.get_rfactor(self())
 
         initial_loss = closure().item()
         if self.verbose > 0:
@@ -401,7 +401,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
                 if self.verbose > 1:
                     print(f"Iter {tries_needed}   Current ML loss: {current_loss:.4f}")
             final_loss = closure().item()
-            final_rwork, final_rfree = self.scaler.rfactor(self())
+            final_rwork, final_rfree = self.xray_target.get_rfactor(self())
             converged = final_rwork < self.rfactor_converged_threshold
 
             if converged or tries_needed >= n_tries:

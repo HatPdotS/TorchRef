@@ -12,23 +12,22 @@ making it suitable for use cases like:
 - Custom model implementations
 """
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional
 
 import torch
 import torch.nn as nn
 
 from torchref.base.math_torch import U_to_matrix
 from torchref.base.metrics import (
-    bin_wise_rfactors,
     binwise_scale,
-    get_rfactors,
     nll_xray,
     nll_xray_lognormal,
+    rfactor_work_free,
 )
 from torchref.base.reciprocal import get_scattering_vectors
 from torchref.base.targets.xray_ml_sigmaa import (
+    SigmaAEstimator,
     epsilon_from_hkl,
-    estimate_beta,
     ml_xray_loss_beta_math,
 )
 from torchref.config import get_complex_dtype, get_default_device, get_float_dtype
@@ -121,10 +120,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             self.register_buffer("s", None)
             self.register_buffer("bins", None)
             self.register_buffer("_s_half_sq", None)
-            self.register_buffer("sigma_eff", None)
-            self.register_buffer("sigma_eff_per_bin", None)
             self._f_sol_raw = None
-            self._init_beta_cache()
             return
 
         # Full initialization with data
@@ -139,84 +135,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         self._f_sol_raw = None
         bins, self.nbins = self._data.get_bins(self.nbins)
         self.register_buffer("bins", bins)
-        # Effective sigma buffers (populated by estimate_sigma_eff after scaling)
-        # sigma_eff: per-reflection effective sigma, shape (N,)
-        # sigma_eff_per_bin: per-bin effective sigma, shape (nbins,)
-        # Initialized to raw sigmas; will be updated after scaling.
-        sigma_raw = self._data.get_corrected_data()[1]
-        self.register_buffer("sigma_eff", sigma_raw.clone().to(self.device))
-        self.register_buffer(
-            "sigma_eff_per_bin",
-            torch.zeros(self.nbins, device=self.device, dtype=sigma_raw.dtype),
-        )
-        self._init_beta_cache()
         if self.verbose > 0:
             print(f"Initialized ScalerBase with {self.nbins} bins.")
-
-    # ------------------------------------------------------------------
-    # Maximum-likelihood model-error variance beta, lazily cached
-    # ------------------------------------------------------------------
-
-    def _init_beta_cache(self):
-        """Initialise the lazy beta cache attributes."""
-        self._beta_cache = None  # (beta_refl, epsilon) detached
-        self._epsilon_per_refl = None  # cached once (multiplicity, model-independent)
-        self._beta_per_bin = None  # diagnostics
-
-    def reset_beta_cache(self):
-        """Invalidate the cached beta so it re-estimates on next access.
-
-        Called from ``MaximumLikelihoodXrayTarget.maintenance`` (which
-        ``LossState`` invokes after each optimizer-step block). Epsilon is kept
-        (it is model-independent). Mirrors the ``_f_sol_raw = None`` solvent-cache
-        invalidation pattern.
-        """
-        self._beta_cache = None
-
-    def get_beta(self, fcalc: torch.Tensor = None):
-        """Lazily estimate and cache per-reflection ML ``(beta, epsilon)``.
-
-        ``beta`` (absolute per-shell model-error variance) is estimated by the
-        Phenix/Lunin-Skovoroda ML estimator on the FREE set in ~140-reflection
-        shells, using the **scaled** ``|F_calc|`` (``self.forward``). Returns
-        detached tensors; gradients never flow through them. Cached until
-        :meth:`reset_beta_cache`.
-        """
-        if self._beta_cache is not None:
-            return self._beta_cache
-
-        with torch.no_grad():
-            if fcalc is None:
-                if not hasattr(self, "compute_fcalc"):
-                    raise RuntimeError(
-                        "get_beta needs fcalc or a model-aware Scaler "
-                        "(compute_fcalc)."
-                    )
-                fcalc = self.compute_fcalc()
-            fc_amp = torch.abs(self.forward(fcalc)).reshape(-1)
-
-            fobs = self._data.get_corrected_data()[0].to(fc_amp.dtype).reshape(-1)
-            free = self._data.free.mask  # valid & ~rfree (& ~validation)
-            centric = self._data.centric
-
-            if self._epsilon_per_refl is None:
-                sg = getattr(self._data, "spacegroup", None)
-                self._epsilon_per_refl = epsilon_from_hkl(self._data.hkl, sg).to(
-                    fc_amp.dtype
-                )
-            eps = self._epsilon_per_refl
-
-            dss = 4.0 * self._s_half_sq
-            beta, bbin, _bdss = estimate_beta(fobs, fc_amp, centric, eps, dss, free)
-            self._beta_per_bin = bbin
-
-            self._beta_cache = (beta.detach(), eps.detach())
-        return self._beta_cache
-
-    @property
-    def beta_per_bin(self):
-        """Last-estimated per-bin beta (diagnostics); ``None`` until first call."""
-        return self._beta_per_bin
 
     def set_data(self, data: "ReflectionData"):
         """
@@ -494,65 +414,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             return torch.exp(self.log_scale.mean().clamp(-10, 10)).item()
         return 1.0
 
-    def rfactor(self, fcalc: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Calculate the R-factor between observed and calculated structure factors.
-
-        The R-factor is computed directly on the scaled amplitude
-        ``|self.forward(fcalc)|``. The scaler fits its per-bin ``log_scale`` so
-        that ``k*|Fc| ≈ Fo`` against the same loss the body sees (mean ``= |Fc|``,
-        no ``alpha`` mean-shift), so the scaled amplitude is already the
-        least-squares / REFMAC-consistent reporting scale -- no extra per-bin
-        correction is needed.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor
-            Calculated structure factors (complex).
-
-        Returns
-        -------
-        tuple
-            R-work and R-free values.
-        """
-        fcalc_scaled = self.forward(fcalc)
-        valid = self._data.masks().to(torch.bool)
-        F_obs = torch.abs(self._data.get_corrected_data()[0][valid])
-        F_calc = torch.abs(fcalc_scaled[valid])
-        rfree = self._data.rfree_flags[valid]
-        return get_rfactors(F_obs, F_calc, rfree)
-
-    def bin_wise_rfactor(self, fcalc: torch.Tensor):
-        """
-        Calculate the bin-wise R-factor between observed and calculated structure factors.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor
-            Calculated structure factors (complex).
-
-        Returns
-        -------
-        mean_res_per_bin : torch.Tensor
-            Mean resolution per bin.
-        rwork_per_bin : torch.Tensor
-            R-work per bin.
-        rfree_per_bin : torch.Tensor
-            R-free per bin.
-        """
-        fcalc_scaled = self.forward(fcalc)
-        valid = self._data.masks().to(torch.bool)
-        fobs = self._data.get_corrected_data()[0][valid]
-        fcalc_scaled = fcalc_scaled[valid]
-        rfree = self._data.rfree_flags[valid]
-        mean_res_per_bin = self._data.mean_res_per_bin()
-        return mean_res_per_bin, *bin_wise_rfactors(
-            torch.abs(fobs),
-            torch.abs(fcalc_scaled),
-            rfree,
-            self.bins[valid],
-        )
-
     def setup_bin_wise_bfactor(self):
         """Initialize bin-wise B-factor correction parameters."""
         self.bin_wise_bfactor = nn.Parameter(
@@ -796,23 +657,39 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         # handles NaN/Inf rejection so no per-target try/except is needed.
         scaler_self = self
 
+        # σ_A model-error variance for the scale-fit likelihood: estimated ONCE
+        # on the free set from the currently-scaled |F_calc| and held constant
+        # (detached) during the scale optimisation. The σ_A variance is what
+        # keeps the per-bin log_scale from collapsing toward zero in weak shells
+        # (R blow-up). It is owned here transiently rather than cached on the
+        # scaler — the scaler owns scaling only.
+        with torch.no_grad():
+            fc_amp0 = torch.abs(self.forward(fcalc)).reshape(-1)
+            fobs0 = self._data.get_corrected_data()[0].to(fc_amp0.dtype).reshape(-1)
+            eps0 = epsilon_from_hkl(
+                self._data.hkl, getattr(self._data, "spacegroup", None)
+            ).to(fc_amp0.dtype)
+            dss0 = (4.0 * self._s_half_sq).to(fc_amp0.dtype)
+            beta0, eps0 = SigmaAEstimator().get(
+                fobs0, fc_amp0, self._data.centric, eps0, dss0, self._data.free.mask
+            )
+
         class _ScalerXrayTarget(nn.Module):
             name = "scaler/xray"
 
             def forward(self):
-                # σ_A (Read/Rice MLF) target on the work set — the SAME
-                # likelihood the body refinement uses. beta/epsilon (model-error
-                # variance) come detached from get_beta (estimated on the free
-                # set), so they act as constants. This replaces the plain
-                # σ-weighted Gaussian nll_xray, whose minimum drove the per-bin
-                # log_scale toward zero in weak shells (R blow-up).
+                # σ_A (Read MLF) scale-fit on the work set — the SAME likelihood
+                # the body refinement uses. beta/epsilon (free-set model-error
+                # variance) are detached constants estimated once above, so this
+                # fits scales only. Replaces the plain σ-weighted Gaussian
+                # nll_xray, whose minimum drove the per-bin log_scale toward zero
+                # in weak shells (R blow-up).
                 fcalc_scaled = scaler_self.forward(fcalc)
-                beta, eps = scaler_self.get_beta(fcalc)
                 work = scaler_self._data.work
                 F_obs = work.F.to(get_float_dtype())
                 Fc = work.select(torch.abs(fcalc_scaled).reshape(-1))
-                beta_w = work.select(beta).to(F_obs.dtype)
-                eps_w = work.select(eps).to(F_obs.dtype) if eps is not None else None
+                beta_w = work.select(beta0).to(F_obs.dtype)
+                eps_w = work.select(eps0).to(F_obs.dtype) if eps0 is not None else None
                 centric_w = work.select(scaler_self._data.centric)
                 u_penalty = torch.sum(scaler_self.U**2)
                 return (
@@ -867,11 +744,12 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 xray_test = nll_xray(
                     free.F, free.select(fcalc_scaled), free.sigF
                 )
-                valid = self._data.masks().to(torch.bool)
-                rwork, rfree_val = get_rfactors(
-                    torch.abs(self._data.get_corrected_data()[0][valid]),
-                    torch.abs(fcalc_scaled[valid]),
-                    self._data.rfree_flags[valid],
+                # Same R-factor partition as XrayTarget.get_rfactor (work/free
+                # subsets) so this scale-fit diagnostic and the refinement R are
+                # computed identically — any residual difference is only the
+                # outlier/model state at the time each is printed.
+                rwork, rfree_val = rfactor_work_free(
+                    self._data, torch.abs(fcalc_scaled)
                 )
 
                 metrics["steps"].append(step + 1)
@@ -887,10 +765,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                         f"NLL_work={xray_work.item():.2f}, NLL_test={xray_test.item():.2f}"
                     )
 
-        # Estimate per-shell effective sigmas from residuals (SIGMAA-style)
-        # This makes the X-ray likelihood robust to miscalibrated experimental sigmas.
-        self.estimate_sigma_eff(fcalc)
-
         if verbose and self.verbose > 0:
             with torch.no_grad():
                 print(
@@ -902,117 +776,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                         print(f"  {name}: {param.data}")
 
         return metrics
-
-    def estimate_sigma_eff(
-        self,
-        fcalc: torch.Tensor,
-        max_inflation: float = 2.0,
-    ) -> torch.Tensor:
-        """
-        Estimate per-resolution-shell effective sigmas from current residuals.
-
-        Pannu & Read / SIGMAA-style correction: detects miscalibrated
-        experimental sigmas by comparing residual variance to the claimed
-        variance, per resolution bin.
-
-        For each resolution bin:
-
-            D_bin         = < (F_obs - k * |F_calc|)^2 >      (using work set)
-            ratio_bin     = sqrt(D_bin / <sigma_F^2>)
-            ratio_capped  = clamp(ratio_bin, 1.0, max_inflation)
-            sigma_eff     = sigma_F * ratio_capped
-
-        **Why the cap?** At the start of refinement the model is bad, so
-        residuals are dominated by *model error* (which is fixable by
-        refining), not noise. Uncapped inflation creates a vicious cycle:
-        bad model -> huge sigma_eff -> weak data gradient -> bad model.
-        Capping at ``max_inflation`` (default 2.0, i.e. sigmas can grow
-        at most 2x) prevents runaway while still correcting genuinely
-        under-estimated sigmas.
-
-        As the model improves, residuals shrink and the ratio drops toward
-        1, so sigma_eff converges to the raw sigma (good calibration).
-
-        Uses the work set only so the test set doesn't leak into
-        sigma estimation.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor
-            Calculated structure factors (complex, unscaled).
-        max_inflation : float, optional
-            Maximum allowed ratio sigma_eff / sigma_raw. Default 2.0.
-
-        Returns
-        -------
-        torch.Tensor
-            Per-reflection effective sigmas, shape (N,).
-        """
-        with torch.no_grad():
-            fobs_raw, sigma_raw = self._data.get_corrected_data()
-            # Apply scaling to F_calc
-            fcalc_scaled = (
-                self.forward(fcalc).squeeze(0)
-                if fcalc.ndim == 1
-                else self.forward(fcalc)
-            )
-            if fcalc_scaled.ndim > 1:
-                fcalc_scaled = fcalc_scaled.squeeze(0)
-            fcalc_amp = torch.abs(fcalc_scaled).to(fobs_raw.dtype)
-
-            # Work set only (rfree != 0 = work in this codebase convention)
-            work_mask = self._data.work.mask
-
-            bins_work = self.bins[work_mask].to(torch.int64)
-            fobs_work = fobs_raw[work_mask]
-            fcalc_work = fcalc_amp[work_mask]
-            sigma_work = sigma_raw[work_mask]
-
-            # Residuals using F_calc directly (alpha=1 assumed post-scaling)
-            residuals_sq = (fobs_work - fcalc_work) ** 2
-
-            # Per-bin sums
-            sum_d = torch.zeros(self.nbins, device=self.device, dtype=fobs_raw.dtype)
-            sum_s2 = torch.zeros(self.nbins, device=self.device, dtype=fobs_raw.dtype)
-            counts = torch.zeros(self.nbins, device=self.device, dtype=fobs_raw.dtype)
-
-            sum_d = torch.scatter_add(sum_d, 0, bins_work, residuals_sq)
-            sum_s2 = torch.scatter_add(sum_s2, 0, bins_work, sigma_work**2)
-            counts = torch.scatter_add(counts, 0, bins_work, torch.ones_like(fobs_work))
-
-            # Per-bin empirical residual variance and mean raw variance
-            d_per_bin = sum_d / counts.clamp(min=1.0)
-            mean_sigma2_per_bin = sum_s2 / counts.clamp(min=1.0)
-
-            # Ratio sigma_eff / sigma_raw, capped to [1, max_inflation]
-            ratio_per_bin = torch.sqrt(
-                (d_per_bin / mean_sigma2_per_bin.clamp(min=1e-12)).clamp(min=1e-12)
-            )
-            ratio_per_bin = torch.clamp(ratio_per_bin, 1.0, float(max_inflation))
-
-            # sigma_eff per reflection = sigma_raw * ratio_for_its_bin
-            all_bins = self.bins.to(torch.int64)
-            ratio_per_refl = ratio_per_bin[all_bins]
-            sigma_eff_all = sigma_raw * ratio_per_refl
-
-            # Store per-bin representative sigma_eff (using mean raw sigma in bin)
-            sigma_eff_per_bin = (
-                torch.sqrt(mean_sigma2_per_bin.clamp(min=1e-12)) * ratio_per_bin
-            )
-            self.sigma_eff_per_bin.copy_(sigma_eff_per_bin)
-            self.sigma_eff.copy_(sigma_eff_all)
-
-            if self.verbose > 1:
-                mean_raw = sigma_raw[work_mask].mean().item()
-                mean_eff = sigma_eff_all[work_mask].mean().item()
-                print(
-                    f"  sigma_eff estimation: mean raw={mean_raw:.3f}, "
-                    f"mean effective={mean_eff:.3f}, "
-                    f"ratio={mean_eff/max(mean_raw,1e-6):.2f}, "
-                    f"per-bin ratios={ratio_per_bin.cpu().tolist()}"
-                )
-
-            return sigma_eff_all
 
     def forward(
         self,

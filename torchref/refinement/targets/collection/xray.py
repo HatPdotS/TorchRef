@@ -21,7 +21,12 @@ from typing import TYPE_CHECKING, Dict
 import numpy as np
 import torch
 
-from torchref.base.targets.xray_ml_sigmaa import ml_xray_loss_beta_math
+from torchref.base.reciprocal import get_scattering_vectors
+from torchref.base.targets.xray_ml_sigmaa import (
+    SigmaAEstimator,
+    epsilon_from_hkl,
+    ml_xray_loss_beta_math,
+)
 from torchref.refinement.targets.base import Target
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
@@ -301,22 +306,23 @@ class CollectionMLTarget(Target):
     The collection analogue of
     :class:`~torchref.refinement.targets.xray.maximum_likelihood.MaximumLikelihoodXrayTarget`:
     instead of ``beta = sigma**2`` (plain Rice), it uses one **shared** Luzzati
-    model-error variance ``beta`` estimated by the (collection) scaler across all
-    datasets (``scaler.get_beta()``).  Because the datasets share the common HKL
-    set, the single per-reflection ``beta`` applies to every dataset.
+    model-error variance ``beta``.  ``beta`` is estimated by maximum likelihood on
+    the **pooled** free reflections of every data–model pair and mapped back onto
+    the common HKL, so a single per-reflection ``beta`` applies to every dataset.
 
-    The per-dataset loss is the Read MLF form
-    (``mean = |Fc|``, variance ``epsilon*beta``) from
-    :func:`torchref.base.targets.xray_ml_sigmaa.ml_xray_loss_beta_math`,
-    summed over datasets.  ``beta`` is detached (a constant in autograd);
-    gradients reach the models only through ``F_calc``.
+    The estimate is owned by **this target** (a :class:`SigmaAEstimator`), not the
+    scaler — the scaler owns scaling only.  The per-dataset loss is the Read MLF
+    form (``mean = |Fc|``, variance ``epsilon*beta``) from
+    :func:`torchref.base.targets.xray_ml_sigmaa.ml_xray_loss_beta_math`, summed
+    over datasets.  ``beta`` is detached (a constant in autograd); gradients reach
+    the models only through ``F_calc``.
 
     Parameters
     ----------
     dataset_collection : DatasetCollection
     model_collection : ModelCollection
     scaler : ScalerBase
-        Must provide ``get_beta()`` (e.g. ``CollectionScaler``).
+        Scaling layer applied to F_calc (``forward_mixed`` when available).
     normalize : bool
         Unused placeholder (kept for signature parity with CollectionRiceTarget).
     use_work_set : bool
@@ -356,6 +362,26 @@ class CollectionMLTarget(Target):
         self.base_weight = (
             self.DEFAULT_BASE_WEIGHT if base_weight is None else float(base_weight)
         )
+        # The shared σ_A model-error variance is owned by the target.
+        self._sigma_a = SigmaAEstimator()
+        # Model-independent common-HKL geometry (multiplicity + d*²), cached.
+        self._eps_common: torch.Tensor = None
+        self._dss_common: torch.Tensor = None
+        self._geom_key: int = None
+
+    def _common_geom(self):
+        """``(epsilon, d_star_sq)`` on the common HKL, cached per dark dataset."""
+        dc = self._dataset_collection
+        mc = self._model_collection
+        data = dc[mc.dark_key]
+        key = id(data)
+        if self._eps_common is None or self._geom_key != key:
+            sg = getattr(data, "spacegroup", None)
+            eps = epsilon_from_hkl(data.hkl, sg)
+            s = get_scattering_vectors(data.hkl, data.cell)
+            dss = (torch.norm(s, dim=1) ** 2).to(eps.dtype)
+            self._eps_common, self._dss_common, self._geom_key = eps, dss, key
+        return self._eps_common, self._dss_common
 
     def forward(self) -> torch.Tensor:
         dc = self._dataset_collection
@@ -367,27 +393,58 @@ class CollectionMLTarget(Target):
         if not all_keys:
             return torch.tensor(0.0, device=mc.device)
 
-        scaler = self._scaler
-        if scaler is None or not hasattr(scaler, "get_beta"):
-            raise RuntimeError(
-                "CollectionMLTarget requires a scaler with get_beta(); "
-                f"got {type(scaler).__name__}."
-            )
-        # One shared (beta, epsilon) for all datasets (common HKL).
-        beta, eps = scaler.get_beta()
+        eps_common, dss_common = self._common_geom()
+        dtype = dss_common.dtype
 
-        total = torch.tensor(0.0, device=mc.device)
+        # Clear any structure-factor cache populated under no_grad (e.g. by the
+        # scaler's joint initialization) so the F_calc computed below carries a
+        # live graph — otherwise gradients never reach the models.
+        for bm in getattr(mc, "base_models", []):
+            if hasattr(bm, "reset_cache"):
+                bm.reset_cache()
+
+        # Compute each pair's F_calc once (with grad — used by the loss), and
+        # collect detached copies to pool the free reflections for ONE shared
+        # beta estimate across all datasets.
+        per_ds = []  # (F_obs, F_calc[grad], centric, mask)
+        fo_parts, fc_parts, cen_parts = [], [], []
+        eps_parts, dss_parts, free_parts = [], [], []
         for key in all_keys:
             data = dc[key]
             model = mc[key]
             hkl = data.hkl
 
             F_obs, _sigma, rfree, validity, centric = _unpack_masked_data(data)
-            F_calc = torch.abs(_scale_fcalc(self._scaler, model(hkl), model))
-            mask = validity & rfree if self.use_work_set else validity
+            F_obs = F_obs.to(dtype)
+            F_calc = torch.abs(_scale_fcalc(self._scaler, model(hkl), model)).to(dtype)
             if centric is None:
                 centric = torch.zeros(len(hkl), dtype=torch.bool, device=hkl.device)
+            mask = (validity & rfree) if self.use_work_set else validity
+            per_ds.append((F_obs, F_calc, centric, mask))
 
+            free = validity & (~rfree)
+            fo_parts.append(F_obs)
+            fc_parts.append(F_calc.detach())  # beta needs no gradient
+            cen_parts.append(centric)
+            eps_parts.append(eps_common.to(dtype))
+            dss_parts.append(dss_common.to(dtype))
+            free_parts.append(free)
+
+        # One shared (beta, epsilon) for all datasets, mapped onto the common
+        # HKL via target_dss. Detached; cached until maintenance() resets it.
+        beta, eps = self._sigma_a.get(
+            torch.cat(fo_parts),
+            torch.cat(fc_parts),
+            torch.cat(cen_parts),
+            torch.cat(eps_parts),
+            torch.cat(dss_parts),
+            torch.cat(free_parts),
+            out_epsilon=eps_common.to(dtype),
+            target_dss=dss_common,
+        )
+
+        total = torch.tensor(0.0, device=mc.device)
+        for F_obs, F_calc, centric, mask in per_ds:
             b = beta.to(F_obs.dtype)
             e = eps.to(F_obs.dtype) if eps is not None else None
             total = total + ml_xray_loss_beta_math(F_obs, F_calc, b, centric, mask, e)
@@ -398,18 +455,15 @@ class CollectionMLTarget(Target):
         return total
 
     def maintenance(self) -> None:
-        """Invalidate the scaler's shared beta so it is re-estimated from the
-        updated models on the next forward (``LossState`` calls this after each
+        """Invalidate the shared beta so it is re-estimated from the updated
+        models on the next forward (``LossState`` calls this after each
         optimizer-step block)."""
-        scaler = self._scaler
-        if scaler is not None and hasattr(scaler, "reset_beta_cache"):
-            scaler.reset_beta_cache()
+        self._sigma_a.reset()
 
     def stats(self) -> Dict[str, StatEntry]:
         """Report shared beta diagnostics (low/high-resolution shell values)."""
         out: Dict[str, StatEntry] = {}
-        scaler = self._scaler
-        bb = getattr(scaler, "beta_per_bin", None)
+        bb = self._sigma_a.beta_per_bin
         if bb is not None and bb.numel() > 0:
             out["beta_bin0"] = stat(bb[0].item(), VERBOSITY_STANDARD)
             out["beta_binN"] = stat(bb[-1].item(), VERBOSITY_STANDARD)

@@ -3,8 +3,8 @@
 - factory dispatch / thin target
 - loss math: exact reduction to the unit-variance ML target at beta=eps=1
 - gradient isolation (beta is a detached constant)
-- end-to-end on 1DAW: beta owned by the base Scaler, maintenance resets the
-  cache, gradients reach the model.
+- end-to-end on 1DAW: beta owned by the target's SigmaAEstimator, maintenance
+  resets the cache, gradients reach the model.
 """
 
 import pytest
@@ -21,8 +21,11 @@ class TestMaximumLikelihoodXrayTarget:
 
         target = MaximumLikelihoodXrayTarget()
         assert target._model is None and target._data is None and target._scaler is None
-        # σ_A lives in the Scaler now — the target carries no estimation state.
-        assert not hasattr(target, "sigma_a_params")
+        # σ_A (beta) is owned by the target via a SigmaAEstimator; the scaler
+        # owns scaling only.
+        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator
+
+        assert isinstance(target._sigma_a, SigmaAEstimator)
 
     def test_factory_dispatch(self):
         from torchref.refinement.targets import (
@@ -101,7 +104,7 @@ class TestCollectionTargetsRelocated:
         from torchref.refinement.targets import CollectionMLTarget
 
         assert CollectionMLTarget.DEFAULT_BASE_WEIGHT == 10.0
-        # maintenance hook present (resets the scaler's shared beta)
+        # maintenance hook present (resets the target's own shared beta)
         assert hasattr(CollectionMLTarget, "maintenance")
 
 
@@ -157,12 +160,16 @@ class TestSigmaAOnRealData:
         ref.scaler.refine_lbfgs()
         return ref
 
-    def test_beta_owned_by_base_scaler(self, refinement):
+    def test_beta_owned_by_target(self, refinement):
+        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator
         from torchref.scaling import Scaler
 
-        # No subclass: beta lives in the base Scaler, shared by both targets.
+        # The scaler owns scaling only — no beta machinery.
         assert isinstance(refinement.scaler, Scaler)
-        assert hasattr(refinement.scaler, "get_beta")
+        assert not hasattr(refinement.scaler, "get_beta")
+        # beta lives in the target's own SigmaAEstimator.
+        assert isinstance(refinement.xray_target_work._sigma_a, SigmaAEstimator)
+        # both targets still share the one scaler (scaling layer).
         assert (
             refinement.xray_target_work._scaler
             is refinement.scaler
@@ -170,23 +177,41 @@ class TestSigmaAOnRealData:
         )
 
     def test_beta_physical_and_falls_with_resolution(self, refinement):
-        assert torch.isfinite(refinement.xray_target_work.forward())
-        beta, eps = refinement.scaler.get_beta()
+        from torchref.base.reciprocal import get_scattering_vectors
+        from torchref.base.targets.xray_ml_sigmaa import (
+            epsilon_from_hkl,
+            estimate_beta,
+        )
+
+        t = refinement.xray_target_work
+        assert torch.isfinite(t.forward())
+        beta, eps = t._sigma_a._cache
         v = refinement.reflection_data.masks().to(torch.bool)
         assert (beta[v] > 0).all() and torch.isfinite(beta[v]).all()
-        bbin = refinement.scaler.beta_per_bin
+
+        # The falling-with-resolution trend is an estimator-math property,
+        # checked in float64 so it is device-independent.
+        data = refinement.reflection_data
+        with torch.no_grad():
+            fc = torch.abs(t._scaled_F_calc_full()).double().reshape(-1)
+            fo = data.get_corrected_data()[0].double().reshape(-1)
+            epsd = epsilon_from_hkl(data.hkl, getattr(data, "spacegroup", None)).double()
+            s = get_scattering_vectors(data.hkl, data.cell)
+            dss = (torch.norm(s, dim=1) ** 2).double()
+            _b, bbin, _ = estimate_beta(fo, fc, data.centric, epsd, dss, data.free.mask)
+        assert (bbin > 0).all() and torch.isfinite(bbin).all()
         # beta is an absolute model-error variance in F^2 units (~(1-sigma_A^2)*
         # Sigma_N); Sigma_N ~= <F^2> decays steeply with resolution, so absolute
-        # beta falls: the low-resolution half exceeds the high-resolution half
-        # (robust to small bin-to-bin bumps and LBFGS-scale nondeterminism).
+        # beta falls: the low-resolution half exceeds the high-resolution half.
         h = bbin.numel() // 2
         assert bbin[:h].mean() > bbin[h:].mean()
 
     def test_maintenance_resets_cache(self, refinement):
-        refinement.scaler.get_beta()
-        assert refinement.scaler._beta_cache is not None
-        refinement.xray_target_work.maintenance()
-        assert refinement.scaler._beta_cache is None
+        t = refinement.xray_target_work
+        t.forward()  # populates the estimator cache
+        assert t._sigma_a._cache is not None
+        t.maintenance()
+        assert t._sigma_a._cache is None
 
     def test_gradient_reaches_model(self, refinement):
         refinement.xray_target_work.forward().backward()

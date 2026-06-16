@@ -57,6 +57,37 @@ def get_rfactors(
     return r_work, r_test
 
 
+def rfactor_work_free(data, F_calc_amp: torch.Tensor) -> tuple:
+    """R-work / R-free over a ReflectionData's canonical work / free subsets.
+
+    The single shared R-factor partition: ``R_work`` on ``data.work`` and
+    ``R_free`` on ``data.free`` (the same subset accessors the refinement loss
+    uses — validity masks applied, work/test split applied, and any separate
+    validation set excluded from both). Both the refinement reporting
+    (:meth:`XrayTarget.get_rfactor`) and the scaler's scale-fit diagnostic call
+    this, so they cannot disagree on convention.
+
+    Parameters
+    ----------
+    data : ReflectionData
+        Must expose ``.work`` / ``.free`` subset accessors with ``.F`` and
+        ``.select(full_array)``.
+    F_calc_amp : torch.Tensor
+        Full-size, already-scaled calculated **amplitudes** (``|F_calc|``),
+        aligned to ``data.hkl``.
+
+    Returns
+    -------
+    tuple
+        ``(R_work, R_free)`` as Python floats.
+    """
+    work = data.work
+    free = data.free
+    r_work = rfactor(work.F, work.select(F_calc_amp))
+    r_free = rfactor(free.F, free.select(F_calc_amp))
+    return r_work, r_free
+
+
 def bin_wise_rfactors(
     F_obs: torch.Tensor, F_calc: torch.Tensor, rfree: torch.Tensor, bins: torch.Tensor
 ) -> tuple:

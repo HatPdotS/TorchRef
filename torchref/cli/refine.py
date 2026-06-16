@@ -213,6 +213,20 @@ Examples:
         sigma_m_scale=args.sigma_m_scale,
     )
 
+    # Apply manual group weights, if given. Merge onto DEFAULT_GROUP_WEIGHTS so
+    # unspecified groups keep their defaults (e.g. --weights '{"xray": 5}' sets
+    # xray=5 while geometry=1 / adp=0.1 stay). reset_loss_state() forces the lazy
+    # LossState to rebuild with the new weighting.
+    if manual_weights:
+        from torchref.refinement.base_refinement import DEFAULT_GROUP_WEIGHTS
+        from torchref.refinement.weighting import ManualWeighting
+
+        merged = {**DEFAULT_GROUP_WEIGHTS, **manual_weights}
+        refinement.weighting = ManualWeighting(merged)
+        refinement.reset_loss_state()
+        if args.verbose > 0:
+            print(f"Applied manual group weights: {merged}")
+
     if args.verbose > 0:
         print("Refinement initialized successfully.\n")
         sys.stdout.flush()

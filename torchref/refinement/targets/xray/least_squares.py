@@ -42,7 +42,6 @@ class LeastSquaresXrayTarget(XrayTarget):
         scaler: "Scaler" = None,
         weighting: str = "sigma",
         use_work_set: bool = True,
-        sigma_mode: str = "raw",
         scale_mode: str = "scaler",
         n_bins: int = 20,
         verbose: int = 0,
@@ -62,7 +61,6 @@ class LeastSquaresXrayTarget(XrayTarget):
             model=model,
             scaler=scaler,
             use_work_set=use_work_set,
-            sigma_mode=sigma_mode,
             verbose=verbose,
         )
         self.weighting = weighting
@@ -81,6 +79,30 @@ class LeastSquaresXrayTarget(XrayTarget):
             self.n_bins = n_bins
             self._bins_cache_dataid = dataid
         return self._bins_cache
+
+    def _scaled_F_calc_full(self, fcalc: torch.Tensor = None) -> torch.Tensor:
+        """Full-size ``|F_calc|`` under the active scale.
+
+        For ``scale_mode="scaler"`` this is just the scaler-scaled amplitude
+        (base behaviour). For ``binwise_optimal`` the closed-form per-bin scale
+        is fit on the **work** set and applied to **all** reflections, so a
+        reported ``R_free`` uses the same work-fit ``c`` as ``R_work`` (the
+        apples-to-apples Phenix convention).
+        """
+        F_calc_full = super()._scaled_F_calc_full(fcalc=fcalc)
+        if self.scale_mode != "binwise_optimal":
+            return F_calc_full
+        full_bins = self._get_bins_cached()
+        work = self._data.work
+        c = binwise_scale(
+            work.select(F_calc_full),
+            work.F,
+            work.select(full_bins),
+            valid=None,
+            nbins=self.n_bins,
+            weights=None,
+        ).detach()
+        return c[full_bins] * F_calc_full
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """
