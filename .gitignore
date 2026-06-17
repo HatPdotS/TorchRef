@@ -56,3 +56,4 @@ paper/figure2_validation/experiments/
 paper/extended_figures/*/experiments/
 paper/extended_figures/*/output/
 
+torchref/data/amber_cache

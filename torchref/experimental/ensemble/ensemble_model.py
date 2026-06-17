@@ -563,8 +563,12 @@ class EnsembleModel(ModelFT):
         # refinement is enabled.
         self._refine_population: bool = False
         self._refine_member_b: bool = False
+        # Frozen at construction (requires_grad=False); a fresh ensemble refines
+        # xyz only. enable_population_refinement() flips these refinable when the
+        # opt-in feature is turned on.
         self.occ_logits = torch.nn.Parameter(
-            torch.zeros(n_members, dtype=self.dtype_float, device=self.device)
+            torch.zeros(n_members, dtype=self.dtype_float, device=self.device),
+            requires_grad=False,
         )
         with torch.no_grad():
             # Per-member initial B = mean of that member's per-atom B (all
@@ -576,7 +580,9 @@ class EnsembleModel(ModelFT):
                 .clamp_min(1e-3)
             )
             b_raw0 = torch.log(torch.expm1(b_per_member).clamp_min(1e-6))
-        self.b_raw = torch.nn.Parameter(b_raw0.to(self.dtype_float))
+        self.b_raw = torch.nn.Parameter(
+            b_raw0.to(self.dtype_float), requires_grad=False
+        )
         # Only xyz refines — B-factors fixed (ensemble spread IS the disorder),
         # anisotropic U is unused, and occupancy is fixed at 1/N.
         for tgt in ("adp", "u", "occupancy"):
@@ -607,6 +613,10 @@ class EnsembleModel(ModelFT):
         """
         self._refine_population = bool(enable)
         self._refine_member_b = bool(refine_b)
+        # Flip the per-member levers refinable exactly when the feature is on
+        # (they are frozen at construction so a fresh ensemble refines xyz only).
+        self.occ_logits.requires_grad_(bool(enable))
+        self.b_raw.requires_grad_(bool(enable) and bool(refine_b))
         self.reset_cache()
 
     @property

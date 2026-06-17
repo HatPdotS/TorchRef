@@ -470,7 +470,7 @@ def main():
     p.add_argument("--n-cycles", type=int, default=25)
     p.add_argument("--adp-weight", type=float, default=0.1,
                    help="Group weight on the entire ADP loss (default 0.1).")
-    p.add_argument("--xray-mode", default="ml_sigmaa")
+    p.add_argument("--xray-mode", default="ml")
     p.add_argument("--sigma-m-scale", type=float, default=1.0)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true")
