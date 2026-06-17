@@ -754,21 +754,9 @@ def build_h_candidate_pairs(
     symop_np = heavy_symop.cpu().numpy()
     offsets_np = heavy_offsets.cpu().numpy()
 
-    # Read VDW radii from the min_distances and indices of existing pairs
-    # Instead, read from data file — we need per-atom VDW radii
-    # Use h_vdw_radius for H, and derive heavy VDW radii from vdw_data
-    # Since we have min_distances = radii[A] + radii[B], we can't easily
-    # decompose.  Instead, just load the model's VDW radii.
-    # The caller should pass these.  For now, compute from min_distances
-    # and use a simple approach: store radii per heavy atom.
-
-    # Actually, just use a lookup: min_dist_h_heavy = H_vdw + heavy_vdw
-    # We need heavy_vdw per atom.  Derive from existing pair data:
-    # For any pair (A, B): min_dist = radii[A] + radii[B]
-    # We can solve if we have a self-pair, but we don't.  Instead, pass
-    # heavy_vdw_radii directly from the restraints object.
-    # For now, use a default approach: 1.7 Å for heavy atoms and refine later.
-    # This will be overridden by the caller.
+    # Per-pair VDW radius sums are not computed here: the cand_min_dist
+    # buffer is allocated as zeros below and is populated by the caller,
+    # which has the model's per-atom VDW radii.
 
     # Candidate pairs stored as indices into the combined array:
     #   [0 .. n_heavy-1] = heavy atoms,  [n_heavy .. n_heavy+n_h-1] = H atoms

@@ -6,8 +6,9 @@ This module defines the CrystalDataset dataclass that provides:
 - Device management (to, cuda, cpu)
 - Serialization (save, load)
 
-Space groups are stored as gemmi.SpaceGroup objects for consistency
-and direct access to symmetry operations.
+On the base class the ``spacegroup`` field is an ``Optional[str]`` name;
+concrete subclasses (e.g. ReflectionData, FcalcDataset) override it to hold
+``torchref.symmetry.SpaceGroup`` objects.
 """
 
 from dataclasses import dataclass, field, fields
@@ -188,8 +189,9 @@ class CrystalDataset(DeviceMovementMixin):
         ----------
         state : Dict[str, Any]
             State dictionary from _get_state().
-        device : str
-            Device to load tensors onto.
+        device : torch.device, optional
+            Device to load tensors onto. If None, defaults to the configured
+            device via get_default_device().
 
         Returns
         -------
@@ -255,8 +257,9 @@ class CrystalDataset(DeviceMovementMixin):
         ----------
         path : str
             Input file path.
-        device : str
-            Device to load tensors onto.
+        device : torch.device, optional
+            Device to load tensors onto. If None, defaults to the configured
+            device via get_default_device().
 
         Returns
         -------

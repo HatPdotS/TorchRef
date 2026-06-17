@@ -693,8 +693,17 @@ class IHMWriter:
         Builds a ``python-ihm`` System object with:
         - Entity and assembly from base model atom data
         - Multi-state definitions from mapping states
-        - Model groups from mapping groups with population fractions
+        - Model groups from mapping groups
         - Atom coordinates per state via ``pdbx_PDB_model_num``
+
+        Notes
+        -----
+        Population fractions are written onto ``ihm.model.State`` via its
+        single ``population_fraction`` scalar. Because that attribute is
+        per-state (not per-(state, group)), assigning fractions while
+        linking multiple groups to a state overwrites earlier values, so
+        the per-group ``state_fractions`` in the mapping are not fully
+        round-tripped.
 
         Parameters
         ----------

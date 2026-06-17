@@ -454,9 +454,22 @@ def write_results_mtz(dc, mc, scaler, filename):
     amp_2fofc_bayes = 2 * F_ext_bayes_amp - amp_calc_bayes
     amp_fofc_bayes = F_ext_bayes_amp - amp_calc_bayes
 
-    print("Phase-aware extrapolation rfactors:", scaler_extra.rfactor())
-    print("Classic extrapolation rfactors:", scaler_classic.rfactor())
-    print("Bayes extrapolation rfactors:", scaler_bayes.rfactor())
+    from torchref.base.metrics import get_rfactors
+
+    def _extrapolation_rfactors(data, fcalc_scaled):
+        valid = data.masks().to(torch.bool)
+        return get_rfactors(
+            torch.abs(data.get_corrected_data()[0][valid]),
+            torch.abs(fcalc_scaled[valid]),
+            data.rfree_flags[valid],
+        )
+
+    print("Phase-aware extrapolation rfactors:",
+          _extrapolation_rfactors(data_light_extra, F_calc_extra))
+    print("Classic extrapolation rfactors:",
+          _extrapolation_rfactors(data_extra_classic, F_calc_classic))
+    print("Bayes extrapolation rfactors:",
+          _extrapolation_rfactors(data_extra_bayes, F_calc_bayes))
     print(f"  Bayes: tau^2 = {tau_sq:.4f}, mean w(h) = {w_shrinkage.mean().item():.3f}")
 
     # --- Build MTZ ---

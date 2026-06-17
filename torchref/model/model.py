@@ -528,8 +528,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ----------
         cif_path : str or list of str
             Path(s) to CIF restraints dictionary file(s).
-        return self
-            For method chaining
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
         """
         self._cif_path = cif_path
         # Reset restraints so they will be rebuilt on next access
@@ -1144,17 +1147,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Notes
         -----
-        When every atom is isotropic and no H exclusion is active —
-        ``self._iso_covers_all is True``, the common protein-refinement
-        case — the per-atom indexing is skipped and ``self.xyz()``,
-        ``self.adp()``, ``self.occupancy()`` are returned directly.
-
-        Motivation: ``self.xyz()[idx]`` is a no-op forward when
-        ``idx = arange(N)``, but its backward routes through PyTorch's
-        ``aten::_index_put_impl_(accumulate=True)``, which performs a
-        ``cub::DeviceRadixSortOnesweepKernel`` over ``len(idx)`` indices
-        followed by a deduplicated scatter (~50-150 µs/iter per gather
-        on A100 / 1DAW). Skipping the gather avoids that cost.
+        When every atom is isotropic and no H exclusion is active
+        (``self._iso_covers_all is True``, the common protein-refinement
+        case), the per-atom indexing is skipped and ``self.xyz()``,
+        ``self.adp()``, ``self.occupancy()`` are returned directly to
+        avoid the cost of a redundant gather and its backward scatter.
         """
         if self._iso_covers_all:
             return self.xyz(), self.adp(), self.occupancy()
@@ -1670,6 +1667,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         from torchref import PATH_TORCHREF_DATA
 
+        # ``mgr`` is set when we fall back to TorchRef's auto-fetching monomer
+        # library manager; per-residue CIFs are then resolved through it (which
+        # downloads/caches on demand) rather than from ``mon_lib_path`` directly.
+        mgr = None
         if mon_lib_path is None:
             # Search candidate paths in priority order
             import os as _os
@@ -1688,10 +1689,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                     mon_lib_path = c
                     break
             if mon_lib_path is None:
-                raise FileNotFoundError(
-                    "CCP4 monomer library not found. Provide mon_lib_path explicitly, "
-                    "or set the CLIBD_MON environment variable to the library directory."
-                )
+                # No complete CCP4 library on hand — use TorchRef's monomer
+                # library manager, which ships standard residues, auto-downloads
+                # non-standard ones (e.g. ligands), and stages the global
+                # ener_lib.cif + mon_lib_list.cif into the cache. This is the
+                # normal path; a full CCP4 install is not required.
+                from torchref.restraints.library import get_library_manager
+
+                mgr = get_library_manager(verbose=self.verbose)
+                mon_lib_path = str(mgr.ensure_gemmi_base())
 
         # Sync current xyz/adp/occupancy into DataFrame
         self.update_pdb()
@@ -1716,12 +1722,20 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             st = gemmi.read_structure(tmp_heavy)
             st.setup_entities()
 
-            # Load monomer library and add relevant monomers
+            # Load monomer library and add relevant monomers. Per-residue CIFs
+            # are resolved via the manager (bundled → cache → on-demand download)
+            # when falling back to it, else from the explicit library directory.
             monlib = gemmi.read_monomer_lib(mon_lib_path, [])
             resnames = set(r.name for m in st for c in m for r in c)
             for rn in resnames:
-                cif_path = os.path.join(mon_lib_path, rn[0].lower(), rn + ".cif")
-                if not os.path.exists(cif_path):
+                if mgr is not None:
+                    cif = mgr.get_cif_file(rn)
+                    cif_path = str(cif) if cif is not None else None
+                else:
+                    cif_path = os.path.join(mon_lib_path, rn[0].lower(), rn + ".cif")
+                    if not os.path.exists(cif_path):
+                        cif_path = None
+                if cif_path is None:
                     continue
                 doc = gemmi.cif.read(cif_path)
                 for block in doc:
@@ -3121,9 +3135,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         translation = translation.to(device=xyz.device, dtype=xyz.dtype)
 
         if fractional:
-            # Convert fractional to Cartesian using the fractional matrix
-            # fractional_matrix transforms fractional -> Cartesian
-            translation_cart = translation @ self.fractional_matrix
+            # Convert fractional -> Cartesian. The orthogonalization matrix B
+            # (fractional_matrix) follows the convention cart = frac @ B.T
+            # (see Cell.fractional_to_cartesian); the transpose matters for
+            # non-orthogonal (monoclinic/triclinic) cells.
+            translation_cart = translation @ self.fractional_matrix.T
         else:
             translation_cart = translation
 

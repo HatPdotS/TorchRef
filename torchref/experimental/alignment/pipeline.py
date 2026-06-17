@@ -504,7 +504,9 @@ class MolecularReplacementPipeline:
             dtype=get_float_dtype(),
             device=self.device,
         )
-        trans_cart = trans_frac @ self.data.cell.fractional_matrix.to(self.device)
+        # cart = frac @ B.T (B = fractional_matrix); the transpose is required
+        # for non-orthogonal cells.
+        trans_cart = trans_frac @ self.data.cell.fractional_matrix.T.to(self.device)
         xyz_final = xyz_rotated + trans_cart
 
         atom_mask = AtomSampler.from_model(self.model, mode='ca_only')

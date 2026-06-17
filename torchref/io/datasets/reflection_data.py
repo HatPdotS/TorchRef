@@ -520,6 +520,18 @@ class ReflectionData(CrystalDataset, DebugMixin):
             rfree = rfree.clip(min=0, max=1).to(torch.bool)
             self.rfree_flags = rfree
             self.masks["flagged_initial"] = ~flagged
+            # If a third (validation) column was present, record it in the
+            # separate boolean ``validation_flags`` (rfree_flags stays binary
+            # work/free); the work/free/validation subsets are kept disjoint by
+            # ``_subset_indices``. Otherwise leave flags two-class -- callers can
+            # invoke ``generate_validation_set`` explicitly.
+            if "Validation-flags" in data_dict:
+                self.validation_flags = torch.tensor(
+                    data_dict["Validation-flags"],
+                    device=self.device,
+                    requires_grad=False,
+                ).to(torch.bool)
+                self.rfree_source = "MTZ FreeR+Validation"
         else:
             flagged = torch.zeros(
                 len(self.hkl), dtype=torch.bool, device=self.device, requires_grad=False
@@ -1133,14 +1145,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
         2. Estimate B_solvent from low-resolution data (d > 6 Å) where solvent dominates
         3. Refine both together with two-exponential fit across all data
 
-        Args:
-            n_bins: Number of resolution bins for averaging (default: 30)
+        Parameters
+        ----------
+        n_bins : int, optional
+            Number of resolution bins for averaging. Default is 30.
 
-        Sets:
-            self.wilson_b: Overall Wilson B-factor (weighted average) in Å²
-            self.wilson_b_structure: Structure B-factor from high-res in Å²
-            self.wilson_b_solvent: Solvent B-factor from low-res in Å²
-            self.wilson_k_sol: Relative solvent contribution (0-1)
+        Notes
+        -----
+        Sets the following attributes:
+
+        - ``self.wilson_b`` : Overall Wilson B-factor (structure B) in Å².
+        - ``self.wilson_b_structure`` : Structure B-factor from high-res in Å².
+        - ``self.wilson_b_solvent`` : Solvent B-factor from low-res in Å².
+        - ``self.wilson_k_sol`` : Relative solvent contribution (0-1).
         """
         if self.F is None or self.resolution is None:
             return
@@ -1226,14 +1243,21 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         Fit single-exponential Wilson plot to selected resolution range.
 
-        Args:
-            s_sq: s² values for bins
-            mean_F_sq: Mean F² values for bins
-            mask: Boolean mask selecting which bins to use
-            label: Label for error messages
+        Parameters
+        ----------
+        s_sq : torch.Tensor
+            s² values for bins.
+        mean_F_sq : torch.Tensor
+            Mean F² values for bins.
+        mask : torch.Tensor
+            Boolean mask selecting which bins to use.
+        label : str
+            Label for error messages.
 
-        Returns:
-            B-factor from fit (Å²)
+        Returns
+        -------
+        float
+            B-factor from fit (Å²).
         """
         if mask.sum() < 3:
             # Not enough data, return reasonable default
@@ -1518,12 +1542,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     def get_mask(self):
         """
-        Return combined mask from all active filters.
+        Placeholder for returning a combined mask from all active filters.
 
-        Returns
-        -------
-        torch.Tensor
-            Boolean mask combining all filter conditions.
+        Not implemented; the body is empty and this returns ``None``. Use
+        :meth:`masks` (the combined-validity callable) to obtain the boolean
+        mask combining all active filter conditions.
         """
 
     def cut_res(
@@ -2032,15 +2055,22 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         mask = torch.zeros(len(self.F), dtype=torch.bool, device=self.device)
         if self.F is not None:
-            if self.verbose > 0:
-                print("found nan F values: ", torch.isnan(self.F).sum().item())
-            mask |= torch.isnan(self.F)
-        if self.F_sigma is not None:
+            # ~isfinite catches NaN AND +/-Inf (isnan alone let Inf through).
+            nonfinite = ~torch.isfinite(self.F)
             if self.verbose > 0:
                 print(
-                    "found nan F_sigma values: ", torch.isnan(self.F_sigma).sum().item()
+                    "found non-finite F values (NaN/Inf): ",
+                    nonfinite.sum().item(),
                 )
-            mask |= torch.isnan(self.F_sigma)
+            mask |= nonfinite
+        if self.F_sigma is not None:
+            nonfinite_sigma = ~torch.isfinite(self.F_sigma)
+            if self.verbose > 0:
+                print(
+                    "found non-finite F_sigma values (NaN/Inf): ",
+                    nonfinite_sigma.sum().item(),
+                )
+            mask |= nonfinite_sigma
         neg_mask = self.F <= 0
         if torch.any(neg_mask):
             warnings.warn(
@@ -2245,10 +2275,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         z_threshold : float, optional
             Z-score threshold to classify outliers. Default is 4.0.
 
-        Returns
-        -------
-        torch.Tensor
-            Boolean mask where True indicates outliers.
+        Notes
+        -----
+        Operates by side effect: stores ``~outlier_mask`` (True = keep) under
+        ``self.masks['outliers']``. The normal code path returns ``None``;
+        only the early no-valid-ratio branch returns a boolean tensor.
         """
         hkl, F_obs, _, _ = self._masked_unpack(mask=False)
         log_ratio = self.get_log_ratio(model, scaler)
@@ -2725,11 +2756,23 @@ class ReflectionData(CrystalDataset, DebugMixin):
             if self.I_sigma is not None:
                 data_dict["SIGI-obs"] = self.I_sigma.detach().cpu().numpy()
 
-        # Add R-free flags (canonical name: FreeR_flag)
+        # Add R-free flags (canonical name: FreeR_flag).
+        # The work/free split lives in the binary ``rfree_flags`` (1=work,
+        # 0=free); the optional held-out validation set lives in the separate
+        # boolean ``validation_flags``. They are written as two standard columns
+        # so external crystallography tools keep working:
+        #   FreeR_flag:      1 = work, 0 = free (classical "1 = refined against")
+        #   Validation_flag: 1 = validation, 0 = otherwise (optional column)
         if self.rfree_flags is not None:
-            data_dict["R-free-flags"] = (
-                self.rfree_flags.detach().cpu().numpy().astype(int)
-            )
+            flags_np = self.rfree_flags.detach().cpu().numpy()
+            # rfree_flags is binary work/free (bool or {0,1}); write 1=work.
+            data_dict["R-free-flags"] = (flags_np != 0).astype(int)
+            # Emit Validation_flag column only if a validation set exists.
+            if self.validation_flags is not None and bool(
+                self.validation_flags.any()
+            ):
+                val_np = self.validation_flags.detach().cpu().numpy()
+                data_dict["Validation_flag"] = (val_np != 0).astype(int)
 
         # Compute fcalc if model_ft is provided but fcalc is not
         if fcalc is None and model_ft is not None:
@@ -3580,11 +3623,17 @@ class ReflectionData(CrystalDataset, DebugMixin):
     ) -> None:
         """
         Setup anisotropy correction parameters.
+
         Parameters
         ----------
         U_aniso : torch.Tensor, optional
             Anisotropic parameters [u11, u22, u33, u12, u13, u23], shape (6,).
-            If None, uses Initializes as zeros.
+            If None, U_aniso is initialized to a zero (6,) tensor.
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
         """
 
         if U_aniso is None:
@@ -3758,13 +3807,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Parameters
         ----------
         scale : float, optional
-            If provided, sets the scale factor directly.
-            If None, computes scale to make mean F equal to 1.0.
+            If provided, sets the scale factor directly (stored as its log).
+            If None (default), the scale defaults to 1.0 (``log_scale = 0.0``).
 
         Returns
         -------
-        float
-            The scale factor applied.
+        ReflectionData
+            Self, for method chaining.
         """
         if scale is None:
             self.log_scale = torch.tensor(
@@ -3800,6 +3849,74 @@ class ReflectionData(CrystalDataset, DebugMixin):
         F_sigma_scaled = F_sigma_corrected * scale_factor
 
         return F_scaled, F_sigma_scaled
+
+    def generate_validation_set(
+        self,
+        val_fraction_of_free: float = 0.5,
+        seed: Optional[int] = None,
+    ) -> None:
+        """
+        Carve a validation set out of the existing free-set reflections.
+
+        Used when an MTZ file has only the standard ``FreeR_flag`` (work/free)
+        but downstream code (e.g. ensemble refinement) needs a third held-out
+        set for hyperparameter tuning. Free reflections are split
+        resolution-stratified; ``val_fraction_of_free`` of them are marked in
+        the separate boolean :attr:`validation_flags`, leaving
+        :attr:`rfree_flags` untouched. The work/free/validation subsets are
+        disjoint (validation is carved out of free) -- see
+        :meth:`_subset_indices` and the ``work``/``free``/``validation``
+        accessors.
+
+        Parameters
+        ----------
+        val_fraction_of_free : float, optional
+            Fraction of *existing free* reflections to reassign as
+            validation. Default 0.5.
+        seed : int, optional
+            Random seed for reproducibility.
+        """
+        if self.rfree_flags is None:
+            raise ValueError("No rfree_flags present; cannot split into validation.")
+        if not 0.0 < val_fraction_of_free < 1.0:
+            raise ValueError(
+                f"val_fraction_of_free must be in (0, 1); got {val_fraction_of_free}"
+            )
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+
+        # Free reflections are those with rfree_flags == 0 (0=free, nonzero=work).
+        rwork = self.rfree_flags.to(torch.bool)
+        free_mask = ~rwork
+        val_flags = torch.zeros_like(rwork)
+
+        # Reuse get_bins for resolution-stratified sampling.
+        bin_indices, n_bins = self.get_bins(n_bins=20, min_per_bin=20)
+        for b in range(n_bins):
+            bin_free = (bin_indices == b) & free_mask
+            n_bin_free = int(bin_free.sum().item())
+            if n_bin_free == 0:
+                continue
+            n_val = max(1, int(n_bin_free * val_fraction_of_free))
+            bin_free_idx = bin_free.nonzero(as_tuple=True)[0]
+            perm = torch.randperm(n_bin_free, device=bin_free_idx.device)[:n_val]
+            val_flags[bin_free_idx[perm]] = True
+
+        self.validation_flags = val_flags
+        self.rfree_source = (self.rfree_source or "") + "+val_split"
+
+        if self.verbose > 0:
+            n_work = int(rwork.sum().item())
+            n_val = int(val_flags.sum().item())
+            total = len(val_flags)
+            n_free = total - n_work - n_val
+            print(
+                f"  Generated validation set: "
+                f"work={n_work} ({100*n_work/total:.1f}%), "
+                f"free={n_free} ({100*n_free/total:.1f}%), "
+                f"val={n_val} ({100*n_val/total:.1f}%)"
+            )
 
     def parameters(self) -> List[Parameter]:
         """

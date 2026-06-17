@@ -90,15 +90,15 @@ class BhattacharyyaXrayTarget(XrayTarget):
         verbose: int = 0,
         **kwargs,
     ):
-        kwargs.pop("sigma_mode", None)
         kwargs.pop("n_bins", None)  # legacy kwarg ignored
+        use_set = kwargs.pop("use_set", None)
         super().__init__(
             data=data,
             model=model,
             scaler=scaler,
             use_work_set=use_work_set,
-            sigma_mode="raw",
             verbose=verbose,
+            use_set=use_set,
         )
         # log-spaced B grid
         log_b_grid = torch.linspace(

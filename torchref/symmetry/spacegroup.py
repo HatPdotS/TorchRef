@@ -833,6 +833,9 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         ----------
         xyz_fractional : torch.Tensor
             Input tensor of shape (N, 3) representing fractional coordinates.
+        apply_translation : bool, default True
+            If True, apply the full operation x' = R·x + t. If False, apply
+            the rotational part only (x' = R·x), as used for Miller indices.
 
         Returns
         -------

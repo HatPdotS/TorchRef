@@ -14,7 +14,7 @@ class ModuleReference:
 
     When you assign a nn.Module to an attribute of another nn.Module, PyTorch
     automatically registers it as a submodule, which adds its parameters to the
-    parent's parameter tree. This wrapper prevents tlog_normal_stdhat automatic registration.
+    parent's parameter tree. This wrapper prevents this automatic registration.
 
     This is useful when you want to:
 

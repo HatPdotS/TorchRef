@@ -21,10 +21,6 @@ class GeometryTarget(ModelTarget):
         Reference to the Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
-    target_value : float, optional
-        Target value for this loss. Default is -1.0.
-    sigma : float, optional
-        Sigma parameter for weighting. Default is 0.5.
     """
 
     def __init__(

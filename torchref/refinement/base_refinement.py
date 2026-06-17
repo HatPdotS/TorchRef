@@ -30,22 +30,11 @@ from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
 
-# Default LossState group base weights — the single, transparent source of truth
-# for how the data term and the priors are balanced. These are *calibration
-# offsets*: with a perfectly calibrated ML likelihood and geometry/ADP prior they
-# would all be 1.0 (the posterior is just -logL - logP). The offsets correct
-# known mis-calibrations, validated to match Phenix/Refmac on the AF-start
-# benchmark (REFMAC-validated median R-free ~ Phenix at n=10):
-#   xray = 10.0  -> the Read/sigma_A likelihood is "soft" (under-counts the data's
-#                   information, a reflection-correlation / effective-N effect), so
-#                   it needs ~10x to sit on equal footing with the geometry prior.
-#   geometry = 1.0 -> reference scale (geometry NLL with physical Engh-Huber sigmas).
-#   adp = 0.1    -> the ADP-restraint prior is ~10x too tight; down-weighting lets
-#                   B-factors spread to their data-supported values.
-# NOTE: gradient-ratio auto-weighting is circular (at the optimum the gradient
-# ratio equals the weight by stationarity); the principled future direction is
-# R-free cross-validation or fixing the sigma_A "softness" calibration so these
-# offsets converge to 1.0. See the cleanup plan for the full rationale.
+# Default LossState group base weights balancing the data term against the
+# priors. These are calibration offsets relative to a unit-weight posterior
+# (-logL - logP): xray=10 compensates for the "soft" Read/sigma_A likelihood,
+# geometry=1 is the reference scale (Engh-Huber sigmas), and adp=0.1 loosens the
+# over-tight ADP-restraint prior so B-factors reach data-supported values.
 DEFAULT_GROUP_WEIGHTS = {"xray": 10.0, "geometry": 1.0, "adp": 0.1}
 
 
@@ -254,6 +243,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
             self.model._build_restraints()
+            self._freeze_unrestrained_residues()
 
             # Initialize target functions (instantiated once, evaluated each iteration)
             self._init_targets()
@@ -262,6 +252,88 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             if self.verbose > 1:
                 self.debug_on_error(e)
             raise e
+
+    def _freeze_unrestrained_residues(self):
+        """Freeze xyz of multi-atom, non-water residues that contain an atom with
+        no geometry restraint.
+
+        After restraints are built, an atom that appears in no bond / angle /
+        torsion / plane / chiral restraint has nothing holding its position;
+        refining it against the X-ray target alone distorts the geometry (the
+        usual cause is a ligand whose monomer-library CIF could not be found).
+        Such an atom's whole residue is frozen in xyz, *except*:
+
+        - waters (legitimately restraint-free), and
+        - single-atom residues (ions: no internal geometry to break).
+
+        B-factors and occupancy remain refinable.
+        """
+        import pandas as pd
+
+        model = self.model
+        pdb = getattr(model, "pdb", None)
+        acc = getattr(getattr(model, "_restraints", None), "restraints", None)
+        if pdb is None or acc is None:
+            return
+        n = len(pdb)
+
+        # 1. atoms that appear in at least one geometry restraint
+        restrained = set()
+
+        def mark(idx):
+            if idx is None or len(idx) == 0:
+                return
+            for v in torch.as_tensor(idx).reshape(-1).tolist():
+                if 0 <= v < n:
+                    restrained.add(int(v))
+
+        for rtype in ("bond", "angle", "torsion", "plane"):
+            try:
+                if rtype in acc:
+                    for _origin, data in acc[rtype].items():
+                        if isinstance(data, dict):
+                            mark(data.get("indices"))
+            except Exception:
+                pass
+        try:
+            if "chiral" in acc:
+                mark(acc["chiral"]["indices"])
+        except Exception:
+            pass
+
+        # 2. group atoms into residues (positional, aligned with xyz)
+        resname = pdb["resname"].astype(str).str.strip().tolist()
+        icode = (pdb["icode"].astype(str).tolist() if "icode" in pdb.columns
+                 else [""] * n)
+        chainid = pdb["chainid"].astype(str).tolist()
+        resseq = pdb["resseq"].astype(str).tolist()
+        res_atoms = {}
+        for i in range(n):
+            res_atoms.setdefault(
+                (chainid[i], resseq[i], icode[i], resname[i]), []
+            ).append(i)
+
+        # 3. residues with an unrestrained atom (skip water + single-atom residues)
+        WATER = {"HOH", "WAT", "DOD", "H2O", "SOL", "TIP", "TIP3", "TIP4"}
+        freeze_idx, frozen_res = [], []
+        for (c, rs, ic, rn), atoms in res_atoms.items():
+            if rn in WATER or len(atoms) <= 1:
+                continue
+            if any(i not in restrained for i in atoms):
+                freeze_idx.extend(atoms)
+                frozen_res.append(f"{c}/{rn}{rs}")
+        if not freeze_idx:
+            return
+
+        # 4. freeze xyz of those atoms (same path as freeze_selection)
+        model.xyz_mask[torch.tensor(freeze_idx, dtype=torch.long)] = False
+        model.apply_mask_to_parameter("xyz")
+        if self.verbose > 0:
+            shown = frozen_res[:20] + (["..."] if len(frozen_res) > 20 else [])
+            print(
+                f"Froze xyz for {len(freeze_idx)} atom(s) in {len(frozen_res)} "
+                f"residue(s) with incomplete restraints: {shown}"
+            )
 
     def _init_targets(self, xray_mode: str = "ml"):
         """
@@ -706,50 +778,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Create a configured LossState for optimization.
 
         .. deprecated::
-            Use the `loss_state` property instead for the persistent state.
-            This method is kept for backwards compatibility.
-
-        Sets up a LossState with all targets registered as callables with
-        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'). All targets
-        aggregate at uniform weight unless weights are set explicitly via
-        ``state.set_weight``.
-
-        Usage:
-            from torchref.utils import validate_loss
-
-            state = refinement.create_loss_state()
-            params = list(refinement.parameters())
-
-            # Log initial state
-            state.aggregate(log_values=True)
-
-            # In an LBFGS closure, wrap with validate_loss so non-finite
-            # losses warn + reject the step instead of poisoning the run.
-            def closure():
-                optimizer.zero_grad()
-                loss = state.aggregate()
-                loss.backward()
-                ok = validate_loss(
-                    loss, state=state, parameters=params,
-                    context="my_refinement", raise_on_fail=False,
-                )
-                if not ok:
-                    for p in params:
-                        if p.grad is not None:
-                            p.grad.zero_()
-                    return torch.full_like(loss.detach(), float("inf"))
-                return loss
-
-            optimizer.step(closure)
-
-            # Log final state
-            state.new_entry()
-            state.aggregate(log_values=True)
+            Use the :attr:`loss_state` property instead for the persistent
+            state. This method is kept for backwards compatibility and simply
+            delegates to :meth:`_create_loss_state`.
 
         Returns
         -------
         LossState
-            Configured LossState with targets and weights.
+            Configured LossState with targets registered and the default group
+            weights applied.
         """
         return self._create_loss_state()
 
@@ -864,46 +901,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return state
 
     def get_rfactor(self):
-        # If the xray target uses its own closed-form per-bin scale
-        # (scale_mode == "binwise_optimal", e.g. ls_wunit_k1), the external
-        # scaler — even a solvent-only one — does not provide the right
-        # overall scaling. Compute R via the closed-form c[bins] instead.
-        target_scale_mode = getattr(
-            getattr(self, "xray_target_work", None), "scale_mode", None
-        )
-        if target_scale_mode != "binwise_optimal" and self.scaler is not None:
-            return self.scaler.rfactor()
-        # Scaler-free / binwise-optimal path. Fit the per-bin scale on the
-        # work reflections, apply the same c[bins] to the test reflections
-        # for an apples-to-apples R_free.
-        from torchref.base.metrics import binwise_scale, rfactor
+        """``(R_work, R_free)`` for the current model.
 
-        with torch.no_grad():
-            # get_data returns compact (already-subset) tensors plus the
-            # ``_ReflectionSubset`` view (5th element); we use the view to
-            # align full-size bins to the compact arrays.
-            Fo_w, Fc_w, _, _, sub_w = self.xray_target_work.get_data()
-            Fo_t, Fc_t, _, _, sub_t = self.xray_target_test.get_data()
-
-            if getattr(self.xray_target_work, "scale_mode", None) == "binwise_optimal":
-                full_bins = self.xray_target_work._get_bins_cached()
-                bins_w = sub_w.select(full_bins)
-                bins_t = sub_t.select(full_bins)
-                c = binwise_scale(
-                    Fc_w, Fo_w, bins_w,
-                    valid=None,
-                    nbins=self.xray_target_work.n_bins,
-                    weights=None,
-                )
-                Fc_w_s = c[bins_w] * Fc_w
-                Fc_t_s = c[bins_t] * Fc_t
-            else:
-                Fc_w_s = Fc_w
-                Fc_t_s = Fc_t
-
-            rwork = rfactor(Fo_w, Fc_w_s)
-            rfree = rfactor(Fo_t, Fc_t_s)
-        return rwork, rfree
+        Delegates to the work X-ray target, the single source of truth: R is
+        computed from exactly the scaled ``|F_calc|`` the target's loss sees
+        (the scaler's scaling, or the target's own closed-form per-bin scale for
+        ``binwise_optimal``). See :meth:`XrayTarget.get_rfactor`.
+        """
+        return self.xray_target_work.get_rfactor()
 
     def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
         import matplotlib.pyplot as plt

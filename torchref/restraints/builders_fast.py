@@ -910,7 +910,11 @@ class ChiralRestraintBuilder(RestraintBuilder):
                             ]
                         )
                     )
-                    # Ideal volume = sign * 2.5 (typical tetrahedral volume)
+                    # Ideal volume = sign * 2.5 (typical tetrahedral volume).
+                    # For volume_sign 'both'/'either' the sign is 0.0, so this
+                    # stores exactly 0.0. That 0.0 is a sentinel: the chiral
+                    # target treats ideal_volume == 0 as an achiral centre and
+                    # restrains |volume| toward 2.5 (not toward a target of 0).
                     all_ideal_volumes.append(work_signs[:count].copy() * 2.5)
                     all_sigmas.append(work_sigmas[:count].copy())
 

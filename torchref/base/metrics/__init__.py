@@ -9,6 +9,7 @@ This submodule provides functions for:
 
 from .rfactor import (
     get_rfactors,
+    rfactor_work_free,
     bin_wise_rfactors,
 )
 
@@ -28,6 +29,7 @@ from .binwise_scale import binwise_scale
 __all__ = [
     # R-factor
     "get_rfactors",
+    "rfactor_work_free",
     "bin_wise_rfactors",
     "binwise_scale",
     # Loss functions

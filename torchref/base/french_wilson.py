@@ -1385,13 +1385,19 @@ class FrenchWilson(DeviceMixin, nn.Module):
         """
         Apply French-Wilson conversion.
 
-        Args:
-            I: Measured intensities, shape (n_reflections,)
-            sigma_I: Standard deviations of intensities, shape (n_reflections,)
+        Parameters
+        ----------
+        I : torch.Tensor
+            Measured intensities of shape (n_reflections,).
+        sigma_I : torch.Tensor
+            Standard deviations of intensities of shape (n_reflections,).
 
-        Returns:
-            F: Structure factor amplitudes, shape (n_reflections,)
-            sigma_F: Standard deviations of F, shape (n_reflections,)
+        Returns
+        -------
+        F : torch.Tensor
+            Structure factor amplitudes of shape (n_reflections,).
+        sigma_F : torch.Tensor
+            Standard deviations of F of shape (n_reflections,).
         """
         # Check for NaN values in input
         nan_mask = torch.isnan(I) | torch.isnan(sigma_I)

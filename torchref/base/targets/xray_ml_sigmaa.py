@@ -1,25 +1,16 @@
 """Maximum-likelihood (Read MLF) X-ray math with a per-shell model-error
 variance ``beta``.
 
-PyTorch port of Phenix/cctbx's maximum-likelihood sigma_A treatment, with the
-Luzzati ``alpha`` (mean-coupling) term removed: we showed empirically that the
-``alpha * |F_calc|`` mean-shift is gauge-absorbed by the co-refined scaler (the
-per-bin scale ``k`` re-sets to ``k_B = alpha * k_A``, cancelling ``alpha`` from
-the model gradient), so it does nothing. The genuine, overfit-controlling
-ingredient is ``beta`` -- the heteroscedastic conditional variance
-``epsilon * beta`` that down-weights poorly-phased / high-resolution shells.
+PyTorch port of the Phenix/cctbx maximum-likelihood sigma_A treatment with the
+Luzzati ``alpha`` (mean-coupling) term fixed at 1: the per-reflection model mean
+is ``|F_calc|`` and the conditional variance is ``epsilon * beta`` (the
+experimental sigma is not added). ``beta`` is the absolute model-error variance
+in F^2 units and is the overfit-controlling ingredient.
 
-* the **loss** (``cctbx/xray/targets/mlf.h`` with ``alpha=1``): per reflection
-  the model mean is ``|F_calc|`` and the conditional variance is
-  ``epsilon * beta`` (the experimental sigma is *not* added); ``beta`` is the
-  absolute model-error variance in F^2 units.
-
-* the **estimator** (``mmtbx/max_lik/max_lik.h`` ``alpha_beta_est`` +
-  Lunin-Skovoroda ``solvm``): per resolution shell on the FREE set, estimate
-  ``beta`` by maximum likelihood (weighted moments + a root-find for the ML
-  parameter ``topt``), 3-point smooth, interpolate to every reflection. The
-  root-find is retained (``beta`` is derived from ``topt``); only the ``alpha``
-  readout is dropped.
+The estimator (:func:`estimate_beta`) fits ``beta`` by maximum likelihood per
+resolution shell on the FREE set (weighted moments plus a root-find for the ML
+parameter ``topt``), 3-point smooths ``topt``, and interpolates ``beta`` to
+every reflection.
 
 Acentric (with ``eb = epsilon * beta``)::
 
@@ -159,31 +150,41 @@ def estimate_beta(
     min_bins: int = 5,
     min_per_bin: int = 40,
 ):
-    """Maximum-likelihood per-reflection model-error variance ``beta`` (Phenix port).
+    """Maximum-likelihood per-reflection model-error variance ``beta``.
 
-    Estimates on the FREE set in equal-count resolution shells (~``per_bin``
-    reflections each), then interpolates linearly in ``d_star_sq`` to all
-    reflections. All inputs are 1-D length-N tensors; ``F_calc`` is the scaled
-    amplitude. Returns ``(beta_per_refl, beta_per_bin, bin_dss)``. Intended to
-    run under ``torch.no_grad()``.
+    Estimates ``beta`` on the FREE set in equal-count resolution shells via the
+    Lunin-Skovoroda ML root-find for ``topt`` (``beta_bin = 2*hbeta``), 3-point
+    smooths ``topt``, then interpolates linearly in ``d_star_sq`` to all
+    reflections. Intended to run under ``torch.no_grad()``.
 
-    The Lunin-Skovoroda ML root-find (for ``topt``) is retained -- ``beta`` is
-    derived from it (``beta_bin = 2*hbeta``, independent of the Luzzati ``alpha``
-    readout, which is dropped). Robustness over the raw Phenix recipe (per-bin
-    moments are noisy at ~140 reflections, which destabilises sparse free sets
-    like 6A0C):
+    Parameters
+    ----------
+    F_obs, F_calc, centric, epsilon, d_star_sq, free_mask : torch.Tensor
+        1-D length-N tensors. ``F_calc`` is the scaled amplitude.
+    per_bin : int, optional
+        Target reflections per resolution shell. Default 140.
+    n_iter : int, optional
+        Iterations for the bracket and regula-falsi root-find. Default 60.
+    sigma_a_max : float, optional
+        Floors ``beta`` at ``(1 - sigma_a_max**2) * B`` so it cannot collapse to
+        ~0 in saturated bins (a near-zero variance gives a near-infinite
+        per-reflection weight). Default 0.99.
+    min_bins, min_per_bin : int, optional
+        Floor the bin count (down to ``min_per_bin`` reflections/bin) so sparse
+        free sets still get enough shells for ``beta`` to vary smoothly.
+        Defaults 5 and 40.
 
-    * ``min_bins``/``min_per_bin`` -- floor the bin count so sparse free sets
-      (e.g. 6A0C: ~200 free -> only 2 bins at ~140/bin) get enough shells for
-      ``beta`` to vary smoothly. The per-bin moments are NOT smoothed: they
-      must stay mutually consistent (``C**2 <= A*B`` etc.) for the ML root-find,
-      and smoothing them independently collapses ``topt``. (Phenix smooths the
-      fitted ``topt`` afterwards, which we also do, never the moments.)
-    * ``sigma_a_max`` -- floor ``beta`` at ``(1 - sigma_a_max**2) * B`` instead
-      of letting it collapse to ~0 in (near-)saturated bins. A near-zero
-      conditional variance gives a near-infinite per-reflection weight and is
-      the source of the transient ``R_work`` blow-ups; physically the model is
-      never a perfect predictor, so the variance floor keeps it bounded.
+    Returns
+    -------
+    tuple of torch.Tensor
+        ``(beta_per_refl, beta_per_bin, bin_dss)``. The latter two are ``None``
+        for a degenerate free set (fewer than 2 free reflections).
+
+    Notes
+    -----
+    The per-bin moments are not smoothed: they must stay mutually consistent
+    (``C**2 <= A*B`` etc.) for the ML root-find, so only the fitted ``topt`` is
+    3-point smoothed afterwards (matching Phenix).
     """
     device = F_obs.device
     dtype = F_obs.dtype
@@ -223,10 +224,9 @@ def estimate_beta(
     dss = dss_all[free_idx][order]
 
     # Adaptive bin count. Aim for ~per_bin reflections/bin, but for sparse free
-    # sets (e.g. 6A0C: ~200 free) ~140/bin gives only 2 bins -> a binary
-    # alpha=[1.2, 0.0] ramp with a dead high-res half. Floor the bin count at
-    # min_bins (down to min_per_bin reflections/bin) so alpha can decay
-    # smoothly; moment smoothing keeps the smaller bins stable.
+    # sets ~140/bin can give only 2 bins -> a dead high-res half. Floor the bin
+    # count at min_bins (down to min_per_bin reflections/bin) so beta can decay
+    # smoothly across enough shells.
     n_by_count = max(1, n_free // per_bin)
     n_cap = max(1, n_free // min_per_bin)
     n_bins = max(n_by_count, min(min_bins, n_cap))
@@ -357,3 +357,108 @@ def _interp_in_dss(dss_all, bin_dss, vals):
     x1 = bin_dss[idx]
     wlin = ((dss_all - x0) / (x1 - x0).clamp(min=1e-30)).clamp(0.0, 1.0)
     return (1 - wlin) * vals[idx - 1] + wlin * vals[idx]
+
+
+# =====================================================================
+# Stateful estimator (owned by the consuming target, not the scaler)
+# =====================================================================
+
+
+class SigmaAEstimator:
+    """Lazy, cached free-set model-error variance ``beta`` (Luzzati σ_A).
+
+    Thin stateful wrapper around :func:`estimate_beta`: it caches the detached
+    ``(beta, epsilon)`` from the last estimate and re-estimates only after
+    :meth:`reset`. The owning target calls :meth:`reset` from its
+    ``maintenance()`` hook so ``beta`` refreshes once per optimizer-step block
+    (the same cadence the scaler used previously).
+
+    Ownership note
+    --------------
+    ``beta`` (the conditional variance ``epsilon*beta``) is the only
+    overfit-controlling ingredient; the Luzzati ``alpha`` mean-coupling is
+    gauge-absorbed by the scaler and intentionally not produced (see the module
+    docstring). This estimator therefore belongs to the *target* that consumes
+    the likelihood, not to the scaler (which now owns scaling only). Plain
+    tensor in/out — no ``ReflectionData``/``Scaler`` coupling — so it is usable
+    from both ``scaling`` and ``refinement.targets`` without an import cycle.
+    """
+
+    def __init__(self):
+        self._cache = None  # (beta_per_refl, epsilon) detached
+        self._beta_per_bin = None  # diagnostics
+
+    def reset(self) -> None:
+        """Invalidate the cache so the next :meth:`get` re-estimates ``beta``."""
+        self._cache = None
+
+    @property
+    def beta_per_bin(self):
+        """Last-estimated per-bin ``beta`` (diagnostics); ``None`` until first call."""
+        return self._beta_per_bin
+
+    def get(
+        self,
+        F_obs: torch.Tensor,
+        F_calc_scaled: torch.Tensor,
+        centric: torch.Tensor,
+        epsilon: torch.Tensor,
+        d_star_sq: torch.Tensor,
+        free_mask: torch.Tensor,
+        out_epsilon: torch.Tensor = None,
+        target_dss: torch.Tensor = None,
+    ):
+        """Return cached-or-recomputed ``(beta, epsilon)``, both detached.
+
+        Estimated on the **free** set under ``no_grad``; gradients never flow
+        through ``beta``.
+
+        Parameters
+        ----------
+        F_obs, F_calc_scaled, centric, epsilon, d_star_sq, free_mask
+            Length-N tensors passed straight to :func:`estimate_beta`.
+            ``F_calc_scaled`` must already carry the scaler's scaling.
+        out_epsilon : torch.Tensor, optional
+            Multiplicity to return/cache, if it differs from the estimation
+            ``epsilon`` (e.g. the collection case pools several datasets for the
+            fit but applies a single common ``epsilon``). Defaults to
+            ``epsilon``.
+        target_dss : torch.Tensor, optional
+            If given, the per-bin ``beta`` is interpolated onto this
+            ``d_star_sq`` grid instead of using the per-reflection estimate
+            (used to map a pooled multi-dataset fit back onto the common HKL).
+        """
+        if self._cache is not None:
+            return self._cache
+
+        # Estimate in the INPUT dtype (float32 in production). Kept float32
+        # deliberately for device portability — MPS (Apple Metal) has no
+        # float64 — and the AF-start benchmark confirmed float32 β reproduces
+        # the float64 result (median R_free identical). The Lunin-Skovoroda ML
+        # root-find can be slightly noisy for the lowest-resolution shells in
+        # float32, but β is a detached per-shell weight re-estimated every
+        # optimizer-step block (see maintenance()), so a transient self-corrects.
+        with torch.no_grad():
+            beta_refl, bbin, bin_dss = estimate_beta(
+                F_obs, F_calc_scaled, centric, epsilon, d_star_sq, free_mask
+            )
+            self._beta_per_bin = bbin
+
+            if target_dss is not None:
+                if bbin is None or bin_dss is None:
+                    finite = torch.isfinite(F_obs)
+                    mean_fo2 = (
+                        (F_obs[finite] ** 2).mean()
+                        if finite.any()
+                        else F_obs.new_ones(())
+                    )
+                    beta = torch.full_like(target_dss, float(mean_fo2))
+                else:
+                    beta = _interp_in_dss(target_dss, bin_dss, bbin)
+            else:
+                beta = beta_refl
+
+            eps_ret = out_epsilon if out_epsilon is not None else epsilon
+            eps_ret = eps_ret.detach() if torch.is_tensor(eps_ret) else eps_ret
+            self._cache = (beta.detach(), eps_ret)
+        return self._cache

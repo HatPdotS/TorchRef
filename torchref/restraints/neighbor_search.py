@@ -300,34 +300,47 @@ def find_pairs_periodic_grid_v2(
     identity_combo: int,
     chunk_size: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Optimised periodic-grid neighbour search.
+    """Find candidate VDW pairs on a periodic grid with batched cdist.
 
-    Three optimisations over a naive per-offset broadcast approach:
+    Sweeps the 14 canonical neighbour offsets (the self-cell plus the 13
+    lex-positive half of the 26 non-zero offsets), so each unique cell pair
+    is visited once; the symmetric partner is reached by swapping source and
+    target indices on emission. Distances are computed with ``torch.cdist``
+    over a precomputed padded ``(C, max_per_cell, 3)`` tensor.
 
-    1. **14 canonical offsets** (self + 13 lex-positive). For cell pairs
-       where both cells contain ASU atoms, the original algorithm finds
-       each pair twice (once via ``+d`` and once via ``-d``) and dedups at
-       the end — pure waste. Processing only half the offsets eliminates
-       the redundant cdist work. We still cover every ASU-containing pair
-       by allowing the "target is ASU" case via an index swap on emission.
+    Parameters
+    ----------
+    cart_sorted : (E, 3) float
+        Cartesian image positions, sorted into CSR cell order.
+    atom_idx_sorted, combo_idx_sorted : (E,) long
+        ASU atom index and (symop, offset) combo index per entry.
+    unique_cells : (C,) long
+        Occupied flat grid-cell indices.
+    starts : (C+1,) long
+        CSR boundaries into the sorted arrays.
+    cell_lookup : (n_grid_total,) long
+        Maps a flat cell index to its position in ``unique_cells`` (-1 empty).
+    grid_dims : (3,) long
+        Number of grid cells per axis.
+    cutoff : float
+        Cartesian distance cutoff in Angstrom.
+    identity_combo : int
+        Combo index corresponding to the identity (op=0, offset=0).
+    chunk_size : int, optional
+        Number of source cells per cdist tile. Defaults to a device-adaptive
+        value (CUDA: cap the tile at ~256 MB; CPU: 128).
 
-    2. **Precomputed padded tensor.** ``padded_xyz``, ``valid_mask`` and
-       ``asu_mask`` are built once (not per-chunk per-offset as in the
-       original). Per-cell metadata is also precomputed: ``cell_has_asu``,
-       and the flat index offsets for mapping local ``(row, col)`` hits
-       back to global CSR indices.
+    Returns
+    -------
+    pair_atom_i, pair_atom_j, pair_combo_j : each (P,) long
+        ASU atom index, partner atom index, and partner combo index.
 
-    3. **Use torch.cdist** (matmul-based internally) instead of broadcast
-       subtract so the intermediate tensor stays cache-friendly. Chunking
-       is kept but with a larger default (``512``) so we pay less Python
-       overhead without blowing the cache.
-
-    Correctness invariant: within a hit ``(src_atom, tgt_atom)`` we emit
-    a pair iff ``is_asu[src] | is_asu[tgt]``, and we canonicalise so the
-    ASU atom is always on the ``i`` side. For intra-ASU pairs we further
-    enforce ``atom_i < atom_j`` after the swap so both-ASU pairs emit in
-    a single canonical order so both-ASU pairs emit once, matching the
-    invariant expected by the downstream dedup.
+    Notes
+    -----
+    A pair is emitted iff at least one side is an ASU atom; it is
+    canonicalised so the ASU atom is on the ``i`` side. For intra-ASU pairs
+    ``atom_i < atom_j`` is enforced so ``(a, b)`` and ``(b, a)`` collapse to
+    one entry, matching the invariant expected by the downstream dedup.
     """
     device = cart_sorted.device
     offsets14 = _get_canonical_offsets_14(device)

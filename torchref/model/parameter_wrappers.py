@@ -16,13 +16,11 @@ class _AssembleMixedTensor(torch.autograd.Function):
     """Scatter refinable values into a clone of fixed_values, with a
     cheap (index_select) backward.
 
-    PyTorch's default backward for ``result[idx] = refinable`` lowers to
-    ``aten::_index_put_impl_``, whose backward goes through a radix-sort
-    of the indices followed by an atomic scatter. Profiling on A100/1DAW
-    showed this dominating the model SF backward (~370 µs/iter across
-    six MixedTensors). The gradient w.r.t. ``refinable_params`` is just
-    ``grad_output[indices]`` — a single ``index_select`` — so we wrap the
-    assembly in a custom autograd op that returns exactly that.
+    The gradient w.r.t. ``refinable_params`` is just ``grad_output[indices]``
+    — a single ``index_select`` (gather) — so the assembly is wrapped in a
+    custom autograd op that returns exactly that, instead of PyTorch's default
+    ``index_put_`` backward (a radix-sort of the indices plus an atomic
+    scatter).
     """
 
     @staticmethod
@@ -464,21 +462,13 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
                 f"for {n_selected} selected elements"
             )
 
-        # Get current full tensor
-        current_full = self.forward().detach()
-
-        # Update the full tensor at masked positions
-        current_full[mask] = values.to(dtype=self.dtype, device=self.device)
-
-        # Update fixed_values buffer with the new full tensor
-        self.fixed_values = current_full.clone()
-
-        # Re-extract refinable parameters (only those in refinable_mask)
-        if self.refinable_mask.any():
-            new_refinable = current_full[self.refinable_mask].clone()
-            self.refinable_params = nn.Parameter(
-                new_refinable, requires_grad=self.refinable_params.requires_grad
-            )
+        # Delegate the actual assignment to _set_values so subclass overrides
+        # are honored (PositiveMixedTensor's log-space, OccupancyTensor's
+        # collapsed-logit storage, ...). Inlining the base logic here used to
+        # bypass those overrides — e.g. it wrote per-atom occupancies straight
+        # into OccupancyTensor's collapsed-logit buffer, double-applying the
+        # sigmoid and corrupting the values.
+        self._set_values(mask, values.to(dtype=self.dtype, device=self.device))
 
     @property
     def shape(self):
@@ -861,7 +851,9 @@ class PositiveMixedTensor(MixedTensor):
     name : str, optional
         Optional name for this parameter.
     epsilon : float, optional
-        Small value to add before taking log to avoid log(0). Default is 1e-1.
+        Clamp floor applied to values before taking the log; any input below
+        epsilon is raised to epsilon, which both avoids log(0) and bounds the
+        smallest representable value from below. Default is 1e-1.
 
     Examples
     --------
@@ -909,7 +901,9 @@ class PositiveMixedTensor(MixedTensor):
         name : str, optional
             Optional name for this parameter.
         epsilon : float, optional
-            Small value to add before taking log to avoid log(0). Default is 1e-1.
+            Clamp floor applied to values before taking the log; any input
+            below epsilon is raised to epsilon, which both avoids log(0) and
+            bounds the smallest representable value from below. Default is 1e-1.
 
         Raises
         ------
@@ -1323,6 +1317,14 @@ class CholeskyMixedTensor(MixedTensor):
         # Project to positive-definite: symmetrise, clamp eigenvalues off zero.
         # No-op for well-conditioned deposited U; rescues marginally non-PD input.
         M = 0.5 * (M + M.transpose(-1, -2))
+        # Run the eigh + Cholesky PD-projection on CPU. This path executes only
+        # at load / refinable-mask change (never per optimizer step — U is frozen
+        # during refinement), so the host round-trip is negligible. cuSolver's
+        # *batched* eigh/cholesky return CUSOLVER_STATUS_INVALID_VALUE on the
+        # large, degenerate batches an isotropic ensemble produces (U ≡ 0 over
+        # ~N_members·N_atoms matrices); LAPACK handles the zero/degenerate batch.
+        src_device = M.device
+        M = M.cpu()
         w, V = torch.linalg.eigh(M)
         w = w.clamp(min=eps * eps)
         M = (V * w.unsqueeze(-2)) @ V.transpose(-1, -2)
@@ -1330,7 +1332,7 @@ class CholeskyMixedTensor(MixedTensor):
         diag = torch.stack([L[..., 0, 0], L[..., 1, 1], L[..., 2, 2]], dim=-1)
         off = torch.stack([L[..., 1, 0], L[..., 2, 0], L[..., 2, 1]], dim=-1)
         raw_diag = torch.log((diag - eps).clamp(min=1e-12))  # invert exp(x)+eps
-        raw = torch.cat([raw_diag, off], dim=-1)
+        raw = torch.cat([raw_diag, off], dim=-1).to(src_device)
         nan = torch.full_like(raw, float("nan"))
         return torch.where(finite.unsqueeze(-1), raw, nan)
 
@@ -1472,11 +1474,14 @@ class OccupancyTensor(MixedTensor):
     Attributes
     ----------
     expansion_mask : torch.Tensor
-        Maps atoms to collapsed indices.
-    linked_occ_sizes : list
-        List of altloc group sizes present.
+        Registered buffer mapping atoms to collapsed indices.
     collapse_counts : torch.Tensor
-        Count of atoms per collapsed index.
+        Registered buffer holding the count of atoms per collapsed index.
+    linked_occ_sizes : list
+        Sorted list of altloc group sizes present (plain list, not a buffer).
+        Only set when altloc_groups are supplied; absent after empty
+        initialization, so consumers guard with
+        ``hasattr(self, "linked_occ_sizes")``.
 
     Examples
     --------
@@ -2402,7 +2407,11 @@ class OccupancyTensor(MixedTensor):
 
         n_atoms = len(initial_values)
         sharing_groups_tensor = torch.arange(n_atoms, dtype=torch.long)
-        collapsed_idx = 0
+        # Singletons keep their arange ids (0..n_atoms-1); start multi-atom
+        # group ids past that range so a group id can never collide with a
+        # singleton's leftover arange id (the torch.unique compaction below
+        # would otherwise silently merge them into one sharing group).
+        collapsed_idx = n_atoms
 
         for (resname, resseq, chainid, altloc), group in grouped:
             indices = group["index"].tolist()

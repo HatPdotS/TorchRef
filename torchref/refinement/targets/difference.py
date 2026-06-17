@@ -27,24 +27,19 @@ class DifferenceXrayTarget(Target):
     """
     Target for time-resolved crystallography comparing light/dark states.
 
-    Computes difference structure factors and compares against observed differences:
+    Compares calculated and observed difference amplitudes via a Gaussian NLL
+    with propagated error:
 
     - ΔF_calc = |F_light_calc| - |F_dark_calc|
     - ΔF_obs = F_light_obs - F_dark_obs
-
-    Uses Gaussian NLL with proper error propagation:
-
     - σ_diff = sqrt(σ_light² + σ_dark²)
     - NLL = 0.5 * (ΔF_obs - ΔF_calc)² / σ_diff² + log(σ_diff) + 0.5*log(2π)
 
-    Supports two initialization modes:
-
-    1. **DatasetCollection mode** (recommended): Pass a DatasetCollection with
-       pre-aligned datasets. This is more efficient and ensures consistency
-       with other targets using the same data.
-
-    2. **Separate datasets mode**: Pass individual ReflectionData objects.
-       HKL matching is performed automatically.
+    Two initialization modes are supported: pass a ``dataset_collection`` with
+    pre-aligned 'dark' and 'light' datasets (recommended; lets scalers be shared
+    with other targets), or pass individual ``data_light``/``data_dark``
+    ReflectionData objects, in which case HKL matching is performed
+    automatically.
 
     Parameters
     ----------
@@ -70,24 +65,8 @@ class DifferenceXrayTarget(Target):
 
     Examples
     --------
-    Using DatasetCollection (recommended for sharing scalers)::
+    Using a DatasetCollection with shared scalers::
 
-        # Create collection with aligned HKL
-        collection = DatasetCollection()
-        collection.add_dataset('dark', data_dark, set_as_reference=True)
-        collection.add_dataset('light', data_light)
-
-        # Create shared scalers
-        scaler_dark = IsotropicScaler(data=collection['dark'], model=model_dark)
-        scaler_light = IsotropicScaler(data=collection['light'], model=model_mixed)
-
-        # Create targets that share scalers
-        xray_dark = GaussianXrayTarget(
-            data=collection['dark'], model=model_dark, scaler=scaler_dark
-        )
-        xray_light = GaussianXrayTarget(
-            data=collection['light'], model=model_mixed, scaler=scaler_light
-        )
         diff_target = DifferenceXrayTarget(
             dataset_collection=collection,
             model_light=model_mixed,
@@ -95,30 +74,7 @@ class DifferenceXrayTarget(Target):
             scaler_light=scaler_light,
             scaler_dark=scaler_dark,
         )
-
-        # Combined loss
-        loss = xray_dark() + xray_light() + diff_target()
-
-    Using separate datasets::
-
-        diff_target = DifferenceXrayTarget(
-            data_light=data_light,
-            data_dark=data_dark,
-            model_light=model_light,
-            model_dark=model_dark,
-        )
         loss = diff_target()
-
-    With mixed model for partial occupancy::
-
-        mixed_light = MixedModel([model_dark, model_light], [0.7, 0.3])
-        diff_target = DifferenceXrayTarget(
-            dataset_collection=collection,
-            model_light=mixed_light,
-            model_dark=model_dark,
-            scaler_light=scaler_light,
-            scaler_dark=scaler_dark,
-        )
     """
 
     name: str = "difference_xray"
@@ -490,7 +446,7 @@ class DifferenceXrayTarget(Target):
         Returns
         -------
         torch.Tensor
-            Mean NLL loss value.
+            Summed Gaussian NLL over included reflections (scalar).
         """
         # Get observed differences
         delta_F_obs, sigma_diff, mask = self.get_delta_F_obs()
@@ -590,21 +546,16 @@ class PhaseInformedDifferenceTarget(Target):
     """
     Phase-informed difference target for time-resolved crystallography.
 
-    Uses model phases to create complex observed differences, then compares
-    with calculated complex differences:
+    Uses (detached) model phases to build a complex observed difference, then
+    compares with the calculated complex difference:
 
         ΔF_calc = F_mixed_calc - F_dark_calc  (complex)
         ΔF_obs_complex = ΔF_obs * exp(i * φ)  (using model phases)
         Loss = |ΔF_obs_complex - ΔF_calc|² / σ_diff²
 
-    The phase source can be configured:
-    - "dark": Use dark model phases (stable reference)
-    - "difference": Use phase of calculated difference ΔF_calc (self-consistent)
-    - "mixed": Use mixed/light model phases
-
-    Using current model phases is standard practice in difference Fourier
-    methods. The iterative nature of refinement self-corrects any phase bias,
-    and the localized nature of difference peaks allows detection of weak signals.
+    The phase source is selected by ``phase_source``: "dark" (dark model
+    phases), "difference" (phase of the calculated difference ΔF_calc), or
+    "mixed" (mixed/light model phases).
 
     Parameters
     ----------
@@ -634,15 +585,6 @@ class PhaseInformedDifferenceTarget(Target):
             model_light=mixed_model,
             model_dark=model_dark,
             phase_source="difference",
-        )
-
-    Using dark phases::
-
-        target = PhaseInformedDifferenceTarget(
-            dataset_collection=collection,
-            model_light=mixed_model,
-            model_dark=model_dark,
-            phase_source="dark",
         )
     """
 
@@ -766,7 +708,7 @@ class PhaseInformedDifferenceTarget(Target):
         Returns
         -------
         torch.Tensor
-            Mean weighted squared error.
+            Summed weighted squared error over included reflections (scalar).
         """
         hkl = self.hkl
 
@@ -876,22 +818,15 @@ class TaylorCorrectedDifferenceTarget(Target):
     """
     Taylor-corrected difference target for time-resolved crystallography.
 
-    Uses an exact Taylor expansion to properly account for the phase shift
-    between dark and light states when constructing observed complex differences:
+    Builds the observed complex difference from an exact complex-exponential
+    expansion of the model phase shift between dark and light states (no
+    small-angle approximation):
 
         ΔF_obs = exp(i*φ_dark) * [F_obs_dark * (exp(i*dφ) - 1) + dF_obs * exp(i*dφ)]
 
-    Where:
-        - dφ = φ_light_calc - φ_dark_calc (phase rotation from model)
-        - dF_obs = F_obs_light - F_obs_dark (observed amplitude difference)
-
-    This formulation:
-        1. Uses the exact complex exponential (no small-angle approximation)
-        2. Properly accounts for both the amplitude difference and phase rotation
-        3. Eliminates the false minimum that causes refinement to stop at ~70%
-
-    The loss is computed as:
-        Loss = |ΔF_obs_corrected - ΔF_calc|² / σ_diff²
+    where dφ = φ_light_calc - φ_dark_calc is the model phase rotation and
+    dF_obs = F_obs_light - F_obs_dark is the observed amplitude difference. The
+    loss is Loss = |ΔF_obs - ΔF_calc|² / σ_diff².
 
     Parameters
     ----------
@@ -918,16 +853,6 @@ class TaylorCorrectedDifferenceTarget(Target):
             dataset_collection=collection,
             model_light=mixed_model,
             model_dark=model_dark,
-        )
-
-    With scalers::
-
-        target = TaylorCorrectedDifferenceTarget(
-            dataset_collection=collection,
-            model_light=mixed_model,
-            model_dark=model_dark,
-            scaler_light=scaler_light,
-            scaler_dark=scaler_dark,
         )
     """
 
@@ -1031,7 +956,7 @@ class TaylorCorrectedDifferenceTarget(Target):
         Returns
         -------
         torch.Tensor
-            Mean weighted squared error.
+            Summed weighted squared error over included reflections (scalar).
         """
         hkl = self.hkl
 
@@ -1399,7 +1324,7 @@ class RiceDifferenceTarget(Target):
         Returns
         -------
         torch.Tensor
-            Mean Rice NLL loss value.
+            Summed Rice NLL over included reflections (scalar).
         """
         hkl = self.hkl
 

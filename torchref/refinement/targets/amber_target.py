@@ -166,7 +166,6 @@ _MODELLER_FF_RESIDUES: frozenset = frozenset(
 # near charged ligands.
 _TLEAP_EXCLUDE_RESIDUES: frozenset = frozenset()
 
-
 # ---------------------------------------------------------------------------
 # Autograd bridge
 # ---------------------------------------------------------------------------
@@ -176,24 +175,27 @@ class _OpenMMAMBERFunction(torch.autograd.Function):
     """
     Bridges OpenMM energy + analytical forces into PyTorch autograd.
 
-    forward : xyz_ang (Å, float, [n_model, 3]) → energy (kJ/mol, scalar)
-    backward: ∂loss/∂xyz = −F (OpenMM forces, exact gradients)
+    forward : full_xyz_nm (nm, float, [n_omm_total, 3]) → energy (kJ/mol)
 
-    Non-tensor arguments are passed as plain Python objects; they receive
-    ``None`` gradients and are not differentiated.
+    The input tensor must already contain positions for **every** OpenMM
+    atom — heavy and H — in OpenMM's native atom order. Building this
+    tensor (scattering model heavy atoms + computing H positions
+    analytically from heavy positions) happens in
+    :meth:`AmberTarget._compose_full_omm_xyz`, upstream of this Function.
+
+    backward: ∂E/∂full_xyz = −F (full OpenMM force vector). The H
+    contributions in F propagate naturally through ``_compose_full_omm_xyz``
+    and ``_place_hydrogens`` upstream via PyTorch autograd, delivering
+    correctly-distributed gradients to the heavy model atoms (parent +
+    local-frame neighbors).
     """
 
     @staticmethod
-    def forward(ctx, xyz_ang, context, model_to_omm, pos_buf):
+    def forward(ctx, full_xyz_nm, context, max_force_nm=10000.0):
         import openmm.unit as unit  # noqa: PLC0415
 
-        # Update heavy-atom positions in the pre-allocated nm buffer (Å → nm)
-        model_xyz_nm = xyz_ang.detach().cpu().numpy().astype(np.float64) * 0.1
-        valid = model_to_omm >= 0
-        pos_buf[model_to_omm[valid]] = model_xyz_nm[valid]
-
-        # Transfer positions to OpenMM context (CPU → GPU inside OpenMM)
-        context.setPositions(pos_buf)
+        pos_np = full_xyz_nm.detach().cpu().numpy().astype(np.float64)
+        context.setPositions(pos_np)
 
         state = context.getState(getEnergy=True, getForces=True)
         energy_kJ = state.getPotentialEnergy().value_in_unit(
@@ -203,32 +205,111 @@ class _OpenMMAMBERFunction(torch.autograd.Function):
             unit.kilojoules_per_mole / unit.nanometer
         )
 
-        # Map forces: OpenMM-indexed → model-indexed;  kJ/mol/nm → kJ/mol/Å
-        n_model = xyz_ang.shape[0]
-        model_forces = np.zeros((n_model, 3), dtype=np.float64)
-        model_forces[valid] = forces_kJ_nm[model_to_omm[valid]] * 0.1
-
-        # Clamp per-atom force magnitude to prevent extreme LJ clashes
-        # from producing gradients that blow up the optimizer.
-        # 1000 kJ/mol/Å ≈ force from a ~0.3 Å LJ overlap.
-        max_force = 1000.0  # kJ/mol/Å
-        norms = np.linalg.norm(model_forces, axis=1, keepdims=True)
+        # Per-atom force clamp to prevent extreme LJ clashes from blowing
+        # up the optimizer. 1000 kJ/mol/Å ≈ force from a ~0.3 Å LJ
+        # overlap; converted to kJ/mol/nm = 10000 (the default). Raising it
+        # (or passing inf) lets amber push harder against clash geometry —
+        # the lever for rejecting the unphysical-geometry overfit. A huge
+        # value makes scale≡1 (no clamp).
+        norms = np.linalg.norm(forces_kJ_nm, axis=1, keepdims=True)
         norms = np.maximum(norms, 1e-10)
-        scale = np.minimum(max_force / norms, 1.0)
-        model_forces *= scale
+        scale = np.minimum(float(max_force_nm) / norms, 1.0)
+        forces_kJ_nm = forces_kJ_nm * scale
 
         ctx.save_for_backward(
             torch.tensor(
-                model_forces, dtype=xyz_ang.dtype, device=xyz_ang.device
+                forces_kJ_nm,
+                dtype=full_xyz_nm.dtype,
+                device=full_xyz_nm.device,
             )
         )
-        return torch.tensor(energy_kJ, dtype=xyz_ang.dtype, device=xyz_ang.device)
+        return torch.tensor(
+            energy_kJ, dtype=full_xyz_nm.dtype, device=full_xyz_nm.device,
+        )
 
     @staticmethod
     def backward(ctx, grad_output):
         (forces,) = ctx.saved_tensors
-        # F = −∂E/∂x  →  ∂E/∂x = −F
-        return -forces * grad_output, None, None, None
+        # F = −∂E/∂full_xyz  →  ∂E/∂full_xyz = −F (kJ/mol/nm).
+        # Trailing Nones are for the non-tensor ``context`` and ``max_force_nm``.
+        return -forces * grad_output, None, None
+
+
+# ---------------------------------------------------------------------------
+# Differentiable hydrogen placement (single source of truth)
+# ---------------------------------------------------------------------------
+
+
+def _place_hydrogens_local_frame(
+    heavy_xyz: torch.Tensor,
+    parent_idx: torch.Tensor,
+    n1_idx: torch.Tensor,
+    n2_idx: torch.Tensor,
+    local_pos: torch.Tensor,
+    frame_valid: torch.Tensor,
+    offset: torch.Tensor,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Place hydrogens from heavy-atom positions via captured local frames.
+
+    The one and only implementation of the H-placement physics, shared by the
+    single-molecule / per-member path (:meth:`AmberTarget._place_hydrogens`)
+    and the tiled supercell path (``QuasiCrystalAmberTarget._place_hydrogens``).
+    Differentiable in ``heavy_xyz``: autograd distributes each H force onto its
+    parent + the two frame-reference atoms via the exact local-frame Jacobian.
+
+    For each H, an orthonormal frame is built from its parent ``p`` and two
+    heavy neighbours ``n1, n2``::
+
+        e1 = û(n1 − p)
+        e2 = û((n2 − p) ⊥ e1)
+        e3 = e1 × e2
+        h  = p + lx·e1 + ly·e2 + lz·e3
+
+    Hs flagged ``frame_valid == False`` (no two heavy neighbours) fall back to
+    the rigid translation ``p + offset``.
+
+    Parameters
+    ----------
+    heavy_xyz : torch.Tensor, ``(M, 3)``
+        Positions (nm) with all heavy-atom slots populated. May be a single
+        topology (``M = n_omm``) or a tiled supercell (``M = N · n_omm``).
+    parent_idx, n1_idx, n2_idx : torch.Tensor, ``(H,)`` long
+        Indices into ``heavy_xyz``. Invalid-frame neighbour indices must be
+        pre-clamped to a safe in-bounds value (their result is masked out).
+    local_pos : torch.Tensor, ``(H, 3)``
+        Captured local-frame coordinates of each H.
+    frame_valid : torch.Tensor, ``(H,)`` bool
+        Whether the local-frame placement is used (else the rigid fallback).
+    offset : torch.Tensor, ``(H, 3)``
+        Rigid-fallback ``p → H`` vector.
+    eps : float
+        Norm floor guarding degenerate frames.
+
+    Returns
+    -------
+    torch.Tensor, ``(H, 3)``
+        H positions (nm). The caller writes these into the H slots.
+    """
+    p = heavy_xyz.index_select(0, parent_idx)
+    n1 = heavy_xyz.index_select(0, n1_idx)
+    n2 = heavy_xyz.index_select(0, n2_idx)
+
+    a = n1 - p
+    e1 = a / a.norm(dim=-1, keepdim=True).clamp(min=eps)
+    b = n2 - p
+    b_perp = b - (b * e1).sum(-1, keepdim=True) * e1
+    e2 = b_perp / b_perp.norm(dim=-1, keepdim=True).clamp(min=eps)
+    e3 = torch.cross(e1, e2, dim=-1)
+
+    h_frame = (
+        p
+        + local_pos[:, 0:1] * e1
+        + local_pos[:, 1:2] * e2
+        + local_pos[:, 2:3] * e3
+    )
+    h_rigid = p + offset
+    return torch.where(frame_valid.unsqueeze(-1), h_frame, h_rigid)
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +382,9 @@ class AmberTarget(ModelTarget):
         normalize_by_atoms: bool = True,
         residue_charges: Optional[Dict[str, int]] = None,
         gaff2_files: Optional[Dict[str, Tuple[str, str]]] = None,
+        charge_method: str = "gas",
         verbose: int = 0,
+        chem_model: "Model" = None,
     ):
         try:
             import openmm  # noqa: F401, PLC0415
@@ -314,6 +397,25 @@ class AmberTarget(ModelTarget):
 
         super().__init__(model=model, verbose=verbose)
 
+        # The chemistry/topology is built from a SINGLE-conformation model
+        # (``_chem_model``). ``_model`` may be a multi-member ensemble whose
+        # per-member coordinates are fed through ``_energy`` by subclasses;
+        # for the single-molecule case the two are the same object.
+        self._chem_model = chem_model if chem_model is not None else model
+
+        # Antechamber charge method. Options (per antechamber -c flag):
+        #   'bcc'  — AM1-BCC; runs sqm semi-empirical QM, accurate but can
+        #            fail to converge on multi-residue batches.
+        #   'gas'  — Gasteiger; empirical, no QM, always succeeds. Less
+        #            accurate Coulomb terms but fine when bonded geometry
+        #            dominates (e.g. ensemble geometry restraints).
+        #   'gascharge', 'rc', 'esp', 'mul', etc. — see antechamber docs.
+        if charge_method not in {"bcc", "gas", "gascharge", "rc", "esp", "mul", "abcg2"}:
+            raise ValueError(
+                f"charge_method must be one of bcc/gas/gascharge/rc/esp/mul/abcg2; "
+                f"got {charge_method!r}"
+            )
+        self._charge_method = charge_method
         self._normalize = normalize_by_atoms
         self._residue_charges = dict(residue_charges) if residue_charges else {}
         self._gaff2_files = dict(gaff2_files) if gaff2_files else {}
@@ -330,21 +432,29 @@ class AmberTarget(ModelTarget):
         self._n_nonstandard: int = 0
         # GAFF2 path: ordered residue map for atom matching (None = standard path)
         self._tleap_residue_map: Optional[List[Dict[str, int]]] = None
+        # Cached protonated chemistry PDB (filled lazily by the first ligand
+        # parameterisation that needs H). None = not yet computed; False =
+        # generate_hydrogens failed (don't retry).
+        self._protonated_pdb_cache = None
 
-        if model is None:
+        if self._chem_model is None:
             return  # Allow empty init for state_dict loading
 
-        self._build(model)
+        self._build()
 
     # ------------------------------------------------------------------
     # Top-level build orchestration
     # ------------------------------------------------------------------
 
-    def _build(self, model: "Model") -> None:
-        """Detect → antechamber → build OpenMM system → map atoms."""
+    def _build(self) -> None:
+        """Detect → antechamber → build OpenMM system → map atoms.
+
+        Builds the OpenMM topology from ``self._chem_model`` — a single
+        conformation. (``self._model`` may be a multi-member ensemble.)
+        """
         # Reject models with alternate conformations — OpenMM only handles
         # a single conformation.  Call model.strip_altlocs() first.
-        altlocs = model.pdb["altloc"].astype(str).str.strip()
+        altlocs = self._chem_model.pdb["altloc"].astype(str).str.strip()
         if (altlocs != "").any():
             raise ValueError(
                 "[AmberTarget] Model contains alternate conformations. "
@@ -370,7 +480,13 @@ class AmberTarget(ModelTarget):
 
         # Pre-allocate nm position buffer: H positions pre-filled from OpenMM init
         self._pos_buf = positions_nm.copy()
-        self._n_model_atoms = len(model.pdb)
+        self._n_model_atoms = len(self._chem_model.pdb)
+        # Build (H, parent, offset) table so we can rigidly re-attach H atoms
+        # to their parent heavy atom each forward. Without this, H positions
+        # stay frozen at construction time while heavy atoms move, blowing up
+        # bond-stretch terms by orders of magnitude (the dominant pathology
+        # for any model.xyz() that excludes H).
+        self._build_h_attachment(positions_nm)
 
         if self.verbose >= 1:
             print(
@@ -388,7 +504,7 @@ class AmberTarget(ModelTarget):
         Return ``(resname, net_charge)`` for HETATM residues not in
         :data:`AMBER14_STANDARD`.  ATOM records with unknown resnames warn.
         """
-        pdb = self._model.pdb
+        pdb = self._chem_model.pdb
         nonstandard: List[Tuple[str, int]] = []
         seen: set = set()
 
@@ -430,8 +546,9 @@ class AmberTarget(ModelTarget):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _cache_key(resname: str, atom_names: List[str], charge: int) -> str:
-        content = f"{resname}:{':'.join(sorted(atom_names))}:{charge}"
+    def _cache_key(resname: str, atom_names: List[str], charge: int,
+                   charge_method: str = "bcc") -> str:
+        content = f"{resname}:{':'.join(sorted(atom_names))}:{charge}:{charge_method}"
         return hashlib.sha1(content.encode()).hexdigest()
 
     def _get_cache_dir(self, resname: str) -> Path:
@@ -457,6 +574,56 @@ class AmberTarget(ModelTarget):
                 )
             f.write("END\n")
 
+    def _protonated_chem_pdb(self):
+        """Protonated chemistry-model PDB DataFrame (cached), or ``None``.
+
+        Uses :meth:`Model.generate_hydrogens` once on the whole chemistry model
+        (which has a unit cell + full residue context, so gemmi's topology engine
+        is well-posed). H come from the monomer-library CIF at ideal geometry via
+        TorchRef's auto-fetching monomer library — no full CCP4 install needed.
+        Cached so repeated ligand parameterisations don't re-run it.
+        """
+        if self._protonated_pdb_cache is None:
+            try:
+                m_h = self._chem_model.generate_hydrogens()
+                self._protonated_pdb_cache = (
+                    m_h.update_pdb() if hasattr(m_h, "update_pdb") else m_h.pdb
+                )
+            except Exception as exc:  # missing CIF/lib, gemmi failure, etc.
+                if self.verbose >= 1:
+                    print(f"[AmberTarget] generate_hydrogens failed: {exc}")
+                self._protonated_pdb_cache = False
+        if self._protonated_pdb_cache is False:
+            return None
+        return self._protonated_pdb_cache
+
+    def _protonate_residue_pdb(self, resname: str, out_pdb: Path) -> bool:
+        """Write a protonated single-residue PDB for ``resname`` to ``out_pdb``.
+
+        antechamber/GAFF2 needs a protonated, valence-satisfied molecule because
+        the model is heavy-atom-only. Only topologically-correct H are required
+        here — charges are Gasteiger (connectivity-based, no QM) and the running-
+        system H are re-placed analytically each step — so the monomer library's
+        ideal geometry (via :meth:`_protonated_chem_pdb`) is ample.
+
+        Returns ``True`` iff H were added for ``resname`` (a monomer CIF
+        resolved); ``False`` lets the caller fall back.
+        """
+        pdb_h = self._protonated_chem_pdb()
+        if pdb_h is None:
+            return False
+        res = pdb_h[pdb_h["resname"].astype(str).str.strip() == resname]
+        h_mask = res["element"].astype(str).str.strip().isin(["H", "D"])
+        if not bool(h_mask.any()):
+            return False
+        self._write_residue_pdb(res, out_pdb)
+        if self.verbose >= 1:
+            print(
+                f"[AmberTarget] protonated '{resname}' via monomer library: "
+                f"+{int(h_mask.sum())} H"
+            )
+        return True
+
     def _run_antechamber_one(
         self, resname: str, charge: int
     ) -> Tuple[str, Path, Path]:
@@ -466,13 +633,15 @@ class AmberTarget(ModelTarget):
         Cache is checked first.  On a miss, work happens in a temp dir and
         results are atomically moved to the cache (write-then-rename).
         """
-        pdb = self._model.pdb
+        pdb = self._chem_model.pdb
         res_atoms = pdb[pdb["resname"].astype(str).str.strip() == resname]
         atom_names = res_atoms["name"].astype(str).str.strip().tolist()
 
-        # antechamber's BCC charges require a fully protonated molecule so that
-        # the semiempirical QM step (sqm) has an even electron count.
-        # Detect odd-electron count early and emit a clear error.
+        # antechamber needs a fully protonated molecule (sqm — used for BCC
+        # charges — needs an even electron count, and GAFF2 atom typing needs
+        # satisfied valences). The model is heavy-atom-only, so a ligand with no
+        # H is protonated below from the monomer library before antechamber runs.
+        # Compute the heavy-atom electron parity here to sanity-check the result.
         _Z = {"H":1,"He":2,"Li":3,"Be":4,"B":5,"C":6,"N":7,"O":8,"F":9,"Ne":10,
                "Na":11,"Mg":12,"Al":13,"Si":14,"P":15,"S":16,"Cl":17,"Ar":18,
                "K":19,"Ca":20,"Cr":24,"Mn":25,"Fe":26,"Co":27,"Ni":28,"Cu":29,
@@ -480,25 +649,9 @@ class AmberTarget(ModelTarget):
         elems = res_atoms["element"].astype(str).str.strip().str.capitalize()
         n_protons = sum(_Z.get(e, 0) for e in elems)
         n_electrons = n_protons - charge
-        if n_electrons % 2 != 0:
-            # Odd electron count → sqm cannot converge.  Almost certainly caused
-            # by missing H atoms in an organic molecule.
-            has_h = elems.isin(["H", "D"]).any()
-            raise RuntimeError(
-                f"[AmberTarget] Cannot run antechamber for '{resname}': "
-                f"odd electron count ({n_electrons}) for charge {charge:+d}.\n"
-                + (
-                    "The model has no H atoms for this residue; sqm (inside antechamber) "
-                    "requires a fully protonated molecule.\n"
-                    "Fix: call model.generate_hydrogens() or load the PDB with "
-                    "strip_H=False before creating AmberTarget."
-                    if not has_h else
-                    f"Check the net charge (residue_charges={{'{resname}': <charge>}}) "
-                    f"and verify the protonation state."
-                )
-            )
+        has_h = bool(elems.isin(["H", "D"]).any())
 
-        key = self._cache_key(resname, atom_names, charge)
+        key = self._cache_key(resname, atom_names, charge, self._charge_method)
         cache_dir = self._get_cache_dir(resname)
 
         mol2_cached = cache_dir / f"{key}.mol2"
@@ -520,13 +673,33 @@ class AmberTarget(ModelTarget):
 
             self._write_residue_pdb(res_atoms, lig_pdb)
 
+            # Heavy-atom-only ligand → protonate before antechamber so GAFF2
+            # typing sees satisfied valences (and sqm, if BCC, gets a closed-
+            # shell molecule). Hydrogens come from TorchRef's monomer-library
+            # placement at ideal geometry.
+            antechamber_input = lig_pdb
+            if not has_h:
+                lig_h_pdb = work_dir / "lig_h.pdb"
+                if self._protonate_residue_pdb(resname, lig_h_pdb):
+                    antechamber_input = lig_h_pdb
+                elif n_electrons % 2 != 0:
+                    raise RuntimeError(
+                        f"[AmberTarget] Cannot parameterise '{resname}': odd "
+                        f"electron count ({n_electrons}) for charge {charge:+d} "
+                        f"and no hydrogens could be added (no monomer-library CIF "
+                        f"resolved for '{resname}').\nFix: make the monomer CIF "
+                        f"available (CLIBD_MON / TORCHREF_MONOMER_LIB), pass an "
+                        f"explicit charge via residue_charges={{'{resname}': "
+                        f"<charge>}}, or supply gaff2_files for this residue."
+                    )
+
             # antechamber
             r = subprocess.run(
                 [
                     _find_ambertools_binary("antechamber"),
-                    "-i", str(lig_pdb), "-fi", "pdb",
+                    "-i", str(antechamber_input), "-fi", "pdb",
                     "-o", str(lig_mol2), "-fo", "mol2",
-                    "-c", "bcc", "-nc", str(charge),
+                    "-c", self._charge_method, "-nc", str(charge),
                     "-s", "2", "-at", "gaff2", "-dr", "no",
                 ],
                 cwd=str(work_dir),
@@ -636,7 +809,7 @@ class AmberTarget(ModelTarget):
         The returned DataFrame keeps the original model.pdb integer index
         so that ``df.index`` can be used as model row indices in the atom map.
         """
-        pdb = self._model.update_pdb()
+        pdb = self._chem_model.update_pdb()
 
         mask = pdb["altloc"].astype(str).str.strip().isin(["", "A"])
         mask &= ~pdb["element"].astype(str).str.strip().isin(["H", "D"])
@@ -660,9 +833,10 @@ class AmberTarget(ModelTarget):
         - Heavy atoms only (element != H or D)
         - Standard AMBER residues only (``AMBER14_STANDARD``) — non-standard
           HETATM residues are handled via antechamber / mol2 separately
-        - Waters excluded (``_TLEAP_EXCLUDE_RESIDUES``) — tleap reorders
-          waters, breaking sequential atom-map strategy; no gradient loss
-          since crystal waters are not primary refinement targets
+        - Waters (HOH/WAT) ARE included — ``_TLEAP_EXCLUDE_RESIDUES`` is
+          empty, so all ``AMBER14_STANDARD`` residues participate in the
+          LJ/Coulomb gradients (atom matching is position-based, so tleap's
+          water ordering does not break the map)
         - Monatomic ions (MG, ZN, CA, …) ARE included — covered by
           ``leaprc.water.tip3p`` (Li/Merz 12-6 set), appear in fixed PDB
           order, important for electrostatics near charged ligands
@@ -672,12 +846,13 @@ class AmberTarget(ModelTarget):
         so that ions absent from amber14-all.xml are still sent to tleap.
         Index is preserved (original model.pdb row positions).
         """
-        pdb = self._model.update_pdb()
+        pdb = self._chem_model.update_pdb()
 
         mask = pdb["altloc"].astype(str).str.strip().isin(["", "A"])
         mask &= ~pdb["element"].astype(str).str.strip().isin(["H", "D"])
 
-        # Allow AMBER-standard residues; exclude HOH/WAT and non-standard HETATM
+        # Allow AMBER-standard residues (including HOH/WAT, since
+        # _TLEAP_EXCLUDE_RESIDUES is empty); non-standard HETATM are excluded
         res_col = pdb["resname"].astype(str).str.strip()
         tleap_allowed = AMBER14_STANDARD - _TLEAP_EXCLUDE_RESIDUES
         mask &= res_col.isin(tleap_allowed)
@@ -919,7 +1094,7 @@ class AmberTarget(ModelTarget):
         """
         from scipy.spatial import cKDTree  # noqa: PLC0415
 
-        pdb = self._model.pdb
+        pdb = self._chem_model.pdb
         n_model = len(pdb)
         model_to_omm = np.full(n_model, -1, dtype=np.int32)
 
@@ -969,7 +1144,7 @@ class AmberTarget(ModelTarget):
 
             # Collect model primary-altloc heavy-atom positions (nm) and indices.
             # Use update_pdb() coords — same values that were written to tleap PDB.
-            fresh_pdb = self._model.update_pdb()
+            fresh_pdb = self._chem_model.update_pdb()
             altloc_ok = fresh_pdb["altloc"].astype(str).str.strip().isin(["", "A"])
             not_h = ~fresh_pdb["element"].astype(str).str.strip().isin(["H", "D"])
             primary_heavy = np.where((altloc_ok & not_h).values)[0]
@@ -1073,6 +1248,304 @@ class AmberTarget(ModelTarget):
             )
 
     # ------------------------------------------------------------------
+    # Hydrogen re-attachment
+    # ------------------------------------------------------------------
+
+    def _build_h_attachment(self, pos_nm: np.ndarray) -> None:
+        """
+        Build the local-frame placement table for every H atom.
+
+        Each H is placed at construction-time according to OpenMM's
+        ``Modeller.addHydrogens`` output. We freeze that placement in a
+        local frame defined by the parent heavy atom and 2 reference
+        heavy atoms. At forward time, the H position is recomputed in
+        differentiable PyTorch from the current heavy positions:
+
+            e1 = (n1 − p) / |n1 − p|
+            e2 = perp(n2 − p, e1) / |perp(n2 − p, e1)|
+            e3 = e1 × e2
+            h = p + lx·e1 + ly·e2 + lz·e3
+
+        where (lx, ly, lz) = (h − p) · [e1, e2, e3] is captured once.
+
+        Backward through this formula in PyTorch autograd produces the
+        exact local-frame Jacobian — so the force on H from OpenMM gets
+        correctly distributed across p, n1, n2, not just onto p.
+
+        Reference-atom selection per H:
+        - parent ``p``       : the unique heavy atom bonded to H
+        - neighbor ``n1``    : any heavy atom bonded to ``p`` (≠ H)
+        - neighbor ``n2``    : another heavy atom bonded to ``p``; if
+                               ``p`` has only one heavy neighbour, fall
+                               back to a heavy atom bonded to ``n1``
+                               (i.e. walk one bond further out).
+
+        Hs with no usable triple — extremely rare in real chemistry —
+        fall back to the legacy ``h = p + offset`` rigid translation
+        path, with ``h_frame_valid=False``.
+        """
+        if not hasattr(self, "_topology") or self._topology is None:
+            self._h_idx = None
+            self._h_parent_idx = None
+            self._h_n1_idx = None
+            self._h_n2_idx = None
+            self._h_local_pos = None
+            self._h_frame_valid = None
+            self._h_offset = None
+            return
+
+        # ---- Walk topology bonds. Build heavy-neighbor adjacency and
+        # parent map for H atoms in one pass. ------------------------------
+        from collections import defaultdict
+
+        def _is_h(atom) -> bool:
+            return atom.element is not None and atom.element.symbol == "H"
+
+        parent_of_h: Dict[int, int] = {}
+        heavy_neighbors: Dict[int, list] = defaultdict(list)
+        for bond in self._topology.bonds():
+            a, b = bond[0], bond[1]
+            a_is_h = _is_h(a)
+            b_is_h = _is_h(b)
+            if a_is_h and not b_is_h:
+                parent_of_h[a.index] = b.index
+            elif b_is_h and not a_is_h:
+                parent_of_h[b.index] = a.index
+            elif not a_is_h and not b_is_h:
+                heavy_neighbors[a.index].append(b.index)
+                heavy_neighbors[b.index].append(a.index)
+            # H-H bonds are nonsense; ignored.
+
+        if not parent_of_h:
+            self._h_idx = None
+            self._h_parent_idx = None
+            self._h_n1_idx = None
+            self._h_n2_idx = None
+            self._h_local_pos = None
+            self._h_frame_valid = None
+            self._h_offset = None
+            return
+
+        # ---- Resolve (parent, n1, n2) per H ----------------------------
+        h_indices = sorted(parent_of_h.keys())
+        n_h = len(h_indices)
+        p_arr = np.empty(n_h, dtype=np.int64)
+        n1_arr = np.empty(n_h, dtype=np.int64)
+        n2_arr = np.empty(n_h, dtype=np.int64)
+        valid = np.zeros(n_h, dtype=bool)
+
+        for k, h in enumerate(h_indices):
+            p = parent_of_h[h]
+            p_arr[k] = p
+            neigh = heavy_neighbors.get(p, [])
+            if len(neigh) >= 2:
+                n1_arr[k] = neigh[0]
+                n2_arr[k] = neigh[1]
+                valid[k] = True
+            elif len(neigh) == 1:
+                n1 = neigh[0]
+                further = [
+                    j for j in heavy_neighbors.get(n1, []) if j != p
+                ]
+                if further:
+                    n1_arr[k] = n1
+                    n2_arr[k] = further[0]
+                    valid[k] = True
+                else:
+                    n1_arr[k] = n1
+                    n2_arr[k] = -1
+                    valid[k] = False
+            else:
+                n1_arr[k] = -1
+                n2_arr[k] = -1
+                valid[k] = False
+
+        # ---- Compute local-frame coordinates from initial positions ----
+        h_pos = pos_nm[np.asarray(h_indices, dtype=np.int64)]
+        p_pos = pos_nm[p_arr]
+        local_pos = np.zeros((n_h, 3), dtype=np.float64)
+        eps = 1e-12
+
+        valid_idx = np.where(valid)[0]
+        if valid_idx.size > 0:
+            n1_pos = pos_nm[n1_arr[valid_idx]]
+            n2_pos = pos_nm[n2_arr[valid_idx]]
+            a = n1_pos - p_pos[valid_idx]
+            b = n2_pos - p_pos[valid_idx]
+            e1 = a / np.maximum(
+                np.linalg.norm(a, axis=-1, keepdims=True), eps,
+            )
+            b_perp = b - (b * e1).sum(-1, keepdims=True) * e1
+            e2 = b_perp / np.maximum(
+                np.linalg.norm(b_perp, axis=-1, keepdims=True), eps,
+            )
+            e3 = np.cross(e1, e2)
+            offset_v = h_pos[valid_idx] - p_pos[valid_idx]
+            local_pos[valid_idx, 0] = (offset_v * e1).sum(-1)
+            local_pos[valid_idx, 1] = (offset_v * e2).sum(-1)
+            local_pos[valid_idx, 2] = (offset_v * e3).sum(-1)
+
+        # Rigid fallback offset (used for !valid Hs only)
+        offset_all = h_pos - p_pos
+
+        # Stash numpy arrays for the forward path (the autograd Function
+        # converts to torch tensors lazily on the model's device).
+        self._h_idx = np.asarray(h_indices, dtype=np.int64)
+        self._h_parent_idx = p_arr
+        self._h_n1_idx = n1_arr
+        self._h_n2_idx = n2_arr
+        self._h_local_pos = local_pos.astype(np.float64)
+        self._h_frame_valid = valid
+        self._h_offset = offset_all  # legacy field, used only when !valid
+
+        if self.verbose >= 1:
+            n_frame = int(valid.sum())
+            n_fallback = int((~valid).sum())
+            print(
+                f"[AmberTarget] H-attachment: {n_h} H atoms — "
+                f"{n_frame} via local-frame placement, "
+                f"{n_fallback} via rigid fallback"
+            )
+
+    # ------------------------------------------------------------------
+    # Differentiable PyTorch placement (called from AmberTarget.forward)
+    # ------------------------------------------------------------------
+
+    def _place_hydrogens(self, heavy_omm_xyz_nm: torch.Tensor) -> torch.Tensor:
+        """
+        Compute H positions from the current heavy-atom OpenMM-order tensor.
+
+        Uses the local-frame data captured in :meth:`_build_h_attachment`:
+        for each H, build an orthonormal frame from (parent, n1, n2) and
+        place the H at its captured local-frame coordinates. Hs with
+        ``h_frame_valid=False`` fall back to ``parent + h_offset``.
+
+        Differentiable: backward through this function distributes the
+        H force across the parent + n1 + n2 reference atoms via the exact
+        local-frame Jacobian (handled by PyTorch autograd).
+
+        Parameters
+        ----------
+        heavy_omm_xyz_nm : (n_omm_total, 3) tensor in nm, OpenMM atom order.
+            H slot values are ignored — they will be overwritten in the
+            returned tensor.
+
+        Returns
+        -------
+        h_xyz_nm : (n_H, 3) tensor in nm. Empty if no Hs.
+        """
+        if self._h_idx is None or self._h_idx.size == 0:
+            return torch.zeros(
+                (0, 3),
+                dtype=heavy_omm_xyz_nm.dtype,
+                device=heavy_omm_xyz_nm.device,
+            )
+
+        device = heavy_omm_xyz_nm.device
+        dtype = heavy_omm_xyz_nm.dtype
+        # Lazily cache tensor views on the right device/dtype.
+        if (
+            getattr(self, "_h_tensors_dev", None) != device
+            or getattr(self, "_h_tensors_dtype", None) != dtype
+        ):
+            self._h_parent_idx_t = torch.as_tensor(
+                self._h_parent_idx, dtype=torch.long, device=device,
+            )
+            # For invalid frames clamp neighbor indices to 0 so the gather is
+            # safe; the value is masked out by `where` below.
+            n1 = np.where(self._h_n1_idx >= 0, self._h_n1_idx, 0)
+            n2 = np.where(self._h_n2_idx >= 0, self._h_n2_idx, 0)
+            self._h_n1_idx_t = torch.as_tensor(n1, dtype=torch.long, device=device)
+            self._h_n2_idx_t = torch.as_tensor(n2, dtype=torch.long, device=device)
+            self._h_local_pos_t = torch.as_tensor(
+                self._h_local_pos, dtype=dtype, device=device,
+            )
+            self._h_offset_t = torch.as_tensor(
+                self._h_offset, dtype=dtype, device=device,
+            )
+            self._h_frame_valid_t = torch.as_tensor(
+                self._h_frame_valid, dtype=torch.bool, device=device,
+            )
+            self._h_tensors_dev = device
+            self._h_tensors_dtype = dtype
+
+        return _place_hydrogens_local_frame(
+            heavy_omm_xyz_nm,
+            self._h_parent_idx_t,
+            self._h_n1_idx_t,
+            self._h_n2_idx_t,
+            self._h_local_pos_t,
+            self._h_frame_valid_t,
+            self._h_offset_t,
+        )
+
+    def _compose_full_omm_xyz(
+        self,
+        heavy_model_xyz_ang: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Build the full OpenMM-order position tensor (heavy + H) in nm.
+
+        Heavy model atoms are scattered into their OpenMM slots via
+        ``self._model_to_omm``. Unmatched OpenMM heavy slots (e.g.
+        non-standard residues without a model match) are filled from
+        the construction-time ``_pos_buf`` snapshot so they're at least
+        consistent. H slots are filled by :meth:`_place_hydrogens`.
+
+        Differentiable through ``heavy_model_xyz_ang`` — autograd routes
+        gradients on H slots back to their parent/n1/n2 reference atoms.
+        """
+        device = heavy_model_xyz_ang.device
+        dtype = heavy_model_xyz_ang.dtype
+        n_omm = self._n_omm_atoms
+
+        # Lazy tensorize index maps.
+        if (
+            getattr(self, "_omm_tensors_dev", None) != device
+            or getattr(self, "_omm_tensors_dtype", None) != dtype
+        ):
+            valid_np = self._model_to_omm >= 0
+            self._model_valid_t = torch.as_tensor(
+                valid_np, dtype=torch.bool, device=device,
+            )
+            self._model_valid_model_idx_t = torch.as_tensor(
+                np.where(valid_np)[0], dtype=torch.long, device=device,
+            )
+            self._model_valid_omm_idx_t = torch.as_tensor(
+                self._model_to_omm[valid_np], dtype=torch.long, device=device,
+            )
+            # Construction-time snapshot for unmatched heavy slots + initial Hs
+            self._pos_buf_t = torch.as_tensor(
+                self._pos_buf, dtype=dtype, device=device,
+            )
+            self._omm_tensors_dev = device
+            self._omm_tensors_dtype = dtype
+
+        # Start from the construction-time snapshot (provides values for
+        # unmatched heavy atoms and any non-frame-placed atom). Heavy and
+        # H slots will be overwritten below.
+        full = self._pos_buf_t.clone()
+
+        heavy_model_xyz_nm = heavy_model_xyz_ang * 0.1
+        heavy_matched = heavy_model_xyz_nm.index_select(
+            0, self._model_valid_model_idx_t,
+        )
+        full = full.index_copy(0, self._model_valid_omm_idx_t, heavy_matched)
+
+        # Now derive H positions from the fully-populated heavy tensor.
+        if self._h_idx is not None and self._h_idx.size > 0:
+            h_xyz = self._place_hydrogens(full)
+            if not hasattr(self, "_h_idx_t_for_omm"):
+                self._h_idx_t_for_omm = torch.as_tensor(
+                    self._h_idx, dtype=torch.long, device=device,
+                )
+            elif self._h_idx_t_for_omm.device != device:
+                self._h_idx_t_for_omm = self._h_idx_t_for_omm.to(device)
+            full = full.index_copy(0, self._h_idx_t_for_omm, h_xyz)
+
+        return full
+
+    # ------------------------------------------------------------------
     # Step 5 — OpenMM Context
     # ------------------------------------------------------------------
 
@@ -1085,7 +1558,7 @@ class AmberTarget(ModelTarget):
         """
         import openmm as mm  # noqa: PLC0415
 
-        device_type = getattr(self._model.device, "type", "cpu")
+        device_type = getattr(self._chem_model.device, "type", "cpu")
         preferred = "CUDA" if device_type == "cuda" else "CPU"
 
         seen: set = set()
@@ -1119,34 +1592,45 @@ class AmberTarget(ModelTarget):
     # forward
     # ------------------------------------------------------------------
 
-    def forward(self) -> torch.Tensor:
-        """
-        Compute AMBER14 energy for current model coordinates.
+    def _energy(self, xyz_ang: torch.Tensor) -> torch.Tensor:
+        """AMBER14 energy for one conformation's heavy-atom coords.
+
+        Parameters
+        ----------
+        xyz_ang : torch.Tensor
+            ``(n_model_atoms, 3)`` heavy-atom coordinates in Å, in the order
+            of ``self._chem_model.pdb`` (the topology the system was built on).
 
         Returns
         -------
         torch.Tensor
-            Scalar energy in kJ/mol (or kJ/mol/atom if normalize_by_atoms).
-            Gradient flows to ``model.xyz`` via OpenMM analytical forces.
+            Scalar energy in kJ/mol (or kJ/mol/atom if ``normalize_by_atoms``).
+            Gradient flows to ``xyz_ang`` via OpenMM analytical forces
+            (heavy atoms direct) and via :meth:`_place_hydrogens` / PyTorch
+            autograd (H positions, redistributed onto their parent +
+            local-frame neighbors).
+
+        Notes
+        -----
+        Subclasses feed per-member coordinates here; the single-molecule
+        :meth:`forward` passes ``self._model.xyz()``.
         """
         if self._context is None:
             raise RuntimeError(
                 "[AmberTarget] Not initialised. Pass model= to constructor."
             )
 
-        xyz = self._model.xyz()  # (n_model_atoms, 3), Å
-
-        energy = _OpenMMAMBERFunction.apply(
-            xyz,
-            self._context,
-            self._model_to_omm,
-            self._pos_buf,
-        )
+        full_xyz_nm = self._compose_full_omm_xyz(xyz_ang)
+        energy = _OpenMMAMBERFunction.apply(full_xyz_nm, self._context)
 
         if self._normalize:
             energy = energy / self._n_model_atoms
 
         return energy
+
+    def forward(self) -> torch.Tensor:
+        """Compute the AMBER14 energy for the model's current coordinates."""
+        return self._energy(self._model.xyz())
 
     # ------------------------------------------------------------------
     # stats

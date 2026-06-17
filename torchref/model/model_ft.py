@@ -481,8 +481,9 @@ class ModelFT(CachedForwardMixin, Model):
         Parameters
         ----------
         radius : int, optional
-            Radius in voxels around each atom to compute density.
-            If None, uses self.radius.
+            Accepted for backward compatibility but unused; the density
+            radius is governed by ``self.radius_angstrom`` and resolved by
+            the FFT submodule when building the map. Default is None.
         apply_symmetry : bool, optional
             If True and space group is not P1, apply symmetry operations
             to the map. Default is True.

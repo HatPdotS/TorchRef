@@ -674,10 +674,14 @@ def compute_ball_cross_correlation_coefficients(
     Compute Wigner coefficients for ball cross-correlation.
 
     The cross-correlation is:
-        C(R) = Σ_{p,l,m,n} f*_{p,l,m} g_{p,l,n} D^l_{m,n}(R)
-             = Σ_{l,m,n} ξ_{l,m,n} D^l_{m,n}(R)
+        C(R) = Σ_{p,l,m,n} ξ_{l,m,n} D^l_{m,n}(R)
 
-    where ξ_{l,m,n} = Σ_p w_p f*_{p,l,m} g_{p,l,n}
+    To recover the rotation R itself (rather than its transpose) under the
+    s2ball Wigner D convention, g is conjugated and f/g are swapped between the
+    m and n indices (see the inline comment in the body). The coefficients
+    actually assembled are therefore
+        ξ_{l,m,n} = Σ_p w_p f_{p,l,n} conj(g_{p,l,m})
+    summed over the P radial shells with weights w_p.
 
     Parameters
     ----------

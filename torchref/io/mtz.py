@@ -126,6 +126,17 @@ class MTZReader:
         "Free",
     ]
 
+    # Optional third-class flag for ensemble refinement / hyperparameter tuning.
+    # Distinct from R-free: validation reflections are held out for tuning
+    # regularization strength while R-free stays untouched for final reporting.
+    VALIDATION_FLAG_NAMES = [
+        "Validation_flag",
+        "Validation-flags",
+        "VAL_FLAG",
+        "VALID",
+        "Validation",
+    ]
+
     def __init__(
         self,
         verbose: int = 0,
@@ -202,6 +213,7 @@ class MTZReader:
 
         self._extract_amplitudes_and_intensities()
         self._extract_rfree_flags()
+        self._extract_validation_flags()
 
         # Carry the merge state out to the caller (ReflectionData.load reads it).
         self.data["friedel_merged"] = self.friedel_merged
@@ -476,6 +488,37 @@ class MTZReader:
                                 f"Warning: Could not load R-free flags from {col}: {e}"
                             )
 
+    def _extract_validation_flags(self) -> None:
+        """
+        Extract optional third-class validation flags from the MTZ.
+
+        Validation flags encode reflections held out for tuning regularization
+        strength, distinct from the R-free test set. Convention: 1 marks a
+        validation reflection, 0 marks any other class.
+        """
+        available_cols = set(self.mtz_data.columns)
+        for col in self.VALIDATION_FLAG_NAMES:
+            if col in available_cols:
+                try:
+                    flags = self.mtz_data[col].to_numpy()
+                    if not np.issubdtype(flags.dtype, np.integer):
+                        flags = pd.to_numeric(flags, errors="coerce")
+                        flags = np.nan_to_num(flags, nan=0).astype(np.int32)
+                    else:
+                        flags = flags.astype(np.int32)
+                    self.data["Validation-flags"] = (flags == 1).astype(bool)
+                    self.data["Validation-source"] = col
+                    if self.verbose > 0:
+                        n_val = int((flags == 1).sum())
+                        print(
+                            f"   Loaded validation flags from '{col}': "
+                            f"{n_val} reflections ({100.0 * n_val / max(len(flags), 1):.1f}%)"
+                        )
+                    return
+                except Exception as e:
+                    if self.verbose > 0:
+                        print(f"Warning: Could not load validation flags from {col}: {e}")
+
     def _find_sigma_column(self, data_col: str, is_intensity: bool) -> Optional[str]:
         """Find the sigma column for a data column."""
         available_cols = set(self.mtz_data.columns)
@@ -619,7 +662,14 @@ def write(
         "PHIF-model(-)",
         "PANOM",
     ]
-    flags = ["R-free-flags", "FreeR_flag", "FREE"]
+    flags = [
+        "R-free-flags",
+        "FreeR_flag",
+        "FREE",
+        "Validation_flag",
+        "Validation-flags",
+        "VAL_FLAG",
+    ]
 
     if "H" in mtz_rs.columns and "K" in mtz_rs.columns and "L" in mtz_rs.columns:
         mtz_rs["H"] = mtz_rs["H"].astype("H")
