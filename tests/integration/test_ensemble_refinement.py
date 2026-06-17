@@ -7,12 +7,32 @@ configuration.
 """
 
 import os
+import shutil
 
 import pytest
 import torch
 
+# This end-to-end test builds the QuasiCrystal Amber target (amber_weight=1.0),
+# so it requires OpenMM. Skip the whole module if OpenMM isn't installed.
+openmm = pytest.importorskip("openmm")
+
 from torchref.experimental.ensemble import EnsembleModel
 from torchref.experimental.ensemble import EnsembleRefinement
+
+
+def _have_amber_tools() -> bool:
+    """antechamber/tleap are needed because 1DAW's ANP ligand is non-standard
+    and is parameterised via GAFF2/antechamber during the Amber build."""
+    return shutil.which("antechamber") is not None and shutil.which("tleap") is not None
+
+
+# The module-scoped ``refinement`` fixture builds Amber eagerly, so every test
+# here transitively needs AmberTools — gate the whole module.
+pytestmark = pytest.mark.skipif(
+    not _have_amber_tools(),
+    reason="AmberTools (antechamber/tleap) not available — run under the conda "
+           "env with ambertools installed for the full Amber integration test.",
+)
 
 
 TEST_MTZ = os.path.join(
@@ -33,7 +53,11 @@ def refinement() -> EnsembleRefinement:
         perturb_sigma=0.01,    # symmetry-breaking only; clashes from larger values
         b_const=5.0,
         wilson_weight=0.5,
-        amber_lam=0.0,         # OpenMM disabled in CI tests
+        # Amber is ON (default amber_weight=1.0) so this end-to-end test
+        # exercises the real QuasiCrystal Amber path. The module is gated on
+        # OpenMM (and AmberTools, since 1DAW's ANP ligand is parameterised via
+        # antechamber) — see the importorskip/skipif at the top of the file.
+        amber_lam=0.0,
         amber_kT=0.0,
         val_fraction_of_free=0.5,
         xray_mode="ls",
