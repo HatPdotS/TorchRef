@@ -13,29 +13,15 @@ import os
 import pytest
 import torch
 
-# OpenMM is required for the target; skip the module entirely if it isn't
-# available in the test env.
-openmm = pytest.importorskip("openmm")
-
 from torchref.io.datasets import ReflectionData
 from torchref.experimental.ensemble import EnsembleModel
 from torchref.experimental.ensemble.quasi_crystal_amber import (
     QuasiCrystalAmberTarget,
 )
 
-
-def _have_amber_tools() -> bool:
-    """Check whether antechamber/tleap are available (required when the
-    template build runs GAFF2 for non-standard residues like 3GR5's SO4)."""
-    import shutil as _sh
-    return _sh.which("antechamber") is not None and _sh.which("tleap") is not None
-
-
-requires_amber_tools = pytest.mark.skipif(
-    not _have_amber_tools(),
-    reason="AmberTools (antechamber/tleap) not available — run under the "
-           "conda env with ambertools installed for the full Amber tests.",
-)
+# The template build runs GAFF2 for non-standard residues (3GR5's SO4), so this
+# module needs OpenMM + AmberTools. Gated centrally in conftest.
+pytestmark = pytest.mark.amber
 
 
 # 3GR5 is altloc-free (verified) and the production reference structure,
@@ -76,7 +62,6 @@ def small_setup():
     return ens, data
 
 
-@requires_amber_tools
 def test_construction_succeeds_n_disorder_1(small_setup):
     """Smallest valid case: n_members = 12 = 1 * N_sym."""
     ens, data = small_setup
@@ -96,7 +81,6 @@ def test_construction_succeeds_n_disorder_1(small_setup):
     assert target._n_omm_total == 12 * target._n_omm_per_member
 
 
-@requires_amber_tools
 def test_n_members_must_match_layout(small_setup):
     """n_disorder * N_sym must equal model.n_members."""
     ens, data = small_setup
@@ -112,7 +96,6 @@ def test_n_members_must_match_layout(small_setup):
         )
 
 
-@requires_amber_tools
 def test_construction_pme_box_matches_supercell(small_setup):
     """Periodic box equals the small cell when n_disorder=1."""
     ens, data = small_setup
@@ -139,7 +122,6 @@ def test_construction_pme_box_matches_supercell(small_setup):
             )
 
 
-@requires_amber_tools
 def test_forward_returns_finite_energy_with_gradient(small_setup):
     """forward() returns a finite energy and a *bounded* gradient.
 
@@ -168,16 +150,19 @@ def test_forward_returns_finite_energy_with_gradient(small_setup):
     g = ens.xyz.refinable_params.grad
     assert g is not None, "no gradient on ensemble xyz"
     assert torch.isfinite(g).all(), "non-finite gradient entries"
-    # The clamp produces O(1) per-coord gradients — bounded regardless of the
-    # raw energy value. If the gradient is huge here, the clamp is broken.
-    assert float(g.abs().max()) < 100.0, (
+    # The per-atom force clamp (10000 kJ/mol/nm) keeps the gradient bounded
+    # regardless of the raw energy. 3GR5's special-position HOH (12 sym-mates
+    # overlap in the supercell) drives several atoms to the clamp, so the
+    # post-chain-rule per-coord gradient is O(100) — well under what a broken
+    # clamp would give (the unclamped special-position LJ force is orders of
+    # magnitude larger, → gradients ~1e4+).
+    assert float(g.abs().max()) < 1000.0, (
         f"max |gradient| = {float(g.abs().max())} unexpectedly large; "
         "force-clamp may not be in effect"
     )
     assert (g.abs().sum(dim=-1) > 0).any(), "all atoms have zero gradient"
 
 
-@requires_amber_tools
 def test_forward_per_asu_normalization(small_setup):
     """``forward()`` returns supercell-energy / n_members when
     ``normalize_per_asu=True`` (default).

@@ -14,10 +14,12 @@ import os
 import pytest
 import torch
 
-openmm = pytest.importorskip("openmm")
-
 from torchref.model.model import Model
 from torchref.refinement.targets.amber_target import AmberTarget
+
+# Ligand-free protein → standard OpenMM Modeller path; needs OpenMM (+ pdbfixer
+# from the same [amber] extra), but no AmberTools. Gated centrally in conftest.
+pytestmark = pytest.mark.openmm
 
 # Ligand-free protein → standard Modeller path, no antechamber needed.
 TEST_PDB = os.path.join(

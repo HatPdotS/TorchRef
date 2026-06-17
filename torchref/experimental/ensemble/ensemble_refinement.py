@@ -185,6 +185,11 @@ class EnsembleRefinement(LBFGSRefinement):
         xray_adaptive_floor: float = 1e-4,
         xray_adaptive_ema_halflife_steps: int = 50,
         xray_adaptive_doubling_factor: float = 5.0,
+        integrator: str = "adam",
+        md_dt: float = 0.01,
+        md_friction: float = 10.0,
+        md_temperature: float = 2.494,
+        md_max_step: float = 0.1,
         amber_every: int = 1,
         refine_population: bool = False,
         refine_member_b: bool = False,
@@ -233,6 +238,11 @@ class EnsembleRefinement(LBFGSRefinement):
             self.xray_adaptive_floor = xray_adaptive_floor
             self.xray_adaptive_ema_halflife_steps = xray_adaptive_ema_halflife_steps
             self.xray_adaptive_doubling_factor = xray_adaptive_doubling_factor
+            self.integrator = str(integrator).lower()
+            self.md_dt = md_dt
+            self.md_friction = md_friction
+            self.md_temperature = md_temperature
+            self.md_max_step = md_max_step
             self.amber_every = amber_every
             self.refine_population = refine_population
             self.refine_member_b = refine_member_b
@@ -333,6 +343,11 @@ class EnsembleRefinement(LBFGSRefinement):
         self.xray_adaptive_floor = float(xray_adaptive_floor)
         self.xray_adaptive_ema_halflife_steps = int(xray_adaptive_ema_halflife_steps)
         self.xray_adaptive_doubling_factor = float(xray_adaptive_doubling_factor)
+        self.integrator = str(integrator).lower()
+        self.md_dt = float(md_dt)
+        self.md_friction = float(md_friction)
+        self.md_temperature = float(md_temperature)
+        self.md_max_step = float(md_max_step)
         self.amber_every = max(1, int(amber_every))
         self.refine_population = bool(refine_population)
         self.refine_member_b = bool(refine_member_b)
@@ -798,7 +813,12 @@ class EnsembleRefinement(LBFGSRefinement):
             xyz_params = [p for p in self.model.xyz.parameters() if p.requires_grad]
         else:
             xyz_params = self.model.parameters_of_types(("xyz",))
-        params = xyz_params + list(self.scaler.parameters())
+        guided_md = getattr(self, "integrator", "adam") == "langevin_baoab"
+        # Guided MD integrates the atomic DOF (xyz) ONLY. The scaler is a
+        # nuisance parameter that must not be thermally sampled, so it is left
+        # out of the integrator and refit deterministically per macro-cycle
+        # (see the cycle loop). The Adam/SGD paths keep co-refining it as before.
+        params = list(xyz_params) if guided_md else xyz_params + list(self.scaler.parameters())
         # Per-member occupancy (softmax logits) + ADP (softplus raw) refine
         # alongside xyz in the same group (Adam adapts the per-parameter scale;
         # the LR schedule drives all groups uniformly). On-demand for population
@@ -807,7 +827,43 @@ class EnsembleRefinement(LBFGSRefinement):
             params = params + [self.model.occ_logits]
             if self.refine_member_b:
                 params = params + [self.model.b_raw]
-        if self.optimizer_name == "sgd":
+        if guided_md:
+            # Genuine thermostatted MD: BAOAB Langevin on xyz with physical
+            # atomic masses and a CONSTANT bath temperature (never anneal to 0
+            # — that would re-collapse the ensemble). The X-ray term enters as a
+            # weighted force in the aggregated loss (w_xray is the strength
+            # knob, driven by the free/work gap controller), and the Amber
+            # supercell is the physical force field. The thermostat — not the
+            # gradient — maintains kinetic energy, so the ensemble spreads to
+            # the bath width and holds. The post-hoc SGLD noise is disabled
+            # (the thermostat owns the noise) and Amber runs every step.
+            from torchref.refinement.optimizers.langevin_sa import LangevinSA
+
+            self.amber_every = 1
+            _md_total = max(int(macro_cycles) * int(self.adam_steps_per_cycle), 1)
+            optimizer = LangevinSA(
+                params,
+                dt=self.md_dt,
+                friction=self.md_friction,
+                T_initial=self.md_temperature,
+                T_final=self.md_temperature,
+                total_steps=_md_total,
+                adaptive_masses=False,
+                max_step_size=self.md_max_step,
+            )
+            masses = self._physical_masses_for_xyz()
+            optimizer.set_physical_masses(masses or {}, T=self.md_temperature)
+            if self.verbose > 0:
+                src = "physical atomic" if masses else "unit (no element map)"
+                print(
+                    f"[ensemble] guided-MD: BAOAB Langevin on xyz "
+                    f"(dt={self.md_dt}, friction={self.md_friction}, "
+                    f"T={self.md_temperature} kJ/mol, max_step={self.md_max_step} Å); "
+                    f"{src} masses; Amber every step; scaler refit per cycle; "
+                    f"post-hoc noise disabled.",
+                    flush=True,
+                )
+        elif self.optimizer_name == "sgd":
             # Plain SGD (no momentum) + the post-step Langevin/floor noise =
             # proper overdamped SGLD: x ← x − lr·∇L + √(2·lr·T)·ε samples the
             # TRUE posterior p(x) ∝ exp(−L/T), uncorrupted by Adam's adaptive
@@ -1034,6 +1090,11 @@ class EnsembleRefinement(LBFGSRefinement):
         # off sharp work-overfit minima (drives the work/free gap closed).
         do_noise_floor = self.noise_floor_sigma > 0.0 or self.noise_floor_amp > 0.0
         do_noise = do_langevin or do_noise_floor
+        if guided_md:
+            # The BAOAB thermostat injects thermal noise (mass/T-scaled, in the
+            # O-step); the post-hoc lr-coupled SGLD kick would double-count it.
+            do_noise = False
+            do_noise_floor = False
         if do_langevin and self.verbose > 0:
             print(
                 f"[ensemble] Langevin ON: T={self.langevin_T} — "
@@ -1215,6 +1276,17 @@ class EnsembleRefinement(LBFGSRefinement):
             # H positions are derived from heavy atoms via local-frame
             # placement inside ``AmberTarget._place_hydrogens`` on every
             # forward — no per-cycle refresh needed.
+
+            # Guided MD excludes the scaler from the integrator; refit it to the
+            # current ensemble at the start of each macro-cycle (deterministic,
+            # treats |F_calc| as fixed, so atoms are not moved by the scale fit).
+            if guided_md:
+                with torch.no_grad():
+                    fcalc_now = self.model(self.reflection_data.hkl)
+                self.scaler.refine_lbfgs(
+                    fcalc_now, nsteps=2, max_iter=100, verbose=False
+                )
+                self.model.reset_cache()
 
             state = self.complete_loss_state()
             last_loss = None
@@ -1538,6 +1610,46 @@ class EnsembleRefinement(LBFGSRefinement):
             return float("nan")
         with torch.no_grad():
             return float(target().item()) / n
+
+    def _physical_masses_for_xyz(self) -> Optional[Dict[int, torch.Tensor]]:
+        """Per-atom physical masses for the refinable xyz parameter.
+
+        Builds a ``{id(param) -> mass}`` dict consumed by
+        :meth:`LangevinSA.set_physical_masses`. The mass tensor has shape
+        ``(N_rows, 1)`` so it ``expand_as``-broadcasts over the three Cartesian
+        components of the ``(N_rows, 3)`` coordinate parameter.
+
+        Masses come from the model's per-atom ``element`` column (member-
+        contiguous, aligned row-for-row with ``xyz.refinable_params``) via
+        gemmi's atomic weights. Hydrogens are absent from the refinable set
+        (they are placed analytically and slaved to heavy atoms), so only
+        heavy-atom masses are needed.
+
+        Returns ``None`` when the layout is not the standard flat coordinate
+        parameter (e.g. a PCA/low-rank reparameterization) or the element list
+        does not line up — the caller then falls back to unit masses.
+        """
+        xyz = self.model.xyz
+        flat = getattr(xyz, "refinable_params", None)
+        if flat is None or flat.dim() != 2 or flat.shape[1] != 3:
+            return None
+        n_rows = int(flat.shape[0])
+        elements = self.model.pdb["element"].astype(str).str.strip().tolist()
+        if len(elements) != n_rows:
+            return None
+        import gemmi
+
+        weights = []
+        for e in elements:
+            try:
+                w = gemmi.Element(e.capitalize() if e else "C").weight
+            except Exception:
+                w = 0.0
+            weights.append(w if w and w > 0.0 else 12.0)  # floor unknowns to C
+        m = torch.tensor(
+            weights, dtype=flat.dtype, device=flat.device
+        ).view(n_rows, 1)
+        return {id(flat): m}
 
     def _compute_rval(self) -> float:
         """R-factor on the validation set (monitoring only)."""

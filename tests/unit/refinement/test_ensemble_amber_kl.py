@@ -12,31 +12,15 @@ triphosphate charge) satisfies antechamber's even-electron requirement.
 """
 
 import os
-import shutil as _sh
 
 import pytest
 import torch
 
-openmm = pytest.importorskip("openmm")
-
 from torchref.experimental.ensemble import EnsembleAmberKLTarget, EnsembleModel
 
-
-def _ambertools_available() -> bool:
-    """Check whether antechamber/tleap are available (required because the
-    1DAW ligand ANP is non-standard and is parameterised via antechamber)."""
-    return _sh.which("antechamber") is not None and _sh.which("tleap") is not None
-
-
-requires_amber_tools = pytest.mark.skipif(
-    not _ambertools_available(),
-    reason="AmberTools (antechamber/tleap) not available — run under the "
-           "conda env with ambertools installed for the full Amber tests.",
-)
-
-# The eager Amber build parameterises ANP, so every test in this module needs
-# AmberTools (the entropy-only kT=0 path no longer dodges the build).
-pytestmark = requires_amber_tools
+# The eager Amber build parameterises the 1DAW ANP ligand (antechamber/GAFF2),
+# so every test here needs OpenMM + AmberTools. Gated centrally in conftest.
+pytestmark = pytest.mark.amber
 
 TEST_PDB = os.path.join(
     os.path.dirname(__file__), "..", "..", "files", "pdb", "1DAW.pdb"

@@ -14,6 +14,11 @@ import torch
 from torchref.experimental.ensemble import EnsembleModel
 from torchref.experimental.ensemble import EnsembleRefinement
 
+# The module-scoped ``refinement`` fixture builds the QuasiCrystal Amber target
+# eagerly (amber_weight=1.0), parameterising 1DAW's ANP ligand via GAFF2, so
+# every test here needs OpenMM + AmberTools. Gated centrally in conftest.
+pytestmark = pytest.mark.amber
+
 
 TEST_MTZ = os.path.join(
     os.path.dirname(__file__), "..", "files", "mtz", "1DAW.mtz"
@@ -33,7 +38,15 @@ def refinement() -> EnsembleRefinement:
         perturb_sigma=0.01,    # symmetry-breaking only; clashes from larger values
         b_const=5.0,
         wilson_weight=0.5,
-        amber_lam=0.0,         # OpenMM disabled in CI tests
+        # Amber is ON (default amber_weight=1.0) so this end-to-end test
+        # exercises the real QuasiCrystal Amber path, including parameterising
+        # 1DAW's ANP ligand (which is protonated from the monomer library).
+        # The init OpenMM energy-minimisation is disabled: 1DAW's supercell has
+        # special-position/metal clashes that make the (non-clamped) minimizer
+        # diverge to NaN — a separate pre-existing amber-stability issue. The
+        # differentiable forward clamps per-atom forces, so refinement is fine.
+        amber_relax_on_init=False,
+        amber_lam=0.0,
         amber_kT=0.0,
         val_fraction_of_free=0.5,
         xray_mode="ls",
@@ -49,13 +62,14 @@ def test_model_is_ensemble(refinement):
 
 
 def test_validation_set_was_generated(refinement):
-    assert int(refinement.reflection_data.val_idx.shape[0]) > 0
-    n_total = (
-        int(refinement.reflection_data.work_idx.shape[0])
-        + int(refinement.reflection_data.free_idx.shape[0])
-        + int(refinement.reflection_data.val_idx.shape[0])
-    )
-    assert n_total == len(refinement.reflection_data)
+    # work/free/validation are disjoint _ReflectionSubset views (.n) over the
+    # valid, in-resolution reflections (a subset of len(data), which counts all
+    # loaded reflections incl. out-of-resolution / invalid).
+    data = refinement.reflection_data
+    assert int(data.validation.n) > 0
+    assert int(data.work.n) > 0 and int(data.free.n) > 0
+    n_split = int(data.work.n) + int(data.free.n) + int(data.validation.n)
+    assert 0 < n_split <= len(data)
 
 
 def test_three_xray_targets_registered(refinement):
