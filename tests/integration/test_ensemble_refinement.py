@@ -62,11 +62,14 @@ def test_model_is_ensemble(refinement):
 
 
 def test_validation_set_was_generated(refinement):
-    # work/free/validation are _ReflectionSubset views (.n) on ReflectionData.
+    # work/free/validation are disjoint _ReflectionSubset views (.n) over the
+    # valid, in-resolution reflections (a subset of len(data), which counts all
+    # loaded reflections incl. out-of-resolution / invalid).
     data = refinement.reflection_data
     assert int(data.validation.n) > 0
-    n_total = int(data.work.n) + int(data.free.n) + int(data.validation.n)
-    assert n_total == len(data)
+    assert int(data.work.n) > 0 and int(data.free.n) > 0
+    n_split = int(data.work.n) + int(data.free.n) + int(data.validation.n)
+    assert 0 < n_split <= len(data)
 
 
 def test_three_xray_targets_registered(refinement):
