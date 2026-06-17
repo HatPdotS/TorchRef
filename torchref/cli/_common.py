@@ -129,6 +129,34 @@ def add_resolution_args(parser: argparse.ArgumentParser) -> None:
     add_dmax_arg(parser)
 
 
+def add_adp_mode_arg(parser: argparse.ArgumentParser) -> None:
+    """Add ``--adp-mode`` and ``--anisotropic-selection`` arguments.
+
+    Controls the atomic displacement parameter (ADP) parametrization: isotropic
+    per-atom B (default) vs anisotropic 6-component U for a selected atom set.
+    """
+    parser.add_argument(
+        "--adp-mode",
+        type=str,
+        default="isotropic",
+        choices=["isotropic", "anisotropic"],
+        help="ADP parametrization: 'isotropic' (default) refines a per-atom "
+        "B-factor; 'anisotropic' refines a 6-component U tensor for the atoms "
+        "given by --anisotropic-selection. The model is converted between "
+        "representations and the output PDB/mmCIF follows the convention "
+        "(ANISOU only for anisotropic atoms).",
+    )
+    parser.add_argument(
+        "--anisotropic-selection",
+        type=str,
+        default=None,
+        metavar="SELECTION",
+        help="Phenix-style atom selection refined anisotropically when "
+        "--adp-mode anisotropic (e.g. 'chain A', 'not resname HOH'). Default: "
+        "'not resname HOH and not element H' (all non-water heavy atoms).",
+    )
+
+
 def add_column_args(parser: argparse.ArgumentParser) -> None:
     """Add ``-csf`` and ``-csig`` column-selection arguments."""
     parser.add_argument(

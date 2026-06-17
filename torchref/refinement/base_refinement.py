@@ -102,6 +102,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         anomalous_threshold: float = 0.5,
         french_wilson: bool = True,
         anomalous: Optional[bool] = None,
+        adp_mode: str = "isotropic",
+        aniso_selection: Optional[str] = None,
     ):
         """
         Initialize Refinement.
@@ -136,6 +138,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             ``F(+)/F(-)`` (or ``I(+)/I(-)``) data are auto-detected and loaded as
             Friedel pairs when present, enabling the model's f'' term. True forces
             this; False forces a merged load (f'' disabled).
+        adp_mode : str, optional
+            ADP parametrization: ``"isotropic"`` (default) refines a per-atom
+            B-factor; ``"anisotropic"`` refines a 6-component U tensor for the
+            atoms selected by ``aniso_selection``. The model is converted between
+            representations accordingly (see :meth:`Model.set_adp_mode`).
+        aniso_selection : str, optional
+            Phenix-style atom selection of atoms refined anisotropically when
+            ``adp_mode="anisotropic"``. Defaults to
+            ``"not resname HOH and not element H"`` (all non-water heavy atoms).
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -158,6 +169,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # Anomalous (Bijvoet) load preference: None auto-detects and prefers
         # anomalous data when present; True forces it; False forces a merged load.
         self.anomalous = anomalous
+        # ADP parametrization: 'isotropic' (default) refines per-atom B;
+        # 'anisotropic' refines a 6-component U for atoms matched by
+        # aniso_selection (default all non-water heavy atoms). Applied to the
+        # model right after load, before scaling/restraints/targets.
+        self.adp_mode = adp_mode
+        self.aniso_selection = aniso_selection
 
         # Persistent state and logger (created lazily)
         self._loss_state: Optional[LossState] = None
@@ -239,6 +256,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 )
 
             self._sync_model_cell_to_data()
+            # Set ADP parametrization (iso/aniso) before scaling/restraints/targets
+            # so all structure-factor evaluation sees the chosen representation.
+            self.model.set_adp_mode(self.adp_mode, self.aniso_selection)
             self.setup_scaler()
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
