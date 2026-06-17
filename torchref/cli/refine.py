@@ -67,7 +67,7 @@ Examples:
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
 
   # Separated XYZ then ADP cycles
-  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode refine
+  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode separate
 
   # Legacy maximum-likelihood target
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
@@ -319,29 +319,28 @@ Examples:
     # Add final R-factors if available
     try:
         work_nll, test_nll = refinement.nll_xray()
-        hkl, fobs, sigma, rfree = refinement.reflection_data()
+        rd = refinement.reflection_data
         # Signed HKL so |F_calc| matches what refinement optimized (anomalous mates).
-        fcalc = refinement.get_F_calc_scaled(
-            refinement.reflection_data.hkl_for_sf(), recalc=True
-        )
+        fcalc = refinement.get_F_calc_scaled(rd.hkl_for_sf(), recalc=True)
 
-        work_mask = rfree
-        test_mask = ~rfree
-
-        r_work = torch.sum(torch.abs(fobs[work_mask] - fcalc[work_mask])) / torch.sum(
-            fobs[work_mask]
-        )
-        r_free = torch.sum(torch.abs(fobs[test_mask] - fcalc[test_mask])) / torch.sum(
-            fobs[test_mask]
-        )
+        # work/free accessor: scaled, validity-masked |F_obs| per subset; .select()
+        # aligns the full-size |F_calc| onto the same subset. Replaces the
+        # deprecated data() unpack and applies the validity mask to the counts too.
+        fobs_work, fobs_free = rd.work.F, rd.free.F
+        r_work = torch.sum(
+            torch.abs(fobs_work - rd.work.select(fcalc))
+        ) / torch.sum(fobs_work)
+        r_free = torch.sum(
+            torch.abs(fobs_free - rd.free.select(fcalc))
+        ) / torch.sum(fobs_free)
 
         history_data["final_statistics"] = {
             "R_work": float(r_work.item()),
             "R_free": float(r_free.item()),
             "NLL_work": float(work_nll.item()),
             "NLL_test": float(test_nll.item()),
-            "n_reflections_work": int(work_mask.sum().item()),
-            "n_reflections_test": int(test_mask.sum().item()),
+            "n_reflections_work": rd.work.n,
+            "n_reflections_test": rd.free.n,
         }
     except Exception as e:
         if args.verbose > 1:

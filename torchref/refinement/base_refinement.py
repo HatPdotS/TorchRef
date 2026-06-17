@@ -243,6 +243,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             # Configure CIF path for lazy restraint building (restraints built on first access)
             self.model.set_restraints_cif(cif)
             self.model._build_restraints()
+            self._freeze_unrestrained_residues()
 
             # Initialize target functions (instantiated once, evaluated each iteration)
             self._init_targets()
@@ -251,6 +252,88 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             if self.verbose > 1:
                 self.debug_on_error(e)
             raise e
+
+    def _freeze_unrestrained_residues(self):
+        """Freeze xyz of multi-atom, non-water residues that contain an atom with
+        no geometry restraint.
+
+        After restraints are built, an atom that appears in no bond / angle /
+        torsion / plane / chiral restraint has nothing holding its position;
+        refining it against the X-ray target alone distorts the geometry (the
+        usual cause is a ligand whose monomer-library CIF could not be found).
+        Such an atom's whole residue is frozen in xyz, *except*:
+
+        - waters (legitimately restraint-free), and
+        - single-atom residues (ions: no internal geometry to break).
+
+        B-factors and occupancy remain refinable.
+        """
+        import pandas as pd
+
+        model = self.model
+        pdb = getattr(model, "pdb", None)
+        acc = getattr(getattr(model, "_restraints", None), "restraints", None)
+        if pdb is None or acc is None:
+            return
+        n = len(pdb)
+
+        # 1. atoms that appear in at least one geometry restraint
+        restrained = set()
+
+        def mark(idx):
+            if idx is None or len(idx) == 0:
+                return
+            for v in torch.as_tensor(idx).reshape(-1).tolist():
+                if 0 <= v < n:
+                    restrained.add(int(v))
+
+        for rtype in ("bond", "angle", "torsion", "plane"):
+            try:
+                if rtype in acc:
+                    for _origin, data in acc[rtype].items():
+                        if isinstance(data, dict):
+                            mark(data.get("indices"))
+            except Exception:
+                pass
+        try:
+            if "chiral" in acc:
+                mark(acc["chiral"]["indices"])
+        except Exception:
+            pass
+
+        # 2. group atoms into residues (positional, aligned with xyz)
+        resname = pdb["resname"].astype(str).str.strip().tolist()
+        icode = (pdb["icode"].astype(str).tolist() if "icode" in pdb.columns
+                 else [""] * n)
+        chainid = pdb["chainid"].astype(str).tolist()
+        resseq = pdb["resseq"].astype(str).tolist()
+        res_atoms = {}
+        for i in range(n):
+            res_atoms.setdefault(
+                (chainid[i], resseq[i], icode[i], resname[i]), []
+            ).append(i)
+
+        # 3. residues with an unrestrained atom (skip water + single-atom residues)
+        WATER = {"HOH", "WAT", "DOD", "H2O", "SOL", "TIP", "TIP3", "TIP4"}
+        freeze_idx, frozen_res = [], []
+        for (c, rs, ic, rn), atoms in res_atoms.items():
+            if rn in WATER or len(atoms) <= 1:
+                continue
+            if any(i not in restrained for i in atoms):
+                freeze_idx.extend(atoms)
+                frozen_res.append(f"{c}/{rn}{rs}")
+        if not freeze_idx:
+            return
+
+        # 4. freeze xyz of those atoms (same path as freeze_selection)
+        model.xyz_mask[torch.tensor(freeze_idx, dtype=torch.long)] = False
+        model.apply_mask_to_parameter("xyz")
+        if self.verbose > 0:
+            shown = frozen_res[:20] + (["..."] if len(frozen_res) > 20 else [])
+            print(
+                f"Froze xyz for {len(freeze_idx)} atom(s) in {len(frozen_res)} "
+                f"residue(s) with incomplete restraints: {shown}"
+            )
 
     def _init_targets(self, xray_mode: str = "ml"):
         """
