@@ -1,0 +1,13 @@
+subset,arm,n_with_rfree,median_rfree
+all,af_initial,767,0.4159
+all,torchref_norb,759,0.3379
+all,torchref_rb,746,0.4335
+all,phenix_norb,734,0.3243
+all,phenix_rb,734,0.3216
+all,refmac,767,0.3216
+tfz>=8,af_initial,629,0.4102
+tfz>=8,torchref_norb,622,0.3303
+tfz>=8,torchref_rb,612,0.4142
+tfz>=8,phenix_norb,603,0.3168
+tfz>=8,phenix_rb,603,0.3147
+tfz>=8,refmac,629,0.3146

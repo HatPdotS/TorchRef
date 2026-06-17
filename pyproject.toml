@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchref"
-version = "0.6.0-dev"
+version = "0.6.0"
 description = "Pytorch based crystallographic refinement"
 readme = "README.md"
 requires-python = ">=3.10"

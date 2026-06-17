@@ -16,6 +16,7 @@ Version 0.6.0
 - Refinement now freezes all residues missing restraints (xyz)
 - Changed reflection data acessor api to use property style dataselection
 - Added benchmark to the paper folder were we refine from alphafold start coordinates
+- Added isotropic / anisotropic switch and seleciton to refinement cli
 - Updated many docstrings, and fixed some bugs
 
 Version 0.5.3.3

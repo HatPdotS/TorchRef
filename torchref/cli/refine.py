@@ -30,6 +30,7 @@ from pathlib import Path
 import torch
 
 from torchref.cli._common import (
+    add_adp_mode_arg,
     add_dmin_arg,
     add_general_args,
     add_metadata_args,
@@ -134,6 +135,7 @@ Examples:
         "If unset, an auto schedule is derived from native d_min. "
         "Only used when --with-rigid-body is set.",
     )
+    add_adp_mode_arg(refine_group)
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -187,6 +189,13 @@ Examples:
         print(f"Device:            {args.device}")
         if args.dmin:
             print(f"Resolution cutoff: {args.dmin:.2f} A")
+        adp_line = f"ADP mode:          {args.adp_mode}"
+        if args.adp_mode == "anisotropic":
+            adp_line += (
+                "  (selection: "
+                f"{args.anisotropic_selection or 'not resname HOH and not element H'})"
+            )
+        print(adp_line)
         if manual_weights:
             print(f"Manual weights:    {json.dumps(manual_weights)}")
         print("=" * 80)
@@ -211,6 +220,8 @@ Examples:
         column_names=column_names,
         target_mode=args.xray_mode,
         sigma_m_scale=args.sigma_m_scale,
+        adp_mode=args.adp_mode,
+        aniso_selection=args.anisotropic_selection,
     )
 
     # Apply manual group weights, if given. Merge onto DEFAULT_GROUP_WEIGHTS so
@@ -301,6 +312,10 @@ Examples:
         "parameters": {
             "n_cycles": args.n_cycles,
             "mode": args.mode,
+            "adp_mode": args.adp_mode,
+            "anisotropic_selection": (
+                args.anisotropic_selection if args.adp_mode == "anisotropic" else None
+            ),
             "xray_mode": args.xray_mode,
             "sigma_m_scale": args.sigma_m_scale,
             "weights": manual_weights if manual_weights else None,

@@ -1242,6 +1242,121 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 self.occupancy_mask, in_compressed_space=False
             )
 
+    def set_adp_mode(self, mode: str = "isotropic", aniso_selection: str = None):
+        """Set the atomic displacement parameter (ADP) parametrization.
+
+        Repartitions atoms between isotropic (a single B-factor, refined via
+        ``adp``) and anisotropic (a 6-component U tensor, refined via ``u``)
+        parametrization, *converting* the stored ADP values between the two
+        representations and updating everything that depends on the per-atom
+        iso/aniso split: the ``aniso_flag`` buffer, the cached structure-factor
+        index arrays (:meth:`_rebuild_sf_indices`), the refinable masks, the PDB
+        ``anisou_flag`` column (which gates ANISOU output), and the forward
+        caches.
+
+        This is a true conversion, not a freeze: the structure factor of an
+        anisotropic atom uses only its ``u`` (its ``adp`` is ignored), so simply
+        freezing ``u`` would leave most atoms' ADPs fixed rather than isotropic.
+
+        Parameters
+        ----------
+        mode : {"isotropic", "anisotropic"}, optional
+            ``"isotropic"`` (default) makes every atom isotropic; atoms that were
+            anisotropic get the equivalent isotropic
+            ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"`` makes the
+            atoms selected by ``aniso_selection`` anisotropic; atoms that were
+            isotropic are expanded to ``U = (B / 8 pi^2) I``.
+        aniso_selection : str, optional
+            Phenix-style atom selection (parsed by
+            :func:`torchref.utils.utils.create_selection_mask`) choosing which
+            atoms are anisotropic when ``mode="anisotropic"``. Defaults to
+            ``"not resname HOH and not element H"`` (all non-water heavy atoms).
+            Ignored for ``mode="isotropic"``.
+
+        Notes
+        -----
+        Intended to run once at model setup (before scaling / restraints /
+        targets). The isotropic result is identical to a freshly-loaded
+        isotropic-only model.
+        """
+        if not getattr(self, "initialized", False) or self.pdb is None:
+            return
+        if mode == "isotropic":
+            aniso_mask = torch.zeros(
+                len(self.pdb), dtype=torch.bool, device=self.device
+            )
+        elif mode == "anisotropic":
+            from torchref.utils.utils import create_selection_mask
+
+            sel = aniso_selection or "not resname HOH and not element H"
+            aniso_mask = torch.as_tensor(
+                create_selection_mask(sel, self.pdb), dtype=torch.bool
+            ).to(self.device)
+        else:
+            raise ValueError(
+                f"Unknown ADP mode: {mode!r}. Use 'isotropic' or 'anisotropic'."
+            )
+        self._apply_adp_partition(aniso_mask)
+
+    def _apply_adp_partition(self, aniso_mask: torch.Tensor):
+        """Convert ADP storage to match a target anisotropic-atom mask.
+
+        See :meth:`set_adp_mode`. Moves each atom's ADP between the isotropic
+        ``adp`` (B) and the anisotropic ``u`` (U) representation, rebuilds the
+        parameter wrappers, and refreshes ``aniso_flag``, the SF index cache, the
+        refinable masks, the PDB ``anisou_flag`` column and the forward caches.
+        """
+        import math
+
+        eight_pi_sq = 8.0 * math.pi**2
+        aniso_mask = torch.as_tensor(
+            aniso_mask, dtype=torch.bool, device=self.device
+        )
+        with torch.no_grad():
+            B = self.adp().detach().clone()
+            U = self.u().detach().clone()
+            finite_U = torch.isfinite(U).all(dim=1)
+
+            # --- target U (NaN row == isotropic atom) ---
+            U_target = U.clone()
+            entering = aniso_mask & ~finite_U  # iso -> aniso: expand B to U_iso*I
+            u_iso = (B / eight_pi_sq)[entering]
+            z = torch.zeros_like(u_iso)
+            U_target[entering] = torch.stack([u_iso, u_iso, u_iso, z, z, z], dim=1)
+            U_target[~aniso_mask] = float("nan")  # isotropic atoms carry U = NaN
+
+            # --- target B (equivalent isotropic B_eq for atoms leaving aniso) ---
+            B_target = B.clone()
+            leaving = (~aniso_mask) & finite_U
+            beq = (eight_pi_sq / 3.0) * (U[:, 0] + U[:, 1] + U[:, 2])
+            B_target[leaving] = beq[leaving]
+
+        # Rebuild the parameter wrappers from the converted values (mirrors load()).
+        self.adp = PositiveMixedTensor(
+            B_target.to(self.dtype_float), name="adp", device=self.device
+        )
+        self.u = CholeskyMixedTensor(
+            U_target.to(self.dtype_float), name="aniso_U", device=self.device
+        )
+
+        # Update the per-atom iso/aniso split and everything keyed off it.
+        self.aniso_flag = aniso_mask.clone()
+        self._rebuild_sf_indices()
+        # Clean partition: isotropic atoms refine B (adp), anisotropic atoms refine U.
+        self.adp_mask = ~aniso_mask
+        self.u_mask = aniso_mask.clone()
+        self.adp.update_refinable_mask(self.adp_mask)
+        self.u.update_refinable_mask(self.u_mask)
+
+        # The PDB/mmCIF writers gate ANISOU on this column; update_pdb() does not
+        # touch it, so keep it in sync with the chosen parametrization.
+        if self.pdb is not None:
+            self.pdb["anisou_flag"] = aniso_mask.detach().cpu().numpy()
+
+        # Anisotropy change invalidates structure-factor + wrapper forward caches.
+        if hasattr(self, "reset_cache"):
+            self.reset_cache()
+
     def update_mask_from_selection(
         self, selection_string: str, target: str, mode: str = "set", freeze: bool = True
     ):
