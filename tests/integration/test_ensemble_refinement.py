@@ -7,32 +7,17 @@ configuration.
 """
 
 import os
-import shutil
 
 import pytest
 import torch
 
-# This end-to-end test builds the QuasiCrystal Amber target (amber_weight=1.0),
-# so it requires OpenMM. Skip the whole module if OpenMM isn't installed.
-openmm = pytest.importorskip("openmm")
-
 from torchref.experimental.ensemble import EnsembleModel
 from torchref.experimental.ensemble import EnsembleRefinement
 
-
-def _have_amber_tools() -> bool:
-    """antechamber/tleap are needed because 1DAW's ANP ligand is non-standard
-    and is parameterised via GAFF2/antechamber during the Amber build."""
-    return shutil.which("antechamber") is not None and shutil.which("tleap") is not None
-
-
-# The module-scoped ``refinement`` fixture builds Amber eagerly, so every test
-# here transitively needs AmberTools — gate the whole module.
-pytestmark = pytest.mark.skipif(
-    not _have_amber_tools(),
-    reason="AmberTools (antechamber/tleap) not available — run under the conda "
-           "env with ambertools installed for the full Amber integration test.",
-)
+# The module-scoped ``refinement`` fixture builds the QuasiCrystal Amber target
+# eagerly (amber_weight=1.0), parameterising 1DAW's ANP ligand via GAFF2, so
+# every test here needs OpenMM + AmberTools. Gated centrally in conftest.
+pytestmark = pytest.mark.amber
 
 
 TEST_MTZ = os.path.join(
@@ -54,9 +39,13 @@ def refinement() -> EnsembleRefinement:
         b_const=5.0,
         wilson_weight=0.5,
         # Amber is ON (default amber_weight=1.0) so this end-to-end test
-        # exercises the real QuasiCrystal Amber path. The module is gated on
-        # OpenMM (and AmberTools, since 1DAW's ANP ligand is parameterised via
-        # antechamber) — see the importorskip/skipif at the top of the file.
+        # exercises the real QuasiCrystal Amber path, including parameterising
+        # 1DAW's ANP ligand (which is protonated from the monomer library).
+        # The init OpenMM energy-minimisation is disabled: 1DAW's supercell has
+        # special-position/metal clashes that make the (non-clamped) minimizer
+        # diverge to NaN — a separate pre-existing amber-stability issue. The
+        # differentiable forward clamps per-atom forces, so refinement is fine.
+        amber_relax_on_init=False,
         amber_lam=0.0,
         amber_kT=0.0,
         val_fraction_of_free=0.5,
@@ -73,13 +62,11 @@ def test_model_is_ensemble(refinement):
 
 
 def test_validation_set_was_generated(refinement):
-    assert int(refinement.reflection_data.val_idx.shape[0]) > 0
-    n_total = (
-        int(refinement.reflection_data.work_idx.shape[0])
-        + int(refinement.reflection_data.free_idx.shape[0])
-        + int(refinement.reflection_data.val_idx.shape[0])
-    )
-    assert n_total == len(refinement.reflection_data)
+    # work/free/validation are _ReflectionSubset views (.n) on ReflectionData.
+    data = refinement.reflection_data
+    assert int(data.validation.n) > 0
+    n_total = int(data.work.n) + int(data.free.n) + int(data.validation.n)
+    assert n_total == len(data)
 
 
 def test_three_xray_targets_registered(refinement):

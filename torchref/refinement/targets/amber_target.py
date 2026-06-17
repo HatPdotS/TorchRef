@@ -432,6 +432,10 @@ class AmberTarget(ModelTarget):
         self._n_nonstandard: int = 0
         # GAFF2 path: ordered residue map for atom matching (None = standard path)
         self._tleap_residue_map: Optional[List[Dict[str, int]]] = None
+        # Cached protonated chemistry PDB (filled lazily by the first ligand
+        # parameterisation that needs H). None = not yet computed; False =
+        # generate_hydrogens failed (don't retry).
+        self._protonated_pdb_cache = None
 
         if self._chem_model is None:
             return  # Allow empty init for state_dict loading
@@ -570,6 +574,56 @@ class AmberTarget(ModelTarget):
                 )
             f.write("END\n")
 
+    def _protonated_chem_pdb(self):
+        """Protonated chemistry-model PDB DataFrame (cached), or ``None``.
+
+        Uses :meth:`Model.generate_hydrogens` once on the whole chemistry model
+        (which has a unit cell + full residue context, so gemmi's topology engine
+        is well-posed). H come from the monomer-library CIF at ideal geometry via
+        TorchRef's auto-fetching monomer library — no full CCP4 install needed.
+        Cached so repeated ligand parameterisations don't re-run it.
+        """
+        if self._protonated_pdb_cache is None:
+            try:
+                m_h = self._chem_model.generate_hydrogens()
+                self._protonated_pdb_cache = (
+                    m_h.update_pdb() if hasattr(m_h, "update_pdb") else m_h.pdb
+                )
+            except Exception as exc:  # missing CIF/lib, gemmi failure, etc.
+                if self.verbose >= 1:
+                    print(f"[AmberTarget] generate_hydrogens failed: {exc}")
+                self._protonated_pdb_cache = False
+        if self._protonated_pdb_cache is False:
+            return None
+        return self._protonated_pdb_cache
+
+    def _protonate_residue_pdb(self, resname: str, out_pdb: Path) -> bool:
+        """Write a protonated single-residue PDB for ``resname`` to ``out_pdb``.
+
+        antechamber/GAFF2 needs a protonated, valence-satisfied molecule because
+        the model is heavy-atom-only. Only topologically-correct H are required
+        here — charges are Gasteiger (connectivity-based, no QM) and the running-
+        system H are re-placed analytically each step — so the monomer library's
+        ideal geometry (via :meth:`_protonated_chem_pdb`) is ample.
+
+        Returns ``True`` iff H were added for ``resname`` (a monomer CIF
+        resolved); ``False`` lets the caller fall back.
+        """
+        pdb_h = self._protonated_chem_pdb()
+        if pdb_h is None:
+            return False
+        res = pdb_h[pdb_h["resname"].astype(str).str.strip() == resname]
+        h_mask = res["element"].astype(str).str.strip().isin(["H", "D"])
+        if not bool(h_mask.any()):
+            return False
+        self._write_residue_pdb(res, out_pdb)
+        if self.verbose >= 1:
+            print(
+                f"[AmberTarget] protonated '{resname}' via monomer library: "
+                f"+{int(h_mask.sum())} H"
+            )
+        return True
+
     def _run_antechamber_one(
         self, resname: str, charge: int
     ) -> Tuple[str, Path, Path]:
@@ -583,9 +637,11 @@ class AmberTarget(ModelTarget):
         res_atoms = pdb[pdb["resname"].astype(str).str.strip() == resname]
         atom_names = res_atoms["name"].astype(str).str.strip().tolist()
 
-        # antechamber's BCC charges require a fully protonated molecule so that
-        # the semiempirical QM step (sqm) has an even electron count.
-        # Detect odd-electron count early and emit a clear error.
+        # antechamber needs a fully protonated molecule (sqm — used for BCC
+        # charges — needs an even electron count, and GAFF2 atom typing needs
+        # satisfied valences). The model is heavy-atom-only, so a ligand with no
+        # H is protonated below from the monomer library before antechamber runs.
+        # Compute the heavy-atom electron parity here to sanity-check the result.
         _Z = {"H":1,"He":2,"Li":3,"Be":4,"B":5,"C":6,"N":7,"O":8,"F":9,"Ne":10,
                "Na":11,"Mg":12,"Al":13,"Si":14,"P":15,"S":16,"Cl":17,"Ar":18,
                "K":19,"Ca":20,"Cr":24,"Mn":25,"Fe":26,"Co":27,"Ni":28,"Cu":29,
@@ -593,23 +649,7 @@ class AmberTarget(ModelTarget):
         elems = res_atoms["element"].astype(str).str.strip().str.capitalize()
         n_protons = sum(_Z.get(e, 0) for e in elems)
         n_electrons = n_protons - charge
-        if n_electrons % 2 != 0:
-            # Odd electron count → sqm cannot converge.  Almost certainly caused
-            # by missing H atoms in an organic molecule.
-            has_h = elems.isin(["H", "D"]).any()
-            raise RuntimeError(
-                f"[AmberTarget] Cannot run antechamber for '{resname}': "
-                f"odd electron count ({n_electrons}) for charge {charge:+d}.\n"
-                + (
-                    "The model has no H atoms for this residue; sqm (inside antechamber) "
-                    "requires a fully protonated molecule.\n"
-                    "Fix: call model.generate_hydrogens() or load the PDB with "
-                    "strip_H=False before creating AmberTarget."
-                    if not has_h else
-                    f"Check the net charge (residue_charges={{'{resname}': <charge>}}) "
-                    f"and verify the protonation state."
-                )
-            )
+        has_h = bool(elems.isin(["H", "D"]).any())
 
         key = self._cache_key(resname, atom_names, charge, self._charge_method)
         cache_dir = self._get_cache_dir(resname)
@@ -633,11 +673,31 @@ class AmberTarget(ModelTarget):
 
             self._write_residue_pdb(res_atoms, lig_pdb)
 
+            # Heavy-atom-only ligand → protonate before antechamber so GAFF2
+            # typing sees satisfied valences (and sqm, if BCC, gets a closed-
+            # shell molecule). Hydrogens come from TorchRef's monomer-library
+            # placement at ideal geometry.
+            antechamber_input = lig_pdb
+            if not has_h:
+                lig_h_pdb = work_dir / "lig_h.pdb"
+                if self._protonate_residue_pdb(resname, lig_h_pdb):
+                    antechamber_input = lig_h_pdb
+                elif n_electrons % 2 != 0:
+                    raise RuntimeError(
+                        f"[AmberTarget] Cannot parameterise '{resname}': odd "
+                        f"electron count ({n_electrons}) for charge {charge:+d} "
+                        f"and no hydrogens could be added (no monomer-library CIF "
+                        f"resolved for '{resname}').\nFix: make the monomer CIF "
+                        f"available (CLIBD_MON / TORCHREF_MONOMER_LIB), pass an "
+                        f"explicit charge via residue_charges={{'{resname}': "
+                        f"<charge>}}, or supply gaff2_files for this residue."
+                    )
+
             # antechamber
             r = subprocess.run(
                 [
                     _find_ambertools_binary("antechamber"),
-                    "-i", str(lig_pdb), "-fi", "pdb",
+                    "-i", str(antechamber_input), "-fi", "pdb",
                     "-o", str(lig_mol2), "-fo", "mol2",
                     "-c", self._charge_method, "-nc", str(charge),
                     "-s", "2", "-at", "gaff2", "-dr", "no",
