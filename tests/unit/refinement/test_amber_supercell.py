@@ -1,5 +1,6 @@
 """
-Unit tests for :class:`~torchref.refinement.targets.amber_target.SupercellLayout`.
+Unit tests for
+:class:`~torchref.experimental.ensemble.supercell.SupercellLayout`.
 
 Covers the pure tensor math: identity sym op + n_disorder=1 round-trip, tile
 shift, sym op application, 3GR5 P 6_5 2 2 shape sanity, and gradient flow.
@@ -8,7 +9,7 @@ shift, sym op application, 3GR5 P 6_5 2 2 shape sanity, and gradient flow.
 import pytest
 import torch
 
-from torchref.refinement.targets.amber_target import SupercellLayout
+from torchref.experimental.ensemble.supercell import SupercellLayout
 
 
 def _identity_layout(n_disorder: int = 1) -> SupercellLayout:
@@ -241,7 +242,7 @@ def _build_minimal_template(n_atoms: int = 4):
 
 def test_supercell_system_particle_count():
     """Particles = n_members × n_template."""
-    from torchref.refinement.targets.amber_target import (
+    from torchref.experimental.ensemble.supercell import (
         _replicate_to_supercell_system,
     )
 
@@ -258,7 +259,7 @@ def test_supercell_system_particle_count():
 
 def test_supercell_system_force_counts():
     """Each replicated force has n_members × template force count entries."""
-    from torchref.refinement.targets.amber_target import (
+    from torchref.experimental.ensemble.supercell import (
         _replicate_to_supercell_system,
     )
 
@@ -289,7 +290,7 @@ def test_supercell_system_force_counts():
 
 def test_supercell_system_pme_and_box():
     """NonbondedForce uses PME with the supercell PBC vectors."""
-    from torchref.refinement.targets.amber_target import (
+    from torchref.experimental.ensemble.supercell import (
         _replicate_to_supercell_system,
     )
 
@@ -317,7 +318,7 @@ def test_supercell_system_pme_and_box():
 
 def test_supercell_system_atom_indices_offset_correctly():
     """Bond indices in member m should sit in [m·n_template, (m+1)·n_template)."""
-    from torchref.refinement.targets.amber_target import (
+    from torchref.experimental.ensemble.supercell import (
         _replicate_to_supercell_system,
     )
 
@@ -350,7 +351,7 @@ def test_supercell_runs_an_energy_eval():
     via the layout's compute_member_positions. Verifies the System is
     self-consistent (no OpenMM validation error) and an energy comes out.
     """
-    from torchref.refinement.targets.amber_target import (
+    from torchref.experimental.ensemble.supercell import (
         _replicate_to_supercell_system,
     )
     import openmm.unit as u_omm

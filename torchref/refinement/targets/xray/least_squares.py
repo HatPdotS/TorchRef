@@ -131,7 +131,7 @@ class LeastSquaresXrayTarget(XrayTarget):
         if self.scale_mode == "binwise_optimal":
             # bins must be the compact-aligned bins; ``_get_bins_cached``
             # returns full-data bins, so select via the work-set indices.
-            sub = self._data.work if self.use_work_set else self._data.free
+            sub = self._subset()
             full_bins = self._get_bins_cached()
             bins = sub.select(full_bins)
             # .detach() so the gradient w.r.t. θ treats c as a constant —

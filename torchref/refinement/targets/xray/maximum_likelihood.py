@@ -77,7 +77,7 @@ class MaximumLikelihoodXrayTarget(XrayTarget):
         torch.Tensor
             Summed ML loss on this target's set (work or free).
         """
-        sub = self._data.work if self.use_work_set else self._data.free
+        sub = self._subset()
 
         # Full-size scaled |F_calc| (aligned to data.hkl). beta is estimated on
         # the full free set, so it needs the full-size arrays.

@@ -56,7 +56,6 @@ import subprocess
 import tempfile
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -167,368 +166,6 @@ _MODELLER_FF_RESIDUES: frozenset = frozenset(
 # near charged ligands.
 _TLEAP_EXCLUDE_RESIDUES: frozenset = frozenset()
 
-
-# ---------------------------------------------------------------------------
-# Supercell layout
-# ---------------------------------------------------------------------------
-#
-# For ensemble refinement, the disorder copies are tiled along axis a in a
-# k × 1 × 1 supercell, with the spacegroup's full sym expansion applied
-# within each small cell. The two "filling axes" of the ensemble are:
-#
-#   - sym mate j ∈ [0, N_sym): the crystallographic symmetry copies within
-#     one small cell (1 to N_sym = order of the spacegroup).
-#   - disorder copy d ∈ [0, k): the supercell tile (the same molecule
-#     conformer at a shifted small-cell position).
-#
-# Member index m maps to (d, j) by ``m = d * N_sym + j`` so members are
-# block-ordered: the first N_sym members fill tile d=0, the next N_sym fill
-# tile d=1, etc. This matches the layout of ``EnsembleModel.xyz_per_member``.
-#
-# Total members ``N = k * N_sym``.
-
-
-@dataclass
-class SupercellLayout:
-    """k × 1 × 1 supercell tiled along axis a, with sym expansion per small cell.
-
-    The class is just a container + a position-transform method — no OpenMM
-    state lives here. ``compute_member_positions`` is a pure differentiable
-    tensor op so gradients flow from supercell positions back to the model's
-    per-member xyz tensor.
-
-    Parameters
-    ----------
-    cell : torch.Tensor, (3, 3)
-        Orthogonalization matrix ``B`` such that ``cart_col = B @ frac_col``
-        (column convention). Columns are lattice vectors. This matches
-        :attr:`torchref.symmetry.Cell.fractional_matrix`.
-    sym_rotations : torch.Tensor, (n_sym, 3, 3)
-        Spacegroup rotation matrices in fractional coordinates (from
-        :attr:`torchref.symmetry.SpaceGroup.matrices`).
-    sym_translations : torch.Tensor, (n_sym, 3)
-        Spacegroup translations in fractional coordinates.
-    n_disorder : int
-        Number of disorder copies tiled along axis a (k ≥ 1).
-
-    Notes
-    -----
-    For member m = (d, j) (where ``d = m // n_sym`` and ``j = m % n_sym``)
-    and atom a with Cartesian ASU coords ``r_a``, the supercell-Cartesian
-    position is::
-
-        r_sym_cart = R_cart_j @ r_a + t_cart_j        (apply sym op j)
-        r_supercell = r_sym_cart + d * cell[:, 0]     (shift to tile d)
-
-    where ``R_cart_j = B @ R_j @ B^-1`` and ``t_cart_j = B @ t_j``
-    (rotation and translation conjugated into Cartesian frame).
-    """
-
-    cell: torch.Tensor
-    sym_rotations: torch.Tensor
-    sym_translations: torch.Tensor
-    n_disorder: int
-
-    def __post_init__(self) -> None:
-        if tuple(self.cell.shape) != (3, 3):
-            raise ValueError(
-                f"cell must be (3, 3); got {tuple(self.cell.shape)}"
-            )
-        if (
-            self.sym_rotations.ndim != 3
-            or tuple(self.sym_rotations.shape[-2:]) != (3, 3)
-        ):
-            raise ValueError(
-                f"sym_rotations must be (n_sym, 3, 3); got "
-                f"{tuple(self.sym_rotations.shape)}"
-            )
-        n_sym = int(self.sym_rotations.shape[0])
-        if tuple(self.sym_translations.shape) != (n_sym, 3):
-            raise ValueError(
-                f"sym_translations must be ({n_sym}, 3); got "
-                f"{tuple(self.sym_translations.shape)}"
-            )
-        if int(self.n_disorder) < 1:
-            raise ValueError(
-                f"n_disorder must be >= 1; got {self.n_disorder}"
-            )
-
-    @property
-    def n_sym(self) -> int:
-        return int(self.sym_rotations.shape[0])
-
-    @property
-    def n_members(self) -> int:
-        return int(self.n_disorder) * self.n_sym
-
-    @property
-    def supercell_vectors(self) -> torch.Tensor:
-        """(3, 3) cell matrix for the ``k·a × b × c`` supercell (same column
-        convention as :attr:`cell`)."""
-        a_vec, b_vec, c_vec = self.cell.unbind(dim=1)
-        return torch.stack(
-            [a_vec * int(self.n_disorder), b_vec, c_vec], dim=1
-        )
-
-    def compute_member_positions(
-        self, model_xyz: torch.Tensor
-    ) -> torch.Tensor:
-        """Map per-member ASU coords to supercell Cartesian positions.
-
-        Parameters
-        ----------
-        model_xyz : torch.Tensor, (N, n_atoms, 3)
-            Per-member Cartesian coordinates in the ASU frame.
-            ``N`` must equal :attr:`n_members`.
-
-        Returns
-        -------
-        torch.Tensor, (N, n_atoms, 3)
-            Cartesian positions in the supercell frame (Å). Differentiable
-            in ``model_xyz``.
-        """
-        if model_xyz.ndim != 3 or model_xyz.shape[-1] != 3:
-            raise ValueError(
-                f"model_xyz must be (N, n_atoms, 3); got "
-                f"{tuple(model_xyz.shape)}"
-            )
-        N = int(model_xyz.shape[0])
-        if N != self.n_members:
-            raise ValueError(
-                f"model_xyz N={N} does not match layout n_members="
-                f"{self.n_members}"
-            )
-
-        # Move cell + sym ops to the model's device/dtype, treat as constants.
-        device = model_xyz.device
-        dtype = model_xyz.dtype
-        B = self.cell.to(device=device, dtype=dtype).detach()
-        R_frac = self.sym_rotations.to(device=device, dtype=dtype).detach()
-        t_frac = self.sym_translations.to(device=device, dtype=dtype).detach()
-
-        # Cartesian sym ops: R_cart_j = B @ R_frac_j @ B^-1; t_cart_j = B @ t_frac_j.
-        B_inv = torch.linalg.inv(B)
-        R_cart = B @ R_frac @ B_inv  # (n_sym, 3, 3)
-        # t_frac is (n_sym, 3) row vectors; t_cart row = (B @ t_col).T = t_row @ B.T.
-        t_cart = t_frac @ B.T  # (n_sym, 3)
-
-        # Per-member (d, j) decomposition.
-        n_sym = self.n_sym
-        member_idx = torch.arange(N, device=device)
-        j_idx = member_idx % n_sym
-        d_idx = member_idx // n_sym
-
-        R_per_member = R_cart.index_select(0, j_idx)  # (N, 3, 3)
-        t_per_member = t_cart.index_select(0, j_idx)  # (N, 3)
-
-        # Apply rotation: r_sym[n, a, i] = R[n, i, k] * r[n, a, k] (column conv).
-        rotated = torch.einsum("nik,nak->nai", R_per_member, model_xyz)
-        rotated = rotated + t_per_member.unsqueeze(1)  # broadcast over atoms
-
-        # Tile shift: d * a_vec where a_vec = B[:, 0].
-        a_vec = B[:, 0]
-        tile_offset = (
-            d_idx.to(dtype).unsqueeze(-1) * a_vec.unsqueeze(0)
-        )  # (N, 3)
-        return rotated + tile_offset.unsqueeze(1)
-
-
-def _reduce_box_vectors_for_openmm(box: np.ndarray) -> np.ndarray:
-    """Canonicalize a (3, 3) column-major lattice matrix to OpenMM's
-    reduced-form periodic box.
-
-    OpenMM requires:
-      a = (a_x, 0, 0), a_x > 0
-      b = (b_x, b_y, 0), b_y > 0
-      c = (c_x, c_y, c_z), c_z > 0
-      |b_x| < a_x/2,  |c_x| < a_x/2,  |c_y| < b_y/2 (strict — float-precision-tight)
-
-    The crystallographic cell starts in this frame already (a along x, etc.)
-    but real data trips the strict check via two paths:
-
-    1. tiny float-noise non-zero entries (e.g. ``c_x ≈ 1e-5`` because the
-       supplied ``cos(90°)`` isn't exactly 0). Fix: zero entries below
-       ``1e-5 × cell scale``.
-    2. ``b_x`` sitting on the ``|b_x| = a_x/2`` boundary (hexagonal γ=120°
-       lattices like 3GR5: a=90.67, γ=120 → b_x = -45.335 = -a_x/2). Fix:
-       clamp ``b_x`` to just inside the boundary (a 1e-9 relative shift is
-       sub-µÅ on an Å-scale cell — undetectable in any force calc).
-
-    We don't do general lattice reduction (subtract n·a from b for vectors
-    far outside the reduced form) because every real crystallographic cell
-    already arrives in the standard reduced frame; only the boundary float-
-    precision case needs cleanup.
-    """
-    import math as _math  # noqa: PLC0415
-
-    a = box[:, 0].astype(np.float64).copy()
-    b = box[:, 1].astype(np.float64).copy()
-    c = box[:, 2].astype(np.float64).copy()
-
-    # 1) Drop sub-µÅ noise in entries that should be exactly zero.
-    scale = max(np.linalg.norm(a), np.linalg.norm(b), np.linalg.norm(c))
-    tol = 1e-5 * scale
-    if abs(a[1]) < tol: a[1] = 0.0
-    if abs(a[2]) < tol: a[2] = 0.0
-    if abs(b[2]) < tol: b[2] = 0.0
-    if abs(c[0]) < tol: c[0] = 0.0
-    if abs(c[1]) < tol: c[1] = 0.0
-
-    # 2) Clamp boundary cases inward by a tiny fraction so OpenMM's strict
-    #    "< a_x/2" passes. copysign keeps the sign of the original component.
-    def _clamp_in(v: float, half: float) -> float:
-        if abs(v) >= half * (1 - 1e-12):
-            return _math.copysign(half * (1.0 - 1e-9), v)
-        return v
-
-    if a[0] > 0:
-        b[0] = _clamp_in(b[0], a[0] / 2.0)
-        c[0] = _clamp_in(c[0], a[0] / 2.0)
-    if b[1] > 0:
-        c[1] = _clamp_in(c[1], b[1] / 2.0)
-
-    return np.stack([a, b, c], axis=1)
-
-
-def _replicate_to_supercell_system(
-    template_system,
-    layout: SupercellLayout,
-    pme_cutoff_nm: float = 1.0,
-    ewald_error_tolerance: float = 5e-4,
-):
-    """Build a unified OpenMM ``System`` for ``layout``'s k·N_sym replicas.
-
-    Walks the template (single-molecule) System's forces and replicates each
-    for every member m, offsetting atom indices by ``m * N_template``. The
-    NonbondedForce is rebuilt for PME on the supercell PBC; per-member 1-2/
-    1-3/1-4 exceptions are replicated. **No cross-member exceptions** — those
-    interactions are the crystal-contact forces that do the regularization.
-
-    Parameters
-    ----------
-    template_system : openmm.System
-        Single-molecule System (as produced by AmberTarget's existing
-        ``_build_omm_system`` path).
-    layout : SupercellLayout
-        Disorder + sym-expansion description; supplies ``n_members`` and
-        ``supercell_vectors`` (Å, column-vector convention).
-    pme_cutoff_nm : float
-        Nonbonded cutoff in nm (10 Å = 1.0 nm is typical for protein PME).
-    ewald_error_tolerance : float
-        PME accuracy tolerance; 5e-4 is OpenMM's default for production work.
-
-    Returns
-    -------
-    openmm.System
-        Supercell System with ``layout.n_members * template_system
-        .getNumParticles()`` particles, PBC set to ``layout.supercell_vectors``,
-        PME NonbondedForce.
-
-    Raises
-    ------
-    NotImplementedError
-        If the template contains a force type the replicator doesn't handle
-        (so unsupported forces surface immediately rather than being silently
-        dropped).
-    """
-    import openmm  # noqa: PLC0415
-    import openmm.unit as u_omm  # noqa: PLC0415
-
-    n_template = template_system.getNumParticles()
-    n_members = layout.n_members
-
-    new_system = openmm.System()
-
-    # ---- Particles ----
-    for _m in range(n_members):
-        for i in range(n_template):
-            new_system.addParticle(template_system.getParticleMass(i))
-
-    # ---- Periodic box (Å → nm), canonicalized to OpenMM reduced form ----
-    sv_ang_raw = layout.supercell_vectors.detach().cpu().numpy()
-    sv_ang = _reduce_box_vectors_for_openmm(sv_ang_raw)
-    sv_nm = sv_ang / 10.0
-    new_system.setDefaultPeriodicBoxVectors(
-        openmm.Vec3(float(sv_nm[0, 0]), float(sv_nm[1, 0]), float(sv_nm[2, 0]))
-        * u_omm.nanometer,
-        openmm.Vec3(float(sv_nm[0, 1]), float(sv_nm[1, 1]), float(sv_nm[2, 1]))
-        * u_omm.nanometer,
-        openmm.Vec3(float(sv_nm[0, 2]), float(sv_nm[1, 2]), float(sv_nm[2, 2]))
-        * u_omm.nanometer,
-    )
-
-    # ---- Forces ----
-    for force in template_system.getForces():
-        if isinstance(force, openmm.HarmonicBondForce):
-            new_force = openmm.HarmonicBondForce()
-            for m in range(n_members):
-                off = m * n_template
-                for k in range(force.getNumBonds()):
-                    p1, p2, length, kK = force.getBondParameters(k)
-                    new_force.addBond(p1 + off, p2 + off, length, kK)
-            new_force.setUsesPeriodicBoundaryConditions(True)
-            new_system.addForce(new_force)
-
-        elif isinstance(force, openmm.HarmonicAngleForce):
-            new_force = openmm.HarmonicAngleForce()
-            for m in range(n_members):
-                off = m * n_template
-                for k in range(force.getNumAngles()):
-                    p1, p2, p3, theta, kK = force.getAngleParameters(k)
-                    new_force.addAngle(
-                        p1 + off, p2 + off, p3 + off, theta, kK
-                    )
-            new_force.setUsesPeriodicBoundaryConditions(True)
-            new_system.addForce(new_force)
-
-        elif isinstance(force, openmm.PeriodicTorsionForce):
-            new_force = openmm.PeriodicTorsionForce()
-            for m in range(n_members):
-                off = m * n_template
-                for k in range(force.getNumTorsions()):
-                    p1, p2, p3, p4, periodicity, phase, kK = (
-                        force.getTorsionParameters(k)
-                    )
-                    new_force.addTorsion(
-                        p1 + off, p2 + off, p3 + off, p4 + off,
-                        periodicity, phase, kK,
-                    )
-            new_force.setUsesPeriodicBoundaryConditions(True)
-            new_system.addForce(new_force)
-
-        elif isinstance(force, openmm.NonbondedForce):
-            new_force = openmm.NonbondedForce()
-            for _m in range(n_members):
-                for i in range(n_template):
-                    q, sigma, eps = force.getParticleParameters(i)
-                    new_force.addParticle(q, sigma, eps)
-            for m in range(n_members):
-                off = m * n_template
-                for k in range(force.getNumExceptions()):
-                    i, j, q_prod, sigma, eps = force.getExceptionParameters(k)
-                    new_force.addException(
-                        i + off, j + off, q_prod, sigma, eps,
-                    )
-            new_force.setNonbondedMethod(openmm.NonbondedForce.PME)
-            new_force.setCutoffDistance(pme_cutoff_nm * u_omm.nanometer)
-            new_force.setEwaldErrorTolerance(float(ewald_error_tolerance))
-            new_force.setUseDispersionCorrection(True)
-            new_system.addForce(new_force)
-
-        elif isinstance(force, openmm.CMMotionRemover):
-            # Strip — per-atom forces are required for autograd; the template
-            # path already removes it on the original System, but be robust.
-            continue
-
-        else:
-            raise NotImplementedError(
-                f"Force type {type(force).__name__} not yet supported in "
-                f"_replicate_to_supercell_system"
-            )
-
-    return new_system
-
-
 # ---------------------------------------------------------------------------
 # Autograd bridge
 # ---------------------------------------------------------------------------
@@ -596,6 +233,83 @@ class _OpenMMAMBERFunction(torch.autograd.Function):
         # F = −∂E/∂full_xyz  →  ∂E/∂full_xyz = −F (kJ/mol/nm).
         # Trailing Nones are for the non-tensor ``context`` and ``max_force_nm``.
         return -forces * grad_output, None, None
+
+
+# ---------------------------------------------------------------------------
+# Differentiable hydrogen placement (single source of truth)
+# ---------------------------------------------------------------------------
+
+
+def _place_hydrogens_local_frame(
+    heavy_xyz: torch.Tensor,
+    parent_idx: torch.Tensor,
+    n1_idx: torch.Tensor,
+    n2_idx: torch.Tensor,
+    local_pos: torch.Tensor,
+    frame_valid: torch.Tensor,
+    offset: torch.Tensor,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Place hydrogens from heavy-atom positions via captured local frames.
+
+    The one and only implementation of the H-placement physics, shared by the
+    single-molecule / per-member path (:meth:`AmberTarget._place_hydrogens`)
+    and the tiled supercell path (``QuasiCrystalAmberTarget._place_hydrogens``).
+    Differentiable in ``heavy_xyz``: autograd distributes each H force onto its
+    parent + the two frame-reference atoms via the exact local-frame Jacobian.
+
+    For each H, an orthonormal frame is built from its parent ``p`` and two
+    heavy neighbours ``n1, n2``::
+
+        e1 = û(n1 − p)
+        e2 = û((n2 − p) ⊥ e1)
+        e3 = e1 × e2
+        h  = p + lx·e1 + ly·e2 + lz·e3
+
+    Hs flagged ``frame_valid == False`` (no two heavy neighbours) fall back to
+    the rigid translation ``p + offset``.
+
+    Parameters
+    ----------
+    heavy_xyz : torch.Tensor, ``(M, 3)``
+        Positions (nm) with all heavy-atom slots populated. May be a single
+        topology (``M = n_omm``) or a tiled supercell (``M = N · n_omm``).
+    parent_idx, n1_idx, n2_idx : torch.Tensor, ``(H,)`` long
+        Indices into ``heavy_xyz``. Invalid-frame neighbour indices must be
+        pre-clamped to a safe in-bounds value (their result is masked out).
+    local_pos : torch.Tensor, ``(H, 3)``
+        Captured local-frame coordinates of each H.
+    frame_valid : torch.Tensor, ``(H,)`` bool
+        Whether the local-frame placement is used (else the rigid fallback).
+    offset : torch.Tensor, ``(H, 3)``
+        Rigid-fallback ``p → H`` vector.
+    eps : float
+        Norm floor guarding degenerate frames.
+
+    Returns
+    -------
+    torch.Tensor, ``(H, 3)``
+        H positions (nm). The caller writes these into the H slots.
+    """
+    p = heavy_xyz.index_select(0, parent_idx)
+    n1 = heavy_xyz.index_select(0, n1_idx)
+    n2 = heavy_xyz.index_select(0, n2_idx)
+
+    a = n1 - p
+    e1 = a / a.norm(dim=-1, keepdim=True).clamp(min=eps)
+    b = n2 - p
+    b_perp = b - (b * e1).sum(-1, keepdim=True) * e1
+    e2 = b_perp / b_perp.norm(dim=-1, keepdim=True).clamp(min=eps)
+    e3 = torch.cross(e1, e2, dim=-1)
+
+    h_frame = (
+        p
+        + local_pos[:, 0:1] * e1
+        + local_pos[:, 1:2] * e2
+        + local_pos[:, 2:3] * e3
+    )
+    h_rigid = p + offset
+    return torch.where(frame_valid.unsqueeze(-1), h_frame, h_rigid)
 
 
 # ---------------------------------------------------------------------------
@@ -668,8 +382,9 @@ class AmberTarget(ModelTarget):
         normalize_by_atoms: bool = True,
         residue_charges: Optional[Dict[str, int]] = None,
         gaff2_files: Optional[Dict[str, Tuple[str, str]]] = None,
-        charge_method: str = "bcc",
+        charge_method: str = "gas",
         verbose: int = 0,
+        chem_model: "Model" = None,
     ):
         try:
             import openmm  # noqa: F401, PLC0415
@@ -681,6 +396,12 @@ class AmberTarget(ModelTarget):
             ) from None
 
         super().__init__(model=model, verbose=verbose)
+
+        # The chemistry/topology is built from a SINGLE-conformation model
+        # (``_chem_model``). ``_model`` may be a multi-member ensemble whose
+        # per-member coordinates are fed through ``_energy`` by subclasses;
+        # for the single-molecule case the two are the same object.
+        self._chem_model = chem_model if chem_model is not None else model
 
         # Antechamber charge method. Options (per antechamber -c flag):
         #   'bcc'  — AM1-BCC; runs sqm semi-empirical QM, accurate but can
@@ -712,20 +433,24 @@ class AmberTarget(ModelTarget):
         # GAFF2 path: ordered residue map for atom matching (None = standard path)
         self._tleap_residue_map: Optional[List[Dict[str, int]]] = None
 
-        if model is None:
+        if self._chem_model is None:
             return  # Allow empty init for state_dict loading
 
-        self._build(model)
+        self._build()
 
     # ------------------------------------------------------------------
     # Top-level build orchestration
     # ------------------------------------------------------------------
 
-    def _build(self, model: "Model") -> None:
-        """Detect → antechamber → build OpenMM system → map atoms."""
+    def _build(self) -> None:
+        """Detect → antechamber → build OpenMM system → map atoms.
+
+        Builds the OpenMM topology from ``self._chem_model`` — a single
+        conformation. (``self._model`` may be a multi-member ensemble.)
+        """
         # Reject models with alternate conformations — OpenMM only handles
         # a single conformation.  Call model.strip_altlocs() first.
-        altlocs = model.pdb["altloc"].astype(str).str.strip()
+        altlocs = self._chem_model.pdb["altloc"].astype(str).str.strip()
         if (altlocs != "").any():
             raise ValueError(
                 "[AmberTarget] Model contains alternate conformations. "
@@ -751,7 +476,7 @@ class AmberTarget(ModelTarget):
 
         # Pre-allocate nm position buffer: H positions pre-filled from OpenMM init
         self._pos_buf = positions_nm.copy()
-        self._n_model_atoms = len(model.pdb)
+        self._n_model_atoms = len(self._chem_model.pdb)
         # Build (H, parent, offset) table so we can rigidly re-attach H atoms
         # to their parent heavy atom each forward. Without this, H positions
         # stay frozen at construction time while heavy atoms move, blowing up
@@ -775,7 +500,7 @@ class AmberTarget(ModelTarget):
         Return ``(resname, net_charge)`` for HETATM residues not in
         :data:`AMBER14_STANDARD`.  ATOM records with unknown resnames warn.
         """
-        pdb = self._model.pdb
+        pdb = self._chem_model.pdb
         nonstandard: List[Tuple[str, int]] = []
         seen: set = set()
 
@@ -854,7 +579,7 @@ class AmberTarget(ModelTarget):
         Cache is checked first.  On a miss, work happens in a temp dir and
         results are atomically moved to the cache (write-then-rename).
         """
-        pdb = self._model.pdb
+        pdb = self._chem_model.pdb
         res_atoms = pdb[pdb["resname"].astype(str).str.strip() == resname]
         atom_names = res_atoms["name"].astype(str).str.strip().tolist()
 
@@ -1024,7 +749,7 @@ class AmberTarget(ModelTarget):
         The returned DataFrame keeps the original model.pdb integer index
         so that ``df.index`` can be used as model row indices in the atom map.
         """
-        pdb = self._model.update_pdb()
+        pdb = self._chem_model.update_pdb()
 
         mask = pdb["altloc"].astype(str).str.strip().isin(["", "A"])
         mask &= ~pdb["element"].astype(str).str.strip().isin(["H", "D"])
@@ -1061,7 +786,7 @@ class AmberTarget(ModelTarget):
         so that ions absent from amber14-all.xml are still sent to tleap.
         Index is preserved (original model.pdb row positions).
         """
-        pdb = self._model.update_pdb()
+        pdb = self._chem_model.update_pdb()
 
         mask = pdb["altloc"].astype(str).str.strip().isin(["", "A"])
         mask &= ~pdb["element"].astype(str).str.strip().isin(["H", "D"])
@@ -1309,7 +1034,7 @@ class AmberTarget(ModelTarget):
         """
         from scipy.spatial import cKDTree  # noqa: PLC0415
 
-        pdb = self._model.pdb
+        pdb = self._chem_model.pdb
         n_model = len(pdb)
         model_to_omm = np.full(n_model, -1, dtype=np.int32)
 
@@ -1359,7 +1084,7 @@ class AmberTarget(ModelTarget):
 
             # Collect model primary-altloc heavy-atom positions (nm) and indices.
             # Use update_pdb() coords — same values that were written to tleap PDB.
-            fresh_pdb = self._model.update_pdb()
+            fresh_pdb = self._chem_model.update_pdb()
             altloc_ok = fresh_pdb["altloc"].astype(str).str.strip().isin(["", "A"])
             not_h = ~fresh_pdb["element"].astype(str).str.strip().isin(["H", "D"])
             primary_heavy = np.where((altloc_ok & not_h).values)[0]
@@ -1684,26 +1409,14 @@ class AmberTarget(ModelTarget):
             self._h_tensors_dev = device
             self._h_tensors_dtype = dtype
 
-        p = heavy_omm_xyz_nm.index_select(0, self._h_parent_idx_t)
-        n1 = heavy_omm_xyz_nm.index_select(0, self._h_n1_idx_t)
-        n2 = heavy_omm_xyz_nm.index_select(0, self._h_n2_idx_t)
-
-        eps = 1e-12
-        a = n1 - p
-        e1 = a / a.norm(dim=-1, keepdim=True).clamp(min=eps)
-        b = n2 - p
-        b_perp = b - (b * e1).sum(-1, keepdim=True) * e1
-        e2 = b_perp / b_perp.norm(dim=-1, keepdim=True).clamp(min=eps)
-        e3 = torch.cross(e1, e2, dim=-1)
-
-        lx = self._h_local_pos_t[:, 0:1]
-        ly = self._h_local_pos_t[:, 1:2]
-        lz = self._h_local_pos_t[:, 2:3]
-        h_frame = p + lx * e1 + ly * e2 + lz * e3
-
-        h_rigid = p + self._h_offset_t
-        return torch.where(
-            self._h_frame_valid_t.unsqueeze(-1), h_frame, h_rigid,
+        return _place_hydrogens_local_frame(
+            heavy_omm_xyz_nm,
+            self._h_parent_idx_t,
+            self._h_n1_idx_t,
+            self._h_n2_idx_t,
+            self._h_local_pos_t,
+            self._h_frame_valid_t,
+            self._h_offset_t,
         )
 
     def _compose_full_omm_xyz(
@@ -1785,7 +1498,7 @@ class AmberTarget(ModelTarget):
         """
         import openmm as mm  # noqa: PLC0415
 
-        device_type = getattr(self._model.device, "type", "cpu")
+        device_type = getattr(self._chem_model.device, "type", "cpu")
         preferred = "CUDA" if device_type == "cuda" else "CPU"
 
         seen: set = set()
@@ -1819,25 +1532,34 @@ class AmberTarget(ModelTarget):
     # forward
     # ------------------------------------------------------------------
 
-    def forward(self) -> torch.Tensor:
-        """
-        Compute AMBER14 energy for current model coordinates.
+    def _energy(self, xyz_ang: torch.Tensor) -> torch.Tensor:
+        """AMBER14 energy for one conformation's heavy-atom coords.
+
+        Parameters
+        ----------
+        xyz_ang : torch.Tensor
+            ``(n_model_atoms, 3)`` heavy-atom coordinates in Å, in the order
+            of ``self._chem_model.pdb`` (the topology the system was built on).
 
         Returns
         -------
         torch.Tensor
             Scalar energy in kJ/mol (or kJ/mol/atom if ``normalize_by_atoms``).
-            Gradient flows to ``model.xyz`` via OpenMM analytical forces
-            (heavy atoms direct) and via :meth:`_place_hydrogens` /
-            PyTorch autograd (H positions, redistributed onto their
-            parent + local-frame neighbors).
+            Gradient flows to ``xyz_ang`` via OpenMM analytical forces
+            (heavy atoms direct) and via :meth:`_place_hydrogens` / PyTorch
+            autograd (H positions, redistributed onto their parent +
+            local-frame neighbors).
+
+        Notes
+        -----
+        Subclasses feed per-member coordinates here; the single-molecule
+        :meth:`forward` passes ``self._model.xyz()``.
         """
         if self._context is None:
             raise RuntimeError(
                 "[AmberTarget] Not initialised. Pass model= to constructor."
             )
 
-        xyz_ang = self._model.xyz()                # (n_model_atoms, 3) Å
         full_xyz_nm = self._compose_full_omm_xyz(xyz_ang)
         energy = _OpenMMAMBERFunction.apply(full_xyz_nm, self._context)
 
@@ -1845,6 +1567,10 @@ class AmberTarget(ModelTarget):
             energy = energy / self._n_model_atoms
 
         return energy
+
+    def forward(self) -> torch.Tensor:
+        """Compute the AMBER14 energy for the model's current coordinates."""
+        return self._energy(self._model.xyz())
 
     # ------------------------------------------------------------------
     # stats

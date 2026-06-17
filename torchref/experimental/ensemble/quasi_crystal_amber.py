@@ -19,15 +19,19 @@ the physical anti-collapse.
 
 Design
 ------
-Composition, not subclassing. The class internally builds a *temporary*
-single-copy :class:`AmberTarget` (via the existing ``_SingleMemberShim``
-pattern) just to reuse:
+Subclass of :class:`~torchref.refinement.targets.amber_target.AmberTarget`. The
+base ``__init__`` builds the single-molecule chemistry against a genuine
+single-conformation :class:`Model` (the ensemble's ``_pdb_single`` restricted to
+non-special-position atoms), giving us as **inherited** state:
 
 - the antechamber pipeline + GAFF2 setup for non-standard residues;
 - the template OpenMM ``System`` (single-molecule, AMBER14 / GAFF2);
-- the topology used to build the H virtual-site frame
-  (``_build_h_attachment`` / ``_place_hydrogens``);
+- the H virtual-site frame tables (``_build_h_attachment``) and the shared
+  local-frame placement (``_place_hydrogens_local_frame``);
 - the autograd Function ``_OpenMMAMBERFunction``.
+
+This target then replicates the template ``System`` into the symmetry-expanded
+supercell and replaces the (single-molecule) context with a PME supercell one.
 
 After the template is built we discard most of the temporary target's
 state and:
@@ -53,12 +57,11 @@ import torch
 
 from torchref.refinement.targets.amber_target import (
     AmberTarget,
-    SupercellLayout,
     _OpenMMAMBERFunction,
-    _replicate_to_supercell_system,
+    _place_hydrogens_local_frame,
 )
-from torchref.refinement.targets.base import ModelTarget
-from .ensemble_amber_kl import _SingleMemberShim
+from .ensemble_model import build_single_copy_model
+from .supercell import SupercellLayout, _replicate_to_supercell_system
 
 
 def _detect_special_position_atoms(
@@ -118,7 +121,7 @@ if TYPE_CHECKING:
     from torchref.symmetry import Cell, SpaceGroup
 
 
-class QuasiCrystalAmberTarget(ModelTarget):
+class QuasiCrystalAmberTarget(AmberTarget):
     """Amber energy on a k × 1 × 1 supercell with full crystal sym expansion.
 
     The ensemble is laid out as ``k = n_members / N_sym`` disorder copies
@@ -202,8 +205,6 @@ class QuasiCrystalAmberTarget(ModelTarget):
                 "Or via conda:  conda install -c conda-forge openmm"
             ) from e
 
-        super().__init__(model=model, verbose=verbose)
-
         # --- Validate N == n_disorder · N_sym ---
         n_sym = int(spacegroup.n_ops)
         N = int(model.n_members)
@@ -273,20 +274,22 @@ class QuasiCrystalAmberTarget(ModelTarget):
         else:
             self._keep_atom_idx_np = np.arange(n_atoms_full, dtype=np.int64)
 
-        # --- Build the template (single-copy) AmberTarget via the existing shim ---
-        # The shim presents one ensemble member as a plain Model to AmberTarget,
-        # so we reuse the full antechamber + ForceField pipeline. We point at
-        # member 0 for the template build (its coords are the initial
-        # positions baked into the OpenMM Context — these are overwritten on
-        # every forward() anyway). The shim is restricted to non-special-
-        # position atoms via atom_idx.
-        shim = _SingleMemberShim(
-            model,
-            atom_idx=torch.from_numpy(self._keep_atom_idx_np),
+        # --- Build the single-copy chemistry topology as INHERITED state. ---
+        # As an AmberTarget subclass we run the full antechamber + ForceField
+        # pipeline against a genuine single-conformation Model (the ensemble's
+        # ``_pdb_single`` restricted to non-special-position atoms). This
+        # populates self._system / _pos_buf / _model_to_omm / _h_* for ONE
+        # member; we replicate them into the supercell below. ``_model`` stays
+        # the ensemble (its per-member coords drive forward()); the
+        # single-molecule context the base builds is replaced by the supercell
+        # context. coords baked into the build are member-0's; they are
+        # overwritten on every forward() anyway.
+        chem_model = build_single_copy_model(
+            model, atom_idx=self._keep_atom_idx_np, verbose=verbose
         )
-        shim._active_member = 0
-        template_target = AmberTarget(
-            model=shim,
+        super().__init__(
+            model=model,
+            chem_model=chem_model,
             cutoff=self._pme_cutoff_ang,
             normalize_by_atoms=False,
             residue_charges=residue_charges,
@@ -295,16 +298,15 @@ class QuasiCrystalAmberTarget(ModelTarget):
             verbose=verbose,
         )
 
-        # --- Steal what we need from the template, then drop the target. ---
-        template_system = template_target._system
-        template_pos_nm = template_target._pos_buf  # (n_omm_template, 3) numpy float64
-        self._n_omm_per_member = int(template_target._n_omm_atoms)
-        self._n_model_per_member = int(template_target._n_model_atoms)
-        self._n_nonstandard = int(template_target._n_nonstandard)
+        # --- Read the single-member template from inherited state. ---
+        template_system = self._system
+        template_pos_nm = self._pos_buf  # (n_omm_template, 3) numpy float64
+        self._n_omm_per_member = int(self._n_omm_atoms)
+        self._n_model_per_member = int(self._n_model_atoms)
 
         # Atom map for one member, in OpenMM indices. Tile per member at
         # forward time via the (src_model_idx, dst_omm_idx) pairs.
-        template_map = np.asarray(template_target._model_to_omm, dtype=np.int64)
+        template_map = np.asarray(self._model_to_omm, dtype=np.int64)
         self._template_model_to_omm = template_map
         # Index pairs: model atom `src_model_idx[k]` lives in OMM slot
         # `dst_omm_idx[k]` (single-member, in [0, n_omm_per_member)). Atoms
@@ -345,17 +347,17 @@ class QuasiCrystalAmberTarget(ModelTarget):
         # and errors on negative indices, so clamp the sentinels to 0 — a
         # safe in-bounds dummy whose result is then masked away by the
         # ``frame_valid`` ``torch.where`` in :meth:`_place_hydrogens`.
-        self._h_idx_template = np.asarray(template_target._h_idx, dtype=np.int64).copy()
-        self._h_parent_idx_template = np.asarray(template_target._h_parent_idx, dtype=np.int64).copy()
-        h_n1 = np.asarray(template_target._h_n1_idx, dtype=np.int64).copy()
-        h_n2 = np.asarray(template_target._h_n2_idx, dtype=np.int64).copy()
+        self._h_idx_template = np.asarray(self._h_idx, dtype=np.int64).copy()
+        self._h_parent_idx_template = np.asarray(self._h_parent_idx, dtype=np.int64).copy()
+        h_n1 = np.asarray(self._h_n1_idx, dtype=np.int64).copy()
+        h_n2 = np.asarray(self._h_n2_idx, dtype=np.int64).copy()
         h_n1[h_n1 < 0] = 0
         h_n2[h_n2 < 0] = 0
         self._h_n1_idx_template = h_n1
         self._h_n2_idx_template = h_n2
-        self._h_local_pos_template = np.asarray(template_target._h_local_pos, dtype=np.float64).copy()
-        self._h_frame_valid_template = np.asarray(template_target._h_frame_valid, dtype=bool).copy()
-        self._h_offset_template = np.asarray(template_target._h_offset, dtype=np.float64).copy()
+        self._h_local_pos_template = np.asarray(self._h_local_pos, dtype=np.float64).copy()
+        self._h_frame_valid_template = np.asarray(self._h_frame_valid, dtype=bool).copy()
+        self._h_offset_template = np.asarray(self._h_offset, dtype=np.float64).copy()
 
         # Build the supercell System (replicate + PME + PBC).
         self._system = _replicate_to_supercell_system(
@@ -365,13 +367,11 @@ class QuasiCrystalAmberTarget(ModelTarget):
             ewald_error_tolerance=self._ewald_tol,
         )
 
-        # --- Build the Context on the supercell System ---
+        # --- Build the Context on the supercell System (replaces the
+        #     single-molecule context the base just built). ---
         self._context, self._platform_name = self._build_supercell_context(
             supercell_pos_nm
         )
-
-        # Drop the template target — we've extracted everything we need.
-        del template_target, shim
 
         # --- Relax against Amber to resolve sym-expansion clashes BEFORE
         #     any Adam steps see them. Without this, the first few forwards
@@ -708,26 +708,17 @@ class QuasiCrystalAmberTarget(ModelTarget):
         cross for ``e3``; H position is ``p + Σ local_pos[k] · e_k``. Rigid
         fallback for the small fraction of Hs without two heavy neighbours.
         """
-        p = heavy_xyz_nm.index_select(0, self._h_parent_idx_tiled)
-        n1 = heavy_xyz_nm.index_select(0, self._h_n1_idx_tiled)
-        n2 = heavy_xyz_nm.index_select(0, self._h_n2_idx_tiled)
-
-        e1 = n1 - p
-        e1 = e1 / e1.norm(dim=-1, keepdim=True).clamp(min=1e-9)
-        bvec = n2 - p
-        e2 = bvec - (bvec * e1).sum(-1, keepdim=True) * e1
-        e2 = e2 / e2.norm(dim=-1, keepdim=True).clamp(min=1e-9)
-        e3 = torch.cross(e1, e2, dim=-1)
-
-        l = self._h_local_pos_tiled
-        h_frame = (
-            p + l[:, 0:1] * e1 + l[:, 1:2] * e2 + l[:, 2:3] * e3
+        # Same local-frame physics as the single-molecule path — one shared
+        # implementation, here applied with member-tiled index tensors.
+        h_pos = _place_hydrogens_local_frame(
+            heavy_xyz_nm,
+            self._h_parent_idx_tiled,
+            self._h_n1_idx_tiled,
+            self._h_n2_idx_tiled,
+            self._h_local_pos_tiled,
+            self._h_frame_valid_tiled,
+            self._h_offset_tiled,
         )
-        h_rigid = p + self._h_offset_tiled
-
-        valid = self._h_frame_valid_tiled.unsqueeze(-1)
-        h_pos = torch.where(valid, h_frame, h_rigid)
-
         # Write H positions into the heavy tensor via functional index_copy.
         return heavy_xyz_nm.index_copy(0, self._h_idx_tiled, h_pos)
 
@@ -754,8 +745,8 @@ class QuasiCrystalAmberTarget(ModelTarget):
 
         # Subset to the kept atoms (drop special-position atoms that would
         # double-count when sym-expanded). The result has shape
-        # (N, n_model_per_member_kept, 3), matching the template AmberTarget
-        # which was built on the SAME subset via the shim's atom_idx.
+        # (N, n_model_per_member_kept, 3), matching the inherited single-copy
+        # chemistry model, which was built on the SAME kept-atom subset.
         ensemble_xyz_ang = ensemble_xyz_ang_full.index_select(
             1, self._keep_atom_idx_torch
         )

@@ -24,9 +24,13 @@ RankPenaltyTarget
     displacement matrix.
 WilsonPriorTarget
     Per-bin penalty keeping ``<|F_calc|^2>`` on the Wilson curve.
-QuasiCrystalAmberTarget, EnsembleAmberKLTarget
-    Optional Amber-based geometry/energy restraints for the ensemble
-    (require the optional ``openmm`` dependency).
+EnsembleAmberTarget, EnsembleAmberKLTarget, QuasiCrystalAmberTarget
+    Amber force-field restraints for the ensemble, all subclasses of the
+    single-molecule ``AmberTarget``: per-member mean energy
+    (:class:`EnsembleAmberTarget`), the same plus an entropy regularizer
+    (:class:`EnsembleAmberKLTarget`), and the symmetry-expanded PME supercell
+    with crystal contacts (:class:`QuasiCrystalAmberTarget`). Constructing any
+    of them requires the optional ``openmm`` dependency.
 """
 
 from torchref.experimental.ensemble.ensemble_model import EnsembleModel
@@ -40,11 +44,15 @@ from torchref.experimental.ensemble.quasi_crystal_amber import QuasiCrystalAmber
 from torchref.experimental.ensemble.rank_penalty import RankPenaltyTarget
 from torchref.experimental.ensemble.wilson_prior import WilsonPriorTarget
 
-# Optional: requires openmm (pulled in via amber_target).
+# Optional: constructing these requires openmm (imported lazily by AmberTarget).
 try:
-    from torchref.experimental.ensemble.ensemble_amber_kl import EnsembleAmberKLTarget
+    from torchref.experimental.ensemble.ensemble_amber_kl import (
+        EnsembleAmberKLTarget,
+        EnsembleAmberTarget,
+    )
 except ImportError:
     EnsembleAmberKLTarget = None
+    EnsembleAmberTarget = None
 
 __all__ = [
     "EnsembleModel",
@@ -55,5 +63,6 @@ __all__ = [
     "QuasiCrystalAmberTarget",
     "RankPenaltyTarget",
     "WilsonPriorTarget",
+    "EnsembleAmberTarget",
     "EnsembleAmberKLTarget",
 ]

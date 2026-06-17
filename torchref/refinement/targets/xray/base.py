@@ -80,9 +80,22 @@ class XrayTarget(DataTarget):
             Verbosity level. Default is 0.
         """
         super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
-        self.use_work_set = use_work_set
-        # Set name based on work/test set
-        self.name = "xray_work" if use_work_set else "xray_test"
+        # ``use_set`` (3-way: "work"/"free"/"val") is the canonical subset
+        # selector; the legacy ``use_work_set`` bool maps onto it. When
+        # ``use_set`` is not given explicitly, fall back to the bool so older
+        # callers (which only pass ``use_work_set``) keep working. Both
+        # attributes are kept consistent so ``get_data`` (reads ``use_set``) and
+        # the subclass ``forward`` paths (historically read ``use_work_set``)
+        # never disagree about which subset they operate on.
+        if use_set is None:
+            use_set = "work" if use_work_set else "free"
+        self.use_set = use_set
+        self.use_work_set = use_set == "work"
+        self.name = {
+            "work": "xray_work",
+            "free": "xray_test",
+            "val": "xray_validation",
+        }.get(use_set, "xray_work")
 
     def reset_get_data_cache(self):
         """Deprecated no-op.
@@ -93,6 +106,19 @@ class XrayTarget(DataTarget):
         backward compatibility.
         """
         pass
+
+    def _subset(self):
+        """Return the ``_ReflectionSubset`` view for this target's ``use_set``.
+
+        Single source of truth for the work/free/validation selection used by
+        both :meth:`get_data` and the subclass ``forward`` implementations, so
+        the loss and the reported statistics always operate on the same set.
+        """
+        if self.use_set == "free":
+            return self._data.free
+        elif self.use_set == "val":
+            return self._data.validation
+        return self._data.work
 
     def get_data(
         self, fcalc: torch.Tensor = None
@@ -120,12 +146,7 @@ class XrayTarget(DataTarget):
             ``(F_obs, F_calc, sigma, centric, sub)`` — the first four compact;
             ``sub`` is the ``_ReflectionSubset`` view (``.indices``/``.select``/``.n``).
         """
-        if self.use_set == "free":
-            sub = self._data.free
-        elif self.use_set == "val":
-            sub = self._data.validation
-        else:
-            sub = self._data.work
+        sub = self._subset()
 
         F_obs = sub.F
 

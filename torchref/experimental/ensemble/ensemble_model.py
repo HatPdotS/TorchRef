@@ -256,6 +256,47 @@ class _SyntheticPDBReader:
         return self.dataframe, self.cell, self.spacegroup
 
 
+def build_single_copy_model(ensemble, atom_idx=None, verbose: int = 0):
+    """Build a single-conformation :class:`~torchref.model.model.Model` from an
+    ensemble's single-copy chemistry (``EnsembleModel._pdb_single``).
+
+    Used as the ``chem_model`` for the Amber targets so they build one OpenMM
+    topology from a genuine :class:`Model` (no duck-typed shim). Optionally
+    restrict to ``atom_idx`` (row indices into the per-member atom layout) to
+    drop non-standard or special-position atoms before parameterisation.
+
+    Parameters
+    ----------
+    ensemble : EnsembleModel
+        Source ensemble; supplies ``_pdb_single``, ``cell``, ``spacegroup``,
+        ``device``.
+    atom_idx : array-like of int, optional
+        Rows of ``_pdb_single`` to keep (``None`` ⇒ all atoms).
+    verbose : int
+        Forwarded to the :class:`Model` constructor.
+
+    Returns
+    -------
+    Model
+        A single-conformation model exposing ``.pdb`` / ``.update_pdb()`` /
+        ``.xyz()`` / ``.device`` over the selected atoms.
+    """
+    from torchref.model.model import Model
+
+    df = ensemble._pdb_single
+    if atom_idx is not None:
+        df = df.iloc[np.asarray(atom_idx)]
+    chem = Model(verbose=verbose, strip_H=False, device=ensemble.device)
+    chem.load(
+        _SyntheticPDBReader(
+            df.reset_index(drop=True).copy(),
+            ensemble.cell,
+            ensemble.spacegroup,
+        )
+    )
+    return chem
+
+
 class EnsembleModel(ModelFT):
     """
     Ensemble of ``n_members`` atomic copies behind a single ``ModelFT``.

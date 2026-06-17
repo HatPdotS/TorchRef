@@ -1,150 +1,203 @@
 """
-Variational-Boltzmann ensemble restraint via per-member AMBER energy.
+Per-member AMBER energy over an ensemble, with an optional entropy regularizer.
 
-Treats the ensemble as variational samples from a Boltzmann target
-distribution ``p(x) ∝ exp(-E_amber(x) / kT)``. Minimizing the loss
+Two targets, both subclasses of the single-molecule
+:class:`~torchref.refinement.targets.amber_target.AmberTarget`:
 
-    L = (1/N) * Σ_i E_amber(x_i) / kT  −  λ * H_hat(x_1, …, x_N)
+- :class:`EnsembleAmberTarget` — the AMBER energy of every ensemble member
+  (``N`` non-interacting copies of one chemistry), averaged. It **inherits**
+  the full AmberTarget machinery (OpenMM system build via antechamber /
+  ForceField, atom map, differentiable hydrogen placement, autograd bridge):
+  the single-copy chemistry/topology is built once from the ensemble's
+  ``_pdb_single`` and each member's coordinates are fed through the inherited
+  per-conformation energy (:meth:`AmberTarget._energy`).
 
-makes the empirical ensemble approximate that target without collapsing
-all members to one minimum — the entropy term ``H_hat`` keeps members
-spread.
+- :class:`EnsembleAmberKLTarget` — adds the variational-Boltzmann entropy
+  regularizer on top of the mean energy::
 
-Entropy estimator
------------------
-Per-atom isotropic-Gaussian surrogate:
+      L = (1/N) Σ_i E_amber(x_i) / kT  −  λ · Ĥ(x_1, …, x_N)
 
-    H_hat = (1 / n_atoms) * Σ_a log( var_a + ε )
+  Minimizing this makes the empirical ensemble approximate samples from
+  ``p(x) ∝ exp(−E_amber(x) / kT)`` without collapsing all members to one
+  minimum — the per-atom entropy surrogate ``Ĥ`` blows up as the spread
+  vanishes (``var → 0 ⇒ log → −∞``). ``kT = 0`` drops the energy term (entropy
+  only); ``λ = 0`` drops the regularizer.
 
-where ``var_a`` is the trace of the 3x3 covariance of atom ``a``
-across the ``N`` members. Cheap, differentiable, and blows up when the
-ensemble collapses (``var → 0`` ⇒ ``log → -∞`` ⇒ loss explodes).
-
-Implementation notes
---------------------
-One :class:`~torchref.refinement.targets.amber_target.AmberTarget` is
-built once against the single-copy chemistry (``model._pdb_single``)
-exposed via a thin shim model. On each forward, the shim's coordinate
-function is rebound to each member's slice in turn and the resulting
-N energies are summed. Topology is built once; the per-member cost is
-``setPositions`` + ``getState``.
-
-This target inherits any limitation of ``AmberTarget`` on the underlying
-chemistry. Pass ``lam=0`` to skip the energy term and use only the
-entropy regularizer.
+Hydrogen handling is **identical** to the single-molecule target: every member
+is placed through the inherited :meth:`AmberTarget._place_hydrogens`
+(local-frame placement, one shared implementation). There is no per-member
+hydrogen logic here.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, Optional
 
+import numpy as np
 import torch
 
-from torch import nn
-
-from torchref.refinement.targets.base import ModelTarget
+from torchref.refinement.targets.amber_target import AMBER14_STANDARD, AmberTarget
 
 if TYPE_CHECKING:
     from .ensemble_model import EnsembleModel
 
 
-class _SingleMemberShim(nn.Module):
+class EnsembleAmberTarget(AmberTarget):
+    """Mean per-member AMBER energy over an ensemble (``N`` independent copies).
+
+    Subclass of :class:`~torchref.refinement.targets.amber_target.AmberTarget`.
+    The expensive chemistry/topology is built **once** from the ensemble's
+    single-copy PDB (``EnsembleModel._pdb_single``); ``forward`` evaluates the
+    inherited per-conformation energy for each member and returns the mean.
+    The OpenMM system (and any antechamber parameterisation for non-standard
+    residues) is built eagerly in ``__init__``.
+
+    Parameters
+    ----------
+    model : EnsembleModel
+        Ensemble whose members are evaluated. ``forward`` reads
+        :attr:`EnsembleModel.xyz_per_member`.
+    cutoff : float
+        AMBER non-bonded cutoff (Å).
+    normalize_by_atoms : bool
+        Report each member's energy per-atom (forwarded to the base).
+    gaff2_files, residue_charges : dict, optional
+        Forwarded to the base for non-standard residue parameterisation.
+    restrict_to_standard : bool
+        If True, drop atoms in non-:data:`AMBER14_STANDARD` residues from the
+        Amber chemistry (and from each member's coordinates), so the OpenMM
+        topology builds without antechamber/tleap. The X-ray side still sees
+        the full model.
+    charge_method : str
+        antechamber charge method ('gas' default, no QM; or 'bcc').
+    verbose : int
+        Verbosity.
     """
-    Minimal Model-like wrapper that exposes a single-member view of the
-    ensemble as if it were a stand-alone :class:`Model`. Used to convince
-    :class:`AmberTarget` we have a single-conformation model.
 
-    Two modes:
-
-    - **Full topology** (``atom_idx=None``): expose every atom of
-      ``ensemble._pdb_single``.
-    - **Restricted topology** (``atom_idx`` given): expose only the atoms
-      indexed by ``atom_idx`` into ``_pdb_single``. The shim's ``xyz()``
-      returns the per-member coordinates restricted to those rows. Used
-      to drop non-standard residues (SO4, ligands, etc.) so AmberTarget
-      can build a topology without antechamber/tleap.
-
-    Subclasses ``nn.Module`` so :class:`ModelTarget.__init__` can register
-    it via ``add_module``. We don't register the ensemble as a submodule
-    (it lives on the parent target), so backward through ``self.xyz()``
-    flows to the ensemble's parameters via the live view.
-    """
+    name: str = "ensemble_amber"
 
     def __init__(
         self,
-        ensemble: "EnsembleModel",
-        atom_idx: Optional[torch.Tensor] = None,
+        model: "EnsembleModel" = None,
+        cutoff: float = 5.0,
+        normalize_by_atoms: bool = True,
+        gaff2_files=None,
+        residue_charges=None,
+        restrict_to_standard: bool = False,
+        charge_method: str = "gas",
+        verbose: int = 0,
     ):
-        super().__init__()
-        # Hold a non-Parameter reference to the ensemble to keep it out of
-        # the shim's nn.Module child tree (it's owned by the outer target).
-        object.__setattr__(self, "_ensemble", ensemble)
-        if atom_idx is None:
-            self.pdb = ensemble._pdb_single
-            self._atom_idx = None
+        self.restrict_to_standard = bool(restrict_to_standard)
+
+        # Build the single-conformation chemistry model (and the kept-atom
+        # subset) BEFORE the base __init__ so the inherited build targets it.
+        chem_model = None
+        atom_idx_np: Optional[np.ndarray] = None
+        if model is not None:
+            chem_model, atom_idx_np = self._make_chem_model(model, verbose)
+
+        super().__init__(
+            model=model,
+            chem_model=chem_model,
+            cutoff=cutoff,
+            normalize_by_atoms=normalize_by_atoms,
+            gaff2_files=gaff2_files,
+            residue_charges=residue_charges,
+            charge_method=charge_method,
+            verbose=verbose,
+        )
+
+        # Register the kept-atom indices now that nn.Module is initialised, so
+        # the buffer moves with .to(device). None → use all atoms.
+        if atom_idx_np is not None:
+            self.register_buffer(
+                "_member_atom_idx",
+                torch.as_tensor(
+                    atom_idx_np, dtype=torch.long, device=self._model.device
+                ),
+            )
         else:
-            self.pdb = ensemble._pdb_single.iloc[atom_idx.cpu().numpy()].reset_index(drop=True)
-            self.register_buffer("_atom_idx_buf", atom_idx.to(ensemble.device))
-            self._atom_idx = self._atom_idx_buf
-        self.cell = ensemble.cell
-        self.spacegroup = ensemble.spacegroup
-        # Member index to expose on the next xyz() call.
-        self._active_member: int = 0
+            self._member_atom_idx = None
 
-    # AmberTarget calls model.xyz() expecting a (n_atoms, 3) tensor.
-    def xyz(self) -> torch.Tensor:
-        member_xyz = self._ensemble.xyz_per_member[self._active_member]
-        if self._atom_idx is None:
-            return member_xyz
-        return member_xyz.index_select(0, self._atom_idx)
+    def _make_chem_model(self, ensemble: "EnsembleModel", verbose: int):
+        """Build a single-conformation :class:`Model` for the Amber chemistry.
 
-    # Some AmberTarget code paths may probe these attributes.
-    @property
-    def device(self):
-        return self._ensemble.device
-
-    def strip_altlocs(self):
-        # The single-copy chemistry has no altlocs (we cleared them at load).
-        return self
-
-    def update_pdb(self):
+        Returns ``(chem_model, atom_idx_np)`` where ``atom_idx_np`` indexes the
+        kept atoms into the per-member atom layout (``None`` ⇒ all atoms). When
+        ``restrict_to_standard`` is set, non-standard residues are dropped so
+        the OpenMM topology builds without antechamber/tleap.
         """
-        Sync ``self.pdb`` x/y/z columns to the current member's coordinates.
+        from .ensemble_model import build_single_copy_model
 
-        ``AmberTarget._filter_pdb_for_tleap`` and similar paths call this
-        so the DataFrame reflects refined positions when writing input PDB
-        files for tleap. Mirrors ``Model.update_pdb`` for our duck-typed
-        shim.
+        atom_idx_np: Optional[np.ndarray] = None
+        if self.restrict_to_standard:
+            resnames = ensemble._pdb_single["resname"].astype(str).str.strip()
+            mask = resnames.isin(AMBER14_STANDARD).values
+            n_dropped = int((~mask).sum())
+            if n_dropped > 0:
+                if verbose > 0:
+                    dropped = sorted(set(resnames[~mask].tolist()))
+                    print(
+                        f"[{type(self).__name__}] restrict_to_standard: dropping "
+                        f"{n_dropped} atom(s) in non-standard residues: {dropped}"
+                    )
+                atom_idx_np = np.nonzero(mask)[0].astype(np.int64)
+
+        chem = build_single_copy_model(ensemble, atom_idx=atom_idx_np, verbose=verbose)
+        return chem, atom_idx_np
+
+    def _member_xyz(self, i: int) -> torch.Tensor:
+        """Member ``i`` coordinates ``(n_chem_atoms, 3)``, subset to kept atoms.
+
+        The returned ordering matches ``self._chem_model.pdb`` (what the OpenMM
+        atom map was built on), so it can be fed straight to
+        :meth:`AmberTarget._energy`.
         """
-        coords = self.xyz().detach().cpu().numpy()
-        self.pdb.loc[:, ["x", "y", "z"]] = coords
-        return self.pdb
+        xyz = self._model.xyz_per_member[i]
+        if self._member_atom_idx is not None:
+            xyz = xyz.index_select(0, self._member_atom_idx)
+        return xyz
+
+    def forward(self) -> torch.Tensor:
+        """Mean of the inherited per-conformation AMBER energy over all members."""
+        n_members = int(self._model.n_members)
+        energies = [self._energy(self._member_xyz(i)) for i in range(n_members)]
+        return torch.stack(energies).mean()
+
+    def stats(self) -> Dict:
+        from torchref.utils.stats import VERBOSITY_STANDARD, stat
+
+        with torch.no_grad():
+            loss = self.forward().item()
+        return {"loss": stat(loss, VERBOSITY_STANDARD)}
 
 
-class EnsembleAmberKLTarget(ModelTarget):
-    """
-    Per-member AMBER energy + ensemble-entropy regularizer.
+class EnsembleAmberKLTarget(EnsembleAmberTarget):
+    """Per-member AMBER energy + ensemble-entropy regularizer.
 
     Parameters
     ----------
     model : EnsembleModel
         Ensemble whose members are evaluated.
     kT : float
-        Boltzmann temperature scale (kJ/mol). Default 2.494 = 300 K.
+        Boltzmann temperature scale (kJ/mol). Default 2.494 = 300 K. ``kT = 0``
+        drops the energy term (entropy-only); the OpenMM system is still built.
     lam : float
-        Coefficient on the entropy regularizer ``H_hat``. ``lam=0`` drops
-        the regularizer; the energy term will collapse the ensemble.
+        Coefficient on the entropy regularizer ``Ĥ``. ``lam = 0`` drops the
+        regularizer; the energy term alone will collapse the ensemble.
     cutoff : float
-        AMBER nonbonded cutoff (Å).
+        AMBER non-bonded cutoff (Å).
     eps : float
         Numerical floor inside ``log`` of the per-atom variance.
     normalize_by_atoms : bool
-        Forwarded to the underlying AmberTarget so the per-member energy
-        is reported per-atom.
-    gaff2_files : dict, optional
-        Forwarded to AmberTarget for non-standard residues.
-    residue_charges : dict, optional
-        Forwarded to AmberTarget.
+        Forwarded to the base so the per-member energy is reported per-atom.
+    gaff2_files, residue_charges : dict, optional
+        Forwarded to the base for non-standard residue parameterisation.
+    restrict_to_standard : bool
+        Drop non-standard residues from the Amber chemistry (see
+        :class:`EnsembleAmberTarget`).
+    charge_method : str
+        antechamber charge method ('gas' default).
     verbose : int
         Verbosity.
     """
@@ -165,106 +218,46 @@ class EnsembleAmberKLTarget(ModelTarget):
         charge_method: str = "gas",
         verbose: int = 0,
     ):
-        super().__init__(model=model, verbose=verbose)
+        super().__init__(
+            model=model,
+            cutoff=cutoff,
+            normalize_by_atoms=normalize_by_atoms,
+            gaff2_files=gaff2_files,
+            residue_charges=residue_charges,
+            restrict_to_standard=restrict_to_standard,
+            charge_method=charge_method,
+            verbose=verbose,
+        )
         self.kT = float(kT)
         self.lam = float(lam)
         self.eps = float(eps)
-        self.restrict_to_standard = bool(restrict_to_standard)
-        # Lazily-built AmberTarget against a single-member shim. We avoid
-        # the OpenMM import / parameterization cost until the first forward.
-        self._shim: Optional[_SingleMemberShim] = None
-        self._amber_target = None
-        # Default to Gasteiger (no SCF) — bonded geometry restraints are the
-        # point of using Amber here, partial-charge accuracy barely matters,
-        # and 'bcc' fails on multi-instance HETATM batches when sqm doesn't
-        # converge (e.g. multiple SO4 ions). User can override with
-        # ``charge_method='bcc'`` if desired.
-        self._amber_init_kwargs = dict(
-            cutoff=cutoff, normalize_by_atoms=normalize_by_atoms,
-            gaff2_files=gaff2_files, residue_charges=residue_charges,
-            charge_method=charge_method,
-        )
-
-    # ------------------------------------------------------------------
-    # Lazy AmberTarget construction
-    # ------------------------------------------------------------------
-
-    def _ensure_amber(self) -> None:
-        if self._amber_target is not None:
-            return
-        if self._model is None:
-            raise RuntimeError("EnsembleAmberKLTarget has no model attached.")
-        # Local import: AmberTarget imports openmm at construction.
-        from torchref.refinement.targets.amber_target import AmberTarget, AMBER14_STANDARD
-
-        atom_idx = None
-        if self.restrict_to_standard:
-            pdb = self._model._pdb_single
-            resnames = pdb["resname"].astype(str).str.strip()
-            standard_mask = resnames.isin(AMBER14_STANDARD).values
-            n_dropped = int((~standard_mask).sum())
-            if n_dropped > 0:
-                dropped_set = sorted(set(resnames[~standard_mask].tolist()))
-                if self.verbose > 0:
-                    print(
-                        f"[EnsembleAmberKL] restrict_to_standard: dropping "
-                        f"{n_dropped} atom(s) in non-standard residues: "
-                        f"{dropped_set}"
-                    )
-                atom_idx = torch.as_tensor(
-                    standard_mask.nonzero()[0], dtype=torch.long,
-                    device=self._model.device,
-                )
-
-        self._shim = _SingleMemberShim(self._model, atom_idx=atom_idx)
-        self._amber_target = AmberTarget(
-            model=self._shim,
-            verbose=self.verbose,
-            **self._amber_init_kwargs,
-        )
-
-    # ------------------------------------------------------------------
-    # Entropy estimator
-    # ------------------------------------------------------------------
 
     def _entropy(self) -> torch.Tensor:
-        """
-        Per-atom isotropic-variance log-entropy.
+        """Per-atom isotropic-variance log-entropy across members.
 
-        Sums log(trace(Cov_a) + eps) across atoms, divided by n_atoms.
+        Sums ``log(trace(Cov_a) + eps)`` over atoms, divided by ``n_atoms``.
         """
         xyz = self._model.xyz_per_member  # (N, n_atoms, 3)
         # var across N members, summed over xyz: trace of the 3x3 covariance.
         var = xyz.var(dim=0, unbiased=False).sum(dim=-1)  # (n_atoms,)
         return torch.log(var + self.eps).mean()
 
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
-
     def forward(self) -> torch.Tensor:
         H = self._entropy()
-        if self.lam == 0.0 and self.kT == 0.0:
-            return -H  # entropy-only mode shouldn't happen in practice
         if self.kT > 0.0:
-            self._ensure_amber()
-            n_members = self._model.n_members
-            energies = []
-            for i in range(n_members):
-                self._shim._active_member = i
-                energies.append(self._amber_target.forward())
-            mean_energy = torch.stack(energies).mean()
+            mean_energy = super().forward()  # mean per-member AMBER energy
             loss = mean_energy / self.kT
         else:
             loss = torch.zeros((), device=H.device, dtype=H.dtype)
         return loss - self.lam * H
 
-    # ------------------------------------------------------------------
-    # Diagnostics
-    # ------------------------------------------------------------------
-
     def stats(self) -> Dict:
-        from torchref.utils.stats import VERBOSITY_DETAILED, VERBOSITY_STANDARD, stat
+        from torchref.utils.stats import (
+            VERBOSITY_DETAILED,
+            VERBOSITY_STANDARD,
+            stat,
+        )
+
         with torch.no_grad():
             H = self._entropy().item()
             loss = self.forward().item()
