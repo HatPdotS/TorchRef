@@ -4,16 +4,19 @@ Changelog
 Version 0.6.0
 -------------
 - Implemented Phenix style sigma A weighting in the Maximum likelihood target (New default for refinement)
-- Added sigma A estimation to scaler objects
 - Added collection versions of the sigma A target
 - Deprecated internal coordinates
 - Renamed Maximum likelihood target to Rice target, Sigma A target to Maximum likelihood target.
 - Moved alignment into experimental
-- Fixed Fast rotation function, current blocker on alignment is the rescorign function
+- Fixed Fast rotation function, current blocker on alignment is the rescoring function
 - Moved kinetic to experimental 
 - Added monolithic refinement under experimental
+- Moved ensemble refinement to experimental
+- Fixed antechamber handling of non-standard residues
+- Refinement now freezes all residues missing restraints (xyz)
 - Changed reflection data acessor api to use property style dataselection
 - Added benchmark to the paper folder were we refine from alphafold start coordinates
+- Updated many docstrings, and fixed some bugs
 
 Version 0.5.3.3
 -------------
