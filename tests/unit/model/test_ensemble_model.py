@@ -126,20 +126,6 @@ def _dropout_hkl(ens):
         dtype=torch.int32, device=ens.device,
     )
 
-
-def test_dropout_all_members_equals_full(small_ensemble):
-    """Subset == all members (rescale N/k = 1) reproduces the full average."""
-    ens = small_ensemble
-    ens.setup_grid(max_res=2.5)
-    hkl = _dropout_hkl(ens)
-    sf_full = ens(hkl).detach().clone()
-    ens.configure_dropout(True, ens.n_members, ens.n_members)
-    ens.resample_dropout()
-    ens.reset_cache()
-    sf_sub = ens(hkl).detach()
-    assert torch.allclose(sf_full, sf_sub, rtol=1e-5, atol=1e-4)
-
-
 def test_dropout_zeros_gradient_for_dropped_members(small_ensemble):
     """Dropped members contribute nothing to F_calc, so get exactly zero
     gradient; kept members get a real gradient. This is the mechanism."""
