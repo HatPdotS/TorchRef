@@ -537,7 +537,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 len(self.hkl), dtype=torch.bool, device=self.device, requires_grad=False
             )
             self.masks["flagged_initial"] = ~flagged
-            self._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
+            self._generate_rfree_flags()
 
         self._post_load_cleanup()
 
@@ -658,7 +658,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
         else:
             data._calculate_resolution()
-            data._generate_rfree_flags(free_fraction=0.02, n_bins=20, min_per_bin=100)
+            # Seed an all-valid mask so get_bins (called inside
+            # _generate_rfree_flags) has a validity mask to bin on; the
+            # _post_load_cleanup() below replaces it with the real
+            # suspicious-sigma flagging. Mirrors the no-FreeR path in load().
+            data.masks["flagged_initial"] = torch.ones(
+                len(data.hkl), dtype=torch.bool, device=data.device
+            )
+            data._generate_rfree_flags()
 
         data._post_load_cleanup()
 
@@ -776,24 +783,33 @@ class ReflectionData(CrystalDataset, DebugMixin):
     def _generate_rfree_flags(
         self,
         free_fraction: float = 0.02,
-        n_bins: int = 20,
-        min_per_bin: int = 100,
+        n_bins: int = 10,
+        min_per_bin: int = 1000,
+        min_free_per_bin: int = 50,
         seed: Optional[int] = None,
     ) -> None:
         """
         Generate R-free flags with resolution-stratified sampling.
 
         Ensures free reflections are evenly distributed across resolution
-        shells for unbiased cross-validation.
+        shells for unbiased cross-validation, with each shell holding enough
+        reflections (``min_per_bin``) and contributing enough free reflections
+        (``min_free_per_bin``) for stable per-shell statistics (R-free, σ_A).
 
         Parameters
         ----------
         free_fraction : float, optional
             Fraction of reflections to mark as free (0.02 = 2%). Default is 0.02.
+            The per-bin free count is ``max(min_free_per_bin, free_fraction*bin)``,
+            so the effective fraction can exceed ``free_fraction`` for small bins.
         n_bins : int, optional
-            Target number of resolution bins. Default is 20.
+            Target number of resolution bins. Default is 10.
         min_per_bin : int, optional
-            Minimum reflections per resolution bin. Default is 100.
+            Minimum reflections per resolution bin. Default is 1000. Bins are
+            coarsened (fewer than ``n_bins``) on small datasets to honor this.
+        min_free_per_bin : int, optional
+            Minimum free reflections per resolution bin. Default is 50 (clamped
+            to the bin size for tiny bins).
         seed : int, optional
             Random seed for reproducibility. Default is None.
 
@@ -817,6 +833,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         print(f"  Target free fraction: {free_fraction*100:.1f}%")
         print(f"  Target bins: {n_bins}")
         print(f"  Minimum per bin: {min_per_bin} reflections")
+        print(f"  Minimum free per bin: {min_free_per_bin} reflections")
 
         # Set random seed for reproducibility
         if seed is not None:
@@ -846,9 +863,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
             if bin_size == 0:
                 continue
 
-            # Number of free reflections in this bin
-            # Ensure at least 1, but respect the free_fraction
-            n_free_in_bin = max(1, int(bin_size * free_fraction))
+            # Number of free reflections in this bin: at least min_free_per_bin,
+            # otherwise free_fraction of the bin; never more than the bin holds.
+            n_free_in_bin = min(
+                bin_size, max(min_free_per_bin, int(bin_size * free_fraction))
+            )
 
             # Get indices of reflections in this bin
             bin_refl_indices = torch.where(bin_mask)[0]
@@ -1063,8 +1082,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
     def regenerate_rfree_flags(
         self,
         free_fraction: float = 0.02,
-        n_bins: int = 20,
-        min_per_bin: int = 100,
+        n_bins: int = 10,
+        min_per_bin: int = 1000,
+        min_free_per_bin: int = 50,
         seed: Optional[int] = None,
         force: bool = False,
     ) -> None:
@@ -1076,9 +1096,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         free_fraction : float, optional
             Fraction of reflections to mark as free. Default is 0.02 (2%).
         n_bins : int, optional
-            Target number of resolution bins. Default is 20.
+            Target number of resolution bins. Default is 10.
         min_per_bin : int, optional
-            Minimum reflections per resolution bin. Default is 100.
+            Minimum reflections per resolution bin. Default is 1000.
+        min_free_per_bin : int, optional
+            Minimum free reflections per resolution bin. Default is 50.
         seed : int, optional
             Random seed for reproducibility. Default is None.
         force : bool, optional
@@ -1107,6 +1129,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             free_fraction=free_fraction,
             n_bins=n_bins,
             min_per_bin=min_per_bin,
+            min_free_per_bin=min_free_per_bin,
             seed=seed,
         )
 
