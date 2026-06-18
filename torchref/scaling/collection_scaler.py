@@ -20,6 +20,12 @@ import torch
 import torch.nn as nn
 
 from torchref.base.metrics import get_rfactors, nll_xray
+from torchref.base.reciprocal import get_scattering_vectors
+from torchref.base.targets.xray_ml_sigmaa import (
+    SigmaAEstimator,
+    epsilon_from_hkl,
+    ml_xray_loss_beta_math,
+)
 from torchref.config import get_default_device, get_float_dtype
 from torchref.scaling.scaler_base import ScalerBase
 from torchref.scaling.solvent import SolventModel
@@ -304,6 +310,7 @@ class CollectionScaler(ScalerBase):
         lr: float = 1.0,
         max_iter: int = 200,
         history_size: int = 10,
+        scale_smoothness: float = 1000.0,
         verbose: bool = True,
     ) -> dict:
         """
@@ -336,10 +343,21 @@ class CollectionScaler(ScalerBase):
         mc = self._model_collection
         all_keys = [mc.dark_key] + mc.timepoint_names
 
-        # Pre-compute all fcalc (detached)
+        # Pre-compute all fcalc (detached) plus the per-dataset σ_A model-error
+        # variance (beta/epsilon). beta is estimated ONCE on each dataset's free
+        # set from the currently-scaled |F_calc| and held constant (detached)
+        # during the scale optimisation — exactly as the single-dataset
+        # ``ScalerBase.refine_lbfgs`` does. The σ_A (Read MLF) likelihood is what
+        # keeps the per-bin log_scale from collapsing toward zero in weak shells;
+        # the plain σ-weighted Gaussian ``nll_xray`` used previously drove the
+        # scale down (model under-scaled, R blow-up).
         fcalc_cache = {}
         fractions_cache = {}
         data_cache = {}
+        beta_cache = {}
+        eps_cache = {}
+        work_cache = {}
+        centric_cache = {}
         for name in all_keys:
             if name not in dc:
                 continue
@@ -349,16 +367,35 @@ class CollectionScaler(ScalerBase):
             fobs, sigma = data.get_corrected_data()
             rfree = data.rfree_flags
             with torch.no_grad():
-                fc = model(hkl)
-            fcalc_cache[name] = fc.detach()
-            fractions_cache[name] = model.fractions.detach()
+                fc = model(hkl).detach()
+                fracs = model.fractions.detach()
+                f_sol_raw = self.get_mixed_solvent_raw(fracs)
+                scaled0 = super(CollectionScaler, self).forward(
+                    fc, f_sol_override=f_sol_raw
+                )
+                fc_amp0 = torch.abs(scaled0).reshape(-1)
+                fobs0 = fobs.to(fc_amp0.dtype).reshape(-1)
+                eps0 = epsilon_from_hkl(
+                    hkl, getattr(data, "spacegroup", None)
+                ).to(fc_amp0.dtype)
+                s = get_scattering_vectors(hkl, data.cell)
+                dss0 = (torch.norm(s, dim=1) ** 2).to(fc_amp0.dtype)
+                beta0, eps0 = SigmaAEstimator().get(
+                    fobs0, fc_amp0, data.centric, eps0, dss0, data.free.mask
+                )
+            fcalc_cache[name] = fc
+            fractions_cache[name] = fracs
             data_cache[name] = (fobs, sigma, rfree)
+            beta_cache[name] = beta0
+            eps_cache[name] = eps0
+            work_cache[name] = data.work
+            centric_cache[name] = data.centric
 
-        # Wrap the joint NLL + U-penalty as a LossState target. fcalc is
-        # detached, so the only leaves in the autograd graph are the
-        # scaler's own parameters — LossState's probe picks them up at
-        # registration time, and validate_loss inside state.step handles
-        # NaN/Inf rejection so no per-target try/except is needed.
+        # Wrap the joint σ_A ML loss + U-penalty as a LossState target. fcalc is
+        # detached, so the only leaves in the autograd graph are the scaler's own
+        # parameters — LossState's probe picks them up at registration time, and
+        # validate_loss inside state.step handles NaN/Inf rejection so no
+        # per-target try/except is needed.
         scaler_self = self
 
         class _CollectionScalerJointTarget(nn.Module):
@@ -372,19 +409,45 @@ class CollectionScaler(ScalerBase):
                         continue
                     fc = fcalc_cache[nm]
                     fracs = fractions_cache[nm]
-                    fobs_n, sigma_n, _ = data_cache[nm]
                     f_sol_raw = scaler_self.get_mixed_solvent_raw(fracs)
                     scaled = super(CollectionScaler, scaler_self).forward(
                         fc, f_sol_override=f_sol_raw
                     )
-                    loss = nll_xray(fobs_n, scaled, sigma_n)
+                    # σ_A (Read MLF) scale-fit on the WORK set, with detached
+                    # free-set beta/epsilon — same likelihood the body
+                    # refinement uses.
+                    amp = torch.abs(scaled).reshape(-1)
+                    work = work_cache[nm]
+                    F_obs = work.F.to(amp.dtype)
+                    Fc = work.select(amp)
+                    beta_w = work.select(beta_cache[nm]).to(F_obs.dtype)
+                    eps_w = (
+                        work.select(eps_cache[nm]).to(F_obs.dtype)
+                        if eps_cache[nm] is not None
+                        else None
+                    )
+                    centric_w = work.select(centric_cache[nm])
+                    loss = ml_xray_loss_beta_math(
+                        F_obs, Fc, beta_w, centric_w, epsilon=eps_w
+                    )
                     if torch.isfinite(loss):
                         total = total + loss
                         n += 1
                 if n > 0:
                     total = total / n
                 u_penalty = torch.sum(scaler_self.U**2)
-                return total + u_penalty
+                # Smoothness (Tikhonov) penalty on the per-bin log_scale: the
+                # lowest-resolution shells are solvent-dominated with large
+                # model error, so the σ_A likelihood is nearly flat there and a
+                # free per-bin scale runs away to -inf (model amplitudes -> 0,
+                # R blow-up). Penalising squared first differences ties each bin
+                # to its neighbours so under-constrained shells follow the
+                # well-determined ones instead of collapsing.
+                ls = scaler_self.log_scale
+                smooth_penalty = scale_smoothness * torch.sum(
+                    (ls[1:] - ls[:-1]) ** 2
+                )
+                return total + u_penalty + smooth_penalty
 
         state = LossState(device=self.device)
         state.register_target("scaler/joint", _CollectionScalerJointTarget())

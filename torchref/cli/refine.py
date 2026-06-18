@@ -38,6 +38,7 @@ from torchref.cli._common import (
     add_outdir_arg,
     add_output_format_args,
     add_single_model_args,
+    add_wavelength_arg,
     add_weights_arg,
     build_column_names,
     configure_unbuffered_output,
@@ -136,6 +137,7 @@ Examples:
         "Only used when --with-rigid-body is set.",
     )
     add_adp_mode_arg(refine_group)
+    add_wavelength_arg(refine_group)
 
     res = parser.add_argument_group("Resolution")
     add_dmin_arg(res)
@@ -196,6 +198,10 @@ Examples:
                 f"{args.anisotropic_selection or 'not resname HOH and not element H'})"
             )
         print(adp_line)
+        if args.wavelength == 0:
+            print("Anomalous:         off (wavelength 0 -> Friedel-merged read)")
+        else:
+            print(f"Wavelength:        {args.wavelength:.4g} A")
         if manual_weights:
             print(f"Manual weights:    {json.dumps(manual_weights)}")
         print("=" * 80)
@@ -222,6 +228,7 @@ Examples:
         sigma_m_scale=args.sigma_m_scale,
         adp_mode=args.adp_mode,
         aniso_selection=args.anisotropic_selection,
+        wavelength=args.wavelength,
     )
 
     # Apply manual group weights, if given. Merge onto DEFAULT_GROUP_WEIGHTS so
@@ -316,6 +323,7 @@ Examples:
             "anisotropic_selection": (
                 args.anisotropic_selection if args.adp_mode == "anisotropic" else None
             ),
+            "wavelength": args.wavelength,
             "xray_mode": args.xray_mode,
             "sigma_m_scale": args.sigma_m_scale,
             "weights": manual_weights if manual_weights else None,
