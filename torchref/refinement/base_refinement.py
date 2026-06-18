@@ -138,6 +138,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             ``F(+)/F(-)`` (or ``I(+)/I(-)``) data are auto-detected and loaded as
             Friedel pairs when present, enabling the model's f'' term. True forces
             this; False forces a merged load (f'' disabled).
+        wavelength : float, optional
+            X-ray wavelength in Angstroms for the anomalous (f'/f'') scattering
+            correction. Default 1.0. A value of ``0`` means "no anomalous
+            refinement": it disables the correction (model wavelength ``None``)
+            and forces a Friedel-merged read (overrides ``anomalous`` to False).
         adp_mode : str, optional
             ADP parametrization: ``"isotropic"`` (default) refines a per-atom
             B-factor; ``"anisotropic"`` refines a 6-component U tensor for the
@@ -175,6 +180,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # model right after load, before scaling/restraints/targets.
         self.adp_mode = adp_mode
         self.aniso_selection = aniso_selection
+        # A wavelength of 0 means "no anomalous refinement": disable the f'/f''
+        # correction (model wavelength None) and force a Friedel-merged read so
+        # F(+)/F(-) are not loaded as Bijvoet pairs.
+        if self.wavelength is not None and float(self.wavelength) == 0.0:
+            self.wavelength = None
+            self.anomalous = False
 
         # Persistent state and logger (created lazily)
         self._loss_state: Optional[LossState] = None
