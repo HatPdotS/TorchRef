@@ -69,9 +69,9 @@ All input data and refinement outputs included in the directory.
 
 | Figure | Description | Data status |
 |--------|-------------|-------------|
-| ExtFig 1 | ΔR-factor vs resolution (1000 structures) | Plotting only — uses existing benchmark CSVs |
-| ExtFig 2 | Refinement convergence traces (3–5 structures) | Requires TorchRef + Phenix refinement runs |
-| ExtFig 3 | GPU memory scaling (~25 structures) | Requires GPU profiling |
-| ExtFig 4 | Splatting optimization breakdown (1DAW) | Requires CPU + GPU benchmarking |
+| ExtFig 1 | AF-start loss-weight landscape (10×10 geometry×adp grid) | Plotting only — uses `figure2_alphafold_start/runs/metrics/weight_grid.csv` |
+| ExtFig 2 | R-factor gap vs resolution (TorchRef − PHENIX & − REFMAC, AF-start, PHENIX-scored) | Plotting only — uses `figure2_alphafold_start/runs/metrics/fig_crossscore.csv` |
+| ExtFig 3 | R-factor scorer consistency (REFMAC / PHENIX / TorchRef cross-scoring) | Plotting only — uses `figure2_alphafold_start/runs/metrics/fig_crossscore.csv` |
+| ExtFig 4 | F_calc splatting optimization breakdown (1DAW) | Requires CPU + GPU benchmarking |
 
 See `extended_figures/instructions.md` for the design document.

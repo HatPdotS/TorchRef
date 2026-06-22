@@ -30,12 +30,16 @@ from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
 
-# Default LossState group base weights balancing the data term against the
-# priors. These are calibration offsets relative to a unit-weight posterior
-# (-logL - logP): xray=10 compensates for the "soft" Read/sigma_A likelihood,
-# geometry=1 is the reference scale (Engh-Huber sigmas), and adp=0.1 loosens the
-# over-tight ADP-restraint prior so B-factors reach data-supported values.
-DEFAULT_GROUP_WEIGHTS = {"xray": 10.0, "geometry": 1.0, "adp": 0.1}
+# Default LossState group base weights, balancing the data term against the
+# priors with the x-ray data term as the reference (xray=1). Tuned on the
+# AlphaFold-start benchmark (paper/figure2_alphafold_start, 10x10 log weight
+# screen over geometry x adp, validation-landscape analysis): geometry=0.2 pulls
+# bond/angle RMSZ close to the ideal 1.0 (vs ~1.4 at 0.1) at no R-free cost, and
+# adp=0.02 keeps the main-chain B-factor distribution near ideal (MC-bond B RMSZ
+# ~1.6, vs a badly under-restrained ~3.5 at adp=0.005) — also essentially free in
+# R-free. (The earlier reference xray=10/geometry=1/adp=0.1 normalizes — divide by
+# 10 — to xray=1/geometry=0.1/adp=0.01.)
+DEFAULT_GROUP_WEIGHTS = {"xray": 1.0, "geometry": 0.2, "adp": 0.02}
 
 
 class Refinement(DeviceMixin, DebugMixin, nnModule):
@@ -758,9 +762,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         Sets up a LossState with all targets registered as callables with
         hierarchical naming (e.g., 'geometry/bond', 'adp/simu'), then applies the
-        default group base weights ``DEFAULT_GROUP_WEIGHTS`` (xray 10 / geometry 1
-        / adp 0.1) — the single, transparent source of truth for the data/prior
-        balance (see that constant for the calibration rationale).
+        default group base weights ``DEFAULT_GROUP_WEIGHTS`` (xray 1 / geometry
+        0.2 / adp 0.02) — the single, transparent source of truth for the
+        data/prior balance (see that constant for the calibration rationale).
 
         Returns
         -------
@@ -796,7 +800,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 )
 
         # Apply the weighting scheme (default: ManualWeighting holding the
-        # DEFAULT_GROUP_WEIGHTS — xray 10 / geometry 1 / adp 0.1). The scheme
+        # DEFAULT_GROUP_WEIGHTS — xray 1 / geometry 0.2 / adp 0.02). The scheme
         # returns a {component: weight} dict; we apply it to the state. This is
         # the single, transparent place the data/prior balance lives — see
         # DEFAULT_GROUP_WEIGHTS for the calibration-offset rationale.

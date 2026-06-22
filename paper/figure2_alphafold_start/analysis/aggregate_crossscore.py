@@ -29,6 +29,9 @@ BASE = Path(__file__).resolve().parent.parent
 RUNS = BASE / "runs"
 OUT = RUNS / "metrics"
 ARM = {"refmac": "refmac", "phenix": "phenix_norb", "torchref": "torchref_devbuild",
+       "torchref_locked": "torchref_locked",
+       "torchref_g0p2_a0p01": "torchref_g0p2_a0p01",
+       "torchref_g0p2_a0p02": "torchref_g0p2_a0p02",
        "prediction": "af_initial"}
 
 RE_RM_W = re.compile(r"Overall R factor\s+=\s+([\d.]+)")

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Re-run the canonical AF-start TorchRef arm with THIS (dev) build, in-tree.
 
-Reproduces the validated default arm ``torchref_scalerfix_nocoref_n10`` exactly:
-``-n 10 --mode separate --xray-mode ml --adp-weight 0.1`` with NO ``--weights``
-override (xray group weight stays the default 10 from ``DEFAULT_GROUP_WEIGHTS``),
-separate scaler (corefine off, the LBFGSRefinement default), no rigid body.
+Reproduces the canonical default arm exactly: ``-n 10 --mode separate
+--xray-mode ml`` with NO ``--weights`` override, so the group weights stay at the
+locked ``DEFAULT_GROUP_WEIGHTS`` (xray 1 / geometry 0.2 / adp 0.02); separate
+scaler (corefine off, the LBFGSRefinement default), no rigid body.
 
 Because this lives under the dev worktree, ``run_af_pipeline``'s ``PYTHON`` /
 ``REFINE_SCRIPT`` already point at the dev build — no override needed.
@@ -27,6 +27,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -34,14 +35,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import run_af_pipeline as P  # noqa: E402
 
 
-def build_script(arm, code, pdb, mtz, outdir, n_cycles, mem, xray_weight=None):
-    # Default weights (xray=10 / geom=1 / adp=0.1) come from
-    # DEFAULT_GROUP_WEIGHTS — no flag needed. --xray-weight only overrides the
-    # data-term weight (merged onto the defaults by refine.py), e.g. 5 to
-    # down-weight the data and let the geometry prior regularize more.
+def build_script(arm, code, pdb, mtz, outdir, n_cycles, mem, weights=None):
+    # Group weights default to DEFAULT_GROUP_WEIGHTS (xray=1 / geom=0.2 /
+    # adp=0.02) — no flag needed. Pass an explicit {xray, geometry, adp} dict
+    # to override and record the exact weights in the job script (merged onto
+    # the defaults by refine.py).
     weights_line = (
-        "" if xray_weight is None
-        else f" \\\n    --weights '{{\"xray\": {xray_weight}}}'"
+        "" if not weights
+        else f" \\\n    --weights '{json.dumps(weights)}'"
     )
     return f"""#!/bin/bash
 #SBATCH --job-name=af_{arm}_{code}
@@ -87,8 +88,11 @@ def main():
                     help="Output arm name under runs/ (default torchref_devbuild).")
     ap.add_argument("--n-cycles", type=int, default=10)
     ap.add_argument("--xray-weight", type=float, default=None,
-                    help="Override the xray group weight (default 10). e.g. 5 "
-                         "to down-weight the data term; geom=1/adp=0.1 unchanged.")
+                    help="Override the xray group weight (default 1).")
+    ap.add_argument("--geometry-weight", type=float, default=None,
+                    help="Override the geometry group weight (default 0.2).")
+    ap.add_argument("--adp-weight", type=float, default=None,
+                    help="Override the adp group weight (default 0.02).")
     ap.add_argument("--mem", default="8G",
                     help="SLURM --mem per job (e.g. 16G for large structures).")
     ap.add_argument("--codes", nargs="+", default=None)
@@ -104,9 +108,17 @@ def main():
 
     arm_dir = P.RUNS / args.arm
     tmp = arm_dir / "tmp_scripts"
-    xw = "10 (default)" if args.xray_weight is None else f"{args.xray_weight}"
+    weights = {}
+    if args.xray_weight is not None:
+        weights["xray"] = args.xray_weight
+    if args.geometry_weight is not None:
+        weights["geometry"] = args.geometry_weight
+    if args.adp_weight is not None:
+        weights["adp"] = args.adp_weight
+    weights = weights or None
+    wdesc = "DEFAULT_GROUP_WEIGHTS (1/0.2/0.02)" if weights is None else json.dumps(weights)
     print(f"Arm: {args.arm}  build=DEV(in-tree)  n_cycles={args.n_cycles}  "
-          f"xray-mode=ml  xray-weight={xw}  geom=1/adp=0.1")
+          f"xray-mode=ml  weights={wdesc}")
     print(f"Python: {P.PYTHON}")
     print(f"Output: {arm_dir}\n{len(codes)} solved structures\n")
 
@@ -123,7 +135,7 @@ def main():
         if not args.dry_run:
             outdir.mkdir(parents=True, exist_ok=True)
         script = build_script(args.arm, code, pdb, mtz, outdir, args.n_cycles,
-                              args.mem, xray_weight=args.xray_weight)
+                              args.mem, weights=weights)
         if args.dry_run and submitted == 0:
             print("── example sbatch script ──")
             print(script)

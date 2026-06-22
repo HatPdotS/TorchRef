@@ -1,92 +1,90 @@
 #!/usr/bin/env python3
-"""Collect resolution + R-factor data for Extended Figure 2.
+"""Collect resolution + R-factor-gap data for Extended Figure 2.
 
-Reads d_min from MTZ headers via gemmi, merges with REFMAC5-validated
-R-factors from the 1,000-structure benchmark.
+Per structure, the R-factor gap between the TorchRef model (locked default
+arm, xray 1 / geometry 0.2 / adp 0.02) and each reference program (PHENIX and
+REFMAC), all judged by the SAME independent scorer (phenix.model_vs_data) so the
+comparison is bias-free, versus resolution.
+
+  ΔR-free vs PHENIX = R-free(TorchRef) − R-free(PHENIX)   [percentage points]
+  ΔR-free vs REFMAC = R-free(TorchRef) − R-free(REFMAC)
+  (and likewise for R-work)
+
+Source: figure2_alphafold_start/runs/metrics/fig_crossscore.csv
+        (analysis/aggregate_crossscore.py); d_min from the TorchRef refined MTZ.
 
 Output: data/exF2_rfactor_by_resolution.csv
-"""
 
-import json
+Usage:
+    ./.dev/bin/python paper/extended_figures/exF2/collect_exF2_data.py
+"""
 import sys
 from pathlib import Path
 
 import gemmi
-import numpy as np
 import pandas as pd
 
 BASE = Path(__file__).resolve().parent
-PAPER_ROOT = BASE.parent.parent                              # paper/
-VALIDATION = PAPER_ROOT / "figure2_validation"
-REFMAC_CSV = VALIDATION / "data" / "refmac_metrics.csv"
-STRUCTURES_JSON = VALIDATION / "structures.json"
-DATA_DIR = PAPER_ROOT / "data"                              # symlink → scientific_testing/data
+AF_ROOT = BASE.parent.parent / "figure2_alphafold_start"
+CROSSSCORE = AF_ROOT / "runs" / "metrics" / "fig_crossscore.csv"
+TORCHREF_ARM = AF_ROOT / "runs" / "torchref_g0p2_a0p02"
+SCORER = "phenix"                       # common independent scorer (main-figure scorer)
+TORCHREF_ENGINE = "torchref_g0p2_a0p02"
+PHENIX_ENGINE = "phenix"
+REFMAC_ENGINE = "refmac"
 OUT_CSV = BASE / "data" / "exF2_rfactor_by_resolution.csv"
 
 
 def main():
-    with open(STRUCTURES_JSON) as f:
-        codes = json.load(f)
-    print(f"Structures in benchmark: {len(codes)}")
+    if not CROSSSCORE.exists():
+        sys.exit(f"missing {CROSSSCORE}; run analysis/aggregate_crossscore.py first")
+    df = pd.read_csv(CROSSSCORE)
+    df = df[df["scorer"] == SCORER]
 
-    df = pd.read_csv(REFMAC_CSV)
+    def eng(name, suffix):
+        return df[df.model_engine == name][["code", "r_work", "r_free"]].rename(
+            columns={"r_work": f"rwork_{suffix}", "r_free": f"rfree_{suffix}"})
 
-    # Pivot to get torchref and phenix side by side
-    default = df[df["variant"] == "default"][["code", "r_work", "r_free"]].rename(
-        columns={"r_work": "rwork_torchref", "r_free": "rfree_torchref"}
-    )
-    phenix = df[df["variant"] == "phenix"][["code", "r_work", "r_free"]].rename(
-        columns={"r_work": "rwork_phenix", "r_free": "rfree_phenix"}
-    )
-    merged = default.merge(phenix, on="code", how="inner")
-    print(f"Structures with both TorchRef + Phenix R-factors: {len(merged)}")
+    tr = eng(TORCHREF_ENGINE, "torchref")
+    ph = eng(PHENIX_ENGINE, "phenix")
+    rm = eng(REFMAC_ENGINE, "refmac")
+    merged = tr.merge(ph, on="code", how="inner").merge(rm, on="code", how="inner")
+    print(f"Structures with TorchRef + PHENIX + REFMAC ({SCORER}-scored): {len(merged)}")
 
-    # Read resolution from MTZ headers
+    # resolution from the TorchRef refined MTZ
     resolutions = {}
-    n_atoms_map = {}
     missing = []
     for code in merged["code"]:
-        mtz_path = DATA_DIR / code / f"{code}.mtz"
-        pdb_path = DATA_DIR / code / f"{code}_shaken.pdb"
-        if not mtz_path.exists():
+        mtz = TORCHREF_ARM / code / "refined.mtz"
+        if not mtz.exists():
             missing.append(code)
             continue
         try:
-            mtz = gemmi.read_mtz_file(str(mtz_path))
-            resolutions[code] = mtz.resolution_high()
+            resolutions[code] = gemmi.read_mtz_file(str(mtz)).resolution_high()
         except Exception as e:
             print(f"  Warning: failed to read {code}.mtz: {e}", file=sys.stderr)
             missing.append(code)
-
-        # Also grab n_atoms from PDB if available
-        if pdb_path.exists():
-            try:
-                st = gemmi.read_structure(str(pdb_path))
-                n_atoms_map[code] = sum(
-                    1 for model in st for chain in model for res in chain for _ in res
-                )
-            except Exception:
-                pass
-
     if missing:
         print(f"  Missing/failed MTZ: {len(missing)} ({missing[:5]}...)")
 
     merged["d_min"] = merged["code"].map(resolutions)
-    merged["n_atoms"] = merged["code"].map(n_atoms_map)
     merged = merged.dropna(subset=["d_min"])
 
-    # Compute deltas (TorchRef minus Phenix, in percentage points)
-    merged["delta_rwork"] = (merged["rwork_torchref"] - merged["rwork_phenix"]) * 100
-    merged["delta_rfree"] = (merged["rfree_torchref"] - merged["rfree_phenix"]) * 100
-
+    # ΔR (TorchRef − reference), in percentage points, for each reference program
+    for ref in ("phenix", "refmac"):
+        merged[f"delta_rwork_{ref}"] = (
+            merged["rwork_torchref"] - merged[f"rwork_{ref}"]) * 100
+        merged[f"delta_rfree_{ref}"] = (
+            merged["rfree_torchref"] - merged[f"rfree_{ref}"]) * 100
     merged = merged.sort_values("d_min").reset_index(drop=True)
 
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(OUT_CSV, index=False, float_format="%.6f")
     print(f"\nSaved {len(merged)} structures to {OUT_CSV}")
     print(f"  Resolution range: {merged['d_min'].min():.2f} – {merged['d_min'].max():.2f} Å")
-    print(f"  Median ΔR-work: {merged['delta_rwork'].median():.2f} pp")
-    print(f"  Median ΔR-free: {merged['delta_rfree'].median():.2f} pp")
+    for ref in ("phenix", "refmac"):
+        print(f"  vs {ref.upper():7s} median ΔR-work {merged[f'delta_rwork_{ref}'].median():+.2f} pp"
+              f"   median ΔR-free {merged[f'delta_rfree_{ref}'].median():+.2f} pp")
 
 
 if __name__ == "__main__":

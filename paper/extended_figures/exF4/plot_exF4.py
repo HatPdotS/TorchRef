@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
-"""Extended Figure 4: GPU memory scaling.
+"""Extended Figure 4: Structure factor splatting optimization breakdown.
 
 Three-panel figure:
-  (A) Peak GPU memory vs number of atoms
-  (B) Peak GPU memory vs number of reflections
-  (C) Memory timeline during refinement (per-stage peak)
+  (A) Grouped bar chart — total Fcalc time per approach (log Y)
+  (B) Stacked bar chart — CPU stage breakdown
+  (C) Stacked bar chart — GPU stage breakdown (own y-axis scale)
 
-Reads data from:
-  data/exF4_memory.csv          (scatter data)
-  data/exF4_memory_timeline.json (timeline data)
+Reads data from data/exF4_splatting.json (produced by benchmark_exF4_splatting.py).
 """
 
-import json
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 # ── Style ────────────────────────────────────────────────────────────────────
 plt.rcParams.update({
@@ -28,167 +24,151 @@ plt.rcParams.update({
     "mathtext.fontset": "stix",
     "axes.labelsize": 16,
     "axes.titlesize": 17,
-    "xtick.labelsize": 13,
+    "xtick.labelsize": 12,
     "ytick.labelsize": 13,
 })
 
+COLOR_SPLATTING = "#2563eb"
+COLOR_FFT = "#e67e22"
+COLOR_EXTRACTION = "#10b981"
 DPI = 500
-GPU_TIERS = {8: "8 GB", 16: "16 GB", 24: "24 GB", 40: "40 GB", 80: "80 GB"}
 
 BASE = Path(__file__).resolve().parent
-DATA_CSV = BASE / "exF4_memory.csv"
-DATA_TIMELINE = BASE / "exF4_memory_timeline.json"
+DATA_JSON = BASE  / "exF4_splatting.json"
 OUTDIR = BASE / "output"
 
-# Readable labels for timeline stages
-STAGE_LABELS = {
-    "start": "Start",
-    "after_init": "Init\n(load + restraints)",
-    "after_scaling": "Scaling",
-    "after_create_loss_state_xyz": "Create\nloss state",
-    "after_forward_xyz": "Forward\n(XYZ)",
-    "after_backward_xyz": "Backward\n(XYZ)",
-    "after_refine_xyz": "Full\nrefine XYZ",
-    "after_refine_adp": "Full\nrefine ADP",
-    "cycle2_after_scaling": "Cycle 2\nscaling",
-    "cycle2_after_xyz": "Cycle 2\nXYZ",
-    "cycle2_after_adp": "Cycle 2\nADP",
-}
+
+def load_data():
+    import json
+    with open(DATA_JSON) as f:
+        return json.load(f)
 
 
-def plot_scatter_panel(ax, x, y, d_min, xlabel, label_letter):
-    """Plot one memory scaling panel."""
-    sc = ax.scatter(x, y, c=d_min, cmap="plasma_r", s=40, edgecolors="black",
-                    linewidths=0.3, zorder=3)
+def _split_by_device(results):
+    """Split results into CPU and GPU lists."""
+    cpu = [r for r in results if r["device"] == "cpu"]
+    gpu = [r for r in results if r["device"] == "cuda"]
+    return cpu, gpu
 
-    # Trend line (linear fit)
-    coeffs = np.polyfit(x, y, 1)
-    x_fit = np.linspace(x.min(), x.max(), 100)
-    ax.plot(x_fit, np.polyval(coeffs, x_fit), "--", color="#555555", lw=1.5,
-            alpha=0.6, zorder=2, label="Linear fit")
 
-    # GPU tier lines
-    y_max = max(y.max() * 1.3, 10)
-    for tier_gb, tier_label in GPU_TIERS.items():
-        if tier_gb < y_max:
-            ax.axhline(y=tier_gb, color="gray", ls=":", lw=0.8, alpha=0.5, zorder=1)
-            ax.text(x.max() * 0.98, tier_gb + 0.3, tier_label,
-                    fontsize=9, color="gray", ha="right", va="bottom")
+def plot_panel_a(ax, results):
+    """Grouped bar chart: total Fcalc time per approach."""
+    labels = [r["label"] for r in results]
+    total_ms = [r["total"]["mean_ms"] for r in results]
+    total_std = [r["total"]["std_ms"] for r in results]
 
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("Peak GPU Memory (GB)")
-    ax.set_ylim(0, y_max)
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=11, loc="upper left")
+    x = np.arange(len(labels))
+    bars = ax.bar(x, total_ms, 0.6, yerr=total_std, capsize=4,
+                  color=["#999999", COLOR_SPLATTING, COLOR_SPLATTING,
+                         "#ffb347", "#10b981"][:len(labels)],
+                  edgecolor="white", linewidth=0.5)
 
-    ax.text(-0.08, 1.05, label_letter, transform=ax.transAxes,
+    # Speedup annotations
+    baseline = total_ms[0]
+    for i, (bar, ms) in enumerate(zip(bars, total_ms)):
+        speedup = baseline / ms
+        if i > 0:
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() * 1.15,
+                f"{speedup:.1f}×",
+                ha="center", va="bottom", fontsize=11, fontweight="bold",
+            )
+
+    ax.set_yscale("log")
+    ax.set_ylabel("Time per F$_{\\mathrm{calc}}$ (ms)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=10)
+    ax.grid(True, which="both", alpha=0.3, axis="y")
+    ax.set_title("Total F$_{\\mathrm{calc}}$ Time")
+
+    ax.text(-0.08, 1.05, "A", transform=ax.transAxes,
             fontsize=18, fontweight="bold", va="top")
-    return sc
 
 
-def plot_timeline_panel(ax, timelines, label_letter):
-    """Bar chart showing peak memory at each refinement stage."""
-    codes = list(timelines.keys())
-    colors = ["#b2182b", "#2166ac", "#4dac26", "#e67e22", "#7c3aed"]
+def _plot_stacked_breakdown(ax, subset, title, panel_label):
+    """Stacked bar chart for a subset of results."""
+    labels = [r["label"] for r in subset]
+    splatting = [r["stage_a_splatting"]["mean_ms"] for r in subset]
+    fft = [r["stage_b_fft"]["mean_ms"] for r in subset]
+    extraction = [r["stage_c_extraction"]["mean_ms"] for r in subset]
 
-    bar_width = 0.8 / len(codes)
+    x = np.arange(len(labels))
+    w = 0.6
 
-    for ci, code in enumerate(codes):
-        tl = timelines[code]
-        trace = tl["trace"]
+    ax.bar(x, splatting, w, label="Splatting", color=COLOR_SPLATTING,
+           edgecolor="white", linewidth=0.5)
+    ax.bar(x, fft, w, bottom=splatting, label="FFT", color=COLOR_FFT,
+           edgecolor="white", linewidth=0.5)
+    bottom2 = [s + f for s, f in zip(splatting, fft)]
+    ax.bar(x, extraction, w, bottom=bottom2, label="Extraction",
+           color=COLOR_EXTRACTION, edgecolor="white", linewidth=0.5)
 
-        labels = [STAGE_LABELS.get(pt["label"], pt["label"]) for pt in trace]
-        peaks = [pt["peak_mb"] / 1024 for pt in trace]  # Convert to GB
-
-        x = np.arange(len(labels))
-        offset = (ci - (len(codes) - 1) / 2) * bar_width
-        ax.bar(x + offset, peaks, bar_width * 0.9, label=f"{code} ({tl['n_atoms']} atoms)",
-               color=colors[ci % len(colors)], edgecolor="white", linewidth=0.3,
-               alpha=0.85)
-
-    ax.set_xticks(np.arange(len(labels)))
-    ax.set_xticklabels(labels, fontsize=9, rotation=0, ha="center")
-    ax.set_ylabel("Peak GPU Memory (GB)")
-    ax.set_title("Memory During Refinement (peak per stage)")
+    ax.set_ylabel("Time per F$_{\\mathrm{calc}}$ (ms)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=10)
     ax.grid(True, alpha=0.3, axis="y")
-    ax.legend(fontsize=10, loc="upper left")
+    ax.legend(fontsize=11, loc="upper right")
+    ax.set_title(title)
 
-    ax.text(-0.05, 1.05, label_letter, transform=ax.transAxes,
+    ax.text(-0.08, 1.05, panel_label, transform=ax.transAxes,
             fontsize=18, fontweight="bold", va="top")
 
 
 def main():
+    data = load_data()
+    results = data["results"]
+    n_atoms = results[0]["n_atoms"]
+    n_refl = results[0]["n_reflections"]
+    d_min = results[0]["d_min"]
+    cpu_results, gpu_results = _split_by_device(results)
+
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
-    has_scatter = DATA_CSV.exists()
-    has_timeline = DATA_TIMELINE.exists()
+    # ── Combined figure (3 panels) ──
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
+    fig.suptitle(
+        f"Extended Figure 4 — F$_{{\\mathrm{{calc}}}}$ Optimization Breakdown "
+        f"(1DAW: {n_atoms} atoms, {n_refl} reflections, {d_min:.2f} Å)",
+        fontsize=17, y=1.02,
+    )
 
-    if has_scatter:
-        df = pd.read_csv(DATA_CSV)
-        print(f"Loaded {len(df)} structures (scatter)")
-        n_atoms = df["n_atoms"].values.astype(float)
-        n_refl = df["n_reflections"].values.astype(float)
-        mem = df["peak_memory_gb"].values
-        d_min = df["d_min"].values
+    plot_panel_a(ax1, results)
+    _plot_stacked_breakdown(ax2, cpu_results, "CPU Stage Breakdown", "B")
+    _plot_stacked_breakdown(ax3, gpu_results, "GPU Stage Breakdown", "C")
 
-    if has_timeline:
-        with open(DATA_TIMELINE) as f:
-            timelines = json.load(f)
-        print(f"Loaded {len(timelines)} timelines")
-
-    # ── Combined figure ──
-    if has_scatter and has_timeline:
-        fig = plt.figure(figsize=(16, 10))
-        ax1 = fig.add_subplot(2, 2, 1)
-        ax2 = fig.add_subplot(2, 2, 2)
-        ax3 = fig.add_subplot(2, 1, 2)
-
-        sc1 = plot_scatter_panel(ax1, n_atoms, mem, d_min, "Number of Atoms", "A")
-        sc2 = plot_scatter_panel(ax2, n_refl, mem, d_min, "Number of Reflections", "B")
-        plot_timeline_panel(ax3, timelines, "C")
-
-        cbar = fig.colorbar(sc2, ax=[ax1, ax2], shrink=0.8, pad=0.02)
-        cbar.set_label("Resolution (Å)", fontsize=14)
-
-        fig.suptitle("GPU Memory Scaling", fontsize=17, y=1.01)
-        plt.tight_layout(rect=[0, 0, 1, 0.98])
-        out = OUTDIR / "extended_figure4.png"
-        plt.savefig(str(out), dpi=DPI, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved: {out}")
-    elif has_timeline:
-        fig, ax = plt.subplots(figsize=(14, 5))
-        plot_timeline_panel(ax, timelines, "")
-        plt.tight_layout()
-        out = OUTDIR / "extended_figure4.png"
-        plt.savefig(str(out), dpi=DPI, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved: {out}")
+    plt.tight_layout()
+    out = OUTDIR / "extended_figure4.png"
+    plt.savefig(str(out), dpi=DPI, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out}")
 
     # ── Individual panels ──
-    if has_scatter:
-        for x_data, xlabel, letter, fname in [
-            (n_atoms, "Number of Atoms", "A", "exF4_panel_a.png"),
-            (n_refl, "Number of Reflections", "B", "exF4_panel_b.png"),
-        ]:
-            fig, ax = plt.subplots(figsize=(8, 6))
-            sc = plot_scatter_panel(ax, x_data, mem, d_min, xlabel, letter)
-            cbar = fig.colorbar(sc, ax=ax, shrink=0.8)
-            cbar.set_label("Resolution (Å)", fontsize=14)
-            plt.tight_layout()
-            p = OUTDIR / fname
-            plt.savefig(str(p), dpi=DPI, bbox_inches="tight")
-            plt.close(fig)
-            print(f"Saved: {p}")
-
-    if has_timeline:
-        fig, ax = plt.subplots(figsize=(14, 5))
-        plot_timeline_panel(ax, timelines, "C")
+    for plot_fn, plot_args, fname in [
+        (plot_panel_a, (results,), "exF4_panel_a.png"),
+        (_plot_stacked_breakdown, (cpu_results, "CPU Stage Breakdown", "B"), "exF4_panel_b.png"),
+        (_plot_stacked_breakdown, (gpu_results, "GPU Stage Breakdown", "C"), "exF4_panel_c.png"),
+    ]:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        plot_fn(ax, *plot_args)
         plt.tight_layout()
-        p = OUTDIR / "exF4_panel_c.png"
+        p = OUTDIR / fname
         plt.savefig(str(p), dpi=DPI, bbox_inches="tight")
         plt.close(fig)
         print(f"Saved: {p}")
+
+    # Print summary table
+    print(f"\n{'Label':<35} {'Total':>10} {'Splat':>10} {'FFT':>10} {'Extract':>10} {'Speedup':>8}")
+    print("-" * 93)
+    for r in results:
+        print(
+            f"{r['label']:<35} "
+            f"{r['total']['mean_ms']:>8.2f}ms "
+            f"{r['stage_a_splatting']['mean_ms']:>8.2f}ms "
+            f"{r['stage_b_fft']['mean_ms']:>8.2f}ms "
+            f"{r['stage_c_extraction']['mean_ms']:>8.2f}ms "
+            f"{r['speedup_vs_baseline']:>7.1f}×"
+        )
 
 
 if __name__ == "__main__":

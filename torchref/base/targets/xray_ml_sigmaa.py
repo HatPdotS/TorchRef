@@ -430,14 +430,6 @@ class SigmaAEstimator:
         """
         if self._cache is not None:
             return self._cache
-
-        # Estimate in the INPUT dtype (float32 in production). Kept float32
-        # deliberately for device portability — MPS (Apple Metal) has no
-        # float64 — and the AF-start benchmark confirmed float32 β reproduces
-        # the float64 result (median R_free identical). The Lunin-Skovoroda ML
-        # root-find can be slightly noisy for the lowest-resolution shells in
-        # float32, but β is a detached per-shell weight re-estimated every
-        # optimizer-step block (see maintenance()), so a transient self-corrects.
         with torch.no_grad():
             beta_refl, bbin, bin_dss = estimate_beta(
                 F_obs, F_calc_scaled, centric, epsilon, d_star_sq, free_mask

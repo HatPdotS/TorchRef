@@ -57,7 +57,7 @@ class TestDefaultGroupWeights:
 
     @pytest.mark.unit
     def test_default_group_weights_values(self):
-        """DEFAULT_GROUP_WEIGHTS is the documented xray 10 / geometry 1 / adp 0.1."""
+        """DEFAULT_GROUP_WEIGHTS is the AF-screen-tuned xray 1 / geom 0.2 / adp 0.02."""
         from torchref.refinement.base_refinement import DEFAULT_GROUP_WEIGHTS
 
-        assert DEFAULT_GROUP_WEIGHTS == {"xray": 10.0, "geometry": 1.0, "adp": 0.1}
+        assert DEFAULT_GROUP_WEIGHTS == {"xray": 1.0, "geometry": 0.2, "adp": 0.02}
