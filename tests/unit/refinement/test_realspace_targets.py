@@ -35,7 +35,7 @@ class TestRealSpaceTargetImports:
 
     @pytest.mark.unit
     def test_import_from_targets(self):
-        from torchref.refinement.targets import (
+        from torchref.experimental.targets import (
             RealSpaceTarget,
             RealSpaceCorrelationTarget,
             RealSpaceDifferenceTarget,
@@ -54,7 +54,7 @@ class TestRealSpaceTargetImports:
 
     @pytest.mark.unit
     def test_correlation_inherits_realspace(self):
-        from torchref.refinement.targets import (
+        from torchref.experimental.targets import (
             RealSpaceCorrelationTarget,
             RealSpaceTarget,
         )
@@ -63,7 +63,7 @@ class TestRealSpaceTargetImports:
 
     @pytest.mark.unit
     def test_difference_inherits_realspace(self):
-        from torchref.refinement.targets import (
+        from torchref.experimental.targets import (
             RealSpaceDifferenceTarget,
             RealSpaceTarget,
         )
