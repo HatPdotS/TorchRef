@@ -87,7 +87,7 @@ def plot_quality_strips(ax, by_engine):
     labels = ["Bond RMSZ", "Angle RMSZ", "Chiral RMSZ", "MC B-factor RMSZ"]
     sigma_col = {"rmsBOND": "sigBOND", "rmsANGL": "sigANGL",
                  "rmsCHIRAL": "sigCHIRAL", "rmsB_mc_bond": "sigB_mc_bond"}
-    bounds = {m: (0.1, 10.0) for m in metrics}  # RMSZ, log-normalized
+    bounds = {m: (0.0, 3.0) for m in metrics}  # RMSZ, linear 0–3
 
     def rmsz(df, m):
         sub = df[[m, sigma_col[m]]].dropna()
@@ -96,19 +96,20 @@ def plot_quality_strips(ax, by_engine):
             out = np.where(sig > 0, sub[m].values / sig, np.nan)
         return out[~np.isnan(out)]
 
-    LOG_FLOOR = 1e-3
-
     def to_x(m, v):
         lo, hi = bounds[m]
-        lo_l, hi_l = np.log10(lo), np.log10(hi)
-        v_l = np.log10(np.maximum(v, LOG_FLOOR))
-        return np.clip((v_l - lo_l) / (hi_l - lo_l + 1e-12), 0.0, 1.0)
+        return np.clip((v - lo) / (hi - lo + 1e-12), 0.0, 1.0)
 
     n = len(metrics)
     y_positions = np.arange(n)[::-1].astype(float)
     row_half = 0.32
     for y in y_positions:
         ax.axhspan(y - row_half, y + row_half, color="0.96", zorder=0)
+    # all rows share the linear 0–3 scale, so one guide marks the ideal RMSZ = 1
+    ideal_x = to_x(metrics[0], 1.0)
+    ax.axvline(ideal_x, color="0.55", ls="--", lw=0.8, zorder=1)
+    ax.text(ideal_x, n - 1 + row_half + 0.06, "ideal = 1", ha="center",
+            va="bottom", fontsize=8, color="0.45")
 
     for engine, _, color in ENGINES:
         df = by_engine.get(engine)
@@ -133,10 +134,10 @@ def plot_quality_strips(ax, by_engine):
     for i, (m, label) in enumerate(zip(metrics, labels)):
         y = y_positions[i]
         lo, hi = bounds[m]
-        geo_mid = np.sqrt(lo * hi)
         ax.text(-0.02, y, label, ha="right", va="center", fontsize=11)
         tick_y = y - row_half - 0.04
-        for x_frac, val in [(0.0, lo), (0.5, geo_mid), (1.0, hi)]:
+        for val in (0, 1, 2, 3):
+            x_frac = (val - lo) / (hi - lo)
             ax.plot([x_frac, x_frac], [y - row_half, y - row_half - 0.02],
                     color="0.4", lw=0.6, clip_on=False)
             ax.text(x_frac, tick_y, f"{val:g}", ha="center", va="top",
