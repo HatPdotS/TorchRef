@@ -76,7 +76,7 @@ def test_occupancy_floor_density_matmul_float64(double_cpu, sample_structure_pai
     """compute_density_at_positions hardcoded hkl.T.float(); matmul raised under float64."""
     from torchref.io import ReflectionData
     from torchref.model.model_ft import ModelFT
-    from torchref.refinement.targets.occupancy_floor_diagnostic import (
+    from torchref.experimental.targets.occupancy_floor_diagnostic import (
         OccupancyFloorDiagnostic,
     )
 

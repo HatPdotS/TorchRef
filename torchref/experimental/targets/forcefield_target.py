@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Dict, Optional
 import torch
 from torch import nn
 
-from .base import ModelTarget
+from torchref.refinement.targets.base import ModelTarget
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -48,7 +48,7 @@ class ForceFieldTarget(ModelTarget):
     Examples
     --------
     >>> from torchref.model import Model
-    >>> from torchref.refinement.targets import ForceFieldTarget
+    >>> from torchref.experimental.targets import ForceFieldTarget
     >>>
     >>> # Load model WITH hydrogens
     >>> model = Model(strip_H=False)

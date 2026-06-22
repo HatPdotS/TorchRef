@@ -1,6 +1,6 @@
 """
 Unit tests for the single-molecule
-:class:`~torchref.refinement.targets.amber_target.AmberTarget`.
+:class:`~torchref.experimental.targets.amber_target.AmberTarget`.
 
 Uses a ligand-free protein (7L84) so the standard OpenMM ``Modeller`` path is
 exercised — no antechamber/tleap (AmberTools) required, only OpenMM. This
@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from torchref.model.model import Model
-from torchref.refinement.targets.amber_target import AmberTarget
+from torchref.experimental.targets.amber_target import AmberTarget
 
 # Ligand-free protein → standard OpenMM Modeller path; needs OpenMM (+ pdbfixer
 # from the same [amber] extra), but no AmberTools. Gated centrally in conftest.

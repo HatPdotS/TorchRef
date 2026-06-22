@@ -2,7 +2,7 @@
 Per-member AMBER energy over an ensemble, with an optional entropy regularizer.
 
 Two targets, both subclasses of the single-molecule
-:class:`~torchref.refinement.targets.amber_target.AmberTarget`:
+:class:`~torchref.experimental.targets.amber_target.AmberTarget`:
 
 - :class:`EnsembleAmberTarget` — the AMBER energy of every ensemble member
   (``N`` non-interacting copies of one chemistry), averaged. It **inherits**
@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Dict, Optional
 import numpy as np
 import torch
 
-from torchref.refinement.targets.amber_target import AMBER14_STANDARD, AmberTarget
+from torchref.experimental.targets.amber_target import AMBER14_STANDARD, AmberTarget
 
 if TYPE_CHECKING:
     from .ensemble_model import EnsembleModel
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 class EnsembleAmberTarget(AmberTarget):
     """Mean per-member AMBER energy over an ensemble (``N`` independent copies).
 
-    Subclass of :class:`~torchref.refinement.targets.amber_target.AmberTarget`.
+    Subclass of :class:`~torchref.experimental.targets.amber_target.AmberTarget`.
     The expensive chemistry/topology is built **once** from the ensemble's
     single-copy PDB (``EnsembleModel._pdb_single``); ``forward`` evaluates the
     inherited per-conformation energy for each member and returns the mean.

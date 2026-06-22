@@ -49,29 +49,27 @@ class TestForceFieldTargetImport:
     @pytest.mark.unit
     def test_forcefield_target_importable(self):
         """ForceFieldTarget should be importable from targets module."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         assert ForceFieldTarget is not None
 
     @pytest.mark.unit
     def test_forcefield_target_is_model_target(self):
         """ForceFieldTarget should inherit from ModelTarget."""
-        from torchref.refinement.targets import ForceFieldTarget, ModelTarget
+        from torchref.experimental.targets import ForceFieldTarget
+        from torchref.refinement.targets import ModelTarget
 
         assert issubclass(ForceFieldTarget, ModelTarget)
 
     @pytest.mark.unit
     def test_forcefield_target_has_name(self):
         """ForceFieldTarget should have name attribute."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         assert ForceFieldTarget.name == "forcefield"
 
     @pytest.mark.unit
     def test_forcefield_target_empty_init(self):
         """ForceFieldTarget should allow empty initialization."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         target = ForceFieldTarget()
 
         assert target.model is None
@@ -81,8 +79,7 @@ class TestForceFieldTargetImport:
     @pytest.mark.unit
     def test_forcefield_target_with_params(self):
         """ForceFieldTarget should accept configuration parameters."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         target = ForceFieldTarget(
             model_path="/path/to/model.ckpt",
             cutoff=6.0,
@@ -98,7 +95,7 @@ class TestForceFieldTargetImport:
     @pytest.mark.unit
     def test_forcefield_target_is_nn_module(self):
         """ForceFieldTarget should be a nn.Module."""
-        from torchref.refinement.targets import ForceFieldTarget
+        from torchref.experimental.targets import ForceFieldTarget
         import torch.nn as nn
 
         target = ForceFieldTarget()
@@ -108,8 +105,7 @@ class TestForceFieldTargetImport:
     @pytest.mark.unit
     def test_cutoff_is_buffer(self):
         """Cutoff should be registered as a buffer for state_dict compatibility."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         target = ForceFieldTarget(cutoff=7.5)
 
         assert "_cutoff" in dict(target.named_buffers())
@@ -122,8 +118,7 @@ class TestForceFieldTargetErrorHandling:
     @pytest.mark.unit
     def test_forward_without_model_path_raises(self):
         """forward() should raise ValueError if model_path is None."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         # Create a mock model using MockAtomicModel
         mock_model = MockAtomicModel(has_hydrogens=True)
 
@@ -135,8 +130,7 @@ class TestForceFieldTargetErrorHandling:
     @pytest.mark.unit
     def test_forward_without_torchmdnet_raises(self):
         """forward() should raise ImportError if torchmd-net is not installed."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         mock_model = MockAtomicModel(has_hydrogens=True)
 
         target = ForceFieldTarget(model=mock_model, model_path="/fake/path.ckpt")
@@ -156,8 +150,7 @@ class TestForceFieldTargetWithMock:
     @pytest.mark.unit
     def test_forward_returns_tensor(self):
         """forward() should return a scalar tensor."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         # Create mock atomic model
         mock_atomic_model = MockAtomicModel(has_hydrogens=True)
 
@@ -176,8 +169,7 @@ class TestForceFieldTargetWithMock:
     @pytest.mark.unit
     def test_forward_normalizes_by_atoms(self):
         """forward() should normalize energy by number of atoms when enabled."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         n_atoms = 5
         raw_energy = 10.0
 
@@ -202,8 +194,7 @@ class TestForceFieldTargetWithMock:
     @pytest.mark.unit
     def test_forward_no_normalization(self):
         """forward() should not normalize when normalize_by_atoms=False."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         n_atoms = 5
         raw_energy = 10.0
 
@@ -227,8 +218,7 @@ class TestForceFieldTargetWithMock:
     @pytest.mark.unit
     def test_stats_returns_dict(self):
         """stats() should return a dictionary with expected keys."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         mock_atomic_model = MockAtomicModel(has_hydrogens=True)
 
         mock_nn_potential = Mock()
@@ -268,8 +258,7 @@ class TestForceFieldTargetIntegration:
     @pytest.mark.integration
     def test_forward_with_real_model(self):
         """Test forward pass with real TorchMD-Net model."""
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         # Create a minimal mock atomic model using MockAtomicModel
         mock_atomic_model = MockAtomicModel(has_hydrogens=True)
 
@@ -296,8 +285,7 @@ class TestForceFieldTargetWithRealModel:
     def test_forward_with_real_pdb(self):
         """Test forward pass with real PDB file containing hydrogens."""
         from torchref.model import Model
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         # Load model WITH hydrogens
         model = Model(strip_H=False)
         model.load_pdb(str(TEST_PDB_WITH_H))
@@ -328,8 +316,7 @@ class TestForceFieldTargetWithRealModel:
     def test_gradient_flow(self):
         """Test that gradients flow through the target."""
         from torchref.model import Model
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         # Load model WITH hydrogens
         model = Model(strip_H=False)
         model.load_pdb(str(TEST_PDB_WITH_H))
@@ -357,8 +344,7 @@ class TestForceFieldTargetWithRealModel:
     def test_stats_with_real_model(self):
         """Test stats() with real model."""
         from torchref.model import Model
-        from torchref.refinement.targets import ForceFieldTarget
-
+        from torchref.experimental.targets import ForceFieldTarget
         model = Model(strip_H=False)
         model.load_pdb(str(TEST_PDB_WITH_H))
 
@@ -380,7 +366,7 @@ class TestForceFieldTargetHydrogenValidation:
     @pytest.mark.unit
     def test_warns_on_missing_hydrogens(self):
         """Should warn when model lacks hydrogen atoms."""
-        from torchref.refinement.targets import ForceFieldTarget
+        from torchref.experimental.targets import ForceFieldTarget
         import warnings
 
         # Mock model without hydrogens
@@ -407,7 +393,7 @@ class TestForceFieldTargetHydrogenValidation:
     @pytest.mark.unit
     def test_no_warning_with_hydrogens(self):
         """Should not warn when model has hydrogen atoms."""
-        from torchref.refinement.targets import ForceFieldTarget
+        from torchref.experimental.targets import ForceFieldTarget
         import warnings
 
         # Mock model with hydrogens

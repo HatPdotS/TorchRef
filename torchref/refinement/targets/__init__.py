@@ -48,24 +48,6 @@ from .geometry import (
     RamachandranTarget,
     TorsionTarget,
 )
-from .occupancy_floor_diagnostic import (
-    DifferenceAmplitudeRegularizer,
-    DisplacementRegularizer,
-    NegativeDensityPenalty,
-    OccupancyFloorDiagnostic,
-)
-from .realspace import (
-    RealSpaceCorrelationTarget,
-    RealSpaceDifferenceTarget,
-    RealSpaceExtrapolatedTarget,
-    RealSpaceTarget,
-)
-from .sampled_ml_phase_target import (
-    SampledMLDifferenceTarget,
-    SampledMLPhaseTarget,
-    create_sampled_ml_difference_target,
-    create_sampled_ml_target,
-)
 from .similarity import CoordinateSimilarityTarget
 from .xray import (
     GaussianXrayTarget,
@@ -75,23 +57,6 @@ from .xray import (
     XrayTarget,
     create_xray_target,
 )
-
-# Force field target (optional dependency: torchmd-net)
-# Note: torchmd-net is imported lazily inside ForceFieldTarget.__init__
-# and raises a clear ImportError there if missing.
-try:
-    from .forcefield_target import ForceFieldTarget
-except ImportError:
-    ForceFieldTarget = None
-
-# AMBER target (optional dependency: openmm)
-# Note: openmm is imported lazily inside AmberTarget methods
-# and raises a clear ImportError there if missing.
-try:
-    from .amber_target import AMBER14_STANDARD, AmberTarget
-except ImportError:
-    AmberTarget = None
-    AMBER14_STANDARD = None
 
 __all__ = [
     # Base classes
@@ -140,26 +105,8 @@ __all__ = [
     "CombinedTargets",
     "TotalGeometryTarget",
     "TotalADPTarget",
-    # Force field
-    "ForceFieldTarget",
-    # AMBER force field
-    "AmberTarget",
-    "AMBER14_STANDARD",
-    # Occupancy diagnostics
-    "OccupancyFloorDiagnostic",
-    "NegativeDensityPenalty",
-    "DisplacementRegularizer",
-    "DifferenceAmplitudeRegularizer",
-    # Sampled ML phase targets
-    "SampledMLPhaseTarget",
-    "SampledMLDifferenceTarget",
-    "create_sampled_ml_target",
-    "create_sampled_ml_difference_target",
-    # Real-space targets
-    "RealSpaceTarget",
-    "RealSpaceCorrelationTarget",
-    "RealSpaceDifferenceTarget",
-    "RealSpaceExtrapolatedTarget",
     # Similarity restraint
     "CoordinateSimilarityTarget",
 ]
+# Force-field, real-space, sampled-ML phase, and occupancy-diagnostic
+# targets are experimental and live in :mod:`torchref.experimental.targets`.
