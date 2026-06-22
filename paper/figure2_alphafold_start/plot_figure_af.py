@@ -105,11 +105,6 @@ def plot_quality_strips(ax, by_engine):
     row_half = 0.32
     for y in y_positions:
         ax.axhspan(y - row_half, y + row_half, color="0.96", zorder=0)
-    # all rows share the linear 0–3 scale, so one guide marks the ideal RMSZ = 1
-    ideal_x = to_x(metrics[0], 1.0)
-    ax.axvline(ideal_x, color="0.55", ls="--", lw=0.8, zorder=1)
-    ax.text(ideal_x, n - 1 + row_half + 0.06, "ideal = 1", ha="center",
-            va="bottom", fontsize=8, color="0.45")
 
     for engine, _, color in ENGINES:
         df = by_engine.get(engine)
