@@ -730,7 +730,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         ).values
 
         distances = torch.cdist(sg_coords, sg_coords)
-        threshold = 4.0
+        threshold = 2.5
         close_pairs = torch.where((distances < threshold) & (distances > 0.1))
 
         valid_pairs = []
