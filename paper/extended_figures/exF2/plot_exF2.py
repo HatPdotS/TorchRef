@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""Extended Figure 2: Resolution-binned R-factor comparison.
+"""Extended Figure 2: R-factor gap vs resolution (AlphaFold-start).
 
-Two-panel figure:
-  (A) ΔR-free (TorchRef − Phenix) vs resolution
-  (B) ΔR-work (TorchRef − Phenix) vs resolution
+Two-panel figure, every refined structure judged by the same independent scorer
+(phenix.model_vs_data). TorchRef (locked default arm, xray 1 / geometry 0.2 /
+adp 0.02) is compared against both reference programs:
+  (A) ΔR-free (TorchRef − PHENIX) and (TorchRef − REFMAC) vs resolution
+  (B) ΔR-work (TorchRef − PHENIX) and (TorchRef − REFMAC) vs resolution
 
-Each panel shows a scatter plot with a running median overlay.
+Each comparison is a light scatter + a bold running-median line; values below 0
+are where TorchRef beats the reference program.
+
+Reads data/exF2_rfactor_by_resolution.csv (collect_exF2_data.py).
+
+Usage:
+    ./.dev/bin/python paper/extended_figures/exF2/plot_exF2.py
 """
-
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 
-# ── Style (matching main paper figures) ──────────────────────────────────────
 plt.rcParams.update({
     "font.size": 14,
     "font.family": "serif",
@@ -28,99 +34,87 @@ plt.rcParams.update({
     "ytick.labelsize": 13,
 })
 
-COLOR_TORCHREF = "#b2182b"
-COLOR_PHENIX = "#2166ac"
+# reference program -> (scatter colour, median colour, display name)
+REFS = {
+    "phenix": ("#2166ac", "#0b3a66", "PHENIX"),
+    "refmac": ("#9970ab", "#542788", "REFMAC"),
+}
 DPI = 500
 
-# ── Paths ────────────────────────────────────────────────────────────────────
 BASE = Path(__file__).resolve().parent
 DATA_CSV = BASE / "data" / "exF2_rfactor_by_resolution.csv"
 OUTDIR = BASE / "output"
 
 
-def running_median(x, y, window=50):
-    """Compute running median of y sorted by x."""
+def running_median(x, y, window=200):
     order = np.argsort(x)
-    x_sorted = x[order]
-    y_sorted = y[order]
-    n = len(x_sorted)
+    xs, ys = x[order], y[order]
+    n = len(xs)
+    window = max(5, min(window, n if n % 2 else n - 1))
     half = window // 2
-    x_out, y_out = [], []
+    xo, yo = [], []
     for i in range(half, n - half):
-        x_out.append(x_sorted[i])
-        y_out.append(np.median(y_sorted[i - half : i + half + 1]))
-    return np.array(x_out), np.array(y_out)
+        xo.append(xs[i])
+        yo.append(np.median(ys[i - half: i + half + 1]))
+    return np.array(xo), np.array(yo)
 
 
-def plot_panel(ax, d_min, delta_r, ylabel, label_letter, metric_name):
-    """Plot one panel: scatter + running median."""
-    ax.scatter(d_min, delta_r, s=8, alpha=0.35, color=COLOR_TORCHREF,
-               edgecolors="none", zorder=2)
+def plot_panel(ax, df, metric, label_letter, xlim, ylim):
+    """metric = 'rfree' or 'rwork'."""
+    d_min = df["d_min"].values
+    name = "R-free" if metric == "rfree" else "R-work"
+    txt = []
+    for ref, (sc, mc, disp) in REFS.items():
+        dr = df[f"delta_{metric}_{ref}"].values
+        ax.scatter(d_min, dr, s=7, alpha=0.22, color=sc, edgecolors="none", zorder=2)
+        xm, ym = running_median(d_min, dr)
+        ax.plot(xm, ym, color=mc, lw=2.2, zorder=4, label=f"− {disp} (median)")
+        txt.append(f"vs {disp}: {np.median(dr):+.2f} pp")
 
-    # Running median
-    xm, ym = running_median(d_min, delta_r, window=200)
-    ax.plot(xm, ym, color="#67001f", lw=2, zorder=3, label="Running median")
-
-    # Reference line
-    ax.axhline(y=0, color="black", ls="--", lw=0.8, alpha=0.3, zorder=1)
-
-    # Annotation
-    med = np.median(delta_r)
-    ax.text(
-        0.97, 0.95,
-        f"Median Δ{metric_name} = {med:+.2f} pp",
-        transform=ax.transAxes, ha="right", va="top",
-        fontsize=12, bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8),
-    )
+    ax.axhline(y=0, color="black", ls="--", lw=0.8, alpha=0.4, zorder=1)
+    ax.text(0.97, 0.95, f"Median Δ{name}\n" + "\n".join(txt),
+            transform=ax.transAxes, ha="right", va="top", fontsize=11,
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85))
 
     ax.set_xlabel("Resolution (Å)")
-    ax.set_ylabel(f"Δ{ylabel} (TorchRef − Phenix, pp)")
-    ax.invert_xaxis()
-    ax.set_xlim(3.1, 1.0)
-    ax.set_ylim(-4, 6)
+    ax.set_ylabel(f"Δ{name} (TorchRef − reference, pp)")
+    ax.set_xlim(*xlim)            # already high→low (inverted)
+    ax.set_ylim(*ylim)
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=11, loc="lower left")
-
-    # Panel label
-    ax.text(
-        -0.08, 1.05, label_letter,
-        transform=ax.transAxes, fontsize=18, fontweight="bold", va="top",
-    )
+    ax.text(-0.08, 1.05, label_letter, transform=ax.transAxes, fontsize=18,
+            fontweight="bold", va="top")
 
 
 def main():
     df = pd.read_csv(DATA_CSV)
     print(f"Loaded {len(df)} structures")
-
     d_min = df["d_min"].values
-    delta_rfree = df["delta_rfree"].values
-    delta_rwork = df["delta_rwork"].values
+
+    xlim = (float(np.nanmax(d_min)) + 0.1, float(np.nanmin(d_min)) - 0.1)  # high→low
+    cols = [f"delta_{m}_{r}" for m in ("rfree", "rwork") for r in REFS]
+    allv = np.concatenate([df[c].values for c in cols])
+    pad = 0.5
+    ylim = (float(np.nanpercentile(allv, 1)) - pad,
+            float(np.nanpercentile(allv, 99)) + pad)
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Combined figure ──
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-
-    plot_panel(ax1, d_min, delta_rfree, "R-free", "A", "R-free")
-    plot_panel(ax2, d_min, delta_rwork, "R-work", "B", "R-work")
-
-    fig.suptitle(
-        "Resolution-Binned R-Factor Comparison (REFMAC5 Validation)",
-        fontsize=17, y=1.02,
-    )
+    plot_panel(ax1, df, "rfree", "A", xlim, ylim)
+    plot_panel(ax2, df, "rwork", "B", xlim, ylim)
+    fig.suptitle("Extended Figure 2 — R-factor gap vs resolution "
+                 "(AF-start, PHENIX-scored)", fontsize=17, y=1.02)
     plt.tight_layout()
     out = OUTDIR / "extended_figure2.png"
     plt.savefig(str(out), dpi=DPI, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out}")
 
-    # ── Individual panels ──
-    for delta, ylabel, letter, metric, fname in [
-        (delta_rfree, "R-free", "A", "R-free", "exF2_panel_a.png"),
-        (delta_rwork, "R-work", "B", "R-work", "exF2_panel_b.png"),
-    ]:
+    for metric, letter, fname in [("rfree", "A", "exF2_panel_a.png"),
+                                  ("rwork", "B", "exF2_panel_b.png")]:
         fig, ax = plt.subplots(figsize=(7, 5))
-        plot_panel(ax, d_min, delta, ylabel, letter, metric)
+        plot_panel(ax, df, metric, letter, xlim, ylim)
         plt.tight_layout()
         p = OUTDIR / fname
         plt.savefig(str(p), dpi=DPI, bbox_inches="tight")

@@ -44,7 +44,7 @@ ENGINE_DIR = {
     "prediction": "af_initial",
     "refmac": "refmac",
     "phenix": "phenix_norb",
-    "torchref": "torchref_devbuild",
+    "torchref": "torchref_g0p2_a0p02",
 }
 
 

@@ -157,11 +157,10 @@ def plot_runtime_box(ax, runtime_long):
     order = ["refmac", "torchref", "phenix"]  # speed order
     rng = np.random.default_rng(0)             # reproducible jitter
 
-    data, meds = [], {}
+    data = []
     for e in order:
         v = runtime_long.loc[runtime_long.engine == e, "wall_s"].dropna().values / 60.0
         data.append(v)
-        meds[e] = np.median(v)
 
     pos = np.arange(len(order))
     bp = ax.boxplot(data, positions=pos, widths=0.55, patch_artist=True,
@@ -176,11 +175,6 @@ def plot_runtime_box(ax, runtime_long):
     for i, (v, e) in enumerate(zip(data, order)):
         x = rng.normal(pos[i], 0.05, size=len(v))
         ax.scatter(x, v, s=3, color=COLOR[e], alpha=0.12, linewidths=0, zorder=1)
-    # median labels
-    for i, e in enumerate(order):
-        ax.annotate(f"{meds[e]:.2f} min", (pos[i], meds[e]),
-                    xytext=(8, 0), textcoords="offset points",
-                    va="center", ha="left", fontsize=10, color="0.15")
 
     ax.set_yscale("log")
     ax.set_xlim(-0.6, len(order) - 0.4)

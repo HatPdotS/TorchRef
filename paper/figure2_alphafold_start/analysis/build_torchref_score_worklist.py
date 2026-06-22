@@ -28,7 +28,7 @@ WORKLIST = XDIR / "torchref_worklist.txt"
 MODELS = {
     "refmac": ("refmac", "refmac/{code}/refined.pdb"),
     "phenix": ("phenix_norb", "phenix_norb/{code}/{code}_refined_001.pdb"),
-    "torchref": ("torchref_devbuild", "torchref_devbuild/{code}/refined.pdb"),
+    "torchref": ("torchref_g0p2_a0p02", "torchref_g0p2_a0p02/{code}/refined.pdb"),
     "prediction": ("af_initial", "../placed/{code}_af.pdb"),
 }
 

@@ -31,6 +31,15 @@ MODELS = {
     "refmac": ("refmac", "refmac/{code}/refined.pdb"),
     "phenix": ("phenix_norb", "phenix_norb/{code}/{code}_refined_001.pdb"),
     "torchref": ("torchref_devbuild", "torchref_devbuild/{code}/refined.pdb"),
+    # New locked-in default weights (xray=1/geom=0.2/adp=0.005); scored
+    # alongside the old torchref_devbuild (xray=10/geom=1/adp=0.1) arm.
+    "torchref_locked": ("torchref_locked", "torchref_locked/{code}/refined.pdb"),
+    # adp=0.01 variant of the locked weights (1/0.2/0.01), to settle adp 0.005 vs 0.01.
+    "torchref_g0p2_a0p01": ("torchref_g0p2_a0p01",
+                            "torchref_g0p2_a0p01/{code}/refined.pdb"),
+    # New locked default (1/0.2/0.02) — full-pipeline arm.
+    "torchref_g0p2_a0p02": ("torchref_g0p2_a0p02",
+                            "torchref_g0p2_a0p02/{code}/refined.pdb"),
     "prediction": ("af_initial", "../placed/{code}_af.pdb"),
 }
 RE_DONE = re.compile(r"^\s*r_free:\s*[\d.]+", re.M)
