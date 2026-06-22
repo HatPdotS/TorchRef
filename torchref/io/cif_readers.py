@@ -1931,22 +1931,38 @@ class RestraintCIFReader:
             elif "id" in df.columns and len(df) > 0:
                 compounds = df["id"].tolist()
 
-        # If no comp_list/chem_comp, look for single compound definition
-        if not compounds:
-            for key in self.cif.data.keys():
-                if key.startswith("comp_") and key != "comp_list":
-                    # Extract compound ID from key pattern
-                    # Keys like 'comp_ALA', 'comp_bond', etc.
-                    continue
+        if not compounds and "comp" in self.cif.data:
+            df = self.cif.data["comp"]
+            if "id" in df.columns and len(df) > 0:
+                compounds = [df["id"].iloc[0]]
+            elif "_chem_comp.id" in df.columns and len(df) > 0:
+                compounds = [df["_chem_comp.id"].iloc[0]]
 
-            # Alternative: look in raw data for data_ blocks
-            # For now, try to extract from available keys
-            if "comp" in self.cif.data:
-                df = self.cif.data["comp"]
-                if "id" in df.columns and len(df) > 0:
-                    compounds = [df["id"].iloc[0]]
-                elif "_chem_comp.id" in df.columns and len(df) > 0:
-                    compounds = [df["_chem_comp.id"].iloc[0]]
+        # If no comp_list/chem_comp header, derive the compound ID(s) from the
+        # restraint data blocks themselves. Many user-supplied dictionaries
+        # (eLBOW, AceDRG, Grade) ship a single ``data_comp_<ID>`` block with no
+        # ``comp_list``; without this the ID would fall back to the filename
+        # stem (see ``_validate``), which rarely matches the PDB residue name,
+        # so ``_filter_by_comp`` returns nothing and the custom restraints are
+        # silently overshadowed by the bundled monomer library.
+        if not compounds:
+            for block in (
+                "comp_atom",
+                "chem_comp_atom",
+                "comp_bond",
+                "chem_comp_bond",
+            ):
+                df = self.cif.data.get(block)
+                if df is None or len(df) == 0:
+                    continue
+                id_col = next(
+                    (c for c in df.columns if c == "comp_id" or c.endswith(".comp_id")),
+                    None,
+                )
+                if id_col is not None:
+                    compounds = [c for c in df[id_col].unique().tolist() if c]
+                    if compounds:
+                        break
 
         return compounds
 
