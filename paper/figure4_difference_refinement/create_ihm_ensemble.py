@@ -27,8 +27,8 @@ LIGHT_MTZ = DATA_DIR / "7YYZ-light.mtz"
 OUTPUT_CIF = DATA_DIR / "dark_light_ensemble.cif"
 
 # ── Population fractions (dark, light) ─────────────────────────────────
-# 82% dark / 18% light matches the 0.18 photoactivation yield
-FRACTIONS = [0.82, 0.18]
+# 78% dark / 22% light matches the 0.22 photoactivation yield
+FRACTIONS = [0.78, 0.22]
 
 # ── Load models ────────────────────────────────────────────────────────
 print(f"Loading dark model:  {DARK_PDB.name}")

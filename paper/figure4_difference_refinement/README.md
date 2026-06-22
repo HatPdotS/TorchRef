@@ -35,14 +35,14 @@ light and dark structure factor amplitudes:
 torchref.difference-refine \
     -lm work.pdb -dm data/8QL2.pdb \
     -lsf data/7YYZ-light.mtz -dsf data/dark-phenix.mtz \
-    --fraction 0.18 --cif data/IBL_grade.cif \
+    --fraction 0.22 --cif data/IBL_grade.cif \
     -o refinement_output --dmin 1.9 \
     --weight-schedule 10,5,2 --n-cycles 10
 ```
 
 Key parameters:
 - **Starting model**: 8QL2 (dark state) — the light structure is initialized from the dark
-- **Fraction**: 0.18 (18% light, 82% dark occupancy)
+- **Fraction**: 0.22 (22% light, 78% dark occupancy)
 - **Resolution**: 1.9 A
 - **Weight schedule**: geometry weights decrease over cycles (10 -> 5 -> 2) to allow
   the model to first satisfy geometry, then fit the density more closely
@@ -65,10 +65,10 @@ The refinement produces a pair of PDB files (dark + light) and the difference da
 
 | File | Description |
 |------|-------------|
-| `refinement_output/fractions_82_18_light.pdb` | Refined light-state structure |
-| `refinement_output/fractions_82_18_dark.pdb` | Dark-state structure (unchanged) |
-| `refinement_output/fractions_82_18_difference_data.mtz` | Difference data with map coefficients |
-| `refinement_output/fractions_82_18_summary.json` | Refinement parameters and statistics |
+| `refinement_output/fractions_78_22_light.pdb` | Refined light-state structure |
+| `refinement_output/fractions_78_22_dark.pdb` | Dark-state structure (unchanged) |
+| `refinement_output/fractions_78_22_difference_data.mtz` | Difference data with map coefficients |
+| `refinement_output/fractions_78_22_summary.json` | Refinement parameters and statistics |
 
 ## Validation
 

@@ -16,7 +16,7 @@ Usage
 
     python create_joined_model_for_deposition.py \\
         --dark dark.cif --light light.cif \\
-        --occ-dark 0.82 --occ-light 0.18 \\
+        --occ-dark 0.78 --occ-light 0.22 \\
         -o deposited.cif
 """
 
@@ -91,10 +91,10 @@ def main():
     )
     parser.add_argument("--dark", required=True, help="Dark model mmCIF file")
     parser.add_argument("--light", required=True, help="Light model mmCIF file")
-    parser.add_argument("--occ-dark", type=float, default=0.82,
-                        help="Occupancy for dark conformer (default: 0.82)")
-    parser.add_argument("--occ-light", type=float, default=0.18,
-                        help="Occupancy for light conformer (default: 0.18)")
+    parser.add_argument("--occ-dark", type=float, default=0.78,
+                        help="Occupancy for dark conformer (default: 0.78)")
+    parser.add_argument("--occ-light", type=float, default=0.22,
+                        help="Occupancy for light conformer (default: 0.22)")
     parser.add_argument("-o", "--output", required=True,
                         help="Output mmCIF file path")
 
