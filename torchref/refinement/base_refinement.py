@@ -30,16 +30,29 @@ from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 
 
-# Default LossState group base weights, balancing the data term against the
-# priors with the x-ray data term as the reference (xray=1). Tuned on the
-# AlphaFold-start benchmark (paper/figure2_alphafold_start, 10x10 log weight
-# screen over geometry x adp, validation-landscape analysis): geometry=0.2 pulls
-# bond/angle RMSZ close to the ideal 1.0 (vs ~1.4 at 0.1) at no R-free cost, and
-# adp=0.02 keeps the main-chain B-factor distribution near ideal (MC-bond B RMSZ
-# ~1.6, vs a badly under-restrained ~3.5 at adp=0.005) — also essentially free in
-# R-free. (The earlier reference xray=10/geometry=1/adp=0.1 normalizes — divide by
-# 10 — to xray=1/geometry=0.1/adp=0.01.)
-DEFAULT_GROUP_WEIGHTS = {"xray": 1.0, "geometry": 0.2, "adp": 0.02}
+# Default LossState weights, balancing the data term against the priors with the
+# x-ray data term as the reference (xray=1). Weights are hierarchical and
+# MULTIPLICATIVE: a target's effective weight is the product of its path levels
+# (e.g. geometry/ramachandran = weight[geometry] * weight[geometry/ramachandran];
+# see LossState.get_effective_weight), so a component key scales *within* its
+# group. Tuned on the AlphaFold-start benchmark (paper/figure2_alphafold_start,
+# 10x10 log weight screen over geometry x adp, validation-landscape analysis):
+# geometry=0.2 pulls bond/angle RMSZ close to the ideal 1.0 (vs ~1.4 at 0.1) at no
+# R-free cost, and adp=0.02 keeps the main-chain B-factor distribution near ideal
+# (MC-bond B RMSZ ~1.6, vs a badly under-restrained ~3.5 at adp=0.005) — also
+# essentially free in R-free. (The earlier reference xray=10/geometry=1/adp=0.1
+# normalizes — divide by 10 — to xray=1/geometry=0.1/adp=0.01.)
+#
+# geometry/ramachandran=0 DISABLES the Ramachandran restraint by default (0.2 * 0
+# = 0, so aggregate() skips it): the AF-start ablation (745 paired structures)
+# showed it has no measurable effect (median dR-free +0.0002, geometry RMSZ
+# unchanged). Set it back to a positive value via --weights to re-enable.
+DEFAULT_GROUP_WEIGHTS = {
+    "xray": 1.0,
+    "geometry": 0.2,
+    "geometry/ramachandran": 0.0,
+    "adp": 0.02,
+}
 
 
 class Refinement(DeviceMixin, DebugMixin, nnModule):
