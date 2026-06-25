@@ -4,6 +4,7 @@ Changelog
 Version 0.6.0
 -------------
 - Implemented Phenix style sigma A weighting in the Maximum likelihood target (New default for refinement)
+- Set Ramachandran restraints to be off by default (to enable specify a non zero weight)
 - Added collection versions of the sigma A target
 - Fixed bug in Rfree-generation now min 1000 reflections per bin, min 50 free reflections max 2% and 10 bins
 - Deprecated internal coordinates

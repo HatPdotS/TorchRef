@@ -133,7 +133,7 @@ DEFAULT_TARGET_WEIGHTS = {
     # "adp/simu": 1.0,
     # "adp/locality": 1.0,
     # "adp/KL": 1.0,
-    "similarity": 0.0,
+    "similarity": 1.0,
 }
 
 
@@ -656,9 +656,9 @@ Examples:
         help="Refine population fractions during optimisation (default: frozen)",
     )
     refine.add_argument(
-        "--similarity-weight", type=float, default=3.0,
+        "--similarity-weight", type=float, default=1.0,
         help="Weight for dark/light coordinate similarity restraint "
-             "(0 to disable, default: 3.0)",
+             "(0 to disable, default: 1.0)",
     )
     refine.add_argument(
         "--similarity-alpha", type=float, default=2.0,

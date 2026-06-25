@@ -71,7 +71,7 @@ from torchref.utils.stats import (
     stat,
 )
 
-from .base import ModelTarget
+from torchref.refinement.targets.base import ModelTarget
 
 if TYPE_CHECKING:
     from torchref.model.model import Model

@@ -27,7 +27,7 @@ from torchref.utils.stats import (
     stat,
 )
 
-from .base import DataTarget
+from torchref.refinement.targets.base import DataTarget
 
 if TYPE_CHECKING:
     from torchref.io.datasets import ReflectionData, DatasetCollection

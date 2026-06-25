@@ -1,8 +1,8 @@
 """
 Supercell layout + OpenMM System replication for quasi-crystal ensemble Amber.
 
-Extracted from :mod:`torchref.refinement.targets.amber_target` so the
-single-molecule :class:`~torchref.refinement.targets.amber_target.AmberTarget`
+Extracted from :mod:`torchref.experimental.targets.amber_target` so the
+single-molecule :class:`~torchref.experimental.targets.amber_target.AmberTarget`
 base carries no crystal-specific code. Only
 :class:`~torchref.experimental.ensemble.quasi_crystal_amber.QuasiCrystalAmberTarget`
 uses these helpers.

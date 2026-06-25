@@ -19,7 +19,7 @@ the physical anti-collapse.
 
 Design
 ------
-Subclass of :class:`~torchref.refinement.targets.amber_target.AmberTarget`. The
+Subclass of :class:`~torchref.experimental.targets.amber_target.AmberTarget`. The
 base ``__init__`` builds the single-molecule chemistry against a genuine
 single-conformation :class:`Model` (the ensemble's ``_pdb_single`` restricted to
 non-special-position atoms), giving us as **inherited** state:
@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from torchref.refinement.targets.amber_target import (
+from torchref.experimental.targets.amber_target import (
     AmberTarget,
     _OpenMMAMBERFunction,
     _place_hydrogens_local_frame,
