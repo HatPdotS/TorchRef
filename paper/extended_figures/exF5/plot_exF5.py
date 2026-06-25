@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extended Figure 5: Structure factor splatting optimization breakdown.
+"""Extended Figure 5: Structure factor sampling optimization breakdown.
 
 Three-panel figure:
   (A) Grouped bar chart — total Fcalc time per approach (log Y)
@@ -28,7 +28,7 @@ plt.rcParams.update({
     "ytick.labelsize": 13,
 })
 
-COLOR_SPLATTING = "#2563eb"
+COLOR_SAMPLING = "#2563eb"
 COLOR_FFT = "#e67e22"
 COLOR_EXTRACTION = "#10b981"
 DPI = 500
@@ -59,7 +59,7 @@ def plot_panel_a(ax, results):
 
     x = np.arange(len(labels))
     bars = ax.bar(x, total_ms, 0.6, yerr=total_std, capsize=4,
-                  color=["#999999", COLOR_SPLATTING, COLOR_SPLATTING,
+                  color=["#999999", COLOR_SAMPLING, COLOR_SAMPLING,
                          "#ffb347", "#10b981"][:len(labels)],
                   edgecolor="white", linewidth=0.5)
 
@@ -89,18 +89,18 @@ def plot_panel_a(ax, results):
 def _plot_stacked_breakdown(ax, subset, title, panel_label):
     """Stacked bar chart for a subset of results."""
     labels = [r["label"] for r in subset]
-    splatting = [r["stage_a_splatting"]["mean_ms"] for r in subset]
+    sampling = [r["stage_a_splatting"]["mean_ms"] for r in subset]
     fft = [r["stage_b_fft"]["mean_ms"] for r in subset]
     extraction = [r["stage_c_extraction"]["mean_ms"] for r in subset]
 
     x = np.arange(len(labels))
     w = 0.6
 
-    ax.bar(x, splatting, w, label="Splatting", color=COLOR_SPLATTING,
+    ax.bar(x, sampling, w, label="Sampling", color=COLOR_SAMPLING,
            edgecolor="white", linewidth=0.5)
-    ax.bar(x, fft, w, bottom=splatting, label="FFT", color=COLOR_FFT,
+    ax.bar(x, fft, w, bottom=sampling, label="FFT", color=COLOR_FFT,
            edgecolor="white", linewidth=0.5)
-    bottom2 = [s + f for s, f in zip(splatting, fft)]
+    bottom2 = [s + f for s, f in zip(sampling, fft)]
     ax.bar(x, extraction, w, bottom=bottom2, label="Extraction",
            color=COLOR_EXTRACTION, edgecolor="white", linewidth=0.5)
 
@@ -128,8 +128,8 @@ def main():
     # ── Combined figure (3 panels) ──
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
     fig.suptitle(
-        f"F$_{{\\mathrm{{calc}}}}$ Optimization Breakdown "
-        f"(1DAW: {n_atoms} atoms, {n_refl} reflections, {d_min:.2f} Å)",
+        f"Extended Figure 5 — F$_{{\\mathrm{{calc}}}}$ Optimization Breakdown "
+        f"(pdb_00001daw: {n_atoms} atoms, {n_refl} reflections, {d_min:.2f} Å)",
         fontsize=17, y=1.02,
     )
 
@@ -158,7 +158,7 @@ def main():
         print(f"Saved: {p}")
 
     # Print summary table
-    print(f"\n{'Label':<35} {'Total':>10} {'Splat':>10} {'FFT':>10} {'Extract':>10} {'Speedup':>8}")
+    print(f"\n{'Label':<35} {'Total':>10} {'Sample':>10} {'FFT':>10} {'Extract':>10} {'Speedup':>8}")
     print("-" * 93)
     for r in results:
         print(

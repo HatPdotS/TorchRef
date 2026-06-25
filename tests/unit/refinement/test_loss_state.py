@@ -29,7 +29,7 @@ class TestLossStateBasic:
         """Test LossState creation with specific device."""
         from torchref.refinement.loss_state import LossState
 
-        device = torch.device('cpu')
+        device = torch.device("cpu")
         state = LossState(device=device)
 
         assert state.device == device
@@ -46,9 +46,9 @@ class TestTargetRegistration:
         state = LossState()
         target_fn = lambda: torch.tensor(1.0)
 
-        result = state.register_target('geometry/bond', target_fn)
+        result = state.register_target("geometry/bond", target_fn)
 
-        assert 'geometry/bond' in state.targets
+        assert "geometry/bond" in state.targets
         assert result is state  # Method chaining
 
     @pytest.mark.unit
@@ -58,17 +58,17 @@ class TestTargetRegistration:
 
         state = LossState()
         targets = {
-            'xray/work': lambda: torch.tensor(1.0),
-            'geometry/bond': lambda: torch.tensor(0.5),
-            'adp/simu': lambda: torch.tensor(0.3),
+            "xray/work": lambda: torch.tensor(1.0),
+            "geometry/bond": lambda: torch.tensor(0.5),
+            "adp/simu": lambda: torch.tensor(0.3),
         }
 
         state.register_targets(targets)
 
         assert len(state.targets) == 3
-        assert 'xray/work' in state.targets
-        assert 'geometry/bond' in state.targets
-        assert 'adp/simu' in state.targets
+        assert "xray/work" in state.targets
+        assert "geometry/bond" in state.targets
+        assert "adp/simu" in state.targets
 
     @pytest.mark.unit
     def test_register_target_with_prefix(self):
@@ -76,11 +76,15 @@ class TestTargetRegistration:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('geometry/bond', lambda: torch.tensor(1.0), prefix='model1')
-        state.register_target('geometry/bond', lambda: torch.tensor(2.0), prefix='model2')
+        state.register_target(
+            "geometry/bond", lambda: torch.tensor(1.0), prefix="model1"
+        )
+        state.register_target(
+            "geometry/bond", lambda: torch.tensor(2.0), prefix="model2"
+        )
 
-        assert 'model1/geometry/bond' in state.targets
-        assert 'model2/geometry/bond' in state.targets
+        assert "model1/geometry/bond" in state.targets
+        assert "model2/geometry/bond" in state.targets
         assert len(state.targets) == 2
 
     @pytest.mark.unit
@@ -90,13 +94,13 @@ class TestTargetRegistration:
 
         state = LossState()
         targets = {
-            'xray': lambda: torch.tensor(1.0),
-            'geometry/bond': lambda: torch.tensor(0.5),
+            "xray": lambda: torch.tensor(1.0),
+            "geometry/bond": lambda: torch.tensor(0.5),
         }
-        state.register_targets(targets, prefix='model1')
+        state.register_targets(targets, prefix="model1")
 
-        assert 'model1/xray' in state.targets
-        assert 'model1/geometry/bond' in state.targets
+        assert "model1/xray" in state.targets
+        assert "model1/geometry/bond" in state.targets
 
     @pytest.mark.unit
     def test_prefix_with_hierarchical_weighting(self):
@@ -104,12 +108,16 @@ class TestTargetRegistration:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('geometry/bond', lambda: torch.tensor(1.0), prefix='model1')
-        state.register_target('geometry/bond', lambda: torch.tensor(2.0), prefix='model2')
+        state.register_target(
+            "geometry/bond", lambda: torch.tensor(1.0), prefix="model1"
+        )
+        state.register_target(
+            "geometry/bond", lambda: torch.tensor(2.0), prefix="model2"
+        )
 
         # Set model-level weights
-        state.set_weight('model1', 0.5)
-        state.set_weight('model2', 1.0)
+        state.set_weight("model1", 0.5)
+        state.set_weight("model2", 1.0)
 
         total = state.aggregate()
         # Expected: 0.5 * 1.0 + 1.0 * 2.0 = 2.5
@@ -125,9 +133,9 @@ class TestWeightManagement:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        result = state.set_weight('geometry', 0.5)
+        result = state.set_weight("geometry", 0.5)
 
-        assert state.weights['geometry'] == 0.5
+        assert state.weights["geometry"] == 0.5
         assert result is state  # Method chaining
 
     @pytest.mark.unit
@@ -136,15 +144,17 @@ class TestWeightManagement:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.set_weights({
-            'xray': 1.0,
-            'geometry': 0.5,
-            'geometry/bond': 2.0,
-        })
+        state.set_weights(
+            {
+                "xray": 1.0,
+                "geometry": 0.5,
+                "geometry/bond": 2.0,
+            }
+        )
 
-        assert state.weights['xray'] == 1.0
-        assert state.weights['geometry'] == 0.5
-        assert state.weights['geometry/bond'] == 2.0
+        assert state.weights["xray"] == 1.0
+        assert state.weights["geometry"] == 0.5
+        assert state.weights["geometry/bond"] == 2.0
 
     @pytest.mark.unit
     def test_get_weight_default(self):
@@ -154,7 +164,7 @@ class TestWeightManagement:
         state = LossState()
 
         # Missing weight returns default
-        weight = state.get_weight('nonexistent', default=1.0)
+        weight = state.get_weight("nonexistent", default=1.0)
         assert weight == 1.0
 
     @pytest.mark.unit
@@ -163,9 +173,9 @@ class TestWeightManagement:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.set_weight('xray', 2.0)
+        state.set_weight("xray", 2.0)
 
-        effective = state.get_effective_weight('xray')
+        effective = state.get_effective_weight("xray")
         assert effective == 2.0
 
     @pytest.mark.unit
@@ -174,11 +184,11 @@ class TestWeightManagement:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.set_weight('geometry', 0.5)
-        state.set_weight('geometry/bond', 2.0)
+        state.set_weight("geometry", 0.5)
+        state.set_weight("geometry/bond", 2.0)
 
         # geometry/bond -> geometry (0.5) * geometry/bond (2.0) = 1.0
-        effective = state.get_effective_weight('geometry/bond')
+        effective = state.get_effective_weight("geometry/bond")
         assert effective == 1.0
 
     @pytest.mark.unit
@@ -187,10 +197,10 @@ class TestWeightManagement:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.set_weight('geometry/bond', 2.0)
+        state.set_weight("geometry/bond", 2.0)
         # 'geometry' not set, defaults to 1.0
 
-        effective = state.get_effective_weight('geometry/bond')
+        effective = state.get_effective_weight("geometry/bond")
         assert effective == 2.0  # 1.0 * 2.0
 
 
@@ -203,10 +213,10 @@ class TestAggregation:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('xray', lambda: torch.tensor(2.0))
-        state.register_target('geometry', lambda: torch.tensor(1.0))
-        state.set_weight('xray', 1.0)
-        state.set_weight('geometry', 0.5)
+        state.register_target("xray", lambda: torch.tensor(2.0))
+        state.register_target("geometry", lambda: torch.tensor(1.0))
+        state.set_weight("xray", 1.0)
+        state.set_weight("geometry", 0.5)
 
         total = state.aggregate(log_values=False)
 
@@ -219,11 +229,11 @@ class TestAggregation:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('geometry/bond', lambda: torch.tensor(1.0))
-        state.register_target('geometry/angle', lambda: torch.tensor(2.0))
-        state.set_weight('geometry', 0.5)
-        state.set_weight('geometry/bond', 2.0)
-        state.set_weight('geometry/angle', 1.0)
+        state.register_target("geometry/bond", lambda: torch.tensor(1.0))
+        state.register_target("geometry/angle", lambda: torch.tensor(2.0))
+        state.set_weight("geometry", 0.5)
+        state.set_weight("geometry/bond", 2.0)
+        state.set_weight("geometry/angle", 1.0)
 
         total = state.aggregate(log_values=False)
 
@@ -238,8 +248,8 @@ class TestAggregation:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('xray', lambda: torch.tensor(2.0))
-        state.register_target('geometry', lambda: torch.tensor(1.0))
+        state.register_target("xray", lambda: torch.tensor(2.0))
+        state.register_target("geometry", lambda: torch.tensor(1.0))
         # No weights set - all default to 1.0
 
         total = state.aggregate(log_values=False)
@@ -253,11 +263,11 @@ class TestAggregation:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('xray', lambda: torch.tensor(2.0))
+        state.register_target("xray", lambda: torch.tensor(2.0))
 
         state.aggregate(log_values=False)
 
-        loss = state.get_loss('xray')
+        loss = state.get_loss("xray")
         assert torch.isclose(loss, torch.tensor(2.0))
 
 
@@ -270,10 +280,10 @@ class TestHistoryLogging:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.log('test_key', 1.5)
+        state.log("test_key", 1.5)
 
         assert len(state.history) == 1
-        assert state.history[0]['test_key'] == 1.5
+        assert state.history[0]["test_key"] == 1.5
 
     @pytest.mark.unit
     def test_log_tensor(self):
@@ -281,10 +291,10 @@ class TestHistoryLogging:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.log('test_key', torch.tensor(1.5))
+        state.log("test_key", torch.tensor(1.5))
 
-        assert state.history[0]['test_key'] == 1.5
-        assert isinstance(state.history[0]['test_key'], float)
+        assert state.history[0]["test_key"] == 1.5
+        assert isinstance(state.history[0]["test_key"], float)
 
     @pytest.mark.unit
     def test_new_entry(self):
@@ -292,13 +302,13 @@ class TestHistoryLogging:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.log('key1', 1.0)
+        state.log("key1", 1.0)
         state.new_entry()
-        state.log('key2', 2.0)
+        state.log("key2", 2.0)
 
         assert len(state.history) == 2
-        assert 'key1' in state.history[0]
-        assert 'key2' in state.history[1]
+        assert "key1" in state.history[0]
+        assert "key2" in state.history[1]
 
     @pytest.mark.unit
     def test_get_history(self):
@@ -306,13 +316,13 @@ class TestHistoryLogging:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.log('total', 1.0)
+        state.log("total", 1.0)
         state.new_entry()
-        state.log('total', 2.0)
+        state.log("total", 2.0)
         state.new_entry()
-        state.log('total', 3.0)
+        state.log("total", 3.0)
 
-        totals = state.get_history('total')
+        totals = state.get_history("total")
         assert totals == [1.0, 2.0, 3.0]
 
     @pytest.mark.unit
@@ -321,17 +331,17 @@ class TestHistoryLogging:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('xray', lambda: torch.tensor(2.0))
-        state.set_weight('xray', 1.5)
+        state.register_target("xray", lambda: torch.tensor(2.0))
+        state.set_weight("xray", 1.5)
 
         state.aggregate(log_values=True)
 
         assert len(state.history) == 1
         entry = state.history[0]
-        assert 'loss/xray' in entry
-        assert 'weight/xray' in entry
-        assert 'weighted/xray' in entry
-        assert 'total' in entry
+        assert "loss/xray" in entry
+        assert "weight/xray" in entry
+        assert "weighted/xray" in entry
+        assert "total" in entry
 
 
 class TestBreakdown:
@@ -343,19 +353,19 @@ class TestBreakdown:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('geometry/bond', lambda: torch.tensor(1.0))
-        state.register_target('geometry/angle', lambda: torch.tensor(2.0))
-        state.register_target('adp/simu', lambda: torch.tensor(0.5))
-        state.set_weight('geometry', 0.5)
+        state.register_target("geometry/bond", lambda: torch.tensor(1.0))
+        state.register_target("geometry/angle", lambda: torch.tensor(2.0))
+        state.register_target("adp/simu", lambda: torch.tensor(0.5))
+        state.set_weight("geometry", 0.5)
 
         state.aggregate(log_values=False)
         breakdown = state.get_breakdown()
 
-        assert 'geometry' in breakdown
-        assert 'adp' in breakdown
-        assert 'bond' in breakdown['geometry']
-        assert 'angle' in breakdown['geometry']
-        assert 'simu' in breakdown['adp']
+        assert "geometry" in breakdown
+        assert "adp" in breakdown
+        assert "bond" in breakdown["geometry"]
+        assert "angle" in breakdown["geometry"]
+        assert "simu" in breakdown["adp"]
 
     @pytest.mark.unit
     def test_get_group_totals(self):
@@ -363,19 +373,19 @@ class TestBreakdown:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('geometry/bond', lambda: torch.tensor(1.0))
-        state.register_target('geometry/angle', lambda: torch.tensor(1.0))
-        state.register_target('xray/work', lambda: torch.tensor(2.0))
-        state.set_weight('geometry', 0.5)
-        state.set_weight('xray', 1.0)
+        state.register_target("geometry/bond", lambda: torch.tensor(1.0))
+        state.register_target("geometry/angle", lambda: torch.tensor(1.0))
+        state.register_target("xray/work", lambda: torch.tensor(2.0))
+        state.set_weight("geometry", 0.5)
+        state.set_weight("xray", 1.0)
 
         state.aggregate(log_values=False)
         totals = state.get_group_totals()
 
         # geometry: (1.0 + 1.0) * 0.5 = 1.0
         # xray: 2.0 * 1.0 = 2.0
-        assert abs(totals['geometry'] - 1.0) < 1e-6
-        assert abs(totals['xray'] - 2.0) < 1e-6
+        assert abs(totals["geometry"] - 1.0) < 1e-6
+        assert abs(totals["xray"] - 2.0) < 1e-6
 
 
 class TestUtility:
@@ -387,15 +397,15 @@ class TestUtility:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('xray', lambda: torch.tensor(2.0))
+        state.register_target("xray", lambda: torch.tensor(2.0))
         state.aggregate(log_values=False)
 
-        assert state.get_loss('xray') is not None
+        assert state.get_loss("xray") is not None
 
         state.clear()
 
-        assert state.get_loss('xray') is None
-        assert 'xray' in state.targets  # Targets not cleared
+        assert state.get_loss("xray") is None
+        assert "xray" in state.targets  # Targets not cleared
 
     @pytest.mark.unit
     def test_clear_history(self):
@@ -403,7 +413,7 @@ class TestUtility:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.log('key', 1.0)
+        state.log("key", 1.0)
 
         assert len(state.history) == 1
 
@@ -417,14 +427,14 @@ class TestUtility:
         from torchref.refinement.loss_state import LossState
 
         state = LossState()
-        state.register_target('xray', lambda: torch.tensor(1.0))
-        state.set_weight('xray', 1.0)
+        state.register_target("xray", lambda: torch.tensor(1.0))
+        state.set_weight("xray", 1.0)
 
         repr_str = repr(state)
 
-        assert 'LossState' in repr_str
-        assert 'targets=1' in repr_str
-        assert 'weights=1' in repr_str
+        assert "LossState" in repr_str
+        assert "targets=1" in repr_str
+        assert "weights=1" in repr_str
 
 
 class TestFactory:
@@ -435,14 +445,66 @@ class TestFactory:
         """Test create_loss_state factory."""
         from torchref.refinement.loss_state import create_loss_state
 
-        targets = {'xray': lambda: torch.tensor(1.0)}
-        weights = {'xray': 2.0}
+        targets = {"xray": lambda: torch.tensor(1.0)}
+        weights = {"xray": 2.0}
 
         state = create_loss_state(
-            device=torch.device('cpu'),
+            device=torch.device("cpu"),
             targets=targets,
             weights=weights,
         )
 
-        assert 'xray' in state.targets
-        assert state.weights['xray'] == 2.0
+        assert "xray" in state.targets
+        assert state.weights["xray"] == 2.0
+
+
+class TestLinalgExceptionGuard:
+    """A few linalg ops (svd/eig/cholesky/inv) RAISE on non-finite input instead
+    of returning NaN. When strong-Wolfe probes an overshooting trial step that
+    sends parameters to inf, such an op throws inside aggregate(), bypassing the
+    value-based validate_loss gate. LossState.run must catch it, warn, reject the
+    step (+inf so the line search backtracks), and keep going."""
+
+    @pytest.mark.unit
+    def test_linalg_raise_is_caught_warned_and_step_rejected(self):
+        import warnings
+
+        import torch
+
+        from torchref.refinement.loss_state import LossState
+
+        p = torch.nn.Parameter(torch.tensor([5.0]))
+        ctl = {"raise_on_call": None, "n": 0}
+
+        def target():
+            ctl["n"] += 1
+            # Simulate a linalg op (e.g. planarity SVD) throwing on a trial step.
+            if ctl["n"] == ctl["raise_on_call"]:
+                raise torch._C._LinAlgError("simulated non-finite svd")
+            return (p**2).sum()
+
+        ls = LossState()
+        ls.register_target("geometry/plane", target)
+
+        # --- run 1: a trial step raises a LinAlgError mid line-search ---------
+        ctl["raise_on_call"], ctl["n"] = 2, 0
+        opt = torch.optim.LBFGS([p], max_iter=20, line_search_fn="strong_wolfe")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ls.run(opt, nsteps=1, context="test_linalg_guard")  # must NOT raise
+        linalg_warns = [
+            x
+            for x in w
+            if issubclass(x.category, RuntimeWarning)
+            and "linear-algebra" in str(x.message)
+        ]
+        assert len(linalg_warns) == 1  # warned exactly once per run
+        assert torch.isfinite(p).all()  # no NaN leaked into the parameter
+
+        # --- run 2: no raise -> state intact, optimization makes progress -----
+        ctl["raise_on_call"], ctl["n"] = None, 0
+        p0 = abs(float(p.detach()))
+        opt2 = torch.optim.LBFGS([p], max_iter=20, line_search_fn="strong_wolfe")
+        ls.run(opt2, nsteps=1, context="test_linalg_guard")
+        assert torch.isfinite(p).all()
+        assert abs(float(p.detach())) < p0  # moved toward the (p**2) minimum

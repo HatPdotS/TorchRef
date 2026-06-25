@@ -1,0 +1,44 @@
+Data: --------------------------------------------------------------------------
+  Miller array info: /das/work/p17/p17490/Peter/Library/work_trees_torchref/dev/paper/data/1A0F/1A0F.mtz:FP,SIGFP,systematic_absences_eliminated
+  Observation type: xray.amplitude
+  Type of data: double, size=25970
+  Type of sigmas: double, size=25970
+  Number of Miller indices: 25970
+  Anomalous flag: False
+  Unit cell: (90.65, 95.39, 51.21, 90, 90, 90)
+  Space group: P 21 21 21 (No. 19)
+  Systematic absences: 0
+  Centric reflections: 2574
+  Resolution range: 45.325 2.02435
+  Completeness in resolution range: 0.875413
+  Completeness with d_max=infinity: 0.875354
+  Wavelength: 0.0000
+R-free-flags: ------------------------------------------------------------------
+  flag value: 0
+Model vs Data: -----------------------------------------------------------------
+   Resolution    Compl Nwork Nfree R_work    <Fobs>  <Fmodel> kiso   kani kmask
+ 45.325-14.495   94.29    97     2 0.2775   688.519   655.651 1.284 1.002 0.293
+ 14.491-11.472   98.99    96     2 0.3639   700.173   597.889 0.958 1.009 0.287
+ 11.444-9.039    98.94   185     2 0.2887   745.013   670.776 1.083 1.017 0.290
+  9.024-7.135    97.88   365     5 0.1987   614.362   574.569 1.197 1.016 0.300
+  7.131-5.634    97.82   701    18 0.2216   469.403   454.948 1.256 1.017 0.311
+  5.631-4.446    98.05  1435    27 0.1924   589.301   568.877 1.284 1.013 0.309
+  4.444-3.511    97.02  2783    54 0.1852   564.616   552.915 1.381 1.007 0.300
+  3.510-2.772    96.29  5553   109 0.2318   337.327   328.672 1.382 0.996 0.082
+  2.771-2.188    89.30 10350   205 0.2276   201.210   193.843 1.364 0.975 0.000
+  2.188-2.024    65.77  3898    76 0.2207   135.273   129.088 1.342 0.953 0.000
+
+  r_work: 0.2174
+  r_free: 0.2426
+
+  Number of F-obs outliers: 7
+Information extracted from PDB file header: ------------------------------------
+  program_name    : REFMAC
+  year            : 2026
+  r_work          : 0.22009
+  r_free          : 0.24854
+  high_resolution : 2.02
+  low_resolution  : 45.33
+  sigma_cutoff    : None
+  matthews_coeff  : None
+  solvent_cont    : None

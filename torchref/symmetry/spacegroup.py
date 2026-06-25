@@ -27,6 +27,7 @@ Example
     coords = torch.tensor([[0.1, 0.2, 0.3]])
     transformed = sg(coords)  # Apply all symmetry operations
 """
+
 from __future__ import annotations
 
 from typing import Union
@@ -186,8 +187,8 @@ def get_symmetry_operations(spacegroup: SpaceGroupLike):
 
 def get_operations_as_tensors(
     spacegroup: SpaceGroupLike,
-    dtype: torch.dtype = get_float_dtype(),
-    device: torch.device = get_default_device(),
+    dtype: torch.dtype = None,
+    device: torch.device = None,
 ):
     """
     Get symmetry operations as PyTorch tensors.
@@ -208,6 +209,10 @@ def get_operations_as_tensors(
     translations : torch.Tensor, shape (n_ops, 3)
         Translation vectors (in fractional coordinates).
     """
+    if dtype is None:
+        dtype = get_float_dtype()
+    if device is None:
+        device = get_default_device()
     sg = _normalize_spacegroup(spacegroup)
 
     # Extract rotation matrices and translations from gemmi operations
@@ -678,10 +683,14 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     def __init__(
         self,
         space_group: SpaceGroupLike = None,
-        dtype: torch.dtype = get_float_dtype(),
-        device: torch.device = get_default_device(),
+        dtype: torch.dtype = None,
+        device: torch.device = None,
     ):
         super(SpaceGroup, self).__init__()
+        if dtype is None:
+            dtype = get_float_dtype()
+        if device is None:
+            device = get_default_device()
         self._device = device
         self._dtype = dtype
 
@@ -812,7 +821,9 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     # Symmetry operation methods
     # =========================================================================
 
-    def apply(self, xyz_fractional: torch.Tensor, apply_translation: bool = True) -> torch.Tensor:
+    def apply(
+        self, xyz_fractional: torch.Tensor, apply_translation: bool = True
+    ) -> torch.Tensor:
         """
         Apply symmetry operations to fractional coordinates (rotation + translation).
 
@@ -822,6 +833,9 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         ----------
         xyz_fractional : torch.Tensor
             Input tensor of shape (N, 3) representing fractional coordinates.
+        apply_translation : bool, default True
+            If True, apply the full operation x' = R·x + t. If False, apply
+            the rotational part only (x' = R·x), as used for Miller indices.
 
         Returns
         -------
@@ -981,9 +995,7 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     # =========================================================================
 
     def __repr__(self) -> str:
-        return (
-            f"SpaceGroup('{self.name}', number={self.number}, n_ops={self.n_ops})"
-        )
+        return f"SpaceGroup('{self.name}', number={self.number}, n_ops={self.n_ops})"
 
     def __hash__(self) -> int:
         """Hash based on space group number."""
@@ -1000,7 +1012,6 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     # =========================================================================
     # Device movement
     # =========================================================================
-
 
     def copy(self) -> "SpaceGroup":
         """Create a deep copy of this SpaceGroup.

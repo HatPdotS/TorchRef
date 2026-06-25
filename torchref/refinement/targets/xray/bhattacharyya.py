@@ -90,15 +90,15 @@ class BhattacharyyaXrayTarget(XrayTarget):
         verbose: int = 0,
         **kwargs,
     ):
-        kwargs.pop("sigma_mode", None)
         kwargs.pop("n_bins", None)  # legacy kwarg ignored
+        use_set = kwargs.pop("use_set", None)
         super().__init__(
             data=data,
             model=model,
             scaler=scaler,
             use_work_set=use_work_set,
-            sigma_mode="raw",
             verbose=verbose,
+            use_set=use_set,
         )
         # log-spaced B grid
         log_b_grid = torch.linspace(
@@ -147,11 +147,7 @@ class BhattacharyyaXrayTarget(XrayTarget):
         s_half_sq = self._scaler._s_half_sq.to(device=device, dtype=dtype)
         s_sq = 4.0 * s_half_sq
 
-        _, _, sigma_raw, _ = self._data(mask=False)
-        sigma_data = sigma_raw
-        if hasattr(sigma_data, "get_data"):
-            sigma_data = sigma_data.get_data()
-        sigma_data = sigma_data.to(device=device, dtype=dtype)
+        sigma_data = self._data.get_corrected_data()[1].to(device=device, dtype=dtype)
         validity = self._data.masks().to(torch.bool).to(device)
         valid_f = validity.to(dtype)
 
@@ -304,16 +300,15 @@ class BhattacharyyaXrayTarget(XrayTarget):
         if not self._initialized:
             self._initialize_cache()
 
-        F_obs, F_calc, sigma_d, _centric, mask = self.get_data(fcalc=fcalc)
+        F_obs, F_calc, sigma_d, _centric, sub = self.get_data(fcalc=fcalc)
 
         # σ_m is non-differentiable — refreshed each call from the current
-        # atomic B distribution.
+        # atomic B distribution. It is full-size (per-reflection); restrict
+        # it to this subset.
         with torch.no_grad():
-            sigma_m = self._sigma_m_per_refl()
+            sigma_m = sub.select(self._sigma_m_per_refl())
 
-        return bhattacharyya_xray_loss_math(
-            F_obs, F_calc, sigma_d, sigma_m, mask
-        )
+        return bhattacharyya_xray_loss_math(F_obs, F_calc, sigma_d, sigma_m)
 
     # ------------------------------------------------------------------
     # Diagnostics
@@ -327,11 +322,7 @@ class BhattacharyyaXrayTarget(XrayTarget):
 
         with torch.no_grad():
             sigma_m = self._sigma_m_per_refl()
-            _, _, sigma_raw_all, _ = self._data()
-            if hasattr(sigma_raw_all, "get_data"):
-                sigma_d_all = sigma_raw_all.get_data()
-            else:
-                sigma_d_all = sigma_raw_all
+            sigma_d_all = self._data.get_corrected_data()[1]
             ratio = sigma_m / sigma_d_all.clamp(min=1e-6)
 
         base["sigma_m_over_d_mean"] = stat(ratio.mean().item(), VERBOSITY_STANDARD)

@@ -19,15 +19,13 @@ class TestRealSpaceTargetNames:
 
     @pytest.mark.unit
     def test_correlation_target_name(self):
-        from torchref.refinement.targets import RealSpaceCorrelationTarget
-
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
         target = RealSpaceCorrelationTarget()
         assert target.name == "realspace/correlation"
 
     @pytest.mark.unit
     def test_difference_target_name(self):
-        from torchref.refinement.targets import RealSpaceDifferenceTarget
-
+        from torchref.experimental.targets import RealSpaceDifferenceTarget
         target = RealSpaceDifferenceTarget()
         assert target.name == "realspace/difference"
 
@@ -37,7 +35,7 @@ class TestRealSpaceTargetImports:
 
     @pytest.mark.unit
     def test_import_from_targets(self):
-        from torchref.refinement.targets import (
+        from torchref.experimental.targets import (
             RealSpaceTarget,
             RealSpaceCorrelationTarget,
             RealSpaceDifferenceTarget,
@@ -49,13 +47,14 @@ class TestRealSpaceTargetImports:
 
     @pytest.mark.unit
     def test_base_inherits_data_target(self):
-        from torchref.refinement.targets import RealSpaceTarget, DataTarget
+        from torchref.experimental.targets import RealSpaceTarget
+        from torchref.refinement.targets import DataTarget
 
         assert issubclass(RealSpaceTarget, DataTarget)
 
     @pytest.mark.unit
     def test_correlation_inherits_realspace(self):
-        from torchref.refinement.targets import (
+        from torchref.experimental.targets import (
             RealSpaceCorrelationTarget,
             RealSpaceTarget,
         )
@@ -64,7 +63,7 @@ class TestRealSpaceTargetImports:
 
     @pytest.mark.unit
     def test_difference_inherits_realspace(self):
-        from torchref.refinement.targets import (
+        from torchref.experimental.targets import (
             RealSpaceDifferenceTarget,
             RealSpaceTarget,
         )
@@ -77,15 +76,13 @@ class TestRealSpaceTargetValidation:
 
     @pytest.mark.unit
     def test_invalid_map_type_raises(self):
-        from torchref.refinement.targets import RealSpaceTarget
-
+        from torchref.experimental.targets import RealSpaceTarget
         with pytest.raises(ValueError, match="map_type"):
             RealSpaceTarget(map_type="invalid")
 
     @pytest.mark.unit
     def test_valid_map_types(self):
-        from torchref.refinement.targets import RealSpaceTarget
-
+        from torchref.experimental.targets import RealSpaceTarget
         t1 = RealSpaceTarget(map_type="2mFo-DFc")
         assert t1.map_type == "2mFo-DFc"
 
@@ -94,15 +91,13 @@ class TestRealSpaceTargetValidation:
 
     @pytest.mark.unit
     def test_correlation_hardcodes_map_type(self):
-        from torchref.refinement.targets import RealSpaceCorrelationTarget
-
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
         target = RealSpaceCorrelationTarget()
         assert target.map_type == "2mFo-DFc"
 
     @pytest.mark.unit
     def test_difference_hardcodes_map_type(self):
-        from torchref.refinement.targets import RealSpaceDifferenceTarget
-
+        from torchref.experimental.targets import RealSpaceDifferenceTarget
         target = RealSpaceDifferenceTarget()
         assert target.map_type == "Fo-Fc"
 
@@ -276,8 +271,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_correlation_target_forward(self, model_data_pair):
         """Correlation target forward pass should produce finite value."""
-        from torchref.refinement.targets import RealSpaceCorrelationTarget
-
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data = model_data_pair
         target = RealSpaceCorrelationTarget(
             data=data, model=model, mask_solvent=True, verbose=0,
@@ -291,8 +285,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_difference_target_forward(self, model_data_pair):
         """Difference target forward pass should produce finite positive value."""
-        from torchref.refinement.targets import RealSpaceDifferenceTarget
-
+        from torchref.experimental.targets import RealSpaceDifferenceTarget
         model, data = model_data_pair
         target = RealSpaceDifferenceTarget(
             data=data, model=model, mask_solvent=True, verbose=0,
@@ -305,8 +298,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_correlation_target_gradient_flow(self, model_data_pair):
         """Gradients should flow through model parameters."""
-        from torchref.refinement.targets import RealSpaceCorrelationTarget
-
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data = model_data_pair
         target = RealSpaceCorrelationTarget(
             data=data, model=model, mask_solvent=True, verbose=0,
@@ -331,8 +323,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_difference_target_gradient_flow(self, model_data_pair):
         """Gradients should flow through model parameters for difference target."""
-        from torchref.refinement.targets import RealSpaceDifferenceTarget
-
+        from torchref.experimental.targets import RealSpaceDifferenceTarget
         model, data = model_data_pair
         target = RealSpaceDifferenceTarget(
             data=data, model=model, mask_solvent=True, verbose=0,
@@ -357,8 +348,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_correlation_stats(self, model_data_pair):
         """Stats should return expected keys."""
-        from torchref.refinement.targets import RealSpaceCorrelationTarget
-
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data = model_data_pair
         target = RealSpaceCorrelationTarget(
             data=data, model=model, mask_solvent=True, verbose=0,
@@ -372,8 +362,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_difference_stats(self, model_data_pair):
         """Stats should return expected keys."""
-        from torchref.refinement.targets import RealSpaceDifferenceTarget
-
+        from torchref.experimental.targets import RealSpaceDifferenceTarget
         model, data = model_data_pair
         target = RealSpaceDifferenceTarget(
             data=data, model=model, mask_solvent=True, verbose=0,
@@ -390,8 +379,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_mask_shape_matches_grid(self, model_data_pair):
         """Molecular mask shape should match the density grid."""
-        from torchref.refinement.targets import RealSpaceCorrelationTarget
-
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data = model_data_pair
         target = RealSpaceCorrelationTarget(
             data=data, model=model, mask_solvent=True, verbose=0,
@@ -407,8 +395,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_update_mask(self, model_data_pair):
         """update_mask() should recompute the molecular mask."""
-        from torchref.refinement.targets import RealSpaceCorrelationTarget
-
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data = model_data_pair
         target = RealSpaceCorrelationTarget(
             data=data, model=model, mask_solvent=True, verbose=0,
@@ -428,8 +415,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_no_mask_mode(self, model_data_pair):
         """Target should work without molecular mask."""
-        from torchref.refinement.targets import RealSpaceCorrelationTarget
-
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
         model, data = model_data_pair
         target = RealSpaceCorrelationTarget(
             data=data, model=model, mask_solvent=False, verbose=0,
@@ -441,7 +427,7 @@ class TestRealSpaceTargetsIntegration:
     @pytest.mark.integration
     def test_register_with_loss_state(self, model_data_pair):
         """Target should integrate with LossState via register_target."""
-        from torchref.refinement.targets import RealSpaceCorrelationTarget
+        from torchref.experimental.targets import RealSpaceCorrelationTarget
         from torchref.refinement.loss_state import LossState
 
         model, data = model_data_pair

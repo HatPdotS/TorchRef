@@ -51,13 +51,12 @@ class PlanarityTarget(GeometryTarget):
     For each planar group (e.g., aromatic rings, peptide planes), computes the
     distance of each atom from the best-fit plane.
 
-    The best-fit plane normal is found by eigendecomposition of the 3x3
-    covariance matrix of centered coordinates (eigh). The normal is detached
-    from the computational graph so that gradients flow only through the
-    deviation projection, not through the eigendecomposition. This is standard
-    practice in crystallographic refinement (SHELXL, Phenix, Refmac) and is
-    more numerically robust than differentiating through SVD — in particular
-    it avoids NaN gradients when atoms are exactly coplanar.
+    The best-fit plane normal is the smallest-variance direction of the
+    centered coordinates, obtained via SVD (see ``_plane_normals``). The
+    normal is detached from the computational graph so that gradients flow
+    only through the deviation projection, not through the SVD. This is
+    standard practice in crystallographic refinement (SHELXL, Phenix, Refmac)
+    and avoids NaN gradients when atoms are exactly coplanar.
 
     Plane groups with <= 3 atoms are skipped since 3 coplanar points have
     zero deviation by construction and contribute no gradient signal.

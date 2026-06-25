@@ -4,8 +4,8 @@ Smoke test: every torchref subpackage/module parses and imports.
 This catches parse-time failures (SyntaxError, IndentationError) in any
 file under ``torchref/`` — the kind of bug that historically slipped past
 CI because only the top-level ``torchref`` package was imported during
-the unit-test run, leaving subpackages like ``torchref.kinetic`` and
-``torchref.alignment`` untested at import time.
+the unit-test run, leaving subpackages like ``torchref.experimental.kinetic`` and
+``torchref.experimental.alignment`` untested at import time.
 
 Modules that legitimately depend on optional packages (JAX, CCTBX,
 OpenMM, torchmd-net, pdbfixer, ihm) are allowed to raise ``ImportError``
@@ -38,6 +38,7 @@ OPTIONAL_DEP_HINTS = (
     "openmm",
     "pdbfixer",
     "ihm",
+    "triton",  # CUDA-only; not installable on macOS / CPU-only environments
 )
 
 
@@ -88,9 +89,9 @@ def test_discovery_found_modules():
 def test_kinetic_subpackage_imports():
     """Explicit guard for the bug that motivated this whole test file.
 
-    ``torchref.kinetic.refinement`` once shipped with a misplaced import
-    line that broke ``import torchref.kinetic`` at parse time. Pin the
+    ``torchref.experimental.kinetic.refinement`` once shipped with a misplaced import
+    line that broke ``import torchref.experimental.kinetic`` at parse time. Pin the
     invariant directly so that regression is impossible to miss.
     """
-    importlib.import_module("torchref.kinetic")
-    importlib.import_module("torchref.kinetic.refinement")
+    importlib.import_module("torchref.experimental.kinetic")
+    importlib.import_module("torchref.experimental.kinetic.refinement")

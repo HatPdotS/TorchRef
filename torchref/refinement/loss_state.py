@@ -1,19 +1,15 @@
 """
 LossState - Hierarchical loss computation with lazy evaluation.
 
-Design:
-- Targets stored as callables, evaluated only on aggregation
-- Hierarchical naming via '/' separator (e.g., 'geometry/bond', 'adp/simu')
-- Weights computed at initialization, not recalculated each pass
-- Internal history logging for debugging/analysis
-- Aggregation handled directly in this class
-- Loss functions with zeroed weight are not evaluated at all. 
-- Implements optimization closures and data handling
-- Automatically detects parameter root tensors and disables requires_grad on any that the loss touches but the optimizer wasn't built to update, enabling dynamic caching. 
+Targets are stored as callables and evaluated only on aggregation, keyed by
+a hierarchical '/' name (e.g. 'geometry/bond'). Weights apply per group or
+component; targets with a zeroed effective weight are skipped. The class also
+provides the optimization closure used by :meth:`LossState.run`, which
+auto-freezes leaves that the loss touches but the optimizer was not built to
+update.
 
-
-
-Example:
+Example
+-------
     state = LossState(device)
     state.register_target('xray/work', xray_work_target)
     state.register_target('geometry/bond', bond_target)
@@ -23,7 +19,7 @@ Example:
 
     total = state.aggregate()  # Evaluates targets, applies hierarchical weights
 
-    state.step(optimizer)  # Runs optimizer step with closure that validates loss and auto-freezes parameters depending on the loss graph.
+    state.step(optimizer)      # Optimizer step with a loss-validating closure
 """
 
 import warnings
@@ -47,8 +43,6 @@ class LossStateWarning(UserWarning):
     Subclassed from ``UserWarning`` so it shows up by default, but exposed
     as a distinct category so callers can silence/escalate it independently.
     """
-
-
 
 
 @dataclass
@@ -256,7 +250,7 @@ class LossState(DeviceMovementMixin):
 
         # Check if target is a combined/dictionary-like target with .items()
         # This handles CombinedTargets, TotalGeometryTarget, TotalADPTarget, etc.
-        if hasattr(target, 'items') and callable(getattr(target, 'items', None)):
+        if hasattr(target, "items") and callable(getattr(target, "items", None)):
             # Use name as prefix to maintain hierarchy (e.g., "geometry" -> "geometry/bond")
             combined_prefix = f"{prefix}/{name}" if prefix else name
             return self.register_targets(
@@ -300,21 +294,16 @@ class LossState(DeviceMovementMixin):
         ``target()`` may return a Tensor, a tuple/list of tensors, or a dict
         of tensors — :func:`collect_loss_leaves` handles all three.
 
-        Convention: targets are expected to be probed while every parameter
-        the loss should track has ``requires_grad=True``. If the probe walks
-        the full graph and finds zero leaves — meaning every root is either
-        constant (``grad_fn is None``) or only depends on tensors with
-        ``requires_grad=False`` — emit a warning. This is almost never what
-        the caller intended (a target with no trainable parameters
-        contributes nothing to gradient-based optimization). It is *not*
-        an error: missing leaves only cost a bit of extra backward work
-        inside the optimization loop, never correctness.
+        Targets should be probed while every parameter the loss should track
+        has ``requires_grad=True``. A target that resolves to zero leaves
+        (every root constant or depending only on non-trainable tensors)
+        contributes nothing here; that is harmless for correctness and only
+        costs a little extra backward work in the optimization loop.
         """
         with torch.enable_grad():
             roots = target()
         new_leaves = collect_loss_leaves(roots)
         self._loss_leaves |= new_leaves
-
 
     def register_targets(
         self,
@@ -325,8 +314,13 @@ class LossState(DeviceMovementMixin):
     ) -> "LossState":
         """Register multiple targets from a component target or dict.
 
-        For targets with a .name attribute, uses target.name as the key.
-        For plain callables, uses the dict key.
+        For plain callables, uses the dict key. For targets with a ``.name``
+        attribute, uses ``target.name`` as the key — EXCEPT when the dict key
+        itself is hierarchical (contains ``/``). A hierarchical dict key (e.g.
+        ``"model_0/bond"`` emitted by the MultiModel targets) encodes structure
+        the leaf ``.name`` cannot — without honoring it, every base model's leaf
+        targets collapse onto the same ``.name`` key and all but the last are
+        dropped — so it is treated as authoritative.
 
         Parameters
         ----------
@@ -340,7 +334,10 @@ class LossState(DeviceMovementMixin):
             Forwarded to :meth:`register_target`.
         """
         for name, target in targets.items():
-            target_name = getattr(target, "name", name)
+            # Honor hierarchical dict keys (from MultiModel expansion); they
+            # carry the per-model index that the leaf target's fixed .name
+            # would otherwise discard, causing model-to-model key collisions.
+            target_name = name if "/" in name else getattr(target, "name", name)
             self.register_target(
                 target_name, target, prefix=prefix, compile=compile, probe=probe
             )
@@ -367,7 +364,9 @@ class LossState(DeviceMovementMixin):
             Self for chaining.
         """
         self.weights[name] = weight
-        self._compiled_aggregate = None  # invalidate stale compiled closure (weights baked in)
+        self._compiled_aggregate = (
+            None  # invalidate stale compiled closure (weights baked in)
+        )
         return self
 
     def set_weights(self, weights: Dict[str, float]) -> "LossState":
@@ -670,7 +669,8 @@ class LossState(DeviceMovementMixin):
         that the loss touches but the optimizer was not constructed with —
         autograd then prunes those subgraphs from the backward pass.
 
-        Technically this should work with all optimzers in pytorch that support closures but it has only been tested for LBFGS so far. The closure is built to be as general as possible, so if you have a custom optimizer that supports closures it should "just work" with this method.
+        Works with any PyTorch optimizer that supports closures, though it is
+        currently exercised mainly with LBFGS.
 
         Every collected ``reset_cache``-bearing submodule is reset
         **before** the optimizer step so the closure's first forward sees
@@ -678,7 +678,7 @@ class LossState(DeviceMovementMixin):
         NaN/inf forward result that the fingerprint would happily serve
         again if parameter values haven't changed).
 
-        After the the run we call maintenance on all targets. 
+        After the step loop, ``maintenance()`` is called on every target.
 
         On exit, ``requires_grad=True`` is unconditionally re-enabled on
         every leaf in ``self._loss_leaves`` — defending against state
@@ -692,8 +692,10 @@ class LossState(DeviceMovementMixin):
         log : bool
             If True, calls ``aggregate(log_values=True)`` before and after the optimization loop
         nsteps : int
-            Number of steps to run (default 1). Only the first step's closure caching is enabled between multiple steps.
-            If you want to run truly independent steps, call this method multiple times with nsteps=1. This adds overhead but might be desirable if the overhead is negligible anyway. 
+            Number of ``optimizer.step(closure)`` calls to run (default 1).
+            Forward caches are reset once before the loop, not between
+            individual steps; call this method repeatedly with ``nsteps=1``
+            for fully independent steps.
         context : str
             Diagnostic label forwarded to ``validate_loss``.
 
@@ -707,11 +709,46 @@ class LossState(DeviceMovementMixin):
 
         params = list(_optimizer_param_set(optimizer))
         last_loss: Dict[str, Optional[torch.Tensor]] = {"val": None}
+        # Device/dtype for the +inf sentinel returned when a trial step is
+        # rejected before a loss value exists (linalg op raised on non-finite
+        # input — see below).
+        _ref = params[0] if params else None
+        _inf_dev = _ref.device if _ref is not None else self.device
+        _inf_dtype = _ref.dtype if _ref is not None else torch.get_default_dtype()
+        _warned_linalg = {"done": False}
+
+        def _reject():
+            """Zero grads and return +inf so strong-Wolfe backtracks the step."""
+            for p in params:
+                if p.grad is not None:
+                    p.grad.zero_()
+            return torch.full((), float("inf"), device=_inf_dev, dtype=_inf_dtype)
 
         def closure():
             optimizer.zero_grad()
-            loss = self.aggregate()
-            loss.backward()
+            try:
+                loss = self.aggregate()
+                loss.backward()
+            except (torch._C._LinAlgError, RuntimeError) as exc:
+                # The value-based gate below only sees losses that are
+                # *returned*; a few linalg ops (svd/eig/cholesky/inv) instead
+                # *raise* on non-finite input. When strong-Wolfe probes an
+                # overshooting trial point that sends parameters to inf, such an
+                # op throws here, bypassing validate_loss. Treat it exactly like
+                # a non-finite loss: reject the step (+inf) so the line search
+                # backtracks, instead of letting the exception kill refinement.
+                if not _warned_linalg["done"]:
+                    warnings.warn(
+                        f"LossState.run({context!r}): a linear-algebra op raised "
+                        f"during a trial step ({type(exc).__name__}: {exc}); the "
+                        "parameters likely diverged to non-finite values. "
+                        "Rejecting the step (+inf) so the optimizer backtracks. "
+                        "Further occurrences this step are suppressed.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    _warned_linalg["done"] = True
+                return _reject()
             ok = validate_loss(
                 loss,
                 state=self,
@@ -754,17 +791,13 @@ class LossState(DeviceMovementMixin):
             maint = getattr(target, "maintenance", None)
             if callable(maint):
                 maint()
-        
+
         if log:
             self.aggregate(log_values=True)
 
         return last_loss["val"]
 
-    def step(
-        self,
-        optimizer: torch.optim.Optimizer,
-        *args, **kwargs
-    ) -> "LossState":
+    def step(self, optimizer: torch.optim.Optimizer, *args, **kwargs) -> "LossState":
         """Convenience method that calls :meth:`run` with 1 step.
 
 
@@ -834,7 +867,7 @@ class LossState(DeviceMovementMixin):
             totals[group] += weighted
 
         return dict(totals)
-    
+
     def format_breakdown(self) -> str:
         """Return per-target loss / weight / weighted / finite as a string.
 
@@ -879,7 +912,11 @@ class LossState(DeviceMovementMixin):
 
             device, _ = _parse_to_args(args, kwargs)
             if device is not None:
-                result.device = torch.device(device) if not isinstance(device, torch.device) else device
+                result.device = (
+                    torch.device(device)
+                    if not isinstance(device, torch.device)
+                    else device
+                )
         return result
 
     # =========================================================================

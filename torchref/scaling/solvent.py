@@ -13,8 +13,8 @@ from torchref.base import (
 from torchref.base.electron_density.main import _get_radius_offsets
 from torchref.config import get_default_device, get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.utils import TensorDict, ModuleReference
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.utils import ModuleReference, TensorDict
 
 
 class SolventModel(DeviceMixin, DebugMixin, nn.Module):
@@ -67,8 +67,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         optimize_phase=True,
         initial_phase_offset=0.0,
         verbose=1,
-        float_type=get_float_dtype(),
-        device=get_default_device(),
+        float_type=None,
+        device=None,
     ):
         """
         Initialize SolventModel.
@@ -102,6 +102,10 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             Device for tensor operations.
         """
         super(SolventModel, self).__init__()
+        if float_type is None:
+            float_type = get_float_dtype()
+        if device is None:
+            device = get_default_device()
         self.device = device
         self.verbose = verbose
         self.float_type = float_type
@@ -254,8 +258,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             # our intermediates are denser per atom.
             ATOM_CHUNK = 256
 
-            voxel_size = (self.real_space_grid[3, 3, 3]
-                          - self.real_space_grid[2, 2, 2])
+            voxel_size = self.real_space_grid[3, 3, 3] - self.real_space_grid[2, 2, 2]
             local_offsets = _get_radius_offsets(
                 voxel_size, self.max_radius_angstrom, device
             )  # (R, 3) int — sphere voxels relative to atom center
@@ -295,7 +298,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 del diff_frac
 
                 vdw_c = vdw_radii[s:e]
-                vdw_sq = (vdw_c ** 2).unsqueeze(1)
+                vdw_sq = (vdw_c**2).unsqueeze(1)
                 rcut_sq = ((vdw_c + self.solvent_radius) ** 2).unsqueeze(1)
 
                 is_protein = r_sq < vdw_sq
@@ -312,10 +315,16 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 protein_chunks.append(voxel_flat[p_idx])
                 boundary_chunks.append(voxel_flat[b_idx])
 
-            protein_voxels = torch.cat(protein_chunks, dim=0) if protein_chunks else \
-                torch.empty((0, 3), dtype=torch.long, device=device)
-            boundary_voxels = torch.cat(boundary_chunks, dim=0) if boundary_chunks else \
-                torch.empty((0, 3), dtype=torch.long, device=device)
+            protein_voxels = (
+                torch.cat(protein_chunks, dim=0)
+                if protein_chunks
+                else torch.empty((0, 3), dtype=torch.long, device=device)
+            )
+            boundary_voxels = (
+                torch.cat(boundary_chunks, dim=0)
+                if boundary_chunks
+                else torch.empty((0, 3), dtype=torch.long, device=device)
+            )
             del protein_chunks, boundary_chunks
 
             # --- Step 2: symmetry expansion via index transform ---
@@ -329,7 +338,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                     b_idx = boundary_voxels
                 else:
                     R = spacegroup.matrices[op_idx].to(device=device, dtype=float_dtype)
-                    t = spacegroup.translations[op_idx].to(device=device, dtype=float_dtype)
+                    t = spacegroup.translations[op_idx].to(
+                        device=device, dtype=float_dtype
+                    )
                     gd = grid_dims.to(float_dtype)
 
                     p_frac = protein_voxels.to(float_dtype) / gd
@@ -369,9 +380,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             #     separate roll launches (each its own kernel) by ~2x.
             # Both produce the exact same mask.
             if torch.device(device).type == "cuda":
-                half_k = int(
-                    torch.ceil(self.erosion_radius / voxel_size.min()).item()
-                )
+                half_k = int(torch.ceil(self.erosion_radius / voxel_size.min()).item())
                 K = 2 * half_k + 1
                 offs = torch.arange(
                     -half_k, half_k + 1, device=device, dtype=voxel_size.dtype
@@ -380,14 +389,14 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 dy = offs.view(1, -1, 1) * voxel_size[1]
                 dz = offs.view(1, 1, -1) * voxel_size[2]
                 kernel = (
-                    (dx * dx + dy * dy + dz * dz) <= self.erosion_radius ** 2
-                ).to(self.log_k_solvent.dtype).view(1, 1, K, K, K)
+                    ((dx * dx + dy * dy + dz * dz) <= self.erosion_radius**2)
+                    .to(self.log_k_solvent.dtype)
+                    .view(1, 1, K, K, K)
+                )
                 solv_float = definitely_solvent.to(self.log_k_solvent.dtype).view(
                     1, 1, *grid_shape
                 )
-                solv_padded = F.pad(
-                    solv_float, (half_k,) * 6, mode="circular"
-                )
+                solv_padded = F.pad(solv_float, (half_k,) * 6, mode="circular")
                 neighbour_count = F.conv3d(solv_padded, kernel)
                 dilated_solvent = neighbour_count.squeeze(0).squeeze(0) > 0.5
                 del solv_float, solv_padded, neighbour_count

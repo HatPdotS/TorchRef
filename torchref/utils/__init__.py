@@ -50,9 +50,6 @@ from .loss_validation import (
     validate_loss,
 )
 
-# Hyperparameters
-from .hyperparameters import HyperparameterMixin
-
 # Statistics
 from .stats import (
     StatEntry,
@@ -65,6 +62,16 @@ from .stats import (
 # Serialization
 from .serialization import convert_to_serializable
 
+# Triton/eager backend dispatch
+from .triton_dispatch import (
+    Engine,
+    get_engine,
+    set_engine,
+    should_use_triton,
+    triton_available,
+    use_engine,
+)
+
 # Core utilities
 from .utils import (
     ModuleReference,
@@ -73,7 +80,6 @@ from .utils import (
     create_selection_mask,
     parse_phenix_selection,
     sanitize_pdb_dataframe,
-    save_map,
 )
 
 __all__ = [
@@ -88,7 +94,6 @@ __all__ = [
     "TensorMasks",
     "TensorDict",
     "ModuleReference",
-    "save_map",
     "sanitize_pdb_dataframe",
     "parse_phenix_selection",
     "create_selection_mask",
@@ -101,8 +106,6 @@ __all__ = [
     "filter_stats",
     "flatten_stats",
     "format_stats_table",
-    # Hyperparameters
-    "HyperparameterMixin",
     # Serialization
     "convert_to_serializable",
     # Gradients
@@ -113,4 +116,11 @@ __all__ = [
     "reset_diagnostic_budget",
     # Autograd introspection
     "collect_loss_leaves",
+    # Triton/eager backend dispatch
+    "Engine",
+    "get_engine",
+    "set_engine",
+    "use_engine",
+    "triton_available",
+    "should_use_triton",
 ]

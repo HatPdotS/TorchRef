@@ -4,43 +4,32 @@ Refinement target functions for crystallographic structure refinement.
 This module provides target (loss) functions for X-ray, geometry, and ADP restraints.
 """
 
+from .adp import (
+    ADPEntropyTarget,
+    ADPLocalityTarget,
+    ADPSimilarityTarget,
+    ADPTarget,
+    RigidBondTarget,
+)
 from .base import (
-    Target,
-    ModelTarget,
     DataTarget,
+    ModelTarget,
+    Target,
+    adp_similarity_nll,
     gaussian_nll,
     von_mises_nll,
-    adp_similarity_nll,
+)
+from .collection import (
+    CollectionDifferenceTarget,
+    CollectionMLTarget,
+    CollectionRiceTarget,
+    MultiModelADPTarget,
+    MultiModelGeometryTarget,
 )
 from .combined import (
     CombinedTargets,
     TotalADPTarget,
     TotalGeometryTarget,
-)
-from .xray import (
-    XrayTarget,
-    GaussianXrayTarget,
-    LeastSquaresXrayTarget,
-    MaximumLikelihoodXrayTarget,
-    create_xray_target,
-)
-from .geometry import (
-    GeometryTarget,
-    BondTarget,
-    AngleTarget,
-    TorsionTarget,
-    PlanarityTarget,
-    ChiralTarget,
-    NonBondedTarget,
-    NonBondedHTarget,
-    RamachandranTarget,
-)
-from .adp import (
-    ADPTarget,
-    ADPSimilarityTarget,
-    RigidBondTarget,
-    ADPEntropyTarget,
-    ADPLocalityTarget,
 )
 from .difference import (
     DifferenceXrayTarget,
@@ -48,42 +37,26 @@ from .difference import (
     RiceDifferenceTarget,
     TaylorCorrectedDifferenceTarget,
 )
-from .realspace import (
-    RealSpaceTarget,
-    RealSpaceCorrelationTarget,
-    RealSpaceDifferenceTarget,
-    RealSpaceExtrapolatedTarget,
+from .geometry import (
+    AngleTarget,
+    BondTarget,
+    ChiralTarget,
+    GeometryTarget,
+    NonBondedHTarget,
+    NonBondedTarget,
+    PlanarityTarget,
+    RamachandranTarget,
+    TorsionTarget,
 )
 from .similarity import CoordinateSimilarityTarget
-from .occupancy_floor_diagnostic import (
-    OccupancyFloorDiagnostic,
-    NegativeDensityPenalty,
-    DisplacementRegularizer,
-    DifferenceAmplitudeRegularizer,
+from .xray import (
+    GaussianXrayTarget,
+    LeastSquaresXrayTarget,
+    MaximumLikelihoodXrayTarget,
+    RiceXrayTarget,
+    XrayTarget,
+    create_xray_target,
 )
-from .sampled_ml_phase_target import (
-    SampledMLPhaseTarget,
-    SampledMLDifferenceTarget,
-    create_sampled_ml_target,
-    create_sampled_ml_difference_target,
-)
-
-# Force field target (optional dependency: torchmd-net)
-# Note: torchmd-net is imported lazily inside ForceFieldTarget.__init__
-# and raises a clear ImportError there if missing.
-try:
-    from .forcefield_target import ForceFieldTarget
-except ImportError:
-    ForceFieldTarget = None
-
-# AMBER target (optional dependency: openmm)
-# Note: openmm is imported lazily inside AmberTarget methods
-# and raises a clear ImportError there if missing.
-try:
-    from .amber_target import AmberTarget, AMBER14_STANDARD
-except ImportError:
-    AmberTarget = None
-    AMBER14_STANDARD = None
 
 __all__ = [
     # Base classes
@@ -97,9 +70,16 @@ __all__ = [
     # X-ray targets
     "XrayTarget",
     "GaussianXrayTarget",
+    "RiceXrayTarget",
     "MaximumLikelihoodXrayTarget",
     "LeastSquaresXrayTarget",
     "create_xray_target",
+    # Collection (multi-dataset) targets
+    "CollectionDifferenceTarget",
+    "CollectionRiceTarget",
+    "CollectionMLTarget",
+    "MultiModelGeometryTarget",
+    "MultiModelADPTarget",
     # Difference targets
     "DifferenceXrayTarget",
     "PhaseInformedDifferenceTarget",
@@ -125,26 +105,8 @@ __all__ = [
     "CombinedTargets",
     "TotalGeometryTarget",
     "TotalADPTarget",
-    # Force field
-    "ForceFieldTarget",
-    # AMBER force field
-    "AmberTarget",
-    "AMBER14_STANDARD",
-    # Occupancy diagnostics
-    "OccupancyFloorDiagnostic",
-    "NegativeDensityPenalty",
-    "DisplacementRegularizer",
-    "DifferenceAmplitudeRegularizer",
-    # Sampled ML phase targets
-    "SampledMLPhaseTarget",
-    "SampledMLDifferenceTarget",
-    "create_sampled_ml_target",
-    "create_sampled_ml_difference_target",
-    # Real-space targets
-    "RealSpaceTarget",
-    "RealSpaceCorrelationTarget",
-    "RealSpaceDifferenceTarget",
-    "RealSpaceExtrapolatedTarget",
     # Similarity restraint
     "CoordinateSimilarityTarget",
 ]
+# Force-field, real-space, sampled-ML phase, and occupancy-diagnostic
+# targets are experimental and live in :mod:`torchref.experimental.targets`.

@@ -101,7 +101,7 @@ def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu") -> 
         data_file=MTZ_FILE,
         pdb=PDB_FILE,
         device=device,
-        target_mode="bhattacharyya",
+        target_mode="ml",
     )
 
     # Create and configure loss state with default weights

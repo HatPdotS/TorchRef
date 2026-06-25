@@ -164,6 +164,41 @@ class MonomerLibraryManager:
             _CACHE_DIR / relative,
         )
 
+    def ensure_gemmi_base(self):
+        """Return a directory usable as a gemmi monomer-library root.
+
+        ``gemmi.read_monomer_lib`` needs ``ener_lib.cif`` at the root and
+        ``list/mon_lib_list.cif``. If a complete local library is configured
+        (``TORCHREF_MONOMER_LIB`` / legacy install) that already has both, return
+        it. Otherwise stage both into the user cache (downloading from the pinned
+        mirror) and return the cache directory. Per-residue component CIFs are
+        resolved separately via :meth:`get_cif_file`, so this only provides the
+        global energy/link files that the bundled per-residue data lacks.
+
+        Returns
+        -------
+        Path
+            A directory containing ``ener_lib.cif`` and ``list/mon_lib_list.cif``.
+        """
+        for base in (self._env_path, _LEGACY_PATH):
+            if (
+                base
+                and (base / "ener_lib.cif").exists()
+                and (base / "list" / "mon_lib_list.cif").exists()
+            ):
+                return base
+
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        ener = _CACHE_DIR / "ener_lib.cif"
+        if not ener.exists():
+            self._download_file(f"{_MONOMER_LIB_RAW_URL}/ener_lib.cif", ener)
+        link = _CACHE_DIR / "list" / "mon_lib_list.cif"
+        if not link.exists():
+            self._download_file(
+                f"{_MONOMER_LIB_RAW_URL}/list/mon_lib_list.cif", link
+            )
+        return _CACHE_DIR
+
     @property
     def monomer_dir(self):
         """

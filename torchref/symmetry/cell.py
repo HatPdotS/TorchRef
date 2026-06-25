@@ -46,8 +46,8 @@ class Cell(_NonModuleDeviceMixin):
         self,
         data: Any,
         *,
-        dtype: torch.dtype = get_float_dtype(),
-        device: torch.device | str = get_default_device(),
+        dtype: torch.dtype = None,
+        device: torch.device | str = None,
         requires_grad: bool = False,
     ) -> None:
         """
@@ -70,6 +70,10 @@ class Cell(_NonModuleDeviceMixin):
         ValueError
             If data does not have exactly 6 elements.
         """
+        if dtype is None:
+            dtype = get_float_dtype()
+        if device is None:
+            device = get_default_device()
         # Convert to tensor first to get shape
         if isinstance(data, torch.Tensor):
             tensor = data.to(dtype=dtype, device=device)
@@ -268,7 +272,7 @@ class Cell(_NonModuleDeviceMixin):
         """
         Compute the fractional-to-Cartesian transformation matrix.
 
-        Delegates to math_numpy.get_fractional_matrix for the computation.
+        Delegates to math_torch.get_fractional_matrix for the computation.
         """
         from torchref.base import math_torch
 

@@ -39,6 +39,13 @@ def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None,
     -------
     torch.Tensor
         Real space grid of shape (nx, ny, nz, 3) containing Cartesian coordinates.
+
+    Notes
+    -----
+    When ``gridsize`` is not given, grid dimensions are derived as
+    ``floor(cell[:3] / max_res * 3)`` (oversampling factor of 3). This matches
+    ``get_real_grid_numpy`` and ``get_grids`` but differs from
+    ``find_grid_size``, which uses a factor of 2.3.
     """
     if device is None:
         if isinstance(fractional_matrix, torch.Tensor):
@@ -94,6 +101,13 @@ def find_grid_size(cell: torch.Tensor, max_res: float):
     -------
     torch.Tensor
         Grid dimensions [nx, ny, nz] as int32.
+
+    Notes
+    -----
+    Grids are sized as ``floor(cell[:3] / max_res * 2.3)``, i.e. an
+    oversampling factor of 2.3. This differs from ``get_real_grid``,
+    ``get_real_grid_numpy`` and ``get_grids``, which use a factor of 3 and
+    therefore produce larger grids for the same ``max_res``.
     """
     return torch.floor(cell[:3] / max_res * 2.3).to(dtypes.int)
 

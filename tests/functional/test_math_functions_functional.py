@@ -24,9 +24,7 @@ class TestStructureFactorCalculations:
         
         # Cell is a dataclass wrapping a tensor; use cell.data to get the
         # underlying tensor while preserving its device.
-        cell_double = cell.data.double()
-        
-        s_vectors = get_scattering_vectors(hkl.double(), cell_double)
+        s_vectors = get_scattering_vectors(hkl, cell.data)
         
         assert s_vectors.shape[0] == hkl.shape[0]
         assert s_vectors.shape[1] == 3
@@ -41,15 +39,13 @@ class TestStructureFactorCalculations:
         hkl = data.hkl
         cell = model.cell
         
-        cell_double = cell.data.double()
+        d = get_d_spacing(hkl, cell.data)
 
-        d = get_d_spacing(hkl.double(), cell_double)
-        
         # d-spacing should be positive
         assert torch.all(d > 0)
-        
+
         # d should be less than cell size
-        max_cell = cell_double[:3].max()
+        max_cell = cell.data[:3].max()
         assert torch.all(d <= max_cell + 1e-6)
 
     def test_reciprocal_basis_matrix(self, model_and_data):
@@ -59,9 +55,7 @@ class TestStructureFactorCalculations:
         model = model_and_data["model"]
         cell = model.cell
         
-        cell_double = cell.data.double()
-
-        recB = reciprocal_basis_matrix(cell_double)
+        recB = reciprocal_basis_matrix(cell.data)
         
         assert recB.shape == (3, 3)
         # Should be non-singular
@@ -72,18 +66,6 @@ class TestStructureFactorCalculations:
 @pytest.mark.integration
 class TestRfactorFunctions:
     """Test R-factor calculation functions."""
-
-    def test_rfactor_basic(self):
-        """Test basic R-factor calculation."""
-        from torchref.base.math_torch import get_rfactor_torch
-        
-        fobs = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
-        fcalc = torch.tensor([1.1, 2.0, 2.9, 4.1], dtype=torch.float32)
-        
-        r = get_rfactor_torch(fobs, fcalc)
-        
-        assert r >= 0
-        assert r <= 1.0
 
     def test_get_rfactors(self, model_and_data):
         """Test R-factor calculation with real data."""
@@ -117,17 +99,15 @@ class TestCoordinateTransformations:
         )
         
         model = model_and_data["model"]
-        xyz = model.xyz().double()
+        xyz = model.xyz()
         cell = model.cell
-        
-        cell_double = cell.data.double()
 
         # Convert to fractional and back
-        frac = cartesian_to_fractional_torch(xyz, cell_double)
-        xyz_back = fractional_to_cartesian_torch(frac, cell_double)
-        
-        # Should match original
-        assert torch.allclose(xyz, xyz_back, atol=1e-4)
+        frac = cartesian_to_fractional_torch(xyz, cell.data)
+        xyz_back = fractional_to_cartesian_torch(frac, cell.data)
+
+        # Should match original (float32 roundtrip on coords up to ~100 Å)
+        assert torch.allclose(xyz, xyz_back, atol=1e-3)
 
 
 @pytest.mark.integration
@@ -169,25 +149,6 @@ class TestNLLFunctions:
         loss = log_loss(fobs, fcalc, sigma)
         
         assert torch.all(torch.isfinite(loss))
-
-
-@pytest.mark.integration
-class TestFrenchWilson:
-    """Test French-Wilson conversion functions."""
-
-    def test_french_wilson_basic(self):
-        """Test French-Wilson conversion with mock data."""
-        from torchref.base.math_torch import french_wilson_conversion
-        
-        # Create mock intensity data
-        Iobs = torch.tensor([100.0, 200.0, 300.0], dtype=torch.float32)
-        sigma_I = torch.tensor([10.0, 15.0, 20.0], dtype=torch.float32)
-        
-        # This may return F and sigma_F
-        result = french_wilson_conversion(Iobs, sigma_I)
-        
-        # Should return something
-        assert result is not None
 
 
 @pytest.mark.integration

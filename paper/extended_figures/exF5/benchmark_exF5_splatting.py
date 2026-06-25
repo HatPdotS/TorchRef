@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Benchmark structure factor splatting approaches for Extended Figure 5.
+"""Benchmark structure factor sampling approaches for Extended Figure 5.
 
 Compares 5 configurations of the Fcalc pipeline on the 1DAW test structure:
-  1. CPU original (1 thread)     — trivial splatting
-  2. CPU separable (1 thread)    — decomposed splatting
+  1. CPU original (1 thread)     — trivial sampling
+  2. CPU separable (1 thread)    — decomposed sampling
   3. CPU separable (4 threads)   — decomposed + threading
   4. GPU fused_triton            — trivial GPU kernel
   5. GPU separable_triton        — decomposed GPU kernel
 
 For each, times the total Fcalc AND breaks it into 3 stages:
-  A. Electron density splatting
+  A. Electron density sampling
   B. FFT
   C. Symmetry extraction
 
@@ -147,7 +147,7 @@ def benchmark_config(label, engine_key, engine_val, device_str, n_threads=1,
         total_times = timer(lambda: full_pipeline(), n_iterations)
 
     # === Time individual stages ===
-    print("  Timing Stage A (splatting)...")
+    print("  Timing Stage A (sampling)...")
     with torch.no_grad():
         stage_a_times = timer(stage_a, n_iterations)
 
@@ -182,7 +182,7 @@ def benchmark_config(label, engine_key, engine_val, device_str, n_threads=1,
     }
 
     print(f"  Total:      {result['total']['mean_ms']:8.2f} ± {result['total']['std_ms']:.2f} ms")
-    print(f"  Splatting:  {result['stage_a_splatting']['mean_ms']:8.2f} ± {result['stage_a_splatting']['std_ms']:.2f} ms")
+    print(f"  Sampling:  {result['stage_a_splatting']['mean_ms']:8.2f} ± {result['stage_a_splatting']['std_ms']:.2f} ms")
     print(f"  FFT:        {result['stage_b_fft']['mean_ms']:8.2f} ± {result['stage_b_fft']['std_ms']:.2f} ms")
     print(f"  Extraction: {result['stage_c_extraction']['mean_ms']:8.2f} ± {result['stage_c_extraction']['std_ms']:.2f} ms")
 
@@ -190,7 +190,7 @@ def benchmark_config(label, engine_key, engine_val, device_str, n_threads=1,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Splatting benchmark for ExF 5")
+    parser = argparse.ArgumentParser(description="Sampling benchmark for ExF 4")
     parser.add_argument("--cpu-only", action="store_true", help="Skip GPU benchmarks")
     parser.add_argument("--n-warmup", type=int, default=N_WARMUP)
     parser.add_argument("--n-iterations", type=int, default=N_ITERATIONS)

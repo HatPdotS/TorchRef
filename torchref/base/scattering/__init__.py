@@ -20,18 +20,6 @@ Example using table lookup::
     A, B = get_scattering_params_by_z(z)
 """
 
-from .itc92 import (
-    get_scattering_factors_unique,
-    get_scattering_factors,
-    get_scattering_itc92,
-    calc_scattering_factors_paramtetrization,
-    get_parameterization,
-    get_parameterization_extended,
-    get_parametrization_for_elements,
-    get_parametrization_atom,
-    linear_interpolation,
-)
-
 from .scattering_table import (
     load_scattering_table,
     get_scattering_params_by_z,
@@ -48,16 +36,6 @@ from .anomalous_table import (
 )
 
 __all__ = [
-    # Legacy gemmi-based functions
-    "get_scattering_factors_unique",
-    "get_scattering_factors",
-    "get_scattering_itc92",
-    "calc_scattering_factors_paramtetrization",
-    "get_parameterization",
-    "get_parameterization_extended",
-    "get_parametrization_for_elements",
-    "get_parametrization_atom",
-    "linear_interpolation",
     # Table-based lookup (recommended)
     "load_scattering_table",
     "get_scattering_params_by_z",

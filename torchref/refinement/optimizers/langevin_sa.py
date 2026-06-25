@@ -245,6 +245,53 @@ class LangevinSA(Optimizer):
                 )
 
     # ------------------------------------------------------------------
+    # Physical-mass seeding (genuine thermostatted MD)
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def set_physical_masses(self, mass_by_param, T=None):
+        """Seed externally supplied (e.g. physical atomic) masses and
+        initialise Maxwell-Boltzmann velocities, bypassing the grad²
+        :meth:`calibrate` path.
+
+        Use this for a genuine thermostatted MD where the masses are physical
+        atomic masses rather than the adaptive grad²-derived preconditioner.
+        Set ``adaptive_masses=False`` on the affected param group(s) so the
+        BAOAB final B-step does not overwrite ``state["mass"]`` with grad²
+        values on the next step.
+
+        Parameters
+        ----------
+        mass_by_param : dict
+            Maps ``id(param) -> mass tensor`` that is ``expand_as``-compatible
+            with the parameter (e.g. shape ``(members, atoms, 1)`` for an
+            ``(members, atoms, 3)`` coordinate parameter). Parameters absent
+            from the dict keep unit mass (``state["mass"] = None``).
+        T : float, optional
+            Temperature for the Maxwell-Boltzmann velocity init. Defaults to
+            the current scheduled temperature.
+        """
+        if T is None:
+            T = self._get_temperature()
+        for group in self.param_groups:
+            for p in group["params"]:
+                state = self.state[p]
+                state["prev_grad"] = None
+                m = mass_by_param.get(id(p))
+                if m is not None:
+                    m = (
+                        m.to(device=p.device, dtype=p.dtype)
+                        .expand_as(p.data)
+                        .clone()
+                    )
+                    state["mass"] = m
+                    state["velocity"] = torch.randn_like(p.data) * (T / m).sqrt()
+                else:
+                    state["mass"] = None
+                    state["velocity"] = torch.randn_like(p.data) * math.sqrt(T)
+        self._calibrated = True
+
+    # ------------------------------------------------------------------
     # BAOAB step
     # ------------------------------------------------------------------
 
@@ -253,9 +300,9 @@ class LangevinSA(Optimizer):
         """Perform one BAOAB Langevin dynamics step.
 
         Tracks the best-loss configuration and rolls back to it when the
-        loss exceeds ``loss_rollback_factor`` times the best loss seen so
-        far.  This prevents the dynamics from permanently damaging the
-        structure while still allowing uphill exploration.
+        loss becomes non-finite or exceeds 3x the best loss seen so far.
+        This prevents the dynamics from permanently damaging the structure
+        while still allowing uphill exploration.
 
         Args:
             closure: A callable that re-evaluates the model and returns the

@@ -11,14 +11,13 @@ This module provides the full-featured `Scaler` class that maintains a reference
 to a Model object. For a model-independent scaler, see `ScalerBase`.
 """
 
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 
 from torchref.config import get_default_device
 from torchref.io import ReflectionData
-from torchref.base.metrics import bin_wise_rfactors, get_rfactors, nll_xray, nll_xray_lognormal
 from torchref.base.reciprocal import get_scattering_vectors
 from torchref.scaling.scaler_base import ScalerBase
 from torchref.scaling.solvent import SolventModel
@@ -188,7 +187,9 @@ class Scaler(ScalerBase):
         """
         if self.model is None:
             raise RuntimeError("No model set and no fcalc provided")
-        return self.model(self.hkl)
+        # Signed HKL so the scaled fcalc carries the anomalous (Bijvoet)
+        # difference; bulk solvent below is evaluated at the same indices.
+        return self.model(self._data.hkl_for_sf())
 
     def calc_initial_scale(self, fcalc: torch.Tensor = None):
         """
@@ -345,50 +346,6 @@ class Scaler(ScalerBase):
             history_size=history_size,
             verbose=verbose,
         )
-
-    def rfactor(self, fcalc: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Calculate R-factors.
-
-        If fcalc is not provided, computes it from the internal model.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor, optional
-            Calculated structure factors. If None, computed from model.
-
-        Returns
-        -------
-        tuple
-            R-work and R-free values.
-        """
-        if fcalc is None:
-            fcalc = self.compute_fcalc()
-        return super().rfactor(fcalc)
-
-    def bin_wise_rfactor(self, fcalc: torch.Tensor = None):
-        """
-        Calculate bin-wise R-factors.
-
-        If fcalc is not provided, computes it from the internal model.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor, optional
-            Calculated structure factors. If None, computed from model.
-
-        Returns
-        -------
-        mean_res_per_bin : torch.Tensor
-            Mean resolution per bin.
-        rwork_per_bin : torch.Tensor
-            R-work per bin.
-        rfree_per_bin : torch.Tensor
-            R-free per bin.
-        """
-        if fcalc is None:
-            fcalc = self.compute_fcalc()
-        return super().bin_wise_rfactor(fcalc)
 
     def get_binwise_mean_intensity(self, fcalc: torch.Tensor = None):
         """

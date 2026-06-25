@@ -90,7 +90,7 @@ class TestScalingCalculations:
     @pytest.mark.unit
     def test_resolution_binning_logic(self, mock_hkl_indices, mock_cell):
         """Test resolution binning creates correct number of bins."""
-        from torchref.base.math_numpy import get_s
+        from torchref.base.reciprocal import get_s
 
         hkl = mock_hkl_indices(n_reflections=1000).numpy()
         cell = mock_cell.numpy()
@@ -137,7 +137,7 @@ class TestBFactorScaling:
     @pytest.mark.unit
     def test_b_factor_debye_waller(self, mock_hkl_indices, mock_cell):
         """Test Debye-Waller factor calculation."""
-        from torchref.base.math_numpy import get_s
+        from torchref.base.reciprocal import get_s
 
         hkl = mock_hkl_indices(n_reflections=100).numpy()
         cell = mock_cell.numpy()
@@ -155,7 +155,7 @@ class TestBFactorScaling:
     @pytest.mark.unit
     def test_b_factor_high_resolution_attenuation(self, mock_cell):
         """Higher resolution (larger s) should have more attenuation."""
-        from torchref.base.math_numpy import get_s
+        from torchref.base.reciprocal import get_s
 
         cell = mock_cell.numpy()
         

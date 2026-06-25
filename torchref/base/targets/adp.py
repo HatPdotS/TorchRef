@@ -46,39 +46,3 @@ def adp_simu_math(
         return adp_simu_math_triton(b, pair_indices, simu_sigma)
     return _adp_simu_math_eager(b, pair_indices, simu_sigma)
 
-
-def adp_kl_math(
-    log_adp: torch.Tensor,
-    target_log_std: float = 0.2,
-) -> torch.Tensor:
-    """KL divergence regularizer on log(B).
-
-    Mirrors ``Model.adp_kl_divergence_loss``: KL between an empirical Gaussian
-    (mean fixed to current ``mean(log_adp)`` detached, std = ``std(log_adp)``)
-    and a target Gaussian with the same mean but fixed std.
-    """
-    sigma_data = torch.std(log_adp)
-    log_sigma_ratio = torch.log(
-        torch.tensor(target_log_std, device=log_adp.device, dtype=log_adp.dtype)
-        / sigma_data
-    )
-    variance_ratio = (sigma_data ** 2) / (2 * target_log_std ** 2)
-    return log_sigma_ratio + variance_ratio - 0.5
-
-
-def adp_locality_math(
-    b: torch.Tensor,
-    neighbor_indices: torch.Tensor,
-    neighbor_distances: torch.Tensor,
-) -> torch.Tensor:
-    """ADP locality NLL: weighted MSE on log(B) differences with KNN.
-
-    Mirrors ``ADPLocalityTarget.forward``. Neighbor list construction is the
-    target's bookkeeping and is not included here.
-    """
-    log_adp = torch.log(b.clamp(min=1e-3))
-    neighbor_log_adp = log_adp[neighbor_indices]
-    diff = log_adp.unsqueeze(1) - neighbor_log_adp
-    weights = 1.0 / (neighbor_distances + 1e-6)
-    weighted_sq_diff = weights * (diff / 0.5) ** 2
-    return weighted_sq_diff.sum()

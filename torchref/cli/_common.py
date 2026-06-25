@@ -129,6 +129,47 @@ def add_resolution_args(parser: argparse.ArgumentParser) -> None:
     add_dmax_arg(parser)
 
 
+def add_adp_mode_arg(parser: argparse.ArgumentParser) -> None:
+    """Add ``--adp-mode`` and ``--anisotropic-selection`` arguments.
+
+    Controls the atomic displacement parameter (ADP) parametrization: isotropic
+    per-atom B (default) vs anisotropic 6-component U for a selected atom set.
+    """
+    parser.add_argument(
+        "--adp-mode",
+        type=str,
+        default="isotropic",
+        choices=["isotropic", "anisotropic"],
+        help="ADP parametrization: 'isotropic' (default) refines a per-atom "
+        "B-factor; 'anisotropic' refines a 6-component U tensor for the atoms "
+        "given by --anisotropic-selection. The model is converted between "
+        "representations and the output PDB/mmCIF follows the convention "
+        "(ANISOU only for anisotropic atoms).",
+    )
+    parser.add_argument(
+        "--anisotropic-selection",
+        type=str,
+        default=None,
+        metavar="SELECTION",
+        help="Phenix-style atom selection refined anisotropically when "
+        "--adp-mode anisotropic (e.g. 'chain A', 'not resname HOH'). Default: "
+        "'not resname HOH and not element H' (all non-water heavy atoms).",
+    )
+
+
+def add_wavelength_arg(parser: argparse.ArgumentParser) -> None:
+    """Add ``--wavelength`` argument (Angstroms; 0 disables anomalous)."""
+    parser.add_argument(
+        "--wavelength",
+        type=float,
+        default=1.0,
+        help="X-ray wavelength in Angstroms, used for anomalous (f'/f'') "
+        "scattering. Set to 0 to disable anomalous refinement entirely, which "
+        "also forces a Friedel-merged read of the data (no F(+)/F(-) Bijvoet "
+        "pairs). Default 1.0.",
+    )
+
+
 def add_column_args(parser: argparse.ArgumentParser) -> None:
     """Add ``-csf`` and ``-csig`` column-selection arguments."""
     parser.add_argument(
@@ -363,8 +404,13 @@ def add_weights_arg(
 ) -> None:
     """Add ``--weights`` argument (JSON string or file path)."""
     help_text = (
-        "Target weights as a JSON string or path to a JSON file. "
-        "Only the keys you supply override defaults."
+        "Target weights as a JSON string or path to a JSON file. Keys may be a "
+        "group ('geometry') or a component ('geometry/bond'). Weights are "
+        "hierarchical and MULTIPLICATIVE: a target's effective weight is the "
+        "product of its group and component weights (e.g. 'geometry/bond' is "
+        "weight[geometry] * weight[geometry/bond]), so 'geometry/ramachandran': 0 "
+        "disables only that term while the rest of 'geometry' keeps its weight. "
+        "Only the keys you supply override the defaults."
     )
     if default_weights is not None:
         help_text += f"  Defaults: {json.dumps(default_weights, indent=None)}"

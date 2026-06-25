@@ -1,6 +1,26 @@
 Changelog
 =========
 
+Version 0.6.0
+-------------
+- Implemented Phenix style sigma A weighting in the Maximum likelihood target (New default for refinement)
+- Set Ramachandran restraints to be off by default (to enable specify a non zero weight)
+- Added collection versions of the sigma A target
+- Fixed bug in Rfree-generation now min 1000 reflections per bin, min 50 free reflections max 2% and 10 bins
+- Deprecated internal coordinates
+- Renamed Maximum likelihood target to Rice target, Sigma A target to Maximum likelihood target.
+- Moved alignment into experimental
+- Fixed Fast rotation function, current blocker on alignment is the rescoring function
+- Moved kinetic to experimental 
+- Added monolithic refinement under experimental
+- Moved ensemble refinement to experimental
+- Fixed antechamber handling of non-standard residues
+- Refinement now freezes all residues missing restraints (xyz)
+- Changed reflection data acessor api to use property style dataselection
+- Added benchmark to the paper folder were we refine from alphafold start coordinates
+- Added isotropic / anisotropic switch and seleciton to refinement cli
+- Updated many docstrings, and fixed some bugs
+
 Version 0.5.3.3
 -------------
 - Fixed U_aniso parametrization and line search instability during refinement with anisotropic b-factor

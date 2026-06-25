@@ -15,11 +15,11 @@ Quick Start
 -----------
 ::
 
-    from torchref import Refinement, ReflectionData, Model
+    from torchref import Refinement, read_mtz, read_pdb
 
     # Load data and model
-    data = ReflectionData().load_mtz('data.mtz')
-    model = Model().load_pdb('structure.pdb')
+    data = read_mtz('data.mtz')
+    model = read_pdb('structure.pdb')
 
     # Run refinement
     refinement = Refinement(data=data, model=model, device='cuda')
@@ -47,14 +47,13 @@ utils
     General utilities and debugging tools.
 """
 
-__version__ = "0.5.3.3"
+__version__ = "0.6.0"
 
 
 import os
 
-
 # For now set MPS fallback gloablly
-os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import warnings
 from pathlib import Path
 
@@ -84,7 +83,6 @@ torch.set_num_threads(N_CPUS)
 # Dtype and device configuration (must be imported after torch)
 from torchref.config import device, dtypes
 
-
 # Project root path for referencing package files
 ROOT_TORCHREF = Path(__file__).parent.parent.resolve()
 
@@ -99,13 +97,22 @@ PATH_TORCHREF_DATA = PATH_TORCHREF / "data"
 
 
 # Data I/O
-from torchref.io import DatasetCollection, ReflectionData, FcalcDataset
+from torchref.io import (
+    DatasetCollection,
+    ReflectionData,
+    FcalcDataset,
+    read_mtz,
+    read_cif,
+    read_pdb,
+)
 
 # Model
 from torchref.model import Model, ModelFT
+from torchref.model.rigid_xyz import RigidXYZTensor
 
 # Refinement
 from torchref.refinement import LBFGSRefinement, Refinement
+from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
 from torchref.symmetry import Cell, SpaceGroup
 
 # Restraints
@@ -132,12 +139,17 @@ __all__ = [
     # Data I/O
     "ReflectionData",
     "DatasetCollection",
+    "read_mtz",
+    "read_cif",
+    "read_pdb",
     # Model
     "Model",
     "ModelFT",
+    "RigidXYZTensor",
     # Refinement
     "Refinement",
     "LBFGSRefinement",
+    "RigidBodyRefinementStep",
     # Scaling
     "Scaler",
     "ScalerBase",

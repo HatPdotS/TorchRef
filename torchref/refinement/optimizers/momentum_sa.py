@@ -1,14 +1,17 @@
+"""
+Adam-based simulated annealing optimizer with adaptive noise injection.
+
+Implements Adam with added Gaussian noise on each step. The noise magnitude is
+controlled by a temperature that is annealed on a logarithmic schedule from
+``T_initial`` to ``T_final`` and scaled by Adam's adaptive denominator, giving
+scale-invariant exploration across parameters.
+"""
+
 import torch
 from torch import Tensor
 from torch.optim.sgd import sgd
 from torch.optim.optimizer import _use_grad_for_differentiable
 from typing import Optional
-
-'''
-This is really just ADAM with noisy gradients.
-Temperature controls the magnitude of the noise relative to the gradient.
-
-'''
 
 
 

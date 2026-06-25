@@ -3,10 +3,22 @@ Root pytest configuration and shared fixtures for torchref tests.
 
 This module provides fixtures that are automatically available to all test files.
 """
+import importlib.util
+import shutil
+
 import pytest
+import torchref
 import torch
 import numpy as np
 from pathlib import Path
+
+
+# Optional Amber/ensemble stack: OpenMM (pip ``[amber]`` extra) and AmberTools
+# (antechamber/tleap — conda-only, detected on PATH). Tests that need them are
+# tagged ``@pytest.mark.openmm`` (OpenMM only) or ``@pytest.mark.amber`` (OpenMM
+# + AmberTools) and auto-skipped below when the stack is absent.
+_HAS_OPENMM = importlib.util.find_spec("openmm") is not None
+_HAS_AMBERTOOLS = bool(shutil.which("antechamber") and shutil.which("tleap"))
 
 
 def pytest_addoption(parser):
@@ -32,18 +44,33 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: GPU-requiring tests (CUDA or MPS; skipped by default)")
     config.addinivalue_line("markers", "cuda_only: Tests that specifically require CUDA (e.g. Triton)")
     config.addinivalue_line("markers", "slow: Slow tests (skipped by default)")
+    config.addinivalue_line("markers", "openmm: Needs OpenMM (the [amber] extra); skipped if absent")
+    config.addinivalue_line("markers", "amber: Needs OpenMM + AmberTools (antechamber/tleap); skipped if absent")
 
 
 def pytest_collection_modifyitems(config, items):
     """Skip GPU/slow tests unless explicitly requested."""
     skip_gpu = pytest.mark.skip(reason="Need --run-gpu option to run")
     skip_slow = pytest.mark.skip(reason="Need --run-slow option to run")
-    
+    skip_openmm = pytest.mark.skip(reason="OpenMM not installed (pip install '.[amber]')")
+    skip_amber = pytest.mark.skip(
+        reason="AmberTools (antechamber/tleap) not on PATH (conda install ambertools)"
+    )
+
     for item in items:
         if "gpu" in item.keywords and not config.getoption("--run-gpu"):
             item.add_marker(skip_gpu)
         if "slow" in item.keywords and not config.getoption("--run-slow"):
             item.add_marker(skip_slow)
+        # Amber stack gates: "amber" needs OpenMM + AmberTools; "openmm" needs
+        # just OpenMM. Skip with the most specific missing-dependency reason.
+        if "amber" in item.keywords:
+            if not _HAS_OPENMM:
+                item.add_marker(skip_openmm)
+            elif not _HAS_AMBERTOOLS:
+                item.add_marker(skip_amber)
+        elif "openmm" in item.keywords and not _HAS_OPENMM:
+            item.add_marker(skip_openmm)
 
 
 # =============================================================================

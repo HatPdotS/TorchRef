@@ -1,11 +1,11 @@
 """
+Combined targets for crystallographic refinement (e.g., geometry + ADP).
 
-Combined targets for refinement (e.g., geometry + ADP).
-
-Integrate multiple component targets into a single combined target
-using nn.ModuleDict for clean organization and easy access.
-
-Integrate into lossState via add_to_state"""
+This module provides combined target classes that group several component
+targets into a single target using ``nn.ModuleDict`` for clean organization
+and dictionary-style access. Combined targets register their components with a
+``LossState`` via :meth:`add_to_state`.
+"""
 
 from typing import TYPE_CHECKING, Dict
 
@@ -249,6 +249,7 @@ class TotalGeometryTarget(CombinedModelTargets):
     - 'planarity': PlanarityTarget
     - 'chiral': ChiralTarget
     - 'nonbonded': NonBondedHTarget (includes riding hydrogen VDW)
+    - 'ramachandran': RamachandranTarget
 
     The torsion weight is reduced because:
 

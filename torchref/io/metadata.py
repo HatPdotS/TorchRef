@@ -40,15 +40,42 @@ from typing import Any, Dict, List, Optional
 class RefinementMetadata:
     """Unified metadata for PDB headers and mmCIF categories.
 
-    Fields map to both PDB REMARK 3 lines and PDBx/mmCIF ``_refine``
-    category items.  Only populated (non-None) fields are rendered.
+    Each dataclass field maps to both PDB REMARK 3 lines and PDBx/mmCIF
+    ``_refine`` category items.  Only populated (non-None / non-empty)
+    fields are rendered.
 
-    Parameters
+    Attributes
     ----------
-    program : str
-        Refinement program name.
-    program_version : str
-        Program version string.
+    program, program_version, refinement_method : str
+        Refinement program identification.
+    resolution_high, resolution_low : float, optional
+        Resolution limits ``d_min`` / ``d_max`` in Angstroms.
+    n_reflections_work, n_reflections_test, n_reflections_all : int, optional
+        Reflection counts; ``percent_free`` is the test-set percentage.
+    r_work, r_free : float, optional
+        Working- and free-set R-factors.
+    b_mean_overall, b_min, b_max : float, optional
+        Atomic B-factor statistics in A**2.
+    rmsd_bond_lengths, rmsd_bond_angles : float, optional
+        Geometry deviations from ideal (Angstroms, degrees).
+    n_atoms_total, n_atoms_protein, n_atoms_solvent : int, optional
+        Model atom counts.
+    solvent_model_ksol, solvent_model_bsol : float, optional
+        Bulk-solvent model parameters.
+    cell : list of float, optional
+        Unit cell ``[a, b, c, alpha, beta, gamma]``.
+    spacegroup : str, optional
+        Space-group name.
+    title : str
+        Structure title.
+    authors : list of str
+        Author names.
+    passthrough_pdb_remarks : list of str
+        Raw REMARK lines carried over from an input PDB file.
+    passthrough_cif_categories : dict
+        Raw mmCIF category items carried over from an input file.
+    custom_remarks : list of str
+        Extra REMARK 3 lines to append.
     """
 
     # Program identification
@@ -178,7 +205,6 @@ class RefinementMetadata:
             n_test = int(rfree_flags.sum().item()) if rfree_flags.dtype == torch.bool else int((~rfree_flags.bool()).sum().item())
             n_work = n_all - n_test
             # In torchref, rfree_flags=True means WORK set
-            # Let's use the same convention as populate_state_meta
             n_work = int(rfree_flags.sum().item())
             n_test = n_all - n_work
             meta.n_reflections_all = n_all
@@ -596,7 +622,11 @@ class RefinementMetadata:
 def _remark3(
     lines: List[str], label: str, value: Any, fmt: str = ""
 ) -> None:
-    """Append a REMARK 3 line with label : value formatting."""
+    """Append a REMARK 3 ``label : value`` line.
+
+    The line is always emitted; when ``value`` is None it is rendered as
+    the literal ``NULL`` rather than being skipped.
+    """
     if value is not None:
         formatted = f"{value:{fmt}}"
     else:

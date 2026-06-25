@@ -1,90 +1,19 @@
 """
-Unit tests for torchref.refinement.weighting.component_weighting
+Unit tests for LossState weight handling.
 
-Tests the component weighting system for loss aggregation.
-Note: Many component weighting tests require a full Refinement object,
-so they are placed in functional/integration tests. These unit tests
-cover the basic interfaces without requiring real refinement objects.
+Covers the retained ``LossState`` weight API (``set_weight`` /
+``get_effective_weight`` / ``aggregate``). The standalone weighting
+schemes were removed; refinement now aggregates at uniform weight by
+default, with explicit per-target/group multipliers set via the
+``LossState`` weight dict.
 """
 
 import pytest
 import torch
-import torch.nn as nn
-from unittest.mock import Mock, MagicMock
 
 
-class TestWeightingSchemeBase:
-    """Tests for WeightingScheme base class."""
-
-    @pytest.mark.unit
-    def test_weighting_scheme_is_nn_module(self):
-        """Test WeightingScheme is a nn.Module."""
-        from torchref.refinement.weighting.component_weighting import WeightingScheme
-
-        # WeightingScheme is abstract, so we can't instantiate it directly
-        # But we can check the inheritance
-        assert issubclass(WeightingScheme, nn.Module)
-
-    @pytest.mark.unit
-    def test_weighting_scheme_has_forward(self):
-        """Test WeightingScheme has forward method."""
-        from torchref.refinement.weighting.component_weighting import WeightingScheme
-
-        assert hasattr(WeightingScheme, 'forward')
-
-
-class TestManualWeighting:
-    """Tests for ManualWeighting class."""
-
-    @pytest.mark.unit
-    def test_manual_weighting_initialization(self):
-        """Test ManualWeighting can be initialized with weights."""
-        from torchref.refinement.weighting.component_weighting import ManualWeighting
-
-        weights = {'xray': 1.0, 'geometry': 0.5}
-        weighting = ManualWeighting(weights=weights, device=torch.device('cpu'))
-
-        assert weighting is not None
-
-    @pytest.mark.unit
-    def test_manual_weighting_forward(self):
-        """Test ManualWeighting forward returns weights."""
-        from torchref.refinement.weighting.component_weighting import ManualWeighting
-        from torchref.refinement.loss_state import LossState
-
-        weights = {'xray': 1.0, 'geometry': 0.5}
-        weighting = ManualWeighting(weights=weights, device=torch.device('cpu'))
-
-        state = LossState()
-        result = weighting.forward(state)
-
-        assert 'xray' in result
-        assert 'geometry' in result
-        # Values are now floats (not tensors)
-        assert isinstance(result['xray'], float)
-        assert isinstance(result['geometry'], float)
-
-
-class TestLossStateIntegration:
-    """Tests for LossState integration with weighting."""
-
-    @pytest.mark.unit
-    def test_manual_weighting_forward_sets_weights(self):
-        """Test ManualWeighting.forward returns weights that can be set on state."""
-        from torchref.refinement.weighting.component_weighting import ManualWeighting
-        from torchref.refinement.loss_state import LossState
-
-        weights = {'xray': 1.0, 'bond': 0.5}
-        weighting = ManualWeighting(weights=weights, device=torch.device('cpu'))
-
-        state = LossState()
-        computed_weights = weighting.forward(state)
-        state.set_weights(computed_weights)
-
-        assert 'xray' in state.weights
-        assert 'bond' in state.weights
-        assert state.weights['xray'] == 1.0
-        assert state.weights['bond'] == 0.5
+class TestLossStateWeights:
+    """Tests for the LossState weight dict (hierarchical multipliers)."""
 
     @pytest.mark.unit
     def test_hierarchical_weights_multiply(self):
@@ -123,4 +52,12 @@ class TestTotalLossFromState:
         assert torch.isclose(total, expected)
 
 
+class TestDefaultGroupWeights:
+    """The validated default base group weights (single source of truth)."""
 
+    @pytest.mark.unit
+    def test_default_group_weights_values(self):
+        """DEFAULT_GROUP_WEIGHTS is the AF-screen-tuned xray 1 / geom 0.2 / adp 0.02."""
+        from torchref.refinement.base_refinement import DEFAULT_GROUP_WEIGHTS
+
+        assert DEFAULT_GROUP_WEIGHTS == {"xray": 1.0, "geometry": 0.2, "adp": 0.02, 'geometry/ramachandran': 0.0}

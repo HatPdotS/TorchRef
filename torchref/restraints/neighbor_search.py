@@ -204,19 +204,6 @@ _NEIGHBOR_OFFSETS_27 = None
 _NEIGHBOR_OFFSETS_14 = None
 
 
-def _get_neighbor_offsets(device: torch.device) -> torch.Tensor:
-    """Return (27, 3) tensor of all neighbor offsets including self."""
-    global _NEIGHBOR_OFFSETS_27
-    if _NEIGHBOR_OFFSETS_27 is None or _NEIGHBOR_OFFSETS_27.device != device:
-        offsets = []
-        for dx in range(-1, 2):
-            for dy in range(-1, 2):
-                for dz in range(-1, 2):
-                    offsets.append([dx, dy, dz])
-        _NEIGHBOR_OFFSETS_27 = torch.tensor(offsets, dtype=torch.long, device=device)
-    return _NEIGHBOR_OFFSETS_27
-
-
 def _get_canonical_offsets_14(device: torch.device) -> torch.Tensor:
     """Return (14, 3) lex-positive half of the 27-offset cube, including self.
 
@@ -301,214 +288,6 @@ def _build_padded_cells(
     return padded_xyz, valid_mask, asu_gather
 
 
-def _gather_padded(
-    cart_sorted: torch.Tensor,
-    starts: torch.Tensor,
-    cell_indices: torch.Tensor,
-    max_per_cell: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Gather Cartesian positions into a padded (batch, max_per_cell, 3) tensor.
-
-    Parameters
-    ----------
-    cart_sorted : (E, 3) Cartesian positions sorted by cell
-    starts : (C+1,) CSR boundaries
-    cell_indices : (B,) which occupied-cell indices to gather
-    max_per_cell : padding size
-
-    Returns
-    -------
-    padded : (B, max_per_cell, 3) – padded with inf
-    counts : (B,) – actual atom count per cell
-    """
-    device = cart_sorted.device
-    B = cell_indices.shape[0]
-    padded = torch.full(
-        (B, max_per_cell, 3), float("inf"), dtype=cart_sorted.dtype, device=device
-    )
-    cell_starts = starts[cell_indices]
-    cell_ends = starts[cell_indices + 1]
-    counts = cell_ends - cell_starts
-
-    # Vectorised fill: build flat indices for all entries across all cells
-    # within_cell_pos[k] = position within its cell (0, 1, 2, ...)
-    max_count = counts.max().item()
-    arange = torch.arange(max_count, device=device)
-    # (B, max_count) mask of valid positions
-    valid = arange.unsqueeze(0) < counts.unsqueeze(1)
-    # Global source indices into cart_sorted
-    src_idx = cell_starts.unsqueeze(1) + arange.unsqueeze(0)  # (B, max_count)
-    src_idx = src_idx.clamp(max=len(cart_sorted) - 1)
-
-    # Scatter into padded tensor
-    padded[:, :max_count, :][valid] = cart_sorted[src_idx[valid]]
-
-    return padded, counts
-
-
-def find_pairs_periodic_grid(
-    cart_sorted: torch.Tensor,
-    atom_idx_sorted: torch.Tensor,
-    combo_idx_sorted: torch.Tensor,
-    unique_cells: torch.Tensor,
-    starts: torch.Tensor,
-    cell_lookup: torch.Tensor,
-    grid_dims: torch.Tensor,
-    cutoff: float,
-    identity_combo: int,
-    chunk_size: int = 128,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Find all ASU-vs-everything pairs within cutoff using periodic grid.
-
-    Fully vectorized: 27 neighbor offsets × chunked batched cdist.
-    No Python loops over individual pairs.
-
-    Parameters
-    ----------
-    cart_sorted : (E, 3) sorted Cartesian positions
-    atom_idx_sorted : (E,) ASU atom index per entry
-    combo_idx_sorted : (E,) combo index per entry
-    unique_cells : (C,) occupied cell flat indices
-    starts : (C+1,) CSR boundaries
-    cell_lookup : (G,) flat cell → occupied index or -1
-    grid_dims : (3,) grid dimensions
-    cutoff : float
-    identity_combo : int – combo index for identity (op=0, offset=0)
-    chunk_size : int – cell pairs per cdist batch
-
-    Returns
-    -------
-    pair_atom_i : (P,) ASU atom index (always from identity/ASU)
-    pair_atom_j : (P,) ASU atom index (mate source)
-    pair_combo_j : (P,) combo index for atom j
-    """
-    device = cart_sorted.device
-    cutoff_sq = cutoff * cutoff
-    neighbor_offsets = _get_neighbor_offsets(device)
-
-    gy = grid_dims[1].item()
-    gz = grid_dims[2].item()
-
-    n_occupied = len(unique_cells)
-    counts = starts[1:] - starts[:-1]
-    max_per_cell = counts.max().item()
-
-    # Decode unique_cells back to (i, j, k)
-    cell_ijk = torch.stack([
-        unique_cells // (gy * gz),
-        (unique_cells % (gy * gz)) // gz,
-        unique_cells % gz,
-    ], dim=1)  # (C, 3)
-
-    # Precompute: which cells have ASU entries?
-    is_asu = combo_idx_sorted == identity_combo
-    # Map each sorted entry to its occupied cell index (vectorised)
-    cell_sizes = starts[1:] - starts[:-1]
-    entry_cell_idx = torch.repeat_interleave(
-        torch.arange(n_occupied, device=device), cell_sizes
-    )
-    # Scatter-or: if any entry in a cell is ASU, mark the cell
-    has_asu_per_cell = torch.zeros(n_occupied, dtype=torch.long, device=device)
-    has_asu_per_cell.scatter_add_(0, entry_cell_idx, is_asu.long())
-    has_asu_per_cell = has_asu_per_cell > 0
-
-    all_pair_atom_i = []
-    all_pair_atom_j = []
-    all_pair_combo_j = []
-
-    for offset_idx in range(27):
-        d = neighbor_offsets[offset_idx]  # (3,)
-        is_self_offset = (d == 0).all().item()
-
-        # Neighbor cell indices with periodic wrapping
-        nb_ijk = (cell_ijk + d[None, :]) % grid_dims[None, :]
-        nb_flat = nb_ijk[:, 0] * (gy * gz) + nb_ijk[:, 1] * gz + nb_ijk[:, 2]
-        nb_occ_idx = cell_lookup[nb_flat]  # (C,) -1 if empty
-
-        active = (nb_occ_idx >= 0) & has_asu_per_cell
-        active_idx = active.nonzero(as_tuple=True)[0]
-        active_nb = nb_occ_idx[active_idx]
-
-        if len(active_idx) == 0:
-            continue
-
-        # Process in chunks
-        for cs in range(0, len(active_idx), chunk_size):
-            ce = min(cs + chunk_size, len(active_idx))
-            c_batch = active_idx[cs:ce]
-            nb_batch = active_nb[cs:ce]
-            B = len(c_batch)
-
-            # Gather positions into padded tensors
-            src_padded, src_counts = _gather_padded(
-                cart_sorted, starts, c_batch, max_per_cell
-            )
-            nb_padded, nb_counts = _gather_padded(
-                cart_sorted, starts, nb_batch, max_per_cell
-            )
-
-            # Batched cdist: (B, max_per_cell, max_per_cell)
-            dists = torch.cdist(src_padded, nb_padded)
-            within = dists < cutoff  # inf padding is never < cutoff
-
-            # Get all hit indices: (batch, local_i, local_j)
-            b_idx, local_i, local_j = within.nonzero(as_tuple=True)
-
-            if len(b_idx) == 0:
-                continue
-
-            # Map local indices to global sorted indices (vectorised)
-            c_occ = c_batch[b_idx]              # occupied cell idx for source
-            nb_occ = nb_batch[b_idx]             # occupied cell idx for neighbor
-            global_i = starts[c_occ] + local_i   # global sorted index
-            global_j = starts[nb_occ] + local_j
-
-            # Bounds check (padding entries)
-            valid = (global_i < starts[c_occ + 1]) & (global_j < starts[nb_occ + 1])
-
-            # Source must be ASU
-            valid = valid & is_asu[global_i]
-
-            # Dedup: for intra-ASU pairs (both identity combo), only keep
-            # atom_i < atom_j to avoid counting (A,B) and (B,A).
-            # For symmetry pairs (j is not identity), no dedup needed
-            # since only one direction has an ASU source.
-            ai_temp = atom_idx_sorted[global_i]
-            aj_temp = atom_idx_sorted[global_j]
-            cj_temp = combo_idx_sorted[global_j]
-            both_asu = is_asu[global_j]  # global_i is always ASU
-            valid = valid & (~both_asu | (ai_temp < aj_temp))
-
-            # Apply validity mask
-            global_i = global_i[valid]
-            global_j = global_j[valid]
-
-            ai = atom_idx_sorted[global_i]
-            aj = atom_idx_sorted[global_j]
-            cj = combo_idx_sorted[global_j]
-
-            # Remove true self-pairs (same atom, identity combo)
-            not_self = ~((ai == aj) & (cj == identity_combo))
-            ai = ai[not_self]
-            aj = aj[not_self]
-            cj = cj[not_self]
-
-            if len(ai) > 0:
-                all_pair_atom_i.append(ai)
-                all_pair_atom_j.append(aj)
-                all_pair_combo_j.append(cj)
-
-    if not all_pair_atom_i:
-        empty = torch.tensor([], dtype=torch.long, device=device)
-        return empty, empty, empty
-
-    return (
-        torch.cat(all_pair_atom_i),
-        torch.cat(all_pair_atom_j),
-        torch.cat(all_pair_combo_j),
-    )
-
-
 def find_pairs_periodic_grid_v2(
     cart_sorted: torch.Tensor,
     atom_idx_sorted: torch.Tensor,
@@ -521,37 +300,47 @@ def find_pairs_periodic_grid_v2(
     identity_combo: int,
     chunk_size: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Optimised replacement for :func:`find_pairs_periodic_grid`.
+    """Find candidate VDW pairs on a periodic grid with batched cdist.
 
-    Three things changed vs the original:
+    Sweeps the 14 canonical neighbour offsets (the self-cell plus the 13
+    lex-positive half of the 26 non-zero offsets), so each unique cell pair
+    is visited once; the symmetric partner is reached by swapping source and
+    target indices on emission. Distances are computed with ``torch.cdist``
+    over a precomputed padded ``(C, max_per_cell, 3)`` tensor.
 
-    1. **14 canonical offsets** (self + 13 lex-positive). For cell pairs
-       where both cells contain ASU atoms, the original algorithm finds
-       each pair twice (once via ``+d`` and once via ``-d``) and dedups at
-       the end — pure waste. Processing only half the offsets eliminates
-       the redundant cdist work. We still cover every ASU-containing pair
-       by allowing the "target is ASU" case via an index swap on emission.
+    Parameters
+    ----------
+    cart_sorted : (E, 3) float
+        Cartesian image positions, sorted into CSR cell order.
+    atom_idx_sorted, combo_idx_sorted : (E,) long
+        ASU atom index and (symop, offset) combo index per entry.
+    unique_cells : (C,) long
+        Occupied flat grid-cell indices.
+    starts : (C+1,) long
+        CSR boundaries into the sorted arrays.
+    cell_lookup : (n_grid_total,) long
+        Maps a flat cell index to its position in ``unique_cells`` (-1 empty).
+    grid_dims : (3,) long
+        Number of grid cells per axis.
+    cutoff : float
+        Cartesian distance cutoff in Angstrom.
+    identity_combo : int
+        Combo index corresponding to the identity (op=0, offset=0).
+    chunk_size : int, optional
+        Number of source cells per cdist tile. Defaults to a device-adaptive
+        value (CUDA: cap the tile at ~256 MB; CPU: 128).
 
-    2. **Precomputed padded tensor.** ``padded_xyz``, ``valid_mask`` and
-       ``asu_mask`` are built once (not per-chunk per-offset as in the
-       original). Per-cell metadata is also precomputed: ``cell_has_asu``,
-       and the flat index offsets for mapping local ``(row, col)`` hits
-       back to global CSR indices.
+    Returns
+    -------
+    pair_atom_i, pair_atom_j, pair_combo_j : each (P,) long
+        ASU atom index, partner atom index, and partner combo index.
 
-    3. **Use torch.cdist** (matmul-based internally) instead of broadcast
-       subtract so the intermediate tensor stays cache-friendly. Chunking
-       is kept but with a larger default (``512``) so we pay less Python
-       overhead without blowing the cache.
-
-    Correctness invariant: within a hit ``(src_atom, tgt_atom)`` we emit
-    a pair iff ``is_asu[src] | is_asu[tgt]``, and we canonicalise so the
-    ASU atom is always on the ``i`` side. For intra-ASU pairs we further
-    enforce ``atom_i < atom_j`` after the swap so both-ASU pairs emit in
-    a single canonical order (matching the current v1 invariant used by
-    the downstream dedup).
-
-    Parameters and return signature match
-    :func:`find_pairs_periodic_grid`.
+    Notes
+    -----
+    A pair is emitted iff at least one side is an ASU atom; it is
+    canonicalised so the ASU atom is on the ``i`` side. For intra-ASU pairs
+    ``atom_i < atom_j`` is enforced so ``(a, b)`` and ``(b, a)`` collapse to
+    one entry, matching the invariant expected by the downstream dedup.
     """
     device = cart_sorted.device
     offsets14 = _get_canonical_offsets_14(device)

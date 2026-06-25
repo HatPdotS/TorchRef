@@ -342,21 +342,21 @@ class TestMathFunctionsFunctional:
         model = Model()
         model.load_cif(str(sample_cif_file))
         
-        xyz = model.xyz().double()  # Ensure double precision for einsum
-        cell = model.cell.data.double()
-        
+        xyz = model.xyz()
+        cell = model.cell.data
+
         # Convert to fractional
         frac = cartesian_to_fractional_torch(xyz, cell)
-        
+
         # Fractional coordinates should be in [0, 1] range (mostly)
         # Some atoms may be outside unit cell
         assert torch.all(torch.isfinite(frac))
-        
+
         # Convert back to Cartesian
         cart_back = fractional_to_cartesian_torch(frac, cell)
-        
-        # Should match original coordinates
-        assert torch.allclose(xyz, cart_back, rtol=1e-5)
+
+        # Should match original coordinates (float32 roundtrip)
+        assert torch.allclose(xyz, cart_back, atol=1e-3)
 
     @pytest.mark.integration
     def test_u_matrix_conversion(self):

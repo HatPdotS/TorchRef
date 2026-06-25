@@ -6,8 +6,9 @@ This module defines the CrystalDataset dataclass that provides:
 - Device management (to, cuda, cpu)
 - Serialization (save, load)
 
-Space groups are stored as gemmi.SpaceGroup objects for consistency
-and direct access to symmetry operations.
+On the base class the ``spacegroup`` field is an ``Optional[str]`` name;
+concrete subclasses (e.g. ReflectionData, FcalcDataset) override it to hold
+``torchref.symmetry.SpaceGroup`` objects.
 """
 
 from dataclasses import dataclass, field, fields
@@ -58,12 +59,27 @@ class CrystalDataset(DeviceMovementMixin):
     I: Optional[torch.Tensor] = None  # Intensities (N,)
     I_sigma: Optional[torch.Tensor] = None  # Intensity uncertainties (N,)
     rfree_flags: Optional[torch.Tensor] = None  # R-free test set flags (N,), int32
+    # Reserved validation set: per-reflection bool. None => no validation
+    # reflections (the validation subset is empty). When populated, these
+    # reflections are carved out of BOTH the work and free sets (disjoint).
+    validation_flags: Optional[torch.Tensor] = None  # (N,), bool
     resolution: Optional[torch.Tensor] = None  # Resolution per reflection (N,)
     bin_indices: Optional[torch.Tensor] = None  # Resolution bin assignments (N,), int32
     outlier_flags: Optional[torch.Tensor] = None  # Outlier flags (N,), bool
     phase: Optional[torch.Tensor] = None  # Phases in radians (N,)
     fom: Optional[torch.Tensor] = None  # Figure of merit (N,)
     _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool
+    # Anomalous (Bijvoet) bookkeeping, populated during canonicalization:
+    #   friedel_flags: True where the canonical mapping conjugated a Friedel mate
+    #   hkl_anomalous: signed Miller indices (canonical for +, negated for flagged
+    #     mates) used for structure-factor evaluation so the two members of a
+    #     Bijvoet pair get distinct |F_calc|. self.hkl stays the canonical ASU index.
+    friedel_flags: Optional[torch.Tensor] = None  # (N,), bool
+    hkl_anomalous: Optional[torch.Tensor] = None  # (N, 3), int32
+    # Scalar merge state (NOT per-reflection): True when the data are Friedel-merged
+    # (one row per ASU reflection), False when anomalous F(+)/F(-) have been loaded as
+    # explicit Bijvoet pairs (separate signed-HKL rows). Gates the model's f'' term.
+    friedel_merged: bool = True
 
     # === E-value and anisotropy correction fields ===
     E: Optional[torch.Tensor] = None  # E-values (N,)
@@ -131,7 +147,6 @@ class CrystalDataset(DeviceMovementMixin):
             if isinstance(val, torch.Tensor):
                 yield f.name, val
 
-
     # ========== SERIALIZATION ==========
 
     def _get_state(self) -> Dict[str, Any]:
@@ -166,9 +181,7 @@ class CrystalDataset(DeviceMovementMixin):
         return state
 
     @classmethod
-    def _from_state(
-        cls, state: Dict[str, Any], device=get_default_device()
-    ) -> "CrystalDataset":
+    def _from_state(cls, state: Dict[str, Any], device=None) -> "CrystalDataset":
         """
         Reconstruct from state dictionary.
 
@@ -176,8 +189,9 @@ class CrystalDataset(DeviceMovementMixin):
         ----------
         state : Dict[str, Any]
             State dictionary from _get_state().
-        device : str
-            Device to load tensors onto.
+        device : torch.device, optional
+            Device to load tensors onto. If None, defaults to the configured
+            device via get_default_device().
 
         Returns
         -------
@@ -185,6 +199,9 @@ class CrystalDataset(DeviceMovementMixin):
             Reconstructed dataset.
         """
         from torchref.utils.utils import TensorMasks
+
+        if device is None:
+            device = get_default_device()
 
         # Extract masks before creating object
         masks_state = state.pop("masks", {})
@@ -232,7 +249,7 @@ class CrystalDataset(DeviceMovementMixin):
             print(f"Saved {self.__class__.__name__} to {path}")
 
     @classmethod
-    def load_state(cls, path: str, device=get_default_device()) -> "CrystalDataset":
+    def load_state(cls, path: str, device=None) -> "CrystalDataset":
         """
         Load dataset state from file.
 
@@ -240,8 +257,9 @@ class CrystalDataset(DeviceMovementMixin):
         ----------
         path : str
             Input file path.
-        device : str
-            Device to load tensors onto.
+        device : torch.device, optional
+            Device to load tensors onto. If None, defaults to the configured
+            device via get_default_device().
 
         Returns
         -------

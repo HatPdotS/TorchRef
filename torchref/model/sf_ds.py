@@ -16,17 +16,19 @@ import torch
 import torch.nn as nn
 
 from torchref.base.direct_summation import (
-    iso_structure_factor_torched,
-    aniso_structure_factor_torched,
+    Engine,
+    ds_aniso,
+    ds_iso,
 )
 from torchref.base.reciprocal import (
     get_scattering_vectors,
     reciprocal_basis_matrix,
 )
-from torchref.config import dtypes, get_default_device
+from torchref.config import dtypes, get_complex_dtype, get_default_device
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.utils.device_resolution import resolve_device
 
 
 class SfDS(DeviceMovementMixin, nn.Module):
@@ -94,10 +96,11 @@ class SfDS(DeviceMovementMixin, nn.Module):
         self,
         cell: Optional[Cell] = None,
         spacegroup: SpaceGroupLike = None,
-        dtype_float: torch.dtype = dtypes.float,
-        device: torch.device = get_default_device(),
+        dtype_float: torch.dtype = None,
+        device: torch.device = None,
         verbose: int = 0,
         max_memory_gb: float = 2.0,
+        engine: Engine = Engine.AUTO,
     ):
         """
         Initialize the SfDS module with cell and spacegroup.
@@ -116,21 +119,29 @@ class SfDS(DeviceMovementMixin, nn.Module):
             Verbosity level for logging. Default is 0.
         max_memory_gb : float, optional
             Maximum memory for intermediate tensors in GB. Default is 2.0.
+        engine : Engine, optional
+            Structure-factor backend selector. ``Engine.AUTO`` (default)
+            derives the backend from device/dtype/availability (Triton on
+            CUDA+float32, else checkpointed eager). ``Engine.TRITON`` and
+            ``Engine.EAGER`` force a path (for tests/benchmarks).
         """
         super().__init__()
+        if dtype_float is None:
+            dtype_float = dtypes.float
+        if device is None:
+            device = get_default_device()
         self.dtype_float = dtype_float
         self.device = device
         self.verbose = verbose
         self.max_memory_gb = max_memory_gb
+        self.engine = engine
 
         # Store cell and spacegroup
         self._cell = cell
         self._spacegroup = None
 
         if spacegroup is not None or cell is not None:
-            self._spacegroup = SpaceGroup(
-                spacegroup, dtype=dtype_float, device=device
-            )
+            self._spacegroup = SpaceGroup(spacegroup, dtype=dtype_float, device=device)
 
         # Cache reciprocal basis matrix
         self._recB: Optional[torch.Tensor] = None
@@ -281,6 +292,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
             def p1_symmetry(coords_3N):
                 # coords_3N: (3, N) -> (3, N, 1)
                 return coords_3N.unsqueeze(2)
+
             return p1_symmetry
 
         def apply_symmetry(coords_3N):
@@ -384,15 +396,39 @@ class SfDS(DeviceMovementMixin, nn.Module):
         if self._cell is None:
             raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
 
+        # Normalize the input hkl onto this module's device. The symmetry
+        # helpers derive equiv_hkls/phases from hkl.device while sf_total is
+        # allocated on self.device, so a caller passing hkl on another device
+        # would hit a cross-device add. resolve_device gives the module's
+        # canonical device; hkl is moved explicitly (resolve_device only moves
+        # modules in place, not plain tensors).
+        device = resolve_device(self)
+        hkl = hkl.to(device)
+
         # Cache atomic parameters for reuse
-        xyz_frac_iso = self._cartesian_to_fractional(xyz_iso) if len(xyz_iso) > 0 else None
-        xyz_frac_aniso = self._cartesian_to_fractional(xyz_aniso) if xyz_aniso is not None and len(xyz_aniso) > 0 else None
+        xyz_frac_iso = (
+            self._cartesian_to_fractional(xyz_iso) if len(xyz_iso) > 0 else None
+        )
+        xyz_frac_aniso = (
+            self._cartesian_to_fractional(xyz_aniso)
+            if xyz_aniso is not None and len(xyz_aniso) > 0
+            else None
+        )
 
         # No symmetry: compute F_P1 directly
         if not apply_symmetry or self._spacegroup is None:
             sf_p1 = self._compute_p1_sf(
-                hkl, xyz_frac_iso, adp_iso, occ_iso, A_iso, B_iso,
-                xyz_frac_aniso, u_aniso, occ_aniso, A_aniso, B_aniso
+                hkl,
+                xyz_frac_iso,
+                adp_iso,
+                occ_iso,
+                A_iso,
+                B_iso,
+                xyz_frac_aniso,
+                u_aniso,
+                occ_aniso,
+                A_aniso,
+                B_aniso,
             )
             return sf_p1, None
 
@@ -413,14 +449,25 @@ class SfDS(DeviceMovementMixin, nn.Module):
         phases = compute_translation_phases(hkl, translations)
 
         # Compute F_P1 at each equivalent HKL and combine
-        sf_total = torch.zeros(hkl.shape[0], dtype=torch.complex128, device=self.device)
+        sf_total = torch.zeros(
+            hkl.shape[0], dtype=get_complex_dtype(), device=self.device
+        )
 
         for i in range(n_ops):
-            equiv_hkl_i = equiv_hkls[i].float()  # (N, 3)
+            equiv_hkl_i = equiv_hkls[i].to(dtype=self.dtype_float)  # (N, 3)
 
             sf_p1_i = self._compute_p1_sf(
-                equiv_hkl_i, xyz_frac_iso, adp_iso, occ_iso, A_iso, B_iso,
-                xyz_frac_aniso, u_aniso, occ_aniso, A_aniso, B_aniso
+                equiv_hkl_i,
+                xyz_frac_iso,
+                adp_iso,
+                occ_iso,
+                A_iso,
+                B_iso,
+                xyz_frac_aniso,
+                u_aniso,
+                occ_aniso,
+                A_aniso,
+                B_aniso,
             )
 
             # Apply phase and accumulate
@@ -444,41 +491,49 @@ class SfDS(DeviceMovementMixin, nn.Module):
     ) -> torch.Tensor:
         """Compute P1 structure factors (no symmetry expansion).
 
-        Always passes A/B coefficients to low-level functions so scattering
-        factors are computed in batches, avoiding large (N_refl, N_atoms) tensors.
+        Dispatches to the capability-selected backend (Triton on CUDA+float32,
+        else checkpointed eager). The backend computes scattering factors
+        internally from A/B and never materializes a large (N_refl, N_atoms)
+        intermediate.
         """
-        # P1 identity
-        def p1_symmetry(coords_3N):
-            return coords_3N.unsqueeze(2)  # (3, N) -> (3, N, 1)
-
         # Get reciprocal basis matrix and compute scattering vectors
         recB = self._get_reciprocal_basis_matrix()
         s_vectors = get_scattering_vectors(hkl, self._cell.data, recB)
         s = torch.norm(s_vectors, dim=1)
 
-        sf_total = torch.zeros(hkl.shape[0], dtype=torch.complex128, device=self.device)
+        sf_total = torch.zeros(
+            hkl.shape[0], dtype=get_complex_dtype(), device=self.device
+        )
 
-        # Compute isotropic contribution - always pass A/B coefficients
+        # Compute isotropic contribution
         if xyz_frac_iso is not None and len(xyz_frac_iso) > 0:
-            sf_iso = iso_structure_factor_torched(
-                hkl=hkl, s=s, xyz_fractional=xyz_frac_iso,
-                occ=occ_iso, scattering_factors=None,
-                adp=adp_iso, spacegroup=p1_symmetry,
+            sf_iso = ds_iso(
+                hkl,
+                s,
+                xyz_frac_iso,
+                occ_iso,
+                adp_iso,
+                A_iso,
+                B_iso,
+                engine=self.engine,
                 max_memory_gb=self.max_memory_gb,
-                A=A_iso, B_coeff=B_iso,
             )
-            sf_total = sf_total + sf_iso
+            sf_total = sf_total + sf_iso.to(sf_total.dtype)
 
-        # Compute anisotropic contribution - always pass A/B coefficients
+        # Compute anisotropic contribution
         if xyz_frac_aniso is not None and len(xyz_frac_aniso) > 0:
-            sf_aniso = aniso_structure_factor_torched(
-                hkl=hkl, s_vector=s_vectors, xyz_fractional=xyz_frac_aniso,
-                occ=occ_aniso, scattering_factors=None,
-                U=u_aniso, spacegroup=p1_symmetry,
+            sf_aniso = ds_aniso(
+                hkl,
+                s_vectors,
+                xyz_frac_aniso,
+                occ_aniso,
+                u_aniso,
+                A_aniso,
+                B_aniso,
+                engine=self.engine,
                 max_memory_gb=self.max_memory_gb,
-                A=A_aniso, B_coeff=B_aniso,
             )
-            sf_total = sf_total + sf_aniso
+            sf_total = sf_total + sf_aniso.to(sf_total.dtype)
 
         return sf_total
 
@@ -502,7 +557,9 @@ class SfDS(DeviceMovementMixin, nn.Module):
         new_cell = self._cell.clone() if self._cell is not None else None
 
         # Copy the spacegroup
-        new_spacegroup = self._spacegroup.copy() if self._spacegroup is not None else None
+        new_spacegroup = (
+            self._spacegroup.copy() if self._spacegroup is not None else None
+        )
 
         # Create new SfDS with copied components
         new_ds = SfDS(
@@ -512,6 +569,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
             device=self.device,
             verbose=self.verbose,
             max_memory_gb=self.max_memory_gb,
+            engine=self.engine,
         )
 
         return new_ds

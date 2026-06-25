@@ -1,0 +1,68 @@
+==============================================================================
+TorchRef — Refinement Cycle Benchmark
+==============================================================================
+CPU threads:    [1, 2, 4, 8, 16]
+GPU:            yes
+Iterations:     10 (+ 3 warmup)
+Output dir:     /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/data/refinement_cycle/results_20260618_141803
+Python:         /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/.dev/bin/python
+==============================================================================
+
+[1/6] CPU with 1 thread(s)...
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:28: UserWarning: TorchRef using user-specified 1 threads from TORCHREF_NUM_THREADS.
+  from torchref.refinement import LBFGSRefinement
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:112: DeprecationWarning: Calling ReflectionData (data()) is deprecated; use the data.work / data.free / data.validation accessor, or data.get_corrected_data() for the full scaled arrays.
+  hkl, _, _, _ = refinement.reflection_data()
+CPU x1  fwd: 0.1131s  bwd: 0.1096s  fwd+bwd: 0.2208s  | top: xray=168.3ms, geometry/nonbonded=39.4ms, geometry/planarity=4.0ms
+
+[2/6] CPU with 2 thread(s)...
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:28: UserWarning: TorchRef using user-specified 2 threads from TORCHREF_NUM_THREADS.
+  from torchref.refinement import LBFGSRefinement
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:112: DeprecationWarning: Calling ReflectionData (data()) is deprecated; use the data.work / data.free / data.validation accessor, or data.get_corrected_data() for the full scaled arrays.
+  hkl, _, _, _ = refinement.reflection_data()
+CPU x2  fwd: 0.0794s  bwd: 0.0711s  fwd+bwd: 0.1515s  | top: xray=112.3ms, geometry/nonbonded=25.9ms, geometry/planarity=4.0ms
+
+[3/6] CPU with 4 thread(s)...
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:28: UserWarning: TorchRef using user-specified 4 threads from TORCHREF_NUM_THREADS.
+  from torchref.refinement import LBFGSRefinement
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:112: DeprecationWarning: Calling ReflectionData (data()) is deprecated; use the data.work / data.free / data.validation accessor, or data.get_corrected_data() for the full scaled arrays.
+  hkl, _, _, _ = refinement.reflection_data()
+CPU x4  fwd: 0.0682s  bwd: 0.0569s  fwd+bwd: 0.1211s  | top: xray=81.1ms, geometry/nonbonded=25.5ms, geometry/planarity=4.0ms
+
+[4/6] CPU with 8 thread(s)...
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:28: UserWarning: TorchRef using user-specified 8 threads from TORCHREF_NUM_THREADS.
+  from torchref.refinement import LBFGSRefinement
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:112: DeprecationWarning: Calling ReflectionData (data()) is deprecated; use the data.work / data.free / data.validation accessor, or data.get_corrected_data() for the full scaled arrays.
+  hkl, _, _, _ = refinement.reflection_data()
+CPU x8  fwd: 0.0542s  bwd: 0.0412s  fwd+bwd: 0.0960s  | top: xray=66.5ms, geometry/nonbonded=16.8ms, geometry/planarity=4.0ms
+
+[5/6] CPU with 16 thread(s)...
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:28: UserWarning: TorchRef using user-specified 16 threads from TORCHREF_NUM_THREADS.
+  from torchref.refinement import LBFGSRefinement
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:112: DeprecationWarning: Calling ReflectionData (data()) is deprecated; use the data.work / data.free / data.validation accessor, or data.get_corrected_data() for the full scaled arrays.
+  hkl, _, _, _ = refinement.reflection_data()
+CPU x16  fwd: 0.0442s  bwd: 0.0355s  fwd+bwd: 0.0809s  | top: xray=55.8ms, geometry/nonbonded=13.7ms, geometry/planarity=3.9ms
+
+[6/6] GPU benchmark...
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:28: UserWarning: TorchRef using user-specified 1 threads from TORCHREF_NUM_THREADS.
+  from torchref.refinement import LBFGSRefinement
+/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/refinement_cycle_benchmark/benchmark_worker.py:112: DeprecationWarning: Calling ReflectionData (data()) is deprecated; use the data.work / data.free / data.validation accessor, or data.get_corrected_data() for the full scaled arrays.
+  hkl, _, _, _ = refinement.reflection_data()
+Saved: /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/output/figure3b_profiling.png
+NVIDIA A100-PCIE-40GB  fwd: 0.0087s  bwd: 0.0058s  fwd+bwd: 0.0153s  | top: xray=7.9ms, geometry/nonbonded=2.0ms, geometry/planarity=1.7ms
+
+==============================================================================================================
+Summary
+==============================================================================================================
+    Device  Threads |        Fwd     Sp | Fwd(graph)     Sp |        Bwd     Sp |    Fwd+Bwd     Sp
+---------------------------------------------------------------------------------------------------
+       CPU        1 |    0.1131s   1.0x |    0.1172s   1.0x |    0.1096s   1.0x |    0.2208s   1.0x
+       CPU        2 |    0.0794s   1.4x |    0.0828s   1.4x |    0.0711s   1.5x |    0.1515s   1.5x
+       CPU        4 |    0.0682s   1.7x |    0.0717s   1.6x |    0.0569s   1.9x |    0.1211s   1.8x
+       CPU        8 |    0.0542s   2.1x |    0.0569s   2.1x |    0.0412s   2.7x |    0.0960s   2.3x
+       CPU       16 |    0.0442s   2.6x |    0.0482s   2.4x |    0.0355s   3.1x |    0.0809s   2.7x
+NVIDIA A100-PCIE-40GB          |    0.0087s  12.9x |    0.0094s  12.5x |    0.0058s  18.8x |    0.0153s  14.4x
+
+Results saved to: /das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure3_performance/data/refinement_cycle/results_20260618_141803/summary.csv
+
+Generating plots...

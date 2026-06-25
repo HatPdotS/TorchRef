@@ -4,53 +4,7 @@ R-factor calculation functions.
 Functions for computing crystallographic R-factors and related metrics.
 """
 
-import numpy as np
 import torch
-
-
-def get_rfactor_torch(F_obs, F_calc):
-    """
-    Calculate R-factor between observed and calculated structure factors (PyTorch version).
-
-    Parameters
-    ----------
-    F_obs : torch.Tensor
-        Observed structure factor amplitudes.
-    F_calc : torch.Tensor
-        Calculated structure factor amplitudes.
-
-    Returns
-    -------
-    torch.Tensor
-        R-factor value.
-    """
-    F_obs = torch.abs(F_obs)
-    F_calc = torch.abs(F_calc)
-    return torch.sum(torch.abs(F_obs - F_calc)) / torch.sum(F_obs)
-
-
-def get_rfactor(F_obs, F_calc):
-    """
-    Calculate the R-factor between observed and calculated structure factors (NumPy version).
-
-    The R-factor is a measure of agreement between observed and calculated
-    structure factor amplitudes, defined as sum(|F_obs - F_calc|) / sum(F_obs).
-
-    Parameters
-    ----------
-    F_obs : numpy.ndarray
-        Observed structure factor amplitudes.
-    F_calc : numpy.ndarray
-        Calculated structure factor amplitudes.
-
-    Returns
-    -------
-    float
-        R-factor value between 0 and 1.
-    """
-    F_obs = np.abs(F_obs)
-    F_calc = np.abs(F_calc)
-    return np.sum(np.abs(F_obs - F_calc)) / np.sum(F_obs)
 
 
 def rfactor(F_obs: torch.Tensor, F_calc: torch.Tensor) -> float:
@@ -103,6 +57,37 @@ def get_rfactors(
     return r_work, r_test
 
 
+def rfactor_work_free(data, F_calc_amp: torch.Tensor) -> tuple:
+    """R-work / R-free over a ReflectionData's canonical work / free subsets.
+
+    The single shared R-factor partition: ``R_work`` on ``data.work`` and
+    ``R_free`` on ``data.free`` (the same subset accessors the refinement loss
+    uses — validity masks applied, work/test split applied, and any separate
+    validation set excluded from both). Both the refinement reporting
+    (:meth:`XrayTarget.get_rfactor`) and the scaler's scale-fit diagnostic call
+    this, so they cannot disagree on convention.
+
+    Parameters
+    ----------
+    data : ReflectionData
+        Must expose ``.work`` / ``.free`` subset accessors with ``.F`` and
+        ``.select(full_array)``.
+    F_calc_amp : torch.Tensor
+        Full-size, already-scaled calculated **amplitudes** (``|F_calc|``),
+        aligned to ``data.hkl``.
+
+    Returns
+    -------
+    tuple
+        ``(R_work, R_free)`` as Python floats.
+    """
+    work = data.work
+    free = data.free
+    r_work = rfactor(work.F, work.select(F_calc_amp))
+    r_free = rfactor(free.F, free.select(F_calc_amp))
+    return r_work, r_free
+
+
 def bin_wise_rfactors(
     F_obs: torch.Tensor, F_calc: torch.Tensor, rfree: torch.Tensor, bins: torch.Tensor
 ) -> tuple:
@@ -136,58 +121,3 @@ def bin_wise_rfactors(
         r_work_bins.append(r_work)
         r_test_bins.append(r_test)
     return torch.tensor(r_work_bins), torch.tensor(r_test_bins)
-
-
-def calc_outliers(F_obs, F_calc, z):
-    """
-    Identify outlier reflections based on deviation from expected values (PyTorch version).
-
-    Parameters
-    ----------
-    F_obs : torch.Tensor
-        Observed structure factor amplitudes.
-    F_calc : torch.Tensor
-        Calculated structure factor amplitudes.
-    z : float
-        Number of standard deviations for outlier threshold.
-
-    Returns
-    -------
-    torch.Tensor
-        Boolean mask where True indicates outlier reflections.
-    """
-    F_obs = torch.abs(F_obs)
-    F_calc = torch.abs(F_calc)
-    diff = torch.abs(F_obs - F_calc) / F_obs
-    std = torch.std(diff)
-    outliers = diff > z * std
-    return outliers
-
-
-def calc_outliers_numpy(F_obs, F_calc, z):
-    """
-    Identify outlier reflections based on structure factor differences (NumPy version).
-
-    Detects reflections where the normalized difference between observed
-    and calculated structure factors exceeds z standard deviations.
-
-    Parameters
-    ----------
-    F_obs : numpy.ndarray
-        Observed structure factor amplitudes.
-    F_calc : numpy.ndarray
-        Calculated structure factor amplitudes.
-    z : float
-        Number of standard deviations for outlier threshold.
-
-    Returns
-    -------
-    numpy.ndarray
-        Boolean array where True indicates an outlier reflection.
-    """
-    F_obs = np.abs(F_obs)
-    F_calc = np.abs(F_calc)
-    diff = np.abs(F_obs - F_calc) / F_obs * np.mean(F_obs)
-    std = np.std(diff)
-    outliers = diff > z * std
-    return outliers

@@ -56,9 +56,9 @@ class MapSymmetry(DeviceMixin, nn.Module):
         space_group,
         map_shape,
         cell_params,
-        dtype_float=get_float_dtype(),
+        dtype_float=None,
         verbose=1,
-        device=get_default_device(),
+        device=None,
     ):
         """
         Initialize map symmetry operator.
@@ -79,6 +79,10 @@ class MapSymmetry(DeviceMixin, nn.Module):
             Device to use for computation.
         """
         super().__init__()
+        if dtype_float is None:
+            dtype_float = get_float_dtype()
+        if device is None:
+            device = get_default_device()
         self.dtype_float = dtype_float
         self.space_group = space_group
         self.map_shape = tuple(map_shape)
@@ -304,7 +308,6 @@ class MapSymmetry(DeviceMixin, nn.Module):
         return self.forward(
             density_map, apply_symmetry=apply_symmetry, combine_mode=combine_mode
         )
-
 
     def get_symmetry_info(self):
         """

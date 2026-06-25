@@ -138,3 +138,41 @@ class TestCLIRefine:
             assert 0.0 < val < 1.0, f"{key} outside plausible range: {val}"
 
 
+
+
+class TestWavelengthFlag:
+    """The ``wavelength`` constructor / ``--wavelength`` flag coupling."""
+
+    @pytest.fixture
+    def small_pair(self, test_files_dir):
+        pdb = test_files_dir / "pdb" / "1DAW.pdb"
+        mtz = test_files_dir / "mtz" / "1DAW.mtz"
+        if not pdb.exists() or not mtz.exists():
+            pytest.skip("1DAW test files not found")
+        return {"pdb": str(pdb), "mtz": str(mtz)}
+
+    @pytest.mark.integration
+    def test_wavelength_zero_disables_anomalous_and_merges(self, small_pair):
+        """wavelength=0 -> no anomalous correction + forced Friedel-merged read."""
+        from torchref.refinement.lbfgs_refinement import LBFGSRefinement
+
+        ref = LBFGSRefinement(
+            data_file=small_pair["mtz"], pdb=small_pair["pdb"],
+            device=torch.device("cpu"), verbose=0, wavelength=0,
+        )
+        assert ref.wavelength is None
+        assert ref.anomalous is False
+        assert bool(ref.reflection_data.friedel_merged) is True
+        assert ref.model.wavelength is None
+        assert bool(ref.model.anomalous_bijvoet) is False
+
+    @pytest.mark.integration
+    def test_wavelength_default_preserved(self, small_pair):
+        from torchref.refinement.lbfgs_refinement import LBFGSRefinement
+
+        ref = LBFGSRefinement(
+            data_file=small_pair["mtz"], pdb=small_pair["pdb"],
+            device=torch.device("cpu"), verbose=0,
+        )
+        assert ref.wavelength == 1.0
+        assert ref.model.wavelength == 1.0

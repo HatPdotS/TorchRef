@@ -346,7 +346,9 @@ class DataTarget(Target):
                 "Either provide a model or pass fcalc directly."
             )
         if hkl is None:
-            hkl, _, _, _ = self._data()
+            # Signed HKL so Bijvoet mates get distinct |F_calc| (see
+            # ReflectionData.hkl_for_sf).
+            hkl = self._data.hkl_for_sf()
         return self._model(hkl, recalc=recalc)
 
     def get_fcalc_scaled(self, hkl=None, recalc=False, fcalc=None):
@@ -392,24 +394,6 @@ class DataTarget(Target):
             Scaled structure factor amplitudes |F_calc|.
         """
         return torch.abs(self.get_fcalc_scaled(hkl, recalc=recalc, fcalc=fcalc))
-
-    def get_rfactor(self):
-        """
-        Compute R-factors using scaler.
-
-        Returns
-        -------
-        tuple
-            (R_work, R_free) values.
-
-        Raises
-        ------
-        RuntimeError
-            If no scaler is set.
-        """
-        if self._scaler is None:
-            raise RuntimeError("Cannot compute R-factor: no scaler set.")
-        return self._scaler.rfactor()
 
 
 # =============================================================================
