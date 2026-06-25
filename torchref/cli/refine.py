@@ -7,19 +7,7 @@ Uses the maximum-likelihood σ_A (Read MLF) target by default; Bhattacharyya /
 Gaussian / least-squares / plain maximum-likelihood targets remain available
 via ``--xray-mode``.
 
-Examples
---------
-::
 
-    # Default: ml (maximum-likelihood Luzzati σ_A) target, joint XYZ+ADP+scaler LBFGS
-    torchref.refine -m model.pdb -sf reflections.mtz -o output_dir/
-
-    # 10 refinement cycles
-    torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
-
-    # Alternative targets
-    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode bhattacharyya
-    torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
 """
 
 import argparse
@@ -68,11 +56,19 @@ Examples:
   # 10 refinement cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ -n 10
 
-  # Separated XYZ then ADP cycles
-  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode separate
+  # Joined XYZ then ADP cycles
+  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode everything
 
-  # Legacy maximum-likelihood target
-  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode ml
+  # Pure gaussian xray target 
+  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode gaussian
+
+Loss weights:
+  Default group weights are xray=1 / geometry=0.2 / adp=0.02, with
+  geometry/ramachandran=0 (the Ramachandran restraint is OFF by default.
+  Weights are hierarchical and MULTIPLICATIVE: a target's effective weight is the 
+  product of its path levels (e.g. geometry/ramachandran = weight[geometry] x weight[geometry/ramachandran]),
+  so a component key scales within its group. Override any subset with --weights,
+  e.g. re-enable Ramachandran with --weights '{"geometry/ramachandran": 1.0}'.
         """,
     )
 
@@ -111,6 +107,8 @@ Examples:
         help="Global multiplier applied to σ_m for the Bhattacharyya target. "
         "Ignored for other targets. Default 1.0.",
     )
+    # Defaults are documented in the epilog above; we avoid importing
+    # DEFAULT_GROUP_WEIGHTS here so --help stays fast (it would pull in torch).
     add_weights_arg(refine_group)
     refine_group.add_argument(
         "--with-rigid-body",

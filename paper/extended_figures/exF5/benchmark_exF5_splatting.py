@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark structure factor sampling approaches for Extended Figure 4.
+"""Benchmark structure factor sampling approaches for Extended Figure 5.
 
 Compares 5 configurations of the Fcalc pipeline on the 1DAW test structure:
   1. CPU original (1 thread)     — trivial sampling
@@ -13,14 +13,14 @@ For each, times the total Fcalc AND breaks it into 3 stages:
   B. FFT
   C. Symmetry extraction
 
-Output: data/exF4_splatting.json
+Output: data/exF5_splatting.json
 
 Usage:
     # CPU-only (no GPU required):
-    python benchmark_exF4_splatting.py --cpu-only
+    python benchmark_exF5_splatting.py --cpu-only
 
     # All (needs GPU):
-    python benchmark_exF4_splatting.py
+    python benchmark_exF5_splatting.py
 """
 
 import argparse
@@ -42,7 +42,7 @@ from torchref.base.reciprocal import ReciprocalSymmetryExtractor
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "figure3_performance" / "data"
 PDB_FILE = DATA_DIR / "1DAW.pdb"
 MTZ_FILE = DATA_DIR / "1DAW.mtz"
-OUT_JSON = Path(__file__).resolve().parent / "exF4_splatting.json"
+OUT_JSON = Path(__file__).resolve().parent / "exF5_splatting.json"
 
 N_WARMUP = 5
 N_ITERATIONS = 25
@@ -226,7 +226,7 @@ def main():
         r["speedup_vs_baseline"] = baseline / r["total"]["mean_ms"]
 
     output = {
-        "benchmark": "exF4_splatting",
+        "benchmark": "exF5_splatting",
         "structure": "1DAW",
         "n_warmup": n_warmup,
         "n_iterations": n_iterations,

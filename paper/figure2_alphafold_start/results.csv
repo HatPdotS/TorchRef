@@ -1,5 +1,5 @@
 engine,n,median_rwork,median_rfree,overfit_gap
-torchref,740,0.2697,0.3174,0.0477
-phenix,734,0.274,0.3156,0.0415
-refmac,760,0.2731,0.3147,0.0416
-prediction,759,0.4078,0.4081,0.0003
+torchref,715,0.2699,0.3168,0.0469
+phenix,715,0.2749,0.3167,0.0418
+refmac,715,0.2741,0.3162,0.0421
+prediction,715,0.409,0.4089,-0.0001

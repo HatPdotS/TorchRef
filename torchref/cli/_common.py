@@ -404,8 +404,13 @@ def add_weights_arg(
 ) -> None:
     """Add ``--weights`` argument (JSON string or file path)."""
     help_text = (
-        "Target weights as a JSON string or path to a JSON file. "
-        "Only the keys you supply override defaults."
+        "Target weights as a JSON string or path to a JSON file. Keys may be a "
+        "group ('geometry') or a component ('geometry/bond'). Weights are "
+        "hierarchical and MULTIPLICATIVE: a target's effective weight is the "
+        "product of its group and component weights (e.g. 'geometry/bond' is "
+        "weight[geometry] * weight[geometry/bond]), so 'geometry/ramachandran': 0 "
+        "disables only that term while the rest of 'geometry' keeps its weight. "
+        "Only the keys you supply override the defaults."
     )
     if default_weights is not None:
         help_text += f"  Defaults: {json.dumps(default_weights, indent=None)}"

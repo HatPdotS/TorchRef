@@ -248,10 +248,20 @@ def create_figure(outpath: str, dpi: int = 300):
     runtime = pd.read_csv(METRICS_DIR / "fig_runtime.csv")
     percycle = pd.read_csv(METRICS_DIR / "fig_percycle.csv")
 
+    # Conserved set: the identical structures every engine has an R-factor for
+    # (written by aggregate_figure_metrics.py). Restricting every panel to it makes
+    # the medians comparable — no engine is scored on a different/easier subset.
+    conserved_file = METRICS_DIR / "conserved_codes.txt"
+    conserved = set(conserved_file.read_text().split()) if conserved_file.exists() else None
+    if conserved:
+        for df in (rfac, geom, runtime, percycle):
+            df.drop(df.index[~df.code.isin(conserved)], inplace=True)
+        print(f"Conserved set: n={len(conserved)} structures (all engines)")
+
     rf_by = {e: rfac[rfac.engine == e] for e in COLOR}
     geom_by = {e: geom[geom.engine == e] for e in COLOR}
 
-    print("Median R-free (validated):")
+    print("Median R-free (validated, conserved set):")
     for e, lbl, _ in ENGINES:
         df = rf_by[e]
         print(f"  {lbl:<22} n={len(df):>4}  R-work={df.r_work.median():.4f} "

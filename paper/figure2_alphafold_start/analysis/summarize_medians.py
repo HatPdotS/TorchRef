@@ -18,7 +18,8 @@ BASE = Path(__file__).resolve().parent.parent          # figure2_alphafold_start
 PAPER = BASE.parent                                     # paper/
 M = BASE / "runs" / "metrics"
 EXF2_CSV = PAPER / "extended_figures" / "exF2" / "data" / "exF2_rfactor_by_resolution.csv"
-EXF4_JSON = PAPER / "extended_figures" / "exF4" / "exF4_splatting.json"
+EXF4_CSV = PAPER / "extended_figures" / "exF4" / "data" / "exF4_singlecore.csv"
+EXF5_JSON = PAPER / "extended_figures" / "exF5" / "exF5_splatting.json"
 OUT = PAPER / "FIGURE_MEDIANS.md"
 
 TR = "torchref_g0p2_a0p02"     # locked-default TorchRef arm
@@ -40,9 +41,16 @@ def main():
            ""]
 
     # ── Main Fig 2A: R-factors, PHENIX-validated (fig_crossscore, scorer=phenix) ──
+    # Restricted to the conserved set (identical structures across engines) so the
+    # medians are comparable; see aggregate_figure_metrics.py.
     cs = pd.read_csv(M / "fig_crossscore.csv")
     php = cs[cs.scorer == "phenix"]
-    out += ["## Figure 2A — R-factors (PHENIX-validated)", "",
+    conserved_file = M / "conserved_codes.txt"
+    conserved = set(conserved_file.read_text().split()) if conserved_file.exists() else None
+    if conserved:
+        php = php[php.code.isin(conserved)]
+    n_note = f" (conserved set, n={len(conserved)})" if conserved else ""
+    out += [f"## Figure 2A — R-factors (PHENIX-validated){n_note}", "",
             "| Model | median R-work | median R-free | n |",
             "|---|---|---|---|"]
     for eng in ["prediction", "refmac", "phenix", TR]:
@@ -53,11 +61,15 @@ def main():
     out.append("")
 
     # ── Main Fig 2B: geometry RMSZ (fig_geometry; RMSZ = rms/sigma) ──
+    # Restricted to the conserved set so every engine is scored on identical
+    # structures (matches plot_figure_af.py, which filters all panels to it).
     geo = pd.read_csv(M / "fig_geometry.csv")
+    if conserved:
+        geo = geo[geo.code.isin(conserved)]
     pairs = [("Bond", "rmsBOND", "sigBOND"), ("Angle", "rmsANGL", "sigANGL"),
              ("Chiral", "rmsCHIRAL", "sigCHIRAL"),
              ("MC B-factor", "rmsB_mc_bond", "sigB_mc_bond")]
-    out += ["## Figure 2B — geometry RMSZ (median; ideal = 1.0)", "",
+    out += [f"## Figure 2B — geometry RMSZ (median; ideal = 1.0){n_note}", "",
             "| Model | " + " | ".join(f"{p[0]} RMSZ" for p in pairs) + " | n |",
             "|---|" + "---|" * (len(pairs) + 1)]
     for eng in ["refmac", "phenix", "torchref"]:
@@ -75,8 +87,11 @@ def main():
     out.append("")
 
     # ── Main Fig 2C: runtime (fig_runtime, wall_s -> min) ──
+    # Conserved set (identical structures per engine), as in panels 2A/2B.
     rt = pd.read_csv(M / "fig_runtime.csv")
-    out += ["## Figure 2C — wall-clock runtime", "",
+    if conserved:
+        rt = rt[rt.code.isin(conserved)]
+    out += [f"## Figure 2C — wall-clock runtime{n_note}", "",
             "| Engine | median runtime (min) | n |", "|---|---|---|"]
     med_min = {}
     for eng in ["refmac", "torchref", "phenix"]:
@@ -90,6 +105,49 @@ def main():
                 f"({'slower' if med_min['torchref']>med_min['refmac'] else 'faster'}); "
                 f"TorchRef vs PHENIX: {med_min['phenix']/med_min['torchref']:.1f}× faster."]
     out.append("")
+
+    # ── Fig 2 run accounting: success counts + grouped failure reasons ──
+    # Every engine attempted the same candidate set of placed AF models. "Validated"
+    # = produced a PHENIX-scored R-factor; the headline medians use the conserved
+    # intersection (all four engines validated). fig_failures.csv (from
+    # aggregate_figure_metrics.py) classifies each non-validated structure as a
+    # 'refine' failure (engine produced no model) or a 'score' failure (model OK but
+    # the uniform PHENIX validator could not score it).
+    rfac = pd.read_csv(M / "fig_rfactors.csv")
+    fails = pd.read_csv(M / "fig_failures.csv") if (M / "fig_failures.csv").exists() \
+        else pd.DataFrame(columns=["engine", "code", "category", "reason"])
+    eng_order = ["prediction", "refmac", "phenix", "torchref"]
+    succ = {e: int((rfac.engine == e).sum()) for e in eng_order}
+    nfail = {e: int((fails.engine == e).sum()) for e in eng_order}
+    cand = {e: succ[e] + nfail[e] for e in eng_order}
+    N = max(cand.values()) if cand else 0
+    out += [f"## Figure 2 — run accounting (N={N} candidates; conserved set "
+            f"n={len(conserved) if conserved else 0})", "",
+            "Each engine refined the same set of Phaser-placed AlphaFold models. "
+            "*Validated* = produced a PHENIX-scored R-factor; the headline medians "
+            "use the conserved intersection where all four engines validated.", "",
+            "| Engine | validated | failed | candidates |", "|---|---|---|---|"]
+    for e in eng_order:
+        out.append(f"| {ENGINE_LABEL[e]} | {succ[e]} | {nfail[e]} | {cand[e]} |")
+    out.append("")
+    out += ["### Failure reasons (grouped)", ""]
+    cat_label = {"refine": "refine", "score": "scoring", "other": "other"}
+    for e in eng_order:
+        sub = fails[fails.engine == e]
+        if sub.empty:
+            continue
+        out.append(f"- **{ENGINE_LABEL[e]}** — {len(sub)} failed")
+        grp = (sub.groupby(["category", "reason"]).size()
+               .sort_values(ascending=False))
+        for (cat, reason), n in grp.items():
+            out.append(f"  - {n} × {cat_label.get(cat, cat)}: {reason}")
+    out += ["",
+            "Most failures trace to a **special-position pathology** in some placed "
+            "AF models: it breaks the uniform PHENIX scorer (so the structure is "
+            "unscoreable for *every* engine) and makes phenix.refine itself abort, "
+            "while REFMAC and TorchRef refine it without error. TorchRef's only "
+            "engine-side failures are OOMs at the 8 GB job limit (large structures; "
+            "would pass at 16 GB); REFMAC had zero refinement failures.", ""]
 
     # ── ExF2: R-factor gap vs resolution (PHENIX-scored) ──
     e2 = pd.read_csv(EXF2_CSV)
@@ -143,10 +201,33 @@ def main():
     out.append(f"| R-free − R-work gap | {gapv:.4f} |")
     out.append("")
 
-    # ── ExF4: sampling-optimization timings (single structure pdb_00001daw) ──
-    d = json.loads(EXF4_JSON.read_text())
+    # ── ExF4: single-core runtime (Figure 2c re-timed at 1 CPU core) ──
+    if EXF4_CSV.exists():
+        sc = pd.read_csv(EXF4_CSV)
+        sc_order = ["refmac", "torchref", "phenix"]   # speed order
+        sc_med = {e: pd.to_numeric(sc.loc[sc.program == e, "wall_s"],
+                                   errors="coerce").median() for e in sc_order}
+        n_sc = sc.code.nunique()
+        out += [f"## Extended Figure 4 — single-core runtime (Fig 2c at 1 CPU core)",
+                "",
+                f"All three programs pinned to **1 CPU core** over the conserved "
+                f"benchmark (n={n_sc}); cf. Fig 2C which runs at 4 cores.",
+                "",
+                "| Engine | median runtime (min) | median runtime (s) |",
+                "|---|---|---|"]
+        for e in sc_order:
+            out.append(f"| {ENGINE_LABEL[e]} | {sc_med[e]/60:.2f} | {sc_med[e]:.1f} |")
+        if all(sc_med.get(e) for e in sc_order):
+            out += ["",
+                    f"TorchRef vs Refmac: {sc_med['torchref']/sc_med['refmac']:.1f}× "
+                    f"slower; TorchRef vs PHENIX: "
+                    f"{sc_med['phenix']/sc_med['torchref']:.1f}× faster."]
+        out.append("")
+
+    # ── ExF5: sampling-optimization timings (single structure pdb_00001daw) ──
+    d = json.loads(EXF5_JSON.read_text())
     res = d["results"]
-    out += ["## Extended Figure 4 — F_calc sampling optimization (pdb_00001daw)",
+    out += ["## Extended Figure 5 — F_calc sampling optimization (pdb_00001daw)",
             "",
             f"{res[0]['n_atoms']} atoms, {res[0]['n_reflections']} reflections, "
             f"{res[0]['d_min']:.2f} Å.",

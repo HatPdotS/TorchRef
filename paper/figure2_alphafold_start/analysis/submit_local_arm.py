@@ -93,6 +93,12 @@ def main():
                     help="Override the geometry group weight (default 0.2).")
     ap.add_argument("--adp-weight", type=float, default=None,
                     help="Override the adp group weight (default 0.02).")
+    ap.add_argument("--no-ramachandran", action="store_true",
+                    help="Disable the Ramachandran restraint by setting the "
+                         "component weight 'geometry/ramachandran' to 0 (the "
+                         "other geometry components stay at their group weight). "
+                         "Use a distinct --arm (e.g. *_norama) so the run lands "
+                         "in its own directory for the with/without comparison.")
     ap.add_argument("--mem", default="8G",
                     help="SLURM --mem per job (e.g. 16G for large structures).")
     ap.add_argument("--codes", nargs="+", default=None)
@@ -115,6 +121,11 @@ def main():
         weights["geometry"] = args.geometry_weight
     if args.adp_weight is not None:
         weights["adp"] = args.adp_weight
+    if args.no_ramachandran:
+        # Zero the Ramachandran component (group weight still multiplies in, but
+        # 0.2 * 0 = 0). refine.py merges this onto DEFAULT_GROUP_WEIGHTS, so the
+        # remaining geometry components keep their default group weight.
+        weights["geometry/ramachandran"] = 0.0
     weights = weights or None
     wdesc = "DEFAULT_GROUP_WEIGHTS (1/0.2/0.02)" if weights is None else json.dumps(weights)
     print(f"Arm: {args.arm}  build=DEV(in-tree)  n_cycles={args.n_cycles}  "
