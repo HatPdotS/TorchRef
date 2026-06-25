@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Extended Figure 4: Structure factor sampling optimization breakdown.
+"""Extended Figure 5: Structure factor sampling optimization breakdown.
 
 Three-panel figure:
   (A) Grouped bar chart — total Fcalc time per approach (log Y)
   (B) Stacked bar chart — CPU stage breakdown
   (C) Stacked bar chart — GPU stage breakdown (own y-axis scale)
 
-Reads data from data/exF4_splatting.json (produced by benchmark_exF4_splatting.py).
+Reads data from data/exF5_splatting.json (produced by benchmark_exF5_splatting.py).
 """
 
 from pathlib import Path
@@ -34,7 +34,7 @@ COLOR_EXTRACTION = "#10b981"
 DPI = 500
 
 BASE = Path(__file__).resolve().parent
-DATA_JSON = BASE  / "exF4_splatting.json"
+DATA_JSON = BASE  / "exF5_splatting.json"
 OUTDIR = BASE / "output"
 
 
@@ -128,7 +128,7 @@ def main():
     # ── Combined figure (3 panels) ──
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
     fig.suptitle(
-        f"Extended Figure 4 — F$_{{\\mathrm{{calc}}}}$ Optimization Breakdown "
+        f"Extended Figure 5 — F$_{{\\mathrm{{calc}}}}$ Optimization Breakdown "
         f"(pdb_00001daw: {n_atoms} atoms, {n_refl} reflections, {d_min:.2f} Å)",
         fontsize=17, y=1.02,
     )
@@ -138,16 +138,16 @@ def main():
     _plot_stacked_breakdown(ax3, gpu_results, "GPU Stage Breakdown", "C")
 
     plt.tight_layout()
-    out = OUTDIR / "extended_figure4.png"
+    out = OUTDIR / "extended_figure5.png"
     plt.savefig(str(out), dpi=DPI, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out}")
 
     # ── Individual panels ──
     for plot_fn, plot_args, fname in [
-        (plot_panel_a, (results,), "exF4_panel_a.png"),
-        (_plot_stacked_breakdown, (cpu_results, "CPU Stage Breakdown", "B"), "exF4_panel_b.png"),
-        (_plot_stacked_breakdown, (gpu_results, "GPU Stage Breakdown", "C"), "exF4_panel_c.png"),
+        (plot_panel_a, (results,), "exF5_panel_a.png"),
+        (_plot_stacked_breakdown, (cpu_results, "CPU Stage Breakdown", "B"), "exF5_panel_b.png"),
+        (_plot_stacked_breakdown, (gpu_results, "GPU Stage Breakdown", "C"), "exF5_panel_c.png"),
     ]:
         fig, ax = plt.subplots(figsize=(8, 6))
         plot_fn(ax, *plot_args)

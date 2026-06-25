@@ -21,7 +21,7 @@ TorchRef here is the locked-default arm (torchref_g0p2_a0p02; xray 1 / geometry 
 
 Usage
 -----
-    ./.dev/bin/python paper/extended_figures/exF4/plot_exF4.py
+    ./.dev/bin/python paper/extended_figures/exF3/plot_exF3.py
 """
 
 import argparse

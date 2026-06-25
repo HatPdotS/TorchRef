@@ -55,5 +55,22 @@ paper/figure2_validation/experiments/
 # Extended figures experiment outputs and generated data
 paper/extended_figures/*/experiments/
 paper/extended_figures/*/output/
+# Per-structure refinement run outputs (refined.pdb/mtz/cif; multi-GB)
+paper/extended_figures/*/runs/
 
 torchref/data/amber_cache
+
+# Local dev environment, editable install, agent/tooling state (not for VCS)
+.dev/
+.claude/
+*.egg-info/
+
+# Test / profiling / tooling artifacts
+_test_runs/
+all_test.*
+graphify-out/
+
+# Large binary scratch dirs & squashfs images
+*.sqsh
+anisotropic/
+torchref_refine_optimization/runs/

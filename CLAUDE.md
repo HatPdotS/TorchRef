@@ -181,6 +181,12 @@ nn.Module
 ### Model
 
 ```python
+# Convenience loader (recommended): returns a ready ModelFT, dispatches on
+# extension; read_cif also dispatches on content. Forwards constructor kwargs.
+from torchref import read_pdb, read_cif
+model = read_pdb("structure.pdb", max_res=1.0, radius_angstrom=4.0)
+
+# Or construct + load explicitly
 model = ModelFT(max_res=1.0, radius_angstrom=4.0)
 model.load_pdb("structure.pdb")
 model.load_cif("structure.cif")
@@ -204,8 +210,14 @@ b = model.adp.refinable_params              # nn.Parameter (N_refinable,)
 ### Reflection Data
 
 ```python
+# Convenience loader (recommended): read_mtz / read_cif return a ReflectionData
+from torchref import read_mtz
+data = read_mtz("reflections.mtz")
+
+# Or construct + load explicitly
 data = ReflectionData()
 data.load_mtz("reflections.mtz")
+
 hkl, F, sigF, rfree_flags = data()          # unpack
 ```
 

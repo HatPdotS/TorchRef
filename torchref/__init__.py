@@ -15,11 +15,11 @@ Quick Start
 -----------
 ::
 
-    from torchref import Refinement, ReflectionData, Model
+    from torchref import Refinement, read_mtz, read_pdb
 
     # Load data and model
-    data = ReflectionData().load_mtz('data.mtz')
-    model = Model().load_pdb('structure.pdb')
+    data = read_mtz('data.mtz')
+    model = read_pdb('structure.pdb')
 
     # Run refinement
     refinement = Refinement(data=data, model=model, device='cuda')

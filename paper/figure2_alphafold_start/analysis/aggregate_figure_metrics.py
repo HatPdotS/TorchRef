@@ -271,13 +271,76 @@ PERCYCLE = {
 
 
 # ── driver ───────────────────────────────────────────────────────────────────
+_CODE_RE = re.compile(r"^[0-9][A-Za-z0-9]{3}$")  # PDB id, e.g. 1DAW (skip tmp_scripts)
+
+
 def all_codes():
     codes = set()
     for d in ENGINE_DIR.values():
         p = RUNS / d
         if p.is_dir():
-            codes |= {c.name for c in p.iterdir() if c.is_dir()}
+            codes |= {c.name for c in p.iterdir()
+                      if c.is_dir() and _CODE_RE.match(c.name)}
     return sorted(codes)
+
+
+def _read_log(path: Path) -> str:
+    try:
+        return path.read_text(errors="replace")
+    except OSError:
+        return ""
+
+
+def classify_failure(engine: str, code: str):
+    """Why a structure has no PHENIX-validated R-factor, as (category, reason).
+
+    category 'refine' = the engine itself could not produce a refined model;
+    'score' = refinement succeeded but the uniform PHENIX validator
+    (model_vs_data, used to score every engine) could not score it. The
+    recurring driver is a special-position pathology in some placed AF models:
+    it crashes the PHENIX validator (so the structure is unscoreable for *all*
+    engines) and makes phenix.refine itself abort, while REFMAC/TorchRef refine
+    it without error.
+    """
+    d = struct_dir(engine, code)
+    out_log = _read_log(d / "out.log")
+    err_log = _read_log(d / "error.log")
+    pval = _read_log(d / "phenix_validate.log")
+    vlog = _read_log(d / "validate.log")
+    pref = _read_log(d / "phenix_refine.log")
+    for g in d.glob("*_refined_001.log"):
+        pref += _read_log(g)
+
+    # 1) engine refinement failures
+    if engine == "torchref":
+        if "oom_kill" in err_log or "out of memory" in (err_log + out_log).lower():
+            return ("refine", "TorchRef OOM at 8 GB (large structure)")
+        if out_log and "Refinement completed successfully" not in out_log:
+            return ("refine", "TorchRef refinement error")
+    if engine == "phenix":
+        low = pref.lower()
+        if "polymer crosses special position" in low:
+            return ("refine", "phenix.refine aborts: polymer crosses special position")
+        if "key not in c++ map" in low:
+            return ("refine", "phenix.refine crash: special-position pathology")
+        if "merge_equivalents" in low or "incompatible flags" in low:
+            return ("refine", "phenix.refine: incompatible data flags (Friedel mismatch)")
+        if "please try again" in low:
+            return ("refine", "phenix.refine transient error")
+        m = re.search(r"Sorry:\s*(.+)", pref)
+        if m:
+            return ("refine", "phenix.refine Sorry: " + m.group(1).strip()[:50])
+
+    # 2) scoring/validation failures (the uniform PHENIX validator)
+    low = (pval + " " + vlog).lower()
+    if ("key not in c++ map" in low or "special position" in low
+            or "polymer crosses" in low):
+        return ("score", "PHENIX validator fails (special-position pathology)")
+    if "merge_equivalents" in low or "incompatible flags" in low:
+        return ("score", "PHENIX validator: incompatible data flags")
+    if "please try again" in low:
+        return ("score", "PHENIX validator transient error")
+    return ("other", "unclassified")
 
 
 def main():
@@ -320,13 +383,49 @@ def main():
     pd.DataFrame(rt_rows).to_csv(OUT / "fig_runtime.csv", index=False)
     pd.DataFrame(pc_rows).to_csv(OUT / "fig_percycle.csv", index=False)
 
-    # ── report + headline results.csv (PHENIX-validated medians per engine) ──
-    print(f"{'engine':<12}{'rfactor':>9}{'geom':>7}{'runtime':>9}{'percycle':>10}"
-          f"{'medRfree':>10}")
+    # ── conserved set: codes with a PHENIX-validated R-free for ALL engines ──
+    # Headline medians MUST be over the same structures or they are not comparable
+    # (an engine that solved more/fewer structures is otherwise scored on a
+    # different, not-equally-hard subset). Persist the set so plot_figure_af.py and
+    # summarize_medians.py report on the identical structures.
     rf = pd.DataFrame(rf_rows)
+    rf_sets = {e: set(rf[rf.engine == e].code) for e in ENGINE_DIR} if not rf.empty else {}
+    conserved = (set.intersection(*rf_sets.values())
+                 if rf_sets and all(rf_sets.values()) else set())
+    (OUT / "conserved_codes.txt").write_text("\n".join(sorted(conserved)) + "\n")
+
+    # ── run accounting: per-engine success + grouped failure reasons ──
+    # Attempted = candidate codes whose arm dir exists; success = has a validated
+    # R-factor; everything else is a failure, classified by classify_failure().
+    fail_rows = []
+    for e in ENGINE_DIR:
+        succ = set(rf[rf.engine == e].code) if not rf.empty else set()
+        for code in codes:
+            if code in succ or not struct_dir(e, code).is_dir():
+                continue
+            cat, reason = classify_failure(e, code)
+            fail_rows.append({"engine": e, "code": code,
+                              "category": cat, "reason": reason})
+    pd.DataFrame(fail_rows,
+                 columns=["engine", "code", "category", "reason"]).to_csv(
+        OUT / "fig_failures.csv", index=False)
+    print(f"\nRun accounting (candidate N={len(codes)}):")
+    for e in ENGINE_DIR:
+        succ = len(set(rf[rf.engine == e].code)) if not rf.empty else 0
+        ef = [r for r in fail_rows if r["engine"] == e]
+        nref = sum(r["category"] == "refine" for r in ef)
+        nsco = sum(r["category"] == "score" for r in ef)
+        print(f"  {e:<11} success={succ:>4}  fail={len(ef):>3} "
+              f"(refine {nref}, score {nsco})")
+
+    # ── report + headline results.csv (PHENIX-validated medians, conserved set) ──
+    print(f"Conserved set (R-free for all {len(ENGINE_DIR)} engines): "
+          f"n={len(conserved)}\n")
+    print(f"{'engine':<12}{'rfactor':>9}{'geom':>7}{'runtime':>9}{'percycle':>10}"
+          f"{'medRfree*':>10}")
     res_rows = []
     for e in ENGINE_DIR:
-        sub = rf[rf.engine == e] if not rf.empty else rf
+        sub = rf[(rf.engine == e) & (rf.code.isin(conserved))] if not rf.empty else rf
         med_w = sub["r_work"].median() if len(sub) else float("nan")
         med_f = sub["r_free"].median() if len(sub) else float("nan")
         c = counts[e]
@@ -336,6 +435,7 @@ def main():
                          "median_rwork": round(med_w, 4),
                          "median_rfree": round(med_f, 4),
                          "overfit_gap": round(med_f - med_w, 4)})
+    print("  * medRfree is over the conserved set (identical structures per engine)")
     # order to match the legacy file: torchref, phenix, refmac, prediction
     order = ["torchref", "phenix", "refmac", "prediction"]
     res = pd.DataFrame(res_rows).set_index("engine").reindex(order).reset_index()

@@ -46,10 +46,9 @@ TorchRef supports multiple file formats:
 
 .. testcode::
 
-   from torchref import ReflectionData, ROOT_TORCHREF
+   from torchref import read_mtz, ROOT_TORCHREF
 
-   data = ReflectionData()
-   data.load_mtz(f"{ROOT_TORCHREF}/example_notebooks/1DAW.mtz")
+   data = read_mtz(f"{ROOT_TORCHREF}/example_notebooks/1DAW.mtz")
 
    # Access reflection data
    hkl, F, sigF, rfree_flags = data()
@@ -65,10 +64,9 @@ TorchRef supports multiple file formats:
 
 .. testcode::
 
-   from torchref import ModelFT, ROOT_TORCHREF
+   from torchref import read_pdb, ROOT_TORCHREF
 
-   model = ModelFT()
-   model.load_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
+   model = read_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
 
    print(f"Number of atoms: {len(model.pdb)}")
 
@@ -85,9 +83,9 @@ Model parameters can be selectively frozen during refinement:
 
 .. testcode::
 
-   from torchref import ModelFT, ROOT_TORCHREF
+   from torchref import read_pdb, ROOT_TORCHREF
 
-   model = ModelFT().load_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
+   model = read_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
 
    # Freeze/unfreeze by parameter type
    model.freeze('b')      # Freeze all B-factors
@@ -118,12 +116,12 @@ Use the model to compute structure factors for given Miller indices:
 .. testcode::
 
    import torch
-   from torchref import ModelFT, ReflectionData, Scaler, ROOT_TORCHREF
+   from torchref import read_mtz, read_pdb, Scaler, ROOT_TORCHREF
    from torchref.math_functions.math_torch import get_rfactors
 
    # Load data and model
-   data = ReflectionData().load_mtz(f"{ROOT_TORCHREF}/example_notebooks/1DAW.mtz")
-   model = ModelFT().load_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
+   data = read_mtz(f"{ROOT_TORCHREF}/example_notebooks/1DAW.mtz")
+   model = read_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
 
    # Get reflection indices
    hkl, F, sigF, rfree = data()
