@@ -465,6 +465,7 @@ def test_triton_bond_matches_eager_cosine():
 from torchref.base.targets.adp import (  # noqa: E402
     EIGHT_PI2,
     adp_locality_aniso_math,
+    adp_rigid_bond_aniso_math,
     adp_simu_aniso_math,
     adp_simu_math,
     u6_deviatoric,
@@ -518,3 +519,28 @@ def test_adp_locality_aniso_gradcheck(double_cpu):
     assert torch.autograd.gradcheck(
         lambda u: adp_locality_aniso_math(u, idx, dist, sdev),
         (u6,), eps=1e-6, atol=1e-5)
+
+
+def test_adp_rigid_bond_aniso_reduces_to_iso(double_cpu):
+    """All-isotropic U6 ⇒ aniso rigid-bond Δz == the iso (B_i-B_j)/8pi^2 form."""
+    b = torch.rand(10, dtype=torch.float64) * 20 + 5
+    g = torch.Generator().manual_seed(7)
+    xyz = torch.rand(10, 3, generator=g, dtype=torch.float64) * 15
+    pairs = torch.tensor([[0, 1], [1, 2], [3, 7], [5, 9], [2, 8]])
+    sigma = 0.004
+    ani = adp_rigid_bond_aniso_math(_iso_u6(b), xyz, pairs, sigma)
+    dz = (b[pairs[:, 0]] - b[pairs[:, 1]]) / EIGHT_PI2
+    log_2pi = torch.log(torch.tensor(2.0 * torch.pi, dtype=torch.float64))
+    iso = (0.5 * (dz / sigma) ** 2 + torch.log(torch.tensor(sigma)) + 0.5 * log_2pi).sum()
+    assert torch.allclose(iso, ani, atol=1e-9)
+
+
+def test_adp_rigid_bond_aniso_gradcheck(double_cpu):
+    """Gradient flows correctly to BOTH the U tensors and the coordinates."""
+    u6 = _rand_u6(10, 4).requires_grad_(True)
+    g = torch.Generator().manual_seed(5)
+    xyz = (torch.rand(10, 3, generator=g, dtype=torch.float64) * 15).requires_grad_(True)
+    pairs = torch.tensor([[0, 1], [1, 2], [3, 7], [5, 9], [2, 8]])
+    assert torch.autograd.gradcheck(
+        lambda u, x: adp_rigid_bond_aniso_math(u, x, pairs, 0.004),
+        (u6, xyz), eps=1e-6, atol=1e-5)

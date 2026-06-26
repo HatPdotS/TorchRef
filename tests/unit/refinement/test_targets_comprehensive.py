@@ -401,8 +401,34 @@ class TestRigidBondTarget:
         
         # DELU restraint: difference should be small
         diff = u1_bond - u2_bond
-        
+
         assert torch.isfinite(diff)
+
+    def test_aniso_path_runs_and_routes_grad_to_u(self, pdb_dir):
+        """The anisotropic DELU path actually executes and feeds gradient to the
+        U tensors. Regression for the dead ``hasattr(model, "u_aniso")`` gate,
+        which made the aniso branch unreachable so DELU silently used the iso
+        ΔB proxy even for anisotropic models. Bond pairs are injected directly to
+        avoid building the full monomer-library restraints in the unit env."""
+        from torchref.model.model_ft import ModelFT
+        from torchref.refinement.targets.adp.rigid_bond import RigidBondTarget
+
+        m = ModelFT()
+        m.load_pdb(str(pdb_dir / "7L84.pdb"))
+        m.set_adp_mode("anisotropic")
+        assert not m._aniso_is_empty  # genuinely anisotropic
+
+        tgt = RigidBondTarget(m)
+        aniso_idx = m.aniso_flag.nonzero(as_tuple=True)[0][:6]
+        pairs = torch.stack([aniso_idx[:-1], aniso_idx[1:]], dim=1)
+        tgt._bond_pairs = lambda: pairs  # bypass restraint building
+
+        loss = tgt.forward()  # routes to the aniso path (aniso atoms present)
+        assert torch.isfinite(loss)
+        m.zero_grad(set_to_none=True)
+        loss.backward()
+        g = m.u.refinable_params.grad
+        assert g is not None and torch.isfinite(g).all() and g.abs().sum() > 0
 
 
 @pytest.mark.unit

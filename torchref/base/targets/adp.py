@@ -131,3 +131,34 @@ def adp_locality_aniso_math(
     dev_term = (w.unsqueeze(-1) * wcomp * (dfrac / sigma_aniso) ** 2).sum()
     return mag + dev_term
 
+
+def adp_rigid_bond_aniso_math(
+    u6: torch.Tensor,
+    xyz: torch.Tensor,
+    pair_indices: torch.Tensor,
+    sigma: float,
+) -> torch.Tensor:
+    """Anisotropic rigid-bond (Hirshfeld DELU) NLL on the unified U6.
+
+    For each bond the mean-square displacement amplitude along the bond,
+    ``z = l^T U l`` (``l`` the unit bond vector), should match for the two
+    atoms: ``Δz = z_i - z_j ~ 0``. Reduces EXACTLY to the isotropic
+    ``Δz = (B_i - B_j) / 8 pi^2`` form when both atoms are isotropic
+    (``l^T (U_iso I) l = U_iso`` for any direction), so iso<->aniso bonds are
+    handled natively. Gradient flows to both the U tensors and the coordinates
+    (the Hirshfeld test couples ADP and geometry).
+    """
+    M = u6.new_zeros(u6.shape[0], 3, 3)
+    M[:, 0, 0] = u6[:, 0]
+    M[:, 1, 1] = u6[:, 1]
+    M[:, 2, 2] = u6[:, 2]
+    M[:, 0, 1] = M[:, 1, 0] = u6[:, 3]
+    M[:, 0, 2] = M[:, 2, 0] = u6[:, 4]
+    M[:, 1, 2] = M[:, 2, 1] = u6[:, 5]
+    r = xyz[pair_indices[:, 1]] - xyz[pair_indices[:, 0]]
+    l = r / torch.sqrt((r * r).sum(-1, keepdim=True) + 1e-8)
+    z1 = torch.einsum("bi,bij,bj->b", l, M[pair_indices[:, 0]], l)
+    z2 = torch.einsum("bi,bij,bj->b", l, M[pair_indices[:, 1]], l)
+    dz = z1 - z2
+    return (0.5 * (dz / sigma) ** 2 + math.log(sigma) + 0.5 * LOG_2PI).sum()
+
