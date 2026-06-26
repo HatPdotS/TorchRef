@@ -457,3 +457,64 @@ def test_triton_bond_matches_eager_cosine():
     L_e = _bond_math_eager(x_eager, idx, references, sigmas)
     (g_e,) = torch.autograd.grad(L_e, x_eager)
     assert_grads_agree([g_t], [g_e], min_cos=0.999, ratio_tol=1e-2, ctx="bond ")
+
+
+# ---------------------------------------------------------------------------
+# Anisotropic ADP restraints (SIMU / locality on the unified U6 tensor)
+# ---------------------------------------------------------------------------
+from torchref.base.targets.adp import (  # noqa: E402
+    EIGHT_PI2,
+    adp_locality_aniso_math,
+    adp_simu_aniso_math,
+    adp_simu_math,
+    u6_deviatoric,
+)
+
+
+def _iso_u6(b):
+    """Isotropic U6 (diagonal B/8pi^2, zero off-diagonal) from a B vector."""
+    diag = b.new_tensor([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+    return (b / EIGHT_PI2).unsqueeze(-1) * diag
+
+
+def _rand_u6(n, seed):
+    """Random physically-plausible U6: positive diagonal, small off-diagonal."""
+    g = torch.Generator().manual_seed(seed)
+    d = torch.rand(n, 3, generator=g, dtype=torch.float64) * 0.2 + 0.1
+    o = (torch.rand(n, 3, generator=g, dtype=torch.float64) - 0.5) * 0.02
+    return torch.cat([d, o], dim=1)
+
+
+def test_adp_simu_aniso_reduces_to_iso(double_cpu):
+    """An all-isotropic U6 makes aniso SIMU collapse exactly onto iso SIMU:
+    the magnitude channel equals adp_simu_math(B) and the deviatoric is zero."""
+    b = torch.rand(12, dtype=torch.float64) * 20 + 5
+    pairs = torch.tensor([[0, 1], [1, 2], [3, 7], [5, 9], [2, 11]])
+    sig = torch.tensor(2.0, dtype=torch.float64)
+    sdev = torch.tensor(1.0, dtype=torch.float64)
+    iso = adp_simu_math(b, pairs, sig)
+    ani = adp_simu_aniso_math(_iso_u6(b), pairs, sig, sdev)
+    assert torch.allclose(iso, ani, atol=1e-9)
+    assert torch.allclose(u6_deviatoric(_iso_u6(b)),
+                          torch.zeros(12, 6, dtype=torch.float64), atol=1e-12)
+
+
+def test_adp_simu_aniso_gradcheck(double_cpu):
+    u6 = _rand_u6(10, 1).requires_grad_(True)
+    pairs = torch.tensor([[0, 1], [1, 2], [3, 7], [5, 9], [2, 8]])
+    sig = torch.tensor(2.0, dtype=torch.float64)
+    sdev = torch.tensor(1.0, dtype=torch.float64)
+    assert torch.autograd.gradcheck(
+        lambda u: adp_simu_aniso_math(u, pairs, sig, sdev),
+        (u6,), eps=1e-6, atol=1e-5)
+
+
+def test_adp_locality_aniso_gradcheck(double_cpu):
+    u6 = _rand_u6(10, 2).requires_grad_(True)
+    g = torch.Generator().manual_seed(3)
+    idx = torch.randint(0, 10, (10, 3), generator=g)
+    dist = torch.rand(10, 3, generator=g, dtype=torch.float64) * 5 + 1
+    sdev = torch.tensor(0.5, dtype=torch.float64)
+    assert torch.autograd.gradcheck(
+        lambda u: adp_locality_aniso_math(u, idx, dist, sdev),
+        (u6,), eps=1e-6, atol=1e-5)

@@ -1616,6 +1616,36 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         occupancy = self.occupancy()[idx]
         return xyz, u, occupancy
 
+    def adp_u6(self) -> "torch.Tensor":
+        """Unified per-atom Cartesian U tensor ``(N, 6)`` for ALL atoms.
+
+        Anisotropic atoms use their refined ``u`` (the 6 components
+        ``u11, u22, u33, u12, u13, u23``); isotropic atoms are lifted to the
+        equivalent isotropic tensor ``U = (B / 8 pi^2) I`` (off-diagonals 0).
+        This gives every atom a common representation so the ADP restraints
+        (similarity, locality) act uniformly and handle iso<->aniso pairs
+        natively.
+
+        Differentiable: anisotropic rows carry gradient to ``u`` (the Cholesky
+        parameters), isotropic rows to ``adp``. ``u()`` returns NaN rows for
+        isotropic atoms; those are scrubbed *before* :func:`torch.where` so the
+        zeroed (unselected) branch cannot poison the backward pass via
+        ``0 * NaN``.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(N, 6)`` Cartesian U components (Å²).
+        """
+        import math
+
+        B = self.adp()
+        U = self.u()
+        diag = B.new_tensor([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+        u_from_b = (B / (8.0 * math.pi**2)).unsqueeze(-1) * diag
+        flag = self.aniso_flag.to(B.device).unsqueeze(-1)
+        return torch.where(flag, torch.nan_to_num(U), u_from_b)
+
     def parameters(self, recurse: bool = True):
         return (p for p in super().parameters(recurse) if p.numel() > 0)
 

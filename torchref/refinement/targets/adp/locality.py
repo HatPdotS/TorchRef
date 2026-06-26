@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
+from torchref.base.targets.adp import adp_locality_aniso_math
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -48,6 +49,7 @@ class ADPLocalityTarget(ADPTarget):
         k_neighbors: int = 50,
         correlation_length: float = 5.0,
         scale: float = 5.0,
+        sigma_aniso: float = 0.5,
         exclude_bonded: bool = True,
         verbose: int = 0,
     ):
@@ -57,6 +59,11 @@ class ADPLocalityTarget(ADPTarget):
         )
         self.register_buffer("_correlation_length", torch.tensor(correlation_length))
         self.register_buffer("_scale", torch.tensor(scale))
+        # Sigma for the deviatoric (anisotropy) channel; only used when
+        # anisotropic atoms are present. Dimensionless and on the same scale as
+        # the magnitude channel's fixed 0.5 log-sigma (the channel restrains
+        # fractional anisotropy dev/B_eq, the analogue of log B_eq).
+        self.register_buffer("_sigma_aniso", torch.tensor(sigma_aniso))
         self.exclude_bonded = exclude_bonded
 
         # Cache for neighbor indices and distances
@@ -87,6 +94,14 @@ class ADPLocalityTarget(ADPTarget):
     @scale.setter
     def scale(self, value: float):
         self._scale.fill_(value)
+
+    @property
+    def sigma_aniso(self) -> float:
+        return self._sigma_aniso.item()
+
+    @sigma_aniso.setter
+    def sigma_aniso(self, value: float):
+        self._sigma_aniso.fill_(value)
 
     # ------------------------------------------------------------------
     # Spatial-hash k-NN (O(N) memory)
@@ -251,10 +266,25 @@ class ADPLocalityTarget(ADPTarget):
         if n_atoms == 0 or self._neighbor_indices is None:
             return torch.tensor(0.0, device=device)
 
-        log_adp = torch.log(adp.clamp(min=1e-3))
-
         indices = self._neighbor_indices
         distances = self._neighbor_distances
+
+        # Anisotropic atoms present: restrain the full U tensors (magnitude
+        # channel on B_eq -- which reproduces the isotropic loss below -- plus a
+        # deviatoric/anisotropy channel). Isotropic-only models keep the
+        # original B-factor path (numerically unchanged, zero overhead).
+        if not getattr(self.model, "_aniso_is_empty", True):
+            if (self._sigma_aniso.device != device
+                    or self._sigma_aniso.dtype != adp.dtype):
+                self._sigma_aniso = self._sigma_aniso.to(
+                    device=device, dtype=adp.dtype
+                )
+            u6 = self.model.adp_u6()
+            return adp_locality_aniso_math(
+                u6, indices, distances, self._sigma_aniso
+            )
+
+        log_adp = torch.log(adp.clamp(min=1e-3))
 
         neighbor_log_adp = log_adp[indices]
         diff = log_adp.unsqueeze(1) - neighbor_log_adp

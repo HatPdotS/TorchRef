@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
-from torchref.base.targets.adp import adp_simu_math
+from torchref.base.targets.adp import adp_simu_math, adp_simu_aniso_math
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -24,18 +24,30 @@ class ADPSimilarityTarget(ADPTarget):
     Restrains B-factors of bonded atoms to be similar.
     NLL = 0.5 * ((B_i - B_j) / σ)² + log(σ) + 0.5 * log(2π)
 
+    For anisotropic atoms the restraint acts on the full U tensors via the
+    unified U6 representation (:meth:`Model.adp_u6`): a magnitude channel on
+    ``B_eq`` (which reduces exactly to the isotropic restraint above) plus an
+    anisotropy channel on the traceless (deviatoric) part of the B-tensor,
+    scaled by ``_simu_sigma_aniso``. Iso<->aniso pairs are handled natively
+    (the isotropic atom's deviatoric part is zero). When every atom is
+    isotropic the original (Triton-accelerated) B-factor path is used.
+
     Tunable parameters (as buffers):
-    - _simu_sigma: float, sigma for B-factor differences (default 2.0 Å²)
+    - _simu_sigma: float, sigma for B_eq differences (default 2.0 Å²)
+    - _simu_sigma_aniso: float, sigma for deviatoric B-tensor differences
+      (default 1.0 Å²); only used when anisotropic atoms are present.
     """
 
     name: str = "adp/simu"
 
     def __init__(
-        self, model: "Model" = None, simu_sigma: float = 2.0, verbose: int = 0
+        self, model: "Model" = None, simu_sigma: float = 2.0,
+        simu_sigma_aniso: float = 1.0, verbose: int = 0
     ):
         super().__init__(model, verbose, target_value=4.0, sigma=1.2)
         # Register simu-specific sigma as buffer (separate from base sigma)
         self.register_buffer("_simu_sigma", torch.tensor(simu_sigma))
+        self.register_buffer("_simu_sigma_aniso", torch.tensor(simu_sigma_aniso))
 
     @property
     def simu_sigma(self) -> float:
@@ -46,6 +58,16 @@ class ADPSimilarityTarget(ADPTarget):
     def simu_sigma(self, value: float):
         """Set SIMU sigma value."""
         self._simu_sigma.fill_(value)
+
+    @property
+    def simu_sigma_aniso(self) -> float:
+        """Get SIMU deviatoric (anisotropy) sigma value."""
+        return self._simu_sigma_aniso.item()
+
+    @simu_sigma_aniso.setter
+    def simu_sigma_aniso(self, value: float):
+        """Set SIMU deviatoric (anisotropy) sigma value."""
+        self._simu_sigma_aniso.fill_(value)
 
     def _get_pair_indices(self) -> torch.Tensor:
         """Concatenate non-"all" bond restraint origins into a single
@@ -83,6 +105,19 @@ class ADPSimilarityTarget(ADPTarget):
                 or self._simu_sigma.dtype != adp_t.dtype):
             self._simu_sigma = self._simu_sigma.to(
                 device=adp_t.device, dtype=adp_t.dtype,
+            )
+        # Anisotropic atoms present: restrain the full U tensors. Isotropic-only
+        # models keep the original (Triton-accelerated) B-factor path so they
+        # pay nothing and are numerically unchanged.
+        if not getattr(self.model, "_aniso_is_empty", True):
+            if (self._simu_sigma_aniso.device != adp_t.device
+                    or self._simu_sigma_aniso.dtype != adp_t.dtype):
+                self._simu_sigma_aniso = self._simu_sigma_aniso.to(
+                    device=adp_t.device, dtype=adp_t.dtype,
+                )
+            u6 = self.model.adp_u6()
+            return adp_simu_aniso_math(
+                u6, pair_indices, self._simu_sigma, self._simu_sigma_aniso
             )
         return adp_simu_math(adp_t, pair_indices, self._simu_sigma)
 

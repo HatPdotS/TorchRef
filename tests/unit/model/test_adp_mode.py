@@ -163,3 +163,53 @@ def test_roundtrip_preserves_pattern(aniso_model):
 def test_invalid_mode_raises(aniso_model):
     with pytest.raises(ValueError):
         aniso_model.set_adp_mode("banana")
+
+
+# ---------------------------------------------------------------------------
+# adp_u6(): the unified per-atom U tensor used by the anisotropic ADP restraints
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+def test_adp_u6_iso_lift_and_aniso_passthrough(aniso_model):
+    """Mixed model: aniso atoms -> u(); iso atoms -> (B/8pi^2)*[1,1,1,0,0,0].
+
+    Crucially NaN-free even though ``u()`` carries NaN rows for isotropic atoms
+    (the restraints would otherwise propagate NaN through the iso<->aniso split).
+    """
+    m = aniso_model
+    m.set_adp_mode("anisotropic")
+    assert m.aniso_flag.any() and not m.aniso_flag.all()  # genuinely mixed
+    u6 = m.adp_u6()
+    assert torch.isfinite(u6).all()
+    ani, iso = m.aniso_flag, ~m.aniso_flag
+    assert torch.allclose(u6[ani], m.u()[ani])
+    b = m.adp()[iso]
+    for k in range(3):
+        assert torch.allclose(u6[iso, k], b / EIGHT_PI_SQ)
+    assert torch.allclose(u6[iso, 3:], torch.zeros_like(u6[iso, 3:]))
+
+
+@pytest.mark.unit
+def test_adp_u6_all_iso_is_diagonal_and_beq_roundtrips(aniso_model):
+    """All-isotropic model: every U6 is diagonal B/8pi^2, and B_eq == B."""
+    m = aniso_model
+    m.set_adp_mode("isotropic")
+    u6 = m.adp_u6()
+    assert torch.isfinite(u6).all()
+    b = m.adp()
+    assert torch.allclose(u6[:, 0], b / EIGHT_PI_SQ)
+    assert torch.allclose(u6[:, 3:], torch.zeros_like(u6[:, 3:]))
+    b_eq = (EIGHT_PI_SQ / 3.0) * (u6[:, 0] + u6[:, 1] + u6[:, 2])
+    assert torch.allclose(b_eq, b, atol=1e-4)
+
+
+@pytest.mark.unit
+def test_adp_u6_backward_is_nan_free(aniso_model):
+    """Gradient of adp_u6 reaches both u (aniso rows) and adp (iso rows) cleanly
+    -- the nan_to_num-before-where guard must keep iso-row NaNs out of backward."""
+    m = aniso_model
+    m.set_adp_mode("anisotropic")
+    m.adp_u6().sum().backward()
+    gu = m.u.refinable_params.grad
+    gb = m.adp.refinable_params.grad
+    assert gu is not None and torch.isfinite(gu).all() and gu.abs().sum() > 0
+    assert gb is not None and torch.isfinite(gb).all() and gb.abs().sum() > 0
