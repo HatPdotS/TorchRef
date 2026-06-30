@@ -191,13 +191,12 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
 
         # Dedicated COARSE grid for the solvent. Early (real-space) symmetry,
         # because the nonlinear occupancy needs the full-cell density assembled
-        # before the mask. radius_angstrom matches the model's density build.
-        radius = getattr(model, "radius_angstrom", 3.0)
+        # before the mask. The per-atom splat radius is governed by
+        # torchref.sigma_cutoff_ed inside the density builder.
         self.solvent_fft = SfFFT(
             cell=model.cell,
             spacegroup=model.fft.spacegroup,
             max_res=self.solvent_res,
-            radius_angstrom=radius,
             dtype_float=float_type,
             device=device,
             verbose=max(0, verbose - 1),

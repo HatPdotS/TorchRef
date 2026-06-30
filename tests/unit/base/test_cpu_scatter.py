@@ -65,7 +65,7 @@ def _make_valid_indices(C, nx, ny, nz, grid_shape, seed=42):
 def cpp_scatter():
     """Import structured_scatter_add (compiles C++ on first call)."""
     try:
-        from torchref.base.kernels.cpu_scatter import structured_scatter_add
+        from torchref.base.electron_density.kernels.cpu.scatter import structured_scatter_add
         return structured_scatter_add
     except Exception as e:
         pytest.skip(f"C++ scatter not available: {e}")
@@ -85,7 +85,7 @@ class TestCompilation:
 
     def test_module_compiles(self):
         """C++ cpu_scatter extension must build successfully."""
-        from torchref.base.kernels import cpu_scatter
+        from torchref.base.electron_density.kernels.cpu import scatter as cpu_scatter
 
         # Reset any cached failure from a previous test in the same process so
         # we get a fresh attempt with up-to-date diagnostics.

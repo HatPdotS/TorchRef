@@ -313,8 +313,6 @@ class EnsembleModel(ModelFT):
         Whether to strip hydrogens (inherited).
     max_res : float
         FFT grid target resolution (inherited).
-    radius_angstrom : float
-        Atomic radius cutoff for the real-space scatter (inherited).
 
     Notes
     -----
@@ -330,7 +328,6 @@ class EnsembleModel(ModelFT):
         device=None,
         strip_H: bool = True,
         max_res: float = 1.0,
-        radius_angstrom: float = 4.0,
         gridsize: Optional[int] = None,
         wavelength: float = 1.0,
         anomalous_threshold: float = 0.5,
@@ -345,7 +342,6 @@ class EnsembleModel(ModelFT):
             device=device,
             strip_H=strip_H,
             max_res=max_res,
-            radius_angstrom=radius_angstrom,
             gridsize=gridsize,
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
@@ -381,7 +377,6 @@ class EnsembleModel(ModelFT):
         device=None,
         strip_H: bool = True,
         max_res: float = 1.0,
-        radius_angstrom: float = 4.0,
         n_max: Optional[int] = None,
         **modelft_kwargs,
     ) -> "EnsembleModel":
@@ -429,7 +424,7 @@ class EnsembleModel(ModelFT):
 
         model = cls(
             verbose=verbose, device=device, strip_H=False,  # already stripped
-            max_res=max_res, radius_angstrom=radius_angstrom,
+            max_res=max_res,
             **modelft_kwargs,
         )
         model._pdb_single = df.reset_index(drop=True).copy()
@@ -452,7 +447,6 @@ class EnsembleModel(ModelFT):
         device=None,
         strip_H: bool = True,
         max_res: float = 1.0,
-        radius_angstrom: float = 4.0,
         n_max: Optional[int] = None,
         **modelft_kwargs,
     ) -> "EnsembleModel":
@@ -516,7 +510,7 @@ class EnsembleModel(ModelFT):
 
         model = cls(
             verbose=verbose, device=device, strip_H=False,
-            max_res=max_res, radius_angstrom=radius_angstrom,
+            max_res=max_res,
             **modelft_kwargs,
         )
         model._pdb_single = models[0].reset_index(drop=True).copy()

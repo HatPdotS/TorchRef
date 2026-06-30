@@ -435,7 +435,6 @@ class IHMReader:
         self,
         mapping: IHMEnsembleMapping,
         max_res: float = 1.5,
-        radius_angstrom: float = 4.0,
         device: "Optional[torch.device]" = None,
     ) -> "ModelCollection":
         """
@@ -450,8 +449,6 @@ class IHMReader:
             Must have ``atom_data_per_state`` populated.
         max_res : float
             Maximum resolution for FFT grid setup.
-        radius_angstrom : float
-            Radius for electron density calculation.
         device : torch.device, optional
             Device for model tensors.
 
@@ -481,7 +478,6 @@ class IHMReader:
             df = mapping.atom_data_per_state[state.state_id]
             model = ModelFT(
                 max_res=max_res,
-                radius_angstrom=radius_angstrom,
                 device=device,
             )
             # Build a lightweight reader-like callable for Model.load()
@@ -534,7 +530,6 @@ class IHMReader:
     def __call__(
         self,
         max_res: float = 1.5,
-        radius_angstrom: float = 4.0,
         device: "Optional[torch.device]" = None,
     ) -> Tuple["ModelCollection", IHMEnsembleMapping]:
         """
@@ -544,8 +539,6 @@ class IHMReader:
         ----------
         max_res : float
             Maximum resolution for FFT grid.
-        radius_angstrom : float
-            Radius for electron density calculation.
         device : torch.device, optional
             Device for tensors.
 
@@ -558,7 +551,6 @@ class IHMReader:
         model_collection = self.build_model_collection(
             mapping,
             max_res=max_res,
-            radius_angstrom=radius_angstrom,
             device=device,
         )
         return model_collection, mapping

@@ -436,7 +436,7 @@ class _StructuredScatterAdd(torch.autograd.Function):
             err = _module_error[0] if _module_error else "unknown reason"
             raise RuntimeError(
                 f"C++ cpu_scatter module not available ({err}). "
-                "See torchref.base.kernels.cpu_scatter._module_error for the full traceback."
+                "See torchref.base.electron_density.kernels.cpu.scatter._module_error for the full traceback."
             )
         result = torch.zeros(
             map_size, dtype=density_cube.dtype, device=density_cube.device
@@ -492,7 +492,7 @@ class _StructuredGather(torch.autograd.Function):
             err = _module_error[0] if _module_error else "unknown reason"
             raise RuntimeError(
                 f"C++ cpu_scatter module not available ({err}). "
-                "See torchref.base.kernels.cpu_scatter._module_error for the full traceback."
+                "See torchref.base.electron_density.kernels.cpu.scatter._module_error for the full traceback."
             )
         # int32 / int64 gather fn name matches the scatter's index dtype.
         gather_fn_name = (

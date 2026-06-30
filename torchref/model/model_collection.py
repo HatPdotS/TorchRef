@@ -421,7 +421,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         cls,
         filepath: str,
         max_res: float = 1.5,
-        radius_angstrom: float = 4.0,
         device=None,
         verbose: int = 0,
     ) -> tuple:
@@ -436,8 +435,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             Path to IHM mmCIF file.
         max_res : float
             Maximum resolution for FFT grid setup.
-        radius_angstrom : float
-            Radius for electron density calculation.
         device : torch.device, optional
             Device for model tensors.
         verbose : int
@@ -452,7 +449,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         reader = IHMReader(filepath, verbose=verbose)
         return reader(
             max_res=max_res,
-            radius_angstrom=radius_angstrom,
             device=device,
         )
 

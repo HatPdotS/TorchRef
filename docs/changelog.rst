@@ -3,6 +3,7 @@ Changelog
 
 Version 0.6.0
 -------------
+- Switched to per atom cutoff radii for the Electron density sampling and added a global sigma cutoff to the cutoff
 - Implemented Phenix style sigma A weighting in the Maximum likelihood target (New default for refinement)
 - Set Ramachandran restraints to be off by default (to enable specify a non zero weight)
 - Added collection versions of the sigma A target

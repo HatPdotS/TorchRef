@@ -14,7 +14,7 @@ Both implementations are fully differentiable and compile on import for
 minimal first-call overhead.
 
 Usage:
-    from torchref.base.kernels import vectorized_add_to_map
+    from torchref.base.electron_density.kernels import vectorized_add_to_map
 
     # Automatically selects CPU or GPU implementation based on tensor device
     density_map = vectorized_add_to_map(
@@ -65,7 +65,7 @@ def _get_triton_kernel():
     global _triton_kernel, _triton_available
     if _triton_available is None:
         try:
-            from torchref.base.kernels.triton_kernel import fused_add_to_map_gpu
+            from torchref.base.electron_density.kernels.cuda.fused import fused_add_to_map_gpu
 
             _triton_kernel = fused_add_to_map_gpu
             _triton_available = True

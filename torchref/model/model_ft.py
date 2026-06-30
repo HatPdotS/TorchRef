@@ -1,3 +1,4 @@
+import math
 from typing import Optional, Tuple
 
 import gemmi
@@ -25,8 +26,6 @@ class ModelFT(CachedForwardMixin, Model):
     ----------
     max_res : float, optional
         Maximum resolution for grid spacing in Angstroms. Default is 1.0.
-    radius_angstrom : float, optional
-        Radius in Angstroms for density calculation around each atom. Default is 4.0.
     gridsize : tuple of int, optional
         Explicit grid size (nx, ny, nz). If None, computed from cell and max_res.
     wavelength : float or None, optional
@@ -46,8 +45,6 @@ class ModelFT(CachedForwardMixin, Model):
     ----------
     max_res : float
         Maximum resolution for grid spacing.
-    radius_angstrom : float
-        Radius for density calculation.
     wavelength : float or None
         X-ray wavelength for anomalous scattering corrections.
     anomalous_threshold : float
@@ -80,7 +77,6 @@ class ModelFT(CachedForwardMixin, Model):
         self,
         *args,
         max_res=1.0,
-        radius_angstrom=4.0,
         gridsize: Optional[Tuple[int, int, int]] = None,
         wavelength: Optional[float] = 1.0,
         anomalous_threshold: float = 0.5,
@@ -97,8 +93,11 @@ class ModelFT(CachedForwardMixin, Model):
         ----------
         max_res : float, optional
             Maximum resolution for grid spacing in Angstroms. Default is 1.0.
-        radius_angstrom : float, optional
-            Radius in Angstroms for density calculation. Default is 4.0.
+
+            The real-space splat radius is no longer a per-structure scalar: each
+            atom is truncated at its own ``N_sigma * sigma_eff`` radius, with
+            ``N_sigma = torchref.sigma_cutoff_ed`` (default 3.5). Set that config
+            value to trade density accuracy against cost.
         gridsize : tuple of int, optional
             Explicit grid size tuple (nx, ny, nz). If None, computed automatically.
         wavelength : float or None, optional
@@ -125,7 +124,6 @@ class ModelFT(CachedForwardMixin, Model):
 
         # FT-specific configuration
         self.max_res = max_res
-        self.radius_angstrom = radius_angstrom
         self._explicit_gridsize = gridsize
 
         # Anomalous scattering configuration
@@ -198,7 +196,6 @@ class ModelFT(CachedForwardMixin, Model):
                 spacegroup=self._spacegroup,
                 device=self.device,
                 max_res=self.max_res,
-                radius_angstrom=self.radius_angstrom,
             )
 
     def load_pdb(self, filename):
@@ -481,9 +478,9 @@ class ModelFT(CachedForwardMixin, Model):
         Parameters
         ----------
         radius : int, optional
-            Accepted for backward compatibility but unused; the density
-            radius is governed by ``self.radius_angstrom`` and resolved by
-            the FFT submodule when building the map. Default is None.
+            Accepted for backward compatibility but unused; the density splat
+            radius is per-atom (``torchref.sigma_cutoff_ed`` sigmas), resolved
+            inside the density builder. Default is None.
         apply_symmetry : bool, optional
             If True and space group is not P1, apply symmetry operations
             to the map. Default is True.
@@ -521,9 +518,7 @@ class ModelFT(CachedForwardMixin, Model):
             self.setup_grid()
 
         if self.verbose > 2:
-            print(
-                f"Building density map with radius={self.radius_angstrom} angstrom..."
-            )
+            print("Building density map (per-atom variable radius)...")
 
         # Get isotropic atoms
         xyz_iso, adp_iso, occ_iso, A_iso, B_iso = self.get_iso()
@@ -947,7 +942,6 @@ class ModelFT(CachedForwardMixin, Model):
             device=self.device,
             strip_H=self.strip_H,
             max_res=self.max_res,
-            radius_angstrom=self.radius_angstrom,
             gridsize=self._explicit_gridsize,
             wavelength=self.wavelength,
             anomalous_threshold=self.anomalous_threshold,
@@ -1022,7 +1016,7 @@ class ModelFT(CachedForwardMixin, Model):
         Return a dictionary containing the complete state of the ModelFT.
 
         Extends parent Model.state_dict() with FT-specific parameters including
-        max_res, radius_angstrom. Grid state is handled by the FFT submodule.
+        max_res. Grid state is handled by the FFT submodule.
 
         Parameters
         ----------
@@ -1045,7 +1039,6 @@ class ModelFT(CachedForwardMixin, Model):
 
         # Add ModelFT-specific state
         state[prefix + "max_res"] = self.max_res
-        state[prefix + "radius_angstrom"] = self.radius_angstrom
         state[prefix + "wavelength"] = self.wavelength
         state[prefix + "anomalous_threshold"] = self.anomalous_threshold
 
@@ -1098,7 +1091,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         # Extract ModelFT-specific metadata
         max_res = state_dict.pop("max_res", 1.0)
-        radius_angstrom = state_dict.pop("radius_angstrom", 4.0)
+        state_dict.pop("radius_angstrom", None)  # legacy key, no longer used
         wavelength = state_dict.pop("wavelength", 1.0)
         anomalous_threshold = state_dict.pop("anomalous_threshold", 0.5)
 
@@ -1126,7 +1119,6 @@ class ModelFT(CachedForwardMixin, Model):
             device=device,
             strip_H=strip_H,
             max_res=max_res,
-            radius_angstrom=radius_angstrom,
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
         )

@@ -7,7 +7,7 @@ Functions for creating real-space and reciprocal-space grids.
 import numpy as np
 import torch
 
-from torchref.config import dtypes, get_default_device
+from torchref.config import NYQUIST_OVERSAMPLING, dtypes, get_default_device
 from torchref.base.coordinates.transforms_torch import (
     fractional_to_cartesian_torch,
     get_fractional_matrix,
@@ -43,9 +43,10 @@ def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None,
     Notes
     -----
     When ``gridsize`` is not given, grid dimensions are derived as
-    ``floor(cell[:3] / max_res * 3)`` (oversampling factor of 3). This matches
-    ``get_real_grid_numpy`` and ``get_grids`` but differs from
-    ``find_grid_size``, which uses a factor of 2.3.
+    ``floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING)``, the proper
+    Shannon-Nyquist sampling factor (see :data:`torchref.config.NYQUIST_OVERSAMPLING`).
+    All grid-sizing helpers (``find_grid_size``, ``get_real_grid_numpy``,
+    ``get_grids``, ``Cell.compute_grid_size``) share this same factor.
     """
     if device is None:
         if isinstance(fractional_matrix, torch.Tensor):
@@ -60,7 +61,11 @@ def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None,
     elif gridsize is not None:
         nsteps = torch.tensor(gridsize, dtype=dtypes.int, device=device)
     else:
-        nsteps = torch.floor(cell[:3] / max_res * 3).to(dtypes.int).to(device)
+        nsteps = (
+            torch.floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING)
+            .to(dtypes.int)
+            .to(device)
+        )
     # Place grid points at grid edges: i / N (CCTBX convention)
     # This matches how CCTBX/gemmi create maps
     x = torch.arange(nsteps[0], device=device, dtype=dtypes.float) / nsteps[0]
@@ -104,12 +109,12 @@ def find_grid_size(cell: torch.Tensor, max_res: float):
 
     Notes
     -----
-    Grids are sized as ``floor(cell[:3] / max_res * 2.3)``, i.e. an
-    oversampling factor of 2.3. This differs from ``get_real_grid``,
-    ``get_real_grid_numpy`` and ``get_grids``, which use a factor of 3 and
-    therefore produce larger grids for the same ``max_res``.
+    Grids are sized as ``floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING)``,
+    the proper Shannon-Nyquist sampling factor (see
+    :data:`torchref.config.NYQUIST_OVERSAMPLING`). This matches
+    ``get_real_grid``, ``get_real_grid_numpy`` and ``get_grids``.
     """
-    return torch.floor(cell[:3] / max_res * 2.3).to(dtypes.int)
+    return torch.floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING).to(dtypes.int)
 
 
 def get_real_grid_numpy(cell, max_res=0.8, gridsize=None):
@@ -138,7 +143,7 @@ def get_real_grid_numpy(cell, max_res=0.8, gridsize=None):
     if gridsize is not None:
         nsteps = np.array(gridsize, dtype=int)
     else:
-        nsteps = np.astype(np.floor(cell[:3] / max_res * 3), int)
+        nsteps = np.astype(np.floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING), int)
     # Place grid points at grid edges: i / N (CCTBX convention)
     # This matches how CCTBX/gemmi create maps
     x = np.arange(nsteps[0]) / nsteps[0]
@@ -177,7 +182,7 @@ def get_grids(cell, max_res=0.8):
     xyz_real_grid : numpy.ndarray
         Real-space grid coordinates with shape (nx, ny, nz, 3).
     """
-    nsteps = np.astype(np.floor(cell[:3] / max_res * 3), int)
+    nsteps = np.astype(np.floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING), int)
     x = np.arange(nsteps[0]) / nsteps[0]
     y = np.arange(nsteps[1]) / nsteps[1]
     z = np.arange(nsteps[2]) / nsteps[2]

@@ -15,7 +15,7 @@ from .map_building import (
 )
 
 # Import optimized JIT kernel version
-from torchref.base.kernels import vectorized_add_to_map
+from torchref.base.electron_density.kernels import vectorized_add_to_map
 
 from .voxel_utils import (
     find_relevant_voxels,

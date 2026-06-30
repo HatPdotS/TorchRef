@@ -81,7 +81,7 @@ import torch
 torch.set_num_threads(N_CPUS)
 
 # Dtype and device configuration (must be imported after torch)
-from torchref.config import device, dtypes
+from torchref.config import device, dtypes, sigma_cutoff_ed
 
 # Project root path for referencing package files
 ROOT_TORCHREF = Path(__file__).parent.parent.resolve()
@@ -136,6 +136,7 @@ __all__ = [
     # Dtype and device configuration
     "dtypes",
     "device",
+    "sigma_cutoff_ed",
     # Data I/O
     "ReflectionData",
     "DatasetCollection",

@@ -31,14 +31,14 @@ _EIGHT_PI_SQ = 8.0 * math.pi**2
 
 def _grid(dtype=torch.float64):
     cell = Cell([12.0, 13.0, 14.0, 90.0, 90.0, 90.0])
-    fft = SfFFT(cell, spacegroup="P1", max_res=3.0, radius_angstrom=3.0,
+    fft = SfFFT(cell, spacegroup="P1", max_res=3.0,
                 dtype_float=dtype, device="cpu")
     fft.setup_grid(max_res=3.0)
     return (
         fft.real_space_grid.to(dtype),
         fft.inv_fractional_matrix.to(dtype),
         fft.fractional_matrix.to(dtype),
-        float(fft.radius_angstrom),
+        3.0,  # splat radius for the legacy fixed-radius reference kernels
     )
 
 
@@ -106,7 +106,7 @@ def test_aniso_map_gradcheck():
 def _grid_full(dtype=torch.float64):
     """Like _grid but also returns real_space_grid + voxel_size for the CPU kernel."""
     cell = Cell([12.0, 13.0, 14.0, 90.0, 90.0, 90.0])
-    fft = SfFFT(cell, spacegroup="P1", max_res=3.0, radius_angstrom=3.0,
+    fft = SfFFT(cell, spacegroup="P1", max_res=3.0,
                 dtype_float=dtype, device="cpu")
     fft.setup_grid(max_res=3.0)
     return fft
@@ -126,7 +126,7 @@ def test_cpu_aniso_reduces_to_isotropic():
     fft = _grid_full()
     grid = fft.real_space_grid
     inv_frac, frac = fft.inv_fractional_matrix, fft.fractional_matrix
-    vox, rad = fft.voxel_size, float(fft.radius_angstrom)
+    vox, rad = fft.voxel_size, 3.0
     shape = grid.shape[:3]
     xyz, A, B, occ, b = _atoms()
 
@@ -150,7 +150,7 @@ def test_cpu_aniso_matches_eager():
     fft = _grid_full()
     grid = fft.real_space_grid
     inv_frac, frac = fft.inv_fractional_matrix, fft.fractional_matrix
-    vox, rad = fft.voxel_size, float(fft.radius_angstrom)
+    vox, rad = fft.voxel_size, 3.0
     shape = grid.shape[:3]
     xyz0, A, B, occ0, _ = _atoms()
     u0 = _ANISO_U
