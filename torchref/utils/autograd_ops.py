@@ -12,6 +12,11 @@ Wrapping the gather in this autograd op routes the backward through
 ``index_add_`` instead: a single atomic-accumulating scatter with no
 radix sort. The forward output is identical to ``buffer[indices]``.
 
+The op is device-agnostic: the forward and backward are correct on any
+device (the backward uses ``index_add_`` on both CPU and CUDA). The
+``cub::DeviceRadixSortOnesweepKernel`` note above is only the CUDA
+performance rationale that motivated the op, not a device restriction.
+
 Use via :func:`gather_with_index_add` (drop-in replacement for
 ``buffer[indices]`` in differentiable code paths).
 """

@@ -6,12 +6,18 @@ with the symmetry operations. Specifically:
 - Screw axes require specific divisibility constraints
 - Grid sizes should also be FFT-friendly (factors of 2, 3, 5)
 
-This module provides the canonical implementations of FFT-friendly grid utilities.
-The spacegroup module imports and re-exports these functions for convenience.
+This module provides thin convenience wrappers around the FFT-friendly grid
+utilities. The canonical implementations live in the ``spacegroup`` module;
+the wrappers here delegate into it (e.g. ``get_symmetry_grid_requirements``
+calls ``spacegroup.get_grid_requirements``). Note that ``spacegroup`` also
+defines its own ``is_fft_friendly`` / ``find_fft_friendly_size`` standalone;
+those in ``spacegroup`` are the source of truth.
 """
 
 import numpy as np
 import torch
+
+from torchref.config import NYQUIST_OVERSAMPLING
 
 
 def get_symmetry_grid_requirements(space_group: str) -> dict:
@@ -99,7 +105,8 @@ def calculate_optimal_grid_size(cell_params, max_res: float, space_group: str) -
 
     Grid sizes are chosen to:
 
-    1. Satisfy Shannon-Nyquist sampling (3x oversampling relative to max_res)
+    1. Satisfy Shannon-Nyquist sampling (``NYQUIST_OVERSAMPLING`` × relative
+       to max_res; see :data:`torchref.config.NYQUIST_OVERSAMPLING`)
     2. Respect symmetry requirements (screw axis divisibility)
     3. Be FFT-friendly (factors of 2, 3, 5 only)
 
@@ -125,10 +132,10 @@ def calculate_optimal_grid_size(cell_params, max_res: float, space_group: str) -
 
     a, b, c = cell_params[:3]
 
-    # Shannon-Nyquist: sample at 3x the maximum frequency
-    nx_min = int(np.floor(a / max_res * 3))
-    ny_min = int(np.floor(b / max_res * 3))
-    nz_min = int(np.floor(c / max_res * 3))
+    # Shannon-Nyquist: sample at NYQUIST_OVERSAMPLING × the maximum frequency
+    nx_min = int(np.floor(a / max_res * NYQUIST_OVERSAMPLING))
+    ny_min = int(np.floor(b / max_res * NYQUIST_OVERSAMPLING))
+    nz_min = int(np.floor(c / max_res * NYQUIST_OVERSAMPLING))
 
     # Use spacegroup module to suggest optimal size
     return suggest_grid_size((nx_min, ny_min, nz_min), space_group, make_fft_friendly=True)

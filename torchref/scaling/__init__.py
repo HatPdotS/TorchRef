@@ -24,15 +24,15 @@ Example
 
     from torchref.scaling import Scaler, ScalerBase, SolventModel
 
-    # Using Scaler with a model (auto-computes F_calc)
+    # Using Scaler with a model (auto-computes fcalc)
     scaler = Scaler(model, data, nbins=20)
     scaler.initialize()
-    F_calc_scaled = scaler(F_calc)
+    fcalc_scaled = scaler(fcalc)
 
-    # Using ScalerBase without a model (requires F_calc as input)
+    # Using ScalerBase without a model (requires fcalc as input)
     scaler_base = ScalerBase(data=data, nbins=20)
     scaler_base.initialize(fcalc)
-    F_calc_scaled = scaler_base(fcalc)
+    fcalc_scaled = scaler_base(fcalc)
 """
 
 from torchref.scaling.scaler import Scaler

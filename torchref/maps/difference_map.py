@@ -36,6 +36,34 @@ class DifferenceMap(Map):
         Model for computing phases.
     gridsize : tuple of int, optional
         Grid dimensions (nx, ny, nz). If None, determined automatically.
+
+    Attributes
+    ----------
+    data_reference : ReflectionData
+        Reflection data for the reference state (e.g., dark, native).
+    data_perturbed : ReflectionData
+        Reflection data for the perturbed state (e.g., light, derivative).
+    map_data : torch.Tensor or None
+        The computed 3D real-space difference map, or ``None`` before
+        ``calculate()``.
+    map_type : str
+        Inherited from :class:`Map`; set to ``"Fcalc"`` as a placeholder
+        because ``calculate()`` is overridden and does not use it.
+
+    Methods
+    -------
+    calculate()
+        Compute and return the 3D real-space isomorphous difference map.
+    write(filepath)
+        Inherited from :class:`Map`; write the map to a CCP4 file.
+    reset_cache()
+        Inherited from :class:`Map`; discard the cached map.
+
+    Notes
+    -----
+    The FFT uses ``torch.fft.fftn`` with ``norm="forward"`` (a 1/N
+    normalization), so the difference-map scale is in normalized units
+    (see :mod:`torchref.maps.map`).
     """
 
     def __init__(self, data, data_reference, model, gridsize=None,

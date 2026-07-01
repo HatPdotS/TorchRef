@@ -1,15 +1,18 @@
 """
 Ensemble Bhattacharyya X-ray target — Fisher information per effective dimension.
 
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``, and the most
+   experimental of the ensemble X-ray targets (the k_eff coupling below). The
+   API and behaviour may change or be removed without notice.
+
 The single-model :class:`BhattacharyyaXrayTarget` builds the per-reflection model
 uncertainty σ_m from the **data-limited** (Fisher / Cramér-Rao) positional error of
 each atom: a position is only as well-determined as the data allow,
-``Var(x) = 1/Fisher``. That is the right notion of error. The wrong move (a first
-attempt, now discarded) was to feed the *raw ensemble spread* in as σ_m — spread is
-a refined model quantity, not a data-limited error, and using its magnitude makes
-σ_m circular (spread ↑ → σ_m ↑ → data weight ↓ → spread ↑) so the fit under-converges.
+``Var(x) = 1/Fisher``. That is the right notion of error.
 
-The correct coupling: the data's information budget is **shared across the effective
+The coupling: the data's information budget is **shared across the effective
 dimensions the ensemble spends**. So Fisher *per effective dimension* is ``I/k_eff``
 and the model variance scales with the effective dimensionality::
 
@@ -31,6 +34,13 @@ the data scale (σ_m vs σ_d) — a Cramér-Rao equilibrium at the data-supporte
 
 σ_m is on the parent's raw form-factor scale; ``sigma_m_scale`` (default 1.0, no
 other scale applied) is calibrated from the σ_m/σ_d diagnostic.
+
+Notes
+-----
+A first attempt fed the *raw ensemble spread* in as σ_m and was discarded:
+spread is a refined model quantity, not a data-limited error, and using its
+magnitude makes σ_m circular (spread ↑ → σ_m ↑ → data weight ↓ → spread ↑) so
+the fit under-converges. The k_eff coupling above replaces it.
 """
 
 from typing import TYPE_CHECKING
@@ -46,6 +56,10 @@ if TYPE_CHECKING:
 
 class EnsembleBhattacharyyaTarget(BhattacharyyaXrayTarget):
     """Bhattacharyya target with σ_m = data-limited Fisher error × √(effective dim).
+
+    .. warning::
+
+       Experimental — API and behaviour may change without notice.
 
     Inherits the parent's data plumbing and Fisher σ_m machinery (``R(h)``); the
     only change is that σ_m² is multiplied by the differentiable, scale-invariant

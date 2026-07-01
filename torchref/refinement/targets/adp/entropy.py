@@ -25,12 +25,16 @@ class ADPEntropyTarget(ADPTarget):
     same (detached) mean and a fixed target log-space standard deviation
     (``target_log_std=0.2``). The loss is zero when the log-ADP spread matches
     the target and grows as the distribution becomes tighter or broader.
+
+    Note: despite the class name "Entropy", the loss is a KL divergence to a
+    fixed-spread Gaussian (hence ``name = "adp/KL"``), not an entropy term;
+    the "distribution regularization" description above is the accurate one.
     """
 
     name: str = "adp/KL"
 
     def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose, target_value=0.5, sigma=0.5)
+        super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
         return self.model.adp_kl_divergence_loss()

@@ -32,7 +32,7 @@ class RamachandranTarget(GeometryTarget):
     name: str = "geometry/ramachandran"
 
     def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose, target_value=2.0, sigma=1.0)
+        super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
         xyz = self.model.xyz()

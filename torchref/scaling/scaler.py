@@ -1,11 +1,14 @@
 """
 A class for scaling and post corrections of scattering factors.
 
-Currently implements:
+Enabled by default in ``initialize()``:
 - Overall scale per resolution bin
-- B-factor per resolution bin
 - Anisotropy correction
 - Solvent model correction
+
+Optional (must be enabled explicitly, not part of the default pipeline):
+- B-factor per resolution bin (via ``setup_bin_wise_bfactor`` /
+  ``bin_wise_bfactor_correction``; never called by ``initialize()``)
 
 This module provides the full-featured `Scaler` class that maintains a reference
 to a Model object. For a model-independent scaler, see `ScalerBase`.
@@ -67,6 +70,15 @@ class Scaler(ScalerBase):
         Current computation device.
     nbins : int
         Number of resolution bins.
+    log_scale : torch.nn.Parameter
+        Per-bin log scale factors (created during ``initialize()``).
+    U : torch.nn.Parameter
+        Anisotropic scaling parameters (created during ``initialize()``).
+    solvent : SolventModel
+        Bulk-solvent model (created during ``initialize()``).
+    cell, bins, s
+        Cell parameters, per-reflection bin indices, and scattering
+        vectors set up from the data.
     """
 
     def __init__(
@@ -371,11 +383,10 @@ class Scaler(ScalerBase):
         """
         Return a dictionary containing the complete state of the Scaler.
 
-        This includes:
-
-        - All registered buffers and parameters (via parent class)
-        - Scaler-specific metadata (nbins, etc.)
-        - Solvent model state (if initialized)
+        This is a pure pass-through to ``ScalerBase.state_dict``; the actual
+        serialization (registered buffers/parameters, nbins/verbose metadata,
+        and solvent model state) is performed by the parent. See
+        :meth:`ScalerBase.state_dict` for the authoritative behavior.
 
         Note: Model and data references are NOT saved (managed separately).
 

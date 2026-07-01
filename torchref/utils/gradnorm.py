@@ -21,15 +21,21 @@ def gradnorm(loss: torch.Tensor, parameters: iter) -> float:
         The loss tensor to backpropagate.
     parameters : iterable
         Iterable of model parameters (typically from model.parameters()).
+        Note the runtime annotation reads ``iter``; the expected argument
+        is any iterable of parameters.
 
     Returns
     -------
-    float
-        The computed RMS gradient norm.
+    torch.Tensor
+        The computed RMS gradient norm as a zero-dim ``torch.Tensor``.
+        (The ``-> float`` annotation is nominal; the value is returned as a
+        scalar tensor, not a Python ``float``.)
 
     Notes
     -----
-    Uses retain_graph=True to allow subsequent backward passes.
+    Has a side effect: this function calls ``loss.backward(retain_graph=True)``,
+    which populates / accumulates the ``.grad`` attribute on the parameters.
+    ``retain_graph=True`` allows subsequent backward passes.
     Only includes parameters that have gradients (skips None grads).
 
     Examples

@@ -39,9 +39,14 @@ def prefilter_symop_offsets(
 
     Parameters
     ----------
-    cell, sg : Cell, SpaceGroup
-    xyz_frac : (N, 3) fractional ASU coordinates
-    cutoff : float  Cartesian cutoff in Angstrom
+    cell : Cell
+        Crystallographic unit cell.
+    sg : SpaceGroup
+        Space group providing the symmetry operators.
+    xyz_frac : torch.Tensor
+        ``(N, 3)`` fractional ASU coordinates.
+    cutoff : float
+        Cartesian cutoff in Angstrom.
 
     Returns
     -------
@@ -615,7 +620,10 @@ def build_vdw_restraints_gpu(
     sg : SpaceGroup
     pdb : DataFrame
     exclusion_set : set of (int, int) bonded exclusion pairs
-    cutoff, sigma : float
+    cutoff : float
+        Contact distance cutoff in Angstrom.
+    sigma : float
+        Standard deviation assigned to each VDW restraint.
     inter_residue_only : bool
     verbose : int
 

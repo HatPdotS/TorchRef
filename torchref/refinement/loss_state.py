@@ -63,6 +63,14 @@ class LossState(DeviceMovementMixin):
         Log of computed values per aggregation call.
     meta : Dict[str, Any]
         Model-level data (rwork, rfree, n_atoms, etc.) populated by refinement.
+
+    Notes
+    -----
+    Several load-bearing fields are underscored (private): ``_losses`` caches
+    the most recent per-target values that :meth:`__getitem__`, :meth:`get`, and
+    :meth:`get_loss` read; ``_loss_leaves`` and ``_resettable_modules`` drive the
+    parameter auto-freezing and cache-reset behaviour exercised by
+    :meth:`active_parameters` and :meth:`run` / :meth:`step`.
     """
 
     device: torch.device = field(default_factory=get_default_device)
@@ -161,7 +169,10 @@ class LossState(DeviceMovementMixin):
         """
         Cache all target losses.
 
-        Evaluates all registered targets and stores results in _losses.
+        Evaluates all registered targets and stores results in ``_losses``.
+        With ``force=False`` only keys not already present are filled; stale
+        entries for de-registered targets are not pruned unless ``force=True``
+        (which clears the cache first).
 
         Parameters
         ----------
@@ -493,7 +504,9 @@ class LossState(DeviceMovementMixin):
         name : str
             Key for the logged value.
         value : Any
-            Value to log. Tensors are converted to Python floats.
+            Value to log. Tensors are converted to Python floats via
+            ``.detach().item()`` (scalar tensors only; a non-scalar tensor
+            will raise).
         """
         # Ensure we have a current entry
         if not self.history:
@@ -660,7 +673,7 @@ class LossState(DeviceMovementMixin):
         *,
         context: str = "loss_state.step",
     ) -> Optional[torch.Tensor]:
-        """Run a single ``optimizer.step(closure)``.
+        """Run ``nsteps`` optimizer steps (default 1), each an ``optimizer.step(closure)``.
 
         Builds the closure, validates each loss for finiteness via
         :func:`torchref.utils.validate_loss`, and on failure zeros the

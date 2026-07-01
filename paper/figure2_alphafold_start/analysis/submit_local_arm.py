@@ -84,8 +84,8 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--arm", default="torchref_devbuild",
-                    help="Output arm name under runs/ (default torchref_devbuild).")
+    ap.add_argument("--arm", default="torchref",
+                    help="Output arm name under runs/ (default torchref).")
     ap.add_argument("--n-cycles", type=int, default=10)
     ap.add_argument("--xray-weight", type=float, default=None,
                     help="Override the xray group weight (default 1).")
@@ -99,8 +99,9 @@ def main():
                          "other geometry components stay at their group weight). "
                          "Use a distinct --arm (e.g. *_norama) so the run lands "
                          "in its own directory for the with/without comparison.")
-    ap.add_argument("--mem", default="8G",
-                    help="SLURM --mem per job (e.g. 16G for large structures).")
+    ap.add_argument("--mem", default="16G",
+                    help="SLURM --mem per job (16G is the benchmark default; 8G "
+                         "OOMs the largest structures).")
     ap.add_argument("--codes", nargs="+", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--dry-run", action="store_true")

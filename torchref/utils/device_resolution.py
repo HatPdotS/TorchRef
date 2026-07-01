@@ -83,10 +83,11 @@ def resolve_device(
         >>> resolve_device(model, data, device='cpu')  # doctest: +SKIP
         device(type='cpu')
 
-    Auto-reconcile with first-wins precedence::
+    Auto-reconcile with first-wins precedence (``cpu_data`` is moved to
+    cuda to match the first module)::
 
         >>> resolve_device(cuda_model, cpu_data)  # doctest: +SKIP
-        device(type='cuda')  # cpu_data has been moved to cuda
+        device(type='cuda')
     """
     if device is not None:
         resolved = torch.device(device) if not isinstance(device, torch.device) else device

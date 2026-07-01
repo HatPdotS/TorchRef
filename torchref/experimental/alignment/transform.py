@@ -3,6 +3,11 @@ Rigid body transformations for crystallographic alignment.
 
 Provides unified handling of rotations and translations with quaternion-based
 internal storage and multiple representation formats.
+
+Experimental / unstable API: part of ``torchref.experimental.alignment``,
+the opt-in ball-harmonic MR engine. The production MR entry point is
+``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
+may change without notice.
 """
 
 from typing import Optional, Union
@@ -53,6 +58,12 @@ def sample_angles(sampling_pitch_rad, max_angles_rad):
     -------
     torch.Tensor
         Sampled angles of shape (N, 3), where N is the number of grid points.
+
+    See Also
+    --------
+    torchref.experimental.alignment.sampling : Related atom-pair sampling
+        utilities (this Euler-angle grid sampler is thematically a sampling
+        helper but lives here in ``transform``).
     """
 
     angles = []

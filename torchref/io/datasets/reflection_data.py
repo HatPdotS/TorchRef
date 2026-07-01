@@ -161,7 +161,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
     verbose : int, optional
         Verbosity level for logging (0=silent, 1=normal, 2=debug). Default is 1.
     device : str, optional
-        Device to store tensors on ('cpu', 'cuda', 'cuda:0', etc.). Defaults to the configured device.current.
+        Device to store tensors on ('cpu', 'cuda', 'cuda:0', etc.). Defaults to
+        the configured default device (``get_default_device()``).
 
     Attributes
     ----------
@@ -176,11 +177,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
     I_sigma : torch.Tensor
         Intensity uncertainties of shape (N,), dtype float32.
     rfree_flags : torch.Tensor
-        R-free test set flags of shape (N,), dtype bool.
+        R-free test set flags of shape (N,). Convention: 1=work, 0=free.
+        Dtype is int32 in the common generated path (``_generate_rfree_flags``)
+        and may be bool when loaded from an MTZ FreeR column; internal accessors
+        coerce to bool as needed, so callers must not rely on a fixed dtype.
     cell : torch.Tensor
         Unit cell parameters [a, b, c, alpha, beta, gamma].
     spacegroup : str
-        Space group symbol.
+        Field annotation is ``str``, but ``load`` / ``from_tensors`` populate it
+        at runtime with a ``torchref.symmetry.SpaceGroup`` object.
     resolution : torch.Tensor
         Resolution per reflection in Ångströms of shape (N,).
     wilson_b : float
@@ -550,7 +555,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         This is called automatically after ``load()`` and ``from_tensors()``.
         It performs:
         1. Resolution calculation from HKL + cell
-        2. Initial flagging mask (marks all reflections as valid if not set)
+        2. Ensure an all-valid flagging mask exists (only filled if absent)
         3. Canonicalization of HKL to CCP4 ASU
         4. Sanitization of F (mask NaN/Inf/non-positive)
         5. Suspicious sigma detection
@@ -603,10 +608,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         spacegroup : SpaceGroup
             Space group.
         rfree_flags : torch.Tensor, optional
-            R-free flags of shape (N,), dtype bool. If None, flags are
-            generated automatically (2% free fraction).
+            R-free flags of shape (N,); convention 1=work, 0=free. If None,
+            flags are generated automatically (2% free fraction) and stored as
+            int32; a supplied bool tensor is kept as-is. Internal accessors
+            coerce to bool, so the stored dtype is not guaranteed bool.
         device : str, optional
-            Device for tensors. Defaults to the configured device.current.
+            Device for tensors. Defaults to the configured default device
+            (``get_default_device()``).
         verbose : int, optional
             Verbosity level. Default is 1.
         friedel_merged : bool, optional
@@ -1180,7 +1188,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         - ``self.wilson_b`` : Overall Wilson B-factor (structure B) in Å².
         - ``self.wilson_b_structure`` : Structure B-factor from high-res in Å².
         - ``self.wilson_b_solvent`` : Solvent B-factor from low-res in Å².
-        - ``self.wilson_k_sol`` : Relative solvent contribution (0-1).
+        - ``self.wilson_k_sol`` : Relative solvent contribution, clamped to (0.01, 0.9).
         """
         if self.F is None or self.resolution is None:
             return
@@ -1511,7 +1519,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Returns
         -------
         torch.Tensor
-            Miller indices of shape (N, 3), dtype int32.
+            Miller indices of the valid subset, shape (M, 3) with M <= N
+            (M = number of valid reflections), dtype int32.
 
         Raises
         ------
@@ -1757,6 +1766,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         Return maximum resolution (lowest d-spacing).
 
+        Here ``d_min`` is the high-resolution limit = the smallest d-spacing
+        in the dataset.
+
         Returns
         -------
         float
@@ -1830,7 +1842,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         F_sigma : torch.Tensor or None
             Uncertainties of shape (M,) or None.
         rfree_flags : torch.Tensor or None
-            R-free flags of shape (M,) or None.
+            R-free flags of shape (M,) or None, coerced to bool on return
+            (convention 1/True=work, 0/False=free).
 
         See Also
         --------
@@ -1958,12 +1971,27 @@ class ReflectionData(CrystalDataset, DebugMixin):
         self, mode="mean"
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Return data tensors with missing or flagged reflections filled with.
+        Return data tensors with missing or flagged reflections filled in.
 
-        args:
-            mode: str, optional
-                'mean' : fill missing/flagged with mean of present data
-                'zero' : fill missing/flagged with zero
+        Parameters
+        ----------
+        mode : str, optional
+            Fill strategy for missing/flagged reflections. Default is 'mean'.
+
+            - 'mean' : fill with the per-bin mean of the present data.
+            - 'zero' : fill with zero.
+
+        Returns
+        -------
+        hkl : torch.Tensor
+            Miller indices of shape (N, 3).
+        F : torch.Tensor
+            Structure factor amplitudes of shape (N,) with gaps filled.
+        F_sigma : torch.Tensor
+            Amplitude uncertainties of shape (N,) with gaps filled.
+        rfree : torch.Tensor
+            R-free flags of shape (N,); filled-in reflections are assigned to
+            the work set (True).
         """
         hkl, F, F_sigma, rfree = self._masked_unpack()
 
@@ -2147,7 +2175,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         -----
         After calling this method:
         - self.hkl will equal hkl_ref exactly
-        - All data arrays (F, F_sigma, rfree_flags, etc.) are reordered/expanded
+        - All data arrays (F, F_sigma, rfree_flags, etc.) are reordered/expanded.
+          ``rfree_flags`` keeps its stored dtype (int32 or bool; convention
+          1=work, 0=free) — internal accessors coerce to bool as needed.
         - Missing reflections are filled with 0 (or appropriate defaults)
         - A mask 'hkl_present' is added marking which reflections have real data
         - forward() will return MaskedTensors that skip missing reflections
@@ -2392,6 +2422,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             - fraction_outliers : float
             - detection_params : dict or None
             - outlier_resolution_stats : dict (if resolution available)
+
+        Notes
+        -----
+        Reads ``self.outlier_flags``, which must be populated separately. Note
+        that :meth:`find_outliers` stores its result in ``self.masks['outliers']``
+        and does NOT set ``self.outlier_flags``; these statistics therefore do
+        not automatically reflect a prior ``find_outliers`` call.
         """
         if self.outlier_flags is None:
             return {"n_outliers": 0, "n_total": 0, "fraction_outliers": 0.0}
@@ -2717,16 +2754,23 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Notes
         -----
-        The MTZ file will contain canonical column names:
+        These are the final MTZ column labels written to disk (after
+        ``mtz.write`` remaps the intermediate DataFrame keys, which use names
+        like ``F-obs``, ``SIGF-obs``, ``I-obs``, ``SIGI-obs``,
+        ``R-free-flags``, ``F-model``, ``PH-model``):
+
             - FP, SIGFP: Observed amplitudes and uncertainties
             - I, SIGI: Observed intensities and uncertainties (if available)
             - FreeR_flag: R-free test set flags
-            - FWT, PHWT: 2mFo-DFc map coefficients (if fcalc provided)
-            - DELFWT, PHDELWT: mFo-DFc map coefficients (if fcalc provided)
+            - FWT, PHWT: 2Fo-Fc map coefficients (if fcalc provided)
+            - DELFWT, PHDELWT: Fo-Fc map coefficients (if fcalc provided)
 
-        Map coefficients are computed as:
-            - 2mFo-DFc: 2*Fo - Fc (filled to resolution limit)
-            - mFo-DFc: Fo - Fc
+        Map coefficients are written under the standard Coot column names
+        (FWT/PHWT, DELFWT/PHDELWT) but are the *unweighted* approximations
+        (figure-of-merit ``m=1``, sigma_a weight ``D=1``), not true
+        likelihood-weighted 2mFo-DFc / mFo-DFc maps. They are computed as:
+            - 2Fo-Fc: 2*Fo - Fc (filled to resolution limit)
+            - Fo-Fc: Fo - Fc
 
         Examples
         --------
@@ -2816,23 +2860,23 @@ class ReflectionData(CrystalDataset, DebugMixin):
             F_calc_amp = np.abs(fcalc_np)
 
             # Compute map coefficients
-            # 2mFo-DFc: Use observed amplitudes with calculated phases
+            # 2Fo-Fc (unweighted, m=D=1): observed amplitudes with calculated phases
             # When 2*Fobs - Fcalc < 0, flip phase by 180° and use absolute amplitude
             two_mfo_dfc_raw = 2.0 * F_obs - F_calc_amp
             two_mfo_dfc_amp = np.abs(two_mfo_dfc_raw)
             two_mfo_dfc_phase = phases.copy()
 
-            # mFo-DFc: Difference map
+            # Fo-Fc: Difference map (unweighted, m=D=1)
             mfo_dfc_complex = F_obs * np.exp(1j * np.deg2rad(phases)) - fcalc_np
             mfo_dfc_complex[~mask] = 0.0  # Zero out reflections outside mask
             mfo_dfc_amp = np.abs(mfo_dfc_complex)
             mfo_dfc_phase = np.angle(mfo_dfc_complex, deg=True)
 
-            # Add 2mFo-DFc map coefficients (standard Coot names: FWT, PHWT)
+            # Add 2Fo-Fc map coefficients (standard Coot names: FWT, PHWT)
             data_dict["FWT"] = two_mfo_dfc_amp
             data_dict["PHWT"] = two_mfo_dfc_phase
 
-            # Add mFo-DFc map coefficients (standard Coot names: DELFWT, PHDELWT)
+            # Add Fo-Fc map coefficients (standard Coot names: DELFWT, PHDELWT)
             data_dict["DELFWT"] = mfo_dfc_amp
             data_dict["PHDELWT"] = mfo_dfc_phase
 
@@ -2841,8 +2885,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
             if self.verbose > 0:
                 print("Added map coefficients:")
-                print("  2mFo-DFc: FWT, PHWT")
-                print("  mFo-DFc: DELFWT, PHDELWT")
+                print("  2Fo-Fc: FWT, PHWT")
+                print("  Fo-Fc: DELFWT, PHDELWT")
                 print(
                     f"  Resolution range: {self.resolution.min().item():.2f} - {self.resolution.max().item():.2f} Å"
                 )
@@ -2876,7 +2920,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if self.hkl is None:
             return None
 
-        # Check if we already have it cached (could be stored in a buffer if we want persistence)
+        # Check if we already have it cached (persisted on the _centric_flags
+        # dataclass field, so it survives serialization)
         if not hasattr(self, "_centric_flags") or self._centric_flags is None:
             from torchref.base.french_wilson import is_centric_from_hkl
 
@@ -3522,9 +3567,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         n_shells : int
             Number of radial shells. Default is 20.
         d_min : float, optional
-            High resolution limit in Angstroms. If None, uses dataset minimum.
+            High resolution limit in Angstroms. If None, uses the
+            highest-resolution (smallest d) value in the dataset.
         d_max : float, optional
-            Low resolution limit in Angstroms. If None, uses dataset maximum.
+            Low resolution limit in Angstroms. If None, uses the
+            lowest-resolution (largest d) value in the dataset.
 
         Returns
         -------
@@ -3585,9 +3632,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         n_shells : int
             Number of resolution shells for variance calculation.
         d_min : float, optional
-            High resolution limit in Angstroms. If None, uses dataset minimum.
+            High resolution limit in Angstroms. If None, uses the
+            highest-resolution (smallest d) value in the dataset.
         d_max : float, optional
-            Low resolution limit in Angstroms. If None, uses dataset maximum.
+            Low resolution limit in Angstroms. If None, uses the
+            lowest-resolution (largest d) value in the dataset.
         n_iterations : int
             Number of optimization iterations.
         verbose : bool, optional
@@ -3745,9 +3794,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         n_shells : int
             Number of resolution shells for normalization.
         d_min : float, optional
-            High resolution limit in Angstroms. If None, uses dataset minimum.
+            High resolution limit in Angstroms. If None, uses the
+            highest-resolution (smallest d) value in the dataset.
         d_max : float, optional
-            Low resolution limit in Angstroms. If None, uses dataset maximum.
+            Low resolution limit in Angstroms. If None, uses the
+            lowest-resolution (largest d) value in the dataset.
         apply_anisotropy : bool
             If True, apply anisotropy correction before E-value calculation.
         fit_anisotropy : bool
@@ -3945,10 +3996,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         Get list of learnable parameters for optimization.
 
+        Despite the ``List[Parameter]`` annotation, the returned values are
+        plain ``torch.Tensor`` objects (``log_scale``, ``U_aniso``), not
+        ``nn.Parameter`` instances, and they are created with
+        ``requires_grad=False``. Callers must enable gradients on them (e.g.
+        ``p.requires_grad_(True)``) before handing them to an optimizer; see
+        ``DatasetCollection.scale``.
+
         Returns
         -------
-        iter[Parameter]
-            iter of torch Parameters to be optimized. Includes log_scale and U_aniso if set.
+        list of torch.Tensor
+            List of the scaling tensors (log_scale and U_aniso, if set) to be
+            optimized. Grad is disabled by default and must be enabled by the
+            caller.
         """
         params = []
         if self.log_scale is not None:

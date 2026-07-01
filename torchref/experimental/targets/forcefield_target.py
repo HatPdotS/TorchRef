@@ -1,6 +1,11 @@
 """
 Force Field Target for Molecular Dynamics Energy Calculations.
 
+Experimental / unstable API: this module lives under
+``torchref.experimental`` and may change without notice.  It is a
+TorchMD-Net scaffold that has not been validated for production
+refinement.
+
 This module provides a target that computes molecular energy using
 TorchMD-Net neural network potentials for crystallographic refinement.
 """
@@ -30,6 +35,11 @@ class ForceFieldTarget(ModelTarget):
     neural network potential. Returns energy as a differentiable tensor
     suitable for gradient-based refinement.
 
+    .. warning::
+
+        Experimental and unvalidated. This target is a TorchMD-Net
+        scaffold and has not been benchmarked for refinement use.
+
     Parameters
     ----------
     model : Model, optional
@@ -39,7 +49,9 @@ class ForceFieldTarget(ModelTarget):
     model_path : str, optional
         Path to TorchMD-Net checkpoint file (.ckpt).
     cutoff : float, optional
-        Interaction cutoff distance in Angstroms. Default is 5.0.
+        Intended interaction cutoff distance in Angstroms. Default is 5.0.
+        Currently stored as a buffer but NOT forwarded to the underlying
+        potential, so it has no effect on the computed energy yet.
     normalize_by_atoms : bool, optional
         If True, return energy per atom. Default is True.
     verbose : int, optional
@@ -60,8 +72,8 @@ class ForceFieldTarget(ModelTarget):
     ...     model_path='path/to/torchmdnet.ckpt',
     ... )
     >>>
-    >>> # Get energy
-    >>> energy = ff_target()
+    >>> # Get energy (per atom by default, since normalize_by_atoms=True)
+    >>> energy_per_atom = ff_target()
 
     Notes
     -----

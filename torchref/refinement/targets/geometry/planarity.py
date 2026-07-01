@@ -69,7 +69,7 @@ class PlanarityTarget(GeometryTarget):
     name: str = "geometry/planarity"
 
     def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose, target_value=-2.0, sigma=0.2)
+        super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
         from torchref.base.targets.planarity import planarity_math

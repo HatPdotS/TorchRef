@@ -104,10 +104,10 @@ class FcalcDataset(CrystalDataset):
         d_max : float, optional
             Low resolution limit in Angstroms. If provided, reflections
             with d-spacing > d_max are removed.
-        device : torch.device
-            Target device.
-        dtype : torch.dtype
-            Float dtype for tensors.
+        device : torch.device, optional
+            Target device. If None, defaults to ``get_default_device()``.
+        dtype : torch.dtype, optional
+            Float dtype for tensors. If None, defaults to ``get_float_dtype()``.
 
         Returns
         -------

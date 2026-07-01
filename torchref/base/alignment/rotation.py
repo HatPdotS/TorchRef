@@ -29,6 +29,11 @@ def rotate_coords_torch(coords, phi, rho):
     -------
     torch.Tensor
         Rotated coordinates of shape (N, 3).
+
+    Notes
+    -----
+    The two-angle (phi, rho) convention composes a rotation by ``phi`` about
+    the z axis followed by a rotation by ``rho`` about the resulting x axis.
     """
     phi = phi * np.pi / 180
     rho = rho * np.pi / 180
@@ -246,8 +251,8 @@ def random_rotation_uniform(
     ----------
     n : int, optional
         Number of rotations to generate. Default is 1.
-    device : str, optional
-        Device for output tensor. Defaults to the configured device.current.
+    device : str or torch.device, optional
+        Device for output tensor. Defaults to the configured default device.
     dtype : torch.dtype, optional
         Data type for output tensor. Default is dtypes.float.
 
@@ -296,7 +301,7 @@ def rotation_matrix_euler_zyz(
     Returns
     -------
     torch.Tensor
-        3x3 rotation matrix.
+        Rotation matrix of shape (3, 3), or (B, 3, 3) for batched input.
     """
 
     batched = True

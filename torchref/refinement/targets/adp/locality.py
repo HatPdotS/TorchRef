@@ -32,9 +32,17 @@ class ADPLocalityTarget(ADPTarget):
     k_neighbors : int, optional
         Number of nearest neighbors to consider. Default is 50.
     correlation_length : float, optional
-        Distance scale for weight decay in Angstrom. Default is 5.0.
+        Distance scale for weight decay in Angstrom. Default is 5.0. Only
+        used in ``stats()`` (for the exponential-decay reported weights);
+        ``forward()`` weights neighbors by inverse distance instead.
     scale : float, optional
-        Scaling factor for loss magnitude. Default is 5.0.
+        Default is 5.0. Currently informational only: ``forward()`` does not
+        multiply the loss by ``scale`` (it is surfaced only in ``stats()``),
+        so it is not an active loss-magnitude lever.
+    sigma_aniso : float, optional
+        Sigma for the deviatoric (anisotropy) channel, used only when
+        anisotropic atoms are present. Default is 0.5. Dimensionless, on the
+        same scale as the magnitude channel's fixed 0.5 log-sigma.
     exclude_bonded : bool, optional
         Exclude directly bonded atoms. Default is True.
     verbose : int, optional
@@ -53,7 +61,7 @@ class ADPLocalityTarget(ADPTarget):
         exclude_bonded: bool = True,
         verbose: int = 0,
     ):
-        super().__init__(model, verbose, target_value=0.3, sigma=0.2)
+        super().__init__(model, verbose)
         self.register_buffer(
             "_k_neighbors", torch.tensor(k_neighbors, dtype=torch.int64)
         )
@@ -237,7 +245,12 @@ class ADPLocalityTarget(ADPTarget):
 
         loss = sum_ij [w_ij * ((log(B_i) - log(B_j)) / 0.5)^2]
         where w_ij = 1 / (d_ij + eps) and the inner sum runs over the k
-        nearest neighbors j of each atom i.
+        nearest neighbors j of each atom i. This formula describes the
+        isotropic path only. When anisotropic atoms are present
+        (``model._aniso_is_empty`` is False) the loss instead routes to
+        ``adp_locality_aniso_math`` on the unified U6 basis: a magnitude
+        channel on B_eq that reproduces the isotropic loss above, plus a
+        deviatoric/fractional-anisotropy channel scaled by ``sigma_aniso``.
 
         Parameters
         ----------
@@ -297,7 +310,16 @@ class ADPLocalityTarget(ADPTarget):
         return loss
 
     def stats(self) -> Dict[str, any]:
-        """Get locality restraint statistics."""
+        """Get locality restraint statistics.
+
+        Notes
+        -----
+        The ``weighted_rms_log`` / ``avg_weight`` entries use exponential
+        decay weights ``exp(-d / correlation_length)``, which is a
+        **different** weighting scheme from ``forward()`` (inverse distance
+        ``1 / (d + eps)``). The reported "weighted" stats therefore do not
+        correspond to the weights used in the loss.
+        """
         self._build_neighbor_list()
 
         if self._neighbor_indices is None:

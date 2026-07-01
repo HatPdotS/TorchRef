@@ -35,7 +35,7 @@ class RiceXrayTarget(XrayTarget):
         Returns
         -------
         torch.Tensor
-            Mean Rice ML loss value.
+            Summed Rice ML loss on this target's set.
         """
         F_obs, F_calc, sigma, centric_flags, _ = self.get_data(fcalc=fcalc)
         return ml_xray_loss_math(F_obs, F_calc, sigma, centric_flags)

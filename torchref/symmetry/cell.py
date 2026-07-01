@@ -12,7 +12,11 @@ from typing import Any
 
 import torch
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import (
+    NYQUIST_OVERSAMPLING,
+    get_default_device,
+    get_float_dtype,
+)
 from torchref.utils.device_mixin import _NonModuleDeviceMixin
 
 
@@ -34,7 +38,7 @@ class Cell(_NonModuleDeviceMixin):
     >>> cell = Cell([50, 60, 70, 90, 90, 90])
     >>> cell.volume  # Computed and cached
     tensor(210000.)
-    >>> cell_gpu = cell.to('cuda')  # Move to GPU (returns new Cell)
+    >>> cell_gpu = cell.to('cuda')  # Move to GPU in place; returns self
     >>> cell_gpu.device.type
     'cuda'
     """
@@ -207,6 +211,9 @@ class Cell(_NonModuleDeviceMixin):
 
         Returns the 3x3 matrix B such that: cart = frac @ B.T
 
+        Note: the property name ``fractional_matrix`` is historical; the matrix
+        it returns is the orthogonalization (de-fractionalizing) matrix.
+
         Returns
         -------
         torch.Tensor
@@ -313,7 +320,9 @@ class Cell(_NonModuleDeviceMixin):
     # Grid computation methods
     # =========================================================================
 
-    def compute_grid_size(self, max_res: float, oversampling: float = 3.0) -> tuple:
+    def compute_grid_size(
+        self, max_res: float, oversampling: float = NYQUIST_OVERSAMPLING
+    ) -> tuple:
         """
         Compute minimum grid dimensions for a given resolution.
 
@@ -325,8 +334,9 @@ class Cell(_NonModuleDeviceMixin):
         max_res : float
             Maximum resolution in Angstroms.
         oversampling : float, optional
-            Oversampling factor relative to max_res. Default is 3.0
-            (standard for crystallographic calculations).
+            Oversampling factor relative to max_res. Defaults to the proper
+            Nyquist limit (:data:`torchref.config.NYQUIST_OVERSAMPLING`, 2.0),
+            shared by all grid-sizing helpers.
 
         Returns
         -------
@@ -337,7 +347,7 @@ class Cell(_NonModuleDeviceMixin):
         --------
         >>> cell = Cell([50, 60, 70, 90, 90, 90])
         >>> cell.compute_grid_size(2.0)
-        (75, 90, 105)
+        (50, 60, 70)
         """
         import math
 

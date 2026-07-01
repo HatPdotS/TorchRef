@@ -75,6 +75,9 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         Buffer containing fixed values.
     refinable_params : nn.Parameter
         Parameter containing refinable values.
+    name : str or None
+        Optional name for this parameter, exposed via the ``name`` property
+        (useful for debugging/logging).
 
     Examples
     --------
@@ -831,10 +834,12 @@ class PositiveMixedTensor(MixedTensor):
 
     Reparametrization::
 
-        internal_value = log(desired_value)
+        internal_value = log(clamp(desired_value, min=epsilon))
         output_value = exp(internal_value)
 
-    This ensures output_value > 0 always, with smooth gradient flow.
+    The input is clamped to ``epsilon`` before the log, so outputs are bounded
+    below by ~``epsilon`` (not exactly 0). This ensures output_value > 0 always,
+    with smooth gradient flow.
 
     Parameters
     ----------
@@ -921,9 +926,8 @@ class PositiveMixedTensor(MixedTensor):
         # Full initialization - clip initial values to be positive
         initial_values = torch.clamp(initial_values, min=epsilon)
 
-        # Store epsilon as buffer (not parameter)
-        self.epsilon = epsilon
-
+        # epsilon is a plain float attribute (set above); it is not a registered
+        # buffer, so it does not move with .to(device) or appear in state_dict.
 
         # Convert initial values to log space
         log_initial_values = torch.log(initial_values)
@@ -1991,6 +1995,11 @@ class OccupancyTensor(MixedTensor):
         """
         Set the occupancy for all atoms in a specific collapsed group.
 
+        .. note::
+            This method currently uses NumPy internally and emits a
+            ``UserWarning`` on every call. It is not yet production-hardened;
+            the warning is expected pending a refactor to pure-torch.
+
         Parameters
         ----------
         group_idx : int
@@ -2505,6 +2514,12 @@ class PassThroughTensor(DeviceMixin, nn.Module):
     Useful as a placeholder or for parameters that do not require any
     special handling.
 
+    .. warning::
+        This class is currently non-functional. ``__init__`` forwards keyword
+        arguments to ``nn.Module.__init__`` (which accepts none) and never
+        assigns ``self.param``, so ``forward`` raises ``AttributeError``. It
+        is retained as a legacy stub pending a code fix.
+
     Parameters
     ----------
     initial_values : torch.Tensor
@@ -2553,11 +2568,19 @@ class PassThroughTensor(DeviceMixin, nn.Module):
 
     def forward(self) -> torch.Tensor:
         """
-        Return the parameter value unchanged.
+        Return the parameter value unchanged (returns ``self.param``).
+
+        .. warning::
+            This class is currently non-functional: ``__init__`` forwards
+            ``initial_values``/``requires_grad``/``dtype``/``device``/``name``
+            to ``super().__init__`` (``nn.Module``), which accepts no such
+            arguments, and ``self.param`` is never assigned. Calling
+            ``forward`` therefore raises ``AttributeError``. Treat as a
+            placeholder/legacy stub pending a code fix.
 
         Returns
         -------
         torch.Tensor
-            The parameter tensor.
+            The parameter tensor (``self.param``).
         """
         return self.param

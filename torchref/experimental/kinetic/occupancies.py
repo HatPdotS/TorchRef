@@ -1,3 +1,18 @@
+"""
+Occupancy models for time-resolved refinement (EXPERIMENTAL).
+
+Provides the public occupancy models that map kinetic schemes onto per-state,
+per-timepoint occupancy fractions:
+
+* :class:`occupancy_unrestrained` -- fully independent per-timepoint occupancies.
+* :class:`occupancies_kinetics` -- kinetics-constrained occupancies wrapping
+  :class:`~torchref.experimental.kinetic.kinetics.KineticModel`.
+* :class:`occupancies_kinetics_multiexperiment` -- multi-experiment variant.
+
+This module is part of the experimental ``torchref.experimental.kinetic``
+subpackage; its API is under active development and may change without notice.
+"""
+
 from torch import nn
 import torch
 from typing import Dict, List, Optional, Union, Tuple
@@ -62,7 +77,7 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
     
     This model uses a kinetic scheme to constrain occupancies at different timepoints.
     Instead of independent parameters for each timepoint, the occupancies are derived
-    from rate constants, efficiencies, and a kinetic flow chart.
+    from rate constants and a kinetic flow chart (efficiencies are frozen at 1.0).
     
     This provides several advantages over unrestrained refinement:
     1. Physical constraints: occupancies follow kinetic laws
@@ -83,7 +98,9 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         at 1.0 (degenerate with rate constants) and are not refinable.
     instrument_function : str, optional
         Instrument response function model, either 'none' or 'gaussian'.
-        Default: 'none'.
+        Default: 'none'. Note this overrides :class:`KineticModel`'s own default
+        of ``'gaussian'``, so constructing through this wrapper applies no IRF
+        unless ``'gaussian'`` is requested explicitly.
     instrument_width : float, optional
         Instrument response function width (Gaussian sigma). Default: 10
     light_activated : bool, optional
@@ -342,7 +359,6 @@ class occupancies_kinetics(DeviceMixin, nn.Module):
         
         Kinetic parameters often benefit from different learning rates:
         - Rate constants (log-space): can use larger steps
-        - Efficiencies: moderate steps
         - Instrument width: small steps (often well-constrained)
         
         Parameters
@@ -551,6 +567,12 @@ class occupancies_kinetics_multiexperiment(DeviceMixin, nn.Module):
     shared_rates : list of str or None
         List of transitions that should share rates across experiments.
         E.g., ["A->B", "C->D"]. If None, all rates are experiment-specific.
+
+        .. warning::
+           Rate sharing is **not yet implemented**: ``_setup_shared_rates``
+           currently only prints which rates would be shared and does not
+           actually link the parameters, so all rates remain
+           experiment-specific regardless of this argument.
     verbose : int
         Verbosity level
     """

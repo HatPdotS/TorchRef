@@ -3,6 +3,7 @@ Changelog
 
 Version 0.6.0
 -------------
+- Switched to per-atom cutoff radii for the electron-density sampling and added a global sigma cutoff
 - Implemented Phenix style sigma A weighting in the Maximum likelihood target (New default for refinement)
 - Set Ramachandran restraints to be off by default (to enable specify a non zero weight)
 - Added collection versions of the sigma A target
@@ -16,9 +17,9 @@ Version 0.6.0
 - Moved ensemble refinement to experimental
 - Fixed antechamber handling of non-standard residues
 - Refinement now freezes all residues missing restraints (xyz)
-- Changed reflection data acessor api to use property style dataselection
-- Added benchmark to the paper folder were we refine from alphafold start coordinates
-- Added isotropic / anisotropic switch and seleciton to refinement cli
+- Changed reflection data accessor api to use property style data selection
+- Added benchmark to the paper folder where we refine from alphafold start coordinates
+- Added isotropic / anisotropic switch and selection to refinement cli
 - Updated many docstrings, and fixed some bugs
 
 Version 0.5.3.3

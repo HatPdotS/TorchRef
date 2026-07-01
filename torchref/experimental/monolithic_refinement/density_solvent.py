@@ -66,7 +66,9 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         wrapper freezes ``rho_s`` at 1.0 and uses ``rho0=0.016`` instead.
     rho0 : float, default 2.0
         Initial protein-density saturation level (e/A^3). Interpolates Babinet
-        (large) <-> flat-mask (small).
+        (large) <-> flat-mask (small). Note: the
+        :class:`~torchref.experimental.monolithic_refinement.density_scaler.DensityDerivedSolvent`
+        wrapper instead uses ``rho0=0.016`` (the sharp-mask regime).
     occupancy : {"exp", "sigmoid", "shell"}, default "exp"
         Occupancy function mapping density -> solvent fraction. ``"exp"`` uses
         ``M = exp(-rho/rho0)``. ``"sigmoid"`` uses ``M = sigmoid((rho0 - rho)/w)``
@@ -191,13 +193,12 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
 
         # Dedicated COARSE grid for the solvent. Early (real-space) symmetry,
         # because the nonlinear occupancy needs the full-cell density assembled
-        # before the mask. radius_angstrom matches the model's density build.
-        radius = getattr(model, "radius_angstrom", 3.0)
+        # before the mask. The per-atom splat radius is governed by
+        # torchref.sigma_cutoff_ed inside the density builder.
         self.solvent_fft = SfFFT(
             cell=model.cell,
             spacegroup=model.fft.spacegroup,
             max_res=self.solvent_res,
-            radius_angstrom=radius,
             dtype_float=float_type,
             device=device,
             verbose=max(0, verbose - 1),

@@ -1,6 +1,11 @@
 """
 Fully-refinable PCA-space parameterization of an ensemble's coordinates.
 
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``. The API and
+   behaviour may change or be removed without notice.
+
 Where :class:`~torchref.experimental.ensemble.low_rank_ensemble.LowRankXYZ` freezes the mean and
 basis (only amplitudes refine), this module refines **all three** factors of the
 low-rank decomposition::
@@ -9,7 +14,10 @@ low-rank decomposition::
 
 with ``μ`` (mean structure), ``V`` (K basis modes) and ``A`` (per-member
 amplitudes) all ``nn.Parameter``. Seeded by an SVD of an existing (overfit)
-ensemble. Hypothesis: refining in collective-coordinate space is an easier
+ensemble — in the de-overfit workflow that ensemble must come from a saved
+checkpoint (seed via ``--branch-from ckpt``, *not* ``--init-pdb``), since the
+basis is only meaningful once real disorder has developed. Hypothesis:
+refining in collective-coordinate space is an easier
 landscape than raw Cartesian, and the explicit spectrum is the natural place for
 the maxent (shrink + diversity) regularizer to act.
 
@@ -34,6 +42,10 @@ from torch import nn
 
 class PCAEnsembleParam(nn.Module):
     """Refinable low-rank PCA parameterization ``xyz = μ + A Vᵀ``.
+
+    .. warning::
+
+       Experimental — API and behaviour may change without notice.
 
     Parameters
     ----------

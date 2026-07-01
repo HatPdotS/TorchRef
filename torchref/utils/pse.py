@@ -1,5 +1,9 @@
 """
-Period Table Data
+Periodic Table Data.
+
+Exposes a single public dict ``PERIODIC_TABLE`` keyed by element symbol,
+with schema ``{symbol: {"number": int, "name": str, "mass": float}}`` where
+``mass`` is the standard atomic weight in atomic mass units (u).
 """
 
 PERIODIC_TABLE = {

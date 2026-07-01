@@ -1,3 +1,6 @@
+"""Helper functions for reading and validating restraint CIF dictionaries
+and link definitions used by the restraints module.
+"""
 
 import numpy as np
 import pandas as pd
@@ -62,7 +65,7 @@ def validate_restraint_data(residue_data, cif_path):
 
 def read_cif(cif_path):
     """
-    Read restraint CIF file using the new RestraintCIFReader.
+    Read restraint CIF file using RestraintCIFReader.
 
     Returns dictionary with standardized keys for compatibility with restraints.py.
 

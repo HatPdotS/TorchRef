@@ -29,7 +29,7 @@ class TestMap:
     def test_init_default(self, model_ft_and_data):
         model, data, _ = model_ft_and_data
         m = Map(data, model)
-        assert m.map_type == "2mFo-DFc"
+        assert m.map_type == "2Fo-Fc"
         assert m.gridsize is None
         assert m.map_data is None
 
@@ -43,7 +43,7 @@ class TestMap:
         with pytest.raises(ValueError, match="map_type must be one of"):
             Map(data, model, map_type="invalid")
 
-    def test_calculate_2mFo_DFc(self, model_ft_and_data):
+    def test_calculate_2fo_fc(self, model_ft_and_data):
         model, data, _ = model_ft_and_data
         m = Map(data, model)
         result = m.calculate()
@@ -65,7 +65,7 @@ class TestMap:
 
     def test_different_map_types_give_different_results(self, model_ft_and_data):
         model, data, _ = model_ft_and_data
-        m1 = Map(data, model, map_type="2mFo-DFc")
+        m1 = Map(data, model, map_type="2Fo-Fc")
         m2 = Map(data, model, map_type="Fcalc")
         r1 = m1.calculate()
         r2 = m2.calculate()

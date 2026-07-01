@@ -48,18 +48,20 @@ def compute_symmetry_equivalent_hkls(
     rotation_matrices: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Compute symmetry-equivalent HKLs: h' = R^T @ h for each operation.
+    Compute symmetry-equivalent HKLs for each operation.
 
-    In reciprocal space, Miller indices transform as h' = h @ R (or equivalently
-    h' = R^T @ h when treating h as a column vector).
+    In reciprocal space, Miller indices transform as h' = h @ R using the
+    row-vector convention (equivalently h' = R^T @ h when treating h as a
+    column vector). The implementation uses ``rotation_matrices`` directly
+    with ``h @ R`` and does NOT transpose them.
 
     Parameters
     ----------
     hkl : torch.Tensor, shape (N, 3)
         Miller indices.
     rotation_matrices : torch.Tensor, shape (n_ops, 3, 3)
-        Real-space rotation matrices. These are transposed internally
-        for reciprocal space transformation.
+        Real-space rotation matrices, applied directly as ``h @ R`` (no
+        transpose).
 
     Returns
     -------

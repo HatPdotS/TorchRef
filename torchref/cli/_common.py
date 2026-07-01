@@ -39,6 +39,11 @@ def add_device_arg(parser: argparse.ArgumentParser) -> None:
     otherwise it falls back to MPS or CPU. Explicit ``cuda`` / ``cpu``
     bypass the auto-selection gates and are pushed back into the global
     config so the rest of TorchRef picks them up.
+
+    Note
+    ----
+    MPS is reachable only through ``auto``; it is not an accepted value of
+    ``--device`` (the choices are ``auto`` / ``cpu`` / ``cuda``).
     """
     parser.add_argument(
         "--device",
@@ -48,7 +53,7 @@ def add_device_arg(parser: argparse.ArgumentParser) -> None:
         help=(
             "Computation device (default: auto; uses CUDA only when a "
             "visible GPU passes the capability + VRAM checks in "
-            "torchref.config, else MPS/CPU)"
+            "torchref.config, else MPS (auto-only) or CPU)"
         ),
     )
 
@@ -660,7 +665,7 @@ def load_reflection_data(
     device : str or torch.device
         Target device.
     column_names : dict, optional
-        Column name overrides (``"F"``, ``"SIGF"``).  Only used for MTZ.
+        Column name overrides (``"F"``, ``"SIGF"``, ``"PHIF"``).  Only used for MTZ.
     verbose : int
         Verbosity passed to ReflectionData.
 

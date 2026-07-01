@@ -15,12 +15,24 @@ class GeometryTarget(ModelTarget):
     Geometry targets access the model's restraints property (built lazily)
     to compute losses for bonds, angles, torsions, planes, etc.
 
+    Subclasses implement ``stats()`` returning a ``Dict[str, StatEntry]``;
+    each :class:`~torchref.utils.stats.StatEntry` carries its value and a
+    verbosity level for display-time filtering via ``filter_stats()``.
+
     Parameters
     ----------
     model : Model, optional
         Reference to the Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
+
+    Notes
+    -----
+    ``**kwargs`` accepted by ``__init__`` are forwarded to
+    :class:`~torchref.refinement.targets.base.ModelTarget`, which currently
+    discards them. Passing ``target_value`` / ``sigma`` here therefore has no
+    effect on the loss; per-target tuning is done through each subclass's own
+    explicit parameters.
     """
 
     def __init__(

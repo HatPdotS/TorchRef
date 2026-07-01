@@ -1,6 +1,9 @@
 """
 SampledMLPhaseTarget - Phase-aware ML target using reparameterized sampling.
 
+Experimental / unstable API: this module lives under
+``torchref.experimental`` and may change without notice.
+
 This module provides a maximum-likelihood refinement target that accounts for
 phase uncertainty derived from amplitude errors. Uses the reparameterization
 trick to enable differentiable Monte Carlo estimation of expected structure
@@ -52,6 +55,9 @@ class SampledMLPhaseTarget(XrayTarget):
         Reference to the Scaler object.
     phi_ref : torch.Tensor, optional
         Reference phases (e.g., from dark state). If None, uses phi_calc.
+        Must be aligned to the full reflection list (same length and order
+        as ``data.rfree_flags``); ``forward`` indexes it with the work/test
+        flags, so a work-set-only ``phi_ref`` would silently mis-index.
     n_samples : int, optional
         Number of MC samples. Default is 32.
     sigma_model_log : float, optional

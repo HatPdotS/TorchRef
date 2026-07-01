@@ -75,22 +75,9 @@ def plot_runtime_box(ax, runtime_long):
     ax.set_ylabel("Wall-clock runtime (min)")
     ax.set_title("Wall-clock runtime (1 CPU core)")
 
-    # paired median ratios (TorchRef as reference) over the conserved set
-    wide = runtime_long.pivot_table(index="code", columns="program", values="wall_s")
-
-    def pair_ratio(a, b):
-        m = wide[a].notna() & wide[b].notna()
-        return float(np.median(wide.loc[m, a] / wide.loc[m, b]))
-
-    r_ref = pair_ratio("torchref", "refmac")
-    r_phe = pair_ratio("torchref", "phenix")
-    n = int(wide[order].notna().all(axis=1).sum())
-    txt = (f"n = {n} structures (1 core)\n"
-           f"TorchRef vs Refmac: {r_ref:.1f}× slower\n"
-           f"TorchRef vs PHENIX: {1/r_phe:.1f}× faster")
-    ax.text(0.04, 0.96, txt, transform=ax.transAxes, ha="left", va="top",
-            fontsize=10.5,
-            bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.7", alpha=0.85))
+    # The pairwise median-runtime ratios (TorchRef vs Refmac / PHENIX) and n are
+    # reported in the figure caption / FIGURE_MEDIANS exF4 rather than annotated
+    # on the panel.
 
 
 def main():

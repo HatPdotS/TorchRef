@@ -478,6 +478,8 @@ class RefinementMetadata:
 
         # B-values
         lines.append("REMARK   3  B VALUES.")
+        # Wilson-plot B is not computed; passing None makes _remark3 render the
+        # literal "NULL" here intentionally (not a bug).
         _remark3(lines, "FROM WILSON PLOT           (A**2)", None, ".2f")
         _remark3(lines, "MEAN B VALUE      (OVERALL, A**2)", self.b_mean_overall, ".2f")
         _remark3(lines, "B MIN                      (A**2)", self.b_min, ".2f")

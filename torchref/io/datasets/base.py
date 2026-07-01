@@ -6,9 +6,12 @@ This module defines the CrystalDataset dataclass that provides:
 - Device management (to, cuda, cpu)
 - Serialization (save, load)
 
-On the base class the ``spacegroup`` field is an ``Optional[str]`` name;
-concrete subclasses (e.g. ReflectionData, FcalcDataset) override it to hold
-``torchref.symmetry.SpaceGroup`` objects.
+On the base class the ``spacegroup`` field is annotated ``Optional[str]``.
+``FcalcDataset`` overrides the field annotation to hold a
+``torchref.symmetry.SpaceGroup`` object. ``ReflectionData`` does NOT override
+the annotation (it inherits ``Optional[str]``) yet at runtime its ``load`` /
+``from_tensors`` paths populate the field with a ``SpaceGroup`` object, so the
+stored value is a ``SpaceGroup`` despite the ``str`` annotation.
 """
 
 from dataclasses import dataclass, field, fields
@@ -39,7 +42,8 @@ class CrystalDataset(DeviceMovementMixin):
     Parameters
     ----------
     device : torch.device
-        Device for tensors ('cpu', 'cuda', etc.). Defaults to the configured device.current.
+        Device for tensors ('cpu', 'cuda', etc.). Defaults to the configured
+        default device (``get_default_device()``).
     verbose : int
         Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
 
@@ -48,7 +52,7 @@ class CrystalDataset(DeviceMovementMixin):
     Basic usage::
 
         data = CrystalDataset(device='cuda')
-        data.hkl = torch.tensor([[1, 0, 0], [0, 1, 0]])
+        data.hkl = torch.tensor([[1, 0, 0], [0, 1, 0]], dtype=torch.int32, device='cuda')
         data.cpu()  # Move all tensors to CPU
     """
 

@@ -5,8 +5,8 @@ This module provides functions for reading and writing MTZ files containing
 crystallographic reflection data (structure factor amplitudes, intensities,
 R-free flags, etc.).
 
-Space groups are returned as gemmi.SpaceGroup objects for consistency
-throughout torchref.
+When reading, the space group is returned as an H-M symbol string (e.g.
+``"P 21 21 21"``); callers wrap it in a SpaceGroup object as needed.
 
 Functions
 ---------
@@ -29,7 +29,7 @@ Examples
     # Reading
     reader = mtz.read('data.mtz', verbose=1)
     data_dict, cell, spacegroup = reader()
-    print(spacegroup.short_name())  # gemmi.SpaceGroup object
+    print(spacegroup)  # H-M symbol string, e.g. "P 21 21 21"
 
     # Writing
     mtz.write(df, cell, spacegroup, 'output.mtz')
@@ -62,8 +62,8 @@ class MTZReader:
         Dictionary containing extracted data arrays.
     cell : np.ndarray
         Unit cell parameters [a, b, c, alpha, beta, gamma].
-    spacegroup : gemmi.SpaceGroup
-        Space group object.
+    spacegroup : str
+        Space group as an H-M symbol string (e.g. ``"P 21 21 21"``).
 
     Examples
     --------
@@ -71,7 +71,7 @@ class MTZReader:
 
         reader = mtz.read('data.mtz', verbose=1)
         data_dict, cell, spacegroup = reader()
-        print(f"Found {len(data_dict['HKL'])} reflections in {spacegroup.short_name()}")
+        print(f"Found {len(data_dict['HKL'])} reflections in {spacegroup}")
     """
 
     AMPLITUDE_PRIORITY = [
@@ -349,11 +349,18 @@ class MTZReader:
         Returns
         -------
         data : dict
-            Dictionary with extracted data arrays.
+            Dictionary with extracted data arrays. Keys present depend on the
+            file, and may include: ``"HKL"`` (int32 Miller indices); ``"F"`` /
+            ``"SIGF"`` and/or ``"I"`` / ``"SIGI"`` (float32 data, with
+            ``"*_col"`` provenance keys recording the source column names);
+            ``"R-free-flags"`` (a **bool** mask) and ``"R-free-source"``;
+            ``"Validation-flags"`` (a **bool** mask) and ``"Validation-source"``;
+            and ``"friedel_merged"`` (bool) indicating the Bijvoet state of the
+            returned data (False when anomalous F(+)/F(-) pairs were stacked).
         cell : np.ndarray
             Unit cell parameters [a, b, c, alpha, beta, gamma].
         spacegroup : str
-            Space group name string.
+            Space group as an H-M symbol string (e.g. ``"P 21 21 21"``).
         """
         if self.data is None:
             raise ValueError("No data loaded. Call read() first.")
@@ -363,7 +370,10 @@ class MTZReader:
         """Extract amplitude and intensity data with priority ordering.
 
         If ``column_names`` were provided at init, those columns are used
-        directly instead of the priority-based search.
+        directly instead of the priority-based search. The ``"F"`` / ``"I"``
+        keys override the amplitude / intensity column, and the ``"SIGF"`` /
+        ``"SIGI"`` keys override their associated sigma columns (otherwise the
+        sigma column is auto-discovered).
         """
         available_cols = set(self.mtz_data.columns)
 
@@ -576,6 +586,13 @@ def read(filepath: str, verbose: int = 0) -> MTZReader:
     -------
     MTZReader
         Reader object with data loaded.
+
+    Notes
+    -----
+    This convenience wrapper forwards only ``verbose``. To set explicit
+    column names or control anomalous (Bijvoet) handling, construct an
+    ``MTZReader(column_names=..., anomalous=...)`` directly and call its
+    ``read`` method.
     """
     return MTZReader(verbose=verbose).read(filepath)
 
@@ -593,7 +610,9 @@ def write(
     ----------
     df : pandas.DataFrame
         DataFrame containing reflection data. Expected columns include
-        H, K, L (Miller indices) and data columns like F_obs, I_obs, etc.
+        H, K, L (Miller indices) and recognized data columns such as
+        ``F-obs``, ``I-obs``, ``SIGF-obs``, ``SIGI-obs`` (the names used to
+        assign MTZ data types; see the column lists in the implementation).
     cell : list, numpy.ndarray, or torch.Tensor
         Unit cell parameters [a, b, c, alpha, beta, gamma] in A and degrees.
     spacegroup : str or gemmi.SpaceGroup
@@ -604,7 +623,7 @@ def write(
     Returns
     -------
     int
-        Returns 1 on success.
+        Always returns 1 (failures raise rather than return a sentinel).
     """
     import gemmi
 
@@ -703,5 +722,6 @@ def write(
     return 1
 
 
-# Legacy alias for backwards compatibility during transition
+# Deprecated alias kept for backwards compatibility; prefer MTZReader.
+# Slated for removal in a future release. This is a public symbol.
 MTZ = MTZReader

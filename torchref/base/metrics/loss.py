@@ -27,6 +27,12 @@ def nll_xray(
     -------
     torch.Tensor
         Mean negative log-likelihood.
+
+    Notes
+    -----
+    The sigma floor is data-dependent: each sigma is clamped to a minimum of
+    ``median(sigma_F_obs) * 0.1`` rather than a fixed small constant, so the
+    effective minimum sigma scales with the data.
     """
     # Handle MaskedTensor inputs: use torch.where to avoid boolean indexing
     # (boolean indexing triggers nonzero() which forces CPU-GPU sync)
@@ -79,6 +85,12 @@ def nll_xray_sum(
     -------
     torch.Tensor
         Sum of negative log-likelihood values.
+
+    Notes
+    -----
+    The sigma floor is data-dependent: each sigma is clamped to a minimum of
+    ``median(sigma_F_obs) * 0.1`` rather than a fixed small constant, so the
+    effective minimum sigma scales with the data.
     """
     # Handle MaskedTensor inputs: use torch.where to avoid boolean indexing
     mask = None

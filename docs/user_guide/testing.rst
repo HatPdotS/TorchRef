@@ -21,11 +21,11 @@ Directory Structure
 .. code-block:: text
 
     torchref/
-    ├── tests/                          # Automated tests (465 tests)
+    ├── tests/                          # Automated test suite
     │   ├── conftest.py                 # Root fixtures and configuration
     │   ├── pytest.ini                  # Pytest configuration
     │   │
-    │   ├── unit/                       # Unit tests (~234 tests)
+    │   ├── unit/                       # Unit tests
     │   │   ├── conftest.py             # Mock data generators
     │   │   ├── base/                   # Base math functions
     │   │   ├── model/                  # Model module
@@ -35,11 +35,11 @@ Directory Structure
     │   │   ├── symmetry/               # Symmetry module
     │   │   └── restraints/             # Restraints module
     │   │
-    │   ├── integration/                # Integration tests (~95 tests)
+    │   ├── integration/                # Integration tests
     │   │   ├── conftest.py             # Real file fixtures
     │   │   └── test_*.py               # Integration test files
     │   │
-    │   ├── functional/                 # Functional tests (~136 tests)
+    │   ├── functional/                 # Functional tests
     │   │   ├── conftest.py             # Loaded object fixtures
     │   │   └── test_*.py               # Functional test files
     │   │
@@ -103,8 +103,22 @@ Tests are organized with pytest markers:
 
 - ``@pytest.mark.unit``: Fast tests with mock data
 - ``@pytest.mark.integration``: Tests requiring file I/O
-- ``@pytest.mark.gpu``: Tests requiring CUDA GPU
+- ``@pytest.mark.gpu``: Tests requiring a GPU (CUDA or MPS); skipped by default
+- ``@pytest.mark.cuda_only``: Tests that specifically require CUDA (e.g. Triton kernels)
 - ``@pytest.mark.slow``: Long-running tests
+- ``@pytest.mark.openmm``: Tests needing OpenMM (the ``[amber]`` extra); auto-skipped if absent
+- ``@pytest.mark.amber``: Tests needing OpenMM **and** AmberTools (``antechamber``/``tleap`` on PATH); auto-skipped if absent
+
+The Amber target ships with v0.6.0. To run its tests, install the optional
+stack and AmberTools:
+
+.. code-block:: bash
+
+    pip install -e ".[amber]"           # OpenMM + Amber helpers
+    conda install -c conda-forge ambertools   # antechamber / tleap
+
+``openmm`` and ``amber`` tests are skipped automatically when their
+dependencies are missing, so the default suite stays green without them.
 
 Run tests by marker:
 
@@ -114,6 +128,7 @@ Run tests by marker:
     pytest -m "integration" -v          # Integration tests only
     pytest -m "not gpu" -v              # Skip GPU tests
     pytest -m "not slow" -v             # Skip slow tests
+    pytest -m "amber" -v                # Amber target tests (needs the stack above)
 
 GPU and Slow Tests
 ~~~~~~~~~~~~~~~~~~
@@ -385,20 +400,16 @@ The ``tox.ini`` file defines test environments for continuous integration:
 
 .. code-block:: ini
 
-    # Test across Python versions
-    py39-latest     # Python 3.9
+    # Test across Python versions (project requires Python >= 3.10)
+    py310-latest    # Python 3.10
     py311-latest    # Python 3.11
     py312-latest    # Python 3.12
 
-    # Test dependency versions
-    py311-numpy1x   # NumPy 1.x compatibility
-    py311-numpy2x   # NumPy 2.x compatibility
-    py311-torch20   # PyTorch 2.0
-    py311-torch22   # PyTorch 2.2
-
     # Boundary testing
-    py311-minimum   # Minimum viable versions
-    py311-lowerbounds  # Declared minimum versions
+    py311-lowerbounds  # Declared minimum dependency versions
+
+Refer to the actual ``tox.ini`` in the repository for the authoritative,
+up-to-date environment list.
 
 Run tox locally:
 

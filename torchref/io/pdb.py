@@ -10,12 +10,18 @@ read
     Read a PDB file and return a reader object.
 write
     Write atomic coordinates to a PDB file.
+write_multi_model
+    Write multiple models to a single PDB file with MODEL/ENDMDL records.
 find_header_length
     Find the number of header lines in a PDB file.
 load_as_dataframe
     Load a PDB file into a pandas DataFrame.
 read_crystallographic_info
     Extract unit cell and space group from a PDB file.
+extract_pdb_headers
+    Read all header lines (before the first ATOM/HETATM) from a PDB file.
+extract_link_records
+    Parse LINK records from a PDB file into a DataFrame.
 
 Classes
 -------
@@ -76,7 +82,10 @@ def find_header_length(filepath: str, max_header_length: int = 100000) -> int:
     """
     Find the number of header lines in a PDB file.
 
-    Scans the file line by line until an ATOM or HETATM record is found.
+    Scans the file line by line until the first line whose leading columns
+    contain ``"ATOM"`` (within the first 4 characters) or ``"HETATM"``
+    (within the first 6 characters). This is a positional-substring test,
+    not a strict record-type ``startswith`` check.
 
     Parameters
     ----------
@@ -177,9 +186,10 @@ def load_as_dataframe(
     Returns
     -------
     pd.DataFrame
-        DataFrame with columns: ATOM, serial, name, altloc, resname, chainid,
-        resseq, icode, x, y, z, occupancy, tempfactor, element, charge,
-        anisou_flag, u11, u22, u33, u12, u13, u23, index.
+        DataFrame whose columns include (among others, in no contractual
+        order): ATOM, serial, name, altloc, resname, chainid, resseq, icode,
+        x, y, z, occupancy, tempfactor, element, charge, anisou_flag, u11,
+        u22, u33, u12, u13, u23, index.
         DataFrame attributes include 'cell', 'spacegroup', and 'z'.
     """
     if skipheader == 0:
@@ -393,10 +403,11 @@ class PDBReader:
         -------
         dataframe : pd.DataFrame
             DataFrame with atomic data.
-        cell : np.ndarray or None
-            Unit cell parameters [a, b, c, alpha, beta, gamma].
+        cell : list of float or None
+            Unit cell parameters [a, b, c, alpha, beta, gamma] (the list
+            returned by ``read_crystallographic_info``), or None if absent.
         spacegroup : str or None
-            Space group symbol.
+            Space group symbol, or None if absent.
         """
         if self.dataframe is None:
             raise ValueError("No data loaded. Call read() first.")
@@ -540,9 +551,20 @@ def write(df: pd.DataFrame, filepath: str, template: str = None, metadata=None) 
     filepath : str
         Output PDB filename.
     template : str, optional
-        PDB template file to copy header from (deprecated, use metadata).
+        PDB template file to copy header from. Deprecated in favour of
+        ``metadata``; no ``DeprecationWarning`` is emitted when it is used.
     metadata : RefinementMetadata, optional
         Metadata to render as PDB header (REMARK 3, TITLE, etc.).
+
+    Notes
+    -----
+    The CRYST1 record is sourced from the DataFrame attributes
+    ``df.attrs["cell"]``, ``df.attrs["spacegroup"]`` and
+    ``df.attrs.get("z")`` (not from columns). If any of these are missing,
+    the file is written without a CRYST1 record and a warning is printed.
+
+    Rows that fail to format are skipped with a printed warning; the
+    remaining rows are still written.
     """
     with open(filepath, "w") as n:
         # Write metadata header if provided (before CRYST1)
@@ -767,7 +789,9 @@ def write_multi_model(
         f.write("END\n")
 
 
-# Legacy aliases for backwards compatibility during transition
+# Deprecated aliases kept for backwards compatibility; prefer the canonical
+# names (PDBReader, find_header_length, load_as_dataframe). Slated for removal
+# in a future release. These are public symbols.
 PDB = PDBReader
 find_header_length_pdb_file = find_header_length
 load_pdb_as_pd = load_as_dataframe

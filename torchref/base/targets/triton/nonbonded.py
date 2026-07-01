@@ -179,8 +179,8 @@ def _nb_bwd_kernel(
     dEdv = tl.where(active, dEdv, 0.0)
     coef = grad_out * dEdv / d  # multiplier on (dx, dy, dz)
 
-    # dE/dpos1 = -coef * (diff)    (because dd/dpos1 = -diff/d and dv/dd = -1)
-    # dE/dpos2 = +coef * (diff)
+    # gradient magnitude on (dx, dy, dz); sign per atom applied at the
+    # scatter below (see the ∂E/∂pos block before the atomic_add).
     g2x = coef * dx
     g2y = coef * dy
     g2z = coef * dz

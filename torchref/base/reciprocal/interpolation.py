@@ -39,7 +39,10 @@ def interpolate_structure_factor_from_grid(
     Notes
     -----
     For a rotation R applied to the model, the structure factor at hkl becomes
-    F(R^T @ hkl), so you would call this with hkl_float = hkl @ R.
+    F(R^T @ hkl), so you would call this with hkl_float = hkl @ R. This is the
+    same row-vector ``h @ R`` convention used by
+    :func:`interpolate_for_rotation` and
+    :func:`~torchref.base.reciprocal.symmetry.compute_symmetry_equivalent_hkls`.
 
     WARNING: Complex interpolation (interpolate_amplitude=False) can give
     incorrect results when neighboring voxels have very different phases.
@@ -249,7 +252,7 @@ def trilinear_interpolate_patterson(
         Should be in fractional coordinates [0, 1) for 'wrap' mode.
         Or batch K, n_points, 3 for multiple batches.
     chunk_size : int, optional
-        Number of points to process at once. Default is 1M.
+        Number of points to process at once. Default is 10,000,000 (10M).
 
     Returns
     -------
@@ -313,23 +316,30 @@ def trilinear_interpolate_patterson(
     return result.reshape(original_shape)
 
 def interpolate_for_rotation(hkl, R, cell, reciprocal_space_grid):
-    '''
-    Interpolate structure factors for rotated HKL positions. This works for all cells.
+    """
+    Interpolate structure factors for rotated HKL positions.
+
+    Works for unit cells of any symmetry by mapping the Cartesian rotation
+    into Miller-index space via the reciprocal basis.
+
     Parameters
     ----------
     hkl : torch.Tensor
         HKL positions, shape (N, 3).
     R : torch.Tensor
-        Rotation matrix, shape (B, 3, 3).
-    cell : Cell
-        Unit cell object with reciprocal_basis_matrix.
+        Rotation matrix, shape (3, 3) or (B, 3, 3) for batched input.
+    cell : object
+        Unit cell object exposing a ``reciprocal_basis_matrix`` attribute, a
+        (3, 3) tensor of reciprocal basis vectors.
     reciprocal_space_grid : torch.Tensor
         Reciprocal space grid of structure factors, shape (Nx, Ny, Nz).
+
     Returns
     -------
     torch.Tensor
-        Interpolated structure factors, shape (B, N) / (N) 
-    '''
+        Interpolated structure factors. Shape (N,) when ``R`` is 2-D
+        (shape (3, 3)), or (B, N) when ``R`` is batched (shape (B, 3, 3)).
+    """
     batched = True
     if R.dim() == 2:
         R = R.unsqueeze(0)

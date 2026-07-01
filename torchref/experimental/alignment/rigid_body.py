@@ -16,6 +16,11 @@ Gradient flow:
     d_alpha → rotation_matrix → xyz_transformed → FFT.compute_structure_factors() → loss
 
 Uses ScalerBase for proper crystallographic scaling during optimization.
+
+Experimental / unstable API: part of ``torchref.experimental.alignment``,
+the opt-in ball-harmonic MR engine. The production MR entry point is
+``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
+may change without notice.
 """
 
 from dataclasses import dataclass
@@ -58,6 +63,10 @@ class RigidBodyResult:
         Final ML loss value.
     n_steps : int
         Number of optimization steps performed.
+    LBFGS_iterations : int
+        Number of LBFGS iterations taken by the optimizer.
+    LBFGS_function_evaluations : int
+        Number of objective/closure evaluations performed by the LBFGS optimizer.
     converged : bool
         Whether the refinement converged.
     """
@@ -78,8 +87,8 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
     Rigid body refinement using FFT directly (bypasses Model/MixedTensor).
 
     Optimizes 6 parameters (3 rotation + 3 translation) to maximize
-    agreement between calculated and observed structure factors using
-    Maximum Likelihood target.
+    agreement between calculated and observed structure factors using a
+    Rice maximum-likelihood X-ray target (``RiceXrayTarget``).
 
     Key design: Extracts all tensors from Model once at init, then uses
     FFT.compute_structure_factors() directly. This maintains gradient flow:
@@ -342,8 +351,9 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             Maximum number of optimizer restarts (with gradient noise on
             non-convergence). Default is 1.
         n_iter : int, optional
-            Reported iteration budget; the underlying LBFGS uses max_iter=100
-            per restart. Default is 100.
+            Currently a no-op: this argument is not read anywhere in the body.
+            The underlying LBFGS uses a hardcoded ``max_iter=100`` per restart
+            regardless of this value. Default is 100.
 
         Returns
         -------

@@ -96,7 +96,7 @@ Accessing Restraint Statistics
    bond_rmsd = restraints.get_bond_rmsd()
    angle_rmsd = restraints.get_angle_rmsd()
 
-   # Number of restraints
-   n_bonds = len(restraints.bond_restraints)
-   n_angles = len(restraints.angle_restraints)
+   # Number of restraints (stored in the nested restraints dict)
+   n_bonds = restraints.restraints['bond']['intra']['indices'].shape[0]
+   n_angles = restraints.restraints['angle']['intra']['indices'].shape[0]
 

@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
 
+from torchref.base.targets.adp import adp_rigid_bond_aniso_math
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -54,7 +55,10 @@ class RigidBondTarget(ADPTarget):
         Reference to Model object.
     sigma : float, optional
         Target standard deviation for Δz. Default is 0.004 Å².
-        Hirshfeld found typical values of 0.001 Å² for good structures.
+        Hirshfeld found typical values of 0.001 Å² for good structures;
+        the default is deliberately ~4× looser for numerical stability and
+        to accommodate mixed iso/aniso models, where Δz is noisier than for
+        a fully anisotropic refinement.
     use_aniso : bool, optional
         If True and model has anisotropic ADPs, use proper tensor calculation.
         Default is True.
@@ -82,15 +86,13 @@ class RigidBondTarget(ADPTarget):
         For isotropic refinement, uses B-factor differences along bonds.
         For anisotropic refinement, computes proper MSDA differences.
         """
-        device = self.model.xyz().device
-
-        # Check if model has anisotropic ADPs
-        has_aniso = hasattr(self.model, "u_aniso") and self.model.u_aniso is not None
-
-        if has_aniso and self.use_aniso:
+        # Use the proper directional MSDA (l^T U l) whenever the model has any
+        # anisotropic atoms; isotropic-only models keep the cheap scalar ΔB path
+        # (the two are numerically identical for isotropic atoms). ``use_aniso``
+        # forces the iso proxy if explicitly disabled.
+        if self.use_aniso and not getattr(self.model, "_aniso_is_empty", True):
             return self._compute_aniso_rigid_bond()
-        else:
-            return self._compute_iso_rigid_bond()
+        return self._compute_iso_rigid_bond()
 
     def _compute_iso_rigid_bond(self) -> torch.Tensor:
         """
@@ -135,6 +137,19 @@ class RigidBondTarget(ADPTarget):
 
         return nll.sum()
 
+    def _bond_pairs(self) -> torch.Tensor:
+        """Concatenate non-"all" bond restraint origins into one (N, 2) tensor."""
+        chunks = []
+        for origin, group in self.restraints.restraints.get("bond", {}).items():
+            if origin == "all":
+                continue
+            idx_ = group.get("indices")
+            if idx_ is not None and len(idx_) > 0:
+                chunks.append(idx_)
+        if chunks:
+            return torch.cat(chunks, dim=0).contiguous()
+        return torch.empty(0, 2, dtype=torch.long, device=self.model.xyz().device)
+
     def _compute_aniso_rigid_bond(self) -> torch.Tensor:
         """
         Compute rigid bond restraint for anisotropic ADPs.
@@ -145,74 +160,18 @@ class RigidBondTarget(ADPTarget):
             z_21 = l^T U_2 l  (MSDA of atom 2 along bond direction)
             Δz = z_12 - z_21
 
-        The U tensor is symmetric 3x3, stored as 6 unique values:
-            U = [[U11, U12, U13],
-                 [U12, U22, U23],
-                 [U13, U23, U33]]
+        Uses the model's unified per-atom U6 (:meth:`Model.adp_u6`): anisotropic
+        atoms contribute their refined ``u``; isotropic atoms their lifted
+        ``U = (B / 8 pi^2) I`` (so ``l^T U l = B / 8 pi^2`` and the result
+        matches :meth:`_compute_iso_rigid_bond` for them). Iso<->aniso bonds are
+        therefore handled with no special case.
         """
         xyz = self.model.xyz()
-        device = xyz.device
-
-        # Get anisotropic U tensors (N, 6) -> (N, 3, 3)
-        u_aniso = self.model.u_aniso  # Shape: (N, 6) for U11,U22,U33,U12,U13,U23
-
-        # Convert to full symmetric matrices
-        n_atoms = u_aniso.shape[0]
-        U = torch.zeros(n_atoms, 3, 3, device=device, dtype=xyz.dtype)
-        U[:, 0, 0] = u_aniso[:, 0]  # U11
-        U[:, 1, 1] = u_aniso[:, 1]  # U22
-        U[:, 2, 2] = u_aniso[:, 2]  # U33
-        U[:, 0, 1] = u_aniso[:, 3]  # U12
-        U[:, 1, 0] = u_aniso[:, 3]  # U12 (symmetric)
-        U[:, 0, 2] = u_aniso[:, 4]  # U13
-        U[:, 2, 0] = u_aniso[:, 4]  # U13 (symmetric)
-        U[:, 1, 2] = u_aniso[:, 5]  # U23
-        U[:, 2, 1] = u_aniso[:, 5]  # U23 (symmetric)
-
-        delta_z_list = []
-
-        if "bond" not in self.restraints.restraints:
-            return torch.tensor(0.0, device=device)
-
-        for origin, restraint_group in self.restraints.restraints["bond"].items():
-            if origin == "all":
-                continue
-            indices = restraint_group.get("indices")
-            if indices is not None and len(indices) > 0:
-                idx1 = indices[:, 0]
-                idx2 = indices[:, 1]
-
-                # Get positions and compute bond vectors
-                r1 = xyz[idx1]  # (n_bonds, 3)
-                r2 = xyz[idx2]  # (n_bonds, 3)
-                bond_vec = r2 - r1  # (n_bonds, 3)
-                # Add small epsilon to prevent division by zero gradient issues
-                bond_length = torch.sqrt((bond_vec**2).sum(dim=-1, keepdim=True) + 1e-8)
-                l = bond_vec / bond_length  # Unit vector along bond
-
-                # Get U tensors for bonded atoms
-                U1 = U[idx1]  # (n_bonds, 3, 3)
-                U2 = U[idx2]  # (n_bonds, 3, 3)
-
-                # Compute MSDA along bond direction: z = l^T U l
-                # For batch: z = sum_ij l_i U_ij l_j
-                # Using einsum: z = einsum('bi,bij,bj->b', l, U, l)
-                z_12 = torch.einsum("bi,bij,bj->b", l, U1, l)
-                z_21 = torch.einsum("bi,bij,bj->b", l, U2, l)
-
-                delta_z = z_12 - z_21
-                delta_z_list.append(delta_z)
-
-        if not delta_z_list:
-            return torch.tensor(0.0, device=device)
-
-        delta_z = torch.cat(delta_z_list, dim=0)
-
-        # Gaussian NLL
-        log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
-        nll = 0.5 * (delta_z / self.sigma) ** 2 + np.log(self.sigma) + 0.5 * log_2pi
-
-        return nll.sum()
+        pairs = self._bond_pairs()
+        if pairs.shape[0] == 0:
+            return torch.zeros((), device=xyz.device, dtype=xyz.dtype)
+        u6 = self.model.adp_u6()
+        return adp_rigid_bond_aniso_math(u6, xyz, pairs, self.sigma)
 
     def get_delta_z_stats(self) -> Dict[str, float]:
         """

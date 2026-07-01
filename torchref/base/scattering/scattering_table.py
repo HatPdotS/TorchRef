@@ -188,11 +188,15 @@ def get_scattering_params_by_z(
     ----------
     z_tensor : torch.Tensor
         Atomic numbers for all atoms, shape (n_atoms,).
-        Values should be in range 1-103.
+        Each value must be a valid table index in range 0-103 (the table is
+        sized ``max_z + 1`` = 104). Z=1..103 are the elements; Z=0 is the
+        reserved "unknown element" slot that ``elements_to_z`` maps unknown
+        symbols to.
     device : torch.device, optional
         Device to place output tensors on. Default uses z_tensor's device.
     dtype : torch.dtype, optional
-        Data type for output tensors. Default is torch.float32.
+        Data type for output tensors. Default is the configured float dtype
+        (``get_float_dtype()``).
 
     Returns
     -------

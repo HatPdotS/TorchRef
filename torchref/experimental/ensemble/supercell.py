@@ -1,6 +1,11 @@
 """
 Supercell layout + OpenMM System replication for quasi-crystal ensemble Amber.
 
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``. The API and
+   behaviour may change or be removed without notice.
+
 Extracted from :mod:`torchref.experimental.targets.amber_target` so the
 single-molecule :class:`~torchref.experimental.targets.amber_target.AmberTarget`
 base carries no crystal-specific code. Only
@@ -62,8 +67,9 @@ class SupercellLayout:
     Notes
     -----
     For member m = (d, j) (where ``d = m // n_sym`` and ``j = m % n_sym``)
-    and atom a with Cartesian ASU coords ``r_a``, the supercell-Cartesian
-    position is::
+    and atom a with Cartesian ASU coords ``r_a`` (one row of the
+    ``model_xyz`` argument to :meth:`compute_member_positions`), the
+    supercell-Cartesian position is::
 
         r_sym_cart = R_cart_j @ r_a + t_cart_j        (apply sym op j)
         r_supercell = r_sym_cart + d * cell[:, 0]     (shift to tile d)

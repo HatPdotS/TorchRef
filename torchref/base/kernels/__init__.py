@@ -1,15 +1,14 @@
 """
-Optimized kernels for electron density computation.
+Backward-compatibility shim.
 
-This submodule provides optimized implementations for compute-intensive
-operations in crystallographic calculations:
-
-- JIT-compiled PyTorch kernels for CPU and GPU
-- Triton CUDA kernels for fused operations
-- Optimized fused operations with reduced kernel launches
+The density-splatting kernels moved to
+:mod:`torchref.base.electron_density.kernels` (organized into ``cpu``/``cuda``/
+``mps`` subpackages). This module re-exports the public API from the new location
+so existing ``from torchref.base.kernels import ...`` imports keep working.
+Prefer importing from ``torchref.base.electron_density.kernels`` in new code.
 """
 
-from .jit_kernel_vectorized_add_to_map import (
+from torchref.base.electron_density.kernels import (  # noqa: F401
     vectorized_add_to_map,
     build_electron_density,
     compute_metric_tensor,
@@ -17,23 +16,17 @@ from .jit_kernel_vectorized_add_to_map import (
     warmup,
     get_cache_dir,
     clear_cache,
+    _HAS_TRITON,
 )
 
-# Triton kernels are optional (require triton package)
 try:
-    from .triton_kernel import fused_add_to_map_gpu, fused_find_and_place_atoms
-    _HAS_TRITON = True
+    from torchref.base.electron_density.kernels import (  # noqa: F401
+        fused_add_to_map_gpu,
+    )
 except ImportError:
-    _HAS_TRITON = False
-
-try:
-    from .separable_triton_kernel import separable_density_gpu
-    _HAS_SEPARABLE_TRITON = True
-except ImportError:
-    _HAS_SEPARABLE_TRITON = False
+    pass
 
 __all__ = [
-    # JIT kernels
     "vectorized_add_to_map",
     "build_electron_density",
     "compute_metric_tensor",
@@ -41,8 +34,5 @@ __all__ = [
     "warmup",
     "get_cache_dir",
     "clear_cache",
-    # Triton kernels (if available)
     "fused_add_to_map_gpu",
-    "fused_find_and_place_atoms",
-    "separable_density_gpu",
 ]

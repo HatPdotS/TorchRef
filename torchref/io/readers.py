@@ -115,8 +115,7 @@ def read_pdb(filepath: Union[str, Path], model_class=None, **model_kwargs):
         Model class to construct. Defaults to :class:`ModelFT`. Pass
         :class:`Model` for the plain base model.
     **model_kwargs
-        Forwarded to the model constructor (e.g. ``max_res``,
-        ``radius_angstrom``).
+        Forwarded to the model constructor (e.g. ``max_res``).
 
     Returns
     -------

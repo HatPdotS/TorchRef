@@ -11,10 +11,10 @@ Examples
 --------
 ::
 
-    # 2mFo-DFc map from refinement output
+    # 2Fo-Fc map from FWT/PHWT columns
     torchref.mtz2map -sf refined.mtz -csf FWT -cphi PHWT -o 2fofc.ccp4
 
-    # mFo-DFc difference map
+    # Fo-Fc difference map
     torchref.mtz2map -sf refined.mtz -csf DELFWT -cphi PHDELWT -o fofc.ccp4
 
     # Custom columns with resolution cutoff
@@ -87,7 +87,9 @@ def main():
         type=str,
         choices=['True', 'False'],
         default='True',
-        help="Normalize amplitudes to unit variance. Default: True.",
+        help="Normalize amplitudes to unit variance. Accepts only the literal "
+        "strings 'True' or 'False' (case-sensitive); pass '-n False' to disable. "
+        "Default: True.",
     )
 
     res = parser.add_argument_group("Resolution")

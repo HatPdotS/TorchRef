@@ -140,8 +140,9 @@ def create_xray_target(
         Reference to Scaler object.
     mode : str, optional
         Target mode: ``'gaussian'``, ``'ls'``, ``'ls_wunit_k1'``, ``'rice'``,
-        ``'ml'``, or ``'bhattacharyya'``. Default is ``'ml'`` (maximum-likelihood
-        Read MLF with free-set Luzzati σ_A variance ``epsilon*beta``).
+        ``'ml'``, ``'bhattacharyya'``, or ``'bhattacharyya_ensemble'`` (experimental).
+        Default is ``'ml'`` (maximum-likelihood Read MLF with free-set Luzzati
+        σ_A variance ``epsilon*beta``).
         ``'rice'`` is the simpler raw-σ Rice likelihood (``beta = sigma**2``).
         ``'ls_wunit_k1'`` is Phenix-style least squares with unit weights and a
         per-bin closed-form optimal scale recomputed at every gradient call
@@ -149,8 +150,16 @@ def create_xray_target(
         for ``'ml'``.
     use_work_set : bool, optional
         Use work set (True) or test set (False). Default is True.
+    sigma_m_scale : float, optional
+        Global multiplier applied to σ_m; used only by the ``'bhattacharyya'``
+        and ``'bhattacharyya_ensemble'`` modes. Default is 1.0.
     verbose : int, optional
         Verbosity level. Default is 0.
+    device : torch.device, optional
+        Device to pin model/data/scaler onto before constructing the target.
+    use_set : str, optional
+        Canonical 3-way subset selector (``"work"``/``"free"``/``"val"``);
+        takes precedence over ``use_work_set``. Default is None.
 
     Returns
     -------

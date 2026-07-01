@@ -83,11 +83,28 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
     max_res : float, optional
         Maximum resolution for reflections.
     device : torch.device, optional
-        Computation device. Defaults to the configured device.current.
-    weighter : LossWeightingModule, optional
-        Loss weighting module. Creates default if None.
+        Computation device. Defaults to the configured default device.
     nbins : int, optional
         Number of resolution bins. Default is 10.
+    column_names : dict, optional
+        Mapping of logical column roles to MTZ column labels.
+    wavelength : float, optional
+        X-ray wavelength in Angstroms for the anomalous (f'/f'') correction.
+        Default 1.0; ``0`` disables anomalous refinement entirely.
+    anomalous_threshold : float, optional
+        Threshold controlling anomalous data handling. Default 0.5.
+    french_wilson : bool, optional
+        Whether to derive amplitudes from intensities via French-Wilson.
+        Default True.
+    anomalous : bool, optional
+        Anomalous (Bijvoet) load preference; None auto-detects. Default None.
+    adp_mode : str, optional
+        ADP parametrization, ``"isotropic"`` (default) or ``"anisotropic"``.
+    aniso_selection : str, optional
+        Phenix-style selection of atoms refined anisotropically when
+        ``adp_mode="anisotropic"``.
+
+    See the :meth:`__init__` docstring for the full parameter descriptions.
 
     Attributes
     ----------
@@ -101,8 +118,13 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Structure factor model (includes lazy restraints via model.restraints).
     scaler : Scaler
         Scale factor calculator.
-    weighter : LossWeightingModule
-        Loss weighting module.
+    weighting : BaseWeighting
+        Loss weighting scheme holding the data/prior group weights. Defaults to
+        ``ManualWeighting(DEFAULT_GROUP_WEIGHTS)``; reassign to change the scheme.
+    weighter : None
+        Vestigial state-dict placeholder, always ``None``. The live weighting
+        knob is :attr:`weighting`; ``weighter`` is retained only for state-dict
+        compatibility.
     """
 
     def __init__(
@@ -142,7 +164,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         max_res : float, optional
             Maximum resolution for reflections.
         device : torch.device, optional
-            Computation device. Defaults to the configured device.current.
+            Computation device. Defaults to the configured default device.
         nbins : int, optional
             Number of resolution bins. Default is 10.
         french_wilson : bool, optional
@@ -390,9 +412,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         xray_mode : str, optional
-            X-ray target mode. Options are 'gaussian', 'ls', 'rice', 'ml',
-            or 'bhattacharyya'. Default is 'ml' (maximum-likelihood Read MLF
-            with Luzzati σ_A).
+            X-ray target mode. Options are 'gaussian', 'ls', 'ls_wunit_k1',
+            'rice', 'ml', or 'bhattacharyya'. Default is 'ml'
+            (maximum-likelihood Read MLF with Luzzati σ_A).
         """
         # X-ray targets (now accept model, data, scaler directly)
         self.xray_target_work = create_xray_target(
@@ -432,7 +454,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         mode : str
-            X-ray target mode. Options: 'gaussian', 'ls', 'rice', 'ml', 'bhattacharyya'.
+            X-ray target mode. Options: 'gaussian', 'ls', 'ls_wunit_k1', 'rice',
+            'ml', 'bhattacharyya'.
         """
         sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
         self.xray_target_work = create_xray_target(
@@ -515,6 +538,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self._logger = None
 
     def get_scales(self):
+        """
+        Initialize and refit the scaler against the current model.
+
+        Calls ``scaler.initialize()``, flags outliers in the reflection data
+        (``z_threshold=5.0``), refits the scaler with LBFGS, then re-flags
+        outliers against the refitted scales. No-op when the scaler is ``None``
+        (e.g. targets such as ``ls_wunit_k1`` in ``binwise_optimal`` mode that
+        compute their own scale and intentionally leave ``self.scaler`` unset).
+        """
         if not hasattr(self, "scaler") or self.scaler is None:
             # Targets that compute their own scale (e.g. ls_wunit_k1 in
             # binwise_optimal mode) intentionally leave ref.scaler=None.
@@ -526,6 +558,13 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
 
     def setup_scaler(self):
+        """
+        Construct the scaler and assign it to ``self.scaler``.
+
+        Uses the class named by ``self._scaler_class`` if set, otherwise the
+        default :class:`Scaler`, and wires it to the current model, reflection
+        data, ``nbins``, verbosity, and device.
+        """
         cls = getattr(self, "_scaler_class", None) or Scaler
         self.scaler = cls(
             self.model,
@@ -622,6 +661,23 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return unique_params
 
     def get_fcalc(self, hkl=None, recalc=False):
+        """
+        Compute complex structure factors ``F_calc`` from the model.
+
+        Parameters
+        ----------
+        hkl : array_like, optional
+            Reflection indices. If None, uses ``reflection_data.hkl_for_sf()``
+            (signed HKL, so Bijvoet mates at +h/-h get distinct ``|F_calc|``
+            under anomalous scattering; falls back to canonical hkl otherwise).
+        recalc : bool, optional
+            Force recomputation rather than reusing the cached SF. Default False.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex ``F_calc`` per reflection.
+        """
         if hkl is None:
             # Signed HKL so Bijvoet mates (which share a canonical ASU index)
             # are evaluated at +h/-h and get distinct |F_calc| under anomalous
@@ -630,6 +686,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return self.model(hkl, recalc=recalc)
 
     def get_fcalc_scaled(self, hkl=None, recalc=False):
+        """
+        Compute scaled complex structure factors (``scaler(F_calc)``).
+
+        See :meth:`get_fcalc` for the ``hkl`` and ``recalc`` parameters.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex scaled ``F_calc`` per reflection.
+        """
         fcalc = self.get_fcalc(hkl, recalc=recalc)
         fcalc_scaled = self.scaler(fcalc)
         return fcalc_scaled
@@ -638,11 +704,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         """
         Compute total ADP loss using TotalADPTarget.
 
-        This combines:
+        This combines the components registered by ``TotalADPTarget``:
 
-        - Bond-based similarity (SIMU-like)
-        - Spread control (tighter than KL)
-        - Bounds penalty
+        - ``simu``: bond-based B-factor similarity (SIMU-like)
+        - ``locality``: local-neighbourhood B-factor smoothness restraint
+        - ``KL``: KL-divergence spread control of the B-factor distribution
 
         Returns
         -------
@@ -652,9 +718,29 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return self.adp_target()
 
     def get_F_calc(self, hkl=None, recalc=False):
+        """
+        Compute structure-factor amplitudes ``|F_calc|`` from the model.
+
+        See :meth:`get_fcalc` for the ``hkl`` and ``recalc`` parameters.
+
+        Returns
+        -------
+        torch.Tensor
+            Real ``|F_calc|`` per reflection.
+        """
         return torch.abs(self.get_fcalc(hkl, recalc=recalc))
 
     def get_F_calc_scaled(self, hkl=None, recalc=False):
+        """
+        Compute scaled structure-factor amplitudes ``|scaler(F_calc)|``.
+
+        See :meth:`get_fcalc` for the ``hkl`` and ``recalc`` parameters.
+
+        Returns
+        -------
+        torch.Tensor
+            Real scaled ``|F_calc|`` per reflection.
+        """
         return torch.abs(self.get_fcalc_scaled(hkl, recalc=recalc))
 
     def nll_xray(self):
@@ -735,40 +821,6 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         """
         return self.geometry_target()
 
-    def loss(self):
-        """
-        Compute total loss using LossState pipeline.
-
-        Creates a LossState, populates meta, caches losses, updates weights,
-        and returns the aggregated weighted loss.
-
-        Returns
-        -------
-        torch.Tensor
-            Total weighted loss.
-        """
-        state = LossState(device=self.device)
-
-        # Register targets
-        state.register_target("xray_work", lambda: self.xray_target_work())
-        state.register_targets(self.geometry_target)
-        state.register_targets(self.adp_target)
-        if self.scaler is not None:
-            n_ref = int(self.reflection_data.hkl.shape[0])
-            if hasattr(self.scaler, "U"):
-                state.register_target(
-                    "adp/scaler_U",
-                    ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
-                )
-            if (hasattr(self.scaler, "log_scale")
-                    and self.scaler.log_scale.requires_grad):
-                state.register_target(
-                    "adp/scaler_log_scale",
-                    ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
-                )
-
-        return state.aggregate()
-
     def _create_loss_state(self) -> LossState:
         """
         Create a configured LossState for optimization (internal).
@@ -825,10 +877,10 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         """
         Create a configured LossState for optimization.
 
-        .. deprecated::
-            Use the :attr:`loss_state` property instead for the persistent
-            state. This method is kept for backwards compatibility and simply
-            delegates to :meth:`_create_loss_state`.
+        Prefer the :attr:`loss_state` property for the persistent, reused
+        state. This method is retained for backwards compatibility and simply
+        delegates to :meth:`_create_loss_state` (it does not emit a runtime
+        ``DeprecationWarning``).
 
         Returns
         -------
@@ -959,13 +1011,20 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return self.xray_target_work.get_rfactor()
 
     def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
+        """
+        Scatter-plot calculated vs observed amplitudes and save to ``outpath``.
+
+        Parameters
+        ----------
+        outpath : str, optional
+            Output PNG path. Default ``"fcalc_vs_fobs.png"``.
+        """
         import matplotlib.pyplot as plt
 
         with torch.no_grad():
             F_obs = self.reflection_data.get_corrected_data()[0]
             self.rfree_flags = self.reflection_data.rfree_flags
-            self.get_F_calc()
-            F_calc = self.F_calc
+            F_calc = self.get_F_calc()
             F_obs_amp = torch.abs(F_obs).cpu().numpy()
             F_calc_amp = torch.abs(F_calc).cpu().numpy()
             plt.figure(figsize=(8, 8))
@@ -1109,8 +1168,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Create a fully initialized Refinement from a state dictionary.
 
         This is the recommended way to restore a Refinement from a saved state.
-        It creates the proper submodules using their respective create_from_state_dict
-        methods, then calls PyTorch's default load_state_dict.
+        It rebuilds the core submodules (reflection data, model, scaler) using
+        their respective factory methods, then calls PyTorch's default
+        load_state_dict. (Restraints are normally lazy-loaded via
+        ``model.restraints``; the standalone restraints handling here is a
+        legacy state-dict path and does not make restraints a first-class
+        persisted submodule.)
 
         Parameters
         ----------
@@ -1118,7 +1181,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             State dictionary from torch.save(refinement.state_dict(), ...)
             or from loading a checkpoint file.
         device : torch.device, optional
-            Device to place tensors on. Defaults to the configured device.current.
+            Device to place tensors on. Defaults to the configured default
+            device.
         verbose : int, optional
             Verbosity level. Default is 1.
 

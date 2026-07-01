@@ -1,13 +1,18 @@
 """
 Base Map class for crystallographic electron density map computation.
 
-Supports 2mFo-DFc and Fcalc map types. Computes maps via FFT
-of map coefficients placed on a reciprocal-space grid.
+Supports 2Fo-Fc and Fcalc map types. Computes maps via FFT
+of map coefficients placed on a reciprocal-space grid. The "2Fo-Fc"
+map is a plain 2Fo-Fc map (no figure-of-merit ``m`` and no sigma-A
+coefficient ``D``; i.e. ``m=1``, ``D=1``), not a likelihood-weighted
+2mFo-DFc map.
 
-FFT convention: ρ(r) = sum_h F(h) * exp(-2πi h·r)
-This corresponds to torch.fft.fftn (forward DFT with exp(-2πi) kernel).
-Hermitian symmetry F(-h) = F*(h) is enforced by place_on_grid to ensure
-a real-valued map.
+FFT convention: ρ(r) = (1/N) * sum_h F(h) * exp(-2πi h·r)
+This corresponds to torch.fft.fftn with ``norm="forward"`` (forward DFT
+with exp(-2πi) kernel and a 1/N normalization, N = number of grid
+points). The map scale is therefore in normalized units. Hermitian
+symmetry F(-h) = F*(h) is enforced by place_on_grid to ensure a
+real-valued map.
 """
 
 from __future__ import annotations
@@ -36,18 +41,45 @@ class Map(DeviceMixin):
         Grid dimensions (nx, ny, nz). If None, determined automatically
         from cell parameters and resolution.
     map_type : str, optional
-        Type of map to compute. One of ``"2mFo-DFc"`` or ``"Fcalc"``.
-        Default is ``"2mFo-DFc"``.
+        Type of map to compute. One of ``"2Fo-Fc"`` or ``"Fcalc"``.
+        Default is ``"2Fo-Fc"``. Note ``"2Fo-Fc"`` is a *plain* 2Fo-Fc map
+        (no figure-of-merit ``m`` and no sigma-A coefficient ``D``; i.e.
+        ``m=1``, ``D=1``), not a likelihood-weighted 2mFo-DFc map.
+
+    Attributes
+    ----------
+    data : ReflectionData
+        The observed reflection data.
+    model : ModelFT
+        The model used to compute structure factors.
+    gridsize : tuple of int or None
+        Requested grid dimensions; ``None`` means auto-determined at
+        ``calculate()`` time.
+    map_type : str
+        The configured map type (one of ``VALID_MAP_TYPES``).
+    map_data : torch.Tensor or None
+        The computed 3D real-space map, or ``None`` before ``calculate()``.
+    device : torch.device
+        Computation device.
+
+    Methods
+    -------
+    calculate()
+        Compute and return the 3D real-space map.
+    write(filepath)
+        Write the map to a CCP4 file (computing it first if needed).
+    reset_cache()
+        Discard the cached map so it is recomputed on next access.
     """
 
-    VALID_MAP_TYPES = ("2mFo-DFc", "Fcalc")
+    VALID_MAP_TYPES = ("2Fo-Fc", "Fcalc")
 
     def __init__(
         self,
         data,
         model,
         gridsize: Optional[Tuple[int, int, int]] = None,
-        map_type: str = "2mFo-DFc",
+        map_type: str = "2Fo-Fc",
         device: Optional[torch.device] = None,
     ):
         if map_type not in self.VALID_MAP_TYPES:
@@ -97,7 +129,10 @@ class Map(DeviceMixin):
         if self.map_type == "Fcalc":
             return fcalc
 
-        # 2mFo-DFc: (2*Fobs - |Fcalc|) * exp(i * phi_calc)
+        # 2Fo-Fc: (2*Fobs - |Fcalc|) * exp(i * phi_calc). Note this is a plain
+        # 2Fo-Fc map: no figure-of-merit ``m`` weights Fobs and no sigma-A
+        # coefficient ``D`` scales Fcalc (i.e. m=1, D=1), so it is not a true
+        # likelihood-weighted 2mFo-DFc map.
         fcalc_amp = fcalc.abs()
         phi_calc = torch.angle(fcalc)
         return (2.0 * fobs - fcalc_amp) * torch.exp(1j * phi_calc)
@@ -131,7 +166,8 @@ class Map(DeviceMixin):
         # Hermitian symmetry, ensuring real-valued output)
         grid = place_on_grid(hkl_p1, coefficients_p1, gridsize, enforce_hermitian=True)
 
-        # FFT to real space: ρ(r) = sum_h F(h) * exp(-2πi h·r)
+        # FFT to real space: ρ(r) = (1/N) * sum_h F(h) * exp(-2πi h·r)
+        # (norm="forward" applies the 1/N normalization, N = grid points)
         self._map = torch.fft.fftn(grid, dim=(0, 1, 2), norm="forward").real
 
         return self._map

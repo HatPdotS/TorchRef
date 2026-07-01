@@ -1,8 +1,14 @@
 """
-Atom pair sampling for efficient Patterson vector generation.
+Atom-pair sampling for Patterson-style vector matching.
 
 Supports weighted sampling to prioritize informative pairs
-(heavy atoms, close distances).
+(heavy atoms, close distances). This is a general weighted atom-pair sampler;
+it is consumed by Patterson-style vector-matching code.
+
+Experimental / unstable API: part of ``torchref.experimental.alignment``,
+the opt-in ball-harmonic MR engine. The production MR entry point is
+``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
+may change without notice.
 """
 
 from typing import Optional, Tuple
@@ -18,8 +24,11 @@ class VectorSampler:
     Samples atom pairs for Patterson vector matching.
 
     Supports weighted sampling to prioritize informative pairs
-    (heavy atoms via Z-weighting). Samples pairs from the asymmetric
-    unit (ASU) only - symmetry is already encoded in the Patterson map.
+    (heavy atoms via Z-weighting). Per-atom weights also fold in a 1/B-factor
+    term (``Z**2 / B`` for ``'Z2'`` weighting, ``1 / B`` for ``'uniform'``),
+    so more-ordered (low-B) atoms are favoured; see :meth:`_compute_weights`.
+    Samples pairs from the asymmetric unit (ASU) only - symmetry is already
+    encoded in the Patterson map.
 
     Parameters
     ----------
@@ -41,7 +50,8 @@ class VectorSampler:
     weighting : str
         Weighting scheme used.
     weights : torch.Tensor
-        Sampling weights for each atom (n_atoms,).
+        Sampling weights for each atom (n_atoms,), combining the Z-weighting
+        scheme with a 1/B-factor term (see :meth:`_compute_weights`).
     rng : torch.Generator
         Random number generator.
     """

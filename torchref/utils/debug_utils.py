@@ -1,5 +1,5 @@
 """
-Debug utilities for multicopy_refinement modules.
+Debug utilities for TorchRef modules.
 
 Provides debugging and introspection functionality for all module classes.
 """

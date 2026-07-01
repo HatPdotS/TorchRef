@@ -148,7 +148,8 @@ def spacegroup_to_str(spacegroup: SpaceGroupLike, style: str = "short") -> str:
         Output style:
         - 'short': No spaces (e.g., 'P212121')
         - 'hm': Hermann-Mauguin with spaces (e.g., 'P 21 21 21')
-        - 'xhm': Extended Hermann-Mauguin (e.g., 'P 21 21 21')
+        - 'xhm': Extended Hermann-Mauguin, including the setting/cell-choice
+          token where applicable (e.g., 'P 1 21 1' for a unique-axis-b setting)
 
     Returns
     -------
@@ -642,8 +643,10 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         - gemmi.SpaceGroup object
         - Another SpaceGroup instance
         - None (defaults to P1)
-    dtype : torch.dtype, default torch.float64
-        Data type for rotation matrices and translations.
+    dtype : torch.dtype, optional
+        Data type for rotation matrices and translations. Defaults to the
+        configured ``dtypes.float`` (``get_float_dtype()``, float32 in
+        production; float64 only when ``TORCHREF_DTYPE_FLOAT=float64``).
     device : torch.device, default: configured device.current
         Device for computation.
 

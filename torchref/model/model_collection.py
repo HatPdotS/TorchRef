@@ -28,6 +28,10 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
     timepoints.  This class stores the shared models as a plain list
     (no ownership) and only owns its own fraction parameters.
 
+    An external fraction override (via ``set_fraction_override``) can replace
+    the softmax-derived fractions; while active, ``fractions`` and ``forward``
+    use the override tensor instead of ``softmax(fraction_params)``.
+
     Parameters
     ----------
     base_models : List[ModelFT]
@@ -220,9 +224,11 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         return self._base_models[0].get_vdw_radii()
 
     def xyz(self):
+        """Cartesian coordinates of the first shared base model."""
         return self._base_models[0].xyz()
 
     def get_individual_fcalc(self, hkl, recalc=True):
+        """Per-model (unweighted) structure factors, one tensor per base model."""
         return [m(hkl, recalc=recalc) for m in self._base_models]
 
     def __repr__(self):
@@ -421,7 +427,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         cls,
         filepath: str,
         max_res: float = 1.5,
-        radius_angstrom: float = 4.0,
         device=None,
         verbose: int = 0,
     ) -> tuple:
@@ -436,8 +441,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
             Path to IHM mmCIF file.
         max_res : float
             Maximum resolution for FFT grid setup.
-        radius_angstrom : float
-            Radius for electron density calculation.
         device : torch.device, optional
             Device for model tensors.
         verbose : int
@@ -452,7 +455,6 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         reader = IHMReader(filepath, verbose=verbose)
         return reader(
             max_res=max_res,
-            radius_angstrom=radius_angstrom,
             device=device,
         )
 

@@ -40,8 +40,10 @@ class CollectionScaler(ScalerBase):
     """
     Joint scaler for DatasetCollection + ModelCollection.
 
-    Shares scale parameters (log_scale, U, bin_wise_bfactor, k_sol,
-    B_sol, phase) across **all** data–model pairs.  Manages per-component
+    Shares scale parameters (log_scale, U, k_sol, B_sol, phase) across
+    **all** data–model pairs.  (A bin-wise B-factor correction exists but
+    is *not* set up by ``initialize()`` and so is not a shared, refined
+    parameter by default.)  Manages per-component
     solvent models so that the bulk-solvent contribution for a mixed model
     is the fraction-weighted sum of individual component solvent SFs.
 
@@ -329,6 +331,9 @@ class CollectionScaler(ScalerBase):
             Maximum line-search iterations per step.
         history_size : int
             LBFGS history size.
+        scale_smoothness : float, default 1000.0
+            Weight of the Tikhonov first-difference penalty on ``log_scale``
+            (smoothness regularization across resolution bins).
         verbose : bool
             Print progress.
 

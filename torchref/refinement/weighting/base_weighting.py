@@ -34,7 +34,7 @@ class BaseWeighting(DeviceMixin, nn.Module, ABC):
     Parameters
     ----------
     device : torch.device, optional
-        Computation device. Defaults to the configured device.current.
+        Computation device. Defaults to the configured default device.
 
     Attributes
     ----------

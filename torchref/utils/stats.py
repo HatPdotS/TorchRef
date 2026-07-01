@@ -22,9 +22,13 @@ Usage
     filter_stats(stats, VERBOSITY_ESSENTIAL)
     # {'rwork': 0.20}
 
-    # StatEntry is JSON serializable. Importing this module monkey-patches
-    # json.dumps / json.dump to use StatEntryEncoder by default, so a plain
-    # call already serializes StatEntry values (and torch/numpy objects):
+The JSON example below only works because importing this module installs a
+global ``json.dumps`` / ``json.dump`` patch (see Side Effects). Without that
+side effect, ``json.dumps`` of a dict containing ``StatEntry`` values would
+raise ``TypeError`` unless ``cls=StatEntryEncoder`` is passed explicitly::
+
+    # After importing this module, a plain call already serializes StatEntry
+    # values (and torch/numpy objects) via the patched default encoder:
     import json
     json.dumps(stats)
     # '{"rwork": 0.2, "bond_rmsd": 0.015}'
@@ -68,10 +72,20 @@ class StatEntry:
     verbosity: int = VERBOSITY_STANDARD
 
     def __repr__(self):
+        # repr shows only the value (not the dataclass form) for log readability.
         return f"{self.value}"
 
     def __json__(self):
-        """Return JSON-serializable representation (just the value)."""
+        """Return a JSON-serializable representation (just the value).
+
+        Notes
+        -----
+        ``__json__`` is a non-standard, courtesy hook. The stdlib ``json``
+        module does not call it; the bundled :class:`StatEntryEncoder`
+        serializes ``StatEntry`` via its ``default`` method (returning
+        ``.value`` directly), so this method is unused unless an external
+        library happens to look for a ``__json__`` hook.
+        """
         return self.value
 
 
@@ -79,7 +93,10 @@ class StatEntryEncoder(json.JSONEncoder):
     """
     Custom JSON encoder that handles StatEntry and torch tensors.
 
-    Usage:
+    Examples
+    --------
+    ::
+
         json.dumps(data, cls=StatEntryEncoder)
     """
 

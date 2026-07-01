@@ -1,6 +1,11 @@
 """
 Wilson prior: per-bin matching of <|F_calc|^2> to the Wilson curve.
 
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``. The API and
+   behaviour may change or be removed without notice.
+
 The Wilson distribution says, in the absence of structural detail, the
 expected per-resolution-bin mean intensity of a randomly-placed atomic
 ensemble follows::
@@ -10,9 +15,9 @@ ensemble follows::
 where ``s = 1/(2*d)`` and ``B_W`` is the overall Wilson B-factor. Real
 calculated intensities should track this curve at low-to-mid resolution.
 A model that drives the work-set R-factor toward zero by absorbing noise
-into extra structural detail (e.g. a B-factor-free ~100-member ensemble)
-inflates ``<|F_calc|^2>`` in particular resolution shells, which this
-target penalizes.
+into extra structural detail (e.g. a B-factor-free ensemble of many
+coordinate copies) inflates ``<|F_calc|^2>`` in particular resolution
+shells, which this target penalizes.
 
 Loss form
 ---------
@@ -46,6 +51,10 @@ if TYPE_CHECKING:
 class WilsonPriorTarget(DataTarget):
     """
     Wilson-curve penalty on calculated intensities.
+
+    .. warning::
+
+       Experimental — API and behaviour may change without notice.
 
     Three modes:
 
@@ -89,6 +98,12 @@ class WilsonPriorTarget(DataTarget):
         Atomic model used to compute F_calc.
     scaler : Scaler
         Scaler used to put F_calc on the F_obs scale.
+    nbins : int
+        Number of resolution bins for the Wilson-curve fit and the
+        ``bin_mean`` reduction (default 20). This binning is **independent**
+        of the refinement's own ``nbins`` — :class:`EnsembleRefinement`
+        constructs the target without forwarding ``nbins``, so the Wilson
+        prior always uses 20 bins regardless of the refinement setting.
     mode : {'bin_mean', 'per_reflection', 'rice'}
         Reduction / loss form (see above).
     eps : float

@@ -17,6 +17,11 @@ where ξ_{l,m,n} = Σ_p w_p f*_{p,l,m} g_{p,l,n} sums over radial shells.
 
 Key property: Rotations only affect the angular part - radial indices are summed.
 This preserves resolution information while reducing to a standard Wigner transform.
+
+Experimental / unstable API: part of ``torchref.experimental.alignment``,
+the opt-in ball-harmonic MR engine. The production MR entry point is
+``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
+may change without notice.
 """
 
 import math
@@ -317,6 +322,9 @@ def get_mw_grid(L: int) -> Tuple[np.ndarray, np.ndarray]:
     """
     Get McEwen-Wiaux (MW) sampling grid positions.
 
+    Internal helper: not exported in the package ``__all__`` and not part of the
+    public package API (treat as internal alongside ``splat_to_mw_grid``).
+
     Parameters
     ----------
     L : int
@@ -343,6 +351,9 @@ def splat_to_mw_grid(
 ) -> np.ndarray:
     """
     Splat values onto MW sampling grid using bilinear interpolation.
+
+    Internal helper: not exported in the package ``__all__`` and not part of the
+    public package API (treat as internal alongside ``get_mw_grid``).
 
     Parameters
     ----------
@@ -843,7 +854,7 @@ def ball_rotation_search(
     L : int
         Angular bandlimit.
     P : int
-        Radial bandlimit.
+        Number of radial shells.
     d_min : float
         High resolution limit in Å.
     d_max : float
@@ -878,7 +889,7 @@ def ball_rotation_search(
     Returns
     -------
     rotation_function : np.ndarray
-        Full rotation function, shape (2L-1, L, 2L-1).
+        Full rotation function, shape (2L-1, L, 2L-1) = (gamma, beta, alpha).
     angles_grid : tuple
         (alphas, betas, gammas) angle grids.
     peaks : list

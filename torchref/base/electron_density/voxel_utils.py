@@ -25,7 +25,12 @@ def find_relevant_voxels(real_space_grid, xyz, radius_angstrom=4, inv_frac_matri
         Atom coordinates in real space (Cartesian coordinates),
         of shape (N, 3) or (3,).
     radius_angstrom : float, optional
-        Radius around each atom in Angstroms. Default is 4.
+        Radius around each atom in Angstroms. Default is 4. This single fixed
+        radius is a legacy fallback: the production density splat
+        (``main.build_electron_density``) derives a per-atom truncation radius
+        from each atom's B/U and ``torchref.sigma_cutoff_ed`` rather than using a
+        global 4 A cutoff. This helper is only reached via the legacy
+        reference/JIT splat path.
     inv_frac_matrix : torch.Tensor, optional
         Matrix to convert Cartesian to fractional coordinates of shape (3, 3).
         Required for proper handling of non-orthogonal cells.

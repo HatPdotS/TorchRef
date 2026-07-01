@@ -43,13 +43,12 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         Space group specification (string, int, or gemmi.SpaceGroup).
         If None, defaults to P1.
     max_res : float, optional
-        Maximum resolution for grid spacing in Angstroms. Default is 1.0.
-    radius_angstrom : float, optional
-        Radius in Angstroms for density calculation around each atom. Default is 4.0.
+        Maximum resolution for grid spacing in Angstroms. Default is 1.5.
     dtype_float : torch.dtype, optional
         Data type for floating point tensors. Default is dtypes.float.
     device : torch.device, optional
-        Computation device. Defaults to the configured device.current.
+        Computation device. Defaults to the configured default device
+        (``get_default_device()``).
     verbose : int, optional
         Verbosity level for logging. Default is 0.
 
@@ -63,8 +62,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         Alias for spacegroup (backward compatibility).
     max_res : float
         Maximum resolution for grid spacing.
-    radius_angstrom : float
-        Radius for density calculation around each atom.
     gridsize : torch.Tensor or None
         Grid dimensions (nx, ny, nz) when grid is set up.
     real_space_grid : torch.Tensor or None
@@ -97,7 +94,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         cell: Optional[Cell] = None,
         spacegroup: SpaceGroupLike = None,
         max_res: float = 1.5,
-        radius_angstrom: float = 3.0,
         dtype_float: torch.dtype = None,
         device: Optional[torch.device] = None,
         verbose: int = 0,
@@ -114,8 +110,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             Space group specification. If None, defaults to P1.
         max_res : float, optional
             Maximum resolution for grid spacing in Angstroms. Default is 1.5.
-        radius_angstrom : float, optional
-            Radius in Angstroms for density calculation. Default is 3.0.
         dtype_float : torch.dtype, optional
             Data type for floating point tensors. Default is dtypes.float.
         device : torch.device, optional
@@ -129,7 +123,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         """
         super().__init__()
         self.max_res = max_res
-        self.radius_angstrom = radius_angstrom
         if dtype_float is None:
             dtype_float = dtypes.float
         self.dtype_float = dtype_float
@@ -499,7 +492,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             B_iso=B_iso,
             inv_frac_matrix=self.inv_fractional_matrix,
             frac_matrix=self.fractional_matrix,
-            radius_angstrom=self.radius_angstrom,
             voxel_size=self.voxel_size,
             xyz_aniso=xyz_aniso,
             u_aniso=u_aniso,
@@ -687,7 +679,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             cell=new_cell,
             spacegroup=new_spacegroup,
             max_res=self.max_res,
-            radius_angstrom=self.radius_angstrom,
             dtype_float=self.dtype_float,
             device=self.device,
             verbose=self.verbose,

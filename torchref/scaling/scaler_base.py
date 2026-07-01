@@ -79,6 +79,15 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Current computation device.
     nbins : int
         Number of resolution bins.
+    log_scale : torch.nn.Parameter
+        Per-bin log scale factors (created during ``initialize()``).
+    U : torch.nn.Parameter
+        Anisotropic scaling parameters (created during ``initialize()``).
+    solvent : SolventModel
+        Bulk-solvent model (created during ``initialize()``).
+    cell, bins, s
+        Cell parameters, per-reflection bin indices, and scattering
+        vectors set up from the data.
     """
 
     def __init__(
@@ -130,7 +139,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         self.cell = data.cell
         s = get_scattering_vectors(data.hkl, self.cell)
         self.register_buffer("s", s)
-        # Precompute (sin(θ)/λ)² for B-factor damping — avoids recomputing per call
+        # Precompute (sin(θ)/λ)^2 for B-factor damping — avoids recomputing per call
         self.register_buffer("_s_half_sq", (torch.norm(s, dim=1) / 2.0) ** 2)
         self._f_sol_raw = None
         bins, self.nbins = self._data.get_bins(self.nbins)
@@ -368,7 +377,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Fit a single global scale factor analytically (least-squares).
 
         This is the simple scaling approach:
-            k = sum(|F_obs||F_calc|) / sum(|F_calc|²)
+            k = sum(|F_obs||F_calc|) / sum(|F_calc|^2)
 
         Useful for rigid body refinement where only an overall scale is needed.
 
@@ -456,6 +465,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         F_calc = torch.abs(self(fcalc))
         fobs = self._data.get_corrected_data()[0]
         valid = self._data.masks().to(torch.bool)
+        # ``rfree_flags != 0`` is the WORK set (1=work, 0=test); despite the
+        # ``rfree`` name this boolean mask selects work reflections.
         rfree = self._data.rfree_flags.to(torch.bool)
         sel = valid & rfree  # valid work-set reflections
         intensities = fobs ** 2
@@ -516,6 +527,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
         fobs, sigma = self._data.get_corrected_data()
         fobs = fobs.to(get_float_dtype()).detach()
+        # Note: ``rfree_flags != 0`` is the WORK set (1=work, 0=test), so this
+        # boolean mask (despite the ``rfree`` name) selects work reflections.
         rfree = self._data.rfree_flags.to(torch.bool)
         fcalc = fcalc.detach()
 
@@ -795,7 +808,10 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Calculated structure factors. Expected shape (N,), an additional
             dimension for batch is possible. N should match the full HKL size.
         use_mask : bool, default True
-            Deprecated parameter, kept for backward compatibility.
+            Deprecated and inert: this flag is never read. Internal masking
+            still happens, but whether to mask is inferred from the input
+            shape (``fcalc.shape[1]`` vs ``len(self.bins)``), not from this
+            flag. Passing ``use_mask=False`` does not disable masking.
         f_sol_override : torch.Tensor, optional
             Pre-computed raw solvent structure factors.  When provided, these
             replace the internally-cached ``_f_sol_raw``.  The scaler's
@@ -857,7 +873,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 kmask_per_refl = gather_with_index_add(kmask, bins_to_use)
                 f_sol = kmask_per_refl * f_sol_raw
             else:
-                # Inline solvent scaling: k_sol * exp(i*phase) * exp(-B*s²) * f_mask
+                # Inline solvent scaling: k_sol * exp(i*phase) * exp(-B*s^2) * f_mask
                 # Uses precomputed self._s_half_sq instead of recomputing scattering vectors
                 sol = self.solvent
                 k_sol = torch.exp(sol.log_k_solvent.clamp(min=-10.0, max=10.0))

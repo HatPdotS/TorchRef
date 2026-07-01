@@ -29,6 +29,7 @@ from .rotation import (
     quaternion_to_rotation_matrix,
     random_rotation_uniform,
     rotation_matrix_euler_zyz,
+    rotation_matrix_euler_xyz,
 )
 
 from .normalization import (
@@ -60,6 +61,7 @@ __all__ = [
     "quaternion_to_rotation_matrix",
     "random_rotation_uniform",
     "rotation_matrix_euler_zyz",
+    "rotation_matrix_euler_xyz",
     # Normalization
     "compute_radial_shells",
     "assign_to_shells",

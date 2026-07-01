@@ -24,12 +24,23 @@ def superpose_vectors_robust_torch(
     weights : torch.Tensor, optional
         Weights for each atom of shape (N, 1). Default is uniform weights.
     max_iterations : int, optional
-        Maximum number of iterations for refinement. Default is 10.
+        Maximum number of weighted Kabsch steps. Default is 10. The function
+        runs up to this many steps and returns the transform with the lowest
+        weighted RMSD seen.
+
+        .. note::
+           The per-atom ``weights`` are held fixed across steps (this is not an
+           iteratively-reweighted / robust estimator), and a single weighted
+           Kabsch step is already optimal for fixed weights, so additional
+           iterations do not normally change the returned transform.
 
     Returns
     -------
     torch.Tensor
-        4x4 transformation matrix (shape (3, 4) returned).
+        Transformation matrix of shape (3, 4): the top-left (3, 3) block is
+        the rotation and the last column is the translation. Unlike the NumPy
+        sibling :func:`superpose_vectors_robust`, only the matrix is returned
+        (no RMSD).
     """
     if weights is None:
         weights = torch.ones((ref_coords.shape[0], 1), device=ref_coords.device)
@@ -99,7 +110,7 @@ def superpose_vectors_robust_torch(
         # Update mobile coords for next iteration if doing iterative refinement
         if max_iterations > 1:
             mobile_coords_current = mobile_transformed
-        return best_matrix
+    return best_matrix
 
 
 def superpose_vectors_robust(
@@ -295,6 +306,12 @@ def align_pdbs(pdb1, pdb2, Atoms=None):
         Transformed pdb2 with updated coordinates.
     rmsd : float
         Root-mean-square deviation after alignment.
+
+    Notes
+    -----
+    The superposition is B-factor weighted with ``weights = 1 / tempfactor``,
+    so the 'tempfactor' column must be nonzero for every atom used (a zero
+    value triggers a division by zero).
     """
     # align to pointclouds
     if Atoms is None:

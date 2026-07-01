@@ -12,20 +12,20 @@ import os
 
 
 def detect_available_cpus(max_if_not_slurm=4) -> int:
-    """Detect actual available CPUs respecting cgroups, affinity, and SLURM."""
+    """Detect actual available CPUs, respecting SLURM and CPU affinity."""
 
     # 1. Check SLURM first (most reliable on HPC)
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
     if slurm_cpus:
         return int(slurm_cpus)
 
-    # 4. Check CPU affinity
+    # 2. Check CPU affinity
     try:
         return min(len(os.sched_getaffinity(0)), 4)
     except (AttributeError, OSError):
         pass
 
-    # 5. Fallback to os.cpu_count() but cap it sensibly
+    # 3. Fallback to os.cpu_count() but cap it sensibly
     return min(os.cpu_count() or 1, 4)
 
 

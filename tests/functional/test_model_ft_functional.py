@@ -21,15 +21,13 @@ class TestModelFTInitialization:
         model = ModelFT()
         assert model is not None
         assert model.max_res == 1.0  # Default
-        assert model.radius_angstrom == 4.0  # Default
 
     def test_modelft_with_custom_resolution(self):
         """Test ModelFT with custom resolution."""
         from torchref.model.model_ft import ModelFT
-        
-        model = ModelFT(max_res=1.5, radius_angstrom=5.0)
+
+        model = ModelFT(max_res=1.5)
         assert model.max_res == 1.5
-        assert model.radius_angstrom == 5.0
 
     def test_modelft_load_cif(self, sample_cif_file):
         """Test loading a CIF file into ModelFT."""

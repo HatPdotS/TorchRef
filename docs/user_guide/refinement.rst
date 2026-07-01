@@ -24,7 +24,7 @@ Basic Usage
    import torch
 
    # Initialize
-   refinement = Refinement(
+   refinement = LBFGSRefinement(
        data_file="data.mtz",
        pdb="model.pdb",
        device=torch.device("cuda")

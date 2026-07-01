@@ -16,9 +16,16 @@ class GaussianXrayTarget(XrayTarget):
     Simple Gaussian NLL target for X-ray data.
 
     NLL = 0.5*(F_obs - |F_calc|)²/σ² + log(σ) + 0.5*log(2π)
+
+    Attributes
+    ----------
+    target_value : float
+        Reference value carried for the generic ``Target`` machinery. Note the
+        loss returned by ``forward`` is a summed (not per-reflection normalized)
+        NLL, so this value is not a tight per-reflection target.
     """
 
-    target_value: float = 1.0  # Ideal normalized NLL
+    target_value: float = 1.0
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """
@@ -33,7 +40,7 @@ class GaussianXrayTarget(XrayTarget):
         Returns
         -------
         torch.Tensor
-            Mean NLL loss value.
+            Summed NLL loss on this target's set.
         """
         F_obs, F_calc, sigma, _, _ = self.get_data(fcalc=fcalc)
         return gaussian_xray_loss_math(F_obs, F_calc, sigma)

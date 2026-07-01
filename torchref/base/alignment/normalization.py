@@ -221,6 +221,14 @@ def fit_anisotropy_correction(
         Optimal anisotropic parameters, shape (6,).
     final_cv : float
         Final mean coefficient of variation after correction.
+
+    Notes
+    -----
+    Optimization uses LBFGS, not plain SGD. The optimizer is invoked
+    ``n_iterations // 20`` times, each call running up to ``max_iter=20``
+    internal LBFGS steps, so the total number of inner iterations is
+    approximately ``n_iterations``. The ``lr`` argument is the LBFGS step
+    scale and behaves differently from an SGD learning rate.
     """
     device = F_squared.device
 
@@ -360,7 +368,10 @@ def F_squared_to_E_values(
     Returns
     -------
     E_values : torch.Tensor
-        Normalized E-values, shape (N,).
+        Normalized E-values, shape (N,). Computed as ``sqrt(E²)`` and are
+        therefore non-negative; no sign information is carried (sign is not
+        meaningful for intensity-derived values), so callers should not
+        expect signed normalized amplitudes.
     E_squared : torch.Tensor
         E² values (for correlation calculations), shape (N,).
     shell_idx : torch.Tensor

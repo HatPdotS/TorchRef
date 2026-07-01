@@ -11,6 +11,11 @@ distributions used in crystallographic ML target functions:
 The key numerical challenge is computing log(I_0(x)) for large x (up to ~10000),
 which requires an asymptotic expansion to avoid overflow.
 
+Experimental / unstable API: part of ``torchref.experimental.alignment``,
+the opt-in ball-harmonic MR engine. The production MR entry point is
+``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
+may change without notice.
+
 References
 ----------
 - Read, R.J. (2001). Pushing the boundaries of molecular replacement with
@@ -56,8 +61,7 @@ def stable_log_bessel_i0(x: torch.Tensor) -> torch.Tensor:
 
         x = torch.tensor([0.1, 10.0, 100.0, 1000.0])
         log_i0 = stable_log_bessel_i0(x)
-        torch.all(torch.isfinite(log_i0))
-    True
+        # torch.all(torch.isfinite(log_i0)) is True
     """
     # Ensure non-negative input
     x_abs = torch.abs(x)

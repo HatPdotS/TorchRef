@@ -164,10 +164,6 @@ class ModelTarget(Target):
         Reference to the Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
-    target_value : float, optional
-        Target value for this loss. Default is 0.0.
-    sigma : float, optional
-        Sigma parameter for weighting. Default is 0.5.
 
     Attributes
     ----------
@@ -249,10 +245,6 @@ class DataTarget(Target):
         Reference to the Scaler object for scaling F_calc.
     verbose : int, optional
         Verbosity level. Default is 0.
-    target_value : float, optional
-        Target value for this loss. Default is 0.0.
-    sigma : float, optional
-        Sigma parameter for weighting. Default is 0.5.
 
     Attributes
     ----------
@@ -435,6 +427,10 @@ def von_mises_nll(
     NLL = -κ*cos(θ) + log(I₀(κ)) + log(2π)
     where κ = 1/σ²
 
+    For numerical stability, ``log(I₀(κ))`` is evaluated directly via ``i0``
+    only for κ < 50; for κ ≥ 50 it uses the large-argument asymptotic
+    ``log I₀(κ) ≈ κ − 0.5*log(2πκ)`` rather than a literal Bessel call.
+
     Parameters
     ----------
     deviations_rad : torch.Tensor
@@ -497,6 +493,14 @@ def adp_similarity_nll(adp_diffs: torch.Tensor, sigma: float = 2.0) -> torch.Ten
 def detach_phases(fcalc: torch.Tensor) -> torch.Tensor:
     """
     Extract phases from complex structure factors with gradient detachment.
+
+    .. note::
+        This helper is not currently exported in ``targets/__init__.__all__``
+        (unlike the sibling ``gaussian_nll`` / ``von_mises_nll`` /
+        ``adp_similarity_nll`` utilities), and callers in ``base.py`` and
+        ``difference.py`` presently inline ``torch.angle(...).detach()``
+        rather than call it. Treat its public-vs-private status as
+        unresolved pending an API-owner decision.
 
     Parameters
     ----------

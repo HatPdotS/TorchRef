@@ -1,3 +1,4 @@
+import math
 from typing import Optional, Tuple
 
 import gemmi
@@ -25,8 +26,6 @@ class ModelFT(CachedForwardMixin, Model):
     ----------
     max_res : float, optional
         Maximum resolution for grid spacing in Angstroms. Default is 1.0.
-    radius_angstrom : float, optional
-        Radius in Angstroms for density calculation around each atom. Default is 4.0.
     gridsize : tuple of int, optional
         Explicit grid size (nx, ny, nz). If None, computed from cell and max_res.
     wavelength : float or None, optional
@@ -46,8 +45,6 @@ class ModelFT(CachedForwardMixin, Model):
     ----------
     max_res : float
         Maximum resolution for grid spacing.
-    radius_angstrom : float
-        Radius for density calculation.
     wavelength : float or None
         X-ray wavelength for anomalous scattering corrections.
     anomalous_threshold : float
@@ -59,7 +56,7 @@ class ModelFT(CachedForwardMixin, Model):
     map : torch.Tensor or None
         Computed electron density map.
     parametrization : dict
-        ITC92 parametrization dictionary {element: (A, B, C)}.
+        ITC92 parametrization dictionary {element: (A, B)}.
     map_symmetry : MapSymmetry
         Symmetry operator for map calculations.
 
@@ -80,7 +77,6 @@ class ModelFT(CachedForwardMixin, Model):
         self,
         *args,
         max_res=1.0,
-        radius_angstrom=4.0,
         gridsize: Optional[Tuple[int, int, int]] = None,
         wavelength: Optional[float] = 1.0,
         anomalous_threshold: float = 0.5,
@@ -97,8 +93,11 @@ class ModelFT(CachedForwardMixin, Model):
         ----------
         max_res : float, optional
             Maximum resolution for grid spacing in Angstroms. Default is 1.0.
-        radius_angstrom : float, optional
-            Radius in Angstroms for density calculation. Default is 4.0.
+
+            The real-space splat radius is no longer a per-structure scalar: each
+            atom is truncated at its own ``N_sigma * sigma_eff`` radius, with
+            ``N_sigma = torchref.sigma_cutoff_ed`` (default 3.5). Set that config
+            value to trade density accuracy against cost.
         gridsize : tuple of int, optional
             Explicit grid size tuple (nx, ny, nz). If None, computed automatically.
         wavelength : float or None, optional
@@ -125,7 +124,6 @@ class ModelFT(CachedForwardMixin, Model):
 
         # FT-specific configuration
         self.max_res = max_res
-        self.radius_angstrom = radius_angstrom
         self._explicit_gridsize = gridsize
 
         # Anomalous scattering configuration
@@ -145,7 +143,12 @@ class ModelFT(CachedForwardMixin, Model):
 
     @property
     def cell(self):
-        """Unit cell object with parameters [a, b, c, alpha, beta, gamma]."""
+        """Unit cell object with parameters [a, b, c, alpha, beta, gamma].
+
+        Setting this property has the side effect of initializing the FFT
+        (via ``_maybe_initialize_fft``) once the spacegroup is also set;
+        see the setter.
+        """
         return self._cell
 
     @cell.setter
@@ -198,7 +201,6 @@ class ModelFT(CachedForwardMixin, Model):
                 spacegroup=self._spacegroup,
                 device=self.device,
                 max_res=self.max_res,
-                radius_angstrom=self.radius_angstrom,
             )
 
     def load_pdb(self, filename):
@@ -221,6 +223,34 @@ class ModelFT(CachedForwardMixin, Model):
         return self
 
     def select(self, selection):
+        """
+        Return a new ModelFT containing only the selected atoms.
+
+        Extends :meth:`Model.select` with the FT-specific setup: rebuilding
+        the ITC92 parametrization and the real-space grid for the reduced
+        atom set. The FFT itself is initialized via the cell/spacegroup
+        setters during the base ``select``.
+
+        Parameters
+        ----------
+        selection : array-like or str
+            Atom selection forwarded to :meth:`Model.select`.
+
+        Returns
+        -------
+        ModelFT
+            A new model holding the selected atoms.
+
+        Notes
+        -----
+        The base :meth:`Model.select` builds the new model via
+        ``type(self)(...)`` passing only the base constructor kwargs
+        (``dtype`` / ``verbose`` / ``device`` / ``strip_H``). The
+        ModelFT-specific constructor arguments — ``max_res``, ``wavelength``,
+        ``anomalous_threshold``, ``gridsize`` — are therefore **not**
+        propagated and are silently reset to their ModelFT defaults on the
+        returned model.
+        """
         selection = super().select(selection)
         selection._build_parametrization()
         # FFT is initialized via cell/spacegroup setters in parent select()
@@ -268,7 +298,7 @@ class ModelFT(CachedForwardMixin, Model):
             self._fft.max_res = max_res
 
         if self.verbose > 1:
-            print(f"Defining grid size for ={self.max_res} Å")
+            print(f"Defining grid size for max_res={self.max_res} Å")
 
         # Use Cell's compute_grid_size method
         gridsize = self.cell.compute_grid_size(self.max_res)
@@ -362,18 +392,22 @@ class ModelFT(CachedForwardMixin, Model):
         """
         Get isotropic atoms with their ITC92 parameters.
 
+        Returns the isotropic subset only (shape ``n_iso``), as produced by
+        :meth:`Model.get_iso`, with the per-atom scattering parameters
+        appended.
+
         Returns
         -------
         xyz : torch.Tensor
-            Atomic coordinates with shape (n_atoms, 3).
+            Atomic coordinates with shape (n_iso, 3).
         adp : torch.Tensor
-            Atomic displacement parameters (isotropic) with shape (n_atoms,).
+            Atomic displacement parameters (isotropic) with shape (n_iso,).
         occupancy : torch.Tensor
-            Occupancies with shape (n_atoms,).
+            Occupancies with shape (n_iso,).
         A : torch.Tensor
-            ITC92 A parameters (amplitudes) with shape (n_atoms, 5).
+            ITC92 A parameters (amplitudes) with shape (n_iso, 5).
         B : torch.Tensor
-            ITC92 B parameters (widths) with shape (n_atoms, 5).
+            ITC92 B parameters (widths) with shape (n_iso, 5).
         """
         # Get base isotropic data from parent
         xyz, adp, occupancy = super().get_iso()
@@ -387,18 +421,22 @@ class ModelFT(CachedForwardMixin, Model):
         """
         Get anisotropic atoms with their ITC92 parameters.
 
+        Returns the anisotropic subset only (shape ``n_aniso``), as produced
+        by :meth:`Model.get_aniso`, with the per-atom scattering parameters
+        appended.
+
         Returns
         -------
         xyz : torch.Tensor
-            Atomic coordinates with shape (n_atoms, 3).
+            Atomic coordinates with shape (n_aniso, 3).
         u : torch.Tensor
-            Anisotropic U parameters with shape (n_atoms, 6).
+            Anisotropic U parameters with shape (n_aniso, 6).
         occupancy : torch.Tensor
-            Occupancies with shape (n_atoms,).
+            Occupancies with shape (n_aniso,).
         A : torch.Tensor
-            ITC92 A parameters (amplitudes) with shape (n_atoms, 5).
+            ITC92 A parameters (amplitudes) with shape (n_aniso, 5).
         B : torch.Tensor
-            ITC92 B parameters (widths) with shape (n_atoms, 5).
+            ITC92 B parameters (widths) with shape (n_aniso, 5).
         """
         # Get base anisotropic data from parent
         xyz, u, occupancy = super().get_aniso()
@@ -445,7 +483,14 @@ class ModelFT(CachedForwardMixin, Model):
 
     def get_radius(self, min_radius_Angstrom: float = 4.0):
         """
-        Get the radius in voxels used for density calculation around each atom.
+        Get a single fixed splat radius in voxels for the given minimum.
+
+        .. note::
+            Vestigial. The production density path no longer uses a single
+            fixed radius: each atom is truncated at its own
+            ``N_sigma * sigma_eff`` radius (``N_sigma = torchref.sigma_cutoff_ed``)
+            per the variable-radius migration. This method is not consulted by
+            :meth:`build_complete_map` / :meth:`build_initial_map`.
 
         Parameters
         ----------
@@ -481,9 +526,9 @@ class ModelFT(CachedForwardMixin, Model):
         Parameters
         ----------
         radius : int, optional
-            Accepted for backward compatibility but unused; the density
-            radius is governed by ``self.radius_angstrom`` and resolved by
-            the FFT submodule when building the map. Default is None.
+            Accepted for backward compatibility but unused; the density splat
+            radius is per-atom (``torchref.sigma_cutoff_ed`` sigmas), resolved
+            inside the density builder. Default is None.
         apply_symmetry : bool, optional
             If True and space group is not P1, apply symmetry operations
             to the map. Default is True.
@@ -521,9 +566,7 @@ class ModelFT(CachedForwardMixin, Model):
             self.setup_grid()
 
         if self.verbose > 2:
-            print(
-                f"Building density map with radius={self.radius_angstrom} angstrom..."
-            )
+            print("Building density map (per-atom variable radius)...")
 
         # Get isotropic atoms
         xyz_iso, adp_iso, occ_iso, A_iso, B_iso = self.get_iso()
@@ -585,7 +628,10 @@ class ModelFT(CachedForwardMixin, Model):
             If no map has been computed yet.
         """
         if self.map is None:
-            raise ValueError("No map to save. Call build_density_map() first.")
+            raise ValueError(
+                "No map to save. Call build_complete_map() (or "
+                "build_initial_map()) to compute the density map first."
+            )
 
         np_map = self.map.detach().cpu().numpy().astype(np.float32)
         cell = self.cell.tolist()
@@ -827,7 +873,11 @@ class ModelFT(CachedForwardMixin, Model):
 
     @property
     def fft(self):
-        """Access the SfFFT submodule."""
+        """Access the SfFFT submodule, initializing it lazily if needed.
+
+        If ``self._fft`` is None it is first created via
+        ``_maybe_initialize_fft`` (requires cell and spacegroup to be set).
+        """
         if self._fft is None:
             self._maybe_initialize_fft()
 
@@ -947,7 +997,6 @@ class ModelFT(CachedForwardMixin, Model):
             device=self.device,
             strip_H=self.strip_H,
             max_res=self.max_res,
-            radius_angstrom=self.radius_angstrom,
             gridsize=self._explicit_gridsize,
             wavelength=self.wavelength,
             anomalous_threshold=self.anomalous_threshold,
@@ -1021,8 +1070,9 @@ class ModelFT(CachedForwardMixin, Model):
         """
         Return a dictionary containing the complete state of the ModelFT.
 
-        Extends parent Model.state_dict() with FT-specific parameters including
-        max_res, radius_angstrom. Grid state is handled by the FFT submodule.
+        Extends parent Model.state_dict() with FT-specific parameters:
+        ``max_res``, ``wavelength``, and ``anomalous_threshold``. Grid state
+        is handled by the FFT submodule.
 
         Parameters
         ----------
@@ -1045,7 +1095,6 @@ class ModelFT(CachedForwardMixin, Model):
 
         # Add ModelFT-specific state
         state[prefix + "max_res"] = self.max_res
-        state[prefix + "radius_angstrom"] = self.radius_angstrom
         state[prefix + "wavelength"] = self.wavelength
         state[prefix + "anomalous_threshold"] = self.anomalous_threshold
 
@@ -1086,6 +1135,17 @@ class ModelFT(CachedForwardMixin, Model):
         -------
         ModelFT
             Fully initialized instance with restored state.
+
+        Notes
+        -----
+        Legacy state_dicts are accepted: the obsolete ``radius_angstrom`` key
+        (removed with the variable-radius migration) is popped and ignored,
+        and old-style ``A`` / ``B`` scattering buffers are remapped to the
+        current ``_A`` / ``_B`` names.
+
+        As in :meth:`Model.create_from_state_dict`, the anisotropic ``u`` is
+        rebuilt here as a :class:`CholeskyMixedTensor`, matching :meth:`load`,
+        so the positive-definite-by-construction parametrization round-trips.
         """
         from torchref.symmetry import SpaceGroup
 
@@ -1098,7 +1158,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         # Extract ModelFT-specific metadata
         max_res = state_dict.pop("max_res", 1.0)
-        radius_angstrom = state_dict.pop("radius_angstrom", 4.0)
+        state_dict.pop("radius_angstrom", None)  # legacy key, no longer used
         wavelength = state_dict.pop("wavelength", 1.0)
         anomalous_threshold = state_dict.pop("anomalous_threshold", 0.5)
 
@@ -1126,7 +1186,6 @@ class ModelFT(CachedForwardMixin, Model):
             device=device,
             strip_H=strip_H,
             max_res=max_res,
-            radius_angstrom=radius_angstrom,
             wavelength=wavelength,
             anomalous_threshold=anomalous_threshold,
         )
@@ -1148,6 +1207,7 @@ class ModelFT(CachedForwardMixin, Model):
         # If PDB exists, create the parameter wrappers with correct shapes
         if pdb is not None:
             from torchref.model.parameter_wrappers import (
+                CholeskyMixedTensor,
                 MixedTensor,
                 OccupancyTensor,
                 PositiveMixedTensor,
@@ -1170,7 +1230,7 @@ class ModelFT(CachedForwardMixin, Model):
                 refinable_mask=adp_mask,
                 name="adp",
             )
-            instance.u = MixedTensor(
+            instance.u = CholeskyMixedTensor(
                 torch.tensor(
                     pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
                     dtype=saved_dtype,

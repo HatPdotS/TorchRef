@@ -36,20 +36,13 @@ Key Features
    user_guide/scaling
    user_guide/naming_conventions
    user_guide/cli
+   user_guide/testing
 
 .. toctree::
    :maxdepth: 2
    :caption: API Reference
 
-   api/torchref.cli
-   api/torchref.io
-   api/torchref.model
-   api/torchref.refinement
-   api/torchref.restraints
-   api/torchref.scaling
-   api/torchref.symmetry
-   api/torchref.base
-   api/torchref.utils
+   api
 
 .. toctree::
    :maxdepth: 1

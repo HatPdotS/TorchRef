@@ -1,6 +1,11 @@
 """
 Soft rank penalty on the ensemble's coordinate disorder.
 
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``. The API and
+   behaviour may change or be removed without notice.
+
 Frozen-basis PCA truncation failed because the 3GR5 ensemble disorder is
 high-rank (a near-flat SVD spectrum) — there is no low-dimensional subspace to
 project onto, and the ensemble *mean* is unphysical. This target takes the
@@ -34,7 +39,18 @@ if TYPE_CHECKING:
 
 
 class RankPenaltyTarget(ModelTarget):
-    """Nuclear-norm (soft rank) penalty on the ensemble member spread.
+    """Soft rank / diversity penalty on the ensemble member spread.
+
+    .. warning::
+
+       Experimental — API and behaviour may change without notice.
+
+    Supports five ``mode`` options (see :meth:`__init__`):
+    ``{"nuclear", "subspace", "entropy", "maxent", "diverse"}``. ``"nuclear"``
+    is the original soft-rank (nuclear-norm) design and the default;
+    ``"diverse"`` (orthogonal participation ⟂ similarity pair) is the
+    recommended de-overfit mode, superseding ``"maxent"``/``"entropy"``, which
+    are retained for comparison.
 
     Parameters
     ----------
@@ -65,6 +81,10 @@ class RankPenaltyTarget(ModelTarget):
         Parameters
         ----------
         mode : {"nuclear", "subspace", "entropy", "maxent", "diverse"}
+            Recommendation: use ``"diverse"`` for de-overfitting; ``"maxent"``
+            and ``"entropy"`` are retained for comparison only (``"diverse"``
+            supersedes them — see below).
+
             ``"diverse"``: the orthogonal participation⟂similarity pair.
             ``L = maxent_shrink·PR + maxent_div·sim``, where ``PR=(Σσ²)²/Σσ⁴`` is
             the (scale-invariant) participation ratio — minimized to concentrate
@@ -82,8 +102,10 @@ class RankPenaltyTarget(ModelTarget):
             spectral (Shannon) entropy. The shrink (trace, L2) term limits total
             disorder → de-overfit; the entropy term is scale-invariant and is
             *maximized* (subtracted), spreading variance across modes (diversity,
-            anti-collapse) without fighting the shrink. Unlike ``"entropy"`` this
-            is a stable equilibrium, not a runaway rank-collapser. Clean
+            anti-collapse) without fighting the shrink. More stable than
+            ``"entropy"`` (whose entropy term can run away into rank collapse),
+            but it was found to be on the same eigenvalue axis as participation
+            and is superseded by ``"diverse"``; kept for comparison. Clean
             gradient (``p ln p → 0``; values-only SVD backward).
             ``"nuclear"`` (default): penalize ``Σ_k σ_k`` (shrinks all modes —
             reduces rank AND magnitude). ``"subspace"``: penalize the variance

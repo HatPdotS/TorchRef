@@ -725,8 +725,11 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
 
         Returns
         -------
-        float or None
-            The loss value.
+        torch.Tensor, float, or None
+            The loss value. The type passes through from the closure: the
+            OPTIMIZING/EXPLORING paths return the closure's loss tensor
+            unchanged (``.item()`` is not applied), so callers may receive a
+            0-d tensor rather than a Python float.
         """
         if self._phase == OptimizerPhase.OPTIMIZING:
             return self._step_optimizing(closure)

@@ -25,8 +25,9 @@ Two pieces:
     "backward through the graph a second time"). Same constructor signature as
     ``Scaler`` plus solvent-shape keyword defaults, so it is a drop-in.
 
-Why ``rho0`` is frozen by default: the scaler caches nothing now, so ``rho0``
-*could* be refined -- but a soft/Babinet-shaped solvent is rejected by the ML
+Why ``rho0`` is frozen by default: because the scaler rebuilds the solvent live
+each forward, ``rho0`` could in principle be refined -- but a soft/Babinet-shaped
+solvent is rejected by the ML
 target (k_sol -> 0), and the only accepted regime is the sharp mask. Freezing
 ``rho0`` keeps the refinement stable and adds no solvent-shape DOF beyond the
 mask's own ``k_sol`` + ``b_solvent``.

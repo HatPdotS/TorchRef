@@ -64,7 +64,7 @@ Examples:
 
 Loss weights:
   Default group weights are xray=1 / geometry=0.2 / adp=0.02, with
-  geometry/ramachandran=0 (the Ramachandran restraint is OFF by default.
+  geometry/ramachandran=0 (the Ramachandran restraint is OFF by default).
   Weights are hierarchical and MULTIPLICATIVE: a target's effective weight is the 
   product of its path levels (e.g. geometry/ramachandran = weight[geometry] x weight[geometry/ramachandran]),
   so a component key scales within its group. Override any subset with --weights,

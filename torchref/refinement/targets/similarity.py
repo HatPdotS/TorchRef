@@ -7,9 +7,7 @@ dark and light models. The loss is quadratic for small displacements
 genuine conformational changes).
 
 Per-atom coordinate uncertainty sigma is derived from B-factors:
-    sigma = sqrt(B / 8*pi^2)
-
-Reference: design_doc_sim_loss.md
+    sigma = sqrt(B / (8*pi^2))
 """
 
 import torch
@@ -41,10 +39,10 @@ class CoordinateSimilarityTarget(Target):
 
         L(d) = -logsumexp(-d^2/(2*sigma^2) + alpha, 0)
 
-    where d = ||xyz_light - xyz_dark|| and sigma = sqrt(B / 8*pi^2)
+    where d = ||xyz_light - xyz_dark|| and sigma = sqrt(B / (8*pi^2))
     is the per-atom coordinate uncertainty from B-factors.
 
-    Gradient: d/sigma^2 * sigmoid(-d^2/(2*sigma^2) + alpha)
+    Gradient: (d / sigma^2) * sigmoid(-d^2/(2*sigma^2) + alpha)
     This is an L2 restraint weighted by the posterior probability
     that the atom is static.
 

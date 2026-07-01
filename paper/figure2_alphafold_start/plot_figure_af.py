@@ -178,19 +178,8 @@ def plot_runtime_box(ax, runtime_long):
     ax.set_xticklabels([LABEL[e] for e in order])
     ax.set_ylabel("Wall-clock runtime (min)")
     ax.set_title("Wall-clock runtime")
-
-    # paired median ratios (TorchRef as reference)
-    wide = runtime_long.pivot_table(index="code", columns="engine", values="wall_s")
-    def pair_ratio(a, b):
-        m = wide[a].notna() & wide[b].notna()
-        return float(np.median(wide.loc[m, a] / wide.loc[m, b]))
-    r_ref = pair_ratio("torchref", "refmac")
-    r_phe = pair_ratio("torchref", "phenix")
-    txt = (f"TorchRef vs Refmac: {r_ref:.1f}× slower\n"
-           f"TorchRef vs PHENIX: {1/r_phe:.1f}× faster")
-    ax.text(0.04, 0.96, txt, transform=ax.transAxes, ha="left", va="top",
-            fontsize=10.5,
-            bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.7", alpha=0.85))
+    # The per-engine median-runtime ratios are reported in the figure caption /
+    # FIGURE_MEDIANS Fig2C rather than annotated on the panel.
 
 
 # ── Panel D: normalized convergence speed ────────────────────────────────────

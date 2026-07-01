@@ -1,6 +1,11 @@
 """
 Low-rank (frozen-basis PCA) reparameterization of an ensemble's coordinates.
 
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``. The API and
+   behaviour may change or be removed without notice.
+
 The full ensemble stores ``N * n_atoms * 3`` independent coordinates — the
 overfitting capacity that produces the work-free gap. This module locks the
 ensemble to a ``K``-dimensional affine subspace::
@@ -11,7 +16,10 @@ where ``mu`` (the mean structure) and ``V`` (the top-K principal coordinate
 modes) are **frozen** buffers computed once by
 :meth:`EnsembleModel.enable_low_rank`, and only the per-member amplitudes
 ``A`` (shape ``(N, K)``) refine. Degrees of freedom collapse from
-``N·n_atoms·3`` to ``N·K``.
+``N·n_atoms·3`` to ``N·K``. The basis is computed from the *current* ensemble,
+so the de-overfit workflow seeds it from a saved checkpoint
+(``--branch-from ckpt``, *not* ``--init-pdb``) — a fresh replicate-and-perturb
+ensemble has only near-degenerate spread to decompose.
 
 Drop-in for the ``MixedTensor`` that normally lives at ``model.xyz``: it is
 called as ``self.xyz()`` everywhere in the model, returns the flat
@@ -30,6 +38,10 @@ from torch import nn
 
 class LowRankXYZ(nn.Module):
     """Frozen-basis low-rank coordinate parameterization for an ensemble.
+
+    .. warning::
+
+       Experimental — API and behaviour may change without notice.
 
     Parameters
     ----------

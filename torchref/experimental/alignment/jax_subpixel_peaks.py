@@ -1,3 +1,12 @@
+"""
+JAX sub-voxel peak refinement for the experimental ball-harmonic MR engine.
+
+Experimental / unstable API: part of ``torchref.experimental.alignment``,
+the opt-in ball-harmonic MR engine. The production MR entry point is
+``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
+may change without notice.
+"""
+
 import jax
 import jax.numpy as jnp
 
@@ -9,14 +18,20 @@ def refine_peaks_subvoxel(
 ) -> tuple[jax.Array, jax.Array]:
     """
     Refine discrete peaks to sub-voxel accuracy using separable quadratic fitting.
-    
-    Args:
-        grid: (n0, n1, n2) array of values
-        peak_indices: (n_peaks, 3) integer indices of discrete maxima
-    
-    Returns:
-        refined_coords: (n_peaks, 3) fractional coordinates
-        refined_values: (n_peaks,) interpolated peak heights
+
+    Parameters
+    ----------
+    grid : jax.Array
+        Array of values, shape (n0, n1, n2).
+    peak_indices : jax.Array
+        Integer indices of discrete maxima, shape (n_peaks, 3).
+
+    Returns
+    -------
+    refined_coords : jax.Array
+        Fractional coordinates, shape (n_peaks, 3).
+    refined_values : jax.Array
+        Interpolated peak heights, shape (n_peaks,).
     """
     shape = jnp.array(grid.shape)
     

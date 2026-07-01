@@ -1,7 +1,7 @@
 """
-4 CIF readers for different data types in crystallographic refinement.
+CIF readers for the different data types used in crystallographic refinement.
 
-This module provides 4 main classes:
+This module provides four main classes:
 - CIFReader: Base class for reading CIF/mmCIF files
 - ReflectionCIFReader: For reading structure factor data (reflection data)
 - ModelCIFReader: For reading atomic coordinate data (model structures)
@@ -10,7 +10,8 @@ This module provides 4 main classes:
 Space groups are returned as plain Python ``str`` Hermann-Mauguin names
 (e.g. ``"P 1"``), validated against gemmi.
 
-Specialized classes are typesave and should handle most edge cases in CIF files.
+These specialized classes are type-safe and handle the common edge cases in
+CIF files.
 """
 
 from pathlib import Path
@@ -578,15 +579,23 @@ class ReflectionCIFReader:
     - R-free flags
     - Unit cell and space group metadata
 
-    Compatible with legacy MTZ reader interface:
+    Compatible with legacy MTZ reader interface (same unpack order as
+    ``MTZReader.__call__``):
         reader = ReflectionCIFReader('7JI4-sf.cif').read()
-        data_dict, spacegroup, cell = reader()
+        data_dict, cell, spacegroup = reader()
 
     Example:
         reader = ReflectionCIFReader('7JI4-sf.cif')
         refln_data = reader.get_reflection_data()
         h, k, l = refln_data['h'], refln_data['k'], refln_data['l']
         F_obs = refln_data['F_obs']
+
+    Note
+    ----
+    The ``get_reflection_data`` DataFrame uses keys ``F_obs``/``sigma_F_obs``
+    and ``I_obs``/``sigma_I_obs``, whereas the standalone ``get_amplitudes``
+    and ``get_intensities`` helpers return dicts keyed ``'F'``/``'sigma_F'``
+    and ``'I'``/``'sigma_I'`` respectively.
     """
 
     def __init__(
@@ -743,17 +752,21 @@ class ReflectionCIFReader:
         """
         Read a CIF file (for compatibility with legacy interface).
 
-        Args:
-            filepath: Path to CIF file (optional, uses initialization path if not provided)
+        Parameters
+        ----------
+        filepath : str, optional
+            Path to CIF file. Uses the initialization path if not provided.
 
-        Returns:
-            self for method chaining
+        Returns
+        -------
+        ReflectionCIFReader
+            ``self``, for method chaining.
         """
         if filepath is not None:
             self.__init__(filepath, verbose=self.verbose)
         return self
 
-    def __call__(self) -> Tuple[Dict[str, np.ndarray], np.ndarray, gemmi.SpaceGroup]:
+    def __call__(self) -> Tuple[Dict[str, np.ndarray], np.ndarray, str]:
         """
         Get data in legacy MTZ-compatible format.
 
@@ -1221,7 +1234,16 @@ class ReflectionCIFReader:
         return any(col in df.columns for col in h_cols)
 
     def has_amplitudes(self) -> bool:
-        """Check if file contains structure factor amplitudes."""
+        """Check if file contains structure factor amplitudes.
+
+        Note
+        ----
+        This counts *calculated* amplitudes (``_refln.F_calc``) as well as
+        observed ones, so it is not equivalent to "has observed amplitudes".
+        A calc-only file returns ``True`` here but is still rejected by the
+        loader (``_extract_data``), which uses only measured F/I as
+        observations.
+        """
         if "refln" not in self.cif_reader:
             return False
         df = self.cif_reader["refln"]
@@ -1268,8 +1290,10 @@ class ReflectionCIFReader:
         """
         Get Miller indices as Nx3 array.
 
-        Returns:
-            Array of shape (N, 3) with h, k, l indices
+        Returns
+        -------
+        numpy.ndarray or None
+            Array of shape (N, 3) with h, k, l indices, or None if absent.
         """
         data = self.get_reflection_data()
         if data is None or "h" not in data.columns:
@@ -1280,8 +1304,10 @@ class ReflectionCIFReader:
         """
         Get structure factor amplitudes and uncertainties.
 
-        Returns:
-            Dict with keys 'F' and 'sigma_F', or None if not available
+        Returns
+        -------
+        dict or None
+            Dict with keys 'F' and 'sigma_F', or None if not available.
         """
         data = self.get_reflection_data()
         if data is None or "F_obs" not in data.columns:
@@ -1294,8 +1320,10 @@ class ReflectionCIFReader:
         """
         Get intensities and uncertainties.
 
-        Returns:
-            Dict with keys 'I' and 'sigma_I', or None if not available
+        Returns
+        -------
+        dict or None
+            Dict with keys 'I' and 'sigma_I', or None if not available.
         """
         data = self.get_reflection_data()
         if data is None or "I_obs" not in data.columns:
@@ -1308,8 +1336,10 @@ class ReflectionCIFReader:
         """
         Extract unit cell parameters [a, b, c, alpha, beta, gamma].
 
-        Returns:
-            List of 6 floats, or None if not found
+        Returns
+        -------
+        list of float or None
+            List of 6 floats, or None if not found.
         """
         if "cell" not in self.cif_reader:
             return None
@@ -1467,7 +1497,7 @@ class ModelCIFReader:
             self.__init__(filepath, verbose=self.verbose)
         return self
 
-    def __call__(self) -> Tuple[pd.DataFrame, List[float], gemmi.SpaceGroup]:
+    def __call__(self) -> Tuple[pd.DataFrame, List[float], str]:
         """
         Get data in legacy PDB-compatible format.
 
@@ -1479,8 +1509,8 @@ class ModelCIFReader:
             anisou_flag, u11, u22, u33, u12, u13, u23.
         cell : list
             Cell parameters [a, b, c, alpha, beta, gamma].
-        spacegroup : gemmi.SpaceGroup
-            Space group object.
+        spacegroup : str
+            Space group Hermann-Mauguin name (e.g. "P 1").
         """
         try:
             return self.dataframe, self.cell, self.spacegroup
@@ -2340,12 +2370,17 @@ class RestraintCIFReader:
         """
         Filter DataFrame to only rows matching the compound ID.
 
-        Args:
-            df: Source DataFrame
-            comp_id: Compound ID to filter for
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Source DataFrame.
+        comp_id : str
+            Compound ID to filter for.
 
-        Returns:
-            Filtered DataFrame
+        Returns
+        -------
+        pandas.DataFrame
+            Filtered DataFrame.
         """
         if df.empty:
             return df
@@ -2375,7 +2410,9 @@ class RestraintCIFReader:
         """
         Get bond restraints with standardized column names.
 
-        Returns:
+        Returns
+        -------
+        pandas.DataFrame
             DataFrame with columns:
                 - atom1, atom2: Atom names
                 - value: Ideal bond length (Å)

@@ -29,7 +29,8 @@ class DatasetCollection(CrystalDataset):
     verbose : int, optional
         Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
     device : str, optional
-        Device for tensors ('cpu', 'cuda', etc.). Defaults to the configured device.current.
+        Device for tensors ('cpu', 'cuda', etc.). Defaults to the configured
+        default device (``get_default_device()``).
 
     Attributes
     ----------
@@ -37,6 +38,21 @@ class DatasetCollection(CrystalDataset):
         Common HKL set for all datasets.
     n_datasets : int
         Number of datasets in collection.
+    datasets : Dict[str, ReflectionData]
+        All member datasets keyed by name.
+    reference_dataset : str or None
+        Name of the reference dataset (drives HKL alignment).
+    spacegroup : str or None
+        Space group of the reference dataset.
+
+    Methods
+    -------
+    add_dataset(name, dataset, set_as_reference=False)
+        Add a dataset, aligning its HKL to the reference.
+    scale()
+        L-BFGS optimization of non-reference scale/anisotropy onto the reference.
+    keys() / values() / items() / get(name, default=None)
+        Dict-like accessors over the member datasets.
 
     Examples
     --------
@@ -231,7 +247,10 @@ class DatasetCollection(CrystalDataset):
         Returns
         -------
         dict
-            Dictionary mapping name to (hkl, F, F_sigma, rfree) tuples.
+            Dictionary mapping name to (hkl, F, F_sigma, rfree) tuples. The
+            values come from the deprecated ``ReflectionData.__call__``, so
+            F and F_sigma are MaskedTensors (not plain tensors) and each
+            dataset emits the same DeprecationWarning.
         """
         return {name: ds(mask=mask, scale=True) for name, ds in self}
 
@@ -243,7 +262,8 @@ class DatasetCollection(CrystalDataset):
         minimize the summed squared error between their corrected structure
         factors and those of the reference dataset, correcting for both
         overall scale and anisotropy. Uses an L-BFGS optimizer with strong
-        Wolfe line search over a fixed number of optimization steps.
+        Wolfe line search: 10 outer ``optimizer.step`` calls, each with
+        ``max_iter=100``.
 
         Raises
         ------

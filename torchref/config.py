@@ -17,14 +17,20 @@ TORCHREF_DEVICE environment variable ('auto' (default), 'cuda', 'mps',
 'cpu'); an explicit value bypasses the capability/VRAM gates but still
 fails fast if the requested backend is unavailable on this host.
 
-Users can also change dtypes/device at runtime via attribute assignment:
+Users can also change dtypes/device/density-cutoff at runtime via attribute
+assignment:
     import torchref
     torchref.dtypes.float = torch.float64
     torchref.device.current = torch.device('cpu')
+    torchref.sigma_cutoff_ed.value = 4.0   # density splat truncation (sigmas)
 
 Or read current values:
-    torchref.dtypes.float   # torch.float32
-    torchref.device.current # torch.device('cuda')
+    torchref.dtypes.float        # torch.float32
+    torchref.device.current      # torch.device('cuda')
+    torchref.sigma_cutoff_ed.value  # 3.0
+
+The density-splat sigma cutoff can also be set at import time via the
+TORCHREF_SIGMA_CUTOFF_ED environment variable (default 3.0).
 
 MPS caveat: Apple's MPS backend does not support float64 / complex128. If
 the resolved device is MPS and the configured float dtype is float64, a
@@ -36,6 +42,24 @@ import os
 import warnings
 
 import torch
+
+# ---------------------------------------------------------------------------
+# Grid sampling
+# ---------------------------------------------------------------------------
+# Shannon-Nyquist oversampling factor used to size real-space / FFT grids from
+# a unit cell and resolution: the number of grid points along an axis of length
+# ``a`` at resolution ``d_min`` is ``floor(a / d_min * NYQUIST_OVERSAMPLING)``,
+# i.e. a grid spacing of ``d_min / NYQUIST_OVERSAMPLING``.
+#
+# A value of 2.0 is the bare Nyquist limit, but electron density built from
+# Gaussian atoms is not strictly band-limited, so sampling at exactly 2.0
+# introduces aliasing/interpolation error in the density->F_calc transform that
+# measurably degrades refinement convergence (median R-free regressed ~+0.004,
+# with high-res / large-cell structures hit much harder). 3.0 is the standard
+# crystallographic oversampling (matches gemmi's default sample_rate) and
+# restores accuracy. All grid-sizing helpers reference this single constant so
+# the real-space map grids and the FFT structure-factor grids stay consistent.
+NYQUIST_OVERSAMPLING = 3.0
 
 # Map strings to torch dtypes
 _FLOAT_DTYPE_MAP = {
@@ -160,6 +184,86 @@ def get_int_dtype() -> torch.dtype:
 def get_complex_dtype() -> torch.dtype:
     """Get the current default complex dtype."""
     return dtypes.complex
+
+
+# ---------------------------------------------------------------------------
+# Electron-density splat cutoff
+# ---------------------------------------------------------------------------
+# Number of sigmas at which each atom's Gaussian density is truncated. The
+# per-atom real-space splat radius is r_i = clamp(ceil_0.25(N_sigma * sigma_eff_i),
+# [2, 7] A), with sigma_eff_i = sqrt((b_form_i + B_i) / 8pi^2). Because the
+# truncation is expressed in sigmas, every atom carries the same fractional tail
+# mass regardless of its B-factor (3 sigma -> ~0.4%, 3.5 sigma -> ~0.09%,
+# 4 sigma -> ~0.013% per-axis tail), so this single knob governs the structure-wide
+# F-truncation residual. It replaces the old per-structure scalar ``radius_angstrom``.
+#
+# Default 3.0: an N_sigma sweep vs the direct-summation oracle (1DAW/3GR5/4BX9/7L84/
+# 5BOV, 1.6-2.6 A) showed the F-residual at 3.0 is identical to 3.5 for 4/5 cases and
+# only 1.0e-4 vs 3.3e-5 on the most demanding (4BX9) -- negligible against the ~1e-3
+# floor from grid sampling -- while using ~33% fewer splat voxels. 2.5 is too tight
+# (4BX9 degrades to 6.8e-4, 20x worse), so 3.0 is the floor.
+_DEFAULT_SIGMA_CUTOFF_ED = 3.0
+
+
+class SigmaCutoffConfig:
+    """
+    Density-splat sigma cutoff with property-based access.
+
+    Read/set the number of sigmas at which the per-atom electron-density
+    Gaussian is truncated::
+
+        sigma_cutoff_ed.value          # get current cutoff (default 3.0)
+        sigma_cutoff_ed.value = 4.0     # set at runtime
+
+    Initialised from the ``TORCHREF_SIGMA_CUTOFF_ED`` environment variable at
+    import time (default ``3.0``). Must be a positive number.
+    """
+
+    def __init__(self):
+        raw = os.environ.get("TORCHREF_SIGMA_CUTOFF_ED")
+        if raw is None:
+            self._value = _DEFAULT_SIGMA_CUTOFF_ED
+        else:
+            try:
+                self._value = float(raw)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid TORCHREF_SIGMA_CUTOFF_ED: {raw!r}. "
+                    "Must be a positive number."
+                )
+            if self._value <= 0:
+                raise ValueError(
+                    f"Invalid TORCHREF_SIGMA_CUTOFF_ED: {raw!r}. "
+                    "Must be a positive number."
+                )
+
+    @property
+    def value(self) -> float:
+        """Get the current sigma cutoff (number of sigmas)."""
+        return self._value
+
+    @value.setter
+    def value(self, sigma: float) -> None:
+        """Set the sigma cutoff for all future density builds."""
+        if not isinstance(sigma, (int, float)) or isinstance(sigma, bool):
+            raise TypeError(
+                f"sigma_cutoff_ed must be a number, got {type(sigma).__name__}"
+            )
+        if sigma <= 0:
+            raise ValueError(f"sigma_cutoff_ed must be positive, got {sigma}")
+        self._value = float(sigma)
+
+    def __repr__(self) -> str:
+        return f"SigmaCutoffConfig(value={self._value})"
+
+
+# Global singleton instance
+sigma_cutoff_ed = SigmaCutoffConfig()
+
+
+def get_sigma_cutoff_ed() -> float:
+    """Get the current density-splat sigma cutoff (number of sigmas)."""
+    return sigma_cutoff_ed.value
 
 
 # ---------------------------------------------------------------------------

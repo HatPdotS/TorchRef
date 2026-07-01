@@ -6,6 +6,11 @@ Correlation: C(t) = IFFT{ conj(F_obs) * F_calc }
 
 This module provides efficient FFT-based translation search that finds the
 optimal translation to position a model after rotation has been determined.
+
+Experimental / unstable API: part of ``torchref.experimental.alignment``,
+the opt-in ball-harmonic MR engine. The production MR entry point is
+``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
+may change without notice.
 """
 
 import numpy as np
@@ -52,7 +57,9 @@ def fft_translation_search(
     Parameters
     ----------
     F_obs : np.ndarray
-        Observed structure factor amplitudes (or complex), shape (N,).
+        Observed structure factor amplitudes (or complex), shape (N,). Real
+        (amplitude-only) input is treated as zero-phase, so the ``conj()`` in
+        the translation function is a no-op on it.
     F_calc : np.ndarray
         Calculated structure factors (complex), shape (N,).
     hkl : np.ndarray

@@ -69,6 +69,13 @@ from .spacegroup import (
 )
 from .symmetry import Symmetry
 
+# Note: the grid-utility names re-exported below (``check_grid_compatibility``,
+# ``find_fft_friendly_size``, ``is_fft_friendly``, etc.) come from ``grid_utils``,
+# which are thin wrappers delegating into ``spacegroup``. The ``spacegroup`` module
+# additionally defines its own canonical, independent copies
+# (``get_grid_requirements``, ``check_grid_compatibility``, ``suggest_grid_size``,
+# and a separate ``is_fft_friendly`` / ``find_fft_friendly_size`` pair) that are NOT
+# re-exported here; the ``spacegroup`` copies are the source of truth.
 __all__ = [
     # Unit cell
     "Cell",

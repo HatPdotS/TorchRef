@@ -25,16 +25,18 @@ Intended workflow::
 
 Performance note
 ----------------
-OpenMM's ``Modeller.addHydrogens()`` is 4–5× faster when H atoms are already
-present in the model (it refines positions rather than building from scratch).
-For pure-protein structures: init ~3 s with H, ~11 s from heavy atoms only.
+OpenMM's ``Modeller.addHydrogens()`` is roughly ~4× faster when H atoms are
+already present in the model (it refines positions rather than building from
+scratch).  Indicative timings (approximate, hardware dependent) for pure-protein
+structures: init ~3 s with H, ~11 s from heavy atoms only.
 Gradient and energy are identical either way (H are stripped from the atom map;
 ``n_model_atoms`` changes only the energy normalisation).
 
 Design notes
 ------------
-- No pdbfixer dependency.  H atoms are handled by OpenMM's Modeller
-  (standard-residues path) or tleap (GAFF2 path).
+- Standard-residues path uses pdbfixer to add missing terminal/sidechain
+  heavy atoms before OpenMM's Modeller adds H; the GAFF2 path uses tleap
+  for H addition.
 - Altloc atoms are filtered before building the OpenMM system: only the
   primary conformation (altloc == '' or 'A') is used.
 - OXT and H atoms are excluded from the PDB written to tleap; tleap
@@ -355,11 +357,13 @@ class AmberTarget(ModelTarget):
         initialisation ~4× because ``Modeller.addHydrogens()`` converges
         faster from existing positions.
 
-        **Required for GAFF2 ligands**: antechamber's BCC charge scheme
-        runs a semiempirical QM step (sqm) that requires a fully protonated
-        molecule.  If the model has no H atoms for a non-standard residue,
-        an explicit error is raised.  Call ``model.generate_hydrogens()``
-        or load the PDB with ``strip_H=False`` before creating the target.
+        **GAFF2 ligands**: antechamber's BCC charge scheme runs a
+        semiempirical QM step (sqm) that needs a fully protonated molecule.
+        Heavy-only ligands are auto-protonated from the monomer library
+        (``generate_hydrogens``) first; an error is raised only if no
+        monomer CIF resolves AND the heavy-atom electron count is odd.
+        Calling ``model.generate_hydrogens()`` or loading the PDB with
+        ``strip_H=False`` beforehand avoids relying on that fallback.
     cutoff : float
         Non-bonded cutoff in Angstroms.  Default 5.0.
     normalize_by_atoms : bool
@@ -369,8 +373,24 @@ class AmberTarget(ModelTarget):
         Net formal charge per non-standard residue name,
         e.g. ``{'LIG': -1, 'ATP': -4}``.  Residues not listed default to 0
         with a warning.
+    gaff2_files : dict[str, tuple[str, str]], optional
+        Escape hatch for pre-parameterised non-standard residues: maps a
+        residue name to a ``(mol2, frcmod)`` file pair, bypassing the
+        antechamber/parmchk2 step for that residue.  Referenced by the
+        parameterisation error messages as a manual override.
+    charge_method : str
+        Antechamber charge method (``-c`` flag), one of
+        ``bcc``/``gas``/``gascharge``/``rc``/``esp``/``mul``/``abcg2``.
+        Default ``"gas"`` (Gasteiger; empirical, no QM, always succeeds).
+        ``"bcc"`` (AM1-BCC) is more accurate but runs the sqm QM step and
+        can fail to converge on multi-residue batches.
     verbose : int
         Verbosity level (0 = silent, 1 = informational, 2 = debug).
+    chem_model : Model, optional
+        Single-conformation topology source.  When ``model`` is a
+        multi-member ensemble, ``chem_model`` supplies the one conformation
+        used to build the chemistry/topology; defaults to ``model`` for the
+        single-molecule case.
     """
 
     name: str = "amber"
@@ -534,7 +554,9 @@ class AmberTarget(ModelTarget):
             else:  # ATOM record with unrecognised name
                 warnings.warn(
                     f"[AmberTarget] ATOM record with unrecognised residue name "
-                    f"'{resname}'. pdbfixer / tleap may or may not handle it.",
+                    f"'{resname}'. It will be dropped from the OpenMM system "
+                    f"(zero AMBER gradient on its atoms) unless a residue_charges "
+                    f"or gaff2_files entry is supplied for it.",
                     UserWarning,
                     stacklevel=4,
                 )
@@ -687,10 +709,11 @@ class AmberTarget(ModelTarget):
                         f"[AmberTarget] Cannot parameterise '{resname}': odd "
                         f"electron count ({n_electrons}) for charge {charge:+d} "
                         f"and no hydrogens could be added (no monomer-library CIF "
-                        f"resolved for '{resname}').\nFix: make the monomer CIF "
-                        f"available (CLIBD_MON / TORCHREF_MONOMER_LIB), pass an "
-                        f"explicit charge via residue_charges={{'{resname}': "
-                        f"<charge>}}, or supply gaff2_files for this residue."
+                        f"resolved for '{resname}').\nFix: pass an explicit charge "
+                        f"via residue_charges={{'{resname}': <charge>}}, supply "
+                        f"gaff2_files for this residue, or make a monomer CIF "
+                        f"resolvable for auto-protonation (TORCHREF_MONOMER_LIB, "
+                        f"or CLIBD_MON as an optional override)."
                     )
 
             # antechamber

@@ -5,6 +5,12 @@ corresponding eager-mode function in :mod:`torchref.base.targets`.
 
 Naming convention: ``<target>_math_triton``. The eager versions remain in
 the parent package as reference implementations and equivalence baselines.
+
+Two additional public kernels are intentionally not re-exported here, as they
+are not part of the dispatched ``<target>_math_triton`` API and are invoked
+directly by their callers: ``torsion.torsion_unimodal_full_math_triton`` (the
+unimodal-torsion path) and ``place_hydrogens.place_riding_hydrogens_triton``
+(riding-H placement).
 """
 
 from .adp_simu import adp_simu_math_triton

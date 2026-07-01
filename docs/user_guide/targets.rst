@@ -4,8 +4,10 @@ Target Functions
 Target functions (loss functions) drive the refinement optimization. TorchRef 
 provides several built-in targets and makes it easy to create custom ones.
 
-Targets reference the refinement object to access model parameters, 
-reflection data, and restraints.
+The base :class:`~torchref.refinement.targets.Target` holds no model or
+refinement handle of its own; each target stores whatever it needs (a model, a
+:class:`~torchref.io.datasets.reflection_data.ReflectionData` object, or the
+refinement) on ``self`` in its ``__init__``.
 
 Targets are registered in a :class:`~torchref.refinement.loss_state.LossState` object, which manages
 
@@ -73,7 +75,7 @@ Using Targets
    )
 
    # Create targets
-   xray_target = create_xray_target(data, model, target_type='ml')
+   xray_target = create_xray_target(data, model, mode='ml')
    geom_target = TotalGeometryTarget(model)
    adp_target = TotalADPTarget(model)
 
@@ -94,10 +96,14 @@ Create custom targets by subclassing :class:`~torchref.refinement.targets.Target
 
    class EntropyRegularization(Target):
        """Entropy regularization for B-factors."""
-       
-       def __init__(self, model, weight=0.01):
-           super().__init__(model) 
-       
+       name = 'entropy_reg'
+
+       def __init__(self, model):
+           # The base Target signature is __init__(self, verbose=0, **kwargs);
+           # keep a handle on the model you want to regularize yourself.
+           super().__init__()
+           self.model = model
+
        def forward(self):
            b_factors = self.model.b()
            # Entropy-based regularization

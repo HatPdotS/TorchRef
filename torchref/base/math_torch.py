@@ -1,7 +1,7 @@
 """
 PyTorch implementations of mathematical functions for crystallography.
 
-.. deprecated::
+.. deprecated:: 0.6.0
     This module is deprecated. Please import from domain-specific submodules:
 
     - ``torchref.base.coordinates`` - Coordinate transformations
@@ -107,6 +107,9 @@ from torchref.base.alignment import (
     random_rotation_uniform,
     superpose_vectors_robust_torch,
     align_torch,
+    # NOTE: legacy misspelling preserved for backward compatibility. The
+    # canonical public name is ``get_alignment_matrix`` (exported by
+    # ``torchref.base``); this ``get_alignement_matrix`` alias is deprecated.
     get_alignement_matrix,
     apply_transformation,
 )
@@ -223,7 +226,7 @@ def hash_tensors(tensors) -> str:
     """
     Compute a hash of multiple tensors for caching purposes.
 
-    .. deprecated::
+    .. deprecated:: 0.6.0
         Use ``(tensor.data_ptr(), tensor._version, tensor.numel())`` tuples
         for lightweight fingerprinting instead. ``hash_tensors`` copies data
         to CPU and computes SHA-1, which is expensive.

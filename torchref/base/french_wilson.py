@@ -7,7 +7,7 @@ Based on Phenix implementation in cctbx/french_wilson.py
 Usage - PyTorch Module (Recommended)::
 
         import torch
-        from french_wilson_pytorch import FrenchWilsonModule
+        from torchref.base.french_wilson import FrenchWilson
 
         # Miller indices for your reflections
         hkl = torch.tensor([[1, 2, 3], [2, 0, 0], [0, 3, 0], [1, 1, 1]])
@@ -16,7 +16,7 @@ Usage - PyTorch Module (Recommended)::
         cell = [50.0, 60.0, 70.0, 90.0, 90.0, 90.0]
 
         # Create module (does all preprocessing)
-        fw_module = FrenchWilsonModule(hkl, cell, space_group='P212121')
+        fw_module = FrenchWilson(hkl, cell, space_group='P212121')
 
         # Apply conversion (can be called repeatedly with different I, sigma_I)
         I = torch.tensor([100.0, 50.0, 30.0, 200.0])
@@ -26,7 +26,7 @@ Usage - PyTorch Module (Recommended)::
 
 Usage - Functional API (for one-off conversions)::
 
-        from french_wilson_pytorch import french_wilson_auto
+        from torchref.base.french_wilson import french_wilson_auto
 
         F, sigma_F, valid = french_wilson_auto(
             I, sigma_I, hkl, d_spacings, space_group='P212121'
@@ -1365,7 +1365,7 @@ class FrenchWilson(DeviceMixin, nn.Module):
 
         # Verbosity level 1: Basic initialization info (most important)
         if self.verbose >= 1:
-            print("FrenchWilsonModule initialized:")
+            print("FrenchWilson initialized:")
             print(f"  Reflections: {self.n_reflections}")
             print(f"  Resolution: {d_spacings.min():.2f} - {d_spacings.max():.2f} Å")
             print(f"  Space group: {space_group}")

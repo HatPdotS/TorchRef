@@ -22,6 +22,8 @@ write_map
     Write electron density map to CCP4 format.
 write_model
     Write atomic coordinates to mmCIF format.
+dataframe_to_gemmi_structure
+    Convert a torchref atom DataFrame to a gemmi.Structure.
 
 Classes
 -------

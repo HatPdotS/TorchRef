@@ -8,13 +8,16 @@ for optimal performance.
 
 Architecture:
 - CPU: JIT-scripted kernel using einsum with metric tensor (efficient for CPU)
-- GPU: JIT-scripted kernel using batch matmul (efficient for GPU)
+- GPU: when the shared ``Engine`` permits Triton (CUDA + float32, engine
+  AUTO/TRITON), ``vectorized_add_to_map`` selects the Triton fused branch
+  (``fused_add_to_map_gpu``) first; otherwise it falls back to the pure-torch,
+  double-differentiable ``_add_to_map_gpu_simple`` (JIT-scripted batch matmul).
 
-Both implementations are fully differentiable and compile on import for
-minimal first-call overhead.
+The CPU JIT and ``_add_to_map_gpu_simple`` paths are fully differentiable and
+compile on import for minimal first-call overhead.
 
 Usage:
-    from torchref.base.kernels import vectorized_add_to_map
+    from torchref.base.electron_density.kernels import vectorized_add_to_map
 
     # Automatically selects CPU or GPU implementation based on tensor device
     density_map = vectorized_add_to_map(
@@ -65,7 +68,7 @@ def _get_triton_kernel():
     global _triton_kernel, _triton_available
     if _triton_available is None:
         try:
-            from torchref.base.kernels.triton_kernel import fused_add_to_map_gpu
+            from torchref.base.electron_density.kernels.cuda.fused import fused_add_to_map_gpu
 
             _triton_kernel = fused_add_to_map_gpu
             _triton_available = True
@@ -407,7 +410,11 @@ def vectorized_add_to_map(
     Returns
     -------
     torch.Tensor
-        Updated electron density map (modified in-place).
+        The updated electron density map. In-place mutation is **not**
+        guaranteed: the CPU/JIT and ``_add_to_map_gpu_simple`` branches mutate
+        ``density_map`` in place, but the Triton fused branch
+        (``fused_add_to_map_gpu``) returns a NEW cloned tensor and leaves the
+        input unchanged. Callers must always use the returned value.
     """
     if density_map.device.type == "cuda":
         # The shared Engine is the only switch: use the Triton kernel when it
@@ -476,6 +483,14 @@ def build_electron_density(
     Build electron density map from atomic parameters.
 
     This is an alias for vectorized_add_to_map for semantic clarity.
+
+    Note
+    ----
+    This alias takes the *voxel-level* signature (precomputed
+    ``surrounding_coords`` / ``voxel_indices``) and is distinct from the
+    top-level :func:`torchref.base.electron_density.main.build_electron_density`,
+    which takes *atomic* parameters and performs the full ``Engine``-based
+    variable-radius dispatch.
 
     Parameters
     ----------

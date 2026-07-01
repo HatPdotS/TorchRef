@@ -55,10 +55,17 @@ def smallest_diff_aniso(
     Returns
     -------
     torch.Tensor
-        Signed difference vectors with shape (..., 3).
-        Note: For anisotropic calculations, the signed vectors are needed
-        to correctly compute the quadratic form r^T × B^(-1) × r with
-        off-diagonal U tensor terms.
+        Signed difference vectors with shape (..., 3), for downstream
+        anisotropic use.
+
+    Notes
+    -----
+    Unlike :func:`smallest_diff` (which returns squared distances), this
+    returns the *signed* minimum-image vectors. The sign is required because
+    anisotropic calculations form a quadratic form with the off-diagonal
+    terms of the ADP ``U`` tensor (e.g. ``sᵀ U s`` in the anisotropic
+    structure factor), where the cross terms depend on the sign of the
+    components.
     """
     diff_shape = diff.shape
     diff = diff.reshape(-1, 3)

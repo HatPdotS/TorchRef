@@ -106,10 +106,12 @@ class LangevinSA(Optimizer):
 
     @property
     def current_step(self):
+        """Index of the current annealing step."""
         return self._current_step
 
     @property
     def total_steps(self):
+        """Total number of steps in the annealing schedule."""
         return self.param_groups[0]["total_steps"]
 
     @property

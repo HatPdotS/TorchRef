@@ -28,7 +28,9 @@ Usage::
         _data: torch.Tensor
 
 The legacy name ``DeviceMovementMixin`` is kept as an alias for
-``DeviceMixin``.
+``DeviceMixin``. The name ``_NonModuleDeviceMixin`` (briefly a distinct
+implementation) is likewise an alias for ``DeviceMixin`` — the unified
+mixin now handles both the Module and non-Module cases.
 """
 
 from __future__ import annotations
@@ -283,6 +285,14 @@ class DeviceMixin:
     # ---- to / cuda / cpu -------------------------------------------------
 
     def to(self, *args, **kwargs):  # type: ignore[override]
+        """Move ``self`` to a device and/or dtype, returning ``self``.
+
+        Accepts the usual ``nn.Module.to`` argument forms (device, dtype,
+        or both). For ``nn.Module`` subclasses this defers to the standard
+        ``nn.Module.to``; for plain (non-Module) classes the (device, dtype)
+        pair is parsed and applied via :meth:`_apply`. A call that resolves
+        to neither a device nor a dtype is a no-op that returns ``self``.
+        """
         token = _enter_traversal()
         try:
             if isinstance(self, nn.Module):
@@ -299,6 +309,11 @@ class DeviceMixin:
             _exit_traversal(token)
 
     def cuda(self, device=None):  # type: ignore[override]
+        """Move ``self`` to a CUDA device, returning ``self``.
+
+        ``device=None`` targets the default ``"cuda"`` device; an integer
+        ``device`` is mapped to ``"cuda:N"``. Delegates to :meth:`to`.
+        """
         if device is None:
             device = "cuda"
         elif isinstance(device, int):
@@ -306,11 +321,30 @@ class DeviceMixin:
         return self.to(device=device)
 
     def cpu(self):  # type: ignore[override]
+        """Move ``self`` to the CPU, returning ``self`` (delegates to :meth:`to`)."""
         return self.to(device="cpu")
 
     # ---- core traversal --------------------------------------------------
 
     def _apply(self, fn, recurse=True):  # type: ignore[override]
+        """Cycle-safe traversal engine that applies ``fn`` to every tensor.
+
+        Overrides ``nn.Module._apply`` and is the core of the movement
+        pipeline described in the class docstring: (1) standard
+        ``nn.Module`` traversal of params/buffers/child modules, (2) a
+        ``__dict__`` walk for plain tensors and non-Module sub-objects,
+        (3) refresh of ``device``/``_device``/``dtype`` trackers, and
+        (4) cache invalidation. A thread-local ``id()`` visited set makes
+        it safe against reference cycles.
+
+        Parameters
+        ----------
+        fn : callable
+            Tensor-to-tensor function applied to each discovered tensor.
+        recurse : bool, default True
+            Forwarded to ``nn.Module._apply`` to control recursion into
+            child modules.
+        """
         visited = _current_visited()
         token = None
         if visited is None:

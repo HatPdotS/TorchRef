@@ -8,6 +8,11 @@ This module provides a unified pipeline for molecular replacement that chains:
 4. Rigid body refinement
 
 The pipeline supports early stopping when a good solution is found.
+
+Experimental / unstable API: this is the opt-in ball-harmonic MR engine in
+``torchref.experimental.alignment``. The production / canonical MR entry point
+is ``torchref.alignment`` (the consolidated FRF engine). Signatures and
+behavior may change without notice.
 """
 
 from dataclasses import dataclass
@@ -182,6 +187,10 @@ class MolecularReplacementPipeline:
     FFT-based translation search, clash filtering, and rigid body refinement
     into a single workflow with early stopping.
 
+    Experimental: this is the opt-in ball-harmonic MR engine. The production
+    MR entry point is ``torchref.alignment`` (the consolidated FRF engine).
+    APIs here may change without notice.
+
     Parameters
     ----------
     data : ReflectionData
@@ -251,7 +260,11 @@ class MolecularReplacementPipeline:
         n_translation_peaks : int
             Number of translation peaks per rotation.
         min_tries : int
-            Minimum number of candidates to refine before early stopping.
+            Floor on the number of refinements performed before early stopping
+            (convergence-based break) is allowed. It does NOT force additional
+            refinements beyond the available candidates: candidates are capped
+            at ``min(len(candidates), max_tries)``, so ``min_tries`` is not a
+            guaranteed minimum when fewer candidates exist.
         max_tries : int
             Maximum number of candidates to refine.
         rfactor_converged : float

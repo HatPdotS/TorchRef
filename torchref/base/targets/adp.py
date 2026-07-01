@@ -1,4 +1,6 @@
-"""ADP (B-factor) restraint NLLs: similarity, KL-divergence, locality."""
+"""ADP (B-factor) restraint NLLs: similarity (SIMU), locality, and rigid-bond
+(DELU), with isotropic and anisotropic variants on the unified per-atom U6
+tensor."""
 
 import math
 
@@ -89,6 +91,18 @@ def adp_simu_aniso_math(
 
     Magnitude channel (on B_eq) reduces EXACTLY to :func:`adp_simu_math` when
     all atoms are isotropic; the deviatoric channel restrains tensor shape.
+
+    Parameters
+    ----------
+    u6 : torch.Tensor
+        (N_atoms, 6) per-atom U tensors in 6-vector order
+        ``[U11, U22, U33, U12, U13, U23]``.
+    pair_indices : torch.Tensor
+        (N, 2) bonded-atom pairs to compare.
+    simu_sigma : torch.Tensor
+        Scalar sigma on the B_eq (magnitude) difference.
+    simu_sigma_aniso : torch.Tensor
+        Scalar sigma on the deviatoric (anisotropy) component differences.
     """
     beq = u6_b_eq(u6)
     dmag = beq[pair_indices[:, 0]] - beq[pair_indices[:, 1]]
@@ -116,6 +130,20 @@ def adp_locality_aniso_math(
     penalises differences of the *fractional* anisotropy ``dev / B_eq`` rather
     than absolute deviatoric U. ``sigma_aniso`` is therefore dimensionless and
     comparable to that 0.5 log-sigma (not an absolute Å² value).
+
+    Parameters
+    ----------
+    u6 : torch.Tensor
+        (N_atoms, 6) per-atom U tensors in 6-vector order
+        ``[U11, U22, U33, U12, U13, U23]``.
+    neighbor_indices : torch.Tensor
+        (N_atoms, k) k-nearest-neighbour atom indices per atom.
+    neighbor_distances : torch.Tensor
+        (N_atoms, k) distances to those neighbours; used as inverse-distance
+        weights ``1 / (d + 1e-6)``.
+    sigma_aniso : torch.Tensor
+        Scalar dimensionless sigma on the fractional-anisotropy differences
+        (comparable to the fixed 0.5 log-sigma of the magnitude channel).
     """
     beq = u6_b_eq(u6)
     beq_c = beq.clamp(min=1e-3)
@@ -130,4 +158,35 @@ def adp_locality_aniso_math(
     wcomp = u6.new_tensor(_U6_WCOMP)
     dev_term = (w.unsqueeze(-1) * wcomp * (dfrac / sigma_aniso) ** 2).sum()
     return mag + dev_term
+
+
+def adp_rigid_bond_aniso_math(
+    u6: torch.Tensor,
+    xyz: torch.Tensor,
+    pair_indices: torch.Tensor,
+    sigma: float,
+) -> torch.Tensor:
+    """Anisotropic rigid-bond (Hirshfeld DELU) NLL on the unified U6.
+
+    For each bond the mean-square displacement amplitude along the bond,
+    ``z = l^T U l`` (``l`` the unit bond vector), should match for the two
+    atoms: ``Δz = z_i - z_j ~ 0``. Reduces EXACTLY to the isotropic
+    ``Δz = (B_i - B_j) / 8 pi^2`` form when both atoms are isotropic
+    (``l^T (U_iso I) l = U_iso`` for any direction), so iso<->aniso bonds are
+    handled natively. Gradient flows to both the U tensors and the coordinates
+    (the Hirshfeld test couples ADP and geometry).
+    """
+    M = u6.new_zeros(u6.shape[0], 3, 3)
+    M[:, 0, 0] = u6[:, 0]
+    M[:, 1, 1] = u6[:, 1]
+    M[:, 2, 2] = u6[:, 2]
+    M[:, 0, 1] = M[:, 1, 0] = u6[:, 3]
+    M[:, 0, 2] = M[:, 2, 0] = u6[:, 4]
+    M[:, 1, 2] = M[:, 2, 1] = u6[:, 5]
+    r = xyz[pair_indices[:, 1]] - xyz[pair_indices[:, 0]]
+    l = r / torch.sqrt((r * r).sum(-1, keepdim=True) + 1e-8)
+    z1 = torch.einsum("bi,bij,bj->b", l, M[pair_indices[:, 0]], l)
+    z2 = torch.einsum("bi,bij,bj->b", l, M[pair_indices[:, 1]], l)
+    dz = z1 - z2
+    return (0.5 * (dz / sigma) ** 2 + math.log(sigma) + 0.5 * LOG_2PI).sum()
 

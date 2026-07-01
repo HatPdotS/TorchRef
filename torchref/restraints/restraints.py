@@ -172,7 +172,7 @@ class _RestraintTypeAccessor:
 
 class RestraintsNew(DeviceMixin, DebugMixin, Module):
     """
-    Refactored restraints handler for crystallographic model refinement.
+    Restraints handler for crystallographic model refinement.
 
     This class uses the builder pattern internally for efficient construction
     of restraint tensors. It is decoupled from Model and accepts a pdb DataFrame
@@ -216,6 +216,23 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         TensorDict. It emulates the nested-dict interface
         (``restraints["bond"]["intra"]["indices"]``) but is not itself a
         plain dict.
+    h_topo : HydrogenTopology or None
+        Property returning the hydrogen topology (populated on demand).
+    h_excl_hash
+        Property returning a hash of the hydrogen-exclusion set.
+    link_dict : dict
+        Link-type definitions loaded from the monomer library (set only when
+        ``pdb`` is provided).
+    link_list : list
+        Ordered list of link types (set only when ``pdb`` is provided).
+    unique_residues : list
+        Residue types present in ``pdb`` that carry more than one atom name.
+    missing_residues : list
+        Residue types for which no CIF dictionary could be resolved.
+    links : pd.DataFrame or None
+        Parsed PDB LINK records passed at construction.
+    cif_path : str or list of str
+        Path(s) to the CIF restraints dictionary file(s).
     """
 
     def __init__(
@@ -318,7 +335,10 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         Returns
         -------
         torch.Tensor
-            Current ADP values of shape (n_atoms,).
+            Current ADP values. Shape ``(n_atoms,)`` for isotropic B-factors,
+            or ``(n_atoms, 6)`` for anisotropic ADPs (the six unique
+            components of the U tensor per atom), depending on what the stored
+            ``adp_fn`` (or the ``adp`` argument) supplies.
         """
         if adp is not None:
             return adp
@@ -1690,7 +1710,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
     def summary(self):
         """Print a detailed summary of all restraints."""
         print("=" * 80)
-        print("Restraints Summary (New Implementation)")
+        print("Restraints Summary")
         print("=" * 80)
         print(f"CIF file: {self.cif_path}")
         print(f"Residue types in dictionary: {len(self.cif_dict)}")
@@ -1766,7 +1786,12 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         print("=" * 80)
 
     def __repr__(self):
-        """Return string representation."""
+        """Return a one-line string representation.
+
+        Surfaces only a subset of restraint counts (intra-residue bonds,
+        angles, torsions and peptide bonds); see :meth:`summary` for the full
+        breakdown.
+        """
 
         def get_count(rtype, origin):
             indices = self.restraints.get(rtype, {}).get(origin, {}).get("indices")
@@ -1986,9 +2011,11 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         Returns
         -------
         deviations : torch.Tensor
-            Calculated minus expected angles in radians.
+            Calculated minus expected angles, in radians. The CIF library
+            references are stored in degrees and converted to radians here
+            before differencing.
         sigmas : torch.Tensor
-            Standard deviations in radians.
+            CIF library standard deviations, converted from degrees to radians.
         """
         if "all" not in self.restraints["angle"]:
             self.cat_dict()
@@ -2231,9 +2258,10 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
 
         Notes
         -----
-        Expected values from CIF library are discrete (typically -60°, 0°, 60°, 90°, 180°)
-        while calculated values from structure are continuous. This is correct!
-        Use wrapped=True for meaningful comparison and visualization.
+        Expected values from the CIF library are discrete (typically -60°, 0°,
+        60°, 90°, 180°) while calculated values from the structure are
+        continuous. Use wrapped=True for meaningful comparison and
+        visualization.
         """
         if "all" not in self.restraints["torsion"]:
             self.cat_dict()

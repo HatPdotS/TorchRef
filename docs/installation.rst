@@ -19,6 +19,7 @@ Installing via pip
 ----------------------
 
 .. code-block:: bash
+
    pip install torchref
 
 Installing from Source

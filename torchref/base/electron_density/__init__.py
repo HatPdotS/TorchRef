@@ -6,6 +6,10 @@ This submodule provides functions for:
 - Finding relevant voxels around atoms
 - Solvent mask generation
 - Scatter operations for map building
+
+The headline entry point is :func:`build_electron_density` (from ``main``): the
+central, ``Engine``-dispatched per-atom variable-radius density builder that
+takes atomic parameters and returns the full density map.
 """
 
 from .map_building import (
@@ -15,7 +19,7 @@ from .map_building import (
 )
 
 # Import optimized JIT kernel version
-from torchref.base.kernels import vectorized_add_to_map
+from torchref.base.electron_density.kernels import vectorized_add_to_map
 
 from .voxel_utils import (
     find_relevant_voxels,

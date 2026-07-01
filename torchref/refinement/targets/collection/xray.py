@@ -74,7 +74,8 @@ class CollectionDifferenceTarget(Target):
         Single scaler applied to all F_calc (uses ``forward_mixed``
         with per-model fractions when available).
     normalize : bool
-        If True, divide total NLL by number of datasets.
+        Unused placeholder. ``forward`` always returns the unnormalised summed
+        NLL regardless of this flag.
     use_work_set : bool
         If True, compute loss only on the work set (rfree_flags=True).
     verbose : int
@@ -198,7 +199,8 @@ class CollectionRiceTarget(Target):
     scaler : ScalerBase, optional
         Single scaler applied to each timepoint's F_calc.
     normalize : bool
-        Divide total NLL by number of matched timepoints.
+        Unused placeholder. ``forward`` always returns the unnormalised summed
+        NLL regardless of this flag.
     use_work_set : bool
         Compute loss only on work set.
     verbose : int
@@ -326,21 +328,22 @@ class CollectionMLTarget(Target):
     scaler : ScalerBase
         Scaling layer applied to F_calc (``forward_mixed`` when available).
     normalize : bool
-        Unused placeholder (kept for signature parity with CollectionRiceTarget).
+        Unused placeholder (kept for signature parity with the other collection
+        targets, where the flag is also non-functional). TODO: remove from all three.
     use_work_set : bool
         Compute loss only on the work set.
     verbose : int
         Verbosity level.
     base_weight : float, optional
-        Intrinsic X-ray up-weight (see the single-dataset target). Defaults to
-        ``DEFAULT_BASE_WEIGHT`` and is applied on the work set only.
+        Intrinsic X-ray up-weight applied to the summed work-set loss. Defaults
+        to ``DEFAULT_BASE_WEIGHT`` (10.0) and is applied on the work set only.
     """
 
     name: str = "collection_ml_xray"
 
-    # Mirrors the single-dataset MaximumLikelihoodXrayTarget: the
-    # correctly-calibrated σ_A likelihood is legitimately soft relative to the
-    # geometry prior, so it carries an intrinsic up-weight.
+    # The correctly-calibrated σ_A likelihood is legitimately soft relative to
+    # the geometry prior, so this collection target carries an intrinsic
+    # up-weight (the single-dataset ML target exposes no such parameter).
     # TODO(weighting): stopgap — belongs in the weighting infrastructure, ideally
     # replaced by a per-cycle gradient-ratio (wxc-style) weight.
     DEFAULT_BASE_WEIGHT = 10.0

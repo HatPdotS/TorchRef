@@ -1,5 +1,13 @@
 """
-LBFGS refinement of an ~100-member ensemble against an X-ray dataset.
+Refinement of an ``n_members`` (default 100) ensemble against an X-ray dataset.
+
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``. The API and
+   behaviour may change or be removed without notice.
+
+Despite the historical class name, the production optimizer is Adam (not
+LBFGS — see :meth:`EnsembleRefinement.refine` for why).
 
 Composes:
 
@@ -7,13 +15,17 @@ Composes:
   (B-factor-free, equal occupancy, ``n_members`` xyz copies).
 - :class:`~torchref.experimental.ensemble.wilson_prior.WilsonPriorTarget`
   to keep ``<|F_calc|^2>`` on the Wilson curve.
-- Optional :class:`~torchref.experimental.ensemble.ensemble_amber_kl.EnsembleAmberKLTarget`
-  for Amber-Boltzmann KL restraints (enabled with ``kT > 0``).
+- The :class:`~torchref.experimental.ensemble.quasi_crystal_amber.QuasiCrystalAmberTarget`
+  supercell Amber restraint (the production Amber path; enabled when
+  ``amber_weight > 0`` and OpenMM is available). It carries no KL/entropy term.
+- An optional :class:`~torchref.experimental.ensemble.rank_penalty.RankPenaltyTarget`
+  soft de-overfitting regularizer on the member-spread spectrum.
 - A third ``xray/validation`` set distinct from R-free for tuning
-  ``wilson_weight`` / ``amber_lambda`` without contaminating R-free.
+  ``wilson_weight`` / ``amber_weight`` without contaminating R-free.
 
 Geometry and ADP targets are intentionally not registered — they would
-collapse the ensemble. Restraints come from the Wilson prior + Amber KL.
+collapse the ensemble. Restraints come from the Wilson prior, the
+quasi-crystal Amber supercell, and (optionally) the rank penalty.
 """
 
 from __future__ import annotations
@@ -85,7 +97,14 @@ def _extract_first_model_pdb(pdb_path: str):
 
 class EnsembleRefinement(LBFGSRefinement):
     """
-    LBFGS ensemble refinement with Wilson + Amber-KL regularization.
+    Ensemble refinement (Adam) with Wilson + quasi-crystal Amber regularization.
+
+    .. warning::
+
+       Experimental — API and behaviour may change without notice. The
+       constructor exposes a large research-knob surface (birth/death,
+       guided-MD, adaptive weighting, dropout, rank penalty); only the more
+       commonly-used parameters are documented below.
 
     Parameters
     ----------
@@ -96,41 +115,82 @@ class EnsembleRefinement(LBFGSRefinement):
         ``n_members`` models, those are used as-is; otherwise members are
         replicated cyclically and perturbed.
     n_members : int
-        Number of ensemble members. Default 100.
+        Number of ensemble members. Default 100. Rounded to a multiple of
+        ``N_sym``; with population dynamics it is the *alive* count within an
+        ``n_max`` slot pool.
     perturb_sigma : float
         Std-dev (Å) of Gaussian noise applied to replicated members.
         Default 0.01 Å — only large enough to break gradient degeneracy
-        between identical copies and to clear the entropy-eps floor in
-        :class:`EnsembleAmberKLTarget` (which uses ``log(var + 1e-4)``).
-        Larger values (≥ ~0.05 Å) introduce LJ clashes when atoms walk
-        inside each other's vdW radii, producing ~10^15 kJ/mol Amber
-        energies. The ensemble's actual disorder develops from the X-ray
-        + entropy gradients during refinement, not from initial noise.
+        between identical copies. Larger values (≥ ~0.05 Å) introduce LJ
+        clashes when atoms walk inside each other's vdW radii, producing
+        ~10^15 kJ/mol Amber energies. The ensemble's actual disorder develops
+        from the X-ray + restraint gradients during refinement, not from the
+        initial noise.
     b_const : float
         Fixed isotropic B (Å²) for every atom in every member. Small but
         non-zero to avoid FFT grid aliasing.
     wilson_weight : float
-        Weight on the Wilson prior in the LossState.
-    amber_lam : float
-        Coefficient on the ensemble entropy regularizer inside
-        :class:`EnsembleAmberKLTarget`.
-    amber_kT : float
-        Boltzmann temperature for Amber KL (kJ/mol). 0 disables the energy
-        term and uses entropy only.
+        Weight on the Wilson prior in the LossState. O(1) because all loss
+        terms are normalized to a per-ASU scale (see ``_create_loss_state``).
+        With the default ``wilson_mode='rice'`` the Wilson term is a
+        per-reflection NLL (not a per-bin mean).
+    wilson_mode : {'rice', 'bin_mean', 'per_reflection'}
+        Wilson-prior loss form (default ``'rice'``); see
+        :class:`~torchref.experimental.ensemble.wilson_prior.WilsonPriorTarget`.
+    xray_weight, amber_weight : float
+        Dimensionless multipliers on the X-ray work term and the
+        quasi-crystal Amber restraint (both O(1) on the per-ASU scale).
+        ``amber_weight == 0`` (or missing OpenMM) disables the Amber target.
+    amber_lam, amber_kT : float
+        Legacy coefficients for the abandoned per-member entropy/KL Amber
+        path (:class:`EnsembleAmberKLTarget`). They are stored on the object
+        but are **not** used by the wired :class:`QuasiCrystalAmberTarget`,
+        which has no entropy term.
     val_fraction_of_free : float
         If the loaded MTZ has only an R-free flag and no Validation_flag,
         split this fraction of the free set into a held-out validation set.
-    wilson_weight : float
-        Weight on the (per-bin-mean) Wilson prior. O(1) because all loss
-        terms are normalized to a per-item scale (see ``_create_loss_state``).
-    amber_weight : float
-        Weight on the (per-atom) Amber-KL restraint. O(1), same rationale.
     xray_mode : str
         Mode for the X-ray targets. Default ``'ml'`` — the maximum-
         likelihood target, which is the Rice distribution NLL for acentric
         reflections (folded-normal for centrics), the statistically correct
-        amplitude likelihood. Other options: ``'ls'``, ``'gaussian'``,
-        ``'bhattacharyya'``.
+        amplitude likelihood. Other options: ``'ls'``, ``'gaussian'``, and
+        ``'bhattacharyya'`` (the most experimental — the ensemble Bhattacharyya
+        / k_eff target).
+
+    Other parameters
+    ----------------
+    The constructor also accepts a large set of research knobs not detailed
+    above. The main families:
+
+    - **Rank penalty** (soft de-overfit on the member spectrum):
+      ``rank_weight``, ``rank_weight_start`` (ramp), ``rank_penalty_mode``
+      (``{'nuclear','subspace','entropy','maxent','diverse'}``),
+      ``rank_target_rank``, ``rank_freeze_disp``, ``maxent_shrink_weight``,
+      ``maxent_div_weight``, ``rank_adaptive`` (+ ``rank_adaptive_base``,
+      ``rank_adaptive_doubling_factor``). See
+      :class:`~torchref.experimental.ensemble.rank_penalty.RankPenaltyTarget`.
+    - **Low-rank / PCA reparameterization**: ``low_rank_modes``.
+    - **Birth/death population dynamics**: ``refine_population``,
+      ``refine_member_b``, ``n_max`` (slot pool), ``death_rate``,
+      ``birth_rate``, ``bifurcation_sigma``, ``birth_death_every``. Note
+      per-member occupancy is a known dead de-overfit lever.
+    - **Guided-MD integrator**: ``integrator`` (``'adam'`` default or
+      ``'langevin_baoab'``), ``md_dt``, ``md_friction``, ``md_temperature``,
+      ``md_max_step``. See :meth:`refine`.
+    - **Adaptive loss weighting**: ``xray_adaptive`` (+ ``xray_adaptive_floor``,
+      ``xray_adaptive_ema_halflife_steps``, ``xray_adaptive_doubling_factor``)
+      and ``rank_adaptive``.
+    - **Stochastic regularization**: ``use_dropout`` (+ ``dropout_min``,
+      ``dropout_max``), the noise floor (``noise_floor_sigma``,
+      ``noise_floor_amp``, ``noise_floor_cycles``), ``langevin_T``, and the
+      two-phase sampler (``sampling_fraction``, ``sampling_lr_factor``).
+    - **Optimizer / schedule**: ``optimizer_name``, ``adam_lr``,
+      ``adam_beta1``, ``adam_beta2``, ``adam_steps_per_cycle``,
+      ``warmup_steps``, ``warmup_start_factor``, ``lr_schedule``,
+      ``lr_cycles``, ``wilson_weight_start`` (opt-in Wilson ramp).
+
+    These are the most error-prone levers; consult the source and the
+    referenced target classes before using them.
     """
 
     def __init__(
@@ -595,7 +655,10 @@ class EnsembleRefinement(LBFGSRefinement):
           observed reflections. Units: nats / ASU.
         - **restraints/amber_kl** — :class:`QuasiCrystalAmberTarget` with
           ``normalize_per_asu=True`` returns supercell energy divided by
-          the number of ASU copies it contains. Units: kJ/mol / ASU.
+          the number of ASU copies it contains. Units: kJ/mol / ASU. The
+          ``_kl`` in the key is historical (carried over from the abandoned
+          :class:`EnsembleAmberKLTarget`); the active target has **no**
+          KL / entropy term.
 
         With every term on a per-ASU scale, the user-facing weights
         (``xray_weight``, ``wilson_weight``, ``amber_weight``) are
@@ -774,11 +837,21 @@ class EnsembleRefinement(LBFGSRefinement):
 
         Why Adam, not LBFGS: the loss landscape under (a) the
         ensemble-coordinate redundancy, (b) the Wilson regularizer, and
-        (c) the per-member Amber energy is highly non-convex with
+        (c) the quasi-crystal Amber energy is highly non-convex with
         ~30k+ xyz parameters per macro cycle. LBFGS's quasi-Newton
         curvature approximation is wrong for this kind of landscape
         and gets stuck. Adam's per-parameter step sizing + momentum is
         the standard choice for ensemble / variational refinement.
+
+        Guided-MD path: if ``integrator == "langevin_baoab"`` the loop runs a
+        thermostatted BAOAB Langevin integrator on the xyz DOF instead of
+        Adam — physical atomic masses, a constant bath temperature
+        (``md_temperature``), the X-ray term as a weighted force, and the
+        Amber supercell as the physical force field. This path differs from
+        the gradient-descent path: the scaler is excluded from the integrator
+        and refit deterministically per macro cycle, Amber is forced every
+        step (``amber_every = 1``), and the post-hoc SGLD/noise-floor noise is
+        disabled (the thermostat owns the noise).
 
         Driven through :meth:`LossState.run`, which already handles:
         non-finite-loss validation, ``requires_grad`` toggling on leaves
@@ -801,10 +874,11 @@ class EnsembleRefinement(LBFGSRefinement):
             early bias-corrected second moment is unstable); annealing
             low at the end gives gentle convergence.
           - ``'warmup'`` — legacy linear warmup then constant.
-        - **Wilson weight** (if ``wilson_weight_start`` is set): ramps
-          linearly from ``wilson_weight_start`` to ``wilson_weight`` over
-          the run. Curriculum: fit the data first, then progressively
-          tighten the Wilson prior as the ensemble starts to overfit.
+        - **Wilson weight** (opt-in; only when ``wilson_weight_start`` is set,
+          which defaults to ``None`` = no ramp): ramps linearly from
+          ``wilson_weight_start`` to ``wilson_weight`` over the run.
+          Curriculum: fit the data first, then progressively tighten the
+          Wilson prior as the ensemble starts to overfit.
         """
         # PCAEnsembleParam refines THREE leaves (μ, A, V); parameters_of_types
         # returns only the single `.refinable_params`, so collect all of them.

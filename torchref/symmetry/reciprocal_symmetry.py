@@ -5,7 +5,9 @@ This module provides efficient symmetry operations for reciprocal space data (h,
 analogous to map_symmetry.py for real space density maps.
 
 Key concepts:
-- Miller indices transform as h' = h @ R = R^T @ h under rotation R
+- Miller indices transform as h' = h @ R = R^T @ h under rotation R, where R is
+  the real-space rotation matrix (the code transposes it into
+  ``reciprocal_matrices``); R here is not the already-transposed reciprocal matrix.
 - Systematic absences occur when translation causes destructive interference
 - Centric reflections have phases restricted to 0 or π
 - Friedel pairs: F(h,k,l) = F*(-h,-k,-l) for normal scattering
@@ -14,6 +16,10 @@ Main interfaces:
 - ReciprocalSymmetry: Factory function for grid-based reciprocal space symmetry
 - expand_reflections: Expand ReflectionData from asymmetric unit to P1
 - expand_reciprocal_grid: Expand a reciprocal space grid from asymmetric unit to P1
+- expand_hkl: Expand Miller indices from the asymmetric unit to P1
+- complete_hkl: Identify reflections missing from a dataset (same space group)
+- reduce_hkl: Reduce Miller indices to the asymmetric unit
+- canonicalize_hkl: Map Miller indices to a canonical representative
 
 Space groups can be specified as strings, integers (1-230), or gemmi.SpaceGroup objects.
 """
@@ -482,8 +488,10 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         F_asym : torch.Tensor, shape (nh, nk, nl)
             Structure factors on asymmetric unit (other positions can be zero).
         asym_mask : torch.Tensor, optional
-            Boolean mask indicating asymmetric unit positions.
-            If None, non-zero values are assumed to be the asymmetric unit.
+            Currently a no-op: this parameter is accepted but ignored by the
+            implementation. Regardless of its value, positions are filled using
+            a non-zero heuristic (entries with ``|F| < 1e-10`` are treated as
+            unset and filled from symmetry mates).
 
         Returns
         -------
@@ -520,7 +528,9 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         Returns
         -------
         torch.Tensor, shape (nh, nk, nl)
-            Structure factors with Friedel symmetry enforced.
+            Structure factors averaged toward Friedel symmetry. The result is
+            ``0.5 * (F(h) + F*(-h))``, i.e. an average of each reflection with
+            its conjugated Friedel mate, not a hard replacement/enforcement.
         """
         # Flip all indices: F(-h,-k,-l)
         F_friedel = torch.flip(F_grid, dims=[0, 1, 2])
@@ -580,7 +590,10 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         Compute epsilon (multiplicity) factors for each reflection.
 
         Epsilon is the number of symmetry operations that map h to itself
-        (or to its Friedel mate for acentric space groups).
+        (h -> h) or to its Friedel mate (h -> -h). This count is taken
+        unconditionally for every space group; there is no centric/acentric
+        branch. Note that folding in Friedel mates inflates the count relative
+        to the conventional ε (pure rotational multiplicity, h -> h only).
 
         Returns
         -------
@@ -1534,8 +1547,9 @@ def expand_reciprocal_grid(
     ----------
     F_grid : torch.Tensor, shape (nh, nk, nl)
         Input structure factor grid (can be complex or real).
-    space_group : str
-        Space group symbol (e.g., 'P21', 'P212121').
+    space_group : str, int, or gemmi.SpaceGroup
+        Space group specification (e.g., 'P21', 'P212121'). The type hint is
+        narrowed to ``str``, but any ``SpaceGroupLike`` value is accepted.
     mode : str, default 'average'
         Operation mode:
         - 'average': Average over all symmetry equivalents (symmetrize)

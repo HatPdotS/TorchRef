@@ -27,7 +27,7 @@ class AngleTarget(GeometryTarget):
     name: str = "geometry/angle"
 
     def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose, target_value=-2.0, sigma=0.5)
+        super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
         # Use the angle_math dispatcher (Triton on CUDA fp32).

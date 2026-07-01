@@ -8,7 +8,10 @@ For each reflection h:
     L_h = (F_obs - |F_calc|)² / (4 · (σ_d² + σ_m²))
         + 0.5 · log( (σ_d² + σ_m²) / (2 σ_d σ_m) )
 
-Total: L = Σ_h L_h. 
+The ``0.5 · log( (σ_d² + σ_m²) / (2 σ_d σ_m) )`` term is the (negated) analytic
+Bhattacharyya-coefficient log for two 1-D Gaussians with variances σ_d² and σ_m².
+
+Total: L = Σ_h L_h.
 
 sigma_m derivation
 ------------------
@@ -70,11 +73,15 @@ class BhattacharyyaXrayTarget(XrayTarget):
     use_work_set : bool, optional
         Use work set (default) or test set for loss.
     sigma_m_scale : float, optional
-        Global multiplier applied to σ_m. Default 1.0.
+        Global multiplier applied to σ_m (dimensionless; ~1.0 keeps σ_m at the
+        Fisher-info estimate, >1 inflates the model uncertainty). Default 1.0.
     b_grid_min, b_grid_max, b_grid_n : float, int, optional
         Log-spaced B-factor grid for σ_m computation.
         Default 1–200 Å², 100 points.
     verbose : int, optional
+    **kwargs
+        Passthrough; the legacy ``n_bins`` is accepted and ignored, and
+        ``use_set`` (3-way subset selector) is forwarded to ``XrayTarget``.
     """
 
     def __init__(
