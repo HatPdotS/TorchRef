@@ -211,16 +211,16 @@ def test_forward_dtype_mismatch_raises(tmp_path):
 # ---------------------------------------------------------------------------
 # CPU structured scatter: second derivatives must be CORRECT (not silently wrong)
 # ---------------------------------------------------------------------------
-def test_cpu_scatter_second_derivative_correct(double_cpu, tmp_path):
-    """A Hessian-vector product through ``model.forward`` (CPU fast scatter)
-    must match central finite differences.
+def test_cpu_plain_scatter_second_derivative_correct(double_cpu, tmp_path):
+    """A Hessian-vector product through ``model.forward`` must match central
+    finite differences under a float64 config.
 
-    Regression for the silent-wrong-Hessian bug: ``_StructuredScatterAdd``
-    computed its backward with an imperative C++ gather (no ``grad_fn``), which
-    did not error under ``create_graph=True`` but dropped the second-order term
-    through the scatter transpose (measured cosine ~0.57 vs finite diff). The
-    fix routes the backward through the adjoint ``_StructuredGather`` Function
-    (scatter/gather are linear mutual adjoints), restoring a correct Hessian.
+    Under ``double_cpu`` the density grid is float64, so the electron-density
+    dispatch routes to the portable plain ``scatter_add`` splat (the C++ fast
+    scatter is float32-only). This guards double-backward correctness of that
+    portable path -- the sanctioned float64 / EAGER Hessian route. The C++ fast
+    scatter's own double-backward is covered separately (float32) by
+    ``test_cpu_cpp_scatter_second_derivative_correct``.
     """
     import itertools
 
@@ -281,3 +281,104 @@ def test_cpu_scatter_second_derivative_correct(double_cpu, tmp_path):
     rel = ((hvp_auto - hvp_fd).norm() / hvp_fd.norm()).item()
     assert cos > 0.999, f"HVP direction wrong: cosine={cos:.6f}"
     assert rel < 5e-3, f"HVP magnitude wrong: rel_err={rel:.3e}"
+
+
+def test_cpu_cpp_scatter_second_derivative_correct(tmp_path):
+    """The CPU C++ fast-scatter double-backward must match central finite
+    differences (float32).
+
+    Regression for the silent-wrong-Hessian bug: ``_StructuredScatterAdd``
+    computed its backward with an imperative C++ gather (no ``grad_fn``), which
+    did not error under ``create_graph=True`` but dropped the second-order term
+    through the scatter transpose (measured cosine ~0.57 vs finite diff). The
+    fix routes the backward through the adjoint ``_StructuredGather`` Function
+    (scatter/gather are linear mutual adjoints), restoring a correct Hessian.
+
+    This runs under a float32 config so the density dispatch stays on the C++
+    fast scatter (the float64 config routes to the plain path instead -- see
+    ``test_cpu_plain_scatter_second_derivative_correct``). Finite differences
+    are float32 here, so the eps is larger and the tolerance looser than the
+    float64 plain-path test, but still far tighter than the ~0.57 regression.
+    """
+    import itertools
+
+    from torchref.base.electron_density.kernels.cpu.scatter_dispatch import (
+        _get_cpp_scatter,
+    )
+    from torchref.config import device, dtypes
+    from torchref.model.model_ft import ModelFT
+
+    if _get_cpp_scatter() is None:
+        pytest.skip("C++ scatter extension not available; nothing to test here")
+
+    f0, c0, d0 = dtypes.float, dtypes.complex, device.current
+    dtypes.float = torch.float32
+    dtypes.complex = torch.complex64
+    device.current = torch.device("cpu")
+    try:
+        pdb = tmp_path / "p1.pdb"
+        g = torch.Generator().manual_seed(0)
+        lines = ["CRYST1   20.000   20.000   20.000  90.00  90.00  90.00 P 1           1"]
+        for i in range(8):
+            x, y, z = (torch.rand(3, generator=g) * 15 + 2.5).tolist()
+            lines.append(
+                f"ATOM  {i + 1:5d}  C   GLY A{i + 1:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00 20.00           C"
+            )
+        lines.append("END")
+        pdb.write_text("\n".join(lines) + "\n")
+
+        model = ModelFT(max_res=2.0, verbose=0)
+        model.load_pdb(str(pdb))
+        # The C++ fast scatter only runs on a float32 density grid.
+        assert model.xyz.refinable_params.dtype == torch.float32
+        hkl = torch.tensor(
+            [h for h in itertools.product(range(-2, 3), repeat=3) if any(h)],
+            dtype=torch.float32,
+        )
+        x = model.xyz.refinable_params
+        x0 = x.detach().clone()
+        gen = torch.Generator().manual_seed(1)
+        v = torch.randn(x0.shape, generator=gen)
+        v /= v.norm()
+
+        def grad_at(xval):
+            with torch.no_grad():
+                x.copy_(xval)
+                model.reset_cache()
+            sf = model(hkl, recalc=True)
+            return (
+                torch.autograd.grad((sf.real**2 + sf.imag**2).sum(), x)[0]
+                .detach()
+                .clone()
+            )
+
+        # Autograd Hessian-vector product (double backward through the scatter).
+        with torch.no_grad():
+            x.copy_(x0)
+            model.reset_cache()
+        sf = model(hkl, recalc=True)
+        (g1,) = torch.autograd.grad(
+            (sf.real**2 + sf.imag**2).sum(), x, create_graph=True
+        )
+        (hvp_auto,) = torch.autograd.grad((g1 * v).sum(), x)
+        hvp_auto = hvp_auto.detach().clone()
+
+        # Central finite-difference reference. Larger eps than the float64 test:
+        # in float32 a too-small step is swamped by subtraction noise.
+        eps = 3e-3
+        hvp_fd = (grad_at(x0 + eps * v) - grad_at(x0 - eps * v)) / (2 * eps)
+        with torch.no_grad():
+            x.copy_(x0)
+            model.reset_cache()
+
+        cos = torch.nn.functional.cosine_similarity(
+            hvp_auto.flatten(), hvp_fd.flatten(), dim=0
+        ).item()
+        rel = ((hvp_auto - hvp_fd).norm() / hvp_fd.norm()).item()
+        assert cos > 0.9999, f"HVP direction wrong: cosine={cos:.6f}"
+        assert rel < 5e-3, f"HVP magnitude wrong: rel_err={rel:.3e}"
+    finally:
+        dtypes.float = f0
+        dtypes.complex = c0
+        device.current = d0

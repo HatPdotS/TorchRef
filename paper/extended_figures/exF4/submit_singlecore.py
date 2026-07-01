@@ -91,10 +91,25 @@ def script_phenix(code, pdb, mtz, outdir):
     # private TMPDIR; phenix stdout flows to the SLURM out.log (no tee, so the timed $? is
     # phenix's). CRYST1 "None" is sed-fixed (mirrors phenix_refine.sh) so phenix never
     # chokes on the Z field.
+    #
+    # IMPORTANT: flags MUST mirror the main Fig-2 benchmark (phenix_refine.sh, phenix_norb
+    # arm) so this is a like-for-like re-timing at 1 core. In particular the production run
+    # DISABLES automatic target-weight optimization (optimize_xyz/adp_weight=false) and
+    # pins a fixed no-rigid-body strategy; phenix DEFAULTS instead run an expensive
+    # per-macrocycle weight grid-search (~2.4x slower) that has nothing to do with cores.
     body = (f'phenix.refine "$WORK/input.pdb" {mtz} \\\n'
-            f"    output.prefix=ref --overwrite \\\n"
+            f"    --overwrite output.prefix=ref \\\n"
             f"    refinement.main.number_of_macro_cycles=10 \\\n"
-            f"    refinement.main.nproc={NCORES} --quiet")
+            f"    refinement.main.nproc={NCORES} \\\n"
+            f"    refinement.refine.strategy=individual_sites+individual_adp+occupancies \\\n"
+            f"    refinement.main.simulated_annealing=false \\\n"
+            f"    refinement.target_weights.optimize_xyz_weight=false \\\n"
+            f"    refinement.target_weights.optimize_adp_weight=false \\\n"
+            f"    refinement.main.bulk_solvent_and_scale=true \\\n"
+            f"    refinement.main.ordered_solvent=false \\\n"
+            f"    refinement.ordered_solvent.mode=every_macro_cycle \\\n"
+            f"    refinement.pdb_interpretation.ramachandran_plot_restraints.enabled=false \\\n"
+            f"    write_def_file=false write_eff_file=false write_geo_file=false --quiet")
     return _header("phenix", code, outdir) + f"""
 OUTDIR={outdir}
 module load {PHENIX_MODULE}

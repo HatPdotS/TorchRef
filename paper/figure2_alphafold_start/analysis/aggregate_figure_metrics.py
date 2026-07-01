@@ -20,7 +20,7 @@ tidy CSVs under ``runs/metrics/``:
 
 Engines use the no-rigid-body protocol:
   prediction = af_initial, refmac, phenix = phenix_norb,
-  torchref   = torchref_scalerfix_nocoref_n10 (the current default config).
+  torchref   = torchref (canonical arm: -n 10 separate ml, weights 1/0.2/0.02).
 
 Usage
 -----
@@ -44,7 +44,7 @@ ENGINE_DIR = {
     "prediction": "af_initial",
     "refmac": "refmac",
     "phenix": "phenix_norb",
-    "torchref": "torchref_g0p2_a0p02",
+    "torchref": "torchref",
 }
 
 

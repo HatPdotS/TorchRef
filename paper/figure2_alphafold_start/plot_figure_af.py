@@ -179,15 +179,16 @@ def plot_runtime_box(ax, runtime_long):
     ax.set_ylabel("Wall-clock runtime (min)")
     ax.set_title("Wall-clock runtime")
 
-    # paired median ratios (TorchRef as reference)
-    wide = runtime_long.pivot_table(index="code", columns="engine", values="wall_s")
-    def pair_ratio(a, b):
-        m = wide[a].notna() & wide[b].notna()
-        return float(np.median(wide.loc[m, a] / wide.loc[m, b]))
-    r_ref = pair_ratio("torchref", "refmac")
-    r_phe = pair_ratio("torchref", "phenix")
+    # Ratio of the per-engine median runtimes (the medians shown by this box plot
+    # and by FIGURE_MEDIANS Fig2C), so the annotation is reproducible from the
+    # displayed medians and consistent with analysis/summarize_medians.py.
+    def _med(e):
+        return float(np.median(
+            runtime_long.loc[runtime_long.engine == e, "wall_s"].dropna()))
+    r_ref = _med("torchref") / _med("refmac")
+    r_phe = _med("phenix") / _med("torchref")
     txt = (f"TorchRef vs Refmac: {r_ref:.1f}× slower\n"
-           f"TorchRef vs PHENIX: {1/r_phe:.1f}× faster")
+           f"TorchRef vs PHENIX: {r_phe:.1f}× faster")
     ax.text(0.04, 0.96, txt, transform=ax.transAxes, ha="left", va="top",
             fontsize=10.5,
             bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.7", alpha=0.85))

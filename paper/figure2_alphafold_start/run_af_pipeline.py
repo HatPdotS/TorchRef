@@ -154,7 +154,7 @@ def cmd_refine(args):
 #SBATCH --partition=day
 #SBATCH --cpus-per-task=4
 #SBATCH --time=04:00:00
-#SBATCH --mem=8G
+#SBATCH --mem=16G
 #SBATCH --output={outdir / 'out.log'}
 #SBATCH --error={outdir / 'error.log'}
 
@@ -163,7 +163,7 @@ def cmd_refine(args):
     -n {args.n_cycles} \\
     --mode separate \\
     --xray-mode {args.xray_mode} \\
-    --adp-weight {args.adp_weight} \\
+    --weights '{{"adp": {args.adp_weight}}}' \\
     --sigma-m-scale {args.sigma_m_scale}{rb_line}
 """
             if _sbatch(script, tmp / f"ref_{code}.sh", args.dry_run) or args.dry_run:
@@ -463,11 +463,13 @@ def main():
                    help="REFMAC restrained-refinement cycles (refiner=refmac).")
     p.add_argument("--rigid-body", action="store_true")
     p.add_argument("--rigid-body-iter", type=int, default=100)
-    # 25 (was 10): with the ADP locality restraint relaxed, B-factors move in
-    # small per-cycle increments and only reach their data-supported spread
-    # around cycle ~22; 10 cycles under-converges B (the "B-factor momentum"
-    # behind the AF-start R-free deficit).
-    p.add_argument("--n-cycles", type=int, default=25)
+    # 10 is the canonical macrocycle count for the benchmark: it matches the
+    # single-core runtime comparison (extended_figures/exF4) so Fig2c (4-core)
+    # and exF4 (1-core) time the SAME refinement. NB: with the ADP locality
+    # restraint relaxed, B-factors keep moving past cycle 10 (full data-supported
+    # spread ~cycle 22), so raising this trades a small R-free gain for runtime;
+    # the benchmark deliberately fixes it at 10.
+    p.add_argument("--n-cycles", type=int, default=10)
     p.add_argument("--adp-weight", type=float, default=0.02,
                    help="Group weight on the entire ADP loss (locked default 0.02; "
                         "see DEFAULT_GROUP_WEIGHTS).")

@@ -53,29 +53,19 @@ def test_math_torch_legacy_reexports_resolve():
 
 
 def test_main_namespace_preserves_moved_symbols():
-    """``main`` re-imports the moved splat impls so its namespace is unchanged.
+    """``main`` re-exports the shared splat helpers so its namespace is stable.
 
-    ``torchref.scaling.solvent`` and ``tests/unit/base/test_aniso_map_building``
-    import these private symbols from ``...electron_density.main`` directly.
+    These are the LIVE helpers reused by the variable-radius kernels (and
+    ``_get_radius_offsets`` by ``torchref.scaling.solvent``); the old fixed-radius
+    entry points were removed in the kernel cleanup.
     """
     main = importlib.import_module("torchref.base.electron_density.main")
     moved = [
-        "_get_box_radius",
         "_get_radius_offsets",
         "_do_structured_scatter",
         "_get_cpp_scatter",
         "_separable_density",
-        "_get_compiled_separable_density",
-        "_splat_chunk",
-        "_CHUNK_SIZES",
-        "_add_isotropic_cpu_separable",
-        "_add_isotropic_cpu_separable_compiled",
-        "_add_isotropic_cpu_fused",
         "_aniso_density_cube",
-        "_add_anisotropic_cpu",
-        "_add_isotropic_mps_single",
-        "_add_isotropic_original",
-        "_add_anisotropic_original",
         # dispatchers stay defined here
         "_add_isotropic",
         "_add_anisotropic",
@@ -95,15 +85,13 @@ def test_solvent_radius_offsets_import_path():
         "torchref.base.electron_density.kernels",
         "torchref.base.electron_density.kernels.offsets",
         "torchref.base.electron_density.kernels.cpu.separable",
-        "torchref.base.electron_density.kernels.cpu.fused",
         "torchref.base.electron_density.kernels.cpu.aniso",
         "torchref.base.electron_density.kernels.cpu.scatter",
         "torchref.base.electron_density.kernels.cpu.scatter_dispatch",
         "torchref.base.electron_density.kernels.cpu.jit_reference",
-        "torchref.base.electron_density.kernels.cpu.eager_reference",
+        "torchref.base.electron_density.kernels.cpu.variable_radius",
         "torchref.base.electron_density.kernels.cuda.fused",
-        "torchref.base.electron_density.kernels.cuda.separable",
-        "torchref.base.electron_density.kernels.mps.separable",
+        "torchref.base.electron_density.kernels.cuda.variable_radius",
     ],
 )
 def test_new_kernel_modules_import(modname):

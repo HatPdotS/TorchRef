@@ -240,7 +240,13 @@ def _add_isotropic(
             # AUTO: fall through to the portable splat
 
     grid_shape_tuple = real_space_grid.shape[:3]
-    if get_engine() is Engine.AUTO and density_map.device.type == "cpu":
+    # The C++-scatter fast path is float32-only; non-float32 (float64 config,
+    # complex-derived double grids) falls through to the portable plain splat.
+    if (
+        get_engine() is Engine.AUTO
+        and density_map.device.type == "cpu"
+        and density_map.dtype == torch.float32
+    ):
         return add_isotropic_cpu_separable_var(
             density_map, xyz, adp, occ, A, B,
             inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
@@ -301,7 +307,13 @@ def _add_anisotropic(
                 raise
             # AUTO: fall back to the portable splat
 
-    if get_engine() is Engine.AUTO and density_map.device.type == "cpu":
+    # The C++-scatter fast path is float32-only; non-float32 falls through to
+    # the portable plain splat (see _add_isotropic).
+    if (
+        get_engine() is Engine.AUTO
+        and density_map.device.type == "cpu"
+        and density_map.dtype == torch.float32
+    ):
         return add_anisotropic_cpu_var(
             real_space_grid, density_map, xyz, u, occ, A, B,
             inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
