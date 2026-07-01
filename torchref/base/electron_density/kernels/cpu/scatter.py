@@ -148,6 +148,8 @@ torch::Tensor structured_scatter_add_impl(
 //
 // Each atom's output is independent — parallelize over atoms directly.
 // No index tensor allocation, no fancy indexing overhead.
+// Note: the worker_gather lambda below is used only by the non-OpenMP branch;
+// under _OPENMP the same loop body is duplicated inline in the parallel-for.
 template <typename IdxT>
 torch::Tensor structured_gather_impl(
     torch::Tensor grad_output,
@@ -549,3 +551,97 @@ def structured_scatter_add(density_cube, wa, wbwc, map_size):
         Scattered result.  Differentiable w.r.t. density_cube.
     """
     return _StructuredScatterAdd.apply(density_cube, wa, wbwc, map_size)
+
+
+def structured_scatter_add_inplace(out_flat, density_cube, wa, wbwc):
+    """Low-level in-place structured scatter: ``out_flat[idx] += cube`` (no autograd).
+
+    The raw building block for :class:`_ScatterAccumulate`. The C++ kernel already
+    does ``out[idx] += ...``, so passing ``out_flat`` straight in as the output
+    buffer accumulates in place — no fresh ``zeros(map_size)`` and no out-of-place
+    ``out + result`` add (the two full-grid touches per chunk that the functional
+    :func:`structured_scatter_add` incurs).
+
+    Returns ``out_flat`` (mutated), or ``None`` if the C++ module is unavailable
+    (caller should fall back to the functional path).
+    """
+    mod = _get_module()
+    if mod is None:
+        return None
+    if density_cube.dtype != torch.float32:
+        density_cube = density_cube.to(torch.float32)
+    C, nx, ny, nz = density_cube.shape
+    if wa.dtype == torch.int32:
+        if out_flat.numel() > _INT32_MAX:
+            raise RuntimeError(
+                f"map_size {out_flat.numel()} exceeds INT32_MAX ({_INT32_MAX}); "
+                "pass int64 indices for grids this large."
+            )
+        fn_name = "structured_scatter_add_i32"
+    elif wa.dtype == torch.int64:
+        fn_name = "structured_scatter_add_i64"
+    else:
+        raise TypeError(f"wa.dtype must be int32 or int64, got {wa.dtype}")
+    getattr(mod, fn_name)(
+        out_flat,
+        wa.contiguous(),
+        wbwc.reshape(C, ny * nz).contiguous(),
+        density_cube.reshape(C, nx * ny * nz).contiguous(),
+        nx,
+        ny,
+        nz,
+    )
+    return out_flat
+
+
+class _ScatterAccumulate(torch.autograd.Function):
+    """Differentiable in-place accumulating scatter: ``out += scatter(cube)``.
+
+    ``out_flat`` is mutated in place (one shared buffer accumulated across chunks),
+    so there is NO per-chunk ``zeros(map_size)`` and NO per-chunk out-of-place
+    ``out + result`` add — the two full-grid touches that dominate scatter-bound,
+    many-chunk structures in the functional path.
+
+    Correctness under autograd: the scatter is linear, so for ``out = out_in +
+    scatter(cube)`` the VJP is ``grad_out`` w.r.t. ``out_in`` (identity) and
+    ``gather(grad_out)`` w.r.t. ``cube``. Crucially the backward needs ONLY the
+    (un-mutated) indices ``wa``/``wbwc`` and ``grad_out`` — never the mutated
+    buffer — so the in-place version bump invalidates no saved tensor and the
+    chunk-to-chunk in-place chain differentiates correctly. The gather is routed
+    through :class:`_StructuredGather` so higher-order graphs still compose.
+    """
+
+    @staticmethod
+    def forward(ctx, out_flat, density_cube, wa, wbwc):
+        if density_cube.dtype != torch.float32:
+            if density_cube.dtype not in _WARNED_CAST_DTYPES:
+                warnings.warn(
+                    f"cpu_scatter is float32-only; casting density_cube from "
+                    f"{density_cube.dtype} to float32 (precision will be reduced).",
+                    stacklevel=3,
+                )
+                _WARNED_CAST_DTYPES.add(density_cube.dtype)
+            density_cube = density_cube.to(torch.float32)
+        ctx.save_for_backward(wa, wbwc)
+        ctx.cube_shape = density_cube.shape
+        structured_scatter_add_inplace(out_flat, density_cube, wa, wbwc)
+        ctx.mark_dirty(out_flat)
+        return out_flat
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        wa, wbwc = ctx.saved_tensors
+        # d out / d out_in = identity  -> grad_out passes through unchanged.
+        # d out / d cube  = adjoint gather of grad_out.
+        grad_cube = _StructuredGather.apply(grad_out, wa, wbwc, ctx.cube_shape)
+        return grad_out, grad_cube, None, None
+
+
+def structured_scatter_accumulate(out_flat, density_cube, wa, wbwc):
+    """Differentiable ``out_flat += scatter(density_cube)``, accumulated in place.
+
+    Returns the (mutated) ``out_flat``. Differentiable w.r.t. both ``out_flat`` and
+    ``density_cube``. Use in the chunk loop to accumulate every chunk into one
+    shared buffer with no per-chunk full-grid allocation or add.
+    """
+    return _ScatterAccumulate.apply(out_flat, density_cube, wa, wbwc)

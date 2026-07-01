@@ -1,6 +1,11 @@
 """
-Ensemble atomic model: ~100 coordinate copies of the same chemistry
-sharing one Fourier transform.
+Ensemble atomic model: ``n_members`` (default 100) coordinate copies of the
+same chemistry sharing one Fourier transform.
+
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``. The API and
+   behaviour may change or be removed without notice.
 
 Implementation strategy
 -----------------------
@@ -301,6 +306,14 @@ class EnsembleModel(ModelFT):
     """
     Ensemble of ``n_members`` atomic copies behind a single ``ModelFT``.
 
+    .. warning::
+
+       Experimental — API and behaviour may change without notice.
+
+    ``n_members`` (default 100) is rounded to a multiple of ``N_sym`` and, when
+    birth/death population dynamics are used, is the number of *alive* members
+    within a pre-allocated ``n_max`` slot pool — not a fixed copy count.
+
     Parameters
     ----------
     dtype_float : torch.dtype
@@ -404,6 +417,21 @@ class EnsembleModel(ModelFT):
             Small but non-zero to avoid FFT grid aliasing.
         seed : int, optional
             RNG seed for the perturbation.
+        verbose : int
+            Verbosity.
+        device : torch.device, optional
+            Computation device.
+        strip_H : bool
+            Strip hydrogens before replication (default True).
+        max_res : float
+            FFT grid target resolution (Å), forwarded to ``ModelFT``.
+        n_max : int, optional
+            Pre-allocate a slot pool of ``max(n_members, n_max)`` members for
+            birth/death population dynamics (the extra slots start dead). Same
+            role as in :meth:`from_multimodel_pdb`. Defaults to ``n_members``
+            (no spare pool).
+        **modelft_kwargs
+            Extra keyword arguments forwarded to the ``ModelFT`` constructor.
         """
         reader = pdb_io.PDBReader(verbose=verbose).read(pdb_path)
         df, cell, spacegroup = reader()
@@ -578,7 +606,9 @@ class EnsembleModel(ModelFT):
             b_raw0.to(self.dtype_float), requires_grad=False
         )
         # Only xyz refines — B-factors fixed (ensemble spread IS the disorder),
-        # anisotropic U is unused, and occupancy is fixed at 1/N.
+        # anisotropic U is unused, and occupancy is fixed at 1/N by default
+        # (per-member occupancy can be opted into via
+        # enable_population_refinement, but is a known dead de-overfit lever).
         for tgt in ("adp", "u", "occupancy"):
             try:
                 self.freeze(tgt)
@@ -604,6 +634,11 @@ class EnsembleModel(ModelFT):
         weighted members to B=0 (delta-function overfit; a hard stability
         risk on the FFT grid). Refinement code must add the matching
         parameters to the optimizer.
+
+        Note: per-member occupancy refinement does **not** de-overfit in
+        practice — it collapses winner-take-all (``k_eff != N_eff``) rather
+        than removing coordinate degrees of freedom, so it is a known dead
+        lever retained experimentally rather than a working regularizer.
         """
         self._refine_population = bool(enable)
         self._refine_member_b = bool(refine_b)
@@ -909,6 +944,11 @@ class EnsembleModel(ModelFT):
         Each ensemble member becomes one MODEL record. The single-copy
         chemistry from ``self._pdb_single`` is used as the row template;
         per-member coordinates come from ``xyz_per_member``.
+
+        Note: the written B-factor is a single scalar (atom 0's ADP) applied to
+        every atom of every member, not a per-atom value — the ensemble carries
+        a constant frozen B and the spread itself is the disorder model.
+        Occupancies are written as the uniform ``1/n_members``.
         """
         if self._pdb_single is None:
             raise RuntimeError(

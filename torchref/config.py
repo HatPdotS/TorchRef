@@ -27,10 +27,10 @@ assignment:
 Or read current values:
     torchref.dtypes.float        # torch.float32
     torchref.device.current      # torch.device('cuda')
-    torchref.sigma_cutoff_ed.value  # 3.5
+    torchref.sigma_cutoff_ed.value  # 3.0
 
 The density-splat sigma cutoff can also be set at import time via the
-TORCHREF_SIGMA_CUTOFF_ED environment variable (default 3.5).
+TORCHREF_SIGMA_CUTOFF_ED environment variable (default 3.0).
 
 MPS caveat: Apple's MPS backend does not support float64 / complex128. If
 the resolved device is MPS and the configured float dtype is float64, a
@@ -193,11 +193,16 @@ def get_complex_dtype() -> torch.dtype:
 # per-atom real-space splat radius is r_i = clamp(ceil_0.25(N_sigma * sigma_eff_i),
 # [2, 7] A), with sigma_eff_i = sqrt((b_form_i + B_i) / 8pi^2). Because the
 # truncation is expressed in sigmas, every atom carries the same fractional tail
-# mass regardless of its B-factor (3.5 sigma -> ~0.09%, 4 sigma -> ~0.013%), so
-# this single knob governs the structure-wide F-truncation residual. It replaces
-# the old per-structure scalar ``radius_angstrom``.
-
-_DEFAULT_SIGMA_CUTOFF_ED = 3.5
+# mass regardless of its B-factor (3 sigma -> ~0.4%, 3.5 sigma -> ~0.09%,
+# 4 sigma -> ~0.013% per-axis tail), so this single knob governs the structure-wide
+# F-truncation residual. It replaces the old per-structure scalar ``radius_angstrom``.
+#
+# Default 3.0: an N_sigma sweep vs the direct-summation oracle (1DAW/3GR5/4BX9/7L84/
+# 5BOV, 1.6-2.6 A) showed the F-residual at 3.0 is identical to 3.5 for 4/5 cases and
+# only 1.0e-4 vs 3.3e-5 on the most demanding (4BX9) -- negligible against the ~1e-3
+# floor from grid sampling -- while using ~33% fewer splat voxels. 2.5 is too tight
+# (4BX9 degrades to 6.8e-4, 20x worse), so 3.0 is the floor.
+_DEFAULT_SIGMA_CUTOFF_ED = 3.0
 
 
 class SigmaCutoffConfig:
@@ -207,11 +212,11 @@ class SigmaCutoffConfig:
     Read/set the number of sigmas at which the per-atom electron-density
     Gaussian is truncated::
 
-        sigma_cutoff_ed.value          # get current cutoff (default 3.5)
+        sigma_cutoff_ed.value          # get current cutoff (default 3.0)
         sigma_cutoff_ed.value = 4.0     # set at runtime
 
     Initialised from the ``TORCHREF_SIGMA_CUTOFF_ED`` environment variable at
-    import time (default ``3.5``). Must be a positive number.
+    import time (default ``3.0``). Must be a positive number.
     """
 
     def __init__(self):

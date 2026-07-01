@@ -1,1 +1,0 @@
-"""MPS density-splatting kernels."""

@@ -87,9 +87,14 @@ class AdamWithAdaptiveNoise(Adam):
 
     def update_noise_scale(self, train_nll, test_nll):
         """
-        Update the noise scale based on the ratio of test to training NLL.
+        Update the noise scale from the overfitting signal.
 
-        If ratio > 1, the model is overfitting and noise is increased.
+        Computes ``log(test_nll) - log(train_nll)`` and clamps it to
+        ``[0, 0.1]``. A positive value means the test NLL exceeds the training
+        NLL (the overfitting signal), which drives noise injection;
+        non-positive differences are clamped to zero so no noise is added. The
+        clamped value is then blended into ``noise_scale`` via ``update_weight``
+        (exponential moving average).
 
         Parameters
         ----------
@@ -98,8 +103,8 @@ class AdamWithAdaptiveNoise(Adam):
         test_nll : torch.Tensor
             Test set negative log-likelihood.
         """
-        ratio = torch.log(torch.clamp(train_nll, min=1e-4)) - torch.log(
-            torch.clamp(test_nll, min=1e-4)
+        ratio = torch.log(torch.clamp(test_nll, min=1e-4)) - torch.log(
+            torch.clamp(train_nll, min=1e-4)
         )
         ratio = torch.clamp(ratio, min=0.0, max=0.1)  # only consider overfitting
         self.noise_scale = (

@@ -3,11 +3,20 @@ Utility functions and classes for TorchRef.
 
 This module provides:
 - TensorMasks and TensorDict for managing tensor collections
+- Device/dtype movement mixins (DeviceMixin) and device resolution
 - Debugging utilities and mixins
 - Statistics formatting and tracking
-- Hyperparameter management
 - Gradient norm computation
 - PDB/selection parsing utilities
+- Loss-finiteness validation (validate_loss)
+- Autograd introspection (collect_loss_leaves)
+- JSON serialization helpers (convert_to_serializable)
+- Triton/eager backend dispatch (Engine)
+
+The names re-exported here are the package's public surface (see
+``__all__``). Some submodule-only helpers (e.g.
+``torchref.utils.timing.register_timing``) are not re-exported and must be
+imported from their submodule.
 
 Example
 -------
@@ -16,7 +25,7 @@ Example
     from torchref.utils import TensorMasks, DebugMixin, gradnorm
 
     # Create tensor masks for parameter selection
-    masks = TensorMasks()
+    masks = TensorMasks(device='cuda')
     masks['backbone'] = backbone_mask
 
     # Use debugging mixin in your class

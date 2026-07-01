@@ -42,8 +42,9 @@ def MapSymmetry(
         Shape of the density map (nx, ny, nz).
     cell_params : torch.Tensor, shape (6,)
         Unit cell parameters [a, b, c, alpha, beta, gamma] in Å and degrees.
-    dtype_float : torch.dtype, default torch.float32
-        Floating point precision to use.
+    dtype_float : torch.dtype, optional
+        Floating point precision to use. Defaults to the configured
+        ``dtypes.float`` (``get_float_dtype()``, float32 in production).
     verbose : int, default 1
         Verbosity level (0=silent, 1=info, 2=debug).
     device : torch.device, default: configured device.current

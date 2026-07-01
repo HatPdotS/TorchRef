@@ -3,6 +3,11 @@ PyTorch implementations of coordinate transformation functions.
 
 These functions are GPU-accelerated and support automatic differentiation
 for use in optimization and refinement.
+
+.. note::
+    ``get_fractional_matrix`` is an exception: it assembles its output via
+    ``torch.tensor([...])``, which detaches from the autograd graph, so
+    gradients do not flow back to the input ``cell`` parameters.
 """
 
 import torch
@@ -76,6 +81,12 @@ def get_fractional_matrix(cell):
     -------
     torch.Tensor
         3x3 transformation matrix B such that cart = frac @ B.T.
+
+    Notes
+    -----
+    The matrix is assembled with ``torch.tensor([...])``, which detaches the
+    result from the autograd graph. Gradients therefore do not propagate back
+    to ``cell``; this function is non-differentiable in the cell parameters.
     """
     a, b, c = cell[:3]
     alpha, beta, gamma = torch.deg2rad(cell[3:])

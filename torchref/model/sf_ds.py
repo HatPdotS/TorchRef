@@ -52,7 +52,8 @@ class SfDS(DeviceMovementMixin, nn.Module):
     dtype_float : torch.dtype, optional
         Data type for floating point tensors. Default is dtypes.float.
     device : torch.device, optional
-        Computation device. Defaults to the configured device.current.
+        Computation device. Defaults to the configured default device
+        (``get_default_device()``).
     verbose : int, optional
         Verbosity level for logging. Default is 0.
     max_memory_gb : float, optional
@@ -236,6 +237,12 @@ class SfDS(DeviceMovementMixin, nn.Module):
     ) -> torch.Tensor:
         """
         Compute atomic scattering factors from ITC92 A and B coefficients.
+
+        .. note::
+            Legacy/unused helper. The active backends (``ds_iso``/``ds_aniso``,
+            dispatched from :meth:`_compute_p1_sf`) compute scattering factors
+            internally from raw A/B and never materialize the large
+            ``(N_reflections, N_atoms)`` intermediate that this method returns.
 
         The scattering factor is computed as:
             f(s) = sum_i A_i * exp(-B_i * s^2 / 4)

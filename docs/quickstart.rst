@@ -5,12 +5,11 @@ This guide walks you through a basic crystallographic refinement with TorchRef.
 
 For interactive examples, see the Jupyter notebooks in ``example_notebooks/``.
 
-For a more detailed explanation check out these collabs:
+For a more detailed explanation check out these Colab notebooks:
 
-- `Basic Usage <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/basic_usage.ipynb>`_ - Getting started tutorial
-- `Code Examples <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/code_examples.ipynb>`_ - Common patterns and recipes
-- `Target Exploration <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/target_exploration.ipynb>`_ - Exploring refinement targets
-- `Structure Factor Calculation <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factor_calculation.ipynb>`_ - FFT-based F_calc
+- `Quick Start <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/quickstart.ipynb>`_ - Getting started tutorial
+- `Structure Factors <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factors.ipynb>`_ - FFT-based F_calc
+- `Targets and Weighting <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/targets_and_weighting.ipynb>`_ - Refinement targets and weighting
 
 Basic Refinement
 ----------------
@@ -117,7 +116,7 @@ Use the model to compute structure factors for given Miller indices:
 
    import torch
    from torchref import read_mtz, read_pdb, Scaler, ROOT_TORCHREF
-   from torchref.math_functions.math_torch import get_rfactors
+   from torchref.base.metrics.rfactor import get_rfactors
 
    # Load data and model
    data = read_mtz(f"{ROOT_TORCHREF}/example_notebooks/1DAW.mtz")
@@ -264,11 +263,14 @@ Define custom refinement targets with automatic gradient computation:
        name = 'custom_lsq'
 
        def __init__(self, refinement):
-           super().__init__(refinement)
+           # The base Target signature is __init__(self, verbose=0, **kwargs);
+           # keep a handle on the refinement object yourself.
+           super().__init__()
+           self.refinement = refinement
 
        def forward(self):
            # Define your loss - gradients computed automatically!
-           F_calc = self.refinement.model.get_F_calc()
+           F_calc = self.refinement.get_F_calc()
            F_obs = self.refinement.reflection_data.F
            loss = torch.mean((torch.abs(F_calc) - F_obs) ** 2)
            return loss
@@ -385,11 +387,11 @@ Command Line Interface
 
 For quick refinements from the command line::
 
-   torchref-refine -f reflections.mtz -s structure.pdb --output refined.pdb
+   torchref.refine -m structure.pdb -sf reflections.mtz -o output_dir/
 
 Next Steps
 ----------
 
-- See ``example_notebooks/basic_usage.ipynb`` for a complete tutorial
-- See ``example_notebooks/code_examples.ipynb`` for more code patterns
-- See ``example_notebooks/target_exploration.ipynb`` for custom targets
+- See ``example_notebooks/quickstart.ipynb`` for a complete tutorial
+- See ``example_notebooks/structure_factors.ipynb`` for structure-factor calculation
+- See ``example_notebooks/targets_and_weighting.ipynb`` for targets and weighting

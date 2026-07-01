@@ -73,6 +73,9 @@ class NonBondedTarget(GeometryTarget):
         Repulsion function type ('prolsq', 'gaussian', 'soft'). Default is 'prolsq'.
     sigma : float, optional
         Effective tolerance on the overlap in Angstroms. Default is 0.3.
+        Stored as the ``_sigma_vdw`` buffer (exposed as the ``sigma_vdw``
+        property) and is distinct from the base-class ``sigma`` keyword,
+        which is currently inert (discarded by ``ModelTarget.__init__``).
     r_exp : float, optional
         Exponent of the repulsion term. Default is 4.0.
     c_rep : float, optional
@@ -87,6 +90,10 @@ class NonBondedTarget(GeometryTarget):
         Default is 0.0.
     verbose : int, optional
         Verbosity level. Default is 0.
+    scale : float, optional
+        Public attribute stored as ``self.scale``. Default is 10.0. Note: it
+        is set but not consumed by ``forward()``; it is currently
+        informational only and does not scale the computed loss.
     """
 
     name: str = "geometry/nonbonded"
@@ -114,7 +121,8 @@ class NonBondedTarget(GeometryTarget):
             Repulsion function type ('prolsq', 'gaussian', 'soft'). Default is 'prolsq'.
         sigma : float, optional
             Effective tolerance on the overlap (Å). Default 0.3. Only
-            used when ``c_rep`` is None.
+            used when ``c_rep`` is None. Stored as ``_sigma_vdw``; distinct
+            from the (currently inert) base-class ``sigma`` keyword.
         r_exp : float, optional
             Repulsion exponent. Default is 4.0.
         c_rep : float or None, optional
@@ -130,8 +138,11 @@ class NonBondedTarget(GeometryTarget):
             cannot slip through the list.
         verbose : int, optional
             Verbosity level. Default is 0.
+        scale : float, optional
+            Public attribute stored as ``self.scale``. Default is 10.0. Set
+            but not consumed by ``forward()`` (informational only).
         """
-        super().__init__(model, verbose, target_value=0.5, sigma=1.2)
+        super().__init__(model, verbose)
         self.mode = mode
         self.scale = scale
         # Register sigma / r_exp / buffer as buffers so .to(device) moves them.
@@ -211,10 +222,14 @@ class NonBondedTarget(GeometryTarget):
 
         Safety invariant: the default build cutoff (6.0 Å) leaves roughly
         ``cutoff - max_vdw_sum ≈ 2.4 Å`` of slack before a previously-
-        non-contact atom pair could form a new clash. Setting
-        ``rebuild_threshold < 2.4 / 2 = 1.2 Å`` guarantees that no such
-        pair can slip through the list — that is, a rebuild fires
-        before the slack is consumed.
+        non-contact atom pair could form a new clash. The displacement
+        test above thresholds the single largest per-atom drift, but both
+        atoms of a pair can move, so in the worst case the pair separation
+        closes by up to ``2 * rebuild_threshold``. Requiring
+        ``rebuild_threshold < 2.4 / 2 = 1.2 Å`` (the default 1.0 Å
+        satisfies this) therefore keeps ``2 * rebuild_threshold`` below the
+        2.4 Å slack, guaranteeing a rebuild fires before any such pair can
+        slip through the list.
         """
         if self._model is None:
             return
@@ -387,6 +402,14 @@ class NonBondedTarget(GeometryTarget):
         -------
         dict
             Dictionary with 'indices', 'violations', 'distances', 'min_distances'.
+
+        Notes
+        -----
+        Reported violations are ``min_distances - actual_distances`` and do
+        **not** include the ``buffer`` onset that ``forward()`` penalizes
+        (``forward()`` uses ``min_distances + buffer - distance``). When
+        ``buffer > 0`` these counts will therefore differ from the pairs the
+        loss actually penalizes.
         """
         xyz = self.model.xyz()
         device = xyz.device
@@ -429,7 +452,14 @@ class NonBondedTarget(GeometryTarget):
         }
 
     def stats(self) -> Dict[str, any]:
-        """Get non-bonded restraint statistics."""
+        """Get non-bonded restraint statistics.
+
+        Notes
+        -----
+        Reported violation counts use ``min_distances - actual_distances``
+        and exclude the ``buffer`` onset that ``forward()`` penalizes, so
+        when ``buffer > 0`` they differ from the pairs the loss penalizes.
+        """
         xyz = self.model.xyz()
         device = xyz.device
 

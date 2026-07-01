@@ -1,8 +1,11 @@
 """Triton forward + analytic backward for the planarity target.
 
-The plane normals are computed on the host via a detached SVD (float64,
-matching the eager path) — that step is not Triton-able and already
-runs without autograd. The Triton kernel handles the per-plane gather
+The plane normals are computed on the host via a detached ``eigh`` on the
+per-plane (P, 3, 3) covariance (chosen over SVD for speed), promoted to
+float64 for the eigendecomposition only and then cast back — that step is
+not Triton-able and already runs without autograd. (The eager path in
+``torchref.base.targets.planarity`` uses SVD in the input dtype.) The Triton
+kernel handles the per-plane gather
 + centroid + (pos - centroid)·normal + Gaussian NLL + sum, and the
 backward kernel scatters the analytic gradient back to ``xyz``.
 
@@ -278,10 +281,10 @@ def planarity_math_triton(
     """Triton-backed planarity NLL with analytic backward.
 
     Drop-in replacement for
-    :func:`torchref.base.targets.planarity.planarity_math`. SVD-derived
-    plane normals are computed on the host (detached, same as eager);
-    the gather + project + NLL + sum and the gradient scatter run in
-    Triton.
+    :func:`torchref.base.targets.planarity.planarity_math`. Plane normals are
+    computed on the host (detached) via ``eigh`` on the per-plane covariance,
+    promoted to float64 then cast back; the gather + project + NLL + sum and
+    the gradient scatter run in Triton.
     """
     if not plane_groups:
         return torch.zeros((), device=xyz.device, dtype=xyz.dtype)

@@ -1,3 +1,22 @@
+"""
+Core utility containers and atom-selection parsing for TorchRef.
+
+This module defines the lower-level building blocks re-exported from
+``torchref.utils``:
+
+- :class:`ModuleReference` -- holds a reference to an ``nn.Module`` without
+  registering it as a submodule (keeps its parameters out of the parent tree).
+- :class:`TensorDict` -- an ``nn.Module``-backed, dict-like tensor container
+  whose entries are registered as buffers (so they move with the module and
+  appear in ``state_dict``).
+- :class:`TensorMasks` -- a ``dict`` subclass for boolean mask tensors with
+  device movement and a cached combined (logical-AND) mask.
+- :func:`sanitize_pdb_dataframe` -- repair duplicate atom identifiers and
+  over-long residue names in a PDB/CIF DataFrame.
+- :func:`parse_phenix_selection` / :func:`create_selection_mask` -- parse
+  Phenix-style atom-selection strings into boolean masks.
+"""
+
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, Tuple
 
@@ -67,15 +86,34 @@ class ModuleReference:
         return f"ModuleReference({self.module.__class__.__name__})"
 
 
+# NOTE: ``torch.nn`` is imported here (mid-module) rather than at the top
+# with the other imports; left in place to avoid a non-docstring code move.
 import torch.nn as nn
 
 
 class TensorDict(nn.Module):
-    """
-    A dictionary-like container for PyTorch tensors that:
-    - Supports standard dict syntax
-    - Automatically moves with the module
-    - Registers tensors as buffers so they are included in state_dict
+    """A dictionary-like container for PyTorch tensors.
+
+    Backed by :class:`torch.nn.Module`: each stored tensor is registered as a
+    buffer, so the container's tensors move with the module (``.to()`` /
+    ``.cuda()`` / ``.cpu()``) and are included in ``state_dict``. Standard
+    dict-style access (``td[key]``, ``key in td``, ``keys``/``values``/
+    ``items``, ``len``) is supported. Insertion order of keys is preserved.
+
+    Parameters
+    ----------
+    initial_dict : dict of str to torch.Tensor, optional
+        Initial key/tensor pairs to populate the container.
+
+    Examples
+    --------
+    ::
+
+        td = TensorDict({'coords': torch.zeros(10, 3)})
+        td['weights'] = torch.ones(10)
+        td.cuda()                 # buffers move with the module
+        coords = td['coords']     # standard dict access
+        'weights' in td           # -> True
     """
 
     def __init__(self, initial_dict: Optional[Dict[str, torch.Tensor]] = None):
@@ -86,6 +124,12 @@ class TensorDict(nn.Module):
                 self[k] = v
 
     def __setitem__(self, key: str, tensor: torch.Tensor):
+        """Store ``tensor`` under ``key`` as a registered buffer.
+
+        On a new key the tensor is registered as a buffer. On an existing
+        key, a same-shape tensor is copied in-place into the buffer;
+        a different-shape tensor causes the buffer to be re-registered.
+        """
         name = f"_buf_{key}"
         if not hasattr(self, name):
             # Register as buffer
@@ -102,27 +146,41 @@ class TensorDict(nn.Module):
                 self.register_buffer(name, tensor)
 
     def __getitem__(self, key: str) -> torch.Tensor:
+        """Return the tensor stored under ``key``.
+
+        Raises
+        ------
+        KeyError
+            If ``key`` is not present.
+        """
         name = f"_buf_{key}"
         if not hasattr(self, name):
             raise KeyError(key)
         return getattr(self, name)
 
     def __contains__(self, key: str):
+        """Return True if ``key`` is stored in the container."""
         return key in self._keys
 
     def keys(self):
+        """Return a list copy of the stored keys (in insertion order)."""
         return self._keys.copy()
 
     def values(self):
+        """Return a list of the stored tensors (in key order)."""
         return [getattr(self, f"_buf_{k}") for k in self._keys]
 
     def items(self):
+        """Return a list of ``(key, tensor)`` pairs (in key order)."""
         return [(k, getattr(self, f"_buf_{k}")) for k in self._keys]
 
     def __len__(self):
         return len(self._keys)
 
     def __repr__(self):
+        # Note: the closing literal is "}})" (one stray extra "}") so the
+        # rendered repr is not perfectly brace-balanced. Kept as-is to avoid
+        # changing user-visible output.
         return (
             "TensorDict({"
             + ", ".join(f'{k}: {getattr(self, f"_buf_{k}")}' for k in self._keys)
@@ -168,6 +226,7 @@ class TensorMasks(DeviceMovementMixin, dict):
 
     This is a lightweight dict subclass that:
     - Ensures all tensors are boolean dtype
+    - Rejects an all-False mask (it would mask out all data)
     - Supports device movement via to(), cuda(), cpu()
     - Provides combined mask via __call__()
 
@@ -176,7 +235,14 @@ class TensorMasks(DeviceMovementMixin, dict):
     data : dict, optional
         Initial mask data.
     device : str or torch.device, optional
-        Device for tensors. Defaults to the configured device.current.
+        Device for tensors. Defaults to
+        :func:`torchref.config.get_default_device`.
+
+    Raises
+    ------
+    ValueError
+        On assignment of a mask that is not boolean dtype, or that is
+        entirely False (which would mask out all data).
 
     Examples
     --------
@@ -205,7 +271,17 @@ class TensorMasks(DeviceMovementMixin, dict):
                 self[k] = v
 
     def __setitem__(self, key: str, tensor: torch.Tensor):
-        """Set mask tensor, ensuring boolean dtype and correct device."""
+        """Set mask tensor, ensuring boolean dtype and correct device.
+
+        The tensor is moved to ``self.device``. A ``None`` value is stored
+        as-is (no validation).
+
+        Raises
+        ------
+        ValueError
+            If ``tensor`` is not boolean dtype, or if it is all-False
+            (which would mask out all data).
+        """
         if tensor is not None:
             if tensor.dtype != torch.bool:
                 raise ValueError(

@@ -30,8 +30,12 @@ class ChiralTarget(GeometryTarget):
     where vi = position of neighbor i - position of center.
 
     For standard protein Cα atoms with ordering (N, C, CB):
-    - L-amino acids: positive volume (~+2.5 Å³)
-    - D-amino acids: negative volume (~-2.5 Å³)
+    - L-amino acids: positive volume (sign convention; ~2.5 Å³ in magnitude)
+    - D-amino acids: negative volume (~-2.5 Å³ in magnitude)
+
+    The ~2.5 Å³ figure is only hard-coded as the effective ideal for
+    *achiral* centers (``ideal_volumes == 0``); genuine chiral centers use
+    their own stored ``ideal_volumes`` rather than this constant.
 
     The loss function penalizes deviations from the ideal signed volume:
         NLL = 0.5 * ((V - V_ideal) / σ)² + log(σ) + 0.5 * log(2π)
@@ -42,7 +46,7 @@ class ChiralTarget(GeometryTarget):
     name: str = "geometry/chiral"
 
     def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose, target_value=-2.0, sigma=0.2)
+        super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
         xyz = self.model.xyz()

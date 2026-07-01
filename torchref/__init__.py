@@ -15,15 +15,13 @@ Quick Start
 -----------
 ::
 
-    from torchref import Refinement, read_mtz, read_pdb
+    from torchref import LBFGSRefinement
 
-    # Load data and model
-    data = read_mtz('data.mtz')
-    model = read_pdb('structure.pdb')
-
-    # Run refinement
-    refinement = Refinement(data=data, model=model, device='cuda')
-    refinement.run_refinement(macro_cycles=10)
+    # Load data and model directly from file paths, then refine
+    refinement = LBFGSRefinement(
+        data_file='data.mtz', pdb='model.pdb', device='cuda'
+    )
+    refinement.refine(macro_cycles=10)
 
 Modules
 -------
@@ -41,8 +39,14 @@ symmetry
     Crystallographic symmetry operations.
 alignment
     Patterson-based structure alignment.
-math_functions
-    Mathematical utilities for crystallography.
+maps
+    Map calculation, including difference maps (``Map``, ``DifferenceMap``).
+base
+    Low-level building blocks, including the math/crystallography utilities.
+cli
+    Command-line entry points (``torchref.refine``, ``torchref.difference-refine``, ...).
+experimental
+    Experimental features (e.g. kinetic targets, monolithic refinement).
 utils
     General utilities and debugging tools.
 """

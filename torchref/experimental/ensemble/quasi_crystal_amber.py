@@ -1,6 +1,11 @@
 """
 Quasi-crystal Amber target for ensemble refinement.
 
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``. The API and
+   behaviour may change or be removed without notice.
+
 Replaces :class:`EnsembleAmberKLTarget`'s per-member Python loop (100
 sequential OpenMM round-trips) with a single unified OpenMM ``System``: the
 asymmetric unit is symmetry-expanded by the spacegroup within each small
@@ -41,7 +46,7 @@ state and:
 2. build a new ``Context`` on the supercell (CUDA > OpenCL > CPU);
 3. tile the template's atom map + H-attachment indices per member.
 
-Forward (implemented in a follow-up increment) reads
+Forward reads
 ``ensemble.xyz_per_member``, applies the supercell layout's sym+tile
 transform, scatters into the unified OpenMM position tensor (heavy via
 ``_compose_full_omm_xyz``-style scatter; H via the tiled local-frame
@@ -123,6 +128,14 @@ if TYPE_CHECKING:
 
 class QuasiCrystalAmberTarget(AmberTarget):
     """Amber energy on a k × 1 × 1 supercell with full crystal sym expansion.
+
+    .. warning::
+
+       Experimental — API and behaviour may change without notice.
+
+    This is the production ensemble Amber restraint (wired by
+    :class:`EnsembleRefinement`). It carries **no** entropy/KL term — physical
+    crystal contacts in the supercell provide the anti-collapse regularization.
 
     The ensemble is laid out as ``k = n_members / N_sym`` disorder copies
     tiled along the small cell's a-axis; each small cell holds the

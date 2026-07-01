@@ -11,6 +11,12 @@ Model
     Base atomic model storing xyz coordinates, B-factors, occupancies.
 ModelFT
     Fourier Transform model for FFT-based structure factor calculation.
+MixedModel
+    Weighted mixture of ModelFT states (e.g. dark/light fractions).
+ModelCollection
+    Named dictionary of MixedModel instances at different timepoints.
+_SharedMixedModel
+    MixedModel variant referencing shared base models without re-registering.
 SfFFT
     Structure Factor calculator using FFT (Fast Fourier Transform).
 SfDS
@@ -21,10 +27,14 @@ MixedTensor
     Hybrid tensor allowing partial freezing of parameters.
 PositiveMixedTensor
     MixedTensor with positivity constraint.
+CholeskyMixedTensor
+    MixedTensor for anisotropic ADPs kept positive-definite via Cholesky.
 PassThroughTensor
     Direct parameter access wrapper.
 OccupancyTensor
     Tensor constrained to [0, 1] range for occupancies.
+RigidXYZTensor
+    Rigid-body coordinate parametrization (Euler angles + translation).
 
 Example
 -------
@@ -60,6 +70,7 @@ from torchref.model.mixed_model import MixedModel
 from torchref.model.model import Model
 from torchref.model.model_ft import ModelFT
 from torchref.model.parameter_wrappers import (
+    CholeskyMixedTensor,
     MixedTensor,
     OccupancyTensor,
     PassThroughTensor,
@@ -77,6 +88,7 @@ __all__ = [
     "ModelFT",
     "MixedTensor",
     "PositiveMixedTensor",
+    "CholeskyMixedTensor",
     "PassThroughTensor",
     "OccupancyTensor",
     "ModelCollection",

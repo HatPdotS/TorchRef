@@ -1,17 +1,22 @@
 """Shared Triton helpers for dihedral-angle computation and gradients.
 
-The forces follow the Bekker / OpenMM convention. Given four atoms
-p1, p2, p3, p4 with bonds b1 = p2-p1, b2 = p3-p2, b3 = p4-p3:
+The forces use the sign convention of
+:func:`torchref.base.targets._common.torsions_from_xyz`, which defines the
+angle as ``atan2(m·n2, n1·n2)``. The canonical Bekker / OpenMM formulas are
+**overall-negated** relative to this convention; the forms below (and the code)
+are the sign-corrected versions, verified by finite differences against the
+eager forward and bitwise via the equivalence tests.
+
+Given four atoms p1, p2, p3, p4 with bonds b1 = p2-p1, b2 = p3-p2, b3 = p4-p3:
 
     n1 = b1 x b2,  n2 = b2 x b3,  b2_len = |b2|
 
-    ∂ω/∂p1 = -(b2_len / |n1|²) · n1     (call F1)
-    ∂ω/∂p4 =  (b2_len / |n2|²) · n2     (call F4)
-    ∂ω/∂p2 = ((b1·b2) / |b2|² − 1) · F1 − ((b3·b2) / |b2|²) · F4
-    ∂ω/∂p3 = −F1 − F2 − F4
+    ∂ω/∂p1 =  (b2_len / |n1|²) · n1     (call F1)
+    ∂ω/∂p4 = -(b2_len / |n2|²) · n2     (call F4)
+    ∂ω/∂p2 = -((b1·b2) / |b2|² + 1) · F1 + ((b3·b2) / |b2|²) · F4   (call F2)
+    ∂ω/∂p3 = −F1 − F2 − F4              (returned as F3)
 
-Sign convention matches :func:`torchref.base.targets._common.torsions_from_xyz`
-(verified bitwise via the equivalence tests).
+The opposite (Bekker) signs would give the wrong-signed forces here.
 """
 
 from __future__ import annotations

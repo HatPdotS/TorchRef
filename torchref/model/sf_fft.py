@@ -43,11 +43,12 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         Space group specification (string, int, or gemmi.SpaceGroup).
         If None, defaults to P1.
     max_res : float, optional
-        Maximum resolution for grid spacing in Angstroms. Default is 1.0.
+        Maximum resolution for grid spacing in Angstroms. Default is 1.5.
     dtype_float : torch.dtype, optional
         Data type for floating point tensors. Default is dtypes.float.
     device : torch.device, optional
-        Computation device. Defaults to the configured device.current.
+        Computation device. Defaults to the configured default device
+        (``get_default_device()``).
     verbose : int, optional
         Verbosity level for logging. Default is 0.
 

@@ -30,6 +30,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
 
     2. Full initialization with model::
 
+        # NOTE: 0.35 / 46.0 are the production values that ``Scaler``
+        # injects; the bare-constructor defaults are k_solvent=1.1,
+        # b_solvent=50.0.
         solvent = SolventModel(model, k_solvent=0.35, b_solvent=46.0)
 
     Attributes
@@ -41,7 +44,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
     verbose : int
         Verbosity level.
     float_type : torch.dtype
-        Floating point data type.
+        Floating point data type. Defaults to the configured float dtype
+        via ``get_float_dtype()`` (e.g. float64 under a float64 config),
+        not a hard-wired ``torch.float32``.
     solvent_radius : float
         Probe radius in Angstroms for dilation.
     erosion_radius : float
@@ -53,7 +58,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
     b_solvent : torch.nn.Parameter
         Solvent B-factor.
     phase_offset : torch.nn.Parameter or buffer
-        Phase offset in radians.
+        Phase offset in radians. It is a trainable ``nn.Parameter`` when
+        ``optimize_phase=True``, otherwise a registered buffer fixed at 0.0.
     """
 
     def __init__(
@@ -96,8 +102,11 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             Initial phase offset in radians.
         verbose : int, default 1
             Verbosity level.
-        float_type : torch.dtype, default torch.float32
-            Floating point data type.
+        float_type : torch.dtype, optional
+            Floating point data type. If ``None`` (default), resolved at
+            runtime to the configured float dtype via ``get_float_dtype()``
+            (e.g. float64 under a float64 config), not a hard-wired
+            ``torch.float32``.
         device : torch.device, default: configured device.current
             Device for tensor operations.
         """
@@ -242,8 +251,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             n_atoms = xyz.shape[0]
 
             # --- Step 1: dilation, chunked over atoms ---
-            # Reuses the SF splatting pattern from
-            # `torchref.base.electron_density.main._add_isotropic_cpu_fused`:
+            # Plain-scatter sphere splat (same pattern as the variable-radius
+            # CPU splat):
             #   - cached spherical voxel offsets via _get_radius_offsets
             #     (avoids rebuilding the meshgrid each call)
             #   - direct fractional voxel positions from integer indices
@@ -518,20 +527,26 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
 
         The solvent model:
 
-        1. Takes the binary solvent mask
-        2. Smooths it with Gaussian filter (σ=1.5 voxels) to create soft edges
-        3. Computes structure factors via FFT
-        4. Applies B-factor damping: exp(-B * s²) where s = sin(θ)/λ
-        5. If optimize_phase=True and F_protein provided: blends mask phases with protein phases
+        1. Retrieves the solvent structure factors ``f_sol`` (the FFT of the
+           *smoothed* mask) from a per-hkl cache keyed on the hkl fingerprint;
+           it is computed only when missing or when ``update_fsol=True``. The
+           smoothing itself uses a Gaussian filter with σ = ``self.transition``
+           voxels (structure/grid dependent; default ``radius/4``), applied
+           upstream when the mask is built.
+        2. Applies B-factor damping: exp(-B * s^2) where s = sin(θ)/λ
+        3. If optimize_phase=True and F_protein provided: blends mask phases with protein phases
            phase_offset controls the blend: 0=use mask phases, ±π=use protein phases
-        6. Scales by k_solvent
+        4. Scales by k_solvent
 
         Parameters
         ----------
         hkl : torch.Tensor
             Miller indices, shape (N, 3).
         update_fsol : bool, default False
-            Whether to update solvent structure factors.
+            When ``True``, forces recomputation of the cached solvent
+            structure factors for this hkl (FFT of the smoothed mask) and
+            refreshes the per-hkl cache entry. When ``False`` (default), a
+            cached entry keyed on the hkl fingerprint is reused if present.
         F_protein : torch.Tensor, optional
             Protein structure factors, used for phase blending.
 
@@ -588,7 +603,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             # Apply global phase offset
             phase_adjusted_f_sol = f_sol * torch.exp(1j * self.phase_offset)
         else:
-            # No phase adjustment - use mask phases as-is4
+            # No phase adjustment - use mask phases as-is
             phase_adjusted_f_sol = f_sol
 
         # Scale by k_solvent and apply B-factor

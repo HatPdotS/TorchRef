@@ -55,7 +55,10 @@ class RigidBondTarget(ADPTarget):
         Reference to Model object.
     sigma : float, optional
         Target standard deviation for Δz. Default is 0.004 Å².
-        Hirshfeld found typical values of 0.001 Å² for good structures.
+        Hirshfeld found typical values of 0.001 Å² for good structures;
+        the default is deliberately ~4× looser for numerical stability and
+        to accommodate mixed iso/aniso models, where Δz is noisier than for
+        a fully anisotropic refinement.
     use_aniso : bool, optional
         If True and model has anisotropic ADPs, use proper tensor calculation.
         Default is True.

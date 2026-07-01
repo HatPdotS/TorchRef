@@ -99,6 +99,10 @@ if _HAVE_TRITON:
         sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
         syz = sy_ * sz_
         n = sx_ * syz
+        # float reciprocals for the decode (avoid the integer-divide on the int pipe;
+        # exact for v < 2^24, i.e. any physical box: bh<=~14 -> n=side^3 << 2^24)
+        inv_syz = 1.0 / syz.to(tl.float32)
+        inv_sz = 1.0 / sz_.to(tl.float32)
         m0 = tl.load(mask_ptr + atom * 5 + 0); m1 = tl.load(mask_ptr + atom * 5 + 1)
         m2 = tl.load(mask_ptr + atom * 5 + 2); m3 = tl.load(mask_ptr + atom * 5 + 3)
         m4 = tl.load(mask_ptr + atom * 5 + 4)
@@ -147,9 +151,9 @@ if _HAVE_TRITON:
         while v_start < n:
             v = v_start + v_lane
             vmask = v < n
-            ix = v // syz
+            ix = (v.to(tl.float32) * inv_syz).to(tl.int32)  # floor via trunc (v >= 0)
             rem = v - ix * syz
-            iy = rem // sz_
+            iy = (rem.to(tl.float32) * inv_sz).to(tl.int32)
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
@@ -159,9 +163,9 @@ if _HAVE_TRITON:
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
             # write index (PBC wrap); coords use the unwrapped offset above
-            vix = (cix + off_x) % nx; vix = tl.where(vix < 0, vix + nx, vix)
-            viy = (ciy + off_y) % ny; viy = tl.where(viy < 0, viy + ny, viy)
-            viz = (ciz + off_z) % nz; viz = tl.where(viz < 0, viz + nz, viz)
+            vix = cix + off_x; vix = vix - tl.where(vix >= nx, nx, 0); vix = vix + tl.where(vix < 0, nx, 0)
+            viy = ciy + off_y; viy = viy - tl.where(viy >= ny, ny, 0); viy = viy + tl.where(viy < 0, ny, 0)
+            viz = ciz + off_z; viz = viz - tl.where(viz >= nz, nz, 0); viz = viz + tl.where(viz < 0, nz, 0)
             r2 = wx * wx + wy * wy + wz * wz
             wmask = vmask & (r2 <= r2cut)
             density = (
@@ -214,6 +218,10 @@ if _HAVE_TRITON:
         sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
         syz = sy_ * sz_
         n = sx_ * syz
+        # float reciprocals for the decode (avoid the integer-divide on the int pipe;
+        # exact for v < 2^24, i.e. any physical box: bh<=~14 -> n=side^3 << 2^24)
+        inv_syz = 1.0 / syz.to(tl.float32)
+        inv_sz = 1.0 / sz_.to(tl.float32)
         m0 = tl.load(mask_ptr + atom * 5 + 0); m1 = tl.load(mask_ptr + atom * 5 + 1)
         m2 = tl.load(mask_ptr + atom * 5 + 2); m3 = tl.load(mask_ptr + atom * 5 + 3)
         m4 = tl.load(mask_ptr + atom * 5 + 4)
@@ -268,9 +276,9 @@ if _HAVE_TRITON:
         while v_start < n:
             v = v_start + v_lane
             vmask = v < n
-            ix = v // syz
+            ix = (v.to(tl.float32) * inv_syz).to(tl.int32)  # floor via trunc (v >= 0)
             rem = v - ix * syz
-            iy = rem // sz_
+            iy = (rem.to(tl.float32) * inv_sz).to(tl.int32)
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
@@ -280,9 +288,9 @@ if _HAVE_TRITON:
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
             # write index (PBC wrap); coords use the unwrapped offset above
-            vix = (cix + off_x) % nx; vix = tl.where(vix < 0, vix + nx, vix)
-            viy = (ciy + off_y) % ny; viy = tl.where(viy < 0, viy + ny, viy)
-            viz = (ciz + off_z) % nz; viz = tl.where(viz < 0, viz + nz, viz)
+            vix = cix + off_x; vix = vix - tl.where(vix >= nx, nx, 0); vix = vix + tl.where(vix < 0, nx, 0)
+            viy = ciy + off_y; viy = viy - tl.where(viy >= ny, ny, 0); viy = viy + tl.where(viy < 0, ny, 0)
+            viz = ciz + off_z; viz = viz - tl.where(viz >= nz, nz, 0); viz = viz + tl.where(viz < 0, nz, 0)
             r2 = wx * wx + wy * wy + wz * wz
             wmask = vmask & (r2 <= r2cut)
 
@@ -361,6 +369,10 @@ if _HAVE_TRITON:
         sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
         syz = sy_ * sz_
         n = sx_ * syz
+        # float reciprocals for the decode (avoid the integer-divide on the int pipe;
+        # exact for v < 2^24, i.e. any physical box: bh<=~14 -> n=side^3 << 2^24)
+        inv_syz = 1.0 / syz.to(tl.float32)
+        inv_sz = 1.0 / sz_.to(tl.float32)
 
         occ = tl.load(occ_ptr + atom)
         ax = tl.load(xyz_ptr + atom * 3 + 0)
@@ -420,9 +432,9 @@ if _HAVE_TRITON:
         while v_start < n:
             v = v_start + v_lane
             vmask = v < n
-            ix = v // syz
+            ix = (v.to(tl.float32) * inv_syz).to(tl.int32)  # floor via trunc (v >= 0)
             rem = v - ix * syz
-            iy = rem // sz_
+            iy = (rem.to(tl.float32) * inv_sz).to(tl.int32)
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
@@ -432,9 +444,9 @@ if _HAVE_TRITON:
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
             # write index (PBC wrap); coords use the unwrapped offset above
-            vix = (cix + off_x) % nx; vix = tl.where(vix < 0, vix + nx, vix)
-            viy = (ciy + off_y) % ny; viy = tl.where(viy < 0, viy + ny, viy)
-            viz = (ciz + off_z) % nz; viz = tl.where(viz < 0, viz + nz, viz)
+            vix = cix + off_x; vix = vix - tl.where(vix >= nx, nx, 0); vix = vix + tl.where(vix < 0, nx, 0)
+            viy = ciy + off_y; viy = viy - tl.where(viy >= ny, ny, 0); viy = viy + tl.where(viy < 0, ny, 0)
+            viz = ciz + off_z; viz = viz - tl.where(viz >= nz, nz, 0); viz = viz + tl.where(viz < 0, nz, 0)
             r2 = wx * wx + wy * wy + wz * wz
             wmask = vmask & (r2 <= r2cut)
             xx = wx * wx; yy = wy * wy; zz = wz * wz
@@ -491,6 +503,10 @@ if _HAVE_TRITON:
         sx_ = 2 * bhx + 1; sy_ = 2 * bhy + 1; sz_ = 2 * bhz + 1
         syz = sy_ * sz_
         n = sx_ * syz
+        # float reciprocals for the decode (avoid the integer-divide on the int pipe;
+        # exact for v < 2^24, i.e. any physical box: bh<=~14 -> n=side^3 << 2^24)
+        inv_syz = 1.0 / syz.to(tl.float32)
+        inv_sz = 1.0 / sz_.to(tl.float32)
 
         occ = tl.load(occ_ptr + atom)
         ax = tl.load(xyz_ptr + atom * 3 + 0)
@@ -552,9 +568,9 @@ if _HAVE_TRITON:
         while v_start < n:
             v = v_start + v_lane
             vmask = v < n
-            ix = v // syz
+            ix = (v.to(tl.float32) * inv_syz).to(tl.int32)  # floor via trunc (v >= 0)
             rem = v - ix * syz
-            iy = rem // sz_
+            iy = (rem.to(tl.float32) * inv_sz).to(tl.int32)
             off_x = ix - bhx
             off_y = iy - bhy
             off_z = (rem - iy * sz_) - bhz
@@ -564,9 +580,9 @@ if _HAVE_TRITON:
             wy = ofxf * uay + ofyf * uby + ofzf * ucy - w0y
             wz = ofxf * uaz + ofyf * ubz + ofzf * ucz - w0z
             # write index (PBC wrap); coords use the unwrapped offset above
-            vix = (cix + off_x) % nx; vix = tl.where(vix < 0, vix + nx, vix)
-            viy = (ciy + off_y) % ny; viy = tl.where(viy < 0, viy + ny, viy)
-            viz = (ciz + off_z) % nz; viz = tl.where(viz < 0, viz + nz, viz)
+            vix = cix + off_x; vix = vix - tl.where(vix >= nx, nx, 0); vix = vix + tl.where(vix < 0, nx, 0)
+            viy = ciy + off_y; viy = viy - tl.where(viy >= ny, ny, 0); viy = viy + tl.where(viy < 0, ny, 0)
+            viz = ciz + off_z; viz = viz - tl.where(viz >= nz, nz, 0); viz = viz + tl.where(viz < 0, nz, 0)
             r2 = wx * wx + wy * wy + wz * wz
             wmask = vmask & (r2 <= r2cut)
 
@@ -694,15 +710,19 @@ class WorkQueueGridDensity(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, real_space_grid, xyz, b, occ, A, B,
+    def forward(ctx, density_map, real_space_grid, xyz, b, occ, A, B,
                 r2cut, mask, inv_frac, frac):
+        # Accumulate the splat into a copy of the running density_map (out =
+        # density_map + splat) so the dispatch needs no separate zeros buffer + add.
+        # A clone (not in-place) keeps this autograd-trivial AND safe for the AUTO
+        # fallthrough: density_map is untouched if the kernel raises.
         nx, ny, nz = real_space_grid.shape[:3]
         grid_flat = real_space_grid.contiguous().view(-1)
         xyz = xyz.contiguous(); b = b.contiguous(); occ = occ.contiguous()
         A = A.contiguous(); B = B.contiguous()
         inv_frac_flat = inv_frac.contiguous().view(-1)
         frac_flat = frac.contiguous().view(-1)
-        out = torch.zeros(nx * ny * nz, dtype=xyz.dtype, device=xyz.device)
+        out = density_map.contiguous().clone().view(-1)
         _launch_grid_fwd(
             out, r2cut, mask,
             (grid_flat, xyz, b, A, B, occ, inv_frac_flat, frac_flat),
@@ -734,8 +754,9 @@ class WorkQueueGridDensity(torch.autograd.Function):
             nx=nx, ny=ny, nz=nz, BLOCK_V=BWD_BLOCK_V,
             num_warps=BWD_NUM_WARPS,
         )
-        # grads for: real_space_grid, xyz, b, occ, A, B, r2cut, mask, inv_frac, frac
-        return (None, grad_xyz, grad_b, grad_occ, None, None,
+        # out = density_map + splat -> grad wrt density_map is identity.
+        # grads for: density_map, real_space_grid, xyz, b, occ, A, B, r2cut, mask, inv_frac, frac
+        return (grad_density_map, None, grad_xyz, grad_b, grad_occ, None, None,
                 None, None, None, None)
 
 
@@ -746,15 +767,16 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
     ``grad_u`` (6 components) in place of ``grad_b``."""
 
     @staticmethod
-    def forward(ctx, real_space_grid, xyz, u, occ, A, B,
+    def forward(ctx, density_map, real_space_grid, xyz, u, occ, A, B,
                 r2cut, mask, inv_frac, frac):
+        # Accumulate into a copy of the running density_map (see the iso forward).
         nx, ny, nz = real_space_grid.shape[:3]
         grid_flat = real_space_grid.contiguous().view(-1)
         xyz = xyz.contiguous(); u = u.contiguous(); occ = occ.contiguous()
         A = A.contiguous(); B = B.contiguous()
         inv_frac_flat = inv_frac.contiguous().view(-1)
         frac_flat = frac.contiguous().view(-1)
-        out = torch.zeros(nx * ny * nz, dtype=xyz.dtype, device=xyz.device)
+        out = density_map.contiguous().clone().view(-1)
         _launch_grid_aniso_fwd(
             out, r2cut, mask,
             (grid_flat, xyz, u, A, B, occ, inv_frac_flat, frac_flat),
@@ -786,5 +808,6 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
             nx=nx, ny=ny, nz=nz, BLOCK_V=BWD_BLOCK_V,
             num_warps=BWD_NUM_WARPS,
         )
-        return (None, grad_xyz, grad_u, grad_occ, None, None,
+        # out = density_map + splat -> grad wrt density_map is identity.
+        return (grad_density_map, None, grad_xyz, grad_u, grad_occ, None, None,
                 None, None, None, None)

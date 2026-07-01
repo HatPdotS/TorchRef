@@ -6,7 +6,7 @@ Provides classes for computing and writing crystallographic electron density map
 Classes
 -------
 Map
-    Base class for 2mFo-DFc and Fcalc maps.
+    Base class for 2Fo-Fc and Fcalc maps.
 DifferenceMap
     Isomorphous difference map from two datasets.
 """

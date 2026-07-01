@@ -1,3 +1,10 @@
+"""
+Correlation scoring utilities for reciprocal-space alignment.
+
+Provides resolution-binned (Pearson) correlation between two sets of values,
+used for scoring rotation and translation searches.
+"""
+
 import torch
 
 
@@ -17,7 +24,16 @@ def binned_correlation(x, y, bins):
     Returns
     -------
     torch.Tensor
-        Binned correlation coefficients, shape (num_bins,) or (B, num_bins).
+        Binned correlation coefficients, shape (B, num_bins). Inputs are
+        always promoted to 2-D internally, so a 1-D input of shape (N,)
+        yields output of shape (1, num_bins); the result is never squeezed
+        back to 1-D.
+
+    Raises
+    ------
+    ValueError
+        If the first dimensions of ``x`` and ``y`` differ and neither is 1
+        (i.e. they cannot be broadcast against each other).
     """
     num_bins = bins.max().item() + 1
 

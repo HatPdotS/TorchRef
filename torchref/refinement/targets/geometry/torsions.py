@@ -133,7 +133,7 @@ class TorsionTarget(GeometryTarget):
         w_cis_proline: float = 0.05,
         w_cis_general: float = 0.0005,
     ):
-        super().__init__(model, verbose, target_value=1.0, sigma=0.3)
+        super().__init__(model, verbose)
         self.w_cis_proline = w_cis_proline
         self.w_cis_general = w_cis_general
 

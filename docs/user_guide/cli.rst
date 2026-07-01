@@ -15,9 +15,9 @@ Standard Refinement
 ``torchref.refine``
 ~~~~~~~~~~~~~~~~~~~
 
-LBFGS crystallographic refinement. Defaults to the maximum-likelihood Read
-MLF X-ray target with a cross-validated Luzzati σ_A term (``ml_sigmaa``) and
-joint XYZ+ADP+scaler optimisation.
+LBFGS crystallographic refinement. Defaults to the maximum-likelihood X-ray
+target with a cross-validated Luzzati σ_A term (``ml``) and separated
+XYZ-then-ADP optimisation.
 
 .. code-block:: bash
 
@@ -28,11 +28,12 @@ and a ``refinement_history.json`` log.
 
 **Key options:**
 
-* ``-n`` number of macro cycles (default 5)
-* ``--mode`` ``everything`` (joint, default) or ``refine`` (separated XYZ
-  then ADP)
-* ``--xray-mode`` ``ml_sigmaa`` (default; maximum-likelihood Read MLF with a
-  cross-validated Luzzati σ_A term), ``bhattacharyya``, ``ml``, ``ls``, ``gaussian``
+* ``-n`` / ``--n-cycles`` number of macro cycles (default 5)
+* ``--mode`` ``separate`` (separated XYZ then ADP, default) or ``everything``
+  (joint XYZ+ADP)
+* ``--xray-mode`` ``ml`` (default; maximum-likelihood with a cross-validated
+  Luzzati σ_A term), ``bhattacharyya``, ``ls``, ``ls_wunit_k1``, ``gaussian``
+  (the legacy ``ml_sigmaa`` is accepted as a deprecated alias for ``ml``)
 * ``--sigma-m-scale`` global multiplier on σ_m for the Bhattacharyya target
 * ``--dmin`` resolution cutoff
 * ``--device`` ``cpu`` / ``cuda``
@@ -54,14 +55,17 @@ restraints.
 .. code-block:: bash
 
    torchref.difference-refine \
-       --dark-pdb dark.pdb --light-pdb light.pdb \
-       --dark-mtz dark.mtz --light-mtz light.mtz \
-       --fractions 0.63,0.37 -o output/
+       -dm dark.pdb -lm light.pdb \
+       -dsf dark.mtz -lsf light.mtz \
+       --fraction 0.37 -o output/
 
-**Key options:** ``--weight-schedule`` annealing schedule (e.g. ``5,3,2``),
-``-n`` macro-cycles.
+**Key options:** ``-dm``/``--dark-model``, ``-lm``/``--light-model``,
+``-dsf``/``--dark-structure-factor``, ``-lsf``/``--light-structure-factor``,
+``--fraction`` (light-state population fraction, singular),
+``--weight-schedule`` annealing schedule (default ``5,3,2``),
+``-n``/``--n-cycles`` macro-cycles.
 
-:API: :mod:`torchref.cli.difference_refine`
+:API: :mod:`torchref.cli.collection_difference_refine`
 
 Map & Validation Utilities
 --------------------------
@@ -90,8 +94,8 @@ Computes real-space correlations and resolution-binned reciprocal-space CC.
 .. code-block:: bash
 
    torchref.validate-ded \
-       --dark-mtz dark.mtz --light-mtz light.mtz \
-       --dark-pdb dark.pdb --light-pdb light.pdb
+       -dsf dark.mtz -lsf light.mtz \
+       -dm dark.pdb -lm light.pdb
 
 **Key options:** ``--fraction``, ``--selection`` (Phenix-style atom
 selection), ``--mask-radius``, ``--n-bins``.
@@ -108,8 +112,8 @@ the input models are kept as-is.
 .. code-block:: bash
 
    torchref.phased-difference-map \
-       --dark-pdb dark.pdb --light-pdb light.pdb \
-       --dark-mtz dark.mtz --light-mtz light.mtz \
-       --fractions 0.63,0.37 -o output/
+       -dm dark.pdb -lm light.pdb \
+       -dsf dark.mtz -lsf light.mtz \
+       --fraction 0.37 -o results.mtz
 
 :API: :mod:`torchref.cli.phased_difference_map`

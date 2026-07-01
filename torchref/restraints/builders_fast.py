@@ -21,6 +21,9 @@ Usage:
     from torchref.restraints.builders_fast import build_all_restraints
     restraints = build_all_restraints(pdb, cif_dict, device)
 
+Note that these builders and ``build_all_restraints`` are not re-exported at
+the ``torchref.restraints`` package level; import them from this module
+(``torchref.restraints.builders_fast``) directly.
 """
 
 from abc import ABC, abstractmethod
@@ -52,9 +55,11 @@ class PreprocessedPDB:
     Converts DataFrame to arrays once, computes residue boundaries,
     enabling O(1) access to residue data without DataFrame operations.
 
-    Supports altloc expansion: residues with alternate conformations
-    are expanded into multiple conformations, each with common atoms
-    plus the specific altloc atoms.
+    Supports altloc expansion: residues with alternate conformations can be
+    expanded into multiple conformations, each with common atoms plus the
+    specific altloc atoms. The constructor only normalizes altlocs and
+    computes residue boundaries; the expansion itself is performed on demand
+    by :meth:`get_altloc_conformations`, not at preprocessing time.
     """
 
     def __init__(self, pdb: pd.DataFrame):
@@ -915,6 +920,9 @@ class ChiralRestraintBuilder(RestraintBuilder):
                     # stores exactly 0.0. That 0.0 is a sentinel: the chiral
                     # target treats ideal_volume == 0 as an achiral centre and
                     # restrains |volume| toward 2.5 (not toward a target of 0).
+                    # Note: chirals with an unknown sign were mapped to NaN by
+                    # PreprocessedCIF._preprocess_chirals and dropped upstream
+                    # by match_chirals_numba, so they never reach here.
                     all_ideal_volumes.append(work_signs[:count].copy() * 2.5)
                     all_sigmas.append(work_sigmas[:count].copy())
 
@@ -1631,7 +1639,8 @@ class InterResidueTorsionBuilder:
     Usage:
         builder = InterResidueTorsionBuilder()
         result = builder.build(pdb, link_dict, device)
-        # result = {'phi': {...}, 'psi': {...}, 'omega': {...}}
+        # result = {'phi': {...}, 'psi': {...}, 'omega': {...},
+        #           'ramachandran': {...}}
 
         # Or for disulfides (incremental):
         builder = InterResidueTorsionBuilder()
@@ -2173,8 +2182,10 @@ class ResidueIterator:
     """
     Efficient iterator over residues.
 
-    Provided for compatibility - prefer using build_all_restraints() or
-    the individual builder.build() methods instead.
+    .. deprecated::
+        Retained only for backward compatibility with code that still relies
+        on residue-by-residue iteration. Prefer :func:`build_all_restraints`
+        or the individual ``builder.build()`` methods instead.
     """
 
     def __init__(self, pdb: pd.DataFrame, filter_atom_type: Optional[str] = None):

@@ -157,7 +157,7 @@ def vectorized_add_to_map(
         -(np.pi**2) * diff_coords_squared.unsqueeze(2) / B_total.unsqueeze(1)
     )
 
-    # Sum over the 4 Gaussian components
+    # Sum over the 5 ITC92 Gaussian components (A/B have shape (N_atoms, 5))
     density = torch.sum(A_normalized.unsqueeze(1) * gaussian_terms, dim=2)
 
     # Flatten to (N_atoms * N_voxels,)
@@ -193,6 +193,11 @@ def vectorized_add_to_map_aniso(
     - B_total_ij = (B_itc92 × δ_ij + 8π² × U_atomic_ij) / 4
     - Normalization: (π³ / det(B_total))^(1/2)
     - Exponent: exp(-π² × r^T × B_total^(-1) × r)
+
+    The isotropic ITC92 ``B`` is scalar and therefore adds only to the diagonal
+    of ``B_total`` (via ``δ_ij``); the off-diagonal entries come solely from the
+    anisotropic ``8π² × U_atomic_ij`` term. All 5 ITC92 Gaussian components are
+    summed (``A``/``B`` have shape ``(N_atoms, 5)``).
 
     Parameters
     ----------

@@ -21,8 +21,14 @@ Centric::
     L = -0.5 log(2/(pi eb)) + F_o**2/(2eb) + F_c**2/(2eb) - log cosh(F_o F_c / eb)
 
 With ``beta=1, epsilon=1`` (``eb=1``) this reduces to the unit-variance MLF
-(used as a reduction test). Numerical-stability tricks (``i0e`` exp-scaled
-Bessel, log-cosh shifted form, clamps) match :mod:`torchref.base.targets.xray_ml`.
+(used as a reduction test) — exactly, up to the ``+1e-12`` floors inside the
+``log``/denominator terms, which are numerical guards and not part of the
+analytic target. Numerical-stability tricks (``i0e`` exp-scaled Bessel,
+log-cosh shifted form, clamps) match :mod:`torchref.base.targets.xray_ml`.
+
+This module is the live machinery for the X-ray mode named ``ml``; the name
+``ml_sigmaa`` (and this file's basename) is a retired alias kept for
+backward compatibility.
 """
 
 import math
@@ -177,8 +183,11 @@ def estimate_beta(
     Returns
     -------
     tuple of torch.Tensor
-        ``(beta_per_refl, beta_per_bin, bin_dss)``. The latter two are ``None``
-        for a degenerate free set (fewer than 2 free reflections).
+        ``(beta_per_refl, beta_per_bin, bin_dss)``. ``beta_per_refl`` is the
+        per-bin ``beta`` interpolated to every reflection, floored at
+        ``(1 - sigma_a_max**2) * B`` (and clamped away from 0; see
+        ``sigma_a_max``). The latter two are ``None`` for a degenerate free set
+        (fewer than 2 free reflections).
 
     Notes
     -----

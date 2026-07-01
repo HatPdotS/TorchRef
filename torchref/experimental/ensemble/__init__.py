@@ -1,6 +1,13 @@
 """
 Ensemble refinement for modelling crystallographic disorder.
 
+.. warning::
+
+   Experimental — this entire submodule is fast-moving research code. The
+   public classes and their APIs/behaviour may change or be removed without
+   notice, and several carry empirically-superseded designs retained only for
+   comparison.
+
 This submodule refines a multi-member ensemble of structural models
 jointly against a single dataset, capturing static/dynamic disorder as
 explicit member spread rather than (or in addition to) B-factors.
@@ -26,11 +33,15 @@ WilsonPriorTarget
     Per-bin penalty keeping ``<|F_calc|^2>`` on the Wilson curve.
 EnsembleAmberTarget, EnsembleAmberKLTarget, QuasiCrystalAmberTarget
     Amber force-field restraints for the ensemble, all subclasses of the
-    single-molecule ``AmberTarget``: per-member mean energy
-    (:class:`EnsembleAmberTarget`), the same plus an entropy regularizer
-    (:class:`EnsembleAmberKLTarget`), and the symmetry-expanded PME supercell
-    with crystal contacts (:class:`QuasiCrystalAmberTarget`). Constructing any
-    of them requires the optional ``openmm`` dependency.
+    single-molecule ``AmberTarget``. :class:`QuasiCrystalAmberTarget` (the
+    symmetry-expanded PME supercell whose crystal contacts provide the
+    anti-collapse regularization) is the **production** Amber path — it is the
+    only one wired by :class:`EnsembleRefinement`. The per-member targets are
+    **legacy / standalone**, not the default: :class:`EnsembleAmberTarget`
+    (per-member mean energy) and :class:`EnsembleAmberKLTarget` (the same plus
+    an entropy regularizer, whose KL/entropy anti-collapse approach was
+    abandoned for the quasi-crystal layout). Constructing any of them requires
+    the optional ``openmm`` dependency.
 """
 
 from torchref.experimental.ensemble.ensemble_model import EnsembleModel

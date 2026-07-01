@@ -52,7 +52,9 @@ class OccupancyFloorDiagnostic:
     Basic usage::
 
         diagnostic = OccupancyFloorDiagnostic(model_dark, model_light_refine)
-        result = diagnostic.analyze()
+        result = diagnostic.estimate_alpha_floor_from_difference_map(
+            hkl, delta_F_obs, sigma_diff
+        )
         print(f"Estimated alpha floor: {result['alpha_floor']:.3f}")
     """
 

@@ -140,6 +140,12 @@ class CombinedModelTargets(ModelTarget):
 
     Subclasses should override `_create_targets()` to define their component targets.
 
+    .. note::
+        This is the base of ``TotalGeometryTarget`` and ``TotalADPTarget`` but,
+        unlike its sibling ``CombinedTargets``, it is not listed in
+        ``targets/__init__.__all__``. Whether this asymmetry is intentional
+        (internal-only) or an oversight is left to the API owner to resolve.
+
     Parameters
     ----------
     model : Model, optional

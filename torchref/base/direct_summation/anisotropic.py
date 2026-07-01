@@ -71,6 +71,14 @@ def aniso_structure_factor_torched(
     -------
     torch.Tensor
         Complex structure factors of shape (N_reflections,).
+
+    Notes
+    -----
+    The complex dtype differs by code path: the non-batched path returns a
+    complex dtype derived from the configured float dtype (``dtypes.float``,
+    float32 in production), whereas the batched path (``_aniso_sf_batched``,
+    used when ``max_memory_gb`` forces batching) allocates its output as
+    ``torch.complex128``.
     """
     # Apply spacegroup to get symmetry-expanded coordinates
     xyz_expanded = spacegroup(xyz_fractional.T)  # (3, N_atoms, n_ops)

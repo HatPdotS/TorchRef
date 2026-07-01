@@ -9,18 +9,27 @@ Triton kernel would replace.
 Mapping
 -------
 
-    refinement.targets.geometry.BondTarget         -> bond.bond_math
-    refinement.targets.geometry.AngleTarget        -> angle.angle_math
-    refinement.targets.geometry.ChiralTarget       -> chiral.chiral_math
-    refinement.targets.geometry.PlanarityTarget    -> planarity.planarity_math
-    refinement.targets.geometry.TorsionTarget      -> torsion.torsion_omega_math
-    refinement.targets.geometry.RamachandranTarget -> ramachandran.ramachandran_math
-    refinement.targets.geometry.NonBondedTarget    -> nonbonded.nonbonded_heavy_math
-    refinement.targets.adp.ADPSimilarityTarget     -> adp.adp_simu_math
-    refinement.targets.xray.RiceXrayTarget          -> xray_ml.ml_xray_loss_math
-    refinement.targets.xray.GaussianXrayTarget          -> xray_gaussian.gaussian_xray_loss_math
-    refinement.targets.xray.LeastSquaresXrayTarget      -> xray_ls.ls_xray_loss_math
-    refinement.targets.xray.BhattacharyyaXrayTarget     -> xray_bhattacharyya.bhattacharyya_xray_loss_math
+    refinement.targets.geometry.bonds.BondTarget               -> bond.bond_math
+    refinement.targets.geometry.angles.AngleTarget             -> angle.angle_math
+    refinement.targets.geometry.chiral.ChiralTarget            -> chiral.chiral_math
+    refinement.targets.geometry.planarity.PlanarityTarget      -> planarity.planarity_math
+    refinement.targets.geometry.torsions.TorsionTarget         -> torsion.torsion_omega_math
+    refinement.targets.geometry.ramachandran.RamachandranTarget -> ramachandran.ramachandran_math
+    refinement.targets.geometry.non_bonded.NonBondedTarget     -> nonbonded.nonbonded_heavy_math
+    refinement.targets.adp.similarity.ADPSimilarityTarget      -> adp.adp_simu_math
+    refinement.targets.xray.rice.RiceXrayTarget                -> xray_ml.ml_xray_loss_math
+    refinement.targets.xray.gaussian.GaussianXrayTarget        -> xray_gaussian.gaussian_xray_loss_math
+    refinement.targets.xray.least_squares.LeastSquaresXrayTarget -> xray_ls.ls_xray_loss_math
+    refinement.targets.xray.bhattacharyya.BhattacharyyaXrayTarget -> xray_bhattacharyya.bhattacharyya_xray_loss_math
+
+The anisotropic-ADP restraint family and the renamed ``ml`` x-ray mode live in
+this package but are not re-exported above:
+
+    adp.adp_simu_aniso_math, adp.adp_locality_aniso_math,
+    adp.adp_rigid_bond_aniso_math      (aniso counterparts of adp_simu_math)
+    xray_ml_sigmaa.ml_xray_loss_beta_math
+                                       (the math used by ``mode="ml"``; the
+                                        ``ml_sigmaa`` name is a legacy alias)
 """
 
 from .adp import adp_simu_math

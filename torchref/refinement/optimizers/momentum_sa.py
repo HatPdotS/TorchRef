@@ -19,6 +19,33 @@ class MomentumStochasticSA(torch.optim.Adam):
     """
     Adam-based SA where noise is scaled by the adaptive learning rate,
     giving automatic scale invariance across parameters.
+
+    At each step Gaussian noise scaled by ``T / denom`` is added after the
+    Adam update, where ``denom`` is Adam's adaptive denominator (so soft,
+    low-curvature directions receive more noise) and ``T`` is the current
+    temperature. Temperature is annealed from ``T_initial`` to ``T_final``
+    over ``total_steps`` on a logarithmic schedule (``torch.logspace``).
+
+    Parameters
+    ----------
+    params : iterable
+        Parameters to optimize, passed through to ``torch.optim.Adam``.
+    lr : float, optional
+        Learning rate. Default is 1e-3.
+    betas : tuple of float, optional
+        Adam moment decay coefficients. Default is (0.9, 0.999).
+    eps : float, optional
+        Term added to the denominator for numerical stability.
+        Default is 1e-8.
+    T_initial : float, optional
+        Starting temperature of the logarithmic annealing schedule.
+        Default is 1.0.
+    T_final : float, optional
+        Ending temperature of the logarithmic annealing schedule.
+        Default is 0.01.
+    total_steps : int, optional
+        Number of steps over which temperature is annealed. After this many
+        steps the temperature is held at ``T_final``. Default is 1000.
     """
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
                  T_initial=1.0, T_final=0.01, total_steps=1000):
@@ -33,6 +60,25 @@ class MomentumStochasticSA(torch.optim.Adam):
 
     @torch.no_grad()
     def step(self, closure=None):
+        """
+        Perform a single Adam update followed by scale-invariant noise.
+
+        Reads the temperature for the current step, applies the standard
+        Adam parameter update, then adds Gaussian noise scaled by
+        ``T / denom`` so that low-curvature directions are explored more.
+
+        Parameters
+        ----------
+        closure : callable, optional
+            Closure that re-evaluates the model and returns the loss. If
+            provided, it is called under ``torch.enable_grad`` and its return
+            value is passed back.
+
+        Returns
+        -------
+        loss : torch.Tensor or None
+            The loss returned by ``closure``, or None if no closure was given.
+        """
         loss = None
         if closure is not None:
             with torch.enable_grad():

@@ -230,9 +230,11 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     @property
     def refinable_params(self) -> torch.Tensor:
         # Compat with ``MixedTensor`` consumers (e.g. ModelFT's dtype guard
-        # in ``_check_forward_dtype``). Returns one of the rigid leaves so
-        # callers can inspect the float dtype — both leaves are kept in
-        # the model's float dtype together.
+        # in ``_check_forward_dtype``). This is a dtype-probe shim only: it
+        # returns just one leaf (``euler_angles``) so callers can inspect the
+        # float dtype, NOT the full refinable set. The actual refinable count
+        # spans both leaves (euler_angles + translations); see
+        # ``get_refinable_count``. Both leaves share the model's float dtype.
         return self.euler_angles
 
     def get_refinable_count(self) -> int:

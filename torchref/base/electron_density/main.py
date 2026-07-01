@@ -1,26 +1,36 @@
 """
 Central electron density building, dispatched solely by the shared ``Engine``.
 
-The capability-based ``Engine`` in :mod:`torchref.utils.triton_dispatch`
-(AUTO/TRITON/EAGER) is the *only* switch — there is no environment-variable
+Every atom is splatted at its own per-atom truncation radius
+(``N_sigma * sigma_eff``, with ``N_sigma = torchref.sigma_cutoff_ed``); there is
+no single global splat radius. The capability-based ``Engine`` in
+:mod:`torchref.utils.triton_dispatch` (AUTO/TRITON/EAGER) is the *only* switch
+selecting which variable-radius kernel runs — there is no environment-variable
 dispatch and no parallel "tier" knobs:
 
-- ``Engine.AUTO`` — fastest available per device: CUDA+float32 -> the fused
-  Triton kernel; CUDA+float64 -> pure-torch; CPU -> the C++-scatter fast path;
-  MPS -> single-pass. (Falls back to the pure-torch splat if a Triton kernel
-  fails.)
-- ``Engine.EAGER`` — the pure-PyTorch (``scatter_add``) reference on every
+- ``Engine.AUTO`` — fastest available per device, all variable-radius:
+  CUDA+float32 -> the work-queue Triton kernels
+  (``WorkQueueGridDensity`` / ``WorkQueueGridDensityAniso``); CPU -> the
+  grouped-separable variable-radius splat
+  (``add_isotropic_cpu_separable_var`` / ``add_anisotropic_cpu_var``);
+  everything else (CUDA+float64, MPS) -> the portable plain-scatter
+  variable-radius splat (``add_isotropic_plain_var`` /
+  ``add_anisotropic_plain_var``). On a Triton kernel failure under AUTO it falls
+  through to the plain-scatter variable-radius splat.
+- ``Engine.EAGER`` — the portable plain-scatter variable-radius splat on every
   device. Double-differentiable; use it for Hessians / debugging. Force it with
   ``with use_engine(Engine.EAGER): ...``.
-- ``Engine.TRITON`` — force the fused Triton kernel (raises if not CUDA+float32).
+- ``Engine.TRITON`` — force the CUDA work-queue Triton kernel (raises if not
+  CUDA+float32).
 
-The individual splat implementations now live one-per-file under
-:mod:`torchref.base.electron_density.kernels` (``cpu/separable``, ``cpu_fused``, ``cpu_aniso``,
-``mps_separable``, ``eager_reference``, plus the Triton kernels and the
-``offsets`` / ``scatter_dispatch`` helpers). They are re-imported here so the
-historical ``torchref.base.electron_density.main`` namespace is unchanged and
-they remain callable directly for benchmarking. This module keeps only the
-``Engine``-based dispatch.
+The production variable-radius splats live in
+``kernels/cuda/variable_radius.py`` and ``kernels/cpu/variable_radius.py``; the
+per-atom radius policy is in :mod:`torchref.base.electron_density.radius_policy`.
+Several legacy fixed-radius kernels are re-imported here so the historical
+``torchref.base.electron_density.main`` namespace is unchanged and they remain
+callable directly for benchmarking, but they are *not* on the production
+dispatch path. This module keeps only the ``Engine``-based variable-radius
+dispatch.
 """
 
 from typing import Optional
@@ -30,35 +40,22 @@ import torch
 from torchref.config import get_float_dtype, get_sigma_cutoff_ed
 from torchref.utils.triton_dispatch import Engine, get_engine, should_use_triton
 
-# --- Moved splat implementations (re-imported to preserve this namespace) ---
-from torchref.base.electron_density.kernels.offsets import _get_box_radius, _get_radius_offsets
+# --- Shared splat helpers (re-imported to preserve this namespace; reused by the
+# variable-radius kernels and, for _get_radius_offsets, by scaling/solvent.py) ---
+from torchref.base.electron_density.kernels.offsets import _get_radius_offsets
 from torchref.base.electron_density.kernels.cpu.scatter_dispatch import (
     _do_structured_scatter,
     _get_cpp_scatter,
 )
-from torchref.base.electron_density.kernels.cpu.separable import (
-    _CHUNK_SIZES,
-    _add_isotropic_cpu_separable,
-    _add_isotropic_cpu_separable_compiled,
-    _get_compiled_separable_density,
-    _separable_density,
-    _splat_chunk,
-)
-from torchref.base.electron_density.kernels.cpu.fused import _add_isotropic_cpu_fused
-from torchref.base.electron_density.kernels.cpu.aniso import _add_anisotropic_cpu, _aniso_density_cube
-from torchref.base.electron_density.kernels.mps.separable import _add_isotropic_mps_single
-from torchref.base.electron_density.kernels.cpu.eager_reference import (
-    _add_anisotropic_original,
-    _add_isotropic_original,
-)
+from torchref.base.electron_density.kernels.cpu.separable import _separable_density
+from torchref.base.electron_density.kernels.cpu.aniso import _aniso_density_cube
 
 # --- Per-atom variable-radius density path ---
 # The splat radius is no longer a single scalar; each atom is truncated at its own
 # N_sigma * sigma_eff radius (N_sigma = torchref.sigma_cutoff_ed). CUDA+float32 uses
-# the variable-radius Triton kernels (work plan + WorkQueueGridDensity{,Aniso});
-# CPU uses the grouped-separable / fused / aniso splats. The pure-torch reference
-# and MPS have no variable-radius kernel, so they receive the per-structure max of
-# the per-atom radii (correct, just not work-optimized).
+# the variable-radius Triton kernels (WorkQueueGridDensity{,Aniso}); CPU + AUTO uses
+# the grouped-separable structured-scatter splat; everything else (EAGER any device,
+# CUDA float64, MPS) uses the portable plain-scatter splat.
 from torchref.base.electron_density.radius_policy import (
     per_atom_radius_aniso,
     per_atom_radius_iso,
@@ -96,9 +93,14 @@ def build_electron_density(
     Build an electron density map from atomic parameters.
 
     Dispatches the isotropic and anisotropic splats through the shared
-    ``Engine`` (see the module docstring): the fused Triton kernel on
-    CUDA+float32 under ``Engine.AUTO``/``Engine.TRITON``, and otherwise the
-    pure-torch / C++-scatter splat appropriate for the device.
+    ``Engine`` (see the module docstring). Each atom is splatted at its own
+    per-atom truncation radius (``N_sigma * sigma_eff``, with
+    ``N_sigma = torchref.sigma_cutoff_ed``) via the per-atom variable-radius
+    kernels: the CUDA float32 work-queue kernels
+    (``WorkQueueGridDensity{,Aniso}``) under ``Engine.AUTO``/``Engine.TRITON``,
+    the grouped-separable variable-radius splat on CPU+AUTO, and the portable
+    plain-scatter variable-radius splat everywhere else (``Engine.EAGER``, CUDA
+    float64, MPS).
 
     Parameters
     ----------
@@ -218,7 +220,9 @@ def _add_isotropic(
         try:
             r2cut = radius_per_atom * radius_per_atom
             coeff_mask = torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
-            return density_map + WorkQueueGridDensity.apply(
+            # kernel accumulates into (a copy of) density_map -> no extra grid buffer + add
+            return WorkQueueGridDensity.apply(
+                density_map,
                 real_space_grid,
                 xyz,
                 adp,
@@ -278,7 +282,9 @@ def _add_anisotropic(
         try:
             r2cut = radius_per_atom * radius_per_atom
             coeff_mask = torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
-            return density_map + WorkQueueGridDensityAniso.apply(
+            # kernel accumulates into (a copy of) density_map -> no extra grid buffer + add
+            return WorkQueueGridDensityAniso.apply(
+                density_map,
                 real_space_grid,
                 xyz,
                 u,

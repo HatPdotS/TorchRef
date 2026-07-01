@@ -80,7 +80,7 @@ Examples
 --------
 ::
 
-    torchref.collection-difference-refine \\
+    torchref.difference-refine \\
         -dm dark.pdb -lm light.pdb \\
         -dsf dark.mtz -lsf light.mtz \\
         --fraction 0.37 -o output/
@@ -608,13 +608,13 @@ def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="torchref.collection-difference-refine",
+        prog="torchref.difference-refine",
         description="Collection-based difference refinement with joint "
                     "scaling and bulk solvent correction.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  torchref.collection-difference-refine \\
+  torchref.difference-refine \\
       -dm dark.pdb -lm light.pdb \\
       -dsf dark.mtz -lsf light.mtz \\
       --fraction 0.37 -o output/
@@ -756,7 +756,7 @@ Examples:
         args.cif, d_min, device, args.verbose,
     )
     dark = mc.dark_model            # _SharedMixedModel (fractions=[1, 0])
-    mixed = mc["light"]             # _SharedMixedModel (fractions=[0.82, 0.18])
+    mixed = mc["light"]             # _SharedMixedModel (fractions=[1-f, f] from --fraction)
     model_dark = mc.base_models[0]  # ModelFT (for output)
     model_light = mc.base_models[1] # ModelFT (for output)
 

@@ -52,6 +52,10 @@ class MonomerLibraryManager:
     4. Legacy ``external_monomer_library/`` directory
     5. On-demand download from GitHub (cached for future use)
 
+    Note that this 5-step chain applies to per-residue CIF resolution via
+    :meth:`get_cif_file`. The :meth:`ensure_gemmi_base` and :meth:`monomer_dir`
+    accessors use reduced chains (see their own docstrings).
+
     Parameters
     ----------
     verbose : int, optional
@@ -211,7 +215,9 @@ class MonomerLibraryManager:
         Returns
         -------
         Path
-            Path to the monomer library root directory.
+            Path to the monomer library root directory. As a last resort the
+            bundled-data path is returned even if it does not exist or is not
+            fully populated, so the returned path is not guaranteed to be usable.
         """
         if self._env_path:
             return self._env_path

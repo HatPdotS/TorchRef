@@ -6,8 +6,12 @@ with the symmetry operations. Specifically:
 - Screw axes require specific divisibility constraints
 - Grid sizes should also be FFT-friendly (factors of 2, 3, 5)
 
-This module provides the canonical implementations of FFT-friendly grid utilities.
-The spacegroup module imports and re-exports these functions for convenience.
+This module provides thin convenience wrappers around the FFT-friendly grid
+utilities. The canonical implementations live in the ``spacegroup`` module;
+the wrappers here delegate into it (e.g. ``get_symmetry_grid_requirements``
+calls ``spacegroup.get_grid_requirements``). Note that ``spacegroup`` also
+defines its own ``is_fft_friendly`` / ``find_fft_friendly_size`` standalone;
+those in ``spacegroup`` are the source of truth.
 """
 
 import numpy as np

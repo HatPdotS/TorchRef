@@ -27,7 +27,7 @@ class BondTarget(GeometryTarget):
     name: str = "geometry/bond"
 
     def __init__(self, model: "Model" = None, verbose: int = 0):
-        super().__init__(model, verbose, target_value=-2.0, sigma=1.0)
+        super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
         # Use the bond_math dispatcher (Triton on CUDA fp32, eager

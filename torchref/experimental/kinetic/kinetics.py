@@ -1,3 +1,16 @@
+"""
+Kinetic ODE solver for time-resolved refinement (EXPERIMENTAL).
+
+Defines :class:`KineticModel`, a configurable PyTorch module that integrates
+arbitrary kinetic schemes (sequential, back-reaction, parallel) via the matrix
+exponential and produces per-state, per-timepoint occupancies. The schemes are
+specified by relational flow-chart strings and an optional instrument response
+function.
+
+This module is part of the experimental ``torchref.experimental.kinetic``
+subpackage; its API is under active development and may change without notice.
+"""
+
 import torch
 from torch.nn import Module as nnModule
 from torch.nn import Parameter
@@ -49,7 +62,7 @@ class KineticModel(DeviceMixin, nnModule):
         Default: 'gaussian'
     instrument_width : float, optional
         Width parameter for the instrument function (e.g., sigma for gaussian)
-        Default: 0.1
+        Default: 10
     initial_state : str, optional
         Which state starts with population 1. Default: first state in flow chart
     light_activated : bool, optional
@@ -172,7 +185,8 @@ class KineticModel(DeviceMixin, nnModule):
         
         # Baseline occupancy offsets (default: all zeros, not refined)
         # These are constant offsets added to the populations
-        # Smart initialization: initial state (A) has 50% baseline (unreactive fraction)
+        # Smart initialization: initial state gets a baseline of (1 - activation_level),
+        # i.e. the unreactive fraction (50% only for the default activation_level=0.5)
         self.baseline_occupancies = torch.zeros(self.n_states)
         initial_state_idx = self.state_to_idx[initial_state]
         self.baseline_occupancies[initial_state_idx] = 1-activation_level
@@ -286,8 +300,8 @@ class KineticModel(DeviceMixin, nnModule):
             state_out_indices[from_state].append(idx)
             state_in_indices[to_state].append(idx)
         
-        # Identify the first transition (from initial state)
-        initial_state = self.states[0]  # Will be set properly later
+        # Identify the first transition (from initial state, i.e. the sorted-first state)
+        initial_state = self.states[0]
         first_transition_indices = state_out_indices[initial_state]
         
         # Initialize first transition(s): quasi-instant, limited by instrument function
@@ -646,7 +660,7 @@ class KineticModel(DeviceMixin, nnModule):
         
         Examples
         --------
-        >>> model.set_baseline('D', 0.1, refinable=False)  # Constant 10% background
+        >>> model.set_baseline('D', 0.1, refinable=False)  # Constant background offset
         >>> model.set_baseline('E', 0.05, refinable=True)  # Refinable baseline
         """
         if state not in self.state_to_idx:
@@ -802,7 +816,17 @@ class KineticModel(DeviceMixin, nnModule):
     def parameters(self) -> Dict[str, torch.Tensor]:
         """
         Get all flexible (learnable) parameters as a dictionary.
-        
+
+        Note
+        ----
+        This **overrides** :meth:`torch.nn.Module.parameters` (which returns an
+        iterator of :class:`~torch.nn.Parameter`) and instead returns a dict, so
+        the standard ``optimizer = Adam(model.parameters())`` idiom does not work
+        directly -- pass ``.values()`` to the optimizer (see the example below).
+        The :class:`~torchref.experimental.kinetic.occupancies.occupancies_kinetics`
+        wrapper does *not* override ``parameters()``, so callers that go through
+        it keep the standard ``nn.Module`` iterator behavior.
+
         Returns
         -------
         params : Dict[str, torch.Tensor]

@@ -55,6 +55,13 @@ class IHMReader:
     verbose : int
         Verbosity level (0=silent, 1=info, 2=debug).
 
+    Raises
+    ------
+    ImportError
+        If the optional ``python-ihm`` dependency is not installed.
+    FileNotFoundError
+        If ``filepath`` does not exist.
+
     Examples
     --------
     ::
@@ -448,7 +455,7 @@ class IHMReader:
         mapping : IHMEnsembleMapping
             Must have ``atom_data_per_state`` populated.
         max_res : float
-            Maximum resolution for FFT grid setup.
+            Maximum resolution for FFT grid setup, in Angstroms.
         device : torch.device, optional
             Device for model tensors.
 
@@ -538,7 +545,7 @@ class IHMReader:
         Parameters
         ----------
         max_res : float
-            Maximum resolution for FFT grid.
+            Maximum resolution for FFT grid, in Angstroms.
         device : torch.device, optional
             Device for tensors.
 
@@ -588,6 +595,14 @@ class IHMWriter:
     mapping : IHMEnsembleMapping, optional
         Original mapping for round-tripping metadata. If ``None``,
         creates a minimal mapping from the collection structure.
+    datasets : dict of {str: ReflectionData}, optional
+        Per-timepoint reflection data keyed by timepoint name. When
+        provided, the corresponding per-timepoint ``_refln`` blocks are
+        appended to the output file by ``write()``. If ``None`` (default),
+        no reflection blocks are written.
+
+        Note: ``ReflectionData`` appears only as a forward-reference string
+        annotation here and is not imported by this module.
     verbose : int
         Verbosity level.
 
@@ -600,6 +615,10 @@ class IHMWriter:
 
         # Or without a pre-existing mapping:
         writer = IHMWriter(model_collection)
+        writer.write("refined_ensemble.cif")
+
+        # With per-timepoint reflection data (writes _refln blocks):
+        writer = IHMWriter(model_collection, datasets=datasets)
         writer.write("refined_ensemble.cif")
     """
 
@@ -696,6 +715,14 @@ class IHMWriter:
         linking multiple groups to a state overwrites earlier values, so
         the per-group ``state_fractions`` in the mapping are not fully
         round-tripped.
+
+        After ``python-ihm`` writes the IHM categories, the file is
+        re-read and rewritten via gemmi to append the multi-model
+        ``_atom_site`` data (always) and, when ``datasets`` was supplied
+        at construction, per-timepoint ``_refln`` blocks. This means the
+        output file is opened and rewritten more than once.
+
+        This method returns ``None``.
 
         Parameters
         ----------

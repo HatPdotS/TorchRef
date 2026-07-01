@@ -30,6 +30,9 @@ class XrayTarget(DataTarget):
     1. With Model: Computes F_calc from model on each forward pass
     2. Without Model: Uses pre-computed F_calc passed to forward()/get_data()
 
+    The R-factor and statistics paths honor this same dual mode (model F_calc
+    vs. supplied ``fcalc``).
+
     Parameters
     ----------
     data : ReflectionData, optional
@@ -41,6 +44,10 @@ class XrayTarget(DataTarget):
         Reference to the Scaler object.
     use_work_set : bool, optional
         If True, compute loss on work set; if False, on test set. Default is True.
+        Legacy bool; superseded by ``use_set`` when the latter is given.
+    use_set : str, optional
+        Canonical 3-way subset selector: ``"work"``/``"free"``/``"val"``. Takes
+        precedence over ``use_work_set``. If None, derived from ``use_work_set``.
     verbose : int, optional
         Verbosity level. Default is 0.
 
@@ -75,7 +82,10 @@ class XrayTarget(DataTarget):
             Reference to the Scaler object.
         use_work_set : bool, optional
             If True, compute loss on work set; if False, on test set. Default is True.
-
+            Legacy bool; superseded by ``use_set`` when the latter is given.
+        use_set : str, optional
+            Canonical 3-way subset selector: ``"work"``/``"free"``/``"val"``. Takes
+            precedence over ``use_work_set``. If None, derived from ``use_work_set``.
         verbose : int, optional
             Verbosity level. Default is 0.
         """
@@ -150,7 +160,7 @@ class XrayTarget(DataTarget):
 
         F_obs = sub.F
 
-        # Sigma: scaled experimental, or per-shell effective from the scaler.
+        # Sigma: scaled (corrected) experimental uncertainty.
         sigma = sub.sigF
 
         centric = sub.centric

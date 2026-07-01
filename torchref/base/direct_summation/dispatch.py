@@ -6,7 +6,7 @@ there is exactly one best path, so the backend is *derived* rather than
 configured.
 
 - CUDA + float32 + Triton available  ->  custom Triton kernels (``triton_ds``)
-- everything else (CPU, float64, MPS, no Triton)  ->  checkpointed eager
+- everything else (CPU, MPS, non-float32, no Triton)  ->  checkpointed eager
 
 An explicit ``Engine`` override (per-call ``engine=`` or the process-wide
 ``use_engine``/``set_engine``) forces a path for tests and benchmarks.

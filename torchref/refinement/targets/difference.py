@@ -182,10 +182,13 @@ class DifferenceXrayTarget(Target):
 
     def _hkl_to_hash(self, hkl: torch.Tensor) -> torch.Tensor:
         """
-        Convert HKL indices to unique hash values for efficient matching.
+        Convert HKL indices to hash values for efficient matching.
 
-        Uses a simple polynomial hash: hash = h * p1 + k * p2 + l
-        where p1 and p2 are large primes.
+        Uses a simple linear combination: hash = h * p1 + k * p2 + l
+        where p1 and p2 are large primes. This is not collision-free for
+        general Miller indices (negative or large indices can alias); the
+        downstream sorted-merge relies on the indices in practice not
+        colliding rather than on the hash being injective.
 
         Parameters
         ----------
@@ -279,7 +282,12 @@ class DifferenceXrayTarget(Target):
         sigma_diff : torch.Tensor
             σ_diff = sqrt(σ_light² + σ_dark²)
         mask : torch.Tensor
-            Boolean mask for work/test set selection and valid data.
+            Boolean mask for work/test set selection and valid data. Note the
+            two code paths differ in length: in collection mode
+            (``_get_delta_F_obs_collection``) the returned arrays are
+            full-length and aligned across datasets, whereas in matched mode
+            (``_get_delta_F_obs_matched``) they are subset to the matched
+            reflections only. Callers must account for this shape difference.
         """
         if self._use_collection:
             return self._get_delta_F_obs_collection()
@@ -549,9 +557,15 @@ class PhaseInformedDifferenceTarget(Target):
     Uses (detached) model phases to build a complex observed difference, then
     compares with the calculated complex difference:
 
-        ΔF_calc = F_mixed_calc - F_dark_calc  (complex)
-        ΔF_obs_complex = ΔF_obs * exp(i * φ)  (using model phases)
+        ΔF_calc = F_light_calc - F_dark_calc  (complex)
+        ΔF_obs_complex = ΔF_obs * exp(i * φ)  (amplitude difference
+            ΔF_obs = |F_light_obs| - |F_dark_obs| grafted with phase φ)
         Loss = |ΔF_obs_complex - ΔF_calc|² / σ_diff²
+
+    Naming note: the "light" state is named consistently here and in the
+    Parameters / ``forward`` (``model_light``, ``fcalc_light``); when the
+    light model is a mixed/excited-state model it may be referred to as
+    "mixed" elsewhere, but the symbol is ``F_light_calc`` throughout.
 
     The phase source is selected by ``phase_source``: "dark" (dark model
     phases), "difference" (phase of the calculated difference ΔF_calc), or
@@ -820,7 +834,9 @@ class TaylorCorrectedDifferenceTarget(Target):
 
     Builds the observed complex difference from an exact complex-exponential
     expansion of the model phase shift between dark and light states (no
-    small-angle approximation):
+    small-angle approximation). Note: the "Taylor" name is historical; the
+    expression below is an exact algebraic identity, not a truncated Taylor
+    series.
 
         ΔF_obs = exp(i*φ_dark) * [F_obs_dark * (exp(i*dφ) - 1) + dF_obs * exp(i*dφ)]
 
@@ -941,7 +957,9 @@ class TaylorCorrectedDifferenceTarget(Target):
         """
         Compute Taylor-corrected difference loss.
 
-        The observed complex difference is constructed using the exact Taylor expansion:
+        The observed complex difference is constructed using the exact
+        complex-exponential identity (the "Taylor" label is historical; this
+        is exact, not a truncated series):
             ΔF_obs = exp(i*φ_dark) * [F_obs_dark * (exp(i*dφ) - 1) + dF_obs * exp(i*dφ)]
 
         Parameters
@@ -1186,6 +1204,10 @@ class RiceDifferenceTarget(Target):
 
         NLL = -log(A) + log(σ²) + (A² + ν²)/(2σ²)
               - log(I₀(A·ν/σ²))
+
+    For numerical stability the implementation evaluates the Bessel term via
+    the exponentially-scaled ``torch.special.i0e``, using the identity
+    ``log(I₀(x)) = log(i0e(x)) + x`` (see ``forward``); the math is equivalent.
 
     The Rice distribution naturally models the magnitude of a complex signal
     plus Gaussian noise, making it statistically appropriate for comparing

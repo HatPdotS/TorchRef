@@ -73,6 +73,14 @@ class HydrogenTopology(DeviceMixin, nn.Module):
         Encoded chain ID (for same-residue filtering).
     h_resseq : (N_h,) long
         Residue sequence number (for same-residue filtering).
+
+    Notes
+    -----
+    Additional candidate-pair buffers (``cand_idx_i``, ``cand_idx_j``,
+    ``cand_symop_idx``, ``cand_cell_offset``, ``cand_min_dist``,
+    ``n_asu_candidates``, ``type_bounds``) are not registered by
+    ``build_hydrogen_topology``; they are populated later by
+    ``build_h_candidate_pairs`` and checked via :attr:`has_candidates`.
     """
 
     def __init__(self):
@@ -104,8 +112,11 @@ def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
     Returns
     -------
     cache : dict
-        ``{resname: {ids, elems, coords, is_h, id_to_idx,
-                     parent_map, ideal_bl, heavy_neighbor_map, ...} | None}``
+        ``{resname: entry | None}`` where each non-``None`` entry is a dict
+        with keys ``ids``, ``elems``, ``coords``, ``is_h``, ``id_to_idx``,
+        ``heavy_names``, ``heavy_coords``, ``h_names``, ``h_coords``,
+        ``parent_map``, ``ideal_bl`` and ``heavy_neighbor_map``. ``None``
+        marks residue types with no usable CIF data.
     """
     from torchref.model.model import Model
     from torchref.restraints.library import MonomerLibraryManager
@@ -546,7 +557,8 @@ def _place_h_jit(
     coeffs: torch.Tensor,
     bond_length: torch.Tensor,
 ) -> torch.Tensor:
-    """JIT-compiled H placement kernel — fuses ~230 ops into few GPU kernels.
+    """JIT-compiled H placement kernel — fuses many elementwise ops into a
+    small number of GPU kernels.
 
     Parameters
     ----------
@@ -608,7 +620,7 @@ def place_riding_hydrogens(
     """Generate riding hydrogen positions from heavy-atom coordinates.
 
     Delegates to a JIT-compiled kernel that fuses element-wise ops,
-    reducing GPU kernel launches from ~230 to ~30.
+    substantially reducing the number of GPU kernel launches.
 
     Parameters
     ----------
@@ -636,9 +648,9 @@ def place_riding_hydrogens(
         topo._bond_len_col = topo.h_bond_length.unsqueeze(-1)
 
     # On CUDA fp32 use the fused Triton forward + analytic Triton
-    # backward (saves ~1.5–1.9 ms on the H-VDW backward — that path is
-    # where ~40 % of the non-bonded fwd+bw cost lives). Falls back to
-    # the JIT-scripted eager helper otherwise.
+    # backward (the H-VDW backward is a significant fraction of the
+    # non-bonded fwd+bw cost). Falls back to the JIT-scripted eager
+    # helper otherwise.
     if xyz_heavy.is_cuda and xyz_heavy.dtype == torch.float32:
         try:
             from torchref.base.targets.triton.place_hydrogens import (

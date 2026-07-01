@@ -34,6 +34,13 @@ def place_on_grid(
     torch.Tensor
         Complex tensor grid of structure factors of shape (Nx, Ny, Nz)
         or (B, Nx, Ny, Nz) for batched input.
+
+    Notes
+    -----
+    With ``enforce_hermitian=True`` the conjugate of each reflection is also
+    index-added at ``-hkl``. If the input already contains Friedel mates
+    (both ``hkl`` and ``-hkl``), this double-counts those reflections; pass
+    only the unique half (e.g. the asymmetric unit) in that case.
     """
     batch_mode = True
     if structure_factor.ndim == 1:
@@ -144,6 +151,13 @@ def apply_translation_phase(
     -------
     torch.Tensor
         Phase-shifted structure factors of shape (N,).
+
+    Notes
+    -----
+    The phase ``2π * hkl · t`` is computed in float32 (``hkl`` and
+    ``translation_frac`` are cast to float32) and the resulting phase factor
+    is then cast to ``F_calc.dtype``. A float64 caller therefore does not get
+    double-precision phases.
     """
     # Compute phase: 2π * hkl · t
     phase = 2.0 * math.pi * (hkl.float() @ translation_frac.float())

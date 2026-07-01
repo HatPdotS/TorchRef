@@ -13,7 +13,9 @@ active development and may change without notice:
 * :class:`~torchref.experimental.targets.sampled_ml_phase_target.SampledMLPhaseTarget`
   -- phase-sampled maximum-likelihood targets.
 * :class:`~torchref.experimental.targets.occupancy_floor_diagnostic.OccupancyFloorDiagnostic`
-  and related regularisers -- diagnostic / regularisation utilities.
+  and related regularisers (:class:`NegativeDensityPenalty`,
+  :class:`DisplacementRegularizer`, :class:`DifferenceAmplitudeRegularizer`)
+  -- diagnostic / regularisation utilities.
 
 These targets are not used by the headline AlphaFold-start benchmark or
 the difference-refinement showcase in the main text; they are exposed

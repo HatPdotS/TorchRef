@@ -501,7 +501,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
             for tp_name, t_idx in all_overrides.items():
                 mc[tp_name].set_fraction_override(kinetic_occ[:, t_idx])
 
-            # Compute X-ray loss only (difference + ML)
+            # Compute X-ray loss only (difference + Rice)
             loss = w_diff * self._diff_target() + w_rice * self._rice_target()
 
             loss.backward()

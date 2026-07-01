@@ -19,14 +19,8 @@ def _estimate_batch_size(
     """
     Estimate optimal batch size based on memory constraints.
 
-    Main memory consumers per reflection:
-    - dot_product: (N_atoms * n_ops) float32 = 4 bytes each
-    - pidot: same size
-    - sin_cos: (N_atoms * n_ops) complex64 = 8 bytes each
-    - terms: (N_atoms) float32 = 4 bytes each
-    - scattering_factors slice: (N_atoms) float32 = 4 bytes each
-
-    Conservative estimate: ~50 bytes per (refl, atom, op) combination.
+    Uses a conservative estimate of ~50 bytes per (refl, atom, op)
+    combination.
     """
     bytes_per_refl = n_atoms * n_ops * 50  # Conservative estimate
     max_bytes = max_memory_gb * 1e9
@@ -79,6 +73,14 @@ def iso_structure_factor_torched(
     -------
     torch.Tensor
         Complex structure factors of shape (N_reflections,).
+
+    Notes
+    -----
+    The complex dtype differs by code path: the non-batched path returns a
+    complex dtype derived from the configured float dtype (``dtypes.float``,
+    float32 in production), whereas the batched path (``_iso_sf_batched``,
+    used when ``max_memory_gb`` forces batching) allocates its output as
+    ``torch.complex128``.
     """
     # Apply spacegroup to get symmetry-expanded coordinates
     xyz_expanded = spacegroup(xyz_fractional.T)  # (3, N_atoms, n_ops)

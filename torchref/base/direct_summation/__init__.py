@@ -68,6 +68,8 @@ from .corrections import (
 from .dispatch import Engine, ds_aniso, ds_iso
 
 __all__ = [
+    # Scattering factor batch helper
+    "compute_scattering_factors_batch",
     # Isotropic
     "iso_structure_factor_torched",
     "iso_structure_factor_torched_no_complex",

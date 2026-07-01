@@ -6,6 +6,12 @@ into a single GPU kernel, eliminating ~14 separate kernel launches and
 ~500MB of intermediate memory allocations.
 
 Provides full autograd support for refinement of xyz, b, and occ.
+
+.. note::
+    Legacy / benchmark-only fixed-radius kernel — not on the production
+    dispatch path. ``main.build_electron_density`` now routes the CUDA float32
+    path through the per-atom variable-radius ``WorkQueueGridDensity`` in
+    :mod:`torchref.base.electron_density.kernels.cuda.variable_radius`.
 """
 
 import torch
@@ -439,9 +445,18 @@ def fused_add_to_map_gpu(
     """
     Fused GPU density computation using Triton.
 
-    Drop-in replacement for the JIT GPU kernel with full autograd support.
     Fuses PBC wrapping, r² computation, 5-Gaussian evaluation, and scatter-add
-    into a single GPU kernel launch.
+    into a single GPU kernel launch, with full autograd support for xyz, b, and
+    occ (no anisotropic ``u`` gradient).
+
+    .. note::
+        Legacy / benchmark-only fixed-radius kernel. It is **not** on the
+        production dispatch path: ``main.build_electron_density`` now routes the
+        CUDA float32 path through the per-atom variable-radius
+        ``WorkQueueGridDensity`` in
+        :mod:`torchref.base.electron_density.kernels.cuda.variable_radius`. This
+        kernel operates at a single fixed splat radius and is retained for
+        benchmarking only.
 
     Parameters
     ----------

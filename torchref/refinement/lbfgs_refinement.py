@@ -1,9 +1,10 @@
 """
 LBFGS-based refinement framework for crystallographic structure refinement.
 
-This module provides an LBFGS optimizer-based refinement approach which has been
-shown to converge much faster than first-order optimizers (Adam, SGD, etc.).
-LBFGS typically reaches near-convergence in just 1-2 macro cycles.
+This module provides an LBFGS optimizer-based refinement approach. As a
+quasi-Newton (second-order) method, LBFGS typically converges in far fewer
+macro cycles than first-order optimizers (Adam, SGD, etc.); the production
+benchmark default is ``macro_cycles=5``.
 
 The refinement composes three pieces:
 
@@ -41,7 +42,7 @@ class LBFGSRefinement(Refinement):
 
     Key advantages:
 
-    - Converges in 1-2 macro cycles (vs 5+ for Adam)
+    - Fewer macro cycles than first-order methods (Adam, SGD)
     - Better final R-factors
     - More stable convergence
     - Automatically handles step size via line search
@@ -49,7 +50,8 @@ class LBFGSRefinement(Refinement):
     Parameters
     ----------
     target_mode : str, optional
-        X-ray target mode ('gaussian', 'ls', 'rice', 'ml', 'bhattacharyya'). Default is 'ml'.
+        X-ray target mode ('gaussian', 'ls', 'ls_wunit_k1', 'rice', 'ml',
+        'bhattacharyya'). Default is 'ml'.
     *args
         Passed to parent Refinement class.
     **kwargs
@@ -96,11 +98,16 @@ class LBFGSRefinement(Refinement):
         Parameters
         ----------
         target_mode : str, optional
-            X-ray target mode ('gaussian', 'ls', 'rice', 'ml', 'bhattacharyya').
-            Default is 'ml' (maximum-likelihood Read MLF with Luzzati σ_A).
+            X-ray target mode ('gaussian', 'ls', 'ls_wunit_k1', 'rice', 'ml',
+            'bhattacharyya'). Default is 'ml' (maximum-likelihood Read MLF with
+            Luzzati σ_A).
         sigma_m_scale : float, optional
             Global multiplier for σ_m in the Bhattacharyya target only.
             Ignored for other target modes. Default 1.0.
+        corefine_scaler : bool, optional
+            If True, the scaler parameters are co-refined jointly with the body
+            parameters in the same optimizer step rather than in a separate
+            scaler step. Default False.
         use_lossstate_scaler : bool, optional
             If True (default), :meth:`refine_scaler` uses the full
             :class:`LossState` with the body's x-ray target — so scaler and
@@ -255,7 +262,11 @@ class LBFGSRefinement(Refinement):
             High-resolution cutoffs (Å), coarse → fine. Defaults to an
             auto-generated schedule from the native data resolution.
         iterations_per_step : int, optional
-            ``max_iter`` for each per-cutoff LBFGS step. Default 30.
+            ``max_iter`` for each per-cutoff LBFGS step. Default 30. Note that
+            30 under-converges in practice (e.g. 9RTS needs >= 100); raise it
+            for production runs. Under the solvent-only (``ls_wunit_k1``)
+            inner-cycle path this is the per-*inner* ``max_iter`` and total
+            iterations become ``n_inner * iterations_per_step``.
         commit : bool, optional
             If True (default), bakes the final coordinates back into a
             regular ``ModelFT`` so subsequent refinement uses per-atom xyz.
@@ -382,7 +393,11 @@ class LBFGSRefinement(Refinement):
 
     def refine(self, macro_cycles=5):
         """
-        Run full LBFGS refinement cycle (ADP + XYZ).
+        Run full LBFGS refinement, alternating parameter groups per cycle.
+
+        Each macro cycle steps the groups in sequence: ``refine_xyz`` →
+        ``refine_adp`` → ``refine_scaler``. (Contrast :meth:`refine_everything`,
+        which optimizes xyz, ADP, U, and occupancy jointly in a single step.)
 
         Parameters
         ----------
@@ -474,7 +489,11 @@ class LBFGSRefinement(Refinement):
 
     def refine_everything(self, macro_cycles=5):
         """
-        Run full LBFGS refinement cycle (ADP + XYZ) without weight screening.
+        Run full LBFGS refinement with a single joint step per cycle.
+
+        Each macro cycle optimizes xyz, ADP, U, and occupancy together in one
+        joint LBFGS step (after ``unfreeze_all``). (Contrast :meth:`refine`,
+        which alternates ``refine_xyz`` → ``refine_adp`` → ``refine_scaler``.)
 
         Parameters
         ----------

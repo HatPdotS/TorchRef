@@ -81,8 +81,9 @@ def generate_possible_hkl(
 
     Returns
     -------
-    torch.Tensor, shape (M, 3), dtype int32
-        All Miller indices with d-spacing >= d_min.
+    torch.Tensor, shape (M, 3)
+        All Miller indices with d-spacing >= d_min. The integer dtype is
+        ``dtypes.int`` (int32 under the default float32 configuration).
 
     Examples
     --------

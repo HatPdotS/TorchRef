@@ -38,7 +38,7 @@ class Cell(_NonModuleDeviceMixin):
     >>> cell = Cell([50, 60, 70, 90, 90, 90])
     >>> cell.volume  # Computed and cached
     tensor(210000.)
-    >>> cell_gpu = cell.to('cuda')  # Move to GPU (returns new Cell)
+    >>> cell_gpu = cell.to('cuda')  # Move to GPU in place; returns self
     >>> cell_gpu.device.type
     'cuda'
     """
@@ -210,6 +210,9 @@ class Cell(_NonModuleDeviceMixin):
         Orthogonalization matrix B (fractional -> Cartesian).
 
         Returns the 3x3 matrix B such that: cart = frac @ B.T
+
+        Note: the property name ``fractional_matrix`` is historical; the matrix
+        it returns is the orthogonalization (de-fractionalizing) matrix.
 
         Returns
         -------

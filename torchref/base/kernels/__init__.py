@@ -17,13 +17,11 @@ from torchref.base.electron_density.kernels import (  # noqa: F401
     get_cache_dir,
     clear_cache,
     _HAS_TRITON,
-    _HAS_SEPARABLE_TRITON,
 )
 
 try:
     from torchref.base.electron_density.kernels import (  # noqa: F401
         fused_add_to_map_gpu,
-        separable_density_gpu,
     )
 except ImportError:
     pass
@@ -37,5 +35,4 @@ __all__ = [
     "get_cache_dir",
     "clear_cache",
     "fused_add_to_map_gpu",
-    "separable_density_gpu",
 ]

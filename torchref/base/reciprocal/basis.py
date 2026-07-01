@@ -16,7 +16,9 @@ def reciprocal_basis_matrix(cell: torch.Tensor):
     Parameters
     ----------
     cell : torch.Tensor
-        Cell parameters [a, b, c, alpha, beta, gamma].
+        Cell parameters [a, b, c, alpha, beta, gamma], shape (6,), where
+        lengths are in Angstroms and angles in degrees. Single cell only
+        (not batched).
 
     Returns
     -------
@@ -166,6 +168,9 @@ def get_s(hkl, cell):
     Calculate the magnitude of scattering vectors for given Miller indices.
 
     Computes |s| = 1/d where d is the interplanar spacing for each reflection.
+
+    This is a NumPy-only helper (it delegates to the NumPy scattering-vector
+    path); it does not accept or return torch tensors.
 
     Parameters
     ----------

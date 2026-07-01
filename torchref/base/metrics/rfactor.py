@@ -101,16 +101,18 @@ def bin_wise_rfactors(
     F_calc : torch.Tensor
         Calculated structure factors.
     rfree : torch.Tensor
-        R-free mask.
+        R-free mask. Must be a boolean tensor: it is used directly in
+        ``mask & rfree`` without an internal cast (unlike ``get_rfactors``,
+        which applies ``.to(torch.bool)``), so a non-boolean ``rfree``
+        silently misbehaves.
     bins : torch.Tensor
         Bin indices for each reflection.
 
     Returns
     -------
-    r_work_bins : torch.Tensor
-        R-factors for working set (per bin).
-    r_test_bins : torch.Tensor
-        R-factors for test set (per bin).
+    tuple of torch.Tensor
+        ``(r_work_bins, r_test_bins)``, a pair of 1-D tensors holding the
+        per-bin R-factors for the working set and the test set respectively.
     """
     r_work_bins = []
     r_test_bins = []

@@ -1,13 +1,15 @@
 """
-DEPRECATED: Use SpaceGroup instead. Symmetry is now an alias for backward compatibility.
+DEPRECATED: Use SpaceGroup instead. ``Symmetry`` is now a bare alias for
+``SpaceGroup``, kept for backward compatibility.
 
 The Symmetry class has been merged into SpaceGroup, which provides the same
-functionality plus additional features. This module provides the Symmetry alias
-for backward compatibility with existing code.
+functionality plus additional features. This module exposes ``Symmetry`` as a
+direct alias (``Symmetry = SpaceGroup``). It is a plain alias and does NOT emit
+a DeprecationWarning; the ``warnings`` import is currently unused.
 
 Usage
 -----
-Old code using Symmetry continues to work::
+Old code using Symmetry continues to work unchanged::
 
     from torchref.symmetry import Symmetry
     sym = Symmetry('P21')

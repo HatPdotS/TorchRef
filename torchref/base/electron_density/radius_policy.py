@@ -3,8 +3,10 @@
 The effective real-space width of atom *i* is ``sigma_eff_i = sqrt((b_form_i +
 B_i) / 8pi^2)``, where ``b_form_i`` is the broadest ITC92 Gaussian width of the
 atom's element and ``B_i`` its ADP. Truncating at ``r = N_sigma * sigma_eff``
-carries the same fractional tail mass for every atom by construction (3.5 sigma
--> ~0.09%, 4 sigma -> ~0.013%), so the structure-wide F-truncation residual is
+carries the same fractional tail mass for every atom by construction (the
+quoted 3.5 sigma -> ~0.09%, 4 sigma -> ~0.013% are the per-axis 1D Gaussian tail
+fractions; the enclosed-mass complement of the 3D radial Gaussian differs but is
+likewise atom-independent), so the structure-wide F-truncation residual is
 governed by the single knob ``N_sigma`` (``torchref.sigma_cutoff_ed``) rather
 than by the worst aggregate atom -- the failure mode of the old per-structure
 scalar radius.

@@ -44,7 +44,7 @@ class ADPSimilarityTarget(ADPTarget):
         self, model: "Model" = None, simu_sigma: float = 2.0,
         simu_sigma_aniso: float = 1.0, verbose: int = 0
     ):
-        super().__init__(model, verbose, target_value=4.0, sigma=1.2)
+        super().__init__(model, verbose)
         # Register simu-specific sigma as buffer (separate from base sigma)
         self.register_buffer("_simu_sigma", torch.tensor(simu_sigma))
         self.register_buffer("_simu_sigma_aniso", torch.tensor(simu_sigma_aniso))

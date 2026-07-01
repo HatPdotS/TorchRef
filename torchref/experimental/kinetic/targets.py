@@ -9,8 +9,6 @@ CollectionDifferenceTarget
     Multi-timepoint difference target (primary optimization driver).
 CollectionRiceTarget
     Multi-timepoint Rice maximum-likelihood amplitude target.
-CollectionMLTarget
-    Multi-timepoint maximum-likelihood target with a shared Luzzati σ_A term.
 MultiModelGeometryTarget
     Geometry restraints applied to the shared base models.
 MultiModelADPTarget

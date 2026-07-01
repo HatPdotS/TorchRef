@@ -16,8 +16,9 @@ Design (per the plan):
   is saved). Each atom is owned by one program, so there are no atomics.
 - ``save_for_backward`` keeps only the small inputs (O(R)+O(N)), never O(R·N).
 
-float32 only (the dispatch routes float64 / non-CUDA elsewhere). Inputs are
-passed as per-component 1-D contiguous columns so loads are coalesced.
+float32 only; non-float32 / non-CUDA inputs are handled by the checkpointed
+eager fallback (see :mod:`.dispatch`). Inputs are passed as per-component
+1-D contiguous columns so loads are coalesced.
 """
 
 from __future__ import annotations

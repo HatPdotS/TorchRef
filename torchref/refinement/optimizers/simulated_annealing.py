@@ -40,7 +40,11 @@ def optimize_simulated_annealing(
     T_initial : float
         Initial temperature. Default is 1.0.
     T_final : float
-        Final temperature. Default is 0.01.
+        Final temperature. Default is 0.01. Note: for the exponential
+        schedule the cooling rate is ``(T_final/T_initial)**(1/n_steps)`` and
+        the step index runs ``0..n_steps-1``, so the last step reaches
+        ``T_initial * (T_final/T_initial)**((n_steps-1)/n_steps)`` --
+        ``T_final`` is approached but not exactly attained.
     n_steps : int
         Number of SA steps. Default is 1000.
     perturbation_scale : float, list, or dict
@@ -59,8 +63,10 @@ def optimize_simulated_annealing(
     verbose : int
         Verbosity level. Default is 0.
     callback : callable, optional
-        Function called after each step with signature callback(step, T, loss, params).
-        Useful for collecting snapshots during optimization.
+        Function called after each step with signature
+        callback(step, T, loss, params), where ``loss`` is the current
+        accepted loss (not the per-step proposal). Useful for collecting
+        snapshots during optimization.
 
     Returns
     -------

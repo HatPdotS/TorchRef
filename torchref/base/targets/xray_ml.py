@@ -1,7 +1,13 @@
 """Rice maximum-likelihood X-ray loss math.
 
 Mirrors the Rice-distribution loss in
-``torchref/refinement/targets/xray/rice.py`` verbatim. The
+``torchref/refinement/targets/xray/rice.py`` up to float32 precision (the
+Triton path uses an ``i0e`` polynomial approximation where the eager path
+calls :func:`torch.special.i0e`). The eager path takes ``|F_calc|`` via
+``torch.abs`` while the Triton kernel consumes ``F_calc`` raw; the two agree
+because inputs are assumed to be real, non-negative amplitudes. Every
+``log``/denominator carries a ``+1e-12`` (or ``min=1e-6``) numerical floor for
+stability — these are guards, not part of the analytic Rice target. The
 caller is responsible for everything ``XrayTarget.get_data`` does:
 unpacking ``ReflectionData``, running the ``Scaler`` forward to produce
 ``|F_calc|`` from a complex ``f_calc``, and building the work/free mask.

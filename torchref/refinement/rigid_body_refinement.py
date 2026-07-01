@@ -35,7 +35,11 @@ class RigidBodyRefinementStep:
         ``None``, a default schedule is generated from the native data
         resolution via :meth:`default_cutoffs`.
     iterations_per_step : int, optional
-        ``max_iter`` for the per-cutoff LBFGS step. Default 30.
+        ``max_iter`` for the per-cutoff LBFGS step. Default 30. Note that 30
+        under-converges in practice (e.g. 9RTS needs >= 100); raise it for
+        production runs. Under the solvent-only (``ls_wunit_k1``) inner-cycle
+        path this is the per-*inner* ``max_iter``, so total rigid-body
+        iterations become ``n_inner * iterations_per_step``.
     commit : bool, optional
         If ``True`` (default), the final rotated/translated coordinates are
         baked back into a plain ``ModelFT`` so subsequent regular refinement

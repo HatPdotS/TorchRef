@@ -15,7 +15,12 @@ sys.path.insert(0, os.path.abspath('..'))
 project = 'TorchRef'
 copyright = '2026, Hans Peter Seidel'
 author = 'Hans Peter Seidel'
-release = '0.5.0'
+
+# Derive the documented version from the installed package so the docs are
+# always stamped with the real release (torchref/__init__.py __version__).
+import torchref  # noqa: E402
+
+release = torchref.__version__
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

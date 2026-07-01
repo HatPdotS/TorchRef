@@ -9,6 +9,7 @@ import torch
 
 # Lazy-loaded C++ parallel scatter for CPU
 _cpp_scatter_fn = None
+_cpp_scatter_accumulate_fn = None
 _cpp_scatter_checked = False
 
 
@@ -17,18 +18,21 @@ def _get_cpp_scatter():
 
     Eagerly triggers the C++ compilation so that failures (missing ninja,
     unsupported compiler flags, etc.) are caught here rather than mid-calculation.
+    Also caches the in-place variant used by the no-grad fast path.
     """
-    global _cpp_scatter_fn, _cpp_scatter_checked
+    global _cpp_scatter_fn, _cpp_scatter_accumulate_fn, _cpp_scatter_checked
     if not _cpp_scatter_checked:
         try:
             from torchref.base.electron_density.kernels.cpu.scatter import (
                 _get_module,
+                structured_scatter_accumulate,
                 structured_scatter_add,
             )
 
             # Trigger compilation now — _get_module returns None on failure
             if _get_module() is not None:
                 _cpp_scatter_fn = structured_scatter_add
+                _cpp_scatter_accumulate_fn = structured_scatter_accumulate
         except Exception:
             pass
         _cpp_scatter_checked = True
@@ -57,6 +61,14 @@ def _do_structured_scatter(
     if density_cube.device.type == "cpu":
         cpp_fn = _get_cpp_scatter()
         if cpp_fn is not None:
+            # Differentiable in-place accumulate: density_flat += scatter(cube),
+            # mutating one shared buffer across chunks. Avoids the per-chunk
+            # zeros(map_size) + out-of-place full-grid add (two full-grid touches
+            # per chunk) that the functional path incurs and that dominate
+            # scatter-bound, many-chunk structures. Gradients are preserved
+            # (the scatter is linear; see _ScatterAccumulate).
+            if _cpp_scatter_accumulate_fn is not None:
+                return _cpp_scatter_accumulate_fn(density_flat, density_cube, wa, wbwc)
             return density_flat + cpp_fn(density_cube, wa, wbwc, map_size)
     # Fallback: PyTorch scatter_add_ requires int64 indices.
     idx_flat = wa[:, :, None, None] + wbwc[:, None, :, :]

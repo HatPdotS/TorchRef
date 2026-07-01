@@ -90,9 +90,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     xyz : MixedTensor
         Atomic coordinates tensor with shape (n_atoms, 3).
     adp : PositiveMixedTensor
-        Atomic displacement parameters (isotropic B-factors) with shape (n_atoms,).
-    u : MixedTensor
-        Anisotropic displacement parameters with shape (n_atoms, 6).
+        Atomic displacement parameters (isotropic B-factors, Å²) with shape (n_atoms,).
+    u : CholeskyMixedTensor
+        Anisotropic displacement parameters with shape (n_atoms, 6), kept
+        positive-definite by construction. :meth:`create_from_state_dict`
+        rebuilds this as a :class:`CholeskyMixedTensor` as well, so a restored
+        model uses the same parametrization as a freshly-loaded one.
     occupancy : OccupancyTensor
         Atomic occupancies with values in [0, 1].
     pdb : pandas.DataFrame
@@ -181,7 +184,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self._cif_path = None
 
     def __bool__(self):
-        """Return the initialization status when used in boolean context."""
+        """Return the initialization status when used in boolean context.
+
+        Note that ``if model:`` tests *initialization*, not non-``None``-ness:
+        an uninitialized (but non-``None``) model is falsy. Use
+        ``if model is not None`` when you mean an existence check.
+        """
         return self.initialized
 
     @property
@@ -376,8 +384,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Build atomic number tensor from element column.
 
-        Converts element symbols to atomic numbers using the pre-loaded
-        element-to-Z mapping from the scattering table.
+        Converts element symbols to atomic numbers using the element-to-Z
+        mapping fetched lazily (via ``get_element_to_z_mapping()``) from the
+        scattering table at call time.
 
         Returns
         -------
@@ -496,6 +505,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ITC92 A parameters (amplitudes) with shape (n_iso_atoms, 5).
         B : torch.Tensor
             ITC92 B parameters (widths) with shape (n_iso_atoms, 5).
+
+        Notes
+        -----
+        ``n_iso_atoms`` honors ``exclude_H_from_sf``: when H exclusion is
+        active the isotropic count is the H-excluded count (mirroring
+        :meth:`get_iso`).
         """
         self._build_parametrization()
         idx = self._iso_indices
@@ -511,6 +526,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ITC92 A parameters (amplitudes) with shape (n_aniso_atoms, 5).
         B : torch.Tensor
             ITC92 B parameters (widths) with shape (n_aniso_atoms, 5).
+
+        Notes
+        -----
+        ``n_aniso_atoms`` honors ``exclude_H_from_sf``: when H exclusion is
+        active the anisotropic count is the H-excluded count (mirroring
+        :meth:`get_aniso`).
         """
         self._build_parametrization()
         idx = self._aniso_indices
@@ -638,6 +659,42 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return self.restraints.torsion_deviations_with_sigmas(self.xyz())
 
     def load(self, reader):
+        """
+        Populate the model from a reader callable.
+
+        This is the central loader that ``load_pdb`` / ``load_cif`` /
+        ``_new_model_from_df`` all funnel through. It strips hydrogens (when
+        ``strip_H`` is set), drops rows with NaN coordinates/B-factors/
+        occupancies, builds the :class:`Cell` and space-group objects, and
+        constructs all four refinable parameter wrappers (``xyz``, ``adp``,
+        ``u``, ``occupancy``). It also registers the ``aniso_flag`` buffer,
+        sets the default refinement masks, and registers alternative
+        conformations.
+
+        Note that ``u`` is built here as a :class:`CholeskyMixedTensor`
+        (positive-definite by construction); :meth:`create_from_state_dict`
+        rebuilds it the same way, so the parametrization round-trips.
+
+        Parameters
+        ----------
+        reader : callable
+            A zero-argument callable returning ``(pdb_df, cell, spacegroup)``,
+            where ``pdb_df`` is a pandas DataFrame of atomic model data,
+            ``cell`` is a unit-cell specification accepted by :class:`Cell`,
+            and ``spacegroup`` is a space-group specification. An optional
+            ``.links`` attribute on the callable is stored on ``self.links``.
+
+        Returns
+        -------
+        Model
+            Self, for method chaining.
+
+        Notes
+        -----
+        Side effects: sets ``self.pdb``, ``self.links``, ``self.cell``,
+        ``self.spacegroup``, the ``aniso_flag`` buffer, the four parameter
+        wrappers, the default masks, and ``self.initialized = True``.
+        """
         self.pdb, cell, spacegroup = reader()
         self.links = getattr(reader, "links", None)
 
@@ -830,7 +887,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         1. First identify alternative conformations (multiple altlocs per residue)
         2. For altloc groups: ALL atoms in each conformation share one collapsed index
         3. For non-altloc residues: group by similar occupancy (within 0.01 tolerance)
-        4. Only refine occupancies that differ from 1.0
+        4. Only refine occupancies that differ from 1.0 by more than the 0.01 deadband
 
         Parameters
         ----------
@@ -958,6 +1015,25 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return sharing_groups_tensor, altloc_groups, refinable_mask
 
     def update_pdb(self):
+        """
+        Write the current refinable parameters back into ``self.pdb``.
+
+        Copies the live values of ``xyz`` (x/y/z), ``u`` (u11..u23), ``adp``
+        (tempfactor), and ``occupancy`` from the parameter wrappers into the
+        corresponding columns of the ``self.pdb`` DataFrame. Called by every
+        writer and by ``hydrogenate`` / ``generate_hydrogens`` before output.
+
+        Returns
+        -------
+        pandas.DataFrame
+            The updated ``self.pdb`` DataFrame.
+
+        Notes
+        -----
+        This does **not** touch ``anisou_flag``: the iso/aniso classification
+        of each atom is left unchanged (see ``_apply_adp_partition`` for the
+        partition logic that owns that flag).
+        """
         self.pdb.loc[:, ["x", "y", "z"]] = self.xyz().cpu().detach().numpy()
         self.pdb.loc[:, ["u11", "u22", "u33", "u12", "u13", "u23"]] = (
             self.u().cpu().detach().numpy()
@@ -1018,7 +1094,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     def to(self, *args, **kwargs):
         """Move Model and rebuild device-specific SF indices.
 
-        Delegates to :class:`~torchref.utils.device_mixin.DeviceMixin`, which
+        Delegates to :class:`~torchref.utils.device_mixin.DeviceMovementMixin`, which
         walks ``self.__dict__`` (picking up ``self.cell``, ``self.altloc_pairs``,
         ``self._restraints`` and all registered parameters / buffers), refreshes
         the ``self.device`` tracker, and invalidates caches. Afterwards this
@@ -1152,6 +1228,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         case), the per-atom indexing is skipped and ``self.xyz()``,
         ``self.adp()``, ``self.occupancy()`` are returned directly to
         avoid the cost of a redundant gather and its backward scatter.
+        See :meth:`get_aniso` for the complementary anisotropic subset.
         """
         if self._iso_covers_all:
             return self.xyz(), self.adp(), self.occupancy()
@@ -1163,6 +1240,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return xyz, adp, occupancy
 
     def set_default_masks(self):
+        """
+        Register the default refinable masks for all four parameter wrappers.
+
+        Builds and registers ``xyz_mask`` (all atoms), ``adp_mask`` (non-NaN
+        B-factors), ``u_mask`` (atoms with no NaN U component), and
+        ``occupancy_mask`` (occupancies below 0.999), then pushes each mask
+        into the corresponding parameter wrapper via ``update_refinable_mask``.
+        Called from :meth:`load` after the wrappers are constructed.
+        """
         self.register_buffer(
             "xyz_mask", torch.ones(len(self.pdb), dtype=torch.bool, device=self.device)
         )
@@ -1208,6 +1294,16 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return out
 
     def freeze(self, target: str):
+        """
+        Freeze (stop refining) one parameter type.
+
+        Parameters
+        ----------
+        target : str
+            One of ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
+            Unrecognized names are ignored. (``occupancy`` is frozen via the
+            OccupancyTensor's ``freeze_all`` rather than ``fix_all``.)
+        """
         if target == "xyz":
             self.xyz.fix_all()
         elif target == "adp":
@@ -1218,18 +1314,32 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             self.occupancy.freeze_all()  # OccupancyTensor uses freeze_all() not fix_all()
 
     def freeze_all(self):
+        """Freeze every parameter type (``xyz``, ``adp``, ``u``, ``occupancy``)."""
         self.freeze("xyz")
         self.freeze("adp")
         self.freeze("u")
         self.freeze("occupancy")
 
     def unfreeze_all(self):
+        """Unfreeze every parameter type, restoring each wrapper's default mask."""
         self.unfreeze("xyz")
         self.unfreeze("adp")
         self.unfreeze("u")
         self.unfreeze("occupancy")
 
     def unfreeze(self, target: str):
+        """
+        Unfreeze (resume refining) one parameter type.
+
+        Restores the parameter's default refinable mask (``xyz_mask`` /
+        ``adp_mask`` / ``u_mask`` / ``occupancy_mask``).
+
+        Parameters
+        ----------
+        target : str
+            One of ``"xyz"``, ``"adp"``, ``"u"``, ``"occupancy"``.
+            Unrecognized names are ignored.
+        """
         if target == "xyz":
             self.xyz.update_refinable_mask(self.xyz_mask)
         elif target == "adp":
@@ -1647,6 +1757,23 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return torch.where(flag, torch.nan_to_num(U), u_from_b)
 
     def parameters(self, recurse: bool = True):
+        """
+        Iterate over refinable parameters, skipping empty ones.
+
+        Wraps :meth:`torch.nn.Module.parameters` and filters out any
+        parameter with zero elements (e.g. the ``u`` leaf when there are no
+        anisotropic atoms), so an optimizer is never handed an empty tensor.
+
+        Parameters
+        ----------
+        recurse : bool, optional
+            If True (default), include parameters of submodules.
+
+        Yields
+        ------
+        torch.nn.Parameter
+            Each non-empty parameter.
+        """
         return (p for p in super().parameters(recurse) if p.numel() > 0)
 
     def named_mixed_tensors(self):
@@ -2695,7 +2822,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Return a dictionary containing the complete state of the Model.
 
-        Includes all registered buffers, model parameters (xyz, b, u, occupancy),
+        Includes all registered buffers, model parameters (xyz, adp, u, occupancy),
         PDB DataFrame, and metadata (spacegroup, device, dtype, etc.).
 
         Parameters
@@ -2797,6 +2924,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         -------
         Model
             Fully initialized instance with restored state.
+
+        Notes
+        -----
+        The anisotropic ``u`` is rebuilt here as a :class:`CholeskyMixedTensor`,
+        matching :meth:`load`, so a model restored from a state_dict refines
+        ``u`` in the same positive-definite-by-construction parametrization as
+        a freshly-loaded one.
         """
         # Resolve dtype/device at call time so the fallbacks below use the
         # current config, not the import-time default.
@@ -2851,7 +2985,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 refinable_mask=adp_mask,
                 name="adp",
             )
-            instance.u = MixedTensor(
+            # Match load(): the anisotropic U is a CholeskyMixedTensor so the
+            # restored model refines it in the same positive-definite-by-
+            # construction parametrization as a freshly-loaded one.
+            instance.u = CholeskyMixedTensor(
                 torch.tensor(
                     pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
                     dtype=saved_dtype,
@@ -2916,8 +3053,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                         name, torch.zeros_like(state_dict[name], device=device)
                     )
 
-        # Now use PyTorch's default load_state_dict
-        state_dict = {k: v for k, v in state_dict.items() if k.shape[0] > 0}
+        # Now use PyTorch's default load_state_dict. Drop only empty-in-dim-0
+        # tensors (placeholders from an atom-less state); keep scalars and any
+        # non-tensor entries. (Previously filtered on ``k.shape`` — the string
+        # key — which raised AttributeError for every real state_dict.)
+        state_dict = {
+            k: v
+            for k, v in state_dict.items()
+            if not (torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] == 0)
+        }
         instance.load_state_dict(state_dict, strict=False)
 
         if verbose > 0:

@@ -108,6 +108,11 @@ class MonolithicRefinement(LBFGSRefinement):
         model SF cache holding tensors tied to a freed graph, so the first
         co-refined ``forward().backward()`` raises "backward through the graph a
         second time". Clearing the cache forces a fresh, in-graph recompute.
+
+        This is the model-side half of the "don't reuse a freed graph" fix; the
+        scaler-side half lives in
+        :meth:`~torchref.experimental.monolithic_refinement.density_scaler.DensitySolventScaler.forward`,
+        which busts its ``_f_sol_raw`` cache each forward.
         """
         super().get_scales()
         if hasattr(self.model, "reset_cache"):

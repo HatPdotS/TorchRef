@@ -15,7 +15,7 @@ coordinates
     Coordinate transformation functions (Cartesian <-> fractional).
 reciprocal
     Reciprocal space calculations (basis, HKL, d-spacing, grid operations).
-structure_factors
+direct_summation
     Structure factor calculations (isotropic, anisotropic, corrections).
 electron_density
     Electron density map building functions.
@@ -236,7 +236,7 @@ __all__ = [
     # -------------------------------------------------------------------------
     "coordinates",
     "reciprocal",
-    "structure_factors",
+    "direct_summation",
     "electron_density",
     "fourier",
     "scattering",

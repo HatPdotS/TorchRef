@@ -61,7 +61,7 @@ class IHMModelGroupInfo:
         Fractions should sum to 1.0.
     time_delay : float, optional
         Time delay in ``time_delay_units`` (for time-resolved experiments).
-    time_delay_units : str
+    time_delay_units : str, optional
         Units for ``time_delay``. Default ``"s"`` (seconds).
     """
 

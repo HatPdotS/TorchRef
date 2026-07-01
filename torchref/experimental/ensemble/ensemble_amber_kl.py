@@ -1,6 +1,17 @@
 """
 Per-member AMBER energy over an ensemble, with an optional entropy regularizer.
 
+.. warning::
+
+   Experimental — part of ``torchref.experimental.ensemble``. The API and
+   behaviour may change or be removed without notice.
+
+   These two targets are **not** the production ensemble Amber path. The
+   refinement driver (:class:`EnsembleRefinement`) wires
+   :class:`~torchref.experimental.ensemble.quasi_crystal_amber.QuasiCrystalAmberTarget`
+   instead, which abandoned the per-member entropy/KL approach (see below).
+   The targets here are retained for standalone / comparison use only.
+
 Two targets, both subclasses of the single-molecule
 :class:`~torchref.experimental.targets.amber_target.AmberTarget`:
 
@@ -17,11 +28,17 @@ Two targets, both subclasses of the single-molecule
 
       L = (1/N) Σ_i E_amber(x_i) / kT  −  λ · Ĥ(x_1, …, x_N)
 
-  Minimizing this makes the empirical ensemble approximate samples from
-  ``p(x) ∝ exp(−E_amber(x) / kT)`` without collapsing all members to one
-  minimum — the per-atom entropy surrogate ``Ĥ`` blows up as the spread
-  vanishes (``var → 0 ⇒ log → −∞``). ``kT = 0`` drops the energy term (entropy
-  only); ``λ = 0`` drops the regularizer.
+  The intent was for minimizing this to make the empirical ensemble
+  approximate samples from ``p(x) ∝ exp(−E_amber(x) / kT)`` while the per-atom
+  entropy surrogate ``Ĥ`` (which blows up as the spread vanishes,
+  ``var → 0 ⇒ log → −∞``) resisted collapse to a single minimum. ``kT = 0``
+  drops the energy term (entropy only); ``λ = 0`` drops the regularizer.
+
+  Caveat: this per-member entropy/KL anti-collapse prior was found inadequate
+  for the quasi-crystal supercell layout and was superseded — see
+  :mod:`~torchref.experimental.ensemble.quasi_crystal_amber`, where physical
+  crystal contacts replace the entropy term. Retained here for
+  standalone / comparison use, not as the production restraint.
 
 Hydrogen handling is **identical** to the single-molecule target: every member
 is placed through the inherited :meth:`AmberTarget._place_hydrogens`
@@ -44,6 +61,12 @@ if TYPE_CHECKING:
 
 class EnsembleAmberTarget(AmberTarget):
     """Mean per-member AMBER energy over an ensemble (``N`` independent copies).
+
+    .. warning::
+
+       Experimental, and **not** the production ensemble Amber restraint
+       (:class:`QuasiCrystalAmberTarget` is). API and behaviour may change
+       without notice.
 
     Subclass of :class:`~torchref.experimental.targets.amber_target.AmberTarget`.
     The expensive chemistry/topology is built **once** from the ensemble's
@@ -174,6 +197,14 @@ class EnsembleAmberTarget(AmberTarget):
 
 class EnsembleAmberKLTarget(EnsembleAmberTarget):
     """Per-member AMBER energy + ensemble-entropy regularizer.
+
+    .. warning::
+
+       Experimental and superseded. The per-member entropy/KL anti-collapse
+       prior was found inadequate for the quasi-crystal layout; the production
+       restraint is :class:`QuasiCrystalAmberTarget` (physical crystal
+       contacts, no KL term). Retained for standalone / comparison use only.
+       API and behaviour may change without notice.
 
     Parameters
     ----------

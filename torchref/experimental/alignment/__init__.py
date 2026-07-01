@@ -1,5 +1,10 @@
 """
-Alignment module for TorchRef.
+Experimental ball-harmonic molecular-replacement engine for TorchRef.
+
+Experimental / unstable API. This is the opt-in **ball-harmonic MR engine**;
+the production / canonical MR entry point is ``torchref.alignment`` (the
+consolidated FRF engine, default ``engine="frf_separate"``). Everything in this
+package may change without notice (importing it emits a ``FutureWarning``).
 
 Provides molecular replacement functionality including:
 
@@ -7,6 +12,33 @@ Provides molecular replacement functionality including:
 2. Translation Search: FFT-based translation function
 3. Rigid Body Refinement: Optimization of rotation and translation
 4. Unified Pipeline: Complete MR workflow with early stopping
+
+Notes
+-----
+Optional dependency surface. The pipeline and ball rotation-search symbols
+(``MolecularReplacementPipeline``, ``MRSolution``, ``ball_rotation_search``,
+``ball_rotation_search_torch``, ``BallHarmonicCoefficients``,
+``splat_evalues_to_ball``, ``compute_ball_harmonic_coefficients``,
+``compute_ball_cross_correlation_coefficients``, ``evaluate_rotation_function``,
+``find_rotation_peaks``, ``reduce_rotation_by_symmetry``, ``RotationCluster``,
+``cluster_rotation_peaks`` and the other rotation/Euler helpers) require the
+JAX/s2fft stack and are exported only when ``pip install torchref[alignment]``
+is present. Without that extra they fall back to stubs (or are absent from
+``__all__``); only translation search, rigid-body refinement, transforms, clash
+scoring, distributions, and the sampling utilities are unconditionally
+available.
+
+The package-level ``cluster_rotation_peaks`` is the ``.ball_transform`` version
+(signature ``(peaks, cluster_radius_deg=5.0, symmetry_matrices=None,
+return_details=False)`` returning 6-tuples / ``RotationCluster`` objects). The
+``.pipeline`` module keeps its own simpler variant for internal use, reachable
+as ``torchref.experimental.alignment.pipeline.cluster_rotation_peaks``.
+
+A handful of public ball helpers (``compute_ball_harmonic_coefficients_analytical``,
+``refine_peaks_analytical``, ``refine_peaks_subvoxel_wrapper``,
+``evaluate_rotation_function_at_angles``, ``build_wigner_index_mapping``) are
+documented in their modules but are not re-exported here and are not part of the
+supported package API.
 
 Example - Full MR Pipeline
 --------------------------
@@ -32,6 +64,9 @@ Example - Individual Components
         fft_translation_search_torch,
         RigidBodyRefinement,
     )
+
+    # E_obs, s_obs, E_calc, s_calc, F_obs, F_calc_rotated, hkl assumed
+    # computed beforehand from the data/model.
 
     # 1. Rotation search
     rf, angles, peaks = ball_rotation_search_torch(
@@ -63,7 +98,6 @@ try:
     from .pipeline import (
         MolecularReplacementPipeline,
         MRSolution,
-        cluster_rotation_peaks,
         rotation_angular_distance,
         euler_angular_distance,
     )
@@ -229,7 +263,6 @@ if _HAS_BALL_TRANSFORM:
         # Pipeline (main entry point)
         "MolecularReplacementPipeline",
         "MRSolution",
-        "cluster_rotation_peaks",
         "rotation_angular_distance",
         "euler_angular_distance",
         # Rotation search

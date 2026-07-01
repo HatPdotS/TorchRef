@@ -42,9 +42,10 @@ Soft-failure closure (recommended for production LBFGS refinement)::
             return torch.full_like(loss, float("inf"))
         return loss
 
-Fast path is one GPU→CPU sync on ``torch.isfinite(loss)`` plus a single
-reduction over parameter gradients when ``check_grads=True``. Diagnostic
-path only runs on failure.
+Fast path is one GPU→CPU sync on ``torch.isfinite(loss)`` plus, when
+``check_grads=True``, a per-gradient-tensor finiteness reduction fused into
+a single bool accumulator with one further sync (see
+``_any_nonfinite_grads``). Diagnostic path only runs on failure.
 """
 
 from collections import defaultdict
@@ -86,9 +87,11 @@ def _is_finite_scalar(t: torch.Tensor) -> bool:
 def _any_nonfinite_grads(parameters: List[torch.Tensor]) -> bool:
     """Check whether any parameter gradient contains a non-finite entry.
 
-    Uses ``torch._foreach_isfinite`` when available to batch the check
-    across all gradient tensors with a single dispatch, then reduces to
-    one scalar sync.
+    Iterates over the gradient tensors in a plain Python loop, OR-ing a
+    per-tensor ``~torch.isfinite(g).all()`` reduction into a single device
+    bool accumulator, then performs one ``.item()`` GPU->CPU sync at the
+    end. The result is one reduction *per* gradient tensor fused into one
+    bool, not a single batched ``torch._foreach_*`` dispatch.
     """
     grads = [p.grad for p in parameters if p.grad is not None]
     if not grads:
@@ -101,7 +104,13 @@ def _any_nonfinite_grads(parameters: List[torch.Tensor]) -> bool:
 
 
 def _nonfinite_counts(parameters: List[torch.Tensor]) -> List[tuple]:
-    """(name_like_shape, non_finite_count) per parameter, for diagnostics only."""
+    """``(label, non_finite_count)`` entries for diagnostics only.
+
+    Returns one entry per parameter (label ``param[i] shape=...``) and, when
+    that parameter has a gradient, an additional entry for the gradient
+    (label ``  .grad shape=...``) — so parameters with grads contribute two
+    entries, not one.
+    """
     out = []
     for i, p in enumerate(parameters):
         label = f"param[{i}] shape={tuple(p.shape)}"

@@ -2,7 +2,7 @@ Contributing
 ============
 
 Contributions are very welcome. This started as a small personal project but has become quite complex.
-If you have any idea for improvement or find a bug let me know via a github issue or fis it yourself and submit a pull request!
+If you have any idea for improvement or find a bug let me know via a github issue or fix it yourself and submit a pull request!
 
 
 Development Setup
@@ -21,9 +21,11 @@ Development Setup
 
       pip install -e ".[dev]"
 
-3. Use of Generative AI
-    Please feel free to use it, most of the doc strings were written with its help and only corrected.
-    I used it a lot for docstrings and refactoring.
+Use of Generative AI
+--------------------
+
+Please feel free to use it; most of the docstrings were written with its help
+and only corrected. I used it a lot for docstrings and refactoring.
 
 Code Style
 ----------

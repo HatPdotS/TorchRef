@@ -1,8 +1,9 @@
 """Triton forward + Triton backward for the ADP-similarity (SIMU) target.
 
 The math is trivial — gather two B-factors, subtract, Gaussian NLL — but
-this target showed the widest math/target gap (~0.23 forward) in
-benchmarking, so it's a clean win to tritonize.
+this target showed the widest gap between the pure-math function and the
+full eager target in benchmarking (the math step was ~0.23 of the eager
+forward time), so it's a clean win to tritonize.
 
 All scalar parameters (``sigma``, ``log_sigma``, ``grad_out``) are
 passed as 0-D device tensors and ``tl.load``ed in-kernel — no

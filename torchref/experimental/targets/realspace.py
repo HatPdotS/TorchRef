@@ -4,7 +4,9 @@ Real-Space Targets for Crystallographic Refinement.
 This module provides target (loss) functions that compare electron density
 maps in real space rather than reciprocal space. Two targets are provided:
 
-1. RealSpaceCorrelationTarget: Maximizes RSCC between 2mFo-DFc and Fcalc density
+1. RealSpaceCorrelationTarget: Maximizes RSCC between the observed map and
+   Fcalc density. The observed map labelled ``"2mFo-DFc"`` is in fact the
+   unweighted 2Fo-Fc approximation (m=D=1); see ``RealSpaceTarget``.
 2. RealSpaceDifferenceTarget: Minimizes mean squared Fo-Fc difference density
 
 Both targets use a molecular mask (inverse of solvent mask) to restrict
@@ -60,7 +62,11 @@ class RealSpaceTarget(DataTarget):
     scaler : Scaler, optional
         Scaler for Fcalc (applied before map coefficient computation).
     map_type : str
-        ``"2mFo-DFc"`` or ``"Fo-Fc"``.
+        ``"2mFo-DFc"`` or ``"Fo-Fc"``. Note the ``"2mFo-DFc"`` option is the
+        *unweighted* 2Fo-Fc approximation (figure-of-merit ``m=1``, sigma_a
+        weight ``D=1``: ``(2*Fobs - |Fcalc|) * exp(i*phi_calc)``), not a true
+        likelihood-weighted 2mFo-DFc map. The string value is kept for
+        backward compatibility.
     mask_solvent : bool
         Whether to apply molecular mask. Default True.
     solvent_radius : float
@@ -267,7 +273,8 @@ class RealSpaceCorrelationTarget(RealSpaceTarget):
     """
     Real-space correlation coefficient (RSCC) target.
 
-    Computes RSCC between a 2mFo-DFc observed map and Fcalc model density
+    Computes RSCC between the observed map (the ``"2mFo-DFc"`` option is the
+    unweighted 2Fo-Fc approximation, m=D=1) and Fcalc model density
     within the molecular mask. The loss is ``1 - RSCC``.
 
     The observed map uses detached model phases and amplitudes, so
@@ -523,6 +530,14 @@ class RealSpaceExtrapolatedTarget(RealSpaceTarget):
         Radius for mask erosion in Angstroms. Default 0.9.
     verbose : int, optional
         Verbosity level. Default 0.
+
+    Notes
+    -----
+    The ``name`` attribute is ``"realspace_extrapolated"`` (underscore),
+    whereas the sibling targets use the slash convention
+    (``"realspace/correlation"``, ``"realspace/difference"``).  This
+    inconsistency is intentional for now but may be normalised in a future
+    release if ``name`` becomes part of the logging API.
     """
 
     name: str = "realspace_extrapolated"

@@ -31,6 +31,11 @@ class ParameterFingerprint:
         return self._entries == other
 
     def __bool__(self):
+        """True iff the fingerprint captured at least one tensor.
+
+        Note this reports whether the fingerprint is *non-empty*, not
+        whether it *matches* anything — use :meth:`matches` for comparison.
+        """
         return len(self._entries) > 0
 
 
@@ -53,6 +58,15 @@ class CachedForwardMixin:
 
     The cached tensor retains its autograd graph — gradients flow correctly
     on the first backward pass, after which the cache is invalidated.
+
+    Notes
+    -----
+    This mixin does **not** use :class:`ParameterFingerprint`. The two
+    change-detection mechanisms are independent: ``ParameterFingerprint``
+    captures a ``(data_ptr, _version, numel)`` triple per tensor, whereas
+    this mixin fingerprints inline via ``_fingerprint_state`` /
+    ``_fingerprint_inputs`` using a ``(data_ptr, _version)`` pair (no
+    ``numel``).
     """
 
     # ---- internal helpers ------------------------------------------------
@@ -90,9 +104,21 @@ class CachedForwardMixin:
 
         Parameters
         ----------
+        *args
+            Positional arguments forwarded to ``forward()`` (and fingerprinted
+            for cache validity).
         recalc : bool, optional
             If True, invalidate the cache and force recomputation.
             Not forwarded to ``forward()``.
+        **kwargs
+            Keyword arguments forwarded to ``forward()`` (and fingerprinted
+            for cache validity).
+
+        Returns
+        -------
+        object
+            The cached ``forward()`` result on a cache hit, otherwise the
+            freshly computed result.
         """
         if recalc:
             self.reset_forward_cache()

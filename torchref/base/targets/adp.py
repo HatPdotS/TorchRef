@@ -1,4 +1,6 @@
-"""ADP (B-factor) restraint NLLs: similarity, KL-divergence, locality."""
+"""ADP (B-factor) restraint NLLs: similarity (SIMU), locality, and rigid-bond
+(DELU), with isotropic and anisotropic variants on the unified per-atom U6
+tensor."""
 
 import math
 
@@ -89,6 +91,18 @@ def adp_simu_aniso_math(
 
     Magnitude channel (on B_eq) reduces EXACTLY to :func:`adp_simu_math` when
     all atoms are isotropic; the deviatoric channel restrains tensor shape.
+
+    Parameters
+    ----------
+    u6 : torch.Tensor
+        (N_atoms, 6) per-atom U tensors in 6-vector order
+        ``[U11, U22, U33, U12, U13, U23]``.
+    pair_indices : torch.Tensor
+        (N, 2) bonded-atom pairs to compare.
+    simu_sigma : torch.Tensor
+        Scalar sigma on the B_eq (magnitude) difference.
+    simu_sigma_aniso : torch.Tensor
+        Scalar sigma on the deviatoric (anisotropy) component differences.
     """
     beq = u6_b_eq(u6)
     dmag = beq[pair_indices[:, 0]] - beq[pair_indices[:, 1]]
@@ -116,6 +130,20 @@ def adp_locality_aniso_math(
     penalises differences of the *fractional* anisotropy ``dev / B_eq`` rather
     than absolute deviatoric U. ``sigma_aniso`` is therefore dimensionless and
     comparable to that 0.5 log-sigma (not an absolute Å² value).
+
+    Parameters
+    ----------
+    u6 : torch.Tensor
+        (N_atoms, 6) per-atom U tensors in 6-vector order
+        ``[U11, U22, U33, U12, U13, U23]``.
+    neighbor_indices : torch.Tensor
+        (N_atoms, k) k-nearest-neighbour atom indices per atom.
+    neighbor_distances : torch.Tensor
+        (N_atoms, k) distances to those neighbours; used as inverse-distance
+        weights ``1 / (d + 1e-6)``.
+    sigma_aniso : torch.Tensor
+        Scalar dimensionless sigma on the fractional-anisotropy differences
+        (comparable to the fixed 0.5 log-sigma of the magnitude channel).
     """
     beq = u6_b_eq(u6)
     beq_c = beq.clamp(min=1e-3)

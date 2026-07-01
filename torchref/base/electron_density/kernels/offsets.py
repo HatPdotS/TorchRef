@@ -12,39 +12,8 @@ import math
 import torch
 
 # =========================================================================
-# Separable box radius (axis offsets) — used by the separable CPU / MPS /
-# aniso box-splat paths.
-# =========================================================================
-_box_radius_cache = {}
-
-
-def _get_box_radius(voxel_size, radius_angstrom, device):
-    """Get axis offsets and box size for separable Gaussian splatting (cached).
-
-    Returns
-    -------
-    axis_offsets : torch.Tensor
-        Integer offsets [-box_radius, ..., box_radius], shape (n_axis,).
-    n_axis : int
-        Cube side length (2 * box_radius + 1).
-    """
-    key = (tuple(voxel_size.tolist()), float(radius_angstrom), device)
-    cached = _box_radius_cache.get(key)
-    if cached is not None:
-        return cached
-
-    min_voxelsize = voxel_size.min()
-    box_radius = int(math.ceil(radius_angstrom / min_voxelsize.item()))
-    n_axis = 2 * box_radius + 1
-    r = torch.arange(-box_radius, box_radius + 1, device=device)
-
-    result = (r, n_axis)
-    _box_radius_cache[key] = result
-    return result
-
-
-# =========================================================================
-# Spherical radius mask (local offsets) — used by the fused CPU path.
+# Spherical radius mask (local offsets) — used by the plain-scatter CPU
+# variable-radius splat (``cpu/variable_radius.py``) and ``scaling/solvent.py``.
 # =========================================================================
 _radius_offsets_cache = {}
 

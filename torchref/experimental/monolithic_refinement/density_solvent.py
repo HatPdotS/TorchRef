@@ -66,7 +66,9 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         wrapper freezes ``rho_s`` at 1.0 and uses ``rho0=0.016`` instead.
     rho0 : float, default 2.0
         Initial protein-density saturation level (e/A^3). Interpolates Babinet
-        (large) <-> flat-mask (small).
+        (large) <-> flat-mask (small). Note: the
+        :class:`~torchref.experimental.monolithic_refinement.density_scaler.DensityDerivedSolvent`
+        wrapper instead uses ``rho0=0.016`` (the sharp-mask regime).
     occupancy : {"exp", "sigmoid", "shell"}, default "exp"
         Occupancy function mapping density -> solvent fraction. ``"exp"`` uses
         ``M = exp(-rho/rho0)``. ``"sigmoid"`` uses ``M = sigmoid((rho0 - rho)/w)``
