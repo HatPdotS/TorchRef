@@ -99,9 +99,10 @@ def main():
                          "other geometry components stay at their group weight). "
                          "Use a distinct --arm (e.g. *_norama) so the run lands "
                          "in its own directory for the with/without comparison.")
-    ap.add_argument("--mem", default="16G",
-                    help="SLURM --mem per job (16G is the benchmark default; 8G "
-                         "OOMs the largest structures).")
+    ap.add_argument("--mem", default="8G",
+                    help="SLURM --mem per job (8G is the benchmark default, "
+                         "matching the exF4 single-core allocation; the largest "
+                         "structures OOM at 8G and are reported as failures).")
     ap.add_argument("--codes", nargs="+", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--dry-run", action="store_true")
