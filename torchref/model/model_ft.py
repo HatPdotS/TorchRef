@@ -96,7 +96,7 @@ class ModelFT(CachedForwardMixin, Model):
 
             The real-space splat radius is no longer a per-structure scalar: each
             atom is truncated at its own ``N_sigma * sigma_eff`` radius, with
-            ``N_sigma = torchref.sigma_cutoff_ed`` (default 3.5). Set that config
+            ``N_sigma = torchref.sigma_cutoff_ed`` (default 3). Set that config
             value to trade density accuracy against cost.
         gridsize : tuple of int, optional
             Explicit grid size tuple (nx, ny, nz). If None, computed automatically.

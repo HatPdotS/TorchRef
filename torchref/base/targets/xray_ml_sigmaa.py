@@ -225,7 +225,10 @@ def estimate_beta(
         return beta, None, None
 
     # --- sort free reflections by resolution, equal-count chunks ----------
-    order = torch.argsort(dss_all[free_idx])
+    # stable=True so tied d_star_sq break deterministically and identically on
+    # CPU/GPU (a non-stable CUDA argsort shuffles ties per process, which
+    # reshuffles shell membership and makes beta non-deterministic).
+    order = torch.argsort(dss_all[free_idx], stable=True)
     fo = fo_all[free_idx][order]
     fc = fc_all[free_idx][order]
     cen = cen_all[free_idx][order]
@@ -241,8 +244,15 @@ def estimate_beta(
     n_bins = max(n_by_count, min(min_bins, n_cap))
     seg = (torch.arange(n_free, device=device) * n_bins) // n_free  # (n_free,)
 
+    # Segments are contiguous (data is sorted by resolution and ``seg`` is a
+    # non-decreasing ramp), so the per-shell reductions are contiguous segment
+    # sums. Use ``segment_reduce`` (atomic-free, one program per segment) rather
+    # than ``scatter_add`` (CUDA atomicAdd, non-deterministic accumulation
+    # order): bit-stable run-to-run and identical CPU/GPU to float32 rounding.
+    seg_lengths = torch.bincount(seg, minlength=n_bins)
+
     def segsum(x):
-        return torch.zeros(n_bins, device=device, dtype=dtype).scatter_add(0, seg, x)
+        return torch.segment_reduce(x, "sum", lengths=seg_lengths, unsafe=True)
 
     w = torch.where(cen, torch.ones_like(fo), 2.0 * torch.ones_like(fo))
     SUMw = segsum(w).clamp(min=1e-30)
@@ -253,19 +263,43 @@ def estimate_beta(
     A = segsum(w * fm2e) / SUMw
     B = segsum(w * fo2e) / SUMw
     C = segsum(w * bj) / SUMw
-    D = segsum(w * bj * bj) / SUMw
-    p = segsum(w * fm2e * fm2e) / SUMw
-    q = segsum(w * fo2e * fo2e) / SUMw
-
-    r = (p - A * A) * (q - B * B)
-    OMEGA = torch.where(
-        r > 0, (D - A * B) / torch.sqrt(r.clamp(min=1e-30)), torch.zeros_like(A)
-    )
-    wi = A * B - C * C
     AB = (A * B).clamp(min=1e-30)
 
+    # --- wi/AB = 1 - rho^2, computed float32-stably ---
+    # The naive ``wi = A*B - C**2`` is a catastrophic cancellation when the
+    # shell correlation rho -> 1 (it subtracts two nearly-equal large numbers;
+    # in float32 it is 6-59% wrong right where the saturated gate lives). Write
+    # it instead as the squared orthogonal residual of the weighted amplitude
+    # vectors u = sqrt(w/eps)*Fc, v = sqrt(w/eps)*Fo: with unit vectors
+    # u_hat, v_hat and rho = <u_hat, v_hat>,
+    #     1 - rho^2 = sum_i (u_hat_i - rho * v_hat_i)^2,
+    # a sum of non-negative terms (no cancellation, accurate to ~1e-5 in f32).
+    sc_w = torch.sqrt((w / eps).clamp(min=0.0))
+    u = sc_w * fc
+    v = sc_w * fo
+    nu = torch.sqrt((A * SUMw).clamp(min=1e-30))  # ||u|| per shell
+    nv = torch.sqrt((B * SUMw).clamp(min=1e-30))  # ||v|| per shell
+    rho = (C / torch.sqrt(AB)).clamp(min=-1.0, max=1.0)  # per shell
+    resid = u / nu[seg] - rho[seg] * (v / nv[seg])  # per reflection
+    wiAB = segsum(resid * resid).clamp(min=0.0)  # = 1 - rho^2, per shell
+    wi = wiAB * AB
+
+    # --- OMEGA = Pearson correlation of X=Fc^2/eps and Y=Fo^2/eps, computed
+    # float32-stably via CENTERED moments (the naive
+    # (D - A*B)/sqrt((p - A^2)(q - B^2)) cancels the same way). Cov/Var are
+    # accumulated about the per-shell means A=<X>, B=<Y>. ---
+    dX = fm2e - A[seg]
+    dY = fo2e - B[seg]
+    VarX = segsum(w * dX * dX) / SUMw
+    VarY = segsum(w * dY * dY) / SUMw
+    Cov = segsum(w * dX * dY) / SUMw
+    rr = VarX * VarY
+    OMEGA = torch.where(
+        rr > 0, Cov / torch.sqrt(rr.clamp(min=1e-30)), torch.zeros_like(A)
+    )
+
     trivial = OMEGA <= 0.0
-    saturated = (wi / AB) <= 3.0e-7
+    saturated = wiAB <= 3.0e-7
     need = (~trivial) & (~saturated)
 
     bin_centric = cen  # per-free-reflection; FOM uses per-reflection centric

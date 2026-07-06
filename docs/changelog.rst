@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Version 0.6.1
+-------------
+- Fixed bug in beta estimation that caused instability in GPU refinement
+
+
 Version 0.6.0
 -------------
 - Switched to per-atom cutoff radii for the electron-density sampling and added a global sigma cutoff
