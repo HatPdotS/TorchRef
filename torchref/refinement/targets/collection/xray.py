@@ -2,8 +2,14 @@
 
 Apply a single X-ray likelihood across a paired ``DatasetCollection`` +
 ``ModelCollection``.  Keys are matched automatically so each timepoint dataset
-is paired with its corresponding mixed model.  All computation is vectorized on
-stacked ``(N, n_hkl)`` tensors.
+is paired with its corresponding mixed model.
+
+All three targets subclass :class:`~torchref.refinement.targets.collection.base.CollectionXrayTarget`,
+so they share the single-dataset subset/masking/R-factor contract: reflections
+are selected through each member's ``data.work`` / ``data.free`` / ``data.validation``
+accessors (validity mask applied, validation carved out of both), and R-factors
+are reported through ``stats()`` via the one shared
+:func:`~torchref.base.metrics.rfactor.rfactor_work_free` source of truth.
 
 Targets
 -------
@@ -29,10 +35,10 @@ from torchref.base.targets.xray_ml_sigmaa import (
     epsilon_from_hkl,
     ml_xray_loss_beta_math,
 )
-from torchref.refinement.targets.base import Target
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
-from ._util import _LOG_2PI, _scale_fcalc, _unpack_masked_data
+from ._util import _LOG_2PI, _scale_fcalc
+from .base import CollectionXrayTarget
 
 if TYPE_CHECKING:
     from torchref.io.datasets.collection import DatasetCollection
@@ -45,7 +51,7 @@ if TYPE_CHECKING:
 # =========================================================================
 
 
-class CollectionDifferenceTarget(Target):
+class CollectionDifferenceTarget(CollectionXrayTarget):
     """
     Mean-based difference target using DatasetCollection + ModelCollection.
 
@@ -63,8 +69,11 @@ class CollectionDifferenceTarget(Target):
     direct dark-reference subtraction.  For N>2 the mean reference has
     lower noise.
 
-    All computation is vectorized on stacked (N, n_hkl) tensors — no
-    Python loops over datasets.
+    This is a cross-dataset-coupled target: the per-reflection mean couples all
+    datasets, so it works on aligned ``(N, n_hkl)`` stacks on the common HKL grid
+    (not the flat concatenate-then-mask form the independent targets use). The
+    combined mask requires a reflection to be in this target's subset in **every**
+    dataset.
 
     Parameters
     ----------
@@ -77,7 +86,9 @@ class CollectionDifferenceTarget(Target):
         Unused placeholder. ``forward`` always returns the unnormalised summed
         NLL regardless of this flag.
     use_work_set : bool
-        If True, compute loss only on the work set (rfree_flags=True).
+        Legacy bool; superseded by ``use_set``. If True, loss on the work set.
+    use_set : str, optional
+        Canonical 3-way subset selector ``"work"``/``"free"``/``"val"``.
     verbose : int
         Verbosity level.
     """
@@ -91,37 +102,44 @@ class CollectionDifferenceTarget(Target):
         scaler: "ScalerBase" = None,
         normalize: bool = True,
         use_work_set: bool = True,
+        use_set: str = None,
         verbose: int = 0,
     ):
-        super().__init__(verbose=verbose)
-        self._dataset_collection = dataset_collection
-        self._model_collection = model_collection
-        self.add_module("_scaler", scaler)
+        super().__init__(
+            dataset_collection,
+            model_collection,
+            scaler=scaler,
+            use_work_set=use_work_set,
+            use_set=use_set,
+            verbose=verbose,
+        )
         self.normalize = normalize
-        self.use_work_set = use_work_set
 
     def forward(self) -> torch.Tensor:
         dc = self._dataset_collection
         mc = self._model_collection
-        hkl = dc.hkl
 
-        # Collect all matched dataset keys (dark + timepoints)
-        all_keys = [mc.dark_key] + [n for n in mc.timepoint_names if n in dc]
+        all_keys = self._keys()
         N = len(all_keys)
         if N < 2:
-            return torch.tensor(0.0, device=hkl.device)
+            return torch.tensor(0.0, device=dc.hkl.device)
 
-        # --- Gather per-dataset tensors ---
+        # Clear caches so a preceding no-grad stats()/get_rfactor() call cannot
+        # leave a detached tensor that breaks the loss backward.
+        self._reset_model_caches()
+
+        # --- Gather per-dataset full-size tensors on the common HKL grid ---
         F_obs_list, sigma_list, mask_list, F_calc_list = [], [], [], []
 
         for key in all_keys:
             data = dc[key]
             model = mc[key]
 
-            F_obs, sigma, rfree, validity, _ = _unpack_masked_data(data)
-            F_calc = torch.abs(_scale_fcalc(self._scaler, model(hkl), model))
-
-            mask = validity & rfree if self.use_work_set else validity
+            F_obs, sigma = data.get_corrected_data()
+            F_calc = self._scaled_amp_full(data, model, recalc=False)
+            # Subset boolean mask: validity + work/free/val selection, validation
+            # carved out of both work and free.
+            mask = self._subset(data).mask
 
             F_obs_list.append(F_obs)
             sigma_list.append(sigma)
@@ -134,7 +152,7 @@ class CollectionDifferenceTarget(Target):
         mask_stack = torch.stack(mask_list)  # (N, n_hkl)
         F_calc_stack = torch.stack(F_calc_list)  # (N, n_hkl)
 
-        # Combined mask: reflection must be valid + work-set in ALL datasets
+        # Combined mask: reflection must be in this subset in ALL datasets
         mask_all = mask_stack.all(dim=0)  # (n_hkl,)
 
         # --- Mean across datasets ---
@@ -184,13 +202,15 @@ class CollectionDifferenceTarget(Target):
 # =========================================================================
 
 
-class CollectionRiceTarget(Target):
+class CollectionRiceTarget(CollectionXrayTarget):
     """
     Multi-timepoint Rice maximum-likelihood amplitude target.
 
     Computes Rice-distribution NLL (acentric) and the corresponding
-    centric NLL for each timepoint, with proper validity masking and
-    NaN/Inf protection.  Vectorized on stacked (N_tp, n_hkl) tensors.
+    centric NLL for each timepoint, with proper subset masking and
+    NaN/Inf protection.  The per-timepoint losses are independent, so the
+    reflections and boolean masks are **concatenated across timepoints and
+    masked once** (flat vectorization) rather than summed in a Python loop.
 
     Parameters
     ----------
@@ -202,7 +222,9 @@ class CollectionRiceTarget(Target):
         Unused placeholder. ``forward`` always returns the unnormalised summed
         NLL regardless of this flag.
     use_work_set : bool
-        Compute loss only on work set.
+        Legacy bool; superseded by ``use_set``. If True, loss on the work set.
+    use_set : str, optional
+        Canonical 3-way subset selector ``"work"``/``"free"``/``"val"``.
     verbose : int
         Verbosity level.
     """
@@ -216,58 +238,67 @@ class CollectionRiceTarget(Target):
         scaler: "ScalerBase" = None,
         normalize: bool = True,
         use_work_set: bool = True,
+        use_set: str = None,
         verbose: int = 0,
     ):
-        super().__init__(verbose=verbose)
-        self._dataset_collection = dataset_collection
-        self._model_collection = model_collection
-        self.add_module("_scaler", scaler)
+        super().__init__(
+            dataset_collection,
+            model_collection,
+            scaler=scaler,
+            use_work_set=use_work_set,
+            use_set=use_set,
+            verbose=verbose,
+        )
         self.normalize = normalize
-        self.use_work_set = use_work_set
+
+    def _keys(self):
+        """Rice fits the timepoints only — the dark reference is excluded."""
+        mc = self._model_collection
+        dc = self._dataset_collection
+        return [n for n in mc.timepoint_names if n in dc]
 
     def forward(self) -> torch.Tensor:
         dc = self._dataset_collection
         mc = self._model_collection
 
-        tp_names = [n for n in mc.timepoint_names if n in dc]
+        tp_names = self._keys()
         if not tp_names:
             return torch.tensor(0.0, device=mc.device)
 
-        # --- Gather per-timepoint tensors ---
-        F_obs_list, F_calc_list, sigma_list = [], [], []
-        mask_list, centric_list = [], []
+        self._reset_model_caches()
 
+        # --- Gather per-timepoint full-size tensors, then concatenate + mask ---
+        fo_parts, fc_parts, sig_parts, cen_parts, mask_parts = [], [], [], [], []
         for tp_name in tp_names:
             data = dc[tp_name]
             model = mc[tp_name]
-            hkl = data.hkl
 
-            F_obs, sigma, rfree, validity, centric = _unpack_masked_data(data)
-            F_calc_amp = torch.abs(_scale_fcalc(self._scaler, model(hkl), model))
-
-            mask = validity & rfree if self.use_work_set else validity
+            F_obs, sigma = data.get_corrected_data()
+            F_calc = self._scaled_amp_full(data, model, recalc=False)
+            centric = data.centric
             if centric is None:
-                centric = torch.zeros(len(hkl), dtype=torch.bool, device=hkl.device)
+                centric = torch.zeros(
+                    len(F_obs), dtype=torch.bool, device=F_obs.device
+                )
 
-            F_obs_list.append(F_obs)
-            F_calc_list.append(F_calc_amp)
-            sigma_list.append(sigma)
-            mask_list.append(mask)
-            centric_list.append(centric)
+            fo_parts.append(F_obs)
+            fc_parts.append(F_calc)
+            sig_parts.append(sigma)
+            cen_parts.append(centric)
+            mask_parts.append(self._subset(data).mask)
 
-        # --- Stack into (N_tp, n_hkl) ---
-        F_obs = torch.stack(F_obs_list)
-        F_calc = torch.stack(F_calc_list)
-        sigma = torch.stack(sigma_list)
-        mask = torch.stack(mask_list)
-        centric = torch.stack(centric_list)
+        # Concatenate the data and the boolean masks, then mask the flat arrays
+        # once (compact — no MaskedTensors, no per-dataset Python reduction).
+        mask = torch.cat(mask_parts)
+        F_obs = torch.cat(fo_parts)[mask]
+        F_calc = torch.cat(fc_parts)[mask]
+        sigma = torch.cat(sig_parts)[mask]
+        centric = torch.cat(cen_parts)[mask]
 
-        # --- Apply mask via torch.where ---
-        F_obs = torch.where(mask, F_obs, torch.zeros_like(F_obs))
-        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
-        sigma = torch.where(mask, sigma, torch.ones_like(sigma))
+        if F_obs.numel() == 0:
+            return torch.tensor(0.0, device=mc.device)
 
-        # ML parameters (defaults)
+        # ML parameters (defaults): plain Rice, beta = sigma^2
         beta = sigma**2
         eb = beta.clamp(min=1e-6)
 
@@ -292,10 +323,8 @@ class CollectionRiceTarget(Target):
         loss = torch.where(centric, loss_centric, loss_acentric)
         loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
 
-        # Sum over valid reflections across all timepoints (unnormalised NLL)
-        total_nll = (loss * mask).sum()
-
-        return total_nll
+        # Sum over all masked reflections (unnormalised NLL)
+        return loss.sum()
 
 
 # =========================================================================
@@ -303,7 +332,7 @@ class CollectionRiceTarget(Target):
 # =========================================================================
 
 
-class CollectionMLTarget(Target):
+class CollectionMLTarget(CollectionXrayTarget):
     """
     Multi-dataset maximum-likelihood σ_A (Read MLF) target.
 
@@ -317,9 +346,10 @@ class CollectionMLTarget(Target):
     The estimate is owned by **this target** (a :class:`SigmaAEstimator`), not the
     scaler — the scaler owns scaling only.  The per-dataset loss is the Read MLF
     form (``mean = |Fc|``, variance ``epsilon*beta``) from
-    :func:`torchref.base.targets.xray_ml_sigmaa.ml_xray_loss_beta_math`, summed
-    over datasets.  ``beta`` is detached (a constant in autograd); gradients reach
-    the models only through ``F_calc``.
+    :func:`torchref.base.targets.xray_ml_sigmaa.ml_xray_loss_beta_math`. Because
+    the loss is an independent per-dataset sum, the datasets are concatenated and
+    masked once (flat vectorization).  ``beta`` is detached (a constant in
+    autograd); gradients reach the models only through ``F_calc``.
 
     Parameters
     ----------
@@ -331,7 +361,9 @@ class CollectionMLTarget(Target):
         Unused placeholder (kept for signature parity with the other collection
         targets, where the flag is also non-functional). TODO: remove from all three.
     use_work_set : bool
-        Compute loss only on the work set.
+        Legacy bool; superseded by ``use_set``. If True, loss on the work set.
+    use_set : str, optional
+        Canonical 3-way subset selector ``"work"``/``"free"``/``"val"``.
     verbose : int
         Verbosity level.
     base_weight : float, optional
@@ -355,15 +387,19 @@ class CollectionMLTarget(Target):
         scaler: "ScalerBase" = None,
         normalize: bool = True,
         use_work_set: bool = True,
+        use_set: str = None,
         verbose: int = 0,
         base_weight: float = None,
     ):
-        super().__init__(verbose=verbose)
-        self._dataset_collection = dataset_collection
-        self._model_collection = model_collection
-        self.add_module("_scaler", scaler)
+        super().__init__(
+            dataset_collection,
+            model_collection,
+            scaler=scaler,
+            use_work_set=use_work_set,
+            use_set=use_set,
+            verbose=verbose,
+        )
         self.normalize = normalize
-        self.use_work_set = use_work_set
         self.base_weight = (
             self.DEFAULT_BASE_WEIGHT if base_weight is None else float(base_weight)
         )
@@ -392,9 +428,7 @@ class CollectionMLTarget(Target):
         dc = self._dataset_collection
         mc = self._model_collection
 
-        tp_names = [n for n in mc.timepoint_names if n in dc]
-        # Include the dark/reference dataset too — it is a real dataset to fit.
-        all_keys = [mc.dark_key] + tp_names if mc.dark_key in dc else tp_names
+        all_keys = self._keys()
         if not all_keys:
             return torch.tensor(0.0, device=mc.device)
 
@@ -402,44 +436,42 @@ class CollectionMLTarget(Target):
         dtype = dss_common.dtype
 
         # Clear any structure-factor cache populated under no_grad (e.g. by the
-        # scaler's joint initialization) so the F_calc computed below carries a
-        # live graph — otherwise gradients never reach the models.
-        for bm in getattr(mc, "base_models", []):
-            if hasattr(bm, "reset_cache"):
-                bm.reset_cache()
+        # scaler's joint initialization or a preceding stats() call) so the
+        # F_calc computed below carries a live graph.
+        self._reset_model_caches()
 
         # Compute each pair's F_calc once (with grad — used by the loss), and
         # collect detached copies to pool the free reflections for ONE shared
         # beta estimate across all datasets.
-        per_ds = []  # (F_obs, F_calc[grad], centric, mask)
-        fo_parts, fc_parts, cen_parts = [], [], []
+        fo_parts, fc_parts, cen_parts, msk_parts = [], [], [], []
         eps_parts, dss_parts, free_parts = [], [], []
         for key in all_keys:
             data = dc[key]
             model = mc[key]
-            hkl = data.hkl
 
-            F_obs, _sigma, rfree, validity, centric = _unpack_masked_data(data)
-            F_obs = F_obs.to(dtype)
-            F_calc = torch.abs(_scale_fcalc(self._scaler, model(hkl), model)).to(dtype)
+            F_obs = data.get_corrected_data()[0].to(dtype)
+            F_calc = self._scaled_amp_full(data, model, recalc=False).to(dtype)
+            centric = data.centric
             if centric is None:
-                centric = torch.zeros(len(hkl), dtype=torch.bool, device=hkl.device)
-            mask = (validity & rfree) if self.use_work_set else validity
-            per_ds.append((F_obs, F_calc, centric, mask))
+                centric = torch.zeros(
+                    len(F_obs), dtype=torch.bool, device=F_obs.device
+                )
 
-            free = validity & (~rfree)
             fo_parts.append(F_obs)
-            fc_parts.append(F_calc.detach())  # beta needs no gradient
+            fc_parts.append(F_calc)
             cen_parts.append(centric)
+            msk_parts.append(self._subset(data).mask)
+
+            # Beta is estimated on the free set (validation excluded by data.free).
+            free_parts.append(data.free.mask)
             eps_parts.append(eps_common.to(dtype))
             dss_parts.append(dss_common.to(dtype))
-            free_parts.append(free)
 
         # One shared (beta, epsilon) for all datasets, mapped onto the common
         # HKL via target_dss. Detached; cached until maintenance() resets it.
         beta, eps = self._sigma_a.get(
             torch.cat(fo_parts),
-            torch.cat(fc_parts),
+            torch.cat([fc.detach() for fc in fc_parts]),  # beta needs no gradient
             torch.cat(cen_parts),
             torch.cat(eps_parts),
             torch.cat(dss_parts),
@@ -448,11 +480,20 @@ class CollectionMLTarget(Target):
             target_dss=dss_common,
         )
 
-        total = torch.tensor(0.0, device=mc.device)
-        for F_obs, F_calc, centric, mask in per_ds:
-            b = beta.to(F_obs.dtype)
-            e = eps.to(F_obs.dtype) if eps is not None else None
-            total = total + ml_xray_loss_beta_math(F_obs, F_calc, b, centric, mask, e)
+        # Concatenate data + boolean masks across datasets and evaluate the
+        # Read-MLF loss once. beta/eps are on the common HKL, so they are tiled
+        # once per dataset to align with the concatenation order.
+        n_ds = len(all_keys)
+        F_obs_cat = torch.cat(fo_parts)
+        F_calc_cat = torch.cat(fc_parts)
+        centric_cat = torch.cat(cen_parts)
+        mask_cat = torch.cat(msk_parts)
+        beta_cat = beta.to(F_obs_cat.dtype).repeat(n_ds)
+        eps_cat = eps.to(F_obs_cat.dtype).repeat(n_ds) if eps is not None else None
+
+        total = ml_xray_loss_beta_math(
+            F_obs_cat, F_calc_cat, beta_cat, centric_cat, mask_cat, eps_cat
+        )
 
         # Base weight drives refinement; applied on the work set only.
         if self.use_work_set:
@@ -466,8 +507,8 @@ class CollectionMLTarget(Target):
         self._sigma_a.reset()
 
     def stats(self) -> Dict[str, StatEntry]:
-        """Report shared beta diagnostics (low/high-resolution shell values)."""
-        out: Dict[str, StatEntry] = {}
+        """Base collection X-ray stats plus shared-beta diagnostics."""
+        out = super().stats()
         bb = self._sigma_a.beta_per_bin
         if bb is not None and bb.numel() > 0:
             out["beta_bin0"] = stat(bb[0].item(), VERBOSITY_STANDARD)

@@ -216,18 +216,19 @@ def setup_scaler(dataset_collection, model_collection, device, verbose=1):
 
 
 def compute_rfactors(model, data, scaler):
-    """Compute R-work/R-free using forward_mixed for proper solvent."""
-    from torchref.base.metrics import get_rfactors
+    """Compute R-work/R-free using forward_mixed for proper solvent.
+
+    Routes through ``rfactor_work_free`` — the shared source of truth used by the
+    refinement targets — so the validity mask is applied and the validation set is
+    excluded from both work and free, matching every other reported R-factor.
+    """
+    from torchref.base.metrics.rfactor import rfactor_work_free
 
     with torch.no_grad():
         hkl = data.hkl
-        fobs = data.get_corrected_data()[0]
-        rfree = data.rfree_flags
         fcalc = model(hkl)
         fcalc_scaled = scaler.forward_mixed(fcalc, model.fractions)
-        return get_rfactors(
-            torch.abs(fobs), torch.abs(fcalc_scaled), rfree
-        )
+        return rfactor_work_free(data, torch.abs(fcalc_scaled))
 
 
 def setup_loss_state(dataset_collection, model_collection, scaler,
@@ -454,15 +455,10 @@ def write_results_mtz(dc, mc, scaler, filename):
     amp_2fofc_bayes = 2 * F_ext_bayes_amp - amp_calc_bayes
     amp_fofc_bayes = F_ext_bayes_amp - amp_calc_bayes
 
-    from torchref.base.metrics import get_rfactors
+    from torchref.base.metrics.rfactor import rfactor_work_free
 
     def _extrapolation_rfactors(data, fcalc_scaled):
-        valid = data.masks().to(torch.bool)
-        return get_rfactors(
-            torch.abs(data.get_corrected_data()[0][valid]),
-            torch.abs(fcalc_scaled[valid]),
-            data.rfree_flags[valid],
-        )
+        return rfactor_work_free(data, torch.abs(fcalc_scaled))
 
     print("Phase-aware extrapolation rfactors:",
           _extrapolation_rfactors(data_light_extra, F_calc_extra))
@@ -932,14 +928,12 @@ Examples:
                     meta.resolution_high = float(res_valid.min())
                     meta.resolution_low = float(res_valid.max())
 
-            # Reflection counts
+            # Reflection counts (standard work/free subset accessors: validity
+            # masked, validation carved out of both).
             with torch.no_grad():
-                rfree_flags = data.rfree_flags
-                if rfree_flags is not None:
-                    rfree_bool = rfree_flags.bool()
-                    valid_mask = data.masks().to(torch.bool)
-                    n_work = int((valid_mask & rfree_bool).sum().item())
-                    n_test = int((valid_mask & ~rfree_bool).sum().item())
+                if data.rfree_flags is not None:
+                    n_work = data.work.n
+                    n_test = data.free.n
                     n_all = n_work + n_test
                     meta.n_reflections_work = n_work
                     meta.n_reflections_test = n_test

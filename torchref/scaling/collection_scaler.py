@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 import torch
 import torch.nn as nn
 
-from torchref.base.metrics import get_rfactors, nll_xray
+from torchref.base.metrics.rfactor import rfactor_work_free
 from torchref.base.reciprocal import get_scattering_vectors
 from torchref.base.targets.xray_ml_sigmaa import (
     SigmaAEstimator,
@@ -144,18 +144,22 @@ class CollectionScaler(ScalerBase):
             data = dc[name]
             model = mc[name]
 
-            hkl, fobs, sigma, rfree = data(mask=False)
+            hkl = data.hkl
+            fobs = data.get_corrected_data()[0]
             with torch.no_grad():
                 fcalc = model(hkl)
             fcalc_amp = torch.abs(fcalc).clamp(min=1e-3).to(fobs.dtype)
             fobs_clamped = fobs.clamp(min=1e-3)
 
-            # Mask: work set, positive intensities
+            # Mask: work subset (validity + work, validation carved out), and
+            # positive intensities. ``data.work.mask`` is the standard subset
+            # boolean mask, replacing the ad-hoc ``masks() & rfree``.
+            work_mask = data.work.mask
             if hasattr(data, "I") and data.I is not None:
                 pos_mask = data.I > 0
             else:
                 pos_mask = torch.ones_like(fobs, dtype=torch.bool)
-            mask = (data.masks() & rfree & pos_mask).to(torch.bool)
+            mask = (work_mask & pos_mask).to(torch.bool)
 
             bins = self.bins[mask].to(torch.int64)
             log_ratios = (
@@ -358,7 +362,6 @@ class CollectionScaler(ScalerBase):
         # scale down (model under-scaled, R blow-up).
         fcalc_cache = {}
         fractions_cache = {}
-        data_cache = {}
         beta_cache = {}
         eps_cache = {}
         work_cache = {}
@@ -370,7 +373,6 @@ class CollectionScaler(ScalerBase):
             model = mc[name]
             hkl = data.hkl
             fobs, sigma = data.get_corrected_data()
-            rfree = data.rfree_flags
             with torch.no_grad():
                 fc = model(hkl).detach()
                 fracs = model.fractions.detach()
@@ -390,7 +392,6 @@ class CollectionScaler(ScalerBase):
                 )
             fcalc_cache[name] = fc
             fractions_cache[name] = fracs
-            data_cache[name] = (fobs, sigma, rfree)
             beta_cache[name] = beta0
             eps_cache[name] = eps0
             work_cache[name] = data.work
@@ -482,19 +483,21 @@ class CollectionScaler(ScalerBase):
             context="collection_scaler.refine_lbfgs_joint",
         )
 
-        # Evaluate metrics once on the dark dataset after refinement.
+        # Evaluate metrics once on the dark dataset after refinement, through the
+        # shared ``rfactor_work_free`` source of truth (validity-masked work/free
+        # subsets, validation excluded from both) — the same partition the
+        # refinement targets report.
         with torch.no_grad():
             dark_name = mc.dark_key
             if dark_name in fcalc_cache:
                 fc = fcalc_cache[dark_name]
                 fracs = fractions_cache[dark_name]
-                fobs, sigma, rfree = data_cache[dark_name]
                 f_sol_raw = self.get_mixed_solvent_raw(fracs)
                 scaled = super(CollectionScaler, self).forward(
                     fc, f_sol_override=f_sol_raw
                 )
-                rwork, rfree_val = get_rfactors(
-                    torch.abs(fobs), torch.abs(scaled), rfree
+                rwork, rfree_val = rfactor_work_free(
+                    dc[dark_name], torch.abs(scaled)
                 )
                 metrics["steps"].append(nsteps)
                 metrics["rwork"].append(rwork)
@@ -539,10 +542,12 @@ class CollectionScaler(ScalerBase):
             model = mc[name]
             hkl = data.hkl
             fobs, sigma = data.get_corrected_data()
-            rfree = data.rfree_flags
+            work_mask = data.work.mask
             with torch.no_grad():
                 fc = model(hkl)
-            pairs.append((fc.detach(), model.fractions.detach(), fobs, sigma, rfree))
+            pairs.append(
+                (fc.detach(), model.fractions.detach(), fobs, sigma, work_mask)
+            )
 
         sol = self.solvent
         best_log_k = sol.log_k_solvent.clone()
@@ -560,13 +565,13 @@ class CollectionScaler(ScalerBase):
                 sol.b_solvent.data = b.to(dtype=sol.b_solvent.dtype)
 
                 total = 0.0
-                for fc, fracs, fobs, sigma, rfree in pairs:
+                for fc, fracs, fobs, sigma, work_mask in pairs:
                     f_sol_raw = self.get_mixed_solvent_raw(fracs)
                     scaled = super(CollectionScaler, self).forward(
                         fc, f_sol_override=f_sol_raw
                     )
-                    diff = fobs[rfree] - torch.abs(scaled[rfree])
-                    sigma_safe = sigma[rfree].clamp(min=1e-3)
+                    diff = fobs[work_mask] - torch.abs(scaled[work_mask])
+                    sigma_safe = sigma[work_mask].clamp(min=1e-3)
                     total += (0.5 * (diff**2) / sigma_safe**2).mean().item()
 
                 if total < best_loss:

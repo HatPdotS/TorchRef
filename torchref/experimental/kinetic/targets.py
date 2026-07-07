@@ -37,7 +37,6 @@ from torchref.refinement.targets.collection import (  # noqa: F401
 from torchref.refinement.targets.collection._util import (  # noqa: F401
     _LOG_2PI,
     _scale_fcalc,
-    _unpack_masked_data,
 )
 
 if TYPE_CHECKING:
