@@ -235,6 +235,90 @@ class DatasetCollection(CrystalDataset):
         resolution = 1.0 / torch.linalg.norm(s, axis=1)
         self._resolution = resolution
 
+    def harmonize_partition(
+        self,
+        val_fraction_of_free: Optional[float] = None,
+        seed: Optional[int] = None,
+        source: Optional[str] = None,
+    ) -> "DatasetCollection":
+        """Make the work/free (and validation) partition identical across members.
+
+        In a collection every member is expanded onto the same common HKL grid, so
+        a single work/free/validation assignment can be shared by all datasets.
+        Sharing it is also *correct*: per-dataset free sets would let a reflection
+        that is free in one timepoint leak into the work set of another, biasing the
+        cross-dataset R-free. This copies one canonical ``rfree_flags`` and
+        ``validation_flags`` onto every member (row-aligned; cheap clone).
+
+        The canonical partition is taken from a ``source`` member (default: the
+        reference dataset), whose ``rfree_flags`` define the common work/free split.
+        When ``val_fraction_of_free`` is given, a common validation set is carved out
+        of that member's free reflections (resolution-stratified via
+        :meth:`ReflectionData.generate_validation_set`) before broadcasting.
+
+        Parameters
+        ----------
+        val_fraction_of_free : float, optional
+            Fraction of the free reflections to reassign as a held-out validation
+            set, shared across all datasets. If None, no validation set is created
+            (existing ``validation_flags`` on the source, if any, are still
+            broadcast).
+        seed : int, optional
+            Seed for the validation split (reproducibility).
+        source : str, optional
+            Name of the member whose partition is canonical. Defaults to the
+            reference dataset (or the first added dataset).
+
+        Returns
+        -------
+        DatasetCollection
+            Self, for chaining.
+        """
+        if not self._datasets:
+            raise RuntimeError("Cannot harmonize an empty collection.")
+
+        src_name = source or self._reference_dataset or self._dataset_order[0]
+        if src_name not in self._datasets:
+            raise KeyError(f"Source dataset {src_name!r} not in collection.")
+        src = self._datasets[src_name]
+
+        if src.rfree_flags is None:
+            raise ValueError(
+                f"Source dataset {src_name!r} has no rfree_flags to harmonize on."
+            )
+
+        # Optionally carve a common validation set out of the source's free set.
+        if val_fraction_of_free is not None:
+            src.generate_validation_set(
+                val_fraction_of_free=val_fraction_of_free, seed=seed
+            )
+
+        # Broadcast the canonical partition to every member (row-aligned clones).
+        canonical_rfree = src.rfree_flags
+        canonical_val = src.validation_flags
+        for name, ds in self._datasets.items():
+            if name == src_name:
+                continue
+            ds.rfree_flags = canonical_rfree.clone().to(ds.device)
+            if canonical_val is not None:
+                ds.validation_flags = canonical_val.clone().to(ds.device)
+
+        if self.verbose > 0:
+            n_work = int(canonical_rfree.to(torch.bool).sum().item())
+            total = len(canonical_rfree)
+            n_val = (
+                int(canonical_val.to(torch.bool).sum().item())
+                if canonical_val is not None
+                else 0
+            )
+            n_free = total - n_work - n_val
+            print(
+                f"Harmonized partition from {src_name!r} across "
+                f"{self.n_datasets} datasets: work={n_work}, free={n_free}, "
+                f"val={n_val}."
+            )
+        return self
+
     def __call__(self, mask: bool = True) -> Dict[str, Tuple]:
         """
         Return all datasets' data scaled if scale factors are set.

@@ -47,9 +47,15 @@ def _find_repo_root() -> Path:
     )
 
 
-DATA_DIR = _find_repo_root() / "paper" / "figure3_performance" / "data"
-MTZ_FILE = str(DATA_DIR / "1DAW.mtz")
-PDB_FILE = str(DATA_DIR / "1DAW.pdb")
+def _resolve_files(structure: str) -> tuple[str, str]:
+    """Resolve (pdb, mtz) paths for a structure from the test-data suite."""
+    files_dir = _find_repo_root() / "tests" / "files"
+    pdb = files_dir / "pdb" / f"{structure}.pdb"
+    mtz = files_dir / "mtz" / f"{structure}.mtz"
+    for path in (pdb, mtz):
+        if not path.exists():
+            raise FileNotFoundError(path)
+    return str(pdb), str(mtz)
 
 
 def _time_iterations(func, n_iterations: int) -> list[float]:
@@ -88,18 +94,21 @@ def _summarize_times(times: list[float]) -> dict:
     }
 
 
-def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu") -> dict:
+def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu",
+                  structure: str = "1DAW") -> dict:
     """Run refinement cycle benchmark and return timing results."""
     device = torch.device(device_str)
     is_gpu = device.type == "cuda"
     timer = _time_iterations_gpu if is_gpu else _time_iterations
 
+    pdb_file, mtz_file = _resolve_files(structure)
+
     # ---- SETUP (untimed) ----
     # Pass device at construction so all tensors (model, scaler, restraints)
     # are created on the correct device from the start.
     refinement = LBFGSRefinement(
-        data_file=MTZ_FILE,
-        pdb=PDB_FILE,
+        data_file=mtz_file,
+        pdb=pdb_file,
         device=device,
         target_mode="ml",
     )
@@ -235,6 +244,7 @@ def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu") -> 
     # ---- Assemble results ----
     result = {
         "device": device_str,
+        "structure": structure,
         "n_threads": n_threads,
         "n_iterations": n_iterations,
         "n_warmup": n_warmup,
@@ -269,6 +279,11 @@ def main():
         "--device", type=str, default="cpu", choices=["cpu", "cuda"],
         help="Device to benchmark on (default: cpu)",
     )
+    parser.add_argument(
+        "--structure", type=str, default="1DAW",
+        help="Structure to benchmark; resolved from tests/files/{pdb,mtz}/ "
+             "(default: 1DAW)",
+    )
     parser.add_argument("--output", type=str, required=True, help="Output JSON file")
     args = parser.parse_args()
 
@@ -281,7 +296,9 @@ def main():
     old_stdout = sys.stdout
     sys.stdout = io.StringIO()
     try:
-        results = run_benchmark(args.n_iterations, args.n_warmup, args.device)
+        results = run_benchmark(
+            args.n_iterations, args.n_warmup, args.device, args.structure
+        )
     finally:
         sys.stdout = old_stdout
 
@@ -294,7 +311,7 @@ def main():
     bwd = results["aggregate_bwd_only"]
     fb = results["aggregate_fwd_bwd"]
     msg = (
-        f"  {device_label}  "
+        f"  [{results['structure']}] {device_label}  "
         f"fwd: {fwd['mean_time']:.4f}s  "
         f"bwd: {bwd['mean_time']:.4f}s  "
         f"fwd+bwd: {fb['mean_time']:.4f}s"

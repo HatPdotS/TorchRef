@@ -265,6 +265,46 @@ class KineticRefinement(DeviceMixin, nn.Module):
         self.loss_state.aggregate(log_values=True)
         self.loss_state.summary()
 
+    def report_rfactors(self) -> Dict[str, dict]:
+        """Report per-target work/free R-factors across the collection.
+
+        Routes through each collection X-ray target's shared ``get_rfactor``
+        (``rfactor_work_free`` per dataset — validity masked, validation excluded
+        from both work and free), so the reported numbers use exactly the same
+        reflection partition the loss does. R-factors form a distribution over the
+        datasets; the median is the headline and the 10-90% spread is shown.
+
+        Returns
+        -------
+        dict
+            ``{target_name: get_rfactor() result}`` for each X-ray target.
+        """
+        from torchref.refinement.targets.collection import CollectionXrayTarget
+
+        out: Dict[str, dict] = {}
+        with torch.no_grad():
+            for name, target in self.loss_state.targets.items():
+                if not isinstance(target, CollectionXrayTarget):
+                    continue
+                rf = target.get_rfactor()
+                out[name] = rf
+                pw, pf = rf["rwork_pct"], rf["rfree_pct"]
+                if not pw or self.verbose <= 0:
+                    continue
+                print(f"  [{name}] R-factors (median [10-90%]):")
+                print(
+                    f"    R_work = {pw['p50']:.4f} "
+                    f"[{pw['p10']:.4f}-{pw['p90']:.4f}]"
+                )
+                print(
+                    f"    R_free = {pf['p50']:.4f} "
+                    f"[{pf['p10']:.4f}-{pf['p90']:.4f}]"
+                )
+                if self.verbose > 1:
+                    for k, (rw, rfr) in rf["per_dataset"].items():
+                        print(f"      {k}: R_work={rw:.4f} R_free={rfr:.4f}")
+        return out
+
     # ------------------------------------------------------------------
     # Optimization loops
     # ------------------------------------------------------------------
@@ -341,6 +381,10 @@ class KineticRefinement(DeviceMixin, nn.Module):
             # Update solvent masks after structure changes
             if hasattr(self.scaler, "update_all_solvent"):
                 self.scaler.update_all_solvent()
+
+            # Report R-factors through the shared source of truth.
+            if self.verbose > 0:
+                self.report_rfactors()
 
     def refine_structures(self, niter: int = 10, max_iter: int = 50):
         """
@@ -432,6 +476,9 @@ class KineticRefinement(DeviceMixin, nn.Module):
                 for name, f in fracs.items():
                     frac_str = ", ".join(f"{v:.3f}" for v in f.detach().tolist())
                     print(f"  {name}: [{frac_str}]")
+
+                # Report R-factors through the shared source of truth.
+                self.report_rfactors()
 
     def refit_kinetic_prior(self, niter: int = 50, lr: float = 1e-2):
         """

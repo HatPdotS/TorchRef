@@ -88,12 +88,26 @@ def get_default_max_threads() -> int:
         return os.cpu_count() or 16
 
 
+def discover_structures() -> list[str]:
+    """All test structures with a matching tests/files/{pdb,mtz}/{ID} pair.
+
+    Mirrors tests/conftest.py::all_structure_pairs — intersection of PDB and
+    MTZ stems. Naturally excludes 1AK5 (pdb is 1AK5_with_H) and 7L84 (no mtz).
+    """
+    files_dir = REPO_ROOT / "tests" / "files"
+    pdb_ids = {p.stem for p in (files_dir / "pdb").glob("*.pdb")}
+    mtz_ids = {p.stem for p in (files_dir / "mtz").glob("*.mtz")}
+    return sorted(pdb_ids & mtz_ids)
+
+
 def run_worker(
     n_threads: int,
     n_iterations: int,
     n_warmup: int,
     output_file: Path,
+    structure: str = "1DAW",
     device: str = "cpu",
+    timeout: int = 900,
 ) -> dict | None:
     """Launch a benchmark worker subprocess with the given thread count."""
     env = os.environ.copy()
@@ -108,6 +122,7 @@ def run_worker(
         "--n_iterations", str(n_iterations),
         "--n_warmup", str(n_warmup),
         "--device", device,
+        "--structure", structure,
         "--output", str(output_file),
     ]
 
@@ -118,7 +133,7 @@ def run_worker(
             stdout=subprocess.PIPE,
             stderr=None,  # pass stderr through to terminal
             text=True,
-            timeout=900,  # 15 min timeout (refinement init is slower)
+            timeout=timeout,
         )
         if result.stdout.strip():
             print(result.stdout.strip())
@@ -130,7 +145,7 @@ def run_worker(
             return json.load(f)
 
     except subprocess.TimeoutExpired:
-        print(f"  TIMEOUT: exceeded 900s")
+        print(f"  TIMEOUT: exceeded {timeout}s")
         return None
     except Exception as e:
         print(f"  EXCEPTION: {e}")
@@ -155,66 +170,106 @@ def _group_per_target(per_target: dict, mode: str = "fwd_bwd") -> dict:
     return groups
 
 
-def write_summary_csv(
-    cpu_results: list[dict], gpu_result: dict | None, output_path: Path
-):
-    """Write combined results to a CSV file."""
-    fieldnames = [
-        "device", "n_threads",
-        "agg_fwd_no_grad_mean", "agg_fwd_no_grad_min", "agg_fwd_no_grad_max",
-        "agg_fwd_no_grad_speedup",
-        "agg_fwd_graph_mean", "agg_fwd_graph_min", "agg_fwd_graph_max",
-        "agg_fwd_graph_speedup",
-        "agg_bwd_only_mean", "agg_bwd_only_min", "agg_bwd_only_max",
-        "agg_bwd_only_speedup",
-        "agg_fwd_bwd_mean", "agg_fwd_bwd_min", "agg_fwd_bwd_max",
-        "agg_fwd_bwd_speedup",
-        "target_xray_mean", "target_geometry_total_mean", "target_adp_total_mean",
-        "n_iterations", "n_atoms", "n_reflections", "d_min",
-    ]
+FIELDNAMES = [
+    "structure", "device", "n_threads",
+    "agg_fwd_no_grad_mean", "agg_fwd_no_grad_min", "agg_fwd_no_grad_max",
+    "agg_fwd_no_grad_speedup",
+    "agg_fwd_graph_mean", "agg_fwd_graph_min", "agg_fwd_graph_max",
+    "agg_fwd_graph_speedup",
+    "agg_bwd_only_mean", "agg_bwd_only_min", "agg_bwd_only_max",
+    "agg_bwd_only_speedup",
+    "agg_fwd_bwd_mean", "agg_fwd_bwd_min", "agg_fwd_bwd_max",
+    "agg_fwd_bwd_speedup",
+    "target_xray_mean", "target_geometry_total_mean", "target_adp_total_mean",
+    "n_iterations", "n_atoms", "n_reflections", "d_min",
+]
 
-    # Find single-thread baselines
+_AGG_KEYS = [
+    ("agg_fwd_no_grad", "aggregate_fwd_no_grad"),
+    ("agg_fwd_graph", "aggregate_fwd_graph"),
+    ("agg_bwd_only", "aggregate_bwd_only"),
+    ("agg_fwd_bwd", "aggregate_fwd_bwd"),
+]
+
+
+def _structure_baselines(cpu_results: list[dict]) -> dict:
+    """Per-structure 1-thread baselines: {structure: {full_key: mean_time}}."""
     baselines = {}
     for r in cpu_results:
         if r["n_threads"] == 1:
-            for key in ["aggregate_fwd_no_grad", "aggregate_fwd_graph",
-                        "aggregate_bwd_only", "aggregate_fwd_bwd"]:
-                baselines[key] = r[key]["mean_time"]
-            break
+            baselines[r["structure"]] = {
+                full: r[full]["mean_time"] for _, full in _AGG_KEYS
+            }
+    return baselines
 
-    def _speedup(key, mean_time):
-        base = baselines.get(key)
+
+def _aggregate_and_write(output_dir: Path):
+    """Rebuild the combined summary.csv from every per-structure JSON in output_dir.
+
+    Gathers the flat ``{structure}_threads_NN.json`` / ``{structure}_gpu.json``
+    files written by per-structure / gpu-only shard jobs (run on separate nodes).
+    """
+    cpu_results, gpu_results = [], []
+    for p in sorted(output_dir.glob("*_threads_*.json")):
+        try:
+            with open(p) as f:
+                cpu_results.append(json.load(f))
+        except Exception as e:
+            print(f"  skip {p.name}: {e}")
+    for p in sorted(output_dir.glob("*_gpu.json")):
+        try:
+            with open(p) as f:
+                gpu_results.append(json.load(f))
+        except Exception as e:
+            print(f"  skip {p.name}: {e}")
+    csv_path = output_dir / "summary.csv"
+    write_summary_csv(cpu_results, gpu_results, csv_path)
+    n_struct = len({r["structure"] for r in cpu_results + gpu_results})
+    print(f"Aggregated {len(cpu_results)} CPU + {len(gpu_results)} GPU JSONs "
+          f"({n_struct} structures) -> {csv_path}")
+
+
+def write_summary_csv(
+    cpu_results: list[dict], gpu_results: list[dict], output_path: Path
+):
+    """Write combined multi-structure results to a CSV file.
+
+    `cpu_results` / `gpu_results` are flat lists across all structures; each
+    dict carries its own "structure". Speedups are computed per structure
+    against that structure's single-thread CPU run.
+    """
+    baselines = _structure_baselines(cpu_results)
+
+    def _speedup(structure, key, mean_time):
+        base = baselines.get(structure, {}).get(key)
         if base and mean_time > 0:
             return base / mean_time
         return float("nan")
 
     rows = []
-    all_results = sorted(cpu_results, key=lambda x: x["n_threads"])
-    if gpu_result:
-        all_results.append(gpu_result)
+    all_results = sorted(cpu_results, key=lambda x: (x["structure"], x["n_threads"]))
+    all_results += sorted(gpu_results, key=lambda x: x["structure"])
 
     for r in all_results:
         is_gpu = r["device"] != "cpu"
         nt = 0 if is_gpu else r["n_threads"]
-        dev = "gpu" if is_gpu else "cpu"
+        structure = r["structure"]
 
         per_target_groups = _group_per_target(r.get("per_target", {}))
 
         row = {
-            "device": dev,
+            "structure": structure,
+            "device": "gpu" if is_gpu else "cpu",
             "n_threads": nt,
         }
-        for short, full in [
-            ("agg_fwd_no_grad", "aggregate_fwd_no_grad"),
-            ("agg_fwd_graph", "aggregate_fwd_graph"),
-            ("agg_bwd_only", "aggregate_bwd_only"),
-            ("agg_fwd_bwd", "aggregate_fwd_bwd"),
-        ]:
+        for short, full in _AGG_KEYS:
             stats = r[full]
             row[f"{short}_mean"] = f"{stats['mean_time']:.6f}"
             row[f"{short}_min"] = f"{stats['min_time']:.6f}"
             row[f"{short}_max"] = f"{stats['max_time']:.6f}"
-            row[f"{short}_speedup"] = f"{_speedup(full, stats['mean_time']):.3f}"
+            row[f"{short}_speedup"] = (
+                f"{_speedup(structure, full, stats['mean_time']):.3f}"
+            )
 
         row["target_xray_mean"] = f"{per_target_groups.get('xray', 0):.6f}"
         row["target_geometry_total_mean"] = f"{per_target_groups.get('geometry', 0):.6f}"
@@ -226,7 +281,7 @@ def write_summary_csv(
         rows.append(row)
 
     with open(output_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -261,11 +316,44 @@ def main():
         help="Skip GPU benchmark even if a GPU is available.",
     )
     parser.add_argument(
+        "--structures", type=str, nargs="+", default=None,
+        help="Structures to benchmark (resolved from tests/files/{pdb,mtz}/). "
+             "Default: all matching test-data pairs.",
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=900,
+        help="Per-worker subprocess timeout in seconds (default: 900). "
+             "Large structures + per-target breakdown can be slow.",
+    )
+    parser.add_argument(
         "--output_dir", type=str, default=None,
         help="Directory for results. Default: results_<timestamp>/",
     )
+    parser.add_argument(
+        "--gpu_only", action="store_true",
+        help="Only run the GPU point per structure (skip the CPU thread sweep).",
+    )
+    parser.add_argument(
+        "--no_summary", action="store_true",
+        help="Skip writing summary.csv and auto-plotting (shard jobs; a later "
+             "--aggregate job builds the combined summary).",
+    )
+    parser.add_argument(
+        "--aggregate", action="store_true",
+        help="Do not benchmark: load every per-structure JSON in --output_dir, "
+             "rebuild the combined summary.csv, then exit.",
+    )
 
     args = parser.parse_args()
+
+    if args.aggregate:
+        if not args.output_dir:
+            print("--aggregate requires --output_dir")
+            sys.exit(1)
+        _aggregate_and_write(Path(args.output_dir).resolve())
+        return
+
+    structures = args.structures if args.structures else discover_structures()
 
     # Determine thread counts
     if args.threads:
@@ -300,6 +388,7 @@ def main():
     print("=" * 78)
     print("TorchRef — Refinement Cycle Benchmark")
     print("=" * 78)
+    print(f"Structures:     {structures}")
     print(f"CPU threads:    {thread_counts}")
     print(f"GPU:            {'yes' if has_gpu else 'no'}")
     print(f"Iterations:     {args.n_iterations} (+ {args.n_warmup} warmup)")
@@ -308,57 +397,62 @@ def main():
     print("=" * 78)
     print()
 
-    total_runs = len(thread_counts) + (1 if has_gpu else 0)
+    runs_per_struct = len(thread_counts) + (1 if has_gpu else 0)
+    total_runs = runs_per_struct * len(structures)
+    run_idx = 0
 
-    # --- CPU thread scaling ---
-    cpu_results = []
-    for i, nt in enumerate(thread_counts):
-        progress = f"[{i + 1}/{total_runs}]"
-        print(f"{progress} CPU with {nt} thread(s)...", flush=True)
+    cpu_results = []   # flat across structures
+    gpu_results = []   # flat across structures
 
-        output_file = output_dir / f"threads_{nt:02d}.json"
-        result = run_worker(nt, args.n_iterations, args.n_warmup, output_file)
+    for structure in structures:
+        print(f"### Structure {structure} ###", flush=True)
 
-        if result:
-            cpu_results.append(result)
-        print()
+        # --- CPU thread scaling ---
+        for nt in ([] if args.gpu_only else thread_counts):
+            run_idx += 1
+            print(f"[{run_idx}/{total_runs}] {structure} CPU with "
+                  f"{nt} thread(s)...", flush=True)
+            output_file = output_dir / f"{structure}_threads_{nt:02d}.json"
+            result = run_worker(nt, args.n_iterations, args.n_warmup,
+                                output_file, structure=structure,
+                                timeout=args.timeout)
+            if result:
+                cpu_results.append(result)
+            print()
 
-    # --- GPU benchmark ---
-    gpu_result = None
-    if has_gpu:
-        progress = f"[{total_runs}/{total_runs}]"
-        print(f"{progress} GPU benchmark...", flush=True)
+        # --- GPU benchmark ---
+        if has_gpu:
+            run_idx += 1
+            print(f"[{run_idx}/{total_runs}] {structure} GPU benchmark...",
+                  flush=True)
+            output_file = output_dir / f"{structure}_gpu.json"
+            gpu_result = run_worker(1, args.n_iterations, args.n_warmup,
+                                    output_file, structure=structure,
+                                    device="cuda", timeout=args.timeout)
+            if gpu_result:
+                gpu_results.append(gpu_result)
+            print()
 
-        output_file = output_dir / "gpu.json"
-        gpu_result = run_worker(
-            1, args.n_iterations, args.n_warmup, output_file, device="cuda"
-        )
-        print()
-
-    if not cpu_results and not gpu_result:
+    if not cpu_results and not gpu_results:
         print("No successful runs. Exiting.")
         sys.exit(1)
 
+    if args.no_summary:
+        print(f"\n--no_summary: wrote per-structure JSONs to {output_dir} "
+              f"(run --aggregate to build summary.csv).")
+        return
+
     # Write combined summary
     csv_path = output_dir / "summary.csv"
-    write_summary_csv(cpu_results, gpu_result, csv_path)
+    write_summary_csv(cpu_results, gpu_results, csv_path)
 
-    # Find baselines for display
-    baselines = {}
-    for r in cpu_results:
-        if r["n_threads"] == 1:
-            baselines["fwd"] = r["aggregate_fwd_no_grad"]["mean_time"]
-            baselines["fg"] = r["aggregate_fwd_graph"]["mean_time"]
-            baselines["bwd"] = r["aggregate_bwd_only"]["mean_time"]
-            baselines["fb"] = r["aggregate_fwd_bwd"]["mean_time"]
-            break
-
-    # Print summary table
+    # Print a compact per-structure summary table
+    baselines = _structure_baselines(cpu_results)
     print("=" * 110)
     print("Summary")
     print("=" * 110)
     header = (
-        f"{'Device':>10s} {'Threads':>8s} | "
+        f"{'Structure':>10s} {'Device':>8s} {'Thr':>5s} | "
         f"{'Fwd':>10s} {'Sp':>6s} | "
         f"{'Fwd(graph)':>10s} {'Sp':>6s} | "
         f"{'Bwd':>10s} {'Sp':>6s} | "
@@ -367,38 +461,27 @@ def main():
     print(header)
     print("-" * len(header))
 
-    def _sp(key, val):
-        base = baselines.get(key)
-        if base and val > 0:
-            return base / val
-        return float("nan")
+    def _sp(r, full):
+        base = baselines.get(r["structure"], {}).get(full)
+        val = r[full]["mean_time"]
+        return base / val if (base and val > 0) else float("nan")
 
-    for r in sorted(cpu_results, key=lambda x: x["n_threads"]):
-        fwd = r["aggregate_fwd_no_grad"]["mean_time"]
-        fg = r["aggregate_fwd_graph"]["mean_time"]
-        bwd = r["aggregate_bwd_only"]["mean_time"]
-        fb = r["aggregate_fwd_bwd"]["mean_time"]
-        nt = r["n_threads"]
+    all_rows = sorted(cpu_results, key=lambda x: (x["structure"], x["n_threads"]))
+    all_rows += sorted(gpu_results, key=lambda x: x["structure"])
+    for r in all_rows:
+        is_gpu = r["device"] != "cpu"
+        dev = r.get("gpu_name", "GPU") if is_gpu else "CPU"
+        nt = "-" if is_gpu else str(r["n_threads"])
         print(
-            f"{'CPU':>10s} {nt:>8d} | "
-            f"{fwd:>9.4f}s {_sp('fwd', fwd):>5.1f}x | "
-            f"{fg:>9.4f}s {_sp('fg', fg):>5.1f}x | "
-            f"{bwd:>9.4f}s {_sp('bwd', bwd):>5.1f}x | "
-            f"{fb:>9.4f}s {_sp('fb', fb):>5.1f}x"
-        )
-
-    if gpu_result:
-        fwd = gpu_result["aggregate_fwd_no_grad"]["mean_time"]
-        fg = gpu_result["aggregate_fwd_graph"]["mean_time"]
-        bwd = gpu_result["aggregate_bwd_only"]["mean_time"]
-        fb = gpu_result["aggregate_fwd_bwd"]["mean_time"]
-        gpu_name = gpu_result.get("gpu_name", "GPU")
-        print(
-            f"{gpu_name:>10s} {'':>8s} | "
-            f"{fwd:>9.4f}s {_sp('fwd', fwd):>5.1f}x | "
-            f"{fg:>9.4f}s {_sp('fg', fg):>5.1f}x | "
-            f"{bwd:>9.4f}s {_sp('bwd', bwd):>5.1f}x | "
-            f"{fb:>9.4f}s {_sp('fb', fb):>5.1f}x"
+            f"{r['structure']:>10s} {dev:>8s} {nt:>5s} | "
+            f"{r['aggregate_fwd_no_grad']['mean_time']:>9.4f}s "
+            f"{_sp(r, 'aggregate_fwd_no_grad'):>5.1f}x | "
+            f"{r['aggregate_fwd_graph']['mean_time']:>9.4f}s "
+            f"{_sp(r, 'aggregate_fwd_graph'):>5.1f}x | "
+            f"{r['aggregate_bwd_only']['mean_time']:>9.4f}s "
+            f"{_sp(r, 'aggregate_bwd_only'):>5.1f}x | "
+            f"{r['aggregate_fwd_bwd']['mean_time']:>9.4f}s "
+            f"{_sp(r, 'aggregate_fwd_bwd'):>5.1f}x"
         )
 
     print()
@@ -410,7 +493,7 @@ def main():
     try:
         subprocess.run(
             [PYTHON, str(PLOT_SCRIPT), "--results-dir", str(output_dir)],
-            timeout=60,
+            timeout=120,
         )
     except Exception as e:
         print(f"Plot generation failed: {e}")

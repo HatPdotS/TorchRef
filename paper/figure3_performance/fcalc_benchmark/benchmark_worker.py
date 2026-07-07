@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import warnings
+from pathlib import Path
 
 # Verify TORCHREF_NUM_THREADS is set before any imports
 n_threads = int(os.environ.get("TORCHREF_NUM_THREADS", 1))
@@ -23,9 +24,35 @@ n_threads = int(os.environ.get("TORCHREF_NUM_THREADS", 1))
 import torch
 from torchref import ModelFT, ReflectionData
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
-MTZ_FILE = os.path.join(DATA_DIR, "1DAW.mtz")
-PDB_FILE = os.path.join(DATA_DIR, "1DAW.pdb")
+
+def _find_repo_root() -> Path:
+    """Walk up from this file to find the repo root (marker: pyproject.toml).
+
+    `__file__` can be relative or staged under sbatch, so we anchor on a
+    stable marker. Override with TORCHREF_REPO_ROOT if needed.
+    """
+    env_root = os.environ.get("TORCHREF_REPO_ROOT")
+    if env_root:
+        return Path(env_root).resolve()
+    p = Path(os.path.abspath(__file__)).parent
+    for ancestor in [p, *p.parents]:
+        if (ancestor / "pyproject.toml").is_file():
+            return ancestor
+    raise RuntimeError(
+        "Could not locate repo root (no pyproject.toml found walking up "
+        f"from {p}). Set TORCHREF_REPO_ROOT explicitly."
+    )
+
+
+def _resolve_files(structure: str) -> tuple[str, str]:
+    """Resolve (pdb, mtz) paths for a structure from the test-data suite."""
+    files_dir = _find_repo_root() / "tests" / "files"
+    pdb = files_dir / "pdb" / f"{structure}.pdb"
+    mtz = files_dir / "mtz" / f"{structure}.mtz"
+    for path in (pdb, mtz):
+        if not path.exists():
+            raise FileNotFoundError(path)
+    return str(pdb), str(mtz)
 
 
 def _time_iterations(func, n_iterations: int) -> list[float]:
@@ -64,16 +91,19 @@ def _summarize_times(times: list[float]) -> dict:
     }
 
 
-def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu") -> dict:
+def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu",
+                  structure: str = "1DAW") -> dict:
     """Run structure factor calculation benchmark and return timing results."""
     device = torch.device(device_str)
     is_gpu = device.type == "cuda"
     timer = _time_iterations_gpu if is_gpu else _time_iterations
 
+    pdb_file, mtz_file = _resolve_files(structure)
+
     # Load data
-    data = ReflectionData(device=device).load_mtz(MTZ_FILE)
+    data = ReflectionData(device=device).load_mtz(mtz_file)
     d_min = data.d_min
-    M = ModelFT(max_res=d_min, device=device, radius_angstrom=3.0).load_pdb(PDB_FILE)
+    M = ModelFT(max_res=d_min, device=device).load_pdb(pdb_file)
     hkl, _, _, _ = data()
 
     n_atoms = M.xyz().shape[0]
@@ -148,6 +178,7 @@ def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu") -> 
 
     result = {
         "device": device_str,
+        "structure": structure,
         "n_threads": n_threads,
         "n_iterations": n_iterations,
         "n_warmup": n_warmup,
@@ -168,7 +199,7 @@ def run_benchmark(n_iterations: int, n_warmup: int, device_str: str = "cpu") -> 
     if not is_gpu:
         from iotbx import pdb as iotbx_pdb
 
-        pdb_input = iotbx_pdb.input(file_name=PDB_FILE)
+        pdb_input = iotbx_pdb.input(file_name=pdb_file)
         xray_structure = pdb_input.xray_structure_simple()
 
         # Warmup
@@ -196,6 +227,11 @@ def main():
         "--device", type=str, default="cpu", choices=["cpu", "cuda"],
         help="Device to benchmark on (default: cpu)",
     )
+    parser.add_argument(
+        "--structure", type=str, default="1DAW",
+        help="Structure to benchmark; resolved from tests/files/{pdb,mtz}/ "
+             "(default: 1DAW)",
+    )
     parser.add_argument("--output", type=str, required=True, help="Output JSON file")
     args = parser.parse_args()
 
@@ -207,7 +243,9 @@ def main():
     old_stdout = sys.stdout
     sys.stdout = io.StringIO()
     try:
-        results = run_benchmark(args.n_iterations, args.n_warmup, args.device)
+        results = run_benchmark(
+            args.n_iterations, args.n_warmup, args.device, args.structure
+        )
     finally:
         sys.stdout = old_stdout
 
@@ -221,7 +259,7 @@ def main():
     fb = results["torchref_fwd_bwd"]
     device_label = results.get("gpu_name", f"CPU x{results['n_threads']}")
     msg = (
-        f"  {device_label}  "
+        f"  [{results['structure']}] {device_label}  "
         f"fwd: {tr['mean_time']:.4f}s  "
         f"fwd(graph): {fg['mean_time']:.4f}s  "
         f"bwd: {bo['mean_time']:.4f}s  "

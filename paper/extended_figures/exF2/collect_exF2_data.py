@@ -27,9 +27,9 @@ import pandas as pd
 BASE = Path(__file__).resolve().parent
 AF_ROOT = BASE.parent.parent / "figure2_alphafold_start"
 CROSSSCORE = AF_ROOT / "runs" / "metrics" / "fig_crossscore.csv"
-TORCHREF_ARM = AF_ROOT / "runs" / "torchref_g0p2_a0p02"
+TORCHREF_ARM = AF_ROOT / "runs" / "torchref"
 SCORER = "phenix"                       # common independent scorer (main-figure scorer)
-TORCHREF_ENGINE = "torchref_g0p2_a0p02"
+TORCHREF_ENGINE = "torchref"
 PHENIX_ENGINE = "phenix"
 REFMAC_ENGINE = "refmac"
 OUT_CSV = BASE / "data" / "exF2_rfactor_by_resolution.csv"

@@ -93,7 +93,7 @@ Loss weights:
         "--xray-mode",
         type=str,
         default="ml",
-        choices=["gaussian", "ls", "ls_wunit_k1", "ml", "bhattacharyya"],
+        choices=["gaussian", "ls", "ls_wunit_k1", "rice", "ml", "bhattacharyya"],
         help="X-ray target function. 'ml' (default) is the "
         "maximum-likelihood Read MLF target with a cross-validated Luzzati "
         "sigma_A term (Phenix-style alpha/beta). 'bhattacharyya' uses the "

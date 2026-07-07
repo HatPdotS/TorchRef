@@ -12,6 +12,21 @@
 
 TorchRef is a crystallographic refinement package built entirely on PyTorch. By leveraging PyTorch's automatic differentiation and GPU acceleration, TorchRef enables seamless integration with machine learning workflows and provides a flexible, extensible framework for crystallographic structure refinement.
 
+> **Scope 
+TorchRef is a mainly a library/framework to build and experiment with. It is not intended to replace mainline refinement programs for standard problems. 
+
+# Benchmark
+
+![TorchRef AlphaFold-start refinement benchmark](paper/figure2_alphafold_start/figures/figure_af_benchmark.png)
+
+*Refinement of Phaser-placed AlphaFold models against experimental data, benchmarked on a conserved set of ~720 PDB structures (1.4–3.0 Å) with all engines starting from the same placed models and scored by a single common validator.*
+
+- **(A) R-factors (PHENIX-validated).** Starting from the AlphaFold prediction (green), TorchRef (red) drives R-work/R-free down to essentially the same cluster as REFMAC (purple) and PHENIX (blue). Median R-free is 0.3167 (TorchRef) vs 0.3166 (PHENIX) and 0.3161 (REFMAC5)
+- **(B) Geometry (RMSZ vs REFMAC restraints).** Bond, angle, chiral and main-chain B-factor RMS Z-scores. TorchRef produces valid, physically reasonable geometry; its restraints run slightly looser than PHENIX/REFMAC (bond RMSZ ≈ 1.3)
+- **(C) Wall-clock runtime.** Median runtime per structure (4 CPU cores). TorchRef (1.65 min) sits between REFMAC (0.53 min) and PHENIX (4.63 min) — ~2.8× faster than PHENIX, ~3× slower than REFMAC.
+- **(D) Convergence speed (normalized).** Fraction of the total R-free improvement achieved per macrocycle. The different programs show differing convergence behavior. 
+
+
 # Key Features
 
 - **Native PyTorch Integration**: Built on PyTorch's `nn.Module` architecture, TorchRef integrates naturally with the PyTorch ecosystem, including machine learning models, optimizers, and GPU acceleration.
@@ -55,11 +70,11 @@ pip install -e ".[dev]"
 ## Dependencies
 
 - Python ≥ 3.10
-- PyTorch ≥ 2.40
+- PyTorch ≥ 2.4
 - NumPy ≥ 2.0
 - Gemmi ≥ 0.5
-- reciprocalspaceship ≥ 0.9
-- SciPy ≥ 1.7
+- reciprocalspaceship ≥ 0.9.18
+- SciPy ≥ 1.10
 
 ## Testing
 

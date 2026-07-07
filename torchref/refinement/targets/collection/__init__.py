@@ -7,7 +7,8 @@ refinement. Kinetic-specific targets (e.g. ``KineticPriorTarget``) stay in
 :mod:`torchref.experimental.kinetic.targets`.
 """
 
-from ._util import _scale_fcalc, _unpack_masked_data
+from ._util import _scale_fcalc
+from .base import CollectionXrayTarget
 from .multimodel import MultiModelADPTarget, MultiModelGeometryTarget
 from .xray import (
     CollectionDifferenceTarget,
@@ -16,6 +17,7 @@ from .xray import (
 )
 
 __all__ = [
+    "CollectionXrayTarget",
     "CollectionDifferenceTarget",
     "CollectionRiceTarget",
     "CollectionMLTarget",

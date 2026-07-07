@@ -15,7 +15,7 @@ scorers rank models consistently. Constant offsets below/above x = y are the
 scorers' systematic differences (PHENIX lowest, then REFMAC, then TorchRef — the
 most conservative); these cancel within a scorer. PHENIX is the main-figure scorer.
 
-TorchRef here is the locked-default arm (torchref_g0p2_a0p02; xray 1 / geometry 0.2
+TorchRef here is the canonical arm (torchref; xray 1 / geometry 0.2
 / adp 0.02). Reads figure2_alphafold_start/runs/metrics/fig_crossscore.csv
 (analysis/aggregate_crossscore.py).
 
@@ -42,7 +42,7 @@ OUTPUT_DIR = SCRIPT_DIR / "output"
 
 # refined-model engines (exclude the AlphaFold prediction to keep axes focused).
 # TorchRef = the locked-default arm (xray 1 / geometry 0.2 / adp 0.02).
-TORCHREF_ENGINE = "torchref_g0p2_a0p02"
+TORCHREF_ENGINE = "torchref"
 ENGINES = [
     ("refmac", "Refmac", "#762a83"),
     ("phenix", "PHENIX", "#2166ac"),

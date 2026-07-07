@@ -94,7 +94,6 @@ class TestCollectionTargetsRelocated:
         from torchref.experimental.kinetic.targets import (  # noqa: F401
             KineticPriorTarget,
             _scale_fcalc,
-            _unpack_masked_data,
         )
         from torchref.refinement.targets import CollectionMLTarget as RefCML
 
