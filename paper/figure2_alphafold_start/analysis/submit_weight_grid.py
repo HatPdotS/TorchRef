@@ -72,6 +72,54 @@ cd / && rm -rf $TEMP_DIR
 """
 
 
+def build_array_script(name, tasks_file, n_tasks, logdir, n_cycles, mem, throttle):
+    """One SLURM job array: task i reads line i of the (tab-separated) tasks file
+    `outdir<TAB>pdb<TAB>mtz<TAB>weights_json` and runs refine + REFMAC validation."""
+    return f"""#!/bin/bash
+#SBATCH --job-name={name}
+#SBATCH --partition=hour
+#SBATCH --cpus-per-task=4
+#SBATCH --time=01:00:00
+#SBATCH --mem={mem}
+#SBATCH --array=0-{n_tasks - 1}%{throttle}
+#SBATCH --output={logdir}/task_%a.out
+#SBATCH --error={logdir}/task_%a.err
+
+set -e
+export TORCHREF_NUM_THREADS=4
+
+LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "{tasks_file}")
+OUTDIR=$(printf '%s' "$LINE" | cut -f1)
+PDB=$(printf '%s' "$LINE" | cut -f2)
+MTZ=$(printf '%s' "$LINE" | cut -f3)
+WEIGHTS=$(printf '%s' "$LINE" | cut -f4)
+mkdir -p "$OUTDIR"
+
+{P.PYTHON} -u {P.REFINE_SCRIPT} \\
+    -m "$PDB" -sf "$MTZ" -o "$OUTDIR" \\
+    -n {n_cycles} \\
+    --mode separate \\
+    --xray-mode ml \\
+    --sigma-m-scale 1.0 \\
+    --weights "$WEIGHTS"
+
+# REFMAC 0-cycle validation (validate.log -> R-factors + geometry RMS/sigma)
+source {P.CCP4_SETUP}
+TEMP_DIR=/tmp/validate_{name}_${{SLURM_ARRAY_JOB_ID}}_${{SLURM_ARRAY_TASK_ID}}
+mkdir -p $TEMP_DIR && cd $TEMP_DIR
+export CCP4_SCR=$TEMP_DIR
+cp "$OUTDIR/refined.pdb" input.pdb
+cp "$MTZ" input.mtz
+refmac5 HKLIN input.mtz HKLOUT output.mtz XYZIN input.pdb XYZOUT output.pdb \\
+    > "$OUTDIR/validate.log" 2>&1 << EOF
+NCYCLES 0
+MAKE HYDR NO
+END
+EOF
+cd / && rm -rf $TEMP_DIR
+"""
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -85,9 +133,32 @@ def main():
     ap.add_argument("--codes", nargs="+", default=None)
     ap.add_argument("--n-cycles", type=int, default=10)
     ap.add_argument("--mem", default="8G")
+    ap.add_argument("--tag", default="",
+                    help="Namespace suffix for an ablation grid, e.g. 'nosimu'. "
+                         "Arms become wgrid_<tag>_g{gi}_a{ai} with their own "
+                         "manifest so they don't collide with the baseline grid.")
+    ap.add_argument("--disable", nargs="+", default=[],
+                    help="Restraint component weights to force to 0 for this "
+                         "grid, e.g. --disable adp/simu adp/KL.")
+    ap.add_argument("--out-root", default=None,
+                    help="Base directory for this grid's arm output + manifest "
+                         "(default: figure2 runs/). Use a dedicated dir for "
+                         "ablation grids to keep runs/ uncluttered.")
+    ap.add_argument("--array", action="store_true",
+                    help="Submit the whole grid as ONE SLURM job array instead "
+                         "of one job per (cell, structure). Much lighter on the "
+                         "scheduler.")
+    ap.add_argument("--array-throttle", type=int, default=200,
+                    help="Max concurrently-running array tasks (sbatch %%N). "
+                         "At 4 cpus/task, 200 ~ 800 cpus (per-user cap ~1167).")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
+
+    out_root = Path(args.out_root).resolve() if args.out_root else P.RUNS
+    suffix = f"_{args.tag}" if args.tag else ""
+    manifest_path = out_root / "metrics" / f"wgrid{suffix}_manifest.csv"
+    disabled = {k: 0 for k in args.disable}
 
     geoms = np.logspace(np.log10(args.geom_range[0]), np.log10(args.geom_range[1]),
                         args.n_geom)
@@ -99,29 +170,34 @@ def main():
         codes = codes[:args.limit]
 
     # Manifest: arm -> (gi, ai, geometry, adp), exact weights for aggregation.
-    MANIFEST.parent.mkdir(parents=True, exist_ok=True)
-    with open(MANIFEST, "w", newline="") as f:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["arm", "gi", "ai", "geometry", "adp"])
         for gi, g in enumerate(geoms):
             for ai, a in enumerate(adps):
-                w.writerow([f"wgrid_g{gi}_a{ai}", gi, ai, f"{g:.6g}", f"{a:.6g}"])
+                w.writerow([f"wgrid{suffix}_g{gi}_a{ai}", gi, ai,
+                            f"{g:.6g}", f"{a:.6g}"])
 
-    print(f"Log weight grid (xray fixed = 1):")
+    print(f"Log weight grid (xray fixed = 1)  tag={args.tag or '(baseline)'}:")
     print(f"  geometry [{args.n_geom}]: {', '.join(f'{g:.4g}' for g in geoms)}")
     print(f"  adp      [{args.n_adp}]: {', '.join(f'{a:.4g}' for a in adps)}")
+    if disabled:
+        print(f"  DISABLED components (weight=0): {', '.join(disabled)}")
     print(f"  {args.n_geom * args.n_adp} combos x {len(codes)} structures = "
           f"{args.n_geom * args.n_adp * len(codes)} jobs max")
-    print(f"  manifest: {MANIFEST}\n")
+    print(f"  manifest: {manifest_path}\n")
 
-    first, total_sub = True, 0
+    # Collect the (cell x structure) work list, skipping already-complete cells.
+    tasks = []  # each: (outdir, pdb, mtz, weights_json)
+    skip = miss = 0
     for gi, g in enumerate(geoms):
         for ai, a in enumerate(adps):
-            arm = f"wgrid_g{gi}_a{ai}"
-            arm_dir = P.RUNS / arm
-            tmp = arm_dir / "tmp_scripts"
-            weights = {"xray": 1, "geometry": float(g), "adp": float(a)}
-            sub = skip = miss = 0
+            arm = f"wgrid{suffix}_g{gi}_a{ai}"
+            arm_dir = out_root / arm
+            weights = {"xray": 1, "geometry": float(g), "adp": float(a),
+                       **disabled}
+            wjson = json.dumps(weights)
             for code in codes:
                 pdb, mtz = P.PLACED / f"{code}_af.pdb", P._mtz(code)
                 if not pdb.exists() or not mtz.exists():
@@ -131,19 +207,56 @@ def main():
                 if P._refmac_complete(outdir / "validate.log") and not args.force:
                     skip += 1
                     continue
-                if not args.dry_run:
-                    outdir.mkdir(parents=True, exist_ok=True)
-                script = build_script(arm, code, pdb, mtz, outdir, args.n_cycles,
-                                      args.mem, weights)
-                if first and args.dry_run:
-                    print("── example sbatch script ──")
-                    print(script)
-                    print("───────────────────────────")
-                    first = False
-                if P._sbatch(script, tmp / f"ref_{code}.sh", args.dry_run) or args.dry_run:
-                    sub += 1
-            total_sub += sub
-    print(f"TOTAL submitted={total_sub}  (over {args.n_geom * args.n_adp} arms)")
+                tasks.append((str(outdir), str(pdb), str(mtz), wjson))
+    print(f"work list: {len(tasks)} tasks  (skip={skip} complete, miss={miss})")
+
+    if not tasks:
+        print("nothing to do.")
+        return
+
+    if args.array:
+        # One job array for the whole grid: task i <- line i of the tasks file.
+        tmp = out_root / "tmp_scripts"
+        logdir = tmp / f"logs{suffix}"
+        tasks_file = tmp / f"tasks{suffix}.tsv"
+        array_script = tmp / f"array{suffix}.sh"
+        name = f"af_wgrid{suffix or '_base'}"
+        script = build_array_script(name, tasks_file, len(tasks), logdir,
+                                    args.n_cycles, args.mem, args.array_throttle)
+        if args.dry_run:
+            print(f"\n[DRY-RUN] would write {len(tasks)} tasks -> {tasks_file}")
+            print(f"[DRY-RUN] would submit array 0-{len(tasks) - 1}%"
+                  f"{args.array_throttle}\n── array script ──\n{script}")
+            return
+        tmp.mkdir(parents=True, exist_ok=True)
+        logdir.mkdir(parents=True, exist_ok=True)
+        with open(tasks_file, "w") as f:
+            for outdir, pdb, mtz, wjson in tasks:
+                f.write(f"{outdir}\t{pdb}\t{mtz}\t{wjson}\n")
+        array_script.write_text(script)
+        jid = P._sbatch(script, array_script, dry_run=False)
+        print(f"submitted array job {jid}: {len(tasks)} tasks "
+              f"(throttle %{args.array_throttle})")
+        return
+
+    # Per-job fallback (one sbatch per task).
+    first = 0
+    for outdir, pdb, mtz, wjson in tasks:
+        outdir_p = Path(outdir)
+        arm = outdir_p.parent.name
+        code = outdir_p.name
+        if not args.dry_run:
+            outdir_p.mkdir(parents=True, exist_ok=True)
+        script = build_script(arm, code, pdb, mtz, outdir, args.n_cycles,
+                              args.mem, json.loads(wjson))
+        if args.dry_run and first == 0:
+            print("── example sbatch script ──")
+            print(script)
+            print("───────────────────────────")
+        first += 1
+        P._sbatch(script, outdir_p.parent / "tmp_scripts" / f"ref_{code}.sh",
+                  args.dry_run)
+    print(f"TOTAL submitted={len(tasks)}  (over {args.n_geom * args.n_adp} arms)")
 
 
 if __name__ == "__main__":

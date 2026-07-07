@@ -20,7 +20,7 @@ data = ReflectionData(device=device).load_mtz(mtz_file)
 d_min = data.d_min
 print(f"d_min: {d_min}")
 
-M = ModelFT(max_res=d_min, device=device,radius_angstrom=3.0).load_pdb(pdb_file)
+M = ModelFT(max_res=d_min, device=device,radius_angstrom=4.0).load_pdb(pdb_file)
 
 hkl, _, _, _ = data()
 M(hkl, recalc=True)

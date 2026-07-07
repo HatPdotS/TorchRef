@@ -9,6 +9,7 @@ Writes runs/metrics/weight_grid.csv and prints per-cell coverage.
 Usage:
     ./.dev/bin/python analysis/aggregate_weight_grid.py
 """
+import argparse
 import csv
 import sys
 from pathlib import Path
@@ -17,15 +18,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import run_af_pipeline as P  # noqa: E402
 from aggregate_figure_metrics import RE_RWORK, RE_RFREE, parse_geometry  # noqa: E402
 
-MANIFEST = P.RUNS / "metrics" / "wgrid_manifest.csv"
-OUT = P.RUNS / "metrics" / "weight_grid.csv"
-
 
 def ratio(num, den):
     return (num / den) if (num is not None and den) else None
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--tag", default="",
+                    help="Ablation-grid namespace (matches submit_weight_grid "
+                         "--tag), e.g. 'nosimu'. Reads wgrid_<tag>_manifest.csv "
+                         "and writes weight_grid_<tag>.csv.")
+    ap.add_argument("--out-root", default=None,
+                    help="Base directory the grid was written to (matches "
+                         "submit_weight_grid --out-root). Default: figure2 runs/.")
+    args = ap.parse_args()
+    out_root = Path(args.out_root).resolve() if args.out_root else P.RUNS
+    suffix = f"_{args.tag}" if args.tag else ""
+    MANIFEST = out_root / "metrics" / f"wgrid{suffix}_manifest.csv"
+    OUT = out_root / "metrics" / f"weight_grid{suffix}.csv"
+
     if not MANIFEST.exists():
         sys.exit(f"missing {MANIFEST}; run submit_weight_grid.py first")
     manifest = list(csv.DictReader(open(MANIFEST)))
@@ -33,7 +45,7 @@ def main():
     rows = []
     for m in manifest:
         arm = m["arm"]
-        arm_dir = P.RUNS / arm
+        arm_dir = out_root / arm
         if not arm_dir.is_dir():
             continue
         for code_dir in sorted(p for p in arm_dir.iterdir() if p.is_dir()):
