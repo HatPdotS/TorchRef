@@ -331,6 +331,153 @@ class ReflectionData(CrystalDataset, DebugMixin):
             self._corrected_fp = fp
         return self._corrected_cache
 
+    # ===================== per-reflection field reindexing =====================
+    #
+    # Any routine that changes the HKL set (expand onto a reference grid, remap,
+    # symmetry reduction) must carry EVERY per-reflection field along, not a
+    # hand-maintained subset. Historically ``validate_hkl`` / ``remap`` /
+    # ``reduce_to_spacegroup`` each hardcoded their own field list and silently
+    # dropped fields added later (notably ``hkl_anomalous``, read by
+    # ``hkl_for_sf``), which broke difference refinement on mismatched reflection
+    # files. The single source of truth below is shared by all of them.
+
+    # Fill value used for MISSING output rows (index == -1) per field. Missing
+    # rows are always masked out downstream (``hkl_present`` / ``missing``), so
+    # these fills only need to be shape-correct and non-poisonous. Fields not
+    # listed default to 0. NOTE: ``hkl_anomalous`` is special-cased (filled with
+    # the reference HKL row, never 0 which would be a spurious Miller index) and
+    # the derived-from-HKL fields below are recomputed, never gathered.
+    _REINDEX_FILL = {
+        "F": 0.0,
+        "I": 0.0,
+        "phase": 0.0,
+        "fom": 0.0,
+        "E": 0.0,
+        "E_squared": 0.0,
+        "F_squared_corrected": 0.0,
+        "radial_shell_indices": 0,
+        "F_sigma": 1.0,
+        "I_sigma": 1.0,
+        "rfree_flags": 1,  # missing reflections default to the work set
+        "friedel_flags": False,
+        "validation_flags": False,
+        "outlier_flags": False,
+    }
+
+    # Per-reflection fields that are pure functions of (hkl, cell, spacegroup):
+    # never gathered/aggregated, always recomputed or invalidated after an HKL
+    # change (``resolution`` recomputed; ``bin_indices`` / ``_centric_flags``
+    # lazily rebuilt by ``get_bins`` / the ``centric`` property).
+    _REINDEX_DERIVED = ("resolution", "bin_indices", "_centric_flags")
+
+    # Tensor dataclass fields that are NOT per-reflection (exempt from the
+    # length invariant): overall anisotropy parameters have shape (6,).
+    _NON_PER_REFLECTION_TENSORS = frozenset({"U_aniso"})
+
+    def _reindex_per_reflection(
+        self,
+        index_map: torch.Tensor,
+        new_hkl: torch.Tensor,
+        target: Optional["ReflectionData"] = None,
+    ) -> torch.Tensor:
+        """Gather every per-reflection field from ``self`` onto ``new_hkl``.
+
+        Enumerates dataclass fields generically (same ``shape[0] == n`` guard as
+        :meth:`__select__` / :meth:`_canonicalize_in_place`) so any current or
+        future per-reflection field is carried automatically.
+
+        Parameters
+        ----------
+        index_map : torch.Tensor
+            LongTensor of length ``len(new_hkl)`` mapping each output row to a
+            source row index into ``self``, or ``-1`` for reflections absent
+            from the source (filled per :attr:`_REINDEX_FILL`).
+        new_hkl : torch.Tensor
+            Miller indices for the reindexed dataset, shape ``(M, 3)``.
+        target : ReflectionData, optional
+            Object to write the gathered fields onto. Defaults to ``self``
+            (in-place). Pass a fresh instance for out-of-place reindexing
+            (``remap``); the caller is responsible for setting ``target.cell`` /
+            ``target.spacegroup`` before calling so resolution can be recomputed.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean presence mask (``index_map >= 0``), for the caller's use in
+            building ``hkl_present`` / ``missing`` masks.
+        """
+        from dataclasses import fields as dc_fields
+
+        if target is None:
+            target = self
+
+        n_src = len(self.hkl) if self.hkl is not None else 0
+        new_hkl = new_hkl.to(dtype=dtypes.int, device=self.device)
+        n_out = len(new_hkl)
+        index_map = index_map.to(device=self.device, dtype=torch.long)
+        present = index_map >= 0
+        src_idx = index_map[present]
+
+        derived = set(self._REINDEX_DERIVED)
+        for f in dc_fields(self):
+            name = f.name
+            if name == "hkl" or name in derived:
+                continue
+            val = getattr(self, name)
+            if not isinstance(val, torch.Tensor):
+                continue
+            if not (val.shape and val.shape[0] == n_src):
+                # Non-per-reflection tensor (e.g. U_aniso (6,)): leave target's
+                # own value untouched (fresh default when target is new).
+                continue
+            if name == "hkl_anomalous":
+                # Present rows keep their signed (anomalous) index; missing rows
+                # fall back to the canonical reference HKL (never a 0,0,0 row).
+                out = new_hkl.clone()
+                out[present] = val[src_idx]
+            else:
+                fill = self._REINDEX_FILL.get(name, 0)
+                out = torch.full(
+                    (n_out,) + tuple(val.shape[1:]),
+                    fill,
+                    dtype=val.dtype,
+                    device=self.device,
+                )
+                out[present] = val[src_idx]
+            setattr(target, name, out)
+
+        # Install the new HKL and recompute / invalidate derived-from-HKL fields.
+        target.hkl = new_hkl
+        target.bin_indices = None
+        target._centric_flags = None
+        if target.cell is not None:
+            target._calculate_resolution()
+        else:
+            target.resolution = None
+        return present
+
+    def _assert_per_reflection_consistent(self) -> None:
+        """Invariant: every per-reflection tensor matches ``len(self.hkl)``.
+
+        A cheap post-condition for the reindex routines. Turns any future
+        hardcoded-list regression (a field silently left at the old length) into
+        a loud failure instead of a downstream shape mismatch.
+        """
+        from dataclasses import fields as dc_fields
+
+        n = len(self.hkl) if self.hkl is not None else 0
+        bad = []
+        for f in dc_fields(self):
+            if f.name in self._NON_PER_REFLECTION_TENSORS:
+                continue
+            val = getattr(self, f.name)
+            if isinstance(val, torch.Tensor) and val.ndim >= 1 and val.shape[0] != n:
+                bad.append((f.name, tuple(val.shape)))
+        if bad:
+            raise RuntimeError(
+                f"ReflectionData per-reflection length mismatch (n_hkl={n}): {bad}"
+            )
+
     def _canonicalize_in_place(self) -> None:
         """Remap HKL to canonical CCP4 ASU form and reorder all data in-place."""
         from dataclasses import fields as dc_fields
@@ -2223,63 +2370,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
             [data_hkl_to_idx.get(tuple(hkl), -1) for hkl in hkl_ref_np], dtype=np.int64
         )
 
-        # Create presence mask: True where data exists
-        presence_mask = torch.from_numpy(ref_to_data_idx >= 0).to(device=self.device)
+        # Index map into this dataset for each reference row (-1 where missing).
         valid_indices = torch.from_numpy(ref_to_data_idx).to(device=self.device)
 
-        # Helper to expand a tensor to reference size
-        def expand_tensor(tensor, fill_value=0.0):
-            if tensor is None:
-                return None
-            expanded = torch.full(
-                (n_ref,) + tensor.shape[1:],
-                fill_value,
-                dtype=tensor.dtype,
-                device=self.device,
-            )
-            # Copy existing data to correct positions
-            mask = valid_indices >= 0
-            expanded[mask] = tensor[valid_indices[mask]]
-            return expanded
-
-        # Expand all data arrays
-        old_F = self.F
-        old_F_sigma = self.F_sigma
-        old_I = self.I
-        old_I_sigma = getattr(self, "I_sigma", None)
-        old_rfree = self.rfree_flags
-        old_phase = getattr(self, "phase", None)
-        old_fom = getattr(self, "fom", None)
-
-        # Replace HKL with reference
-        self.hkl = hkl_ref
-
-        # Expand data tensors
-        self.F = expand_tensor(old_F, fill_value=0.0)
-        self.F_sigma = expand_tensor(old_F_sigma, fill_value=1.0)
-
-        if old_I is not None:
-            self.I = expand_tensor(old_I, fill_value=0.0)
-        if old_I_sigma is not None:
-            self.I_sigma = expand_tensor(old_I_sigma, fill_value=1.0)
-
-        # For rfree, default missing to work set (1)
-        if old_rfree is not None:
-            rfree_expanded = torch.ones(
-                n_ref, dtype=old_rfree.dtype, device=self.device
-            )
-            mask = valid_indices >= 0
-            rfree_expanded[mask] = old_rfree[valid_indices[mask]]
-            self.rfree_flags = rfree_expanded
-
-        # Recalculate resolution for new HKL set
-        self._calculate_resolution()
-
-        # Expand phase and fom if present
-        if old_phase is not None:
-            self.phase = expand_tensor(old_phase, fill_value=0.0)
-        if old_fom is not None:
-            self.fom = expand_tensor(old_fom, fill_value=0.0)
+        # Reindex EVERY per-reflection field onto the reference grid via the
+        # shared primitive (carries hkl_anomalous / friedel_flags / centric /
+        # validation / outlier that this routine used to silently drop, which
+        # broke difference refinement on mismatched reflection files). Masks are
+        # handled separately below because they are not dataclass fields.
+        presence_mask = self._reindex_per_reflection(valid_indices, hkl_ref)
 
         # Transfer existing masks to new indexing
         old_masks = dict(self.masks.items())
@@ -2308,6 +2407,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             print(f"  Present in data: {n_present} ({100*n_present/n_ref:.1f}%)")
             print(f"  Missing (masked): {n_missing} ({100*n_missing/n_ref:.1f}%)")
 
+        self._assert_per_reflection_consistent()
         return self
 
     def find_outliers(
@@ -3046,8 +3146,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """
         from torchref.symmetry.spacegroup import SpaceGroup
 
-        # Helper function for remapping tensors with missing handling
-        def _remap_tensor(tensor, fill_value):
+        # Mask remapper. Masks are not dataclass fields, so the shared
+        # per-reflection reindexer below does not touch them.
+        def _remap_mask(tensor, fill_value):
             if tensor is None:
                 return None
             valid_mask = index_mapping >= 0
@@ -3060,56 +3161,36 @@ class ReflectionData(CrystalDataset, DebugMixin):
             result[valid_mask] = tensor[index_mapping[valid_mask]]
             return result
 
-        # Create new ReflectionData
+        # Create new ReflectionData; set cell/spacegroup first so the shared
+        # reindexer can recompute resolution on the new grid.
         remapped = ReflectionData(verbose=self.verbose, device=self.device)
-
-        # Set new HKL
-        remapped.hkl = new_hkl.to(device=self.device)
-
-        # Remap amplitude and intensity fields
-        remapped.F = _remap_tensor(self.F, fill_value=0.0)
-        remapped.F_sigma = _remap_tensor(self.F_sigma, fill_value=1.0)
-        remapped.I = _remap_tensor(self.I, fill_value=0.0)
-        remapped.I_sigma = _remap_tensor(self.I_sigma, fill_value=1.0)
-        remapped.fom = _remap_tensor(self.fom, fill_value=0.0)
-
-        # Carry forward prior mask if available
-        prior_mask = self.masks()
-        if prior_mask is not None:
-            remapped.masks["prior_flagged"] = _remap_tensor(
-                prior_mask.to(dtype=dtypes.int), fill_value=0
-            ).to(torch.bool)
-
-        # Handle rfree_flags (True = include in Rfree for missing)
-        if self.rfree_flags is not None:
-            remapped.rfree_flags = _remap_tensor(
-                self.rfree_flags.to(dtype=dtypes.int), fill_value=1
-            ).to(torch.bool)
-
-        # Handle phases with optional shifts
-        if self.phase is not None:
-            remapped.phase = _remap_tensor(self.phase, fill_value=0.0)
-            if phase_shifts is not None:
-                remapped.phase = remapped.phase + phase_shifts.to(device=self.device)
-        elif phase_shifts is not None:
-            # Store phase shifts even if no original phases
-            remapped._expansion_phase_shifts = phase_shifts.to(device=self.device)
-
-        # Clone cell
         remapped.cell = self.cell.clone() if self.cell is not None else None
-
-        # Set spacegroup
         if spacegroup is not None:
             remapped.spacegroup = SpaceGroup(spacegroup)
         else:
             remapped.spacegroup = self.spacegroup
 
-        # Recalculate resolution
-        if remapped.cell is not None and remapped.hkl is not None:
-            remapped._calculate_resolution()
+        # Reindex ALL per-reflection dataclass fields onto new_hkl. This carries
+        # the anomalous / validation / centric / outlier fields the old hardcoded
+        # list silently dropped, and sets hkl / resolution while invalidating
+        # bin_indices and _centric_flags. Missing rows (index -1) get the
+        # per-field fills in _REINDEX_FILL.
+        self._reindex_per_reflection(index_mapping, new_hkl, target=remapped)
 
-        # Invalidate dependent fields
-        remapped.bin_indices = None
+        # Apply optional phase shifts (e.g. from symmetry translations).
+        if remapped.phase is not None:
+            if phase_shifts is not None:
+                remapped.phase = remapped.phase + phase_shifts.to(device=self.device)
+        elif phase_shifts is not None:
+            # No original phases: store the shifts for later phase reconstruction.
+            remapped._expansion_phase_shifts = phase_shifts.to(device=self.device)
+
+        # Carry forward prior combined mask if available.
+        prior_mask = self.masks()
+        if prior_mask is not None:
+            remapped.masks["prior_flagged"] = _remap_mask(
+                prior_mask.to(dtype=dtypes.int), fill_value=0
+            ).to(torch.bool)
 
         # Copy metadata sources
         remapped.amplitude_source = self.amplitude_source
@@ -3126,6 +3207,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if missing_mask.any():
             remapped.masks["missing"] = ~missing_mask.to(device=self.device)
 
+        remapped._assert_per_reflection_consistent()
         return remapped
 
     def fill(self, d_min: Optional[float] = None) -> "ReflectionData":
@@ -3440,6 +3522,54 @@ class ReflectionData(CrystalDataset, DebugMixin):
             # 0 = free, non-zero = work. Take min to get free if any is free.
             reduced.rfree_flags = rfree_gathered.min(dim=1).values != 0
 
+        # Boolean per-reflection flags: an equivalent's flag propagates to the
+        # merged reflection if ANY contributor has it set (validation/outlier
+        # are conservative "exclude if any").
+        def _aggregate_any(tensor):
+            if tensor is None:
+                return None
+            gathered = tensor[reduction_indices.clamp(min=0)].to(torch.bool)
+            gathered = gathered & valid_mask
+            return gathered.any(dim=1)
+
+        if self.validation_flags is not None:
+            reduced.validation_flags = _aggregate_any(self.validation_flags)
+        if self.outlier_flags is not None:
+            reduced.outlier_flags = _aggregate_any(self.outlier_flags)
+
+        # Completeness pass: carry any remaining per-reflection dataclass tensor
+        # field not handled above so the merge never silently drops data (the
+        # historical bug). Derived-from-HKL fields are recomputed/invalidated
+        # below, not aggregated; 'first' is a safe representative for the rest.
+        from dataclasses import fields as dc_fields
+
+        _already_set = {
+            "hkl",
+            "F",
+            "F_sigma",
+            "I",
+            "I_sigma",
+            "phase",
+            "fom",
+            "rfree_flags",
+            "validation_flags",
+            "outlier_flags",
+        }
+        _recomputed = set(self._REINDEX_DERIVED) | {"hkl_anomalous", "friedel_flags"}
+        n_src = len(self.hkl)
+        for f in dc_fields(self):
+            name = f.name
+            if name in _already_set or name in _recomputed:
+                continue
+            if name in self._NON_PER_REFLECTION_TENSORS:
+                continue
+            val = getattr(self, name)
+            if not isinstance(val, torch.Tensor):
+                continue
+            if not (val.shape and val.shape[0] == n_src):
+                continue
+            setattr(reduced, name, _aggregate_tensor(val, "first"))
+
         # Clone cell
         reduced.cell = self.cell.clone() if self.cell is not None else None
 
@@ -3450,8 +3580,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if reduced.cell is not None and reduced.hkl is not None:
             reduced._calculate_resolution()
 
-        # Invalidate dependent fields
+        # Invalidate derived-from-HKL fields (recomputed lazily for the new ASU).
+        # hkl_anomalous / friedel_flags are left unset: the merged ASU is
+        # Friedel-merged, so hkl_for_sf() correctly falls back to hkl.
         reduced.bin_indices = None
+        reduced._centric_flags = None
 
         # Copy metadata sources
         reduced.amplitude_source = self.amplitude_source
@@ -3465,6 +3598,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             f"reduce_to_spacegroup({spacegroup}, aggregation={aggregation})"
         )
 
+        reduced._assert_per_reflection_consistent()
         return reduced
 
     def canonicalize(self, include_friedel: bool = True) -> "ReflectionData":

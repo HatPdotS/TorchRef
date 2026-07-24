@@ -1,6 +1,10 @@
 Changelog
 =========
 
+Version 0.6.2
+-------------
+- Fixed crash in difference refinement with mismatched reflection files: HKL reindexing (``validate_hkl``/``remap``/``reduce_to_spacegroup``) now carries all per-reflection fields (including the anomalous bookkeeping read by ``hkl_for_sf()``) instead of a hardcoded subset.
+
 Version 0.6.1
 -------------
 - Fixed bug in beta estimation that caused instability in GPU refinement
