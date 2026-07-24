@@ -48,6 +48,49 @@ def _u6_to_u3(u: torch.Tensor) -> torch.Tensor:
     return U3
 
 
+def _max_eig_sym3(A: torch.Tensor) -> torch.Tensor:
+    """Largest eigenvalue of a batch of symmetric 3x3 matrices, in closed form.
+
+    Uses the analytic (trigonometric) solution of the characteristic cubic
+    (Smith 1961) so no ``torch.linalg.eigvalsh`` is needed -- that op is
+    unimplemented on MPS, and the eigendecomposition here feeds only the
+    (quantized) splat radius, so an exact decomposition is overkill.
+
+    Parameters
+    ----------
+    A : torch.Tensor
+        Symmetric matrices, shape (n, 3, 3).
+
+    Returns
+    -------
+    torch.Tensor
+        Largest eigenvalue per matrix, shape (n,).
+    """
+    a00 = A[:, 0, 0]; a11 = A[:, 1, 1]; a22 = A[:, 2, 2]
+    a01 = A[:, 0, 1]; a02 = A[:, 0, 2]; a12 = A[:, 1, 2]
+
+    p1 = a01 * a01 + a02 * a02 + a12 * a12
+    q = (a00 + a11 + a22) / 3.0
+    p2 = (a00 - q) ** 2 + (a11 - q) ** 2 + (a22 - q) ** 2 + 2.0 * p1
+    p = torch.sqrt((p2 / 6.0).clamp(min=1e-30))
+
+    # B = (A - q I) / p ; r = det(B) / 2 in [-1, 1]
+    b00 = (a00 - q) / p; b11 = (a11 - q) / p; b22 = (a22 - q) / p
+    b01 = a01 / p; b02 = a02 / p; b12 = a12 / p
+    detB = (
+        b00 * (b11 * b22 - b12 * b12)
+        - b01 * (b01 * b22 - b12 * b02)
+        + b02 * (b01 * b12 - b11 * b02)
+    )
+    r = (detB / 2.0).clamp(-1.0, 1.0)
+    phi = torch.acos(r) / 3.0
+    eig_max = q + 2.0 * p * torch.cos(phi)
+
+    # Diagonal matrices (p1 == 0): eigenvalues are the diagonal entries.
+    diag_max = torch.maximum(torch.maximum(a00, a11), a22)
+    return torch.where(p1 <= 1e-30, diag_max, eig_max)
+
+
 def sigma_eff_iso(adp: torch.Tensor, B_widths: torch.Tensor) -> torch.Tensor:
     """``sigma_eff_i = sqrt((max_k B_widths[i,k] + adp_i) / 8pi^2)``, shape (n,).
 
@@ -93,7 +136,8 @@ def sigma_eff_aniso(B_widths: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
         Anisotropic U parameters [U11,U22,U33,U12,U13,U23], shape (n, 6).
     """
     b_form = B_widths.detach().max(dim=1).values  # broadest ITC92 width
-    lam_max = torch.linalg.eigvalsh(_u6_to_u3(u.detach())).max(dim=1).values
+    # Closed-form largest eigenvalue (no eigvalsh -> runs natively on MPS).
+    lam_max = _max_eig_sym3(_u6_to_u3(u.detach()))
     return torch.sqrt((b_form / EIGHT_PI2 + lam_max).clamp(min=1e-6))
 
 

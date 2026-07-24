@@ -10,13 +10,15 @@ dispatch and no parallel "tier" knobs:
 
 - ``Engine.AUTO`` — fastest available per device, all variable-radius:
   CUDA+float32 -> the work-queue Triton kernels
-  (``WorkQueueGridDensity`` / ``WorkQueueGridDensityAniso``); CPU -> the
+  (``WorkQueueGridDensity`` / ``WorkQueueGridDensityAniso``); CPU+float32 -> the
   grouped-separable variable-radius splat
   (``add_isotropic_cpu_separable_var`` / ``add_anisotropic_cpu_var``);
-  everything else (CUDA+float64, MPS) -> the portable plain-scatter
-  variable-radius splat (``add_isotropic_plain_var`` /
-  ``add_anisotropic_plain_var``). On a Triton kernel failure under AUTO it falls
-  through to the plain-scatter variable-radius splat.
+  MPS+float32 -> the native Metal kernels
+  (``add_isotropic_mps_var`` / ``add_anisotropic_mps_var``, compiled via
+  ``torch.mps.compile_shader``); everything else (CUDA/MPS float64) -> the
+  portable plain-scatter variable-radius splat (``add_isotropic_plain_var`` /
+  ``add_anisotropic_plain_var``). On a Triton/Metal kernel failure or
+  unavailability under AUTO it falls through to the plain-scatter splat.
 - ``Engine.EAGER`` — the portable plain-scatter variable-radius splat on every
   device. Double-differentiable; use it for Hessians / debugging. Force it with
   ``with use_engine(Engine.EAGER): ...``.
@@ -206,8 +208,10 @@ def _add_isotropic(
       variable-radius Triton kernel (``WorkQueueGridDensity``). On kernel failure
       under AUTO it falls through to the portable splat; under ``Engine.TRITON``
       it raises (never silently degrade).
-    - CPU + AUTO -> the fast C++-scatter grouped-separable splat.
-    - Everything else (``Engine.EAGER`` on any device, CUDA float64, MPS) -> the
+    - CPU + float32 + AUTO -> the fast C++-scatter grouped-separable splat.
+    - MPS + float32 + AUTO -> the native Metal kernel (``add_isotropic_mps_var``);
+      falls through to the portable splat if the shader is unavailable.
+    - Everything else (``Engine.EAGER`` on any device, CUDA/MPS float64) -> the
       portable plain-``scatter_add`` grouped splat: identical per-atom radius,
       double-differentiable, float64-capable, device-agnostic.
 
@@ -251,6 +255,26 @@ def _add_isotropic(
             density_map, xyz, adp, occ, A, B,
             inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
         )
+    # Native Metal splat on Apple-silicon GPUs (float32 only). Falls through to
+    # the portable plain splat if the shader is unavailable or fails.
+    if (
+        get_engine() is Engine.AUTO
+        and density_map.device.type == "mps"
+        and density_map.dtype == torch.float32
+    ):
+        from torchref.base.electron_density.kernels.mps import (
+            add_isotropic_mps_var,
+            mps_kernels_available,
+        )
+
+        if mps_kernels_available():
+            try:
+                return add_isotropic_mps_var(
+                    density_map, xyz, adp, occ, A, B,
+                    inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
+                )
+            except Exception:
+                pass  # fall through to the portable splat
     return add_isotropic_plain_var(
         density_map, xyz, adp, occ, A, B,
         inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
@@ -274,12 +298,14 @@ def _add_anisotropic(
     The per-atom radius is the isotropic bounding radius of the ellipsoid
     (largest principal axis, ``per_atom_radius_aniso``).
 
-    CUDA+float32 (engine permitting) -> ``WorkQueueGridDensityAniso``. CPU + AUTO
-    -> the fast C++-scatter grouped box-splat ``add_anisotropic_cpu_var``.
-    Everything else (``Engine.EAGER`` on any device, CUDA float64, MPS) -> the
-    portable plain-``scatter_add`` box-splat ``add_anisotropic_plain_var``
-    (double-diff, float64-capable, device-agnostic). All paths use the per-atom
-    radius (isotropic bounding sphere of the ellipsoid).
+    CUDA+float32 (engine permitting) -> ``WorkQueueGridDensityAniso``. CPU +
+    float32 + AUTO -> the fast C++-scatter grouped box-splat
+    ``add_anisotropic_cpu_var``. MPS + float32 + AUTO -> the native Metal kernel
+    ``add_anisotropic_mps_var`` (falls through if unavailable). Everything else
+    (``Engine.EAGER`` on any device, CUDA/MPS float64) -> the portable
+    plain-``scatter_add`` box-splat ``add_anisotropic_plain_var`` (double-diff,
+    float64-capable, device-agnostic). All paths use the per-atom radius
+    (isotropic bounding sphere of the ellipsoid).
     """
     n_sigma = get_sigma_cutoff_ed()
     radius_per_atom = per_atom_radius_aniso(B, u, n_sigma=n_sigma)
@@ -318,6 +344,26 @@ def _add_anisotropic(
             real_space_grid, density_map, xyz, u, occ, A, B,
             inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
         )
+    # Native Metal splat on Apple-silicon GPUs (float32 only). Falls through to
+    # the portable plain splat if the shader is unavailable or fails.
+    if (
+        get_engine() is Engine.AUTO
+        and density_map.device.type == "mps"
+        and density_map.dtype == torch.float32
+    ):
+        from torchref.base.electron_density.kernels.mps import (
+            add_anisotropic_mps_var,
+            mps_kernels_available,
+        )
+
+        if mps_kernels_available():
+            try:
+                return add_anisotropic_mps_var(
+                    real_space_grid, density_map, xyz, u, occ, A, B,
+                    inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
+                )
+            except Exception:
+                pass  # fall through to the portable splat
     return add_anisotropic_plain_var(
         real_space_grid, density_map, xyz, u, occ, A, B,
         inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,

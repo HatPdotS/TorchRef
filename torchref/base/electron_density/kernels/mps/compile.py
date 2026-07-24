@@ -1,0 +1,87 @@
+"""Lazy compilation + availability probe for the Metal (MPS) splat kernels.
+
+Mirrors the memoize / permanent-failure / graceful-fallback structure of
+``kernels/cpu/scatter.py`` (``_get_module``), but the build is a single
+in-process ``torch.mps.compile_shader`` call -- no ninja, build directory, or
+file locking, since PyTorch caches the compiled pipeline-state objects itself.
+
+``mps_kernels_available()`` is the gate the dispatcher checks; it returns False
+(and the caller falls back to the portable plain splat) whenever MPS is absent,
+``compile_shader`` is missing (torch < 2.9), or the shader fails to build.
+"""
+
+from __future__ import annotations
+
+import traceback
+from typing import Optional, Tuple
+
+import torch
+
+from torchref.base.electron_density.kernels.mps._shaders import MSL_SOURCE
+
+# Memoized compile state (attempted at most once per process).
+_lib = None
+_lib_failed = False
+_lib_error: Optional[Tuple[str, str]] = None  # (message, traceback)
+
+
+def _mps_shader_supported() -> bool:
+    """True iff this torch build can compile+run Metal shaders on this host."""
+    return (
+        hasattr(torch, "mps")
+        and hasattr(torch.mps, "compile_shader")
+        and hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+    )
+
+
+def _get_lib():
+    """Return the compiled shader library, or None if unavailable.
+
+    Short-circuits both prior outcomes so compilation is attempted exactly once.
+    Any failure (unsupported torch, MPS off, MSL compile error) is recorded and
+    turned into a None return so callers fall back to the plain splat.
+    """
+    global _lib, _lib_failed, _lib_error
+    if _lib is not None:
+        return _lib
+    if _lib_failed:
+        return None
+    if not _mps_shader_supported():
+        _lib_failed = True
+        _lib_error = (
+            "torch.mps.compile_shader unavailable or MPS not available",
+            "",
+        )
+        return None
+    try:
+        _lib = torch.mps.compile_shader(MSL_SOURCE)
+    except Exception as e:  # noqa: BLE001 - any build failure -> fall back
+        _lib_failed = True
+        _lib_error = (f"{type(e).__name__}: {e}", traceback.format_exc())
+        return None
+    return _lib
+
+
+def mps_kernels_available() -> bool:
+    """Whether the Metal splat kernels compiled and are ready to dispatch."""
+    return _get_lib() is not None
+
+
+def warmup() -> bool:
+    """Eagerly trigger compilation (e.g. to move the one-time cost off the
+    first refinement step). Returns availability."""
+    return _get_lib() is not None
+
+
+def clear_cache() -> None:
+    """Forget the compiled library and failure state (recompiled on next use)."""
+    global _lib, _lib_failed, _lib_error
+    _lib = None
+    _lib_failed = False
+    _lib_error = None
+
+
+def last_error() -> Optional[Tuple[str, str]]:
+    """The (message, traceback) of the last compile failure, if any."""
+    return _lib_error

@@ -92,6 +92,12 @@ def test_solvent_radius_offsets_import_path():
         "torchref.base.electron_density.kernels.cpu.variable_radius",
         "torchref.base.electron_density.kernels.cuda.fused",
         "torchref.base.electron_density.kernels.cuda.variable_radius",
+        # MPS Metal kernels: importing must not trigger shader compilation, so
+        # these resolve cleanly on every platform (compile is deferred to first use).
+        "torchref.base.electron_density.kernels.mps",
+        "torchref.base.electron_density.kernels.mps.compile",
+        "torchref.base.electron_density.kernels.mps.variable_radius",
+        "torchref.base.electron_density.kernels.mps._shaders",
     ],
 )
 def test_new_kernel_modules_import(modname):
