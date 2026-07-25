@@ -36,6 +36,8 @@ import math
 import numpy as np
 import torch
 
+from torchref.config import get_float_dtype
+
 # =====================================================================
 # Loss math (mean = |Fc|, variance = epsilon*beta)
 # =====================================================================
@@ -112,19 +114,22 @@ def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
     ``apply_to_hkl``.
     """
     n = hkl.shape[0]
-    ones = torch.ones(n, device=hkl.device)
+    float_dtype = get_float_dtype()
     if spacegroup is None or not hasattr(spacegroup, "apply_to_hkl"):
-        return ones
-    try:
-        with torch.no_grad():
-            Hs = spacegroup.apply_to_hkl(hkl.to(torch.float64))  # (N,3,ops)
-            h0 = hkl.to(torch.float64).unsqueeze(-1)  # (N,3,1)
-            same = (Hs == h0).all(dim=1)
-            friedel = (Hs == -h0).all(dim=1)
-            eps = (same | friedel).sum(dim=1).clamp(min=1).to(torch.get_default_dtype())
-        return eps.to(hkl.device)
-    except Exception:
-        return ones
+        return torch.ones(n, device=hkl.device, dtype=float_dtype)
+
+    with torch.no_grad():
+        # Configured float dtype, not float64: MPS has no float64 and casting
+        # there raises. Symmetry arithmetic on Miller indices is exact in
+        # float32 (integer-valued rotation matrices, small indices), so the
+        # exact `==` comparisons below remain valid.
+        h = hkl.to(float_dtype)
+        Hs = spacegroup.apply_to_hkl(h)  # (N,3,ops)
+        h0 = h.unsqueeze(-1)  # (N,3,1)
+        same = (Hs == h0).all(dim=1)
+        friedel = (Hs == -h0).all(dim=1)
+        eps = (same | friedel).sum(dim=1).clamp(min=1).to(float_dtype)
+    return eps
 
 
 # =====================================================================

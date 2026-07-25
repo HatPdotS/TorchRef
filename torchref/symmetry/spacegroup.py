@@ -864,9 +864,15 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Apply symmetry operations to Miller indices (rotation only, no translation).
 
-        For reciprocal space, only the rotational part of symmetry operations
-        applies to Miller indices: h' = R·h. The translation vector affects the
-        phase of structure factors, not the indices themselves.
+        For reciprocal space, the symmetry-equivalent Miller index is obtained
+        by the *transpose* of the (real-space, fractional) rotation matrix:
+        ``h' = h·R = Rᵀ·h``. This is NOT the same as the real-space transform
+        ``x' = R·x`` unless ``R`` is symmetric: for space groups whose fractional
+        rotation matrices are non-symmetric (trigonal, hexagonal, and permutation-
+        type cubic operations) applying ``R·h`` instead of ``Rᵀ·h`` yields the
+        wrong set of equivalents, corrupting centric-flag and epsilon-multiplicity
+        determination. The translation vector affects the phase of structure
+        factors, not the indices themselves, so it is not applied here.
 
         Parameters
         ----------
@@ -881,9 +887,12 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
 
         See Also
         --------
-        apply : For real space coordinates (rotation + translation).
+        apply : For real space coordinates (rotation + translation), which uses
+            ``R·x`` and is the transpose of the reciprocal-space convention here.
         """
-        return self.apply(hkl, apply_translation=False)
+        coords = hkl.to(self.matrices.device).to(self.matrices.dtype)
+        # result[n, i, o] = sum_j matrices[o, j, i] * coords[n, j] = (Rᵀ·h)_i
+        return torch.einsum("oji,nj->nio", self.matrices, coords)
 
     def expand_coords_to_P1(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
         """

@@ -11,6 +11,12 @@ import importlib
 
 import pytest
 
+from torchref.utils.triton_dispatch import triton_available
+
+_needs_triton = pytest.mark.skipif(
+    not triton_available(), reason="CUDA/Triton backend requires the triton package"
+)
+
 
 def test_kernels_public_api_resolves():
     kernels = importlib.import_module("torchref.base.kernels")
@@ -90,8 +96,15 @@ def test_solvent_radius_offsets_import_path():
         "torchref.base.electron_density.kernels.cpu.scatter_dispatch",
         "torchref.base.electron_density.kernels.cpu.jit_reference",
         "torchref.base.electron_density.kernels.cpu.variable_radius",
-        "torchref.base.electron_density.kernels.cuda.fused",
-        "torchref.base.electron_density.kernels.cuda.variable_radius",
+        # CUDA/Triton backend: importing pulls in `triton`, absent on non-CUDA
+        # hosts (e.g. macOS), so gate these on triton availability.
+        pytest.param(
+            "torchref.base.electron_density.kernels.cuda.fused", marks=_needs_triton
+        ),
+        pytest.param(
+            "torchref.base.electron_density.kernels.cuda.variable_radius",
+            marks=_needs_triton,
+        ),
         # MPS Metal kernels: importing must not trigger shader compilation, so
         # these resolve cleanly on every platform (compile is deferred to first use).
         "torchref.base.electron_density.kernels.mps",

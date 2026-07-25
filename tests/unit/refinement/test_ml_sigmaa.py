@@ -189,15 +189,20 @@ class TestSigmaAOnRealData:
         assert (beta[v] > 0).all() and torch.isfinite(beta[v]).all()
 
         # The falling-with-resolution trend is an estimator-math property,
-        # checked in float64 so it is device-independent.
+        # checked in float64 so it is device-independent. Move to CPU before
+        # casting -- MPS has no float64, so the double() must happen off-device.
         data = refinement.reflection_data
         with torch.no_grad():
-            fc = torch.abs(t._scaled_F_calc_full()).double().reshape(-1)
-            fo = data.get_corrected_data()[0].double().reshape(-1)
-            epsd = epsilon_from_hkl(data.hkl, getattr(data, "spacegroup", None)).double()
+            fc = torch.abs(t._scaled_F_calc_full()).cpu().double().reshape(-1)
+            fo = data.get_corrected_data()[0].cpu().double().reshape(-1)
+            epsd = epsilon_from_hkl(
+                data.hkl, getattr(data, "spacegroup", None)
+            ).cpu().double()
             s = get_scattering_vectors(data.hkl, data.cell)
-            dss = (torch.norm(s, dim=1) ** 2).double()
-            _b, bbin, _ = estimate_beta(fo, fc, data.centric, epsd, dss, data.free.mask)
+            dss = (torch.norm(s, dim=1) ** 2).cpu().double()
+            _b, bbin, _ = estimate_beta(
+                fo, fc, data.centric.cpu(), epsd, dss, data.free.mask.cpu()
+            )
         assert (bbin > 0).all() and torch.isfinite(bbin).all()
         # beta is an absolute model-error variance in F^2 units (~(1-sigma_A^2)*
         # Sigma_N); Sigma_N ~= <F^2> decays steeply with resolution, so absolute
