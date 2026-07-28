@@ -129,10 +129,11 @@ class SfDS(DeviceMovementMixin, nn.Module):
         super().__init__()
         if dtype_float is None:
             dtype_float = dtypes.float
-        if device is None:
-            device = get_default_device()
         self.dtype_float = dtype_float
-        self.device = device
+        # Derive from ``cell`` when no device is given, instead of jumping to
+        # the global default and leaving a caller-supplied cell behind on
+        # another device. An explicit ``device`` still wins and moves the cell.
+        self.device = resolve_device(cell, device=device)
         self.verbose = verbose
         self.max_memory_gb = max_memory_gb
         self.engine = engine
@@ -142,7 +143,9 @@ class SfDS(DeviceMovementMixin, nn.Module):
         self._spacegroup = None
 
         if spacegroup is not None or cell is not None:
-            self._spacegroup = SpaceGroup(spacegroup, dtype=dtype_float, device=device)
+            self._spacegroup = SpaceGroup(
+                spacegroup, dtype=dtype_float, device=self.device
+            )
 
         # Cache reciprocal basis matrix
         self._recB: Optional[torch.Tensor] = None
@@ -201,7 +204,13 @@ class SfDS(DeviceMovementMixin, nn.Module):
             Unit cell object.
         spacegroup : SpaceGroupLike, optional
             Space group specification.
+
+        Notes
+        -----
+        Receiver wins: an incoming cell on another device is moved to match
+        this module rather than the other way round.
         """
+        self.device = resolve_device(self, cell)
         self._cell = cell
         self._recB = None  # Invalidate cache
         self.spacegroup = spacegroup

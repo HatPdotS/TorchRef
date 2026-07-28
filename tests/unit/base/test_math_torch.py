@@ -92,8 +92,8 @@ class TestCoordinateTransformations:
         frac = cartesian_to_fractional_torch(coords, cell)
         cart_back = fractional_to_cartesian_torch(frac, cell)
         
-        assert frac.device.type == "cuda"
-        assert cart_back.device.type == "cuda"
+        assert frac.device.type == gpu_device.type
+        assert cart_back.device.type == gpu_device.type
 
 
 class TestGridFunctions:

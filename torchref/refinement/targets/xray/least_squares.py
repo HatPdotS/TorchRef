@@ -46,6 +46,7 @@ class LeastSquaresXrayTarget(XrayTarget):
         n_bins: int = 20,
         verbose: int = 0,
         use_set: str = None,
+        device=None,
     ):
         if scale_mode not in ("scaler", "binwise_optimal"):
             raise ValueError(
@@ -64,6 +65,7 @@ class LeastSquaresXrayTarget(XrayTarget):
             use_work_set=use_work_set,
             verbose=verbose,
             use_set=use_set,
+            device=device,
         )
         self.weighting = weighting
         self.scale_mode = scale_mode

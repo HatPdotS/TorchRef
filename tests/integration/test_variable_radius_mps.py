@@ -5,7 +5,7 @@ Both truncate each atom at its own per-atom radius, so the forward maps must
 agree to float32 + truncation-shape tolerance and the gradients (xyz / adp / u /
 occ) must be parallel. Requires an Apple-silicon GPU (MPS); skipped elsewhere.
 
-Markers: ``@pytest.mark.gpu`` (skipped without ``--run-gpu``), ``integration``.
+Markers: ``@pytest.mark.mps`` (skipped without ``--run-gpu``), ``integration``.
 """
 
 import math

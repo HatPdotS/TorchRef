@@ -25,6 +25,7 @@ from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.caching import ParameterFingerprint
 from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.utils.device_resolution import resolve_device
 
 
 class SfFFT(DeviceMovementMixin, nn.Module):
@@ -127,11 +128,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             dtype_float = dtypes.float
         self.dtype_float = dtype_float
 
-        self.device = (
-            device
-            if device is not None
-            else cell.device if cell is not None else get_default_device()
-        )
+        # One device for the module and everything it builds. ``resolve_device``
+        # also moves ``cell`` when an explicit ``device`` disagrees with it, so
+        # the cell and the SpaceGroup below cannot end up split.
+        self.device = resolve_device(cell, device=device)
 
         self.verbose = verbose
         self.use_late_symmetry = use_late_symmetry
@@ -141,7 +141,12 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         self._spacegroup = None
 
         if spacegroup is not None or cell is not None:
-            self._spacegroup = SpaceGroup(spacegroup, dtype=dtype_float, device=device)
+            # ``self.device``, not the raw ``device`` argument: the latter is
+            # ``None`` on the derive-from-cell path, which would silently put
+            # the symmetry matrices on the global default instead.
+            self._spacegroup = SpaceGroup(
+                spacegroup, dtype=dtype_float, device=self.device
+            )
 
         # Buffers (registered during setup_grid)
         self.register_buffer("gridsize", None)
@@ -227,7 +232,14 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             Unit cell object.
         spacegroup : SpaceGroupLike, optional
             Space group specification.
+
+        Notes
+        -----
+        Receiver wins: this module may already own grid buffers, so an incoming
+        cell on another device is moved to match rather than dragging the
+        module after it.
         """
+        self.device = resolve_device(self, cell)
         self._cell = cell
         self.spacegroup = spacegroup
 

@@ -8,6 +8,7 @@ from typing import Optional, Union
 import torch
 from torch import nn
 
+from torchref.config import get_float_dtype, normalize_device
 from torchref.utils.caching import CachedForwardMixin
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -133,12 +134,19 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
 
         # Empty initialization
         if initial_values is None:
+            # Honour the requested device/dtype even with no values yet: the
+            # empty shell is the documented ``load_state_dict`` entry point, and
+            # a caller that asked for a device should not get a CPU parameter
+            # (nor a ``.device`` property that raises because every buffer is
+            # ``None``).
+            device = normalize_device(device)
+            dtype = dtype if dtype is not None else get_float_dtype()
             self.register_buffer("refinable_mask", None)
             self.register_buffer("fixed_mask", None)
             self.register_buffer("fixed_values", None)
-            self.register_buffer("_shape", None)
             self.refinable_params = nn.Parameter(
-                torch.empty(0), requires_grad=requires_grad
+                torch.empty(0, device=device, dtype=dtype),
+                requires_grad=requires_grad,
             )
             self._has_refinable = False
             self._refinable_indices = None
@@ -200,8 +208,12 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             refinable_values, requires_grad=requires_grad
         )
 
-        # Store shape for reconstruction
-        self.register_buffer("_shape", torch.tensor(initial_values.shape))
+        # Shape is host-side metadata, deliberately *not* a registered buffer:
+        # a buffer would be dragged onto the accelerator by ``.to()`` and then
+        # read back with ``.tolist()``, i.e. a device sync on every ``.shape``
+        # access, purely to recover numbers we already have. It is also fully
+        # derivable from ``fixed_values`` (a clone of ``initial_values``), so
+        # storing it separately only creates something that can disagree.
 
         # Pre-compute index cache to avoid boolean indexing at runtime
         self._build_index_cache()
@@ -476,17 +488,30 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     @property
     def shape(self):
         """Return the shape of the full tensor."""
-        return tuple(self._shape.tolist())
+        if self.fixed_values is None:
+            return ()
+        return tuple(self.fixed_values.shape)
+
+    # ``fixed_values`` is ``None`` on the empty-shell path, so both properties
+    # fall back to the (empty) parameter, which always exists and carries the
+    # device/dtype the constructor was given. Without the fallback the
+    # ``AttributeError`` raised by ``None.device`` is intercepted by
+    # ``nn.Module.__getattr__`` and re-raised as the thoroughly misleading
+    # "'MixedTensor' object has no attribute 'device'".
 
     @property
     def dtype(self):
         """Return the dtype of the tensor."""
-        return self.fixed_values.dtype
+        if self.fixed_values is not None:
+            return self.fixed_values.dtype
+        return self.refinable_params.dtype
 
     @property
     def device(self):
         """Return the device of the tensor."""
-        return self.fixed_values.device
+        if self.fixed_values is not None:
+            return self.fixed_values.device
+        return self.refinable_params.device
 
     def get_refinable_count(self) -> int:
         """Return the number of refinable parameters."""
@@ -517,6 +542,16 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             )
         self.fixed_values = new_values.to(dtype=self.dtype, device=self.device).detach()
 
+    def _normalize_refinable_mask(self, new_mask: torch.Tensor) -> torch.Tensor:
+        """Coerce an incoming mask onto this wrapper's device as ``bool``.
+
+        Must be applied *before* deriving ``fixed_mask = ~new_mask``: negating
+        the caller's un-migrated tensor leaves ``refinable_mask`` and
+        ``fixed_mask`` on different devices, which then fails far away from
+        here, in whichever op first uses both.
+        """
+        return new_mask.to(device=self.device, dtype=torch.bool)
+
     def update_refinable_mask(
         self, new_mask: torch.Tensor, reset_refinable: bool = False
     ):
@@ -542,7 +577,8 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
 
         current_full = self.forward().detach()
 
-        self.refinable_mask = new_mask.to(device=self.device)
+        new_mask = self._normalize_refinable_mask(new_mask)
+        self.refinable_mask = new_mask
         self.fixed_mask = ~new_mask
 
         if reset_refinable:
@@ -609,11 +645,27 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         )
         return new_mixed
 
-    def to(self, *args, **kwargs):
-        """Move via :class:`DeviceMixin` and rebuild the index cache."""
-        result = super().to(*args, **kwargs)
-        result._build_index_cache()
-        return result
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        """Drop the legacy ``_shape`` buffer key before delegating.
+
+        ``_shape`` used to be a registered buffer; it is now derived from
+        ``fixed_values``. Checkpoints written before that change still carry the
+        key, and a ``strict=True`` load would reject it as unexpected.
+        """
+        state_dict.pop(prefix + "_shape", None)
+        return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    def _after_device_apply(self, *args, device_changed, dtype_changed, **kwargs):
+        """Rebuild the index cache after a real device/dtype change.
+
+        ``_refinable_indices`` / ``_refinable_idx_1d`` are plain attributes
+        holding tensors, so they must be regenerated on the new device. Using
+        the movement hook rather than a ``to()`` override matters twice over:
+        ``to()`` is bypassed when a parent module reaches this wrapper through
+        ``_apply``, and ``reset_cache()`` would put this rebuild on the
+        per-optimizer-step path.
+        """
+        self._build_index_cache()
 
     def refine(
         self, selection: Union[slice, torch.Tensor, tuple], reset_values: bool = False
@@ -676,6 +728,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             new_mask |= temp_mask
 
         # Update the mask
+        new_mask = self._normalize_refinable_mask(new_mask)
         self.refinable_mask = new_mask
         self.fixed_mask = ~new_mask
 
@@ -755,6 +808,7 @@ class MixedTensor(DeviceMixin, CachedForwardMixin, nn.Module):
             new_mask &= ~temp_mask
 
         # Update the mask
+        new_mask = self._normalize_refinable_mask(new_mask)
         self.refinable_mask = new_mask
         self.fixed_mask = ~new_mask
 
@@ -1180,7 +1234,8 @@ class PositiveMixedTensor(MixedTensor):
             # Convert to log space
             current_log = torch.log(current_normal.clamp(min=self.epsilon))
 
-        self.refinable_mask = new_mask.to(device=self.device)
+        new_mask = self._normalize_refinable_mask(new_mask)
+        self.refinable_mask = new_mask
         self.fixed_mask = ~new_mask
 
         # Update fixed_values with log-space values
@@ -1407,7 +1462,8 @@ class CholeskyMixedTensor(MixedTensor):
             )
         with torch.no_grad():
             current_raw = self._u6_to_raw6(self.forward())
-        self.refinable_mask = new_mask.to(device=self.device)
+        new_mask = self._normalize_refinable_mask(new_mask)
+        self.refinable_mask = new_mask
         self.fixed_mask = ~new_mask
         self.fixed_values = current_raw.clone()
         new_refinable = current_raw[self.refinable_mask].clone()
@@ -1556,16 +1612,22 @@ class OccupancyTensor(MixedTensor):
         self._name = name or "occupancy"
 
         # Empty initialization
+        #
+        # ``OccupancyTensor`` builds its own shell rather than delegating to
+        # ``MixedTensor``, so the device/dtype handling has to be repeated here
+        # -- fixing only the base class would leave this path on CPU.
         if initial_values is None:
+            device = normalize_device(device)
+            dtype = dtype if dtype is not None else get_float_dtype()
             self._full_shape = 0
             self._collapsed_shape = 0
             self.register_buffer("refinable_mask", None)
             self.register_buffer("fixed_mask", None)
             self.register_buffer("fixed_values", None)
-            self.register_buffer("_shape", None)
             self.register_buffer("expansion_mask", None)
             self.refinable_params = nn.Parameter(
-                torch.empty(0), requires_grad=requires_grad
+                torch.empty(0, device=device, dtype=dtype),
+                requires_grad=requires_grad,
             )
             self._has_refinable = False
             self._refinable_indices = None

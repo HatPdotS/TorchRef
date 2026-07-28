@@ -248,3 +248,73 @@ def test_cell_cache_repopulates_on_target_dtype():
     assert "volume" not in cell._cache, "cache must be cleared after .to()"
     new_volume = cell.volume
     assert new_volume.dtype == torch.float64
+
+
+# ---------------------------------------------------------------------------
+# Probe-driven tracker inference (objects that own no tensors)
+# ---------------------------------------------------------------------------
+
+
+class _TensorFreeTracker(DeviceMixin, nn.Module):
+    """Carries device/dtype trackers but owns no tensor to read them from.
+
+    This is the shape of every geometry target: the trackers say where the
+    object *will* allocate, and nothing it currently holds can confirm it. Such
+    objects are the only consumers of ``_probe_target``.
+    """
+
+    def __init__(self, dtype=torch.float64):
+        super().__init__()
+        self.device = torch.device("cpu")
+        self.dtype_float = dtype
+
+
+@pytest.mark.unit
+def test_device_move_does_not_clobber_dtype_tracker(any_device):
+    """A device-only move must leave ``dtype_float`` alone.
+
+    Regression: the probe used a single float32 scratch for the dtype axis, so
+    a plain ``.to(device)`` reported ``float32`` and overwrote a float64
+    tracker. Both axes need their own contrast pair.
+    """
+    mod = _TensorFreeTracker(dtype=torch.float64)
+    mod.to(any_device)
+    assert mod.dtype_float == torch.float64, "device-only move changed dtype_float"
+    assert mod.device.type == any_device.type
+
+
+@pytest.mark.unit
+def test_dtype_only_move_does_not_clobber_device_tracker():
+    """Mirror case: ``.float()`` must leave the device tracker alone."""
+    mod = _TensorFreeTracker(dtype=torch.float64)
+    mod.device = torch.device("cpu")
+    mod.float()
+    assert mod.dtype_float == torch.float32
+    assert mod.device == torch.device("cpu"), "dtype-only move changed device"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "fn,expected_device,expected_dtype",
+    [
+        (lambda t: t.to("cpu"), torch.device("cpu"), None),
+        (lambda t: t.double(), None, torch.float64),
+        (lambda t: t.float(), None, torch.float32),
+        (lambda t: t.half(), None, torch.float16),
+        (lambda t: t, None, None),
+    ],
+    ids=["to_cpu", "double", "float", "half", "identity"],
+)
+def test_probe_target_resolves_axes_independently(fn, expected_device, expected_dtype):
+    """``_probe_target`` reports only the axis ``fn`` actually transforms.
+
+    ``.double()`` is the case that pins the CPU-only dtype pair: MPS has no
+    float64, so contrasting dtype on an accelerator scratch would make it
+    unprobeable on Apple silicon.
+    """
+    from torchref.utils.device_mixin import _probe_target
+
+    device, dtype = _probe_target(fn)
+    assert device == expected_device
+    assert dtype == expected_dtype
+

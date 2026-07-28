@@ -35,6 +35,21 @@ class MockAtomicModel(nn.Module):
         # Create coordinates as a parameter for gradient testing
         self._coords = nn.Parameter(torch.randn(len(self.Z), 3))
 
+    @property
+    def device(self):
+        """Device of the model's coordinates.
+
+        Real ``Model`` / ``ModelFT`` expose this, and ``ModelTarget`` now
+        reconciles its own device against the model's, so a stand-in has to
+        carry it too.
+        """
+        return self._coords.device
+
+    @property
+    def dtype_float(self):
+        """Float dtype of the model's coordinates (mirrors ``Model``)."""
+        return self._coords.dtype
+
     def xyz(self):
         """Return current coordinates."""
         return self._coords

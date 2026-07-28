@@ -158,7 +158,14 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         ----------
         data : ReflectionData
             ReflectionData object with observed data.
+
+        Notes
+        -----
+        Receiver wins: this scaler may already hold buffers, so ``data`` is
+        moved onto the scaler's device rather than the buffers being registered
+        from whatever device ``data`` happened to be on.
         """
+        self.device = resolve_device(self, data)
         self._data = ModuleReference(data)
         if data.cell is not None:
             self.cell = data.cell

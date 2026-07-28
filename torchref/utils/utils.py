@@ -314,12 +314,14 @@ class TensorMasks(DeviceMovementMixin, dict):
         self._cache = None
         self._updated = True
 
-        # Refresh the ``device`` tracker so future ``__setitem__`` calls
-        # (which migrate incoming tensors to ``self.device``) land correctly.
-        for v in self.values():
-            if isinstance(v, torch.Tensor):
-                self.device = v.device
-                break
+        # Refresh the ``device`` tracker (future ``__setitem__`` calls migrate
+        # incoming tensors to it) through the shared helper rather than a local
+        # copy: it also handles the empty-``TensorMasks`` case, where there is
+        # no mask tensor to read a device from and the tracker has to come from
+        # the recorded ``.to()`` request.
+        from torchref.utils.device_mixin import _refresh_device_trackers
+
+        _refresh_device_trackers(self, fn)
         return self
 
     def reset_cache(self) -> None:

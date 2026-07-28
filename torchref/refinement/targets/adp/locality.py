@@ -60,18 +60,22 @@ class ADPLocalityTarget(ADPTarget):
         sigma_aniso: float = 0.5,
         exclude_bonded: bool = True,
         verbose: int = 0,
+        device=None,
     ):
-        super().__init__(model, verbose)
-        self.register_buffer(
-            "_k_neighbors", torch.tensor(k_neighbors, dtype=torch.int64)
-        )
-        self.register_buffer("_correlation_length", torch.tensor(correlation_length))
-        self.register_buffer("_scale", torch.tensor(scale))
+        super().__init__(model, verbose, device=device)
+        # Host-side, deliberately not buffers: all three are only ever reached
+        # through the properties below, which immediately ``.item()`` them, and
+        # their consumers (k-NN sizing, the exp() falloff, stats reporting) are
+        # host-side. Keeping them on the device bought a sync per access.
+        self._k_neighbors = int(k_neighbors)
+        self._correlation_length = float(correlation_length)
+        self._scale = float(scale)
         # Sigma for the deviatoric (anisotropy) channel; only used when
         # anisotropic atoms are present. Dimensionless and on the same scale as
         # the magnitude channel's fixed 0.5 log-sigma (the channel restrains
-        # fractional anisotropy dev/B_eq, the analogue of log B_eq).
-        self.register_buffer("_sigma_aniso", torch.tensor(sigma_aniso))
+        # fractional anisotropy dev/B_eq, the analogue of log B_eq). This one
+        # *is* a buffer: it is handed to adp_locality_aniso_math as a tensor.
+        self._register_scalar("_sigma_aniso", float(sigma_aniso))
         self.exclude_bonded = exclude_bonded
 
         # Cache for neighbor indices and distances
@@ -79,29 +83,48 @@ class ADPLocalityTarget(ADPTarget):
         self._neighbor_distances = None  # (N, k_neighbors)
         self._last_xyz_hash = None
 
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        """Absorb the retired ``_k_neighbors`` / ``_correlation_length`` /
+        ``_scale`` buffers.
+
+        All three are host-side Python scalars now (see ``__init__``).
+        Checkpoints predating that change still carry them, and a
+        ``strict=True`` load would reject them as unexpected keys -- so restore
+        their values rather than discarding a user's tuning.
+        """
+        for legacy, cast in (
+            ("_k_neighbors", int),
+            ("_correlation_length", float),
+            ("_scale", float),
+        ):
+            saved = state_dict.pop(prefix + legacy, None)
+            if saved is not None:
+                setattr(self, legacy, cast(saved.item()))
+        return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
     @property
     def k_neighbors(self) -> int:
-        return self._k_neighbors.item()
+        return self._k_neighbors
 
     @k_neighbors.setter
     def k_neighbors(self, value: int):
-        self._k_neighbors.fill_(value)
+        self._k_neighbors = int(value)
 
     @property
     def correlation_length(self) -> float:
-        return self._correlation_length.item()
+        return self._correlation_length
 
     @correlation_length.setter
     def correlation_length(self, value: float):
-        self._correlation_length.fill_(value)
+        self._correlation_length = float(value)
 
     @property
     def scale(self) -> float:
-        return self._scale.item()
+        return self._scale
 
     @scale.setter
     def scale(self, value: float):
-        self._scale.fill_(value)
+        self._scale = float(value)
 
     @property
     def sigma_aniso(self) -> float:
@@ -287,11 +310,6 @@ class ADPLocalityTarget(ADPTarget):
         # deviatoric/anisotropy channel). Isotropic-only models keep the
         # original B-factor path (numerically unchanged, zero overhead).
         if not getattr(self.model, "_aniso_is_empty", True):
-            if (self._sigma_aniso.device != device
-                    or self._sigma_aniso.dtype != adp.dtype):
-                self._sigma_aniso = self._sigma_aniso.to(
-                    device=device, dtype=adp.dtype
-                )
             u6 = self.model.adp_u6()
             return adp_locality_aniso_math(
                 u6, indices, distances, self._sigma_aniso

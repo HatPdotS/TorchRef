@@ -8,7 +8,6 @@ from torchref.base.targets.xray_ml_sigmaa import (
     epsilon_from_hkl,
     ml_xray_loss_beta_math,
 )
-from torchref.utils.device_resolution import resolve_device
 
 from .base import XrayTarget
 from .gaussian import GaussianXrayTarget
@@ -178,10 +177,10 @@ def create_xray_target(
         )
         mode = "ml"
 
-    # Pin model/data/scaler onto one device before constructing the
-    # target — its forward path mixes tensors from all three.
-    resolve_device(model, data, scaler, device=device)
-
+    # Device reconciliation is ``DataTarget.__init__``'s job now (it calls
+    # ``_adopt_device(model, data, scaler)`` before allocating anything), so
+    # doing it again here would be a second copy of the same policy, free to
+    # drift. ``device`` is forwarded instead.
     kwargs = dict(
         data=data,
         model=model,
@@ -189,6 +188,7 @@ def create_xray_target(
         use_work_set=use_work_set,
         verbose=verbose,
         use_set=use_set,
+        device=device,
     )
     if mode == "gaussian":
         return GaussianXrayTarget(**kwargs)

@@ -42,12 +42,15 @@ class ADPSimilarityTarget(ADPTarget):
 
     def __init__(
         self, model: "Model" = None, simu_sigma: float = 2.0,
-        simu_sigma_aniso: float = 1.0, verbose: int = 0
+        simu_sigma_aniso: float = 1.0, verbose: int = 0, device=None
     ):
-        super().__init__(model, verbose)
-        # Register simu-specific sigma as buffer (separate from base sigma)
-        self.register_buffer("_simu_sigma", torch.tensor(simu_sigma))
-        self.register_buffer("_simu_sigma_aniso", torch.tensor(simu_sigma_aniso))
+        super().__init__(model, verbose, device=device)
+        # Both sigmas are handed to adp_simu_math / adp_simu_aniso_math, which
+        # dispatch to Triton on CUDA float32. Allocating them on the target's
+        # resolved device and dtype is what lets the lazy repair inside
+        # forward() go away.
+        self._register_scalar("_simu_sigma", float(simu_sigma))
+        self._register_scalar("_simu_sigma_aniso", float(simu_sigma_aniso))
 
     @property
     def simu_sigma(self) -> float:
@@ -96,25 +99,10 @@ class ADPSimilarityTarget(ADPTarget):
         adp_t = self.model.adp()
         if pair_indices.shape[0] == 0:
             return torch.zeros((), device=adp_t.device, dtype=adp_t.dtype)
-        # Lazily move the ``_simu_sigma`` buffer onto the model's device
-        # the first time we reach here. Once moved, subsequent forwards
-        # (and CUDA-Graph captures) skip the device transfer — calling
-        # ``.to()`` on a CPU buffer inside a capture region triggers a
-        # ``cudaErrorStreamCaptureUnsupported``.
-        if (self._simu_sigma.device != adp_t.device
-                or self._simu_sigma.dtype != adp_t.dtype):
-            self._simu_sigma = self._simu_sigma.to(
-                device=adp_t.device, dtype=adp_t.dtype,
-            )
         # Anisotropic atoms present: restrain the full U tensors. Isotropic-only
         # models keep the original (Triton-accelerated) B-factor path so they
         # pay nothing and are numerically unchanged.
         if not getattr(self.model, "_aniso_is_empty", True):
-            if (self._simu_sigma_aniso.device != adp_t.device
-                    or self._simu_sigma_aniso.dtype != adp_t.dtype):
-                self._simu_sigma_aniso = self._simu_sigma_aniso.to(
-                    device=adp_t.device, dtype=adp_t.dtype,
-                )
             u6 = self.model.adp_u6()
             return adp_simu_aniso_math(
                 u6, pair_indices, self._simu_sigma, self._simu_sigma_aniso

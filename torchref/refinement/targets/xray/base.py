@@ -67,6 +67,7 @@ class XrayTarget(DataTarget):
         use_work_set: bool = True,
         verbose: int = 0,
         use_set: str = None,
+        device=None,
     ):
         """
         Initialize X-ray target.
@@ -89,7 +90,9 @@ class XrayTarget(DataTarget):
         verbose : int, optional
             Verbosity level. Default is 0.
         """
-        super().__init__(data=data, model=model, scaler=scaler, verbose=verbose)
+        super().__init__(
+            data=data, model=model, scaler=scaler, verbose=verbose, device=device
+        )
         # ``use_set`` (3-way: "work"/"free"/"val") is the canonical subset
         # selector; the legacy ``use_work_set`` bool maps onto it. When
         # ``use_set`` is not given explicitly, fall back to the bool so older

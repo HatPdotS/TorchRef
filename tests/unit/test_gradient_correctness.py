@@ -363,8 +363,7 @@ def test_model_forward_fft_gradient(which, eps):
 # 6. Triton kernels (CUDA float32, hand-written backward) vs eager autograd
 #    Metric: cosine similarity + gradnorm ratio. Skipped without --run-gpu.
 # =============================================================================
-@pytest.mark.gpu
-@pytest.mark.cuda_only
+@pytest.mark.cuda
 @pytest.mark.skipif(not _HAS_CUDA, reason="Triton kernels require CUDA")
 def test_triton_sf_iso_matches_eager_cosine():
     """DS isotropic Triton kernel gradient == eager autograd (CUDA float32)."""
@@ -388,8 +387,7 @@ def test_triton_sf_iso_matches_eager_cosine():
     assert_grads_agree(g_triton, g_eager, min_cos=0.999, ratio_tol=1e-2, ctx="iso ")
 
 
-@pytest.mark.gpu
-@pytest.mark.cuda_only
+@pytest.mark.cuda
 @pytest.mark.skipif(not _HAS_CUDA, reason="Triton kernels require CUDA")
 def test_triton_sf_aniso_matches_eager_cosine():
     """DS anisotropic Triton kernel gradient == eager autograd (CUDA float32)."""
@@ -412,8 +410,7 @@ def test_triton_sf_aniso_matches_eager_cosine():
     assert_grads_agree(g_triton, g_eager, min_cos=0.999, ratio_tol=1e-2, ctx="aniso ")
 
 
-@pytest.mark.gpu
-@pytest.mark.cuda_only
+@pytest.mark.cuda
 @pytest.mark.skipif(not _HAS_CUDA, reason="Triton kernels require CUDA")
 def test_triton_gaussian_xray_matches_eager_cosine():
     """Gaussian X-ray Triton kernel gradient == eager autograd (CUDA float32)."""
@@ -435,8 +432,7 @@ def test_triton_gaussian_xray_matches_eager_cosine():
     assert_grads_agree([g_t], [g_e], min_cos=0.999, ratio_tol=1e-2, ctx="xray ")
 
 
-@pytest.mark.gpu
-@pytest.mark.cuda_only
+@pytest.mark.cuda
 @pytest.mark.skipif(not _HAS_CUDA, reason="Triton kernels require CUDA")
 def test_triton_bond_matches_eager_cosine():
     """Bond restraint Triton kernel gradient == eager autograd (CUDA float32)."""

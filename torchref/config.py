@@ -358,6 +358,65 @@ def _auto_detect_device() -> torch.device:
     return torch.device("cpu")
 
 
+def canonical_device(dev):
+    """Return ``dev`` with its default index filled in.
+
+    ``torch.device('cuda') != torch.device('cuda:0')`` even though both name the
+    same physical device. Devices read back off a real tensor always carry an
+    index, so any comparison between a *requested* device and an *observed* one
+    needs a shared normal form -- otherwise ``obj.device == tensor.device`` is
+    False on a freshly constructed object and True after its first ``.to()``.
+
+    ``cpu`` deliberately stays bare: ``torch.empty(0, device='cpu').device`` has
+    no index, so canonicalising it to ``cpu:0`` would recreate the very mismatch
+    this function exists to remove.
+
+    This is the allocation-free form of ``torch.empty(0, device=d).device``,
+    which matters because it is called on constructor and comparison paths.
+    Deliberately *not* memoised: ``torch.cuda.current_device()`` is mutable via
+    ``torch.cuda.set_device``, so a cache would freeze a stale answer.
+
+    Parameters
+    ----------
+    dev : torch.device or str or int or None
+        Device to normalise. ``None`` passes through so callers can chain.
+
+    Returns
+    -------
+    torch.device or None
+    """
+    if dev is None:
+        return None
+    d = dev if isinstance(dev, torch.device) else torch.device(dev)
+    if d.index is not None:
+        return d
+    if d.type == "cpu":
+        return d
+    if d.type == "cuda":
+        return torch.device("cuda", torch.cuda.current_device())
+    if d.type == "mps":
+        return torch.device("mps", 0)
+    # Unknown/future backend: fall back to asking PyTorch directly.
+    return torch.empty(0, device=d).device
+
+
+def normalize_device(dev=None) -> torch.device:
+    """Coerce a user-supplied ``device`` argument to a canonical device.
+
+    ``None`` resolves to :func:`get_default_device`. This is the pure,
+    side-effect-free counterpart of :func:`torchref.utils.resolve_device`:
+
+    * one device source (or none)  -> ``normalize_device``
+    * several device-bearing inputs to reconcile -> ``resolve_device``
+
+    ``resolve_device`` *moves* the objects it is given, so using it for a
+    single-input constructor with nothing to reconcile is overreach.
+    """
+    if dev is None:
+        return get_default_device()
+    return canonical_device(dev)
+
+
 class DeviceConfig:
     """
     Device configuration with property-based access.
@@ -381,7 +440,10 @@ class DeviceConfig:
     def __init__(self):
         override = os.environ.get("TORCHREF_DEVICE", "auto").lower()
         if override == "auto":
-            self._device = _auto_detect_device()
+            # Canonicalise here too, not just in ``_coerce``: the ``auto``
+            # branch bypasses ``_coerce`` entirely, and it is the branch almost
+            # every user takes.
+            self._device = canonical_device(_auto_detect_device())
         else:
             self._device = self._coerce(override)
         self._warn_if_mps_dtype_mismatch()
@@ -408,7 +470,7 @@ class DeviceConfig:
             hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
         ):
             raise RuntimeError("MPS requested but not available on this system.")
-        return dev
+        return canonical_device(dev)
 
     def _warn_if_mps_dtype_mismatch(self) -> None:
         if self._device.type == "mps" and dtypes.float == torch.float64:

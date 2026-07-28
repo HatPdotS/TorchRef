@@ -18,17 +18,8 @@ from typing import Any, Optional, Union
 
 import torch
 
+from torchref.config import canonical_device as _canonical
 from torchref.config import get_default_device
-
-
-def _canonical(device: torch.device) -> torch.device:
-    """Return ``device`` with its default index filled in.
-
-    ``torch.device('cuda') != torch.device('cuda:0')`` even though both
-    point to the same physical device.  Materialising an empty tensor
-    on the device is the cheapest way to get the canonical form.
-    """
-    return torch.empty(0, device=device).device
 
 
 def resolve_device(
@@ -90,9 +81,17 @@ def resolve_device(
         device(type='cuda')
     """
     if device is not None:
-        resolved = torch.device(device) if not isinstance(device, torch.device) else device
+        resolved = _canonical(device)
         for m in modules:
-            if m is not None:
+            # Skip modules already on target. ``.to()`` invalidates caches and
+            # fires ``_after_device_apply``, so a no-op move is not free --
+            # ``SfDS.forward`` calls ``resolve_device`` on every evaluation.
+            #
+            # This is only safe because ``DeviceMixin`` now keeps ``m.device``
+            # truthful; before that, the unconditional ``.to()`` here was
+            # accidentally repairing objects whose tracker lied about where
+            # their tensors were.
+            if m is not None and _canonical(m.device) != resolved:
                 m.to(resolved)
         return resolved
 

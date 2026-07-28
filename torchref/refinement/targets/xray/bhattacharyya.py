@@ -107,29 +107,48 @@ class BhattacharyyaXrayTarget(XrayTarget):
             verbose=verbose,
             use_set=use_set,
         )
-        # log-spaced B grid
+        # log-spaced B grid. ``log_b_grid`` itself is a construction-time
+        # local, not a buffer: it is read twice below for the min/max and never
+        # touched again, so registering it only created something for ``.to()``
+        # to carry around.
         log_b_grid = torch.linspace(
-            math.log(b_grid_min), math.log(b_grid_max), b_grid_n
+            math.log(b_grid_min),
+            math.log(b_grid_max),
+            b_grid_n,
+            device=self.device,
+            dtype=self.dtype_float,
         )
-        self.register_buffer("log_b_grid", log_b_grid)
         self.register_buffer("b_grid", torch.exp(log_b_grid))
         self._log_b_min = float(log_b_grid[0].item())
         self._log_b_max = float(log_b_grid[-1].item())
         self._log_b_step = (self._log_b_max - self._log_b_min) / (b_grid_n - 1)
         # Global σ_m scale (tunable, non-learnable)
+        self._register_scalar("sigma_m_scale", float(sigma_m_scale))
+        # Populated by _initialize_cache() on first forward(). Empty, but still
+        # allocated on this target's device: a 0-element tensor reports a
+        # device, and a CPU one here reads as a split object.
+        empty = dict(device=self.device, dtype=self.dtype_float)
+        self.register_buffer("exp_table", torch.empty(0, **empty))      # (b_grid_n, N_refl)
+        self.register_buffer("s_sq_per_refl", torch.empty(0, **empty))  # (N_refl,)
+        self.register_buffer("s_4_per_refl", torch.empty(0, **empty))   # (N_refl,)
+        self.register_buffer("f_sq_kh", torch.empty(0, **empty))        # (K, N_refl)
+        self.register_buffer("g_w_table", torch.empty(0, **empty))      # (K, b_grid_n)
+        self.register_buffer("g_4_table", torch.empty(0, **empty))      # (K, b_grid_n)
         self.register_buffer(
-            "sigma_m_scale", torch.tensor(float(sigma_m_scale))
+            "atom_to_element", torch.empty(0, dtype=torch.long, device=self.device)
         )
-        # Populated by _initialize_cache() on first forward()
-        self.register_buffer("exp_table", torch.empty(0))      # (b_grid_n, N_refl)
-        self.register_buffer("s_sq_per_refl", torch.empty(0))  # (N_refl,)
-        self.register_buffer("s_4_per_refl", torch.empty(0))   # (N_refl,)
-        self.register_buffer("f_sq_kh", torch.empty(0))        # (K, N_refl)
-        self.register_buffer("g_w_table", torch.empty(0))      # (K, b_grid_n)
-        self.register_buffer("g_4_table", torch.empty(0))      # (K, b_grid_n)
-        self.register_buffer("atom_to_element", torch.empty(0, dtype=torch.long))
-        self.register_buffer("sigma_d_mean", torch.tensor(0.0))
+        self._register_scalar("sigma_d_mean", 0.0)
         self._initialized = False
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        """Drop the retired ``log_b_grid`` buffer key.
+
+        It is a construction-time local now (derived from the same
+        ``b_grid_min``/``max``/``n`` the constructor already has), so a
+        ``strict=True`` load of an older checkpoint would reject it.
+        """
+        state_dict.pop(prefix + "log_b_grid", None)
+        return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     # ------------------------------------------------------------------
     # Cache initialisation (called once, on first forward)

@@ -157,7 +157,15 @@ class Scaler(ScalerBase):
             Model object for structure factor calculation.
         data : ReflectionData
             ReflectionData object with observed data.
+
+        Notes
+        -----
+        Receiver wins: the scaler already owns buffers by this point, so
+        ``model`` and ``data`` are reconciled onto *its* device. This is the
+        state-dict restore path, where the three objects are built separately
+        and can easily disagree.
         """
+        resolve_device(self, model, data)
         # Set _model_ref directly: nn.Module.__setattr__ intercepts assignments
         # of nn.Module instances (like `self.model = model`) and registers them
         # as submodules, bypassing the property setter entirely.

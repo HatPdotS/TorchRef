@@ -109,6 +109,7 @@ class NonBondedTarget(GeometryTarget):
         rebuild_threshold: float = 1.0,
         verbose: int = 0,
         scale: float = 10.0,
+        device=None,
     ):
         """
         Initialize non-bonded target.
@@ -142,23 +143,50 @@ class NonBondedTarget(GeometryTarget):
             Public attribute stored as ``self.scale``. Default is 10.0. Set
             but not consumed by ``forward()`` (informational only).
         """
-        super().__init__(model, verbose)
+        super().__init__(model, verbose, device=device)
         self.mode = mode
         self.scale = scale
-        # Register sigma / r_exp / buffer as buffers so .to(device) moves them.
-        self.register_buffer("_sigma_vdw", torch.tensor(float(sigma)))
-        self.register_buffer("_r_exp", torch.tensor(float(r_exp)))
-        self.register_buffer("_buffer", torch.tensor(float(buffer)))
-        self.register_buffer(
-            "_rebuild_threshold", torch.tensor(float(rebuild_threshold))
-        )
+        # Tunables that reach the kernel live on the target's resolved device
+        # and float dtype: the prolsq branch hands these straight to a Triton
+        # kernel, where a CPU tensor is a raw pointer into host memory rather
+        # than a promotable scalar.
+        self._register_scalar("_sigma_vdw", float(sigma))
+        self._register_scalar("_r_exp", float(r_exp))
         # c_rep: back-door override; by default derived from sigma so that
         # PROLSQ shape term equals v^p / (p * sigma^p).
         if c_rep is None:
             c_rep_val = 1.0 / (float(r_exp) * float(sigma) ** float(r_exp))
         else:
             c_rep_val = float(c_rep)
-        self.register_buffer("_c_rep", torch.tensor(c_rep_val))
+        self._register_scalar("_c_rep", c_rep_val)
+        # Host-side, deliberately not buffers.
+        #
+        # ``buffer`` is consumed as a Python float -- forward() already called
+        # ``float(self._buffer)`` before handing it to the kernel, where it
+        # becomes a compile-time constant. Storing it on the device only bought
+        # a device->host sync on the hot path.
+        #
+        # ``rebuild_threshold`` is only ever compared against an already
+        # ``.item()``-ed displacement in maintenance().
+        self._buffer = float(buffer)
+        self._rebuild_threshold = float(rebuild_threshold)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        """Absorb the retired ``_buffer`` / ``_rebuild_threshold`` buffers.
+
+        Both are host-side Python floats now (see ``__init__``). Checkpoints
+        written before that change still carry them, and a ``strict=True`` load
+        would reject them as unexpected keys -- so restore their values rather
+        than discarding a user's tuning.
+        """
+        for legacy, attr in (
+            ("_buffer", "_buffer"),
+            ("_rebuild_threshold", "_rebuild_threshold"),
+        ):
+            saved = state_dict.pop(prefix + legacy, None)
+            if saved is not None:
+                setattr(self, attr, float(saved.item()))
+        return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     @property
     def c_rep(self) -> float:
@@ -199,13 +227,13 @@ class NonBondedTarget(GeometryTarget):
 
     @property
     def buffer(self) -> float:
-        """Get distance buffer."""
-        return self._buffer.item()
+        """Get distance buffer (host-side; see ``__init__``)."""
+        return self._buffer
 
     @buffer.setter
     def buffer(self, value: float):
         """Set distance buffer."""
-        self._buffer.fill_(value)
+        self._buffer = float(value)
 
     def maintenance(self) -> None:
         """Rebuild the VDW pair list if any ASU atom drifted too far.
@@ -245,12 +273,12 @@ class NonBondedTarget(GeometryTarget):
             max_disp_sq = (delta * delta).sum(dim=-1).max()
 
         thresh_sq = self._rebuild_threshold * self._rebuild_threshold
-        if max_disp_sq.item() <= thresh_sq.item():
+        if max_disp_sq.item() <= thresh_sq:
             return  # within slack — nothing to do
 
         if self.verbose > 0:
             max_disp = float(max_disp_sq.item()) ** 0.5
-            thresh = float(self._rebuild_threshold.item())
+            thresh = self._rebuild_threshold
             print(
                 f"  VDW rebuild: max drift {max_disp:.2f} Å > "
                 f"threshold {thresh:.2f} Å"
@@ -358,7 +386,7 @@ class NonBondedTarget(GeometryTarget):
                 self.model.cell.fractional_matrix,
                 self.model.cell.inv_fractional_matrix,
                 self._c_rep, self._r_exp,
-                float(self._buffer), self._sigma_vdw,
+                self._buffer, self._sigma_vdw,
             )
 
         # Compute positions (handles symmetry transparently)

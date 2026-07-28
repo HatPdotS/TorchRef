@@ -602,7 +602,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
 
         if spacegroup is not None:
-            self.spacegroup = SpaceGroup(spacegroup)
+            # Build on the dataset's device, not the process default: a
+            # ``ReflectionData(device='cpu')`` on an MPS host would otherwise
+            # end up with mps-resident symmetry matrices while every other
+            # tensor it owns is on CPU, and nothing downstream would notice
+            # until an op mixed the two.
+            self.spacegroup = SpaceGroup(spacegroup, device=self.device)
         self._calculate_resolution()
 
         # Prefer intensities (via French-Wilson) only when French-Wilson is
@@ -804,7 +809,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             else Cell(cell, device=data.device)
         )
         data.spacegroup = (
-            spacegroup if isinstance(spacegroup, SpaceGroup) else SpaceGroup(spacegroup)
+            spacegroup
+            if isinstance(spacegroup, SpaceGroup)
+            else SpaceGroup(spacegroup, device=data.device)
         )
 
         if rfree_flags is not None:
@@ -3166,7 +3173,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         remapped = ReflectionData(verbose=self.verbose, device=self.device)
         remapped.cell = self.cell.clone() if self.cell is not None else None
         if spacegroup is not None:
-            remapped.spacegroup = SpaceGroup(spacegroup)
+            remapped.spacegroup = SpaceGroup(spacegroup, device=remapped.device)
         else:
             remapped.spacegroup = self.spacegroup
 
@@ -3573,8 +3580,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Clone cell
         reduced.cell = self.cell.clone() if self.cell is not None else None
 
-        # Set spacegroup
-        reduced.spacegroup = SpaceGroup(spacegroup)
+        # Set spacegroup (on the reduced dataset's device, not the global default)
+        reduced.spacegroup = SpaceGroup(spacegroup, device=reduced.device)
 
         # Recalculate resolution
         if reduced.cell is not None and reduced.hkl is not None:

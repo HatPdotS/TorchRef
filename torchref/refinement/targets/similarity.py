@@ -72,11 +72,26 @@ class CoordinateSimilarityTarget(Target):
         model_light: "Model" = None,
         alpha: float = 2.0,
         verbose: int = 0,
+        device=None,
     ):
-        super().__init__(verbose=verbose)
+        super().__init__(verbose=verbose, device=device)
         self.add_module("_model_dark", model_dark)
         self.add_module("_model_light", model_light)
-        self.register_buffer("_alpha", torch.tensor(alpha))
+        self._adopt_device(model_dark, model_light, device=device)
+        self._register_scalar("_alpha", float(alpha))
+        # Registered unconditionally, before the map is built. They used to be
+        # created only inside ``_build_atom_map``, which runs only when both
+        # models are present -- so on the empty-init path (the one that exists
+        # for ``load_state_dict``) they never existed at all: ``forward()``
+        # raised AttributeError and a strict load of a populated checkpoint
+        # failed on unexpected keys. ``_build_atom_map`` now overwrites rather
+        # than creates.
+        self.register_buffer(
+            "_idx_dark", torch.zeros(0, dtype=torch.long, device=self.device)
+        )
+        self.register_buffer(
+            "_idx_light", torch.zeros(0, dtype=torch.long, device=self.device)
+        )
         if model_dark is not None and model_light is not None:
             self._build_atom_map()
 
@@ -148,10 +163,10 @@ class CoordinateSimilarityTarget(Target):
                 "dark and light models"
             )
             self.register_buffer(
-                "_idx_dark", torch.zeros(0, dtype=torch.long)
+                "_idx_dark", torch.zeros(0, dtype=torch.long, device=self.device)
             )
             self.register_buffer(
-                "_idx_light", torch.zeros(0, dtype=torch.long)
+                "_idx_light", torch.zeros(0, dtype=torch.long, device=self.device)
             )
             return
 
@@ -168,13 +183,21 @@ class CoordinateSimilarityTarget(Target):
                 f"(dark={n_dark}, light={n_light})"
             )
 
+        # On ``self.device``: these are 1-D index tensors, so unlike the 0-dim
+        # scalars they are not covered by PyTorch's scalar-promotion rule. A
+        # CPU-resident index against accelerator coordinates costs a host sync
+        # on every forward.
         self.register_buffer(
             "_idx_dark",
-            torch.tensor(merged["_idx_dark"].values, dtype=torch.long),
+            torch.tensor(
+                merged["_idx_dark"].values, dtype=torch.long, device=self.device
+            ),
         )
         self.register_buffer(
             "_idx_light",
-            torch.tensor(merged["_idx_light"].values, dtype=torch.long),
+            torch.tensor(
+                merged["_idx_light"].values, dtype=torch.long, device=self.device
+            ),
         )
 
     def forward(self) -> torch.Tensor:
@@ -186,8 +209,9 @@ class CoordinateSimilarityTarget(Target):
             Scalar mean loss over all matched atom pairs.
         """
         if len(self._idx_dark) == 0:
-            device = self._alpha.device
-            return torch.tensor(0.0, device=device)
+            # ``self.device``, not ``self._alpha.device``: an empty target must
+            # still hand back a loss on the refinement's device.
+            return torch.tensor(0.0, device=self.device, dtype=self.dtype_float)
 
         xyz_dark = self._model_dark.xyz()
         xyz_light = self._model_light.xyz()

@@ -1091,21 +1091,28 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ), f"vdW radii length mismatch with number of atoms {len(self.vdw_radii)} != {len(self.pdb)}"
         return self.vdw_radii
 
-    def to(self, *args, **kwargs):
-        """Move Model and rebuild device-specific SF indices.
+    def _after_device_apply(
+        self, old_device, new_device, old_dtype, new_dtype, *,
+        device_changed, dtype_changed,
+    ):
+        """Rebuild the precomputed SF indices after a real device/dtype change.
 
-        Delegates to :class:`~torchref.utils.device_mixin.DeviceMovementMixin`, which
-        walks ``self.__dict__`` (picking up ``self.cell``, ``self.altloc_pairs``,
+        :class:`~torchref.utils.device_mixin.DeviceMixin` walks
+        ``self.__dict__`` (picking up ``self.cell``, ``self.altloc_pairs``,
         ``self._restraints`` and all registered parameters / buffers), refreshes
-        the ``self.device`` tracker, and invalidates caches. Afterwards this
-        override rebuilds the precomputed SF indices on the new device.
+        the ``self.device`` tracker and invalidates caches; this hook then
+        regenerates the iso/aniso index tensors on the new device.
+
+        This lives on the movement hook rather than a ``to()`` override because
+        a parent module reaches ``Model`` through ``_apply``, which never calls
+        ``to()``. It is deliberately not ``reset_cache()``: that hook fires
+        after every optimizer step (see ``LossState.reset_caches``), and index
+        reconstruction does not belong on that path.
         """
-        result = super().to(*args, **kwargs)
-        if hasattr(result, "aniso_flag") and result.aniso_flag is not None:
-            result._rebuild_sf_indices()
-        if result.verbose > 0:
-            print(f"Model moved to device: {result.device}")
-        return result
+        if getattr(self, "aniso_flag", None) is not None:
+            self._rebuild_sf_indices()
+        if self.verbose > 0:
+            print(f"Model moved to device: {self.device}")
 
     def copy(self):
         """

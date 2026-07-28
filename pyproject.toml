@@ -98,8 +98,28 @@ profile = "black"
 line_length = 88
 
 [tool.pytest.ini_options]
+# Used when pytest is invoked from the repo root. ``tests/pytest.ini`` takes
+# over when invoked from inside ``tests/``; keep the two in step so behaviour
+# does not depend on the working directory. Accelerator tests are gated by
+# ``tests/conftest.py``, which runs whatever the host supports -- do not add a
+# default ``-m`` expression here, as it deselects at collection time and no
+# flag can undo it.
 testpaths = ["tests"]
 python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+pythonpath = ["."]
+markers = [
+    "unit: Unit tests (fast, no I/O, isolated)",
+    "integration: Integration tests (slower, real I/O, pipelines)",
+    "gpu: Needs any accelerator (CUDA or MPS); auto-skipped if the host has none",
+    "cuda: Needs CUDA specifically (e.g. Triton kernels); auto-skipped if absent",
+    "mps: Needs MPS specifically (Metal kernels); auto-skipped if absent",
+    "cuda_only: Deprecated alias for 'cuda'",
+    "slow: Long-running tests (skipped in quick runs)",
+    "openmm: Tests requiring OpenMM (the [amber] extra); skipped if absent",
+    "amber: Tests requiring OpenMM + AmberTools (antechamber/tleap); skipped if absent",
+]
 
 [tool.ruff.lint]
 ignore = ["F841","E741","F841","E402","E722"]

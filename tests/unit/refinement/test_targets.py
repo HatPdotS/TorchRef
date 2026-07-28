@@ -160,7 +160,7 @@ class TestTargetDeviceHandling:
         
         loss = torch.mean((fobs / sigma) ** 2)
         
-        assert loss.device.type == 'cuda'
+        assert loss.device.type == gpu_device.type
         assert torch.isfinite(loss)
 
 

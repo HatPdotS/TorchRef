@@ -12,7 +12,7 @@ fp32 tolerance accounting for atomic-scatter non-determinism.
 Toggling is done with the shared ``torchref.utils.use_engine`` context manager
 (``Engine.EAGER`` vs ``Engine.TRITON``). No process restart needed.
 
-Markers: ``@pytest.mark.gpu`` (skipped by default) and
+Markers: ``@pytest.mark.cuda`` (skipped by default) and
 ``@pytest.mark.integration``. Run on a CUDA box with
 ``pytest tests/integration/test_triton_vs_eager_targets.py -m gpu``.
 """
@@ -177,7 +177,7 @@ def _target_names(state):
     return list(state.targets.keys())
 
 
-@pytest.mark.gpu
+@pytest.mark.cuda
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "target_name",
@@ -218,7 +218,7 @@ def test_triton_matches_eager_per_target(target_name, gpu_refinement, gpu_state)
     _assert_close(target_name, eager, triton, atol, rtol)
 
 
-@pytest.mark.gpu
+@pytest.mark.cuda
 @pytest.mark.integration
 @pytest.mark.parametrize("target_mode", ["bhattacharyya", "rice", "ls", "gaussian"])
 def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
@@ -255,7 +255,7 @@ def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
     _assert_close(name, eager, triton, atol, rtol)
 
 
-@pytest.mark.gpu
+@pytest.mark.cuda
 @pytest.mark.integration
 @pytest.mark.parametrize("n_atoms", [4, 5, 6])
 def test_planarity_triton_per_atom_sigma(n_atoms):
@@ -298,7 +298,7 @@ def test_planarity_triton_per_atom_sigma(n_atoms):
     assert torch.allclose(ge, gt, atol=1e-4, rtol=1e-3)
 
 
-@pytest.mark.gpu
+@pytest.mark.cuda
 @pytest.mark.integration
 def test_geometry_degenerate_finite_grads():
     """At degenerate geometry, BOTH eager and Triton give finite gradients.
@@ -403,7 +403,7 @@ def _hvp_vs_fd(model, hkl, eps=1e-5):
     return cos, rel
 
 
-@pytest.mark.gpu
+@pytest.mark.cuda
 @pytest.mark.integration
 def test_eager_gpu_hessian_iso(tmp_path):
     """`use_engine(Engine.EAGER)` gives correct GPU second derivatives (iso).
@@ -450,7 +450,7 @@ def test_eager_gpu_hessian_iso(tmp_path):
         dtypes.float, dtypes.complex = f0, c0
 
 
-@pytest.mark.gpu
+@pytest.mark.cuda
 @pytest.mark.integration
 def test_eager_gpu_hessian_aniso(pdb_dir):
     """Same as above but for anisotropic ADPs (real ANISOU structure)."""

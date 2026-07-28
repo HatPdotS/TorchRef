@@ -21,7 +21,9 @@ import torch
 from torch import nn
 from torch.special import i0
 
+from torchref.config import get_float_dtype, normalize_device
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.device_resolution import resolve_device
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -80,6 +82,7 @@ class Target(DeviceMixin, nn.Module):
     def __init__(
         self,
         verbose: int = 0,
+        device=None,
         **kwargs,
     ):
         """
@@ -89,9 +92,79 @@ class Target(DeviceMixin, nn.Module):
         ----------
         verbose : int, optional
             Verbosity level. Default is 0.
+        device : torch.device, optional
+            Where this target allocates. Defaults to the configured default;
+            :meth:`_adopt_device` refines it from whatever model / data /
+            scaler the subclass is given.
         """
         super().__init__()
         self.verbose = verbose
+        # Seeded here for two distinct reasons.
+        #
+        # (1) Subclasses allocate their tunables in ``__init__``, so
+        #     ``device=self.device`` / ``dtype=self.dtype_float`` must already
+        #     have an answer at that point. Before this existed, every scalar
+        #     tunable in the package landed on CPU float32 regardless of the
+        #     model's device or the configured dtype.
+        #
+        # (2) ``DeviceMixin._refresh_device_trackers`` early-returns unless one
+        #     of these names is already in ``obj.__dict__``. Merely defining
+        #     them is what switches the mixin on for targets -- it was
+        #     previously a complete no-op for every target in the package.
+        self.device = normalize_device(device)
+        self.dtype_float = get_float_dtype()
+
+    # ---- device / dtype resolution --------------------------------------
+
+    def _adopt_device(self, *sources, device=None):
+        """Reconcile this target with the device-bearing objects it wraps.
+
+        Call *after* the sources are attached and *before* allocating any
+        buffer. ``None`` sources are dropped, so the empty-init path used by
+        ``load_state_dict`` keeps the seeded default, and the method stays
+        re-runnable if a source is attached later.
+
+        ``self`` is deliberately **not** passed to
+        :func:`~torchref.utils.resolve_device` -- unlike
+        ``ScalerBase.set_data``, which does pass it. A freshly constructed
+        target owns no tensors, so there is nothing of its own to reconcile,
+        and a target's state is a handful of scalars against a ``Model``'s
+        entire structure. Letting an empty shell's default device outvote a
+        model already on the accelerator would move megabytes to satisfy five
+        floats.
+
+        Returns
+        -------
+        torch.device
+            The resolved device (also stored on ``self.device``).
+        """
+        present = [s for s in sources if s is not None]
+        if device is None and not present:
+            return self.device
+        self.device = resolve_device(*present, device=device)
+        for src in present:
+            src_dtype = getattr(src, "dtype_float", None)
+            if isinstance(src_dtype, torch.dtype):
+                self.dtype_float = src_dtype
+                break
+        return self.device
+
+    def _register_scalar(self, name: str, value, dtype=None) -> None:
+        """Register a 0-dim tunable on this target's device and float dtype.
+
+        Scalar tunables reach Triton kernels as tensors, where a CPU-resident
+        buffer is a raw pointer into host memory rather than a promotable
+        scalar. Allocating them correctly here is what lets the lazy ``.to()``
+        repairs inside ``forward()`` go away.
+        """
+        self.register_buffer(
+            name,
+            torch.tensor(
+                value,
+                device=self.device,
+                dtype=self.dtype_float if dtype is None else dtype,
+            ),
+        )
 
     def forward(self) -> torch.Tensor:
         """Compute and return the loss. Override in subclasses."""
@@ -181,6 +254,7 @@ class ModelTarget(Target):
         self,
         model: "Model" = None,
         verbose: int = 0,
+        device=None,
         **kwargs,
     ):
         """
@@ -192,11 +266,16 @@ class ModelTarget(Target):
             Reference to the Model object (optional for empty init).
         verbose : int, optional
             Verbosity level. Default is 0.
+        device : torch.device, optional
+            Explicit device. When omitted, follows ``model``.
         """
-        super().__init__(verbose=verbose)
+        super().__init__(verbose=verbose, device=device)
         # Register model as a proper submodule (not in state_dict but handles device)
         # Use add_module to allow None values
         self.add_module("_model", model)
+        # Follow the model rather than the global default, so subclass buffers
+        # allocated below this line land beside the coordinates they act on.
+        self._adopt_device(model, device=device)
 
     @property
     def model(self) -> "Model":
@@ -268,6 +347,7 @@ class DataTarget(Target):
         model: "Model" = None,
         scaler: "Scaler" = None,
         verbose: int = 0,
+        device=None,
         **kwargs,
     ):
         """
@@ -284,12 +364,21 @@ class DataTarget(Target):
             Reference to the Scaler object.
         verbose : int, optional
             Verbosity level. Default is 0.
+        device : torch.device, optional
+            Explicit device. When omitted, model / data / scaler are
+            reconciled onto one device, the model winning on disagreement.
         """
-        super().__init__(verbose=verbose)
-        # Register as proper submodules (allows None values)
+        super().__init__(verbose=verbose, device=device)
+        # Register as proper submodules (allows None values). Note ``_data`` is
+        # a plain attribute: ReflectionData is a dataclass, not an nn.Module,
+        # so add_module would reject it -- but DeviceMixin still walks it.
         self.add_module("_model", model)
         self._data = data
         self.add_module("_scaler", scaler)
+        # The forward path mixes tensors from all three, so pin them together
+        # here. Order is precedence: ``resolve_device`` is first-wins, and the
+        # model is what the rest of the pipeline follows.
+        self._adopt_device(model, data, scaler, device=device)
 
     @property
     def model(self) -> "Model":

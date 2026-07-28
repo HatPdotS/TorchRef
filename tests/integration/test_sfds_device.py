@@ -38,7 +38,7 @@ def test_sfds_same_device_cpu():
     assert torch.isfinite(F.real).all() and torch.isfinite(F.imag).all()
 
 
-@pytest.mark.gpu
+@pytest.mark.cuda
 @pytest.mark.integration
 def test_sfds_hkl_on_different_device():
     """hkl on CPU while the module + atoms are on CUDA must not crash."""

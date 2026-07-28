@@ -96,7 +96,7 @@ class TestExplicitOverride:
 # GPU tests (cuda required for the cross-device branches)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.gpu
+@pytest.mark.cuda
 class TestMixedDevices:
     def test_inconsistent_warns_and_moves_to_first(self):
         if not torch.cuda.is_available():

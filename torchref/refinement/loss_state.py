@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import torch
 from torch import nn
 
-from torchref.config import get_default_device
+from torchref.config import canonical_device, get_default_device
 from torchref.utils.autograd_introspection import collect_loss_leaves, _iter_roots
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.loss_validation import validate_loss
@@ -276,7 +276,32 @@ class LossState(DeviceMovementMixin):
         if probe:
             self._probe_and_merge_leaves(target)
         self._collect_resettable_modules(target)
+        self._warn_on_device_mismatch(key, target)
         return self
+
+    def _warn_on_device_mismatch(self, key: str, target: Callable) -> None:
+        """Warn if ``target`` does not agree with this state's device.
+
+        Deliberately a warning and not a move. ``target.to(self.device)`` would
+        drag the model, data and scaler the target *borrows* along with it, so
+        registering a loss term could silently relocate an entire
+        ``ReflectionData``. Targets resolve their own device at construction
+        (see ``Target._adopt_device``); a disagreement here means something
+        upstream built them inconsistently, which is worth surfacing rather
+        than papering over.
+        """
+        target_device = getattr(target, "device", None)
+        if target_device is None or not isinstance(self.device, torch.device):
+            return
+        if canonical_device(target_device) == canonical_device(self.device):
+            return
+        warnings.warn(
+            f"LossState: target {key!r} is on {target_device} but the state is "
+            f"on {self.device}. Not moving it -- a target borrows its model and "
+            "data, so relocating it here would move those too. Construct the "
+            "target on the right device instead.",
+            stacklevel=3,
+        )
 
     def _collect_resettable_modules(self, target: Callable) -> None:
         """Walk ``target``'s submodules and collect any that expose a
@@ -914,23 +939,12 @@ class LossState(DeviceMovementMixin):
     # =========================================================================
     # Device Management
     # =========================================================================
-
-    def to(self, *args, **kwargs):
-        """Move via :class:`DeviceMixin`; honour an explicit device when no tensors exist yet."""
-        result = super().to(*args, **kwargs)
-        # If no tensor was found to refresh ``self.device``, fall back to the
-        # explicit device argument so subsequent allocations land correctly.
-        if not isinstance(result.device, torch.device):
-            from torchref.utils.device_mixin import _parse_to_args
-
-            device, _ = _parse_to_args(args, kwargs)
-            if device is not None:
-                result.device = (
-                    torch.device(device)
-                    if not isinstance(device, torch.device)
-                    else device
-                )
-        return result
+    #
+    # ``LossState`` normally owns no tensors (targets are callables, weights are
+    # floats), so its ``device`` tracker used to need a bespoke ``to()``
+    # override to survive a move. ``DeviceMixin`` now carries the parsed request
+    # down the traversal and updates tensor-free objects itself, so the override
+    # is gone; ``self.device`` follows ``.to()`` via the shared machinery.
 
     # =========================================================================
     # Utility

@@ -212,8 +212,8 @@ class TestSpaceGroupDeviceHandling:
 
         sg = SpaceGroup("P21", device=gpu_device)
 
-        assert sg.matrices.device.type == 'cuda'
-        assert sg.translations.device.type == 'cuda'
+        assert sg.matrices.device.type == gpu_device.type
+        assert sg.translations.device.type == gpu_device.type
 
     @pytest.mark.unit
     def test_spacegroup_dtype(self):

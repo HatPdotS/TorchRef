@@ -18,6 +18,7 @@ import torch
 from torch import nn
 
 from torchref.base.alignment.rotation import rotation_matrix_euler_xyz
+from torchref.config import get_float_dtype, normalize_device
 from torchref.utils.caching import CachedForwardMixin
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -56,14 +57,22 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         self._name = name
 
         if original_xyz is None:
-            # Empty init for state_dict loading.
-            self.register_buffer("original_xyz", torch.empty(0, 3))
-            self.register_buffer("chain_indices", torch.empty(0, dtype=torch.long))
-            self.register_buffer("chain_centers", torch.empty(0, 3))
-            self.register_buffer("mobile_mask", torch.empty(0, dtype=torch.bool))
-            self.register_buffer("atom_weights", torch.empty(0))
-            self.euler_angles = nn.Parameter(torch.empty(0, 3))
-            self.translations = nn.Parameter(torch.empty(0, 3))
+            # Empty init for state_dict loading. Honour the requested
+            # device/dtype: otherwise every buffer lands on CPU regardless of
+            # what the caller asked for, and only a later ``.to()`` repairs it.
+            device = normalize_device(device)
+            dtype = dtype if dtype is not None else get_float_dtype()
+            self.register_buffer("original_xyz", torch.empty(0, 3, device=device, dtype=dtype))
+            self.register_buffer(
+                "chain_indices", torch.empty(0, dtype=torch.long, device=device)
+            )
+            self.register_buffer("chain_centers", torch.empty(0, 3, device=device, dtype=dtype))
+            self.register_buffer(
+                "mobile_mask", torch.empty(0, dtype=torch.bool, device=device)
+            )
+            self.register_buffer("atom_weights", torch.empty(0, device=device, dtype=dtype))
+            self.euler_angles = nn.Parameter(torch.empty(0, 3, device=device, dtype=dtype))
+            self.translations = nn.Parameter(torch.empty(0, 3, device=device, dtype=dtype))
             self._n_chains = 0
             self._chain_id_order: list = []
             return
