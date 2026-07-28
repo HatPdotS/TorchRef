@@ -54,6 +54,8 @@ from torchref.config import device, dtypes
 
 pytestmark = pytest.mark.unit
 
+# Kept for readability in the section header below; backend gating itself is
+# the ``cuda`` marker's job (see tests/conftest.py).
 _HAS_CUDA = torch.cuda.is_available()
 
 
@@ -81,46 +83,16 @@ def double_cpu():
         device.current = d0
 
 
-def _flat_real(t: torch.Tensor) -> torch.Tensor:
-    """Flatten to a real 1-D vector, splitting complex into (re, im)."""
-    if t.is_complex():
-        return torch.view_as_real(t).reshape(-1).double()
-    return t.reshape(-1).double()
-
-
-def cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Cosine similarity of two gradients (direction agreement)."""
-    return torch.nn.functional.cosine_similarity(
-        _flat_real(a), _flat_real(b), dim=0
-    ).item()
-
-
-def gradnorm_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Ratio of gradient norms ``||a|| / ||b||`` (magnitude agreement)."""
-    nb = _flat_real(b).norm()
-    return (_flat_real(a).norm() / nb).item()
-
-
-def assert_grads_agree(got, ref, *, min_cos=0.9999, ratio_tol=1e-3, ctx=""):
-    """Assert per-leaf cosine ≈ 1 and gradnorm ratio ≈ 1 for matched grads."""
-    for name, g, r in got_ref_pairs(got, ref):
-        cos = cosine_similarity(g, r)
-        ratio = gradnorm_ratio(g, r)
-        assert cos >= min_cos, f"{ctx}{name}: cosine {cos:.8f} < {min_cos}"
-        assert (
-            abs(ratio - 1.0) <= ratio_tol
-        ), f"{ctx}{name}: gradnorm ratio {ratio:.8f} off 1 by > {ratio_tol}"
-
-
-def got_ref_pairs(got, ref):
-    """Yield ``(name, got_grad, ref_grad)`` triples for a dict or sequence."""
-    if isinstance(got, dict):
-        for k in got:
-            yield str(k), got[k], ref[k]
-    else:
-        for i, (g, r) in enumerate(zip(got, ref)):
-            yield str(i), g, r
-
+# These live in ``tests/helpers/grad_asserts.py`` so the accelerator kernel
+# comparison tests can share them; re-exported here because this module is where
+# they originated and several tests below use them unqualified.
+from tests.helpers.grad_asserts import (  # noqa: E402
+    _flat_real,
+    assert_grads_agree,
+    cosine_similarity,
+    got_ref_pairs,
+    gradnorm_ratio,
+)
 
 # --- synthetic structure-factor inputs (P1, ~10-15 atoms) ------------------
 def _sf_inputs(N=12, R=18, dtype=torch.float64, device="cpu"):
@@ -364,7 +336,6 @@ def test_model_forward_fft_gradient(which, eps):
 #    Metric: cosine similarity + gradnorm ratio. Auto-skipped without CUDA.
 # =============================================================================
 @pytest.mark.cuda
-@pytest.mark.skipif(not _HAS_CUDA, reason="Triton kernels require CUDA")
 def test_triton_sf_iso_matches_eager_cosine():
     """DS isotropic Triton kernel gradient == eager autograd (CUDA float32)."""
     from torchref.base.direct_summation.dispatch import ds_iso
@@ -388,7 +359,6 @@ def test_triton_sf_iso_matches_eager_cosine():
 
 
 @pytest.mark.cuda
-@pytest.mark.skipif(not _HAS_CUDA, reason="Triton kernels require CUDA")
 def test_triton_sf_aniso_matches_eager_cosine():
     """DS anisotropic Triton kernel gradient == eager autograd (CUDA float32)."""
     from torchref.base.direct_summation.dispatch import ds_aniso
@@ -411,7 +381,6 @@ def test_triton_sf_aniso_matches_eager_cosine():
 
 
 @pytest.mark.cuda
-@pytest.mark.skipif(not _HAS_CUDA, reason="Triton kernels require CUDA")
 def test_triton_gaussian_xray_matches_eager_cosine():
     """Gaussian X-ray Triton kernel gradient == eager autograd (CUDA float32)."""
     dev = "cuda"
@@ -433,7 +402,6 @@ def test_triton_gaussian_xray_matches_eager_cosine():
 
 
 @pytest.mark.cuda
-@pytest.mark.skipif(not _HAS_CUDA, reason="Triton kernels require CUDA")
 def test_triton_bond_matches_eager_cosine():
     """Bond restraint Triton kernel gradient == eager autograd (CUDA float32)."""
     dev = "cuda"

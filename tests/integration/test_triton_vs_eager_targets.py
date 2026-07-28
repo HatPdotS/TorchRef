@@ -150,8 +150,6 @@ def _1daw_pair(pdb_dir, mtz_dir):
 @pytest.fixture(scope="module")
 def gpu_refinement(_1daw_pair):
     """Build a CUDA refinement once for the whole module."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
     from torchref import LBFGSRefinement
 
     device = torch.device("cuda")
@@ -227,8 +225,6 @@ def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
     a constructor argument. (The default 'ml' σ_A target is eager-only, so
     it has no Triton path to compare.)
     """
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
     from torchref import LBFGSRefinement
     from torchref.utils import Engine, use_engine
 
@@ -267,8 +263,6 @@ def test_planarity_triton_per_atom_sigma(n_atoms):
     non-uniform per-atom sigmas the old kernel diverged badly (>50% loss
     error). This pins eager == Triton for non-uniform sigmas.
     """
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
     from torchref.base.targets.planarity import (
         _planarity_math_eager,
         planarity_math,
@@ -308,8 +302,6 @@ def test_geometry_degenerate_finite_grads():
     singularities). Both backends are now floored with EPS so the gradient is
     finite (CPU == GPU behavior), avoiding NaN-poisoned refinement steps.
     """
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
     from torchref.base.targets.angle import angle_math
     from torchref.base.targets.bond import bond_math
     from torchref.base.targets.torsion import torsion_omega_math
@@ -414,8 +406,6 @@ def test_eager_gpu_hessian_iso(tmp_path):
     torch (scatter_add) path, which composes under autograd. A Hessian-vector
     product through ``ModelFT.forward`` must then match finite differences.
     """
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
     import itertools
 
     from torchref.config import device, dtypes
@@ -454,8 +444,6 @@ def test_eager_gpu_hessian_iso(tmp_path):
 @pytest.mark.integration
 def test_eager_gpu_hessian_aniso(pdb_dir):
     """Same as above but for anisotropic ADPs (real ANISOU structure)."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
     import itertools
 
     from torchref.config import dtypes

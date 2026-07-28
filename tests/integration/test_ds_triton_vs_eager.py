@@ -25,9 +25,10 @@ def _rel(a, b):
 
 @pytest.fixture
 def cuda():
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for the Triton DS kernels")
-    return torch.device("cuda")
+    # No availability check: the module-level ``cuda`` marker is the only gate
+    # (see conftest.pytest_collection_modifyitems). A second check here could
+    # only turn a forgotten marker into a silent pass.
+    return torch.device("cuda", 0)
 
 
 def _asym_loss(F, wr, wi):

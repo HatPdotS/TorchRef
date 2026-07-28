@@ -76,6 +76,7 @@ from .triton_dispatch import (
     Engine,
     get_engine,
     set_engine,
+    should_use_metal,
     should_use_triton,
     triton_available,
     use_engine,
@@ -132,4 +133,5 @@ __all__ = [
     "use_engine",
     "triton_available",
     "should_use_triton",
+    "should_use_metal",
 ]

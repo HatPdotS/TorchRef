@@ -221,3 +221,42 @@ class TestSigmaAOnRealData:
         refinement.xray_target_work.forward().backward()
         xyz = refinement.xray_target_work._model.xyz.refinable_params
         assert xyz.grad is not None and torch.isfinite(xyz.grad).all()
+
+
+@pytest.mark.unit
+def test_epsilon_from_hkl_returns_on_hkl_device():
+    """``epsilon_from_hkl`` must answer on ``hkl``'s device, not the spacegroup's.
+
+    ``SpaceGroup.apply_to_hkl`` moves its input onto the symmetry matrices'
+    device, so a spacegroup built elsewhere than the reflection data would
+    otherwise either raise inside the ``Hs == h0`` comparison or hand back a
+    tensor the caller cannot multiply against its per-reflection data.
+    """
+    from torchref.base.targets.xray_ml_sigmaa import epsilon_from_hkl
+    from torchref.symmetry import SpaceGroup
+
+    hkl = torch.tensor([[1, 0, 0], [0, 2, 0], [1, 1, 1]], dtype=torch.int32)
+    sg = SpaceGroup("P 21 21 21", device="cpu")
+
+    eps = epsilon_from_hkl(hkl, sg)
+    assert eps.device == hkl.device
+    assert eps.shape == (3,)
+    assert (eps >= 1).all()
+
+    # No spacegroup: the early-return path must honour the same contract.
+    assert epsilon_from_hkl(hkl, None).device == hkl.device
+
+
+@pytest.mark.mps
+def test_epsilon_from_hkl_cross_device():
+    """hkl on the accelerator, spacegroup on CPU: still answers on hkl's device."""
+    from torchref.base.targets.xray_ml_sigmaa import epsilon_from_hkl
+    from torchref.symmetry import SpaceGroup
+
+    hkl = torch.tensor(
+        [[1, 0, 0], [0, 2, 0], [1, 1, 1]], dtype=torch.int32, device="mps"
+    )
+    sg = SpaceGroup("P 21 21 21", device="cpu")
+    eps = epsilon_from_hkl(hkl, sg)
+    assert eps.device.type == "mps"
+    assert (eps.cpu() >= 1).all()

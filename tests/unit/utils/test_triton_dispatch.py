@@ -7,6 +7,7 @@ from torchref.utils import (
     Engine,
     get_engine,
     set_engine,
+    should_use_metal,
     should_use_triton,
     triton_available,
     use_engine,
@@ -84,3 +85,79 @@ def test_should_use_triton_reads_global_engine_by_default():
         assert should_use_triton(torch.zeros(3)) is False
     finally:
         set_engine(prev)
+
+
+# ---------------------------------------------------------------------------
+# Engine.METAL / should_use_metal
+#
+# All CPU-safe, so they run on every host: the point is the *strict* contract,
+# which is observable without an accelerator because "wrong device" is one of
+# the conditions that must raise.
+# ---------------------------------------------------------------------------
+
+
+def test_metal_engine_roundtrip():
+    prev = get_engine()
+    try:
+        set_engine(Engine.METAL)
+        assert get_engine() is Engine.METAL
+    finally:
+        set_engine(prev)
+
+
+def test_should_use_triton_false_under_metal():
+    """METAL must not leak into the Triton gate.
+
+    Before the explicit-AUTO tail below, ``should_use_triton`` ended in an
+    implicit ``else``, so a new member fell through and selected Triton -- on a
+    CUDA host, ``Engine.METAL`` would have run the Triton kernel.
+    """
+    assert should_use_triton(torch.zeros(3), engine=Engine.METAL) is False
+
+
+def test_should_use_triton_rejects_unknown_engine():
+    """An unhandled member must fail loudly rather than silently pick Triton."""
+
+    class _NotAnEngine:
+        pass
+
+    with pytest.raises(ValueError, match="unhandled engine"):
+        should_use_triton(torch.zeros(3), engine=_NotAnEngine())
+
+
+def test_should_use_metal_rejects_unknown_engine():
+    class _NotAnEngine:
+        pass
+
+    with pytest.raises(ValueError, match="unhandled engine"):
+        should_use_metal(torch.zeros(3), engine=_NotAnEngine())
+
+
+@pytest.mark.parametrize("engine", [Engine.EAGER, Engine.TRITON])
+def test_should_use_metal_false_for_non_metal_engines(engine):
+    assert should_use_metal(torch.zeros(3), engine=engine) is False
+
+
+def test_should_use_metal_false_on_cpu_under_auto():
+    """AUTO never raises -- it just declines the Metal path off MPS."""
+    assert should_use_metal(torch.zeros(3), engine=Engine.AUTO) is False
+
+
+def test_should_use_metal_raises_on_cpu_under_metal():
+    """Forcing METAL on a non-MPS tensor is an error, mirroring TRITON."""
+    with pytest.raises(RuntimeError, match="requires MPS float32"):
+        should_use_metal(torch.zeros(3), engine=Engine.METAL)
+
+
+def test_should_use_metal_raises_on_wrong_dtype_under_metal():
+    """A forced engine must not silently downcast: float64 has no Metal kernel."""
+    with pytest.raises(RuntimeError, match="requires MPS float32"):
+        should_use_metal(torch.zeros(3, dtype=torch.float64), engine=Engine.METAL)
+
+
+def test_should_use_metal_skips_none_but_still_checks_real_tensors():
+    """``None`` entries are optional inputs and are skipped, but a real tensor
+    beside them is still probed -- host-independent, since a CPU tensor is
+    wrong for Metal everywhere."""
+    with pytest.raises(RuntimeError, match="requires MPS float32"):
+        should_use_metal(None, torch.zeros(3), None, engine=Engine.METAL)

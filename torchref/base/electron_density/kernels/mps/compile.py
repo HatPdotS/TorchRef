@@ -5,9 +5,11 @@ Mirrors the memoize / permanent-failure / graceful-fallback structure of
 in-process ``torch.mps.compile_shader`` call -- no ninja, build directory, or
 file locking, since PyTorch caches the compiled pipeline-state objects itself.
 
-``mps_kernels_available()`` is the gate the dispatcher checks; it returns False
-(and the caller falls back to the portable plain splat) whenever MPS is absent,
-``compile_shader`` is missing (torch < 2.9), or the shader fails to build.
+``mps_kernels_available()`` is what ``torchref.utils.should_use_metal`` consults;
+it returns False whenever MPS is absent, ``compile_shader`` is missing
+(torch < 2.9), or the shader fails to build. Under ``Engine.AUTO`` the caller
+then falls back to the portable plain splat; under ``Engine.METAL`` it raises
+instead, quoting :func:`last_error`.
 """
 
 from __future__ import annotations

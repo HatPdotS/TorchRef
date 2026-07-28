@@ -4,9 +4,9 @@ Central electron density building, dispatched solely by the shared ``Engine``.
 Every atom is splatted at its own per-atom truncation radius
 (``N_sigma * sigma_eff``, with ``N_sigma = torchref.sigma_cutoff_ed``); there is
 no single global splat radius. The capability-based ``Engine`` in
-:mod:`torchref.utils.triton_dispatch` (AUTO/TRITON/EAGER) is the *only* switch
-selecting which variable-radius kernel runs — there is no environment-variable
-dispatch and no parallel "tier" knobs:
+:mod:`torchref.utils.triton_dispatch` (AUTO/TRITON/METAL/EAGER) is the *only*
+switch selecting which variable-radius kernel runs — there is no
+environment-variable dispatch and no parallel "tier" knobs:
 
 - ``Engine.AUTO`` — fastest available per device, all variable-radius:
   CUDA+float32 -> the work-queue Triton kernels
@@ -24,6 +24,10 @@ dispatch and no parallel "tier" knobs:
   ``with use_engine(Engine.EAGER): ...``.
 - ``Engine.TRITON`` — force the CUDA work-queue Triton kernel (raises if not
   CUDA+float32).
+- ``Engine.METAL`` — force the native Metal kernel (raises if not MPS+float32,
+  or if the shader did not compile). Use it to benchmark or test the Metal path:
+  under ``AUTO`` a broken kernel degrades silently to the portable splat, so a
+  comparison against ``EAGER`` would pass while measuring nothing.
 
 The production variable-radius splats live in
 ``kernels/cuda/variable_radius.py`` and ``kernels/cpu/variable_radius.py``; the
@@ -40,7 +44,12 @@ from typing import Optional
 import torch
 
 from torchref.config import get_float_dtype, get_sigma_cutoff_ed
-from torchref.utils.triton_dispatch import Engine, get_engine, should_use_triton
+from torchref.utils.triton_dispatch import (
+    Engine,
+    get_engine,
+    should_use_metal,
+    should_use_triton,
+)
 
 # --- Shared splat helpers (re-imported to preserve this namespace; reused by the
 # variable-radius kernels and, for _get_radius_offsets, by scaling/solvent.py) ---
@@ -100,9 +109,10 @@ def build_electron_density(
     ``N_sigma = torchref.sigma_cutoff_ed``) via the per-atom variable-radius
     kernels: the CUDA float32 work-queue kernels
     (``WorkQueueGridDensity{,Aniso}``) under ``Engine.AUTO``/``Engine.TRITON``,
-    the grouped-separable variable-radius splat on CPU+AUTO, and the portable
-    plain-scatter variable-radius splat everywhere else (``Engine.EAGER``, CUDA
-    float64, MPS).
+    the grouped-separable variable-radius splat on CPU+AUTO, the native Metal
+    kernels on MPS+float32 under ``Engine.AUTO``/``Engine.METAL``, and the
+    portable plain-scatter variable-radius splat everywhere else
+    (``Engine.EAGER``, CUDA/MPS float64).
 
     Parameters
     ----------
@@ -209,8 +219,10 @@ def _add_isotropic(
       under AUTO it falls through to the portable splat; under ``Engine.TRITON``
       it raises (never silently degrade).
     - CPU + float32 + AUTO -> the fast C++-scatter grouped-separable splat.
-    - MPS + float32 + AUTO -> the native Metal kernel (``add_isotropic_mps_var``);
-      falls through to the portable splat if the shader is unavailable.
+    - ``should_use_metal`` (MPS + float32 + compiled shader, engine AUTO/METAL)
+      -> the native Metal kernel (``add_isotropic_mps_var``). Mirrors the Triton
+      branch: on kernel failure under AUTO it falls through to the portable
+      splat; under ``Engine.METAL`` it raises (never silently degrade).
     - Everything else (``Engine.EAGER`` on any device, CUDA/MPS float64) -> the
       portable plain-``scatter_add`` grouped splat: identical per-atom radius,
       double-differentiable, float64-capable, device-agnostic.
@@ -255,26 +267,23 @@ def _add_isotropic(
             density_map, xyz, adp, occ, A, B,
             inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
         )
-    # Native Metal splat on Apple-silicon GPUs (float32 only). Falls through to
-    # the portable plain splat if the shader is unavailable or fails.
-    if (
-        get_engine() is Engine.AUTO
-        and density_map.device.type == "mps"
-        and density_map.dtype == torch.float32
-    ):
-        from torchref.base.electron_density.kernels.mps import (
-            add_isotropic_mps_var,
-            mps_kernels_available,
-        )
+    # Native Metal splat on Apple-silicon GPUs (float32 only). ``should_use_metal``
+    # owns the device/dtype/availability decision, so an unavailable shader under
+    # ``Engine.METAL`` raises there rather than slipping past this gate.
+    # Import stays function-local: it loads the MSL source, which no other
+    # platform should pay for.
+    if should_use_metal(density_map, xyz, adp, occ, A, B):
+        from torchref.base.electron_density.kernels.mps import add_isotropic_mps_var
 
-        if mps_kernels_available():
-            try:
-                return add_isotropic_mps_var(
-                    density_map, xyz, adp, occ, A, B,
-                    inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
-                )
-            except Exception:
-                pass  # fall through to the portable splat
+        try:
+            return add_isotropic_mps_var(
+                density_map, xyz, adp, occ, A, B,
+                inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
+            )
+        except Exception:
+            if get_engine() is Engine.METAL:
+                raise
+            # AUTO: fall through to the portable splat
     return add_isotropic_plain_var(
         density_map, xyz, adp, occ, A, B,
         inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
@@ -300,8 +309,9 @@ def _add_anisotropic(
 
     CUDA+float32 (engine permitting) -> ``WorkQueueGridDensityAniso``. CPU +
     float32 + AUTO -> the fast C++-scatter grouped box-splat
-    ``add_anisotropic_cpu_var``. MPS + float32 + AUTO -> the native Metal kernel
-    ``add_anisotropic_mps_var`` (falls through if unavailable). Everything else
+    ``add_anisotropic_cpu_var``. MPS + float32 + AUTO/METAL (via
+    ``should_use_metal``) -> the native Metal kernel ``add_anisotropic_mps_var``;
+    falls through under AUTO, raises under ``Engine.METAL``. Everything else
     (``Engine.EAGER`` on any device, CUDA/MPS float64) -> the portable
     plain-``scatter_add`` box-splat ``add_anisotropic_plain_var`` (double-diff,
     float64-capable, device-agnostic). All paths use the per-atom radius
@@ -344,26 +354,21 @@ def _add_anisotropic(
             real_space_grid, density_map, xyz, u, occ, A, B,
             inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
         )
-    # Native Metal splat on Apple-silicon GPUs (float32 only). Falls through to
-    # the portable plain splat if the shader is unavailable or fails.
-    if (
-        get_engine() is Engine.AUTO
-        and density_map.device.type == "mps"
-        and density_map.dtype == torch.float32
-    ):
-        from torchref.base.electron_density.kernels.mps import (
-            add_anisotropic_mps_var,
-            mps_kernels_available,
-        )
+    # Native Metal splat on Apple-silicon GPUs (float32 only). See the iso path:
+    # ``should_use_metal`` owns device/dtype/availability, and the import is
+    # function-local so only Apple silicon loads the MSL source.
+    if should_use_metal(density_map, xyz, u, occ, A, B):
+        from torchref.base.electron_density.kernels.mps import add_anisotropic_mps_var
 
-        if mps_kernels_available():
-            try:
-                return add_anisotropic_mps_var(
-                    real_space_grid, density_map, xyz, u, occ, A, B,
-                    inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
-                )
-            except Exception:
-                pass  # fall through to the portable splat
+        try:
+            return add_anisotropic_mps_var(
+                real_space_grid, density_map, xyz, u, occ, A, B,
+                inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
+            )
+        except Exception:
+            if get_engine() is Engine.METAL:
+                raise
+            # AUTO: fall through to the portable splat
     return add_anisotropic_plain_var(
         real_space_grid, density_map, xyz, u, occ, A, B,
         inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,

@@ -146,3 +146,34 @@ class TestCollectionDifferenceMismatchedHKL:
         target = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
         loss = target.forward()
         assert torch.isfinite(loss)
+
+
+@pytest.mark.unit
+def test_reindex_preserves_non_per_reflection_u_aniso():
+    """``U_aniso`` must be exempt by *name*, not by a shape coincidence.
+
+    The reindexer decides "is this per-reflection?" by ``shape[0] == n_hkl``.
+    That heuristic collides when the dataset happens to have exactly as many
+    reflections as the field is long -- ``U_aniso`` is ``(6,)``, so a
+    6-reflection dataset would have it gathered and reordered as if it were
+    per-reflection data.
+    """
+    # Exactly 6 reflections: the same length as U_aniso.
+    hkl = torch.tensor(
+        [[1, 0, 1], [0, 1, 1], [0, 0, 1], [1, 1, 1], [1, 0, 2], [0, 1, 2]],
+        dtype=torch.int32,
+    )
+    data = _synthetic(hkl)
+    u_aniso = torch.tensor([0.1, 0.2, 0.3, 0.01, 0.02, 0.03])
+    data.U_aniso = u_aniso.clone().to(device=data.device)
+    assert len(data.hkl) == data.U_aniso.shape[0] == 6, "precondition: lengths collide"
+
+    # Reindex onto a different HKL ordering/size; U_aniso must not follow.
+    ref_hkl = torch.tensor(
+        [[0, 1, 2], [1, 0, 2], [1, 1, 1], [0, 0, 1], [0, 1, 1], [1, 0, 1], [2, 0, 1]],
+        dtype=torch.int32,
+    )
+    data.validate_hkl(ref_hkl.to(data.device))
+
+    assert data.U_aniso.shape == (6,), f"U_aniso reshaped to {tuple(data.U_aniso.shape)}"
+    assert torch.allclose(data.U_aniso.cpu(), u_aniso), "U_aniso values were permuted"

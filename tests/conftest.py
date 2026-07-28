@@ -100,18 +100,42 @@ def pytest_collection_modifyitems(config, items):
     skipped with a reason naming the missing backend.
 
     ``--run-cuda`` / ``--run-mps`` invert the *absence* case from skip to
-    failure, for CI that expects a specific backend and would otherwise go
-    green on a runner that quietly lost its GPU.
+    error, for CI that expects a specific backend and would otherwise go green
+    on a runner that quietly lost its GPU. They do it by *not* adding the skip
+    marker, so the backend tests run and fail with the real error from torch.
+
+    This function is the **only** place that decides what runs. Tests must not
+    re-check availability themselves: a second layer of ``pytest.skip`` can only
+    mask a forgotten marker, and turns "this host cannot run it" into a silent
+    pass instead of the visible skip or the real error.
     """
     has_cuda = _cuda_available()
     has_mps = _mps_available()
 
+    # Forced-but-absent is a warning, not a ``pytest.UsageError``. A UsageError
+    # aborts the entire session -- every unrelated test with it -- and says
+    # nothing about which backend call actually broke. Warning and letting the
+    # marked tests run gives a precise per-test failure and still runs the rest
+    # of the suite. UserWarning, not DeprecationWarning: pytest.ini filters the
+    # latter (see the --run-gpu note in pytest_configure).
     require_cuda = config.getoption("--run-cuda")
     require_mps = config.getoption("--run-mps")
     if require_cuda and not has_cuda:
-        raise pytest.UsageError("--run-cuda given but no CUDA device is available")
+        warnings.warn(
+            "--run-cuda given but no CUDA device is available: running the "
+            "cuda-marked tests anyway so they error with the real backend "
+            "error instead of being skipped.",
+            UserWarning,
+            stacklevel=2,
+        )
     if require_mps and not has_mps:
-        raise pytest.UsageError("--run-mps given but MPS is not available")
+        warnings.warn(
+            "--run-mps given but MPS is not available: running the mps-marked "
+            "tests anyway so they error with the real backend error instead of "
+            "being skipped.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     skip_slow = pytest.mark.skip(reason="Need --run-slow option to run")
     skip_openmm = pytest.mark.skip(reason="OpenMM not installed (pip install '.[amber]')")
@@ -127,9 +151,9 @@ def pytest_collection_modifyitems(config, items):
         # ``cuda_only`` is the retired spelling of ``cuda``.
         wants_cuda = "cuda" in keywords or "cuda_only" in keywords
         wants_mps = "mps" in keywords
-        if wants_cuda and not has_cuda:
+        if wants_cuda and not has_cuda and not require_cuda:
             item.add_marker(skip_cuda)
-        if wants_mps and not has_mps:
+        if wants_mps and not has_mps and not require_mps:
             item.add_marker(skip_mps)
         # A bare ``gpu`` mark means "any accelerator"; a test that also names a
         # specific backend has already been gated on the stricter condition.
@@ -218,12 +242,39 @@ def cpu_device() -> torch.device:
 def gpu_device() -> torch.device:
     """GPU torch device (only use with @pytest.mark.gpu).
 
-    Prefers CUDA, falls back to MPS; skips if neither is available.
+    Prefers CUDA, falls back to MPS; skips if neither is available. Prefer the
+    backend-specific ``cuda_device`` / ``mps_device`` below when a test needs one
+    particular backend -- this fixture's preference order means a
+    ``cuda``-marked test asking for it on a dual-backend host could be handed
+    MPS, which is why the MPS tests used to carry a ``type != 'mps'`` skip to
+    undo it.
     """
     accel = _accelerator()
     if accel is None:
         pytest.skip("No accelerator (CUDA or MPS) on this host")
     return accel
+
+
+@pytest.fixture(scope="session")
+def cuda_device() -> torch.device:
+    """Canonical CUDA device for ``cuda``-marked tests.
+
+    Deliberately unguarded. What runs is decided by the ``cuda`` marker in
+    :func:`pytest_collection_modifyitems` and nowhere else, so this fixture does
+    not re-check availability: on a host without CUDA the test is *meant* to
+    error with the real backend error rather than be quietly skipped here.
+    """
+    return torch.device("cuda", 0)
+
+
+@pytest.fixture(scope="session")
+def mps_device() -> torch.device:
+    """Canonical MPS device for ``mps``-marked tests.
+
+    Unguarded for the same reason as :func:`cuda_device` -- the ``mps`` marker
+    owns the decision.
+    """
+    return torch.device("mps", 0)
 
 
 def _accelerator() -> "torch.device | None":

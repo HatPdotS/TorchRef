@@ -424,12 +424,21 @@ class ReflectionData(CrystalDataset, DebugMixin):
             name = f.name
             if name == "hkl" or name in derived:
                 continue
+            # Declared non-per-reflection fields are exempt by *name*, not by
+            # shape. The shape test below is a heuristic and collides whenever
+            # n_src equals the field's own length -- ``U_aniso`` is (6,), so a
+            # 6-reflection dataset would have it gathered as if it were
+            # per-reflection. ``_assert_per_reflection_consistent`` and
+            # ``reduce_to_spacegroup`` already exempt by name; this keeps all
+            # three routines consistent.
+            if name in self._NON_PER_REFLECTION_TENSORS:
+                continue
             val = getattr(self, name)
             if not isinstance(val, torch.Tensor):
                 continue
             if not (val.shape and val.shape[0] == n_src):
-                # Non-per-reflection tensor (e.g. U_aniso (6,)): leave target's
-                # own value untouched (fresh default when target is new).
+                # Non-per-reflection tensor: leave target's own value untouched
+                # (a fresh default when target is a new instance).
                 continue
             if name == "hkl_anomalous":
                 # Present rows keep their signed (anomalous) index; missing rows
@@ -2233,7 +2242,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
             if val is None:
                 continue
             if isinstance(val, torch.Tensor):
-                if val.shape and val.shape[0] == n_refl:
+                # Exempt by name first: the shape test is a heuristic that
+                # collides when n_refl equals the field's own length (see
+                # ``_reindex_per_reflection``).
+                if f.name in self._NON_PER_REFLECTION_TENSORS:
+                    setattr(selected, f.name, val.clone())
+                elif val.shape and val.shape[0] == n_refl:
                     setattr(selected, f.name, val[indices])
                 else:
                     # Non-matching tensor (e.g. U_aniso shape (6,)): copy as-is

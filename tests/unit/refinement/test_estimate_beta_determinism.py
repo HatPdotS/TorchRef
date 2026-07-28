@@ -47,7 +47,7 @@ def _hard_inputs(dtype=torch.float32):
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.cuda
 class TestEstimateBetaGPUDeterminism:
     def test_gpu_bit_identical_across_calls(self):
         """Same input -> identical beta on every GPU call (was: 15x spread)."""

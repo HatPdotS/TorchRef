@@ -2,12 +2,15 @@
 
 Native Metal kernels (compiled at runtime via ``torch.mps.compile_shader``) for
 the density splat on Apple-silicon GPUs, replacing the portable eager splat that
-dominates fcalc time on MPS. Gated behind ``device.type == 'mps'`` in
-``electron_density.main``; every other platform is unaffected.
+dominates fcalc time on MPS. Selection goes through
+``torchref.utils.should_use_metal``, which gates on MPS + float32 + a compiled
+shader; ``Engine.METAL`` forces the path and raises rather than degrading.
+Every other platform is unaffected.
 """
 
 from torchref.base.electron_density.kernels.mps.compile import (
     clear_cache,
+    last_error,
     mps_kernels_available,
     warmup,
 )
@@ -22,4 +25,5 @@ __all__ = [
     "mps_kernels_available",
     "warmup",
     "clear_cache",
+    "last_error",
 ]

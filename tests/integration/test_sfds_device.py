@@ -42,8 +42,6 @@ def test_sfds_same_device_cpu():
 @pytest.mark.integration
 def test_sfds_hkl_on_different_device():
     """hkl on CPU while the module + atoms are on CUDA must not crash."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
     cuda = torch.device("cuda")
     cell = Cell(_CELL, device=cuda)
     sf = SfDS(cell, spacegroup="P212121").to(cuda)

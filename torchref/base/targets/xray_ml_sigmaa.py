@@ -112,6 +112,10 @@ def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
     Mirrors ``ReciprocalSymmetry.get_epsilon`` (Friedel-aware) but works directly
     on the scattered HKL list. Returns ones if ``spacegroup`` is None or lacks
     ``apply_to_hkl``.
+
+    Always returns on ``hkl.device``, whatever device the space group's symmetry
+    matrices live on: the caller multiplies this against per-reflection data
+    sitting beside ``hkl``.
     """
     n = hkl.shape[0]
     float_dtype = get_float_dtype()
@@ -123,13 +127,19 @@ def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
         # there raises. Symmetry arithmetic on Miller indices is exact in
         # float32 (integer-valued rotation matrices, small indices), so the
         # exact `==` comparisons below remain valid.
-        h = hkl.to(float_dtype)
+        #
+        # ``apply_to_hkl`` moves its input onto the matrices' device, so build
+        # ``h`` there too -- otherwise ``Hs`` and ``h0`` land on different
+        # devices and the comparisons below raise. The space group wins for the
+        # arithmetic; the result is handed back on the caller's device.
+        sym_device = getattr(spacegroup, "matrices", hkl).device
+        h = hkl.to(device=sym_device, dtype=float_dtype)
         Hs = spacegroup.apply_to_hkl(h)  # (N,3,ops)
         h0 = h.unsqueeze(-1)  # (N,3,1)
         same = (Hs == h0).all(dim=1)
         friedel = (Hs == -h0).all(dim=1)
         eps = (same | friedel).sum(dim=1).clamp(min=1).to(float_dtype)
-    return eps
+    return eps.to(hkl.device)
 
 
 # =====================================================================

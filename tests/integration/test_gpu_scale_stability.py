@@ -14,11 +14,9 @@ import torch
 
 
 @pytest.mark.integration
-@pytest.mark.gpu
+@pytest.mark.cuda
 @pytest.mark.slow
 def test_gpu_5cycle_refinement_does_not_collapse_and_matches_cpu(pdb_dir, mtz_dir):
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
     pdb = pdb_dir / "1DAW.pdb"
     mtz = mtz_dir / "1DAW.mtz"
     if not pdb.exists() or not mtz.exists():
