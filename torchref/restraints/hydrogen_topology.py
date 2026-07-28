@@ -17,7 +17,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from torchref.config import dtypes, get_default_device
+from torchref.config import dtypes, normalize_device
+from torchref.utils.device_resolution import resolve_device
 from torchref.utils.device_mixin import DeviceMixin
 
 # ---------------------------------------------------------------------------
@@ -83,9 +84,14 @@ class HydrogenTopology(DeviceMixin, nn.Module):
     ``build_h_candidate_pairs`` and checked via :attr:`has_candidates`.
     """
 
-    def __init__(self):
+    def __init__(self, device=None):
         super().__init__()
-        # Buffers are registered by build_hydrogen_topology()
+        # Buffers are registered later by build_hydrogen_topology(), so this
+        # object is tensor-free at construction. The tracker still has to exist:
+        # ``DeviceMixin._refresh_device_trackers`` only maintains attributes
+        # already present in ``__dict__``, and callers reconcile against
+        # ``h_topo.device`` before attaching buffers to it.
+        self.device = normalize_device(device)
 
     @property
     def n_hydrogens(self) -> int:
@@ -250,8 +256,7 @@ def build_hydrogen_topology(
     HydrogenTopology
         Module with registered buffer tensors.
     """
-    if device is None:
-        device = get_default_device()
+    device = normalize_device(device)
     cache = _load_cif_hydrogen_info(pdb, verbose)
 
     model_names = pdb["name"].astype(str).str.strip().values
@@ -366,7 +371,9 @@ def build_hydrogen_topology(
                 acc_chainid_enc.append(chainid_enc)
                 acc_resseq.append(resseq)
 
-    topo = HydrogenTopology()
+    # Seed the tracker with the device its buffers are about to be built on,
+    # so a later ``resolve_device(h_topo, ...)`` sees the truth.
+    topo = HydrogenTopology(device=device)
     n_h_total = len(acc_parent_idx)
     fdtype = dtypes.float
 
@@ -719,8 +726,10 @@ def build_h_candidate_pairs(
     device : torch.device
     verbose : int
     """
-    if device is None:
-        device = get_default_device()
+    # Buffers are registered onto ``h_topo`` below, so follow it rather than
+    # the global default -- otherwise they attach to a module living somewhere
+    # else.
+    device = resolve_device(h_topo, device=device)
     n_h = h_topo.n_hydrogens
     n_heavy = len(pdb)
 

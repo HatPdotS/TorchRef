@@ -292,10 +292,9 @@ def setup_ded_context(
     from torchref.symmetry.grid_utils import calculate_optimal_grid_size
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
 
-    if device is None:
-        from torchref.config import get_default_device
+    from torchref.config import normalize_device
 
-        device = get_default_device()
+    device = normalize_device(device)
 
     # Load and scale
     data_dark = load_reflection_data(

@@ -12,6 +12,7 @@ import torch
 from torch import nn
 
 from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.utils.device_resolution import resolve_device
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
@@ -104,12 +105,12 @@ class MixedModel(DeviceMovementMixin, nn.Module):
 
         self.verbose = verbose
 
-        # Infer device from first model if not specified
-        if device is None:
-            device = models[0].device
+        # First-wins reconciliation across the supplied models, and the move
+        # itself: ``resolve_device`` warns when they disagree, which the manual
+        # loop this replaces did silently.
+        device = resolve_device(*models, device=device)
 
         # Store models as ModuleList for proper PyTorch handling
-        models = [model.to(device=device) for model in models]
         self.models = nn.ModuleList(models)
 
         # Validate model compatibility

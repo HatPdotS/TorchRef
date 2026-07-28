@@ -14,7 +14,7 @@ Space groups can be specified as strings, integers (1-230), or gemmi.SpaceGroup 
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype, normalize_device
 from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -57,8 +57,12 @@ def MapSymmetry(
     """
     if dtype_float is None:
         dtype_float = get_float_dtype()
-    if device is None:
-        device = get_default_device()
+    # ``cell_params`` is documented as a tensor, so follow it when no device is
+    # given rather than jumping to the global default and leaving the caller's
+    # cell behind.
+    if device is None and isinstance(cell_params, torch.Tensor):
+        device = cell_params.device
+    device = normalize_device(device)
     # Check grid compatibility
     symmetry = SpaceGroup(space_group, dtype=dtype_float, device=device)
     compat = symmetry.check_grid_compatibility(map_shape)
@@ -117,14 +121,24 @@ class MapSymmetryDirect(DeviceMixin, nn.Module):
         super().__init__()
         if dtype_float is None:
             dtype_float = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        if device is None and isinstance(cell_params, torch.Tensor):
+            device = cell_params.device
         self.dtype_float = dtype_float
         self.space_group = space_group
         self.map_shape = tuple(map_shape)
-        self.cell_params = cell_params
         self.verbose = verbose
-        self.device = device
+        self.device = normalize_device(device)
+        # Store ``cell_params`` *on* this module's device. It used to be kept
+        # exactly as handed in -- a plain attribute, so ``DeviceMixin`` could
+        # neither see it nor repair it, and ``self.device`` could disagree with
+        # it indefinitely.
+        if isinstance(cell_params, torch.Tensor):
+            cell_params = cell_params.to(device=self.device, dtype=self.dtype_float)
+        else:
+            cell_params = torch.as_tensor(
+                cell_params, device=self.device, dtype=self.dtype_float
+            )
+        self.cell_params = cell_params
 
         self.symmetry = SpaceGroup(
             space_group, dtype=self.dtype_float, device=self.device

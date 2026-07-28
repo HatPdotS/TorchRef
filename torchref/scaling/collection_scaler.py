@@ -26,7 +26,7 @@ from torchref.base.targets.xray_ml_sigmaa import (
     epsilon_from_hkl,
     ml_xray_loss_beta_math,
 )
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype
 from torchref.scaling.scaler_base import ScalerBase
 from torchref.scaling.solvent import SolventModel
 from torchref.utils.utils import ModuleReference
@@ -80,10 +80,12 @@ class CollectionScaler(ScalerBase):
         verbose: int = 1,
         device: torch.device = None,
     ):
-        if device is None:
-            device = get_default_device()
         # Bind to the dark/reference dataset for bins and scattering vectors
         dark_data = dataset_collection[model_collection.dark_key]
+        # Forward ``device`` through rather than resolving the global default
+        # here: a resolved default arrives at ``ScalerBase`` as an *explicit*
+        # device, which then drags ``dark_data`` onto it. Passing ``None``
+        # lets ScalerBase derive from the data, which is the point.
         super().__init__(
             data=dark_data,
             nbins=nbins,

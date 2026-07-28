@@ -257,11 +257,12 @@ class TensorMasks(DeviceMovementMixin, dict):
 
     def __init__(self, data=None, device=None):
         super().__init__()
-        if device is None:
-            from torchref.config import get_default_device
+        from torchref.config import normalize_device
 
-            device = get_default_device()
-        self.device = torch.device(device)
+        # ``normalize_device`` rather than ``torch.device(...)``: the latter
+        # keeps an un-indexed spelling ("mps"), which compares unequal to the
+        # indexed device every real tensor reports.
+        self.device = normalize_device(device)
         self._cache = None
         self._updated = True
 

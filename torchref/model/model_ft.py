@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 from torchref.base.fourier import fft, ifft
-from torchref.config import dtypes, get_default_device, get_float_dtype
+from torchref.config import dtypes, get_float_dtype, normalize_device
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
@@ -1151,8 +1151,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         # Resolve dtype/device at call time so the fallback below uses the
         # current config rather than an import-time default.
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
         if dtype_float is None:
             dtype_float = get_float_dtype()
 

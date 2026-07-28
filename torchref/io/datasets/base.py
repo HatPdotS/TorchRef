@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 import gemmi
 import torch
 
-from torchref.config import get_default_device
+from torchref.config import get_default_device, normalize_device
 from torchref.symmetry import Cell
 from torchref.utils.device_mixin import DeviceMovementMixin
 
@@ -121,9 +121,10 @@ class CrystalDataset(DeviceMovementMixin):
 
     def __post_init__(self):
         """Initialize non-field attributes after dataclass init."""
-        # Ensure device is a torch.device object
-        if isinstance(self.device, str):
-            object.__setattr__(self, "device", torch.device(self.device))
+        # Canonicalise, don't merely coerce: ``torch.device("mps")`` has no
+        # index and so compares unequal to the ``mps:0`` every tensor reports,
+        # which makes ``resolve_device``'s equality checks misfire.
+        object.__setattr__(self, "device", normalize_device(self.device))
         # Import here to avoid circular imports
         from torchref.utils.utils import TensorMasks
 
@@ -204,8 +205,7 @@ class CrystalDataset(DeviceMovementMixin):
         """
         from torchref.utils.utils import TensorMasks
 
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
 
         # Extract masks before creating object
         masks_state = state.pop("masks", {})

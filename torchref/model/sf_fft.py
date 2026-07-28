@@ -317,8 +317,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         torch.Tensor
             Real-space grid with shape (nx, ny, nz, 3).
         """
-        if device is None:
-            device = get_default_device()
+        # Forward ``device`` as-is, including ``None``. ``get_real_grid``
+        # already infers from ``fractional_matrix`` when no device is given;
+        # resolving the global default here meant it never saw ``None`` and
+        # its inference was dead code.
         return get_real_grid(
             fractional_matrix=fractional_matrix, gridsize=gridsize, device=device
         )

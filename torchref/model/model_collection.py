@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 import torch
 from torch import nn
 
-from torchref.config import get_default_device
 from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.utils.device_resolution import resolve_device
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
@@ -69,8 +69,11 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         # Normalize to handle floating point drift
         initial_fractions = [f / total for f in initial_fractions]
 
-        if device is None:
-            device = base_models[0].device if hasattr(base_models[0], "device") else get_default_device()
+        # Reconcile across *all* base models, not just the first: reading
+        # ``base_models[0].device`` left a mixed-device list unreconciled, so
+        # ``fractions_tensor`` below could land on a device the later models
+        # were not on.
+        device = resolve_device(*base_models, device=device)
 
         # Match base models' float dtype (consistent under a float64 config).
         fractions_tensor = torch.tensor(

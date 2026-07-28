@@ -474,10 +474,9 @@ class IHMReader:
                 "Call read_atom_data() first."
             )
 
-        if device is None:
-            from torchref.config import get_default_device
+        from torchref.config import normalize_device
 
-            device = get_default_device()
+        device = normalize_device(device)
 
         # Build one ModelFT per state
         base_models = []

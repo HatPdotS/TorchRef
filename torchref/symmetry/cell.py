@@ -14,8 +14,8 @@ import torch
 
 from torchref.config import (
     NYQUIST_OVERSAMPLING,
-    get_default_device,
     get_float_dtype,
+    normalize_device,
 )
 from torchref.utils.device_mixin import _NonModuleDeviceMixin
 
@@ -76,8 +76,7 @@ class Cell(_NonModuleDeviceMixin):
         """
         if dtype is None:
             dtype = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
         # Convert to tensor first to get shape
         if isinstance(data, torch.Tensor):
             tensor = data.to(dtype=dtype, device=device)

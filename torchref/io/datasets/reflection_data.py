@@ -8,7 +8,8 @@ intensities, and R-free flags.
 
 import warnings
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -17,7 +18,7 @@ from torch.nn import Parameter
 
 from torchref.base import math_torch
 from torchref.base.french_wilson import FrenchWilson
-from torchref.config import dtypes, get_default_device
+from torchref.config import dtypes, get_default_device, normalize_device
 from torchref.io import cif, mtz
 from torchref.io.datasets.base import CrystalDataset
 from torchref.symmetry import Cell, SpaceGroup
@@ -792,9 +793,14 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             Fully initialized reflection data with all cleanup applied.
         """
-        if device is None:
-            device = get_default_device()
-        data = cls(device=device, verbose=verbose)
+        # Follow the incoming tensors when no device is given, rather than
+        # the global default -- otherwise building from accelerator-resident
+        # arrays on a CPU-default host silently round-trips every one of them
+        # through host memory. ``hkl`` is a bare tensor, so read its device
+        # directly; ``resolve_device`` is for objects it can move in place.
+        if device is None and isinstance(hkl, torch.Tensor):
+            device = hkl.device
+        data = cls(device=normalize_device(device), verbose=verbose)
 
         def _prep(t: torch.Tensor) -> torch.Tensor:
             # Detach (constant data) unless the caller wants the graph preserved.
@@ -845,7 +851,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
     def load_mtz(
         self,
-        path: str,
+        path: Union[str, Path],
         column_names: Optional[dict] = None,
         french_wilson: bool = True,
         anomalous: Optional[bool] = None,
@@ -877,14 +883,18 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             Self, for method chaining.
         """
+        # ``str(path)``: gemmi's readers take a str, and the public
+        # ``torchref.io.read_mtz`` already advertises ``Union[str, Path]``, so
+        # accepting a Path here too keeps the two entry points consistent
+        # instead of failing deep inside gemmi with an argument-type error.
         reader = mtz.MTZReader(
             verbose=self.verbose, column_names=column_names, anomalous=anomalous
-        ).read(path)
+        ).read(str(path))
         return self.load(reader, french_wilson=french_wilson)
 
     def load_cif(
         self,
-        path: str,
+        path: Union[str, Path],
         data_block: Optional[str] = None,
         anomalous: Optional[bool] = None,
     ) -> "ReflectionData":
@@ -910,7 +920,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Self, for method chaining.
         """
         self.reader = cif.ReflectionCIFReader(
-            path, verbose=self.verbose, data_block=data_block, anomalous=anomalous
+            str(path), verbose=self.verbose, data_block=data_block, anomalous=anomalous
         )
         return self.load(self.reader)
 

@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 
 from torchref.base import math_torch
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype, normalize_device
 from torchref.io import cif, pdb
 from torchref.model.parameter_wrappers import (
     CholeskyMixedTensor,
@@ -151,8 +151,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # ``dtypes.float`` / ``device.current`` change is honored.
         if dtype_float is None:
             dtype_float = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
         # Configuration
         self.dtype_float = dtype_float
         self.verbose = verbose
@@ -287,7 +286,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             a space group name string, or a space group number.
         """
         if value is not None:
-            self._spacegroup = SpaceGroup(value)
+            # ``device=self.device``: SpaceGroup falls back to the global
+            # default otherwise, so setting a spacegroup on a CPU-pinned Model
+            # would silently plant accelerator-resident matrices on it.
+            self._spacegroup = SpaceGroup(value, device=self.device)
         else:
             self._spacegroup = None
 
@@ -2941,8 +2943,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         # Resolve dtype/device at call time so the fallbacks below use the
         # current config, not the import-time default.
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
         if dtype_float is None:
             dtype_float = get_float_dtype()
         # Extract metadata (non-tensor data that we handle specially)

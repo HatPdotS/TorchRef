@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 import torch
 from torch.nn import Module as nnModule
 
-from torchref.config import get_default_device
+from torchref.config import normalize_device
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
@@ -1207,8 +1207,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             print(f"Restored at R-work={rwork:.4f}, R-free={rfree:.4f}")
         """
 
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
 
         # Helper to extract submodule state from flattened state_dict
         def extract_submodule_state(state_dict: dict, prefix: str) -> dict:

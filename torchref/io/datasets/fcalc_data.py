@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 import torch
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_default_device, get_float_dtype, normalize_device
 from torchref.symmetry import Cell, SpaceGroup, SpaceGroupLike
 
 from .base import CrystalDataset
@@ -131,13 +131,21 @@ class FcalcDataset(CrystalDataset):
 
         from torchref.base.reciprocal import get_d_spacing
 
-        if device is None:
-            device = get_default_device()
+        # ``Cell`` is the unit-cell carrier: when one is handed in and no device
+        # is requested, follow it rather than the global default -- otherwise a
+        # CPU-default host silently relocates the caller's cell.
+        if device is None and isinstance(cell, Cell):
+            device = cell.device
+        device = normalize_device(device)
         if dtype is None:
             dtype = get_float_dtype()
 
         # Handle Cell input - convert to Cell object if needed
         if isinstance(cell, Cell):
+            # ``Cell.to`` is in-place, so this moves the *caller's* object when
+            # an explicit device disagrees with it. That is the documented
+            # resolve_device contract; the branch above avoids it entirely when
+            # no device was requested.
             cell_obj = cell.to(device=device)
             cell_tensor = cell_obj.data
         else:
@@ -376,8 +384,7 @@ class FcalcDataset(CrystalDataset):
         """
         from torchref.utils.utils import TensorMasks
 
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
 
         # Extract masks before creating object
         masks_state = state.pop("masks", {})

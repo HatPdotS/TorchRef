@@ -633,10 +633,9 @@ def load_model(
     ModelFT
     """
     from torchref import ModelFT
-    from torchref.config import get_default_device
+    from torchref.config import normalize_device
 
-    if device is None:
-        device = get_default_device()
+    device = normalize_device(device)
     model = ModelFT(max_res=max_res, device=device, verbose=verbose)
     suffix = Path(path).suffix.lower()
     if suffix in (".cif", ".mmcif"):
@@ -674,10 +673,9 @@ def load_reflection_data(
     ReflectionData
     """
     from torchref import ReflectionData
-    from torchref.config import get_default_device
+    from torchref.config import normalize_device
 
-    if device is None:
-        device = get_default_device()
+    device = normalize_device(device)
     data = ReflectionData(device=str(device), verbose=verbose)
     suffix = Path(path).suffix.lower()
     if suffix in (".cif",):

@@ -8,7 +8,7 @@ including axis-angle, quaternion, and Euler representations.
 import numpy as np
 import torch
 
-from torchref.config import dtypes, get_default_device, get_float_dtype
+from torchref.config import dtypes, get_float_dtype, normalize_device
 
 
 def rotate_coords_torch(coords, phi, rho):
@@ -261,8 +261,7 @@ def random_rotation_uniform(
     torch.Tensor
         Rotation matrices with shape (n, 3, 3) or (3, 3) if n=1.
     """
-    if device is None:
-        device = get_default_device()
+    device = normalize_device(device)
     if dtype is None:
         dtype = get_float_dtype()
     # Sample uniform random numbers

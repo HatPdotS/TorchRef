@@ -30,7 +30,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype, normalize_device
 from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -133,8 +133,7 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         super().__init__()
         if dtype_float is None:
             dtype_float = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
         self.dtype_float = dtype_float
         self.space_group = space_group
         self.grid_shape = tuple(grid_shape)

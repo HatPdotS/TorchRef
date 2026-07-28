@@ -19,7 +19,6 @@ from typing import Optional, TYPE_CHECKING
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device
 from torchref.io import ReflectionData
 from torchref.base.reciprocal import get_scattering_vectors
 from torchref.scaling.scaler_base import ScalerBase

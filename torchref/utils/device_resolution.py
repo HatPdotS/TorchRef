@@ -62,6 +62,17 @@ def resolve_device(
     torch.device
         The resolved device.
 
+    Raises
+    ------
+    TypeError
+        If a bare ``torch.Tensor`` (or ``nn.Parameter``) is passed. Such an
+        object satisfies the ``.device`` / ``.to()`` precondition
+        *syntactically* but violates it semantically, because
+        ``Tensor.to()`` returns a new tensor rather than moving in place --
+        so the move would be dropped without a word. Use
+        :func:`torchref.config.normalize_device` to read a device off a
+        tensor; use this function only to reconcile owning objects.
+
     Examples
     --------
     Empty call returns the configured default::
@@ -80,6 +91,17 @@ def resolve_device(
         >>> resolve_device(cuda_model, cpu_data)  # doctest: +SKIP
         device(type='cuda')
     """
+    for m in modules:
+        if isinstance(m, torch.Tensor):
+            raise TypeError(
+                "resolve_device() moves its inputs in place and returns only "
+                f"the resolved device, but a bare {type(m).__name__} was "
+                "passed. torch.Tensor.to() is out-of-place, so the move would "
+                "be silently discarded and the tensor left where it was. Pass "
+                "the object that owns the tensor, or move it yourself: "
+                "t = t.to(normalize_device(...))."
+            )
+
     if device is not None:
         resolved = _canonical(device)
         for m in modules:

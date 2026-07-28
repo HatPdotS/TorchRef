@@ -1706,8 +1706,11 @@ class OccupancyTensor(MixedTensor):
             refinable_values, requires_grad=requires_grad
         )
 
-        # Store collapsed shape
-        self.register_buffer("_shape", torch.tensor([self._collapsed_shape]))
+        # Collapsed shape is host-side metadata, not a buffer -- same reasoning
+        # as ``MixedTensor`` (a buffer gets dragged onto the accelerator by
+        # ``.to()`` and then read back with a sync, purely to recover a number
+        # we already have). ``_collapsed_shape`` already holds it as an int;
+        # the ``shape`` property below derives from it.
 
         # Pre-compute index cache to avoid boolean indexing at runtime
         self._build_index_cache()

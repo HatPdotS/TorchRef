@@ -36,7 +36,7 @@ import gemmi
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype, normalize_device
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMovementMixin
 
@@ -212,8 +212,7 @@ def get_operations_as_tensors(
     """
     if dtype is None:
         dtype = get_float_dtype()
-    if device is None:
-        device = get_default_device()
+    device = normalize_device(device)
     sg = _normalize_spacegroup(spacegroup)
 
     # Extract rotation matrices and translations from gemmi operations
@@ -692,8 +691,7 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         super(SpaceGroup, self).__init__()
         if dtype is None:
             dtype = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
         self._device = device
         self._dtype = dtype
 

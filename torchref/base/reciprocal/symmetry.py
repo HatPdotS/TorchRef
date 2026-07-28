@@ -34,7 +34,7 @@ from typing import Optional, TYPE_CHECKING
 import numpy as np
 import torch
 
-from torchref.config import get_float_dtype
+from torchref.config import canonical_device, get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 
 from .grid_operations import extract_structure_factor_from_grid
@@ -251,7 +251,12 @@ class ReciprocalSymmetryExtractor(DeviceMixin):
         grid_shape: tuple,
         device: Optional[torch.device] = None,
     ):
-        self.device = device or hkl.device
+        # ``is not None``, not ``or``: ``device=0`` means cuda:0/mps:0 and is
+        # falsy, so ``or`` silently discarded it. ``hkl`` is a bare tensor, so
+        # this reads its device rather than going through ``resolve_device``.
+        self.device = canonical_device(
+            device if device is not None else hkl.device
+        )
         self.hkl = hkl.to(device=self.device)
         self.symmetry = symmetry
         self.n_ops = symmetry.n_ops

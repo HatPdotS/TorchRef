@@ -29,7 +29,7 @@ from torchref.restraints.restraints_helper import (
     read_cif,
     read_link_definitions,
 )
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.utils import TensorDict
 from torchref.utils.device_mixin import DeviceMixin

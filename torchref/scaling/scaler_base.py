@@ -30,7 +30,7 @@ from torchref.base.targets.xray_ml_sigmaa import (
     epsilon_from_hkl,
     ml_xray_loss_beta_math,
 )
-from torchref.config import get_complex_dtype, get_default_device, get_float_dtype
+from torchref.config import get_complex_dtype, get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin

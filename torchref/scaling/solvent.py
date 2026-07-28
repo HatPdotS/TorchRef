@@ -11,9 +11,10 @@ from torchref.base import (
     ifft,
 )
 from torchref.base.electron_density.main import _get_radius_offsets
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference, TensorDict
 
 
@@ -113,8 +114,11 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         super(SolventModel, self).__init__()
         if float_type is None:
             float_type = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        # Follow the model when no device is given. ``realspace.py`` constructs
+        # a SolventModel with only a model, so falling back to the global
+        # default here put the solvent grids on a different device than the
+        # structure they are computed from.
+        device = resolve_device(model, device=device)
         self.device = device
         self.verbose = verbose
         self.float_type = float_type

@@ -13,9 +13,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-CUDA_AVAILABLE = torch.cuda.is_available()
-
-
 def _load_model_ft(pdb_file, mtz_file):
     """Helper: load a ModelFT and matching reflection data on CPU.
 
@@ -36,6 +33,7 @@ def _load_model_ft(pdb_file, mtz_file):
 
 
 @pytest.mark.integration
+@pytest.mark.cuda
 def test_modelft_cpu_gpu_cpu_sf_round_trip(sample_pdb_file, sample_mtz_file):
     """CPU -> GPU -> CPU structure-factor round-trip via the unified mixin.
 
@@ -46,9 +44,6 @@ def test_modelft_cpu_gpu_cpu_sf_round_trip(sample_pdb_file, sample_mtz_file):
     3. Move back to CPU, recompute Fcalc; verify CPU placement and values
        match the original CPU result.
     """
-    if not CUDA_AVAILABLE:
-        pytest.skip("CUDA device not available")
-
     model, data = _load_model_ft(sample_pdb_file, sample_mtz_file)
     hkl, *_ = data()
 
@@ -66,9 +61,8 @@ def test_modelft_cpu_gpu_cpu_sf_round_trip(sample_pdb_file, sample_mtz_file):
     assert fcalc_cuda.device.type == "cuda"
     assert model.device.type == "cuda"
     assert model.cell.device.type == "cuda", "Cell did not migrate to GPU"
-    for buf in model.buffers():
-        assert buf.device.type == "cuda", "buffer left behind on CPU"
-        break
+    for name, buf in model.named_buffers():
+        assert buf.device.type == "cuda", f"buffer {name} left behind on CPU"
 
     # Values must agree within numerical tolerance after the round-trip. The CPU
     # (C++ box-separable splat) and GPU (Triton work-queue splat) paths differ
