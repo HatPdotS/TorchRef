@@ -5,7 +5,7 @@ Both truncate each atom at its own per-atom radius, so the forward maps must
 agree to float32 + truncation-shape tolerance and the gradients (xyz / adp / u /
 occ) must be parallel. Requires an Apple-silicon GPU (MPS); skipped elsewhere.
 
-Markers: ``@pytest.mark.mps`` (skipped without ``--run-gpu``), ``integration``.
+Markers: ``@pytest.mark.mps`` (auto-skipped without MPS), ``integration``.
 """
 
 import math
@@ -17,7 +17,7 @@ from torchref.base.electron_density.kernels.mps import mps_kernels_available
 from torchref.base.electron_density.main import build_electron_density
 from torchref.utils import Engine, use_engine
 
-pytestmark = [pytest.mark.gpu, pytest.mark.integration]
+pytestmark = [pytest.mark.mps, pytest.mark.integration]
 
 
 @pytest.fixture

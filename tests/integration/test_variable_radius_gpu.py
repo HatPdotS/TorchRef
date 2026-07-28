@@ -5,7 +5,7 @@ Both backends truncate each atom at its own ``N_sigma * sigma_eff`` radius, so t
 forward maps must agree to float32 + analytic-vs-gathered-coord tolerance and the
 gradients (xyz / adp / u / occ) must be parallel. Requires CUDA + Triton.
 
-Markers: ``@pytest.mark.cuda`` (skipped without ``--run-gpu``), ``integration``.
+Markers: ``@pytest.mark.cuda`` (auto-skipped without CUDA), ``integration``.
 """
 
 import math
@@ -16,7 +16,7 @@ import torch
 from torchref.base.electron_density.main import build_electron_density
 from torchref.utils import Engine, use_engine
 
-pytestmark = [pytest.mark.gpu, pytest.mark.integration]
+pytestmark = [pytest.mark.cuda, pytest.mark.integration]
 
 
 def _cell():

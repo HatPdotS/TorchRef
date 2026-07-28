@@ -295,26 +295,53 @@ def test_dtype_only_move_does_not_clobber_device_tracker():
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "fn,expected_device,expected_dtype",
+    "fn,expected_dtype",
     [
-        (lambda t: t.to("cpu"), torch.device("cpu"), None),
-        (lambda t: t.double(), None, torch.float64),
-        (lambda t: t.float(), None, torch.float32),
-        (lambda t: t.half(), None, torch.float16),
-        (lambda t: t, None, None),
+        (lambda t: t.to("cpu"), None),
+        (lambda t: t.double(), torch.float64),
+        (lambda t: t.float(), torch.float32),
+        (lambda t: t.half(), torch.float16),
+        (lambda t: t, None),
     ],
     ids=["to_cpu", "double", "float", "half", "identity"],
 )
-def test_probe_target_resolves_axes_independently(fn, expected_device, expected_dtype):
-    """``_probe_target`` reports only the axis ``fn`` actually transforms.
+def test_probe_target_dtype_axis(fn, expected_dtype):
+    """The dtype axis reports only what ``fn`` actually casts to.
 
-    ``.double()`` is the case that pins the CPU-only dtype pair: MPS has no
-    float64, so contrasting dtype on an accelerator scratch would make it
-    unprobeable on Apple silicon.
+    Host-independent: the dtype contrast pair is pinned to CPU, which is also
+    what keeps ``.double()`` probeable on Apple silicon (MPS has no float64, so
+    contrasting dtype on an accelerator scratch would fail outright).
     """
     from torchref.utils.device_mixin import _probe_target
 
-    device, dtype = _probe_target(fn)
-    assert device == expected_device
+    _, dtype = _probe_target(fn)
     assert dtype == expected_dtype
 
+
+@pytest.mark.unit
+@pytest.mark.gpu
+@pytest.mark.parametrize(
+    "fn,preserves_device",
+    [
+        (lambda t: t.to("cpu"), False),
+        (lambda t: t.double(), True),
+        (lambda t: t.float(), True),
+        (lambda t: t, True),
+    ],
+    ids=["to_cpu", "double", "float", "identity"],
+)
+def test_probe_target_device_axis(fn, preserves_device):
+    """The device axis distinguishes "moves to D" from "keeps its input's device".
+
+    Requires an accelerator: telling those two apart needs two devices to
+    contrast. On a single-device host they are genuinely indistinguishable --
+    and reporting ``cpu`` there is correct, since that is where everything is
+    anyway -- so there is nothing to assert.
+    """
+    from torchref.utils.device_mixin import _probe_target
+
+    device, _ = _probe_target(fn)
+    if preserves_device:
+        assert device is None, "device-preserving fn must not pin a device"
+    else:
+        assert device == torch.device("cpu")

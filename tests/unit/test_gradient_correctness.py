@@ -29,8 +29,8 @@ on-grid splat makes element-wise finite differences underflow — so it is
 validated with the same cosine/gradnorm metric against central finite
 differences of a scalar loss (:func:`test_model_forward_xyz_adp_*`).
 
-CPU-only by default; the Triton comparisons are ``gpu``/``cuda_only`` and skip
-unless ``--run-gpu`` is passed on a CUDA host.
+CPU-only by default; the Triton comparisons are marked ``cuda`` and are
+auto-skipped unless the host actually has a CUDA device.
 """
 
 import itertools
@@ -361,7 +361,7 @@ def test_model_forward_fft_gradient(which, eps):
 
 # =============================================================================
 # 6. Triton kernels (CUDA float32, hand-written backward) vs eager autograd
-#    Metric: cosine similarity + gradnorm ratio. Skipped without --run-gpu.
+#    Metric: cosine similarity + gradnorm ratio. Auto-skipped without CUDA.
 # =============================================================================
 @pytest.mark.cuda
 @pytest.mark.skipif(not _HAS_CUDA, reason="Triton kernels require CUDA")

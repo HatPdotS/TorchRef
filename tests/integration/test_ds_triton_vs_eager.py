@@ -4,14 +4,14 @@ The custom Triton kernels (float32) are compared against the checkpointed
 eager backend evaluated in float64 (downcast for comparison), for both the
 isolated P1 kernels and the full ``SfDS`` symmetry loop.
 
-Markers: ``@pytest.mark.cuda`` (skipped without ``--run-gpu``) and
+Markers: ``@pytest.mark.cuda`` (auto-skipped without CUDA) and
 ``@pytest.mark.integration``. Requires a CUDA device.
 """
 
 import pytest
 import torch
 
-pytestmark = [pytest.mark.gpu, pytest.mark.integration]
+pytestmark = [pytest.mark.cuda, pytest.mark.integration]
 
 _ATOL = 1e-2
 _RTOL = 1e-3
