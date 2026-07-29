@@ -11,14 +11,18 @@ pins that contract down where it can actually run in CI on a laptop.
 
 Why this file exists
 --------------------
-Until now every variable-radius cross-check was gated on hardware --
-``test_variable_radius_gpu.py`` needs CUDA, ``test_variable_radius_mps.py`` needs
-Apple silicon -- so on a CPU-only machine *nothing* tested the splat geometry. That
-is how three different cutoffs came to coexist: the fast CPU path splatted a cube,
-the portable CPU path used a node-centred diagonal metric at a voxel-rounded
-radius, and Metal inflated its radius to a whole voxel. On a beta=115 deg cell those
-differed by ~5e-3 rel L2 -- more than the 1.7e-3 truncation error the cutoff exists
-to deliver -- and the MPS test absorbed it in a 2e-2 tolerance.
+Every variable-radius cross-check used to be gated on hardware, so on a CPU-only
+machine *nothing* tested the splat geometry. That is how three different cutoffs came to
+coexist: the fast CPU path splatted a cube, the portable CPU path used a node-centred
+diagonal metric at a voxel-rounded radius, and Metal inflated its radius to a whole
+voxel. On a beta=115 deg cell those differed by ~5e-3 rel L2 -- more than the 1.7e-3
+truncation error the cutoff exists to deliver -- and the accelerator tests absorbed it in
+a 2e-2 kernel-vs-kernel tolerance.
+
+Accuracy against an independent reference now lives in ``tests/unit/structure_factor/``,
+which checks every production kernel on every device against direct summation. This file
+remains the *geometry* contract: a from-spec brute force, cheap, CPU-only, and
+independent of both kernels.
 
 The reference here is a direct O(atoms x voxels) evaluation of the contract as
 written above (``_brute_iso`` / ``_brute_aniso``), not another kernel: comparing two
@@ -326,7 +330,7 @@ def test_auto_actually_dispatches_the_fused_kernel(dtype):
     If ``should_use_sphere_splat`` ever stopped firing, AUTO would fall through to
     the very same portable splat EAGER uses and every equivalence assertion above
     would pass at ``rel_l2 == 0`` while measuring nothing -- the exact failure mode
-    ``test_variable_radius_mps.py`` documents for its own Metal gate. float64 is
+    the deleted MPS accelerator test documented for its own Metal gate. float64 is
     parametrized because the old dispatch was float32-only, so a regression to a
     dtype gate would be invisible on float32 alone.
 
@@ -375,3 +379,162 @@ def test_density_map_accumulates_not_overwrites():
     both = _build(Engine.AUTO, dims, frac, inv_frac, voxel, torch.float32,
                   iso=iso, aniso=aniso)
     assert _rel_l2(both, a + b) < 1e-6
+
+
+# =========================================================================
+# Ported from now-deleted tests of orphaned kernels
+# =========================================================================
+# ``tests/unit/base/test_aniso_map_building.py`` and ``test_cpu_scatter.py`` covered the
+# legacy fixed-radius splat and the C++ structured scatter. Both are now unreachable from
+# ``build_electron_density``: the dispatch routes CPU to the fused sphere splat or the
+# portable one, so ``add_isotropic_cpu_separable_var`` / ``add_anisotropic_cpu_var`` -- and
+# with them ``_separable_density``, ``_aniso_density_cube`` and the structured scatter --
+# are imported but never called. The source is deliberately retained; the tests were
+# deleted, and the two checks worth keeping are re-pointed at the live path here.
+
+
+@pytest.mark.parametrize("beta", _BETAS)
+@pytest.mark.parametrize("engine", [Engine.AUTO, Engine.EAGER], ids=["auto", "eager"])
+def test_aniso_reduces_to_isotropic(beta, engine):
+    """``U = b/(8*pi^2) I`` must reproduce the isotropic splat, on the live dispatch.
+
+    An analytic identity rather than a comparison against another implementation: a
+    spherical anisotropic tensor *is* an isotropic B factor, so the two code paths must
+    agree exactly whatever the cell. It constrains the ``8*pi^2`` conversion and the
+    diagonal handling of the Mahalanobis form in one assertion, and it fails for a whole
+    class of index and factor errors that cross-backend parity cannot see because both
+    sides would share them.
+
+    Ported from ``test_aniso_map_building.py::test_aniso_reduces_to_isotropic``, which
+    asserted the same identity against ``vectorized_add_to_map_aniso`` -- a kernel no
+    longer on any dispatch path.
+    """
+    frac, inv_frac, dims, f64 = _cell(beta, dtype=torch.float64)
+    xyz, adp, occ, A, B = _iso_atoms(f64, n=24, dtype=torch.float64)
+    voxel = _voxel_size(f64, dims)
+    grid = torch.zeros(*dims, 3, dtype=torch.float64)
+
+    u_sph = torch.zeros(xyz.shape[0], 6, dtype=torch.float64)
+    u_sph[:, :3] = (adp / (8.0 * math.pi**2)).unsqueeze(1)
+
+    with use_engine(engine):
+        iso_map = build_electron_density(
+            grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float64
+        )
+        aniso_map = build_electron_density(
+            grid,
+            xyz[:0], adp[:0], occ[:0], A[:0], B[:0],
+            inv_frac, frac, voxel,
+            xyz_aniso=xyz, u_aniso=u_sph, occ_aniso=occ, A_aniso=A, B_aniso=B,
+            dtype=torch.float64,
+        )
+
+    rel = _rel_l2(aniso_map, iso_map)
+    assert rel < 1e-12, (
+        f"beta={beta}, {engine.value}: a spherical U does not reproduce the iso splat "
+        f"(rel L2 {rel:.3e}). Suspect the 8*pi^2 conversion or the diagonal of the "
+        f"Mahalanobis form."
+    )
+    assert float(iso_map.abs().sum()) > 0, "both maps are empty; the identity is vacuous"
+
+
+@pytest.mark.parametrize("n_threads", [1, 2, 4])
+def test_fused_kernel_is_thread_invariant(n_threads):
+    """The fused splat must give the same map at any thread count.
+
+    It partitions the *output* across threads via ``at::parallel_for`` rather than using
+    atomics, so a race or a partition-boundary error would show up as a thread-count
+    dependence. Deliberately non-orthogonal and dense enough that many atoms' spheres
+    overlap, since a partitioning bug is invisible when no two atoms touch the same voxel.
+
+    **Weak on macOS.** ``_cpp_build.py`` omits ``-fopenmp`` there, and the extension
+    measurably does not parallelize on this host -- 3000 atoms on a 120x108x96 grid take
+    132/131/131 ms at 1/2/4 threads. So this passes locally largely because there is only
+    one thread to disagree with. It still earns its place: it is real coverage wherever the
+    extension is built with OpenMP (Linux, CI), and it costs milliseconds.
+
+    Bit-exactness is the right assertion and is not merely aspirational -- verified to hold
+    on this scene and on a 6x denser one at 2, 4 and 8 threads. Output partitioning means
+    each voxel is accumulated by one thread over a fixed atom order, so a nonzero
+    difference is an ordering change worth investigating, not float noise. (When checking
+    this by hand, compare the maps, not ``dm.sum()``: ``Tensor.sum`` uses a
+    thread-count-dependent tree reduction and will show a spurious difference of its own.)
+
+    Ported from the ``n_threads``-parametrized thread-safety test in
+    ``test_cpu_scatter.py``, which exercised the C++ structured scatter -- no longer
+    reachable from the dispatch.
+    """
+    if not sphere_splat.sphere_splat_available():
+        pytest.skip(f"fused CPU sphere splat unavailable: {sphere_splat.last_error()}")
+
+    frac, inv_frac, dims, f64 = _cell(115.0, dtype=torch.float32)
+    xyz, adp, occ, A, B = _iso_atoms(f64, n=96, dtype=torch.float32, seed=7)
+    voxel = _voxel_size(f64, dims)
+    grid = torch.zeros(*dims, 3, dtype=torch.float32)
+
+    original = torch.get_num_threads()
+    try:
+        torch.set_num_threads(1)
+        with use_engine(Engine.AUTO):
+            ref = build_electron_density(
+                grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float32
+            )
+        torch.set_num_threads(n_threads)
+        with use_engine(Engine.AUTO):
+            got = build_electron_density(
+                grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float32
+            )
+    finally:
+        torch.set_num_threads(original)
+
+    # Bit-exact: output partitioning means each voxel is summed by exactly one thread in
+    # the same order regardless of thread count. Any drift is a real ordering change.
+    assert torch.equal(got, ref), (
+        f"{n_threads} threads changed the map (max abs diff "
+        f"{float((got - ref).abs().max()):.3e}); the fused splat should partition the "
+        "output, so results must not depend on thread count"
+    )
+
+
+def test_fused_extension_compiles():
+    """The fused sphere splat must actually build. Fails rather than skipping.
+
+    Every other test in this file -- and in ``tests/unit/structure_factor`` -- calls
+    ``pytest.skip`` when ``sphere_splat_available()`` is False, which is right for them:
+    they are testing numerics, and without the extension there is nothing to test. But if
+    *every* test skips, a build that has stopped working produces an all-green run while
+    the CPU production path has silently degraded to the portable eager splat. The engine
+    dispatch is designed to degrade quietly under ``Engine.AUTO`` (see
+    ``main.py::_add_isotropic``), which is correct for users and dangerous for CI.
+
+    So exactly one test asserts the extension builds, and reports the captured diagnostic
+    plus environment when it does not -- the same stance, and most of the same diagnostic
+    surface, as the ``TestCompilation`` class in the now-deleted ``test_cpu_scatter.py``.
+    That guard previously protected the C++ structured scatter, a helper; it now protects
+    the production CPU splat, so it matters more than it did.
+    """
+    if sphere_splat.sphere_splat_available():
+        return
+
+    import os
+    import shutil
+    import sys
+
+    err = sphere_splat.last_error()
+    env_info = (
+        f"  python:    {sys.executable}\n"
+        f"  ninja:     {shutil.which('ninja')}\n"
+        f"  CXX env:   {os.environ.get('CXX', '<unset>')}\n"
+        f"  CC env:    {os.environ.get('CC', '<unset>')}\n"
+        f"  PATH head: {os.environ.get('PATH', '').split(':')[:5]}\n"
+        f"  TORCH_EXTENSIONS_DIR: "
+        f"{os.environ.get('TORCH_EXTENSIONS_DIR', '<unset>')}\n"
+    )
+    pytest.fail(
+        "The fused CPU sphere-splat extension failed to build, so Engine.AUTO on CPU is "
+        "silently falling back to the portable eager splat for every density "
+        "calculation.\n"
+        f"Error: {err}\n\n"
+        f"Environment:\n{env_info}"
+    )
+

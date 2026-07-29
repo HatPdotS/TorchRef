@@ -811,3 +811,85 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
         # out = density_map + splat -> grad wrt density_map is identity.
         return (grad_density_map, None, grad_xyz, grad_u, grad_occ, None, None,
                 None, None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# Canonical-signature wrappers
+# ---------------------------------------------------------------------------
+# Every production splat exposes the same signature:
+#
+#     (density_map, xyz, adp_or_u, occ, A, B, inv_frac_matrix, frac_matrix,
+#      radius_per_atom)
+#
+# so the dispatch in ``electron_density/main.py`` is four structurally identical
+# calls per ladder and a test can drive any backend through one code path. These
+# wrappers do for CUDA what ``add_*_mps_var`` already did for Metal: square the
+# radius and build the coefficient mask, rather than leaving that to the caller.
+#
+# ``density_map`` is passed where the ``autograd.Function`` wants
+# ``real_space_grid``. That is exact, not a convenience: ``forward``/``backward``
+# use that argument only for ``.shape[:3]`` and for a ``grid_flat`` pointer handed
+# to the kernel as ``grid_ptr`` -- which none of the four Triton kernels ever
+# loads, because voxel coordinates are derived arithmetically from ``frac`` and the
+# grid dims. ``density_map`` has the same ``(nx, ny, nz)`` shape, so both uses are
+# satisfied. If a kernel is ever changed to actually read ``grid_ptr``, this breaks
+# and the right fix is to delete that dead parameter, not to thread a real grid
+# back through here.
+
+
+def _coeff_mask(xyz):
+    """All-ones per-atom coefficient mask, shape ``(n, 5)``.
+
+    Every call site in the codebase passes all ones -- the mask exists so a caller
+    *could* disable individual ITC92 Gaussians, and nothing does. Kept because it is
+    part of the kernel's argument list.
+    """
+    return torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
+
+
+def add_isotropic_cuda_var(
+    density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
+):
+    """Isotropic variable-radius Triton splat; returns ``density_map + splat``.
+
+    Canonical splat signature, identical to ``add_isotropic_plain_var``,
+    ``add_isotropic_cpu_sphere_var`` and ``add_isotropic_mps_var``. CUDA float32
+    only -- the gate is ``should_use_triton``; this wrapper does not re-check.
+    """
+    return WorkQueueGridDensity.apply(
+        density_map,
+        density_map,  # stands in for real_space_grid; see the note above
+        xyz,
+        adp,
+        occ,
+        A,
+        B,
+        radius_per_atom * radius_per_atom,
+        _coeff_mask(xyz),
+        inv_frac_matrix,
+        frac_matrix,
+    )
+
+
+def add_anisotropic_cuda_var(
+    density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
+):
+    """Anisotropic variable-radius Triton splat; returns ``density_map + splat``.
+
+    Canonical splat signature. ``u`` carries ``[U11, U22, U33, U12, U13, U23]``; the
+    cutoff stays the Euclidean sphere at ``radius_per_atom`` while the density is the
+    full Mahalanobis form, matching the Metal and fused-CPU kernels.
+    """
+    return WorkQueueGridDensityAniso.apply(
+        density_map,
+        density_map,  # stands in for real_space_grid; see the note above
+        xyz,
+        u,
+        occ,
+        A,
+        B,
+        radius_per_atom * radius_per_atom,
+        _coeff_mask(xyz),
+        inv_frac_matrix,
+        frac_matrix,
+    )

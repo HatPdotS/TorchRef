@@ -26,33 +26,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Fix 5 — None scattering factors on the non-batched eager path
 # ---------------------------------------------------------------------------
-def test_eager_sf_none_scattering_no_batch(double_cpu):
-    """`max_memory_gb=None` + `scattering_factors=None` computes from A/B."""
-    from torchref.base.direct_summation.dispatch import _eager_aniso, _eager_iso
-
-    g = torch.Generator().manual_seed(0)
-    N, R = 8, 12
-    hkl = torch.randint(-3, 4, (R, 3), generator=g).double()
-    s = torch.rand(R, generator=g).double() * 0.4
-    svec = torch.randn(R, 3, generator=g).double() * 0.3
-    A = torch.rand(N, 5, generator=g).double()
-    B = torch.rand(N, 5, generator=g).double() + 0.5
-    xyz = torch.rand(N, 3, generator=g).double()
-    occ = torch.rand(N, generator=g).double() * 0.4 + 0.6
-    adp = torch.rand(N, generator=g).double() * 10 + 5
-    U = torch.rand(N, 6, generator=g).double() * 0.04 + 0.01
-
-    f_none = _eager_iso(hkl, s, xyz, occ, adp, A, B, max_memory_gb=None)
-    f_batch = _eager_iso(hkl, s, xyz, occ, adp, A, B, max_memory_gb=2.0)
-    assert torch.isfinite(f_none).all()
-    assert torch.allclose(f_none, f_batch)
-
-    a_none = _eager_aniso(hkl, svec, xyz, occ, U, A, B, max_memory_gb=None)
-    a_batch = _eager_aniso(hkl, svec, xyz, occ, U, A, B, max_memory_gb=2.0)
-    assert torch.isfinite(a_none).all()
-    assert torch.allclose(a_none, a_batch)
-
-
 # ---------------------------------------------------------------------------
 # Fix 3 — eager geometry math is NaN-safe at degenerate geometry
 # ---------------------------------------------------------------------------

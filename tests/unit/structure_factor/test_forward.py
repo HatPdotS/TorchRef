@@ -15,6 +15,9 @@ from torchref.model.sf_ds import SfDS
 from torchref.utils import Engine, use_engine
 
 from . import (
+    COS_MIN_DS,
+    RTOL_DS_F32,
+    RTOL_DS_F64,
     ATOL_TABLE_VS_GEMMI,
     COS_MIN,
     MAXREL_VS_GEMMI,
@@ -26,12 +29,23 @@ from . import (
     SCALE_TOL_GEMMI,
 )
 from . import helpers as H
+from .conftest import DEVICE_DTYPE_KERNELS, DS_DEVICE_DTYPE_KERNELS
 
 pytestmark = pytest.mark.unit
 
 # float32 first: it is the production dtype, so it is the case that matters and the one
 # these gates are calibrated on. float64 separates truncation error from float32 noise.
 _DTYPES = [torch.float32, torch.float64]
+
+
+def _complex_cos(got, ref):
+    """Cosine of two complex F vectors, treating them as real 2R-vectors.
+
+    Catches a conjugated result, which an amplitude comparison cannot.
+    """
+    g = torch.view_as_real(got.reshape(-1)).reshape(-1).double()
+    r = torch.view_as_real(ref.reshape(-1)).reshape(-1).double()
+    return float((g @ r) / (g.norm() * r.norm()).clamp_min(1e-30))
 
 
 def _report(tag, got, ref):
@@ -387,3 +401,117 @@ def test_coarse_grid_is_measurably_worse(scene_coarse, scene_fine, oracle_fine):
         "an under-sampled grid passes the amplitude gate, so the gate is not "
         "constraining grid sampling at all"
     )
+
+
+# ---------------------------------------------------------------------------
+# Every production kernel, on every device it ships on
+# ---------------------------------------------------------------------------
+# These call each splat kernel **directly** rather than through
+# ``build_electron_density`` + ``use_engine``. Under ``Engine.AUTO`` a failed accelerator
+# kernel silently falls back to the portable splat, so a dispatch-driven test can pass
+# while measuring a different kernel than the one it names; a direct call settles that by
+# construction. The dispatch ladder is tested separately in ``test_dispatch.py``.
+#
+# The oracle stays CPU float64 whatever the candidate is -- a reference must not inherit
+# the precision of the thing it judges.
+#
+# Measured when written (60-atom synthetic scene, worst case over the whole matrix):
+#
+#   amplitude rel L2   5.68e-03      gradient rel   9.51e-02
+#   amplitude cos      0.999990      gradient cos   0.995544
+#
+# and, notably, **every device agrees to the printed digits**: Metal float32, CPU fused
+# float32/float64 and the portable splat on either device all land on the same residual
+# against the oracle. That is the truncation-contract standardization showing up as a
+# measurement -- what is left is shared discretization error, not per-kernel divergence.
+# Hence no accelerator-specific tolerances: the CPU constants already bound it.
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernel_matches_ds_amplitudes(scene_fine, oracle_fine, device, dtype, kernel, kind):
+    """Forward amplitudes from one production kernel against the DS oracle."""
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    with torch.no_grad():
+        got = H.density_to_F(
+            scene, H.splat_direct(scene, kernel, aniso=aniso)
+        ).cpu().to(torch.complex128)
+    ref = oracle_fine[f"{kind}_F"]
+
+    rel, cos = H.rel_l2(got, ref), _complex_cos(got, ref)
+    print(f"\n  {device.type}/{dtype}/{kernel}/{kind}: relL2 {rel:.3e}  cos {cos:.8f}")
+    assert rel < RTOL_AMPLITUDE, f"{device.type}/{dtype}/{kernel}/{kind}: rel {rel:.3e}"
+    assert cos > COS_MIN, f"{device.type}/{dtype}/{kernel}/{kind}: cos {cos:.6f}"
+
+
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernel_absolute_scale(scene_fine, oracle_fine, device, dtype, kernel):
+    """Absolute scale per kernel.
+
+    Runs on every backend because the voxel-volume factor comes from ``ifft``, which is
+    shared, but the *density* each kernel accumulates is not -- a kernel that normalized
+    its Gaussian differently would show up only here. Correlation and cosine are both
+    invariant to a global rescale.
+    """
+    scene = scene_fine.to(device=device, dtype=dtype)
+    with torch.no_grad():
+        got = H.density_to_F(scene, H.splat_direct(scene, kernel)).cpu().to(torch.complex128)
+    scale = H.best_fit_scale(got, oracle_fine["iso_F"])
+    print(f"\n  {device.type}/{dtype}/{kernel}: scale {scale:.9f}")
+    assert abs(scale - 1.0) < SCALE_TOL, (
+        f"{device.type}/{dtype}/{kernel}: absolute scale off by {abs(scale - 1.0):.3e}"
+    )
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernels_agree_with_each_other(scene_fine, device, dtype, kernel, kind):
+    """Every kernel on a given ``(device, dtype)`` must agree with the portable splat.
+
+    Complements the oracle comparison rather than duplicating it. The oracle gate is
+    ``1e-2``, loose enough to hide a kernel that is subtly wrong in the same direction as
+    the discretization error; this one is tight, because two kernels implementing the same
+    truncation contract on the same inputs have nothing to disagree about beyond float
+    accumulation order.
+    """
+    if kernel == "portable":
+        pytest.skip("portable is the reference for this comparison")
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    with torch.no_grad():
+        got = H.splat_direct(scene, kernel, aniso=aniso)
+        ref = H.splat_direct(scene, "portable", aniso=aniso)
+    tol = RTOL_BACKEND_F32 if dtype is torch.float32 else RTOL_BACKEND_F64
+    rel = H.rel_l2(got.cpu().to(torch.float64), ref.cpu().to(torch.float64))
+    print(f"\n  {device.type}/{dtype}/{kernel} vs portable ({kind}): relL2 {rel:.3e}")
+    assert rel < tol, f"{device.type}/{dtype}/{kernel}/{kind}: vs portable rel {rel:.3e}"
+
+
+# ---------------------------------------------------------------------------
+# Direct-summation kernels vs the eager oracle
+# ---------------------------------------------------------------------------
+# Restores coverage lost when ``tests/integration/test_ds_triton_vs_eager.py`` was deleted,
+# and extends it: that file only ran on CUDA, so ``_checkpointed_*`` -- what every CPU, MPS
+# and float64 call actually executes -- was compared against eager on CPU only, and DS on
+# MPS had no coverage at all.
+#
+# No grid and no truncation on either side, so the only source of disagreement is float
+# arithmetic and these gate near precision. See ``RTOL_DS_F32`` / ``RTOL_DS_F64``.
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DS_DEVICE_DTYPE_KERNELS)
+def test_ds_kernel_matches_eager_oracle(scene_fine, device, dtype, kernel, kind):
+    """Forward ``F(hkl)`` from one DS kernel against the pure-torch eager oracle."""
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    with torch.no_grad():
+        got = H.ds_direct(scene, kernel, aniso=aniso).cpu().to(torch.complex128)
+        ref = H.ds_direct(scene_fine, "eager", aniso=aniso)
+
+    tol = RTOL_DS_F32 if dtype is torch.float32 else RTOL_DS_F64
+    rel, cos = H.rel_l2(got, ref), _complex_cos(got, ref)
+    print(f"\n  {device.type}/{dtype}/{kernel}/{kind}: relL2 {rel:.3e}  cos {cos:.9f}")
+    assert rel < tol, f"{device.type}/{dtype}/{kernel}/{kind}: rel {rel:.3e}"
+    assert cos > COS_MIN_DS, f"{device.type}/{dtype}/{kernel}/{kind}: cos {cos:.7f}"

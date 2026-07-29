@@ -18,7 +18,7 @@ model, and torchref's tensors are filled from it.
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Optional, Sequence
 
 import torch
@@ -38,6 +38,14 @@ __all__ = [
     "ds_aniso_oracle",
     "sf_fft_for",
     "fft_sf",
+    "splat_kernel",
+    "device_supports_dtype",
+    "kernels_for",
+    "splat_direct",
+    "ds_kernel",
+    "ds_kernels_for",
+    "ds_direct",
+    "density_to_F",
     "synthetic_obs",
     "ls_target",
     "best_fit_scale",
@@ -127,6 +135,28 @@ class Scene:
             t.clone().requires_grad_(requires_grad) for t in (self.xyz, self.occ, third)
         )
 
+    def to(self, device=None, dtype=None) -> "Scene":
+        """A new :class:`Scene` with every tensor moved and cast.
+
+        Scenes are built CPU/float64 and stay that way, because the oracle is computed
+        from them and a reference must not inherit the precision of the thing it judges.
+        Only the *candidate* side is moved, so an MPS float32 kernel and a CPU float64
+        oracle describe the same physical structure.
+
+        ``hkl_list`` is untouched -- it is Python ints for gemmi, not a tensor.
+        """
+        if device is None and dtype is None:
+            return self
+        real = {"hkl", "s", "s_vec", "xyz", "xyz_frac", "occ", "adp", "u6", "A", "B",
+                "frac_matrix", "inv_frac_matrix"}
+        moved = {}
+        for f in fields(self):
+            v = getattr(self, f.name)
+            moved[f.name] = (
+                v.to(device=device, dtype=dtype) if f.name in real else v
+            )
+        return Scene(**moved)
+
 
 def _hkl_within(cell: Cell, d_min: float, dtype: torch.dtype, cap: Optional[int]):
     """Every integer hkl inside the ``d_min`` shell, ordered, ``F(000)`` excluded.
@@ -211,10 +241,24 @@ def synthetic_scene(
 ) -> Scene:
     """A small random P1 scene.
 
-    Degeneracies to avoid are documented in ``tests/helpers/kernel_cases.py``: ``occ``
-    is never 1.0 and the ADP off-diagonals are never zero, because both hide sign and
-    ordering errors -- a wrong ``occ`` gradient is invisible when every ``occ`` is 1,
-    and a ``U12``/``U13`` swap is invisible when both are 0.
+    Two degeneracies are deliberately avoided, both of which once survived in two test
+    files at the same time:
+
+    * ``occ`` is never exactly 1.0. The kernels recover ``d/d_occ`` by dividing the
+      accumulated gradient by ``occ``, and at ``occ == 1`` that division is a no-op that
+      hides a wrong scaling.
+    * the ADP off-diagonals are non-zero **and signed**. Zero off-diagonals mean every
+      ellipsoid is axis-aligned, which leaves the cross-term arithmetic completely
+      uncovered -- the ``p01``/``p02``/``p12`` entries of the inverted 3x3, and the
+      backward's off-diagonal U gradients, which carry a ``4*pi^2`` factor where the
+      diagonal ones carry ``2*pi^2``. Magnitudes stay well below the diagonal so every U
+      remains comfortably positive-definite, since the Metal shader inverts ``M_g``
+      analytically with no positive-definiteness guard.
+
+    (Recorded here rather than in ``tests/helpers/kernel_cases.py``, which documented them
+    for the two accelerator test files this package replaced and has been removed with
+    them. ``test_dispatch.py::test_aniso_scene_exercises_off_diagonal_u`` asserts the
+    second one rather than trusting this docstring.)
     """
     g = torch.Generator().manual_seed(seed)
     cell = Cell(
@@ -388,6 +432,237 @@ def sf_fft_for(
     )
     sf.setup_grid()
     return sf
+
+
+# ---------------------------------------------------------------------------
+# Direct kernel access
+# ---------------------------------------------------------------------------
+# Every production splat is called *directly* here rather than through
+# ``build_electron_density`` + ``use_engine``. Two reasons:
+#
+# 1. **No vacuity risk.** Under ``Engine.AUTO`` a failed accelerator kernel silently
+#    falls back to the portable splat (``main.py`` catches and falls through), so a
+#    dispatch-driven test can pass while measuring a different kernel than the one it
+#    names. Calling the kernel directly settles that by construction.
+# 2. **No global-config coupling.** ``SfFFT`` builds its grid through ``get_real_grid``,
+#    which reads the *global* ``dtypes.float`` and takes no dtype argument -- so an MPS
+#    ``SfFFT`` under this package's float64 pin would try to allocate float64 on MPS and
+#    fail. ``ifft`` and ``extract_structure_factor_from_grid`` read no global config at
+#    all, so :func:`density_to_F` needs no config switching.
+#
+# The dispatch ladder is a separate concern, tested in ``test_dispatch.py``.
+
+#: ``name -> (fn, kind, devices, dtypes)``. All six wrappers share one signature,
+#: ``(density_map, xyz, adp_or_u, occ, A, B, inv_frac, frac, radius_per_atom)``, so
+#: :func:`splat_direct` needs no per-kernel adapter. They did not before the
+#: standardization -- the Metal pair took extra unused arguments in a different order,
+#: and CUDA had no wrapper at all.
+_KERNEL_SPECS = (
+    # name                device   dtypes                        kind
+    ("cpu_sphere",        "cpu",   (torch.float32, torch.float64), "both"),
+    ("portable",          "any",   (torch.float32, torch.float64), "both"),
+    ("mps_metal",         "mps",   (torch.float32,),               "both"),
+    ("cuda_triton",       "cuda",  (torch.float32,),               "both"),
+)
+
+
+def splat_kernel(name: str, aniso: bool):
+    """Resolve a kernel name to its wrapper. Imports are local per backend.
+
+    Backend imports stay inside the function: the Metal module loads MSL source and the
+    CUDA one imports Triton, neither of which a CPU-only host should pay for at
+    collection time.
+    """
+    if name == "cpu_sphere":
+        from torchref.base.electron_density.kernels.cpu import sphere_splat as m
+
+        return m.add_anisotropic_cpu_sphere_var if aniso else m.add_isotropic_cpu_sphere_var
+    if name == "portable":
+        from torchref.base.electron_density.kernels.cpu import variable_radius as m
+
+        return m.add_anisotropic_plain_var if aniso else m.add_isotropic_plain_var
+    if name == "mps_metal":
+        from torchref.base.electron_density.kernels.mps import variable_radius as m
+
+        return m.add_anisotropic_mps_var if aniso else m.add_isotropic_mps_var
+    if name == "cuda_triton":
+        from torchref.base.electron_density.kernels.cuda import variable_radius as m
+
+        return m.add_anisotropic_cuda_var if aniso else m.add_isotropic_cuda_var
+    raise ValueError(f"unknown kernel {name!r}")
+
+
+def device_supports_dtype(device: torch.device, dtype: torch.dtype) -> bool:
+    """Whether ``device`` can hold ``dtype`` at all.
+
+    MPS has no float64 — it is a *device* limitation, not a kernel one, so it belongs
+    here and not in the per-kernel table. The portable splat is float64-capable and
+    device-agnostic, and without this check it would be offered for ``(mps, float64)``
+    and fail inside ``Scene.to``.
+    """
+    if device.type == "mps" and dtype is torch.float64:
+        return False
+    return True
+
+
+def kernels_for(device: torch.device, dtype: torch.dtype):
+    """Kernel names that actually run on this ``(device, dtype)``.
+
+    Filtering here rather than skipping inside the test keeps a wrong entry visible: an
+    unsupported combination produces no test rather than a passing one.
+    """
+    if not device_supports_dtype(device, dtype):
+        return []
+    out = []
+    for name, dev, dtypes_ok, _ in _KERNEL_SPECS:
+        if dtype not in dtypes_ok:
+            continue
+        if dev != "any" and dev != device.type:
+            continue
+        out.append(name)
+    return out
+
+
+def splat_direct(scene: Scene, name: str, xyz=None, occ=None, third=None, *, aniso=False):
+    """Call one splat kernel directly and return the density map.
+
+    ``scene`` must already be on the target device and dtype (see :meth:`Scene.to`).
+    The per-atom radius is computed here because the kernels take it as an argument --
+    ``build_electron_density`` normally does this, and bypassing the dispatch means the
+    caller owns it. Same policy call the dispatch makes, so the truncation contract is
+    unchanged.
+    """
+    from torchref.base.electron_density.radius_policy import (
+        per_atom_radius_aniso,
+        per_atom_radius_iso,
+    )
+    from torchref.config import get_sigma_cutoff_ed
+
+    xyz = scene.xyz if xyz is None else xyz
+    occ = scene.occ if occ is None else occ
+    if third is None:
+        third = scene.u6 if aniso else scene.adp
+
+    n_sigma = get_sigma_cutoff_ed()
+    radius = (
+        per_atom_radius_aniso(scene.B, third, n_sigma=n_sigma)
+        if aniso
+        else per_atom_radius_iso(third, scene.B, n_sigma=n_sigma)
+    )
+    dims = _grid_dims(scene)
+    density_map = torch.zeros(*dims, dtype=xyz.dtype, device=xyz.device)
+    fn = splat_kernel(name, aniso)
+    return fn(
+        density_map, xyz, third, occ, scene.A, scene.B,
+        scene.inv_frac_matrix, scene.frac_matrix, radius,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Direct-summation kernels, also called directly
+# ---------------------------------------------------------------------------
+#: ``name -> (device, dtypes)``. ``eager`` is the oracle and is excluded from the
+#: candidate list by :func:`ds_kernels_for`; it is registered here so the signature
+#: adapter has one place to live.
+#:
+#: There is **no Metal/MPS direct-summation kernel**: ``Engine.METAL`` returns False from
+#: the Triton gate and an MPS device fails ``t.is_cuda``, so DS on MPS *is*
+#: ``_checkpointed_*`` running on-device. That is a real production path and it is what the
+#: ``mps`` leg of ``checkpointed`` covers.
+_DS_KERNEL_SPECS = (
+    ("eager",        "any",  (torch.float32, torch.float64)),
+    ("checkpointed", "any",  (torch.float32, torch.float64)),
+    ("ds_triton",    "cuda", (torch.float32,)),
+)
+
+
+def ds_kernel(name: str, aniso: bool):
+    """Resolve a direct-summation kernel name to its function.
+
+    The Triton import is function-local: it pulls in ``triton``, which a CPU-only host
+    should not need at collection time.
+    """
+    from torchref.base.direct_summation import dispatch as D
+
+    if name == "eager":
+        return D._eager_aniso if aniso else D._eager_iso
+    if name == "checkpointed":
+        return D._checkpointed_aniso if aniso else D._checkpointed_iso
+    if name == "ds_triton":
+        from torchref.base.direct_summation.triton_ds import (
+            ds_aniso_triton,
+            ds_iso_triton,
+        )
+
+        return ds_aniso_triton if aniso else ds_iso_triton
+    raise ValueError(f"unknown DS kernel {name!r}")
+
+
+def ds_kernels_for(device: torch.device, dtype: torch.dtype):
+    """Candidate DS kernels on this ``(device, dtype)``. Excludes the oracle."""
+    if not device_supports_dtype(device, dtype):
+        return []
+    return [
+        name
+        for name, dev, dtypes_ok in _DS_KERNEL_SPECS
+        if name != "eager"
+        and dtype in dtypes_ok
+        and (dev == "any" or dev == device.type)
+    ]
+
+
+def ds_direct(scene: Scene, name: str, xyz_frac=None, occ=None, third=None, *, aniso=False):
+    """Call one direct-summation kernel directly and return complex ``F(hkl)``.
+
+    Coordinates are **fractional** here -- unlike the splat kernels, which take Cartesian.
+    Carrying both on :class:`Scene` is what keeps that from being a silent error.
+
+    ``ds_iso_triton`` takes no ``max_memory_gb``; the eager and checkpointed paths do. That
+    is the only signature difference, and it is absorbed here rather than at call sites.
+    """
+    xyz_frac = scene.xyz_frac if xyz_frac is None else xyz_frac
+    occ = scene.occ if occ is None else occ
+    if third is None:
+        third = scene.u6 if aniso else scene.adp
+    geom = scene.s_vec if aniso else scene.s
+    fn = ds_kernel(name, aniso)
+    args = (scene.hkl, geom, xyz_frac, occ, third, scene.A, scene.B)
+    if name == "ds_triton":
+        return fn(*args)
+    return fn(*args, None)
+
+
+def _grid_dims(scene: Scene, fineness: float = GRID_FINENESS):
+    """Grid dimensions matching what ``SfFFT.setup_grid`` would choose.
+
+    Derived arithmetically instead of by constructing an ``SfFFT``, so no global dtype is
+    read and nothing float64 is allocated on a device that cannot hold it. Rounded to
+    even numbers, which is all the kernels care about (they take the shape from
+    ``density_map``); FFT-friendliness only matters for speed here.
+    """
+    spacing = scene.d_min / (3.0 * fineness)
+    lengths = [float(scene.cell.data[i]) for i in range(3)]
+    return tuple(max(4, 2 * int(round(L / spacing / 2.0))) for L in lengths)
+
+
+def density_to_F(scene: Scene, density_map: torch.Tensor) -> torch.Tensor:
+    """``F(hkl)`` from a density map, without ``SfFFT``.
+
+    ``ifft`` applies the ``V_cell / N`` voxel-volume scaling that makes the result
+    directly comparable to a direct-summation atom sum -- no scale factor, no offset.
+    Neither this nor ``extract_structure_factor_from_grid`` reads the global dtype
+    config, which is what lets an accelerator candidate run while the package is pinned
+    to float64 for the oracle.
+    """
+    from torchref.base.fourier.fft import ifft
+    from torchref.base.reciprocal.grid_operations import (
+        extract_structure_factor_from_grid,
+    )
+
+    volume = float(scene.cell.volume)
+    return extract_structure_factor_from_grid(
+        ifft(density_map, volume), scene.hkl
+    )
 
 
 def fft_sf(scene: Scene, sf_fft, xyz=None, occ=None, third=None, *, aniso=False):

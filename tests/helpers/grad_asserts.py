@@ -5,9 +5,11 @@ similarity alone passes a systematic scale error -- a kernel that returns
 ``2 * grad`` is perfectly parallel to the reference -- so every assertion here
 checks direction *and* magnitude.
 
-Extracted from ``tests/unit/test_gradient_correctness.py`` so the accelerator
-kernel tests (``test_variable_radius_gpu.py`` / ``test_variable_radius_mps.py``)
-can reuse them instead of hand-rolling a bare cosine check.
+Extracted from ``tests/unit/test_gradient_correctness.py`` so that other suites could
+reuse them instead of hand-rolling a bare cosine check. The original consumers were the
+accelerator kernel tests; those are now ``tests/unit/structure_factor/``, which compares
+every production kernel against a direct-summation oracle rather than against another
+kernel.
 """
 
 from __future__ import annotations

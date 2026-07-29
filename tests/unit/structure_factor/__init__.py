@@ -211,6 +211,69 @@ RTOL_BACKEND_F64 = 1e-12
 RTOL_BACKEND_GRAD_F32 = 5e-3
 RTOL_BACKEND_GRAD_F64 = 1e-10
 
+# ---------------------------------------------------------------------------
+# Direct-summation kernels vs the eager oracle.
+# ---------------------------------------------------------------------------
+# Distinct from the map-route gates above: these compare one analytic implementation
+# against another, with no grid and no truncation in between, so the only source of
+# disagreement is float arithmetic. They are gated near precision accordingly.
+#
+# Measured on the 60-atom scene, candidate vs the CPU float64 ``_eager_*`` oracle:
+#
+#   device dtype    kernel        F rel L2    worst grad rel L2   grad cos
+#   cpu    float32  checkpointed  1.71e-06    2.39e-05            1.0000000
+#   cpu    float64  checkpointed  2.44e-16    2.69e-15            1.0000000
+#   mps    float32  checkpointed  1.72e-06    2.41e-05            1.0000000
+#
+# The MPS row is a path that had no coverage of any kind before: there is no Metal
+# direct-summation kernel, so ``Engine.METAL`` and any MPS device both land on
+# ``_checkpointed_*`` running on-device. It agrees with the CPU float32 row to the digit.
+#
+# ``ds_triton`` is **unmeasured** -- no CUDA on the calibration host. It shares these gates,
+# which is a prediction. The deleted ``test_ds_triton_vs_eager.py`` used a max-abs-diff
+# gate of 1e-3 on a different metric; if a Triton leg misses 1e-4 here, measure before
+# widening.
+RTOL_DS_F32 = 1e-4  # worst measured 2.4e-05
+RTOL_DS_F64 = 1e-13  # worst measured 2.7e-15
+COS_MIN_DS = 0.9999
+
+# ---------------------------------------------------------------------------
+# Accelerators need no constants of their own. Measured, not assumed.
+# ---------------------------------------------------------------------------
+# The device legs were expected to need looser gates than the CPU ones, because an
+# accelerator adds its own kernel arithmetic on top of the shared discretization error.
+# They do not. Measured on the 60-atom synthetic scene against the CPU float64 DS oracle,
+# iso then aniso, worst case per column:
+#
+#   device dtype    kernel        amplitude   g_xyz      g_occ      g_U/adp    HVP
+#   cpu    float32  cpu_sphere    4.37e-03    6.97e-02   3.61e-02   8.02e-02   1.62e-02
+#   cpu    float64  cpu_sphere    4.37e-03    6.98e-02   3.63e-02   8.09e-02   1.62e-02
+#   cpu    float64  portable      4.37e-03    6.98e-02   3.63e-02   8.09e-02   1.62e-02
+#   mps    float32  portable      4.37e-03    6.98e-02   3.63e-02   8.09e-02   1.62e-02
+#   mps    float32  mps_metal     4.37e-03    6.98e-02   3.63e-02   8.09e-02   raises
+#
+# Every row agrees to the printed digits. That is the truncation-contract standardization
+# showing up as a measurement: with all four kernels applying the same atom-centred
+# Cartesian sphere at the same raw policy radius, what is left over is *shared*
+# discretization error, not per-kernel divergence. So the CPU constants above bound the
+# accelerators, and adding ``RTOL_*_MPS`` / ``RTOL_*_CUDA`` would have created numbers with
+# nothing behind them.
+#
+# ``mps_metal`` raising on the HVP is the documented contract, not a gap -- see
+# ``mps/variable_radius.py:12``. ``test_second_order.py`` asserts both halves: which
+# kernels give a correct second derivative, and which raise rather than returning a wrong
+# one.
+#
+# **CUDA is unmeasured.** This host has no CUDA, so the Triton legs are written and marked
+# but have never run. They share the parametrization and the tolerances with MPS, which is
+# defensible given every other backend landed on the same numbers -- but it is a prediction
+# until someone runs:
+#
+#     pytest tests/unit/structure_factor -v -s -k cuda
+#
+# on a CUDA host. If a Triton leg misses a gate there, establish whether it is kernel
+# arithmetic or a real geometry difference before touching a constant.
+
 __all__ = [
     "RTOL_VS_GEMMI",
     "MAXREL_VS_GEMMI",
@@ -232,4 +295,7 @@ __all__ = [
     "RTOL_BACKEND_F64",
     "RTOL_BACKEND_GRAD_F32",
     "RTOL_BACKEND_GRAD_F64",
+    "RTOL_DS_F32",
+    "RTOL_DS_F64",
+    "COS_MIN_DS",
 ]

@@ -99,14 +99,15 @@ class MetalGridDensity(torch.autograd.Function):
 
 
 def add_isotropic_mps_var(
-    density_map, xyz, adp, occ, A, B,
-    inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
+    density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
 ):
     """Isotropic variable-radius Metal splat; adds into ``density_map``.
 
-    Signature mirrors ``add_isotropic_plain_var`` (``grid_shape_tuple`` and
-    ``voxel_size`` are unused -- the grid shape comes from ``density_map`` and the
-    truncation box from the inverse-cell row norms).
+    Signature is the canonical splat signature, identical to
+    ``add_isotropic_plain_var`` and ``add_isotropic_cpu_sphere_var`` -- the grid shape
+    comes from ``density_map`` and the truncation box from the inverse-cell row norms,
+    so no ``grid_shape_tuple`` or ``voxel_size`` is needed. Both used to be accepted
+    and ignored.
 
     The truncation radius is the policy radius, used raw; see :func:`_r2cut`.
     """
@@ -180,15 +181,19 @@ class MetalGridDensityAniso(torch.autograd.Function):
 
 
 def add_anisotropic_mps_var(
-    real_space_grid, density_map, xyz, u, occ, A, B,
-    inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
+    density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
 ):
     """Anisotropic variable-radius Metal splat; adds into ``density_map``.
 
-    Signature mirrors ``add_anisotropic_plain_var`` (``real_space_grid`` is used
-    only for its grid shape). Each atom is truncated at its per-axis bounding box
-    with a sphere cull at the per-atom radius -- the same canonical cutoff the
-    CUDA and fused-CPU kernels apply.
+    Signature is the canonical splat signature, identical to
+    ``add_anisotropic_plain_var`` and ``add_anisotropic_cpu_sphere_var``. It used to
+    take ``real_space_grid`` first and ``voxel_size`` last; neither was read -- the
+    grid shape comes from ``density_map``, which is what gets forwarded to
+    ``MetalGridDensityAniso``. The old docstring claimed ``real_space_grid`` was "used
+    only for its grid shape", which had stopped being true.
+
+    Each atom is truncated at its per-axis bounding box with a sphere cull at the
+    per-atom radius -- the same canonical cutoff the CUDA and fused-CPU kernels apply.
     """
     r2cut = _r2cut(radius_per_atom)
     mask = torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)

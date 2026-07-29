@@ -49,6 +49,7 @@ from . import (
     RTOL_HVP,
 )
 from . import helpers as H
+from .conftest import DEVICE_DTYPE_KERNELS
 
 pytestmark = pytest.mark.unit
 
@@ -337,3 +338,86 @@ def test_fft_hvp_matches_ds_real_structure(gemmi_aniso_grad, oracle_aniso_grad):
     assert cos > COS_MIN, f"7L84 HVP direction: cos {cos:.6f}"
     assert rel < RTOL_HVP, f"7L84 HVP magnitude: rel {rel:.3e}"
 
+
+
+# ---------------------------------------------------------------------------
+# 5. Every production kernel, on every device it ships on
+# ---------------------------------------------------------------------------
+# Second order is where the kernels genuinely differ, so this section is not simply the
+# gradient section with another derivative. Only two of the four families are
+# double-differentiable:
+#
+#   add_*_cpu_sphere_var   yes -- via ``_double_backward_vjp``, which re-derives the VJP
+#                          through the portable splat on the saved leaves
+#   add_*_plain_var        yes -- pure autograd over ``scatter_add``
+#   add_*_mps_var          no  -- ``mps/variable_radius.py:12``: "Backward is first-order
+#                          only (like CUDA); double backward must use Engine.EAGER"
+#   WorkQueueGridDensity*  no  -- same, no ``create_graph`` path in the Triton backward
+#
+# So an accelerator HVP cannot be compared against the oracle: there is no HVP to compare.
+# What is testable, and tested below, is that those kernels **raise** rather than returning
+# a silently wrong (or zero) second derivative -- the same failure mode this repo already
+# fixed once for the C++ scatter, where a graph-less backward gave cosine 0.57 while first
+# derivatives stayed correct.
+
+_DOUBLE_DIFFERENTIABLE = {"cpu_sphere", "portable"}
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernel_hvp_matches_ds(scene_fine, oracle_fine, device, dtype, kernel, kind):
+    """HVP of a double-differentiable kernel against the oracle's, on every device.
+
+    Covers the portable splat running *on an accelerator*, which nothing tested before:
+    it is what ``Engine.EAGER`` and the CUDA/MPS float64 fallthrough actually execute, and
+    it is the path a Hessian-based optimizer lands on there.
+    """
+    if kernel not in _DOUBLE_DIFFERENTIABLE:
+        pytest.skip(f"{kernel} is first-order only; see test_kernel_rejects_double_backward")
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    obs = oracle_fine[f"{kind}_obs"].to(device=device, dtype=dtype)
+    v = oracle_fine[f"{kind}_v"].to(device=device, dtype=dtype)
+    _, occ, third = scene.leaves(aniso=aniso, requires_grad=False)
+
+    def loss(x):
+        return H.ls_target(
+            H.density_to_F(scene, H.splat_direct(scene, kernel, x, occ, third, aniso=aniso)),
+            obs,
+        )
+
+    got = hvp(loss, scene.xyz, v)
+    ref = oracle_fine[f"{kind}_hvp"]
+    rel, cos = rel_error(got, ref), cosine_similarity(got, ref)
+    print(f"\n  {device.type}/{dtype}/{kernel}/{kind}: HVP rel {rel:.3e}  cos {cos:.8f}")
+    assert cos > COS_MIN, f"{device.type}/{dtype}/{kernel}/{kind}: HVP cos {cos:.6f}"
+    assert rel < RTOL_HVP, f"{device.type}/{dtype}/{kernel}/{kind}: HVP rel {rel:.3e}"
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernel_rejects_double_backward(scene_fine, oracle_fine, device, dtype, kernel, kind):
+    """First-order-only kernels must raise under ``create_graph=True``, not return garbage.
+
+    The accelerator kernels have hand-written backwards that return tensors carrying no
+    graph, and neither is decorated ``@once_differentiable`` -- so nothing warns, and the
+    only signal is whatever autograd does when asked for a second derivative. Pinning that
+    it *raises* is what distinguishes "unsupported" from "silently wrong".
+
+    The positive half of the pair is :func:`test_kernel_hvp_matches_ds`; together they say
+    which kernels an optimizer may take a Hessian through.
+    """
+    if kernel in _DOUBLE_DIFFERENTIABLE:
+        pytest.skip(f"{kernel} supports double backward; see test_kernel_hvp_matches_ds")
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    obs = oracle_fine[f"{kind}_obs"].to(device=device, dtype=dtype)
+    _, occ, third = scene.leaves(aniso=aniso, requires_grad=False)
+
+    x = scene.xyz.clone().requires_grad_(True)
+    F = H.density_to_F(scene, H.splat_direct(scene, kernel, x, occ, third, aniso=aniso))
+    (g1,) = torch.autograd.grad(H.ls_target(F, obs), x, create_graph=True)
+
+    with pytest.raises(RuntimeError) as exc:
+        torch.autograd.grad((g1 * torch.ones_like(x)).sum(), x)
+    print(f"\n  {device.type}/{dtype}/{kernel}/{kind} raised: {str(exc.value)[:70]}")

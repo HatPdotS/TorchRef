@@ -84,10 +84,13 @@ from torchref.base.electron_density.kernels.cpu.aniso import _aniso_density_cube
 
 # --- Per-atom variable-radius density path ---
 # The splat radius is no longer a single scalar; each atom is truncated at its own
-# N_sigma * sigma_eff radius (N_sigma = torchref.sigma_cutoff_ed). CUDA+float32 uses
-# the variable-radius Triton kernels (WorkQueueGridDensity{,Aniso}); CPU + AUTO uses
-# the grouped-separable structured-scatter splat; everything else (EAGER any device,
-# CUDA float64, MPS) uses the portable plain-scatter splat.
+# N_sigma * sigma_eff radius (N_sigma = torchref.sigma_cutoff_ed). Every wrapper below
+# takes the same canonical signature
+#   (density_map, xyz, adp_or_u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom)
+# so the two dispatch ladders differ only in which kernel they name. CUDA+float32 ->
+# the Triton kernels; CPU+AUTO -> the fused C++ sphere splat; MPS+float32 -> Metal;
+# everything else (EAGER any device, CUDA/MPS float64) -> the portable plain-scatter
+# splat.
 from torchref.base.electron_density.radius_policy import (
     per_atom_radius_aniso,
     per_atom_radius_iso,
@@ -95,6 +98,8 @@ from torchref.base.electron_density.radius_policy import (
 from torchref.base.electron_density.kernels.cuda.variable_radius import (
     WorkQueueGridDensity,
     WorkQueueGridDensityAniso,
+    add_anisotropic_cuda_var,
+    add_isotropic_cuda_var,
 )
 from torchref.base.electron_density.kernels.cpu.variable_radius import (
     add_anisotropic_cpu_var,
@@ -134,10 +139,10 @@ def build_electron_density(
     per-atom truncation radius (``N_sigma * sigma_eff``, with
     ``N_sigma = torchref.sigma_cutoff_ed``) via the per-atom variable-radius
     kernels: the CUDA float32 work-queue kernels
-    (``WorkQueueGridDensity{,Aniso}``) under ``Engine.AUTO``/``Engine.TRITON``,
-    the grouped-separable variable-radius splat on CPU+AUTO, the native Metal
-    kernels on MPS+float32 under ``Engine.AUTO``/``Engine.METAL``, and the
-    portable plain-scatter variable-radius splat everywhere else
+    (``add_isotropic_cuda_var`` / ``add_anisotropic_cuda_var``) under
+    ``Engine.AUTO``/``Engine.TRITON``, the fused C++ sphere splat on CPU+AUTO, the
+    native Metal kernels on MPS+float32 under ``Engine.AUTO``/``Engine.METAL``, and
+    the portable plain-scatter variable-radius splat everywhere else
     (``Engine.EAGER``, CUDA/MPS float64).
 
     Parameters
@@ -157,8 +162,11 @@ def build_electron_density(
     frac_matrix : torch.Tensor
         Fractional-to-Cartesian matrix, shape (3, 3).
     voxel_size : torch.Tensor
-        Voxel dimensions, shape (3,). The per-atom truncation radius is derived
-        internally from each atom's B/U and ``torchref.sigma_cutoff_ed``.
+        Voxel dimensions, shape (3,). **Unused by every splat** -- the per-atom
+        truncation radius comes from each atom's B/U and ``torchref.sigma_cutoff_ed``
+        via :mod:`~torchref.base.electron_density.radius_policy`, and the enumeration
+        box from ``inv_frac_matrix``. Retained because ``SfFFT`` passes it
+        positionally; dropping it is a wider API change.
     xyz_aniso : torch.Tensor, optional
         Anisotropic atom positions, shape (n_aniso, 3).
     u_aniso : torch.Tensor, optional
@@ -188,7 +196,6 @@ def build_electron_density(
     # --- isotropic atoms ---
     if len(xyz_iso) > 0:
         density_map = _add_isotropic(
-            real_space_grid,
             density_map,
             xyz_iso,
             adp_iso,
@@ -197,13 +204,11 @@ def build_electron_density(
             B_iso,
             inv_frac_matrix,
             frac_matrix,
-            voxel_size,
         )
 
     # --- anisotropic atoms ---
     if xyz_aniso is not None and len(xyz_aniso) > 0:
         density_map = _add_anisotropic(
-            real_space_grid,
             density_map,
             xyz_aniso,
             u_aniso,
@@ -212,7 +217,6 @@ def build_electron_density(
             B_aniso,
             inv_frac_matrix,
             frac_matrix,
-            voxel_size,
         )
 
     return density_map
@@ -224,7 +228,6 @@ def build_electron_density(
 
 
 def _add_isotropic(
-    real_space_grid,
     density_map,
     xyz,
     adp,
@@ -233,7 +236,6 @@ def _add_isotropic(
     B,
     inv_frac_matrix,
     frac_matrix,
-    voxel_size,
 ):
     """Add isotropic atoms with a per-atom variable radius. ``Engine`` is the switch.
 
@@ -260,30 +262,21 @@ def _add_isotropic(
     n_sigma = get_sigma_cutoff_ed()
     radius_per_atom = per_atom_radius_iso(adp, B, n_sigma=n_sigma)
 
+    # Every branch below takes the same canonical splat signature, so these differ
+    # only in which kernel they name. Radius squaring and coefficient-mask
+    # construction live inside each wrapper, not here.
     if should_use_triton(xyz):
         try:
-            r2cut = radius_per_atom * radius_per_atom
-            coeff_mask = torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
             # kernel accumulates into (a copy of) density_map -> no extra grid buffer + add
-            return WorkQueueGridDensity.apply(
-                density_map,
-                real_space_grid,
-                xyz,
-                adp,
-                occ,
-                A,
-                B,
-                r2cut,
-                coeff_mask,
-                inv_frac_matrix,
-                frac_matrix,
+            return add_isotropic_cuda_var(
+                density_map, xyz, adp, occ, A, B,
+                inv_frac_matrix, frac_matrix, radius_per_atom,
             )
         except Exception:
             if get_engine() is Engine.TRITON:
                 raise
             # AUTO: fall through to the portable splat
 
-    grid_shape_tuple = real_space_grid.shape[:3]
     # Fused C++ spherical-cutoff splat: the CPU production path, float32 AND float64
     # (the kernel is templated on the scalar type, so a float64 config no longer
     # drops to the slow portable splat). ``should_use_sphere_splat`` owns the
@@ -307,7 +300,7 @@ def _add_isotropic(
         try:
             return add_isotropic_mps_var(
                 density_map, xyz, adp, occ, A, B,
-                inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
+                inv_frac_matrix, frac_matrix, radius_per_atom,
             )
         except Exception:
             if get_engine() is Engine.METAL:
@@ -320,7 +313,6 @@ def _add_isotropic(
 
 
 def _add_anisotropic(
-    real_space_grid,
     density_map,
     xyz,
     u,
@@ -329,7 +321,6 @@ def _add_anisotropic(
     B,
     inv_frac_matrix,
     frac_matrix,
-    voxel_size,
 ):
     """Add anisotropic atoms with a per-atom variable radius (mirrors the iso path).
 
@@ -352,23 +343,14 @@ def _add_anisotropic(
     n_sigma = get_sigma_cutoff_ed()
     radius_per_atom = per_atom_radius_aniso(B, u, n_sigma=n_sigma)
 
+    # As in _add_isotropic: one canonical signature, so the branches differ only in
+    # which kernel they name.
     if should_use_triton(xyz):
         try:
-            r2cut = radius_per_atom * radius_per_atom
-            coeff_mask = torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
             # kernel accumulates into (a copy of) density_map -> no extra grid buffer + add
-            return WorkQueueGridDensityAniso.apply(
-                density_map,
-                real_space_grid,
-                xyz,
-                u,
-                occ,
-                A,
-                B,
-                r2cut,
-                coeff_mask,
-                inv_frac_matrix,
-                frac_matrix,
+            return add_anisotropic_cuda_var(
+                density_map, xyz, u, occ, A, B,
+                inv_frac_matrix, frac_matrix, radius_per_atom,
             )
         except Exception:
             if get_engine() is Engine.TRITON:
@@ -391,8 +373,8 @@ def _add_anisotropic(
 
         try:
             return add_anisotropic_mps_var(
-                real_space_grid, density_map, xyz, u, occ, A, B,
-                inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
+                density_map, xyz, u, occ, A, B,
+                inv_frac_matrix, frac_matrix, radius_per_atom,
             )
         except Exception:
             if get_engine() is Engine.METAL:

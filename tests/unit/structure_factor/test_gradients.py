@@ -33,6 +33,9 @@ from torchref.base.direct_summation.dispatch import (
 from torchref.utils import Engine, use_engine
 
 from . import (
+    COS_MIN_DS,
+    RTOL_DS_F32,
+    RTOL_DS_F64,
     ATOL_GRADCHECK,
     COS_MIN_GRADIENT,
     COS_MIN_GRADIENT_SYNTHETIC,
@@ -44,6 +47,7 @@ from . import (
     RTOL_GRADIENT_SYNTHETIC,
 )
 from . import helpers as H
+from .conftest import DEVICE_DTYPE_KERNELS, DS_DEVICE_DTYPE_KERNELS
 
 pytestmark = pytest.mark.unit
 
@@ -292,3 +296,117 @@ def test_fft_gradients_match_ds_real_structure(gemmi_aniso_grad, oracle_aniso_gr
         "smearing correction; it was measured at 0.9995 when this test was written."
     )
 
+
+
+# ---------------------------------------------------------------------------
+# 5. Every production kernel, on every device it ships on
+# ---------------------------------------------------------------------------
+# Direct kernel calls, not dispatch -- see the note in ``test_forward.py``. Worst case
+# over the whole matrix when written: gradient rel 9.51e-02, cos 0.995544, and every
+# device agreeing to the printed digits, so the CPU constants bound the accelerators too.
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernel_gradients_match_ds(scene_fine, oracle_fine, device, dtype, kernel, kind):
+    """Gradients from one production kernel against the DS oracle, all three leaves.
+
+    The candidate's leaves live on the target device in the target dtype, while the
+    oracle's are CPU float64. Both describe the same structure because
+    :meth:`Scene.to` moves and casts a single source scene, and the comparison helpers
+    promote to CPU float64 before measuring.
+    """
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    obs = oracle_fine[f"{kind}_obs"].to(device=device, dtype=dtype)
+    leaves = scene.leaves(aniso=aniso)
+    F = H.density_to_F(scene, H.splat_direct(scene, kernel, *leaves, aniso=aniso))
+    got = torch.autograd.grad(H.ls_target(F, obs), leaves)
+    ref = oracle_fine[f"{kind}_grads"]
+
+    print(f"\n  {device.type}/{dtype}/{kernel}/{kind}")
+    for name, g, r in zip(_LEAF_NAMES, got, ref):
+        rel, cos = rel_error(g, r), cosine_similarity(g, r)
+        print(f"    {name:10s} rel {rel:.3e}  cos {cos:.8f}  ratio {gradnorm_ratio(g, r):.4f}")
+        assert rel < RTOL_GRADIENT_SYNTHETIC, (
+            f"{device.type}/{dtype}/{kernel}/{kind} {name}: rel {rel:.3e}"
+        )
+        assert cos > COS_MIN_GRADIENT_SYNTHETIC, (
+            f"{device.type}/{dtype}/{kernel}/{kind} {name}: cos {cos:.6f}"
+        )
+
+
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DEVICE_DTYPE_KERNELS)
+def test_kernel_gradients_agree_with_portable(scene_fine, oracle_fine, device, dtype, kernel, kind):
+    """Kernel-vs-portable gradients on the same device, gated tightly.
+
+    The oracle gate above is loose by necessity -- it absorbs the real discretization
+    error. This one is tight, because two kernels applying the same truncation contract to
+    the same inputs differ only in accumulation order. It is what would catch a backward
+    that is wrong in the same direction as the discretization residual.
+    """
+    if kernel == "portable":
+        pytest.skip("portable is the reference for this comparison")
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    obs = oracle_fine[f"{kind}_obs"].to(device=device, dtype=dtype)
+
+    def grads(name):
+        leaves = scene.leaves(aniso=aniso)
+        F = H.density_to_F(scene, H.splat_direct(scene, name, *leaves, aniso=aniso))
+        return torch.autograd.grad(H.ls_target(F, obs), leaves)
+
+    got, ref = grads(kernel), grads("portable")
+    tol = RTOL_BACKEND_GRAD_F32 if dtype is torch.float32 else RTOL_BACKEND_GRAD_F64
+    for name, g, r in zip(_LEAF_NAMES, got, ref):
+        rel = rel_error(g, r)
+        print(f"  {device.type}/{dtype}/{kernel}/{kind} {name:10s} vs portable rel {rel:.3e}")
+        assert rel < tol, f"{device.type}/{dtype}/{kernel}/{kind} {name}: rel {rel:.3e}"
+
+
+# ---------------------------------------------------------------------------
+# 6. Direct-summation kernels vs the eager oracle
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("kind", ["iso", "aniso"])
+@pytest.mark.parametrize("device,dtype,kernel", DS_DEVICE_DTYPE_KERNELS)
+def test_ds_kernel_gradients_match_eager_oracle(scene_fine, device, dtype, kernel, kind):
+    """Gradients from one DS kernel against the eager oracle, all three leaves.
+
+    Absorbs ``test_gradient_correctness.py``'s two Triton DS gradient tests, which lived
+    beside geometry and ADP-restraint tests and compared against ``_eager_*`` at
+    ``min_cos=0.999, ratio_tol=1e-2`` while never checking forward values. Here the forward
+    comparison is :func:`test_forward.test_ds_kernel_matches_eager_oracle` and the gate is
+    near precision, because these are two analytic implementations with no discretization
+    between them.
+
+    Coordinates are **fractional** -- direct summation's convention, unlike the splat
+    kernels' Cartesian.
+    """
+    aniso = kind == "aniso"
+    scene = scene_fine.to(device=device, dtype=dtype)
+    third_ref = scene_fine.u6 if aniso else scene_fine.adp
+
+    with torch.no_grad():
+        obs = H.synthetic_obs(H.ds_direct(scene_fine, "eager", aniso=aniso))
+
+    def grads(sc, name, third_src, obs_local):
+        leaves = tuple(
+            t.clone().requires_grad_(True)
+            for t in (sc.xyz_frac, sc.occ, third_src)
+        )
+        F = H.ds_direct(sc, name, *leaves, aniso=aniso)
+        return torch.autograd.grad(H.ls_target(F, obs_local), leaves)
+
+    ref = grads(scene_fine, "eager", third_ref, obs)
+    got = grads(
+        scene, kernel, scene.u6 if aniso else scene.adp, obs.to(device=device, dtype=dtype)
+    )
+
+    tol = RTOL_DS_F32 if dtype is torch.float32 else RTOL_DS_F64
+    print(f"\n  {device.type}/{dtype}/{kernel}/{kind}")
+    for name, g, r in zip(("xyz_frac", "occ", "adp_or_u"), got, ref):
+        rel, cos = rel_error(g, r), cosine_similarity(g, r)
+        print(f"    {name:10s} rel {rel:.3e}  cos {cos:.9f}")
+        assert rel < tol, f"{device.type}/{dtype}/{kernel}/{kind} {name}: rel {rel:.3e}"
+        assert cos > COS_MIN_DS, f"{device.type}/{dtype}/{kernel}/{kind} {name}: cos {cos:.7f}"

@@ -15,7 +15,87 @@ import torch
 import torchref
 from torchref.config import device as device_cfg, dtypes
 
+from tests.conftest import _accelerator
+
 from . import helpers as H
+
+
+# ---------------------------------------------------------------------------
+# Device axis
+# ---------------------------------------------------------------------------
+# Built at **import time**, copying ``tests/conftest.py:295``. That is load-bearing: the
+# backend mark has to be attached during *collection*, because
+# ``pytest_collection_modifyitems`` is what gates on it and cannot see a mark added later
+# from inside a fixture. On a CPU-only host the accelerator param does not exist at all,
+# so there is no skip noise -- and on this host the ``cuda`` leg likewise never appears.
+#
+# The accelerator carries its *specific* backend mark (``cuda`` or ``mps``), not the
+# generic ``gpu`` one, so a CUDA-less host skips the cuda leg with an accurate reason.
+_DEVICES = [pytest.param(torch.device("cpu"), id="cpu")]
+_ACCELERATOR = _accelerator()
+if _ACCELERATOR is not None:
+    _DEVICES.append(
+        pytest.param(
+            _ACCELERATOR,
+            id=_ACCELERATOR.type,
+            marks=getattr(pytest.mark, _ACCELERATOR.type),
+        )
+    )
+
+#: float32 first: the production dtype. MPS cannot hold float64 at all, which
+#: ``helpers.device_supports_dtype`` filters -- so ``(mps, float64)`` yields no kernels
+#: and therefore no test, rather than a test that skips or silently passes.
+_DTYPES = [torch.float32, torch.float64]
+
+
+def device_dtype_kernels():
+    """Every ``(device, dtype, kernel_name)`` that names a real production path.
+
+    Enumerated from the kernel registry rather than written out, so a kernel added to
+    ``helpers._KERNEL_SPECS`` is covered automatically and an unsupported combination
+    produces no test instead of a vacuous one.
+    """
+    out = []
+    for dev_param in _DEVICES:
+        device = dev_param.values[0]
+        for dtype in _DTYPES:
+            for name in H.kernels_for(device, dtype):
+                out.append(
+                    pytest.param(
+                        device,
+                        dtype,
+                        name,
+                        id=f"{device.type}-{str(dtype).replace('torch.float', 'f')}-{name}",
+                        marks=dev_param.marks,
+                    )
+                )
+    return out
+
+
+def ds_device_dtype_kernels():
+    """Every ``(device, dtype, ds_kernel_name)`` naming a real direct-summation path.
+
+    Separate from the splat list because the two families have different device/dtype
+    envelopes -- notably there is no Metal DS kernel, so the MPS leg here is
+    ``_checkpointed_*`` running on-device rather than a native shader.
+    """
+    out = []
+    for dev_param in _DEVICES:
+        device = dev_param.values[0]
+        for dtype in _DTYPES:
+            for name in H.ds_kernels_for(device, dtype):
+                out.append(
+                    pytest.param(
+                        device, dtype, name,
+                        id=f"{device.type}-{str(dtype).replace('torch.float', 'f')}-{name}",
+                        marks=dev_param.marks,
+                    )
+                )
+    return out
+
+
+DEVICE_DTYPE_KERNELS = device_dtype_kernels()
+DS_DEVICE_DTYPE_KERNELS = ds_device_dtype_kernels()
 
 
 # ---------------------------------------------------------------------------

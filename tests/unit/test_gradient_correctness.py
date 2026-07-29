@@ -33,18 +33,10 @@ CPU-only by default; the Triton comparisons are marked ``cuda`` and are
 auto-skipped unless the host actually has a CUDA device.
 """
 
-import itertools
-import tempfile
 
 import pytest
 import torch
 
-from torchref.base.direct_summation.dispatch import (
-    _checkpointed_aniso,
-    _checkpointed_iso,
-    _eager_aniso,
-    _eager_iso,
-)
 from torchref.base.targets.bond import _bond_math_eager, bond_math
 from torchref.base.targets.xray_gaussian import (
     _gaussian_xray_loss_math_eager,
@@ -67,35 +59,9 @@ _HAS_CUDA = torch.cuda.is_available()
 # These live in ``tests/helpers/grad_asserts.py`` so the accelerator kernel
 # comparison tests can share them; re-exported here because this module is where
 # they originated and several tests below use them unqualified.
-from tests.helpers.grad_asserts import (  # noqa: E402
-    _flat_real,
-    assert_grads_agree,
-    cosine_similarity,
-    got_ref_pairs,
-    gradnorm_ratio,
-)
+from tests.helpers.grad_asserts import assert_grads_agree  # noqa: E402
 
 # --- synthetic structure-factor inputs (P1, ~10-15 atoms) ------------------
-def _sf_inputs(N=12, R=18, dtype=torch.float64, device="cpu"):
-    g = torch.Generator().manual_seed(0)
-    hkl = torch.randint(-3, 4, (R, 3), generator=g).to(dtype=dtype, device=device)
-    s = (torch.rand(R, generator=g) * 0.4).to(dtype=dtype, device=device)
-    svec = (torch.randn(R, 3, generator=g) * 0.3).to(dtype=dtype, device=device)
-    A = torch.rand(N, 5, generator=g).to(dtype=dtype, device=device)
-    B = (torch.rand(N, 5, generator=g) + 0.5).to(dtype=dtype, device=device)
-    return hkl, s, svec, A, B
-
-
-def _sf_leaves(N=12, dtype=torch.float64, device="cpu", requires_grad=True):
-    g = torch.Generator().manual_seed(1)
-    mk = lambda t: t.to(dtype=dtype, device=device).requires_grad_(requires_grad)
-    xyz = mk(torch.rand(N, 3, generator=g))
-    occ = mk(torch.rand(N, generator=g) * 0.4 + 0.6)
-    adp = mk(torch.rand(N, generator=g) * 10 + 5)
-    U = mk(torch.rand(N, 6, generator=g) * 0.04 + 0.01)
-    return xyz, occ, adp, U
-
-
 def test_gaussian_xray_gradcheck(double_cpu):
     """Gaussian X-ray NLL (GaussianXrayTarget.forward body): d/d(F_obs, F_calc).
 
@@ -150,64 +116,6 @@ def test_bond_gradcheck(double_cpu):
 # 4. Optimized SF path (hand-written backward) vs eager autograd
 #    Metric: cosine similarity + gradnorm ratio (CPU, always runs).
 # =============================================================================
-def _scalar(F):
-    """A non-trivial real scalar of a complex SF vector (mixes re & im)."""
-    return (F.real**2 + 2.0 * F.imag).sum()
-
-
-def _grads(fn, leaves):
-    """Gradients of ``_scalar(fn(*leaves))`` w.r.t. each leaf."""
-    out = _scalar(fn(*leaves))
-    return torch.autograd.grad(out, leaves)
-
-
-
-
-@pytest.mark.cuda
-def test_triton_sf_iso_matches_eager_cosine():
-    """DS isotropic Triton kernel gradient == eager autograd (CUDA float32)."""
-    from torchref.base.direct_summation.dispatch import ds_iso
-    from torchref.utils import Engine
-
-    dev = "cuda"
-    hkl, s, _, A, B = _sf_inputs(dtype=torch.float32, device=dev)
-    xyz, occ, adp, _ = _sf_leaves(dtype=torch.float32, device=dev)
-    xyz2, occ2, adp2, _ = _sf_leaves(dtype=torch.float32, device=dev)
-
-    g_triton = _grads(
-        lambda x, o, a: ds_iso(hkl, s, x, o, a, A, B, engine=Engine.TRITON),
-        (xyz, occ, adp),
-    )
-    g_eager = _grads(
-        lambda x, o, a: _eager_iso(hkl, s, x, o, a, A, B, max_memory_gb=2.0),
-        (xyz2, occ2, adp2),
-    )
-    # Looser thresholds: float32 + distinct kernel arithmetic.
-    assert_grads_agree(g_triton, g_eager, min_cos=0.999, ratio_tol=1e-2, ctx="iso ")
-
-
-@pytest.mark.cuda
-def test_triton_sf_aniso_matches_eager_cosine():
-    """DS anisotropic Triton kernel gradient == eager autograd (CUDA float32)."""
-    from torchref.base.direct_summation.dispatch import ds_aniso
-    from torchref.utils import Engine
-
-    dev = "cuda"
-    hkl, _, svec, A, B = _sf_inputs(dtype=torch.float32, device=dev)
-    xyz, occ, _, U = _sf_leaves(dtype=torch.float32, device=dev)
-    xyz2, occ2, _, U2 = _sf_leaves(dtype=torch.float32, device=dev)
-
-    g_triton = _grads(
-        lambda x, o, u: ds_aniso(hkl, svec, x, o, u, A, B, engine=Engine.TRITON),
-        (xyz, occ, U),
-    )
-    g_eager = _grads(
-        lambda x, o, u: _eager_aniso(hkl, svec, x, o, u, A, B, max_memory_gb=2.0),
-        (xyz2, occ2, U2),
-    )
-    assert_grads_agree(g_triton, g_eager, min_cos=0.999, ratio_tol=1e-2, ctx="aniso ")
-
-
 @pytest.mark.cuda
 def test_triton_gaussian_xray_matches_eager_cosine():
     """Gaussian X-ray Triton kernel gradient == eager autograd (CUDA float32)."""
