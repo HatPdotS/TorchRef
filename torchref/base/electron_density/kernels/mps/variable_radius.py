@@ -20,13 +20,19 @@ import torch
 from torchref.base.electron_density.kernels.mps.compile import _get_lib
 
 
-def _quantized_r2cut(radius_per_atom, voxel_size):
-    """Per-atom squared cutoff quantized to a voxel multiple, matching the plain
-    reference (``_box_radius_per_atom`` * ``min_voxel`` in
-    ``kernels/cpu/variable_radius.py``)."""
-    min_voxel = voxel_size.min()
-    r_eff = torch.ceil(radius_per_atom / min_voxel) * min_voxel
-    return r_eff * r_eff
+def _r2cut(radius_per_atom):
+    """Per-atom squared cutoff: the policy radius, used raw.
+
+    This used to round ``radius_per_atom`` up to a whole voxel, to match the old
+    plain-splat reference whose offset list was built in voxel units. That made the
+    effective cutoff **grid-dependent** -- inflating it by up to one voxel (~0.4 A,
+    i.e. ~0.4 sigma at 0.4 A sampling), so Metal truncated systematically later than
+    the CUDA kernel and ``torchref.sigma_cutoff_ed`` meant different things on the two
+    devices. The radius arriving from
+    :mod:`torchref.base.electron_density.radius_policy` is already quantized (0.25 A)
+    and clamped, so it is used as-is; every backend now shares one cutoff.
+    """
+    return radius_per_atom * radius_per_atom
 
 
 class MetalGridDensity(torch.autograd.Function):
@@ -98,14 +104,13 @@ def add_isotropic_mps_var(
 ):
     """Isotropic variable-radius Metal splat; adds into ``density_map``.
 
-    Signature mirrors ``add_isotropic_plain_var`` (``grid_shape_tuple`` is
-    unused -- the grid shape comes from ``density_map``).
+    Signature mirrors ``add_isotropic_plain_var`` (``grid_shape_tuple`` and
+    ``voxel_size`` are unused -- the grid shape comes from ``density_map`` and the
+    truncation box from the inverse-cell row norms).
 
-    The truncation radius is quantized up to a voxel multiple
-    (``ceil(radius/min_voxel)*min_voxel``) to exactly match the plain-splat
-    reference's per-atom cutoff, so the Metal and fallback paths agree.
+    The truncation radius is the policy radius, used raw; see :func:`_r2cut`.
     """
-    r2cut = _quantized_r2cut(radius_per_atom, voxel_size)
+    r2cut = _r2cut(radius_per_atom)
     mask = torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
     return MetalGridDensity.apply(
         density_map, xyz, adp, occ, A, B, r2cut, mask, inv_frac_matrix, frac_matrix
@@ -182,10 +187,10 @@ def add_anisotropic_mps_var(
 
     Signature mirrors ``add_anisotropic_plain_var`` (``real_space_grid`` is used
     only for its grid shape). Each atom is truncated at its per-axis bounding box
-    with a sphere cull at the (quantized) per-atom radius -- far tighter than the
-    plain reference's full cube on anisotropic high-resolution cells.
+    with a sphere cull at the per-atom radius -- the same canonical cutoff the
+    CUDA and fused-CPU kernels apply.
     """
-    r2cut = _quantized_r2cut(radius_per_atom, voxel_size)
+    r2cut = _r2cut(radius_per_atom)
     mask = torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
     return MetalGridDensityAniso.apply(
         density_map, xyz, u, occ, A, B, r2cut, mask, inv_frac_matrix, frac_matrix

@@ -1,27 +1,47 @@
 """
 Central electron density building, dispatched solely by the shared ``Engine``.
 
+One truncation contract, every backend
+-------------------------------------
 Every atom is splatted at its own per-atom truncation radius
 (``N_sigma * sigma_eff``, with ``N_sigma = torchref.sigma_cutoff_ed``); there is
-no single global splat radius. The capability-based ``Engine`` in
-:mod:`torchref.utils.triton_dispatch` (AUTO/TRITON/METAL/EAGER) is the *only*
-switch selecting which variable-radius kernel runs — there is no
-environment-variable dispatch and no parallel "tier" knobs:
+no single global splat radius. Crucially, every production kernel now applies the
+*same* cutoff, so ``sigma_cutoff_ed`` means the same thing on every device:
 
-- ``Engine.AUTO`` — fastest available per device, all variable-radius:
+    voxel v receives atom i's density iff ``||w||^2 <= r_i^2``, where ``w`` is the
+    minimum-image **Cartesian atom->voxel** vector (the sphere is centred on the
+    atom, not on its nearest grid node) and ``r_i`` is the raw
+    :mod:`~torchref.base.electron_density.radius_policy` radius,
+
+enumerated over the triclinic-correct per-axis box
+``ceil(r_i * n_axis * ||inv_frac row_axis||)``. No grid-dependent requantization of
+the radius, no diagonal-metric approximation, no cube. Historically the backends
+disagreed here -- Metal inflated the radius to a whole voxel, the portable CPU
+splat used a node-centred diagonal metric, and the CPU fast path splatted a cube --
+by amounts comparable to or larger than the truncation error itself.
+
+Engine dispatch
+---------------
+The capability-based ``Engine`` in :mod:`torchref.utils.triton_dispatch`
+(AUTO/TRITON/METAL/EAGER) is the *only* switch selecting which kernel runs — there
+is no environment-variable dispatch and no parallel "tier" knobs:
+
+- ``Engine.AUTO`` — fastest available per device:
   CUDA+float32 -> the work-queue Triton kernels
-  (``WorkQueueGridDensity`` / ``WorkQueueGridDensityAniso``); CPU+float32 -> the
-  grouped-separable variable-radius splat
-  (``add_isotropic_cpu_separable_var`` / ``add_anisotropic_cpu_var``);
+  (``WorkQueueGridDensity`` / ``WorkQueueGridDensityAniso``);
+  CPU float32 **or float64** -> the fused C++ spherical-cutoff splat
+  (``add_isotropic_cpu_sphere_var`` / ``add_anisotropic_cpu_sphere_var``);
   MPS+float32 -> the native Metal kernels
   (``add_isotropic_mps_var`` / ``add_anisotropic_mps_var``, compiled via
   ``torch.mps.compile_shader``); everything else (CUDA/MPS float64) -> the
-  portable plain-scatter variable-radius splat (``add_isotropic_plain_var`` /
+  portable plain-scatter splat (``add_isotropic_plain_var`` /
   ``add_anisotropic_plain_var``). On a Triton/Metal kernel failure or
-  unavailability under AUTO it falls through to the plain-scatter splat.
-- ``Engine.EAGER`` — the portable plain-scatter variable-radius splat on every
-  device. Double-differentiable; use it for Hessians / debugging. Force it with
-  ``with use_engine(Engine.EAGER): ...``.
+  unavailability under AUTO it falls through to the portable splat.
+- ``Engine.EAGER`` — the portable plain-scatter splat on every device.
+  Double-differentiable; use it for Hessians / debugging. Force it with
+  ``with use_engine(Engine.EAGER): ...``. Because it now shares the truncation
+  contract above, AUTO-vs-EAGER is a genuine equivalence check rather than a
+  comparison of two different geometries.
 - ``Engine.TRITON`` — force the CUDA work-queue Triton kernel (raises if not
   CUDA+float32).
 - ``Engine.METAL`` — force the native Metal kernel (raises if not MPS+float32,
@@ -29,14 +49,15 @@ environment-variable dispatch and no parallel "tier" knobs:
   under ``AUTO`` a broken kernel degrades silently to the portable splat, so a
   comparison against ``EAGER`` would pass while measuring nothing.
 
-The production variable-radius splats live in
-``kernels/cuda/variable_radius.py`` and ``kernels/cpu/variable_radius.py``; the
-per-atom radius policy is in :mod:`torchref.base.electron_density.radius_policy`.
-Several legacy fixed-radius kernels are re-imported here so the historical
+The production splats live in ``kernels/cuda/variable_radius.py``,
+``kernels/cpu/sphere_splat.py``, ``kernels/mps/variable_radius.py`` and (portable)
+``kernels/cpu/variable_radius.py``; the per-atom radius policy is in
+:mod:`torchref.base.electron_density.radius_policy`. Legacy kernels — the
+fixed-radius Triton/JIT ones and the grouped-separable cube splats
+(``add_isotropic_cpu_separable_var`` / ``add_anisotropic_cpu_var``, superseded by
+the fused sphere kernel) — are re-imported here so the historical
 ``torchref.base.electron_density.main`` namespace is unchanged and they remain
-callable directly for benchmarking, but they are *not* on the production
-dispatch path. This module keeps only the ``Engine``-based variable-radius
-dispatch.
+callable for benchmarking, but they are *not* on the production dispatch path.
 """
 
 from typing import Optional
@@ -80,6 +101,11 @@ from torchref.base.electron_density.kernels.cpu.variable_radius import (
     add_anisotropic_plain_var,
     add_isotropic_cpu_separable_var,
     add_isotropic_plain_var,
+)
+from torchref.base.electron_density.kernels.cpu.sphere_splat import (
+    add_anisotropic_cpu_sphere_var,
+    add_isotropic_cpu_sphere_var,
+    should_use_sphere_splat,
 )
 
 
@@ -218,16 +244,18 @@ def _add_isotropic(
       variable-radius Triton kernel (``WorkQueueGridDensity``). On kernel failure
       under AUTO it falls through to the portable splat; under ``Engine.TRITON``
       it raises (never silently degrade).
-    - CPU + float32 + AUTO -> the fast C++-scatter grouped-separable splat.
+    - ``should_use_sphere_splat`` (CPU + float32/float64 + built extension, AUTO)
+      -> the fused C++ spherical-cutoff splat.
     - ``should_use_metal`` (MPS + float32 + compiled shader, engine AUTO/METAL)
       -> the native Metal kernel (``add_isotropic_mps_var``). Mirrors the Triton
       branch: on kernel failure under AUTO it falls through to the portable
       splat; under ``Engine.METAL`` it raises (never silently degrade).
     - Everything else (``Engine.EAGER`` on any device, CUDA/MPS float64) -> the
-      portable plain-``scatter_add`` grouped splat: identical per-atom radius,
-      double-differentiable, float64-capable, device-agnostic.
+      portable plain-``scatter_add`` splat: double-differentiable, float64-capable,
+      device-agnostic.
 
-    Every path truncates each atom at its own ``N_sigma * sigma_eff`` radius.
+    Every path applies the identical spherical cutoff documented in the module
+    docstring, so these branches differ only in speed, not in result.
     """
     n_sigma = get_sigma_cutoff_ed()
     radius_per_atom = per_atom_radius_iso(adp, B, n_sigma=n_sigma)
@@ -256,16 +284,17 @@ def _add_isotropic(
             # AUTO: fall through to the portable splat
 
     grid_shape_tuple = real_space_grid.shape[:3]
-    # The C++-scatter fast path is float32-only; non-float32 (float64 config,
-    # complex-derived double grids) falls through to the portable plain splat.
-    if (
-        get_engine() is Engine.AUTO
-        and density_map.device.type == "cpu"
-        and density_map.dtype == torch.float32
+    # Fused C++ spherical-cutoff splat: the CPU production path, float32 AND float64
+    # (the kernel is templated on the scalar type, so a float64 config no longer
+    # drops to the slow portable splat). ``should_use_sphere_splat`` owns the
+    # device/dtype/availability decision; if the extension did not build it returns
+    # False and the portable splat below -- same truncation contract -- takes over.
+    if get_engine() is Engine.AUTO and should_use_sphere_splat(
+        density_map, xyz, adp, occ, A, B
     ):
-        return add_isotropic_cpu_separable_var(
+        return add_isotropic_cpu_sphere_var(
             density_map, xyz, adp, occ, A, B,
-            inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
+            inv_frac_matrix, frac_matrix, radius_per_atom,
         )
     # Native Metal splat on Apple-silicon GPUs (float32 only). ``should_use_metal``
     # owns the device/dtype/availability decision, so an unavailable shader under
@@ -286,7 +315,7 @@ def _add_isotropic(
             # AUTO: fall through to the portable splat
     return add_isotropic_plain_var(
         density_map, xyz, adp, occ, A, B,
-        inv_frac_matrix, frac_matrix, grid_shape_tuple, voxel_size, radius_per_atom,
+        inv_frac_matrix, frac_matrix, radius_per_atom,
     )
 
 
@@ -308,14 +337,17 @@ def _add_anisotropic(
     (largest principal axis, ``per_atom_radius_aniso``).
 
     CUDA+float32 (engine permitting) -> ``WorkQueueGridDensityAniso``. CPU +
-    float32 + AUTO -> the fast C++-scatter grouped box-splat
-    ``add_anisotropic_cpu_var``. MPS + float32 + AUTO/METAL (via
+    float32/float64 + AUTO -> the fused C++ sphere splat
+    ``add_anisotropic_cpu_sphere_var``. MPS + float32 + AUTO/METAL (via
     ``should_use_metal``) -> the native Metal kernel ``add_anisotropic_mps_var``;
     falls through under AUTO, raises under ``Engine.METAL``. Everything else
     (``Engine.EAGER`` on any device, CUDA/MPS float64) -> the portable
-    plain-``scatter_add`` box-splat ``add_anisotropic_plain_var`` (double-diff,
-    float64-capable, device-agnostic). All paths use the per-atom radius
-    (isotropic bounding sphere of the ellipsoid).
+    plain-``scatter_add`` splat ``add_anisotropic_plain_var`` (double-diff,
+    float64-capable, device-agnostic).
+
+    Every path culls on the Euclidean sphere at the per-atom radius (the
+    ellipsoid's isotropic bounding radius) and evaluates the Mahalanobis form
+    inside it -- one contract, as for the isotropic pass.
     """
     n_sigma = get_sigma_cutoff_ed()
     radius_per_atom = per_atom_radius_aniso(B, u, n_sigma=n_sigma)
@@ -343,16 +375,13 @@ def _add_anisotropic(
                 raise
             # AUTO: fall back to the portable splat
 
-    # The C++-scatter fast path is float32-only; non-float32 falls through to
-    # the portable plain splat (see _add_isotropic).
-    if (
-        get_engine() is Engine.AUTO
-        and density_map.device.type == "cpu"
-        and density_map.dtype == torch.float32
+    # Fused C++ spherical-cutoff splat, float32 and float64 (see _add_isotropic).
+    if get_engine() is Engine.AUTO and should_use_sphere_splat(
+        density_map, xyz, u, occ, A, B
     ):
-        return add_anisotropic_cpu_var(
-            real_space_grid, density_map, xyz, u, occ, A, B,
-            inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
+        return add_anisotropic_cpu_sphere_var(
+            density_map, xyz, u, occ, A, B,
+            inv_frac_matrix, frac_matrix, radius_per_atom,
         )
     # Native Metal splat on Apple-silicon GPUs (float32 only). See the iso path:
     # ``should_use_metal`` owns device/dtype/availability, and the import is
@@ -370,6 +399,6 @@ def _add_anisotropic(
                 raise
             # AUTO: fall through to the portable splat
     return add_anisotropic_plain_var(
-        real_space_grid, density_map, xyz, u, occ, A, B,
-        inv_frac_matrix, frac_matrix, radius_per_atom, voxel_size,
+        density_map, xyz, u, occ, A, B,
+        inv_frac_matrix, frac_matrix, radius_per_atom,
     )

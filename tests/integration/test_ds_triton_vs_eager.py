@@ -13,7 +13,6 @@ import torch
 
 pytestmark = [pytest.mark.cuda, pytest.mark.integration]
 
-_ATOL = 1e-2
 _RTOL = 1e-3
 
 

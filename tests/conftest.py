@@ -606,3 +606,34 @@ def model_with_restraints(loaded_model):
     )
     restraints.build_restraints()
     return {"model": loaded_model, "restraints": restraints}
+
+@pytest.fixture
+def double_cpu():
+    """float64/complex128 on CPU for the duration of a test; restore afterwards.
+
+    Required rather than cosmetic for anything touching eager structure factors:
+    ``iso_structure_factor_torched`` casts ``hkl`` to the *global* ``dtypes.float``
+    (``torchref/base/direct_summation/isotropic.py:121``), so under the default float32
+    config a float64 leaf produces a dtype-mismatched matmul.
+
+    Promoted here from three byte-similar copies in ``tests/unit/test_kernel_fixes.py``,
+    ``tests/unit/test_gradient_correctness.py`` and
+    ``tests/integration/test_dtype_config_float64.py``. This version also restores
+    ``sigma_cutoff_ed``, which none of those did -- so a test that changed the cutoff
+    leaked it into everything that ran afterwards.
+    """
+    import torchref
+    from torchref.config import device as _device, dtypes as _dtypes
+
+    f0, c0, d0 = _dtypes.float, _dtypes.complex, _device.current
+    s0 = torchref.sigma_cutoff_ed.value
+    _dtypes.float = torch.float64
+    _dtypes.complex = torch.complex128
+    _device.current = torch.device("cpu")
+    try:
+        yield
+    finally:
+        _dtypes.float = f0
+        _dtypes.complex = c0
+        _device.current = d0
+        torchref.sigma_cutoff_ed.value = s0

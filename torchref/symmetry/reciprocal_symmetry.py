@@ -771,8 +771,23 @@ def expand_hkl(
         hkl_transformed = torch.round(torch.matmul(hkl_float, recip_matrices[i].T)).to(
             torch.int32
         )
-        # Phase shift from translation: 2π × h·t
-        phase_shift = 2.0 * np.pi * torch.matmul(hkl_float, translations[i])
+        # Phase shift from translation: -2π × h·t
+        #
+        # Derivation (do not "simplify" the sign away -- it was +2π here until
+        # 2026-07 and the error is invisible in P21/P212121/C2, which is why it
+        # survived). For a structure invariant under x -> Rx + t, and with the
+        # convention F(h) = Σ_j f_j exp(+2πi h·x_j):
+        #
+        #     F(h) = Σ_j f_j exp(2πi h·(R x_j + t))
+        #          = exp(2πi h·t) · F(hR)
+        #     =>   F(hR) = F(h) · exp(-2πi h·t)
+        #     =>   arg F(h') - arg F(h) = -2π h·t      for h' = hR = R^T h
+        #
+        # Verified against direct structure-factor summation and
+        # ``gemmi.Op.phase_shift``. The residual error of the wrong sign is
+        # 4π h·t mod 2π: zero for 2₁ screws and centring, π for 4₁/4₃, and
+        # 2π/3 for 3₁/6₁ -- see ``tests/unit/symmetry/test_phase_convention.py``.
+        phase_shift = -2.0 * np.pi * torch.matmul(hkl_float, translations[i])
 
         all_hkl.append(hkl_transformed)
         all_phases.append(phase_shift)
@@ -1266,7 +1281,8 @@ def reduce_hkl(
             t = translations[equiv_idx]
 
             hkl_trans = torch.round(torch.matmul(hkl_single, R.T)).to(torch.int32)
-            phase_shift = 2.0 * np.pi * torch.matmul(hkl_single, t)
+            # -2π h·t, same convention as expand_hkl (see the derivation there).
+            phase_shift = -2.0 * np.pi * torch.matmul(hkl_single, t)
 
             if tuple(hkl_trans.cpu().numpy()) == canonical:
                 asu_reflections[canonical].append(
@@ -1500,10 +1516,28 @@ def canonicalize_hkl(
         )
 
     # --- Compute phase shifts vectorially ---
-    # phase_shift[i] = 2*pi * hkl_orig[i] . translations[op_idx[i]]
+    # The consumer applies these as
+    #     phi_canonical = where(friedel_flags, -phi_input, phi_input) + phase_shifts
+    # so the required sign *depends on whether the row was Friedel-flipped*.
+    # With h' = hR (see the derivation in ``expand_hkl``), arg F(h') = arg F(h) - 2π h·t:
+    #
+    #   non-Friedel, h_c = h R:
+    #       phi_c = phi_h - 2π h·t          => shift = -2π h·t
+    #   Friedel, h_c = -(h R):
+    #       phi_c = -phi_(hR) = -phi_h + 2π h·t
+    #       and the consumer already supplies -phi_h  => shift = +2π h·t
+    #
+    # A single uniform sign is therefore wrong for one of the two halves. This was
+    # +2π for both until 2026-07, which happened to be correct for the Friedel half
+    # and wrong for the rest; it is undetectable in P21/P212121/C2 because every
+    # shift there is 0 or π. See tests/unit/symmetry/test_phase_convention.py.
     t_selected = translations_np[op_idx]  # (N, 3)
+    friedel_sign = np.where(friedel_np, 1.0, -1.0).astype(np.float32)
     phase_shifts_np = (
-        2.0 * np.pi * np.sum(hkl_np.astype(np.float32) * t_selected, axis=1)
+        friedel_sign
+        * 2.0
+        * np.pi
+        * np.sum(hkl_np.astype(np.float32) * t_selected, axis=1)
     ).astype(np.float32)
 
     # --- Convert to tensors and sort ---

@@ -31,7 +31,8 @@ Autograd: forward is the custom C++ scatter, backward is a standard gather
 import warnings
 
 import torch
-from torch.utils.cpp_extension import load_inline
+
+from torchref.base.electron_density.kernels.cpu._cpp_build import build_extension
 
 _WARNED_CAST_DTYPES: set = set()
 
@@ -269,14 +270,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 """
 
 # ---------------------------------------------------------------------------
-# Lazy compilation with POSIX lockf locking (works across cluster nodes).
-#
-# PyTorch's load_inline uses FileBaton (file-existence lock) which stays
-# behind when a process is killed mid-compile, blocking all future imports.
-# We wrap it with fcntl.lockf (POSIX record locks) which:
-#   - are enforced by the filesystem → work across NFS/GPFS cluster nodes
-#   - are released by the kernel on process death (even SIGKILL)
-# First process compiles; all others (same node or different) reuse cache.
+# Lazy compilation. The build itself (POSIX lockf locking, per-microarchitecture
+# build directory, ninja/GCC discovery, no -fopenmp on macOS) lives in
+# ``_cpp_build.build_extension``, shared with ``sphere_splat.py`` so the two
+# extensions cannot drift apart on cluster deployment details.
 # ---------------------------------------------------------------------------
 _module = None
 _module_failed = False
@@ -292,95 +289,9 @@ def _get_module():
         return _module
     if _module_failed:
         return None
-
-    import os
-    import sys
-    import traceback
-
-    try:
-        import fcntl
-    except ImportError:
-        # fcntl is not available on non-POSIX platforms (e.g. Windows)
+    _module, _module_error = build_extension("cpu_scatter", _CPP_SRC)
+    if _module is None:
         _module_failed = True
-        _module_error = ("fcntl unavailable (non-POSIX platform)", "")
-        return None
-
-    try:
-        # Ensure ninja (installed via pip) is on PATH for compute nodes
-        bin_dir = os.path.dirname(sys.executable)
-        if bin_dir not in os.environ.get("PATH", ""):
-            os.environ["PATH"] = bin_dir + ":" + os.environ.get("PATH", "")
-        # Need GCC >= 9 for PyTorch C++ extensions
-        for toolset in ("14", "13", "12"):
-            gcc = f"/opt/rh/gcc-toolset-{toolset}/root/usr/bin/g++"
-            if os.path.isfile(gcc):
-                os.environ["CXX"] = gcc
-                os.environ["CC"] = gcc.replace("g++", "gcc")
-                break
-
-        # Per-microarchitecture build directory — prevents Illegal Instruction
-        # when different cluster nodes have different CPUs (e.g., AMD vs Intel).
-        import platform
-
-        cpu_tag = platform.machine()
-        try:
-            # Use the CPU model to distinguish microarchitectures
-            with open("/proc/cpuinfo") as f:
-                for line in f:
-                    if line.startswith("model name"):
-                        # e.g. "EPYC_7443P" or "Xeon_Gold_6248"
-                        cpu_tag = line.split(":")[1].strip().replace(" ", "_")
-                        break
-        except OSError:
-            pass
-        build_dir = os.path.join(
-            os.environ.get(
-                "TORCH_EXTENSIONS_DIR",
-                os.path.join(os.path.expanduser("~"), ".cache", "torch_extensions"),
-            ),
-            f"cpu_scatter_{cpu_tag}",
-        )
-        os.makedirs(build_dir, exist_ok=True)
-
-        # Apple Clang on macOS rejects -fopenmp (no bundled OpenMP runtime).
-        # Kernel falls back to std::thread via #ifndef _OPENMP — no libomp,
-        # no Homebrew, no external dependency required.
-        is_apple_clang = sys.platform == "darwin"
-        extra_cflags = ["-O3", "-march=native"]
-        extra_ldflags: list[str] = []
-        if not is_apple_clang:
-            extra_cflags.append("-fopenmp")
-            extra_ldflags.append("-fopenmp")
-
-        # fcntl.lockf uses POSIX record locks (fcntl F_SETLKW) which are:
-        #   1. filesystem-level → work across NFS/GPFS cluster nodes
-        #   2. released by kernel on process death, even SIGKILL
-        lock_fd = os.open(
-            os.path.join(build_dir, "compile.lock"), os.O_CREAT | os.O_RDWR
-        )
-        try:
-            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
-            # Clear any stale PyTorch FileBaton lock from a killed process
-            try:
-                os.unlink(os.path.join(build_dir, "lock"))
-            except FileNotFoundError:
-                pass
-            _module = load_inline(
-                name="cpu_scatter",
-                cpp_sources=[_CPP_SRC],
-                extra_cflags=extra_cflags,
-                extra_ldflags=extra_ldflags,
-                build_directory=build_dir,
-                verbose=False,
-            )
-        finally:
-            fcntl.lockf(lock_fd, fcntl.LOCK_UN)
-            os.close(lock_fd)
-    except Exception as e:
-        _module_failed = True
-        _module_error = (f"{type(e).__name__}: {e}", traceback.format_exc())
-        return None
-
     return _module
 
 

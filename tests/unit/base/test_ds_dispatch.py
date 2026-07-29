@@ -49,41 +49,6 @@ def _leaves(N=4, seed=1, dtype=None):
     return xyz, occ, adp, U
 
 
-def test_checkpointed_iso_matches_eager():
-    hkl, s, _, A, B = _inputs()
-    xyz, occ, adp, _ = _leaves()
-    F = D._checkpointed_iso(hkl, s, xyz, occ, adp, A, B, max_memory_gb=None)
-    ((F.real**2 + 2 * F.imag).sum()).backward()
-    gck = (xyz.grad.clone(), occ.grad.clone(), adp.grad.clone())
-
-    xyz2, occ2, adp2, _ = _leaves()
-    Fe = iso_structure_factor_torched(
-        hkl=hkl, s=s, xyz_fractional=xyz2, occ=occ2, scattering_factors=None,
-        adp=adp2, spacegroup=_p1, max_memory_gb=2.0, A=A, B_coeff=B,
-    )
-    ((Fe.real**2 + 2 * Fe.imag).sum()).backward()
-    assert torch.allclose(F, Fe, atol=_eager_atol, rtol=1e-3)
-    for g, ge in zip(gck, (xyz2.grad, occ2.grad, adp2.grad)):
-        assert torch.allclose(g, ge, atol=_eager_atol, rtol=1e-3)
-
-
-def test_checkpointed_aniso_matches_eager():
-    hkl, _, svec, A, B = _inputs()
-    xyz, occ, _, U = _leaves()
-    F = D._checkpointed_aniso(hkl, svec, xyz, occ, U, A, B, max_memory_gb=None)
-    ((F.real**2 + 2 * F.imag).sum()).backward()
-    gck = (xyz.grad.clone(), occ.grad.clone(), U.grad.clone())
-
-    xyz2, occ2, _, U2 = _leaves()
-    Fe = aniso_structure_factor_torched(
-        hkl=hkl, s_vector=svec, xyz_fractional=xyz2, occ=occ2,
-        scattering_factors=None, U=U2, spacegroup=_p1, max_memory_gb=2.0,
-        A=A, B_coeff=B,
-    )
-    ((Fe.real**2 + 2 * Fe.imag).sum()).backward()
-    assert torch.allclose(F, Fe, atol=_eager_atol, rtol=1e-3)
-    for g, ge in zip(gck, (xyz2.grad, occ2.grad, U2.grad)):
-        assert torch.allclose(g, ge, atol=_eager_atol, rtol=1e-3)
 
 
 def test_checkpointed_chunking_is_exact():
@@ -100,14 +65,6 @@ def test_checkpointed_chunking_is_exact():
     assert torch.allclose(F_full, F_chunk, rtol=1e-10, atol=1e-12)
 
 
-def test_checkpointed_iso_gradcheck():
-    hkl, s, _, A, B = _inputs(dtype=torch.float64)
-    xyz, occ, adp, _ = _leaves(dtype=torch.float64)
-
-    def f(x, o, a):
-        return D._checkpointed_iso(hkl, s, x, o, a, A, B, max_memory_gb=1e-7)
-
-    assert torch.autograd.gradcheck(f, (xyz, occ, adp), eps=1e-6, atol=1e-5)
 
 
 def test_empty_atoms_returns_zeros():

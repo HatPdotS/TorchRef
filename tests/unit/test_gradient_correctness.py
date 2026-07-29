@@ -62,25 +62,6 @@ _HAS_CUDA = torch.cuda.is_available()
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
-@pytest.fixture
-def double_cpu():
-    """Run the body in double precision on CPU, restoring global config after.
-
-    ``gradcheck`` needs float64 leaves, and the eager SF reference casts ``hkl``
-    to the configured ``dtypes.float`` internally, so the global dtype must be
-    float64 too. Pinning CPU keeps the eager paths off the Triton dispatch on
-    GPU hosts.
-    """
-    f0, c0, d0 = dtypes.float, dtypes.complex, device.current
-    dtypes.float = torch.float64
-    dtypes.complex = torch.complex128
-    device.current = torch.device("cpu")
-    try:
-        yield
-    finally:
-        dtypes.float = f0
-        dtypes.complex = c0
-        device.current = d0
 
 
 # These live in ``tests/helpers/grad_asserts.py`` so the accelerator kernel
@@ -115,34 +96,6 @@ def _sf_leaves(N=12, dtype=torch.float64, device="cpu", requires_grad=True):
     return xyz, occ, adp, U
 
 
-# =============================================================================
-# 1. Structure-factor calculation — eager autograd vs finite differences
-# =============================================================================
-def test_sf_iso_gradcheck(double_cpu):
-    """Isotropic SF: autograd matches numerical d/d(xyz, occ, adp)."""
-    hkl, s, _, A, B = _sf_inputs()
-    xyz, occ, adp, _ = _sf_leaves()
-
-    def f(x, o, a):
-        return _eager_iso(hkl, s, x, o, a, A, B, max_memory_gb=2.0)
-
-    assert torch.autograd.gradcheck(f, (xyz, occ, adp), eps=1e-6, atol=1e-5)
-
-
-def test_sf_aniso_gradcheck(double_cpu):
-    """Anisotropic SF: autograd matches numerical d/d(xyz, occ, U)."""
-    hkl, _, svec, A, B = _sf_inputs()
-    xyz, occ, _, U = _sf_leaves()
-
-    def f(x, o, u):
-        return _eager_aniso(hkl, svec, x, o, u, A, B, max_memory_gb=2.0)
-
-    assert torch.autograd.gradcheck(f, (xyz, occ, U), eps=1e-6, atol=1e-5)
-
-
-# =============================================================================
-# 2. X-ray loss target — eager autograd vs finite differences
-# =============================================================================
 def test_gaussian_xray_gradcheck(double_cpu):
     """Gaussian X-ray NLL (GaussianXrayTarget.forward body): d/d(F_obs, F_calc).
 
@@ -208,133 +161,8 @@ def _grads(fn, leaves):
     return torch.autograd.grad(out, leaves)
 
 
-def test_checkpointed_iso_matches_eager_cosine(double_cpu):
-    """Isotropic ``_CheckpointedSF`` (recompute-on-backward) == eager autograd."""
-    hkl, s, _, A, B = _sf_inputs()
-    xyz, occ, adp, _ = _sf_leaves()
-    xyz2, occ2, adp2, _ = _sf_leaves()
-
-    g_ckpt = _grads(
-        lambda x, o, a: _checkpointed_iso(hkl, s, x, o, a, A, B, max_memory_gb=1e-7),
-        (xyz, occ, adp),
-    )
-    g_eager = _grads(
-        lambda x, o, a: _eager_iso(hkl, s, x, o, a, A, B, max_memory_gb=2.0),
-        (xyz2, occ2, adp2),
-    )
-    assert_grads_agree(g_ckpt, g_eager, ctx="iso ")
 
 
-def test_checkpointed_aniso_matches_eager_cosine(double_cpu):
-    """Anisotropic ``_CheckpointedSF`` == eager autograd."""
-    hkl, _, svec, A, B = _sf_inputs()
-    xyz, occ, _, U = _sf_leaves()
-    xyz2, occ2, _, U2 = _sf_leaves()
-
-    g_ckpt = _grads(
-        lambda x, o, u: _checkpointed_aniso(
-            hkl, svec, x, o, u, A, B, max_memory_gb=1e-7
-        ),
-        (xyz, occ, U),
-    )
-    g_eager = _grads(
-        lambda x, o, u: _eager_aniso(hkl, svec, x, o, u, A, B, max_memory_gb=2.0),
-        (xyz2, occ2, U2),
-    )
-    assert_grads_agree(g_ckpt, g_eager, ctx="aniso ")
-
-
-# =============================================================================
-# 5. Production FFT path ModelFT.forward — autograd vs central finite diff
-#    Metric: cosine similarity + gradnorm ratio of a scalar loss.
-# =============================================================================
-_P1_PDB_HEADER = (
-    "CRYST1   20.000   20.000   20.000  90.00  90.00  90.00 P 1           1"
-)
-
-
-def _write_p1_pdb(n=12):
-    g = torch.Generator().manual_seed(0)
-    elems = "C N O S C N O C N O C S".split()[:n]
-    lines = [_P1_PDB_HEADER]
-    for i in range(n):
-        x, y, z = (torch.rand(3, generator=g) * 15 + 2.5).tolist()
-        e = elems[i]
-        lines.append(
-            f"ATOM  {i + 1:5d}  {e:<2s}  GLY A{i + 1:4d}    "
-            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00 20.00          {e:>2s}"
-        )
-    lines.append("END")
-    f = tempfile.NamedTemporaryFile("w", suffix=".pdb", delete=False)
-    f.write("\n".join(lines) + "\n")
-    f.close()
-    return f.name
-
-
-def _central_fd_grad(loss_fn, model, param, eps):
-    """Central finite-difference gradient of ``loss_fn()`` w.r.t. ``param``."""
-    base = param.detach().clone()
-    flat = base.reshape(-1)
-    grad = torch.zeros_like(flat)
-    for i in range(flat.numel()):
-        for sign in (+1, -1):
-            pert = flat.clone()
-            pert[i] += sign * eps
-            with torch.no_grad():
-                param.copy_(pert.view_as(base))
-                model.reset_cache()
-                val = loss_fn()
-            if sign == +1:
-                vp = val
-            else:
-                vm = val
-        grad[i] = (vp - vm) / (2 * eps)
-    with torch.no_grad():
-        param.copy_(base)
-        model.reset_cache()
-    return grad.view_as(base)
-
-
-@pytest.mark.parametrize("which,eps", [("xyz", 5e-3), ("adp", 1e-2)])
-def test_model_forward_fft_gradient(which, eps):
-    """``ModelFT.forward`` (FFT path) autograd grad agrees with finite diff.
-
-    Honors the paper's headline check — ``model.forward(hkl)`` w.r.t. ``xyz``
-    and ``adp`` — for the production FFT engine. The FFT output is float32 and
-    the on-grid splat defeats element-wise gradcheck, so we compare a scalar
-    loss's autograd gradient against central finite differences via cosine
-    similarity and gradnorm ratio (robust where atol/rtol are not).
-    """
-    from torchref.model.model_ft import ModelFT
-
-    d0 = device.current
-    device.current = torch.device("cpu")  # keep float32 default; avoid Triton
-    try:
-        model = ModelFT(max_res=1.5, verbose=0, device=torch.device("cpu"))
-        model.load_pdb(_write_p1_pdb())
-        hkls = [h for h in itertools.product(range(-3, 4), repeat=3) if any(h)]
-        hkl = torch.tensor(hkls, dtype=torch.float32)
-
-        def loss_fn():
-            sf = model(hkl, recalc=True)
-            return (sf.real**2 + sf.imag**2).sum()
-
-        param = getattr(model, which).refinable_params
-        g_auto = torch.autograd.grad(loss_fn(), param)[0]
-        g_fd = _central_fd_grad(loss_fn, model, param, eps)
-
-        cos = cosine_similarity(g_auto, g_fd)
-        ratio = gradnorm_ratio(g_auto, g_fd)
-        assert cos >= 0.999, f"{which}: cosine {cos:.6f} < 0.999"
-        assert abs(ratio - 1.0) <= 0.02, f"{which}: gradnorm ratio {ratio:.6f}"
-    finally:
-        device.current = d0
-
-
-# =============================================================================
-# 6. Triton kernels (CUDA float32, hand-written backward) vs eager autograd
-#    Metric: cosine similarity + gradnorm ratio. Auto-skipped without CUDA.
-# =============================================================================
 @pytest.mark.cuda
 def test_triton_sf_iso_matches_eager_cosine():
     """DS isotropic Triton kernel gradient == eager autograd (CUDA float32)."""

@@ -293,18 +293,65 @@ END
         sf_plus = model.get_structure_factor(hkl, apply_anomalous=True, recalc=True)
         sf_minus = model.get_structure_factor(-hkl, apply_anomalous=True, recalc=True)
 
-        # With anomalous scattering, F(h) != F(-h)* (not complex conjugates)
-        # due to the imaginary f'' contribution
-        # Note: The difference might be small, but should exist
-        is_conjugate = torch.allclose(sf_plus, sf_minus.conj(), atol=1e-6)
-
-        # If Fe contributes significant anomalous scattering, they should not be conjugates
-        # We check this indirectly - the cache should have anomalous scatterers
+        # Friedel's law is governed by f'', which is imaginary and does not change sign
+        # with h, so it makes F(h) != F(-h)*. f' is real and dispersive and leaves the
+        # conjugate relation intact.
+        #
+        # In this model f'' is gated on ``apply_bijvoet`` (``ModelFT.__init__``, applied at
+        # ``model_ft.py:951`` via ``include_fdp``), which defaults to False because merged
+        # data is the usual target and Friedel-preserving F is correct for it. So the
+        # default path deliberately does *not* break Friedel's law -- both branches are
+        # asserted here rather than only the one this test originally assumed.
+        #
+        # History: this test previously computed ``is_conjugate`` and then ended in
+        # ``pass``, asserting nothing. A first attempt to fix it asserted breakdown on the
+        # default path and failed, because that path is Friedel-preserving by design.
         mask, _, _, _, _ = model._get_anomalous_cache()
-        if mask.any():
-            # There are anomalous scatterers, so Friedel pairs should differ
-            # (in principle - the actual difference depends on the positions)
-            pass  # The test passes if no exception was raised
+        assert mask.any(), (
+            "no anomalous scatterers in this structure, so neither branch below is "
+            "meaningful -- pick a structure with an anomalous element"
+        )
+
+        def asymmetry(fp, fm):
+            return float(
+                (fp - fm.conj()).abs().norm().detach() / fp.abs().norm().detach()
+            )
+
+        # --- default branch: f' only, Friedel's law preserved -------------------
+        sf_plus_no = model.get_structure_factor(hkl, apply_anomalous=False, recalc=True)
+        floor = asymmetry(sf_plus_no, model.get_structure_factor(
+            -hkl, apply_anomalous=False, recalc=True))
+        default_asym = asymmetry(sf_plus, sf_minus)
+
+        assert not bool(model.anomalous_bijvoet), "fixture unexpectedly enabled f''"
+        assert default_asym < 10.0 * max(floor, 1e-9), (
+            f"the default path broke Friedel's law ({default_asym:.3e} against a "
+            f"no-anomalous floor of {floor:.3e}). With apply_bijvoet=False, f'' is zeroed "
+            "and F(h) must stay conjugate to F(-h)"
+        )
+        # ...but f' must still be reaching F, or "anomalous" is doing nothing at all.
+        dispersive = float(
+            (sf_plus - sf_plus_no).abs().norm().detach() / sf_plus_no.abs().norm().detach()
+        )
+        assert dispersive > 1e-4, (
+            f"apply_anomalous=True changed F by only {dispersive:.3e}, so the dispersive "
+            "f' term is not reaching the structure factors either"
+        )
+
+        # --- apply_bijvoet=True: f'' included, Friedel's law broken -------------
+        bij = ModelFT(
+            wavelength=1.0, anomalous_threshold=0.5, apply_bijvoet=True, verbose=0
+        )
+        bij.load_pdb(test_pdb_file)
+        bij_asym = asymmetry(
+            bij.get_structure_factor(hkl, apply_anomalous=True, recalc=True),
+            bij.get_structure_factor(-hkl, apply_anomalous=True, recalc=True),
+        )
+        assert bij_asym > 100.0 * max(floor, 1e-9), (
+            f"with apply_bijvoet=True the Friedel asymmetry is only {bij_asym:.3e} "
+            f"against a floor of {floor:.3e}, so f'' is not reaching the structure "
+            "factors and Bijvoet differences would be absent"
+        )
 
     def test_gradient_flow(self, test_pdb_file):
         """Test that gradients flow through anomalous correction."""
