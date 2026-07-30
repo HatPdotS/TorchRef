@@ -45,7 +45,7 @@ since a float64 caller is precision-motivated by definition.
 Gradients flow to ``xyz``, ``adp``/``u`` and ``occ``, with identity to the incoming
 ``density_map``; ``A``/``B`` and the cell matrices get none -- the same set as the
 CUDA and Metal kernels. Backward is first-order only; double backward must use
-``Engine.EAGER`` (the plain splat in ``variable_radius.py``).
+``force_portable`` (the plain splat in ``variable_radius.py``).
 
 Unlike the CUDA and Metal entry points this kernel takes no per-Gaussian
 ``coeff_mask``: that argument is all-ones at every existing call site, so it is

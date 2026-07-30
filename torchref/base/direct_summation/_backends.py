@@ -5,12 +5,9 @@ each field means.
 
 Two things about this table are worth reading before changing it.
 
-**There is no Metal direct-summation kernel.** ``Engine.METAL`` selects the Metal *density
-splat* and nothing else, so at this site it has to mean "run eager" -- which is why
-``checkpointed`` lists it. That was previously an early ``return False`` buried in a
-predicate; here it is a declared fact, and the table refuses to be constructed if some
-engine ends up handled by nothing. DS on MPS is therefore ``_checkpointed_*`` running
-on-device, a real production path.
+**There is no Metal direct-summation kernel.** The Metal shader is a *density splat* only, so
+DS on MPS is ``_checkpointed_*`` running on-device -- a real production path, and one the
+table states by simply having no MPS row.
 
 **The float32 requirement here is policy, not capability**, and the policy is mild. The
 Triton kernel casts every input to float32 itself (``triton_ds._cols_f32``), so it would
@@ -42,7 +39,7 @@ from __future__ import annotations
 import torch
 
 from torchref.utils.backends import Backend, BackendTable
-from torchref.utils.triton_dispatch import Engine, triton_available
+from torchref.utils.backends import triton_available
 
 _THIS = "torchref.base.direct_summation._backends"
 
@@ -97,7 +94,6 @@ DS_BACKENDS = BackendTable(
         Backend(
             name="ds_triton",
             kernel=(_THIS, "_ds_iso_triton", "_ds_aniso_triton"),
-            engines=frozenset({Engine.AUTO, Engine.TRITON}),
             device="cuda",
             dtypes=(torch.float32,),
             # Every argument except ``hkl`` (position 0), whose dtype provably costs
@@ -117,7 +113,6 @@ DS_BACKENDS = BackendTable(
             ),
             # METAL is here because there is no Metal DS kernel; see the module docstring.
             # TRITON is absent, which is what makes that engine strict.
-            engines=frozenset({Engine.AUTO, Engine.EAGER, Engine.METAL}),
             expect_available="always",
             on_failure="raise",
             # First-order only: the backward replays each chunk under ``enable_grad`` but

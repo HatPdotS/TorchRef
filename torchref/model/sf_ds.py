@@ -16,7 +16,6 @@ import torch
 import torch.nn as nn
 
 from torchref.base.direct_summation import (
-    Engine,
     ds_aniso,
     ds_iso,
 )
@@ -101,7 +100,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         device: torch.device = None,
         verbose: int = 0,
         max_memory_gb: float = 2.0,
-        engine: Optional[Engine] = None,
+        force_portable: Optional[bool] = None,
     ):
         """
         Initialize the SfDS module with cell and spacegroup.
@@ -120,16 +119,14 @@ class SfDS(DeviceMovementMixin, nn.Module):
             Verbosity level for logging. Default is 0.
         max_memory_gb : float, optional
             Maximum memory for intermediate tensors in GB. Default is 2.0.
-        engine : Engine, optional
-            Structure-factor backend selector, applied per call so two instances can
-            differ within one process. ``None`` (default) defers to the process-wide
-            engine, so ``with use_engine(...)`` steers an unconfigured instance; pass an
-            explicit ``Engine`` to override that.
+        force_portable : bool, optional
+            Pin the portable reference path instead of the fastest usable backend, applied
+            per call so two instances can differ within one process. ``None`` (default)
+            defers to the process-wide setting, so ``with use_portable():`` steers an
+            unconfigured instance.
 
-            The default was ``Engine.AUTO``, which read as harmless but was not: an
-            explicit engine argument suppresses the global, so a
-            ``with use_engine(Engine.EAGER)`` block never reached direct summation and
-            still ran Triton on a CUDA host.
+            ``SfFFT`` deliberately has no equivalent -- it never had a backend selector, and
+            ``use_portable()`` covers the same need by scoping the call.
         """
         super().__init__()
         if dtype_float is None:
@@ -141,7 +138,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         self.device = resolve_device(cell, device=device)
         self.verbose = verbose
         self.max_memory_gb = max_memory_gb
-        self.engine = engine
+        self.force_portable = force_portable
 
         # Store cell and spacegroup
         self._cell = cell
@@ -536,7 +533,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
                 adp_iso,
                 A_iso,
                 B_iso,
-                engine=self.engine,
+                force_portable=self.force_portable,
                 max_memory_gb=self.max_memory_gb,
             )
             sf_total = sf_total + sf_iso.to(sf_total.dtype)
@@ -551,7 +548,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
                 u_aniso,
                 A_aniso,
                 B_aniso,
-                engine=self.engine,
+                force_portable=self.force_portable,
                 max_memory_gb=self.max_memory_gb,
             )
             sf_total = sf_total + sf_aniso.to(sf_total.dtype)
@@ -590,7 +587,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
             device=self.device,
             verbose=self.verbose,
             max_memory_gb=self.max_memory_gb,
-            engine=self.engine,
+            force_portable=self.force_portable,
         )
 
         return new_ds

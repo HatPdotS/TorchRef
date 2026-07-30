@@ -6,9 +6,8 @@ functions in this package route to their implementations in
 without a usable Triton fall back to the plain eager implementation.
 
 The criteria live in :data:`TARGET_BACKENDS` rather than in a predicate body, for the same
-reason as the density and direct-summation tables: so ``Engine.METAL`` meaning "run eager
-here" is a declared fact rather than an early ``return False``, and so a new ``Engine``
-member cannot be added without something claiming it.
+reason as the density and direct-summation tables: device, dtype and availability stated once,
+as data, next to the kernels they select.
 
 This is a **gate-only** table -- the twelve call sites each do their own
 ``from .triton.<mod> import <fn>`` three lines from the ``if``, which is more legible than a
@@ -17,8 +16,8 @@ dispatch, so its rows carry no ``kernel``.
 
 To force the eager path for an A/B comparison or to sidestep a flaky Triton install::
 
-    from torchref.utils import use_engine, Engine
-    with use_engine(Engine.EAGER):
+    from torchref.utils import use_portable
+    with use_portable():
         ...
 """
 
@@ -26,8 +25,7 @@ from typing import Optional
 
 import torch
 
-from torchref.utils.backends import Backend, BackendTable, admits
-from torchref.utils.triton_dispatch import Engine, triton_available
+from torchref.utils.backends import Backend, BackendTable, triton_available, will_use
 
 _THIS = "torchref.base.targets._dispatch"
 
@@ -67,7 +65,6 @@ TARGET_BACKENDS = BackendTable(
         Backend(
             name="triton",
             kernel=None,  # gate-only; see the module docstring
-            engines=frozenset({Engine.AUTO, Engine.TRITON}),
             device="cuda",
             dtypes=(torch.float32,),
             probe=(_THIS, "why_unavailable"),
@@ -84,7 +81,6 @@ TARGET_BACKENDS = BackendTable(
             kernel=None,
             # METAL is here because there are no Metal target kernels: at this site it has
             # to mean "run eager". TRITON is absent, which is what makes it strict.
-            engines=frozenset({Engine.AUTO, Engine.EAGER, Engine.METAL}),
             expect_available="always",
             on_failure="raise",
             second_order=True,
@@ -96,8 +92,8 @@ TARGET_BACKENDS = BackendTable(
 def use_triton(*tensors: torch.Tensor) -> bool:
     """Decide whether to route a call to the Triton kernel.
 
-    Asks the ``triton`` row of :data:`TARGET_BACKENDS` whether it would run, using the
-    process-wide engine. ``None`` entries among ``tensors`` are ignored, so a caller may
-    pass optional inputs straight through.
+    Asks the ``triton`` row of :data:`TARGET_BACKENDS` whether it is the backend that would
+    actually be selected. ``None`` entries among ``tensors`` are ignored, so a caller may pass
+    optional inputs straight through.
     """
-    return admits(TARGET_BACKENDS, "triton", tensors)
+    return will_use(TARGET_BACKENDS, "triton", tensors)

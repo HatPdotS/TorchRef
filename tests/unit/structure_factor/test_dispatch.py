@@ -1,21 +1,22 @@
-"""The dispatch ladder itself: which engine selects which kernel, and failure policy.
+"""Dispatch end to end, as distinct from the selection *decision*.
 
-Deliberately separate from the accuracy tests. Those call each kernel **directly**, so
-they say nothing about whether ``build_electron_density`` would have chosen it — and that
-separation is the point. Entangling the two is what forced the old accelerator tests to
-carry a monkeypatched call recorder just to prove they were not measuring the fallback.
+Deliberately separate from the accuracy tests. Those call each kernel **directly**, so they
+say nothing about whether ``build_electron_density`` would have chosen it — and that
+separation is the point.
 
-What is pinned here:
+Also distinct from ``tests/unit/utils/test_backend_tables.py``, which asserts what ``select``
+returns. That is a pure function and can be interrogated for any ``(device, dtype)``; what it
+cannot show is that the chosen kernel was then actually *called*. So what is pinned here is
+provenance and fallback behaviour, both of which need a real dispatch on a real device:
 
-* under ``Engine.AUTO`` *and* the strict engine, an accelerator host really reaches its
-  native kernel rather than the portable splat;
-* a strict engine **raises** when its kernel is unavailable, while ``AUTO`` degrades
-  quietly — the two halves of the never-silently-degrade contract;
-* ``Engine.EAGER`` reaches the portable splat on every device.
+* on an accelerator host, the default really reaches the native kernel rather than the
+  portable splat (call recorder, patched at the kernel's defining module);
+* ``force_portable`` reaches the portable splat on every device;
+* with an accelerator forced dead, the fallback produces a numerically correct map.
 
-Ported from ``tests/integration/test_variable_radius_{gpu,mps}.py``, which are deleted:
-their accuracy coverage is superseded by the oracle legs in this package, but these
-dispatch contracts are not accuracy and had no replacement.
+Ported from ``tests/integration/test_variable_radius_{gpu,mps}.py``, which are deleted: their
+accuracy coverage is superseded by the oracle legs in this package, but these dispatch
+contracts are not accuracy and had no replacement.
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ import torch
 
 from torchref.base.electron_density.main import build_electron_density
 from torchref.base.electron_density.radius_policy import per_atom_radius_iso
-from torchref.utils import Engine, use_engine
 
 from tests.helpers.grad_asserts import rel_error
 
@@ -35,7 +35,7 @@ from . import helpers as H
 pytestmark = pytest.mark.unit
 
 
-def _build(scene, device, dtype, engine, aniso=False):
+def _build(scene, device, dtype, force_portable=False, aniso=False):
     """Run one dispatch through ``build_electron_density`` on ``device``.
 
     ``dtype`` is passed explicitly rather than inherited from the ambient config. That is
@@ -59,28 +59,27 @@ def _build(scene, device, dtype, engine, aniso=False):
         voxel_size=voxel,
         dtype=dtype,
     )
-    with use_engine(engine):
-        if aniso:
-            return build_electron_density(
-                xyz_iso=empty3, adp_iso=empty1, occ_iso=empty1,
-                A_iso=empty5, B_iso=empty5,
-                xyz_aniso=s.xyz, u_aniso=s.u6, occ_aniso=s.occ,
-                A_aniso=s.A, B_aniso=s.B, **kw,
-            )
+    kw["force_portable"] = force_portable
+    if aniso:
         return build_electron_density(
-            xyz_iso=s.xyz, adp_iso=s.adp, occ_iso=s.occ,
-            A_iso=s.A, B_iso=s.B, **kw,
+            xyz_iso=empty3, adp_iso=empty1, occ_iso=empty1,
+            A_iso=empty5, B_iso=empty5,
+            xyz_aniso=s.xyz, u_aniso=s.u6, occ_aniso=s.occ,
+            A_aniso=s.A, B_aniso=s.B, **kw,
         )
+    return build_electron_density(
+        xyz_iso=s.xyz, adp_iso=s.adp, occ_iso=s.occ,
+        A_iso=s.A, B_iso=s.B, **kw,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Provenance: the named kernel actually runs
 # ---------------------------------------------------------------------------
 @pytest.mark.mps
-@pytest.mark.parametrize("engine", [Engine.AUTO, Engine.METAL])
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
-def test_metal_kernel_is_actually_dispatched(scene_small, engine, kind, monkeypatch):
-    """On MPS float32, both ``AUTO`` and ``METAL`` must call the Metal kernel.
+def test_metal_kernel_is_actually_dispatched(scene_small, kind, monkeypatch):
+    """On MPS float32, the default must call the Metal kernel.
 
     Verified with a call recorder, not by comparing maps: the portable reference uses
     ``scatter_add`` on MPS, whose accumulation order is not reproducible, so two portable
@@ -107,14 +106,13 @@ def test_metal_kernel_is_actually_dispatched(scene_small, engine, kind, monkeypa
         return real(*args, **kwargs)
 
     monkeypatch.setattr(kernels_mps, name, recording)
-    _build(scene_small, torch.device("mps"), torch.float32, engine, aniso=kind == "aniso")
-    assert calls, f"{engine} did not dispatch to {name}"
+    _build(scene_small, torch.device("mps"), torch.float32, aniso=kind == "aniso")
+    assert calls, f"the default did not dispatch to {name}"
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("engine", [Engine.AUTO, Engine.TRITON])
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
-def test_triton_kernel_is_actually_dispatched(scene_small, engine, kind, monkeypatch):
+def test_triton_kernel_is_actually_dispatched(scene_small, kind, monkeypatch):
     """CUDA float32 equivalent of the Metal provenance test.
 
     Same patch target rule as the Metal case -- the module that defines the kernel. The two
@@ -133,17 +131,18 @@ def test_triton_kernel_is_actually_dispatched(scene_small, engine, kind, monkeyp
         return real(*args, **kwargs)
 
     monkeypatch.setattr(kernels_cuda, name, recording)
-    _build(scene_small, torch.device("cuda"), torch.float32, engine, aniso=kind == "aniso")
-    assert calls, f"{engine} did not dispatch to {name}"
+    _build(scene_small, torch.device("cuda"), torch.float32, aniso=kind == "aniso")
+    assert calls, f"the default did not dispatch to {name}"
 
 
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
-def test_eager_reaches_the_portable_splat(scene_small, kind, monkeypatch):
-    """``Engine.EAGER`` must reach the portable splat, on any device.
+def test_force_portable_reaches_the_portable_splat(scene_small, kind, monkeypatch):
+    """``force_portable`` must reach the portable splat, on any device.
 
-    The counterpart to the provenance tests above: EAGER is the documented escape hatch
-    for double backward and debugging, so it has to be the *portable* kernel that runs,
-    not whatever AUTO would have picked.
+    The counterpart to the provenance tests above, and the only override the dispatcher has:
+    it exists so you can pin the reference implementation when you suspect an accelerator is
+    returning wrong numbers, so it has to be the *portable* kernel that runs and not whatever
+    the default would have picked.
     """
     from torchref.base.electron_density.kernels.cpu import (
         variable_radius as kernels_portable,
@@ -158,24 +157,30 @@ def test_eager_reaches_the_portable_splat(scene_small, kind, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(kernels_portable, name, recording)
-    _build(scene_small, torch.device("cpu"), torch.float32, Engine.EAGER, aniso=kind == "aniso")
-    assert calls, f"Engine.EAGER did not dispatch to {name}"
+    _build(scene_small, torch.device("cpu"), torch.float32, force_portable=True,
+           aniso=kind == "aniso")
+    assert calls, f"force_portable did not dispatch to {name}"
 
 
 # ---------------------------------------------------------------------------
 # Failure policy: strict engines raise, AUTO degrades
 # ---------------------------------------------------------------------------
 @pytest.mark.mps
-def test_metal_raises_when_shader_unavailable(scene_small, monkeypatch):
-    """``Engine.METAL`` must raise, never degrade, when the shader is missing.
+def test_default_degrades_correctly_when_the_shader_is_unavailable(scene_small, monkeypatch):
+    """With the shader dead, dispatch must still produce a *correct* map.
+
+    Selection tests prove the *decision*; this proves the fallback's numbers. It is the only
+    place that runs the degradation end to end rather than asserting which row was chosen.
+
+    The half of this test that asserted ``Engine.METAL`` raises is gone with the enum. Its
+    job -- making a dead accelerator loud rather than silently slow -- is now done by two
+    other things: ``test_backend_is_available_where_it_is_expected`` fails on any run on an
+    MPS host where the shader should work and doesn't, and the degradation warning is promoted
+    to an error under pytest. Both are strictly earlier and broader than a forced engine was.
 
     ``monkeypatch`` reverts the module globals at teardown, so this needs no
-    ``try``/``finally`` -- and must not have one, since a swallowed failure here is
-    precisely the behaviour under test.
-
-    The AUTO half is the other side of the contract: a user gets a correct answer from the
-    portable splat, while a benchmark or a test asking for METAL gets an error instead of a
-    quietly slower result.
+    ``try``/``finally`` -- and must not have one, since a swallowed failure here is precisely
+    the behaviour under test.
     """
     from torchref.base.electron_density.kernels.mps import compile as mps_compile
 
@@ -184,36 +189,21 @@ def test_metal_raises_when_shader_unavailable(scene_small, monkeypatch):
     monkeypatch.setattr(mps_compile, "_lib_error", ("forced test failure", ""))
 
     mps = torch.device("mps")
-    with pytest.raises(RuntimeError, match="forced test failure"):
-        _build(scene_small, mps, torch.float32, Engine.METAL)
-
-    # ...while AUTO still degrades to a working splat. Compared against EAGER on the same
+    # The default degrades to a working splat. Compared against the pinned portable path
     # device, not against the oracle: with the shader forced to fail both engines now reach
     # the *same* portable kernel, so they must agree closely, and an oracle comparison here
     # would instead be measuring this scene's discretization error (which is large -- it is
     # deliberately tiny and coarse for gradcheck) and tell us nothing about the fallback.
     # Loose rather than bitwise because MPS ``scatter_add`` accumulation order is not
     # reproducible, so two portable runs already differ at ~1e-7.
-    auto = _build(scene_small, mps, torch.float32, Engine.AUTO)
-    eager = _build(scene_small, mps, torch.float32, Engine.EAGER)
-    rel = H.rel_l2(auto.cpu().to(torch.float64), eager.cpu().to(torch.float64))
-    print(f"\n  AUTO vs EAGER after forced shader failure: relL2 {rel:.3e}")
+    auto = _build(scene_small, mps, torch.float32)
+    portable = _build(scene_small, mps, torch.float32, force_portable=True)
+    rel = H.rel_l2(auto.cpu().to(torch.float64), portable.cpu().to(torch.float64))
+    print(f"\n  default vs portable after forced shader failure: relL2 {rel:.3e}")
     assert rel < 1e-5, (
-        f"AUTO did not degrade to the portable splat after the shader failed (rel {rel:.3e})"
+        f"dispatch did not degrade to the portable splat after the shader failed "
+        f"(rel {rel:.3e})"
     )
-
-
-@pytest.mark.parametrize("engine", [Engine.TRITON, Engine.METAL])
-def test_strict_engine_rejects_cpu(scene_small, engine):
-    """A strict accelerator engine on CPU must raise, not fall back.
-
-    Both gates refuse CPU inputs, by different routes: ``should_use_triton`` raises
-    directly, and ``should_use_metal`` raises on non-MPS. Either way the failure is loud,
-    which is what lets the provenance tests above be meaningful — a strict engine that
-    quietly degraded would make them untestable.
-    """
-    with pytest.raises(RuntimeError):
-        _build(scene_small, torch.device("cpu"), torch.float32, engine)
 
 
 # ---------------------------------------------------------------------------
@@ -347,19 +337,23 @@ def test_triton_ds_does_not_silently_truncate_hkl(scene_small):
 
 
 @pytest.mark.cuda
-def test_sfds_engine_toggle_end_to_end(scene_fine):
-    """``SfDS`` through a full symmetry loop: ``Engine.TRITON`` vs ``Engine.EAGER``.
+def test_sfds_backend_toggle_end_to_end(scene_fine):
+    """``SfDS`` through a full symmetry loop: the Triton DS kernel vs the reference.
 
-    Restores the end-to-end coverage lost with ``test_ds_triton_vs_eager.py``. Distinct
-    from the per-kernel DS legs in ``test_forward.py`` / ``test_gradients.py``: those call
-    the kernels directly in P1, so nothing there exercises ``SfDS``'s symmetry accumulation
-    or its per-call ``engine=`` argument, which **overrides** ``use_engine`` rather than
-    deferring to it.
+    Restores the end-to-end coverage lost with ``test_ds_triton_vs_eager.py``. Distinct from
+    the per-kernel DS legs in ``test_forward.py`` / ``test_gradients.py``: those call the
+    kernels directly in P1, so nothing there exercises ``SfDS``'s symmetry accumulation or its
+    per-call ``force_portable`` argument.
 
-    A non-P1 group on purpose. Both engines share the symmetry algebra, so this does not
-    validate the convention -- ``test_forward.py::test_sfds_matches_gemmi_with_symmetry``
-    does that against gemmi. What it validates is that swapping the engine underneath a
-    symmetry loop changes nothing.
+    A non-P1 group on purpose. Both backends share the symmetry algebra, so this does not
+    validate the convention -- ``test_forward.py::test_sfds_matches_gemmi_with_symmetry`` does
+    that against gemmi. What it validates is that swapping the backend underneath a symmetry
+    loop changes nothing.
+
+    Non-vacuity does not depend on being able to *force* Triton: on a CUDA host
+    ``test_backend_is_available_where_it_is_expected`` fails if ``ds_triton`` should work and
+    does not, and a runtime fallback raises via the degradation warning. Both fire before this
+    test could quietly compare the reference against itself.
     """
     from torchref.model.sf_ds import SfDS
 
@@ -367,9 +361,9 @@ def test_sfds_engine_toggle_end_to_end(scene_fine):
     s = scene_fine.to(device=cuda, dtype=torch.float32)
     obs = H.synthetic_obs(H.ds_direct(scene_fine, "eager").detach()).to(cuda, torch.float32)
 
-    def run(engine):
+    def run(force_portable):
         sf = SfDS(
-            cell=s.cell, spacegroup="P212121", engine=engine,
+            cell=s.cell, spacegroup="P212121", force_portable=force_portable,
             dtype_float=torch.float32, device=cuda, max_memory_gb=2.0,
         )
         leaves = tuple(t.clone().requires_grad_(True) for t in (s.xyz, s.adp, s.occ))
@@ -378,11 +372,11 @@ def test_sfds_engine_toggle_end_to_end(scene_fine):
         grads = torch.autograd.grad(H.ls_target(F, obs), leaves)
         return F.detach(), grads
 
-    F_t, g_t = run(Engine.TRITON)
-    F_e, g_e = run(Engine.EAGER)
+    F_t, g_t = run(False)   # default: the Triton DS kernel on CUDA float32
+    F_e, g_e = run(True)    # pinned to the checkpointed reference
 
     rel_F = H.rel_l2(F_t.cpu().to(torch.complex128), F_e.cpu().to(torch.complex128))
-    print(f"\n  SfDS P212121 TRITON vs EAGER: F relL2 {rel_F:.3e}")
+    print(f"\n  SfDS P212121 triton vs portable: F relL2 {rel_F:.3e}")
     assert rel_F < RTOL_DS_F32, f"SfDS forward differs by engine: rel {rel_F:.3e}"
     for name, a, b in zip(("xyz", "adp", "occ"), g_t, g_e):
         rel = rel_error(a, b)

@@ -11,7 +11,7 @@ This module provides:
 - Loss-finiteness validation (validate_loss)
 - Autograd introspection (collect_loss_leaves)
 - JSON serialization helpers (convert_to_serializable)
-- Triton/eager backend dispatch (Engine)
+- Backend dispatch (force_portable / use_portable)
 
 The names re-exported here are the package's public surface (see
 ``__all__``). Some submodule-only helpers (e.g.
@@ -71,15 +71,12 @@ from .stats import (
 # Serialization
 from .serialization import convert_to_serializable
 
-# Triton/eager backend dispatch
-from .triton_dispatch import (
-    Engine,
-    get_engine,
-    set_engine,
-    should_use_metal,
-    should_use_triton,
+# Backend dispatch
+from .backends import (
+    force_portable,
+    set_force_portable,
     triton_available,
-    use_engine,
+    use_portable,
 )
 
 # Core utilities
@@ -126,12 +123,9 @@ __all__ = [
     "reset_diagnostic_budget",
     # Autograd introspection
     "collect_loss_leaves",
-    # Triton/eager backend dispatch
-    "Engine",
-    "get_engine",
-    "set_engine",
-    "use_engine",
+    # Backend dispatch
+    "force_portable",
+    "set_force_portable",
+    "use_portable",
     "triton_available",
-    "should_use_triton",
-    "should_use_metal",
 ]

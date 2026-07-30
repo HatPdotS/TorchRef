@@ -10,7 +10,7 @@ a ``torch.autograd.Function`` that dispatches the compiled Metal kernels
 Gradients flow to ``xyz``, ``adp``/``u``, and ``occ`` (and identity to the input
 ``density_map``); ``A``/``B`` and the cell matrices receive no gradient -- the
 same set as the CUDA kernels. Backward is first-order only (like CUDA); double
-backward must use ``Engine.EAGER`` (the plain splat).
+backward must use ``force_portable`` (the plain splat).
 """
 
 from __future__ import annotations

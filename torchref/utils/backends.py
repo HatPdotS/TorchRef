@@ -1,9 +1,9 @@
 """Declarative backend selection: the dispatch criteria, in one place, as data.
 
-Every dispatch site in TorchRef answers the same question -- given these tensors and this
-:class:`~torchref.utils.triton_dispatch.Engine`, which kernel runs? This module holds the
-machinery for answering it from a table, so each criterion (device, dtype, engine,
-availability, failure policy) is written down exactly once, next to the kernels it selects.
+Every dispatch site in TorchRef answers the same question -- given these tensors, which
+kernel runs? This module holds the machinery for answering it from a table, so each criterion
+(device, dtype, availability, failure policy) is written down exactly once, next to the
+kernels it selects.
 The tables themselves live with their kernels: see
 ``torchref/base/electron_density/_backends.py`` and
 ``torchref/base/direct_summation/_backends.py``.
@@ -16,14 +16,17 @@ single :class:`Backend`, not an ordered candidate list, and the only fallback is
 table's base case. An earlier design walked a chain; that models a control structure the
 problem does not have.
 
-Strictness is one boolean
--------------------------
-A forcing engine (``TRITON``, ``METAL``) is admitted by exactly one row, so if that row
-does not match, nothing does and :func:`select` raises with the reason. The base case
-deliberately does **not** list the forcing engines in its ``engines`` set -- that omission
-is the whole mechanism by which forcing is strict. Failure handling follows the same
-principle: under ``AUTO`` a backend marked ``on_failure="degrade"`` falls back, under any
-forcing engine everything propagates (see :func:`run_or_degrade`).
+No configuration
+----------------
+Selection takes no mode, tier or engine: for a given device and dtype there is exactly one
+fastest usable kernel, so the answer is *derived*. The single override is ``force_portable``,
+which pins the reference implementation -- see :func:`use_portable`. It exists for the one
+failure automatic fallback cannot detect: an accelerator that runs and returns wrong numbers
+rather than raising.
+
+This replaced a four-member selector enum whose two *forcing* members could never reach a
+kernel the default would not already have picked -- they could only refuse when one was
+unusable, which is information, not capability.
 
 Why kernels are stored as ``(module, attr)`` rather than as functions
 --------------------------------------------------------------------
@@ -43,15 +46,99 @@ and a ``getattr``, and buys four things a captured function object would break:
 
 from __future__ import annotations
 
+import contextlib
+import warnings
 from dataclasses import dataclass, field
 from importlib import import_module
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Callable, Iterator, Optional, Sequence, Tuple
 
 import torch
 
-from torchref.utils.triton_dispatch import Engine, get_engine
 
-__all__ = ["Backend", "BackendTable", "admits", "select", "run_or_degrade"]
+__all__ = [
+    "Backend",
+    "BackendTable",
+    "TorchRefDegradationWarning",
+    "force_portable",
+    "run_or_degrade",
+    "select",
+    "set_force_portable",
+    "use_portable",
+    "will_use",
+]
+
+
+# ---------------------------------------------------------------------------
+# Forcing the portable reference kernel
+# ---------------------------------------------------------------------------
+# Named after the table row it selects (``portable``), so the flag and the backend cannot
+# drift apart in the reader's head.
+#
+# One boolean is the whole override surface. Selection already picks the fastest backend that
+# can run, and forcing an *accelerator* could never reach a kernel the default would not have
+# picked -- it could only refuse when the kernel was unusable. What is genuinely useful is the
+# other direction: pin the portable reference when you suspect an accelerator is producing
+# wrong numbers, which no automatic fallback can detect.
+_FORCE_PORTABLE: bool = False
+
+
+def force_portable() -> bool:
+    """Whether dispatch is currently pinned to the portable reference kernel."""
+    return _FORCE_PORTABLE
+
+
+def set_force_portable(value: bool) -> None:
+    """Pin (or unpin) dispatch to the portable reference kernel, process-wide."""
+    global _FORCE_PORTABLE
+    _FORCE_PORTABLE = bool(value)
+
+
+@contextlib.contextmanager
+def use_portable() -> Iterator[None]:
+    """Pin the portable reference kernel for the duration of the block.
+
+    Restores the previous setting on exit, including on exception.
+    """
+    previous = force_portable()
+    set_force_portable(True)
+    try:
+        yield
+    finally:
+        set_force_portable(previous)
+
+
+class TorchRefDegradationWarning(UserWarning):
+    """An accelerator kernel failed at runtime and dispatch fell back to the reference.
+
+    Its own category so tests can promote it to an error while production keeps running: a
+    fallback is a performance problem for a user and a correctness signal for CI. Before this
+    existed the fallback was entirely silent, and the only way to discover it was to force the
+    accelerator and watch it raise -- which meant you had to already suspect the problem.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Availability
+# ---------------------------------------------------------------------------
+_has_triton: Optional[bool] = None
+
+
+def triton_available() -> bool:
+    """Whether ``triton`` is importable (cheap, cached for the process).
+
+    Lives here beside the per-backend probes that consume it. ``except Exception``, not
+    ``except ImportError``: a Triton that is installed but skewed against the driver or LLVM
+    raises something else, and that must read as "unavailable" rather than propagating.
+    """
+    global _has_triton
+    if _has_triton is None:
+        try:
+            import triton  # noqa: F401
+
+            _has_triton = True
+        except Exception:
+            _has_triton = False
+    return _has_triton
 
 
 def _mps_present() -> bool:
@@ -85,13 +172,9 @@ class Backend:
         declaring in a table even though the call site names its own kernel. The geometry
         targets are the case -- twelve modules each with a single ``if use_triton(x): from
         .triton.X import f`` call site, where the three-line local import is more legible
-        than a registry hop, but "which engines and devices admit Triton here" still needs
-        to be stated once. :func:`run_or_degrade` refuses such a backend; only
-        :func:`select` and :func:`admits` accept it.
-    engines : frozenset[Engine]
-        Which engines admit this backend. A forcing engine listed here makes this the
-        *only* candidate under it; omitting a forcing engine from the base case is what
-        makes that engine strict.
+        than a registry hop, but "which devices and dtypes admit Triton here" still needs to
+        be stated once. :func:`run_or_degrade` refuses such a backend; only :func:`select` and
+        :func:`will_use` accept it.
     device : str, optional
         Required device type (``"cuda"``/``"mps"``/``"cpu"``). ``None`` means any, which
         is what marks the base case.
@@ -146,8 +229,8 @@ class Backend:
         Not consulted by :func:`select` -- availability is a fact at dispatch time, never an
         expectation.
     on_failure : {"raise", "degrade"}
-        What a *runtime* exception from the kernel means under ``Engine.AUTO``. Under any
-        forcing engine this is ignored and the exception propagates.
+        What a *runtime* exception from the kernel means: ``"degrade"`` falls back to the
+        base case (with a warning), ``"raise"`` propagates.
 
         ``"degrade"`` carries a precondition: the kernel must not have mutated its inputs
         before failing, or the fallback would double-count. Both accelerator splats satisfy
@@ -160,7 +243,6 @@ class Backend:
 
     name: str
     kernel: Optional[Tuple[str, str, str]]
-    engines: frozenset
     device: Optional[str] = None
     dtypes: Optional[Tuple[torch.dtype, ...]] = None
     require_uniform_dtype: bool = False
@@ -243,18 +325,11 @@ class Backend:
 
 @dataclass(frozen=True)
 class BackendTable:
-    """An ordered set of backends plus the invariants that make it a complete policy.
+    """An ordered set of backends plus the invariant that makes it a total policy.
 
-    Two things are checked at import, both of which are currently unwritable against
-    hand-rolled if/elif ladders:
-
-    * **Every** :class:`Engine` member is handled by at least one backend. Without this,
-      adding an engine -- or forgetting to let the base case absorb one -- silently turns a
-      working call into a ``RuntimeError``. ``Engine.METAL`` is the live example: it selects
-      the Metal density splat, and at *every other* dispatch site it must mean "run eager",
-      a fact that otherwise exists only as an early ``return False`` inside a predicate.
-    * Exactly one base case, i.e. one backend with no device and no dtype restriction.
-      Selection under ``AUTO`` must always terminate somewhere.
+    Checked at import: exactly one base case, i.e. one backend with no device and no dtype
+    restriction. That is what makes :func:`select` unable to fail -- with no unrestricted row
+    there would be inputs no backend matched, and selection would need an error path.
     """
 
     name: str
@@ -262,15 +337,6 @@ class BackendTable:
     base: Backend = field(init=False)
 
     def __post_init__(self):
-        covered = frozenset().union(*(b.engines for b in self.backends))
-        missing = frozenset(Engine) - covered
-        if missing:
-            raise ValueError(
-                f"{self.name}: no backend handles "
-                f"{sorted(e.name for e in missing)}. Every engine must select "
-                "something -- if it should run the fallback, add it to that "
-                "backend's `engines`."
-            )
         bases = [b for b in self.backends if b.device is None and b.dtypes is None]
         if len(bases) != 1:
             raise ValueError(
@@ -298,15 +364,19 @@ def _probed(backend: Backend, tensors: Sequence[Optional[torch.Tensor]]):
 def select(
     table: BackendTable,
     tensors: Sequence[Optional[torch.Tensor]],
-    engine: Optional[Engine] = None,
+    force_portable: Optional[bool] = None,
 ) -> Backend:
-    """The one backend that runs, or a ``RuntimeError`` explaining why none can.
+    """The one backend that runs. Cannot fail.
+
+    Totality is structural, not defensive: the base case declares no device and no dtype and
+    carries no probe, so both its criteria return ``None`` unconditionally and the loop always
+    terminates there. There is nothing to raise about -- selection is asked "what is fastest
+    here", and the answer is never "nothing".
 
     Two-phase by contract: device and dtype are checked for every candidate *before* any
-    availability probe is called. That ordering is load-bearing twice over. It keeps an MPS
-    host from compiling the CPU C++ extension it will never use, and it makes a forced
-    engine report the device mismatch (``requires MPS float32``) rather than a compile
-    failure it never got far enough to observe.
+    availability probe is called. That ordering is load-bearing -- it keeps an MPS host from
+    compiling the CPU C++ extension it will never use, and a CUDA host from importing Triton
+    to answer a question about a CPU tensor.
 
     Parameters
     ----------
@@ -315,64 +385,31 @@ def select(
     tensors : sequence of torch.Tensor or None
         Positional arguments to probe. ``None`` entries are ignored, so a site may pass
         optional inputs straight through.
-    engine : Engine, optional
-        Per-call override; defaults to the process-wide engine.
+    force_portable : bool, optional
+        Pin the portable reference kernel. ``None`` defers to the process-wide setting.
     """
-    eng = engine if engine is not None else get_engine()
-    if not isinstance(eng, Engine):
-        # Loud on purpose. This used to be an implicit ``else`` that selected Triton, so
-        # any unrecognised value silently chose an accelerator.
-        raise ValueError(f"{table.name}: unhandled engine {eng!r}")
+    pin = force_portable if force_portable is not None else _FORCE_PORTABLE
+    if pin:
+        return table.base
 
-    reasons = []
     for backend in table.backends:
-        if eng not in backend.engines:
-            continue
-        why = backend.mismatch(tensors)
-        if why is None:
-            why = backend.unavailable()
-        if why is None:
+        if backend.mismatch(tensors) is None and backend.unavailable() is None:
             return backend
-        reasons.append((backend, why))
-
-    detail = "; ".join(f"{b.name} {why}" for b, why in reasons) or (
-        "no backend admits this engine"
-    )
-    raise RuntimeError(f"engine=Engine.{eng.name} {detail}")
+    return table.base
 
 
-def admits(
+def will_use(
     table: BackendTable,
     name: str,
     tensors: Sequence[Optional[torch.Tensor]],
-    engine: Optional[Engine] = None,
+    force_portable: Optional[bool] = None,
 ) -> bool:
-    """Whether one named backend would run -- the shape the public predicates need.
+    """Whether ``name`` is the backend that would actually run for these inputs.
 
-    Differs from :func:`select` in what a non-match means. ``select`` asks "what runs?" and
-    raises when the answer is nothing. This asks "would *this* one run?", which has a third
-    answer: an engine that does not admit this backend at all is not an error, it simply is
-    not this backend's turn. ``should_use_metal`` under ``Engine.TRITON`` is False, not a
-    failure.
-
-    Strictness still applies where it should: if the engine *does* admit this backend and
-    forces it, a failed criterion raises rather than returning False, because a forced
-    engine that quietly declines has silently degraded.
+    A thin wrapper over :func:`select`: with nothing to force there is no third answer, so
+    the question reduces to "is the selected backend this one".
     """
-    eng = engine if engine is not None else get_engine()
-    if not isinstance(eng, Engine):
-        raise ValueError(f"{table.name}: unhandled engine {eng!r}")
-    backend = table.by_name(name)
-    if eng not in backend.engines:
-        return False
-    why = backend.mismatch(tensors)
-    if why is None:
-        why = backend.unavailable()
-    if why is None:
-        return True
-    if eng is not Engine.AUTO:
-        raise RuntimeError(f"engine=Engine.{eng.name} {why}")
-    return False
+    return select(table, tensors, force_portable=force_portable).name == name
 
 
 def run_or_degrade(
@@ -380,23 +417,31 @@ def run_or_degrade(
     backend: Backend,
     aniso: bool,
     *args,
-    engine: Optional[Engine] = None,
     **kwargs,
 ):
     """Run ``backend``'s kernel, falling back to the table's base case only if allowed.
 
-    A forcing engine never degrades: the caller asked for a specific kernel, and quietly
-    substituting another would make an A/B comparison or a benchmark measure the wrong
-    thing. Under ``Engine.AUTO`` a backend marked ``on_failure="degrade"`` falls back,
-    which is what keeps an unavailable accelerator a performance problem rather than an
-    outage.
+    ``on_failure`` alone decides. A backend marked ``"degrade"`` falls back, which keeps a
+    misbehaving accelerator a performance problem rather than an outage; one marked
+    ``"raise"`` propagates, because a kernel that built fine and then threw is a bug, and
+    substituting the reference would convert wrong results into a large silent slowdown whose
+    numbers still look plausible.
+
+    A fallback always **warns**. It is a performance problem for a user and a correctness
+    signal for CI, and it used to be entirely silent -- discoverable only by already
+    suspecting it and forcing the accelerator to watch it raise.
     """
-    eng = engine if engine is not None else get_engine()
     fn = backend.resolve(aniso)
-    strict = eng is not Engine.AUTO
-    if strict or backend.on_failure == "raise" or backend is table.base:
+    if backend.on_failure == "raise" or backend is table.base:
         return fn(*args, **kwargs)
     try:
         return fn(*args, **kwargs)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - the fallback is the point
+        warnings.warn(
+            f"{table.name}: the {backend.name} kernel failed and dispatch fell back to "
+            f"{table.base.name} ({type(exc).__name__}: {exc}). Results are correct but "
+            "slower; this is worth investigating.",
+            TorchRefDegradationWarning,
+            stacklevel=2,
+        )
         return table.base.resolve(aniso)(*args, **kwargs)

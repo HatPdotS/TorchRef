@@ -17,11 +17,15 @@ model, and torchref's tensors are filled from it.
 
 from __future__ import annotations
 
+import contextlib
+
 import itertools
 from dataclasses import dataclass, fields
 from typing import Optional, Sequence
 
 import torch
+
+from torchref.utils import use_portable
 
 from torchref.base.direct_summation._backends import DS_BACKENDS
 from torchref.base.direct_summation.dispatch import _eager_aniso, _eager_iso
@@ -440,9 +444,9 @@ def sf_fft_for(
 # Direct kernel access
 # ---------------------------------------------------------------------------
 # Every production splat is called *directly* here rather than through
-# ``build_electron_density`` + ``use_engine``. Two reasons:
+# ``build_electron_density``. Two reasons:
 #
-# 1. **No vacuity risk.** Under ``Engine.AUTO`` a failed accelerator kernel silently
+# 1. **No vacuity risk.** Under the default a failed accelerator kernel silently
 #    falls back to the portable splat (``main.py`` catches and falls through), so a
 #    dispatch-driven test can pass while measuring a different kernel than the one it
 #    names. Calling the kernel directly settles that by construction.
@@ -476,6 +480,22 @@ def splat_kernel(name: str, aniso: bool):
     collection time: the Metal module loads MSL source and the CUDA one imports Triton.
     """
     return _KERNEL_TABLE.by_name(name).resolve(aniso)
+
+
+def maybe_portable(pin: bool):
+    """``use_portable()`` when ``pin``, otherwise a no-op context.
+
+    Lets a test parametrize over ``[False, True]`` and get the default backend versus the
+    pinned reference from one ``with``. Replaces the ``use_engine(engine)`` idiom that the
+    ``[Engine.AUTO, Engine.EAGER]`` parametrizations used.
+
+    Those parametrizations are all still two *distinct* kernels, which is worth stating
+    because it is easy to assume otherwise: on CPU the default selects the fused C++ sphere
+    splat and the pin selects the portable ``scatter_add`` one. Even at second order they
+    differ -- only the double-backward *re-derivation* borrows the portable splat, while the
+    forward and first derivative stay in C++.
+    """
+    return use_portable() if pin else contextlib.nullcontext()
 
 
 def device_supports_dtype(device: torch.device, dtype: torch.dtype) -> bool:
@@ -562,7 +582,7 @@ def splat_direct(scene: Scene, name: str, xyz=None, occ=None, third=None, *, ani
 #: business in a table describing what production selects; it is resolved here instead.
 #:
 #: There is **no Metal/MPS direct-summation kernel**, which the table now says outright by
-#: listing ``Engine.METAL`` among ``checkpointed``'s engines. So DS on MPS *is*
+#: there being no Metal DS kernel at all. So DS on MPS *is*
 #: ``_checkpointed_*`` running on-device -- a real production path, and what the ``mps`` leg
 #: of ``checkpointed`` covers.
 _DS_KERNEL_TABLE = DS_BACKENDS

@@ -1,9 +1,9 @@
 """The electron-density splat dispatch policy, as one table.
 
 Every criterion for choosing a density kernel is a field in a row below: which device,
-which dtypes, which engines admit it, how availability is probed, whether a runtime failure
+which dtypes, how availability is probed, whether a runtime failure
 may degrade, and whether the kernel composes to second order. Reading this file answers
-"which kernel runs for MPS + float64 + ``Engine.AUTO``?" without tracing an if/elif ladder
+"which kernel runs for MPS + float64?" without tracing an if/elif ladder
 through three modules.
 
 All four wrappers share one signature --
@@ -12,7 +12,7 @@ what lets the dispatch site be a single call rather than a per-kernel adapter.
 
 Ordering within the table is not load-bearing. The three non-base backends are pairwise
 device-disjoint (CUDA / CPU / MPS), so at most one can ever match; the base case matches
-everything and is what ``AUTO`` falls through to.
+everything and is what selection falls through to.
 
 See :mod:`torchref.utils.backends` for what each field means and why it exists.
 """
@@ -22,7 +22,6 @@ from __future__ import annotations
 import torch
 
 from torchref.utils.backends import Backend, BackendTable
-from torchref.utils.triton_dispatch import Engine
 
 _CUDA = "torchref.base.electron_density.kernels.cuda.variable_radius"
 _MPS = "torchref.base.electron_density.kernels.mps.variable_radius"
@@ -43,7 +42,6 @@ DENSITY_BACKENDS = BackendTable(
         Backend(
             name="cuda_triton",
             kernel=(_CUDA, "add_isotropic_cuda_var", "add_anisotropic_cuda_var"),
-            engines=frozenset({Engine.AUTO, Engine.TRITON}),
             device="cuda",
             dtypes=(torch.float32,),
             probes=_ATOM_ARGS,
@@ -51,14 +49,13 @@ DENSITY_BACKENDS = BackendTable(
             expect_available="cuda",
             # A failed launch on an available GPU is a capability miss worth degrading
             # from; the kernel clones the density map before accumulating, so the
-            # fallback cannot double-count. Under a forcing engine it still raises.
+            # fallback cannot double-count.
             on_failure="degrade",
             second_order=False,
         ),
         Backend(
             name="mps_metal",
             kernel=(_MPS, "add_isotropic_mps_var", "add_anisotropic_mps_var"),
-            engines=frozenset({Engine.AUTO, Engine.METAL}),
             device="mps",
             dtypes=(torch.float32,),
             probes=_ATOM_ARGS,
@@ -72,9 +69,6 @@ DENSITY_BACKENDS = BackendTable(
             name="cpu_sphere",
             kernel=(_SPHERE, "add_isotropic_cpu_sphere_var",
                     "add_anisotropic_cpu_sphere_var"),
-            # AUTO only. There is no Engine member that forces the fused CPU splat, which
-            # is why proving it ran needs a call recorder rather than a strict engine.
-            engines=frozenset({Engine.AUTO}),
             device="cpu",
             dtypes=(torch.float32, torch.float64),
             # Uniformity, not membership: the kernel picks one ``scalar_t`` from the output
@@ -97,9 +91,8 @@ DENSITY_BACKENDS = BackendTable(
         Backend(
             name="portable",
             kernel=(_PORTABLE, "add_isotropic_plain_var", "add_anisotropic_plain_var"),
-            # The base case, and the reason forcing works: TRITON and METAL are absent
-            # here, so nothing absorbs them and a forced engine that cannot run raises.
-            engines=frozenset({Engine.AUTO, Engine.EAGER}),
+            # The base case: no device or dtype restriction, so it always matches. That is
+            # what makes ``select`` unable to fail.
             expect_available="always",
             on_failure="raise",
             second_order=True,

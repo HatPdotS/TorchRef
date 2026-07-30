@@ -30,7 +30,6 @@ from torchref.base.direct_summation.dispatch import (
     _eager_aniso,
     _eager_iso,
 )
-from torchref.utils import Engine, use_engine
 
 from . import (
     COS_MIN_DS,
@@ -50,6 +49,11 @@ from . import helpers as H
 from .conftest import DEVICE_DTYPE_KERNELS, DS_DEVICE_DTYPE_KERNELS
 
 pytestmark = pytest.mark.unit
+
+
+def _lbl(pin):
+    """Label for the backend a pin parametrization selected."""
+    return "portable" if pin else "default"
 
 _DTYPES = [torch.float32, torch.float64]  # float32 first: production dtype
 _LEAF_NAMES = ("xyz", "occ", "adp_or_u")
@@ -149,7 +153,7 @@ def test_public_ds_api_matches_oracle(scene_fine):
     """The same check one level up, through ``ds_iso``'s own dispatch.
 
     Guards against the dispatch layer -- not the kernel -- introducing a discrepancy:
-    a wrong ``max_memory_gb`` default, or an ``Engine`` gate that silently routes
+    a wrong ``max_memory_gb`` default, or a dispatch table that silently routes
     somewhere unintended on CPU.
     """
     from torchref.base.direct_summation.dispatch import ds_iso
@@ -179,10 +183,10 @@ def test_public_ds_api_matches_oracle(scene_fine):
 # ---------------------------------------------------------------------------
 # 3. DS -> FFT
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("engine", [Engine.AUTO, Engine.EAGER], ids=["auto", "eager"])
+@pytest.mark.parametrize("pin", [False, True], ids=["default", "portable"])
 @pytest.mark.parametrize("dtype", _DTYPES, ids=["f32", "f64"])
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
-def test_fft_gradients_match_ds(scene_fine, oracle_fine, kind, dtype, engine):
+def test_fft_gradients_match_ds(scene_fine, oracle_fine, kind, dtype, pin):
     """Gradients of the map route against the analytic oracle, for all three leaves.
 
     ``occ`` is included deliberately. Before this package, occupancy gradients through
@@ -198,18 +202,18 @@ def test_fft_gradients_match_ds(scene_fine, oracle_fine, kind, dtype, engine):
     aniso = kind == "aniso"
     sf = H.sf_fft_for(scene_fine, dtype)
     leaves = scene_fine.leaves(aniso=aniso)
-    with use_engine(engine):
+    with H.maybe_portable(pin):
         F = H.fft_sf(scene_fine, sf, *leaves, aniso=aniso)
         got = torch.autograd.grad(H.ls_target(F, oracle_fine[f"{kind}_obs"]), leaves)
     ref = oracle_fine[f"{kind}_grads"]
 
     gate, cos_gate = RTOL_GRADIENT_SYNTHETIC, COS_MIN_GRADIENT_SYNTHETIC
-    print(f"\n{kind}, {dtype}, {engine.value}  (rel gate {gate:.0e}, cos gate {cos_gate})")
+    print(f"\n{kind}, {dtype}, {_lbl(pin)}  (rel gate {gate:.0e}, cos gate {cos_gate})")
     for name, g, r in zip(_LEAF_NAMES, got, ref):
         rel, cos = rel_error(g, r), cosine_similarity(g, r)
         print(f"  {name:10s} rel {rel:.3e}  cos {cos:.8f}  ratio {gradnorm_ratio(g, r):.4f}")
-        assert rel < gate, f"{kind}/{dtype}/{engine.value} {name}: rel {rel:.3e}"
-        assert cos > cos_gate, f"{kind}/{dtype}/{engine.value} {name}: cos {cos:.6f}"
+        assert rel < gate, f"{kind}/{dtype}/{_lbl(pin)} {name}: rel {rel:.3e}"
+        assert cos > cos_gate, f"{kind}/{dtype}/{_lbl(pin)} {name}: cos {cos:.6f}"
 
 
 @pytest.mark.parametrize("dtype", _DTYPES, ids=["f32", "f64"])
@@ -221,13 +225,13 @@ def test_backend_parity_of_gradients(scene_fine, oracle_fine, kind, dtype):
     aniso = kind == "aniso"
     sf = H.sf_fft_for(scene_fine, dtype)
 
-    def run(engine):
+    def run(pin):
         leaves = scene_fine.leaves(aniso=aniso)
-        with use_engine(engine):
+        with H.maybe_portable(pin):
             F = H.fft_sf(scene_fine, sf, *leaves, aniso=aniso)
             return torch.autograd.grad(H.ls_target(F, oracle_fine[f"{kind}_obs"]), leaves)
 
-    auto, eager = run(Engine.AUTO), run(Engine.EAGER)
+    auto, eager = run(False), run(True)
     tol = RTOL_BACKEND_GRAD_F32 if dtype is torch.float32 else RTOL_BACKEND_GRAD_F64
     for name, a, e in zip(_LEAF_NAMES, auto, eager):
         rel = rel_error(a, e)
@@ -259,7 +263,7 @@ def test_fft_gradients_match_ds_real_structure(gemmi_aniso_grad, oracle_aniso_gr
     """Gradients on 7L84 -- 1209 atoms, all with ANISOU -- at production sampling.
 
     This is the gate that states something about production; the synthetic sweeps above
-    exist for dtype/engine/cell coverage and are calibrated loosely because small scenes
+    exist for dtype/backend/cell coverage and are calibrated loosely because small scenes
     overstate the discretization residual (see ``__init__.py``).
 
     Run in float32, the production dtype, against the float64 oracle. Nothing here is

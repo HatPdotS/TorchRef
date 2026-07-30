@@ -664,8 +664,8 @@ def place_riding_hydrogens(
     # helper otherwise.
     #
     # Gated by the shared ``use_triton`` rather than a hand-rolled
-    # ``is_cuda and dtype == float32``. The inline check ignored the ``Engine`` entirely, so
-    # ``with use_engine(Engine.EAGER): ...`` still ran the Triton kernel here -- and since
+    # ``is_cuda and dtype == float32``. The inline check ignored the shared gate entirely, so
+    # a block that pinned the portable path still ran the Triton kernel here -- and since
     # EAGER is the documented double-differentiable route, a Hessian taken through hydrogen
     # placement was silently going through a first-order-only kernel.
     if use_triton(xyz_heavy):

@@ -65,7 +65,7 @@ Why the oracle is ``_eager_*`` and never ``ds_iso``/``SfDS``
 ``backward`` calls ``torch.autograd.grad`` **without** ``create_graph=True`` on detached
 copies (``torchref/base/direct_summation/dispatch.py:197``). They are exact at first
 order -- measured agreement with the eager path is 2.3e-16 -- but a second derivative
-through them raises ``element 0 of tensors does not require grad``. ``Engine.EAGER``
+through them raises ``element 0 of tensors does not require grad``. ``force_portable``
 does not help; it only steers away from Triton and still lands on ``_CheckpointedSF``.
 
 So the oracle is ``_eager_iso`` / ``_eager_aniso``, which are pure torch and therefore
@@ -226,7 +226,7 @@ RTOL_BACKEND_GRAD_F64 = 1e-10
 #   mps    float32  checkpointed  1.72e-06    2.41e-05            1.0000000
 #
 # The MPS row is a path that had no coverage of any kind before: there is no Metal
-# direct-summation kernel, so ``Engine.METAL`` and any MPS device both land on
+# direct-summation kernel, so any MPS device lands on
 # ``_checkpointed_*`` running on-device. It agrees with the CPU float32 row to the digit.
 #
 # ``ds_triton`` is **unmeasured** -- no CUDA on the calibration host. It shares these gates,

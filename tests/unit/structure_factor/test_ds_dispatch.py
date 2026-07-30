@@ -1,8 +1,15 @@
 """Direct-summation dispatch *mechanics*, as distinct from its accuracy.
 
 CPU-only. What is left here after the oracle package absorbed the numerics: that
-reflection-chunking is exact, that an empty atom set returns zeros of the right shape,
-and that the engine guards refuse rather than silently degrade.
+reflection-chunking is exact, that an empty atom set returns zeros of the right shape, and
+that an integer ``hkl`` -- the production dtype -- is accepted losslessly.
+
+Two tests were deleted rather than migrated when the ``Engine`` enum went away. Both had
+forcing as their *subject*: one asserted that a forced Triton engine refuses CPU inputs, and
+one that a forced Metal engine runs eager instead of raising. With no forcing engine there is
+nothing to refuse, and the second would have degenerated into ``assert torch.equal(F, F)``.
+Selection is now asserted directly against the tables in
+``tests/unit/utils/test_backend_tables.py``.
 
 The accuracy questions this file used to own -- checkpointed-vs-eager parity and
 ``gradcheck`` -- moved to ``test_gradients.py`` in this package, which ties the shipping
@@ -14,7 +21,7 @@ strictness, which is why they were consolidated.
 import pytest
 import torch
 
-from torchref.base.direct_summation import Engine, ds_iso
+from torchref.base.direct_summation import ds_iso
 from torchref.base.direct_summation import dispatch as D
 from torchref.config import dtypes
 
@@ -72,36 +79,9 @@ def test_empty_atoms_returns_zeros():
     empty = torch.zeros(0, 3, dtype=torch.float64)
     z = torch.zeros(0, dtype=torch.float64)
     z5 = torch.zeros(0, 5, dtype=torch.float64)
-    F = ds_iso(hkl, s, empty, z, z, z5, z5, engine=Engine.AUTO)
+    F = ds_iso(hkl, s, empty, z, z, z5, z5)
     assert F.shape == (hkl.shape[0],)
     assert F.abs().sum().item() == 0.0
-
-
-def test_explicit_triton_engine_rejects_cpu():
-    hkl, s, _, A, B = _inputs()
-    xyz, occ, adp, _ = _leaves()
-    with pytest.raises(RuntimeError):
-        ds_iso(hkl, s, xyz, occ, adp, A, B, engine=Engine.TRITON)
-
-
-def test_metal_engine_runs_eager_rather_than_raising():
-    """``Engine.METAL`` at a direct-summation site means eager, not an error.
-
-    There is no Metal DS kernel: ``Engine.METAL`` returns False from the Triton gate and
-    an MPS tensor fails ``is_cuda``, so DS under METAL *is* ``_checkpointed_*``. That is
-    deliberate -- the ``Engine`` docstring recommends scoping METAL with ``use_engine``
-    around the density call, which necessarily leaves it set for any DS in the same
-    block -- but nothing asserted it, so a dispatcher that rejected engines no backend
-    claims would break this silently.
-
-    Compared against ``Engine.AUTO`` on the same inputs rather than merely checked for
-    finiteness, so a future path that returned zeros could not pass.
-    """
-    hkl, s, _, A, B = _inputs(dtype=torch.float64)
-    xyz, occ, adp, _ = _leaves(dtype=torch.float64)
-    F_metal = ds_iso(hkl, s, xyz, occ, adp, A, B, engine=Engine.METAL)
-    F_auto = ds_iso(hkl, s, xyz, occ, adp, A, B, engine=Engine.AUTO)
-    assert torch.equal(F_metal, F_auto)
 
 
 def test_integer_hkl_is_accepted_and_lossless():
@@ -114,9 +94,8 @@ def test_integer_hkl_is_accepted_and_lossless():
 
     This matters for how the dtype gate may be tightened. The gate's test is
     ``t.dtype is torch.float32``, an identity check, so probing ``hkl`` with that rule
-    would reject the production dtype -- declining Triton under AUTO and raising under
-    ``Engine.TRITON``. The rule has to exempt integer tensors, and this test is what
-    fails if it does not.
+    would reject the production dtype and disable the Triton path outright. The rule has to
+    exempt integer tensors, and this test is what fails if it does not.
 
     Worth recording alongside: casting ``hkl`` is not merely tolerable, it is *free*.
     Miller indices are integer-valued in every dtype that holds them (symmetry maps
@@ -131,10 +110,8 @@ def test_integer_hkl_is_accepted_and_lossless():
     hkl_int = torch.randint(-3, 4, (7, 3), dtype=torch.int32)
     s = s[: hkl_int.shape[0]]
 
-    F_int = ds_iso(hkl_int, s, xyz, occ, adp, A, B, engine=Engine.AUTO)
-    F_float = ds_iso(
-        hkl_int.to(torch.float64), s, xyz, occ, adp, A, B, engine=Engine.AUTO
-    )
+    F_int = ds_iso(hkl_int, s, xyz, occ, adp, A, B)
+    F_float = ds_iso(hkl_int.to(torch.float64), s, xyz, occ, adp, A, B)
     assert torch.equal(F_int, F_float), "casting integer Miller indices must be exact"
 
 

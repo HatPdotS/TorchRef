@@ -1,6 +1,6 @@
 """Portable per-atom variable-radius density splatting.
 
-Reached by ``Engine.EAGER`` on any device, by CUDA/MPS float64, and whenever the fused
+Reached by ``force_portable`` on any device, by CUDA/MPS float64, and whenever the fused
 C++ kernel could not be built. Plain ``scatter_add`` only, so it runs on every device,
 supports float64, and is double-differentiable -- which makes it the reference the
 accelerator kernels are checked against.
@@ -70,7 +70,7 @@ def _axis_half_widths(r: float, inv_frac: torch.Tensor, grid_dims):
     """``ceil(r * n_axis * ||inv_frac row_axis||)`` -- the kernels' enumeration box.
 
     The norm is taken in float64 **on the CPU**, never on the input's device: this path
-    also serves ``Engine.EAGER`` on MPS, which has no float64, and ``.double()`` in place
+    also serves ``force_portable`` on MPS, which has no float64, and ``.double()`` in place
     raises there. Hopping a 3x3 matrix to the CPU is free, and float64 matters because the
     result feeds a ``ceil`` -- a value landing a hair under an integer in float32 would
     shrink the box by one voxel and silently clip the sphere.

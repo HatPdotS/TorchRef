@@ -1,5 +1,5 @@
 """
-Central electron density building, dispatched solely by the shared ``Engine``.
+Central electron density building, dispatched from one declarative table.
 
 One truncation contract, every backend
 -------------------------------------
@@ -20,22 +20,22 @@ disagreed here -- Metal inflated the radius to a whole voxel, the portable CPU
 splat used a node-centred diagonal metric, and the CPU fast path splatted a cube --
 by amounts comparable to or larger than the truncation error itself.
 
-Engine dispatch
----------------
+Backend dispatch
+----------------
 Which kernel runs is decided from a table, not from an if/elif ladder: see
 :data:`torchref.base.electron_density._backends.DENSITY_BACKENDS`. That table is the only
-place the criteria are written down -- device, dtype, which engines admit each backend, how
-availability is probed, and whether a runtime failure may degrade -- so it is also the only
-place to look, or to edit when adding a backend. The mechanics of reading it live in
-:mod:`torchref.utils.backends`.
+place the criteria are written down -- device, dtype, how availability is probed, and whether
+a runtime failure may degrade -- so it is also the only place to look, or to edit when adding
+a backend. The mechanics of reading it live in :mod:`torchref.utils.backends`.
 
-The capability-based ``Engine`` (AUTO/TRITON/METAL/EAGER) is the *only* switch: no
-environment-variable dispatch, no parallel "tier" knobs. ``AUTO`` picks the fastest
-available path per device and degrades quietly if an accelerator kernel is missing or
-throws; ``EAGER`` pins the portable splat everywhere, which is the double-differentiable
-route to use for Hessians; ``TRITON`` and ``METAL`` force their kernel and raise rather than
-degrade, so a benchmark or an A/B comparison cannot silently measure something else. Pass
-``engine=`` per call, or scope it with ``with use_engine(...)``.
+Selection needs no configuration: the fastest kernel that can run for the given device and
+dtype is chosen, and an accelerator that is missing or throws degrades to the portable splat
+(with a warning). There is no environment-variable dispatch and no "tier" knobs.
+
+The one override is ``force_portable``, which pins the portable reference splat. Pass it per
+call or scope it with ``with use_portable(): ...``. Its purpose is the single failure that
+automatic fallback cannot detect -- an accelerator kernel that runs and returns *wrong
+numbers* rather than raising.
 
 The production splats live in ``kernels/cuda/variable_radius.py``,
 ``kernels/cpu/sphere_splat.py``, ``kernels/mps/variable_radius.py`` and (portable)
@@ -49,7 +49,6 @@ import torch
 
 from torchref.config import get_float_dtype, get_sigma_cutoff_ed
 from torchref.utils.backends import run_or_degrade, select
-from torchref.utils.triton_dispatch import Engine
 
 from torchref.base.electron_density._backends import DENSITY_BACKENDS
 
@@ -78,7 +77,7 @@ def build_electron_density(
     A_aniso: Optional[torch.Tensor] = None,
     B_aniso: Optional[torch.Tensor] = None,
     dtype: torch.dtype = None,
-    engine: Optional[Engine] = None,
+    force_portable: Optional[bool] = None,
 ) -> torch.Tensor:
     """
     Build an electron density map from atomic parameters.
@@ -120,11 +119,11 @@ def build_electron_density(
     dtype : torch.dtype, optional
         Float dtype for the density map. Defaults to the configured float
         dtype (``get_float_dtype()``), which may be float64.
-    engine : Engine, optional
-        Per-call backend override; defaults to the process-wide engine. Prefer this over
-        ``set_engine`` when you only mean to steer the density splat -- a process-wide
-        ``Engine.METAL`` also sends every target math function down the eager path, which
-        would skew a benchmark.
+    force_portable : bool, optional
+        Pin the portable reference splat instead of the fastest available kernel. ``None``
+        defers to the process-wide setting (see ``torchref.utils.use_portable``). Use it to
+        check whether an accelerator kernel is producing wrong numbers -- the one failure
+        automatic fallback cannot detect.
 
     Returns
     -------
@@ -151,7 +150,7 @@ def build_electron_density(
             B_iso,
             inv_frac_matrix,
             frac_matrix,
-            engine=engine,
+            force_portable=force_portable,
         )
 
     # --- anisotropic atoms ---
@@ -165,7 +164,7 @@ def build_electron_density(
             B_aniso,
             inv_frac_matrix,
             frac_matrix,
-            engine=engine,
+            force_portable=force_portable,
         )
 
     return density_map
@@ -185,7 +184,7 @@ def _add_isotropic(
     B,
     inv_frac_matrix,
     frac_matrix,
-    engine=None,
+    force_portable=None,
 ):
     """Add isotropic atoms with a per-atom variable radius.
 
@@ -202,8 +201,8 @@ def _add_isotropic(
     radius_per_atom = per_atom_radius_iso(adp, B, n_sigma=get_sigma_cutoff_ed())
     args = (density_map, xyz, adp, occ, A, B,
             inv_frac_matrix, frac_matrix, radius_per_atom)
-    backend = select(DENSITY_BACKENDS, args, engine)
-    return run_or_degrade(DENSITY_BACKENDS, backend, False, *args, engine=engine)
+    backend = select(DENSITY_BACKENDS, args, force_portable=force_portable)
+    return run_or_degrade(DENSITY_BACKENDS, backend, False, *args)
 
 
 def _add_anisotropic(
@@ -215,7 +214,7 @@ def _add_anisotropic(
     B,
     inv_frac_matrix,
     frac_matrix,
-    engine=None,
+    force_portable=None,
 ):
     """Add anisotropic atoms with a per-atom variable radius (mirrors the iso path).
 
@@ -230,5 +229,5 @@ def _add_anisotropic(
     radius_per_atom = per_atom_radius_aniso(B, u, n_sigma=get_sigma_cutoff_ed())
     args = (density_map, xyz, u, occ, A, B,
             inv_frac_matrix, frac_matrix, radius_per_atom)
-    backend = select(DENSITY_BACKENDS, args, engine)
-    return run_or_degrade(DENSITY_BACKENDS, backend, True, *args, engine=engine)
+    backend = select(DENSITY_BACKENDS, args, force_portable=force_portable)
+    return run_or_degrade(DENSITY_BACKENDS, backend, True, *args)

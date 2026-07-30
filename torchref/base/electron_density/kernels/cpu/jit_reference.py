@@ -8,7 +8,7 @@ for optimal performance.
 
 Architecture:
 - CPU: JIT-scripted kernel using einsum with metric tensor (efficient for CPU)
-- GPU: when the shared ``Engine`` permits Triton (CUDA + float32, engine
+- GPU: when the shared targets gate permits Triton (CUDA + float32, dispatch
   AUTO/TRITON), ``vectorized_add_to_map`` selects the Triton fused branch
   (``fused_add_to_map_gpu``) first; otherwise it falls back to the pure-torch,
   double-differentiable ``_add_to_map_gpu_simple`` (JIT-scripted batch matmul).
@@ -29,7 +29,7 @@ Usage:
 import os
 import torch
 
-from torchref.utils.triton_dispatch import should_use_triton
+from torchref.base.targets._dispatch import use_triton
 
 # =============================================================================
 # Cache directory for JIT kernels
@@ -379,10 +379,10 @@ def vectorized_add_to_map(
     """
     Add atoms to density map using ITC92 Gaussian parameterization.
 
-    Backend is chosen by the shared ``Engine`` via ``should_use_triton``: on
+    Backend is chosen by the shared targets gate via ``use_triton``: on
     GPU it uses the Triton fused kernel when Triton is permitted (CUDA+float32,
     engine AUTO/TRITON) and the pure-torch ``_add_to_map_gpu_simple`` otherwise
-    (Engine.EAGER, float64, or Triton unavailable). CPU uses the JIT kernel.
+    (force_portable, float64, or Triton unavailable). CPU uses the JIT kernel.
 
     Parameters
     ----------
@@ -417,11 +417,11 @@ def vectorized_add_to_map(
         input unchanged. Callers must always use the returned value.
     """
     if density_map.device.type == "cuda":
-        # The shared Engine is the only switch: use the Triton kernel when it
-        # permits (CUDA + float32, engine AUTO/TRITON); otherwise — Engine.EAGER,
+        # The shared targets gate is the only switch: use the Triton kernel when it
+        # permits (CUDA + float32); otherwise — force_portable,
         # float64, or Triton unavailable — the pure-torch, double-differentiable
         # ``_add_to_map_gpu_simple``.
-        if should_use_triton(xyz):
+        if use_triton(xyz):
             triton_fn = _get_triton_kernel()
             if triton_fn is not None:
                 return triton_fn(
@@ -489,7 +489,7 @@ def build_electron_density(
     This alias takes the *voxel-level* signature (precomputed
     ``surrounding_coords`` / ``voxel_indices``) and is distinct from the
     top-level :func:`torchref.base.electron_density.main.build_electron_density`,
-    which takes *atomic* parameters and performs the full ``Engine``-based
+    which takes *atomic* parameters and performs the full table-based
     variable-radius dispatch.
 
     Parameters

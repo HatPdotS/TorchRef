@@ -39,7 +39,6 @@ import torch
 from tests.helpers.grad_asserts import cosine_similarity, hvp, hvp_central_fd, rel_error
 from torchref.base.direct_summation.dispatch import _eager_aniso, _eager_iso
 from torchref.base.electron_density._backends import DENSITY_BACKENDS
-from torchref.utils import Engine, use_engine
 
 from . import (
     ATOL_GRADCHECK,
@@ -53,6 +52,11 @@ from . import helpers as H
 from .conftest import DEVICE_DTYPE_KERNELS
 
 pytestmark = pytest.mark.unit
+
+
+def _lbl(pin):
+    """Label for the backend a pin parametrization selected."""
+    return "portable" if pin else "default"
 
 _DTYPES = [torch.float32, torch.float64]  # float32 first: production dtype
 
@@ -163,14 +167,14 @@ def test_eager_ds_survives_double_backward_where_public_api_does_not(scene_small
 # ---------------------------------------------------------------------------
 # 3. DS -> FFT at second order
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("engine", [Engine.AUTO, Engine.EAGER], ids=["auto", "eager"])
+@pytest.mark.parametrize("pin", [False, True], ids=["default", "portable"])
 @pytest.mark.parametrize("dtype", _DTYPES, ids=["f32", "f64"])
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
-def test_fft_hvp_matches_ds(scene_fine, oracle_fine, kind, dtype, engine):
+def test_fft_hvp_matches_ds(scene_fine, oracle_fine, kind, dtype, pin):
     """The map route's HVP against the DS oracle's HVP.
 
     This is the replacement for the two failing FD-based tests, and it covers strictly
-    more: both dtypes and both engines, where the originals covered float64-plain and
+    more: both dtypes and both backends, where the originals covered float64-plain and
     float32-C++ only, each with its own hand-tuned ``eps``.
 
     Both sides contract with the same seeded direction ``v`` (from the oracle fixture),
@@ -187,14 +191,14 @@ def test_fft_hvp_matches_ds(scene_fine, oracle_fine, kind, dtype, engine):
             oracle_fine[f"{kind}_obs"],
         )
 
-    with use_engine(engine):
+    with H.maybe_portable(pin):
         got = hvp(loss, scene_fine.xyz, v)
     ref = oracle_fine[f"{kind}_hvp"]
 
     rel, cos = rel_error(got, ref), cosine_similarity(got, ref)
-    print(f"\n  {kind}/{dtype}/{engine.value}: HVP vs DS -- rel {rel:.3e}  cos {cos:.8f}")
-    assert cos > COS_MIN, f"{kind}/{dtype}/{engine.value}: HVP direction, cos {cos:.6f}"
-    assert rel < RTOL_HVP, f"{kind}/{dtype}/{engine.value}: HVP magnitude, rel {rel:.3e}"
+    print(f"\n  {kind}/{dtype}/{_lbl(pin)}: HVP vs DS -- rel {rel:.3e}  cos {cos:.8f}")
+    assert cos > COS_MIN, f"{kind}/{dtype}/{_lbl(pin)}: HVP direction, cos {cos:.6f}"
+    assert rel < RTOL_HVP, f"{kind}/{dtype}/{_lbl(pin)}: HVP magnitude, rel {rel:.3e}"
 
 
 @pytest.mark.parametrize("dtype", _DTYPES, ids=["f32", "f64"])
@@ -235,7 +239,7 @@ def test_fused_cpu_kernel_uses_the_double_backward_fallback(
     def loss(x):
         return H.ls_target(H.fft_sf(scene_fine, sf, x, occ, adp), obs)
 
-    with use_engine(Engine.AUTO):
+    with H.maybe_portable(False):
         out = hvp(loss, scene_fine.xyz, v)
 
     assert calls["fallback"] > 0, (
@@ -319,7 +323,7 @@ def test_finite_differences_cannot_detect_map_route_error(scene_fine, oracle_fin
 def test_fft_hvp_matches_ds_real_structure(gemmi_aniso_grad, oracle_aniso_grad):
     """Second derivatives on 7L84 at production sampling, in the production dtype.
 
-    The synthetic HVP sweep above covers dtype and engine combinations; this is the one
+    The synthetic HVP sweep above covers dtype and backend combinations; this is the one
     that speaks to production, for the same reason as its first-order counterpart in
     ``test_gradients.py``.
     """
@@ -352,7 +356,7 @@ def test_fft_hvp_matches_ds_real_structure(gemmi_aniso_grad, oracle_aniso_grad):
 #                          through the portable splat on the saved leaves
 #   add_*_plain_var        yes -- pure autograd over ``scatter_add``
 #   add_*_mps_var          no  -- ``mps/variable_radius.py:12``: "Backward is first-order
-#                          only (like CUDA); double backward must use Engine.EAGER"
+#                          only (like CUDA); double backward needs the portable splat"
 #   WorkQueueGridDensity*  no  -- same, no ``create_graph`` path in the Triton backward
 #
 # So an accelerator HVP cannot be compared against the oracle: there is no HVP to compare.
@@ -376,7 +380,7 @@ def test_kernel_hvp_matches_ds(scene_fine, oracle_fine, device, dtype, kernel, k
     """HVP of a double-differentiable kernel against the oracle's, on every device.
 
     Covers the portable splat running *on an accelerator*, which nothing tested before:
-    it is what ``Engine.EAGER`` and the CUDA/MPS float64 fallthrough actually execute, and
+    it is what ``force_portable`` and the CUDA/MPS float64 fallthrough actually execute, and
     it is the path a Hessian-based optimizer lands on there.
     """
     if kernel not in _DOUBLE_DIFFERENTIABLE:

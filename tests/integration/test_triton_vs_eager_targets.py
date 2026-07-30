@@ -9,8 +9,8 @@ ADP), we run forward + backward twice on the same model state:
 and assert that loss values and parameter gradients agree to within a
 fp32 tolerance accounting for atomic-scatter non-determinism.
 
-Toggling is done with the shared ``torchref.utils.use_engine`` context manager
-(``Engine.EAGER`` vs ``Engine.TRITON``). No process restart needed.
+Toggling is done with the shared ``torchref.utils.use_portable`` context manager
+(``use_portable()`` vs the default). No process restart needed.
 
 Markers: ``@pytest.mark.cuda`` (skipped by default) and
 ``@pytest.mark.integration``. Run on a CUDA box with
@@ -22,6 +22,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 from typing import Dict, Tuple
+
+import contextlib
 
 import pytest
 import torch
@@ -189,28 +191,39 @@ def _target_names(state):
         "geometry/nonbonded",
         "geometry/ramachandran",
         "adp/simu",
-        "adp/locality",
-        "adp/KL",
-        "adp/scaler_U",
-        "adp/scaler_log_scale",
     ],
 )
 def test_triton_matches_eager_per_target(target_name, gpu_refinement, gpu_state):
-    """For each registered target, forward + backward must match between
-    Triton and eager paths (up to the per-target tolerance)."""
+    """For each registered target, forward + backward must match between the Triton and
+    portable paths (up to the per-target tolerance).
+
+    Four params were removed when this migrated off the ``Engine`` enum:
+    ``adp/locality``, ``adp/KL``, ``adp/scaler_U`` and ``adp/scaler_log_scale`` have **no
+    Triton implementation at all**, so they were comparing the eager path against itself and
+    passing at ``rel == 0``. That was true before the migration too -- forcing an engine had
+    never made them non-vacuous, because there was nothing on the other side.
+
+    What keeps the remaining params honest is not the toggle. On a CUDA host
+    ``test_backend_is_available_where_it_is_expected`` fails if the Triton kernels *should*
+    work and do not, and a runtime fallback raises through the degradation warning. Either
+    fires before this test could quietly compare the reference against itself.
+
+    Note the ``xray`` param is broader than a loss-math A/B: it runs through
+    ``LBFGSRefinement`` -> ``ModelFT`` -> ``build_electron_density``, so it also exercises the
+    density splat. That is deliberate coverage, not an accident of the harness.
+    """
     if target_name not in gpu_state.targets:
         pytest.skip(f"target {target_name!r} not in this state")
     target = gpu_state.targets[target_name]
 
-    from torchref.utils import Engine, use_engine
+    from torchref.utils import use_portable
 
-    # ----- eager (Triton dispatch disabled) -----
-    with use_engine(Engine.EAGER):
+    # ----- reference (dispatch pinned to the portable path) -----
+    with use_portable():
         eager = _run_target_capture_grads(target, gpu_refinement)
 
-    # ----- Triton (dispatch enabled) -----
-    with use_engine(Engine.TRITON):
-        triton = _run_target_capture_grads(target, gpu_refinement)
+    # ----- Triton (the default on CUDA float32) -----
+    triton = _run_target_capture_grads(target, gpu_refinement)
 
     atol, rtol = _tol_for(target_name)
     _assert_close(target_name, eager, triton, atol, rtol)
@@ -226,7 +239,7 @@ def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
     it has no Triton path to compare.)
     """
     from torchref import LBFGSRefinement
-    from torchref.utils import Engine, use_engine
+    from torchref.utils import use_portable
 
     device = torch.device("cuda")
     pdb, mtz = _1daw_pair
@@ -241,9 +254,9 @@ def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
     ref.scaler.refine_lbfgs()
     target = ref.xray_target_work
 
-    with use_engine(Engine.EAGER):
+    with use_portable():
         eager = _run_target_capture_grads(target, ref)
-    with use_engine(Engine.TRITON):
+    with contextlib.nullcontext():  # the default: Triton on CUDA float32
         triton = _run_target_capture_grads(target, ref)
 
     name = f"xray/{target_mode}"
@@ -267,7 +280,7 @@ def test_planarity_triton_per_atom_sigma(n_atoms):
         _planarity_math_eager,
         planarity_math,
     )
-    from torchref.utils import Engine, use_engine
+    from torchref.utils import use_portable
 
     dev = torch.device("cuda")
     g = torch.Generator(device=dev).manual_seed(7)
@@ -279,10 +292,10 @@ def test_planarity_triton_per_atom_sigma(n_atoms):
 
     xe = base.clone().requires_grad_(True)
     xt = base.clone().requires_grad_(True)
-    with use_engine(Engine.EAGER):
+    with use_portable():
         le = _planarity_math_eager(xe, [(idx, sigmas)])
     (ge,) = torch.autograd.grad(le, xe)
-    with use_engine(Engine.TRITON):
+    with contextlib.nullcontext():  # the default: Triton on CUDA float32
         lt = planarity_math(xt, [(idx, sigmas)])
     (gt,) = torch.autograd.grad(lt, xt)
 
@@ -305,7 +318,7 @@ def test_geometry_degenerate_finite_grads():
     from torchref.base.targets.angle import angle_math
     from torchref.base.targets.bond import bond_math
     from torchref.base.targets.torsion import torsion_omega_math
-    from torchref.utils import Engine, use_engine
+    from torchref.utils import use_portable
 
     dev = torch.device("cuda")
     # Collinear chain of points -> degenerate angle & torsion; plus a
@@ -344,9 +357,9 @@ def test_geometry_degenerate_finite_grads():
         ),
     ]
     for name, fn, args in cases:
-        for engine in (Engine.EAGER, Engine.TRITON):
+        for pin in (True, False):
             x = xyz0.clone().requires_grad_(True)
-            with use_engine(engine):
+            with (use_portable() if pin else contextlib.nullcontext()):
                 loss = fn(x, *args)
             (grad,) = torch.autograd.grad(loss, x)
             assert torch.isfinite(grad).all(), f"{name}/{engine}: non-finite grad"
@@ -355,9 +368,9 @@ def test_geometry_degenerate_finite_grads():
 def _hvp_vs_fd(model, hkl, eps=1e-5):
     """Return (cosine, rel_err) of the autograd Hessian-vector product vs a
     central finite difference of the gradient, through ``model.forward`` under
-    ``use_engine(Engine.EAGER)`` (the genuine pure-torch, double-differentiable
+    ``use_portable()`` (the genuine pure-torch, double-differentiable
     ED path)."""
-    from torchref.utils import Engine, use_engine
+    from torchref.utils import use_portable
 
     x = model.xyz.refinable_params
     x0 = x.detach().clone()
@@ -369,7 +382,7 @@ def _hvp_vs_fd(model, hkl, eps=1e-5):
         with torch.no_grad():
             x.copy_(xv)
             model.reset_cache()
-        with use_engine(Engine.EAGER):
+        with use_portable():
             sf = model(hkl, recalc=True)
         return (
             torch.autograd.grad((sf.real**2 + sf.imag**2).sum(), x)[0].detach().clone()
@@ -378,7 +391,7 @@ def _hvp_vs_fd(model, hkl, eps=1e-5):
     with torch.no_grad():
         x.copy_(x0)
         model.reset_cache()
-    with use_engine(Engine.EAGER):
+    with use_portable():
         sf = model(hkl, recalc=True)
     (g1,) = torch.autograd.grad((sf.real**2 + sf.imag**2).sum(), x, create_graph=True)
     (hvp,) = torch.autograd.grad((g1 * v).sum(), x)
@@ -398,11 +411,11 @@ def _hvp_vs_fd(model, hkl, eps=1e-5):
 @pytest.mark.cuda
 @pytest.mark.integration
 def test_eager_gpu_hessian_iso(tmp_path):
-    """`use_engine(Engine.EAGER)` gives correct GPU second derivatives (iso).
+    """``use_portable()`` gives correct GPU second derivatives (iso).
 
     The fast GPU density splat is first-order only (custom-Function backward
     with no grad_fn) and silently drops the second-order term under
-    create_graph. Under ``Engine.EAGER`` the iso splat now routes to the pure-
+    create_graph. Under ``use_portable()`` the iso splat now routes to the pure-
     torch (scatter_add) path, which composes under autograd. A Hessian-vector
     product through ``ModelFT.forward`` must then match finite differences.
     """

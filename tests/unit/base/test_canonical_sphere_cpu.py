@@ -32,6 +32,7 @@ Non-orthogonal cells are the point. An orthogonal cell hides a diagonal-metric
 error entirely, so every geometry assertion runs at beta = 90, 100 and 115 degrees.
 """
 
+import contextlib
 import math
 
 import pytest
@@ -48,7 +49,7 @@ from torchref.base.electron_density.radius_policy import (
     per_atom_radius_iso,
 )
 from torchref.base.scattering.scattering_table import get_scattering_params_by_z
-from torchref.utils import Engine, use_engine
+from torchref.utils import use_portable
 
 pytestmark = pytest.mark.unit
 
@@ -241,14 +242,14 @@ def test_fused_float64_is_exact():
 # AUTO vs EAGER through the real dispatch: no accelerator needed
 # ===========================================================================
 
-def _build(engine, dims, frac, inv_frac, voxel, dtype, iso=None, aniso=None):
+def _build(pin, dims, frac, inv_frac, voxel, dtype, iso=None, aniso=None):
     rsg = torch.zeros(*dims, 3, dtype=dtype)  # shape only; no kernel reads its values
     xi, ai, oi, Ai, Bi = iso if iso is not None else _empty_iso(dtype)
     kw = {}
     if aniso is not None:
         xa, ua, oa, Aa, Ba = aniso
         kw = dict(xyz_aniso=xa, u_aniso=ua, occ_aniso=oa, A_aniso=Aa, B_aniso=Ba)
-    with use_engine(engine):
+    with (use_portable() if pin else contextlib.nullcontext()):
         return build_electron_density(
             rsg, xi, ai, oi, Ai, Bi, inv_frac, frac, voxel, dtype=dtype, **kw)
 
@@ -260,8 +261,8 @@ def test_auto_matches_eager_iso(beta, dtype):
     frac, inv_frac, dims, f64 = _cell(beta, dtype=dtype)
     voxel = _voxel_size(f64, dims)
     atoms = _iso_atoms(f64, dtype=dtype)
-    ref = _build(Engine.EAGER, dims, frac, inv_frac, voxel, dtype, iso=atoms)
-    got = _build(Engine.AUTO, dims, frac, inv_frac, voxel, dtype, iso=atoms)
+    ref = _build(True, dims, frac, inv_frac, voxel, dtype, iso=atoms)
+    got = _build(False, dims, frac, inv_frac, voxel, dtype, iso=atoms)
     tol = _F32_TOL if dtype is torch.float32 else 1e-12
     assert _rel_l2(got, ref) < tol
 
@@ -271,8 +272,8 @@ def test_auto_matches_eager_aniso(beta):
     frac, inv_frac, dims, f64 = _cell(beta)
     voxel = _voxel_size(f64, dims)
     atoms = _aniso_atoms(f64)
-    ref = _build(Engine.EAGER, dims, frac, inv_frac, voxel, torch.float32, aniso=atoms)
-    got = _build(Engine.AUTO, dims, frac, inv_frac, voxel, torch.float32, aniso=atoms)
+    ref = _build(True, dims, frac, inv_frac, voxel, torch.float32, aniso=atoms)
+    got = _build(False, dims, frac, inv_frac, voxel, torch.float32, aniso=atoms)
     assert _rel_l2(got, ref) < _F32_TOL
 
 
@@ -289,15 +290,15 @@ def test_auto_matches_eager_gradients(kind):
     else:
         xyz, p, occ, A, B = _aniso_atoms(f64, dtype=torch.float64)
 
-    def grads(engine):
+    def grads(pin):
         x, pp, o = (t.clone().requires_grad_() for t in (xyz, p, occ))
         pack = (x, pp, o, A, B)
-        dm = _build(engine, dims, frac, inv_frac, voxel, torch.float64,
+        dm = _build(pin, dims, frac, inv_frac, voxel, torch.float64,
                     **({"iso": pack} if kind == "iso" else {"aniso": pack}))
         (dm * w).sum().backward()
         return x.grad, pp.grad, o.grad
 
-    for g_auto, g_eager in zip(grads(Engine.AUTO), grads(Engine.EAGER)):
+    for g_auto, g_eager in zip(grads(False), grads(True)):
         assert torch.allclose(g_auto, g_eager, rtol=1e-9, atol=0)
 
 
@@ -349,19 +350,19 @@ def test_auto_actually_dispatches_the_fused_kernel(dtype, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(sphere_splat, "add_isotropic_cpu_sphere_var", recording)
-    _build(Engine.AUTO, dims, frac, inv_frac, _voxel_size(f64, dims), dtype,
+    _build(False, dims, frac, inv_frac, _voxel_size(f64, dims), dtype,
            iso=_iso_atoms(f64, dtype=dtype))
-    assert calls, f"Engine.AUTO did not reach the fused CPU splat for {dtype}"
+    assert calls, f"the default did not reach the fused CPU splat for {dtype}"
 
 
 def test_empty_atom_sets():
     """A structure with no isotropic (or no anisotropic) atoms must not crash."""
     frac, inv_frac, dims, f64 = _cell(90.0)
     voxel = _voxel_size(f64, dims)
-    only_aniso = _build(Engine.AUTO, dims, frac, inv_frac, voxel, torch.float32,
+    only_aniso = _build(False, dims, frac, inv_frac, voxel, torch.float32,
                         aniso=_aniso_atoms(f64))
     assert torch.isfinite(only_aniso).all() and float(only_aniso.abs().sum()) > 0
-    both_empty = _build(Engine.AUTO, dims, frac, inv_frac, voxel, torch.float32)
+    both_empty = _build(False, dims, frac, inv_frac, voxel, torch.float32)
     assert float(both_empty.abs().sum()) == 0.0
 
 
@@ -370,9 +371,9 @@ def test_density_map_accumulates_not_overwrites():
     frac, inv_frac, dims, f64 = _cell(90.0)
     voxel = _voxel_size(f64, dims)
     iso, aniso = _iso_atoms(f64), _aniso_atoms(f64)
-    a = _build(Engine.AUTO, dims, frac, inv_frac, voxel, torch.float32, iso=iso)
-    b = _build(Engine.AUTO, dims, frac, inv_frac, voxel, torch.float32, aniso=aniso)
-    both = _build(Engine.AUTO, dims, frac, inv_frac, voxel, torch.float32,
+    a = _build(False, dims, frac, inv_frac, voxel, torch.float32, iso=iso)
+    b = _build(False, dims, frac, inv_frac, voxel, torch.float32, aniso=aniso)
+    both = _build(False, dims, frac, inv_frac, voxel, torch.float32,
                   iso=iso, aniso=aniso)
     assert _rel_l2(both, a + b) < 1e-6
 
@@ -389,8 +390,8 @@ def test_density_map_accumulates_not_overwrites():
 
 
 @pytest.mark.parametrize("beta", _BETAS)
-@pytest.mark.parametrize("engine", [Engine.AUTO, Engine.EAGER], ids=["auto", "eager"])
-def test_aniso_reduces_to_isotropic(beta, engine):
+@pytest.mark.parametrize("pin", [False, True], ids=["default", "portable"])
+def test_aniso_reduces_to_isotropic(beta, pin):
     """``U = b/(8*pi^2) I`` must reproduce the isotropic splat, on the live dispatch.
 
     An analytic identity rather than a comparison against another implementation: a
@@ -412,7 +413,7 @@ def test_aniso_reduces_to_isotropic(beta, engine):
     u_sph = torch.zeros(xyz.shape[0], 6, dtype=torch.float64)
     u_sph[:, :3] = (adp / (8.0 * math.pi**2)).unsqueeze(1)
 
-    with use_engine(engine):
+    with (use_portable() if pin else contextlib.nullcontext()):
         iso_map = build_electron_density(
             grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float64
         )
@@ -426,7 +427,7 @@ def test_aniso_reduces_to_isotropic(beta, engine):
 
     rel = _rel_l2(aniso_map, iso_map)
     assert rel < 1e-12, (
-        f"beta={beta}, {engine.value}: a spherical U does not reproduce the iso splat "
+        f"beta={beta}, {'portable' if pin else 'default'}: a spherical U does not reproduce the iso splat "
         f"(rel L2 {rel:.3e}). Suspect the 8*pi^2 conversion or the diagonal of the "
         f"Mahalanobis form."
     )
@@ -470,12 +471,12 @@ def test_fused_kernel_is_thread_invariant(n_threads):
     original = torch.get_num_threads()
     try:
         torch.set_num_threads(1)
-        with use_engine(Engine.AUTO):
+        with contextlib.nullcontext():
             ref = build_electron_density(
                 grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float32
             )
         torch.set_num_threads(n_threads)
-        with use_engine(Engine.AUTO):
+        with contextlib.nullcontext():
             got = build_electron_density(
                 grid, xyz, adp, occ, A, B, inv_frac, frac, voxel, dtype=torch.float32
             )
@@ -530,13 +531,18 @@ def test_fused_extension_compiles():
     ``pytest.skip`` when ``sphere_splat_available()`` is False, which is right for them:
     they are testing numerics, and without the extension there is nothing to test. But if
     *every* test skips, a build that has stopped working produces an all-green run while
-    the CPU production path has silently degraded to the portable eager splat. The engine
-    dispatch is designed to degrade quietly under ``Engine.AUTO`` (see
-    ``main.py::_add_isotropic``), which is correct for users and dangerous for CI.
+    the CPU production path has silently degraded to the portable splat. Dispatch is designed
+    to degrade quietly, which is correct for users and dangerous for CI.
 
     So exactly one test asserts the extension builds, and reports the captured diagnostic
     plus environment when it does not -- the same stance, and most of the same diagnostic
     surface, as the ``TestCompilation`` class in the now-deleted ``test_cpu_scatter.py``.
+
+    Now partly redundant with
+    ``tests/unit/utils/test_backend_tables.py::test_backend_is_available_where_it_is_expected``,
+    which generalizes this to every backend from the ``expect_available`` column. This one is
+    kept for its diagnostics: it prints ninja/CXX/PATH/``TORCH_EXTENSIONS_DIR``, which is what
+    you actually need when a build breaks.
     That guard previously protected the C++ structured scatter, a helper; it now protects
     the production CPU splat, so it matters more than it did.
     """
@@ -558,7 +564,7 @@ def test_fused_extension_compiles():
         f"{os.environ.get('TORCH_EXTENSIONS_DIR', '<unset>')}\n"
     )
     pytest.fail(
-        "The fused CPU sphere-splat extension failed to build, so Engine.AUTO on CPU is "
+        "The fused CPU sphere-splat extension failed to build, so CPU dispatch is "
         "silently falling back to the portable eager splat for every density "
         "calculation.\n"
         f"Error: {err}\n\n"

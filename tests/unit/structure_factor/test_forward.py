@@ -12,7 +12,6 @@ import pytest
 import torch
 
 from torchref.model.sf_ds import SfDS
-from torchref.utils import Engine, use_engine
 
 from . import (
     COS_MIN_DS,
@@ -32,6 +31,11 @@ from . import helpers as H
 from .conftest import DEVICE_DTYPE_KERNELS, DS_DEVICE_DTYPE_KERNELS
 
 pytestmark = pytest.mark.unit
+
+
+def _lbl(pin):
+    """Label for the backend a pin parametrization selected."""
+    return "portable" if pin else "default"
 
 # float32 first: it is the production dtype, so it is the case that matters and the one
 # these gates are calibrated on. float64 separates truncation error from float32 noise.
@@ -270,10 +274,10 @@ def test_sfds_matches_gemmi_with_symmetry(gemmi_iso_symmetry):
 # ---------------------------------------------------------------------------
 # DS -> FFT
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("engine", [Engine.AUTO, Engine.EAGER], ids=["auto", "eager"])
+@pytest.mark.parametrize("pin", [False, True], ids=["default", "portable"])
 @pytest.mark.parametrize("dtype", _DTYPES, ids=["f32", "f64"])
 @pytest.mark.parametrize("kind", ["iso", "aniso"])
-def test_fft_matches_ds_amplitudes(scene_fine, oracle_fine, kind, dtype, engine):
+def test_fft_matches_ds_amplitudes(scene_fine, oracle_fine, kind, dtype, pin):
     """The headline gate: the map route reproduces the analytic answer.
 
     The DS reference stays in float64 whatever the candidate's dtype -- an oracle should
@@ -281,13 +285,13 @@ def test_fft_matches_ds_amplitudes(scene_fine, oracle_fine, kind, dtype, engine)
     """
     aniso = kind == "aniso"
     sf = H.sf_fft_for(scene_fine, dtype)
-    with use_engine(engine), torch.no_grad():
+    with H.maybe_portable(pin), torch.no_grad():
         F_fft = H.fft_sf(scene_fine, sf, aniso=aniso).to(torch.complex128)
     F_ds = oracle_fine[f"{kind}_F"]
 
-    print(f"\ngrid {tuple(int(v) for v in sf.gridsize)}, {kind}, {dtype}, {engine.value}")
+    print(f"\ngrid {tuple(int(v) for v in sf.gridsize)}, {kind}, {dtype}, {_lbl(pin)}")
     rel, mrel, scale = _report(f"FFT vs DS ({kind})", F_fft, F_ds)
-    assert rel < RTOL_AMPLITUDE, f"{kind}/{dtype}/{engine.value}: rel L2 {rel:.3e}"
+    assert rel < RTOL_AMPLITUDE, f"{kind}/{dtype}/{_lbl(pin)}: rel L2 {rel:.3e}"
     cos = float(
         (F_fft.conj() * F_ds).real.sum()
         / (F_fft.abs().norm() * F_ds.abs().norm()).clamp_min(1e-30)
@@ -335,9 +339,9 @@ def test_backend_parity_auto_vs_eager(scene_fine, kind, dtype):
     aniso = kind == "aniso"
     sf = H.sf_fft_for(scene_fine, dtype)
     with torch.no_grad():
-        with use_engine(Engine.AUTO):
+        with H.maybe_portable(False):
             auto = H.fft_sf(scene_fine, sf, aniso=aniso).to(torch.complex128)
-        with use_engine(Engine.EAGER):
+        with H.maybe_portable(True):
             eager = H.fft_sf(scene_fine, sf, aniso=aniso).to(torch.complex128)
     tol = RTOL_BACKEND_F32 if dtype is torch.float32 else RTOL_BACKEND_F64
     rel = H.rel_l2(auto, eager)
@@ -407,7 +411,7 @@ def test_coarse_grid_is_measurably_worse(scene_coarse, scene_fine, oracle_fine):
 # Every production kernel, on every device it ships on
 # ---------------------------------------------------------------------------
 # These call each splat kernel **directly** rather than through
-# ``build_electron_density`` + ``use_engine``. Under ``Engine.AUTO`` a failed accelerator
+# ``build_electron_density``. Under the default a failed accelerator
 # kernel silently falls back to the portable splat, so a dispatch-driven test can pass
 # while measuring a different kernel than the one it names; a direct call settles that by
 # construction. The dispatch ladder is tested separately in ``test_dispatch.py``.

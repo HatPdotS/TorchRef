@@ -11,7 +11,7 @@ import importlib
 
 import pytest
 
-from torchref.utils.triton_dispatch import triton_available
+from torchref.utils.backends import triton_available
 
 _needs_triton = pytest.mark.skipif(
     not triton_available(), reason="CUDA/Triton backend requires the triton package"

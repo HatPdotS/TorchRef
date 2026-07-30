@@ -7,8 +7,8 @@ file locking, since PyTorch caches the compiled pipeline-state objects itself.
 
 ``mps_kernels_available()`` is what ``torchref.utils.should_use_metal`` consults;
 it returns False whenever MPS is absent, ``compile_shader`` is missing
-(torch < 2.9), or the shader fails to build. Under ``Engine.AUTO`` the caller
-then falls back to the portable plain splat; under ``Engine.METAL`` it raises
+(torch < 2.9), or the shader fails to build. The caller then falls back to the
+portable plain splat and warns; ``why_unavailable()`` reports
 instead, quoting :func:`last_error`.
 """
 
@@ -70,7 +70,7 @@ def why_unavailable() -> Optional[str]:
 
     The single availability probe for this backend -- the shape every backend implements,
     consumed by :mod:`torchref.utils.backends`. It returns the *reason* rather than a bool
-    because a forced ``Engine.METAL`` has to explain itself, and "torch has no
+    because the availability test has to explain itself, and "torch has no
     ``compile_shader``" and "the MSL failed to compile" are different problems with
     different fixes.
     """

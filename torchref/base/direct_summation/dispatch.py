@@ -2,12 +2,12 @@
 
 Which backend runs is read from
 :data:`torchref.base.direct_summation._backends.DS_BACKENDS` -- device, dtype, which
-engines admit each path, how availability is probed, and what a failure means all live
-there, so this module holds the maths and the entry points but no selection logic. The
-mechanics are in :mod:`torchref.utils.backends`.
+device and dtype, how availability is probed, and what a failure means all live there, so
+this module holds the maths and the entry points but no selection logic. The mechanics are in
+:mod:`torchref.utils.backends`.
 
-An explicit ``Engine`` override (per-call ``engine=`` or the process-wide
-``use_engine``/``set_engine``) forces a path for tests and benchmarks.
+``force_portable`` (per call, or scoped with ``use_portable()``) pins the portable reference
+path; otherwise the fastest usable backend is chosen automatically.
 
 All backends compute a **P1** structure-factor sum only. Crystallographic
 symmetry is applied outside, in :meth:`SfDS.compute_structure_factors`.
@@ -29,7 +29,6 @@ from torchref.base.direct_summation.anisotropic import (
     aniso_structure_factor_torched,
 )
 from torchref.utils.backends import run_or_degrade, select
-from torchref.utils.triton_dispatch import Engine
 
 TWO_PI = 2.0 * math.pi
 NEG_TWO_PI_SQ = -2.0 * (math.pi**2)
@@ -221,7 +220,7 @@ def _eager_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, max_memory_gb):
 # ---------------------------------------------------------------------------
 # Dispatch entry points
 # ---------------------------------------------------------------------------
-def _dispatch(aniso, hkl, geom, xyz_frac, occ, third, A, B, engine, max_memory_gb):
+def _dispatch(aniso, hkl, geom, xyz_frac, occ, third, A, B, force_portable, max_memory_gb):
     """Select a backend from ``DS_BACKENDS`` and run it.
 
     Imported inside the call rather than at module scope: the table names this module as a
@@ -230,35 +229,31 @@ def _dispatch(aniso, hkl, geom, xyz_frac, occ, third, A, B, engine, max_memory_g
     from torchref.base.direct_summation._backends import DS_BACKENDS
 
     args = (hkl, geom, xyz_frac, occ, third, A, B)
-    backend = select(DS_BACKENDS, args, engine)
-    return run_or_degrade(
-        DS_BACKENDS, backend, aniso, *args, max_memory_gb, engine=engine
-    )
+    backend = select(DS_BACKENDS, args, force_portable=force_portable)
+    return run_or_degrade(DS_BACKENDS, backend, aniso, *args, max_memory_gb)
 
 
-def ds_iso(hkl, s, xyz_frac, occ, adp, A, B, *, engine=None, max_memory_gb=None):
+def ds_iso(hkl, s, xyz_frac, occ, adp, A, B, *, force_portable=None, max_memory_gb=None):
     """Isotropic P1 structure factors via the selected backend.
 
-    ``engine=None`` means *defer to the process-wide engine*, which is what makes
-    ``with use_engine(Engine.EAGER): ...`` actually reach this call. The default used to be
-    ``Engine.AUTO``, and because an explicit engine argument suppresses the global, that
-    silently made the documented escape hatch inert here: a forced-eager block still ran
-    Triton on a CUDA host.
+    ``force_portable=None`` defers to the process-wide setting, so
+    ``with use_portable(): ...`` reaches this call. Passing ``True`` pins the checkpointed
+    reference path regardless.
     """
     if xyz_frac.shape[0] == 0:
         return torch.zeros(hkl.shape[0], dtype=torch.complex64, device=hkl.device)
     return _dispatch(
-        False, hkl, s, xyz_frac, occ, adp, A, B, engine, max_memory_gb
+        False, hkl, s, xyz_frac, occ, adp, A, B, force_portable, max_memory_gb
     )
 
 
-def ds_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, *, engine=None, max_memory_gb=None):
+def ds_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, *, force_portable=None, max_memory_gb=None):
     """Anisotropic P1 structure factors via the selected backend.
 
-    See :func:`ds_iso` on ``engine=None``.
+    See :func:`ds_iso` on ``force_portable=None``.
     """
     if xyz_frac.shape[0] == 0:
         return torch.zeros(hkl.shape[0], dtype=torch.complex64, device=hkl.device)
     return _dispatch(
-        True, hkl, s_vec, xyz_frac, occ, U, A, B, engine, max_memory_gb
+        True, hkl, s_vec, xyz_frac, occ, U, A, B, force_portable, max_memory_gb
     )
