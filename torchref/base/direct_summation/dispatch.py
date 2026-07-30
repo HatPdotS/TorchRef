@@ -1,12 +1,10 @@
 """Backend dispatch for direct-summation structure factors.
 
-Selection uses the shared, capability-based :class:`~torchref.utils.Engine`
-(see :mod:`torchref.utils.triton_dispatch`): for a given ``(device, dtype)``
-there is exactly one best path, so the backend is *derived* rather than
-configured.
-
-- CUDA + float32 + Triton available  ->  custom Triton kernels (``triton_ds``)
-- everything else (CPU, MPS, non-float32, no Triton)  ->  checkpointed eager
+Which backend runs is read from
+:data:`torchref.base.direct_summation._backends.DS_BACKENDS` -- device, dtype, which
+engines admit each path, how availability is probed, and what a failure means all live
+there, so this module holds the maths and the entry points but no selection logic. The
+mechanics are in :mod:`torchref.utils.backends`.
 
 An explicit ``Engine`` override (per-call ``engine=`` or the process-wide
 ``use_engine``/``set_engine``) forces a path for tests and benchmarks.
@@ -30,35 +28,11 @@ from torchref.base.direct_summation.anisotropic import (
     _estimate_batch_size_aniso,
     aniso_structure_factor_torched,
 )
-from torchref.utils.triton_dispatch import Engine, should_use_triton
+from torchref.utils.backends import run_or_degrade, select
+from torchref.utils.triton_dispatch import Engine
 
 TWO_PI = 2.0 * math.pi
 NEG_TWO_PI_SQ = -2.0 * (math.pi**2)
-
-
-# ---------------------------------------------------------------------------
-# Lazy Triton probe (mirrors electron_density/main.py:_get_*_triton)
-# ---------------------------------------------------------------------------
-_triton_iso_fn = None
-_triton_aniso_fn = None
-_triton_checked = False
-
-
-def _load_triton():
-    """Import the Triton kernels once; leave the fns ``None`` if unavailable."""
-    global _triton_iso_fn, _triton_aniso_fn, _triton_checked
-    if not _triton_checked:
-        try:
-            from torchref.base.direct_summation.triton_ds import (
-                ds_iso_triton,
-                ds_aniso_triton,
-            )
-
-            _triton_iso_fn = ds_iso_triton
-            _triton_aniso_fn = ds_aniso_triton
-        except Exception:
-            pass
-        _triton_checked = True
 
 
 # ---------------------------------------------------------------------------
@@ -247,40 +221,44 @@ def _eager_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, max_memory_gb):
 # ---------------------------------------------------------------------------
 # Dispatch entry points
 # ---------------------------------------------------------------------------
-# The coarse Triton-vs-eager gate is the shared ``should_use_triton`` (device,
-# dtype, engine). The DS-kernel-module availability is then checked here: under
-# AUTO a missing/failing kernel falls back to checkpointed eager; under
-# Engine.TRITON it raises.
-def ds_iso(hkl, s, xyz_frac, occ, adp, A, B, *, engine=Engine.AUTO, max_memory_gb=None):
-    """Isotropic P1 structure factors via the selected backend."""
-    if xyz_frac.shape[0] == 0:
-        return torch.zeros(hkl.shape[0], dtype=torch.complex64, device=hkl.device)
-    if should_use_triton(xyz_frac, engine=engine):
-        _load_triton()
-        if _triton_iso_fn is not None:
-            try:
-                return _triton_iso_fn(hkl, s, xyz_frac, occ, adp, A, B)
-            except Exception:
-                if engine is Engine.TRITON:
-                    raise
-                # AUTO: fall back to checkpointed eager
-        elif engine is Engine.TRITON:
-            raise RuntimeError("Direct-summation Triton kernels are unavailable")
-    return _checkpointed_iso(hkl, s, xyz_frac, occ, adp, A, B, max_memory_gb)
+def _dispatch(aniso, hkl, geom, xyz_frac, occ, third, A, B, engine, max_memory_gb):
+    """Select a backend from ``DS_BACKENDS`` and run it.
+
+    Imported inside the call rather than at module scope: the table names this module as a
+    kernel source, so a module-level import would close a cycle.
+    """
+    from torchref.base.direct_summation._backends import DS_BACKENDS
+
+    args = (hkl, geom, xyz_frac, occ, third, A, B)
+    backend = select(DS_BACKENDS, args, engine)
+    return run_or_degrade(
+        DS_BACKENDS, backend, aniso, *args, max_memory_gb, engine=engine
+    )
 
 
-def ds_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, *, engine=Engine.AUTO, max_memory_gb=None):
-    """Anisotropic P1 structure factors via the selected backend."""
+def ds_iso(hkl, s, xyz_frac, occ, adp, A, B, *, engine=None, max_memory_gb=None):
+    """Isotropic P1 structure factors via the selected backend.
+
+    ``engine=None`` means *defer to the process-wide engine*, which is what makes
+    ``with use_engine(Engine.EAGER): ...`` actually reach this call. The default used to be
+    ``Engine.AUTO``, and because an explicit engine argument suppresses the global, that
+    silently made the documented escape hatch inert here: a forced-eager block still ran
+    Triton on a CUDA host.
+    """
     if xyz_frac.shape[0] == 0:
         return torch.zeros(hkl.shape[0], dtype=torch.complex64, device=hkl.device)
-    if should_use_triton(xyz_frac, engine=engine):
-        _load_triton()
-        if _triton_aniso_fn is not None:
-            try:
-                return _triton_aniso_fn(hkl, s_vec, xyz_frac, occ, U, A, B)
-            except Exception:
-                if engine is Engine.TRITON:
-                    raise
-        elif engine is Engine.TRITON:
-            raise RuntimeError("Direct-summation Triton kernels are unavailable")
-    return _checkpointed_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, max_memory_gb)
+    return _dispatch(
+        False, hkl, s, xyz_frac, occ, adp, A, B, engine, max_memory_gb
+    )
+
+
+def ds_aniso(hkl, s_vec, xyz_frac, occ, U, A, B, *, engine=None, max_memory_gb=None):
+    """Anisotropic P1 structure factors via the selected backend.
+
+    See :func:`ds_iso` on ``engine=None``.
+    """
+    if xyz_frac.shape[0] == 0:
+        return torch.zeros(hkl.shape[0], dtype=torch.complex64, device=hkl.device)
+    return _dispatch(
+        True, hkl, s_vec, xyz_frac, occ, U, A, B, engine, max_memory_gb
+    )

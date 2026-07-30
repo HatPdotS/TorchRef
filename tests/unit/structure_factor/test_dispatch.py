@@ -87,20 +87,16 @@ def test_metal_kernel_is_actually_dispatched(scene_small, engine, kind, monkeypa
     runs already differ at ~1e-7 and an equality check against one would prove nothing
     either way.
 
-    **The patch target matters.** ``_add_isotropic`` does a *function-local*
-    ``from ...kernels.mps import add_isotropic_mps_var`` on every call, so it re-reads the
-    package each time. Patching the ``main`` module's namespace would silently no-op and
-    leave this test as vacuous as the bug it guards against.
+    **The patch target is the defining module**, and it is the same rule for every backend:
+    dispatch resolves each kernel by ``(module_path, attr)`` at call time, so the name to
+    patch is the one the table points at. That uniformity is new -- this test and the CUDA
+    one used to need different targets (a package here, ``main`` there) because the two
+    ladders bound their kernels differently.
 
     The recorder delegates to the real kernel rather than stubbing it, so the dispatch is
     still exercised end to end.
-
-    The submodule is imported explicitly rather than reached as ``kernels.mps``: the parent
-    package does not import it eagerly, so that attribute only exists once something has
-    already triggered the function-local import. Relying on that ordering is how this test
-    would pass in a full run and fail in isolation.
     """
-    from torchref.base.electron_density.kernels import mps as kernels_mps
+    from torchref.base.electron_density.kernels.mps import variable_radius as kernels_mps
 
     name = f"add_{'anisotropic' if kind == 'aniso' else 'isotropic'}_mps_var"
     real = getattr(kernels_mps, name)
@@ -121,21 +117,22 @@ def test_metal_kernel_is_actually_dispatched(scene_small, engine, kind, monkeypa
 def test_triton_kernel_is_actually_dispatched(scene_small, engine, kind, monkeypatch):
     """CUDA float32 equivalent of the Metal provenance test.
 
-    Patch target differs: ``main.py`` imports the CUDA wrappers at module scope, not
-    per-call, so the name to patch is the one bound in ``main`` -- the mirror image of the
-    Metal case, and the reason each needs its own test rather than one parametrized helper.
+    Same patch target rule as the Metal case -- the module that defines the kernel. The two
+    used to differ, which is why they are separate tests rather than one parametrized
+    helper; that reason is gone, and merging them is a follow-up worth doing on a host that
+    has both backends to run it on.
     """
-    from torchref.base.electron_density import main as ed_main
+    from torchref.base.electron_density.kernels.cuda import variable_radius as kernels_cuda
 
     name = f"add_{'anisotropic' if kind == 'aniso' else 'isotropic'}_cuda_var"
-    real = getattr(ed_main, name)
+    real = getattr(kernels_cuda, name)
     calls = []
 
     def recording(*args, **kwargs):
         calls.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(ed_main, name, recording)
+    monkeypatch.setattr(kernels_cuda, name, recording)
     _build(scene_small, torch.device("cuda"), torch.float32, engine, aniso=kind == "aniso")
     assert calls, f"{engine} did not dispatch to {name}"
 
@@ -148,17 +145,19 @@ def test_eager_reaches_the_portable_splat(scene_small, kind, monkeypatch):
     for double backward and debugging, so it has to be the *portable* kernel that runs,
     not whatever AUTO would have picked.
     """
-    from torchref.base.electron_density import main as ed_main
+    from torchref.base.electron_density.kernels.cpu import (
+        variable_radius as kernels_portable,
+    )
 
     name = f"add_{'anisotropic' if kind == 'aniso' else 'isotropic'}_plain_var"
-    real = getattr(ed_main, name)
+    real = getattr(kernels_portable, name)
     calls = []
 
     def recording(*args, **kwargs):
         calls.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(ed_main, name, recording)
+    monkeypatch.setattr(kernels_portable, name, recording)
     _build(scene_small, torch.device("cpu"), torch.float32, Engine.EAGER, aniso=kind == "aniso")
     assert calls, f"Engine.EAGER did not dispatch to {name}"
 
@@ -273,16 +272,20 @@ def test_radius_policy_is_the_same_on_every_device(scene_small):
 def test_triton_density_gate_probes_every_tensor(scene_small):
     """A float64 ``density_map`` must not reach the float32 Triton kernel.
 
-    ``main.py`` gates the density Triton branch on ``should_use_triton(xyz)`` -- **only
-    xyz** -- while its sibling gates probe six tensors
-    (``should_use_sphere_splat(density_map, xyz, adp, occ, A, B)``, and the same for Metal).
-    So a float32 ``xyz`` with a float64 ``density_map`` passes, and
-    ``WorkQueueGridDensity.forward`` hands that float64 buffer to a kernel doing float32
-    ``tl.atomic_add``.
+    Written when the density Triton branch gated on ``should_use_triton(xyz)`` -- **only
+    xyz** -- while its sibling gates probed six tensors. A float32 ``xyz`` with a float64
+    ``density_map`` therefore passed, and ``WorkQueueGridDensity.forward`` handed that
+    float64 buffer to a kernel doing float32 ``tl.atomic_add``.
 
-    The contract asserted here is that such a call fails loudly. Either outcome is
-    acceptable -- a raise from the gate, or a raise from the kernel -- but silently
-    returning a number is not.
+    The ``cuda_triton`` row now declares ``probes`` covering all six, so the mixed set
+    resolves to ``portable`` instead and this should never reach the Triton kernel at all.
+    Kept as an end-to-end guard rather than deleted: the fix is a table entry, and a table
+    entry can be edited. It has still never executed -- there is no CUDA host here -- so
+    treat a failure as information, not as a broken test.
+
+    The contract asserted is that such a call fails loudly. Either outcome is acceptable --
+    a refusal at selection, or a raise from the kernel -- but silently returning a number is
+    not.
     """
     cuda = torch.device("cuda")
     s = scene_small.to(device=cuda, dtype=torch.float32)

@@ -161,3 +161,63 @@ def test_should_use_metal_skips_none_but_still_checks_real_tensors():
     wrong for Metal everywhere."""
     with pytest.raises(RuntimeError, match="requires MPS float32"):
         should_use_metal(None, torch.zeros(3), None, engine=Engine.METAL)
+
+
+# ---------------------------------------------------------------------------
+# Characterization: facts that hold today and are not asserted anywhere else
+# ---------------------------------------------------------------------------
+# ``Engine.METAL`` selects the native Metal *density splat* and nothing else. Every
+# other dispatch site is expected to run eager under it -- see the ``Engine`` docstring,
+# which recommends scoping METAL with ``use_engine`` precisely because a process-wide
+# METAL sends target math down the eager path.
+#
+# Today that fact exists only as ``if eng is Engine.EAGER or eng is Engine.METAL:
+# return False`` inside ``should_use_triton``. Nothing asserts it, so a dispatch rework
+# that treats "no backend claims this engine" as an error would turn
+# ``with use_engine(Engine.METAL): loss = bond_target(xyz)`` from working into a
+# RuntimeError, silently, in a documented usage pattern. These two tests are the guard.
+
+
+def test_metal_engine_means_eager_at_non_density_sites():
+    """``Engine.METAL`` must be *permissive* elsewhere, not an error.
+
+    There are no Metal direct-summation or target kernels, so METAL at those sites means
+    "run eager", not "fail". Asserted through the shared gate and through the targets
+    wrapper, which is the entry point all twelve target math functions use.
+    """
+    from torchref.base.targets._dispatch import use_triton
+
+    cuda_like = torch.zeros(3)  # CPU here; the engine short-circuits before device
+    assert should_use_triton(cuda_like, engine=Engine.METAL) is False
+
+    with use_engine(Engine.METAL):
+        assert use_triton(cuda_like) is False
+
+
+def test_metal_gate_does_not_probe_availability_on_a_wrong_device(monkeypatch):
+    """Device/dtype must be rejected *before* shader availability is consulted.
+
+    Two things depend on the ordering. Under a forced engine the error has to name the
+    device mismatch (``requires MPS float32``) rather than a compile failure, and on a
+    non-Apple host nothing should pay the cost of the availability probe. The same
+    ordering is what keeps an MPS host from compiling the CPU C++ extension it will never
+    use.
+
+    Asserted by making the probe *fail loudly if reached*, rather than by inspecting
+    ``sys.modules``: a module cannot be unimported, so an import check silently weakens to
+    a no-op as soon as any earlier test has loaded the package -- which in a full run is
+    always.
+    """
+    from torchref.base.electron_density.kernels.mps import compile as mps_compile
+
+    def must_not_be_called():
+        raise AssertionError(
+            "availability was probed for a CPU tensor; the device check must "
+            "short-circuit first"
+        )
+
+    monkeypatch.setattr(mps_compile, "mps_kernels_available", must_not_be_called)
+
+    assert should_use_metal(torch.zeros(3), engine=Engine.AUTO) is False
+    with pytest.raises(RuntimeError, match="requires MPS float32"):
+        should_use_metal(torch.zeros(3), engine=Engine.METAL)

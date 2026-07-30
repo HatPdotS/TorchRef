@@ -84,6 +84,60 @@ def test_explicit_triton_engine_rejects_cpu():
         ds_iso(hkl, s, xyz, occ, adp, A, B, engine=Engine.TRITON)
 
 
+def test_metal_engine_runs_eager_rather_than_raising():
+    """``Engine.METAL`` at a direct-summation site means eager, not an error.
+
+    There is no Metal DS kernel: ``Engine.METAL`` returns False from the Triton gate and
+    an MPS tensor fails ``is_cuda``, so DS under METAL *is* ``_checkpointed_*``. That is
+    deliberate -- the ``Engine`` docstring recommends scoping METAL with ``use_engine``
+    around the density call, which necessarily leaves it set for any DS in the same
+    block -- but nothing asserted it, so a dispatcher that rejected engines no backend
+    claims would break this silently.
+
+    Compared against ``Engine.AUTO`` on the same inputs rather than merely checked for
+    finiteness, so a future path that returned zeros could not pass.
+    """
+    hkl, s, _, A, B = _inputs(dtype=torch.float64)
+    xyz, occ, adp, _ = _leaves(dtype=torch.float64)
+    F_metal = ds_iso(hkl, s, xyz, occ, adp, A, B, engine=Engine.METAL)
+    F_auto = ds_iso(hkl, s, xyz, occ, adp, A, B, engine=Engine.AUTO)
+    assert torch.equal(F_metal, F_auto)
+
+
+def test_integer_hkl_is_accepted_and_lossless():
+    """An ``int32`` ``hkl`` must keep working, and must give the float32 answer exactly.
+
+    Miller indices arrive as ``int32`` straight from the MTZ reader
+    (``torchref/io/mtz.py``), and every DS path casts ``hkl`` itself -- ``_cols_f32`` in
+    the Triton kernel, ``hkl_c.to(xyz_frac.dtype)`` in the chunk math. So integer input
+    is not merely tolerated, it is the production case.
+
+    This matters for how the dtype gate may be tightened. The gate's test is
+    ``t.dtype is torch.float32``, an identity check, so probing ``hkl`` with that rule
+    would reject the production dtype -- declining Triton under AUTO and raising under
+    ``Engine.TRITON``. The rule has to exempt integer tensors, and this test is what
+    fails if it does not.
+
+    Worth recording alongside: casting ``hkl`` is not merely tolerable, it is *free*.
+    Miller indices are integer-valued in every dtype that holds them (symmetry maps
+    ``h -> h.R`` with integer ``R``), so the f64->f32 round-trip is bit-exact for any
+    \\|h\\| < 2**24 and downcasting ``hkl`` alone was measured to change ``F`` by exactly
+    0.0. An earlier version of this comment claimed the cast truncated the phase; it does
+    not, and the gate correspondingly does not probe ``hkl``.
+    """
+    _, s, _, A, B = _inputs(dtype=torch.float64)
+    xyz, occ, adp, _ = _leaves(dtype=torch.float64)
+    torch.manual_seed(0)
+    hkl_int = torch.randint(-3, 4, (7, 3), dtype=torch.int32)
+    s = s[: hkl_int.shape[0]]
+
+    F_int = ds_iso(hkl_int, s, xyz, occ, adp, A, B, engine=Engine.AUTO)
+    F_float = ds_iso(
+        hkl_int.to(torch.float64), s, xyz, occ, adp, A, B, engine=Engine.AUTO
+    )
+    assert torch.equal(F_int, F_float), "casting integer Miller indices must be exact"
+
+
 def test_eager_none_scattering_factors_and_no_batching():
     """``max_memory_gb=None`` with ``scattering_factors=None`` must compute from A/B.
 

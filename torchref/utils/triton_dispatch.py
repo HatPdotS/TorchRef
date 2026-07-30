@@ -117,12 +117,14 @@ def triton_available() -> bool:
 
 
 def should_use_triton(*tensors: torch.Tensor, engine: Optional[Engine] = None) -> bool:
-    """Coarse triton-vs-eager gate shared by every dispatch site.
+    """Coarse triton-vs-eager gate.
 
-    Reads the process-wide engine unless an explicit ``engine`` is passed
-    (direct summation / ``SfDS`` use the per-call override). Probes the given
-    tensors: the Triton path requires every non-None tensor to be CUDA
-    float32.
+    Asks the ``triton`` row of ``TARGET_BACKENDS`` whether it would run, so the
+    device/dtype/availability criteria are stated once, in that table, rather than a second
+    time here. The target-math table is the right one to defer to: it is the *generic*
+    Triton question, with no kernel-family-specific requirement attached. The density and
+    direct-summation sites have their own tables because their availability probes and probe
+    sets genuinely differ.
 
     Parameters
     ----------
@@ -143,49 +145,30 @@ def should_use_triton(*tensors: torch.Tensor, engine: Optional[Engine] = None) -
         If ``engine`` is ``Engine.TRITON`` but the inputs are not CUDA
         float32, or Triton is unavailable.
     ValueError
-        If ``engine`` is a member this function does not handle. Deliberately
-        loud: the AUTO case used to be an implicit ``else``, so *any* new
-        member silently selected Triton.
+        If ``engine`` is not an ``Engine`` member. Deliberately loud: the AUTO case used to
+        be an implicit ``else``, so *any* unrecognised value silently selected Triton.
 
     Notes
     -----
     ``Engine.METAL`` returns False here rather than raising -- it forces the
     Metal density splat (see :func:`should_use_metal`), and every other
-    dispatch site correctly runs eager under it.
+    dispatch site correctly runs eager under it. In the table that is the ``eager`` row
+    listing METAL among its engines, which is checked for completeness at import.
     """
-    eng = engine if engine is not None else get_engine()
-    if eng is Engine.EAGER or eng is Engine.METAL:
-        return False
+    # Function-local: ``torchref.utils`` loads before ``torchref.base``.
+    from torchref.base.targets._dispatch import TARGET_BACKENDS
+    from torchref.utils.backends import admits
 
-    cuda_f32 = all(
-        t is None or (t.is_cuda and t.dtype is torch.float32) for t in tensors
-    )
-
-    if eng is Engine.TRITON:
-        if not cuda_f32:
-            raise RuntimeError(
-                "engine=Engine.TRITON requires CUDA float32 inputs"
-            )
-        if not triton_available():
-            raise RuntimeError("Triton is not available")
-        return True
-
-    if eng is Engine.AUTO:
-        return cuda_f32 and triton_available()
-
-    raise ValueError(f"should_use_triton: unhandled engine {eng!r}")
+    return admits(TARGET_BACKENDS, "triton", tensors, engine)
 
 
 def should_use_metal(*tensors: torch.Tensor, engine: Optional[Engine] = None) -> bool:
     """Metal-vs-portable gate for the MPS electron-density splat.
 
-    The Metal counterpart of :func:`should_use_triton`, and the sole decision
-    point for the Metal path: it probes device, dtype **and** shader
-    availability together. Folding availability in here rather than leaving it
-    as a nested ``if`` at the dispatch site is what makes ``Engine.METAL``
-    genuinely strict -- otherwise an uncompiled shader under a forced engine
-    would fall past the gate onto the portable splat, silently degrading the
-    very thing the caller asked to force.
+    Retained as public API, but no longer a second statement of the criteria: it asks the
+    ``mps_metal`` row of ``DENSITY_BACKENDS`` whether it would run. The device, dtype and
+    shader-availability conditions live in that table, so this cannot drift from what
+    dispatch actually does.
 
     Parameters
     ----------
@@ -198,60 +181,22 @@ def should_use_metal(*tensors: torch.Tensor, engine: Optional[Engine] = None) ->
     Returns
     -------
     bool
-        True if the Metal kernels should be used.
+        True if the Metal kernels should be used. ``False`` -- not an error -- for an
+        engine that does not admit Metal at all, since it is simply not Metal's turn.
 
     Raises
     ------
     RuntimeError
-        If ``engine`` is ``Engine.METAL`` but the inputs are not MPS float32,
-        or the shader library is unavailable. The latter message carries the
-        recorded compile error, since that is the one failure a user can act on
-        (torch < 2.9, or an older Metal rejecting the MSL).
+        If ``engine`` is ``Engine.METAL`` but the inputs are not MPS float32, or the shader
+        library is unavailable. The message carries the recorded compile error, since that
+        is the one failure a user can act on (torch < 2.9, or an older Metal rejecting the
+        MSL).
+    ValueError
+        If ``engine`` is not an ``Engine`` member.
     """
-    eng = engine if engine is not None else get_engine()
-    # EAGER means portable everywhere. TRITON has already raised at the Triton
-    # gate on any MPS input, so reaching here under it means a non-MPS host.
-    if eng is Engine.EAGER or eng is Engine.TRITON:
-        return False
-    if eng is not Engine.AUTO and eng is not Engine.METAL:
-        raise ValueError(f"should_use_metal: unhandled engine {eng!r}")
+    # Imported here, not at module scope: ``torchref.utils`` loads very early and must not
+    # reach into ``torchref.base`` while it is still initialising.
+    from torchref.base.electron_density._backends import DENSITY_BACKENDS
+    from torchref.utils.backends import admits
 
-    mps_f32 = all(
-        t is None or (t.device.type == "mps" and t.dtype is torch.float32)
-        for t in tensors
-    )
-    if not mps_f32:
-        if eng is Engine.METAL:
-            raise RuntimeError(
-                "engine=Engine.METAL requires MPS float32 inputs"
-            )
-        return False
-
-    # Imported lazily and only once the cheap checks pass: this module is
-    # imported very early via ``torchref.utils``, and pulling in the mps
-    # package eagerly would load the MSL source on every platform.
-    try:
-        from torchref.base.electron_density.kernels.mps.compile import (
-            last_error,
-            mps_kernels_available,
-        )
-    except Exception:
-        # A stripped install or a torch without ``torch.mps`` must not make a
-        # predicate raise under AUTO.
-        if eng is Engine.METAL:
-            raise
-        return False
-
-    if mps_kernels_available():
-        return True
-
-    if eng is Engine.METAL:
-        err = last_error()
-        reason = err[0] if err else "unknown reason"
-        raise RuntimeError(
-            f"engine=Engine.METAL requested but the Metal splat kernels are "
-            f"not available ({reason}). See "
-            "torchref.base.electron_density.kernels.mps.compile._lib_error "
-            "for the full traceback."
-        )
-    return False
+    return admits(DENSITY_BACKENDS, "mps_metal", tensors, engine)

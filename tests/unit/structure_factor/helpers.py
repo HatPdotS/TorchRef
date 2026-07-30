@@ -23,7 +23,9 @@ from typing import Optional, Sequence
 
 import torch
 
+from torchref.base.direct_summation._backends import DS_BACKENDS
 from torchref.base.direct_summation.dispatch import _eager_aniso, _eager_iso
+from torchref.base.electron_density._backends import DENSITY_BACKENDS
 from torchref.base.reciprocal import get_scattering_vectors, reciprocal_basis_matrix
 from torchref.base.scattering.scattering_table import get_scattering_params_by_z
 from torchref.symmetry.cell import Cell
@@ -452,44 +454,28 @@ def sf_fft_for(
 #
 # The dispatch ladder is a separate concern, tested in ``test_dispatch.py``.
 
-#: ``name -> (fn, kind, devices, dtypes)``. All six wrappers share one signature,
+#: The production density table, used directly rather than mirrored.
+#:
+#: This was a hand-maintained copy -- ``name, device, dtypes`` for each of the four splat
+#: wrappers -- and copies of a policy drift. It already had: it encoded the six-tensor dtype
+#: rule while the production Triton gate probed one tensor. Deriving the parametrization from
+#: the table that ships means the matrix cannot claim coverage the dispatch does not have.
+#:
+#: All four wrappers share one signature,
 #: ``(density_map, xyz, adp_or_u, occ, A, B, inv_frac, frac, radius_per_atom)``, so
 #: :func:`splat_direct` needs no per-kernel adapter. They did not before the
 #: standardization -- the Metal pair took extra unused arguments in a different order,
 #: and CUDA had no wrapper at all.
-_KERNEL_SPECS = (
-    # name                device   dtypes                        kind
-    ("cpu_sphere",        "cpu",   (torch.float32, torch.float64), "both"),
-    ("portable",          "any",   (torch.float32, torch.float64), "both"),
-    ("mps_metal",         "mps",   (torch.float32,),               "both"),
-    ("cuda_triton",       "cuda",  (torch.float32,),               "both"),
-)
+_KERNEL_TABLE = DENSITY_BACKENDS
 
 
 def splat_kernel(name: str, aniso: bool):
-    """Resolve a kernel name to its wrapper. Imports are local per backend.
+    """Resolve a kernel name to its wrapper, via the production table.
 
-    Backend imports stay inside the function: the Metal module loads MSL source and the
-    CUDA one imports Triton, neither of which a CPU-only host should pay for at
-    collection time.
+    ``Backend.resolve`` does the import lazily, which is what a CPU-only host needs at
+    collection time: the Metal module loads MSL source and the CUDA one imports Triton.
     """
-    if name == "cpu_sphere":
-        from torchref.base.electron_density.kernels.cpu import sphere_splat as m
-
-        return m.add_anisotropic_cpu_sphere_var if aniso else m.add_isotropic_cpu_sphere_var
-    if name == "portable":
-        from torchref.base.electron_density.kernels.cpu import variable_radius as m
-
-        return m.add_anisotropic_plain_var if aniso else m.add_isotropic_plain_var
-    if name == "mps_metal":
-        from torchref.base.electron_density.kernels.mps import variable_radius as m
-
-        return m.add_anisotropic_mps_var if aniso else m.add_isotropic_mps_var
-    if name == "cuda_triton":
-        from torchref.base.electron_density.kernels.cuda import variable_radius as m
-
-        return m.add_anisotropic_cuda_var if aniso else m.add_isotropic_cuda_var
-    raise ValueError(f"unknown kernel {name!r}")
+    return _KERNEL_TABLE.by_name(name).resolve(aniso)
 
 
 def device_supports_dtype(device: torch.device, dtype: torch.dtype) -> bool:
@@ -505,22 +491,32 @@ def device_supports_dtype(device: torch.device, dtype: torch.dtype) -> bool:
     return True
 
 
+def _table_names_for(table, device: torch.device, dtype: torch.dtype):
+    """Backends in ``table`` whose declared device/dtype envelope covers this pair.
+
+    Reads ``Backend.device`` / ``Backend.dtypes`` rather than calling ``select``: the point
+    is to enumerate every kernel that *can* run here so each gets its own direct-call
+    accuracy test, whereas ``select`` answers the narrower question of which one wins.
+    """
+    if not device_supports_dtype(device, dtype):
+        return []
+    out = []
+    for b in table.backends:
+        if b.device is not None and b.device != device.type:
+            continue
+        if b.dtypes is not None and dtype not in b.dtypes:
+            continue
+        out.append(b.name)
+    return out
+
+
 def kernels_for(device: torch.device, dtype: torch.dtype):
     """Kernel names that actually run on this ``(device, dtype)``.
 
     Filtering here rather than skipping inside the test keeps a wrong entry visible: an
     unsupported combination produces no test rather than a passing one.
     """
-    if not device_supports_dtype(device, dtype):
-        return []
-    out = []
-    for name, dev, dtypes_ok, _ in _KERNEL_SPECS:
-        if dtype not in dtypes_ok:
-            continue
-        if dev != "any" and dev != device.type:
-            continue
-        out.append(name)
-    return out
+    return _table_names_for(_KERNEL_TABLE, device, dtype)
 
 
 def splat_direct(scene: Scene, name: str, xyz=None, occ=None, third=None, *, aniso=False):
@@ -561,54 +557,34 @@ def splat_direct(scene: Scene, name: str, xyz=None, occ=None, third=None, *, ani
 # ---------------------------------------------------------------------------
 # Direct-summation kernels, also called directly
 # ---------------------------------------------------------------------------
-#: ``name -> (device, dtypes)``. ``eager`` is the oracle and is excluded from the
-#: candidate list by :func:`ds_kernels_for`; it is registered here so the signature
-#: adapter has one place to live.
+#: The production direct-summation table, plus ``eager`` -- which is deliberately *not* in
+#: it. ``_eager_*`` is the double-differentiable oracle, not a dispatch target, so it has no
+#: business in a table describing what production selects; it is resolved here instead.
 #:
-#: There is **no Metal/MPS direct-summation kernel**: ``Engine.METAL`` returns False from
-#: the Triton gate and an MPS device fails ``t.is_cuda``, so DS on MPS *is*
-#: ``_checkpointed_*`` running on-device. That is a real production path and it is what the
-#: ``mps`` leg of ``checkpointed`` covers.
-_DS_KERNEL_SPECS = (
-    ("eager",        "any",  (torch.float32, torch.float64)),
-    ("checkpointed", "any",  (torch.float32, torch.float64)),
-    ("ds_triton",    "cuda", (torch.float32,)),
-)
+#: There is **no Metal/MPS direct-summation kernel**, which the table now says outright by
+#: listing ``Engine.METAL`` among ``checkpointed``'s engines. So DS on MPS *is*
+#: ``_checkpointed_*`` running on-device -- a real production path, and what the ``mps`` leg
+#: of ``checkpointed`` covers.
+_DS_KERNEL_TABLE = DS_BACKENDS
 
 
 def ds_kernel(name: str, aniso: bool):
     """Resolve a direct-summation kernel name to its function.
 
-    The Triton import is function-local: it pulls in ``triton``, which a CPU-only host
-    should not need at collection time.
+    ``Backend.resolve`` keeps the table's imports lazy: the Triton path pulls in ``triton``,
+    which a CPU-only host should not need at collection time.
     """
-    from torchref.base.direct_summation import dispatch as D
-
     if name == "eager":
-        return D._eager_aniso if aniso else D._eager_iso
-    if name == "checkpointed":
-        return D._checkpointed_aniso if aniso else D._checkpointed_iso
-    if name == "ds_triton":
-        from torchref.base.direct_summation.triton_ds import (
-            ds_aniso_triton,
-            ds_iso_triton,
-        )
-
-        return ds_aniso_triton if aniso else ds_iso_triton
-    raise ValueError(f"unknown DS kernel {name!r}")
+        return _eager_aniso if aniso else _eager_iso
+    return _DS_KERNEL_TABLE.by_name(name).resolve(aniso)
 
 
 def ds_kernels_for(device: torch.device, dtype: torch.dtype):
-    """Candidate DS kernels on this ``(device, dtype)``. Excludes the oracle."""
-    if not device_supports_dtype(device, dtype):
-        return []
-    return [
-        name
-        for name, dev, dtypes_ok in _DS_KERNEL_SPECS
-        if name != "eager"
-        and dtype in dtypes_ok
-        and (dev == "any" or dev == device.type)
-    ]
+    """Candidate DS kernels on this ``(device, dtype)``.
+
+    Excludes the oracle by construction -- it is not in the production table.
+    """
+    return _table_names_for(_DS_KERNEL_TABLE, device, dtype)
 
 
 def ds_direct(scene: Scene, name: str, xyz_frac=None, occ=None, third=None, *, aniso=False):

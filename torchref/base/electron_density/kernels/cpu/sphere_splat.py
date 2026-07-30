@@ -17,10 +17,9 @@ grid-dependent requantization of the radius and no diagonal-metric approximation
 
 Why fused rather than the older grouped-separable splat
 ------------------------------------------------------
-The separable kernel (``variable_radius.py::add_isotropic_cpu_separable_var``,
-still present but no longer dispatched) factorizes the Gaussian into 1D per-axis
-exponentials, which needs a *uniform box per launch* -- hence a cube cutoff and all
-the bucket-by-box-size machinery. Measured on 4000 atoms / 2.3M voxels / 0.40 A
+The separable kernel this replaced (since deleted) factorized the Gaussian into 1D
+per-axis exponentials, which needs a *uniform box per launch* -- hence a cube cutoff and
+all the bucket-by-box-size machinery. Measured on 4000 atoms / 2.3M voxels / 0.40 A
 sampling, the cube touches 19.3M voxels where the sphere touches 8.3M, and
 materializing the ``(C,L,L,L)`` intermediate cube dominates the runtime: this fused
 kernel is ~1.5x faster than the separable one even using ``std::exp``, and ~2.5x
@@ -532,36 +531,31 @@ def _get_module():
     return _module
 
 
-def sphere_splat_available() -> bool:
-    """Whether the fused CPU splat compiled and is ready to dispatch."""
-    return _get_module() is not None
+def why_unavailable() -> Optional[str]:
+    """``None`` if the fused CPU splat is usable, else why it is not.
 
-
-def should_use_sphere_splat(*tensors: torch.Tensor) -> bool:
-    """Fused-vs-portable gate for the CPU density splat.
-
-    The CPU counterpart of ``should_use_triton`` / ``should_use_metal``: probes
-    device, dtype **and** extension availability together, so an uncompiled
-    extension is a predicate returning False rather than an exception at the
-    dispatch site. ``None`` entries are ignored.
-
-    Unlike the accelerator gates this one does not consult the ``Engine`` -- the
-    caller owns that, because ``Engine.EAGER`` must reach the portable splat.
-
-    Every tensor must be CPU and share one float32/float64 dtype: the kernel
-    reads raw pointers under a single ``AT_DISPATCH_FLOATING_TYPES``, so a mixed
-    set (e.g. a float64 map with float32 atoms) has to take the portable path,
-    which promotes as usual.
+    The single availability probe for this backend -- the shape every backend implements,
+    consumed by :mod:`torchref.utils.backends`. A missing compiler and a compile error are
+    different problems, and the captured diagnostic is the only thing that separates them.
     """
-    present = [t for t in tensors if t is not None]
-    if not present:
-        return False
-    dtype = present[0].dtype
-    if dtype not in (torch.float32, torch.float64):
-        return False
-    if any(t.device.type != "cpu" or t.dtype is not dtype for t in present):
-        return False
-    return sphere_splat_available()
+    if _get_module() is not None:
+        return None
+    reason = _module_error[0] if _module_error else "unknown reason"
+    return (
+        f"the fused CPU sphere_splat extension is not available ({reason}); see "
+        "torchref.base.electron_density.kernels.cpu.sphere_splat.last_error()"
+    )
+
+
+def sphere_splat_available() -> bool:
+    """Whether the fused CPU splat compiled and is ready to dispatch.
+
+    Derived from :func:`why_unavailable` rather than re-testing, so there is one
+    availability check here, not two that can drift.
+    """
+    return why_unavailable() is None
+
+
 
 
 def warmup() -> bool:

@@ -16,15 +16,7 @@ from torchref.base.electron_density.kernels import (  # noqa: F401
     warmup,
     get_cache_dir,
     clear_cache,
-    _HAS_TRITON,
 )
-
-try:
-    from torchref.base.electron_density.kernels import (  # noqa: F401
-        fused_add_to_map_gpu,
-    )
-except ImportError:
-    pass
 
 __all__ = [
     "vectorized_add_to_map",
@@ -34,5 +26,17 @@ __all__ = [
     "warmup",
     "get_cache_dir",
     "clear_cache",
-    "fused_add_to_map_gpu",
 ]
+
+# Optional, and only advertised when it actually resolved -- listing it
+# unconditionally made ``from torchref.base.kernels import *`` raise on a Triton-less
+# host. The former ``_HAS_TRITON`` re-export is gone: nothing read it, and
+# ``torchref.utils.triton_available()`` is the answer to that question.
+try:
+    from torchref.base.electron_density.kernels import (  # noqa: F401
+        fused_add_to_map_gpu,
+    )
+
+    __all__.append("fused_add_to_map_gpu")
+except ImportError:
+    pass

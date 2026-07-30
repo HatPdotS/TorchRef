@@ -324,37 +324,33 @@ def test_cutoff_is_grid_independent():
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64],
                          ids=["float32", "float64"])
-def test_auto_actually_dispatches_the_fused_kernel(dtype):
+def test_auto_actually_dispatches_the_fused_kernel(dtype, monkeypatch):
     """Guard against the AUTO-vs-EAGER tests going vacuous.
 
-    If ``should_use_sphere_splat`` ever stopped firing, AUTO would fall through to
-    the very same portable splat EAGER uses and every equivalence assertion above
-    would pass at ``rel_l2 == 0`` while measuring nothing -- the exact failure mode
-    the deleted MPS accelerator test documented for its own Metal gate. float64 is
-    parametrized because the old dispatch was float32-only, so a regression to a
-    dtype gate would be invisible on float32 alone.
+    If the ``cpu_sphere`` row ever stopped matching, AUTO would fall through to the very
+    same portable splat EAGER uses and every equivalence assertion above would pass at
+    ``rel_l2 == 0`` while measuring nothing. float64 is parametrized because the dispatch
+    was once float32-only, so a regression to a dtype gate would be invisible on float32
+    alone.
 
-    ``main`` is patched, not the kernel module: the dispatch site resolves the name
-    from its own module globals at import time.
+    The kernel's **defining module** is patched -- the same rule as every other provenance
+    test, since dispatch resolves each kernel by ``(module_path, attr)`` at call time. This
+    used to patch ``main`` instead, because the ladder there resolved the name from its own
+    globals.
     """
-    import torchref.base.electron_density.main as main_mod
-
     if not sphere_splat.sphere_splat_available():
         pytest.skip("fused CPU splat unavailable")
     frac, inv_frac, dims, f64 = _cell(100.0, dtype=dtype)
     calls = []
-    real = main_mod.add_isotropic_cpu_sphere_var
+    real = sphere_splat.add_isotropic_cpu_sphere_var
 
     def recording(*args, **kwargs):
         calls.append(1)
         return real(*args, **kwargs)
 
-    main_mod.add_isotropic_cpu_sphere_var = recording
-    try:
-        _build(Engine.AUTO, dims, frac, inv_frac, _voxel_size(f64, dims), dtype,
-               iso=_iso_atoms(f64, dtype=dtype))
-    finally:
-        main_mod.add_isotropic_cpu_sphere_var = real
+    monkeypatch.setattr(sphere_splat, "add_isotropic_cpu_sphere_var", recording)
+    _build(Engine.AUTO, dims, frac, inv_frac, _voxel_size(f64, dims), dtype,
+           iso=_iso_atoms(f64, dtype=dtype))
     assert calls, f"Engine.AUTO did not reach the fused CPU splat for {dtype}"
 
 
@@ -385,12 +381,11 @@ def test_density_map_accumulates_not_overwrites():
 # Ported from now-deleted tests of orphaned kernels
 # =========================================================================
 # ``tests/unit/base/test_aniso_map_building.py`` and ``test_cpu_scatter.py`` covered the
-# legacy fixed-radius splat and the C++ structured scatter. Both are now unreachable from
-# ``build_electron_density``: the dispatch routes CPU to the fused sphere splat or the
-# portable one, so ``add_isotropic_cpu_separable_var`` / ``add_anisotropic_cpu_var`` -- and
-# with them ``_separable_density``, ``_aniso_density_cube`` and the structured scatter --
-# are imported but never called. The source is deliberately retained; the tests were
-# deleted, and the two checks worth keeping are re-pointed at the live path here.
+# legacy fixed-radius splat and the C++ structured scatter. The dispatch routes CPU to the
+# fused sphere splat or the portable one, so that whole chain -- the grouped-separable and
+# cube splats, the separable density core, the structured scatter -- became unreachable
+# from ``build_electron_density`` and has since been deleted. The two checks worth keeping
+# are re-pointed at the live path here.
 
 
 @pytest.mark.parametrize("beta", _BETAS)
@@ -494,6 +489,38 @@ def test_fused_kernel_is_thread_invariant(n_threads):
         f"{float((got - ref).abs().max()):.3e}); the fused splat should partition the "
         "output, so results must not depend on thread count"
     )
+
+
+def test_fused_gate_requires_one_shared_dtype():
+    """The fused kernel takes a *uniform* dtype, not any mix of f32 and f64.
+
+    The C++ selects one ``scalar_t`` from the output map via
+    ``AT_DISPATCH_FLOATING_TYPES(out.scalar_type(), ...)`` and then reads every other
+    tensor through a raw pointer of that type. So a float64 map beside float32 atoms would
+    reinterpret the coordinate buffer as doubles -- garbage values and a 2x out-of-bounds
+    read -- and the gate has to refuse it.
+
+    Written down because the rule is easy to get wrong when it is restated as a set of
+    permitted dtypes: "each tensor's dtype is in {f32, f64}" *admits* the mixed case, while
+    the actual requirement is "all tensors share one dtype drawn from {f32, f64}". The two
+    read almost identically and only one is memory-safe. In the table that difference is the
+    ``require_uniform_dtype`` flag, and this asserts it against the row that ships.
+    """
+    from torchref.base.electron_density._backends import DENSITY_BACKENDS
+
+    row = DENSITY_BACKENDS.by_name("cpu_sphere")
+    f64 = torch.zeros(4, dtype=torch.float64)
+    f32 = torch.zeros(4, dtype=torch.float32)
+    six = lambda *ts: list(ts) + [ts[-1]] * (6 - len(ts))  # noqa: E731
+
+    # Uniform sets satisfy the device/dtype contract.
+    assert row.mismatch(six(f32, f32, f32)) is None
+    assert row.mismatch(six(f64, f64, f64)) is None
+
+    # Mixed sets never do, and the message says why.
+    for mixed in (six(f64, f32, f32), six(f32, f64, f32)):
+        why = row.mismatch(mixed)
+        assert why is not None and "single dtype" in why, why
 
 
 def test_fused_extension_compiles():

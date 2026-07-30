@@ -837,6 +837,27 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
 # back through here.
 
 
+def why_unavailable():
+    """``None`` if these kernels can run, else why they cannot.
+
+    The reason-returning half of the availability protocol shared by every backend (see
+    :mod:`torchref.utils.backends`).
+
+    This probe closes a real gap rather than restating ``triton_available()``. The
+    ``@triton.jit`` kernel bodies live inside ``if _HAVE_TRITON:`` above, but
+    ``WorkQueueGridDensity`` and these wrappers are defined *unconditionally*, so on a host
+    without Triton the module imports cleanly and the failure surfaces as a bare
+    ``NameError`` from deep inside ``_launch_grid_fwd``. Every other backend answers
+    "can I run" before being called; this one had nothing to ask.
+    """
+    if not _HAVE_TRITON:
+        return (
+            "triton is not importable, so the work-queue kernel bodies were never "
+            "compiled into this module"
+        )
+    return None
+
+
 def _coeff_mask(xyz):
     """All-ones per-atom coefficient mask, shape ``(n, 5)``.
 

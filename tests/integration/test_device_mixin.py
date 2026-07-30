@@ -64,13 +64,20 @@ def test_modelft_cpu_gpu_cpu_sf_round_trip(sample_pdb_file, sample_mtz_file):
     for name, buf in model.named_buffers():
         assert buf.device.type == "cuda", f"buffer {name} left behind on CPU"
 
-    # Values must agree within numerical tolerance after the round-trip. The CPU
-    # (C++ box-separable splat) and GPU (Triton work-queue splat) paths differ
-    # slightly in truncation shape (box vs sphere), which surfaces mostly on the
-    # strongest low-resolution reflections in absolute terms. Aggregate agreement
-    # is excellent (~0.3% RMS, ~0.12% R-factor), so use a combined
-    # relative-OR-absolute tolerance rather than max-abs-vs-mean, which a single
-    # very strong reflection (|F| >> mean |F|) can trip on a tiny relative error.
+    # Values must agree within numerical tolerance after the round-trip.
+    #
+    # This tolerance is loose for a reason that no longer applies. It was set when the CPU
+    # path was a box-separable splat and the GPU path a sphere-truncated work-queue kernel,
+    # so the two genuinely differed in truncation shape (~0.3% RMS, ~0.12% R-factor,
+    # concentrated on the strongest low-resolution reflections). Every production kernel now
+    # applies the identical spherical cutoff -- see ``electron_density/main.py`` -- so the
+    # residual should be float32 kernel arithmetic only, which is far smaller.
+    #
+    # It is deliberately NOT tightened here: this test is CUDA-only and has not been run
+    # since the contract was unified, so any number picked now would be a guess. Re-measure
+    # on a GPU host and tighten then. The combined relative-OR-absolute form stays either
+    # way -- max-abs-vs-mean trips on a single very strong reflection (|F| >> mean |F|) for
+    # a tiny relative error.
     fcalc_cuda_cpu = fcalc_cuda.cpu()
     magnitude = fcalc_cpu_initial.abs().mean().item()
     max_abs_diff = (fcalc_cpu_initial - fcalc_cuda_cpu).abs().max().item()

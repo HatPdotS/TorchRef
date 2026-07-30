@@ -50,9 +50,17 @@ echo "=========================================="
 echo "Running GPU tests..."
 echo "=========================================="
 
-# Run GPU tests
+# Run GPU tests.
+#
+# ``gpu or cuda`` rather than ``gpu`` alone: a mark expression *deselects* at collection
+# time, so ``-m "gpu"`` never even collected the `cuda`-marked tests -- which is most of the
+# accelerator coverage, including every direct-call kernel leg and the Triton provenance and
+# gate tests. They were silently absent from this job rather than failing in it.
+#
+# ``mps`` is deliberately not included: this is a CUDA cluster, and those tests are skipped
+# by ``pytest_collection_modifyitems`` on a host without Metal anyway.
 python -m pytest tests/ \
-    -m "gpu" \
+    -m "gpu or cuda" \
     --cov=torchref \
     --cov-report=term-missing \
     -v \

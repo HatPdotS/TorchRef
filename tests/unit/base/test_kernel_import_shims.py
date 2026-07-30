@@ -59,19 +59,20 @@ def test_math_torch_legacy_reexports_resolve():
 
 
 def test_main_namespace_preserves_moved_symbols():
-    """``main`` re-exports the shared splat helpers so its namespace is stable.
+    """``main`` keeps the names other modules and tests reach for.
 
-    These are the LIVE helpers reused by the variable-radius kernels (and
-    ``_get_radius_offsets`` by ``torchref.scaling.solvent``); the old fixed-radius
-    entry points were removed in the kernel cleanup.
+    Only two things need to resolve here now. ``_get_radius_offsets`` because
+    ``torchref.scaling.solvent`` imports it from ``main`` rather than from its defining
+    module, and the two dispatchers because they are ``main``'s own API.
+
+    The list used to also carry ``_do_structured_scatter``, ``_get_cpp_scatter``,
+    ``_separable_density`` and ``_aniso_density_cube``. Those were re-exported for a
+    grouped-separable/cube splat chain that the fused sphere kernel superseded; nothing
+    called it, and it has been deleted along with the four modules behind it.
     """
     main = importlib.import_module("torchref.base.electron_density.main")
     moved = [
         "_get_radius_offsets",
-        "_do_structured_scatter",
-        "_get_cpp_scatter",
-        "_separable_density",
-        "_aniso_density_cube",
         # dispatchers stay defined here
         "_add_isotropic",
         "_add_anisotropic",
@@ -90,10 +91,6 @@ def test_solvent_radius_offsets_import_path():
     [
         "torchref.base.electron_density.kernels",
         "torchref.base.electron_density.kernels.offsets",
-        "torchref.base.electron_density.kernels.cpu.separable",
-        "torchref.base.electron_density.kernels.cpu.aniso",
-        "torchref.base.electron_density.kernels.cpu.scatter",
-        "torchref.base.electron_density.kernels.cpu.scatter_dispatch",
         "torchref.base.electron_density.kernels.cpu.jit_reference",
         "torchref.base.electron_density.kernels.cpu.variable_radius",
         # CUDA/Triton backend: importing pulls in `triton`, absent on non-CUDA

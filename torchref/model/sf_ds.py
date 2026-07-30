@@ -101,7 +101,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         device: torch.device = None,
         verbose: int = 0,
         max_memory_gb: float = 2.0,
-        engine: Engine = Engine.AUTO,
+        engine: Optional[Engine] = None,
     ):
         """
         Initialize the SfDS module with cell and spacegroup.
@@ -121,10 +121,15 @@ class SfDS(DeviceMovementMixin, nn.Module):
         max_memory_gb : float, optional
             Maximum memory for intermediate tensors in GB. Default is 2.0.
         engine : Engine, optional
-            Structure-factor backend selector. ``Engine.AUTO`` (default)
-            derives the backend from device/dtype/availability (Triton on
-            CUDA+float32, else checkpointed eager). ``Engine.TRITON`` and
-            ``Engine.EAGER`` force a path (for tests/benchmarks).
+            Structure-factor backend selector, applied per call so two instances can
+            differ within one process. ``None`` (default) defers to the process-wide
+            engine, so ``with use_engine(...)`` steers an unconfigured instance; pass an
+            explicit ``Engine`` to override that.
+
+            The default was ``Engine.AUTO``, which read as harmless but was not: an
+            explicit engine argument suppresses the global, so a
+            ``with use_engine(Engine.EAGER)`` block never reached direct summation and
+            still ran Triton on a CUDA host.
         """
         super().__init__()
         if dtype_float is None:

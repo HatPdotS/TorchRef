@@ -65,9 +65,31 @@ def _get_lib():
     return _lib
 
 
+def why_unavailable() -> Optional[str]:
+    """``None`` if the Metal kernels are usable, else why they are not.
+
+    The single availability probe for this backend -- the shape every backend implements,
+    consumed by :mod:`torchref.utils.backends`. It returns the *reason* rather than a bool
+    because a forced ``Engine.METAL`` has to explain itself, and "torch has no
+    ``compile_shader``" and "the MSL failed to compile" are different problems with
+    different fixes.
+    """
+    if _get_lib() is not None:
+        return None
+    reason = _lib_error[0] if _lib_error else "unknown reason"
+    return (
+        f"the Metal splat kernels are not available ({reason}); see "
+        "torchref.base.electron_density.kernels.mps.compile.last_error()"
+    )
+
+
 def mps_kernels_available() -> bool:
-    """Whether the Metal splat kernels compiled and are ready to dispatch."""
-    return _get_lib() is not None
+    """Whether the Metal splat kernels compiled and are ready to dispatch.
+
+    Derived from :func:`why_unavailable` rather than re-testing, so there is one
+    availability check here, not two that can drift.
+    """
+    return why_unavailable() is None
 
 
 def warmup() -> bool:

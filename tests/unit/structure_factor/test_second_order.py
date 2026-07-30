@@ -38,6 +38,7 @@ import torch
 
 from tests.helpers.grad_asserts import cosine_similarity, hvp, hvp_central_fd, rel_error
 from torchref.base.direct_summation.dispatch import _eager_aniso, _eager_iso
+from torchref.base.electron_density._backends import DENSITY_BACKENDS
 from torchref.utils import Engine, use_engine
 
 from . import (
@@ -360,7 +361,13 @@ def test_fft_hvp_matches_ds_real_structure(gemmi_aniso_grad, oracle_aniso_grad):
 # fixed once for the C++ scatter, where a graph-less backward gave cosine 0.57 while first
 # derivatives stayed correct.
 
-_DOUBLE_DIFFERENTIABLE = {"cpu_sphere", "portable"}
+#: Read from the production table rather than restated. This was a hand-written set, i.e. a
+#: third copy of the same fact (the other two being the kernel docstrings and the table),
+#: and the kind that goes stale silently: a kernel gaining a ``create_graph`` path would
+#: leave its HVP untested, and one losing it would fail confusingly.
+_DOUBLE_DIFFERENTIABLE = {
+    b.name for b in DENSITY_BACKENDS.backends if b.second_order
+}
 
 
 @pytest.mark.parametrize("kind", ["iso", "aniso"])

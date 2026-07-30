@@ -638,6 +638,10 @@ def place_riding_hydrogens(
     -------
     xyz_h : (N_h, 3) float tensor, differentiable w.r.t. xyz_heavy
     """
+    # Function-local, matching every other target dispatch site: importing the gate at
+    # module scope would pull ``torchref.base.targets`` into ``torchref.restraints``.
+    from torchref.base.targets._dispatch import use_triton
+
     N_h = topo.h_parent_idx.shape[0]
     if N_h == 0:
         return torch.zeros(0, 3, dtype=xyz_heavy.dtype, device=xyz_heavy.device)
@@ -658,7 +662,13 @@ def place_riding_hydrogens(
     # backward (the H-VDW backward is a significant fraction of the
     # non-bonded fwd+bw cost). Falls back to the JIT-scripted eager
     # helper otherwise.
-    if xyz_heavy.is_cuda and xyz_heavy.dtype == torch.float32:
+    #
+    # Gated by the shared ``use_triton`` rather than a hand-rolled
+    # ``is_cuda and dtype == float32``. The inline check ignored the ``Engine`` entirely, so
+    # ``with use_engine(Engine.EAGER): ...`` still ran the Triton kernel here -- and since
+    # EAGER is the documented double-differentiable route, a Hessian taken through hydrogen
+    # placement was silently going through a first-order-only kernel.
+    if use_triton(xyz_heavy):
         try:
             from torchref.base.targets.triton.place_hydrogens import (
                 place_riding_hydrogens_triton,
