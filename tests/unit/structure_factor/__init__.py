@@ -137,8 +137,8 @@ RTOL_DS_HVP_VS_FD = 1e-5  # measured 1.19e-10 on a 6-atom scene
 # Measured at the **production** grid (``max_res = d_min``, spacing ``d_min/3``) with the
 # default 3.0 sigma cutoff, differentiating ``ls_target`` against pseudo-observations
 # offset from the oracle by 10% relative noise. Identical to 3 significant figures across
-# float32/float64 and AUTO/EAGER, so these are properties of the discretization, not of
-# precision or of a kernel:
+# float32/float64 and across both CPU kernels, so these are properties of the
+# discretization, not of precision or of a kernel:
 #
 #            amplitude   g_xyz      g_occ      g_adp/g_U   HVP        HVP cos
 #   iso      5.89e-03    8.51e-02   2.68e-02   4.45e-02    2.26e-02   0.99980
@@ -194,7 +194,7 @@ RTOL_BACKEND_F64 = 1e-12
 
 # Gradients need their own float32 constant. The fused C++ kernel's hand-written backward
 # and the portable splat's autograd accumulate in different orders, and float32 does not
-# forgive that the way the forward pass does. Measured AUTO-vs-EAGER on ``scene_fine``
+# forgive that the way the forward pass does. Measured fused-vs-portable on ``scene_fine``
 # (60 atoms), float32:
 #
 #            xyz        occ        adp/U

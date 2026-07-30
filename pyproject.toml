@@ -120,6 +120,19 @@ markers = [
     "openmm: Tests requiring OpenMM (the [amber] extra); skipped if absent",
     "amber: Tests requiring OpenMM + AmberTools (antechamber/tleap); skipped if absent",
 ]
+# Keep in step with ``tests/pytest.ini``; see the note above on why both exist.
+#
+# A backend degradation is an error under test and a warning in production. Dispatch falls
+# back to the portable kernel when an accelerator throws, which is right for a user -- the
+# answer stays correct, it just gets slower -- and wrong for CI, because a comparison between
+# an accelerator and the reference would then run the reference twice and pass at zero
+# difference while measuring nothing.
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+    "ignore::FutureWarning",
+    "error::torchref.utils.backends.TorchRefDegradationWarning",
+]
 
 [tool.ruff.lint]
 ignore = ["F841","E741","F841","E402","E722"]

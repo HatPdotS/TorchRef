@@ -7,7 +7,9 @@ Version 0.6.2
 - Added a metal shader for structure factor calculation
 - Standardized structure factor calculation geometry
 - Split gpu tests into cuda and mps
-- Reworked VDW pair list creation 
+- Reworked VDW pair list creation
+- Reworked backend dispatch: which kernel runs is now read from one declarative table per kernel family (device, dtype, availability probe, failure policy), replacing two hand-written if/elif ladders.
+
 
 Version 0.6.1
 -------------
