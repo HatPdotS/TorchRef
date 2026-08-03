@@ -22,14 +22,11 @@ from torchref.base.metrics import (
     binwise_scale,
     nll_xray,
     nll_xray_lognormal,
+    nll_xray_mean,
     rfactor_work_free,
 )
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.base.targets.xray_ml_sigmaa import (
-    SigmaAEstimator,
-    epsilon_from_hkl,
-    ml_xray_loss_beta_math,
-)
+from torchref.base.targets.xray_likelihoods import complex_var_from_beta, rice_math
 from torchref.config import get_complex_dtype, get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
@@ -40,6 +37,16 @@ from torchref.utils.utils import ModuleReference
 if TYPE_CHECKING:
     from torchref.io import ReflectionData
     from torchref.scaling.solvent import SolventModel
+
+
+#: Selectable objectives for the scaler's own L-BFGS scale fit. See
+#: :meth:`ScalerBase.refine_lbfgs` for what each means and for the ``'nll'`` hazard.
+SCALE_TARGETS = ("nll", "sigmaa")
+
+#: The default scale-fit objective, defined ONCE. Five call sites used to carry their own
+#: copy of this string (two ctors, a ``getattr`` fallback, the CLI's ``default=`` and its
+#: ``choices=``); that is the drift pattern that previously left five CLI flags dead.
+DEFAULT_SCALE_TARGET = "nll"
 
 
 class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
@@ -638,6 +645,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         max_iter: int = 200,
         history_size: int = 10,
         verbose: bool = True,
+        scale_target: str = DEFAULT_SCALE_TARGET,
     ):
         """
         Refine scale parameters using LBFGS optimizer.
@@ -660,6 +668,38 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Number of previous gradients to store for Hessian approximation.
         verbose : bool, default True
             Print progress information.
+        scale_target : {'nll', 'sigmaa'}, default 'nll'
+            Objective for the scale fit.
+
+            ``'nll'`` -- the plain σ_obs-weighted Gaussian
+            (:func:`torchref.base.metrics.loss.nll_xray`). **The default.**
+            Conceptually the right objective for a *nuisance-magnitude* fit: scaling
+            matches the magnitude of ``|F_calc|`` to ``F_obs``, for which the
+            measurement error is the natural weight, and it avoids coupling the
+            nuisance layer to the model-error estimate.
+
+            It is also the only choice that treats the body targets even-handedly.
+            ``'sigmaa'`` is ``ml``'s own likelihood, so under it ``ml`` gets a scaler
+            fitted with the objective it is then judged by while ``ml_full`` does not --
+            a standing confound in every ``ml`` vs ``ml_full`` comparison. And routing
+            the scaler through ``ml_full`` instead is not an option: it would put a
+            32-node quadrature inside every L-BFGS line-search evaluation.
+
+            ``'sigmaa'`` -- the Read-MLF σ_A likelihood with a detached free-set
+            ``beta``. Was the default. It is exactly ``--xray-mode ml_noalpha``: the mean is
+            ``|F_calc|``, because in a scale fit the Luzzati coupling is degenerate with the
+            per-bin scale being optimised, so pinning it at 1 is correct here rather than an
+            approximation. (``--xray-mode ml`` centres on ``alpha*|F_calc|`` and is
+            therefore *not* the same objective.)
+
+            **Known hazard, now on the default path.** ``'sigmaa'`` originally replaced
+            ``'nll'`` because a least-squares scale fit collapses in shells where
+            ``F_obs`` is noise-dominated and uncorrelated with ``F_calc``: the per-bin
+            optimum ``k = sum(F_obs*Fc/sigma^2) / sum(Fc^2/sigma^2)`` tends to 0 there,
+            which blows up R. ``'sigmaa'`` resists this because ``beta`` absorbs the
+            mismatch instead. **Check the per-bin ``log_scale`` spread and the
+            post-scaling R-factors rather than assuming it behaved**, and switch to
+            ``'sigmaa'`` for a dataset where the low-resolution or outer shells collapse.
 
         Returns
         -------
@@ -667,6 +707,18 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Dictionary with refinement metrics including steps, xray_work,
             xray_test, rwork, rfree.
         """
+        if scale_target not in SCALE_TARGETS:
+            raise ValueError(
+                f"scale_target must be one of {SCALE_TARGETS}, got {scale_target!r}"
+            )
+        # Imported HERE, not at module scope, and deliberately so. `sigma_a` lives under
+        # `torchref.refinement`, which imports `torchref.scaling` at module level
+        # (`base_refinement.py`), so a module-level import in this direction closes the
+        # cycle. It happens to resolve today only because `torchref/__init__.py` imports
+        # refinement before scaling -- an invariant enforced by nothing but line order.
+        # Every use of these two names is inside this method, so the local import costs
+        # nothing. Do not "tidy" it back up to module scope.
+        from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator, epsilon_from_hkl
         from torchref.refinement.loss_state import LossState
 
         fobs, sigma = self._data.get_corrected_data()
@@ -686,16 +738,29 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         # keeps the per-bin log_scale from collapsing toward zero in weak shells
         # (R blow-up). It is owned here transiently rather than cached on the
         # scaler — the scaler owns scaling only.
-        with torch.no_grad():
-            fc_amp0 = torch.abs(self.forward(fcalc)).reshape(-1)
-            fobs0 = self._data.get_corrected_data()[0].to(fc_amp0.dtype).reshape(-1)
-            eps0 = epsilon_from_hkl(
-                self._data.hkl, getattr(self._data, "spacegroup", None)
-            ).to(fc_amp0.dtype)
-            dss0 = (4.0 * self._s_half_sq).to(fc_amp0.dtype)
-            beta0, eps0 = SigmaAEstimator().get(
-                fobs0, fc_amp0, self._data.centric, eps0, dss0, self._data.free.mask
-            )
+        beta0 = eps0 = None
+        if scale_target == "sigmaa":
+            with torch.no_grad():
+                fc_amp0 = torch.abs(self.forward(fcalc)).reshape(-1)
+                _fobs_raw, _sig_raw = self._data.get_corrected_data()
+                fobs0 = _fobs_raw.to(fc_amp0.dtype).reshape(-1)
+                sig0 = _sig_raw.to(fc_amp0.dtype).reshape(-1)
+                eps0 = epsilon_from_hkl(
+                    self._data.hkl, getattr(self._data, "spacegroup", None)
+                ).to(fc_amp0.dtype)
+                dss0 = (4.0 * self._s_half_sq).to(fc_amp0.dtype)
+                # sigma_obs is passed here for the same reason it is passed in the body
+                # target: it is what makes sigma_A the correlation with the noise-free
+                # amplitudes rather than with the noisy data. One estimator behaviour,
+                # every call site -- this used to fetch only `[0]` and so fitted a
+                # different sigma_A from the target that consumes the result.
+                _est = SigmaAEstimator().get(
+                    fobs0, fc_amp0, self._data.centric, eps0, dss0,
+                    self._data.free.mask, sigma_obs=sig0,
+                )
+                # Total variance: this scale fit uses the same likelihood as `ml`,
+                # which does not account for sigma_obs separately.
+                beta0, eps0 = _est.beta, _est.epsilon
 
         class _ScalerXrayTarget(nn.Module):
             name = "scaler/xray"
@@ -711,13 +776,21 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 work = scaler_self._data.work
                 F_obs = work.F.to(get_float_dtype())
                 Fc = work.select(torch.abs(fcalc_scaled).reshape(-1))
+                u_penalty = torch.sum(scaler_self.U**2)
+                if scale_target == "nll":
+                    # Measurement-error-weighted Gaussian: a pure magnitude fit,
+                    # with no model-error term to couple the nuisance layer to the
+                    # sigma_A estimate. On the same absolute scale as every other
+                    # target, so it combines with u_penalty directly.
+                    return (
+                        nll_xray(F_obs, Fc, work.sigF.to(F_obs.dtype)) + u_penalty
+                    )
                 beta_w = work.select(beta0).to(F_obs.dtype)
                 eps_w = work.select(eps0).to(F_obs.dtype) if eps0 is not None else None
                 centric_w = work.select(scaler_self._data.centric)
-                u_penalty = torch.sum(scaler_self.U**2)
                 return (
-                    ml_xray_loss_beta_math(
-                        F_obs, Fc, beta_w, centric_w, epsilon=eps_w
+                    rice_math(
+                        F_obs, Fc, complex_var_from_beta(beta_w, eps_w), centric_w
                     )
                     + u_penalty
                 )
@@ -761,10 +834,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 fcalc_scaled = self.forward(fcalc)
                 work, free = self._data.work, self._data.free
 
-                xray_work = nll_xray(
+                # Reported side by side for work vs free, which differ in size by
+                # ~20x, so use the per-reflection mean here -- the sum would say
+                # nothing but "the work set is bigger".
+                xray_work = nll_xray_mean(
                     work.F, work.select(fcalc_scaled), work.sigF
                 )
-                xray_test = nll_xray(
+                xray_test = nll_xray_mean(
                     free.F, free.select(fcalc_scaled), free.sigF
                 )
                 # Same R-factor partition as XrayTarget.get_rfactor (work/free

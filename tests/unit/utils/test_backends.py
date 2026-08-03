@@ -359,6 +359,32 @@ def test_integer_tensors_are_exempt_from_the_dtype_contract():
     assert select(t, [hkl_int, torch.zeros(2, dtype=torch.float64)]).name == "base"
 
 
+def test_complex_tensors_are_refused_not_exempted():
+    """Complex must disqualify a real-dtype backend, matching component precision or not.
+
+    The mirror image of the integer rule above, and the reason both are worth pinning: they
+    are the same line of code. The exemption is written with ``is_floating_point()``, which
+    is ``False`` for complex as well as for integer -- so read literally it admitted a
+    complex64 tensor through a ``dtypes=(float32,)`` gate. That is how a complex ``F_calc``
+    reached the Triton Gaussian X-ray kernel, whose only defence was its own ``assert``.
+
+    ``complex64`` is the interesting case precisely because its components *are* float32.
+    Matching precision is not the question: every kernel behind these tables reads one real
+    scalar per element, so the complex buffer would be walked as interleaved re/im pairs.
+    Mapping complex to its component dtype and admitting it would be the wrong repair.
+    """
+    t = _table(accel_device="cpu")
+    real = torch.zeros(2)
+    assert select(t, [real, real]).name == "accel"
+    for cdtype in (torch.complex64, torch.complex128):
+        got = select(t, [real, torch.zeros(2, dtype=cdtype)])
+        assert got.name == "base", f"{cdtype} satisfied a float32-only contract"
+    # The message has to name the culprit, or a fallback is indistinguishable from a
+    # device mismatch when someone is debugging why the accelerator went quiet.
+    reason = t.by_name("accel").mismatch([real, torch.zeros(2, dtype=torch.complex64)])
+    assert reason is not None and "complex" in reason
+
+
 # ---------------------------------------------------------------------------
 # Running
 # ---------------------------------------------------------------------------

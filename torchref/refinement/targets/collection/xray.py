@@ -30,11 +30,8 @@ import numpy as np
 import torch
 
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.base.targets.xray_ml_sigmaa import (
-    SigmaAEstimator,
-    epsilon_from_hkl,
-    ml_xray_loss_beta_math,
-)
+from torchref.base.targets.xray_likelihoods import complex_var_from_beta, rice_math
+from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator, epsilon_from_hkl
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
 from ._util import _LOG_2PI, _scale_fcalc
@@ -337,7 +334,7 @@ class CollectionMLTarget(CollectionXrayTarget):
     Multi-dataset maximum-likelihood σ_A (Read MLF) target.
 
     The collection analogue of
-    :class:`~torchref.refinement.targets.xray.maximum_likelihood.MaximumLikelihoodXrayTarget`:
+    :class:`~torchref.refinement.targets.xray.ml_noalpha.MLNoAlphaXrayTarget`:
     instead of ``beta = sigma**2`` (plain Rice), it uses one **shared** Luzzati
     model-error variance ``beta``.  ``beta`` is estimated by maximum likelihood on
     the **pooled** free reflections of every data–model pair and mapped back onto
@@ -346,7 +343,7 @@ class CollectionMLTarget(CollectionXrayTarget):
     The estimate is owned by **this target** (a :class:`SigmaAEstimator`), not the
     scaler — the scaler owns scaling only.  The per-dataset loss is the Read MLF
     form (``mean = |Fc|``, variance ``epsilon*beta``) from
-    :func:`torchref.base.targets.xray_ml_sigmaa.ml_xray_loss_beta_math`. Because
+    :func:`torchref.base.targets.xray_likelihoods.rice_math`. Because
     the loss is an independent per-dataset sum, the datasets are concatenated and
     masked once (flat vectorization).  ``beta`` is detached (a constant in
     autograd); gradients reach the models only through ``F_calc``.
@@ -444,12 +441,14 @@ class CollectionMLTarget(CollectionXrayTarget):
         # collect detached copies to pool the free reflections for ONE shared
         # beta estimate across all datasets.
         fo_parts, fc_parts, cen_parts, msk_parts = [], [], [], []
-        eps_parts, dss_parts, free_parts = [], [], []
+        eps_parts, dss_parts, free_parts, sig_parts = [], [], [], []
         for key in all_keys:
             data = dc[key]
             model = mc[key]
 
-            F_obs = data.get_corrected_data()[0].to(dtype)
+            F_obs, sig_obs = data.get_corrected_data()
+            F_obs = F_obs.to(dtype)
+            sig_parts.append(sig_obs.to(dtype).reshape(-1))
             F_calc = self._scaled_amp_full(data, model, recalc=False).to(dtype)
             centric = data.centric
             if centric is None:
@@ -469,7 +468,7 @@ class CollectionMLTarget(CollectionXrayTarget):
 
         # One shared (beta, epsilon) for all datasets, mapped onto the common
         # HKL via target_dss. Detached; cached until maintenance() resets it.
-        beta, eps = self._sigma_a.get(
+        _est = self._sigma_a.get(
             torch.cat(fo_parts),
             torch.cat([fc.detach() for fc in fc_parts]),  # beta needs no gradient
             torch.cat(cen_parts),
@@ -478,7 +477,12 @@ class CollectionMLTarget(CollectionXrayTarget):
             torch.cat(free_parts),
             out_epsilon=eps_common.to(dtype),
             target_dss=dss_common,
+            # Always passed, as at every other call site: it is what makes sigma_A the
+            # correlation with the noise-free amplitudes rather than with the noisy data.
+            sigma_obs=torch.cat(sig_parts),
         )
+        # TOTAL variance: this target's likelihood does not account for sigma_obs itself.
+        beta, eps = _est.beta, _est.epsilon
 
         # Concatenate data + boolean masks across datasets and evaluate the
         # Read-MLF loss once. beta/eps are on the common HKL, so they are tiled
@@ -491,8 +495,11 @@ class CollectionMLTarget(CollectionXrayTarget):
         beta_cat = beta.to(F_obs_cat.dtype).repeat(n_ds)
         eps_cat = eps.to(F_obs_cat.dtype).repeat(n_ds) if eps is not None else None
 
-        total = ml_xray_loss_beta_math(
-            F_obs_cat, F_calc_cat, beta_cat, centric_cat, mask_cat, eps_cat
+        # TOTAL variance (`est.beta`, not `beta_model`): this likelihood does not
+        # account for sigma_obs itself, so the measurement variance must stay inside beta.
+        total = rice_math(
+            F_obs_cat, F_calc_cat, complex_var_from_beta(beta_cat, eps_cat),
+            centric_cat, mask=mask_cat,
         )
 
         # Base weight drives refinement; applied on the work set only.

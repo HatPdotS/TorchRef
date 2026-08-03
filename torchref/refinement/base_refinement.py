@@ -22,9 +22,11 @@ from torchref.refinement.targets.combined import (
 )
 
 # Target system imports
+from torchref.refinement.model_error_estimation.sigma_a import SHRINK_ENABLED, SIGMA_A_MAX
 from torchref.refinement.targets.xray import create_xray_target
 from torchref.refinement.weighting import ManualWeighting
 from torchref.scaling.scaler import Scaler
+from torchref.scaling.scaler_base import DEFAULT_SCALE_TARGET
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
@@ -142,6 +144,10 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         french_wilson: bool = True,
         anomalous: Optional[bool] = None,
         adp_mode: str = "isotropic",
+        xray_mode: str = "ml",
+        sigma_a_max: float = SIGMA_A_MAX,
+        shrink: bool = SHRINK_ENABLED,
+        scale_target: str = DEFAULT_SCALE_TARGET,
         aniso_selection: Optional[str] = None,
     ):
         """
@@ -219,6 +225,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # model right after load, before scaling/restraints/targets.
         self.adp_mode = adp_mode
         self.aniso_selection = aniso_selection
+        # Everything the x-ray targets are built from must be set BEFORE
+        # _init_targets() further down this __init__ (it also calls get_scales()).
+        # They are read back through _xray_target_kwargs(), which is the single
+        # source of truth for target construction -- see the note there.
+        self.scale_target = scale_target
+        self.xray_mode = xray_mode
+        self.sigma_a_max = sigma_a_max
+        self.shrink = shrink
         # A wavelength of 0 means "no anomalous refinement": disable the f'/f''
         # correction (model wavelength None) and force a Friedel-merged read so
         # F(+)/F(-) are not loaded as Bijvoet pairs.
@@ -405,34 +419,57 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 f"residue(s) with incomplete restraints: {shown}"
             )
 
-    def _init_targets(self, xray_mode: str = "ml"):
+    def _xray_target_kwargs(self) -> dict:
+        """Every configuration value the x-ray targets are built from, in one place.
+
+        **Both** construction paths go through this, and that is the point. Until
+        2026-07-31 ``set_xray_target_mode`` rebuilt the targets with only a subset of
+        the configuration, and ``LBFGSRefinement.__init__`` called it *after*
+        ``_init_targets`` had already built them correctly -- so the second build
+        silently reverted ``sigma_a_estimator``, ``sigma_in_variance``,
+        ``ml_estimation_set``, ``use_alpha`` and ``subtract_sigma_from_beta`` to
+        factory defaults. Those five CLI flags were dead for every ``LBFGSRefinement``,
+        which is the CLI and every paper harness. Keep this the only place the kwargs
+        are spelled out, so a new option cannot be dropped by one path and honoured by
+        the other.
+
+        ``getattr`` fallbacks are required: the ensemble and ``create_from_state_dict``
+        paths call target construction before these attributes exist.
+        """
+        return dict(
+            model=self.model,
+            data=self.reflection_data,
+            scaler=self.scaler,
+            verbose=self.verbose,
+            sigma_a_max=getattr(self, "sigma_a_max", SIGMA_A_MAX),
+            shrink=getattr(self, "shrink", SHRINK_ENABLED),
+        )
+
+    def _build_xray_targets(self, mode: str) -> None:
+        """Build the work/test x-ray targets for ``mode`` with the full configuration."""
+        kw = self._xray_target_kwargs()
+        self.xray_target_work = create_xray_target(
+            mode=mode, use_work_set=True, **kw
+        )
+        self.xray_target_test = create_xray_target(
+            mode=mode, use_work_set=False, **kw
+        )
+        self.xray_mode = mode
+
+    def _init_targets(self, xray_mode: str = None):
         """
         Initialize target functions.
 
         Parameters
         ----------
         xray_mode : str, optional
-            X-ray target mode. Options are 'gaussian', 'ls', 'ls_wunit_k1',
-            'rice', 'ml', or 'bhattacharyya'. Default is 'ml'
-            (maximum-likelihood Read MLF with Luzzati σ_A).
+            X-ray target mode. Defaults to ``self.xray_mode`` (itself defaulting to
+            ``'ml'``), so the deserialization path picks up the stored mode instead of
+            silently reverting to the default.
         """
-        # X-ray targets (now accept model, data, scaler directly)
-        self.xray_target_work = create_xray_target(
-            model=self.model,
-            data=self.reflection_data,
-            scaler=self.scaler,
-            mode=xray_mode,
-            use_work_set=True,
-            verbose=self.verbose,
-        )
-        self.xray_target_test = create_xray_target(
-            model=self.model,
-            data=self.reflection_data,
-            scaler=self.scaler,
-            mode=xray_mode,
-            use_work_set=False,
-            verbose=self.verbose,
-        )
+        if xray_mode is None:
+            xray_mode = getattr(self, "xray_mode", "ml")
+        self._build_xray_targets(xray_mode)
 
         # Total geometry target (handles bond, angle, torsion internally)
         # Geometry targets now accept model directly instead of refinement
@@ -454,28 +491,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         mode : str
-            X-ray target mode. Options: 'gaussian', 'ls', 'ls_wunit_k1', 'rice',
-            'ml', 'bhattacharyya'.
+            X-ray target mode: 'ml' (default), 'ml_noalpha', 'ml_full', 'nll_beta',
+            'nll', 'ls', 'ls_wunit_k1'. See
+            :mod:`torchref.refinement.targets.xray._specs` for the taxonomy.
         """
-        sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
-        self.xray_target_work = create_xray_target(
-            model=self.model,
-            data=self.reflection_data,
-            scaler=self.scaler,
-            mode=mode,
-            use_work_set=True,
-            sigma_m_scale=sigma_m_scale,
-            verbose=self.verbose,
-        )
-        self.xray_target_test = create_xray_target(
-            model=self.model,
-            data=self.reflection_data,
-            scaler=self.scaler,
-            mode=mode,
-            use_work_set=False,
-            sigma_m_scale=sigma_m_scale,
-            verbose=self.verbose,
-        )
+        self._build_xray_targets(mode)
         # Reset loss state since targets changed
         self.reset_loss_state()
         if self.verbose > 0:
@@ -546,6 +566,12 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         outliers against the refitted scales. No-op when the scaler is ``None``
         (e.g. targets such as ``ls_wunit_k1`` in ``binwise_optimal`` mode that
         compute their own scale and intentionally leave ``self.scaler`` unset).
+
+        The scale-fit objective is chosen by ``self.scale_target`` (see
+        :meth:`torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`). It is
+        deliberately *not* the body target: for ``ml_full`` that would put a
+        32-node quadrature inside every L-BFGS line-search evaluation, and scaling
+        is a nuisance-magnitude fit that need not carry a model-error term at all.
         """
         if not hasattr(self, "scaler") or self.scaler is None:
             # Targets that compute their own scale (e.g. ls_wunit_k1 in
@@ -554,7 +580,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             return
         self.scaler.initialize()
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
-        self.scaler.refine_lbfgs()
+        self.scaler.refine_lbfgs(scale_target=getattr(self, "scale_target", DEFAULT_SCALE_TARGET))
         self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
 
     def setup_scaler(self):

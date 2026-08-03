@@ -49,7 +49,8 @@ class TestCollectionSigmaA:
 
         target = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
         target.forward()  # estimates + caches one shared beta on the common HKL
-        beta, eps = target._sigma_a._cache
+        _c = target._sigma_a._cache
+        beta, eps = _c.beta, _c.epsilon
         assert beta.shape[0] == n
         assert torch.isfinite(beta).all()
         assert (beta > 0).all()

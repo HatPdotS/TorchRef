@@ -10,6 +10,8 @@ only cover the backend the machine happens to have, whereas ``select`` is a pure
 the table and can be interrogated for combinations this host cannot execute.
 """
 
+import inspect
+
 import pytest
 import torch
 
@@ -99,6 +101,53 @@ def test_every_row_resolves_to_a_distinct_kernel(table):
                     "wrong kernel, and every other test would still pass"
                 )
             seen[key] = (backend.name, variant)
+
+
+@pytest.mark.parametrize("table", ALL_TABLES, ids=lambda t: t.name.split()[0])
+def test_every_row_in_a_table_shares_one_signature(table):
+    """All rows of a table must accept the same number of positional arguments.
+
+    This is the invariant the dispatch sites are built on. ``select`` returns a row and
+    ``run_or_degrade`` calls it with one fixed argument tuple -- then, on a degrade, calls
+    ``table.base`` with *the same tuple*. Nothing tailors arguments per row, so a row whose
+    arity differs is unreachable by construction, and the failure lands at the call with a
+    ``TypeError`` naming a private adapter rather than anywhere near the table that caused
+    it.
+
+    Where a kernel genuinely does not need an argument the others take, the table absorbs the
+    difference in a named adapter rather than by making the call site row-aware: ``ds_triton``
+    resolves to ``_ds_iso_triton``, which accepts ``max_memory_gb`` and drops it, because the
+    Triton kernel forms only a ``(BLOCK_H, N)`` tile in registers and has nothing to bound.
+    Keeping that discipline is what lets both dispatch sites stay a single untailored call.
+
+    Runs on every host: resolving a kernel imports its module without launching it.
+    """
+    rows = [b for b in table.backends if b.kernel is not None]
+    if len(rows) < 2:
+        pytest.skip(f"{table.name} has fewer than two callable rows")
+
+    arities = {}
+    for backend in rows:
+        for variant, fn in (("iso", backend.resolve(False)), ("aniso", backend.resolve(True))):
+            params = inspect.signature(fn).parameters.values()
+            positional = [
+                p for p in params
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            ]
+            takes_var_args = any(p.kind is p.VAR_POSITIONAL for p in params)
+            arities.setdefault(
+                (len(positional), takes_var_args), []
+            ).append(f"{backend.name}/{variant}")
+
+    assert len(arities) == 1, (
+        f"{table.name}: rows disagree on positional arity -- "
+        + "; ".join(
+            f"{n} positional{' + *args' if var else ''}: {', '.join(who)}"
+            for (n, var), who in sorted(arities.items())
+        )
+        + ". run_or_degrade calls the selected row and the base row with one identical "
+        "argument tuple, so a row with a different signature cannot be dispatched to."
+    )
 
 
 # ---------------------------------------------------------------------------

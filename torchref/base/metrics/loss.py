@@ -8,11 +8,47 @@ structure refinement.
 import torch
 
 
+def _nll_xray_per_refl(F_obs, F_calc, sigma_F_obs):
+    """Shared per-reflection Gaussian NLL and mask for the ``nll_xray`` family.
+
+    ``0.5 (F_obs - |F_calc|)^2 / sigma^2 + log sigma + 0.5 log 2pi``
+
+    The sigma floor is data-dependent: each sigma is clamped to a minimum of
+    ``median(sigma_F_obs) * 0.1`` rather than a fixed constant, so the effective
+    minimum scales with the data.
+    """
+    # MaskedTensor inputs: use torch.where rather than boolean indexing, which
+    # triggers nonzero() and forces a CPU-GPU sync.
+    mask = None
+    if hasattr(F_obs, "get_mask"):
+        mask = F_obs.get_mask()
+        F_obs = torch.where(mask, F_obs.get_data(), torch.zeros_like(F_obs.get_data()))
+        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
+        sigma_raw = (
+            sigma_F_obs.get_data() if hasattr(sigma_F_obs, "get_mask") else sigma_F_obs
+        )
+        sigma_F_obs = torch.where(mask, sigma_raw, torch.ones_like(sigma_raw))
+    elif hasattr(sigma_F_obs, "get_mask"):
+        mask = sigma_F_obs.get_mask()
+        F_obs = torch.where(mask, F_obs, torch.zeros_like(F_obs))
+        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
+        sigma_F_obs = torch.where(
+            mask, sigma_F_obs.get_data(), torch.ones_like(sigma_F_obs.get_data())
+        )
+
+    diff = F_obs - torch.abs(F_calc)
+    eps = torch.median(sigma_F_obs) * 1e-1
+    sigma_save = torch.clamp(sigma_F_obs, min=eps)
+    log_2pi = torch.log(torch.tensor(2.0 * torch.pi))
+    nll = 0.5 * (diff**2) / (sigma_save**2) + torch.log(sigma_save) + 0.5 * log_2pi
+    return nll, mask
+
+
 def nll_xray(
     F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tensor
 ) -> torch.Tensor:
     """
-    Compute X-ray negative log-likelihood assuming Gaussian distribution.
+    Summed X-ray negative log-likelihood assuming a Gaussian on the amplitude.
 
     Parameters
     ----------
@@ -26,101 +62,50 @@ def nll_xray(
     Returns
     -------
     torch.Tensor
-        Mean negative log-likelihood.
+        Summed negative log-likelihood (scalar).
 
     Notes
     -----
+    **This returns a SUM.** Every other target in TorchRef is on an absolute
+    scale -- all five x-ray target maths (``xray_likelihoods``, ``xray_ml_full``,
+    ``xray_ls``, ``xray_nll``), every geometry term
+    (bond, angle, chiral, planarity, torsion, ramachandran, nonbonded) and the ADP
+    terms all return ``.sum()``. This function previously returned a ``.mean()``,
+    which made it the sole exception: any caller combining it with another term
+    (e.g. an anisotropy ``sum(U**2)`` penalty) silently got a relative weight wrong
+    by a factor of the reflection count. It now matches the convention, so absolute
+    magnitudes reported by it are ~n times larger than before.
+
+    ``nll_xray_sum`` is retained as an alias.
+
     The sigma floor is data-dependent: each sigma is clamped to a minimum of
-    ``median(sigma_F_obs) * 0.1`` rather than a fixed small constant, so the
-    effective minimum sigma scales with the data.
+    ``median(sigma_F_obs) * 0.1``, so the effective minimum scales with the data.
     """
-    # Handle MaskedTensor inputs: use torch.where to avoid boolean indexing
-    # (boolean indexing triggers nonzero() which forces CPU-GPU sync)
-    mask = None
-    if hasattr(F_obs, "get_mask"):
-        mask = F_obs.get_mask()
-        F_obs = torch.where(mask, F_obs.get_data(), torch.zeros_like(F_obs.get_data()))
-        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
-        sigma_raw = sigma_F_obs.get_data() if hasattr(sigma_F_obs, "get_mask") else sigma_F_obs
-        sigma_F_obs = torch.where(mask, sigma_raw, torch.ones_like(sigma_raw))
-    elif hasattr(sigma_F_obs, "get_mask"):
-        mask = sigma_F_obs.get_mask()
-        F_obs = torch.where(mask, F_obs, torch.zeros_like(F_obs))
-        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
-        sigma_F_obs = torch.where(mask, sigma_F_obs.get_data(), torch.ones_like(sigma_F_obs.get_data()))
+    nll, mask = _nll_xray_per_refl(F_obs, F_calc, sigma_F_obs)
+    if mask is not None:
+        return (nll * mask).sum()
+    return nll.sum()
 
-    # Compute amplitude of calculated structure factors
-    F_calc_amp = torch.abs(F_calc)
 
-    # Compute residual
-    diff = F_obs - F_calc_amp
-    # Avoid division by zero by setting a minimum sigma
-    eps = torch.median(sigma_F_obs) * 1e-1
-    # Compute Gaussian NLL: 0.5*(x-μ)²/σ² + log(σ) + 0.5*log(2π)
-    log_2pi = torch.log(torch.tensor(2.0 * torch.pi))
-    sigma_save = torch.clamp(sigma_F_obs, min=eps)
-    nll = 0.5 * (diff**2) / (sigma_save**2) + torch.log(sigma_save) + 0.5 * log_2pi
+def nll_xray_mean(
+    F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tensor
+) -> torch.Tensor:
+    """Per-reflection *mean* Gaussian NLL.
 
+    Use only for reporting a number that should be comparable between datasets of
+    different sizes. Never mix it with another loss term -- see the convention note
+    in :func:`nll_xray`.
+    """
+    nll, mask = _nll_xray_per_refl(F_obs, F_calc, sigma_F_obs)
     if mask is not None:
         return (nll * mask).sum() / mask.sum()
     return nll.mean()
 
 
-def nll_xray_sum(
-    F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tensor
-) -> torch.Tensor:
-    """
-    Compute summed X-ray negative log-likelihood assuming Gaussian distribution.
-
-    Parameters
-    ----------
-    F_obs : torch.Tensor or MaskedTensor
-        Observed structure factor amplitudes.
-    F_calc : torch.Tensor
-        Calculated structure factors (complex).
-    sigma_F_obs : torch.Tensor or MaskedTensor
-        Standard deviations of observed amplitudes.
-
-    Returns
-    -------
-    torch.Tensor
-        Sum of negative log-likelihood values.
-
-    Notes
-    -----
-    The sigma floor is data-dependent: each sigma is clamped to a minimum of
-    ``median(sigma_F_obs) * 0.1`` rather than a fixed small constant, so the
-    effective minimum sigma scales with the data.
-    """
-    # Handle MaskedTensor inputs: use torch.where to avoid boolean indexing
-    mask = None
-    if hasattr(F_obs, "get_mask"):
-        mask = F_obs.get_mask()
-        F_obs = torch.where(mask, F_obs.get_data(), torch.zeros_like(F_obs.get_data()))
-        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
-        sigma_raw = sigma_F_obs.get_data() if hasattr(sigma_F_obs, "get_mask") else sigma_F_obs
-        sigma_F_obs = torch.where(mask, sigma_raw, torch.ones_like(sigma_raw))
-    elif hasattr(sigma_F_obs, "get_mask"):
-        mask = sigma_F_obs.get_mask()
-        F_obs = torch.where(mask, F_obs, torch.zeros_like(F_obs))
-        F_calc = torch.where(mask, F_calc, torch.zeros_like(F_calc))
-        sigma_F_obs = torch.where(mask, sigma_F_obs.get_data(), torch.ones_like(sigma_F_obs.get_data()))
-
-    # Compute amplitude of calculated structure factors
-    F_calc_amp = torch.abs(F_calc)
-
-    # Compute residual
-    diff = F_obs - F_calc_amp
-    # Avoid division by zero by setting a minimum sigma
-    eps = torch.median(sigma_F_obs) * 1e-1
-    # Compute Gaussian NLL: 0.5*(x-μ)²/σ² + log(σ) + 0.5*log(2π)
-    log_2pi = torch.log(torch.tensor(2.0 * torch.pi))
-    sigma_save = torch.clamp(sigma_F_obs, min=eps)
-    nll = 0.5 * (diff**2) / (sigma_save**2) + torch.log(sigma_save) + 0.5 * log_2pi
-
-    if mask is not None:
-        return (nll * mask).sum()
-    return nll.sum()
+# Alias: `nll_xray` is itself a sum now, so these are the same function. Kept
+# because it is re-exported from torchref.base, torchref.base.math_torch and
+# torchref.base.metrics.
+nll_xray_sum = nll_xray
 
 
 def nll_xray_lognormal(

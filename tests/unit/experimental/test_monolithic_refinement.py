@@ -5,7 +5,7 @@ variance ``beta = c * sigma_m**2`` (no free-set beta, no maintenance cache), plu
 the MonolithicRefinement driver that co-refines everything in one joint step:
 
 - target construction / subclassing / no-op maintenance
-- reduction: the beta slot is the same ml_xray_loss_beta_math kernel
+- reduction: the beta slot is the same rice_math kernel
 - end-to-end on 1DAW: work/test share one calibration; gradients reach BOTH the
   model B-factors and the co-refined calibration; the calibration is identifiable
   (settles finite); and it actually moves in the monolithic refine_joint step.
@@ -14,7 +14,7 @@ the MonolithicRefinement driver that co-refines everything in one joint step:
 import pytest
 import torch
 
-from torchref.base.targets.xray_ml_sigmaa import ml_xray_loss_beta_math
+from torchref.base.targets.xray_likelihoods import complex_var_from_beta, rice_math
 
 
 @pytest.mark.unit
@@ -25,11 +25,23 @@ class TestRiceSigmaMTarget:
             RiceSigmaMXrayTarget,
         )
 
-    def test_is_subclass_of_bhattacharyya(self):
-        from torchref.experimental.monolithic_refinement import RiceSigmaMXrayTarget
-        from torchref.refinement.targets.xray import BhattacharyyaXrayTarget
+    def test_owns_a_sigma_m_estimator(self):
+        """The Bhattacharyya target it used to subclass is gone; the estimator survived.
 
-        assert issubclass(RiceSigmaMXrayTarget, BhattacharyyaXrayTarget)
+        `RiceSigmaMXrayTarget` inherited from `BhattacharyyaXrayTarget` purely to borrow
+        the Fisher sigma_m machinery. That machinery is now
+        `torchref.refinement.model_error_estimation.sigma_m.SigmaMEstimator` and the Bhattacharyya loss
+        was deleted, so ownership replaces inheritance.
+        """
+        from torchref.refinement.model_error_estimation.sigma_m import SigmaMEstimator
+        from torchref.experimental.monolithic_refinement.targets import (
+            RiceSigmaMXrayTarget,
+        )
+
+        t = RiceSigmaMXrayTarget()
+        assert isinstance(t._sigma_m, SigmaMEstimator)
+        # constructible with no data/model, which the other tests here rely on
+        assert t._sigma_m.ready is False
 
     def test_owns_calibration_parameter(self):
         from torchref.experimental.monolithic_refinement import RiceSigmaMXrayTarget
@@ -57,9 +69,12 @@ class TestBetaSlot:
         eps = torch.ones(n, dtype=torch.float64)
         sigma_m_sq = torch.rand(n, generator=g, dtype=torch.float64) * 50 + 1
         c = 7.0
-        a = ml_xray_loss_beta_math(F_obs, F_calc, c * sigma_m_sq, centric, epsilon=eps)
-        b = ml_xray_loss_beta_math(
-            F_obs, F_calc, (c * sigma_m_sq).clamp(min=1e-10), centric, epsilon=eps
+        a = rice_math(
+            F_obs, F_calc, complex_var_from_beta(c * sigma_m_sq, eps), centric
+        )
+        b = rice_math(
+            F_obs, F_calc,
+            complex_var_from_beta((c * sigma_m_sq).clamp(min=1e-10), eps), centric,
         )
         assert a.item() == pytest.approx(b.item(), rel=1e-12, abs=1e-9)
 

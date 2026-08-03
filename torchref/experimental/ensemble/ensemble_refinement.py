@@ -43,7 +43,7 @@ from torchref.refinement.lbfgs_refinement import LBFGSRefinement
 from torchref.refinement.loss_state import LossState
 from .rank_penalty import RankPenaltyTarget
 from .wilson_prior import WilsonPriorTarget
-from torchref.refinement.targets.xray.maximum_likelihood import create_xray_target
+from torchref.refinement.targets.xray import create_xray_target
 from torchref.scaling import Scaler
 
 try:
@@ -153,9 +153,9 @@ class EnsembleRefinement(LBFGSRefinement):
         Mode for the X-ray targets. Default ``'ml'`` — the maximum-
         likelihood target, which is the Rice distribution NLL for acentric
         reflections (folded-normal for centrics), the statistically correct
-        amplitude likelihood. Other options: ``'ls'``, ``'gaussian'``, and
-        ``'bhattacharyya'`` (the most experimental — the ensemble Bhattacharyya
-        / k_eff target).
+        amplitude likelihood. Other options: ``'ml_noalpha'``, ``'ml_full'``,
+        ``'nll_beta'``, ``'nll'``, ``'ls'``, ``'ls_wunit_k1'``; see
+        :mod:`torchref.refinement.targets.xray._specs`.
 
     Other parameters
     ----------------

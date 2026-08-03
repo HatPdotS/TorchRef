@@ -27,7 +27,7 @@ from torchref.config import dtypes, get_complex_dtype, get_default_device
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMovementMixin
-from torchref.utils.device_resolution import resolve_device
+from torchref.utils.device_resolution import require_cell_dtype, resolve_device
 
 
 class SfDS(DeviceMovementMixin, nn.Module):
@@ -237,6 +237,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         """
         if self._cell is None:
             raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
+        require_cell_dtype(self._cell, self.dtype_float, type(self).__name__)
 
         if self._recB is None:
             self._recB = reciprocal_basis_matrix(self._cell.data)
@@ -344,6 +345,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         """
         if self._cell is None:
             raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
+        require_cell_dtype(self._cell, self.dtype_float, type(self).__name__)
 
         # Use Cell's to_fractional method via inv_fractional_matrix
         # fractional = cartesian @ inv_frac_matrix.T
@@ -413,6 +415,9 @@ class SfDS(DeviceMovementMixin, nn.Module):
         """
         if self._cell is None:
             raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
+        # Refused, not reconciled: unlike the device normalization just below, a dtype cast
+        # is lossy, so the cell is the caller's to fix. See ``require_cell_dtype``.
+        require_cell_dtype(self._cell, self.dtype_float, type(self).__name__)
 
         # Normalize the input hkl onto this module's device. The symmetry
         # helpers derive equiv_hkls/phases from hkl.device while sf_total is

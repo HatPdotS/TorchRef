@@ -187,6 +187,14 @@ class Backend:
         production dtype and disable the kernel it was meant to protect. What the rule
         catches is a *float* in the wrong precision -- a float64 ``hkl`` whose silent
         downcast would truncate the phase.
+
+        **Complex tensors are refused, not exempt**, and the distinction matters because
+        the exemption above is implemented with ``is_floating_point()``, which is ``False``
+        for complex as well as for integers. Read literally that admitted a complex64
+        ``F_calc`` through a ``dtypes=(float32,)`` gate -- and every kernel behind these
+        tables reads one real scalar per element, so it would have been reinterpreted as
+        interleaved re/im pairs. Mapping complex to its component dtype would be the wrong
+        repair: matching precision does not make the memory layout compatible.
     require_uniform_dtype : bool
         Whether every probed floating-point tensor must share **one** dtype, as opposed to
         each independently being in ``dtypes``.
@@ -288,6 +296,19 @@ class Backend:
         ):
             return self.requirement()
         if self.dtypes is not None:
+            # Complex is refused outright, never mapped to its component dtype. Every
+            # kernel behind these tables reads a real scalar per element, so a complex64
+            # buffer at a float32 gate would be reinterpreted as interleaved re/im pairs --
+            # admitting it on the grounds that its components are float32 would be wrong,
+            # not lenient. This is checked separately because ``is_floating_point()`` is
+            # False for complex, so the membership test below cannot see these at all.
+            complexes = [t for t in probed if t.is_complex()]
+            if complexes:
+                got = sorted({str(t.dtype).replace("torch.", "") for t in complexes})
+                return (
+                    f"{self.requirement()}, and a complex tensor ({', '.join(got)}) does "
+                    "not satisfy a real-dtype contract"
+                )
             floats = [t for t in probed if t.is_floating_point()]
             if any(t.dtype not in self.dtypes for t in floats):
                 return self.requirement()

@@ -156,10 +156,12 @@ def test_rice_matches_ml_target_at_zero_centroid(setup_target):
     The defining identity: the rice-mode Wilson prior is the ML X-ray Rice
     likelihood evaluated with the calc/centroid amplitude pinned to zero and
     the width pinned to sqrt(Sigma(s_h)). Feed the model amplitude through the
-    eager ML math's F_obs slot with F_calc=0 and sigma=sqrt(Sigma); since both
+    closed-form MLF oracle's F_obs slot with F_calc=0 and sigma=sqrt(Sigma); since both
     reduce by summing over the (work) reflections, the sums must be equal.
     """
-    from torchref.base.targets.xray_ml import _ml_xray_loss_math_eager
+    from tests.unit.refinement.test_ml_sigmaa import (
+        _unit_variance_mlf_closed_form,
+    )
 
     _t, ens, data, scaler = setup_target
     target = _build(data, ens, scaler, "rice")
@@ -178,7 +180,7 @@ def test_rice_matches_ml_target_at_zero_centroid(setup_target):
         )
         sigma = Sigma.sqrt()
         mask = torch.ones_like(F_model, dtype=torch.bool)
-        ref_sum = _ml_xray_loss_math_eager(
+        ref_sum = _unit_variance_mlf_closed_form(
             F_model, torch.zeros_like(F_model), sigma, centric, mask
         )
 

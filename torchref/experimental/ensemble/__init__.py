@@ -23,8 +23,6 @@ EnsembleModel
 LowRankXYZ, PCAEnsembleParam
     Reduced-dimensionality parameterisations of the ensemble displacement
     field (frozen mean + low-rank basis).
-EnsembleBhattacharyyaTarget
-    Ensemble X-ray likelihood (Bhattacharyya overlap of model/observed
     intensity distributions).
 RankPenaltyTarget
     Soft de-overfitting penalty on the rank/magnitude of the ensemble
@@ -48,9 +46,6 @@ from torchref.experimental.ensemble.ensemble_model import EnsembleModel
 from torchref.experimental.ensemble.low_rank_ensemble import LowRankXYZ
 from torchref.experimental.ensemble.pca_model import PCAEnsembleParam
 from torchref.experimental.ensemble.ensemble_refinement import EnsembleRefinement
-from torchref.experimental.ensemble.ensemble_bhattacharyya import (
-    EnsembleBhattacharyyaTarget,
-)
 from torchref.experimental.ensemble.quasi_crystal_amber import QuasiCrystalAmberTarget
 from torchref.experimental.ensemble.rank_penalty import RankPenaltyTarget
 from torchref.experimental.ensemble.wilson_prior import WilsonPriorTarget
@@ -70,7 +65,6 @@ __all__ = [
     "LowRankXYZ",
     "PCAEnsembleParam",
     "EnsembleRefinement",
-    "EnsembleBhattacharyyaTarget",
     "QuasiCrystalAmberTarget",
     "RankPenaltyTarget",
     "WilsonPriorTarget",

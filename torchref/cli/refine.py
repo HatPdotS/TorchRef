@@ -3,9 +3,9 @@
 """
 Command-line script for LBFGS crystallographic refinement using torchref.
 
-Uses the maximum-likelihood σ_A (Read MLF) target by default; Bhattacharyya /
-Gaussian / least-squares / plain maximum-likelihood targets remain available
-via ``--xray-mode``.
+Uses the maximum-likelihood σ_A (Read MLF) target by default. Four other x-ray
+targets are selectable via ``--xray-mode``; see
+:mod:`torchref.refinement.targets.xray._specs` for the taxonomy.
 
 
 """
@@ -13,6 +13,7 @@ via ``--xray-mode``.
 import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import torch
@@ -36,12 +37,45 @@ from torchref.cli._common import (
     validate_files,
     write_refinement_outputs,
 )
+from torchref.refinement.targets.xray._specs import XRAY_TARGETS
+from torchref.scaling.scaler_base import DEFAULT_SCALE_TARGET, SCALE_TARGETS
 from torchref.utils.serialization import convert_to_serializable
 
 configure_unbuffered_output()
 
 # Import stats module early to patch json with StatEntry encoder
 import torchref.utils.stats  # noqa: F401,E402
+
+
+def _sigma_a_kwargs(args) -> dict:
+    """Only the σ_A estimator knobs the user actually set.
+
+    Passing ``None`` through would override the library default with ``None``; omitting
+    unset flags keeps :mod:`torchref.refinement.model_error_estimation.sigma_a` the single source of
+    truth for the defaults, so the CLI help and the code cannot drift apart.
+    """
+    out = {}
+    if getattr(args, "sigma_a_max", None) is not None:
+        out["sigma_a_max"] = float(args.sigma_a_max)
+    if getattr(args, "no_shrink", False):
+        out["shrink"] = False
+    # `--shrink-passes` is retired: the shrinkage target is now a fitted curve rather
+    # than the neighbouring shells, so it is one-shot and a pass count would be a flag
+    # whose value changes nothing. Accepted as an on/off alias so existing scripts and
+    # benchmark arms keep running, with a warning naming the replacement.
+    passes = getattr(args, "shrink_passes", None)
+    if passes is not None:
+        warnings.warn(
+            "--shrink-passes is deprecated: the stability shrinkage is one-shot now "
+            "(it shrinks toward a fitted sigma_A(d*^2) curve, not toward neighbouring "
+            f"shells, so passes no longer apply). Treating {passes} as "
+            f"{'--no-shrink' if int(passes) <= 0 else 'shrinkage enabled'}; use "
+            "--no-shrink instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        out["shrink"] = int(passes) > 0
+    return out
 
 
 def main():
@@ -59,8 +93,8 @@ Examples:
   # Joined XYZ then ADP cycles
   torchref.refine -m model.pdb -sf reflections.mtz -o output/ --mode everything
 
-  # Pure gaussian xray target 
-  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode gaussian
+  # Plain sigma-weighted Gaussian NLL (no model-error term)
+  torchref.refine -m model.pdb -sf reflections.mtz -o output/ --xray-mode nll
 
 Loss weights:
   Default group weights are xray=1 / geometry=0.2 / adp=0.02, with
@@ -93,19 +127,52 @@ Loss weights:
         "--xray-mode",
         type=str,
         default="ml",
-        choices=["gaussian", "ls", "ls_wunit_k1", "rice", "ml", "bhattacharyya"],
-        help="X-ray target function. 'ml' (default) is the "
-        "maximum-likelihood Read MLF target with a cross-validated Luzzati "
-        "sigma_A term (Phenix-style alpha/beta). 'bhattacharyya' uses the "
-        "Bhattacharyya overlap loss with first-principles model error "
-        "estimation; 'ls'/'gaussian' are simpler alternatives.",
+        choices=list(XRAY_TARGETS.names),
+        # Generated from the table, not hand-written. The hand-written version drifted
+        # badly: it advertised 'bhattacharyya' (not in `choices`, so argparse rejected it)
+        # and 'gaussian' (an alias), while never mentioning ml_noalpha, nll_beta or nll --
+        # three of the modes it actually accepted. `spec.doc` promised it was "surfaced in
+        # --help" and had no reader at all.
+        help="X-ray target function. " + "  ".join(
+            f"'{spec.name}': {spec.doc}" for spec in XRAY_TARGETS.specs
+        ),
     )
     refine_group.add_argument(
-        "--sigma-m-scale",
+        "--scale-target",
+        type=str,
+        default=DEFAULT_SCALE_TARGET,
+        choices=list(SCALE_TARGETS),
+        help="Objective for the scaler's own L-BFGS scale fit (NOT the body "
+        "target). 'nll' (default) uses the sigma_obs-weighted Gaussian: the natural "
+        "objective for a nuisance-magnitude fit, it avoids coupling the nuisance "
+        "layer to the model-error estimate, and it treats the body targets "
+        "even-handedly -- 'sigmaa' IS ml's own likelihood, so under it ml gets a "
+        "scaler fitted with the objective it is judged by while ml_full does not. "
+        "'sigmaa' uses the Read-MLF sigma_A likelihood with a detached free-set "
+        "beta; prefer it if the per-bin log_scale collapses in weak shells.",
+    )
+    refine_group.add_argument(
+        "--sigma-a-max",
         type=float,
-        default=1.0,
-        help="Global multiplier applied to σ_m for the Bhattacharyya target. "
-        "Ignored for other targets. Default 1.0.",
+        default=None,
+        help="Upper bound on the per-shell Luzzati σ_A, i.e. the floor on the "
+        "model-error variance at (1 - σ_A_max²)·Σ_N. Raising it lets very "
+        "well-fitting shells reach a smaller variance. Default 0.99. Applies to the "
+        "σ_A-family targets (ml, ml_full, nll_beta) only.",
+    )
+    refine_group.add_argument(
+        "--no-shrink",
+        action="store_true",
+        help="Disable the per-shell stability shrinkage, which moves each shell's σ_A "
+        "toward a fitted σ_A(d*²) curve in proportion to that shell's own sampling "
+        "variance (a shell measured precisely is left alone). On by default.",
+    )
+    refine_group.add_argument(
+        "--shrink-passes",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,  # deprecated on/off alias for --no-shrink; see
+        # _sigma_a_kwargs. The shrinkage is one-shot now, so a pass count is meaningless.
     )
     # Defaults are documented in the epilog above; we avoid importing
     # DEFAULT_GROUP_WEIGHTS here so --help stays fast (it would pull in torch).
@@ -181,8 +248,6 @@ Loss weights:
         print(f"Output directory:  {outdir}")
         print(f"Refinement mode:   {args.mode}")
         print(f"X-ray target:      {args.xray_mode}")
-        if args.xray_mode == "bhattacharyya":
-            print(f"sigma_m scale:     {args.sigma_m_scale}")
         print(f"Refinement cycles: {args.n_cycles}")
         if args.with_rigid_body:
             print(f"Rigid-body step:   on (iterations/cutoff = {args.rigid_body_iter})")
@@ -223,7 +288,8 @@ Loss weights:
         device=device,
         column_names=column_names,
         target_mode=args.xray_mode,
-        sigma_m_scale=args.sigma_m_scale,
+        scale_target=args.scale_target,
+        **_sigma_a_kwargs(args),
         adp_mode=args.adp_mode,
         aniso_selection=args.anisotropic_selection,
         wavelength=args.wavelength,
@@ -323,7 +389,7 @@ Loss weights:
             ),
             "wavelength": args.wavelength,
             "xray_mode": args.xray_mode,
-            "sigma_m_scale": args.sigma_m_scale,
+            **_sigma_a_kwargs(args),
             "weights": manual_weights if manual_weights else None,
             "dmin": args.dmin,
             "device": str(device),

@@ -150,6 +150,14 @@ class Scene:
         oracle describe the same physical structure.
 
         ``hkl_list`` is untouched -- it is Python ints for gemmi, not a tensor.
+
+        ``cell`` is moved too, and **must be cloned first**. Unlike a tensor,
+        :class:`~torchref.symmetry.cell.Cell` inherits ``to()`` from ``DeviceMixin``, which
+        moves in place and returns ``self`` -- so casting it directly would mutate the
+        shared CPU/float64 scene this was called on, and every later comparison against
+        that oracle would silently be against a downcast cell. Leaving it behind is not an
+        option either: ``SfDS`` takes all its cell-derived quantities from the ``Cell``, and
+        now refuses a cell whose dtype disagrees with its ``dtype_float``.
         """
         if device is None and dtype is None:
             return self
@@ -158,9 +166,16 @@ class Scene:
         moved = {}
         for f in fields(self):
             v = getattr(self, f.name)
-            moved[f.name] = (
-                v.to(device=device, dtype=dtype) if f.name in real else v
-            )
+            if f.name == "cell":
+                # Cast before moving, never in one call: scenes are built float64 and the
+                # MPS leg of this matrix has no float64, so a combined ``.to()`` can put a
+                # transient float64 view on a device that rejects it. ``SfFFT`` splits the
+                # same call for the same reason (``sf_fft.py``, ``fractional_matrix``).
+                moved[f.name] = v.clone().to(dtype=dtype).to(device=device)
+            else:
+                moved[f.name] = (
+                    v.to(device=device, dtype=dtype) if f.name in real else v
+                )
         return Scene(**moved)
 
 
@@ -613,8 +628,13 @@ def ds_direct(scene: Scene, name: str, xyz_frac=None, occ=None, third=None, *, a
     Coordinates are **fractional** here -- unlike the splat kernels, which take Cartesian.
     Carrying both on :class:`Scene` is what keeps that from being a silent error.
 
-    ``ds_iso_triton`` takes no ``max_memory_gb``; the eager and checkpointed paths do. That
-    is the only signature difference, and it is absorbed here rather than at call sites.
+    Every kernel reachable from here takes the same trailing ``max_memory_gb``, so there is
+    no signature difference left to absorb. The eager and checkpointed paths use the budget
+    to bound their reflection chunks; the Triton row resolves to
+    ``_backends._ds_iso_triton``, an adapter that accepts it and drops it, because the kernel
+    forms only a ``(BLOCK_H, N)`` tile in registers and has nothing to bound. Passing it
+    uniformly is what keeps this helper free of per-row knowledge -- a special case here
+    silently rotted when the adapters landed and the table's signature became uniform.
     """
     xyz_frac = scene.xyz_frac if xyz_frac is None else xyz_frac
     occ = scene.occ if occ is None else occ
@@ -623,8 +643,6 @@ def ds_direct(scene: Scene, name: str, xyz_frac=None, occ=None, third=None, *, a
     geom = scene.s_vec if aniso else scene.s
     fn = ds_kernel(name, aniso)
     args = (scene.hkl, geom, xyz_frac, occ, third, scene.A, scene.B)
-    if name == "ds_triton":
-        return fn(*args)
     return fn(*args, None)
 
 

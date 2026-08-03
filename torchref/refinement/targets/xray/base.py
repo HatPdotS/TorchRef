@@ -68,6 +68,7 @@ class XrayTarget(DataTarget):
         verbose: int = 0,
         use_set: str = None,
         device=None,
+        sigma_a=None,
     ):
         """
         Initialize X-ray target.
@@ -100,6 +101,16 @@ class XrayTarget(DataTarget):
         # attributes are kept consistent so ``get_data`` (reads ``use_set``) and
         # the subclass ``forward`` paths (historically read ``use_work_set``)
         # never disagree about which subset they operate on.
+        #: Model-error estimator configuration
+        #: (:class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAConfig`).
+        #: Carried by EVERY x-ray target so the factory has one construction call for all
+        #: seven taxonomy rows; read only by the ``sigma_A``-family subclasses. ``nll``,
+        #: ``ls`` and ``ls_wunit_k1`` store it and ignore it.
+        if sigma_a is None:
+            from torchref.refinement.model_error_estimation.sigma_a import SigmaAConfig
+
+            sigma_a = SigmaAConfig()
+        self.sigma_a_config = sigma_a
         if use_set is None:
             use_set = "work" if use_work_set else "free"
         self.use_set = use_set

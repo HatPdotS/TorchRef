@@ -1,4 +1,9 @@
-"""Triton kernels for the Gaussian X-ray target."""
+"""Triton kernels for the ``nll`` X-ray target (Gaussian at sigma_obs**2).
+
+Fused: the ``median(sigma)*1e-1`` clamp is computed inside the kernel. The eager
+counterpart is :func:`torchref.base.targets.xray_likelihoods.nll_math` composed with
+``amplitude_var_from_sigma_obs``; ``xray_nll.nll_sigma_obs_math`` chooses between them.
+"""
 
 from __future__ import annotations
 
@@ -111,6 +116,6 @@ class _GaussXrayMathTriton(torch.autograd.Function):
         return None, dF_calc, None, None
 
 
-def gaussian_xray_loss_math_triton(F_obs, F_calc, sigma, mask):
-    """Triton-backed Gaussian NLL X-ray loss."""
+def nll_sigma_obs_math_triton(F_obs, F_calc, sigma, mask):
+    """Triton-backed Gaussian amplitude NLL at ``var = clamp(sigma)**2``."""
     return _GaussXrayMathTriton.apply(F_obs, F_calc, sigma, mask)

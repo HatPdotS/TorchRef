@@ -134,3 +134,51 @@ def resolve_device(
         for m in inconsistent:
             m.to(target)
     return target
+
+
+def require_cell_dtype(cell: Any, dtype: torch.dtype, owner: str) -> None:
+    """Refuse a cell whose dtype disagrees with its owner's declared float dtype.
+
+    The counterpart to :func:`resolve_device` for the *dtype* axis -- and deliberately not
+    the same policy. ``resolve_device`` reconciles by moving its inputs, which is right
+    because relocating a tensor is lossless. Casting is not: silently pulling a float64 cell
+    down to float32 would discard precision the caller chose explicitly, and pushing a
+    float32 cell up to float64 would manufacture digits that were never measured. So this
+    refuses instead of repairing, and leaves the choice with the caller.
+
+    Called at the point of *use* rather than in a constructor, which is what makes it
+    load-bearing: :class:`~torchref.symmetry.cell.Cell` is mutable and its ``to()`` operates
+    in place, so a cell can be recast or replaced long after the owning module was built. A
+    constructor check cannot see that; this can.
+
+    What it buys is a diagnosis instead of a symptom. Every cell-derived quantity -- the
+    fractional matrices, the reciprocal basis -- inherits the *cell's* dtype, so a
+    disagreement surfaces as a bare ``RuntimeError: expected mat1 and mat2 to have the same
+    dtype`` from whichever ``matmul`` happens to run first, with nothing naming the cell.
+
+    Parameters
+    ----------
+    cell : Cell or None
+        The cell to check. ``None`` is accepted and ignored, so callers may run this
+        beside their own "is the cell set at all" precondition without ordering the two.
+    dtype : torch.dtype
+        The owner's declared float dtype (``self.dtype_float``).
+    owner : str
+        Class name of the owner, for the error message.
+
+    Raises
+    ------
+    RuntimeError
+        If ``cell.dtype`` is not ``dtype``.
+    """
+    if cell is None or cell.dtype == dtype:
+        return
+    raise RuntimeError(
+        f"{owner} was built for {dtype} but its cell holds {cell.dtype}. Every "
+        "cell-derived quantity (the fractional matrices, the reciprocal basis) is taken "
+        f"from the cell, so the calculation would run at {cell.dtype} regardless of the "
+        f"requested {dtype} and fail on the first mixed-dtype operation. This normally "
+        "means the cell was recast or replaced after the module was constructed -- "
+        f"``Cell.to()`` mutates in place. Rebuild the cell at {dtype}, or construct a new "
+        f"{owner} for the dtype you want."
+    )

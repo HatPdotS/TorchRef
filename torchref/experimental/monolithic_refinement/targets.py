@@ -1,10 +1,10 @@
 """Rice X-ray target driven by a differentiable, co-refined model-error variance.
 
-EXPERIMENTAL. This is the :class:`MaximumLikelihoodXrayTarget` Read-MLF Rice
+EXPERIMENTAL. This is the :class:`MLNoAlphaXrayTarget` Read-MLF Rice
 likelihood, but the per-reflection conditional variance ``Sigma = epsilon * beta``
 is built from the *differentiable* Fisher model-error variance ``sigma_m**2``
 (estimated from the atomic B-factor distribution, reused from
-:class:`~torchref.refinement.targets.xray.bhattacharyya.BhattacharyyaXrayTarget`)
+the retired ``BhattacharyyaXrayTarget``)
 instead of the free-set root-find ``beta``. Concretely ``beta := c * sigma_m**2``
 with ``c`` a small, bounded, **co-refined** calibration *owned by this target*
 (``log_sigma_m_scale``).
@@ -25,12 +25,11 @@ from typing import TYPE_CHECKING, Dict, Optional
 import torch
 import torch.nn as nn
 
-from torchref.base.targets.xray_ml_sigmaa import (
-    epsilon_from_hkl,
-    ml_xray_loss_beta_math,
-)
+from torchref.base.targets.xray_likelihoods import complex_var_from_beta, rice_math
+from torchref.refinement.model_error_estimation.sigma_a import epsilon_from_hkl
 from torchref.config import get_float_dtype
-from torchref.refinement.targets.xray.bhattacharyya import BhattacharyyaXrayTarget
+from torchref.refinement.model_error_estimation.sigma_m import SigmaMEstimator
+from torchref.refinement.targets.xray.base import XrayTarget
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
 if TYPE_CHECKING:
@@ -39,14 +38,15 @@ if TYPE_CHECKING:
     from torchref.scaling.scaler_base import Scaler
 
 
-class RiceSigmaMXrayTarget(BhattacharyyaXrayTarget):
+class RiceSigmaMXrayTarget(XrayTarget):
     """Read-MLF Rice target with ``beta = c * sigma_m**2`` (differentiable, co-refined).
 
-    Reuses the entire Fisher ``sigma_m`` machinery of
-    :class:`BhattacharyyaXrayTarget` (cache, soft B-histogram, ``_sigma_m_sq_per_refl``)
-    but, unlike that target, keeps ``sigma_m`` **in the autograd graph** and feeds
+    Owns a :class:`~torchref.refinement.model_error_estimation.sigma_m.SigmaMEstimator` (the Fisher
+    machinery extracted from the retired Bhattacharyya target: cache, soft B-histogram,
+    per-reflection variance) and keeps ``sigma_m`` **in the autograd graph**, feeding
     ``c * sigma_m**2`` into the validated Read-MLF Rice likelihood
-    (:func:`ml_xray_loss_beta_math`) in the slot the free-set ``beta`` normally
+    (:func:`~torchref.base.targets.xray_likelihoods.rice_math`) in the slot the
+    free-set ``beta`` normally
     occupies.
 
     Parameters
@@ -61,7 +61,6 @@ class RiceSigmaMXrayTarget(BhattacharyyaXrayTarget):
         Used to share one ``c`` between the work and test targets so the R-free
         statistics see the same calibration the work loss refines.
 
-    See :class:`BhattacharyyaXrayTarget` for ``sigma_m_scale`` and ``b_grid_*``.
     """
 
     def __init__(
@@ -70,7 +69,6 @@ class RiceSigmaMXrayTarget(BhattacharyyaXrayTarget):
         model: "Model" = None,
         scaler: "Scaler" = None,
         use_work_set: bool = True,
-        sigma_m_scale: float = 1.0,
         sigma_m_calib_bins: int = 1,
         shared_log_sigma_m_scale: Optional[nn.Parameter] = None,
         verbose: int = 0,
@@ -81,10 +79,20 @@ class RiceSigmaMXrayTarget(BhattacharyyaXrayTarget):
             model=model,
             scaler=scaler,
             use_work_set=use_work_set,
-            sigma_m_scale=sigma_m_scale,
             verbose=verbose,
             **kwargs,
         )
+        # The structure-driven model-error estimator, extracted from the retired
+        # Bhattacharyya target. It returns an UNSCALED variance: this target refines its
+        # own calibration (`log_sigma_m_scale`), so a second scale applied underneath
+        # would be degenerate with it.
+        #
+        # A `sigma_m_scale` constructor argument used to sit here, documented as "the
+        # initial value of that calibration". It was never used: the calibration is
+        # initialised to `zeros` below regardless, so the comment was false and the whole
+        # thread from `--sigma-m-scale` down was dead end to end -- the factory swallowed it
+        # too. Removed 2026-08 along with the CLI flag.
+        self._sigma_m = SigmaMEstimator()
         self.sigma_m_calib_bins = int(sigma_m_calib_bins)
         if shared_log_sigma_m_scale is not None:
             # Share the work target's calibration (test target reads it).
@@ -127,18 +135,24 @@ class RiceSigmaMXrayTarget(BhattacharyyaXrayTarget):
     # ------------------------------------------------------------------
 
     def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
-        if not self._initialized:
-            self._initialize_cache()
-
         F_obs, F_calc, _sigma_d, centric, sub = self.get_data(fcalc=fcalc)
 
-        # Differentiable model-error variance (NO no_grad): gradients flow to B.
-        sigma_m_sq = sub.select(self._sigma_m_sq_per_refl())
+        # Differentiable model-error variance (NO no_grad): gradients flow to B. The
+        # estimator deliberately does not wrap this itself -- that choice is the
+        # caller's, and this caller needs the gradient.
+        self._sigma_m.prepare(
+            self._scaler._s_half_sq,
+            self._data.get_corrected_data()[1],
+            self._data.masks(),
+            *self._model.get_scattering_params_iso(),
+        )
+        b_iso = self._model.adp()[self._model._iso_indices]
+        sigma_m_sq = sub.select(self._sigma_m.sigma_m_sq(b_iso))
         calib = sub.select(self._calibration_per_refl()).to(F_obs.dtype)
         eps = sub.select(self._epsilon_per_refl()).to(F_obs.dtype)
 
         beta = (calib * sigma_m_sq).clamp(min=1e-10)
-        return ml_xray_loss_beta_math(F_obs, F_calc, beta, centric, epsilon=eps)
+        return rice_math(F_obs, F_calc, complex_var_from_beta(beta, eps), centric)
 
     def maintenance(self) -> None:
         """No-op: nothing to refresh between optimizer blocks.

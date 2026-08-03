@@ -17,6 +17,7 @@ from .rfactor import (
 from .loss import (
     nll_xray,
     nll_xray_sum,
+    nll_xray_mean,
     nll_xray_lognormal,
     log_loss,
     estimate_sigma_I,
@@ -37,6 +38,7 @@ __all__ = [
     # Loss functions
     "nll_xray",
     "nll_xray_sum",
+    "nll_xray_mean",
     "nll_xray_lognormal",
     "log_loss",
     "estimate_sigma_I",

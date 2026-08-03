@@ -12,7 +12,7 @@ import torch
 
 from torchref.config import get_default_device
 from torchref.symmetry import Cell, SpaceGroup
-from torchref.utils import resolve_device
+from torchref.utils import require_cell_dtype, resolve_device
 
 
 # ---------------------------------------------------------------------------
@@ -140,3 +140,65 @@ class TestMixedDevices:
         assert result.type == "cpu"  # cell_cpu wins
         assert sg_cuda.matrices.device.type == "cpu"
         assert cell2_cpu.device.type == "cpu"  # already cpu, unaffected
+
+
+# ---------------------------------------------------------------------------
+# The dtype axis: refused, not reconciled
+# ---------------------------------------------------------------------------
+class TestRequireCellDtype:
+    """``require_cell_dtype`` is the dtype counterpart to ``resolve_device`` -- and the
+    opposite policy, deliberately. Moving a tensor between devices is lossless, so
+    reconciling is right there; casting is not, so this refuses and leaves the choice with
+    the caller.
+    """
+
+    def test_agreement_is_silent(self, recwarn):
+        cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float32)
+        require_cell_dtype(cell, torch.float32, "SfDS")
+        assert len(recwarn) == 0
+
+    def test_none_cell_is_ignored(self):
+        """So a caller can run this beside its own "is the cell set" check, in either order."""
+        require_cell_dtype(None, torch.float32, "SfDS")
+
+    def test_disagreement_raises_naming_both_dtypes(self):
+        cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float64)
+        with pytest.raises(RuntimeError) as exc:
+            require_cell_dtype(cell, torch.float32, "SfDS")
+        message = str(exc.value)
+        assert "float64" in message and "float32" in message
+        assert "SfDS" in message
+
+    def test_the_cell_is_not_repaired(self):
+        """The refusal must not quietly cast on the way out.
+
+        A helper that raised *and* mutated would be the worst of both designs: the caller
+        sees an error, retries, and silently gets the precision it was warned about.
+        """
+        cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float64)
+        with pytest.raises(RuntimeError):
+            require_cell_dtype(cell, torch.float32, "SfDS")
+        assert cell.dtype == torch.float64
+
+
+def test_sfds_refuses_a_cell_recast_after_construction():
+    """The reason this is checked at point of use rather than in ``__init__``.
+
+    ``Cell.to()`` mutates in place, so a cell can be recast long after the module that owns
+    it was built -- and every cell-derived quantity (the fractional matrices, the reciprocal
+    basis) is read straight off the cell. A constructor check cannot see this at all.
+
+    Without the guard the symptom is a bare ``RuntimeError: expected mat1 and mat2 to have
+    the same dtype`` from whichever matmul runs first, with nothing pointing at the cell.
+    """
+    from torchref.model.sf_ds import SfDS
+
+    cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float32, device="cpu")
+    sf = SfDS(cell=cell, spacegroup="P 1", dtype_float=torch.float32,
+              device=torch.device("cpu"))
+    xyz = torch.zeros(3, 3, dtype=torch.float32)
+    sf._cartesian_to_fractional(xyz)  # consistent: fine
+
+    cell.to(dtype=torch.float64)  # in place, behind the module's back
+    with pytest.raises(RuntimeError, match="float64"):
+        sf._cartesian_to_fractional(xyz)

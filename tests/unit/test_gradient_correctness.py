@@ -10,7 +10,8 @@ back that claim from two angles:
 
    * the structure-factor calculation w.r.t. ``xyz``, ``occ`` and the ADPs
      (isotropic ``adp`` and anisotropic ``U``),
-   * the Gaussian X-ray likelihood (the body of ``GaussianXrayTarget.forward``),
+   * the Gaussian X-ray likelihood (``nll_sigma_obs_math``, the body of
+     ``NLLXrayTarget.forward``),
    * the bond-length restraint (the body of ``BondTarget.forward``).
 
 2. **Optimized paths vs. the eager reference** — some production paths replace
@@ -37,11 +38,13 @@ auto-skipped unless the host actually has a CUDA device.
 import pytest
 import torch
 
+from torchref.base.targets._dispatch import use_triton
 from torchref.base.targets.bond import _bond_math_eager, bond_math
-from torchref.base.targets.xray_gaussian import (
-    _gaussian_xray_loss_math_eager,
-    gaussian_xray_loss_math,
+from torchref.base.targets.xray_likelihoods import (
+    amplitude_var_from_sigma_obs,
+    nll_math,
 )
+from torchref.base.targets.xray_nll import nll_sigma_obs_math
 from torchref.config import device, dtypes
 
 pytestmark = pytest.mark.unit
@@ -63,10 +66,10 @@ from tests.helpers.grad_asserts import assert_grads_agree  # noqa: E402
 
 # --- synthetic structure-factor inputs (P1, ~10-15 atoms) ------------------
 def test_gaussian_xray_gradcheck(double_cpu):
-    """Gaussian X-ray NLL (GaussianXrayTarget.forward body): d/d(F_obs, F_calc).
+    """Gaussian X-ray NLL (NLLXrayTarget.forward body): d/d(F_obs, F_calc).
 
     ``F_calc`` is complex; gradcheck differentiates the real and imaginary
-    parts. ``gaussian_xray_loss_math`` is the public dispatcher and routes to
+    parts. ``nll_sigma_obs_math`` is the public dispatcher and routes to
     the eager implementation for CPU/float64 inputs.
     """
     g = torch.Generator().manual_seed(2)
@@ -84,7 +87,7 @@ def test_gaussian_xray_gradcheck(double_cpu):
     sigma = torch.rand(R, generator=g, dtype=torch.float64) * 5 + 1
 
     def f(fo, fc):
-        return gaussian_xray_loss_math(fo, fc, sigma)
+        return nll_sigma_obs_math(fo, fc, sigma)
 
     assert torch.autograd.gradcheck(f, (F_obs, F_calc), eps=1e-6, atol=1e-5)
 
@@ -118,17 +121,40 @@ def test_bond_gradcheck(double_cpu):
 # =============================================================================
 @pytest.mark.cuda
 def test_triton_gaussian_xray_matches_eager_cosine():
-    """Gaussian X-ray Triton kernel gradient == eager autograd (CUDA float32)."""
+    """Gaussian X-ray Triton kernel gradient == eager autograd (CUDA float32).
+
+    ``F_calc`` is a **real, non-negative amplitude**, which is the production contract:
+    ``XrayTarget.get_data`` returns ``get_F_calc_scaled``, and that is
+    ``torch.abs(get_fcalc_scaled(...))``. Both properties are load-bearing.
+
+    *Real*, because the two implementations disagree on a complex input -- the eager path
+    takes ``torch.abs(F_calc)`` while the Triton kernel loads one real scalar per element
+    (``diff = F_obs - F_calc``). This test used to pass complex64, which the dtype gate let
+    through only because ``is_floating_point()`` is ``False`` for complex; the kernel's own
+    assert was the sole thing that caught it. The gate now refuses complex, so a complex
+    input here would silently route to eager and compare eager against itself.
+
+    *Non-negative*, because ``abs()`` is the identity only on non-negative input. A negative
+    ``F_calc`` would flip the gradient sign in the eager path and not in Triton, and the
+    disagreement would be a property of the fixture rather than of either kernel.
+    """
     dev = "cuda"
     g = torch.Generator().manual_seed(2)
     R = 64
     F_obs = (torch.rand(R, generator=g) * 100 + 10).to(dev)
     sigma = (torch.rand(R, generator=g) * 5 + 1).to(dev)
-    fc_vals = (torch.randn(R, generator=g) + 1j * torch.randn(R, generator=g)) * 10
+    fc_vals = torch.rand(R, generator=g) * 100 + 10
     fc_triton = fc_vals.clone().to(dev).requires_grad_()
     fc_eager = fc_vals.clone().to(dev).requires_grad_()
 
-    L_t = gaussian_xray_loss_math(F_obs, fc_triton, sigma)  # CUDA fp32 -> Triton
+    # Non-vacuity: without this the test still passes if the gate starts refusing these
+    # inputs, by comparing the eager implementation against itself.
+    assert use_triton(fc_triton, F_obs, sigma), (
+        "the Triton arm of this test is not reaching Triton, so it compares eager against "
+        "eager -- the gate in TARGET_BACKENDS has started refusing CUDA float32 amplitudes"
+    )
+
+    L_t = nll_sigma_obs_math(F_obs, fc_triton, sigma)  # CUDA fp32 -> Triton
     (g_t,) = torch.autograd.grad(L_t, fc_triton)
     L_e = _gaussian_xray_loss_math_eager(
         F_obs, fc_eager, sigma, torch.ones(R, dtype=torch.bool, device=dev)

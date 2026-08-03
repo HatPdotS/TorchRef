@@ -106,7 +106,7 @@ def test_epsilon_from_hkl_matches_gemmi(sg_name):
     """Friedel-aware epsilon must match gemmi's epsilon (doubled for centrics)."""
     import gemmi
 
-    from torchref.base.targets.xray_ml_sigmaa import epsilon_from_hkl
+    from torchref.refinement.model_error_estimation.sigma_a import epsilon_from_hkl
     from torchref.symmetry import SpaceGroup
 
     ops = gemmi.SpaceGroup(sg_name).operations()

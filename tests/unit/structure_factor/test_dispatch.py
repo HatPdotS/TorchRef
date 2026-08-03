@@ -259,7 +259,7 @@ def test_radius_policy_is_the_same_on_every_device(scene_small):
 
 
 @pytest.mark.cuda
-def test_triton_density_gate_probes_every_tensor(scene_small):
+def test_triton_density_gate_probes_every_tensor(scene_small, monkeypatch):
     """A float64 ``density_map`` must not reach the float32 Triton kernel.
 
     Written when the density Triton branch gated on ``should_use_triton(xyz)`` -- **only
@@ -268,36 +268,68 @@ def test_triton_density_gate_probes_every_tensor(scene_small):
     float64 buffer to a kernel doing float32 ``tl.atomic_add``.
 
     The ``cuda_triton`` row now declares ``probes`` covering all six, so the mixed set
-    resolves to ``portable`` instead and this should never reach the Triton kernel at all.
-    Kept as an end-to-end guard rather than deleted: the fix is a table entry, and a table
-    entry can be edited. It has still never executed -- there is no CUDA host here -- so
-    treat a failure as information, not as a broken test.
+    resolves to ``portable`` instead. That is asserted at **two** layers, because they can
+    fail independently: the table can name the right probes while the dispatch site forgets
+    to consult it, and the site can consult a table whose probes are wrong.
 
-    The contract asserted is that such a call fails loudly. Either outcome is acceptable --
-    a refusal at selection, or a raise from the kernel -- but silently returning a number is
-    not.
+    This originally wrapped a direct ``add_isotropic_cuda_var`` call in
+    ``pytest.raises(Exception)``, which was the wrong question in two ways. That wrapper is
+    documented not to re-gate ("CUDA float32 only -- the gate is ``should_use_triton``; this
+    wrapper does not re-check"), so *not* raising is its correct behaviour -- and the
+    ``pytest.raises`` block made its own follow-up assertion unreachable. The guard the test
+    was written for lives at selection, so that is where it is asked.
+
+    What is *not* asserted is that some kernel then serves the mixed set. None does, and none
+    should: a float64 map beside float32 atoms is a caller error, and ``portable`` -- which
+    takes its working dtype from the map -- raises on the float32 cell matrices rather than
+    quietly picking one precision. That raise is the "fails loudly" half of the original
+    contract; the half worth pinning is that it comes from the reference kernel on the host
+    side and not from a float32 ``tl.atomic_add`` walking a float64 buffer.
     """
+    from torchref.base.electron_density._backends import DENSITY_BACKENDS
+    from torchref.base.electron_density.kernels.cuda import (
+        variable_radius as kernels_cuda,
+    )
+    from torchref.base.electron_density.main import _add_isotropic
+    from torchref.config import get_sigma_cutoff_ed
+    from torchref.utils.backends import select
+
     cuda = torch.device("cuda")
     s = scene_small.to(device=cuda, dtype=torch.float32)
     dims = H._grid_dims(s)
     dm_f64 = torch.zeros(*dims, dtype=torch.float64, device=cuda)
-    from torchref.base.electron_density.kernels.cuda.variable_radius import (
-        add_isotropic_cuda_var,
-    )
-    from torchref.config import get_sigma_cutoff_ed
-
     radius = per_atom_radius_iso(s.adp, s.B, n_sigma=get_sigma_cutoff_ed())
 
-    with pytest.raises(Exception):
-        out = add_isotropic_cuda_var(
+    # Layer 1: the decision. Position 0 (the map) is probed, so float64 fails
+    # ``dtypes=(float32,)``; ``mps_metal``/``cpu_sphere`` are device-disjoint from CUDA, so
+    # the only row left is the base case.
+    args = (dm_f64, s.xyz, s.adp, s.occ, s.A, s.B,
+            s.inv_frac_matrix, s.frac_matrix, radius)
+    chosen = select(DENSITY_BACKENDS, args)
+    assert chosen.name == "portable", (
+        f"a float64 density map beside float32 atoms selected {chosen.name!r}; the "
+        "float32-only Triton kernel would have received a float64 buffer for its "
+        "tl.atomic_add"
+    )
+
+    # Layer 2: the dispatch site honours that decision. Separable from layer 1 -- the table
+    # can name the right probes while the site forgets to consult it -- and asserted by
+    # provenance rather than by the return value, since nothing serves this input.
+    reached_triton = []
+    monkeypatch.setattr(
+        kernels_cuda,
+        "add_isotropic_cuda_var",
+        lambda *a, **k: reached_triton.append(1),
+    )
+    with pytest.raises(RuntimeError):
+        _add_isotropic(
             dm_f64, s.xyz, s.adp, s.occ, s.A, s.B,
-            s.inv_frac_matrix, s.frac_matrix, radius,
+            s.inv_frac_matrix, s.frac_matrix,
         )
-        # If it did not raise, it must at least not have silently produced garbage.
-        assert torch.isfinite(out).all() and out.abs().sum() > 0, (
-            "float64 density_map + float32 Triton kernel returned a non-finite or empty "
-            "map instead of raising"
-        )
+    assert not reached_triton, (
+        "dispatch called the CUDA Triton splat with a float64 density map, so it is not "
+        "consulting the probes declared on the cuda_triton row"
+    )
 
 
 @pytest.mark.cuda

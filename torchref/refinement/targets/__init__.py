@@ -50,10 +50,15 @@ from .geometry import (
 )
 from .similarity import CoordinateSimilarityTarget
 from .xray import (
-    GaussianXrayTarget,
     LeastSquaresXrayTarget,
-    MaximumLikelihoodXrayTarget,
+    MLFullXrayTarget,
+    MLNoAlphaXrayTarget,
+    MLXrayTarget,
+    NLLBetaXrayTarget,
+    NLLXrayTarget,
     RiceXrayTarget,
+    SigmaAXrayTarget,
+    UnitWeightK1XrayTarget,
     XrayTarget,
     create_xray_target,
 )
@@ -69,10 +74,15 @@ __all__ = [
     "adp_similarity_nll",
     # X-ray targets
     "XrayTarget",
-    "GaussianXrayTarget",
-    "RiceXrayTarget",
-    "MaximumLikelihoodXrayTarget",
+    "SigmaAXrayTarget",
+    "NLLXrayTarget",
+    "NLLBetaXrayTarget",
+    "MLXrayTarget",
+    "MLNoAlphaXrayTarget",
+    "MLFullXrayTarget",
     "LeastSquaresXrayTarget",
+    "UnitWeightK1XrayTarget",
+    "RiceXrayTarget",
     "create_xray_target",
     # Collection (multi-dataset) targets
     "CollectionDifferenceTarget",

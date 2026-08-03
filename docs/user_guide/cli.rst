@@ -31,10 +31,15 @@ and a ``refinement_history.json`` log.
 * ``-n`` / ``--n-cycles`` number of macro cycles (default 5)
 * ``--mode`` ``separate`` (separated XYZ then ADP, default) or ``everything``
   (joint XYZ+ADP)
-* ``--xray-mode`` ``ml`` (default; maximum-likelihood with a cross-validated
-  Luzzati σ_A term), ``bhattacharyya``, ``ls``, ``ls_wunit_k1``, ``gaussian``
-  (the legacy ``ml_sigmaa`` is accepted as a deprecated alias for ``ml``)
-* ``--sigma-m-scale`` global multiplier on σ_m for the Bhattacharyya target
+* ``--xray-mode`` one of ``ml`` (default; Read MLF at variance ε·β, conditional
+  mean α·|F_calc|), ``ml_noalpha`` (the same with the mean coupling fixed at 1),
+  ``ml_full`` (marginalises the measurement error rather than inflating the
+  variance; ~4× the cost), ``nll_beta`` (the Gaussian large-signal limit of
+  ``ml`` — diagnostic), ``nll`` (Gaussian weighted by σ_obs only, no model-error
+  term), ``ls`` (unit-weight least squares) or ``ls_wunit_k1`` (Phenix-style, own
+  global scale). ``--help`` lists them from the taxonomy table itself.
+* ``--sigma-a-max`` upper bound on the per-shell Luzzati σ_A (default 0.99)
+* ``--no-shrink`` disable the per-shell σ_A stability shrinkage
 * ``--dmin`` resolution cutoff
 * ``--device`` ``cpu`` / ``cuda``
 * ``-v`` verbose

@@ -266,6 +266,87 @@ def get_sigma_cutoff_ed() -> float:
     return sigma_cutoff_ed.value
 
 
+_DEFAULT_COMPILE_TARGETS = False
+
+
+class CompileTargetsConfig:
+    """Whether to ``torch.compile`` the quadrature X-ray target kernels.
+
+        compile_targets.value          # get (default False)
+        compile_targets.value = True   # enable at runtime
+
+    Initialised from ``TORCHREF_COMPILE_TARGETS`` at import time (set to
+    "1"/"true"/"yes"/"on" to enable).
+
+    Applies to the full-form MLF target (``--xray-mode ml_full``), which evaluates a
+    fixed-node quadrature per reflection. In eager PyTorch that is a separate pass
+    over the reflection arrays for every operation in every node, so it is bound by
+    dispatch and memory traffic rather than by the maths, and fusing it is worth a
+    lot: measured at 25 408 reflections, forward+backward goes from **101 ms eager to
+    9.9 ms compiled (13x)**.
+
+    **Off by default because of the compile latency, which autograd dominates.**
+    A forward-only compile is ~22 s cold / ~9 s warm, but once the backward has to be
+    compiled too the first call costs **~131 s**. Saving 91 ms per call, that only
+    breaks even after ~1440 gradient evaluations -- more than a typical 10-cycle
+    refinement of a small structure performs, so enabling it there makes the job
+    slower, not faster.
+
+    It pays off decisively when the per-call saving is larger:
+
+    * **big datasets** -- the target scales with reflection count while ``F_calc``
+      scales with atoms *and* reflections, so at ~740 000 reflections the eager cost
+      is ~29x this measurement and the crossover falls to a few tens of calls;
+    * **long or repeated runs in one process** -- ensembles, collection/PanDDA-style
+      refinements, interactive sessions -- where the compile is amortised to nothing.
+
+    Only the leading (reflection-count) dimension varies, so the kernels compile with
+    ``dynamic=True`` and **one** compilation serves every dataset size: verified by
+    counting ``unique_graphs`` across 13 sizes from 2 to 739 272 and across separate
+    datasets, work/free subsets and gathered tensors. There is no per-structure
+    recompilation, so no chunking or padding layer is needed.
+
+    To cut the latency, point ``TORCHINDUCTOR_CACHE_DIR`` at node-local disk (never
+    gpfs) so codegen is reused across processes; the artifacts are ~22 MB. The proper
+    fix for a CLI is AOTInductor -- compile once at install to a ``.so`` and load it
+    in milliseconds -- which would let this default back to on.
+
+    Keep it off for float64 / gradient-verification work regardless: that path is
+    the eager reference and deliberately unfused.
+    """
+
+    def __init__(self):
+        raw = os.environ.get("TORCHREF_COMPILE_TARGETS")
+        if raw is None:
+            self._value = _DEFAULT_COMPILE_TARGETS
+        else:
+            self._value = raw.strip().lower() in ("1", "true", "yes", "on")
+
+    @property
+    def value(self) -> bool:
+        """Whether quadrature target kernels are ``torch.compile``d."""
+        return self._value
+
+    @value.setter
+    def value(self, flag: bool) -> None:
+        if not isinstance(flag, bool):
+            raise TypeError(
+                f"compile_targets must be a bool, got {type(flag).__name__}"
+            )
+        self._value = flag
+
+    def __repr__(self) -> str:
+        return f"CompileTargetsConfig(value={self._value})"
+
+
+compile_targets = CompileTargetsConfig()
+
+
+def get_compile_targets() -> bool:
+    """Whether quadrature X-ray target kernels should be ``torch.compile``d."""
+    return compile_targets.value
+
+
 # ---------------------------------------------------------------------------
 # Device configuration
 # ---------------------------------------------------------------------------

@@ -81,7 +81,7 @@ class WilsonPriorTarget(DataTarget):
           centric:   −½·log(2/(π·Σ_h))     + |F_calc,h|²/(2·Σ_h)
 
       It is a proper per-reflection NLL in **nats**, directly commensurate
-      with :class:`MaximumLikelihoodXrayTarget`. At weight 1.0 the total is
+      with :class:`MLXrayTarget`. At weight 1.0 the total is
       the honest joint (data likelihood × Wilson prior): where the data is
       sharp it dominates; where the data is weak (the noise-dominated
       reflections an overparameterized ensemble overfits) the prior's O(1)

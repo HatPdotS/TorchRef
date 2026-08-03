@@ -21,11 +21,7 @@ import torch.nn as nn
 
 from torchref.base.metrics.rfactor import rfactor_work_free
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.base.targets.xray_ml_sigmaa import (
-    SigmaAEstimator,
-    epsilon_from_hkl,
-    ml_xray_loss_beta_math,
-)
+from torchref.base.targets.xray_likelihoods import complex_var_from_beta, rice_math
 from torchref.config import get_float_dtype
 from torchref.scaling.scaler_base import ScalerBase
 from torchref.scaling.solvent import SolventModel
@@ -348,6 +344,14 @@ class CollectionScaler(ScalerBase):
         dict
             Refinement metrics (steps, rwork, rfree of dark dataset).
         """
+        # Imported HERE, not at module scope, and deliberately so. `sigma_a` lives under
+        # `torchref.refinement`, which imports `torchref.scaling` at module level
+        # (`base_refinement.py`), so a module-level import in this direction closes the
+        # cycle. It happens to resolve today only because `torchref/__init__.py` imports
+        # refinement before scaling -- an invariant enforced by nothing but line order.
+        # Every use of these two names is inside this method, so the local import costs
+        # nothing. Do not "tidy" it back up to module scope.
+        from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator, epsilon_from_hkl
         from torchref.refinement.loss_state import LossState
 
         dc = self._dataset_collection
@@ -389,9 +393,16 @@ class CollectionScaler(ScalerBase):
                 ).to(fc_amp0.dtype)
                 s = get_scattering_vectors(hkl, data.cell)
                 dss0 = (torch.norm(s, dim=1) ** 2).to(fc_amp0.dtype)
-                beta0, eps0 = SigmaAEstimator().get(
-                    fobs0, fc_amp0, data.centric, eps0, dss0, data.free.mask
+                # sigma_obs passed for the same reason as every other call site: it is
+                # what makes sigma_A the correlation with the noise-free amplitudes.
+                # One estimator behaviour across the codebase.
+                _est = SigmaAEstimator().get(
+                    fobs0, fc_amp0, data.centric, eps0, dss0, data.free.mask,
+                    sigma_obs=sigma.to(fc_amp0.dtype).reshape(-1),
                 )
+                # TOTAL variance (`beta`, not `beta_model`): this scale fit uses the same
+                # likelihood as `ml`, which does not account for sigma_obs separately.
+                beta0, eps0 = _est.beta, _est.epsilon
             fcalc_cache[name] = fc
             fractions_cache[name] = fracs
             beta_cache[name] = beta0
@@ -435,8 +446,8 @@ class CollectionScaler(ScalerBase):
                         else None
                     )
                     centric_w = work.select(centric_cache[nm])
-                    loss = ml_xray_loss_beta_math(
-                        F_obs, Fc, beta_w, centric_w, epsilon=eps_w
+                    loss = rice_math(
+                        F_obs, Fc, complex_var_from_beta(beta_w, eps_w), centric_w
                     )
                     if torch.isfinite(loss):
                         total = total + loss

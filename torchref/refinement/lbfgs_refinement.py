@@ -50,8 +50,9 @@ class LBFGSRefinement(Refinement):
     Parameters
     ----------
     target_mode : str, optional
-        X-ray target mode ('gaussian', 'ls', 'ls_wunit_k1', 'rice', 'ml',
-        'bhattacharyya'). Default is 'ml'.
+        X-ray target mode: 'ml' (default), 'ml_noalpha', 'ml_full', 'nll_beta', 'nll', 'ls',
+        'ls_wunit_k1'.
+        See :mod:`torchref.refinement.targets.xray._specs` for the taxonomy.
     *args
         Passed to parent Refinement class.
     **kwargs
@@ -87,7 +88,6 @@ class LBFGSRefinement(Refinement):
         self,
         *args,
         target_mode: str = "ml",
-        sigma_m_scale: float = 1.0,
         corefine_scaler: bool = False,
         use_lossstate_scaler: bool = True,
         **kwargs,
@@ -98,12 +98,9 @@ class LBFGSRefinement(Refinement):
         Parameters
         ----------
         target_mode : str, optional
-            X-ray target mode ('gaussian', 'ls', 'ls_wunit_k1', 'rice', 'ml',
-            'bhattacharyya'). Default is 'ml' (maximum-likelihood Read MLF with
-            Luzzati σ_A).
-        sigma_m_scale : float, optional
-            Global multiplier for σ_m in the Bhattacharyya target only.
-            Ignored for other target modes. Default 1.0.
+            X-ray target mode. Default 'ml' (maximum-likelihood Read MLF with
+            Luzzati σ_A, centred on alpha*|F_calc|). See
+            :mod:`torchref.refinement.targets.xray._specs` for the seven rows.
         corefine_scaler : bool, optional
             If True, the scaler parameters are co-refined jointly with the body
             parameters in the same optimizer step rather than in a separate
@@ -120,17 +117,20 @@ class LBFGSRefinement(Refinement):
         **kwargs
             Passed to parent Refinement class.
         """
+        # Hand the mode to the base so it builds the targets ONCE,
+        # with the full configuration. Previously this class rebuilt them afterwards
+        # via set_xray_target_mode(), which forwarded only a subset and so reverted
+        # five options to factory defaults -- see Refinement._xray_target_kwargs.
+        kwargs.setdefault("xray_mode", target_mode)
         super().__init__(*args, **kwargs)
 
-        self.sigma_m_scale = sigma_m_scale
         # Default False: hold the scaler fixed during the xyz/adp body steps and
         # only update it via the separate refine_scaler() step. Co-refining the
         # few high-leverage scaler params (scale / aniso U / bulk solvent) in the
         # same LBFGS as thousands of body params is ill-conditioned and drags
         # R-free up (validated on the AF-start benchmark).
         self.corefine_scaler = corefine_scaler
-        # Set the X-ray target mode (uses the new target system from base class)
-        self.set_xray_target_mode(target_mode)
+        # Targets are already built for this mode by super().__init__(); no rebuild.
         self.target_mode = target_mode
         self.use_lossstate_scaler = use_lossstate_scaler
 
@@ -218,7 +218,7 @@ class LBFGSRefinement(Refinement):
         same one the body :meth:`refine_xyz` and :meth:`refine_adp` see.
         The legacy :meth:`Scaler.refine_lbfgs` minimises a standalone
         ``nll_xray`` + ``U^2`` penalty, which can pull scales in a
-        different direction than a ``bhattacharyya`` or ``ml`` body loss
+        different direction than an ``ml`` body loss
         and leaves the body to chase a scaler that disagrees with its own
         objective.
 

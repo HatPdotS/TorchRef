@@ -21,7 +21,7 @@ import torch.nn as nn
 
 from torchref.io import ReflectionData
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.scaling.scaler_base import ScalerBase
+from torchref.scaling.scaler_base import DEFAULT_SCALE_TARGET, ScalerBase
 from torchref.scaling.solvent import SolventModel
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference
@@ -329,6 +329,7 @@ class Scaler(ScalerBase):
         max_iter: int = 200,
         history_size: int = 10,
         verbose: bool = True,
+        scale_target: str = DEFAULT_SCALE_TARGET,
     ):
         """
         Refine scale parameters using LBFGS optimizer.
@@ -349,6 +350,9 @@ class Scaler(ScalerBase):
             Number of previous gradients to store for Hessian approximation.
         verbose : bool, default True
             Print progress information.
+        scale_target : {'nll', 'sigmaa'}, default 'nll'
+            Scale-fit objective; see
+            :meth:`torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`.
 
         Returns
         -------
@@ -364,6 +368,7 @@ class Scaler(ScalerBase):
             max_iter=max_iter,
             history_size=history_size,
             verbose=verbose,
+            scale_target=scale_target,
         )
 
     def get_binwise_mean_intensity(self, fcalc: torch.Tensor = None):
