@@ -1,80 +1,23 @@
 #!/usr/bin/env python3 -u
 
 """
-Collection-based difference refinement using joint scaling with proper
-bulk solvent correction.
+Collection-based difference refinement: joint scaling with bulk solvent.
 
-Uses the collection infrastructure (ModelCollection, DatasetCollection,
-CollectionScaler) for a clean, joint-scaling approach to difference
-refinement.  A single set of scale parameters (overall scale, anisotropy,
-bulk solvent k_sol/B_sol) is shared across both dark and light datasets.
+Uses ModelCollection / DatasetCollection / CollectionScaler so ONE set of scale
+parameters (overall scale, anisotropy, bulk solvent k_sol/B_sol) is shared across the
+dark and light datasets.
 
-Output
-------
-PDB/CIF files for refined dark and light models, a JSON summary, and a
-difference MTZ file with the following columns:
+Writes refined dark and light models (PDB/CIF), a JSON summary, and a difference MTZ:
 
-Observed data:
-    Fo_dark, SIGFo_dark       Observed amplitudes and sigma (dark)
-    Fo_light, SIGFo_light     Observed amplitudes and sigma (light)
-
-Differences:
-    DF                        F_light - F_dark (scalar difference)
-    SIGDF                     Propagated sigma on DF
-    WDF                       Sigma-weighted DF
-
-Calculated:
-    Fc_dark, Fc_light         |Fc| for dark and mixed models
-    DFc                       |Fc_light| - |Fc_dark| (scalar)
-    DFc_complex               |Fc_light*exp(i*phi) - Fc_dark*exp(i*phi)|
-
-DED map coefficients (phase-aware):
-    2mDFop-DFc                Weighted 2*DFo_phased - DFc (DED map)
-    mDFop-DFc                 Weighted DFo_phased - DFc (DED difference map)
-
-Phases:
-    PHIC_dark                 Calculated phase (dark model)
-    PHIC_mixed                Calculated phase (mixed model)
-    PHIC_diff                 Phase of complex Fc difference
-    PHIC_light                Calculated phase (pure light model)
-
-Phase-aware extrapolation:
-    Grafts calculated phases onto observed amplitudes, then extrapolates
-    the complex structure factors::
-
-        F_extp = (Fo_light * exp(i*phi_mixed) - w_d * Fo_dark * exp(i*phi_dark)) / w_l
-        sigma_extp = sqrt(sig_light^2 + w_d^2 * sig_dark^2) / w_l
-
-    Fextp                     |F_extp|
-    2Fextp-Fc                 2*Fextp - Fc (map coefficient)
-    Fextp-Fc                  Fextp - Fc (difference map coefficient)
-
-Classic (amplitude-only) extrapolation:
-    Scalar extrapolation using amplitudes only (no phase information)::
-
-        F_extc = (|Fo_light| - w_d * |Fo_dark|) / w_l
-        sigma_extc = sqrt(sig_light^2 + w_d^2 * sig_dark^2) / w_l
-
-    Fextc, SIGFextc           Extrapolated amplitude and sigma
-    2Fextc-Fc, Fextc-Fc       Map coefficients
-
-Empirical Bayes extrapolation:
-    Starts from the phase-aware extrapolation, then applies per-reflection
-    amplitude shrinkage towards Fo_dark to regularise noisy high-resolution
-    and weakly-measured reflections::
-
-        F_ext       = |Fo_dark*exp(i*phi_dark) + dF/f|      (phase-aware)
-        sig_ext^2   = (sig_light^2 + sig_dark^2) / f^2
-        tau^2       = max(<(F_ext - Fo_dark)^2> - <sig_ext^2>, floor)
-        w(h)        = tau^2 / (tau^2 + sig_ext^2(h))
-        F_extb(h)   = w(h) * F_ext(h) + (1-w(h)) * Fo_dark(h)
-
-    tau^2 is the estimated global signal variance; w(h) is the
-    per-reflection shrinkage weight (high for strong/well-measured
-    reflections, low for noisy ones).
-
-    Fextb, SIGFextb           Shrinkage-regularised amplitude and sigma
-    2Fextb-Fc, Fextb-Fc       Map coefficients
+Observed        ``Fo_dark``, ``SIGFo_dark``, ``Fo_light``, ``SIGFo_light``
+Differences     ``DF`` = F_light - F_dark, ``SIGDF`` (propagated), ``WDF`` (sigma-weighted)
+Calculated      ``Fc_dark``, ``Fc_light`` (mixed model), ``DFc`` (scalar), ``DFc_complex``
+DED map coeffs  ``2mDFop-DFc``, ``mDFop-DFc`` (phase-aware, figure-of-merit weighted)
+Phases          ``PHIC_dark``, ``PHIC_mixed``, ``PHIC_diff``, ``PHIC_light``
+Extrapolations  ``Fextp`` (phase-aware), ``Fextc`` (amplitude-only, no phases),
+                ``Fextb`` (empirical-Bayes shrinkage toward Fo_dark -- see
+                :func:`compute_bayes_extrapolated_amplitudes`), each with its sigma
+                and ``2F-Fc`` / ``F-Fc`` map coefficients
 
 Examples
 --------
@@ -281,9 +224,9 @@ def compute_bayes_extrapolated_amplitudes(
 ):
     """Empirical Bayes shrinkage estimator for extrapolated SF amplitudes.
 
-    Estimates per-reflection shrinkage weights from the propagated
-    variance of the extrapolation, then shrinks the phase-aware
-    extrapolated amplitude towards Fo_dark::
+    Estimates per-reflection shrinkage weights from the propagated variance of the
+    extrapolation, then shrinks the phase-aware extrapolated amplitude toward
+    Fo_dark, regularising noisy high-resolution and weakly-measured reflections::
 
         F_ext     = |F_dark*e^(iφ_d) + ΔF/f|         (phase-aware amplitude)
         σ_ext²    = (σ_light² + σ_dark²) / f²
@@ -298,22 +241,18 @@ def compute_bayes_extrapolated_amplitudes(
     sig_dark, sig_light : Tensor (N,)
         Measurement uncertainties.
     phi_dark, phi_mixed : Tensor (N,)
-        Calculated phases (radians) for dark and mixed models.
-    f : float or Tensor (scalar)
+        Calculated phases (radians) for the dark and mixed models.
+    f : float or Tensor
         Excited-state population fraction.
     tau_sq_floor : float
-        Minimum signal variance.
+        Floor on the estimated signal variance τ².
 
     Returns
     -------
-    F_ext_bayes : Tensor (N,)
-        Phase-aware extrapolated amplitudes (before shrinkage).
-    var_ext_bayes : Tensor (N,)
-        Posterior variance per reflection.
-    w_shrinkage : Tensor (N,)
-        Per-reflection shrinkage weights.
-    tau_sq : float
-        Estimated global signal variance.
+    tuple
+        ``(F_ext_bayes, var_ext_bayes, w_shrinkage, tau_sq)`` -- extrapolated
+        amplitudes **before** shrinkage, posterior variance and shrinkage weight per
+        reflection, and the global τ² as a float.
     """
     F_dark_phased = Fobs_dark * torch.exp(1j * phi_dark)
     F_light_phased = Fobs_light * torch.exp(1j * phi_mixed)
@@ -603,6 +542,7 @@ def optimize_lbfgs(state, parameters, max_iter, nsteps, n_clean, verbose):
 
 
 def main():
+    """Entry point for ``torchref.difference-refine``; returns the exit code."""
     parser = argparse.ArgumentParser(
         prog="torchref.difference-refine",
         description="Collection-based difference refinement with joint "

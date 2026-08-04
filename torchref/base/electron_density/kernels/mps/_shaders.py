@@ -1,26 +1,18 @@
-"""Metal Shading Language (MSL) source for the variable-radius density splat.
+"""Metal Shading Language source for the variable-radius density splat.
 
-Compiled at runtime via ``torch.mps.compile_shader`` (see ``compile.py``). One
-GPU thread per atom (dispatched ``threads=[n_atoms]``): each thread sizes its
-own cubic bounding box from ``r2cut`` and the inverse-cell row norms, iterates
-the box, truncates to the per-atom sphere (``r2 <= r2cut``), evaluates the
-5-term ITC92 Gaussian, and accumulates into the grid via a portable
-compare-exchange float atomic-add (``atomic_add_f``) that works on every Metal
-GPU family (Apple7 / M1 onward), not just Metal-3 native ``atomic_float``.
+Compiled at runtime via ``torch.mps.compile_shader`` (see ``compile.py``). One GPU thread
+per atom (``threads=[n_atoms]``): each sizes its own cubic bounding box from ``r2cut``
+and the inverse-cell row norms, iterates it, truncates to the per-atom sphere
+(``r2 <= r2cut``), evaluates the 5-term ITC92 Gaussian, and accumulates via a portable
+compare-exchange float atomic-add that works on every Metal GPU family (Apple7 / M1
+onward), not just Metal-3 native ``atomic_float``. Because each thread owns one atom, the
+backward kernels need no atomics.
 
-The math mirrors the CUDA variable-radius kernels
-(``kernels/cuda/variable_radius.py``) and is validated against the portable CPU
-reference (``add_isotropic_plain_var`` / ``add_anisotropic_plain_var``). Because
-each thread owns one atom, the backward kernels accumulate per-atom gradients
-with no atomics.
-
-Coordinates: work in Cartesian offsets. ``frac`` is the fractional->Cartesian
-matrix (its columns are the cell vectors a,b,c); ``inv_frac`` is its inverse
-(Cartesian->fractional). For voxel offset ``o`` from the atom's grid anchor,
-``w = frac @ (o/n - residual)`` is the Cartesian atom->voxel vector and
-``r2 = w.w``.
-
-Constants match the reference bit-for-bit: PI_1P5 = pi^1.5, PI_SQ = pi^2.
+The math mirrors ``kernels/cuda/variable_radius.py`` and is validated against the
+portable CPU reference. Coordinates are Cartesian offsets: ``frac`` is
+fractional->Cartesian (columns are a, b, c), ``inv_frac`` its inverse, and for voxel
+offset ``o`` from the atom's grid anchor ``w = frac @ (o/n - residual)`` with
+``r2 = w.w``. Constants match the reference bit-for-bit.
 """
 
 # NOTE: kept as a single translation unit so one compile_shader call yields all

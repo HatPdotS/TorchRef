@@ -1,20 +1,15 @@
 """The X-ray target taxonomy, as data.
 
 One row per selectable ``--xray-mode``. This table is the **single source of truth**:
-:func:`~torchref.refinement.targets.xray.factory.create_xray_target`
-dispatches from it and the CLI derives its ``choices=`` from it. Before this existed the
-mode list was maintained by hand in two places -- an ``if/elif`` chain in the factory and
-a literal list in ``cli/refine.py`` -- which drifted (``nll_beta`` reached the factory but
-never the CLI, and ``bhattacharyya_ensemble`` was reachable only from Python).
-
-Follows the house pattern of :mod:`torchref.utils.backends`: frozen dataclass rows plus a
-table object that checks its own invariants at import time, so a malformed row fails the
-build rather than a refinement. Enums are deliberately not used -- string literals
-validated against a table are the established convention here.
+:func:`~torchref.refinement.targets.xray.factory.create_xray_target` dispatches from it and
+the CLI derives its ``choices=`` from it, so a mode added in one place cannot go missing
+from the other. Frozen dataclass rows plus a table that checks its own invariants at import,
+following :mod:`torchref.utils.backends`; string literals validated against a table, not
+enums, is the house convention.
 
 ## The sigma_A family
 
-Four targets, each a choice of (distribution) x (variance) x (mean):
+Each is a choice of (distribution) x (variance) x (mean):
 
 =============  ========================  ============  ================================
 mode           distribution              mean          variance
@@ -26,75 +21,26 @@ mode           distribution              mean          variance
 ``ml_full``    Rice (x) Gaussian, marg.  ``a*|F_c|``   ``eps*beta_model`` + sigma_obs
 =============  ========================  ============  ================================
 
-``ml`` is the default and **centres on** ``alpha*|F_calc|``.
-
-**On the full 767-structure AF-start benchmark, alpha is a small net LOSS.** Paired against
-``ml_noalpha`` (n=766, against a clean same-config null at p=0.74):
-
-===============  ==============  =========
-quantity         alpha - no alpha  p
-===============  ==============  =========
-R_work           **+0.00200**     0.0000
-R_free           **+0.00020**     0.0000
-work-free gap    -0.00180         0.0000
-===============  ==============  =========
-
-The narrower gap is **not** evidence of better generalisation: R_work degrades ten times
-more than R_free does, so the gap closes because the fit to the work data gets worse, not
-because prediction improves. R_free -- the metric that matters -- is *significantly worse*
-with alpha, by a small but consistent margin (357 losses to 312 wins, and the losing
-magnitudes are systematically larger).
-
-An earlier 50-structure screen read this the other way (R_free +0.00030 at p=0.47, gap
--0.00105 at p=0.008) and was written up here as "less overfitting for equal prediction".
-That conclusion did not survive 15x the data: at n=50 the R_free cost was real but below
-the resolution floor, and the R_work channel -- which is what identifies the mechanism --
-was not examined. **Do not re-derive the optimistic reading from the small-n numbers.**
-
-``ml_noalpha`` is that same likelihood with the coupling fixed at 1. It exists because a
-**scale** fit is a nuisance-magnitude fit in which ``alpha`` is degenerate with the very
-per-bin scale being optimised, so pinning it there is the correct choice rather than an
-approximation. It is also, exactly, the likelihood
-:meth:`ScalerBase.refine_lbfgs`'s ``scale_target='sigmaa'`` evaluates.
+``ml`` is the default and centres on ``alpha*|F_calc|``; ``ml_noalpha`` is the same
+likelihood with the coupling pinned at 1, which is the correct choice for a **scale** fit,
+where ``alpha`` is degenerate with the per-bin scale being optimised -- an ``alpha``-centred
+row drives the scale to absorb ``1/alpha`` and inflates every R-factor computed from
+``k*|F_calc|``. That constraint is enforced, not advised:
+:data:`~torchref.scaling.scaler_base.SCALE_TARGETS` admits only ``nll`` and ``ml_noalpha``,
+and :meth:`ScalerBase.refine_lbfgs` builds its objective from *this* table. ``ml_full`` is
+the most principled row (it treats the two error kinds as the different objects they are) but
+costs a 32-node quadrature per loss evaluation, so it is not the default.
 
 **The ``mean`` column describes the LIKELIHOOD, never the estimator.** The estimator behind
-``beta`` fits ``alpha`` and ``beta`` *jointly* for every row, including the rows whose mean
-is ``|F_c|``, because pinning the mean during the fit biases ``sigma_A`` +0.035 high. Read
-``mean = |F_c|`` as "this row does not *centre* on alpha", not as "alpha is absent here".
+``beta`` fits ``alpha`` and ``beta`` *jointly* for every row, including rows whose mean is
+``|F_c|``, because pinning the mean during the fit biases ``sigma_A`` +0.035 high. Read
+``mean = |F_c|`` as "this row does not *centre* on alpha", not "alpha is absent here".
 
-Nothing else in the table varies by row: every target is fitted by the same estimator, with
-the same ``sigma_obs`` and the same shrinkage, so a comparison between two rows measures the
-likelihood and nothing else. That was not true before -- ``ml`` and ``ml_full`` used to get
-differently configured estimators, which confounded every comparison between them.
+Nothing else varies by row: same estimator, same ``sigma_obs``, same shrinkage, so a
+comparison between two rows measures the likelihood and nothing else.
 
-## What the full benchmark settled about ``ml_full``
-
-The ``sigma_obs`` marginalisation -- ``ml_full``'s distinguishing ingredient -- **is worth
-nothing on R_free**: ``ml_full`` vs ``ml`` gives ``dR_free = +0.00000`` (p=0.055) on 766
-structures, and on 50 structures it gave ``+0.00005`` at *both* alpha settings (p=0.914 and
-p=0.417). It shows the same signature alpha does, one order smaller: ``dR_work = +0.00030``,
-``dgap = -0.00030``, i.e. it damps the work fit rather than improving prediction.
-
-So ranked by R_free on 766 structures, ``ml_noalpha`` is best, and both ``ml`` (+0.00020,
-p=0.0000) and ``ml_full`` (+0.00015, p=0.0001) are significantly behind it. The margins are
-small -- 2e-4 -- but they are significant against a null that returns p=0.74, and they are
-consistent in sign.
-
-``ml_full`` is kept as the most principled statement of the model available (the two error
-kinds are genuinely different objects and it treats them so), and because the null is a null
-*in this regime*: ``S2/beta_model`` is ~0.087 on AF-start data against ~0.247 on deposited
-coordinates, so the term it adds is near its weakest here. It is not the default, and it
-costs a 32-node quadrature inside every loss evaluation.
-
-## Why there is no Rice-with-sigma_obs row
-
-A ``rice`` mode used to exist and was removed. The Rice distribution arises from a 2-D
-isotropic Gaussian in the complex plane marginalised over phase, so supplying
-``sigma_obs`` as its ``Sigma`` asserts an isotropic *complex* error. ``sigma_obs`` is a
-1-DOF amplitude error carrying no phase information, so there is no regime in which the
-pairing is correct -- and empirically it was the worst-behaved target measured, destroying
-geometry (bond RMSZ 28.0 where every other target sat near 1.3). Model error, which
-*does* have a phase component, is what belongs in a Rice ``Sigma``; that is ``beta``.
+There is deliberately no Rice-with-``sigma_obs`` row; see
+:mod:`torchref.base.targets.xray_likelihoods` for why the pairing is never correct.
 """
 
 from dataclasses import dataclass, field
@@ -122,22 +68,13 @@ class XrayTargetSpec:
     name
         The ``--xray-mode`` value.
     target_cls
-        The class. **One class per row**, checked by :class:`XrayTargetTable` below.
-
-        Until 2026-08 this table also carried ``family`` / ``distribution`` / ``variance`` /
-        ``mean`` / ``needs_estimator``, and four rows shared one class that read those fields
-        at runtime to pick a likelihood, a variance field and a mean. Each row is now its own
-        class, so dispatch is ``spec.target_cls(**kwargs)`` and those columns had no readers
-        left. Keeping them would have left import-time invariants asserting *documentation*,
-        which looks load-bearing and is not. The taxonomy they described is in this module's
-        docstring, where a description belongs.
+        The class. **One class per row**, checked by :class:`XrayTargetTable` below, so
+        dispatch is just ``spec.target_cls(**kwargs)`` with nothing to branch on.
     doc
         One line, surfaced in ``--help``.
     aliases
-        Retired spellings kept working. Resolving one emits a ``DeprecationWarning``. No row
-        carries one at present -- ``ml_sigmaa`` and ``gaussian`` were removed -- so the
-        machinery is exercised by a purpose-built table in the tests rather than by a live
-        deprecated name.
+        Retired spellings kept working; resolving one emits a ``DeprecationWarning``. No row
+        carries one at present, so the tests exercise this with their own table.
     """
 
     name: str

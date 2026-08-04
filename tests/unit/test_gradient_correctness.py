@@ -156,8 +156,14 @@ def test_triton_gaussian_xray_matches_eager_cosine():
 
     L_t = nll_sigma_obs_math(F_obs, fc_triton, sigma)  # CUDA fp32 -> Triton
     (g_t,) = torch.autograd.grad(L_t, fc_triton)
-    L_e = _gaussian_xray_loss_math_eager(
-        F_obs, fc_eager, sigma, torch.ones(R, dtype=torch.bool, device=dev)
+    # The eager arm is now the primitive plus its variance builder, which is exactly what
+    # `nll_sigma_obs_math` falls back to off the Triton path -- `_gaussian_xray_loss_math_eager`
+    # was deleted when the loss math was consolidated. Build the variance explicitly rather
+    # than passing `sigma`: the two conventions (amplitude variance vs complex Sigma) differ by
+    # a factor of 2, and spelling it out is what keeps that from silently reappearing here.
+    L_e = nll_math(
+        F_obs, fc_eager, amplitude_var_from_sigma_obs(sigma),
+        mask=torch.ones(R, dtype=torch.bool, device=dev),
     )
     (g_e,) = torch.autograd.grad(L_e, fc_eager)
     assert_grads_agree([g_t], [g_e], min_cos=0.999, ratio_tol=1e-2, ctx="xray ")

@@ -1,14 +1,9 @@
-"""
-Anomalous scattering factor lookup (f' and f'').
+"""Anomalous scattering factor lookup (f' and f'').
 
-Uses gemmi for wavelength-dependent f'/f'' values via the Cromer-Liberman
-calculation. These corrections account for the dispersive (f') and
-absorptive (f'') components of X-ray scattering near atomic absorption edges.
-
-The complete scattering factor is: f(s, lambda) = f0(s) + f'(lambda) + i*f''(lambda)
-
-where f0 is the normal (Thomson) scattering factor and f'/f'' are the
-wavelength-dependent anomalous corrections.
+Wavelength-dependent f'/f'' from gemmi's Cromer-Liberman calculation: the
+dispersive and absorptive components that matter near absorption edges. The
+full factor is ``f(s, λ) = f0(s) + f'(λ) + i·f''(λ)``, with f0 the normal
+(Thomson) term.
 """
 
 import torch
@@ -17,19 +12,7 @@ from typing import Dict, List, Tuple
 
 def wavelength_to_energy_ev(wavelength: float) -> float:
     """
-    Convert X-ray wavelength in Angstroms to energy in eV.
-
-    Uses the gemmi.hc constant (hc in eV*Angstrom).
-
-    Parameters
-    ----------
-    wavelength : float
-        Wavelength in Angstroms
-
-    Returns
-    -------
-    float
-        Energy in eV
+    Convert X-ray wavelength (Å) to energy (eV) via the ``gemmi.hc`` constant.
     """
     return gemmi.hc / wavelength
 
@@ -39,33 +22,24 @@ def get_anomalous_correction(
     wavelength: float,
 ) -> Tuple[float, float]:
     """
-    Get f' and f'' for a single element at given wavelength.
+    Get f' and f'' for one element at one wavelength (Cromer-Liberman, gemmi).
 
-    Uses the Cromer-Liberman calculation via gemmi. Returns the standard
-    crystallographic f' and f'' values as used in International Tables.
+    Standard crystallographic values as in International Tables. The wavelength
+    is converted to eV here because ``gemmi.cromer_liberman`` takes eV, not keV.
 
     Parameters
     ----------
     element : str
-        Element symbol (e.g., 'Fe', 'Hg', 'Se')
+        Element symbol (e.g. 'Fe', 'Hg', 'Se').
     wavelength : float
-        X-ray wavelength in Angstroms
+        X-ray wavelength in Angstroms.
 
     Returns
     -------
     f_prime : float
-        Real anomalous correction (electrons)
+        Real anomalous correction (electrons).
     f_double_prime : float
-        Imaginary anomalous correction (electrons)
-
-    Examples
-    --------
-    >>> f_prime, f_double_prime = get_anomalous_correction('Se', 0.9792)
-    >>> print(f"Se at Se K-edge: f'={f_prime:.2f}, f''={f_double_prime:.2f}")
-
-    Notes
-    -----
-    The gemmi.cromer_liberman function expects energy in eV, not keV.
+        Imaginary anomalous correction (electrons).
     """
     elem = gemmi.Element(element)
     z = elem.atomic_number
@@ -80,31 +54,24 @@ def get_significant_elements(
     threshold: float = 0.5,
 ) -> Dict[str, Tuple[float, float]]:
     """
-    Find elements with significant anomalous scattering.
+    Keep only the elements whose anomalous scattering is worth computing.
 
-    An element is considered significant if |f'| > threshold OR |f''| > threshold.
-    This filtering avoids unnecessary computation for light atoms (C, N, O, H)
-    which have negligible anomalous contributions at typical wavelengths.
+    Significant means ``|f'| > threshold`` or ``|f''| > threshold``, which drops
+    the light atoms (H, C, N, O) that contribute nothing at usual wavelengths.
 
     Parameters
     ----------
     elements : list of str
-        List of unique element symbols
+        Unique element symbols.
     wavelength : float
-        X-ray wavelength in Angstroms
+        X-ray wavelength in Angstroms.
     threshold : float, optional
-        Significance threshold in electrons (default: 0.5)
+        Significance threshold in electrons. Default is 0.5.
 
     Returns
     -------
     dict
-        {element: (f_prime, f_double_prime)} for significant elements only
-
-    Examples
-    --------
-    >>> elements = ['C', 'N', 'O', 'S', 'Fe', 'Zn']
-    >>> significant = get_significant_elements(elements, wavelength=1.0)
-    >>> print(f"Significant anomalous scatterers: {list(significant.keys())}")
+        ``{element: (f_prime, f_double_prime)}``, significant elements only.
     """
     significant = {}
     for elem in elements:
@@ -121,39 +88,27 @@ def get_anomalous_corrections_by_indices(
     dtype: torch.dtype,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Get anomalous corrections and mask for atoms needing correction.
-
-    This function creates tensors suitable for vectorized computation
-    of the anomalous correction to structure factors.
+    Build the per-atom mask and compacted f'/f'' tensors for vectorized use.
 
     Parameters
     ----------
     element_list : list of str
-        Element symbols for all atoms (length n_atoms)
+        Element symbols for all atoms (length n_atoms).
     significant_elements : dict
-        {element: (f_prime, f_double_prime)} from get_significant_elements()
+        ``{element: (f_prime, f_double_prime)}`` from
+        :func:`get_significant_elements`.
     device : torch.device
-        Device for output tensors
+        Device for output tensors.
     dtype : torch.dtype
-        Data type for output tensors
+        Dtype for output tensors.
 
     Returns
     -------
     mask : torch.Tensor
-        Boolean mask of shape (n_atoms,) - True for atoms needing correction
-    f_prime : torch.Tensor
-        f' values for significant atoms only (n_significant,)
-    f_double_prime : torch.Tensor
-        f'' values for significant atoms only (n_significant,)
-
-    Examples
-    --------
-    >>> elements = ['C', 'C', 'N', 'Fe', 'O', 'Fe']
-    >>> significant = {'Fe': (-1.2, 3.1)}
-    >>> mask, fp, fdp = get_anomalous_corrections_by_indices(
-    ...     elements, significant, torch.device('cpu'), torch.float32
-    ... )
-    >>> print(f"Atoms needing correction: {mask.sum().item()}")  # 2 (two Fe atoms)
+        Bool, shape (n_atoms,); True where a correction applies.
+    f_prime, f_double_prime : torch.Tensor
+        Shape (n_significant,), *not* (n_atoms,) -- compacted in ``mask`` order,
+        so they line up only with ``element_list[mask]``.
     """
     n_atoms = len(element_list)
     mask = torch.zeros(n_atoms, dtype=torch.bool, device=device)

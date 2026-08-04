@@ -20,50 +20,27 @@ from torchref.utils.stats import (
 
 @dataclass
 class Logger:
-    """
-    Refinement logging with verbosity-aware stat reporting.
-
-    Integrates with LossState to record, compare, and display refinement stats.
-    Supports regex-based filtering of target names.
+    """Verbosity-aware recording, comparison and display of a LossState's stats.
 
     Parameters
     ----------
     state : LossState
         The loss state to monitor.
     verbose : int
-        Verbosity level (0=essential, 1=standard, 2=detailed, 3=debug).
+        0=essential, 1=standard, 2=detailed, 3=debug.
     pattern : str
-        Regex pattern for filtering target names. Default ".*" matches all.
-        Examples: "xray.*" for X-ray targets only, "geometry/bond" for specific target.
+        Regex filtering target names (``"xray.*"``, ``"geometry/bond"``); ``".*"``
+        matches all. Per-call ``pattern=`` arguments override it.
 
     Examples
     --------
-    Basic usage::
-
-        from torchref.refinement import LossState, Logger
-
-        state = LossState(device=device)
-        state.register_target("xray/work", xray_target)
-        state.register_target("geometry/bond", bond_target)
+    ::
 
         logger = Logger(state, verbose=1)
-
-        # Record before refinement
         logger.record(label="before_xyz")
-
-        # ... run refinement ...
-
-        # Record after and compare
+        ...                                   # run refinement
         logger.record(label="after_xyz")
         logger.compare(title="XYZ Refinement")
-
-    Filtering by pattern::
-
-        # Show only X-ray targets
-        logger.current(pattern="xray.*")
-
-        # Create a logger that only tracks geometry
-        geom_logger = Logger(state, pattern="geometry.*")
     """
 
     state: LossState
@@ -77,21 +54,10 @@ class Logger:
         self._compiled_pattern = re.compile(self.pattern)
 
     def record(self, label: str = None) -> Dict[str, Any]:
-        """
-        Record current refinement state.
+        """Record every matching target's stats into history under ``label``.
 
-        Gathers stats from all targets in LossState, stores in history.
-        Uses the instance's pattern filter.
-
-        Parameters
-        ----------
-        label : str, optional
-            Label for this record (e.g., "before_xyz", "after_xyz").
-
-        Returns
-        -------
-        dict
-            The recorded stats dictionary.
+        Aggregates the LossState first, so this forces a loss evaluation. Returns the
+        recorded dict.
         """
         stats = {}
 
@@ -140,21 +106,11 @@ class Logger:
         pattern: str = None,
         title: str = "Refinement Comparison",
     ) -> None:
-        """
-        Print comparison between two recorded states.
+        """Print a before/after table for two recorded states.
 
-        If labels not provided, compares last two records.
-
-        Parameters
-        ----------
-        label_before : str, optional
-            Label of "before" state. Default: second-to-last record.
-        label_after : str, optional
-            Label of "after" state. Default: last record.
-        pattern : str, optional
-            Regex to filter which targets to display. Default: use instance pattern.
-        title : str, optional
-            Title for the comparison output. Default: "Refinement Comparison".
+        Unlabelled arguments fall back to the last two records (``label_before`` to
+        second-to-last, ``label_after`` to last); a missing label is silently treated
+        as absent rather than raising. ``pattern`` overrides the instance filter.
         """
         # Get before record
         if label_before and label_before in self._labels:
@@ -184,18 +140,7 @@ class Logger:
         self._print_comparison(before_filtered, after_filtered, title)
 
     def current(self, pattern: str = None, title: str = "Current State") -> None:
-        """
-        Print the current refinement state.
-
-        Uses latest recorded state, or records new one if none exist.
-
-        Parameters
-        ----------
-        pattern : str, optional
-            Regex to filter which targets to display. Default: use instance pattern.
-        title : str, optional
-            Title for the output. Default: "Current State".
-        """
+        """Print the latest recorded state, recording one first if none exist."""
         if not self._records:
             self.record()
 
@@ -205,19 +150,7 @@ class Logger:
         self._print_current(filtered, title)
 
     def get_record(self, label: str) -> Optional[Dict[str, Any]]:
-        """
-        Get a specific recorded state by label.
-
-        Parameters
-        ----------
-        label : str
-            The label to look up.
-
-        Returns
-        -------
-        dict or None
-            The recorded stats dictionary, or None if label not found.
-        """
+        """The stats dict recorded under ``label``, or None if there is none."""
         if label in self._labels:
             return self._records[self._labels[label]]["stats"]
         return None
@@ -237,41 +170,14 @@ class Logger:
     # =========================================================================
 
     def _matches_pattern(self, name: str, pattern: str = None) -> bool:
-        """
-        Check if target name matches the filter pattern.
-
-        Parameters
-        ----------
-        name : str
-            The name to check.
-        pattern : str, optional
-            Pattern to use. If None, uses instance's compiled pattern.
-
-        Returns
-        -------
-        bool
-            True if name matches the pattern.
-        """
+        """Whether ``name`` matches ``pattern``, or the instance pattern if None."""
         if pattern is None:
             return self._compiled_pattern.search(name) is not None
         return re.search(pattern, name) is not None
 
     def _filter_by_pattern(self, stats: Dict, pattern: str = None) -> Dict:
-        """
-        Filter stats dict by regex pattern on keys.
-
-        Parameters
-        ----------
-        stats : dict
-            Stats dictionary to filter.
-        pattern : str, optional
-            Pattern to use. If None, uses instance pattern.
-
-        Returns
-        -------
-        dict
-            Filtered dictionary.
-        """
+        """``stats`` keyed only by names matching the pattern, recursing into
+        nested dicts and dropping any that end up empty."""
         filtered = {}
         for key, val in stats.items():
             if self._matches_pattern(key, pattern):
@@ -284,24 +190,8 @@ class Logger:
         return filtered
 
     def _group_by_hierarchy(self, keys_and_values: Dict) -> Dict[str, Dict]:
-        """
-        Group flat keys by hierarchical prefix.
-
-        Parameters
-        ----------
-        keys_and_values : dict
-            Flat dictionary with potentially hierarchical keys.
-
-        Returns
-        -------
-        dict
-            Grouped dictionary: {"xray": {"work": 3.2, "test": 3.4}, ...}
-
-        Examples
-        --------
-        Input: {"xray/work": 3.2, "xray/test": 3.4, "geometry/bond": 0.02}
-        Output: {"xray": {"work": 3.2, "test": 3.4}, "geometry": {"bond": 0.02}}
-        """
+        """Split flat keys on the first ``/`` into ``{group: {component: value}}``;
+        keys without one land under ``"other"``."""
         groups = {}
         for key, val in keys_and_values.items():
             if "/" in key:
@@ -316,18 +206,7 @@ class Logger:
         return groups
 
     def _print_comparison(self, before: Dict, after: Dict, title: str) -> None:
-        """
-        Format and print before/after comparison table.
-
-        Parameters
-        ----------
-        before : dict
-            Stats from before state.
-        after : dict
-            Stats from after state.
-        title : str
-            Title for the comparison.
-        """
+        """Format and print the before/after comparison table."""
         width = 68
         separator = "─" * width
 
@@ -383,16 +262,7 @@ class Logger:
         print(separator)
 
     def _print_current(self, stats: Dict, title: str) -> None:
-        """
-        Format and print current state.
-
-        Parameters
-        ----------
-        stats : dict
-            Stats dictionary.
-        title : str
-            Title for the output.
-        """
+        """Format and print a single state's table."""
         width = 68
         separator = "─" * width
 
@@ -432,18 +302,7 @@ class Logger:
     def _print_comparison_row(
         self, label: str, before: float, after: float
     ) -> None:
-        """
-        Print a single comparison row.
-
-        Parameters
-        ----------
-        label : str
-            Row label.
-        before : float or None
-            Value before.
-        after : float or None
-            Value after.
-        """
+        """Print one row; a ``None`` on either side prints "-" and no change."""
         bstr = self._format_value(before) if before is not None else "-"
         astr = self._format_value(after) if after is not None else "-"
 
@@ -456,21 +315,8 @@ class Logger:
         print(f"    {label:<24} {bstr:>10} {astr:>10} {cstr:>10}")
 
     def _format_value(self, val: float, show_sign: bool = False) -> str:
-        """
-        Format a numeric value for display.
-
-        Parameters
-        ----------
-        val : float
-            Value to format.
-        show_sign : bool
-            If True, show + sign for positive values.
-
-        Returns
-        -------
-        str
-            Formatted string.
-        """
+        """Fixed-width numeric string, switching to exponential below 1e-4;
+        ``show_sign`` prefixes positives with ``+``. ``None`` renders as "-"."""
         if val is None:
             return "-"
 

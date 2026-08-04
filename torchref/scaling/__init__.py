@@ -1,38 +1,11 @@
-"""
-Structure factor scaling module for TorchRef.
+"""Scaling calculated structure factors onto observed data.
 
-This module provides classes for scaling calculated structure factors
-to match observed data, including:
-- Overall and anisotropic scale factors
-- Bulk solvent contribution modeling
-
-Classes
--------
-ScalerBase
-    Base scaler class that does not require a Model object.
-    All methods that need F_calc take it as an input argument.
-Scaler
-    Full-featured scaler with Model integration.
-    Extends ScalerBase with convenience methods that auto-compute F_calc.
-SolventModel
-    Models bulk solvent contribution to structure factors using
-    flat solvent model with k_sol and B_sol parameters.
-
-Example
--------
-::
-
-    from torchref.scaling import Scaler, ScalerBase, SolventModel
-
-    # Using Scaler with a model (auto-computes fcalc)
-    scaler = Scaler(model, data, nbins=20)
-    scaler.initialize()
-    fcalc_scaled = scaler(fcalc)
-
-    # Using ScalerBase without a model (requires fcalc as input)
-    scaler_base = ScalerBase(data=data, nbins=20)
-    scaler_base.initialize(fcalc)
-    fcalc_scaled = scaler_base(fcalc)
+Per-bin overall scale, anisotropic correction and bulk-solvent contribution.
+:class:`ScalerBase` is model-independent -- every method that needs ``F_calc``
+takes it as an argument; :class:`Scaler` holds a :class:`~torchref.model.Model`
+and computes ``F_calc`` itself; :class:`CollectionScaler` fits one shared set of
+scales jointly across a dataset/model collection. :class:`SolventModel` supplies
+the flat bulk-solvent term (k_sol, B_sol).
 """
 
 from torchref.scaling.scaler import Scaler

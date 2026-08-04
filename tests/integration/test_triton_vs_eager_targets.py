@@ -19,14 +19,14 @@ Markers: ``@pytest.mark.cuda`` (skipped by default) and
 
 from __future__ import annotations
 
-import math
-from pathlib import Path
 from typing import Dict, Tuple
 
 import contextlib
 
 import pytest
 import torch
+
+from torchref.refinement.targets.xray._specs import XRAY_TARGETS
 
 # Tolerances. Most targets are bit-perfect or within 1e-7 relative;
 # atomic-scatter ones (nonbonded, planarity) need a little more slack.
@@ -37,11 +37,41 @@ _DEFAULT_RTOL = 1e-3
 # (e.g. ML's polynomial Bessel) need looser bounds. The first entry is
 # atol, second is rtol.
 _TARGET_TOLERANCES: Dict[str, Tuple[float, float]] = {
-    "xray/rice": (1e-1, 5e-3),              # poly Bessel approx, log-amplified
+    # `xray/rice` had a loose tolerance here for the polynomial Bessel approximation. The
+    # `rice` mode is no longer selectable (it is a private target with no Triton path), so
+    # the row is gone rather than kept as a tolerance for a name nothing can produce.
     "geometry/nonbonded": (5e-3, 5e-4),      # atomic-add scatter on N pairs
     "geometry/planarity": (1e-2, 1e-3),      # SVD/eigh near-degenerate plane normals
     "geometry/ramachandran": (5e-3, 5e-4),   # bilinear interp tolerance
 }
+
+
+#: The x-ray modes whose loss has a Triton kernel: ``nll`` routes to
+#: ``torchref.base.targets.triton.xray_nll``, ``ls`` and ``ls_wunit_k1`` to
+#: ``triton.xray_ls``. The sigma_A family (``ml``, ``ml_noalpha``, ``ml_full``,
+#: ``nll_beta``) is eager-only, so an A/B on those would compare the reference against
+#: itself in the loss and add nothing over the density-splat coverage the ``xray`` param
+#: below already gives.
+_TRITON_XRAY_MODES: Tuple[str, ...] = ("nll", "ls", "ls_wunit_k1")
+
+
+def _triton_xray_modes() -> Tuple[str, ...]:
+    """:data:`_TRITON_XRAY_MODES`, checked against the mode table at collection time.
+
+    Not decoration. This module named ``bhattacharyya``, ``rice`` and ``gaussian`` for as
+    long as it took to run the suite on a GPU host after the 2026-08 target refactor
+    deleted them, and all twelve of its params then died on a ``ValueError`` raised from
+    :func:`~torchref.refinement.targets.xray.factory.create_xray_target` -- a message that
+    names the factory rather than the drift. A mode renamed out from under this list now
+    fails at collection, quoting the current table.
+    """
+    missing = sorted(set(_TRITON_XRAY_MODES) - set(XRAY_TARGETS.names))
+    if missing:
+        raise RuntimeError(
+            f"stale x-ray mode(s) {missing} in _TRITON_XRAY_MODES; XRAY_TARGETS now "
+            f"offers {', '.join(XRAY_TARGETS.names)}"
+        )
+    return _TRITON_XRAY_MODES
 
 
 def _tol_for(name: str) -> Tuple[float, float]:
@@ -160,7 +190,10 @@ def gpu_refinement(_1daw_pair):
         data_file=str(mtz),
         pdb=str(pdb),
         device=device,
-        target_mode="bhattacharyya",
+        # Any mode with a Triton path will do -- this fixture exercises the geometry/adp
+        # targets, and xray is only one row of the comparison. `nll` is the successor of the
+        # retired `gaussian` and keeps the fused Triton kernel.
+        target_mode="nll",
         verbose=0,
     )
     ref.scaler.initialize()
@@ -231,12 +264,27 @@ def test_triton_matches_eager_per_target(target_name, gpu_refinement, gpu_state)
 
 @pytest.mark.cuda
 @pytest.mark.integration
-@pytest.mark.parametrize("target_mode", ["bhattacharyya", "rice", "ls", "gaussian"])
+@pytest.mark.parametrize("target_mode", _triton_xray_modes())
 def test_triton_matches_eager_xray_modes(target_mode, _1daw_pair):
-    """Same comparison for the four xray loss modes (Bhattacharyya, Rice,
-    LS, Gaussian) — builds a fresh refinement per mode since the mode is
-    a constructor argument. (The default 'ml' σ_A target is eager-only, so
-    it has no Triton path to compare.)
+    """Same comparison for every xray mode that HAS a Triton path.
+
+    Builds a fresh refinement per mode, since the mode is a constructor argument.
+
+    The list is three of the seven selectable modes, and it is short for a reason: the
+    sigma_A family (``ml``, ``ml_noalpha``, ``ml_full``, ``nll_beta``) is eager-only, so
+    there is nothing to compare. It previously read
+    ``["bhattacharyya", "rice", "ls", "gaussian"]`` -- three names that no longer resolve
+    (bhattacharyya and rice were deleted, gaussian was renamed to nll). Because this test is
+    CUDA-marked it cannot run on an sm_61 host, so those three sat here erroring at setup and
+    invisible until the suite was run on a real GPU node. Hence
+    :func:`_triton_xray_modes`, which now fails at collection instead.
+
+    ``ls_wunit_k1`` shares ``ls``'s Triton kernel but not its scale: it is the one target
+    overriding ``_scaled_F_calc_full``, recomputing a global scale on every gradient call,
+    so it reaches the kernel with different amplitudes than ``ls`` does.
+
+    Measured on 1DAW/CUDA: loss agrees to <= 3e-7 relative and the worst per-parameter
+    gradient to <= 3.3e-5, against the default bounds of atol 1e-2 / rtol 1e-3.
     """
     from torchref import LBFGSRefinement
     from torchref.utils import use_portable
@@ -362,7 +410,8 @@ def test_geometry_degenerate_finite_grads():
             with (use_portable() if pin else contextlib.nullcontext()):
                 loss = fn(x, *args)
             (grad,) = torch.autograd.grad(loss, x)
-            assert torch.isfinite(grad).all(), f"{name}/{engine}: non-finite grad"
+            path = "portable" if pin else "default"
+            assert torch.isfinite(grad).all(), f"{name}/{path}: non-finite grad"
 
 
 def _hvp_vs_fd(model, hkl, eps=1e-5):
@@ -421,7 +470,7 @@ def test_eager_gpu_hessian_iso(tmp_path):
     """
     import itertools
 
-    from torchref.config import device, dtypes
+    from torchref.config import dtypes
     from torchref.model.model_ft import ModelFT
 
     f0, c0 = dtypes.float, dtypes.complex

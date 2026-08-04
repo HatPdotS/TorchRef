@@ -1,17 +1,11 @@
-"""
-Joint scaler for multi-dataset / multi-model kinetic refinement.
+"""Joint scaler for multi-dataset / multi-model kinetic refinement.
 
-``CollectionScaler`` extends ``ScalerBase`` to operate on paired
-``DatasetCollection`` + ``ModelCollection`` instances.  A single set of
-scale parameters (log_scale, U, k_sol, B_sol, phase) is shared across
-**all** data–model pairs, preventing artificial scale differences that
-corrupt the difference signal in time-resolved refinement.
-
-Per-component solvent models are created for each base model in the
-``ModelCollection``.  For a mixed model at any timepoint the solvent
-contribution is the linear combination of individual component solvent
-structure factors, weighted by the same population fractions as the
-structural models.
+``CollectionScaler`` extends ``ScalerBase`` to paired ``DatasetCollection`` +
+``ModelCollection`` instances, sharing one set of scale parameters (log_scale,
+U, k_sol, B_sol, phase) across **all** data-model pairs so no artificial scale
+difference corrupts the time-resolved difference signal. One solvent model is
+built per base model; a mixed model's solvent contribution is their linear
+combination at the same population fractions as the structural models.
 """
 
 from typing import TYPE_CHECKING, Dict, List, Optional
@@ -36,12 +30,11 @@ class CollectionScaler(ScalerBase):
     """
     Joint scaler for DatasetCollection + ModelCollection.
 
-    Shares scale parameters (log_scale, U, k_sol, B_sol, phase) across
-    **all** data–model pairs.  (A bin-wise B-factor correction exists but
-    is *not* set up by ``initialize()`` and so is not a shared, refined
-    parameter by default.)  Manages per-component
-    solvent models so that the bulk-solvent contribution for a mixed model
-    is the fraction-weighted sum of individual component solvent SFs.
+    Shares scale parameters (log_scale, U, k_sol, B_sol, phase) across **all**
+    data-model pairs, and manages per-component solvent models so a mixed
+    model's bulk solvent is the fraction-weighted sum of the component solvent
+    SFs. The bin-wise B-factor correction is *not* set up by ``initialize()``
+    and so is not a shared refined parameter by default.
 
     Parameters
     ----------
@@ -184,14 +177,9 @@ class CollectionScaler(ScalerBase):
     # ------------------------------------------------------------------
 
     def _setup_component_solvent_models(self):
-        """
-        Create a SolventModel for each base model in the ModelCollection.
-
-        The **first** component's SolventModel is also stored as
-        ``self.solvent`` — it owns the shared k_sol / B_sol / phase
-        parameters that are optimised during scaling.  The remaining
-        component models are used only for their raw solvent structure
-        factors (mask FFT); their own k/B/phase parameters are frozen.
+        """Create a SolventModel per base model; the first also becomes
+        ``self.solvent`` and owns the shared k_sol / B_sol / phase parameters.
+        The rest contribute only their mask FFT and are frozen.
         """
         mc = self._model_collection
         self._component_solvent_models = nn.ModuleList()
@@ -228,19 +216,7 @@ class CollectionScaler(ScalerBase):
             )
 
     def _get_component_f_sol_raw(self, idx: int) -> torch.Tensor:
-        """
-        Get (and cache) raw solvent SFs for component *idx*.
-
-        Parameters
-        ----------
-        idx : int
-            Index into ``_component_solvent_models``.
-
-        Returns
-        -------
-        torch.Tensor
-            Raw (un-damped) complex solvent structure factors.
-        """
+        """Raw (un-damped) complex solvent SFs for component *idx*, cached."""
         if idx not in self._f_sol_raw_components:
             sol = self._component_solvent_models[idx]
             self._f_sol_raw_components[idx] = sol.get_rec_solvent(self.hkl)
@@ -344,13 +320,9 @@ class CollectionScaler(ScalerBase):
         dict
             Refinement metrics (steps, rwork, rfree of dark dataset).
         """
-        # Imported HERE, not at module scope, and deliberately so. `sigma_a` lives under
-        # `torchref.refinement`, which imports `torchref.scaling` at module level
-        # (`base_refinement.py`), so a module-level import in this direction closes the
-        # cycle. It happens to resolve today only because `torchref/__init__.py` imports
-        # refinement before scaling -- an invariant enforced by nothing but line order.
-        # Every use of these two names is inside this method, so the local import costs
-        # nothing. Do not "tidy" it back up to module scope.
+        # Local import, deliberately: `torchref.refinement` imports
+        # `torchref.scaling` at module scope, so hoisting these to module level
+        # closes an import cycle. Do not "tidy" them up.
         from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator, epsilon_from_hkl
         from torchref.refinement.loss_state import LossState
 
@@ -360,12 +332,9 @@ class CollectionScaler(ScalerBase):
 
         # Pre-compute all fcalc (detached) plus the per-dataset σ_A model-error
         # variance (beta/epsilon). beta is estimated ONCE on each dataset's free
-        # set from the currently-scaled |F_calc| and held constant (detached)
-        # during the scale optimisation — exactly as the single-dataset
-        # ``ScalerBase.refine_lbfgs`` does. The σ_A (Read MLF) likelihood is what
-        # keeps the per-bin log_scale from collapsing toward zero in weak shells;
-        # the plain σ-weighted Gaussian ``nll_xray`` used previously drove the
-        # scale down (model under-scaled, R blow-up).
+        # set from the currently-scaled |F_calc| and held detached during the fit,
+        # as in the single-dataset ``ScalerBase.refine_lbfgs``; that variance is
+        # what stops the per-bin log_scale collapsing toward zero in weak shells.
         fcalc_cache = {}
         fractions_cache = {}
         beta_cache = {}
@@ -393,9 +362,8 @@ class CollectionScaler(ScalerBase):
                 ).to(fc_amp0.dtype)
                 s = get_scattering_vectors(hkl, data.cell)
                 dss0 = (torch.norm(s, dim=1) ** 2).to(fc_amp0.dtype)
-                # sigma_obs passed for the same reason as every other call site: it is
-                # what makes sigma_A the correlation with the noise-free amplitudes.
-                # One estimator behaviour across the codebase.
+                # sigma_obs must be passed, as at every other call site: it is what
+                # makes sigma_A the correlation with the noise-free amplitudes.
                 _est = SigmaAEstimator().get(
                     fobs0, fc_amp0, data.centric, eps0, dss0, data.free.mask,
                     sigma_obs=sigma.to(fc_amp0.dtype).reshape(-1),
@@ -410,11 +378,9 @@ class CollectionScaler(ScalerBase):
             work_cache[name] = data.work
             centric_cache[name] = data.centric
 
-        # Wrap the joint σ_A ML loss + U-penalty as a LossState target. fcalc is
-        # detached, so the only leaves in the autograd graph are the scaler's own
-        # parameters — LossState's probe picks them up at registration time, and
-        # validate_loss inside state.step handles NaN/Inf rejection so no
-        # per-target try/except is needed.
+        # Wrap the joint σ_A ML loss + U-penalty as a LossState target, reusing its
+        # NaN/Inf rejection. fcalc is detached, so the only leaves in the graph are
+        # the scaler's own parameters.
         scaler_self = self
 
         class _CollectionScalerJointTarget(nn.Module):
@@ -455,13 +421,11 @@ class CollectionScaler(ScalerBase):
                 if n > 0:
                     total = total / n
                 u_penalty = torch.sum(scaler_self.U**2)
-                # Smoothness (Tikhonov) penalty on the per-bin log_scale: the
-                # lowest-resolution shells are solvent-dominated with large
-                # model error, so the σ_A likelihood is nearly flat there and a
-                # free per-bin scale runs away to -inf (model amplitudes -> 0,
-                # R blow-up). Penalising squared first differences ties each bin
-                # to its neighbours so under-constrained shells follow the
-                # well-determined ones instead of collapsing.
+                # Smoothness (Tikhonov) penalty on the per-bin log_scale: the σ_A
+                # likelihood is nearly flat in the solvent-dominated lowest-
+                # resolution shells, where a free per-bin scale runs away to -inf
+                # (amplitudes -> 0, R blow-up). Penalising squared first
+                # differences ties under-constrained bins to their neighbours.
                 ls = scaler_self.log_scale
                 smooth_penalty = scale_smoothness * torch.sum(
                     (ls[1:] - ls[:-1]) ** 2

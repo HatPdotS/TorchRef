@@ -5,8 +5,8 @@ C++ kernel could not be built. Plain ``scatter_add`` only, so it runs on every d
 supports float64, and is double-differentiable -- which makes it the reference the
 accelerator kernels are checked against.
 
-One truncation contract, shared with the Triton, Metal and fused-CPU kernels, so AUTO
-and EAGER agree to float noise on every device:
+One truncation contract, shared with the Triton, Metal and fused-CPU kernels, so AUTO and
+EAGER agree to float noise on every device:
 
     voxel v gets atom i's density iff ``||w||^2 <= r_i^2``, where ``w`` is the Cartesian
     atom->voxel vector (sphere centred on the ATOM, not on its anchor node) and ``r_i``
@@ -16,19 +16,11 @@ enumerated over the triclinic-correct per-axis box
 ``ceil(r * n_axis * ||inv_frac row_axis||)``. See ``sphere_splat.py`` for the canonical
 statement.
 
-These used to diverge from that in three ways at once: the iso path selected voxels by
-``||offset * voxel_size||`` -- a diagonal metric, wrong for any non-orthogonal cell --
-measured from the anchor node rather than from the atom, at a radius rounded up to a
-whole voxel; and the aniso path splatted a full cube. On a beta=115 deg cell that
-mis-selected ~12% of each sphere's voxels, a 5e-3 rel L2 map error, i.e. larger than the
-1.7e-3 truncation error the cutoff exists to deliver.
-
 Out-of-sphere voxels are zeroed rather than dropped, keeping the box dense so one
-``scatter_add`` covers the chunk. That wastes some writes, which is the right trade for a
-portable reference.
-
-These functions ADD into the supplied ``density_map`` (so the isotropic and anisotropic
-passes accumulate into the same map) and are autograd-connected in xyz / adp / u / occ.
+``scatter_add`` covers the chunk -- some wasted writes, the right trade for a portable
+reference. These functions ADD into the supplied ``density_map`` (so the isotropic and
+anisotropic passes accumulate into one map) and are autograd-connected in
+xyz / adp / u / occ.
 """
 
 from __future__ import annotations
@@ -49,10 +41,8 @@ _CHUNK = 1024
 def _bucket_by_radius(radius: torch.Tensor, center_1d: torch.Tensor):
     """Sort atoms by (radius, center_1d); return ``(order, [(radius, start, end)])``.
 
-    Buckets on the radius itself rather than a voxel-derived box size: the policy
-    quantizes to 0.25 A and clamps to [2, 7], so there are at most 21 distinct
-    values and the per-axis box follows from the radius alone. Sorting by 1D centre
-    within a bucket keeps the scatter cache-friendly.
+    Buckets on the radius itself, of which the policy's quantization leaves at most 21
+    distinct values; sorting by 1D centre within a bucket keeps the scatter cache-friendly.
     """
     order_parts, spans, cursor = [], [], 0
     for r in torch.unique(radius).tolist():
@@ -69,11 +59,10 @@ def _bucket_by_radius(radius: torch.Tensor, center_1d: torch.Tensor):
 def _axis_half_widths(r: float, inv_frac: torch.Tensor, grid_dims):
     """``ceil(r * n_axis * ||inv_frac row_axis||)`` -- the kernels' enumeration box.
 
-    The norm is taken in float64 **on the CPU**, never on the input's device: this path
-    also serves ``force_portable`` on MPS, which has no float64, and ``.double()`` in place
-    raises there. Hopping a 3x3 matrix to the CPU is free, and float64 matters because the
-    result feeds a ``ceil`` -- a value landing a hair under an integer in float32 would
-    shrink the box by one voxel and silently clip the sphere.
+    The norm is taken in float64 **on the CPU**, never on the input's device: this path also
+    serves ``force_portable`` on MPS, which has no float64 and raises on ``.double()``.
+    float64 matters because the result feeds a ``ceil`` -- a value landing a hair under an
+    integer in float32 shrinks the box by one voxel and silently clips the sphere.
     """
     row_norms = torch.linalg.norm(inv_frac.detach().cpu().double(), dim=1)
     return tuple(
@@ -83,11 +72,8 @@ def _axis_half_widths(r: float, inv_frac: torch.Tensor, grid_dims):
 
 
 def _box_offsets(bh, frac, grid_dims, device, dtype):
-    """Per-axis box offsets plus their Cartesian displacements.
-
-    Returns ``(offsets (R,3) int64, off_cart (R,3))`` with
-    ``off_cart = frac @ (offset / n)`` -- the same ``ox*u_a + oy*u_b + oz*u_c`` the
-    kernels accumulate.
+    """``(offsets (R,3) int64, off_cart (R,3))`` with ``off_cart = frac @ (offset / n)``
+    -- the same ``ox*u_a + oy*u_b + oz*u_c`` the kernels accumulate.
     """
     axes = [torch.arange(-b, b + 1, device=device) for b in bh]
     gx, gy, gz = torch.meshgrid(*axes, indexing="ij")
@@ -118,9 +104,9 @@ def add_isotropic_plain_var(density_map, xyz, adp, occ, A, B,
 
     Signature mirrors
     :func:`~torchref.base.electron_density.kernels.cpu.sphere_splat.add_isotropic_cpu_sphere_var`
-    exactly, so the two are interchangeable at the dispatch site. There is no
-    ``voxel_size`` or ``grid_shape`` argument: the grid shape comes from
-    ``density_map`` and the truncation box from ``inv_frac_matrix``.
+    exactly, so the two are interchangeable at the dispatch site. No ``voxel_size`` or
+    ``grid_shape``: the grid shape comes from ``density_map``, the box from
+    ``inv_frac_matrix``.
     """
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)
@@ -159,12 +145,8 @@ def add_anisotropic_plain_var(density_map, xyz, u, occ, A, B,
     :func:`~torchref.base.electron_density.kernels.cpu.sphere_splat.add_anisotropic_cpu_sphere_var`.
     Density is the full 3D Gaussian ``exp(-pi^2 w^T Minv w)`` with
     ``M_g = (B_g*I + 8*pi^2*U)/4``; the *cutoff* is the Euclidean sphere at
-    ``radius_per_atom`` (the ellipsoid's isotropic bounding radius), matching the
-    CUDA and Metal kernels, which likewise cull on Euclidean distance and evaluate
-    the Mahalanobis form.
-
-    This replaces a full-cube splat: the cube was ~2.3x the sphere's voxel count
-    and disagreed with every accelerator path.
+    ``radius_per_atom`` (the ellipsoid's isotropic bounding radius), matching the CUDA and
+    Metal kernels.
     """
     device, dtype = xyz.device, density_map.dtype
     nx, ny, nz = (int(s) for s in density_map.shape)

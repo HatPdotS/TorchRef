@@ -46,6 +46,7 @@ class MultiModelGeometryTarget(Target):
         )
 
     def forward(self) -> torch.Tensor:
+        """Geometry loss summed over the collection's base models."""
         total = torch.tensor(0.0, device=self._model_collection.device)
         for target in self._targets:
             total = total + target()
@@ -53,13 +54,8 @@ class MultiModelGeometryTarget(Target):
 
     def register_to_state(self, state):
         """
-        Register each base model's geometry sub-targets individually
-        into a LossState with hierarchical naming.
-
-        Parameters
-        ----------
-        state : LossState
-            The loss state to register targets into.
+        Register each base model's geometry sub-targets into ``state`` individually,
+        named ``model_<i>/<sub>``. Returns the state for chaining.
         """
         for i, target in enumerate(self._targets):
             state.register_target("geometry", target, prefix=f"model_{i}")
@@ -103,6 +99,7 @@ class MultiModelADPTarget(Target):
         )
 
     def forward(self) -> torch.Tensor:
+        """ADP restraint loss summed over the collection's base models."""
         total = torch.tensor(0.0, device=self._model_collection.device)
         for target in self._targets:
             total = total + target()
@@ -115,6 +112,7 @@ class MultiModelADPTarget(Target):
         return state
 
     def items(self):
+        """Sub-targets as ``("model_<i>/<sub>", target)`` for LossState expansion."""
         result = {}
         for i, target in enumerate(self._targets):
             for sub_name, sub_target in target.items():

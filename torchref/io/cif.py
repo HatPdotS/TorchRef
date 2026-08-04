@@ -1,66 +1,14 @@
 """
-CIF/mmCIF file format reading and writing.
+CIF/mmCIF reading and writing: reflections, coordinates, restraint
+dictionaries and CCP4 maps.
 
-This module provides functions for reading and writing CIF (Crystallographic
-Information File) format data, including:
-- Reflection data (structure factors)
-- Model data (atomic coordinates)
-- Restraint dictionaries
-- Electron density maps
+Thin wrappers over the readers in :mod:`torchref.io.cif_readers`. The ``read_*``
+functions return a *reader object*, not the data -- call it (or one of its
+``get_*`` methods) to get the parsed content::
 
-Functions
----------
-read_reflections
-    Read reflection data from a CIF file.
-read_model
-    Read atomic coordinates from a CIF file.
-read_restraints
-    Read restraint dictionary from a CIF file.
-list_data_blocks
-    List available data blocks in a CIF file.
-write_map
-    Write electron density map to CCP4 format.
-write_model
-    Write atomic coordinates to mmCIF format.
-dataframe_to_gemmi_structure
-    Convert a torchref atom DataFrame to a gemmi.Structure.
-
-Classes
--------
-CIFReader
-    Generic CIF file reader.
-ReflectionCIFReader
-    Reader for structure factor CIF files.
-ModelCIFReader
-    Reader for mmCIF coordinate files.
-RestraintCIFReader
-    Reader for restraint dictionary CIF files.
-
-Examples
---------
-::
-
-    from torchref.io import cif
-
-    # Reading reflections
-    reader = cif.read_reflections('structure-sf.cif', verbose=1)
-    data_dict, cell, spacegroup = reader()
-
-    # Reading model
-    reader = cif.read_model('structure.cif')
-    df, cell, spacegroup = reader()
-
-    # Writing model (mmCIF)
-    from torchref.io.metadata import RefinementMetadata
-    meta = RefinementMetadata(r_work=0.18, r_free=0.21)
-    cif.write_model(df, 'refined.cif', metadata=meta)
-
-    # Reading restraints
-    reader = cif.read_restraints('ALA.cif')
-    restraints = reader.get_all_restraints()
-
-    # List data blocks
-    blocks = cif.list_data_blocks('multi-block.cif')
+    data_dict, cell, spacegroup = cif.read_reflections('structure-sf.cif')()
+    df, cell, spacegroup = cif.read_model('structure.cif')()
+    restraints = cif.read_restraints('ALA.cif').get_all_restraints()
 """
 
 from typing import List, Optional
@@ -95,15 +43,7 @@ def read_reflections(
     Returns
     -------
     ReflectionCIFReader
-        Reader object with data loaded.
-
-    Examples
-    --------
-    ::
-
-        reader = cif.read_reflections('structure-sf.cif')
-        data_dict, cell, spacegroup = reader()
-        hkl = data_dict['HKL']
+        Reader object; call it for ``(data_dict, cell, spacegroup)``.
     """
     return ReflectionCIFReader(filepath, verbose=verbose, data_block=data_block)
 
@@ -122,15 +62,7 @@ def read_model(filepath: str, verbose: int = 0) -> ModelCIFReader:
     Returns
     -------
     ModelCIFReader
-        Reader object with data loaded.
-
-    Examples
-    --------
-    ::
-
-        reader = cif.read_model('structure.cif')
-        df, cell, spacegroup = reader()
-        print(f"Loaded {len(df)} atoms")
+        Reader object; call it for ``(df, cell, spacegroup)``.
     """
     return ModelCIFReader(filepath, verbose=verbose)
 
@@ -147,14 +79,7 @@ def read_restraints(filepath: str) -> RestraintCIFReader:
     Returns
     -------
     RestraintCIFReader
-        Reader object with restraints loaded.
-
-    Examples
-    --------
-    ::
-
-        reader = cif.read_restraints('ALA.cif')
-        restraints = reader.get_all_restraints()
+        Reader object; use ``get_all_restraints()`` to extract them.
     """
     return RestraintCIFReader(filepath)
 
@@ -171,14 +96,7 @@ def list_data_blocks(filepath: str) -> List[str]:
     Returns
     -------
     list of str
-        Names of available data blocks.
-
-    Examples
-    --------
-    ::
-
-        blocks = cif.list_data_blocks('multi-dataset.cif')
-        print(f"Available blocks: {blocks}")
+        Names of available data blocks, in file order.
     """
     reader = CIFReader(filepath)
     return reader.available_blocks
@@ -340,27 +258,18 @@ def dataframe_to_gemmi_structure(df, cell, spacegroup):
 
 
 def _add_refine_categories(doc, metadata):
-    """Inject refinement metadata into an mmCIF document.
-
-    Parameters
-    ----------
-    doc : gemmi.cif.Document
-        The mmCIF document to modify.
-    metadata : RefinementMetadata
-        Metadata to inject.
-    """
+    """Inject a :class:`RefinementMetadata`'s categories into ``doc``, in place."""
     import gemmi
 
     block = doc.sole_block()
     cats = metadata.render_cif_categories()
 
     for cat_name, items in cats.items():
-        # Check if any values are lists (loop categories)
+        # List values mean a loop category rather than key-value pairs.
         is_loop = any(isinstance(v, list) for v in items.values())
 
         if is_loop:
-            # Create loop: gemmi expects prefix (e.g. '_audit_author.')
-            # and tag suffixes (e.g. ['name', 'pdbx_ordinal'])
+            # gemmi wants a prefix ('_audit_author.') plus tag suffixes.
             tags = list(items.keys())
             prefix = tags[0].rsplit(".", 1)[0] + "."
             suffixes = [t.split(".")[-1] for t in tags]
@@ -377,7 +286,6 @@ def _add_refine_categories(doc, metadata):
                         row.append(str(val))
                 loop.add_row(row)
         else:
-            # Simple key-value pairs
             for key, val in items.items():
                 block.set_pair(key, gemmi.cif.quote(str(val)))
 
@@ -392,22 +300,20 @@ def write_model(df, filepath: str, metadata=None) -> None:
     filepath : str
         Output mmCIF file path.
     metadata : RefinementMetadata, optional
-        Metadata to include in the mmCIF file (refinement statistics,
-        title, authors, etc.).
+        Refinement statistics, title, authors etc. When given, the file is
+        rebuilt so the metadata precedes the atom records.
     """
     import gemmi
 
     cell = df.attrs.get("cell")
     spacegroup = df.attrs.get("spacegroup", "P 1")
 
-    # Build metadata block first, then structure block, so metadata
-    # appears before atom records in the output file.
+    # Metadata block first, then the structure block, so metadata precedes the
+    # atom records in the output file.
     if metadata is not None:
-        # Create a standalone document with metadata
         meta_doc = gemmi.cif.Document()
         meta_block = meta_doc.add_new_block("torchref")
 
-        # Add cell and symmetry to metadata block
         if cell is not None:
             if not isinstance(cell, (list, tuple)):
                 cell = cell.tolist()
@@ -423,15 +329,13 @@ def write_model(df, filepath: str, metadata=None) -> None:
                 "_symmetry.space_group_name_H-M", gemmi.cif.quote(str(spacegroup))
             )
 
-        # Add refinement metadata categories
         _add_refine_categories(meta_doc, metadata)
 
-        # Now build structure and get its atom_site loop
         st = dataframe_to_gemmi_structure(df, cell, spacegroup)
         struct_doc = st.make_mmcif_document()
         struct_block = struct_doc.sole_block()
 
-        # Copy atom-related loops from struct_block to meta_block
+        # Copy the atom loops across into the metadata block.
         for item in struct_block:
             if item.loop is not None:
                 loop = item.loop

@@ -16,8 +16,7 @@ project = 'TorchRef'
 copyright = '2026, Hans Peter Seidel'
 author = 'Hans Peter Seidel'
 
-# Derive the documented version from the installed package so the docs are
-# always stamped with the real release (torchref/__init__.py __version__).
+# Single source of truth for the version: torchref/__init__.py __version__.
 import torchref  # noqa: E402
 
 release = torchref.__version__
@@ -81,13 +80,12 @@ intersphinx_mapping = {
 }
 
 templates_path = ['_templates']
-exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store', 'api/torchref.alignment*.rst', 'api/torchref.math_functions*.rst']
+exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = 'sphinx_rtd_theme'  # Read the Docs theme (popular, clean)
-html_static_path = ['_static']
 
 # Theme options
 html_theme_options = {

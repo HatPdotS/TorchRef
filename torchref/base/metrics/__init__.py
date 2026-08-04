@@ -1,10 +1,8 @@
 """
-Metrics and loss functions for crystallographic refinement.
+R-factors, amplitude-space likelihoods and per-bin scaling.
 
-This submodule provides functions for:
-- R-factor calculations
-- Negative log-likelihood loss functions
-- Statistical metrics
+Two reduction conventions live side by side here: the ``nll_xray`` family sums, the
+lognormal and log-space losses average. See :mod:`~torchref.base.metrics.loss`.
 """
 
 from .rfactor import (

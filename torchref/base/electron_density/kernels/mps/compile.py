@@ -1,15 +1,11 @@
-"""Lazy compilation + availability probe for the Metal (MPS) splat kernels.
+"""Lazy compilation and availability probe for the Metal (MPS) splat kernels.
 
-Mirrors the memoize / permanent-failure / graceful-fallback structure of
-``kernels/cpu/scatter.py`` (``_get_module``), but the build is a single
-in-process ``torch.mps.compile_shader`` call -- no ninja, build directory, or
-file locking, since PyTorch caches the compiled pipeline-state objects itself.
-
-``mps_kernels_available()`` is what ``torchref.utils.should_use_metal`` consults;
-it returns False whenever MPS is absent, ``compile_shader`` is missing
-(torch < 2.9), or the shader fails to build. The caller then falls back to the
-portable plain splat and warns; ``why_unavailable()`` reports
-instead, quoting :func:`last_error`.
+The build is a single in-process ``torch.mps.compile_shader`` call -- no ninja, build
+directory or file locking, since PyTorch caches the compiled pipeline-state objects
+itself. ``mps_kernels_available()`` is what ``torchref.utils.should_use_metal`` consults
+and returns False whenever MPS is absent, ``compile_shader`` is missing (torch < 2.9), or
+the shader fails to build; the caller then falls back to the portable plain splat and
+warns, while ``why_unavailable()`` reports :func:`last_error`.
 """
 
 from __future__ import annotations
@@ -38,11 +34,10 @@ def _mps_shader_supported() -> bool:
 
 
 def _get_lib():
-    """Return the compiled shader library, or None if unavailable.
+    """The compiled shader library, or None if unavailable.
 
-    Short-circuits both prior outcomes so compilation is attempted exactly once.
-    Any failure (unsupported torch, MPS off, MSL compile error) is recorded and
-    turned into a None return so callers fall back to the plain splat.
+    Short-circuits both prior outcomes so compilation is attempted exactly once; any failure
+    is recorded and turned into None so callers fall back to the plain splat.
     """
     global _lib, _lib_failed, _lib_error
     if _lib is not None:
@@ -68,11 +63,10 @@ def _get_lib():
 def why_unavailable() -> Optional[str]:
     """``None`` if the Metal kernels are usable, else why they are not.
 
-    The single availability probe for this backend -- the shape every backend implements,
-    consumed by :mod:`torchref.utils.backends`. It returns the *reason* rather than a bool
-    because the availability test has to explain itself, and "torch has no
-    ``compile_shader``" and "the MSL failed to compile" are different problems with
-    different fixes.
+    The single availability probe for this backend, consumed by
+    :mod:`torchref.utils.backends`. It returns the *reason* rather than a bool because
+    "torch
+    has no ``compile_shader``" and "the MSL failed to compile" need different fixes.
     """
     if _get_lib() is not None:
         return None

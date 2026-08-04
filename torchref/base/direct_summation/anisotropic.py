@@ -54,40 +54,29 @@ def aniso_structure_factor_torched(
     occ : torch.Tensor
         Occupancies of shape (N_atoms,).
     scattering_factors : torch.Tensor or None
-        Atomic scattering factors of shape (N_reflections, N_atoms).
-        If None, must provide A and B_coeff to compute them in batches.
+        Shape (N_reflections, N_atoms). If None, ``A``/``B_coeff`` are required.
     U : torch.Tensor
         Anisotropic displacement parameters of shape (N_atoms, 6).
     spacegroup : callable
         Space group symmetry operator function.
     max_memory_gb : float, optional
         Maximum memory to use in GB. If None, no batching is applied.
-    A : torch.Tensor, optional
-        ITC92 A coefficients (N_atoms, 5) for computing scattering factors.
-    B_coeff : torch.Tensor, optional
-        ITC92 B coefficients (N_atoms, 5) for computing scattering factors.
+    A, B_coeff : torch.Tensor, optional
+        ITC92 coefficients (N_atoms, 5), used when ``scattering_factors`` is None.
 
     Returns
     -------
     torch.Tensor
-        Complex structure factors of shape (N_reflections,).
-
-    Notes
-    -----
-    The complex dtype differs by code path: the non-batched path returns a
-    complex dtype derived from the configured float dtype (``dtypes.float``,
-    float32 in production), whereas the batched path (``_aniso_sf_batched``,
-    used when ``max_memory_gb`` forces batching) allocates its output as
-    ``torch.complex128``.
+        Complex structure factors of shape (N_reflections,). Dtype depends on
+        the path taken: complex derived from ``dtypes.float`` unbatched, but
+        ``complex128`` once ``max_memory_gb`` forces batching.
     """
-    # Apply spacegroup to get symmetry-expanded coordinates
     xyz_expanded = spacegroup(xyz_fractional.T)  # (3, N_atoms, n_ops)
     fractional_shape = xyz_expanded.shape
     n_ops = fractional_shape[2] if len(fractional_shape) > 2 else 1
     n_atoms = fractional_shape[1]
     n_refl = hkl.shape[0]
 
-    # Reshape for matrix multiplication
     xyz_flat = xyz_expanded.reshape(3, -1)  # (3, N_atoms * n_ops)
 
     # Precompute U matrix (doesn't depend on batch)
@@ -96,7 +85,6 @@ def aniso_structure_factor_torched(
     U_row3 = torch.stack([U[:, 4], U[:, 5], U[:, 2]], dim=0)
     U_matrix = torch.stack([U_row1, U_row2, U_row3], dim=0)  # (3, 3, N_atoms)
 
-    # Check if batching is needed
     if max_memory_gb is not None:
         batch_size = _estimate_batch_size_aniso(n_refl, n_atoms, n_ops, max_memory_gb)
         if batch_size < n_refl:
@@ -119,7 +107,6 @@ def aniso_structure_factor_torched(
         s_mag = torch.norm(s_vector, dim=1)
         scattering_factors = _compute_scattering_factors_batch(s_mag, A, B_coeff)
 
-    # No batching - compute all at once
     dot_product = torch.matmul(hkl.to(dtypes.float), xyz_flat).reshape(
         n_refl, n_atoms, -1
     )
@@ -150,36 +137,12 @@ def _aniso_sf_batched(
     A=None,
     B_coeff=None,
 ):
-    """
-    Compute anisotropic structure factors in batches over reflections.
+    """Batched-over-reflections variant of :func:`aniso_structure_factor_torched`.
 
-    Parameters
-    ----------
-    hkl : torch.Tensor
-        Miller indices (N_refl, 3).
-    s_vector : torch.Tensor
-        Scattering vectors (N_refl, 3).
-    xyz_flat : torch.Tensor
-        Flattened fractional coordinates (3, N_atoms * n_ops).
-    fractional_shape : tuple
-        Original shape (3, N_atoms, n_ops).
-    occ : torch.Tensor
-        Occupancies (N_atoms,).
-    scattering_factors : torch.Tensor or None
-        Scattering factors (N_refl, N_atoms). If None, computed from A/B_coeff.
-    U_matrix : torch.Tensor
-        Precomputed U matrix (3, 3, N_atoms).
-    batch_size : int
-        Number of reflections per batch.
-    A : torch.Tensor, optional
-        ITC92 A coefficients for computing scattering factors.
-    B_coeff : torch.Tensor, optional
-        ITC92 B coefficients for computing scattering factors.
-
-    Returns
-    -------
-    torch.Tensor
-        Complex structure factors (N_refl,).
+    ``xyz_flat`` is the symmetry-expanded coordinates flattened to
+    (3, N_atoms * n_ops), ``fractional_shape`` its pre-flatten shape
+    (3, N_atoms, n_ops), ``U_matrix`` the expanded U as (3, 3, N_atoms). Output
+    is always ``complex128``, unlike the unbatched path.
     """
     n_refl = hkl.shape[0]
     n_atoms = fractional_shape[1]
@@ -191,18 +154,15 @@ def _aniso_sf_batched(
     for start in range(0, n_refl, batch_size):
         end = min(start + batch_size, n_refl)
 
-        # Slice inputs for this batch
         hkl_batch = hkl[start:end]
         s_batch = s_vector[start:end]
 
-        # Get or compute scattering factors for this batch
         if scattering_factors is not None:
             sf_batch = scattering_factors[start:end]
         else:
             s_mag = torch.norm(s_batch, dim=1)
             sf_batch = _compute_scattering_factors_batch(s_mag, A, B_coeff)
 
-        # Compute for this batch
         dot_product = torch.matmul(hkl_batch.to(dtypes.float), xyz_flat).reshape(
             end - start, n_atoms, -1
         )
@@ -223,8 +183,6 @@ def aniso_structure_factor_torched_no_complex(
 ):
     """
     Calculate anisotropic structure factors without complex numbers.
-
-    Returns real and imaginary parts as separate rows.
 
     Parameters
     ----------

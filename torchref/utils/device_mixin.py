@@ -1,36 +1,16 @@
 """
 DeviceMixin - unified device and dtype movement for TorchRef.
 
-Provides a single mixin that hijacks ``.to()``, ``.cuda()``, ``.cpu()`` (and
-indirectly ``.float()``, ``.double()``, ``.half()`` since they all funnel
-through ``nn.Module._apply``) for both ``nn.Module`` subclasses and plain
-Python classes. The mixin recursively traverses the object graph, moving:
+One mixin hijacks ``.to()``/``.cuda()``/``.cpu()`` (and indirectly ``.float()`` and
+friends, which funnel through ``nn.Module._apply``) for both ``nn.Module`` subclasses and
+plain Python classes, recursively moving: params, buffers and child modules via the
+standard machinery; raw tensor attributes on ``self``; non-Module sub-objects exposing
+``_apply``; tensors nested in ``list``/``tuple``/``dict`` attributes; and unregistered
+``nn.Module`` instances held as plain attributes.
 
-* parameters, buffers and child ``nn.Module`` instances (via the standard
-  ``nn.Module._apply`` machinery when applicable),
-* raw ``torch.Tensor`` attributes stored directly on ``self``,
-* non-Module sub-objects that expose ``_apply``,
-* tensors nested inside ``list`` / ``tuple`` / ``dict`` attributes,
-* unregistered ``nn.Module`` instances held as plain attributes.
-
-A thread-local visited set keyed by ``id()`` makes traversal cycle-safe
-(e.g. ``Target.refinement -> Refinement.targets -> Target``). After moving,
-any node exposing ``reset_forward_cache()`` or ``reset_cache()`` is
-invalidated.
-
-Usage::
-
-    class MyModule(DeviceMixin, nn.Module):
-        ...  # nothing else required for device movement
-
-    @dataclass
-    class MyDataclass(DeviceMixin):
-        _data: torch.Tensor
-
-The legacy name ``DeviceMovementMixin`` is kept as an alias for
-``DeviceMixin``. The name ``_NonModuleDeviceMixin`` (briefly a distinct
-implementation) is likewise an alias for ``DeviceMixin`` — the unified
-mixin now handles both the Module and non-Module cases.
+A thread-local ``id()`` visited set makes traversal cycle-safe, and every moved node has
+``reset_forward_cache()``/``reset_cache()`` called on it -- so a ``.to()`` is never free,
+even when it targets the device the object is already on.
 """
 
 from __future__ import annotations
@@ -43,21 +23,18 @@ from torch import nn
 
 from torchref.config import canonical_device
 
-# ``torch._C._nn._parse_to`` is the same parser ``nn.Module.to`` uses, so it
-# accepts every overload PyTorch does -- including ``.to(other_tensor)`` and
-# ``.to(0)``, which the hand-rolled ``_parse_to_args`` fallback below cannot
-# express. It is a private API, so probe once at import rather than catching
-# per call: catching ``TypeError``/``RuntimeError`` around each invocation
-# would turn a genuinely invalid user argument into a silent no-op.
+# The same parser ``nn.Module.to`` uses, so it accepts every overload PyTorch does --
+# including ``.to(other_tensor)`` and ``.to(0)``, which the ``_parse_to_args`` fallback
+# below cannot express. Private API, so probe once at import: catching per call would
+# turn a genuinely invalid user argument into a silent no-op.
 try:
     _PARSE_TO = torch._C._nn._parse_to
 except AttributeError:  # pragma: no cover - defensive against API drift
     _PARSE_TO = None
 
-# Whether this torch exposes ``nn.Module._apply(fn, recurse=...)``. Detected
-# once by signature rather than by catching ``TypeError`` at the call site: a
-# blanket catch there would also swallow a genuine ``TypeError`` raised *inside*
-# ``_apply`` after some tensors had already moved, and retry the move.
+# Whether this torch exposes ``nn.Module._apply(fn, recurse=...)``. Detected by signature,
+# not by catching ``TypeError`` at the call site: that would also swallow a genuine
+# ``TypeError`` raised *inside* ``_apply`` after some tensors moved, and retry the move.
 _MODULE_APPLY_TAKES_RECURSE = (
     "recurse" in inspect.signature(nn.Module._apply).parameters
 )
@@ -96,15 +73,9 @@ _NN_MODULE_INTERNALS = frozenset(
 class _ToRequest:
     """The ``(device, dtype)`` a top-level ``.to()`` asked for.
 
-    :meth:`DeviceMixin._apply` receives only an opaque tensor-to-tensor ``fn``,
-    so an object that owns no tensors cannot work out where it was just asked
-    to go. Recording the parsed request on the traversal thread-local lets
-    :func:`_refresh_device_trackers` answer that question at *every* node --
-    including tensor-free children, which are reached through
-    ``child._apply(fn)`` and therefore never pass through their own ``to()``.
-
-    ``probe`` caches a :func:`_probe_target` result for the traversal so a
-    graph with many tensor-free nodes probes at most once.
+    Recorded on the traversal thread-local because ``_apply`` receives only an opaque
+    ``fn``: it is the sole way a tensor-free node can learn where it was asked to go.
+    ``probe`` caches a :func:`_probe_target` result so one traversal probes at most once.
     """
 
     __slots__ = ("device", "dtype", "probe")
@@ -138,16 +109,16 @@ def _pop_request(prev):
 
 
 def _enter_traversal():
-    """Begin a top-level traversal. Returns a token for :func:`_exit_traversal`.
+    """Begin a top-level traversal; the token goes to :func:`_exit_traversal`.
 
-    Nested calls reuse the existing visited set and return ``None`` so the
-    outermost caller is the only one that tears it down.
+    Nested calls reuse the visited set and return ``None``, so only the outermost caller
+    tears it down.
     """
     prev = getattr(_traversal_state, "visited", None)
     if prev is None:
         _traversal_state.visited = set()
-        # Never inherit a request leaked by an earlier traversal that unwound
-        # abnormally: a stale target would silently misdirect this one.
+        # Never inherit a request leaked by a traversal that unwound abnormally: a stale
+        # target would silently misdirect this one.
         _traversal_state.request = None
         return "owner"
     return None
@@ -163,9 +134,8 @@ def _exit_traversal(token):
 def _parse_to_args(args, kwargs):
     """Parse loose ``.to()`` arguments into ``(device, dtype)``.
 
-    Supports the common forms used in TorchRef and in ``torch.Tensor.to``:
-    positional ``torch.dtype`` / device-like / ``None``, and the explicit
-    keyword arguments ``device=`` and ``dtype=``.
+    Fallback for a torch without ``_parse_to``: handles positional dtype/device-like and
+    the ``device=``/``dtype=`` keywords only, not ``.to(other_tensor)``.
     """
     device = kwargs.get("device", None)
     dtype = kwargs.get("dtype", None)
@@ -191,28 +161,22 @@ def _accepts_single_arg(func) -> bool:
 
 
 def _apply_to_obj(val, fn, visited):
-    """Apply ``fn`` to any tensors inside ``val``, recursing as needed.
+    """Apply ``fn`` to any tensors inside ``val``; returns the value to store back.
 
-    Returns the (possibly new) value to store back. ``nn.Module`` children
-    that have already been visited (registered submodules of the current
-    parent) are skipped; unregistered ``nn.Module`` attributes are traversed.
+    Already-visited ``nn.Module`` children are skipped; unregistered ``nn.Module``
+    attributes are traversed.
     """
     if isinstance(val, torch.Tensor):
-        # Do NOT short-circuit on visited for tensors: the same source
-        # tensor may be aliased from multiple attribute slots (e.g. a
-        # ``Cell._data`` referenced both as ``cell._data`` and as
-        # ``submodule.cell_params``). Each slot needs an independent
-        # ``fn(val)`` invocation so its attribute is updated to the
-        # moved tensor. Re-applying ``fn`` to an already-converted
-        # tensor is a cheap no-op when the target matches.
+        # Never short-circuit on visited for tensors: one source tensor may be aliased
+        # from several attribute slots, and each slot needs its own ``fn(val)`` to be
+        # rebound to the moved tensor. Re-applying ``fn`` is a no-op when it matches.
         return fn(val)
 
     if isinstance(val, nn.Module):
         if id(val) in visited:
             return val
-        # Do NOT add ``id(val)`` to ``visited`` here — ``val._apply`` does
-        # that itself. Adding it first would make the inner call short-circuit
-        # before it actually moves the module's tensors.
+        # Do NOT add ``id(val)`` to ``visited`` here -- ``val._apply`` does it, and
+        # pre-adding makes that inner call short-circuit before it moves anything.
         val._apply(fn)
         return val
 
@@ -221,10 +185,9 @@ def _apply_to_obj(val, fn, visited):
     if callable(apply_method) and not isinstance(val, type):
         if id(val) in visited:
             return val
-        # Check the signature up front instead of catching ``TypeError`` from
-        # the call: a catch there cannot distinguish "wrong signature" from a
-        # real ``TypeError`` raised mid-traversal, and would silently leave the
-        # object partially moved.
+        # Signature checked up front rather than catching ``TypeError`` from the call,
+        # which cannot tell "wrong signature" from a real error raised mid-traversal and
+        # would leave the object partially moved.
         if _accepts_single_arg(apply_method):
             apply_method(fn)
             return val
@@ -257,19 +220,14 @@ def _apply_to_obj(val, fn, visited):
 def _invalidate_caches(obj):
     """Call ``reset_forward_cache`` / ``reset_cache`` if present.
 
-    Failures propagate rather than being swallowed. A cache that fails to clear
-    keeps tensors from the *previous* device, which produces either a
-    cross-device error much later or -- worse -- silently stale numbers; that
-    is precisely the corruption this mixin exists to prevent, so it must not be
-    hidden behind a bare ``except``.
+    Failures propagate: a cache that fails to clear keeps tensors from the previous
+    device, i.e. silently stale numbers.
 
     Raises
     ------
     RuntimeError
-        Chained from the hook's own exception, naming the object and hook.
-        Note that movement is **not atomic**: by the time a cache hook runs,
-        some of the object's tensors have already been transformed, so the
-        object may be left partially moved.
+        Chained from the hook's exception. Movement is **not atomic** -- some tensors
+        have already moved by then, so the object may be left partially moved.
     """
     for hook_name in ("reset_forward_cache", "reset_cache"):
         hook = getattr(obj, hook_name, None)
@@ -287,17 +245,14 @@ def _invalidate_caches(obj):
 
 
 def _owned_tensors(obj):
-    """Yield the tensors *obj* itself owns (never a child's).
+    """Yield the tensors *obj* itself owns, never a child's.
 
-    ``recurse=False`` is deliberate: the trackers describe where this object
-    allocates, so inheriting a device from a submodule would report a
+    Non-recursive by design: inheriting a device from a submodule would report a
     half-moved graph as consistent.
     """
     if isinstance(obj, nn.Module):
-        # Read the registration dicts rather than ``buffers()``/``parameters()``:
-        # several classes here override those accessors with a no-argument
-        # signature (``SolventModel.parameters``, ``MixedTensor.parameters``),
-        # and the dicts are in any case the literal "owned, not inherited" set.
+        # The registration dicts, not ``buffers()``/``parameters()``: several classes here
+        # override those accessors with a no-argument signature.
         for buf in obj._buffers.values():
             if buf is not None:
                 yield buf
@@ -333,11 +288,9 @@ def _representative_tensor(obj):
 def _observed_state(obj):
     """Return ``(device, floating_dtype)`` observed from *obj*'s own tensors.
 
-    The two axes are resolved **independently**: the first owned tensor fixes
-    the device, but only a floating/complex tensor may fix ``dtype_float``.
-    Deciding both from a single representative tensor lets an integer buffer
-    that happens to be registered first (``hkl``, ``aniso_flag``) veto the
-    dtype answer.
+    The axes resolve **independently**: the first owned tensor fixes the device, but only
+    a floating/complex one may fix the dtype -- otherwise an integer buffer registered
+    first (``hkl``, ``aniso_flag``) vetoes the dtype answer.
     """
     device = None
     dtype = None
@@ -354,42 +307,22 @@ def _observed_state(obj):
 def _probe_target(fn):
     """Discover what ``fn`` does to a tensor's device and floating dtype.
 
-    Needed only on the paths that bypass :meth:`DeviceMixin.to` and therefore
-    record no request: ``.float()`` / ``.double()`` / ``.half()``, and an
-    ``_apply`` driven by a plain (non-mixin) ``nn.Module`` parent.
+    Needed only on the paths that bypass :meth:`DeviceMixin.to` and so record no request:
+    ``.float()``/``.double()``/``.half()``, and an ``_apply`` driven by a plain
+    (non-mixin) ``nn.Module`` parent. Scratch devices are always ones known to be valid,
+    never the object's own tracker, which on a tensor-free object may name a backend this
+    host does not have.
 
-    ``fn`` is probed on scratch tensors whose devices are **known to be
-    valid**, never on the object's own tracker -- a tensor-free object can be
-    carrying a stale tracker naming a backend this host does not have (say
-    ``cuda:0`` on a CPU-only machine), and allocating there would fail exactly
-    when the answer matters most.
-
-    **Both** axes need two reference points, and the scratches must differ on
-    both. A transforming ``fn`` funnels its two inputs to a single value on the
-    axis it touches, while a preserving ``fn`` hands each input's own value
-    back:
-
-    ==================  ===================  ===================
-    ``fn``              devices agree?       dtypes agree?
-    ==================  ===================  ===================
-    ``.to(device=D)``   yes -> device is D   no  -> dtype is None
-    ``.half()``         no  -> None          yes -> dtype is f16
-    ``.to(D, f32)``     yes -> D             yes -> f32
-    ==================  ===================  ===================
-
-    Probing one axis with a single reference is what makes a device-only move
-    report the scratch's own dtype and clobber ``dtype_float``.
-
-    Scratch devices are always ones **known to be valid**, never the object's
-    own tracker -- a tensor-free object can carry a stale tracker naming a
-    backend this host does not have (``cuda:0`` on a CPU-only machine), and
-    allocating there would fail exactly when the answer matters most.
+    Each axis needs its own two-point contrast: a transforming ``fn`` funnels both inputs
+    to one value, a preserving one hands each input's value back. Probing an axis with a
+    single reference is what makes a device-only move report the scratch's dtype and
+    clobber ``dtype_float``.
 
     Returns
     -------
     tuple
-        ``(device, dtype)``; either is ``None`` when ``fn`` leaves that axis
-        untouched, or when ``fn`` could not be probed at all.
+        ``(device, dtype)``; either is ``None`` when ``fn`` leaves that axis untouched or
+        could not be probed at all.
     """
     accel = None
     if torch.cuda.is_available():
@@ -403,20 +336,17 @@ def _probe_target(fn):
             scratch = torch.empty(0, device=device, dtype=dtype)
         except (RuntimeError, TypeError):
             return None  # backend advertised but unusable for this dtype
-        # ``fn`` is arbitrary caller-supplied code, so a broad catch is correct
-        # here -- unlike the cache hooks above, a non-conforming ``fn`` is an
-        # expected outcome, not a corruption signal. The caller decides what an
-        # unprobeable ``fn`` means.
+        # Broad catch is correct here: unlike the cache hooks above, a non-conforming
+        # ``fn`` is an expected outcome, not a corruption signal.
         try:
             out = fn(scratch)
         except Exception:
             return None
         return out if isinstance(out, torch.Tensor) else None
 
-    # The two axes get their own contrast pair, and each pair varies only along
-    # the axis it measures. Sharing one pair for both would couple them: an
-    # accelerator scratch cannot be cast to float64 on MPS, so probing dtype on
-    # the device pair makes ``.double()`` unprobeable on Apple silicon.
+    # Each axis gets its own pair, varying only along the axis it measures. Sharing one
+    # pair couples them: an accelerator scratch cannot be cast to float64 on MPS, so
+    # probing dtype on the device pair makes ``.double()`` unprobeable there.
     base = run(torch.device("cpu"), torch.float32)
     if base is None:
         return None, None
@@ -449,23 +379,15 @@ _DTYPE_TRACKERS = ("dtype_float", "_dtype")
 def _refresh_device_trackers(obj, fn=None):
     """Refresh ``device`` / ``_device`` / ``dtype_float`` / ``_dtype`` trackers.
 
-    The tracker decides where the object allocates *next* -- over 200 call
-    sites in the package pass ``device=self.device`` -- so leaving it stale on
-    a tensor-free object silently misplaces every tensor that object later
-    creates.
+    The tracker decides where the object allocates *next*, so leaving it stale on a
+    tensor-free object silently misplaces every tensor it later creates. Per axis, in
+    order: a tensor the object owns; the ``.to()`` request on the traversal thread-local
+    (the only source for an object holding no tensors); a probe of ``fn``
+    (:func:`_probe_target`), for the ``.float()`` and plain-parent paths.
 
-    Resolution order, applied per axis:
-
-    1. a tensor the object itself owns (authoritative, already moved),
-    2. the ``.to()`` request recorded on the traversal thread-local, which is
-       the only source available to an object holding no tensors,
-    3. a probe of ``fn`` (see :func:`_probe_target`), for the ``.float()`` and
-       plain-parent paths that record no request.
-
-    Only attributes already present in ``obj.__dict__`` and already holding a
-    device/dtype-shaped value are written, so an unrelated attribute that
-    happens to be named ``device`` is never clobbered. Written values are
-    canonical, so ``obj.device == some_tensor.device`` holds.
+    Writes only attributes already in ``obj.__dict__`` already holding a
+    device/dtype-shaped value, so an unrelated attribute named ``device`` is never
+    clobbered. Written values are canonical, so ``obj.device == some_tensor.device``.
     """
     has_device_tracker = any(a in obj.__dict__ for a in _DEVICE_TRACKERS)
     has_dtype_tracker = any(a in obj.__dict__ for a in _DTYPE_TRACKERS)
@@ -526,26 +448,12 @@ def _safe_setattr(obj, name, value):
 class DeviceMixin:
     """Unified device/dtype movement.
 
-    Inherit alongside ``nn.Module`` (place before ``nn.Module`` in the MRO)::
-
-        class Foo(DeviceMixin, nn.Module):
-            ...
-
-    Or use on a plain Python class / dataclass::
-
-        @dataclass
-        class Bar(DeviceMixin):
-            data: torch.Tensor
-
-    All of ``.to()``, ``.cuda()``, ``.cpu()``, ``.float()``, ``.double()``,
-    ``.half()`` route through :meth:`_apply`, which:
-
-    1. invokes ``nn.Module._apply`` when applicable so parameters, buffers
-       and child modules are moved by the standard PyTorch path,
-    2. walks ``self.__dict__`` to pick up plain tensor attributes, nested
-       containers and non-Module sub-objects,
-    3. calls ``reset_forward_cache()`` and ``reset_cache()`` if either is
-       defined.
+    Inherit **before** ``nn.Module`` in the MRO (``class Foo(DeviceMixin, nn.Module)``),
+    or use it alone on a plain class or dataclass. Every mover -- ``.to()``, ``.cuda()``,
+    ``.cpu()``, ``.float()``, ``.double()``, ``.half()`` -- routes through :meth:`_apply`,
+    which runs ``nn.Module._apply`` where applicable, walks ``self.__dict__`` for plain
+    tensors, nested containers and non-Module sub-objects, refreshes the device/dtype
+    trackers, and calls ``reset_forward_cache()``/``reset_cache()`` if defined.
     """
 
     # ---- to / cuda / cpu -------------------------------------------------
@@ -565,13 +473,10 @@ class DeviceMixin:
         else:  # pragma: no cover - only on a torch build without the private API
             device, dtype = _parse_to_args(args, kwargs)
 
-        # Build the request BEFORE claiming the traversal. ``_ToRequest``
-        # canonicalises the device, which raises for a backend this host does
-        # not have (``.to('cuda')`` on a CUDA-less machine). Constructing it
-        # after ``_enter_traversal`` but outside the ``try`` leaked the
-        # thread-local visited set on that raise, and every later ``.to()`` on
-        # the thread then short-circuited as "already visited" -- moving
-        # nothing, silently.
+        # Build the request BEFORE claiming the traversal: ``_ToRequest`` canonicalises the
+        # device and so raises for a backend this host lacks. Constructed after
+        # ``_enter_traversal`` and outside the ``try``, that raise leaks the thread-local
+        # visited set, and every later ``.to()`` on the thread silently moves nothing.
         request = _ToRequest(device, dtype)
 
         token = _enter_traversal()
@@ -615,21 +520,14 @@ class DeviceMixin:
     def _apply(self, fn, recurse=True):  # type: ignore[override]
         """Cycle-safe traversal engine that applies ``fn`` to every tensor.
 
-        Overrides ``nn.Module._apply`` and is the core of the movement
-        pipeline described in the class docstring: (1) standard
-        ``nn.Module`` traversal of params/buffers/child modules, (2) a
-        ``__dict__`` walk for plain tensors and non-Module sub-objects,
-        (3) refresh of ``device``/``_device``/``dtype`` trackers, and
-        (4) cache invalidation. A thread-local ``id()`` visited set makes
-        it safe against reference cycles.
+        Overrides ``nn.Module._apply`` and runs the numbered pipeline below.
 
         Parameters
         ----------
         fn : callable
             Tensor-to-tensor function applied to each discovered tensor.
         recurse : bool, default True
-            Forwarded to ``nn.Module._apply`` to control recursion into
-            child modules.
+            Forwarded to ``nn.Module._apply`` to control recursion into child modules.
         """
         visited = _current_visited()
         token = None
@@ -642,8 +540,8 @@ class DeviceMixin:
                 return self
             visited.add(id(self))
 
-            # Snapshot before anything moves, so step 5 can tell a real
-            # transformation from a ``.to()`` that targets the current state.
+            # Snapshot before anything moves, so step 5 can tell a real transformation
+            # from a ``.to()`` that targets the current state.
             old_device, old_dtype = _observed_state(self)
 
             # 1. Standard nn.Module traversal (params, buffers, child modules).
@@ -653,9 +551,8 @@ class DeviceMixin:
                 else:  # pragma: no cover - older torch without the kwarg
                     super()._apply(fn)
 
-                # Mark registered children as visited so that other plain
-                # attributes / back-references pointing at them do not trigger
-                # redundant traversal in step 2.
+                # Mark registered children visited so back-references pointing at them do
+                # not re-traverse in step 2.
                 for child in self.children():
                     visited.add(id(child))
 
@@ -667,15 +564,14 @@ class DeviceMixin:
                 if new_val is not val:
                     _safe_setattr(self, name, new_val)
 
-            # 3. Refresh ``device`` / ``_device`` / ``dtype`` trackers so
-            #    subsequent tensor allocations target the new device.
+            # 3. Refresh trackers so later allocations target the new device.
             _refresh_device_trackers(self, fn)
 
             # 4. Invalidate caches.
             _invalidate_caches(self)
 
-            # 5. Notify the object iff something actually changed, so index
-            #    rebuilds do not fire on a no-op ``.to(current_device)``.
+            # 5. Notify the object iff something actually changed, so index rebuilds do
+            #    not fire on a no-op ``.to(current_device)``.
             new_device, new_dtype = _observed_state(self)
             device_changed = (
                 old_device is not None
@@ -713,24 +609,18 @@ class DeviceMixin:
     ):
         """Hook called once per object after a *real* device/dtype change.
 
-        No-op by default. Override to rebuild state derived from tensor
-        placement -- precomputed index tensors, device-specific caches -- that
-        the generic walk cannot repair on its own.
-
-        Use this rather than ``reset_cache()``: ``reset_cache`` is a
-        functional-cache hook that :meth:`LossState.reset_caches` fires after
-        *every* optimizer step, so rebuilding indices there would put index
-        reconstruction and GPU syncs on the hot path. This hook only fires when
-        movement actually happened.
+        No-op by default. Override to rebuild state derived from tensor placement --
+        precomputed index tensors, device-specific caches -- that the generic walk cannot
+        repair. Use this rather than ``reset_cache()``, which fires after *every* optimizer
+        step and would put index rebuilds and GPU syncs on the hot path.
 
         Parameters
         ----------
         old_device, new_device : torch.device or None
-            Device before and after. ``None`` when the object owned no tensors
-            on that side of the move.
+            Device before and after; ``None`` when the object owned no tensors on that
+            side of the move.
         old_dtype, new_dtype : torch.dtype or None
-            Floating/complex dtype before and after, resolved independently of
-            the device.
+            Floating/complex dtype before and after, resolved independently of the device.
         device_changed, dtype_changed : bool
             Which axes actually changed. At least one is always True.
         """
@@ -740,10 +630,6 @@ class DeviceMixin:
 # Backwards-compatibility aliases
 # ---------------------------------------------------------------------------
 
-# Older code imports ``DeviceMovementMixin``; keep it pointing at the
-# active implementation so existing classes pick up the new behaviour.
 DeviceMovementMixin = DeviceMixin
 
-# ``_NonModuleDeviceMixin`` was briefly distinct; the unified mixin now
-# handles both Module and non-Module cases.
 _NonModuleDeviceMixin = DeviceMixin

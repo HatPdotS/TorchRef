@@ -1,3 +1,10 @@
+"""ModelFT -- a :class:`~torchref.model.Model` that can compute structure factors.
+
+Adds the electron-density / FFT path (via an :class:`~torchref.model.SfFFT`
+submodule created as soon as both cell and space group are set), the ITC92
+scattering parametrization, and the anomalous f' / f'' correction.
+"""
+
 import math
 from typing import Optional, Tuple
 
@@ -16,11 +23,12 @@ from torchref.utils.caching import CachedForwardMixin
 
 class ModelFT(CachedForwardMixin, Model):
     """
-    Model subclass for Fourier Transform-based electron density and structure factor calculations.
+    Model subclass for FFT-based electron density and structure factors.
 
-    ModelFT extends the base Model class with capabilities for computing electron
-    density maps in real space and structure factors via FFT. Uses ITC92
-    parametrization for electron density calculations.
+    Extends :class:`Model` with real-space density maps and structure factors via
+    FFT, using the ITC92 scattering parametrization. Build it empty
+    (``ModelFT()`` then ``load_pdb`` / ``load_state_dict``) or with parameters
+    (``ModelFT(max_res=1.5)``).
 
     Parameters
     ----------
@@ -43,34 +51,17 @@ class ModelFT(CachedForwardMixin, Model):
 
     Attributes
     ----------
-    max_res : float
-        Maximum resolution for grid spacing.
-    wavelength : float or None
-        X-ray wavelength for anomalous scattering corrections.
-    anomalous_threshold : float
-        Threshold for significant anomalous scattering (electrons).
-    gridsize : torch.Tensor
-        Grid dimensions (nx, ny, nz).
-    real_space_grid : torch.Tensor
-        Real-space coordinate grid with shape (nx, ny, nz, 3).
+    max_res, wavelength, anomalous_threshold : float
+        The constructor arguments above, readable back as attributes.
+    gridsize, real_space_grid : torch.Tensor
+        Grid dimensions ``(nx, ny, nz)`` and coordinate grid
+        ``(nx, ny, nz, 3)``; both live on the ``SfFFT`` submodule.
     map : torch.Tensor or None
-        Computed electron density map.
+        Most recently computed electron density map.
     parametrization : dict
         ITC92 parametrization dictionary {element: (A, B)}.
     map_symmetry : MapSymmetry
         Symmetry operator for map calculations.
-
-    Examples
-    --------
-    Empty initialization for state_dict loading::
-
-        model = ModelFT()
-        model.load_state_dict(torch.load('model.pt'))
-
-    File-based initialization::
-
-        model = ModelFT(max_res=1.5)
-        model.load_pdb('structure.pdb')
     """
 
     def __init__(
@@ -93,11 +84,8 @@ class ModelFT(CachedForwardMixin, Model):
         ----------
         max_res : float, optional
             Maximum resolution for grid spacing in Angstroms. Default is 1.0.
-
-            The real-space splat radius is no longer a per-structure scalar: each
-            atom is truncated at its own ``N_sigma * sigma_eff`` radius, with
-            ``N_sigma = torchref.sigma_cutoff_ed`` (default 3). Set that config
-            value to trade density accuracy against cost.
+            (The splat radius is *not* set here: each atom is truncated at its own
+            ``torchref.sigma_cutoff_ed * sigma_eff``.)
         gridsize : tuple of int, optional
             Explicit grid size tuple (nx, ny, nz). If None, computed automatically.
         wavelength : float or None, optional
@@ -109,12 +97,11 @@ class ModelFT(CachedForwardMixin, Model):
             Atoms with |f'| > threshold or |f''| > threshold will have
             anomalous corrections applied. Default is 0.5.
         apply_bijvoet : bool, optional
-            Whether to apply the imaginary f'' (Bijvoet) term, which breaks
-            Friedel's law and produces F(+h) != F(-h). Default is False (the
-            dispersive f' term is still applied whenever a wavelength is set).
-            Set True only for anomalous (Friedel-unmerged) data; for merged data
-            f'' has no observable effect on the Friedel-mean amplitude. Bound from
-            ``ReflectionData.friedel_merged`` by the refinement constructor.
+            Apply the imaginary f'' (Bijvoet) term, which breaks Friedel's law
+            (``F(+h) != F(-h)``). Default False, and correct only for
+            Friedel-unmerged data -- on merged data f'' cannot affect the
+            Friedel-mean amplitude. The dispersive f' is applied whenever a
+            wavelength is set. Bound from ``ReflectionData.friedel_merged``.
         *args
             Passed to parent Model class.
         **kwargs
@@ -122,11 +109,9 @@ class ModelFT(CachedForwardMixin, Model):
         """
         super().__init__(*args, **kwargs)
 
-        # FT-specific configuration
         self.max_res = max_res
         self._explicit_gridsize = gridsize
 
-        # Anomalous scattering configuration
         self.wavelength = wavelength
         self.anomalous_threshold = anomalous_threshold
         # Whether to apply the imaginary f'' (Bijvoet) term. Registered as a buffer
@@ -143,24 +128,12 @@ class ModelFT(CachedForwardMixin, Model):
 
     @property
     def cell(self):
-        """Unit cell object with parameters [a, b, c, alpha, beta, gamma].
-
-        Setting this property has the side effect of initializing the FFT
-        (via ``_maybe_initialize_fft``) once the spacegroup is also set;
-        see the setter.
-        """
+        """Unit cell object with parameters [a, b, c, alpha, beta, gamma]."""
         return self._cell
 
     @cell.setter
     def cell(self, value):
-        """
-        Set the unit cell and initialize FFT if spacegroup is also set.
-
-        Parameters
-        ----------
-        value : Cell
-            The unit cell object to set.
-        """
+        """Set the unit cell; also builds the FFT once the spacegroup is set."""
         self._cell = value
         self._maybe_initialize_fft()
 
@@ -171,13 +144,8 @@ class ModelFT(CachedForwardMixin, Model):
 
     @spacegroup.setter
     def spacegroup(self, value):
-        """
-        Set the space group and initialize FFT if cell is also set.
-
-        Parameters
-        ----------
-        value : SpaceGroup, gemmi.SpaceGroup, str, or int
-            The space group to set.
+        """Set the space group (SpaceGroup, gemmi.SpaceGroup, name or number);
+        also builds the FFT once the cell is set.
         """
         if value is not None:
             self._spacegroup = SpaceGroup(
@@ -188,13 +156,7 @@ class ModelFT(CachedForwardMixin, Model):
         self._maybe_initialize_fft()
 
     def _maybe_initialize_fft(self):
-        """
-        Initialize SfFFT module if both cell and spacegroup are set.
-
-        This method is called by the cell and spacegroup setters to ensure
-        the SfFFT module is properly configured when both crystallographic
-        parameters are available.
-        """
+        """(Re)build the SfFFT submodule once both cell and spacegroup are set."""
         if self._cell is not None and self._spacegroup is not None:
             self._fft = SfFFT(
                 cell=self._cell,
@@ -243,13 +205,10 @@ class ModelFT(CachedForwardMixin, Model):
 
         Notes
         -----
-        The base :meth:`Model.select` builds the new model via
-        ``type(self)(...)`` passing only the base constructor kwargs
-        (``dtype`` / ``verbose`` / ``device`` / ``strip_H``). The
-        ModelFT-specific constructor arguments — ``max_res``, ``wavelength``,
-        ``anomalous_threshold``, ``gridsize`` — are therefore **not**
-        propagated and are silently reset to their ModelFT defaults on the
-        returned model.
+        The ModelFT-specific constructor arguments -- ``max_res``,
+        ``wavelength``, ``anomalous_threshold``, ``gridsize`` -- are **not**
+        propagated: :meth:`Model.select` passes only the base kwargs, so the
+        returned model silently carries the ModelFT defaults for those.
         """
         selection = super().select(selection)
         selection._build_parametrization()
@@ -300,18 +259,11 @@ class ModelFT(CachedForwardMixin, Model):
         if self.verbose > 1:
             print(f"Defining grid size for max_res={self.max_res} Å")
 
-        # Use Cell's compute_grid_size method
         gridsize = self.cell.compute_grid_size(self.max_res)
         return torch.tensor(gridsize, dtype=dtypes.int, device=self.device)
 
     def _build_parametrization(self):
-        """
-        Build ITC92 parametrization for all atoms in the model.
-
-        Delegates to parent Model class which handles the actual parametrization
-        building. This method exists for API compatibility.
-        """
-        # Use parent's implementation
+        """Build the ITC92 parametrization (delegates to :class:`Model`)."""
         return super()._build_parametrization()
 
     # =========================================================================
@@ -320,27 +272,13 @@ class ModelFT(CachedForwardMixin, Model):
 
     @property
     def A(self) -> torch.Tensor:
-        """
-        ITC92 A parameters (amplitudes) for all atoms.
-
-        Returns
-        -------
-        torch.Tensor
-            A parameters with shape (n_atoms, 5).
-        """
+        """ITC92 A parameters (amplitudes), ``(n_atoms, 5)``; builds them if needed."""
         self._build_parametrization()
         return self._A
 
     @property
     def B(self) -> torch.Tensor:
-        """
-        ITC92 B parameters (widths) for all atoms.
-
-        Returns
-        -------
-        torch.Tensor
-            B parameters with shape (n_atoms, 5).
-        """
+        """ITC92 B parameters (widths), ``(n_atoms, 5)``; builds them if needed."""
         self._build_parametrization()
         return self._B
 
@@ -409,10 +347,7 @@ class ModelFT(CachedForwardMixin, Model):
         B : torch.Tensor
             ITC92 B parameters (widths) with shape (n_iso, 5).
         """
-        # Get base isotropic data from parent
         xyz, adp, occupancy = super().get_iso()
-
-        # Get scattering parameters from parent
         A, B = self.get_scattering_params_iso()
 
         return xyz, adp, occupancy, A, B
@@ -438,10 +373,7 @@ class ModelFT(CachedForwardMixin, Model):
         B : torch.Tensor
             ITC92 B parameters (widths) with shape (n_aniso, 5).
         """
-        # Get base anisotropic data from parent
         xyz, u, occupancy = super().get_aniso()
-
-        # Get scattering parameters from parent
         A, B = self.get_scattering_params_aniso()
 
         return xyz, u, occupancy, A, B
@@ -468,10 +400,8 @@ class ModelFT(CachedForwardMixin, Model):
         if self.verbose > 1:
             print(f"Setting up grids with max_res={self.max_res} Å")
 
-        # Determine grid size to use
         gridsize_to_use = gridsize or self._explicit_gridsize
 
-        # Delegate to FFT submodule (which now uses stored cell/spacegroup)
         self._fft.setup_grid(
             gridsize=gridsize_to_use,
             max_res=self.max_res,
@@ -485,12 +415,8 @@ class ModelFT(CachedForwardMixin, Model):
         """
         Get a single fixed splat radius in voxels for the given minimum.
 
-        .. note::
-            Vestigial. The production density path no longer uses a single
-            fixed radius: each atom is truncated at its own
-            ``N_sigma * sigma_eff`` radius (``N_sigma = torchref.sigma_cutoff_ed``)
-            per the variable-radius migration. This method is not consulted by
-            :meth:`build_complete_map` / :meth:`build_initial_map`.
+        Vestigial: the density path truncates each atom at its own
+        ``torchref.sigma_cutoff_ed * sigma_eff`` radius and never consults this.
 
         Parameters
         ----------
@@ -568,7 +494,6 @@ class ModelFT(CachedForwardMixin, Model):
         if self.verbose > 2:
             print("Building density map (per-atom variable radius)...")
 
-        # Get isotropic atoms
         xyz_iso, adp_iso, occ_iso, A_iso, B_iso = self.get_iso()
 
         if self.verbose > 3:
@@ -588,10 +513,8 @@ class ModelFT(CachedForwardMixin, Model):
                 torch.isfinite(occ_iso)
             ), "Non-finite values found in occ_iso during map building."
 
-        # Get anisotropic atoms
         xyz_aniso, u_aniso, occ_aniso, A_aniso, B_aniso = self.get_aniso()
 
-        # Delegate to FFT submodule
         self.map = self._fft.build_density_map(
             xyz_iso=xyz_iso,
             adp_iso=adp_iso,
@@ -696,37 +619,23 @@ class ModelFT(CachedForwardMixin, Model):
     def _get_anomalous_cache(
         self,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Lazily compute and cache anomalous correction data.
+        """Cached ``(mask, f_prime, f_double_prime, has_anomalous, indices)``.
 
-        Returns mask, f_prime, f_double_prime for significant atoms.
-        Recomputes if element list changes.
-
-        Returns
-        -------
-        mask : torch.Tensor
-            Boolean mask of shape (n_atoms,) - True for atoms needing correction
-        f_prime : torch.Tensor
-            f' values for significant atoms only (n_significant,)
-        f_double_prime : torch.Tensor
-            f'' values for significant atoms only (n_significant,)
+        ``mask`` is per-atom; ``f_prime`` / ``f_double_prime`` cover only the
+        significant scatterers. Recomputed when the element list changes.
         """
         from torchref.base.scattering.anomalous_table import (
             get_anomalous_corrections_by_indices,
             get_significant_elements,
         )
 
-        # Get element list from PDB
         element_list = self.pdb["element"].tolist()
-
-        # Hash current element list
         elements_hash = hash(tuple(element_list))
 
         if (
             self._anomalous_cache is None
             or self._anomalous_elements_hash != elements_hash
         ):
-            # Find significant elements at current wavelength
             unique_elements = list(set(element_list))
             significant = get_significant_elements(
                 unique_elements, self.wavelength, self.anomalous_threshold
@@ -738,7 +647,6 @@ class ModelFT(CachedForwardMixin, Model):
                     f"{list(significant.keys())}"
                 )
 
-            # Get corrections for all atoms
             mask, f_prime, f_double_prime = get_anomalous_corrections_by_indices(
                 element_list, significant, self.device, self.dtype_float
             )
@@ -765,29 +673,11 @@ class ModelFT(CachedForwardMixin, Model):
         hkl: torch.Tensor,
         include_fdp: bool = True,
     ) -> torch.Tensor:
-        """
-        Apply anomalous scattering correction to structure factors.
+        """Add ``ΔF(h) = Σ (f' + i f'') exp(2πi h·r) occ`` to ``sf``.
 
-        The correction adds the contribution from anomalous scattering:
-        ΔF(h) = Σ_significant (f' + if'') × exp(2πi h·r) × occ
-
-        Only computed for atoms where |f'| > threshold or |f''| > threshold.
-
-        Parameters
-        ----------
-        sf : torch.Tensor
-            Complex structure factors from FFT with shape (n_reflections,)
-        hkl : torch.Tensor
-            Miller indices with shape (n_reflections, 3)
-        include_fdp : bool, optional
-            Whether to include the imaginary f'' (Bijvoet) term. When False, only
-            the dispersive f' contribution is applied (f'' zeroed), which leaves
-            Friedel's law intact. Default True.
-
-        Returns
-        -------
-        torch.Tensor
-            Corrected complex structure factors with shape (n_reflections,)
+        Only the significant scatterers (|f'| or |f''| above
+        ``anomalous_threshold``) contribute. ``include_fdp=False`` zeroes f'',
+        keeping Friedel's law intact -- the correct choice for merged data.
         """
         mask, f_prime, f_double_prime, has_anomalous, anomalous_indices = (
             self._get_anomalous_cache()
@@ -796,13 +686,11 @@ class ModelFT(CachedForwardMixin, Model):
         if not has_anomalous:
             return sf  # No significant anomalous scatterers
 
-        # Get fractional coordinates and occupancies for significant atoms only
-        # Uses pre-computed integer indices to avoid boolean indexing GPU sync
+        # Integer indices, not the boolean mask: boolean indexing forces a GPU sync.
         xyz_frac = self.xyz_fractional()[anomalous_indices]  # (n_significant, 3)
         occ = self.occupancy()[anomalous_indices]  # (n_significant,)
 
-        # Compute phase factors: exp(2πi h·r)
-        # h·r is the dot product of hkl with fractional coordinates
+        # Phase factors exp(2πi h·r), h·r over fractional coordinates
         h_dot_r = torch.matmul(
             hkl.to(dtype=self.dtype_float, device=xyz_frac.device), xyz_frac.T
         )  # (n_refl, n_significant)
@@ -811,14 +699,10 @@ class ModelFT(CachedForwardMixin, Model):
         cos_phase = torch.cos(phase)
         sin_phase = torch.sin(phase)
 
-        # Anomalous contribution weighted by occupancy
-        # f' contributes to both real and imaginary parts
-        # f'' contributes with a phase shift (it's the imaginary part of f)
         f_prime_occ = f_prime * occ  # (n_significant,)
         f_double_prime_occ = f_double_prime * occ  # (n_significant,)
         if not include_fdp:
-            # Drop the imaginary f'' term: keep only the dispersive f' contribution
-            # so Friedel's law is preserved (correct target for merged data).
+            # Dispersive f' only, so Friedel's law is preserved (merged data).
             f_double_prime_occ = torch.zeros_like(f_double_prime_occ)
 
         # For each reflection:
@@ -860,42 +744,26 @@ class ModelFT(CachedForwardMixin, Model):
 
         Notes
         -----
-        The complete scattering factor is:
-            f(s, λ) = f₀(s) + f'(λ) + i·f''(λ)
-
-        where f₀ is the normal (Thomson) scattering factor computed via FFT,
-        and f'/f'' are the wavelength-dependent anomalous corrections.
-
-        Anomalous corrections are only computed for atoms where
-        |f'| > anomalous_threshold or |f''| > anomalous_threshold.
+        The full scattering factor is ``f(s, λ) = f₀(s) + f'(λ) + i f''(λ)``,
+        with f₀ from the FFT and the wavelength-dependent f' / f'' applied only
+        to atoms above ``anomalous_threshold``.
         """
         return self(hkl, recalc=recalc, apply_anomalous=apply_anomalous)
 
     @property
     def fft(self):
-        """Access the SfFFT submodule, initializing it lazily if needed.
-
-        If ``self._fft`` is None it is first created via
-        ``_maybe_initialize_fft`` (requires cell and spacegroup to be set).
-        """
+        """The SfFFT submodule, built on first access (needs cell + spacegroup)."""
         if self._fft is None:
             self._maybe_initialize_fft()
 
         return self._fft
 
     def _check_forward_dtype(self, hkl: torch.Tensor) -> None:
-        """Fail fast with a clear message on a model/input dtype mismatch.
+        """Fail fast on a model/input float-dtype mismatch, which would otherwise
+        surface as a cryptic matmul or Triton-compile error deep in the kernels.
 
-        The structure-factor path runs the electron-density build, FFT and
-        interpolation in the model's float dtype. A float64 input fed to a
-        float32 model (or a model whose parameters drifted from
-        ``self.dtype_float``) otherwise surfaces as a cryptic
-        ``mat1 and mat2 must have the same dtype`` matmul error — or, on CUDA,
-        a Triton kernel compile failure — deep in the kernels.
-
-        Integer ``hkl`` (the usual Miller-index dtype) is always fine: it is
-        cast to the model dtype internally. Only a *floating* ``hkl`` whose
-        dtype differs from the model's is rejected.
+        Integer ``hkl`` always passes (it is cast internally); only *floating*
+        ``hkl`` of the wrong dtype, or drifted parameters, are rejected.
         """
         model_dtype = self.dtype_float
         params = self.xyz.refinable_params
@@ -977,20 +845,11 @@ class ModelFT(CachedForwardMixin, Model):
         Returns
         -------
         ModelFT
-            A new ModelFT instance with copied data.
-
-        Examples
-        --------
-        ::
-
-            model = ModelFT().load_pdb('structure.pdb')
-            model_copy = model.copy()
-            # model_copy is independent, changes won't affect model
+            A new, fully independent ModelFT instance with copied data.
         """
         if not self.initialized:
             raise RuntimeError("Cannot copy an uninitialized ModelFT. Load data first.")
 
-        # Create new ModelFT instance with same configuration
         model_copy = ModelFT(
             dtype_float=self.dtype_float,
             verbose=self.verbose,
@@ -1002,10 +861,8 @@ class ModelFT(CachedForwardMixin, Model):
             anomalous_threshold=self.anomalous_threshold,
         )
 
-        # Deep copy the PDB DataFrame
         model_copy.pdb = self.pdb.copy(deep=True)
 
-        # Copy spacegroup using its copy() method
         if self._spacegroup is not None:
             model_copy._spacegroup = self._spacegroup.copy()
         else:
@@ -1013,12 +870,10 @@ class ModelFT(CachedForwardMixin, Model):
 
         model_copy.initialized = True
 
-        # Copy Cell object using its clone() method
         if self.cell is not None:
             model_copy.cell = self.cell.clone()
 
-        # Copy all registered buffers using PyTorch's _buffers dict
-        # (excluding FFT submodule buffers which are handled separately)
+        # Own buffers only; the FFT submodule's are handled by its copy() below.
         for buffer_name, buffer_value in self._buffers.items():
             if buffer_value is not None:
                 if detach:
@@ -1028,8 +883,7 @@ class ModelFT(CachedForwardMixin, Model):
                 else:
                     model_copy.register_buffer(buffer_name, buffer_value.clone())
 
-        # Copy all modules (parameter wrappers) using their .copy() methods
-        # Skip _fft and _spacegroup as they are handled separately
+        # Parameter wrappers via their own .copy(); _fft / _spacegroup are separate.
         skip_modules = {"_fft", "_spacegroup", "spacegroup", "_symmetry", "symmetry"}
         for module_name, module in self._modules.items():
             if module_name in skip_modules:
@@ -1045,20 +899,17 @@ class ModelFT(CachedForwardMixin, Model):
         else:
             model_copy.altloc_pairs = []
 
-        # Copy FT-specific attributes: _parametrization dict
         if hasattr(self, "_parametrization") and self._parametrization is not None:
             import copy as copy_module
 
             model_copy._parametrization = copy_module.deepcopy(self._parametrization)
 
-        # Copy FFT submodule using its copy() method
         if self._fft is not None:
             model_copy._fft = self._fft.copy()
-            # Setup grid if it was set up in the original
             if self._fft.real_space_grid is not None:
                 model_copy.setup_grid(max_res=self.max_res)
 
-        # Reset cache on the copy (don't share cached structure factors)
+        # Don't share cached structure factors with the original.
         model_copy.reset_cache()
 
         if self.verbose > 0:
@@ -1088,22 +939,17 @@ class ModelFT(CachedForwardMixin, Model):
         dict
             Complete state dictionary.
         """
-        # Get parent Model state_dict (includes _A, _B buffers and FFT submodule)
+        # Parent covers _A/_B and the FFT submodule's buffers.
         state = super().state_dict(
             destination=destination, prefix=prefix, keep_vars=keep_vars
         )
 
-        # Add ModelFT-specific state
         state[prefix + "max_res"] = self.max_res
         state[prefix + "wavelength"] = self.wavelength
         state[prefix + "anomalous_threshold"] = self.anomalous_threshold
 
-        # Note: FFT submodule state (gridsize, real_space_grid, voxel_size) is
-        # automatically included via PyTorch's module serialization with _fft. prefix
-        # _parametrization dict is not saved as it can be rebuilt from _A, _B buffers
-        # _cache is not saved as it should be rebuilt
-        # _anomalous_cache is not saved as it can be rebuilt from element list
-
+        # Deliberately not saved, all rebuildable: _parametrization (from _A/_B),
+        # _cache, _anomalous_cache (from the element list).
         return state
 
     @classmethod
@@ -1138,14 +984,10 @@ class ModelFT(CachedForwardMixin, Model):
 
         Notes
         -----
-        Legacy state_dicts are accepted: the obsolete ``radius_angstrom`` key
-        (removed with the variable-radius migration) is popped and ignored,
-        and old-style ``A`` / ``B`` scattering buffers are remapped to the
-        current ``_A`` / ``_B`` names.
-
-        As in :meth:`Model.create_from_state_dict`, the anisotropic ``u`` is
-        rebuilt here as a :class:`CholeskyMixedTensor`, matching :meth:`load`,
-        so the positive-definite-by-construction parametrization round-trips.
+        Legacy state_dicts are accepted: the obsolete ``radius_angstrom`` key is
+        ignored and old-style ``A`` / ``B`` buffers are remapped to ``_A`` / ``_B``.
+        The anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, as in
+        :meth:`load`, so the positive-definite parametrization round-trips.
         """
         from torchref.symmetry import SpaceGroup
 
@@ -1155,13 +997,11 @@ class ModelFT(CachedForwardMixin, Model):
         if dtype_float is None:
             dtype_float = get_float_dtype()
 
-        # Extract ModelFT-specific metadata
         max_res = state_dict.pop("max_res", 1.0)
         state_dict.pop("radius_angstrom", None)  # legacy key, no longer used
         wavelength = state_dict.pop("wavelength", 1.0)
         anomalous_threshold = state_dict.pop("anomalous_threshold", 0.5)
 
-        # Extract Model metadata
         pdb = state_dict.pop("pdb", None)
         spacegroup_str = state_dict.pop("spacegroup", None)
         cell_tensor = state_dict.pop("cell", None)
@@ -1171,14 +1011,11 @@ class ModelFT(CachedForwardMixin, Model):
         strip_H = state_dict.pop("strip_H", True)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
 
-        # Extract grid info from FFT submodule state
-        # Note: FFT buffers are prefixed with "_fft."
+        # FFT submodule buffers are prefixed "_fft."; older checkpoints are flat.
         gridsize = state_dict.pop("_fft.gridsize", None)
-        # Also try old-style keys for backward compatibility
         if gridsize is None:
             gridsize = state_dict.pop("gridsize", None)
 
-        # Create instance with FT-specific params
         instance = cls(
             dtype_float=saved_dtype,
             verbose=verbose,
@@ -1189,15 +1026,13 @@ class ModelFT(CachedForwardMixin, Model):
             anomalous_threshold=anomalous_threshold,
         )
 
-        # Set metadata
         instance.pdb = pdb
         instance.initialized = initialized
         instance.altloc_pairs = altloc_pairs
 
-        # Setup spacegroup - setter also sets symmetry automatically
+        # Setter also sets symmetry; the cell setter below then builds the FFT.
         instance.spacegroup = spacegroup_str
 
-        # Create Cell object - setter will initialize FFT since spacegroup is already set
         from torchref.symmetry import Cell
 
         if cell_tensor is not None:
@@ -1214,7 +1049,6 @@ class ModelFT(CachedForwardMixin, Model):
 
             n_atoms = len(pdb)
 
-            # Create MixedTensors
             xyz_mask = state_dict.get("xyz.refinable_mask")
             adp_mask = state_dict.get("adp.refinable_mask")
             u_mask = state_dict.get("u.refinable_mask")
@@ -1238,7 +1072,6 @@ class ModelFT(CachedForwardMixin, Model):
                 name="aniso_U",
             )
 
-            # Create OccupancyTensor
             initial_occ = torch.tensor(pdb["occupancy"].values, dtype=saved_dtype)
             sharing_groups, altloc_groups, refinable_mask = (
                 instance._create_occupancy_groups(pdb, initial_occ)
@@ -1260,7 +1093,6 @@ class ModelFT(CachedForwardMixin, Model):
                 name="occupancy",
             )
 
-            # Register aniso_flag buffer
             if "aniso_flag" not in instance._buffers or instance.aniso_flag is None:
                 instance.register_buffer(
                     "aniso_flag",
@@ -1288,8 +1120,7 @@ class ModelFT(CachedForwardMixin, Model):
                     torch.zeros_like(state_dict["vdw_radii"], device=device),
                 )
 
-            # Handle _A and _B buffers (scattering parameters)
-            # Check both old-style (A, B) and new-style (_A, _B) keys
+            # Scattering buffers: accept both old-style (A, B) and new (_A, _B).
             a_key = "_A" if "_A" in state_dict else "A" if "A" in state_dict else None
             b_key = "_B" if "_B" in state_dict else "B" if "B" in state_dict else None
 
@@ -1302,7 +1133,6 @@ class ModelFT(CachedForwardMixin, Model):
                     "_B", torch.zeros_like(state_dict[b_key], device=device)
                 )
 
-        # Setup grid via FFT submodule
         if gridsize is not None and cell_tensor is not None:
             if isinstance(gridsize, torch.Tensor):
                 gs_tuple = tuple(int(x) for x in gridsize.tolist())
@@ -1311,12 +1141,10 @@ class ModelFT(CachedForwardMixin, Model):
 
             instance.setup_grid(gridsize=gs_tuple)
 
-        # Filter state_dict and load
-        # Remap old-style A/B keys to new _A/_B keys
+        # Drop empty placeholders, remapping old-style A/B keys to _A/_B.
         filtered_state_dict = {}
         for k, v in state_dict.items():
             if not hasattr(v, "shape") or v.numel() > 0:
-                # Remap old keys to new keys
                 if k == "A":
                     filtered_state_dict["_A"] = v
                 elif k == "B":
@@ -1326,7 +1154,6 @@ class ModelFT(CachedForwardMixin, Model):
 
         instance.load_state_dict(filtered_state_dict, strict=False)
 
-        # Reset cache
         instance.reset_cache()
 
         if verbose > 0:

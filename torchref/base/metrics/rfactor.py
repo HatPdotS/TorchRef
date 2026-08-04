@@ -1,7 +1,9 @@
 """
-R-factor calculation functions.
+Crystallographic R-factor calculations.
 
-Functions for computing crystallographic R-factors and related metrics.
+Note the flag convention used throughout: in a ``rfree`` mask, **1 (True) is the WORK set
+and 0 is the test set**. :func:`rfactor_work_free` is the canonical partition and avoids
+the question entirely; prefer it over :func:`get_rfactors` for anything reportable.
 """
 
 import torch
@@ -9,7 +11,11 @@ import torch
 
 def rfactor(F_obs: torch.Tensor, F_calc: torch.Tensor) -> float:
     """
-    Calculate R-factor between observed and calculated structure factors.
+    ``sum|F_obs - F_calc| / sum|F_obs|`` over every reflection passed.
+
+    Applies no masking and no work/free split -- select the subset before calling. Both
+    arguments must be **amplitudes**, not complex structure factors, and syncs to a Python
+    float.
 
     Parameters
     ----------
@@ -17,11 +23,6 @@ def rfactor(F_obs: torch.Tensor, F_calc: torch.Tensor) -> float:
         Observed structure factor amplitudes of shape (N,).
     F_calc : torch.Tensor
         Calculated structure factor amplitudes of shape (N,).
-
-    Returns
-    -------
-    float
-        R-factor value.
     """
     numerator = torch.sum(torch.abs(F_obs - F_calc))
     denominator = torch.sum(torch.abs(F_obs))
@@ -33,7 +34,10 @@ def get_rfactors(
     F_obs: torch.Tensor, F_calc: torch.Tensor, rfree: torch.Tensor
 ) -> tuple:
     """
-    Get R-factors for working and test sets.
+    R-factors for the working and test sets, split by a flag array.
+
+    Applies no validity mask, so invalid reflections are included -- use
+    :func:`rfactor_work_free` for anything reported.
 
     Parameters
     ----------
@@ -42,14 +46,13 @@ def get_rfactors(
     F_calc : torch.Tensor
         Calculated structure factor amplitudes of shape (N,).
     rfree : torch.Tensor
-        Boolean mask indicating R-free reflections of shape (N,).
-        1 is Working set, 0 is Test set.
+        Flag array of shape (N,), cast to bool here: **1 is WORK, 0 is test**. If R-free
+        comes out below R-work, this array is inverted.
 
     Returns
     -------
     tuple
-        (r_work, r_test) where r_work is the R-factor for the working set
-        and r_test is the R-factor for the test set.
+        ``(r_work, r_test)`` as Python floats.
     """
     rfree = rfree.to(torch.bool)
     r_work = rfactor(F_obs[rfree], F_calc[rfree])
@@ -60,21 +63,16 @@ def get_rfactors(
 def rfactor_work_free(data, F_calc_amp: torch.Tensor) -> tuple:
     """R-work / R-free over a ReflectionData's canonical work / free subsets.
 
-    The single shared R-factor partition: ``R_work`` on ``data.work`` and
-    ``R_free`` on ``data.free`` (the same subset accessors the refinement loss
-    uses — validity masks applied, work/test split applied, and any separate
-    validation set excluded from both). Both the refinement reporting
-    (:meth:`XrayTarget.get_rfactor`) and the scaler's scale-fit diagnostic call
-    this, so they cannot disagree on convention.
+    The one shared R-factor partition, using the same subset accessors as the refinement
+    loss -- validity masks and work/test split applied, any separate validation set excluded
+    from both -- so refinement reporting and the scaler diagnostic cannot disagree.
 
     Parameters
     ----------
     data : ReflectionData
-        Must expose ``.work`` / ``.free`` subset accessors with ``.F`` and
-        ``.select(full_array)``.
+        Must expose ``.work`` / ``.free`` accessors with ``.F`` and ``.select()``.
     F_calc_amp : torch.Tensor
-        Full-size, already-scaled calculated **amplitudes** (``|F_calc|``),
-        aligned to ``data.hkl``.
+        Full-size, already-**scaled** calculated **amplitudes**, aligned to ``data.hkl``.
 
     Returns
     -------
@@ -92,27 +90,24 @@ def bin_wise_rfactors(
     F_obs: torch.Tensor, F_calc: torch.Tensor, rfree: torch.Tensor, bins: torch.Tensor
 ) -> tuple:
     """
-    Calculate bin-wise R-factors between observed and calculated structure factors.
+    Per-bin R-work and R-test, one entry per bin index in ``[0, bins.max()]``.
 
     Parameters
     ----------
     F_obs : torch.Tensor
-        Observed structure factors.
+        Observed structure factor amplitudes.
     F_calc : torch.Tensor
-        Calculated structure factors.
+        Calculated structure factor amplitudes.
     rfree : torch.Tensor
-        R-free mask. Must be a boolean tensor: it is used directly in
-        ``mask & rfree`` without an internal cast (unlike ``get_rfactors``,
-        which applies ``.to(torch.bool)``), so a non-boolean ``rfree``
-        silently misbehaves.
+        **Must already be boolean** -- used directly in ``mask & rfree`` with no cast, unlike
+        :func:`get_rfactors`, so an integer mask silently misbehaves. 1 is WORK.
     bins : torch.Tensor
-        Bin indices for each reflection.
+        Bin index per reflection.
 
     Returns
     -------
     tuple of torch.Tensor
-        ``(r_work_bins, r_test_bins)``, a pair of 1-D tensors holding the
-        per-bin R-factors for the working set and the test set respectively.
+        ``(r_work_bins, r_test_bins)``. An empty bin yields NaN (0/0).
     """
     r_work_bins = []
     r_test_bins = []

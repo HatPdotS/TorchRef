@@ -1,37 +1,15 @@
 """
-I/O module for crystallographic data files.
+I/O for crystallographic data files: dataset containers, MTZ/PDB/CIF format
+modules, and the top-level object-creation readers.
 
-This module provides:
-- Dataset classes for handling reflection data
-- Format-specific readers and writers (MTZ, PDB, CIF)
-- Top-level object-creation readers: read_mtz, read_cif, read_pdb
+The three layers, loosest to tightest::
 
-High-level API
---------------
-Load objects directly::
+    data = read_mtz('structure.mtz')          # -> ReflectionData
+    data = ReflectionData(verbose=1); data.load_mtz('structure.mtz')
+    data_dict, cell, spacegroup = mtz.read('data.mtz')()
 
-    from torchref.io import read_mtz, read_cif, read_pdb
-    data = read_mtz('structure.mtz')   # -> ReflectionData
-    model = read_pdb('structure.pdb')  # -> ModelFT
-
-Or construct and load explicitly::
-
-    from torchref.io import ReflectionData
-    data = ReflectionData(verbose=1)
-    data.load_mtz('structure.mtz')
-
-Multi-dataset handling::
-
-    from torchref.io import DatasetCollection
-    collection = DatasetCollection()
-    collection.add_dataset('native', native_data)
-    collection.add_dataset('derivative', derivative_data)
-
-Direct format access::
-
-    from torchref.io import mtz
-    reader = mtz.read('data.mtz')
-    data_dict, cell, spacegroup = reader()
+:class:`DatasetCollection` handles several datasets jointly. The IHM reader and
+writer need ``python-ihm``; :class:`IHMEnsembleMapping` does not.
 """
 
 # Format modules

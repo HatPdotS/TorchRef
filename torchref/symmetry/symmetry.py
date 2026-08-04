@@ -1,25 +1,8 @@
-"""
-DEPRECATED: Use SpaceGroup instead. ``Symmetry`` is now a bare alias for
-``SpaceGroup``, kept for backward compatibility.
+"""DEPRECATED: ``Symmetry`` is a bare alias for :class:`SpaceGroup`.
 
-The Symmetry class has been merged into SpaceGroup, which provides the same
-functionality plus additional features. This module exposes ``Symmetry`` as a
-direct alias (``Symmetry = SpaceGroup``). It is a plain alias and does NOT emit
-a DeprecationWarning; the ``warnings`` import is currently unused.
-
-Usage
------
-Old code using Symmetry continues to work unchanged::
-
-    from torchref.symmetry import Symmetry
-    sym = Symmetry('P21')
-    sym.apply(coords)
-
-Preferred new style::
-
-    from torchref.symmetry import SpaceGroup
-    sg = SpaceGroup('P21')
-    sg.apply(coords)
+``Symmetry = SpaceGroup`` literally, so ``isinstance`` checks against either name
+succeed and existing calls keep working. No ``DeprecationWarning`` is emitted --
+nothing tells a caller to migrate. Prefer ``SpaceGroup`` in new code.
 """
 
 import warnings

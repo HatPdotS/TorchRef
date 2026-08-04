@@ -1,39 +1,24 @@
 """SeededLBFGS: L-BFGS whose first step is a diagonal-Newton step.
 
-Stock :class:`torch.optim.LBFGS` initialises its inverse-Hessian approximation
-with a *scalar* (``H_diag = ys / y.y``), so its very first search direction is
-plain steepest descent ``d = -g``. That is badly conditioned when the parameter
-blocks have very different curvature scales -- e.g. joint refinement of atomic
-coordinates (Angstrom), ADPs (Angstrom^2 / log) and occupancies (sigmoid-logit)
-in a single L-BFGS call.
+Stock :class:`torch.optim.LBFGS` initialises its inverse-Hessian approximation with a
+*scalar*, so its first search direction is plain steepest descent -- badly conditioned
+when parameter blocks have very different curvature scales (coordinates in Angstrom, ADPs
+in Angstrom^2/log, occupancies in sigmoid-logit, in one call). ``SeededLBFGS`` takes a
+per-parameter inverse-curvature preconditioner ``1 / (|H_ii| + lambda)`` and uses it for
+the **first** inner iteration only::
 
-``SeededLBFGS`` accepts a per-parameter *inverse-curvature preconditioner*
-``precond_i = 1 / (|H_ii| + lambda)`` (the diagonal of the loss Hessian,
-regularised) and uses it to seed the **first** inner iteration only:
+    d_0 = -(precond .* g)     # diagonal-Newton direction
+    t_0 = lr                  # Newton scale -> start the line search at t = 1
 
-    d_0 = -(precond .* g)          # diagonal-Newton direction
-    t_0 = lr                       # Newton scale -> start line search at t = 1
+Every later iteration is stock L-BFGS. The seed fires exactly while the curvature history
+is empty, so re-seeding a fresh block is ``optimizer.state.clear()`` +
+:meth:`set_init_hess_diag`. The diagonal comes from
+:mod:`torchref.refinement.optimizers.curvature`, but this optimizer is agnostic to that.
 
-Every subsequent iteration is identical to stock L-BFGS (scalar ``H_diag`` seed,
-strong-Wolfe line search, two-loop recursion). The seed fires exactly while the
-curvature history is empty (``state["n_iter"] == 1``), which resets whenever
-``optimizer.state.clear()`` is called -- so re-seeding a fresh block is just
-``clear()`` + :meth:`set_init_hess_diag`.
-
-The diagonal itself is produced by
-:mod:`torchref.refinement.optimizers.curvature` (Hutchinson estimate via analytic
-double-backward Hessian-vector products under ``use_portable()``); this optimizer is
-agnostic to how the preconditioner was obtained.
-
-Notes
------
-* With ``init_hess_diag=None`` the trajectory is **bit-identical** to
-  :class:`torch.optim.LBFGS` (both changed branches fall through to the exact base
-  expressions).
-* With an all-ones preconditioner the first *direction* equals stock steepest
-  descent, but the first trial step length differs (``t = lr`` vs the
-  ``min(1, 1/||g||_1)`` heuristic), so the trajectory is *not* bit-identical --
-  this is deliberate (the diagonal supplies Newton scale).
+With ``init_hess_diag=None`` the trajectory is **bit-identical** to stock L-BFGS. With an
+all-ones preconditioner it is deliberately *not*: the direction matches steepest descent
+but the first trial step is ``lr`` rather than the ``min(1, 1/||g||_1)`` heuristic,
+because the diagonal supplies Newton scale.
 """
 
 from __future__ import annotations
@@ -62,14 +47,10 @@ class SeededLBFGS(torch.optim.LBFGS):
     def set_init_hess_diag(self, precond: Optional[torch.Tensor]) -> None:
         """Set the flat inverse-curvature preconditioner ``1/(|diag|+lambda)``.
 
-        Parameters
-        ----------
-        precond : torch.Tensor or None
-            Flat tensor aligned to ``cat(p.view(-1) for p in params)`` (the same
-            layout as :meth:`_gather_flat_grad`). ``None`` disables seeding
-            (stock L-BFGS behaviour). The seed is applied to the first inner
-            iteration of the next :meth:`step` call whose curvature history is
-            empty.
+        ``precond`` must be flat and aligned to ``cat(p.view(-1) for p in params)``, the
+        :meth:`_gather_flat_grad` layout; ``None`` disables seeding. It applies to the
+        first inner iteration of the next :meth:`step` whose curvature history is empty.
+        Raises ``ValueError`` if the element count does not match the parameters.
         """
         if precond is None:
             self._init_hess_diag = None
@@ -85,16 +66,11 @@ class SeededLBFGS(torch.optim.LBFGS):
 
     @torch.no_grad()
     def step(self, closure):  # type: ignore[override]
-        """Perform a single optimization step.
+        """One optimization step, ``closure`` returning the loss.
 
-        Identical to :meth:`torch.optim.LBFGS.step` except that, on the first
-        inner iteration when a seed is set, the search direction is the
-        diagonal-Newton step ``-(precond .* g)`` and the initial trial step
-        length is ``lr``.
-
-        Args:
-            closure (Callable): A closure that reevaluates the model and returns
-                the loss.
+        Identical to :meth:`torch.optim.LBFGS.step` except that, on the first inner
+        iteration with a seed set, the direction is ``-(precond .* g)`` and the initial
+        trial step is ``lr``.
         """
         assert len(self.param_groups) == 1
 

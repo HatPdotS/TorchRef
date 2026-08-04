@@ -18,16 +18,9 @@ def convert_to_serializable(obj):
     Returns
     -------
     object
-        A JSON-serializable equivalent.
-
-    Notes
-    -----
-    Tensor conversion depends on element count: a tensor with more than one
-    element is converted via ``.tolist()``, while a tensor with exactly one
-    element is converted to a Python scalar via ``.item()``. As a result a
-    shape-``(1,)`` tensor collapses to a scalar (not a one-element list),
-    whereas a shape-``(2,)`` tensor becomes a list — an asymmetry that can
-    surprise round-trips.
+        A JSON-serializable equivalent. Note the shape asymmetry: a one-element tensor
+        collapses to a **scalar** via ``.item()`` while anything longer becomes a list, so a
+        shape-``(1,)`` tensor does not round-trip to a list.
     """
     if isinstance(obj, torch.Tensor):
         return obj.tolist() if obj.numel() > 1 else obj.item()

@@ -1,3 +1,5 @@
+"""The two least-squares X-ray targets, differing only in who owns the scale."""
+
 import torch
 from typing import TYPE_CHECKING
 
@@ -15,26 +17,17 @@ if TYPE_CHECKING:
 class LeastSquaresXrayTarget(XrayTarget):
     """``--xray-mode ls``: ``L = 0.5 * sum w_i * (|F_obs| - k*|F_calc|)**2``, unit weights.
 
-    ``k`` is owned by the attached :class:`Scaler` (per-bin scales, anisotropy, bulk
+    ``k`` belongs to the attached :class:`Scaler` (per-bin scales, anisotropy, bulk
     solvent), fit separately from this target.
 
-    **Unit weights.** ``sigma`` weighting used to be the default and was dropped as a
-    duplicate: with ``w_i = 1/sigma_i**2`` this target is :class:`NLLXrayTarget` minus a
-    parameter-independent constant, because
-    ``nll = 0.5*d**2/sigma**2 + log sigma + 0.5*log 2pi`` over the *same*
-    ``median(sigma)*0.1`` clamp. Measured on 1DAW, both reflection sets: the losses differ by
-    exactly ``sum(log sigma_safe + 0.5*log 2pi)`` and the gradients are **bit-identical**, so
-    ``--xray-mode ls`` and ``--xray-mode nll`` produced the same refinement trajectory and
-    differed only in the number they reported. Unit weights are what make this row a distinct
-    objective. ``weighting`` remains a parameter because the math layer supports both and
-    ``tests/unit/refinement/test_xray_target_parity.py`` uses the sigma arm to keep that
-    de-duplication argument checkable.
+    The unit weights are what make this a distinct objective: at ``w_i = 1/sigma_i**2``
+    this target is :class:`NLLXrayTarget` minus a parameter-independent constant, with
+    **bit-identical gradients**, so ``weighting="sigma"`` would give the same refinement
+    trajectory as ``--xray-mode nll`` and only report a different number. The parameter
+    survives to keep the math layer's second arm reachable; it is not selectable as a mode.
 
-    ``ls_wunit_k1`` -- unit weights and a *self-owned* closed-form scale -- is
-    :class:`UnitWeightK1XrayTarget` below. It used to be this same class configured with
-    ``scale_mode="binwise_optimal"``, which meant two ``if self.scale_mode`` branches in two
-    methods plus a factory that special-cased on the mode *name*. The two rows now differ
-    only in who owns the scale, which is exactly one overridden hook.
+    :class:`UnitWeightK1XrayTarget` below is the ``ls_wunit_k1`` row -- unit weights and a
+    *self-owned* closed-form scale. The two differ in exactly one overridden hook.
     """
 
     def __init__(
@@ -95,25 +88,20 @@ class LeastSquaresXrayTarget(XrayTarget):
 class UnitWeightK1XrayTarget(LeastSquaresXrayTarget):
     """``--xray-mode ls_wunit_k1``: Phenix-style unit weights, one global K refit per call.
 
-    The "k1" means "K_one" -- **one** K, not per-bin (Phenix's ``update_all_scales`` fits a
-    single ``k_overall``, anisotropy off at d > 3 A). ``n_bins=1`` collapses the closed-form
-    ``c[bins]`` to a scalar, matching Phenix exactly.
+    "k1" is "K_one" -- **one** K, not per-bin, as Phenix's ``update_all_scales`` fits a
+    single ``k_overall`` (anisotropy off at d > 3 A); ``n_bins=1`` collapses the
+    closed-form ``c[bins]`` to that scalar.
 
-    At every forward call the closed-form optimal scale
-    ``c = sum|F_obs|*|F_calc| / sum|F_calc|**2`` is computed over the work set and applied to
-    ``|F_calc|`` before the LS sum. ``c`` is ``.detach()``-ed first, so the gradient w.r.t.
-    atom positions treats it as a constant for that step -- matching Phenix, where
-    ``update_all_scales`` refits K *before* each rigid-body LBFGS macro-cycle and freezes it
-    during. Without the detach the loss is the envelope of all scaled losses and the gradient
-    is biased toward different local minima than Phenix's frozen-K objective (observed on
-    9RTS).
+    Every forward recomputes ``c = sum|F_obs|*|F_calc| / sum|F_calc|**2`` on the work set
+    and applies it to ``|F_calc|`` before the LS sum. ``c`` is ``.detach()``-ed, so the
+    coordinate gradient sees it as constant for the step -- as in Phenix, which refits K
+    *between* macro-cycles and freezes it within. Without the detach the loss becomes the
+    envelope of all scaled losses and the gradient prefers different local minima.
 
-    ``weighting`` is **forced**, not defaulted: the pre-split code hardcoded ``"unit"`` inside
-    the loss call while ``self.weighting`` remained a settable attribute, a discrepancy that
-    was unreachable only because the factory happened to pass ``"unit"`` too.
+    ``weighting`` is **forced** to ``"unit"``, not defaulted.
 
-    The caller must attach only scalers contributing ADDITIVE terms (e.g. bulk solvent) and
-    **not** an overall ``K_overall x aniso`` multiplication, or ``F_calc`` is double-scaled.
+    Attach only scalers contributing ADDITIVE terms (e.g. bulk solvent) -- an overall
+    ``K_overall x aniso`` multiplication would double-scale ``F_calc``.
     """
 
     def __init__(self, *args, **kwargs):
@@ -124,10 +112,8 @@ class UnitWeightK1XrayTarget(LeastSquaresXrayTarget):
         self._bins_cache_dataid: int = None
 
     def _get_bins_cached(self) -> torch.Tensor:
-        """Per-reflection bin indices, cached per ReflectionData instance.
-
-        Note this *writes back* ``self.n_bins`` from ``get_bins``, which may return fewer
-        bins than requested. Preserved deliberately -- ``n_bins`` is state, not a constant.
+        """Per-reflection bin indices, cached per ReflectionData instance. Deliberately
+        *writes back* ``self.n_bins``, which ``get_bins`` may lower: ``n_bins`` is state.
         """
         dataid = id(self._data)
         if self._bins_cache is None or self._bins_cache_dataid != dataid:
@@ -139,10 +125,9 @@ class UnitWeightK1XrayTarget(LeastSquaresXrayTarget):
         return self._bins_cache
 
     def _binwise_scale(self, F_calc, F_obs, bins) -> torch.Tensor:
-        """Detached closed-form scale. Argument order matches ``binwise_scale``'s.
-
-        ``weights=None`` is unit weighting -- Phenix ``wunit`` semantics. ``valid=None``
-        means all of the tensors passed, which on a compact work-set view is what is wanted.
+        """Detached closed-form scale; argument order matches ``binwise_scale``'s.
+        ``weights=None`` is Phenix ``wunit`` semantics and ``valid=None`` is everything
+        passed -- correct here only because the input is already a compact work-set view.
         """
         return binwise_scale(
             F_calc, F_obs, bins, valid=None, nbins=self.n_bins, weights=None
@@ -157,10 +142,9 @@ class UnitWeightK1XrayTarget(LeastSquaresXrayTarget):
         """Full-size ``|F_calc|`` under this target's own scale.
 
         The closed-form scale is fit on the **work** set and applied to **all** reflections,
-        so a reported ``R_free`` uses the same work-fit ``c`` as ``R_work`` (the
-        apples-to-apples Phenix convention). This is the only ``_scaled_F_calc_full``
-        override in the x-ray family, and therefore the one R-factor path a change here can
-        break without moving any loss value.
+        so ``R_free`` uses the same work-fit ``c`` as ``R_work`` (Phenix convention). The
+        only ``_scaled_F_calc_full`` override in the family, so an edit here moves reported
+        R-factors without moving any loss value.
         """
         F_calc_full = super()._scaled_F_calc_full(fcalc=fcalc)
         full_bins = self._get_bins_cached()

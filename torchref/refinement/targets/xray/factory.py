@@ -29,10 +29,8 @@ def create_xray_target(
 ) -> XrayTarget:
     """Construct the x-ray target for ``mode``.
 
-    Dispatch is ``XRAY_TARGETS.by_name(mode).target_cls(**kwargs)`` -- there is no branching
-    left. Until 2026-08 this held three predicates (``spec.family == "least_squares"``,
-    ``spec.name == "ls_wunit_k1"``, ``not spec.needs_estimator``) because two classes each
-    served several modes; every row now has its own class and the table maps name to class.
+    Dispatch is ``XRAY_TARGETS.by_name(mode).target_cls(**kwargs)``, with no branching:
+    keep it that way, since one class per row is the invariant the table enforces.
 
     Parameters
     ----------
@@ -43,17 +41,15 @@ def create_xray_target(
     scaler : Scaler, optional
         Owns the overall scale for every mode except ``ls_wunit_k1``, which fits its own.
     mode : str, optional
-        Any name in :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS`, the single
-        source of truth for the taxonomy -- see that module's docstring for what the rows
-        mean and which was measured best. Default ``'ml'``.
+        Any name in :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS`, the
+        single source of truth for the taxonomy. Default ``'ml'``.
     use_work_set : bool, optional
         Legacy 2-way selector, superseded by ``use_set``. Default True.
     sigma_a_max, shrink : optional
-        Model-error estimator knobs. Packed into one
-        :class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAConfig` and handed
-        to **every** row, so no ``needs_estimator`` conditional is needed to decide who gets
-        them; rows that do not use them store the config and ignore it. ``shrink=None`` means
-        the module default.
+        Model-error estimator knobs, packed into one
+        :class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAConfig` handed to
+        **every** row; rows that do not use it store it and ignore it. ``shrink=None``
+        means the module default.
     verbose : int, optional
         Verbosity. Default 0.
     device : torch.device, optional

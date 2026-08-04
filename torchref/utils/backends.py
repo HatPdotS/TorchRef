@@ -1,47 +1,17 @@
 """Declarative backend selection: the dispatch criteria, in one place, as data.
 
-Every dispatch site in TorchRef answers the same question -- given these tensors, which
-kernel runs? This module holds the machinery for answering it from a table, so each criterion
-(device, dtype, availability, failure policy) is written down exactly once, next to the
-kernels it selects.
-The tables themselves live with their kernels: see
-``torchref/base/electron_density/_backends.py`` and
+Every dispatch site answers the same question -- given these tensors, which kernel runs?
+This module holds the machinery for answering it from a table, so each criterion (device,
+dtype, availability, failure policy) is written down once. The tables themselves live with
+their kernels: ``torchref/base/electron_density/_backends.py`` and
 ``torchref/base/direct_summation/_backends.py``.
 
-There is no chain
-----------------
-The accelerator gates are pairwise device-disjoint -- CUDA, CPU and MPS -- so for any
-given input **at most one** non-base backend can match. :func:`select` therefore returns a
-single :class:`Backend`, not an ordered candidate list, and the only fallback is the
-table's base case. An earlier design walked a chain; that models a control structure the
-problem does not have.
-
-No configuration
-----------------
-Selection takes no mode, tier or engine: for a given device and dtype there is exactly one
-fastest usable kernel, so the answer is *derived*. The single override is ``force_portable``,
-which pins the reference implementation -- see :func:`use_portable`. It exists for the one
-failure automatic fallback cannot detect: an accelerator that runs and returns wrong numbers
-rather than raising.
-
-This replaced a four-member selector enum whose two *forcing* members could never reach a
-kernel the default would not already have picked -- they could only refuse when one was
-unusable, which is information, not capability.
-
-Why kernels are stored as ``(module, attr)`` rather than as functions
---------------------------------------------------------------------
-Resolving ``getattr(import_module(path), attr)`` on every call costs a ``sys.modules`` hit
-and a ``getattr``, and buys four things a captured function object would break:
-
-* ``torchref.utils`` is imported very early and must not reach into
-  ``torchref.base.electron_density`` at module scope;
-* the Metal MSL source and ``import triton`` stay off hosts that never dispatch to them;
-* availability stays readable *late*, so a test that flips
-  ``mps.compile._lib_failed`` is still seen;
-* the kernel stays monkeypatchable at its defining module, which is what keeps the
-  provenance tests in ``tests/unit/structure_factor/test_dispatch.py`` meaningful. A table
-  holding function objects captured at import time would make those tests pass while
-  measuring nothing.
+The accelerator gates are pairwise device-disjoint, so at most one non-base backend can
+match and :func:`select` returns a single :class:`Backend`, not a candidate chain. Kernels
+are stored as ``(module, attr)`` and resolved per call: that keeps ``torchref.utils`` from
+reaching into kernel packages at module scope, keeps availability readable late, and keeps
+each kernel monkeypatchable where it is defined -- a table of function objects captured at
+import time would make the dispatch-provenance tests pass while measuring nothing.
 """
 
 from __future__ import annotations
@@ -72,13 +42,9 @@ __all__ = [
 # Forcing the portable reference kernel
 # ---------------------------------------------------------------------------
 # Named after the table row it selects (``portable``), so the flag and the backend cannot
-# drift apart in the reader's head.
-#
-# One boolean is the whole override surface. Selection already picks the fastest backend that
-# can run, and forcing an *accelerator* could never reach a kernel the default would not have
-# picked -- it could only refuse when the kernel was unusable. What is genuinely useful is the
-# other direction: pin the portable reference when you suspect an accelerator is producing
-# wrong numbers, which no automatic fallback can detect.
+# drift apart in the reader's head. This is the whole override surface: it exists for the
+# one failure automatic fallback cannot detect -- an accelerator that runs and returns
+# wrong numbers rather than raising.
 _FORCE_PORTABLE: bool = False
 
 
@@ -111,9 +77,7 @@ class TorchRefDegradationWarning(UserWarning):
     """An accelerator kernel failed at runtime and dispatch fell back to the reference.
 
     Its own category so tests can promote it to an error while production keeps running: a
-    fallback is a performance problem for a user and a correctness signal for CI. Before this
-    existed the fallback was entirely silent, and the only way to discover it was to force the
-    accelerator and watch it raise -- which meant you had to already suspect the problem.
+    fallback is a performance problem for a user and a correctness signal for CI.
     """
 
 
@@ -145,9 +109,7 @@ def _mps_present() -> bool:
     return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 
 
-#: Host conditions a backend can declare via ``Backend.expect_available``. Parametrized
-#: rather than hand-written per kernel: "this must work here" is the same question for the
-#: fused C++ splat, the Metal shader and the Triton kernels, and only the condition differs.
+#: Host conditions a backend can declare via ``Backend.expect_available``.
 _EXPECTATIONS = {
     "never": lambda: False,
     "always": lambda: True,
@@ -160,93 +122,54 @@ _EXPECTATIONS = {
 class Backend:
     """One row of a dispatch table: a kernel plus every criterion for choosing it.
 
+    Parameter-heavy by intent -- each field is one dispatch criterion, and four of them
+    carry hazards a caller cannot see from the table.
+
     Parameters
     ----------
     name : str
         Stable identifier, used in error messages and by tests to name a path.
     kernel : (str, str, str), optional
-        ``(module_path, isotropic_attr, anisotropic_attr)``, resolved per call. For
-        single-variant backends pass the same attribute twice.
-
-        ``None`` marks a **gate-only** backend: one whose selection criteria are worth
-        declaring in a table even though the call site names its own kernel. The geometry
-        targets are the case -- twelve modules each with a single ``if use_triton(x): from
-        .triton.X import f`` call site, where the three-line local import is more legible
-        than a registry hop, but "which devices and dtypes admit Triton here" still needs to
-        be stated once. :func:`run_or_degrade` refuses such a backend; only :func:`select` and
-        :func:`will_use` accept it.
+        ``(module_path, isotropic_attr, anisotropic_attr)``, resolved per call; pass the
+        same attribute twice for a single-variant backend. ``None`` marks a **gate-only**
+        backend, whose call site names its own kernel: :func:`run_or_degrade` refuses one,
+        only :func:`select` and :func:`will_use` accept it.
     device : str, optional
         Required device type (``"cuda"``/``"mps"``/``"cpu"``). ``None`` means any, which
         is what marks the base case.
     dtypes : tuple[torch.dtype, ...], optional
-        Permitted **floating-point** dtypes. ``None`` means any.
-
-        Integer tensors are exempt, deliberately. Miller indices arrive as ``int32`` from
-        the MTZ reader and every kernel casts them itself; that cast is exact for
-        \\|h\\| < 2**24, so an identity test against ``float32`` would reject the
-        production dtype and disable the kernel it was meant to protect. What the rule
-        catches is a *float* in the wrong precision -- a float64 ``hkl`` whose silent
-        downcast would truncate the phase.
-
-        **Complex tensors are refused, not exempt**, and the distinction matters because
-        the exemption above is implemented with ``is_floating_point()``, which is ``False``
-        for complex as well as for integers. Read literally that admitted a complex64
-        ``F_calc`` through a ``dtypes=(float32,)`` gate -- and every kernel behind these
-        tables reads one real scalar per element, so it would have been reinterpreted as
-        interleaved re/im pairs. Mapping complex to its component dtype would be the wrong
-        repair: matching precision does not make the memory layout compatible.
+        Permitted **floating-point** dtypes; ``None`` means any. Integer tensors are exempt
+        (Miller indices arrive as ``int32`` and every kernel casts them itself), but
+        **complex tensors are refused, not exempt** -- the kernels behind these tables read
+        one real scalar per element, so an admitted complex64 buffer would be reinterpreted
+        as interleaved re/im pairs. Checked separately, since ``is_floating_point()`` is
+        ``False`` for complex as well as for integers.
     require_uniform_dtype : bool
-        Whether every probed floating-point tensor must share **one** dtype, as opposed to
-        each independently being in ``dtypes``.
-
-        Not the same condition, and the difference is memory safety rather than taste. The
-        fused CPU kernel selects one ``scalar_t`` from the output map via
-        ``AT_DISPATCH_FLOATING_TYPES`` and then reads every other tensor through a raw
-        pointer of that type, so a float64 map beside float32 atoms reinterprets the
-        coordinate buffer as doubles -- a 2x out-of-bounds read. ``dtypes=(f32, f64)``
-        alone *admits* that call.
+        Whether every probed float tensor must share **one** dtype, rather than each
+        independently being in ``dtypes``. Memory safety, not taste: the fused CPU kernel
+        picks one ``scalar_t`` from the output map and reads every other tensor through a
+        raw pointer of that type, so a float64 map beside float32 atoms is a 2x
+        out-of-bounds read -- which ``dtypes=(f32, f64)`` alone *admits*.
     probes : tuple[int, ...], optional
-        Which argument positions carry the device/dtype contract. ``None`` probes them all.
-
-        Per-table because the requirement means different things in different tables. For
-        the density splats float32 is a *capability* -- the C++ and the MSL shader cannot
-        consume anything else. For direct summation it is *policy*: the Triton kernel casts
-        everything itself, so the gate polices only the leaves whose precision the caller
-        chose, and must not probe the float32 stored scattering-factor table (which would
-        decline the kernel unconditionally).
+        Which argument positions carry the device/dtype contract; ``None`` probes all. Set
+        per table, because for some kernels the dtype is a capability and for others only
+        policy over the leaves whose precision the caller chose.
     probe : (str, str), optional
         ``(module_path, attr)`` of a zero-argument callable returning ``None`` when the
-        backend is usable, or a human-readable reason when it is not. ``None`` means
-        always available. Resolved late, so a cache the callable consults can still be
-        invalidated.
-
-        One function per backend, deliberately: a separate boolean ``*_available()`` would
-        be the same test written twice. Where such a bool already exists as public API it
-        derives from this probe rather than repeating it.
+        backend is usable, else a human-readable reason; ``None`` means always available.
+        Resolved late, so a cache the callable consults can still be invalidated.
     expect_available : {"never", "always", "cuda", "mps"}
-        The host condition under which this backend *must* work. Distinct from ``probe``,
-        which reports what is true; this states what ought to be.
-
-        The two together are what let a broken build fail rather than skip. Dispatch under
-        ``AUTO`` degrades quietly, which is right for users and dangerous for CI: if every
-        test skips when a kernel is missing, a build that stopped working produces an
-        all-green run while production has silently fallen back. Declaring the expectation
-        here means one parametrized test covers every backend, instead of each kernel
-        needing its own bespoke compile check.
-
-        Not consulted by :func:`select` -- availability is a fact at dispatch time, never an
-        expectation.
+        The host condition under which this backend *must* work, so a broken build fails
+        instead of skipping. Distinct from ``probe``, which reports what is true; this
+        states what ought to be, and is **not** consulted by :func:`select`.
     on_failure : {"raise", "degrade"}
         What a *runtime* exception from the kernel means: ``"degrade"`` falls back to the
-        base case (with a warning), ``"raise"`` propagates.
-
-        ``"degrade"`` carries a precondition: the kernel must not have mutated its inputs
-        before failing, or the fallback would double-count. Both accelerator splats satisfy
-        it by cloning the density map before accumulating.
+        base case (with a warning), ``"raise"`` propagates. ``"degrade"`` carries a
+        precondition -- the kernel must not have mutated its inputs before failing, or the
+        fallback double-counts; both accelerator splats clone the map before accumulating.
     second_order : bool
         Whether the kernel composes under ``create_graph=True``. Not consulted by
-        :func:`select`; it is here so the test matrix can be derived from this table rather
-        than maintaining its own copy.
+        :func:`select`; it is here so the test matrix can be derived from this table.
     """
 
     name: str
@@ -296,12 +219,10 @@ class Backend:
         ):
             return self.requirement()
         if self.dtypes is not None:
-            # Complex is refused outright, never mapped to its component dtype. Every
-            # kernel behind these tables reads a real scalar per element, so a complex64
-            # buffer at a float32 gate would be reinterpreted as interleaved re/im pairs --
-            # admitting it on the grounds that its components are float32 would be wrong,
-            # not lenient. This is checked separately because ``is_floating_point()`` is
-            # False for complex, so the membership test below cannot see these at all.
+            # Checked separately from the membership test below, which cannot see complex
+            # at all: ``is_floating_point()`` is False for it. Refused outright rather than
+            # mapped to its component dtype -- these kernels read one real scalar per
+            # element, so a complex64 buffer would be read as interleaved re/im pairs.
             complexes = [t for t in probed if t.is_complex()]
             if complexes:
                 got = sorted({str(t.dtype).replace("torch.", "") for t in complexes})
@@ -367,6 +288,7 @@ class BackendTable:
         object.__setattr__(self, "base", bases[0])
 
     def by_name(self, name: str) -> Backend:
+        """The backend named ``name``; raises ``KeyError`` if this table has none."""
         for b in self.backends:
             if b.name == name:
                 return b
@@ -389,10 +311,8 @@ def select(
 ) -> Backend:
     """The one backend that runs. Cannot fail.
 
-    Totality is structural, not defensive: the base case declares no device and no dtype and
-    carries no probe, so both its criteria return ``None`` unconditionally and the loop always
-    terminates there. There is nothing to raise about -- selection is asked "what is fastest
-    here", and the answer is never "nothing".
+    Totality is structural: the base case restricts neither device nor dtype and carries no
+    probe, so the loop always terminates there.
 
     Two-phase by contract: device and dtype are checked for every candidate *before* any
     availability probe is called. That ordering is load-bearing -- it keeps an MPS host from
@@ -425,11 +345,7 @@ def will_use(
     tensors: Sequence[Optional[torch.Tensor]],
     force_portable: Optional[bool] = None,
 ) -> bool:
-    """Whether ``name`` is the backend that would actually run for these inputs.
-
-    A thin wrapper over :func:`select`: with nothing to force there is no third answer, so
-    the question reduces to "is the selected backend this one".
-    """
+    """Whether ``name`` is the backend that would actually run for these inputs."""
     return select(table, tensors, force_portable=force_portable).name == name
 
 
@@ -442,15 +358,10 @@ def run_or_degrade(
 ):
     """Run ``backend``'s kernel, falling back to the table's base case only if allowed.
 
-    ``on_failure`` alone decides. A backend marked ``"degrade"`` falls back, which keeps a
-    misbehaving accelerator a performance problem rather than an outage; one marked
-    ``"raise"`` propagates, because a kernel that built fine and then threw is a bug, and
-    substituting the reference would convert wrong results into a large silent slowdown whose
-    numbers still look plausible.
-
-    A fallback always **warns**. It is a performance problem for a user and a correctness
-    signal for CI, and it used to be entirely silent -- discoverable only by already
-    suspecting it and forcing the accelerator to watch it raise.
+    ``on_failure`` alone decides: ``"degrade"`` falls back and always emits a
+    :class:`TorchRefDegradationWarning`, ``"raise"`` propagates. Requires the ``"degrade"``
+    precondition documented on :class:`Backend` -- an input mutated before the failure
+    would be counted twice.
     """
     fn = backend.resolve(aniso)
     if backend.on_failure == "raise" or backend is table.base:

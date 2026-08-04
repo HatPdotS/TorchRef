@@ -1,57 +1,22 @@
-"""Full-form maximum-likelihood (MLF) X-ray math: model error *and* observation
-error, each treated according to its own nature.
+"""Full-form maximum-likelihood (MLF) X-ray math: model *and* observation error.
 
-The ``ml`` target (:func:`torchref.base.targets.xray_likelihoods.rice_math`) uses the
-conditional variance ``Sigma = epsilon * beta`` and nothing else -- the
-experimental sigma never enters. This module adds it, and adds it *correctly*:
-
-* **Model/data mismatch** (``beta``, the Luzzati sigma_A variance) is an error in
-  the *complex* structure factor: it has a phase component. Marginalising that
-  unknown phase is what produces the Rice / ``I0`` form, and it is why this
-  variance carries the multiplicity ``epsilon`` (symmetry-enhanced expected
-  intensity).
-* **Observation error** (``sigma_obs``) is an error in the measured *amplitude
-  only*. It is a 1-D real Gaussian on ``|F|``, carries no phase, and must **not**
-  be multiplied by ``epsilon``.
-
-Folding a 1-D amplitude error into a 2-D phase-carrying variance -- the
-variance-inflation shortcut ``Sigma_tot = epsilon*beta + sigma^2`` (Green, 1979) --
-conflates the two. The correct treatment marginalises the unknown error-free
-amplitude ``t`` (the MLF target of Pannu & Read, 1996)::
+Model/data mismatch (``beta``, the Luzzati sigma_A variance) is an error in the
+*complex* structure factor, so it carries a phase -- marginalising that phase is
+what produces the Rice / ``I0`` form, and it is why this variance is scaled by
+the multiplicity ``epsilon``. Observation error (``sigma_obs``) is an error in
+the measured *amplitude only*: a 1-D real Gaussian on ``|F|``, and it must
+**never** be multiplied by ``epsilon``. Folding one into the other -- the
+variance-inflation shortcut ``Sigma_tot = epsilon*beta + sigma^2`` (Green, 1979)
+-- conflates them; instead the unknown error-free amplitude ``t`` is
+marginalised (MLF of Pannu & Read, 1996)::
 
     p(F_obs | F_calc) = int_0^inf dt  p_m(t)  *  N(F_obs; t, sigma_obs)
 
-with ``p_m`` the phase-marginalised model-error density. Geometrically: the
-observation is an annulus in the complex plane (radius ``F_obs +- sigma_obs``,
-phase unconstrained), the model is a 2-D Gaussian blob at ``F_calc``, and the
-target is their overlap.
-
-**The two parities are evaluated differently, because one is exactly integrable.**
-
-* *Centric* -- the ``cosh`` form of ``p_m`` *is* a folded normal,
-  ``N(t;+Fc,Sigma) + N(t;-Fc,Sigma)``, so each branch against the measurement
-  Gaussian is a half-line Gaussian x Gaussian integral with a closed form in
-  ``Phi``. Exact, no quadrature.
-* *Acentric* -- no elementary closed form exists. The double integral (radial x
-  model phase) is elementary in *either* order but only one of the two: phase-first
-  gives ``I0`` and leaves a non-elementary radial integral, radial-first gives
-  ``erfc`` and leaves a non-elementary periodic phase integral. So: quadrature,
-  on the reduced 1-D integral.
-
-Note that this is a **1-D** quadrature. The angular half of the complex-plane
-integral is done analytically and exactly -- ``I0`` *is* the phase integral,
-``I0(x) = (1/2pi) int_0^2pi exp(x cos theta) dtheta`` -- so the Rice density
-already carries the exact angular result at zero quadrature cost. ``N_QUAD``
-nodes are ``N_QUAD`` nodes on the single remaining dimension, not a product grid;
-spending nodes on the phase would throw away a closed form.
-
-Quadrature parameters
----------------------
-``N_QUAD`` and ``N_SIGMA`` are **empirical**, from the screening study in
-``sigma_a_rework/quad_screen.py`` (Gauss-Legendre beat Gauss-Hermite by ~10 orders
-of magnitude head-to-head). Achieved accuracy and the worst-case grid point are
-recorded beside their definitions below -- do not change them without re-running
-that screen.
+Centric reflections have an exact closed form (:func:`centric_nll`); acentric
+ones have none and go through 1-D Gauss-Legendre quadrature
+(:func:`acentric_nll`). ``N_QUAD`` / ``N_SIGMA`` are empirical -- do not change
+them without re-running ``sigma_a_rework/quad_screen.py``; see
+``QUAD_PROVENANCE`` below.
 """
 
 import math
@@ -144,22 +109,16 @@ def log_i0_exact(z: torch.Tensor) -> torch.Tensor:
 def log_i0(z: torch.Tensor) -> torch.Tensor:
     """Branchless two-region ``log I0(z)`` (Abramowitz & Stegun 9.8.1 / 9.8.2).
 
-    ``torch.special.i0e`` costs ~10.5 ns/element -- 25x ``exp`` -- and would
-    dominate this kernel on its own (measured: 50 ms vs 23 ms per forward at 200K
-    reflections and 16 nodes). Since ``log I0`` is what is needed, not ``I0``, there
-    is no reason to pay for ``i0e`` and then a ``log``.
+    Replaces ``i0e`` + ``log``, which at 25x ``exp`` per element would dominate
+    this kernel (~2x measured per forward). Accuracy is max ``|dlog I0|`` = 4.7e-7
+    against :func:`log_i0_exact` over ``z`` in [0, 1e4] -- under the target's
+    float32 floor, but *above* the float64 quadrature error, so the float64 /
+    EAGER reference path must use :func:`log_i0_exact` instead.
 
-    Screened accuracy: max ``|dlog I0|`` = 4.7e-7 against :func:`log_i0_exact` over
-    ``z`` in [0, 1e4] (A&S quote ~2e-7 for the underlying rational forms). That is
-    below the float32 floor of the target and so does not limit it, but it *is*
-    larger than the float64 quadrature error -- use :func:`log_i0_exact` on the
-    float64 / EAGER reference path.
-
-    Both branches are evaluated everywhere and selected with ``where``, with each
-    branch's input first clamped into its own valid domain so the unused branch can
-    never emit a NaN that would poison the gradient. Uses ``|z|`` because ``I0`` is
-    even; clamping negatives to zero instead would return ``log I0(0) = 0`` rather
-    than ``log I0(|z|)`` and break that symmetry.
+    Both branches run everywhere and are selected with ``where``, each input first
+    clamped into its own valid domain so the unused branch cannot emit a NaN that
+    would poison the gradient. Takes ``|z|`` because ``I0`` is even; clamping
+    negatives to zero would return ``log I0(0)`` and break that symmetry.
     """
     zc = torch.abs(z)
 
@@ -224,15 +183,10 @@ def _log_h_acentric(t, F_obs, sigma, Fc, Sigma, li0):
 def _laplace_centre_acentric(F_obs, sigma, Fc, Sigma):
     """Closed-form Laplace centre ``t0`` and width ``s`` -- no root-find, no Bessel.
 
-    From ``log I0(x) ~ x`` with ``x = 2 t Fc / Sigma`` (slope ``2Fc/Sigma``,
-    curvature ``2/Sigma``). ``a`` is dominated by whichever distribution is
-    *narrower*, which is what makes the window auto-scale onto the peak:
-    ``sigma << sqrt(Sigma)`` gives ``s -> sqrt(2) sigma`` (measurement spike),
-    the reverse gives ``s -> sqrt(Sigma/2)`` (model density).
-
-    The centric integrand has a *different* asymptote (``log cosh(x) ~ |x|`` with
-    ``x = t Fc / Sigma``, so half the slope); it is handled by the closed form
-    below and never needs a window.
+    From ``log I0(x) ~ x`` at ``x = 2 t Fc / Sigma``, so ``a`` is set by whichever
+    density is narrower and the window auto-scales onto the peak. Acentric only:
+    the centric integrand's asymptote has half this slope, and its closed form
+    needs no window.
     """
     a = 1.0 / Sigma + 1.0 / (2.0 * sigma**2)
     t0 = (F_obs / sigma**2 + 2.0 * Fc / Sigma) / (2.0 * a)
@@ -258,8 +212,8 @@ def acentric_nll(F_obs, sigma, Fc, Sigma, n_quad=None, n_sigma=None, li0=log_i0)
 
     Routes through a ``torch.compile(dynamic=True)`` build when
     ``torchref.compile_targets`` is on (the default) and the standard configuration
-    is in use. Eager costs ~20 array passes *per node*; fusing is worth 3.7-16x on
-    CPU and 13-29x on GPU. See :class:`torchref.config.CompileTargetsConfig`.
+    is in use -- eager costs ~20 array passes per node, so fusing is worth an order
+    of magnitude. See :class:`torchref.config.CompileTargetsConfig`.
     """
     n_quad = N_QUAD if n_quad is None else n_quad
     n_sigma = N_SIGMA if n_sigma is None else n_sigma
@@ -283,11 +237,9 @@ _COMPILED: dict = {}
 def _compiled_acentric(n_quad: int, n_sigma: float):
     """Lazily-built compiled kernel, one per ``(n_quad, n_sigma)``.
 
-    ``n_quad`` and ``n_sigma`` are closed over rather than passed as arguments so
-    the unrolled node loop is a compile-time constant. Only the leading dimension
-    varies, so ``dynamic=True`` yields **one** compilation for every dataset size --
-    verified across 13 reflection counts (2 to 739 272), separate datasets,
-    work/free subsets and gathered tensors, with ``unique_graphs`` staying at 1.
+    Both are closed over rather than passed, so the unrolled node loop is a
+    compile-time constant; only the leading dimension varies, and ``dynamic=True``
+    then gives one compilation for every dataset size.
     """
     key = (n_quad, float(n_sigma))
     if key not in _COMPILED:
@@ -302,10 +254,9 @@ def _compiled_acentric(n_quad: int, n_sigma: float):
 
 
 def _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, li0):
-    """Eager reference. Everything independent of ``t`` is hoisted out of the node
-    loop -- with ``n_quad = 32`` a single un-hoisted ``log`` or divide is 32 extra
-    passes over the whole reflection array, and leaving the measurement normaliser
-    and ``1/Sigma`` inside cost ~2x measured.
+    """Eager reference. Keep everything independent of ``t`` hoisted out of the
+    node loop: at ``n_quad = 32`` one stray ``log`` or divide inside is 32 extra
+    passes over the whole reflection array (~2x measured).
     """
     inv_S = 1.0 / Sigma
     inv_2s2 = 1.0 / (2.0 * sigma * sigma)
@@ -328,11 +279,10 @@ def _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, li0):
     with torch.no_grad():
         t0, s = _laplace_centre_acentric(F_obs, sigma, Fc, Sigma)
         # Laplace window ONLY. Do not union this with F_obs +- n*sigma: `s` already
-        # accounts for both distributions, so a union can only widen the interval
-        # away from the peak. At sigma=100, sqrt(Sigma)=1 the peak is 0.7 wide while
-        # F_obs +- 8 sigma spans ~800 -- measured max|dNLL| ~ 1e1..1e2, worsening
-        # with n_sigma and flat in n_quad. The integrand is a *product*, so its mass
-        # sits at the compromise peak; the factors' own supports are irrelevant.
+        # accounts for both densities, so a union can only widen the interval away
+        # from the peak and wreck the accuracy (max|dNLL| ~ 1e1..1e2, worsening with
+        # n_sigma). The integrand is a *product*; the factors' own supports are
+        # irrelevant to where its mass sits.
         lo = torch.clamp(t0 - n_sigma * s, min=0.0)
         hi = t0 + n_sigma * s
         half = (hi - lo) * 0.5
@@ -358,14 +308,10 @@ def _acentric_nll_eager(F_obs, sigma, Fc, Sigma, n_quad, n_sigma, li0):
 def _log_shift(F_obs, sigma, Fc, Sigma, t0, li0):
     """Log-sum-exp shift: ``max h`` over three cheap candidate peak locations.
 
-    A *fixed* analytic shift (rather than a running max) is what lets the node loop
-    use one ``exp`` per node with no second pass and no ``(n, n_quad)`` intermediate.
-    But ``t0`` *under*estimates the true peak when the measurement spike and the
-    model density are well separated (e.g. ``F_obs=200, Fc=50, sqrt(Sigma)=1`` --
-    150 sigma apart), and an under-estimated shift makes ``exp(h - shift)``
-    overflow. In that regime the peak is pinned near one of the two individual
-    maxima, so probing ``t0``, ``F_obs`` and ``Fc`` covers it at O(1) cost,
-    independent of ``n_quad``.
+    A fixed analytic shift (not a running max) keeps the node loop at one ``exp``
+    per node with no ``(n, n_quad)`` intermediate. All three probes are needed:
+    ``t0`` alone *under*estimates the peak when the measurement spike and model
+    density are far apart, and an under-estimated shift overflows ``exp(h - shift)``.
     """
     out = None
     for t in (
@@ -458,11 +404,9 @@ def ml_full_nll_per_refl(
     F_obs = F_obs.reshape(-1)
     Fc = torch.abs(F_calc).reshape(-1)
     if alpha is not None:
-        # The Luzzati mean coupling enters ONLY as the Rice/folded-normal mean, and
-        # it appears there solely as alpha*Fc: the model term carries
-        # -(t^2 + alpha^2 Fc^2)/Sigma and log I0(2 t alpha Fc / Sigma), i.e.
-        # (alpha*Fc)^2 and 2 t (alpha*Fc). So folding it into Fc here is exact and
-        # leaves the quadrature, window, shift and centric closed form untouched.
+        # Exact, not an approximation: the Luzzati coupling enters only as the
+        # Rice/folded-normal mean and only ever as alpha*Fc, so absorbing it into Fc
+        # leaves quadrature, window, shift and the centric closed form untouched.
         Fc = alpha.reshape(-1).to(Fc.dtype) * Fc
     sig = torch.clamp(sigma_obs.reshape(-1), min=_SIGMA_FLOOR)
     beta = torch.clamp(beta.reshape(-1), min=_VAR_FLOOR)

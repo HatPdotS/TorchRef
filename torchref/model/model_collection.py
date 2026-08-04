@@ -69,10 +69,9 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         # Normalize to handle floating point drift
         initial_fractions = [f / total for f in initial_fractions]
 
-        # Reconcile across *all* base models, not just the first: reading
-        # ``base_models[0].device`` left a mixed-device list unreconciled, so
-        # ``fractions_tensor`` below could land on a device the later models
-        # were not on.
+        # Reconcile across *all* base models, not just the first: otherwise a
+        # mixed-device list stays unreconciled and ``fractions_tensor`` below can
+        # land on a device the later models are not on.
         device = resolve_device(*base_models, device=device)
 
         # Match base models' float dtype (consistent under a float64 config).
@@ -93,11 +92,8 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
 
     @property
     def fractions(self) -> torch.Tensor:
-        """Normalized population fractions (sum to 1).
-
-        When a fraction override is active (set by ``set_fraction_override``),
-        returns the override tensor instead of softmax(fraction_params).
-        This allows kinetic model predictions to flow directly into F_calc.
+        """Normalized population fractions -- the override tensor while one is
+        set (see ``set_fraction_override``), else ``softmax(fraction_params)``.
         """
         if self._fraction_override is not None:
             return self._fraction_override
@@ -268,12 +264,7 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         models = ModelCollection([model_dark, model_light])
         models.add_dark()                             # fractions=[1, 0]
         models.add_timepoint("1ps", [0.9, 0.1])
-        models.add_timepoint("5ps", [0.7, 0.3])
-
-        # Access
-        mixed = models["1ps"]
-        fcalc = mixed(hkl)
-        print(mixed.fractions)
+        fcalc = models["1ps"](hkl)
     """
 
     def __init__(

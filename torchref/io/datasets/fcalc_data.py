@@ -1,11 +1,9 @@
 """
-FcalcDataset - Dataset for storing calculated structure factors.
+:class:`FcalcDataset` -- container for calculated structure factors.
 
-This module provides a lightweight container for calculated structure factors
-(Fcalc) with support for:
-- Creation from cell/spacegroup/resolution
-- Complex Fcalc with amplitude/phase decomposition
-- MTZ file export
+Generates its own HKL set from cell/spacegroup/resolution, decomposes complex
+Fcalc into amplitude and phase, and exports to MTZ either as model columns or
+as pseudo-observations.
 """
 
 from dataclasses import dataclass
@@ -25,14 +23,8 @@ class FcalcDataset(CrystalDataset):
     """
     Dataset for storing calculated structure factors.
 
-    Provides a lightweight container for Fcalc values with:
-    - Cell and spacegroup information (using torchref.symmetry types)
-    - HKL indices and resolution
-    - Complex Fcalc with amplitude/phase decomposition
-    - MTZ export capability
-
-    This class inherits from CrystalDataset and overrides the spacegroup
-    field to store torchref.symmetry.SpaceGroup instead of gemmi.SpaceGroup.
+    Unlike :class:`CrystalDataset`, ``spacegroup`` here holds a
+    ``torchref.symmetry.SpaceGroup`` object, not a string.
 
     Parameters
     ----------
@@ -46,31 +38,11 @@ class FcalcDataset(CrystalDataset):
         Space group object (torchref.symmetry.SpaceGroup).
     fcalc : torch.Tensor, optional
         Complex structure factors of shape (N,).
-    fcalc_amp : torch.Tensor, optional
-        Amplitudes |Fcalc| of shape (N,).
-    fcalc_phase : torch.Tensor, optional
-        Phases in radians of shape (N,).
+    fcalc_amp, fcalc_phase : torch.Tensor, optional
+        ``|Fcalc|`` and its phase in radians, shape (N,); normally derived by
+        :meth:`set_fcalc` rather than passed.
     device : torch.device
         Device for tensors.
-
-    Examples
-    --------
-    Create from cell and resolution::
-
-        from torchref.io.datasets import FcalcDataset
-
-        dataset = FcalcDataset.from_cell_and_resolution(
-            cell=[50.0, 60.0, 70.0, 90.0, 90.0, 90.0],
-            spacegroup='P212121',
-            d_min=2.0,
-        )
-
-        # Set Fcalc values (complex tensor)
-        fcalc = torch.randn(len(dataset), dtype=torch.complex64)
-        dataset.set_fcalc(fcalc)
-
-        # Write to MTZ
-        dataset.write_mtz('output.mtz')
     """
 
     # Override spacegroup to use torchref.symmetry.SpaceGroup (not gemmi)
@@ -96,7 +68,8 @@ class FcalcDataset(CrystalDataset):
         Parameters
         ----------
         cell : torch.Tensor, list, or Cell
-            Unit cell [a, b, c, alpha, beta, gamma] or Cell object.
+            Unit cell [a, b, c, alpha, beta, gamma] or Cell object. A ``Cell``
+            is moved IN PLACE if ``device`` disagrees with it.
         spacegroup : SpaceGroupLike
             Space group (str, int, gemmi.SpaceGroup, or torchref.symmetry.SpaceGroup).
         d_min : float, optional
@@ -112,40 +85,23 @@ class FcalcDataset(CrystalDataset):
         Returns
         -------
         FcalcDataset
-            New dataset with HKL and resolution populated.
-
-        Examples
-        --------
-        ::
-
-            from torchref.symmetry import Cell, SpaceGroup
-
-            cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
-            sg = SpaceGroup('P212121')
-            dataset = FcalcDataset.from_cell_and_resolution(
-                cell=cell, spacegroup=sg, d_min=2.0,
-            )
-            print(f"Generated {len(dataset)} reflections")
+            New dataset with HKL (unique ASU reflections) and resolution set.
         """
         import gemmi
 
         from torchref.base.reciprocal import get_d_spacing
 
-        # ``Cell`` is the unit-cell carrier: when one is handed in and no device
-        # is requested, follow it rather than the global default -- otherwise a
-        # CPU-default host silently relocates the caller's cell.
+        # With a Cell in hand and no device requested, follow the Cell rather
+        # than the global default, or a CPU-default host silently relocates it.
         if device is None and isinstance(cell, Cell):
             device = cell.device
         device = normalize_device(device)
         if dtype is None:
             dtype = get_float_dtype()
 
-        # Handle Cell input - convert to Cell object if needed
         if isinstance(cell, Cell):
-            # ``Cell.to`` is in-place, so this moves the *caller's* object when
-            # an explicit device disagrees with it. That is the documented
-            # resolve_device contract; the branch above avoids it entirely when
-            # no device was requested.
+            # ``Cell.to`` is in-place, so an explicit disagreeing device moves
+            # the *caller's* object (the resolve_device contract).
             cell_obj = cell.to(device=device)
             cell_tensor = cell_obj.data
         else:
@@ -155,14 +111,11 @@ class FcalcDataset(CrystalDataset):
                 cell_tensor = cell.to(device=device, dtype=dtype)
             cell_obj = Cell(cell_tensor, dtype=dtype, device=device)
 
-        # Handle spacegroup - normalize to torchref.symmetry.SpaceGroup
         if isinstance(spacegroup, SpaceGroup):
             sg_obj = spacegroup
         else:
-            sg_obj = SpaceGroup(spacegroup)  # Normalize any input
+            sg_obj = SpaceGroup(spacegroup)
 
-        # Generate HKL indices using gemmi (respects space group symmetry)
-        # This generates only unique reflections in the asymmetric unit
         cell_list = cell_tensor.cpu().tolist()
         gemmi_cell = gemmi.UnitCell(
             cell_list[0],
@@ -172,16 +125,14 @@ class FcalcDataset(CrystalDataset):
             cell_list[4],
             cell_list[5],
         )
-        gemmi_sg = sg_obj._gemmi  # Get underlying gemmi.SpaceGroup
+        gemmi_sg = sg_obj._gemmi
 
-        # make_miller_array returns unique HKL for the asymmetric unit
+        # make_miller_array returns unique HKL for the asymmetric unit only.
         hkl_list = gemmi.make_miller_array(gemmi_cell, gemmi_sg, d_min)
         hkl = torch.tensor(hkl_list, dtype=torch.int32, device=device)
 
-        # Calculate resolution
         resolution = get_d_spacing(hkl.float(), cell_tensor)
 
-        # Apply low resolution cutoff if requested
         if d_max is not None:
             mask = resolution <= d_max
             hkl = hkl[mask]
@@ -199,9 +150,7 @@ class FcalcDataset(CrystalDataset):
 
     def set_fcalc(self, fcalc: torch.Tensor) -> None:
         """
-        Assign complex Fcalc values.
-
-        Automatically computes amplitude and phase from complex values.
+        Assign complex Fcalc, also setting ``fcalc_amp`` and ``fcalc_phase``.
 
         Parameters
         ----------
@@ -211,18 +160,7 @@ class FcalcDataset(CrystalDataset):
         Raises
         ------
         ValueError
-            If fcalc length doesn't match HKL length.
-
-        Examples
-        --------
-        ::
-
-            # Create complex Fcalc values
-            fcalc = torch.randn(len(dataset), dtype=torch.complex64)
-            dataset.set_fcalc(fcalc)
-
-            print(dataset.fcalc_amp[:5])   # Amplitudes
-            print(dataset.fcalc_phase[:5]) # Phases in radians
+            If HKL is unset or ``fcalc`` has a different length.
         """
         if self.hkl is None:
             raise ValueError("HKL not set. Cannot assign Fcalc without HKL indices.")
@@ -238,7 +176,7 @@ class FcalcDataset(CrystalDataset):
 
     def write_mtz(self, filepath: str) -> None:
         """
-        Write Fcalc to MTZ file.
+        Write Fcalc to MTZ as ``F-model`` / ``PH-model`` (phase in degrees).
 
         Parameters
         ----------
@@ -248,14 +186,7 @@ class FcalcDataset(CrystalDataset):
         Raises
         ------
         ValueError
-            If no Fcalc values have been set.
-
-        Examples
-        --------
-        ::
-
-            dataset.set_fcalc(fcalc_values)
-            dataset.write_mtz('calculated.mtz')
+            If Fcalc, HKL, cell or spacegroup is unset.
         """
         from torchref.io import mtz
 
@@ -283,7 +214,6 @@ class FcalcDataset(CrystalDataset):
             }
         )
 
-        # Write using existing mtz.write() - pass SpaceGroup wrapper
         mtz.write(df, self.cell.data, self.spacegroup, filepath)
 
     def write_mtz_as_fobs(
@@ -295,10 +225,10 @@ class FcalcDataset(CrystalDataset):
         phase_column: str = "PHIF-model",
     ) -> None:
         """
-        Write Fcalc to MTZ as if it were observed data (F-obs columns).
+        Write Fcalc to MTZ as pseudo-observations, readable back by
+        :meth:`ReflectionData.load_mtz` as if measured.
 
-        Useful for creating simulated "experimental" MTZ files that can be
-        read back by ReflectionData.load_mtz() as observed amplitudes.
+        Sigmas are fabricated as ``sigma_frac * |F|``, not measured.
 
         Parameters
         ----------
@@ -313,12 +243,10 @@ class FcalcDataset(CrystalDataset):
         phase_column : str, optional
             Column name for model phases. Default is 'PHIF-model'.
 
-        Examples
-        --------
-        ::
-
-            dataset.set_fcalc(fcalc_values)
-            dataset.write_mtz_as_fobs('simulated_obs.mtz', sigma_frac=0.05)
+        Raises
+        ------
+        ValueError
+            If Fcalc, HKL, cell or spacegroup is unset.
         """
         from torchref.io import mtz
 
@@ -351,64 +279,38 @@ class FcalcDataset(CrystalDataset):
     # ========== SERIALIZATION OVERRIDES ==========
 
     def _get_state(self) -> Dict[str, Any]:
-        """
-        Get serializable state, handling SpaceGroup wrapper.
-
-        Returns
-        -------
-        Dict[str, Any]
-            State dictionary with all tensor and metadata fields.
-        """
+        """As the base, but ``spacegroup`` is flattened via its ``hm`` symbol."""
         state = super()._get_state()
-        # SpaceGroup is stored as torchref.symmetry.SpaceGroup, serialize as string
         if self.spacegroup is not None:
-            state["spacegroup"] = self.spacegroup.hm  # Use hm property
+            state["spacegroup"] = self.spacegroup.hm
         return state
 
     @classmethod
     def _from_state(cls, state: Dict[str, Any], device=None) -> "FcalcDataset":
-        """
-        Reconstruct from state, creating SpaceGroup wrapper.
-
-        Parameters
-        ----------
-        state : Dict[str, Any]
-            State dictionary from _get_state().
-        device : str
-            Device to load tensors onto.
-
-        Returns
-        -------
-        FcalcDataset
-            Reconstructed dataset.
+        """Rebuild from a :meth:`_get_state` dict, rewrapping the H-M string as a
+        ``SpaceGroup``. Pops ``"masks"``, so ``state`` is mutated.
         """
         from torchref.utils.utils import TensorMasks
 
         device = normalize_device(device)
 
-        # Extract masks before creating object
         masks_state = state.pop("masks", {})
 
-        # Convert device string back to torch.device
         if "device" in state:
             state["device"] = torch.device(state["device"])
 
-        # Convert spacegroup string to SpaceGroup object
         if "spacegroup" in state and state["spacegroup"] is not None:
             if isinstance(state["spacegroup"], str):
                 state["spacegroup"] = SpaceGroup(state["spacegroup"])
 
-        # Convert cell tensor back to Cell object
         if "cell" in state and state["cell"] is not None:
             if isinstance(state["cell"], torch.Tensor):
                 state["cell"] = Cell(
                     state["cell"], dtype=get_float_dtype(), device=device
                 )
 
-        # Create object with remaining state
         obj = cls(**state)
 
-        # Restore masks
         if masks_state:
             obj.masks = TensorMasks(data=masks_state, device=device)
 

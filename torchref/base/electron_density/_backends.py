@@ -1,20 +1,16 @@
 """The electron-density splat dispatch policy, as one table.
 
-Every criterion for choosing a density kernel is a field in a row below: which device,
-which dtypes, how availability is probed, whether a runtime failure
-may degrade, and whether the kernel composes to second order. Reading this file answers
-"which kernel runs for MPS + float64?" without tracing an if/elif ladder
-through three modules.
+Every criterion for choosing a density kernel is a field in a row below: device, dtypes,
+how availability is probed, whether a runtime failure may degrade, and whether the kernel
+composes to second order. Reading this file answers "which kernel runs for MPS +
+float64?" without tracing an if/elif ladder through three modules.
 
 All four wrappers share one signature --
 ``(density_map, xyz, adp_or_u, occ, A, B, inv_frac, frac, radius_per_atom)`` -- which is
-what lets the dispatch site be a single call rather than a per-kernel adapter.
-
-Ordering within the table is not load-bearing. The three non-base backends are pairwise
-device-disjoint (CUDA / CPU / MPS), so at most one can ever match; the base case matches
-everything and is what selection falls through to.
-
-See :mod:`torchref.utils.backends` for what each field means and why it exists.
+what lets the dispatch site be a single call rather than a per-kernel adapter. Ordering
+is not load-bearing: the three non-base backends are pairwise device-disjoint, so at most
+one matches, and the base case is the fallthrough. See :mod:`torchref.utils.backends` for
+what each field means.
 """
 
 from __future__ import annotations

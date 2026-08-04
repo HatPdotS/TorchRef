@@ -1,31 +1,14 @@
-"""
-Space group utilities using gemmi as the canonical representation.
+"""Space group utilities using gemmi as the canonical representation.
 
-This module provides a unified interface for space group handling throughout
-torchref. The primary class is SpaceGroup, an nn.Module that:
-- Normalizes input (string, int, gemmi.SpaceGroup) in the constructor
-- Stores symmetry matrices and translations as registered buffers
-- Provides all symmetry operation methods
+:class:`SpaceGroup` is the interface used throughout torchref: an ``nn.Module``
+that normalizes its input (string, int, ``gemmi.SpaceGroup``, another
+``SpaceGroup``, or None for P1), holds the rotation matrices and translations as
+registered buffers, and applies them. The module-level functions here are
+stateless equivalents plus the FFT/symmetry grid-size helpers.
 
-Example
--------
-::
-
-    from torchref.symmetry.spacegroup import SpaceGroup
-
-    # Create from various inputs
-    sg = SpaceGroup('P 21')
-    sg = SpaceGroup('P21')  # Same result
-    sg = SpaceGroup(19)     # From space group number
-
-    # Access properties
-    print(sg.hm)            # 'P 21 21 21' (Hermann-Mauguin)
-    print(sg.number)        # 19
-    print(sg.name)          # 'P21' (short name)
-
-    # Apply symmetry operations
-    coords = torch.tensor([[0.1, 0.2, 0.3]])
-    transformed = sg(coords)  # Apply all symmetry operations
+Real and reciprocal space use *transposed* conventions -- ``x' = R·x + t`` versus
+``h' = Rᵀ·h`` -- so :meth:`SpaceGroup.apply` and :meth:`SpaceGroup.apply_to_hkl`
+are not interchangeable.
 """
 
 from __future__ import annotations
@@ -45,32 +28,12 @@ SpaceGroupLike = Union[str, int, gemmi.SpaceGroup, "SpaceGroup", None]
 
 
 def _normalize_spacegroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
-    """
-    Normalize space group input to a gemmi.SpaceGroup object (internal helper).
+    """Normalize any ``SpaceGroupLike`` to a ``gemmi.SpaceGroup``.
 
-    This is an internal function used by the SpaceGroup class constructor.
-    For external use, prefer the SpaceGroup class which provides a full
-    nn.Module interface with symmetry operations.
-
-    Parameters
-    ----------
-    spacegroup : str, int, gemmi.SpaceGroup, SpaceGroup, or None
-        Space group specification:
-        - str: Hermann-Mauguin symbol (e.g., 'P21', 'P 21', 'P212121')
-        - int: Space group number (1-230)
-        - gemmi.SpaceGroup: Passed through unchanged
-        - SpaceGroup: Extracts the internal gemmi.SpaceGroup
-        - None: Returns P1
-
-    Returns
-    -------
-    gemmi.SpaceGroup
-        Normalized space group object.
-
-    Raises
-    ------
-    ValueError
-        If the space group cannot be recognized.
+    Accepts a Hermann-Mauguin string (spacing-insensitive, retried upper-cased),
+    a number 1-230, a ``gemmi.SpaceGroup`` (returned unchanged), a
+    :class:`SpaceGroup` (unwrapped), or None (P1). Raises ``ValueError`` for an
+    unrecognised name/number, ``TypeError`` for any other type.
     """
     if spacegroup is None:
         return gemmi.SpaceGroup("P 1")
@@ -325,28 +288,9 @@ def n_operations(spacegroup: SpaceGroupLike) -> int:
 
 
 def is_fft_friendly(n: int) -> bool:
-    """
-    Check if a number has only factors of 2, 3, and 5.
+    """True if ``n`` factors into 2, 3 and 5 only (radix-2,3,5 FFT sizes).
 
-    These are optimal for radix-2,3,5 FFT algorithms used by PyTorch/cuFFT.
-
-    Parameters
-    ----------
-    n : int
-        Number to check.
-
-    Returns
-    -------
-    bool
-        True if n has only factors of 2, 3, 5.
-
-    Examples
-    --------
-    ::
-
-        is_fft_friendly(128)  # True (2^7)
-        is_fft_friendly(135)  # True (3^3 * 5)
-        is_fft_friendly(131)  # False (prime)
+    ``n <= 0`` is False; 128 and 135 are True, 131 is not.
     """
     if n <= 0:
         return False
@@ -364,29 +308,19 @@ def is_fft_friendly(n: int) -> bool:
 
 
 def find_fft_friendly_size(n: int, divisibility: int = 1) -> int:
-    """
-    Find the nearest FFT-friendly size >= n that satisfies divisibility constraint.
-
-    FFT-friendly means factors only of 2, 3, and 5 (radix-2,3,5 FFT algorithms).
+    """Smallest size >= ``n`` that is FFT-friendly and divisible by ``divisibility``.
 
     Parameters
     ----------
     n : int
         Minimum grid size.
     divisibility : int, default 1
-        Required divisibility (e.g., 2 for screw axes).
+        Required divisibility (e.g. 2 for a screw axis).
 
     Returns
     -------
     int
-        Optimal grid size.
-
-    Examples
-    --------
-    ::
-
-        find_fft_friendly_size(131)      # 135
-        find_fft_friendly_size(131, 2)   # 160 (divisible by 2, FFT-friendly)
+        Optimal grid size (131 -> 135; 131 with divisibility 2 -> 160).
     """
     candidate = n
 
@@ -402,33 +336,16 @@ def find_fft_friendly_size(n: int, divisibility: int = 1) -> int:
 
 
 def get_grid_requirements(spacegroup: SpaceGroupLike) -> dict:
-    """
-    Analyze symmetry operations to determine grid size requirements.
+    """Per-axis grid divisibility required for interpolation-free symmetry expansion.
 
-    Examines all rotation matrices and translations to determine which
-    grid dimensions must satisfy divisibility constraints for exact
-    integer indexing (interpolation-free symmetry expansion).
-
-    Parameters
-    ----------
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
+    Derived from the denominators of the fractional translations, so a grid meeting
+    them indexes symmetry mates at exact integers.
 
     Returns
     -------
     dict
-        {'nx_mod': int, 'ny_mod': int, 'nz_mod': int}
-        Required divisibility for each axis.
-
-    Examples
-    --------
-    ::
-
-        get_grid_requirements('P21')
-        # {'nx_mod': 1, 'ny_mod': 2, 'nz_mod': 1}
-
-        get_grid_requirements('P212121')
-        # {'nx_mod': 2, 'ny_mod': 2, 'nz_mod': 2}
+        ``{'nx_mod': int, 'ny_mod': int, 'nz_mod': int}`` -- e.g. P21 gives
+        ``(1, 2, 1)``, P212121 gives ``(2, 2, 2)``.
     """
     import math
     from fractions import Fraction
@@ -463,12 +380,7 @@ def get_grid_requirements(spacegroup: SpaceGroupLike) -> dict:
 
 
 def check_grid_compatibility(grid_shape: tuple, spacegroup: SpaceGroupLike) -> dict:
-    """
-    Check if a grid is compatible with space group symmetry and FFT requirements.
-
-    Verifies that the grid satisfies both:
-    1. Symmetry requirements (divisibility for screw axes)
-    2. FFT-friendly sizes (factors of 2, 3, 5 only)
+    """Check a grid against both space-group divisibility and FFT-friendliness.
 
     Parameters
     ----------
@@ -480,30 +392,11 @@ def check_grid_compatibility(grid_shape: tuple, spacegroup: SpaceGroupLike) -> d
     Returns
     -------
     dict
-        Dictionary with the following keys:
-
-        - 'compatible' : bool
-            True if grid satisfies all requirements.
-        - 'symmetry_compatible' : bool
-            True if grid satisfies symmetry requirements.
-        - 'fft_friendly' : bool
-            True if all dimensions are FFT-friendly.
-        - 'can_use_direct_indexing' : bool
-            True if interpolation-free expansion is possible.
-        - 'issues' : list of str
-            Descriptions of incompatibilities (empty if compatible).
-        - 'requirements' : dict
-            Required divisibility from get_grid_requirements().
-
-    Examples
-    --------
-    ::
-
-        check_grid_compatibility((131, 163, 148), 'P21')
-        # {'compatible': False, 'issues': ['ny=163 not divisible by 2', ...]}
-
-        check_grid_compatibility((135, 164, 150), 'P21')
-        # {'compatible': True, 'issues': []}
+        ``compatible`` (both tests pass), ``symmetry_compatible``,
+        ``fft_friendly``, ``can_use_direct_indexing`` (interpolation-free
+        expansion possible -- equal to ``symmetry_compatible``), ``issues``
+        (per-axis descriptions, empty when compatible) and ``requirements``
+        (from :func:`get_grid_requirements`).
     """
     nx, ny, nz = grid_shape
     sg = _normalize_spacegroup(spacegroup)
@@ -561,12 +454,7 @@ def suggest_grid_size(
     spacegroup: SpaceGroupLike,
     make_fft_friendly: bool = True,
 ) -> tuple:
-    """
-    Suggest an optimal grid size that satisfies symmetry and FFT requirements.
-
-    Given a minimum grid size, finds the nearest larger size that:
-    1. Satisfies symmetry requirements (divisibility constraints)
-    2. Optionally, is FFT-friendly (factors of 2, 3, 5 only)
+    """Smallest grid >= ``min_grid_shape`` meeting the symmetry divisibility.
 
     Parameters
     ----------
@@ -575,22 +463,12 @@ def suggest_grid_size(
     spacegroup : SpaceGroupLike
         Space group in any supported format.
     make_fft_friendly : bool, default True
-        If True, ensures result has only factors of 2, 3, 5.
+        If True, the result also factors into 2, 3, 5 only.
 
     Returns
     -------
     tuple of int
         Suggested grid dimensions (nx, ny, nz).
-
-    Examples
-    --------
-    ::
-
-        suggest_grid_size((131, 163, 148), 'P21')
-        # (135, 164, 150) or similar
-
-        suggest_grid_size((131, 163, 148), 'P212121')
-        # (135, 164, 150) - all divisible by 2 and FFT-friendly
     """
     requirements = get_grid_requirements(spacegroup)
 
@@ -626,26 +504,19 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     """
     Unified space group handler for crystallographic symmetry operations.
 
-    This class combines space group normalization with symmetry operations,
-    providing a single interface for:
-    - Normalizing input (string, int, gemmi.SpaceGroup) in the constructor
-    - Storing symmetry matrices and translations as PyTorch buffers
-    - Applying symmetry operations to fractional coordinates
-    - Grid size utilities for symmetry-compatible grids
+    Normalizes its input, holds the operations as buffers, applies them to
+    fractional coordinates (``__call__``) or Miller indices, and exposes the
+    grid-size helpers as methods. Only the derived metadata is retained -- no
+    persistent ``gemmi`` reference is held (see :attr:`_gemmi`).
 
     Parameters
     ----------
     space_group : str, int, gemmi.SpaceGroup, SpaceGroup, or None
-        Space group specification. Accepts:
-        - Hermann-Mauguin symbol (e.g., 'P21', 'P 21 21 21')
-        - Space group number (1-230)
-        - gemmi.SpaceGroup object
-        - Another SpaceGroup instance
-        - None (defaults to P1)
+        Hermann-Mauguin symbol, number 1-230, gemmi object, another instance,
+        or None for P1.
     dtype : torch.dtype, optional
-        Data type for rotation matrices and translations. Defaults to the
-        configured ``dtypes.float`` (``get_float_dtype()``, float32 in
-        production; float64 only when ``TORCHREF_DTYPE_FLOAT=float64``).
+        Data type for matrices and translations. Defaults to the configured
+        ``dtypes.float`` (float32 unless ``TORCHREF_DTYPE_FLOAT=float64``).
     device : torch.device, default: configured device.current
         Device for computation.
 
@@ -657,29 +528,6 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         Translation vectors for all symmetry operations (registered buffer).
     n_ops : int
         Number of symmetry operations.
-
-    Examples
-    --------
-    ::
-
-        # Create from various inputs
-        sg = SpaceGroup('P21')
-        sg = SpaceGroup('P 21')      # Same result
-        sg = SpaceGroup(4)           # P21 by number
-        sg = SpaceGroup(None)        # Returns P1
-
-        # Access properties
-        print(sg.name)          # 'P21' (short name)
-        print(sg.hm)            # 'P 21' (Hermann-Mauguin with spaces)
-        print(sg.number)        # 4
-
-        # Apply symmetry operations
-        coords = torch.tensor([[0.1, 0.2, 0.3]])
-        transformed = sg(coords)  # Apply all symmetry operations
-
-        # Grid utilities
-        req = sg.get_grid_requirements()
-        suggested = sg.suggest_grid_size((131, 163, 148))
     """
 
     def __init__(
@@ -725,11 +573,8 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
 
     @property
     def _gemmi(self) -> gemmi.SpaceGroup:
-        """Create gemmi.SpaceGroup on demand (not stored persistently).
-
-        This avoids holding a persistent reference to the C++ singleton,
-        which prevents nanobind leak warnings during interpreter shutdown.
-        """
+        """Fresh gemmi.SpaceGroup each access; never cache it -- a persistent
+        reference to the C++ singleton produces nanobind leak warnings at shutdown."""
         return gemmi.find_spacegroup_by_name(self._sg_hm)
 
     @property
@@ -862,15 +707,11 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Apply symmetry operations to Miller indices (rotation only, no translation).
 
-        For reciprocal space, the symmetry-equivalent Miller index is obtained
-        by the *transpose* of the (real-space, fractional) rotation matrix:
-        ``h' = h·R = Rᵀ·h``. This is NOT the same as the real-space transform
-        ``x' = R·x`` unless ``R`` is symmetric: for space groups whose fractional
-        rotation matrices are non-symmetric (trigonal, hexagonal, and permutation-
-        type cubic operations) applying ``R·h`` instead of ``Rᵀ·h`` yields the
-        wrong set of equivalents, corrupting centric-flag and epsilon-multiplicity
-        determination. The translation vector affects the phase of structure
-        factors, not the indices themselves, so it is not applied here.
+        Reciprocal space uses the *transpose*: ``h' = h·R = Rᵀ·h``. Substituting
+        ``R·h`` gives the wrong equivalents wherever the fractional rotation is
+        non-symmetric (trigonal, hexagonal, permutation-type cubic ops), silently
+        corrupting centric flags and epsilon multiplicities. Translations shift
+        structure-factor phases, not indices, so they are not applied here.
 
         Parameters
         ----------
@@ -880,13 +721,11 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         Returns
         -------
         torch.Tensor
-            Transformed Miller indices of shape (N, 3, ops) where ops is the
-            number of symmetry operations.
+            Transformed Miller indices of shape (N, 3, ops).
 
         See Also
         --------
-        apply : For real space coordinates (rotation + translation), which uses
-            ``R·x`` and is the transpose of the reciprocal-space convention here.
+        apply : Real-space coordinates (``R·x + t``), the transposed convention.
         """
         coords = hkl.to(self.matrices.device).to(self.matrices.dtype)
         # result[n, i, o] = sum_j matrices[o, j, i] * coords[n, j] = (Rᵀ·h)_i
@@ -922,82 +761,20 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     # =========================================================================
 
     def get_grid_requirements(self) -> dict:
-        """
-        Analyze symmetry operations to determine grid size requirements.
-
-        Returns
-        -------
-        dict
-            {'nx_mod': int, 'ny_mod': int, 'nz_mod': int}
-            Required divisibility for each axis.
-
-        Examples
-        --------
-        ::
-
-            sg = SpaceGroup('P21')
-            req = sg.get_grid_requirements()
-            print(req)  # {'nx_mod': 1, 'ny_mod': 2, 'nz_mod': 1}
-        """
+        """Per-axis grid divisibility; see :func:`get_grid_requirements`."""
         return get_grid_requirements(self)
 
     def check_grid_compatibility(self, grid_shape: tuple) -> dict:
-        """
-        Check if a grid size is compatible with the symmetry operations.
+        """Report whether ``(nx, ny, nz)`` suits this group and the FFT.
 
-        Parameters
-        ----------
-        grid_shape : tuple of int
-            (nx, ny, nz) grid dimensions.
-
-        Returns
-        -------
-        dict
-            Dictionary with keys:
-            - 'compatible' : bool - True if grid satisfies all requirements
-            - 'symmetry_compatible' : bool - True if grid satisfies symmetry
-            - 'fft_friendly' : bool - True if all dimensions are FFT-friendly
-            - 'can_use_direct_indexing' : bool - True if no interpolation needed
-            - 'issues' : list of str - Descriptions of incompatibilities
-            - 'requirements' : dict - Required divisibility
-
-        Examples
-        --------
-        ::
-
-            sg = SpaceGroup('P21')
-            result = sg.check_grid_compatibility((131, 163, 148))
-            print(result['compatible'])  # False
-            print(result['issues'])  # ['ny=163 not divisible by 2']
+        Returns the report dict documented in :func:`check_grid_compatibility`.
         """
         return check_grid_compatibility(grid_shape, self)
 
     def suggest_grid_size(
         self, min_grid_shape: tuple, make_fft_friendly: bool = True
     ) -> tuple:
-        """
-        Suggest an optimal grid size that satisfies symmetry requirements.
-
-        Parameters
-        ----------
-        min_grid_shape : tuple of int
-            Minimum (nx, ny, nz) grid dimensions.
-        make_fft_friendly : bool, default True
-            If True, ensures result has only factors of 2, 3, 5.
-
-        Returns
-        -------
-        tuple of int
-            Suggested grid dimensions (nx, ny, nz).
-
-        Examples
-        --------
-        ::
-
-            sg = SpaceGroup('P21')
-            suggested = sg.suggest_grid_size((131, 163, 148))
-            print(suggested)  # (135, 164, 150) or similar
-        """
+        """Smallest valid grid >= ``min_grid_shape``; see :func:`suggest_grid_size`."""
         return suggest_grid_size(min_grid_shape, self, make_fft_friendly)
 
     # =========================================================================
@@ -1024,13 +801,6 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
     # =========================================================================
 
     def copy(self) -> "SpaceGroup":
-        """Create a deep copy of this SpaceGroup.
-
-        Returns
-        -------
-        SpaceGroup
-            A new SpaceGroup instance with cloned buffers.
-        """
-        # Create new SpaceGroup from HM string to preserve symmetry info
+        """A new SpaceGroup with the same symmetry, dtype and device (fresh buffers)."""
         new_sg = SpaceGroup(self._sg_hm, dtype=self._dtype, device=self._device)
         return new_sg

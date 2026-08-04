@@ -10,9 +10,11 @@ class MLNoAlphaXrayTarget(SigmaAXrayTarget):
 
     ``ml``'s likelihood with the mean coupling fixed at 1 -- the scaler owns that gauge.
     **Best of the five on R_free** over 766 AF-start structures (0.3244, tied with Phenix);
-    ``ml`` is +0.00020 behind and ``ml_full`` +0.00015, both p<=0.0001. Also exactly the
-    likelihood ``ScalerBase.refine_lbfgs``'s ``scale_target='sigmaa'`` evaluates, and the
-    right choice there because ``alpha`` is degenerate with the per-bin scale being fitted.
+    ``ml`` is +0.00020 behind and ``ml_full`` +0.00015, both p<=0.0001.
+
+    Also the row ``ScalerBase.refine_lbfgs`` instantiates for ``scale_target='ml_noalpha'``,
+    and the right choice there because ``alpha`` is degenerate with the per-bin scale being
+    fitted.
 
     The mean is the base class default, so there is nothing to override but this docstring.
     """

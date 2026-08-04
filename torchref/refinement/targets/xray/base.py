@@ -1,3 +1,11 @@
+"""Shared base for the X-ray targets.
+
+:class:`XrayTarget` owns the work/free/validation subset selection, the compact
+``get_data`` view every subclass' ``forward`` consumes, and the one R-factor
+implementation (:meth:`XrayTarget.get_rfactor`). Subclasses supply only the
+likelihood -- and, if they own their own scale, :meth:`_scaled_F_calc_full`.
+"""
+
 from typing import TYPE_CHECKING, Dict, Tuple
 
 import torch
@@ -21,40 +29,31 @@ if TYPE_CHECKING:
 
 
 class XrayTarget(DataTarget):
-    """
-    Base class for X-ray targets.
+    """Base class for X-ray targets, with or without a model.
 
-    Provides common functionality for accessing F_obs, F_calc, etc.
-    Supports two modes of operation:
-
-    1. With Model: Computes F_calc from model on each forward pass
-    2. Without Model: Uses pre-computed F_calc passed to forward()/get_data()
-
-    The R-factor and statistics paths honor this same dual mode (model F_calc
-    vs. supplied ``fcalc``).
+    With a model, F_calc is recomputed each forward pass; without one, a
+    pre-computed ``fcalc`` is passed to ``forward()``/``get_data()``. The
+    R-factor and statistics paths honour the same dual mode.
 
     Parameters
     ----------
     data : ReflectionData, optional
-        Reference to the ReflectionData object. Required for forward().
+        Reference to the ReflectionData object. Required for ``forward()``.
     model : Model or ModelFT, optional
-        Reference to Model object for F_calc computation.
-        If None, fcalc must be provided to forward().
+        Model used for F_calc. If None, ``fcalc`` must be passed to ``forward()``.
     scaler : Scaler, optional
         Reference to the Scaler object.
     use_work_set : bool, optional
-        If True, compute loss on work set; if False, on test set. Default is True.
-        Legacy bool; superseded by ``use_set`` when the latter is given.
+        Legacy bool, default True; ignored when ``use_set`` is given.
     use_set : str, optional
-        Canonical 3-way subset selector: ``"work"``/``"free"``/``"val"``. Takes
-        precedence over ``use_work_set``. If None, derived from ``use_work_set``.
+        Canonical 3-way subset selector, ``"work"``/``"free"``/``"val"``. Takes
+        precedence over ``use_work_set``; if None, derived from it.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Attributes
-    ----------
-    use_work_set : bool
-        Whether to use work set or test set.
+    sigma_a : SigmaAConfig, optional
+        Model-error estimator configuration. Carried by every x-ray target so the
+        factory has one construction call for all taxonomy rows, but read only by
+        the sigma_A family -- ``nll``, ``ls`` and ``ls_wunit_k1`` ignore it.
     """
 
     name: str = "xray"  # Will be overridden based on work/test set
@@ -70,42 +69,14 @@ class XrayTarget(DataTarget):
         device=None,
         sigma_a=None,
     ):
-        """
-        Initialize X-ray target.
-
-        Parameters
-        ----------
-        data : ReflectionData, optional
-            Reference to the ReflectionData object. Required for forward().
-        model : Model or ModelFT, optional
-            Reference to Model object for F_calc computation.
-            If None, fcalc must be provided to forward().
-        scaler : Scaler, optional
-            Reference to the Scaler object.
-        use_work_set : bool, optional
-            If True, compute loss on work set; if False, on test set. Default is True.
-            Legacy bool; superseded by ``use_set`` when the latter is given.
-        use_set : str, optional
-            Canonical 3-way subset selector: ``"work"``/``"free"``/``"val"``. Takes
-            precedence over ``use_work_set``. If None, derived from ``use_work_set``.
-        verbose : int, optional
-            Verbosity level. Default is 0.
-        """
+        """Initialize X-ray target; see the class docstring for parameters."""
         super().__init__(
             data=data, model=model, scaler=scaler, verbose=verbose, device=device
         )
-        # ``use_set`` (3-way: "work"/"free"/"val") is the canonical subset
-        # selector; the legacy ``use_work_set`` bool maps onto it. When
-        # ``use_set`` is not given explicitly, fall back to the bool so older
-        # callers (which only pass ``use_work_set``) keep working. Both
-        # attributes are kept consistent so ``get_data`` (reads ``use_set``) and
-        # the subclass ``forward`` paths (historically read ``use_work_set``)
-        # never disagree about which subset they operate on.
-        #: Model-error estimator configuration
-        #: (:class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAConfig`).
-        #: Carried by EVERY x-ray target so the factory has one construction call for all
-        #: seven taxonomy rows; read only by the ``sigma_A``-family subclasses. ``nll``,
-        #: ``ls`` and ``ls_wunit_k1`` store it and ignore it.
+        # ``use_set`` is canonical and the legacy ``use_work_set`` bool maps onto
+        # it. Keep BOTH consistent below: ``get_data`` reads ``use_set`` while some
+        # subclass ``forward`` paths read ``use_work_set``, and if the two disagree
+        # the loss and the reported statistics silently use different subsets.
         if sigma_a is None:
             from torchref.refinement.model_error_estimation.sigma_a import SigmaAConfig
 
@@ -122,21 +93,16 @@ class XrayTarget(DataTarget):
         }.get(use_set, "xray_work")
 
     def reset_get_data_cache(self):
-        """Deprecated no-op.
-
-        The work/free subset indices and the scaled ``(F, F_sigma)`` are now
-        cached on the :class:`ReflectionData` and self-invalidate via
-        fingerprints, so there is nothing to reset here. Retained for
-        backward compatibility.
+        """Deprecated no-op, kept for compatibility: the subset indices and scaled
+        ``(F, F_sigma)`` now live on the :class:`ReflectionData` and self-invalidate
+        by fingerprint, so there is nothing here to reset.
         """
         pass
 
     def _subset(self):
-        """Return the ``_ReflectionSubset`` view for this target's ``use_set``.
-
-        Single source of truth for the work/free/validation selection used by
-        both :meth:`get_data` and the subclass ``forward`` implementations, so
-        the loss and the reported statistics always operate on the same set.
+        """The ``_ReflectionSubset`` view for this target's ``use_set``. Single
+        source of truth for the selection -- both :meth:`get_data` and the subclass
+        ``forward`` paths go through here, so loss and stats cannot diverge.
         """
         if self.use_set == "free":
             return self._data.free
@@ -148,15 +114,14 @@ class XrayTarget(DataTarget):
         self, fcalc: torch.Tensor = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, object]:
         """
-        Get compact F_obs, F_calc, sigma, centric, and the subset view for the
-        appropriate set (work, free, or validation).
+        Get compact F_obs, F_calc, sigma, centric and the subset view for
+        this target's set (work, free or validation).
 
-        Uses the :class:`ReflectionData` ``work``/``free``/``validation``
-        accessor, which applies the validity masks and the work/test/validation
-        selection and caches the remapped integer indices. The returned
-        amplitude tensors are **compact** (already restricted to the subset);
-        use ``sub.select(t)`` to align a full-size, model-computed array to the
-        same subset.
+        Goes through the :class:`ReflectionData` subset accessor, which applies the
+        validity masks and caches the remapped indices. The returned amplitude
+        tensors are **compact** -- already restricted to the subset -- so a
+        full-size, model-computed array must be passed through ``sub.select(t)``
+        before it can be combined with them.
 
         Parameters
         ----------
@@ -192,10 +157,8 @@ class XrayTarget(DataTarget):
     def _scaled_F_calc_full(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """Full-size ``|F_calc|`` under THIS target's objective scaling.
 
-        Default is the scaler's scaling (:meth:`get_F_calc_scaled`). Targets that
-        own their scale (e.g. :class:`LeastSquaresXrayTarget` in
-        ``binwise_optimal`` mode) override this so the reported R-factor uses the
-        very scale the loss sees.
+        Defaults to the scaler's; targets owning their own scale override it so the
+        reported R-factor uses the very scale the loss saw.
         """
         if fcalc is not None:
             return self.get_F_calc_scaled(fcalc=fcalc)

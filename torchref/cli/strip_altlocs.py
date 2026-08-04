@@ -21,17 +21,8 @@ from torchref.io import pdb
 
 
 def strip_altlocs(df):
-    """Remove alternate conformations, keeping the higher-occupancy conformer.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        PDB dataframe with altloc column.
-
-    Returns
-    -------
-    pd.DataFrame
-        Dataframe with altlocs removed.
+    """Drop alternate conformations from a PDB dataframe, keeping the higher-occupancy
+    conformer (altloc A on a tie); atoms with no altloc are always kept.
     """
     no_alt = df["altloc"].isna() | df["altloc"].isin(["", " "])
 
@@ -65,6 +56,7 @@ def strip_altlocs(df):
 
 
 def main():
+    """Entry point for ``torchref.strip-altlocs``; returns the exit code."""
     parser = argparse.ArgumentParser(
         prog="torchref.strip-altlocs",
         description="Strip alternate conformations from a PDB file, "

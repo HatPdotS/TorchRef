@@ -25,11 +25,8 @@ def optimize_simulated_annealing(
     verbose: int = 0,
     callback: callable = None,
 ) -> LossState:
-    """
-    Run simulated annealing optimization on a LossState.
-
-    Uses per-parameter Metropolis criterion where each parameter
-    is independently accepted or rejected.
+    """Simulated annealing on a LossState, accepting or rejecting each parameter
+    independently by its own Metropolis criterion.
 
     Parameters
     ----------
@@ -37,41 +34,29 @@ def optimize_simulated_annealing(
         Configured loss state with targets and weights.
     params : list of torch.Tensor
         Parameters to optimize.
-    T_initial : float
-        Initial temperature. Default is 1.0.
-    T_final : float
-        Final temperature. Default is 0.01. Note: for the exponential
-        schedule the cooling rate is ``(T_final/T_initial)**(1/n_steps)`` and
-        the step index runs ``0..n_steps-1``, so the last step reaches
-        ``T_initial * (T_final/T_initial)**((n_steps-1)/n_steps)`` --
-        ``T_final`` is approached but not exactly attained.
+    T_initial, T_final : float
+        Temperature bounds. Note the exponential rate is
+        ``(T_final/T_initial)**(1/n_steps)`` over steps ``0..n_steps-1``, so ``T_final`` is
+        approached but never exactly reached.
     n_steps : int
-        Number of SA steps. Default is 1000.
+        Number of SA steps.
     perturbation_scale : float, list, or dict
-        Scale factor for perturbations. Can be:
-        - float: uniform scale for all parameters
-        - list: per-parameter scales (same length as params)
-        - dict: mapping from parameter index to scale (missing indices use 0.01)
-        If absolute_scale=False (default), this is multiplied by parameter magnitude.
-        If absolute_scale=True, this is used directly as the standard deviation.
-        Default is 0.01.
+        One scale for all parameters, one per parameter, or ``{index: scale}`` (missing
+        indices use 0.01). Relative to parameter magnitude unless ``absolute_scale``.
     absolute_scale : bool
-        If True, perturbation_scale is used as absolute std dev for noise.
-        If False (default), perturbation_scale is relative to parameter magnitude.
+        Treat ``perturbation_scale`` as the absolute noise standard deviation.
     cooling_schedule : str
-        Cooling schedule: "exponential" or "linear". Default is "exponential".
+        ``"exponential"`` (default) or ``"linear"``.
     verbose : int
-        Verbosity level. Default is 0.
+        Verbosity level.
     callback : callable, optional
-        Function called after each step with signature
-        callback(step, T, loss, params), where ``loss`` is the current
-        accepted loss (not the per-step proposal). Useful for collecting
-        snapshots during optimization.
+        ``callback(step, T, loss, params)`` after each step, where ``loss`` is the currently
+        *accepted* loss, not the per-step proposal. Useful for collecting snapshots.
 
     Returns
     -------
     LossState
-        State with history containing before/after loss values.
+        State whose history holds the before/after loss values.
     """
     params = list(params)
     n_params = len(params)

@@ -1,20 +1,13 @@
 """Shared dispatch gate for the target math functions.
 
-When called on a CUDA float32 tensor and the Triton kernels are importable, the math
-functions in this package route to their implementations in
-:mod:`torchref.base.targets.triton`. CPU tensors, non-float32 tensors, and environments
-without a usable Triton fall back to the plain eager implementation.
+On a CUDA float32 tensor with importable Triton kernels, this package's math functions
+route to :mod:`torchref.base.targets.triton`; CPU tensors, non-float32 tensors and a
+missing or broken Triton fall back to eager. The criteria are data in
+:data:`TARGET_BACKENDS`, matching the density and direct-summation tables.
 
-The criteria live in :data:`TARGET_BACKENDS` rather than in a predicate body, for the same
-reason as the density and direct-summation tables: device, dtype and availability stated once,
-as data, next to the kernels they select.
-
-This is a **gate-only** table -- the twelve call sites each do their own
-``from .triton.<mod> import <fn>`` three lines from the ``if``, which is more legible than a
-registry lookup for a single-kernel choice. The table's job is the decision, not the
-dispatch, so its rows carry no ``kernel``.
-
-To force the eager path for an A/B comparison or to sidestep a flaky Triton install::
+**Gate-only**: rows carry no ``kernel``, because each call site does its own
+``from .triton.<mod> import <fn>`` beside the ``if``. To force eager for an A/B
+comparison or around a flaky Triton install::
 
     from torchref.utils import use_portable
     with use_portable():
@@ -33,19 +26,14 @@ _THIS = "torchref.base.targets._dispatch"
 def why_unavailable() -> Optional[str]:
     """``None`` if the target Triton kernels can run, else why they cannot.
 
-    Closes a real gap. ``triton_available()`` answers "is the ``triton`` package
-    importable", which is not the same question as "do *these* kernels import" -- and
-    nothing asked the second one. Each of the twelve call sites does an unguarded
-    function-local import, so a Triton present but skewed against the installed driver or
-    LLVM raised straight through a refinement step, where the density and direct-summation
-    paths would have degraded. Importing the package is the shared prerequisite for all
-    twelve, so one probe covers them.
+    Distinct from ``triton_available()``, which only answers "is the package
+    importable": the call sites import unguarded, so a Triton skewed against the driver
+    or LLVM would raise straight through a refinement step instead of degrading.
+    Importing the package is the shared prerequisite, so one probe covers all of them.
 
-    Deliberately does *not* re-check ``torch.cuda.is_available()``. Selection is two-phase,
-    so the device criterion has already matched by the time a probe runs -- and the presence
-    of a CUDA tensor is stronger evidence than the query. Asking again would also make this
-    probe disagree with ``triton_available()`` on a host that has Triton installed but no
-    GPU, which is an ordinary CI configuration.
+    Deliberately does *not* re-check ``torch.cuda.is_available()``: selection is
+    two-phase, so the device criterion has already matched, and re-asking would make
+    this disagree with ``triton_available()`` on the ordinary Triton-but-no-GPU CI host.
     """
     if not triton_available():
         return "triton is not importable"
@@ -69,10 +57,9 @@ TARGET_BACKENDS = BackendTable(
             dtypes=(torch.float32,),
             probe=(_THIS, "why_unavailable"),
             expect_available="cuda",
-            # Availability is handled by the probe above, so this governs only a kernel
-            # that imported and then threw -- a bug in pure math on already-validated
-            # tensors. Degrading would buy a silent ~50x slowdown with subtly different
-            # numbers, which is worse than the exception.
+            # The probe handles availability, so this governs only a kernel that
+            # imported and then threw -- a bug in pure math on validated tensors.
+            # Degrading there would silently swap in different numbers.
             on_failure="raise",
             second_order=False,
         ),
@@ -90,10 +77,8 @@ TARGET_BACKENDS = BackendTable(
 
 
 def use_triton(*tensors: torch.Tensor) -> bool:
-    """Decide whether to route a call to the Triton kernel.
-
-    Asks the ``triton`` row of :data:`TARGET_BACKENDS` whether it is the backend that would
-    actually be selected. ``None`` entries among ``tensors`` are ignored, so a caller may pass
-    optional inputs straight through.
+    """Whether to route this call to the Triton kernel, per the ``triton`` row of
+    :data:`TARGET_BACKENDS`. ``None`` entries in ``tensors`` are ignored, so optional
+    inputs can be passed straight through.
     """
     return will_use(TARGET_BACKENDS, "triton", tensors)

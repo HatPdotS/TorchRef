@@ -15,25 +15,23 @@ def rotate_coords_torch(coords, phi, rho):
     """
     Rotate coordinates using phi and rho angles (PyTorch version).
 
+    Convention: rotate by ``phi`` about z, then by ``rho`` about the resulting
+    x axis.
+
     Parameters
     ----------
     coords : torch.Tensor
         Coordinates of shape (N, 3) to rotate.
     phi : torch.Tensor
-        Rotation angle phi in degrees (scalar tensor; ``torch.cos``/``sin``
-        are applied to it, so a Python float is not accepted).
+        Angle in degrees; must be a scalar *tensor* (``torch.cos`` is applied
+        to it), so a Python float is rejected.
     rho : torch.Tensor
-        Rotation angle rho in degrees (scalar tensor).
+        Angle in degrees (scalar tensor).
 
     Returns
     -------
     torch.Tensor
         Rotated coordinates of shape (N, 3).
-
-    Notes
-    -----
-    The two-angle (phi, rho) convention composes a rotation by ``phi`` about
-    the z axis followed by a rotation by ``rho`` about the resulting x axis.
     """
     phi = phi * np.pi / 180
     rho = rho * np.pi / 180
@@ -61,8 +59,8 @@ def rotate_coords_numpy(coords, phi, rho):
     """
     Rotate 3D coordinates by phi and rho angles (NumPy version).
 
-    Applies a rotation transformation to a set of 3D coordinates using
-    two rotation angles (phi and rho) in degrees.
+    Same convention as :func:`rotate_coords_torch`; the matrix is built in
+    float64 regardless of the input dtype.
 
     Parameters
     ----------
@@ -336,7 +334,8 @@ def rotation_matrix_euler_xyz(
     """
     Create rotation matrix from XYZ Euler angles (differentiable PyTorch version).
 
-    R = Rz(gamma) @ Ry(beta) @ Rx(alpha)
+    R = Rz(gamma) @ Ry(beta) @ Rx(alpha). Distinct world axes, so unlike ZYZ
+    there is no gimbal-lock singularity at beta=0.
 
     Parameters
     ----------
@@ -349,12 +348,6 @@ def rotation_matrix_euler_xyz(
     -------
     torch.Tensor
         3x3 rotation matrix (or batched (B, 3, 3)).
-
-    Notes
-    -----
-    Rotating about distinct world axes avoids the gimbal-lock singularity at
-    the origin that ZYZ has when beta=0 (where alpha and gamma both rotate
-    about Z).
     """
     batched = True
     if angles.dim() == 1:

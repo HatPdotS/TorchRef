@@ -5,19 +5,21 @@ TorchRef Documentation
 
 **A PyTorch-based crystallographic refinement library**
 
-TorchRef is a modern crystallographic refinement package built entirely on PyTorch. 
-By leveraging PyTorch's automatic differentiation and GPU acceleration, TorchRef 
-enables seamless integration with machine learning workflows and provides a flexible, 
-extensible framework for crystallographic structure refinement.
+TorchRef is a crystallographic refinement package built entirely on PyTorch.
+Autograd and GPU acceleration make it composable with machine-learning
+workflows and cheap to extend with new targets, restraints, and optimizers.
+
+It is mainly a library to build and experiment with, not a replacement for
+mainline refinement programs on standard problems.
 
 Key Features
 ------------
 
-- **Native PyTorch Integration**: Built on PyTorch's ``nn.Module`` architecture
-- **Automatic Differentiation**: No manual gradient implementations required
-- **Modular Architecture**: Easily composable and extensible components
-- **GPU Acceleration**: CUDA support for fast structure factor calculations
-- **State Management**: Full ``state_dict`` support for checkpointing
+- **Native PyTorch Integration**: built on ``nn.Module``
+- **Automatic Differentiation**: define a forward pass, get gradients
+- **Modular Architecture**: composable targets, restraints, optimizers
+- **GPU Acceleration**: CUDA and Apple Silicon (MPS)
+- **State Management**: full ``state_dict`` support for checkpointing
 
 .. toctree::
    :maxdepth: 2

@@ -1,3 +1,5 @@
+"""Planarity restraint on the deviation of each atom from its best-fit plane."""
+
 import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
@@ -17,28 +19,12 @@ if TYPE_CHECKING:
 
 
 def _plane_normals(centered: torch.Tensor) -> torch.Tensor:
-    """Compute unit plane normals from centered coordinates via SVD.
+    """Unit plane normals (P, 3) from mean-centred coordinates (P, N, 3), by SVD.
 
-    SVD is backward-stable even for rank-deficient matrices and never raises
-    on finite input, so no jitter is needed. The right singular vector with
-    the smallest singular value is the plane normal (direction of minimum
-    variance).
-
-    SVD is run in the input dtype — for small (P, N, 3) matrices over
-    O(Å) atom coordinates, float32 is numerically sufficient.
-
-    The result is detached — the caller is responsible for wrapping this in
-    ``torch.no_grad()``.
-
-    Parameters
-    ----------
-    centered : torch.Tensor
-        (P, N, 3) atoms of each plane group, mean-centred.
-
-    Returns
-    -------
-    torch.Tensor
-        (P, 3) plane normals (smallest-variance direction).
+    The smallest right singular vector is the minimum-variance direction. SVD needs no
+    jitter -- backward-stable even rank-deficient, never raises on finite input -- and
+    runs in the input dtype, which is enough for O(Å) coordinates. The result is
+    detached; the caller must still wrap the call in ``torch.no_grad()``.
     """
     _U, _S, Vh = torch.linalg.svd(centered.detach(), full_matrices=False)
     return Vh[:, -1, :]
@@ -48,22 +34,14 @@ class PlanarityTarget(GeometryTarget):
     """
     Planarity restraint target (Gaussian NLL).
 
-    For each planar group (e.g., aromatic rings, peptide planes), computes the
-    distance of each atom from the best-fit plane.
+    Per planar group (aromatic rings, peptide planes), ``d_i`` is atom i's distance from
+    the best-fit plane and the loss is ``0.5·(d_i/σ_i)² + log σ_i + 0.5·log 2π``.
 
-    The best-fit plane normal is the smallest-variance direction of the
-    centered coordinates, obtained via SVD (see ``_plane_normals``). The
-    normal is detached from the computational graph so that gradients flow
-    only through the deviation projection, not through the SVD. This is
-    standard practice in crystallographic refinement (SHELXL, Phenix, Refmac)
-    and avoids NaN gradients when atoms are exactly coplanar.
-
-    Plane groups with <= 3 atoms are skipped since 3 coplanar points have
-    zero deviation by construction and contribute no gradient signal.
-
-    NLL = 0.5 * (d_i / σ_i)² + log(σ_i) + 0.5 * log(2π)
-
-    where d_i is the distance of atom i from the best-fit plane.
+    The plane normal is the minimum-variance direction from an SVD (see
+    :func:`_plane_normals`) and is **detached**, so gradients flow through the deviation
+    projection only -- as in SHELXL, Phenix and Refmac, and what avoids NaN gradients at
+    exact coplanarity. Groups of <= 3 atoms are skipped: three points are coplanar by
+    construction, so they carry no signal.
     """
 
     name: str = "geometry/planarity"
@@ -72,6 +50,7 @@ class PlanarityTarget(GeometryTarget):
         super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
+        """Summed planarity NLL over plane-size buckets; 0.0 when there are no planes."""
         from torchref.base.targets.planarity import planarity_math
         xyz = self.model.xyz()
         device = xyz.device
@@ -79,8 +58,7 @@ class PlanarityTarget(GeometryTarget):
         if "plane" not in self.restraints.restraints:
             return torch.tensor(0.0, device=device)
 
-        # Build (indices, sigmas) per plane-size bucket, skipping
-        # 3-atom planes (zero gradient signal by construction).
+        # Bucketed by plane size, skipping 3-atom planes: zero signal by construction.
         plane_groups = []
         for _key, plane_data in self.restraints.restraints["plane"].items():
             indices = plane_data.get("indices")

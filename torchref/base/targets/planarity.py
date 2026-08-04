@@ -9,13 +9,9 @@ from ._dispatch import use_triton
 
 
 def _plane_normals_detached(centered: torch.Tensor) -> torch.Tensor:
-    """SVD-derived plane normal (right singular vector at smallest σ).
-
-    Caller must wrap in ``torch.no_grad()``; the result is intentionally
-    detached so backward flows only through the deviation projection.
-
-    SVD is run in the input dtype — for small (P, N, 3) matrices over
-    O(Å) atom coordinates, float32 is numerically sufficient.
+    """SVD-derived plane normal (right singular vector at smallest σ), in the input
+    dtype, which is enough for O(Å) coordinates. Caller must wrap in
+    ``torch.no_grad()``: backward must flow through the deviation projection only.
     """
     _U, _S, Vh = torch.linalg.svd(centered, full_matrices=False)
     return Vh[:, -1, :]

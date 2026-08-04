@@ -51,7 +51,8 @@ def _sigma_a_kwargs(args) -> dict:
     """Only the σ_A estimator knobs the user actually set.
 
     Passing ``None`` through would override the library default with ``None``; omitting
-    unset flags keeps :mod:`torchref.refinement.model_error_estimation.sigma_a` the single source of
+    unset flags keeps :mod:`torchref.refinement.model_error_estimation.sigma_a` the
+    single source of
     truth for the defaults, so the CLI help and the code cannot drift apart.
     """
     out = {}
@@ -59,10 +60,8 @@ def _sigma_a_kwargs(args) -> dict:
         out["sigma_a_max"] = float(args.sigma_a_max)
     if getattr(args, "no_shrink", False):
         out["shrink"] = False
-    # `--shrink-passes` is retired: the shrinkage target is now a fitted curve rather
-    # than the neighbouring shells, so it is one-shot and a pass count would be a flag
-    # whose value changes nothing. Accepted as an on/off alias so existing scripts and
-    # benchmark arms keep running, with a warning naming the replacement.
+    # `--shrink-passes` is retired: the shrinkage is one-shot, so a pass count would be
+    # a flag whose value changes nothing. Accepted as an on/off alias, with a warning.
     passes = getattr(args, "shrink_passes", None)
     if passes is not None:
         warnings.warn(
@@ -142,14 +141,14 @@ Loss weights:
         type=str,
         default=DEFAULT_SCALE_TARGET,
         choices=list(SCALE_TARGETS),
-        help="Objective for the scaler's own L-BFGS scale fit (NOT the body "
-        "target). 'nll' (default) uses the sigma_obs-weighted Gaussian: the natural "
-        "objective for a nuisance-magnitude fit, it avoids coupling the nuisance "
-        "layer to the model-error estimate, and it treats the body targets "
-        "even-handedly -- 'sigmaa' IS ml's own likelihood, so under it ml gets a "
-        "scaler fitted with the objective it is judged by while ml_full does not. "
-        "'sigmaa' uses the Read-MLF sigma_A likelihood with a detached free-set "
-        "beta; prefer it if the per-bin log_scale collapses in weak shells.",
+        help="Objective for the scaler's own L-BFGS scale fit (NOT the body target). The "
+        "choices are --xray-mode rows, evaluated by the same target classes the body uses; "
+        "only rows that do not centre on alpha are offered, because alpha is degenerate with "
+        "the scale being fitted. 'nll' (default) is the sigma_obs-weighted Gaussian: the "
+        "natural objective for a nuisance-magnitude fit, it avoids coupling the nuisance "
+        "layer to the model-error estimate, and it treats the body targets even-handedly. "
+        "'ml_noalpha' is the Read-MLF sigma_A likelihood; prefer it if the per-bin log_scale "
+        "collapses in weak shells, since its beta absorbs the mismatch instead.",
     )
     refine_group.add_argument(
         "--sigma-a-max",
@@ -295,10 +294,8 @@ Loss weights:
         wavelength=args.wavelength,
     )
 
-    # Apply manual group weights, if given. Merge onto DEFAULT_GROUP_WEIGHTS so
-    # unspecified groups keep their defaults (e.g. --weights '{"xray": 5}' sets
-    # xray=5 while geometry=1 / adp=0.1 stay). reset_loss_state() forces the lazy
-    # LossState to rebuild with the new weighting.
+    # Merge onto DEFAULT_GROUP_WEIGHTS so unspecified groups keep their defaults;
+    # reset_loss_state() forces the lazy LossState to rebuild with the new weighting.
     if manual_weights:
         from torchref.refinement.base_refinement import DEFAULT_GROUP_WEIGHTS
         from torchref.refinement.weighting import ManualWeighting
@@ -389,6 +386,10 @@ Loss weights:
             ),
             "wavelength": args.wavelength,
             "xray_mode": args.xray_mode,
+            # Recorded because it changes the R-factors this file reports: without it an
+            # archived run cannot be attributed to a scale target, and a change to the
+            # default silently invalidates every cached score derived from these numbers.
+            "scale_target": args.scale_target,
             **_sigma_a_kwargs(args),
             "weights": manual_weights if manual_weights else None,
             "dmin": args.dmin,
@@ -411,8 +412,7 @@ Loss weights:
         fcalc = refinement.get_F_calc_scaled(rd.hkl_for_sf(), recalc=True)
 
         # work/free accessor: scaled, validity-masked |F_obs| per subset; .select()
-        # aligns the full-size |F_calc| onto the same subset. Replaces the
-        # deprecated data() unpack and applies the validity mask to the counts too.
+        # aligns the full-size |F_calc| onto the same subset.
         fobs_work, fobs_free = rd.work.F, rd.free.F
         r_work = torch.sum(
             torch.abs(fobs_work - rd.work.select(fcalc))

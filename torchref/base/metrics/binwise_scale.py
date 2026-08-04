@@ -22,13 +22,9 @@ def binwise_scale(
 ) -> torch.Tensor:
     """Per-bin least-squares scale matching ``|F_calc|`` to ``|F_obs|``.
 
-    For each bin ``b`` returns the scalar minimising
-    ``sum_b w (|F_obs| - c_b |F_calc|)**2``, i.e.
-
-    .. math:: c_b = \\frac{\\sum w\\,|F_{obs}|\\,|F_{calc}|}{\\sum w\\,|F_{calc}|^2}
-
-    computed with ``scatter_add`` (no Python loop over bins) so it is O(N) and
-    GPU-friendly. Multiply ``|F_calc|`` by ``c[bins]`` to apply the correction.
+    Returns the minimiser of ``sum_b w (|F_obs| - c_b |F_calc|)**2``, i.e.
+    ``c_b = sum(w |F_obs||F_calc|) / sum(w |F_calc|^2)``, via ``scatter_add``
+    (O(N), no Python loop over bins). Multiply ``|F_calc|`` by ``c[bins]``.
 
     Parameters
     ----------
@@ -38,17 +34,16 @@ def binwise_scale(
     bins : torch.Tensor
         Per-reflection bin index, shape ``(N,)`` (cast to ``int64`` internally).
     valid : torch.Tensor, optional
-        Boolean mask of reflections used to *fit* the scale (e.g. the work set,
-        or positive-intensity reflections). The returned per-bin scale applies
-        to every reflection regardless of ``valid``; reflections excluded here
-        simply do not contribute to the fit. Defaults to all reflections.
+        Boolean mask of the reflections used to *fit* the scale (default all); it
+        is multiplied into ``weights``, so a non-boolean tensor reweights rather
+        than gates. The returned scale applies to every reflection regardless.
     nbins : int, optional
         Number of bins. Defaults to ``bins.max() + 1``.
     weights : torch.Tensor, optional
         Per-reflection weights ``w`` (shape ``(N,)``). Defaults to ones.
     min_count : int, default 1
-        Bins with fewer than ``min_count`` contributing reflections are left at
-        ``c_b = 1`` (no correction) to avoid noise from sparse shells.
+        Bins with fewer contributing reflections are left at ``c_b = 1``, so
+        sparse shells are not corrected on noise.
     eps : float, default 1e-12
         Denominator floor.
 

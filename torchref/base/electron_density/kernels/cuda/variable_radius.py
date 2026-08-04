@@ -1,22 +1,17 @@
 """Variable-radius GPU density-splatting kernels (Triton).
 
-One program per atom (``grid=(n_atoms,)``); each program iterates the cubic voxel
-per-axis bounding box (sized in-kernel from ``r2cut`` + the inverse-cell metric)
-around its atom, **decoding each voxel offset
+One program per atom (``grid=(n_atoms,)``); each iterates the cubic per-axis voxel box
+(sized in-kernel from ``r2cut`` and the inverse-cell metric), **decoding each voxel offset
 arithmetically** from the lane index, and truncates to the per-atom sphere
-(``r2 <= r2cut``). So every atom is splatted at its own ``N_sigma * sigma_eff``
-radius with no host-built work plan / offset buffer. This is the production CUDA
-float32 path, replacing the old single-radius ``fused_find_and_place_atoms``.
+(``r2 <= r2cut``). So every atom is splatted at its own ``N_sigma * sigma_eff`` radius
+with no host-built work plan or offset buffer. This is the production CUDA float32 path.
 
-The per-voxel Gaussian math, PBC wrapping, and gradient formulae match the
-reference fused kernel bit-for-bit (modulo atomic ordering); the only change vs the
-earlier CSR-plan version is that offsets are computed in-kernel and the sphere
-truncation is applied per voxel (``wmask``). The isotropic kernels carry the scalar
-ADP ``b``; the anisotropic kernels carry the 6-component ``U`` and evaluate the 3D
-quadratic form ``q = w^T Minv w`` with ``M = (B_g*I + 8*pi^2*U)/4`` inverted in-kernel.
-
-Backward accumulates per-atom grads with ``atomic_add``; out-of-sphere voxels are
-masked identically to the forward so they contribute neither density nor gradient.
+Per-voxel Gaussian math, PBC wrapping and gradient formulae match the reference fused
+kernel bit-for-bit modulo atomic ordering. Isotropic kernels carry the scalar ADP ``b``;
+anisotropic ones carry the 6-component ``U`` and evaluate ``q = w^T Minv w`` with
+``M = (B_g*I + 8*pi^2*U)/4`` inverted in-kernel. Backward accumulates per-atom grads with
+``atomic_add``, masking out-of-sphere voxels exactly as the forward does so they
+contribute neither density nor gradient.
 """
 
 from __future__ import annotations
@@ -840,15 +835,11 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
 def why_unavailable():
     """``None`` if these kernels can run, else why they cannot.
 
-    The reason-returning half of the availability protocol shared by every backend (see
-    :mod:`torchref.utils.backends`).
-
-    This probe closes a real gap rather than restating ``triton_available()``. The
-    ``@triton.jit`` kernel bodies live inside ``if _HAVE_TRITON:`` above, but
-    ``WorkQueueGridDensity`` and these wrappers are defined *unconditionally*, so on a host
-    without Triton the module imports cleanly and the failure surfaces as a bare
-    ``NameError`` from deep inside ``_launch_grid_fwd``. Every other backend answers
-    "can I run" before being called; this one had nothing to ask.
+    The reason-returning half of the availability protocol every backend implements (see
+    :mod:`torchref.utils.backends`). Not a restatement of ``triton_available()``: the
+    ``@triton.jit`` bodies live under ``if _HAVE_TRITON:`` but the wrappers are defined
+    unconditionally, so without Triton the module imports cleanly and the failure would
+    otherwise surface as a bare ``NameError`` from inside ``_launch_grid_fwd``.
     """
     if not _HAVE_TRITON:
         return (
@@ -859,11 +850,10 @@ def why_unavailable():
 
 
 def _coeff_mask(xyz):
-    """All-ones per-atom coefficient mask, shape ``(n, 5)``.
+    """All-ones per-atom ITC92 coefficient mask, ``(n, 5)``.
 
-    Every call site in the codebase passes all ones -- the mask exists so a caller
-    *could* disable individual ITC92 Gaussians, and nothing does. Kept because it is
-    part of the kernel's argument list.
+    Every call site passes all ones; the mask exists so a caller *could* disable individual
+    Gaussians, and it is kept because it is part of the kernel's argument list.
     """
     return torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
 

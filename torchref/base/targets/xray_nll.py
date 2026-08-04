@@ -1,19 +1,14 @@
 """Dispatcher for the ``nll`` target's Gaussian, at ``var = sigma_obs**2``.
 
-This module holds **no math**. The Gaussian lives once, in
-:func:`torchref.base.targets.xray_likelihoods.nll_math`, and the amplitude variance is built
-once, by :func:`~torchref.base.targets.xray_likelihoods.amplitude_var_from_sigma_obs`. What
-is left here is the Triton fast path and the choice between it and the eager primitive.
+**No math here.** The Gaussian lives once in
+:func:`torchref.base.targets.xray_likelihoods.nll_math` and the amplitude variance once in
+:func:`~torchref.base.targets.xray_likelihoods.amplitude_var_from_sigma_obs`; this module is
+only the Triton fast path and the choice between it and the eager primitive.
 
-Was ``xray_gaussian.py``, which carried its own full copy of the Gaussian -- a copy that was
-bit-for-bit the same arithmetic as the one ``nll_beta`` used, differing only in how the
-variance was constructed. Both copies are gone.
-
-The Triton kernel is kept and is **not** rewritten to take ``var``: it is a fused kernel for
-this specific case (it computes the sigma clamp inside), rewriting it would mean editing CUDA
-that the development node cannot execute, and an eager/Triton pair per loss is the
-established pattern in this package -- ``bond``, ``angle`` and ``ls`` all have one, and
-``tests/unit/test_gradient_correctness.py`` cosine-compares them.
+The Triton kernel deliberately does **not** take ``var`` -- it is fused for this case and
+computes the sigma clamp itself. An eager/Triton pair per loss is the package pattern
+(``bond``, ``angle``, ``ls``), cosine-compared by
+``tests/unit/test_gradient_correctness.py``.
 """
 
 import torch

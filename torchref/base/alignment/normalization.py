@@ -77,8 +77,6 @@ def assign_to_shells(
         Shell index for each reflection, shape (N,).
         Values 0 to n_shells-1, or -1 for out-of-range.
     """
-    # bucketize gives index of the bin (right edge)
-    # We subtract 1 to get the shell index
     shell_idx = torch.bucketize(s_mag, shell_edges[1:-1])
 
     n_shells = len(shell_edges) - 1
@@ -116,8 +114,6 @@ def compute_anisotropy_correction(
     """
     U_matrix = U_to_matrix(U)  # (3, 3)
 
-    # exp(-2*pi^2 * s^T U s)
-    # sUs = s @ U @ s^T for each s
     sUs = torch.einsum("ni,ij,nj->n", s_vectors, U_matrix, s_vectors)
     exponent = -2 * (torch.pi**2) * sUs
 
@@ -186,14 +182,9 @@ def fit_anisotropy_correction(
     lr: float = 0.01,
     verbose: bool = True,
 ) -> Tuple[torch.Tensor, float]:
-    """
-    Fit anisotropy correction parameters to minimize variance within shells.
+    """Fit U so that corrected F² has minimal CV within each resolution shell.
 
-    Optimizes U parameters so that corrected F² values have minimal
-    coefficient of variation within each resolution shell, making the
-    distribution more isotropic before E-value conversion.
-
-    Uses PyTorch's LBFGS optimizer for efficient optimization.
+    Flattens the anisotropic falloff before E-value conversion.
 
     Parameters
     ----------
@@ -203,14 +194,13 @@ def fit_anisotropy_correction(
         Reciprocal space vectors in Angstroms^-1, shape (N, 3).
     n_shells : int
         Number of resolution shells for variance calculation.
-    d_min : float
-        High resolution limit in Angstroms.
-    d_max : float
-        Low resolution limit in Angstroms.
+    d_min, d_max : float
+        Resolution limits in Angstroms; reflections outside are dropped.
     n_iterations : int
-        Number of optimization iterations.
+        Approximate total inner steps: LBFGS is stepped ``n_iterations // 20``
+        times at ``max_iter=20``, so values below 20 optimize nothing at all.
     lr : float
-        Learning rate for optimizer.
+        LBFGS step scale -- not an SGD learning rate.
     verbose : bool
         Print progress.
 
@@ -220,14 +210,6 @@ def fit_anisotropy_correction(
         Optimal anisotropic parameters, shape (6,).
     final_cv : float
         Final mean coefficient of variation after correction.
-
-    Notes
-    -----
-    Optimization uses LBFGS, not plain SGD. The optimizer is invoked
-    ``n_iterations // 20`` times, each call running up to ``max_iter=20``
-    internal LBFGS steps, so the total number of inner iterations is
-    approximately ``n_iterations``. The ``lr`` argument is the LBFGS step
-    scale and behaves differently from an SGD learning rate.
     """
     device = F_squared.device
 
@@ -367,10 +349,8 @@ def F_squared_to_E_values(
     Returns
     -------
     E_values : torch.Tensor
-        Normalized E-values, shape (N,). Computed as ``sqrt(E²)`` and are
-        therefore non-negative; no sign information is carried (sign is not
-        meaningful for intensity-derived values), so callers should not
-        expect signed normalized amplitudes.
+        Normalized E-values, shape (N,). ``sqrt(E²)``, so non-negative and
+        unsigned -- never treat these as signed normalized amplitudes.
     E_squared : torch.Tensor
         E² values (for correlation calculations), shape (N,).
     shell_idx : torch.Tensor
@@ -406,8 +386,6 @@ def F_squared_to_E_values(
             # E² = F² / <F²> so that <E²> = 1
             E2_shell = F2_shell / mean_F2
             E_squared[mask] = E2_shell
-            # E = sqrt(E²) with sign preservation isn't meaningful for intensities
-            # E is typically defined as sqrt(E²)
             E_values[mask] = torch.sqrt(E2_shell.clamp(min=0))
 
     return E_values, E_squared, shell_idx

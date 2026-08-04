@@ -76,10 +76,14 @@ class ScalerLogScaleTrendTarget(Target):
         return (self._x_centered * y).sum() / self._x_var
 
     def forward(self) -> torch.Tensor:
+        """``slope² · N_ref / nbins`` on the ``log_scale`` vs ``|s|²`` fit."""
         slope = self._slope()
         return self._scale * slope ** 2
 
     def stats(self) -> Dict[str, any]:
+        """Loss, the fitted slope, and ``B_equiv = -4·slope`` -- the atomic B shift the
+        trend is standing in for.
+        """
         with torch.no_grad():
             slope = self._slope().item()
             log_scale = self._scaler.log_scale.detach()

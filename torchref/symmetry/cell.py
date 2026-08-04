@@ -36,10 +36,10 @@ class Cell(_NonModuleDeviceMixin):
     Examples
     --------
     >>> cell = Cell([50, 60, 70, 90, 90, 90])
-    >>> cell.volume  # Computed and cached
-    tensor(210000.)
-    >>> cell_gpu = cell.to('cuda')  # Move to GPU in place; returns self
-    >>> cell_gpu.device.type
+    >>> float(cell.volume)  # computed and cached
+    210000.0
+    >>> cell_gpu = cell.to('cuda')  # move in place; returns self  # doctest: +SKIP
+    >>> cell_gpu.device.type  # doctest: +SKIP
     'cuda'
     """
 
@@ -275,22 +275,13 @@ class Cell(_NonModuleDeviceMixin):
     # =========================================================================
 
     def _compute_fractional_matrix(self) -> torch.Tensor:
-        """
-        Compute the fractional-to-Cartesian transformation matrix.
-
-        Delegates to math_torch.get_fractional_matrix for the computation.
-        """
+        """Fractional-to-Cartesian matrix, via ``math_torch.get_fractional_matrix``."""
         from torchref.base import math_torch
 
         return math_torch.get_fractional_matrix(self._data)
 
     def _compute_volume(self) -> torch.Tensor:
-        """
-        Compute the unit cell volume.
-
-        Uses the formula: V = abc * sqrt(1 - cos^2(alpha) - cos^2(beta) - cos^2(gamma)
-                                         + 2*cos(alpha)*cos(beta)*cos(gamma))
-        """
+        """V = abc·sqrt(1 - Σcos²angle + 2·cosα·cosβ·cosγ)."""
         a, b, c = self._data[0], self._data[1], self._data[2]
         angles_rad = torch.deg2rad(self._data[3:])
         cos_alpha, cos_beta, cos_gamma = torch.cos(angles_rad)
@@ -306,11 +297,7 @@ class Cell(_NonModuleDeviceMixin):
         return a * b * c * volume_factor
 
     def _compute_reciprocal_basis_matrix(self) -> torch.Tensor:
-        """
-        Compute the reciprocal space basis matrix.
-
-        Delegates to math_torch.reciprocal_basis_matrix for the computation.
-        """
+        """Reciprocal basis, via ``math_torch.reciprocal_basis_matrix``."""
         from torchref.base import math_torch
 
         return math_torch.reciprocal_basis_matrix(self._data)
@@ -323,19 +310,16 @@ class Cell(_NonModuleDeviceMixin):
         self, max_res: float, oversampling: float = NYQUIST_OVERSAMPLING
     ) -> tuple:
         """
-        Compute minimum grid dimensions for a given resolution.
-
-        Uses Shannon-Nyquist sampling criterion to determine the minimum
-        number of grid points needed along each axis.
+        Minimum Shannon-Nyquist grid dimensions for a given resolution.
 
         Parameters
         ----------
         max_res : float
             Maximum resolution in Angstroms.
         oversampling : float, optional
-            Oversampling factor relative to max_res. Defaults to the proper
-            Nyquist limit (:data:`torchref.config.NYQUIST_OVERSAMPLING`, 2.0),
-            shared by all grid-sizing helpers.
+            Factor relative to max_res. Defaults to
+            :data:`torchref.config.NYQUIST_OVERSAMPLING`, shared by every
+            grid-sizing helper.
 
         Returns
         -------
@@ -345,8 +329,8 @@ class Cell(_NonModuleDeviceMixin):
         Examples
         --------
         >>> cell = Cell([50, 60, 70, 90, 90, 90])
-        >>> cell.compute_grid_size(2.0)
-        (50, 60, 70)
+        >>> cell.compute_grid_size(2.0)  # at the default oversampling of 3.0
+        (75, 90, 105)
         """
         import math
 

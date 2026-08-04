@@ -24,10 +24,8 @@ def binned_correlation(x, y, bins):
     Returns
     -------
     torch.Tensor
-        Binned correlation coefficients, shape (B, num_bins). Inputs are
-        always promoted to 2-D internally, so a 1-D input of shape (N,)
-        yields output of shape (1, num_bins); the result is never squeezed
-        back to 1-D.
+        Binned correlation coefficients, shape (B, num_bins) -- always 2-D, so
+        1-D input gives (1, num_bins) rather than (num_bins,).
 
     Raises
     ------

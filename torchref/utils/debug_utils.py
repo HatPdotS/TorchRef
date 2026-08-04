@@ -14,27 +14,27 @@ import torch
 
 class DebugMixin:
     """
-    Mixin class that adds debugging capabilities to modules.
+    Adds state-dumping helpers to a module: tensors, submodules, DataFrames, arrays.
 
-    When an error occurs, call print_debug_summary() to get a comprehensive
-    overview of the module's state including:
-
-    - All attributes and their types
-    - Tensor shapes, dtypes, and devices
-    - DataFrame/array shapes
-    - Other object information
+    :meth:`print_debug_summary` for one object, :meth:`debug_on_error` for a whole
+    subtree from an exception handler.
     """
 
     def print_debug_summary(self, title: str = None, file=sys.stderr):
         """
-        Print a comprehensive debug summary of this module's state.
+        Dump this module's public attributes, grouped by kind, to ``file``.
+
+        Reads every public attribute via ``getattr``, so a property with side effects will
+        fire, and computes min/max/mean of each tensor -- expect device syncs. Individual
+        failures are caught and printed rather than raised, since this normally runs while
+        already handling an error.
 
         Parameters
         ----------
         title : str, optional
-            Title for the summary.
+            Defaults to the class name.
         file : file-like, default sys.stderr
-            File to write output to.
+            Where to write.
         """
         if title is None:
             title = f"{self.__class__.__name__} Debug Summary"
@@ -213,7 +213,10 @@ class DebugMixin:
         self, error: Exception, context: str = "", recursive: bool = True
     ):
         """
-        Print debug summary when an error occurs, recursively printing submodules.
+        Print the error, its traceback and this module's state to stderr.
+
+        Call from inside an ``except`` block -- it uses ``traceback.print_exc()``, so it
+        needs a live exception. Does **not** re-raise; the caller still owns that.
 
         Parameters
         ----------
@@ -222,7 +225,7 @@ class DebugMixin:
         context : str, default ""
             Additional context string to print.
         recursive : bool, default True
-            If True, recursively print debug info for all submodules.
+            Also dump every debuggable submodule.
         """
         print("\n" + "!" * 80, file=sys.stderr)
         print(f"  ERROR OCCURRED: {type(error).__name__}", file=sys.stderr)
@@ -249,27 +252,14 @@ class DebugMixin:
     def _print_recursive_debug_summaries(
         self, file=sys.stderr, visited=None, indent_level=0
     ):
-        """
-        Recursively print debug summaries for all submodules.
-
-        Parameters
-        ----------
-        file : file-like, default sys.stderr
-            File to write output to.
-        visited : set, optional
-            Set of already visited module ids (to avoid infinite recursion).
-        indent_level : int, default 0
-            Current indentation level for nested modules.
-        """
+        """Dump every debuggable submodule; ``visited`` (ids) makes it cycle-safe."""
         if visited is None:
             visited = set()
 
-        # Avoid infinite recursion
         if id(self) in visited:
             return
         visited.add(id(self))
 
-        # Find all relevant submodules and attributes to debug
         debug_attrs = []
 
         for attr_name in dir(self):
@@ -310,28 +300,15 @@ class DebugMixin:
                 print_module_summary(attr_value, title=f"{attr_name}", file=file)
 
     def _is_debuggable(self, obj):
-        """
-        Check if an object should be included in recursive debugging.
-
-        Parameters
-        ----------
-        obj : any
-            Object to check.
-
-        Returns
-        -------
-        bool
-            True if object should be debugged recursively.
-        """
-        # Include torch modules
+        """Whether to recurse into ``obj``: an ``nn.Module``, anything with
+        ``print_debug_summary``, or a name in the hardcoded list below."""
         if isinstance(obj, torch.nn.Module):
             return True
 
-        # Include objects with custom debug capabilities
         if hasattr(obj, "print_debug_summary"):
             return True
 
-        # Include specific types we want to debug
+        # Matched by class NAME, so a rename here silently drops the type.
         debuggable_types = (
             "ReflectionData",
             "Model",
@@ -346,19 +323,19 @@ class DebugMixin:
 
 def print_module_summary(module, title: str = None, file=sys.stderr):
     """
-    Print debug summary for any module.
+    Print a debug summary for any object, with or without :class:`DebugMixin`.
 
-    Standalone function to print debug information for modules that
-    may or may not have the DebugMixin.
+    Delegates to ``module.print_debug_summary`` when present, else prints a minimal
+    type/attribute-count fallback.
 
     Parameters
     ----------
     module : object
-        The module to inspect.
+        The object to inspect.
     title : str, optional
-        Title for the summary.
+        Defaults to the class name.
     file : file-like, default sys.stderr
-        File to write output to.
+        Where to write.
     """
     if hasattr(module, "print_debug_summary"):
         module.print_debug_summary(title=title, file=file)

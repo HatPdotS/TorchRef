@@ -174,9 +174,9 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
     """
     Restraints handler for crystallographic model refinement.
 
-    This class uses the builder pattern internally for efficient construction
-    of restraint tensors. It is decoupled from Model and accepts a pdb DataFrame
-    with callable functions for accessing coordinates and ADPs.
+    Builds restraint tensors via the builder classes in ``builders_fast``.
+    Decoupled from Model: takes a pdb DataFrame plus callables for coordinates,
+    ADPs and VDW radii.
 
     Parameters
     ----------
@@ -185,54 +185,36 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
     cif_path : str or list of str, optional
         Path to the CIF restraints dictionary file(s).
     xyz_fn : callable, optional
-        Function returning current xyz coordinates as torch.Tensor.
-        Required for building and evaluation if pdb is provided.
+        Returns current xyz coordinates. Required to build/evaluate when ``pdb``
+        is provided.
     adp_fn : callable, optional
-        Function returning current ADP values as torch.Tensor.
-        Required for ADP-based restraints.
+        Returns current ADP values. Required for ADP-based restraints.
     vdw_radii_fn : callable, optional
-        Function returning VDW radii as torch.Tensor.
-        Required for VDW restraints.
+        Returns VDW radii. Required for VDW restraints.
     cell : Cell, optional
         Crystallographic unit cell. Together with ``spacegroup``, enables
         symmetry-aware VDW restraints (contacts with symmetry mates).
     spacegroup : SpaceGroup or str, optional
-        Space group. Together with ``cell``, enables symmetry-aware VDW
-        restraints.
+        Space group. Together with ``cell``, enables symmetry-aware VDW restraints.
     links : pd.DataFrame, optional
-        Parsed PDB LINK records; each accepted record adds one bond
-        restraint between the two named atoms.
+        Parsed PDB LINK records; each accepted record adds one bond restraint
+        between the two named atoms.
     verbose : int, default 1
         Verbosity level (0=silent, 1=normal, 2=detailed).
 
     Attributes
     ----------
-    pdb : pd.DataFrame
-        DataFrame containing atomic structure data.
-    cif_dict : dict
-        Parsed CIF dictionary with restraints for each residue type.
     restraints : _RestraintsAccessor
-        Property returning a dict-like accessor over the underlying flat
-        TensorDict. It emulates the nested-dict interface
-        (``restraints["bond"]["intra"]["indices"]``) but is not itself a
-        plain dict.
-    h_topo : HydrogenTopology or None
-        Property returning the hydrogen topology (populated on demand).
-    h_excl_hash
-        Property returning a hash of the hydrogen-exclusion set.
-    link_dict : dict
-        Link-type definitions loaded from the monomer library (set only when
-        ``pdb`` is provided).
-    link_list : list
-        Ordered list of link types (set only when ``pdb`` is provided).
-    unique_residues : list
-        Residue types present in ``pdb`` that carry more than one atom name.
-    missing_residues : list
-        Residue types for which no CIF dictionary could be resolved.
-    links : pd.DataFrame or None
-        Parsed PDB LINK records passed at construction.
-    cif_path : str or list of str
-        Path(s) to the CIF restraints dictionary file(s).
+        Dict-*like* accessor over the flat TensorDict: it emulates
+        ``restraints["bond"]["intra"]["indices"]`` but is not a plain dict.
+    cif_dict : dict
+        Parsed CIF restraints keyed by residue type; ``missing_residues`` lists
+        the types that could not be resolved.
+    h_topo, h_excl_hash
+        Riding-hydrogen topology and its exclusion hash, populated on demand.
+    link_dict, link_list
+        Link-type definitions from the monomer library, set only when ``pdb``
+        was provided.
     """
 
     def __init__(
@@ -424,11 +406,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
 
     @property
     def restraints(self) -> "_RestraintsAccessor":
-        """
-        Provide dict-like access to restraints for backward compatibility.
-
-        Returns an accessor object that mimics the old nested dict interface.
-        """
+        """Nested-dict-*like* accessor over the flat TensorDict (not a real dict)."""
         return _RestraintsAccessor(self)
 
     def _load_cif_dictionaries(self, cif_path):
@@ -522,19 +500,14 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         self.register_buffer("_rama_surfaces", surfaces)
 
     def build_restraints(self):
-        """
-        Build all restraints using the fast builder API.
+        """Build every restraint group; each builder handles all residues at once.
 
-        This method uses the optimized builders that handle all residues
-        internally with Numba-accelerated matching (~10x faster).
+        Builds on CPU and moves the result to the ``xyz()`` device at the end.
         """
         try:
             target_device = self.xyz().device
             device = torch.device("cpu")
             pdb = self.pdb
-
-            # Build intra-residue restraints using fast builders
-            # Each builder.build() handles all residues internally - no looping needed!
 
             bond_result = BondRestraintBuilder(verbose=self.verbose).build(
                 pdb, self.cif_dict, device
@@ -567,29 +540,22 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             if chiral_result:
                 self.restraints["chiral"] = chiral_result
 
-            # Build inter-residue restraints
             self._build_peptide_restraints(device)
             self._build_disulfide_restraints(device)
             self._build_link_restraints(device)
 
-            # Build VDW restraints. Cutoff is held ~1 Å wider than the
-            # maximum heavy-atom VDW sum (~3.6 Å) plus the expected inter-
-            # build drift, so the maintenance-triggered rebuild can be
-            # driven by a displacement threshold well inside the cutoff
-            # margin without missing newly-formed contacts.
+            # cutoff sits ~1 Å beyond the largest heavy-atom VDW sum (~3.6 Å) plus
+            # expected drift, so a displacement-triggered rebuild stays inside the
+            # margin and cannot miss a newly-formed contact.
             self._build_vdw_restraints(
                 cutoff=6.0, sigma=0.05, inter_residue_only=False, use_spatial_hash=True
             )
 
-            # Pre-compute concatenated 'all' groups so every buffer is registered
-            # on the correct device at build time.  This prevents register_buffer()
-            # being called during a forward pass (which would break CUDA-graph
-            # capture) and ensures model.to(device) moves ALL restraint tensors.
+            # Register the concatenated 'all' buffers here, not lazily in forward:
+            # register_buffer() during a forward pass breaks CUDA-graph capture, and
+            # only registered buffers are moved by model.to(device).
             self.cat_dict()
 
-            # Restraint construction (pair searches, CIF-driven topology) is
-            # built on CPU for predictability; move buffers to the model's
-            # device now so forward passes don't trigger H2D copies.
             if target_device.type != "cpu":
                 self.to(target_device)
 
@@ -598,12 +564,10 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             raise
 
     def _build_peptide_restraints(self, device: torch.device):
-        """Build peptide bond restraints using fast inter-residue builders.
+        """Build peptide bond/angle/torsion/plane restraints.
 
-        Uses TRANS/CIS links for standard peptide bonds and PTRANS/PCIS
-        links for peptide bonds to proline.  The proline-specific links
-        include the C(i-1)-N-CD angle that constrains the pyrrolidine
-        ring orientation, and use proline-specific angle target values.
+        TRANS/CIS links for standard peptide bonds; PTRANS/PCIS for bonds to
+        proline, which add the C(i-1)-N-CD angle and proline-specific targets.
         """
         if "TRANS" not in self.link_dict:
             if self.verbose > 0:
@@ -825,22 +789,14 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
                 )
 
     def _build_link_restraints(self, device: torch.device):
-        """Build bond restraints from PDB LINK records.
+        """Build one bond restraint per accepted PDB LINK record.
 
-        Each accepted LINK contributes one bond restraint between the two
-        named atoms. The bond automatically becomes part of the VDW
-        exclusion set (via ``_build_exclusion_set``), preventing the
-        non-bonded term from pushing the linked atoms apart.
-
-        Behaviour:
-        - Distance/sigma source: ``length`` from the LINK record is used as
-          target distance with sigma=0.02 Å. If the field was blank we fall
-          back to a generic 1.5 Å bond.
-        - Symmetry-mate links are filtered out earlier in
-          ``extract_link_records``.
-        - LINKs that duplicate an auto-detected disulfide (CYS SG-SG pair)
-          are skipped, because the disulfide builder has already added a
-          bond + angles + torsions for that pair.
+        Target is the record's ``length`` at sigma=0.02 Å, falling back to 1.5 Å
+        when blank. LINKs duplicating an auto-detected CYS SG-SG disulfide are
+        skipped (that builder already added bond + angles + torsions); symmetry-mate
+        links were dropped earlier in ``extract_link_records``. Each bond joins the
+        VDW exclusion set via ``_build_exclusion_set``, so the non-bonded term does
+        not push linked atoms apart.
         """
         if self.links is None or len(self.links) == 0:
             return
@@ -928,11 +884,10 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         name: str,
         altloc: str,
     ):
-        """Resolve a LINK atom record to a row index in the model pdb.
+        """Resolve a LINK atom record to a row index in the model pdb, or None.
 
-        Match on (chainid, resseq, icode, name); resname is used as a tie-
-        breaker if present. Altloc preference: requested altloc first, then
-        blank, then 'A', then any.
+        Matches (chainid, resseq, icode, name), resname as tie-breaker; altloc
+        preference is requested, then blank, then 'A', then any.
         """
         sel = pdb[
             (pdb["chainid"].astype(str) == str(chainid))
@@ -989,26 +944,11 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         return exclusions
 
     def _find_nearby_pairs_spatial_hash(self, xyz, cutoff=6.0):
-        """
-        Find all atom pairs within cutoff distance using spatial cell lists.
+        """Atom pairs within ``cutoff`` of each other, as (M, 2) rows with i < j.
 
-        Divides space into cubic cells of side length = cutoff and only checks
-        atom pairs in the same or adjacent cells (14 unique offsets: self + 13
-        forward neighbours).  This gives O(N) memory and O(N*k) time where k
-        is the average number of neighbours, compared to O(N^2) for a full
-        distance matrix.
-
-        Parameters
-        ----------
-        xyz : torch.Tensor
-            Atom coordinates of shape (N, 3).
-        cutoff : float
-            Distance cutoff in Angstroms.
-
-        Returns
-        -------
-        torch.Tensor
-            Pairs of atom indices, shape (M, 2), each row (i, j) with i < j.
+        Cell-list search over cubic cells of side ``cutoff``, checking only the 14
+        unique offsets (self + 13 forward neighbours): O(N) memory instead of the
+        O(N^2) distance matrix. Runs on CPU regardless of ``xyz``'s device.
         """
         device = xyz.device
         n_atoms = xyz.shape[0]
@@ -1135,29 +1075,12 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             return torch.tensor([], dtype=torch.long, device=device).reshape(0, 2)
 
     def _expand_with_symmetry_mates(self, xyz, cutoff):
-        """
-        Expand ASU coordinates with symmetry mate positions for neighbor search.
+        """Append symmetry-mate positions to ASU ``xyz`` for neighbour search.
 
-        Generates Cartesian coordinates of symmetry-related copies that could
-        potentially have contacts with the ASU, using centroid-based pre-filtering
-        to skip distant mates.
-
-        Parameters
-        ----------
-        xyz : torch.Tensor
-            ASU Cartesian coordinates of shape (N, 3).
-        cutoff : float
-            Distance cutoff in Angstroms for contact search.
-
-        Returns
-        -------
-        combined_xyz : torch.Tensor
-            Concatenated coordinates (N_asu + N_mates, 3).
-        provenance : dict
-            Dictionary with arrays describing the origin of each atom:
-            - 'asu_source_indices': (N_total,) int array, ASU atom index
-            - 'symop_indices': (N_total,) int array, symmetry operation index
-            - 'cell_offsets': (N_total, 3) int array, unit cell offset
+        Centroid pre-filtering skips mates that cannot reach within ``cutoff``.
+        Returns ``(combined_xyz, provenance)``; the ASU occupies rows ``[:N]`` and
+        ``provenance`` maps every row back with numpy ``asu_source_indices``,
+        ``symop_indices`` and ``(N, 3)`` ``cell_offsets``.
         """
         from torchref.config import dtypes
         from torchref.symmetry import SpaceGroup
@@ -1280,20 +1203,10 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         return getattr(self, "_h_excl_hash", None)
 
     def _build_h_exclusion_hash(self, h_topo, device):
-        """Build sorted hash tensor for H-specific 1-2 and 1-3 exclusions.
+        """Sorted 1-D hash tensor of H-specific 1-2 and 1-3 exclusions.
 
-        Exclusions are stored as ``min(i, j) * max_idx + max(i, j)`` hashes,
-        sorted for O(log n) lookup via ``torch.searchsorted``.
-
-        Parameters
-        ----------
-        h_topo : HydrogenTopology
-        device : torch.device
-
-        Returns
-        -------
-        torch.Tensor
-            Sorted 1-D long tensor of exclusion hashes.
+        Hashes are ``min(i, j) * max_idx + max(i, j)``; the sort is required for
+        ``torch.searchsorted`` lookup.
         """
         if h_topo is None or h_topo.n_hydrogens == 0:
             return torch.tensor([], dtype=torch.long, device=device)
@@ -1334,39 +1247,29 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
     ):
         """Build van der Waals (non-bonded contact) restraints.
 
-        When cell and spacegroup are available, also includes contacts between
-        ASU atoms and symmetry-related copies in neighboring molecules. Uses
-        the GPU-native periodic grid search in that case, and falls back to
-        the legacy spatial hash otherwise. Also builds the riding hydrogen
-        topology for H-VDW evaluation.
+        With cell and spacegroup present, includes contacts to symmetry mates via
+        the GPU-native periodic grid search; otherwise falls back to
+        :meth:`_build_vdw_restraints_legacy` (whose own default cutoff is 5.0).
+        Also builds the riding-hydrogen topology for H-VDW evaluation.
 
         Parameters
         ----------
         cutoff : float, default 6.0
-            Distance cutoff in Angstroms for the contact search. The
-            production caller (:meth:`build_restraints`) holds this ~1 A
-            wider than the maximum heavy-atom VDW sum so the
-            maintenance-triggered rebuild has margin. Note the legacy
-            fallback :meth:`_build_vdw_restraints_legacy` defaults to 5.0.
+            Contact-search cutoff in Angstroms. Keep it ~1 Å beyond the largest
+            heavy-atom VDW sum so the rebuild threshold has margin.
         sigma : float, default 0.2
-            Restraint sigma in Angstroms. The production caller passes 0.05.
+            Restraint sigma in Angstroms (the production caller passes 0.05).
         inter_residue_only : bool, default True
             If True, only build contacts between atoms in different residues.
         use_spatial_hash : bool, default True
-            If True, use the spatial-hash neighbour search in the legacy
-            (no-symmetry) path.
+            Use the spatial-hash neighbour search in the legacy (no-symmetry) path.
 
         Notes
         -----
-        Caches the build kwargs and a detached snapshot of the ASU
-        coordinates at build time in ``_vdw_build_kwargs`` and
-        ``_last_vdw_build_xyz``. :meth:`rebuild_vdw_restraints` consults
-        those to refresh the pair list with the same parameters, and
-        ``NonBondedTarget.maintenance`` uses the snapshot to decide
-        whether a rebuild is needed.
+        Caches the kwargs in ``_vdw_build_kwargs`` and a detached ASU coordinate
+        snapshot in ``_last_vdw_build_xyz``; :meth:`rebuild_vdw_restraints` and
+        ``NonBondedTarget.maintenance`` both read those.
         """
-        # Remember how we built so rebuild can call back with the same
-        # parameters without re-plumbing them through every caller.
         self._vdw_build_kwargs = dict(
             cutoff=cutoff,
             sigma=sigma,
@@ -1382,13 +1285,9 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             and self._spacegroup is not None
         )
 
-        # Restraint build (neighbor search, H topology, exclusion hashing)
-        # runs on CPU: pair lists are O(N) integers with launch overhead
-        # that dominates any GPU benefit, and the underlying searches are
-        # only called at build time. Newly-registered buffers, h_topo, and
-        # h_excl_hash are migrated to the model device at the end of this
-        # function so both the initial build and the maintenance-triggered
-        # rebuild path land on the right device.
+        # The build (neighbour search, H topology, exclusion hashing) runs on CPU;
+        # everything it registers is migrated to target_device at the end, which
+        # the maintenance-triggered rebuild path depends on.
         cpu = torch.device("cpu")
         target_device = self.xyz().device if self._xyz_fn is not None else cpu
 
@@ -1470,30 +1369,22 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
                     + all_radii[self._h_topo.cand_idx_j]
                 )
 
-        # Snapshot the ASU coordinates *at* build time so maintenance()
-        # callers can diff current positions against it and decide if a
-        # rebuild is needed. Detached clone lives on the model's device so
-        # the compare is a single op on whatever device xyz() returns.
+        # Snapshot at build time so maintenance() can diff current positions
+        # against it; kept on the model device so the compare is one op.
         if self._xyz_fn is not None:
             self._last_vdw_build_xyz = self.xyz().detach().clone()
 
-        # Migrate the freshly-built VDW pair list, h_topo, and h_excl_hash
-        # from their CPU build device to the model's device. Required for
-        # both the initial build (the outer build_restraints also calls
-        # .to(target_device) — a no-op when already migrated) and for the
-        # maintenance-triggered rebuild, which has no surrounding migration.
+        # Move the CPU-built pair list, h_topo and h_excl_hash to the model device.
+        # The rebuild path has no surrounding migration, so this cannot be dropped.
         if target_device.type != "cpu":
             self.to(target_device)
 
     def rebuild_vdw_restraints(self) -> None:
-        """Refresh the VDW pair list using the cached build kwargs.
+        """Refresh the VDW pair list with the kwargs the initial build was given.
 
-        Called by :meth:`NonBondedTarget.maintenance` after it detects
-        that the maximum atomic displacement since the last build has
-        exceeded the rebuild threshold. Uses the same ``cutoff``,
-        ``sigma``, ``inter_residue_only`` and ``use_spatial_hash`` that
-        the initial build was given, so behaviour is stable across the
-        run.
+        Called by :meth:`NonBondedTarget.maintenance` once max atomic displacement
+        since the last build exceeds its threshold. Raises ``RuntimeError`` if no
+        initial build has run.
         """
         if not hasattr(self, "_vdw_build_kwargs"):
             raise RuntimeError(
@@ -1808,20 +1699,11 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         )
 
     def _get_all_indices(self, restraint_type, keys_to_merge=None):
-        """
-        Gather all indices of a given restraint type across all origins.
+        """Concatenate the indices of one restraint type across origins, or None.
 
-        Parameters
-        ----------
-        restraint_type : str
-            Type of restraint ('bond', 'angle', or 'torsion').
-        keys_to_merge : list of str, optional
-            Specific origins to include. If None, includes all origins.
-
-        Returns
-        -------
-        torch.Tensor or None
-            Concatenated tensor of all indices, or None if none exist.
+        ``keys_to_merge`` restricts to those origins; None means all. Rows follow
+        origin iteration order, so pair this only with
+        :meth:`_get_all_property` calls made with the same ``keys_to_merge``.
         """
         indices_list = []
         for origin, data in self.restraints.get(restraint_type, {}).items():
@@ -1838,22 +1720,10 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         return torch.cat(indices_list, dim=0)
 
     def _get_all_property(self, restraint_type, property_name, keys_to_merge=None):
-        """
-        Gather all values of a given property across all origins.
+        """Concatenate one property ('references'/'sigmas'/'periods') across origins.
 
-        Parameters
-        ----------
-        restraint_type : str
-            Type of restraint ('bond', 'angle', or 'torsion').
-        property_name : str
-            Property to gather ('references', 'sigmas', or 'periods').
-        keys_to_merge : list of str, optional
-            Specific origins to include. If None, includes all origins.
-
-        Returns
-        -------
-        torch.Tensor or None
-            Concatenated tensor of all property values, or None if none exist.
+        Returns None if no origin carries it. Row order matches
+        :meth:`_get_all_indices` for the same ``keys_to_merge``.
         """
         values_list = []
         for origin, data in self.restraints.get(restraint_type, {}).items():
@@ -2150,31 +2020,11 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         return torsions_deg
 
     def _wrap_torsion_periodicity(self, diff_rad, periods):
-        """
-        Find minimum angular deviation considering n-fold rotational symmetry.
+        """Smallest angular deviation under n-fold rotational symmetry.
 
-        For period=n, angles differing by 360°/n are equivalent. This function
-        finds the equivalent angle with the smallest absolute deviation.
-
-        Parameters
-        ----------
-        diff_rad : torch.Tensor
-            Tensor of angular deviations in radians (any shape).
-        periods : torch.Tensor
-            Tensor of periodicity values (same shape as diff_rad).
-            Period=0 or 1 means no symmetry (simple wrapping).
-            Period=n means n-fold rotational symmetry.
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of minimum wrapped deviations in radians (same shape as input).
-            Values are wrapped to [-π, π] and account for rotational symmetry.
-
-        Examples
-        --------
-        For period=6 (e.g., benzene), angles of 10°, 70°, 130°, 190°, 250°, 310°
-        are all equivalent. The function returns the one closest to 0°.
+        ``diff_rad`` and ``periods`` share a shape; period 0 or 1 means plain
+        wrapping to [-π, π], period n folds by 360°/n and returns the equivalent
+        deviation nearest zero (period 6, benzene: 10°/70°/130°/... all give 10°).
         """
         # Clamp periods to minimum of 1 to avoid division by zero
         periods_safe = torch.clamp(periods, min=1)
@@ -2318,19 +2168,9 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         """
         Compute negative log-likelihood for torsion angle restraints.
 
-        For von Mises distribution: NLL = -log(P(θ|μ,κ))
-        NLL = -κ*cos(θ-μ) + log(I₀(κ)) + log(2π)
-
-        where κ = 1/σ² is the concentration parameter and I₀ is the modified
-        Bessel function of the first kind.
-
-        Notes
-        -----
-        Period indicates n-fold rotational symmetry (e.g., period=6 for benzene).
-        We handle this by finding the minimum angular distance considering periodicity.
-        For period=n, angles differing by 360°/n are equivalent.
-
-        This is the true NLL where exp(-NLL) = probability density.
+        von Mises: NLL = -κ·cos(θ-μ) + log(I₀(κ)) + log(2π), with κ = 1/σ². This is
+        the true NLL, so exp(-NLL) is a probability density. Deviations are folded
+        by the restraint period first (see :meth:`_wrap_torsion_periodicity`).
 
         Parameters
         ----------

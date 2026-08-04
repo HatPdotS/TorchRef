@@ -12,8 +12,7 @@ import torch
 def superpose_vectors_robust_torch(
     ref_coords, mov_coords, weights=None, max_iterations=10
 ):
-    """
-    Perform weighted superposition of two coordinate sets using SVD (PyTorch version).
+    """Weighted SVD (Kabsch) superposition of two coordinate sets (PyTorch).
 
     Parameters
     ----------
@@ -24,23 +23,15 @@ def superpose_vectors_robust_torch(
     weights : torch.Tensor, optional
         Weights for each atom of shape (N, 1). Default is uniform weights.
     max_iterations : int, optional
-        Maximum number of weighted Kabsch steps. Default is 10. The function
-        runs up to this many steps and returns the transform with the lowest
-        weighted RMSD seen.
-
-        .. note::
-           The per-atom ``weights`` are held fixed across steps (this is not an
-           iteratively-reweighted / robust estimator), and a single weighted
-           Kabsch step is already optimal for fixed weights, so additional
-           iterations do not normally change the returned transform.
+        Weighted Kabsch steps, best weighted RMSD wins. Weights are never
+        reweighted, so past the first step this normally changes nothing.
 
     Returns
     -------
     torch.Tensor
-        Transformation matrix of shape (3, 4): the top-left (3, 3) block is
-        the rotation and the last column is the translation. Unlike the NumPy
-        sibling :func:`superpose_vectors_robust`, only the matrix is returned
-        (no RMSD).
+        Transformation matrix of shape (3, 4): rotation block plus translation
+        column. Unlike the NumPy sibling :func:`superpose_vectors_robust`, no
+        RMSD is returned.
     """
     if weights is None:
         weights = torch.ones((ref_coords.shape[0], 1), device=ref_coords.device)
@@ -116,12 +107,10 @@ def superpose_vectors_robust_torch(
 def superpose_vectors_robust(
     target_coords, mobile_coords, weights=None, max_iterations=1
 ):
-    """
-    Superpose mobile coordinates onto target coordinates using the Kabsch algorithm.
+    """Superpose mobile onto target coordinates with the weighted Kabsch algorithm.
 
-    Computes the optimal rotation and translation to minimize the weighted
-    RMSD between two sets of 3D coordinates, with robust handling of special
-    cases such as reflection.
+    Reflections are rejected by determinant correction, so the result is always
+    a proper rotation.
 
     Parameters
     ----------
@@ -130,27 +119,22 @@ def superpose_vectors_robust(
     mobile_coords : numpy.ndarray
         Mobile coordinates with shape (N, 3) to be superposed onto target.
     weights : numpy.ndarray, optional
-        Per-atom weights for the superposition with shape (N,). Default is
-        uniform weights.
+        Per-atom weights with shape (N,). Default is uniform weights.
     max_iterations : int, optional
         Number of iterations for refinement. Default is 1 (standard Kabsch).
 
     Returns
     -------
     transformation_matrix : numpy.ndarray
-        4x4 transformation matrix that maps mobile_coords onto target_coords.
+        4x4 matrix mapping mobile_coords onto target_coords. If the SVD fails
+        this degrades to the identity (printed, not raised).
     rmsd : float
-        Weighted root-mean-square deviation after superposition.
+        Weighted RMSD after superposition -- unweighted on the SVD-failure path.
 
     Raises
     ------
     ValueError
         If input coordinate arrays have different shapes.
-
-    Notes
-    -----
-    The algorithm uses SVD decomposition of the covariance matrix and handles
-    the reflection case by checking the determinant of the rotation matrix.
     """
     # Check input dimensions
     if target_coords.shape != mobile_coords.shape:
@@ -285,33 +269,26 @@ def get_alignement_matrix(xyz1, xyz2, idx_to_move=None):
 
 
 def align_pdbs(pdb1, pdb2, Atoms=None):
-    """
-    Align two PDB structures using the Kabsch algorithm.
+    """Align pdb2 onto pdb1 by weighted Kabsch, rewriting pdb2's coordinates in place.
 
-    Superimposes pdb2 onto pdb1 by minimizing the RMSD between corresponding
-    atoms. The transformation is applied in-place to pdb2.
+    Weighting is ``1 / tempfactor``, so every atom used must have a nonzero
+    'tempfactor' or the call divides by zero.
 
     Parameters
     ----------
     pdb1 : pandas.DataFrame
-        Reference PDB structure with 'x', 'y', 'z', 'name', and 'tempfactor' columns.
+        Reference structure with 'x', 'y', 'z', 'name' and 'tempfactor' columns.
     pdb2 : pandas.DataFrame
-        Mobile PDB structure to be aligned onto pdb1.
+        Mobile structure; its coordinate columns are overwritten.
     Atoms : list, optional
-        List of atom names to use for alignment. If None, all atoms are used.
+        Atom names to use for alignment. If None, all atoms are used.
 
     Returns
     -------
     pdb2 : pandas.DataFrame
-        Transformed pdb2 with updated coordinates.
+        The same object, with updated coordinates.
     rmsd : float
-        Root-mean-square deviation after alignment.
-
-    Notes
-    -----
-    The superposition is B-factor weighted with ``weights = 1 / tempfactor``,
-    so the 'tempfactor' column must be nonzero for every atom used (a zero
-    value triggers a division by zero).
+        Unweighted all-atom RMSD after alignment.
     """
     # align to pointclouds
     if Atoms is None:
@@ -337,27 +314,26 @@ def align_pdbs(pdb1, pdb2, Atoms=None):
 
 
 def get_alignment_matrix(pdb1, pdb2, Atoms=None):
-    """
-    Calculate the transformation matrix to align two PDB structures.
+    """Transformation matrix that would superimpose pdb2 onto pdb1, without applying it.
 
-    Computes the 4x4 transformation matrix that would superimpose pdb2 onto
-    pdb1 without actually applying the transformation.
+    Same ``1 / tempfactor`` weighting as :func:`align_pdbs`, so 'tempfactor'
+    must be nonzero for every atom used.
 
     Parameters
     ----------
     pdb1 : pandas.DataFrame
-        Reference PDB structure with 'x', 'y', 'z', 'name', and 'tempfactor' columns.
+        Reference structure with 'x', 'y', 'z', 'name' and 'tempfactor' columns.
     pdb2 : pandas.DataFrame
         Mobile PDB structure.
     Atoms : list, optional
-        List of atom names to use for alignment. If None, all atoms are used.
+        Atom names to use for alignment. If None, all atoms are used.
 
     Returns
     -------
     transformation_matrix : numpy.ndarray
         4x4 transformation matrix.
     rmsd : float
-        Root-mean-square deviation that would result from the alignment.
+        Weighted RMSD that would result from the alignment.
     """
     # align to pointclouds
     if Atoms is None:
@@ -391,24 +367,17 @@ def apply_transformation(points, transformation_matrix):
     torch.Tensor
         Transformed 3D points of shape (N, 3).
     """
-    # Convert to homogeneous coordinates
     homo_points = torch.hstack(
         (points, torch.ones((points.shape[0], 1), device=points.device))
     )
     last_row = torch.tensor([0, 0, 0, 1], device=points.device)
     transformation_matrix = torch.vstack((transformation_matrix, last_row))
-    # Apply transformation
     transformed = torch.matmul(homo_points, transformation_matrix.T)
-    # Return 3D coordinates
     return transformed[:, :3]
 
 
 def apply_transformation_numpy(points, transformation_matrix):
-    """
-    Apply a 4x4 transformation matrix to 3D points (NumPy version).
-
-    Converts points to homogeneous coordinates, applies the transformation,
-    and returns the transformed 3D coordinates.
+    """Apply a 4x4 transformation matrix to 3D points (NumPy version).
 
     Parameters
     ----------
@@ -422,48 +391,34 @@ def apply_transformation_numpy(points, transformation_matrix):
     numpy.ndarray
         Transformed 3D coordinates with shape (N, 3).
     """
-    # Convert to homogeneous coordinates
     homo_points = np.hstack((points, np.ones((points.shape[0], 1))))
-    # Apply transformation
     transformed = np.dot(homo_points, transformation_matrix.T)
-    # Return 3D coordinates
     return transformed[:, :3]
 
 
 def invert_transformation_matrix(transformation_matrix):
-    """
-    Compute the inverse of a 4x4 transformation matrix.
+    """Invert a rigid-body 4x4 transformation matrix.
 
-    Efficiently inverts a rigid-body transformation matrix by transposing
-    the rotation component and computing the inverse translation.
+    Uses ``R^-1 = R^T``, so a matrix that is not a pure rotation plus
+    translation (any scale or shear) is inverted silently wrongly.
 
     Parameters
     ----------
     transformation_matrix : numpy.ndarray
-        4x4 transformation matrix containing rotation (top-left 3x3) and
-        translation (top-right 3x1).
+        4x4 matrix with rotation in the top-left 3x3 and translation in the
+        top-right 3x1.
 
     Returns
     -------
     numpy.ndarray
         Inverse 4x4 transformation matrix.
-
-    Notes
-    -----
-    This function assumes the input is a valid rigid-body transformation
-    (rotation + translation). For such matrices, the inverse rotation is
-    simply the transpose, and the inverse translation is computed as
-    -R^T @ t.
     """
-    # Extract rotation and translation
     rotation = transformation_matrix[:3, :3]
     translation = transformation_matrix[:3, 3]
 
-    # Calculate inverse rotation (transpose) and inverse translation
     inverse_rotation = rotation.T
     inverse_translation = -np.dot(inverse_rotation, translation)
 
-    # Build inverse transformation matrix
     inverse_matrix = np.eye(4)
     inverse_matrix[:3, :3] = inverse_rotation
     inverse_matrix[:3, 3] = inverse_translation

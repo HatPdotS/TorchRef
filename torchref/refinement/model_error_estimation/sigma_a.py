@@ -1,41 +1,18 @@
 """Data-driven model-error estimation: the per-shell Luzzati ``sigma_A``.
 
-The first of two model-error estimators (see the package docstring). ``sigma_A`` is
-inferred from data-model *disagreement* per resolution shell on the FREE set, and
-``alpha``/``beta``/``beta_model`` are algebraic consequences of it -- which is what makes
+``sigma_A`` is fitted per resolution shell on the FREE set and
+``alpha``/``beta``/``beta_model`` are algebraic consequences of it, which is what makes
 the second-moment identity ``alpha**2 * Sigma_P + beta_model + S2 == B`` hold exactly
-rather than approximately. ``beta`` is the absolute model-error variance in F**2 units and
-is the overfit-controlling ingredient.
+rather than approximately. ``beta`` -- the absolute model-error variance in F**2 units --
+is the overfit-controlling ingredient. :func:`estimate_beta` fits by *joint*
+``(alpha, beta)`` ML even for likelihoods that later pin the mean coupling at 1, because
+fitting with the mean pinned at ``|F_calc|`` biases ``sigma_A`` high.
 
-**The estimator and the likelihood use alpha differently, deliberately.**
-:func:`estimate_beta` fits ``sigma_A`` by *joint* ``(alpha, beta)`` maximum likelihood --
-the mean is ``alpha*|F_calc|`` during the fit, the same problem Phenix's ``funcgm(t) = 0``
-root solves. Which target then *consumes* ``alpha`` is a separate question: ``ml`` and
-``ml_full`` centre on ``alpha*|F_calc|``, while ``ml_noalpha`` and ``nll_beta`` fix the mean
-coupling at 1 (the scaler owning that gauge). Fitting with the mean pinned at ``|F_calc|``
--- which this code used to do -- biases ``sigma_A`` **+0.035 high** on synthetic data with
-known truth, so the estimator must use alpha even where the likelihood does not.
-
-Mechanically the fit is a bounded 3-stage geometric grid over ``v = 1 - sigma_A**2`` (no
-root-find, no sign-triggered gates, hence deterministic across devices and processes),
-followed by an instability-weighted shrinkage toward a fitted ``sigma_A(d*^2)`` curve
-(:func:`_shrink_to_curve`), and finally interpolation of
-``sigma_A``/``Sigma_N``/``Sigma_P``/``S2`` to every reflection with
-``alpha``/``beta``/``beta_model`` derived per reflection from those.
-
-The likelihoods that consume ``beta`` live in
-:mod:`torchref.base.targets.xray_likelihoods`; nothing here imports them.
-
-**Do not split :func:`estimate_beta` from :class:`SigmaAEstimator`.** The out-of-repo
-estimator lab (``sigma_a_rework/estimator_lab/install.py``) swaps estimator variants by
-monkeypatching this module's ``estimate_beta`` global, and :meth:`SigmaAEstimator.get`
-resolves it as a same-module global. Moving one without the other makes that patch a
-silent no-op, and the lab's own assertion checks the wrong symbol so it would not catch it.
-
-Plain tensors in, plain tensors out -- no ``ReflectionData``/``Scaler`` coupling -- so this
-is usable from both :mod:`torchref.scaling` and :mod:`torchref.refinement.targets` without
-an import cycle. ``scaling`` must import it *inside* the method that uses it: see the note
-in ``ScalerBase.refine_lbfgs``.
+Two traps. **Do not move :func:`estimate_beta` out of this module**: the out-of-repo
+estimator lab monkeypatches it as a same-module global that :meth:`SigmaAEstimator.get`
+resolves, and nothing asserts the patch took. And keep it plain-tensor in/out (no
+``ReflectionData``/``Scaler`` coupling), so :mod:`torchref.scaling` -- which must import
+it *inside* the method that uses it -- stays free of an import cycle.
 """
 
 import math
@@ -48,19 +25,18 @@ from torchref.config import get_float_dtype
 
 # --- sigma_A estimator constants -------------------------------------------------
 #: Upper bound on the per-shell ``sigma_A``, i.e. the floor on the model-error variance at
-#: ``(1 - SIGMA_A_MAX**2) * Sigma_N``. Matches the effective floor the previous fit had.
+#: ``(1 - SIGMA_A_MAX**2) * Sigma_N``.
 SIGMA_A_MAX = 0.99
 #: Hard floor on the returned ``alpha``. A BACKSTOP, not a model choice: ``sigma_A = 0``
 #: gives ``alpha = 0``, which deletes a whole shell's model contribution from a likelihood
-#: centred on ``alpha*|F_calc|``. Observed on a real structure (6OHI shell 2). The
-#: stability shrinkage normally prevents it; this catches "every shell collapsed".
+#: centred on ``alpha*|F_calc|``. The stability shrinkage normally prevents it; this
+#: catches "every shell collapsed".
 ALPHA_FLOOR = 0.1
 #: Whether to run the stability shrinkage (:func:`_shrink_to_curve`). There is no pass
-#: count: the shrinkage target is a fixed fitted curve, so one shot is exact. The retired
-#: ``SHRINK_PASSES = 3`` counted Jacobi passes of the neighbour-shrinkage this replaced.
+#: count: the shrinkage target is a fixed fitted curve, so one shot is exact.
 SHRINK_ENABLED = True
-#: Bounded-grid solve: candidates per stage and number of nested-zoom stages. 17 x 3 gives
-#: steps in ``beta`` of 27.7% -> 3.1% -> 0.38%, against 12-20% sampling noise.
+#: Bounded-grid solve: candidates per stage and number of nested-zoom stages. 17 x 3 steps
+#: ``beta`` down 27.7% -> 3.1% -> 0.38%, comfortably under the 12-20% sampling noise.
 N_GRID = 17
 N_STAGES = 3
 #: Floor on ``Sigma_N / B``. Fires only where a shell's observed power is at or below its
@@ -75,12 +51,8 @@ RATIO_MAX = 25.0
 class SigmaAConfig:
     """The estimator's knobs, as one value.
 
-    Exists so target construction is a single call for every taxonomy row: the factory packs
-    this and hands it to all seven, and only the ``sigma_A``-family classes read it. The
-    alternative -- passing the knobs only to the rows that consume them -- puts a
-    ``needs_estimator`` conditional back in the factory, which is the dispatch the 2026-08
-    refactor removed.
-
+    Packed by the target factory and handed to every taxonomy row, so construction needs
+    no ``needs_estimator`` conditional; only the ``sigma_A``-family classes read it.
     ``shrink=None`` means "the module default", normalised here so consumers never have to
     handle ``None``. Frozen, so two targets sharing a config cannot drift apart.
     """
@@ -140,17 +112,16 @@ def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
 class SigmaAShells:
     """Per-shell output of :func:`estimate_beta`: one bounded parameter plus derivations.
 
-    ``sigma_A`` is the only thing estimated. ``alpha``, ``beta`` and ``beta_model`` are
-    algebraic consequences, which is what makes the second-moment identity
-    ``alpha**2 * Sigma_P + beta_model + S2 == B`` hold exactly instead of approximately.
+    ``sigma_A`` is the only thing estimated; ``alpha``, ``beta`` and ``beta_model`` are
+    algebraic consequences, so ``alpha**2 * Sigma_P + beta_model + S2 == B`` holds exactly.
 
     Attributes
     ----------
     sigma_a
         The estimate actually used, after the stability shrinkage.
     sigma_a_raw
-        Before shrinkage. Kept so the shrinkage's effect is always attributable, and so a
-        collapsed shell (``sigma_a_raw == 0``) stays visible after being rescued.
+        Before shrinkage, so the shrinkage's effect stays attributable and a collapsed
+        shell (``sigma_a_raw == 0``) stays visible after being rescued.
     alpha
         ``sigma_A * sqrt(Sigma_N/Sigma_P)``, floored at ``ALPHA_FLOOR``.
     beta
@@ -166,19 +137,17 @@ class SigmaAShells:
         Reflections per shell and its mean ``d*^2`` (the interpolation abscissa).
     shrink_w, tau
         Per-shell shrinkage weight and the DerSimonian-Laird between-shell sd **about the
-        fitted curve**. ``w -> 0`` means "this shell's departure from the curve is real";
-        ``w -> 1`` means "it is noise, use the curve".
+        fitted curve**: ``w -> 0`` means the shell's departure from the curve is real,
+        ``w -> 1`` means it is noise and the curve is used.
     curve_a, curve_b
-        The fitted ``-ln sigma_A = a + b*d*^2`` coefficients the shells were shrunk toward
-        (``b >= 0`` by construction). Diagnostics only -- nothing in the estimate is
-        derived from them. NaN when no curve was fitted: shrinkage disabled, fewer than 4
-        shells, or every shell at one ``d*^2``.
+        Fitted ``-ln sigma_A = a + b*d*^2`` coefficients (``b >= 0``). Diagnostics only.
+        NaN when no curve was fitted: shrinkage off, fewer than 4 shells, or one ``d*^2``.
     degenerate
         True when no usable free set existed and the fields are the conservative fallback.
     diagnostics
-        Counters for every clamp and filter, so a badly-behaved shell is visible rather
-        than merely finite: ``n_dropped``, ``n_free``, ``n_shell``, ``n_s2_clamped``,
-        ``n_ratio_clamped``, ``n_alpha_floored``, ``n_sigma_a_zero``, ``rho_min``.
+        Counters for every clamp and filter: ``n_dropped``, ``n_free``, ``n_shell``,
+        ``n_s2_clamped``, ``n_ratio_clamped``, ``n_alpha_floored``, ``n_sigma_a_zero``,
+        ``rho_min``.
     """
 
     sigma_a: torch.Tensor
@@ -204,11 +173,6 @@ class SigmaAShells:
 class SigmaAEstimate:
     """Everything a target needs from one model-error estimate, per reflection.
 
-    Replaces ``(beta, epsilon)`` / ``(alpha, beta, epsilon)`` tuples, and the eight return
-    shapes the old flag matrix produced (four flag combinations x two degenerate paths) in
-    which slot 4 was either ``shells`` or ``alpha_refl`` depending on the flags -- so
-    callers had to branch on flags rather than on arity.
-
     All tensors are per-reflection, detached (the estimate is a nuisance quantity;
     gradients must never flow through it) and share one length, so a consumer reading
     several fields cannot hit a shape mismatch.
@@ -223,9 +187,9 @@ class SigmaAEstimate:
         ``Sigma_N/Sigma_P > 1`` whenever the model explains less scattering than the data
         contain, which is the normal state (measured 1.02-1.6 on refined models).
     beta
-        TOTAL conditional variance -- model error plus the measurement variance that the
-        raw second moment carries. What a likelihood consumes when it does not account
-        for ``sigma_obs`` itself (``ml``, ``nll_beta``).
+        TOTAL conditional variance -- model error plus the measurement variance the raw
+        second moment carries. What a likelihood consumes when it does not account for
+        ``sigma_obs`` itself (``ml``, ``nll_beta``).
     beta_model
         Model error alone, ``beta`` less the per-shell mean measurement variance. What a
         likelihood consumes when it DOES account for ``sigma_obs`` explicitly
@@ -257,24 +221,12 @@ def _rice_nll_reduced(
     Sigma: torch.Tensor,
     centric: torch.Tensor,
 ) -> torch.Tensor:
-    """Per-reflection Read-MLF NLL with every ``Sigma``-independent term dropped.
+    """Per-reflection Read-MLF NLL, ``Sigma``-independent terms dropped for conditioning.
 
-    This is the kernel the sigma_A grid minimises. It is the same Rice/folded-normal form
-    as ``ml``'s own likelihood (:func:`_ml_beta_nll_per_refl`) up to a per-shell additive
-    constant, but the *solve* evaluates it at the mean ``alpha*|F_c|`` while ``ml``
-    evaluates it at ``|F_c|`` -- so it is not the same objective, and must not be
-    described as one. That difference is the point: see :func:`_solve_sigma_a` for why
-    fitting at ``alpha == 1`` biases ``sigma_A`` high.
-
-    The dropped terms -- ``-log(2 F_o)`` acentric and
-    ``-0.5 log(2/pi)`` centric -- do not depend on the parameter being fitted, so they
-    only inflate the magnitude that the differences between candidates have to survive.
-    The naive full objective reaches ~4e4 while the difference to resolve is ~5e-3,
-    i.e. 1.25e-7 relative = float32 epsilon; that is why the old fit had a recorded
-    f32-vs-f64 discrepancy of 13.1. (The solve additionally runs in float64, which is
-    what actually retires the problem; this is margin.)
-
-    ``i0e`` is the exp-scaled Bessel, so ``log I0(z) = log i0e(z) + z`` for ``z >= 0``.
+    The kernel the sigma_A grid minimises. Same Rice/folded-normal form as ``ml``'s
+    likelihood up to a per-shell constant, but evaluated at the mean ``alpha*|F_c|``
+    rather than ``|F_c|`` -- so it is NOT the same objective. ``i0e`` is the exp-scaled
+    Bessel: ``log I0(z) = log i0e(z) + z`` for ``z >= 0``.
     """
     Sigma = Sigma.clamp(min=1e-30)
     z = (2.0 * fo * fc / Sigma).clamp(min=0.0, max=1e8)
@@ -291,10 +243,8 @@ def _rice_nll_reduced(
 def _grid_ladder(n: int, ratio: float, device, dtype) -> torch.Tensor:
     """``ratio ** (k - (n-1)/2)`` for ``k`` in ``[0, n)``, built from Python floats.
 
-    Built on the host and moved, rather than computed with ``exp``/``linspace`` on the
-    device: the stages below are then pure multiplications of this constant by the
-    running winner, which is bit-identical on CPU and GPU. A device-side ``exp`` is not
-    guaranteed to be.
+    Built on the host and moved, not with a device-side ``exp``/``linspace``, so the
+    stages that multiply it stay bit-identical on CPU and GPU.
     """
     mid = (n - 1) / 2.0
     return torch.tensor(
@@ -312,55 +262,21 @@ def _solve_sigma_a(
     **This is the JOINT (alpha, beta) maximum-likelihood fit.** Each candidate ``v`` fixes
     both the variance ``beta = v*Sigma_N + S2`` and the mean coupling
     ``alpha = sqrt(1-v) * sqrt(Sigma_N/Sigma_P)``, and the objective is evaluated at the
-    mean ``alpha*|F_c|`` -- not at ``|F_c|``.
+    mean ``alpha*|F_c|`` -- not at ``|F_c|``, which would bias ``sigma_A`` high. The
+    ``dL/dbeta = 0`` condition *is* the moment identity, so a 1-D search over ``sigma_A``
+    scored with the true joint likelihood lands on the joint ML optimum (the same problem
+    Phenix's ``funcgm(t) = 0`` root solves).
 
-    That distinction is the whole point, so it is worth stating why. The Rice likelihood
-    has two stationarity conditions::
-
-        dL/dalpha = 0  <=>  alpha*Sigma_P = <b_j * I1/I0(2 t b_j)>,  b_j = Fo Fc/eps
-        dL/dbeta  = 0  <=>  beta = B - alpha**2 * Sigma_P
-
-    The second **is** the moment identity -- it is a consequence of the unconstrained
-    two-parameter fit, not a constraint imposed on it. So the joint optimum necessarily
-    lies on the identity surface, and that surface is exactly what ``sigma_A``
-    parameterises (``alpha**2 Sigma_P + beta = sigma_A**2 Sigma_N + (1-sigma_A**2) Sigma_N
-    + S2 = B`` for every candidate). A 1-D search over ``sigma_A``, scored with the true
-    joint likelihood, therefore lands on the joint ML optimum -- which is precisely what
-    Phenix's ``funcgm(t) = 0`` root solves (``mmtbx/max_lik/max_lik.h``), reproduced here
-    with a bounded deterministic grid instead of a bracket-and-regula-falsi that needed
-    three sign-triggered gates to survive.
-
-    A previous version scored candidates with the mean pinned at ``|F_c|`` (alpha == 1) and
-    then back-derived ``alpha`` from the identity. That fits the wrong likelihood, and the
-    error is not academic: on synthetic data with known per-shell ``sigma_A`` it biases the
-    estimate **+0.035 high** (100 shells x 400 reflections, shrinkage off), which this form
-    removes (-0.006). See ``tests/.../test_sigma_a_solve.py`` for the pinned regression.
-
-    Why a grid and not a root-find. The previous solve bracketed and regula-falsi'd an
-    unbounded parametrisation ``t in (0, inf)`` and needed three *sign-triggered* gates
-    to cope (``OMEGA <= 0``, ``wiAB <= 3e-7``, and a "never bracketed" fallback), plus
-    the cancellation-prone ``wi = A*B - C**2``. Discrete gates on a float32 quantity are
-    what made ``beta`` differ across GPU processes. This has:
-
-    * **no data-dependent control flow at all** -- a fixed ``n_stages * n_grid``
-      evaluations, hence deterministic by construction;
-    * **global character** -- interior unimodality is *not* guaranteed (a heavy-tailed
-      within-shell amplitude distribution can give two local minima), and every
-      candidate including both boundaries is evaluated;
-    * a **hard invariant** -- the result minimises the objective over all evaluated
-      candidates, with non-finite mapped to ``+inf``, so the worst possible outcome is
-      ``v = 1`` (``sigma_A = 0``, ``beta = B``): the conservative "this shell's model
-      carries no information" answer for the *variance*. Note it is NOT conservative
-      for the mean, which is why ``alpha`` is guarded separately.
-
-    Stage 1 spans ``[v_min, 1]``; each later stage re-centres on the winner with the
-    previous stage's step as its full span. With 17 points and 3 stages the step in
-    ``beta`` is 27.7% -> 3.1% -> 0.38%, against a measured within-shell sampling noise
-    of 12-20% -- three orders of margin.
-
+    A grid rather than a root-find, so there is **no data-dependent control flow at all**
+    -- a fixed ``n_stages * n_grid`` evaluations, deterministic across devices and
+    processes, where sign-triggered gates on float32 made ``beta`` differ between GPU
+    processes. Non-finite candidates map to ``+inf``, so the worst outcome is ``v = 1``
+    (``sigma_A = 0``, ``beta = B``): conservative for the *variance* but NOT for the mean,
+    which is why ``alpha`` is guarded separately. Stage 1 spans ``[v_min, 1]``; each later
+    stage re-centres on the winner with the previous stage's step as its full span.
     Searching ``v`` rather than ``sigma_A`` is deliberate: ``1 - sigma_A**2`` is pure
-    round-off once ``sigma_A`` approaches 1, so the small-variance end would be
-    unresolvable if the grid lived in ``sigma_A``.
+    round-off once ``sigma_A`` approaches 1, so a grid in ``sigma_A`` could not resolve
+    the small-variance end.
     """
     dtype, device = Sigma_N.dtype, Sigma_N.device
     n_bins = Sigma_N.numel()
@@ -429,22 +345,11 @@ def _sigma_a_sampling_var(sigma_a: torch.Tensor, n: torch.Tensor) -> torch.Tenso
         var_SN = ((1 - sA^2) / (2 sA))**2 / n           propagated from Sigma_N's own
                                                         sampling error, relsd ~ 1/sqrt(n)
 
-    ``var_SN`` is **exactly** ``var_ml / 2`` for every ``sigma_A`` and ``n``, since
-    ``var_SN/var_ml = [1/(4 sA^2 n)] / [1/(2 sA^2 n)] = 1/2``. So this is
-    ``1.5 * var_ml``, and the two terms are kept separate only to record where the factor
-    comes from -- do not read the second as "the one that matters when the model is good".
-
-    (An earlier comment here claimed the second term dominates at the good end. That is
-    true of **alpha's** relative sd, not sigma_A's: ``alpha = sigma_A sqrt(Sigma_N/Sigma_P)``
-    picks up ``Sigma_N`` at ``0.5/sqrt(n)`` relative, which does *not* vanish as
-    ``sigma_A -> 1`` whereas the ML term does. That is what makes alpha's bootstrapped
-    relative sd 1.8-3.3x the ML-only prediction on well-fitting structures. Shrinkage
-    here is applied to ``sigma_A``, so ``sigma_A``'s variance is the right input.)
-
-    Against a 400-rep bootstrap of alpha through the production solve, propagating this
-    form **overestimates** by 1.3-1.7x. Overestimating is the safe direction: slightly
-    more shrinkage than strictly warranted. Left uncalibrated on purpose -- a correction
-    fitted to five structures would not generalise.
+    ``var_SN`` is **exactly** ``var_ml / 2`` for every ``sigma_A`` and ``n``, so this is
+    ``1.5 * var_ml``; the terms are split only to record where the factor comes from --
+    do not read the second as "the one that matters when the model is good".
+    Deliberately uncalibrated, and it overestimates, which is the safe direction (slightly
+    more shrinkage than warranted).
     """
     sa = sigma_a.clamp(min=1e-4)
     one_m = 1.0 - sa * sa
@@ -456,68 +361,35 @@ def _sigma_a_sampling_var(sigma_a: torch.Tensor, n: torch.Tensor) -> torch.Tenso
 def _shrink_to_curve(sigma_a, var, bin_dss):
     """Shrink each shell's ``sigma_A`` toward a 2-parameter FITTED CURVE by its instability.
 
-    Same DerSimonian-Laird machinery as the neighbour shrinkage this replaces; only the
-    target changes, and that is the whole point. Shrinking toward neighbours borrows from
-    shells that are themselves as noisy as the shell being corrected. Shrinking toward
-    ``exp(-(a + b*d*^2))`` fitted across ALL shells borrows from something 10-80x better
-    determined, because the two parameters see every free reflection::
+    DerSimonian-Laird shrinkage toward a curve fitted across ALL shells, which the two
+    parameters determine far better than any one shell is determined::
 
         fit    -ln sigma_A = a + b*d*^2, weights 1/var(-ln sigma_A) = sigma_A^2/var
         tau^2  = DL between-shell variance ABOUT THE CURVE, weights 1/var
         w_i    = var_i / (var_i + tau^2)
         sigma_A_i <- (1 - w_i)*sigma_A_i + w_i*curve_i
 
-    **Why a hybrid and not either extreme.** Measured on logged refinement trajectories,
-    the residual (per-shell minus curve) is 100% reproducible within a structure
-    (correlation between consecutive refinement steps 0.998-1.000) and only ~61% shared
-    between structures. So the curve captures a real common trend, while ~39% of the
-    residual is dataset-specific (ice rings, anisotropy, local incompleteness) and no
-    function of resolution can express it. Five separate attempts to *remove* per-shell
-    freedom all refined worse -- global curve, fixed boxcar, Gaussian, an unbinned
-    2-parameter ML fit, and injected noise; the noise control is what proved the per-shell
-    scatter is information rather than stochastic regularisation. This *adds* a
-    well-determined fallback instead of taking information away, and lets DL decide per
-    shell how much of each to use. Measured against the neighbour shrinkage on 765 of the
-    767-structure AF-start benchmark: a tie overall (R_free p=0.083, R_work p=0.817) and
-    -0.00060 (p=0.022) on the data-poor quartile, which is what it is here for.
+    ``tau^2`` is the size of the dataset-specific residual (ice rings, anisotropy, local
+    incompleteness), so ``w_i -> 0`` where that residual is real and large and ``w_i -> 1``
+    where the shell is badly determined. One shot, no iteration: the target is a fixed
+    curve. ``b`` is clamped at ``>= 0`` to enforce the physically required monotone decay
+    that noisy per-shell fits can violate, with ``a`` refitted after the clamp so the curve
+    still passes through the weighted centroid. Weights are ``1/var``, never counts --
+    count weighting lets high-``var`` shells dominate ``Q`` and veto shrinkage entirely.
 
-    ``tau^2`` is the between-shell variance about the curve, i.e. the size of that
-    dataset-specific residual, so ``w_i -> 0`` where the residual is real and large (keep
-    the shell) and ``w_i -> 1`` where the shell is badly determined (use the curve). No
-    iteration: unlike the Jacobi neighbour passes the target is fixed, so one shot is exact
-    -- which is why there is no pass count any more.
-
-    ``b`` is clamped at ``>= 0`` to enforce monotone decay, the physically required
-    direction that noisy per-shell fits violate (measured: 2 of 10 structures produced a
-    slightly negative slope). ``a`` is refitted after the clamp so the curve still passes
-    through the weighted centroid.
-
-    Only ``sigma_A`` is pooled; ``Sigma_N`` and ``S2`` stay per shell. That is what makes
-    this safe where smoothing ``beta`` was measured harmful: ``beta = (1-sigma_A^2)*Sigma_N``
-    multiplies a dimensionless factor that *should* vary smoothly with resolution by
-    ``Sigma_N``, which falls steeply and is well determined (relsd ~ 1/sqrt(n)). Smoothing
-    the product smears the falloff; pooling only ``sigma_A`` leaves
-    ``beta_i = (1 - sigma_A_pooled^2) * Sigma_N,i`` falling exactly as ``Sigma_N`` does.
-
-    The DL weights are ``1/var``, never counts. Count weighting lets shells with huge
-    ``var`` dominate ``Q`` and veto shrinkage entirely.
-
-    **Known weakness, deliberately left in.** ``tau^2`` is a single GLOBAL number, so a
-    curve that fits most shells well shrinks a badly-fit shell hard too. On synthetic data
-    ``w`` reached 0.36 on the top-resolution shell even at 4000 reflections/shell, pulling
-    ``sigma_A`` 0.609 -> 0.653 against a truth of 0.60. A per-shell residual scale would
-    fix it and is not estimable from one observation per shell -- but the trajectory data
-    above shows the residual is reproducible within a structure, so a *previous cycle's*
-    residual could supply it. That is the next step, and it is not taken here.
+    Only ``sigma_A`` is pooled; ``Sigma_N`` and ``S2`` stay per shell, so
+    ``beta_i = (1 - sigma_A_pooled^2) * Sigma_N,i`` still falls exactly as ``Sigma_N``
+    does. Smoothing ``beta`` itself smears that falloff and was measured harmful.
+    ``tau^2`` is a single GLOBAL number, so a curve that fits most shells well shrinks a
+    genuinely badly-fit shell too hard; a per-shell residual scale is not estimable from
+    one observation per shell.
 
     Returns ``(sigma_a_shrunk, w, tau_sq, a, b)``; ``a``/``b`` are NaN scalars when no
     curve was fitted.
     """
     nan = float("nan")
     k = sigma_a.numel()
-    # Two fitted parameters need at least two residual degrees of freedom to be
-    # meaningful. Note this is stricter than the neighbour shrinkage's `k < 3`: a
-    # 3-shell fit now gets no shrinkage where it previously got some.
+    # Two fitted parameters need at least two residual degrees of freedom.
     if k < 4:
         return sigma_a, torch.zeros_like(sigma_a), sigma_a.new_zeros(()), nan, nan
 
@@ -533,11 +405,8 @@ def _shrink_to_curve(sigma_a, var, bin_dss):
     Sxy = (wt * x * y).sum()
     det = S * Sxx - Sx * Sx
     # Relative, not absolute: `det` is a difference of two ~`S**2 * x**2` terms, so on a
-    # degenerate input it lands at the cancellation floor (~1e-10 for S~1e4, x~0.2), not
-    # near zero. An absolute 1e-30 threshold therefore never fires and the fit proceeds on
-    # noise. Fires only when every shell shares one d*^2, which equal-count resolution
-    # shells built by sorting on d*^2 cannot produce -- so this guard is unreachable on
-    # real data and exists for synthetic/1-shell inputs.
+    # degenerate input it lands at the cancellation floor, not near zero, and an absolute
+    # threshold would never fire while the fit proceeded on noise.
     if float(det.abs()) <= 1e-12 * float((S * Sxx).abs()):
         # All shells at one d*^2: the slope is unidentifiable.
         return sigma_a, torch.zeros_like(sigma_a), sigma_a.new_zeros(()), nan, nan
@@ -583,15 +452,8 @@ def estimate_beta(
 
         alpha**2 * Sigma_P + beta_model + S2 == B
 
-    holds **exactly** rather than approximately. The previous implementation fitted
-    ``alpha`` on the raw moment ``B`` and subtracted the measurement variance from
-    ``beta`` afterwards, which left the shipped pair implying
-    ``sigma_A**2 = (B - beta_raw)/(B - S2) > 1`` whenever ``beta_raw < S2``. (Measured
-    frequency of that on 24 real structures x ~170 shells: zero. It is a latent
-    inconsistency, not an observed one -- do not cite it as a performance motivation.)
-
-    Runs under ``torch.no_grad()`` in float64 internally; ~3 ms, against a 145 s
-    refinement.
+    holds **exactly** rather than approximately. Runs under ``torch.no_grad()`` in float64
+    internally, whatever dtype comes in; results are cast back to ``F_obs.dtype``.
 
     Parameters
     ----------
@@ -600,25 +462,20 @@ def estimate_beta(
     sigma_obs : torch.Tensor, optional
         Scaled experimental sigmas, on the same scale as ``F_obs``. Supplying them is
         what makes ``beta_model`` differ from ``beta``; with ``None`` the shell-mean
-        measurement variance ``S2`` is zero and the two coincide (documented, and the
-        only difference between the two paths -- there is no branch).
+        measurement variance ``S2`` is zero and the two coincide.
     per_bin : int, optional
-        Target reflections per shell. Default 140. Note this is a *count* target, so the
-        precision of ``sigma_A`` it delivers varies enormously with the model quality
-        (measured: 0.3% relative on a good structure, 114% on a bad one at the same
-        count). The stability shrinkage exists to absorb that.
+        Target reflections per shell. A *count* target, so the ``sigma_A`` precision it
+        delivers varies with model quality; the shrinkage exists to absorb that.
     sigma_a_max : float, optional
         Upper bound on ``sigma_A``, i.e. the floor on the model-error variance
-        ``(1 - sigma_a_max**2) * Sigma_N``. Default matches the historical effective floor.
+        ``(1 - sigma_a_max**2) * Sigma_N``.
     alpha_floor : float, optional
         Hard floor on the returned ``alpha``. A backstop only: ``sigma_A = 0`` gives
         ``alpha = 0``, which would delete a whole shell's model contribution from a mean
-        centred on ``alpha*|F_calc|``. Observed on one real structure. The shrinkage
-        normally prevents it; this catches the case where *every* shell collapses.
+        centred on ``alpha*|F_calc|``.
     shrink : bool, optional
         Run the stability shrinkage toward the fitted ``sigma_A(d*^2)`` curve
-        (:func:`_shrink_to_curve`). One shot, no pass count -- the target is a fixed
-        curve, so iterating would change nothing.
+        (:func:`_shrink_to_curve`).
     n_grid, n_stages : int, optional
         Grid resolution of the bounded solve.
     min_bins, min_per_bin : int, optional
@@ -627,9 +484,7 @@ def estimate_beta(
     Returns
     -------
     SigmaAShells
-        One frozen record of per-shell quantities plus clamp counters. This replaces the
-        eight return shapes the flag matrix used to produce, in which slot 4 was either
-        ``shells`` or ``alpha_refl`` depending on the flags.
+        One frozen record of per-shell quantities plus clamp counters.
     """
     device = F_obs.device
     out_dtype = F_obs.dtype
@@ -720,9 +575,8 @@ def estimate_beta(
         # identical CPU/GPU, unlike scatter_add's CUDA atomicAdd accumulation order.
         return torch.segment_reduce(x, "sum", lengths=seg_lengths, unsafe=True)
 
-    # Lunin-Skovoroda moment weighting, kept for continuity with the previous fit. The
-    # identity below holds under any consistent positive weighting, and centrics are a
-    # few percent of reflections, so the choice is immaterial.
+    # Lunin-Skovoroda moment weighting. The identity below holds under any consistent
+    # positive weighting, so the exact choice is immaterial.
     w = torch.where(cen, torch.ones_like(fo), 2.0 * torch.ones_like(fo))
     sum_w = segsum(w).clamp(min=1e-30)
     counts = segsum(torch.ones_like(fo))
@@ -730,9 +584,7 @@ def estimate_beta(
     B = segsum(w * fo * fo / eps) / sum_w
     Sigma_P = segsum(w * fc * fc / eps) / sum_w
     S2 = segsum(w * sig * sig / eps) / sum_w
-    # Diagnostic only: the shell correlation. Nothing branches on it any more -- the old
-    # `wi = A*B - C**2` and `OMEGA` reformulations existed solely to make two sign gates
-    # survive float32, and both gates are gone.
+    # Diagnostic only (the shell correlation); nothing branches on it.
     C = segsum(w * fo * fc / eps) / sum_w
 
     # S2 > B means the shell's observed power is at or below its own measurement noise.
@@ -745,11 +597,9 @@ def estimate_beta(
 
     # alpha = sigma_A * sqrt(Sigma_N/Sigma_P). NOT bounded by 1: in Read's decomposition
     # Sigma_N = Sigma_P + Sigma_Q the unmodelled part Sigma_Q > 0 for any real structure,
-    # so Sigma_N/Sigma_P > 1 is the normal state and alpha > 1 is legitimate (measured
-    # sqrt(Sigma_N/Sigma_P) 1.02 at low resolution to 1.6 at high). It is *not* a
-    # low-resolution bulk-solvent artefact -- that hypothesis was tested and refuted.
-    # The ratio is capped only for the degenerate case of a shell with no model amplitude.
-    # Computed BEFORE the solve because the fit is joint in (alpha, beta) and so needs it.
+    # so Sigma_N/Sigma_P > 1 is the normal state and alpha > 1 is legitimate. The ratio is
+    # capped only for the degenerate case of a shell with no model amplitude, and computed
+    # BEFORE the solve because the fit is joint in (alpha, beta) and so needs it.
     ratio = Sigma_N / Sigma_P.clamp(min=1e-30)
     n_ratio_clamped = int((ratio > RATIO_MAX).sum())
 
@@ -776,16 +626,11 @@ def estimate_beta(
         curve_a = curve_b = float("nan")
 
     # --- everything else, derived --------------------------------------------
-    # The alpha backstop is applied to ``sigma_A``, NOT to ``alpha``. Clamping ``alpha``
-    # after deriving it would break the moment identity
-    # ``alpha**2 Sigma_P + beta_model + S2 == B`` for precisely the shells the backstop
-    # exists to rescue -- reintroducing the mutual inconsistency between the triple that
-    # this estimator was rewritten to remove. (Measured before the fix: one collapsed
-    # shell in 100 gave a 9.2e-3 relative violation while every other shell was exact.)
-    # Since ``alpha = sigma_A * sqrt(ratio)`` is monotone in ``sigma_A``, the identical
-    # guarantee ``alpha >= alpha_floor`` is obtained by flooring ``sigma_A`` at
-    # ``alpha_floor / sqrt(ratio)``, and then EVERYTHING is still derived from one
-    # ``sigma_A``, so the identity stays exact.
+    # The alpha backstop is applied to ``sigma_A``, NOT to ``alpha``: clamping ``alpha``
+    # after deriving it breaks the moment identity for precisely the shells the backstop
+    # rescues. Since ``alpha = sigma_A * sqrt(ratio)`` is monotone in ``sigma_A``, flooring
+    # ``sigma_A`` at ``alpha_floor / sqrt(ratio)`` gives the same guarantee with everything
+    # still derived from one ``sigma_A``, so the identity stays exact.
     ratio_sqrt = ratio.clamp(max=RATIO_MAX).sqrt()
     sa_floor = (alpha_floor / ratio_sqrt.clamp(min=1e-30)).clamp(
         max=float(sigma_a_max)
@@ -850,28 +695,12 @@ def _interp_in_dss(dss_all, bin_dss, vals):
 class SigmaAEstimator:
     """Lazy, cached free-set model-error variance ``beta`` (Luzzati σ_A).
 
-    Thin stateful wrapper around :func:`estimate_beta`: it caches the detached
-    ``(beta, epsilon)`` from the last estimate and re-estimates only after
-    :meth:`reset`. The owning target calls :meth:`reset` from its
-    ``maintenance()`` hook so ``beta`` refreshes once per optimizer-step block
-    (the same cadence the scaler used previously).
-
-    Ownership note
-    --------------
-    ``beta`` (the conditional variance ``epsilon*beta``) is the overfit-controlling
-    ingredient, and ``alpha`` is produced alongside it: the fit is joint in the pair, and
-    a target that centres on ``alpha*|F_calc|`` (``ml``, ``ml_full``) reads it.
-    ``ml_noalpha`` and ``nll_beta`` fix the mean coupling at 1 in their *likelihood* — the
-    scaler owns that gauge — but that is a property of the likelihood, not of the estimate.
-    This estimator therefore belongs to the *target* that consumes it, not to the scaler
-    (which owns scaling only). Plain tensor in/out — no ``ReflectionData``/``Scaler``
-    coupling — so it is usable from both ``scaling`` and ``refinement.targets`` without an
-    import cycle.
-
-    Every caller passes ``sigma_obs`` and the same ``shrink`` setting. There is exactly one
-    estimator behaviour in the codebase; a configuration that varied by consumer meant
-    ``ml`` and ``ml_full`` were fitted differently, so comparing them measured the
-    estimator as much as the likelihood.
+    Thin stateful wrapper around :func:`estimate_beta`: caches the detached estimate and
+    re-estimates only after :meth:`reset`. **The owning target must call :meth:`reset`
+    from its ``maintenance()`` hook**, otherwise ``beta`` is frozen for the whole run.
+    Owned by the consuming target, not the scaler (which owns scaling only), and every
+    caller must pass the same ``sigma_obs``/``shrink`` settings so comparing two
+    likelihoods does not also compare two estimators.
     """
 
     def __init__(self):
@@ -910,14 +739,11 @@ class SigmaAEstimator:
         """Return the cached-or-recomputed :class:`SigmaAEstimate`, all fields detached.
 
         Estimated on the **free** set under ``no_grad``; gradients never flow through it.
-
-        Four shell curves are interpolated and everything is then derived per reflection,
-        rather than interpolating ``beta`` directly: ``sigma_A`` (bounded, so linear
-        interpolation cannot leave ``[0, 1]``), ``log Sigma_N`` and ``log Sigma_P``
-        (positive by construction under log-linear interpolation) and ``S2``. The
-        identity ``alpha**2 Sigma_P + beta_model + S2 == B`` therefore holds at every
-        reflection, not merely per shell -- interpolating ``beta`` could yield a
-        per-reflection value consistent with no ``sigma_A <= 1`` at all.
+        Four shell curves are interpolated (``sigma_A``, ``log Sigma_N``, ``log Sigma_P``,
+        ``S2``) and the rest derived per reflection, so the identity
+        ``alpha**2 Sigma_P + beta_model + S2 == B`` holds at every reflection rather than
+        merely per shell -- interpolating ``beta`` directly can yield a value consistent
+        with no ``sigma_A <= 1`` at all.
 
         Parameters
         ----------

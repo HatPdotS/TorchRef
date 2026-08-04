@@ -1,19 +1,14 @@
-"""
-Optimized density-splatting kernels, organized by device.
+"""Optimized density-splatting kernels, organized by device.
 
-Layout:
-- ``cpu/``  — the production fused C++ spherical-cutoff splat
-  (``sphere_splat.py``), the portable plain-scatter splats
-  (``variable_radius.py``), and the JIT reference.
-- ``cuda/`` — the production variable-radius work-queue kernels
-  (``variable_radius.py``: ``WorkQueueGridDensity{,Aniso}``) plus the legacy
-  fixed-radius fused Triton kernel (``fused.py``, benchmark-only).
-- ``offsets.py`` — shared voxel-offset helpers for the variable-radius splats.
+* ``cpu/`` -- the production fused C++ spherical-cutoff splat (``sphere_splat.py``), the
+  portable plain-scatter splats (``variable_radius.py``), and the JIT reference.
+* ``cuda/`` -- the production variable-radius work-queue kernels
+  (``variable_radius.py``) plus a fixed-radius fused Triton kernel (``fused.py``,
+  benchmark-only).
+* ``offsets.py`` -- shared voxel-offset helpers for the variable-radius splats.
 
-This package re-exports the public API (``vectorized_add_to_map``, the two-step
-``build_electron_density``, the variable-radius entry points, and the legacy
-Triton entry points, …). Triton imports are optional (guarded) so the package
-loads without a GPU.
+The public API is re-exported here. Triton imports are guarded, so the package loads
+without a GPU.
 """
 
 from .cpu.jit_reference import (

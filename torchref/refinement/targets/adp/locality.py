@@ -1,3 +1,5 @@
+"""K-nearest-neighbour spatial smoothness restraint on the ADPs."""
+
 import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
@@ -19,11 +21,10 @@ if TYPE_CHECKING:
 
 class ADPLocalityTarget(ADPTarget):
     """
-    Proximity-based ADP restraint using K nearest neighbors.
+    Proximity-based ADP restraint over each atom's K nearest neighbours.
 
-    Uses a spatial cell-list (O(N) memory, O(N·k) time) instead of
-    a full N×N distance matrix, so it scales to arbitrarily large
-    structures without memory issues.
+    Built on a spatial cell-list (O(N) memory, O(N·k) time) rather than a full
+    N×N distance matrix, so it scales to arbitrarily large structures.
 
     Parameters
     ----------
@@ -32,17 +33,15 @@ class ADPLocalityTarget(ADPTarget):
     k_neighbors : int, optional
         Number of nearest neighbors to consider. Default is 50.
     correlation_length : float, optional
-        Distance scale for weight decay in Angstrom. Default is 5.0. Only
-        used in ``stats()`` (for the exponential-decay reported weights);
-        ``forward()`` weights neighbors by inverse distance instead.
+        Weight-decay distance scale (Å), default 5.0. Used **only** by ``stats()``;
+        ``forward()`` weights by inverse distance instead.
     scale : float, optional
-        Default is 5.0. Currently informational only: ``forward()`` does not
-        multiply the loss by ``scale`` (it is surfaced only in ``stats()``),
-        so it is not an active loss-magnitude lever.
+        Default 5.0, and informational only -- ``forward()`` does **not** multiply
+        the loss by it, so it is not a loss-magnitude lever.
     sigma_aniso : float, optional
-        Sigma for the deviatoric (anisotropy) channel, used only when
-        anisotropic atoms are present. Default is 0.5. Dimensionless, on the
-        same scale as the magnitude channel's fixed 0.5 log-sigma.
+        Sigma for the deviatoric (anisotropy) channel, used only when anisotropic
+        atoms are present. Default 0.5, dimensionless and on the same scale as the
+        magnitude channel's fixed 0.5 log-sigma.
     exclude_bonded : bool, optional
         Exclude directly bonded atoms. Default is True.
     verbose : int, optional
@@ -63,18 +62,15 @@ class ADPLocalityTarget(ADPTarget):
         device=None,
     ):
         super().__init__(model, verbose, device=device)
-        # Host-side, deliberately not buffers: all three are only ever reached
-        # through the properties below, which immediately ``.item()`` them, and
-        # their consumers (k-NN sizing, the exp() falloff, stats reporting) are
-        # host-side. Keeping them on the device bought a sync per access.
+        # Host-side, deliberately not buffers: every consumer (k-NN sizing, the
+        # exp() falloff, stats) is host-side, so a device tensor would only add a
+        # sync per access.
         self._k_neighbors = int(k_neighbors)
         self._correlation_length = float(correlation_length)
         self._scale = float(scale)
-        # Sigma for the deviatoric (anisotropy) channel; only used when
-        # anisotropic atoms are present. Dimensionless and on the same scale as
-        # the magnitude channel's fixed 0.5 log-sigma (the channel restrains
-        # fractional anisotropy dev/B_eq, the analogue of log B_eq). This one
-        # *is* a buffer: it is handed to adp_locality_aniso_math as a tensor.
+        # This one *is* a buffer, unlike the three above: adp_locality_aniso_math
+        # takes it as a tensor. It restrains fractional anisotropy dev/B_eq, the
+        # analogue of log B_eq, hence the shared 0.5 scale.
         self._register_scalar("_sigma_aniso", float(sigma_aniso))
         self.exclude_bonded = exclude_bonded
 
@@ -84,13 +80,9 @@ class ADPLocalityTarget(ADPTarget):
         self._last_xyz_hash = None
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-        """Absorb the retired ``_k_neighbors`` / ``_correlation_length`` /
-        ``_scale`` buffers.
-
-        All three are host-side Python scalars now (see ``__init__``).
-        Checkpoints predating that change still carry them, and a
-        ``strict=True`` load would reject them as unexpected keys -- so restore
-        their values rather than discarding a user's tuning.
+        """Absorb ``_k_neighbors``/``_correlation_length``/``_scale`` from older
+        checkpoints. All three are host-side scalars now, so a ``strict=True`` load
+        would reject them as unexpected keys; restore the values instead.
         """
         for legacy, cast in (
             ("_k_neighbors", int),
@@ -139,11 +131,8 @@ class ADPLocalityTarget(ADPTarget):
     # ------------------------------------------------------------------
 
     def _build_neighbor_list(self) -> None:
-        """
-        Build k-nearest-neighbor list using a spatial cell-list.
-
-        Memory usage is O(N·k) for the output arrays and O(N) for the
-        cell-list bookkeeping, instead of O(N²) for a full distance matrix.
+        """Build the k-NN list via a spatial cell-list: O(N·k) for the output plus
+        O(N) bookkeeping, instead of the O(N²) of a full distance matrix.
         """
         xyz = self.model.xyz()
         device = xyz.device
@@ -152,8 +141,8 @@ class ADPLocalityTarget(ADPTarget):
 
         coords = xyz.detach().cpu().numpy()
 
-        # Cell size should cover the kth-neighbor distance.  For proteins
-        # k=50 neighbors are typically within ~8-10 Å, so 12 Å is safe.
+        # Must cover the kth-neighbour distance or neighbours are silently missed;
+        # for proteins k=50 sits within ~8-10 Å, so 12 Å has margin.
         cell_size = 12.0
 
         xyz_min = coords.min(axis=0)
@@ -264,16 +253,13 @@ class ADPLocalityTarget(ADPTarget):
 
     def forward(self, recompute_neighbors: bool = False) -> torch.Tensor:
         """
-        Compute the inverse-distance-weighted sum of squared log(B) differences.
+        Inverse-distance-weighted sum of squared log(B) differences.
 
-        loss = sum_ij [w_ij * ((log(B_i) - log(B_j)) / 0.5)^2]
-        where w_ij = 1 / (d_ij + eps) and the inner sum runs over the k
-        nearest neighbors j of each atom i. This formula describes the
-        isotropic path only. When anisotropic atoms are present
-        (``model._aniso_is_empty`` is False) the loss instead routes to
-        ``adp_locality_aniso_math`` on the unified U6 basis: a magnitude
-        channel on B_eq that reproduces the isotropic loss above, plus a
-        deviatoric/fractional-anisotropy channel scaled by ``sigma_aniso``.
+        ``loss = sum_ij w_ij ((log B_i - log B_j) / 0.5)^2`` with
+        ``w_ij = 1/(d_ij + eps)`` over each atom's k nearest neighbours -- the
+        isotropic path. With anisotropic atoms present the loss instead routes to
+        ``adp_locality_aniso_math`` on the unified U6 basis: a B_eq magnitude channel
+        reproducing the above, plus a fractional-anisotropy channel at ``sigma_aniso``.
 
         Parameters
         ----------
@@ -305,10 +291,8 @@ class ADPLocalityTarget(ADPTarget):
         indices = self._neighbor_indices
         distances = self._neighbor_distances
 
-        # Anisotropic atoms present: restrain the full U tensors (magnitude
-        # channel on B_eq -- which reproduces the isotropic loss below -- plus a
-        # deviatoric/anisotropy channel). Isotropic-only models keep the
-        # original B-factor path (numerically unchanged, zero overhead).
+        # With any anisotropic atom, restrain the full U tensors; isotropic-only
+        # models take the cheaper B-factor path below, numerically unchanged.
         if not getattr(self.model, "_aniso_is_empty", True):
             u6 = self.model.adp_u6()
             return adp_locality_aniso_math(
@@ -328,15 +312,11 @@ class ADPLocalityTarget(ADPTarget):
         return loss
 
     def stats(self) -> Dict[str, any]:
-        """Get locality restraint statistics.
+        """Locality restraint statistics.
 
-        Notes
-        -----
-        The ``weighted_rms_log`` / ``avg_weight`` entries use exponential
-        decay weights ``exp(-d / correlation_length)``, which is a
-        **different** weighting scheme from ``forward()`` (inverse distance
-        ``1 / (d + eps)``). The reported "weighted" stats therefore do not
-        correspond to the weights used in the loss.
+        Caution: ``weighted_rms_log`` and ``avg_weight`` use exponential-decay
+        weights ``exp(-d / correlation_length)``, **not** the inverse-distance
+        weights ``forward()`` uses, so they do not describe the loss's weighting.
         """
         self._build_neighbor_list()
 

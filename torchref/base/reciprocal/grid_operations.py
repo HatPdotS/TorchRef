@@ -1,8 +1,7 @@
-"""
-Grid operations for reciprocal space.
+"""Placing structure factors on reciprocal-space grids and reading them back.
 
-Functions for placing structure factors on grids and extracting them,
-which are essential for FFT-based calculations.
+:func:`place_on_grid` and :func:`extract_structure_factor_from_grid` share one
+index convention (hkl taken mod the grid dimensions), so they round-trip.
 """
 
 import math
@@ -14,9 +13,7 @@ def place_on_grid(
     hkls, structure_factor, grid_size, enforce_hermitian: bool = True
 ) -> torch.Tensor:
     """
-    Place structure factors on a reciprocal-space grid.
-
-    Vectorized placement of batched structure factors on reciprocal-space grid.
+    Place structure factors on a reciprocal-space grid, wrapping hkl periodically.
 
     Parameters
     ----------
@@ -37,10 +34,9 @@ def place_on_grid(
 
     Notes
     -----
-    With ``enforce_hermitian=True`` the conjugate of each reflection is also
-    index-added at ``-hkl``. If the input already contains Friedel mates
-    (both ``hkl`` and ``-hkl``), this double-counts those reflections; pass
-    only the unique half (e.g. the asymmetric unit) in that case.
+    ``enforce_hermitian=True`` index-adds each reflection's conjugate at ``-hkl``,
+    so input already holding both Friedel mates is double-counted -- pass only the
+    unique half. Placement is index-*add*, so duplicate hkl accumulate.
     """
     batch_mode = True
     if structure_factor.ndim == 1:
@@ -50,7 +46,6 @@ def place_on_grid(
     device = structure_factor.device
     dtype = structure_factor.dtype
     Nx, Ny, Nz = [int(x) for x in grid_size]
-    # Prepare Miller indices and linear indices
     hkls = hkls.to(device=device)
     h = hkls[:, 0].to(torch.int64)
     k = hkls[:, 1].to(torch.int64)
@@ -60,7 +55,6 @@ def place_on_grid(
     ki = torch.remainder(k, Ny)
     li = torch.remainder(l, Nz)
     lin = (hi * (Ny * Nz) + ki * Nz + li).to(torch.int64)  # (N,)
-    # Vectorized scatter-add to grid
     grid = torch.zeros((B, Nx * Ny * Nz), dtype=dtype, device=device)
     grid = grid.index_add(1, lin, structure_factor)  # (B, Nx*Ny*Nz)
 
@@ -97,7 +91,6 @@ def extract_structure_factor_from_grid(reciprocal_grid, hkls) -> torch.Tensor:
     device = reciprocal_grid.device
     dtype = reciprocal_grid.dtype
 
-    # Handle both batched and unbatched input
     if reciprocal_grid.ndim == 3:
         reciprocal_grid = reciprocal_grid.unsqueeze(0)  # Add batch dimension
         squeeze_output = True
@@ -106,19 +99,16 @@ def extract_structure_factor_from_grid(reciprocal_grid, hkls) -> torch.Tensor:
 
     B, Nx, Ny, Nz = reciprocal_grid.shape
 
-    # Convert Miller indices to grid positions using same convention as place_on_grid
+    # Same wrapping convention as place_on_grid.
     hkls = hkls.to(device=device)
     h = hkls[:, 0].to(torch.int64)
     k = hkls[:, 1].to(torch.int64)
     l = hkls[:, 2].to(torch.int64)
 
-    # Map to grid indices with periodic wrapping
     hi = torch.remainder(h, Nx)
     ki = torch.remainder(k, Ny)
     li = torch.remainder(l, Nz)
 
-    # Extract structure factors at these positions
-    # For batched: (B, Nx, Ny, Nz) -> (B, N)
     structure_factors = reciprocal_grid[:, hi, ki, li]  # (B, N)
 
     if squeeze_output:
@@ -154,15 +144,11 @@ def apply_translation_phase(
 
     Notes
     -----
-    The phase ``2π * hkl · t`` is computed in float32 (``hkl`` and
-    ``translation_frac`` are cast to float32) and the resulting phase factor
-    is then cast to ``F_calc.dtype``. A float64 caller therefore does not get
-    double-precision phases.
+    The phase is computed in float32 regardless of input dtype and only then cast
+    to ``F_calc.dtype``, so a float64 caller does *not* get float64 phases.
     """
-    # Compute phase: 2π * hkl · t
     phase = 2.0 * math.pi * (hkl.float() @ translation_frac.float())
 
-    # Apply phase shift: F * exp(i * phase)
     phase_factor = torch.complex(torch.cos(phase), torch.sin(phase))
 
     return F_calc * phase_factor.to(F_calc.dtype)

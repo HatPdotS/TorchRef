@@ -1,14 +1,10 @@
 """Static (manual) weighting scheme.
 
 A weighting scheme returns a ``{component: weight}`` dict from a
-:class:`~torchref.refinement.loss_state.LossState`; the refinement applies it
-to the state's weight dict. ``ManualWeighting`` is the **static** scheme: it is
-state-independent and simply returns a fixed set of weights — the canonical home
-for the default base weights (see
-:data:`torchref.refinement.base_refinement.DEFAULT_GROUP_WEIGHTS`).
-
-This restores the minimal static piece of the pre-Springclean weighting package
-(the adaptive policy/random/ES schemes were removed and are not reinstated).
+:class:`~torchref.refinement.loss_state.LossState` and the refinement applies it.
+``ManualWeighting`` is the **static** one: state-independent, returning a fixed set of
+weights, and the canonical home for the defaults
+(:data:`torchref.refinement.base_refinement.DEFAULT_GROUP_WEIGHTS`).
 """
 
 from typing import TYPE_CHECKING, Dict
@@ -25,18 +21,15 @@ WeightingScheme = BaseWeighting
 
 
 class ManualWeighting(BaseWeighting):
-    """Apply fixed manual weights.
+    """Apply fixed manual weights, ignoring the ``LossState`` entirely.
 
-    State-independent: :meth:`forward` ignores the ``LossState`` and returns the
-    weights supplied at construction. Use this to express a static weighting
-    scheme (e.g. the default group base weights) as a first-class object rather
-    than a bare dict.
+    Lets a static weighting scheme (e.g. the default group base weights) be a first-class
+    object rather than a bare dict.
 
     Parameters
     ----------
     weights : dict
-        Mapping of weight key (group like ``'geometry'`` or component like
-        ``'geometry/bond'``) to weight value.
+        Weight key -- group (``'geometry'``) or component (``'geometry/bond'``) -- to value.
     device : torch.device, optional
         Computation device.
     """

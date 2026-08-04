@@ -1,8 +1,8 @@
-"""
-FFT operations for crystallographic calculations.
+"""Forward and inverse Fourier transforms in the crystallographic convention.
 
-Functions for forward and inverse Fourier transforms following
-crystallographic sign conventions.
+The crystallographic sign convention is the opposite of torch's, so
+:func:`fft` (F -> ρ) calls ``fftn`` while :func:`ifft` (ρ -> F) calls ``ifftn``.
+Pass ``volume`` to both or to neither -- mixing leaves an N/V scale error.
 """
 
 import torch
@@ -10,33 +10,26 @@ import torch
 
 def fft(reciprocal_grid, volume: float = None) -> torch.Tensor:
     """
-    Perform FFT to obtain real space electron density.
+    Transform structure factors to a real-space electron density map.
 
-    Uses fftn with norm="forward" to match crystallographic sign convention
-    directly, avoiding expensive flip/roll operations.
-
-    Crystallographic convention: ρ(r) = (1/V) Σ F(h) exp(-2πi h·r)
-
-    PyTorch fftn with norm="forward" gives:
-        fftn(x)[n] = (1/N) Σ_k x[k] exp(-2πi k·n/N)
-
-    When input structure factors F are correctly scaled (with V/N factor from ifft),
-    we need to multiply by N/V to recover the original electron density:
-        ρ = fftn(F) * (N / V)
+    Implements ρ(r) = (1/V) Σ F(h) exp(-2πi h·r), which is torch's *forward*
+    ``fftn`` under the crystallographic sign convention -- hence the apparent
+    name inversion against :func:`ifft`. No flip/roll is needed.
 
     Parameters
     ----------
     reciprocal_grid : torch.Tensor
-        Reciprocal space grid of shape (Nx, Ny, Nz) or (B, Nx, Ny, Nz).
-        Expected to contain correctly scaled structure factors (from ifft with volume).
+        Structure factors, shape (Nx, Ny, Nz) or (B, Nx, Ny, Nz), scaled as
+        :func:`ifft` with ``volume`` leaves them.
     volume : float, optional
-        Unit cell volume in Å³. If provided, result is scaled by N/V to give
-        correctly normalized electron density.
+        Unit cell volume in Å³. Applies the N/V factor that undoes ``ifft``'s
+        voxel-volume scaling; omitting it here after passing it there (or the
+        reverse) leaves the density off by N/V.
 
     Returns
     -------
     torch.Tensor
-        Real-valued tensor of electron density with same shape as input.
+        Real-valued electron density, same shape as the input.
     """
     if reciprocal_grid.ndim == 4:
         rs = torch.fft.fftn(reciprocal_grid, dim=(1, 2, 3), norm="forward").real
@@ -44,7 +37,6 @@ def fft(reciprocal_grid, volume: float = None) -> torch.Tensor:
         rs = torch.fft.fftn(reciprocal_grid, dim=(0, 1, 2), norm="forward").real
 
     if volume is not None:
-        # Apply crystallographic normalization: multiply by N/V
         N_total = reciprocal_grid.numel()
         rs = rs * N_total / volume
 
@@ -53,29 +45,25 @@ def fft(reciprocal_grid, volume: float = None) -> torch.Tensor:
 
 def ifft(real_space_map, volume: float = None) -> torch.Tensor:
     """
-    Perform inverse FFT to obtain reciprocal space structure factors.
+    Transform an electron density map to reciprocal-space structure factors.
 
-    Crystallographic convention: F(h) = Σ ρ(r) exp(+2πi h·r) * ΔV
-    where ΔV = V_cell / N is the voxel volume.
-
-    PyTorch ifftn with norm="forward" gives unnormalized DFT:
-        DFT[k] = Σ x[n] exp(+2πi k·n/N)
-
-    To obtain correctly scaled structure factors, we multiply by voxel volume:
-        F(h) = DFT(ρ) * (V_cell / N)
+    Implements F(h) = ΔV Σ ρ(r) exp(+2πi h·r) with ΔV = V/N the voxel volume,
+    which is torch's *inverse* ``ifftn`` under the crystallographic sign
+    convention -- hence the apparent name inversion against :func:`fft`.
 
     Parameters
     ----------
     real_space_map : torch.Tensor
-        Real space electron density map of shape (Nx, Ny, Nz) or (B, Nx, Ny, Nz).
+        Electron density, shape (Nx, Ny, Nz) or (B, Nx, Ny, Nz).
     volume : float, optional
-        Unit cell volume in Å³. If provided, result is scaled by voxel volume
-        (V_cell / N_total) to give correctly normalized structure factors.
+        Unit cell volume in Å³. Applies the ΔV = V/N factor; without it the
+        structure factors carry no absolute scale, and :func:`fft` must then also
+        be called without ``volume``.
 
     Returns
     -------
     torch.Tensor
-        Complex-valued tensor of structure factors with same shape as input.
+        Complex structure factors, same shape as the input.
     """
     if real_space_map.ndim == 4:
         rg = torch.fft.ifftn(real_space_map, dim=(1, 2, 3), norm="forward")
@@ -83,7 +71,6 @@ def ifft(real_space_map, volume: float = None) -> torch.Tensor:
         rg = torch.fft.ifftn(real_space_map, dim=(0, 1, 2), norm="forward")
 
     if volume is not None:
-        # Apply crystallographic normalization: multiply by voxel volume (V/N)
         N_total = real_space_map.numel()
         voxel_volume = volume / N_total
         rg = rg * voxel_volume

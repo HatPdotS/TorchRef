@@ -1,10 +1,4 @@
-"""
-Fourier transform functions for crystallography.
-
-This submodule provides functions for:
-- FFT and inverse FFT operations for crystallographic conventions
-- Real-space grid generation
-"""
+"""Fourier transforms in the crystallographic convention, plus grid generation."""
 
 from .fft import fft, ifft
 

@@ -177,6 +177,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     # Forward — reconstruct full xyz
     # -----------------------------------------------------------------------
     def forward(self) -> torch.Tensor:
+        """Full ``(N, 3)`` coordinates: each chain rotated about its weighted
+        centroid and translated. Non-mobile atoms keep ``original_xyz``.
+        """
         # XYZ Euler — same convention as Phenix's default rigid-body
         # parametrization. Critical near macro-cycle resets (after bake()
         # the angles are exactly zero): XYZ keeps the Jacobian full-rank
@@ -305,6 +308,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         self.update_fixed_values(new_xyz)
 
     def update_fixed_values(self, new_values: torch.Tensor):
+        """Adopt ``new_values`` as the reference pose, ZEROING the rigid-body
+        parameters and recomputing the chain centroids (see :meth:`bake`).
+        """
         # Update the reference coordinates and reset the per-chain transforms
         # so forward() reproduces these new values.
         if new_values.shape != self.shape:
@@ -368,6 +374,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     # Materialize back into a regular MixedTensor.
     # -----------------------------------------------------------------------
     def to_mixed_tensor(self):
+        """A per-atom :class:`MixedTensor` holding the current transformed
+        coordinates, for handing per-atom refinement back to ``Model``.
+        """
         from torchref.model.parameter_wrappers import MixedTensor
 
         with torch.no_grad():

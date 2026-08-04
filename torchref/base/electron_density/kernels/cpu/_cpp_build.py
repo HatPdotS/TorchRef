@@ -1,26 +1,23 @@
 """Shared ``load_inline`` harness for the CPU C++ kernels.
 
-Extracted from ``scatter.py`` so the fused sphere splat (``sphere_splat.py``) does
-not carry a second copy of it. Everything here is cluster-deployment plumbing that
-must not drift between the two extensions:
+Everything here is cluster-deployment plumbing that must not drift between the two
+extensions:
 
-* **POSIX ``lockf`` locking** instead of PyTorch's ``FileBaton``. FileBaton is a
-  file-existence lock, so a process killed mid-compile leaves it behind and blocks
-  every future import. ``fcntl.lockf`` record locks are enforced by the filesystem
-  (so they work across NFS/GPFS nodes) and released by the kernel on process death,
-  even SIGKILL.
-* **Per-microarchitecture build directory**, keyed on the CPU model. Without it a
-  ``-march=native`` binary built on one cluster node raises Illegal Instruction on
-  a node with a different CPU (e.g. AMD vs Intel).
-* **ninja on PATH** — pip-installed ninja lives next to ``sys.executable``, which
-  is not on PATH on compute nodes.
+* **POSIX ``lockf`` locking**, not PyTorch's ``FileBaton``. FileBaton is a
+  file-existence lock, so a process killed mid-compile leaves it behind and blocks every
+  future import; ``fcntl.lockf`` record locks are enforced by the filesystem (so they
+  work across NFS/GPFS nodes) and released by the kernel even on SIGKILL.
+* **Per-microarchitecture build directory**, keyed on CPU model -- without it a
+  ``-march=native`` binary built on one node raises Illegal Instruction on a node with a
+  different CPU.
+* **ninja on PATH** -- pip-installed ninja lives next to ``sys.executable``, which is not
+  on PATH on compute nodes.
 * **GCC >= 9** via ``/opt/rh/gcc-toolset-*``, required by PyTorch C++ extensions.
-* **No ``-fopenmp`` on macOS** — Apple Clang rejects it (no bundled OpenMP
-  runtime), so kernels must provide a ``std::thread`` fallback under
-  ``#ifndef _OPENMP``.
+* **No ``-fopenmp`` on macOS** -- Apple Clang rejects it, so kernels must provide a
+  ``std::thread`` fallback under ``#ifndef _OPENMP``.
 
-Failures are returned, never raised: every caller degrades to a slower pure-torch
-path, so a missing compiler is a performance problem and not an outage.
+Failures are returned, never raised: every caller degrades to a slower pure-torch path,
+so a missing compiler is a performance problem and not an outage.
 """
 
 from __future__ import annotations
@@ -54,7 +51,7 @@ def build_extension(
     cpp_source: str,
     extra_cflags: Optional[list] = None,
 ) -> Tuple[object, Optional[Tuple[str, str]]]:
-    """Compile ``cpp_source`` into an extension module.
+    """Compile ``cpp_source`` into an extension module. **Never raises.**
 
     Parameters
     ----------
@@ -63,14 +60,13 @@ def build_extension(
     cpp_source : str
         Complete translation unit, including its own ``PYBIND11_MODULE`` block.
     extra_cflags : list of str, optional
-        Appended after the shared ``-O3 -march=native``. ``-fopenmp`` is added
-        automatically on every platform except macOS.
+        Appended after the shared ``-O3 -march=native``. ``-fopenmp`` is added automatically
+        everywhere except macOS.
 
     Returns
     -------
     (module, error)
-        ``(module, None)`` on success, ``(None, (message, traceback))`` on any
-        failure. Never raises.
+        ``(module, None)`` on success, ``(None, (message, traceback))`` on any failure.
     """
     try:
         import fcntl

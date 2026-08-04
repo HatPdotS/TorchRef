@@ -10,38 +10,30 @@ from torch.optim import Adam
 
 
 class AdamWithAdaptiveNoise(Adam):
-    """
-    Drop-in replacement for torch.optim.Adam with adaptive, scale-invariant noise injection.
+    """Adam plus adaptive, scale-invariant noise injection.
 
-    Injects Gaussian noise into gradients scaled by the overfitting ratio between
-    training and test NLL to prevent overfitting.
+    Injects Gaussian noise into the gradients, scaled by the overfitting ratio between
+    training and test NLL (see :meth:`update_noise_scale`).
 
     Parameters
     ----------
     params : iterable
-        Model parameters to optimize.
+        Parameters to optimize.
     lr : float, optional
-        Learning rate. Default is 1e-3.
+        Learning rate.
     alpha : float, optional
-        Scaling factor for how much noise to inject per unit overfitting ratio.
-        Default is 0.1.
+        Noise injected per unit overfitting ratio.
     eps : float, optional
-        Small constant for numerical stability. Default is 1e-8.
+        Numerical-stability constant.
     update_weight : float, optional
-        Weight for exponential moving average of noise scale. Default is 0.05.
+        EMA weight for the noise-scale update.
     **kwargs
-        Additional arguments passed to Adam optimizer.
+        Forwarded to Adam.
 
     Attributes
     ----------
-    alpha : float
-        Noise scaling factor.
-    eps : float
-        Numerical stability constant.
     noise_scale : float
-        Current noise scale (dynamically updated).
-    update_weight : float
-        EMA weight for noise scale updates.
+        The current noise scale, updated dynamically.
     """
 
     def __init__(
@@ -86,22 +78,18 @@ class AdamWithAdaptiveNoise(Adam):
         super().step()
 
     def update_noise_scale(self, train_nll, test_nll):
-        """
-        Update the noise scale from the overfitting signal.
+        """Update ``noise_scale`` from the overfitting signal.
 
-        Computes ``log(test_nll) - log(train_nll)`` and clamps it to
-        ``[0, 0.1]``. A positive value means the test NLL exceeds the training
-        NLL (the overfitting signal), which drives noise injection;
-        non-positive differences are clamped to zero so no noise is added. The
-        clamped value is then blended into ``noise_scale`` via ``update_weight``
-        (exponential moving average).
+        ``log(test_nll) - log(train_nll)`` clamped to ``[0, 0.1]``: a positive value
+        means the test NLL exceeds the training NLL and drives noise injection, while
+        non-positive differences clamp to zero so no noise is added. The result is
+        blended into ``noise_scale`` by ``update_weight``.
 
         Parameters
         ----------
-        train_nll : torch.Tensor
-            Training set negative log-likelihood.
-        test_nll : torch.Tensor
-            Test set negative log-likelihood.
+        train_nll, test_nll : torch.Tensor
+            Training-set and test-set negative log-likelihoods. Must be tensors,
+            not floats -- both go through ``torch.log``/``torch.clamp``.
         """
         ratio = torch.log(torch.clamp(test_nll, min=1e-4)) - torch.log(
             torch.clamp(train_nll, min=1e-4)

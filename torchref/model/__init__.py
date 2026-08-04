@@ -1,67 +1,15 @@
-"""
-Atomic structure model module for TorchRef.
+"""Atomic models: coordinates, ADPs, occupancies and their structure factors.
 
-This module provides PyTorch nn.Module-based representations of
-crystallographic atomic models, including coordinates, B-factors,
-occupancies, and anisotropic displacement parameters.
-
-Classes
--------
-Model
-    Base atomic model storing xyz coordinates, B-factors, occupancies.
-ModelFT
-    Fourier Transform model for FFT-based structure factor calculation.
-MixedModel
-    Weighted mixture of ModelFT states (e.g. dark/light fractions).
-ModelCollection
-    Named dictionary of MixedModel instances at different timepoints.
-_SharedMixedModel
-    MixedModel variant referencing shared base models without re-registering.
-SfFFT
-    Structure Factor calculator using FFT (Fast Fourier Transform).
-SfDS
-    Structure Factor calculator using Direct Summation.
-FFT
-    Backward compatibility alias for SfFFT.
-MixedTensor
-    Hybrid tensor allowing partial freezing of parameters.
-PositiveMixedTensor
-    MixedTensor with positivity constraint.
-CholeskyMixedTensor
-    MixedTensor for anisotropic ADPs kept positive-definite via Cholesky.
-PassThroughTensor
-    Direct parameter access wrapper.
-OccupancyTensor
-    Tensor constrained to [0, 1] range for occupancies.
-RigidXYZTensor
-    Rigid-body coordinate parametrization (Euler angles + translation).
-
-Example
--------
-::
-
-    from torchref.model import Model, ModelFT, MixedTensor, SfFFT, SfDS
-
-    # Load model from PDB
-    model = Model()
-    model.load_pdb('structure.pdb')
-
-    # Access coordinates and B-factors
-    xyz = model.xyz  # (N, 3) tensor
-    b = model.b      # (N,) tensor
-
-    # Use ModelFT for FFT-based structure factors
-    model_ft = ModelFT(data, device='cuda')
-    F_calc = model_ft.get_F_calc()
-
-    # Use SfFFT standalone for custom workflows
-    sf_fft = SfFFT(max_res=1.5)
-    sf_fft.setup_grid(cell, spacegroup)
-    sf = sf_fft.map_to_structure_factors(density_map, hkl)
-
-    # Use SfDS for direct summation
-    sf_ds = SfDS(cell, spacegroup)
-    sf, _ = sf_ds.compute_structure_factors(hkl, xyz, adp, occ, A, B)
+:class:`Model` holds the refinable atomic parameters; :class:`ModelFT` adds
+structure-factor calculation on top, through :class:`SfFFT` (FFT) or
+:class:`SfDS` (direct summation). :class:`MixedModel` combines ModelFT states
+by population fraction (e.g. dark/light), and :class:`ModelCollection` keys
+mixtures by timepoint (``_SharedMixedModel`` is its non-re-registering variant).
+The wrappers from :mod:`torchref.model.parameter_wrappers` --
+:class:`MixedTensor` and its ``Positive`` / ``Cholesky`` / ``Occupancy``
+subclasses plus :class:`RigidXYZTensor` -- are the parametrizations that decide
+which parameters are refinable. ``FFT`` is a deprecated alias for
+:class:`SfFFT`.
 """
 
 from torchref.model.sf_fft import SfFFT, FFT

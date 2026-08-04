@@ -1,41 +1,22 @@
 """Structure-driven model-error estimation (Fisher-information sigma_m).
 
-The second of two independent routes to a per-reflection model-error estimate:
+The second of two independent routes to a per-reflection model-error estimate; the
+data-driven one is
+:class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAEstimator`.
 
-* **data-driven** --
-  :class:`~torchref.refinement.model_error_estimation.sigma_a.SigmaAEstimator`
-  infers it from data-model disagreement per resolution shell;
-* **structure-driven** -- this module predicts it from the *structure alone*.
-
-It never sees ``F_obs`` or ``F_calc``. The inputs are resolution, a single scalar mean
+This module never sees ``F_obs`` or ``F_calc``. Its inputs are resolution, a scalar mean
 ``sigma_obs``, a validity mask, the ITC92 scattering parameters and the current per-atom
-B factors -- so the estimate is available before any comparison with the data, which is
-what makes it a genuinely different quantity rather than a reparametrisation.
+B factors, so the estimate exists before any comparison with the data -- which is what
+makes it a genuinely different quantity rather than a reparametrisation. It agrees with
+``beta`` on shape but is off by roughly an order of magnitude, which is why a
+caller-supplied scale exists at all.
 
-The two were measured to agree on *shape* (Spearman 0.88-0.99 against ``beta``) but to
-differ by ~15x in *magnitude*, which is why a caller-supplied scale exists at all. Keeping
-both behind matching interfaces makes that comparison a first-class capability instead of
-a one-off diagnostic.
-
-Extracted verbatim (numerics unchanged) from the retired ``BhattacharyyaXrayTarget``,
-whose *loss* was removed while this estimation was kept. Three things changed in the move:
-
-1. **Plain tensors in, plain tensors out.** The original reached into
-   ``self._scaler._s_half_sq``, ``self._data.get_corrected_data()`` and
-   ``self._model.adp()``. Matching :class:`SigmaAEstimator`'s deliberate avoidance of
-   ``ReflectionData``/``Scaler`` coupling (it exists to prevent an import cycle), the
-   tensors are now passed in.
-2. **No ``no_grad`` inside.** The original wrapped the estimate in ``no_grad``, but
-   ``RiceSigmaMXrayTarget`` deliberately does not -- it needs gradients to reach the B
-   factors *through* sigma_m. That choice belongs to the caller, so it is not made here.
-3. **The cache is invalidated.** The original set ``_initialized = True`` once and never
-   reset it, so a changed ``d_min``, a swapped ``ReflectionData``, added/removed atoms or
-   a changed iso/aniso partition silently reused stale tables. Now fingerprinted, in the
-   style of ``ReflectionData._subset_fingerprint``.
-
-The tables also no longer live as ``nn.Module`` buffers, which keeps ``exp_table``
-(``b_grid_n x N_refl``, i.e. 100*N floats) out of every checkpoint. The cost is that
-device placement is explicit rather than inherited.
+Plain tensors in and out, like :class:`SigmaAEstimator`, so there is no
+``ReflectionData``/``Scaler`` coupling to close an import cycle. No ``no_grad`` inside:
+``RiceSigmaMXrayTarget`` needs gradients to reach the B factors *through* sigma_m, so
+that choice belongs to the caller. The precomputed tables are plain tensors rather than
+``nn.Module`` buffers, keeping ``exp_table`` (``b_grid_n x N_refl``) out of every
+checkpoint at the cost of explicit device placement.
 """
 
 from typing import Optional, Tuple
@@ -64,27 +45,21 @@ def _fingerprint(*tensors: Optional[torch.Tensor]) -> tuple:
 class SigmaMEstimator:
     """Per-reflection model error predicted from the structure.
 
-    Usage mirrors :class:`SigmaAEstimator`: construct cheaply, then call. Construction
-    takes **no data and no model**, so a target can own one before its inputs exist
-    (``RiceSigmaMXrayTarget`` is built bare in tests and relies on this).
+    Construct cheaply (taking **no data and no model**, so a target can own one before its
+    inputs exist), then :meth:`prepare` the tables, then call :meth:`sigma_m_sq`, which is
+    differentiable in ``b_iso``.
 
-    >>> est = SigmaMEstimator()                        # doctest: +SKIP
-    >>> est.prepare(s_half_sq, sigma_obs, validity, A_iso, B_iso)   # doctest: +SKIP
-    >>> sigma_m_sq = est.sigma_m_sq(b_iso)             # differentiable in b_iso
-
-    The returned variance is **unscaled**. The structure-driven estimate is on the raw
-    form-factor scale (``f_k^2`` carries electrons squared) and is not guaranteed
-    commensurate with a scaler-scaled ``sigma_obs`` -- the measured ~15x magnitude offset
-    against ``beta`` is exactly this. Applying a calibration is therefore the caller's
-    job, and callers that refine one (``RiceSigmaMXrayTarget``) must not have a second
-    scale silently applied underneath them.
+    The returned variance is **unscaled**: the structure-driven estimate is on the raw
+    form-factor scale (``f_k^2`` carries electrons squared) and is not commensurate with a
+    scaler-scaled ``sigma_obs``. Calibration is therefore the caller's job, and callers that
+    refine one (``RiceSigmaMXrayTarget``) must not have a second scale applied underneath.
 
     Parameters
     ----------
     b_grid_min, b_grid_max, b_grid_n
-        Log-spaced B-factor grid, in A^2. It serves two purposes: the axis of the
-        precomputed ``exp(-2 B s_half^2)`` table, and the axis of the soft histogram over
-        atoms. Wider or finer costs memory linearly in ``b_grid_n``.
+        Log-spaced B-factor grid in A^2, serving both as the axis of the precomputed
+        ``exp(-2 B s_half^2)`` table and as the axis of the soft histogram over atoms. Wider
+        or finer costs memory linearly in ``b_grid_n``.
     """
 
     def __init__(
@@ -116,6 +91,7 @@ class SigmaMEstimator:
 
     @property
     def ready(self) -> bool:
+        """Whether :meth:`prepare` has built the tables."""
         return self.exp_table is not None
 
     # ------------------------------------------------------------------ setup
@@ -130,24 +106,24 @@ class SigmaMEstimator:
     ) -> None:
         """Build (or reuse) the resolution/element tables.
 
-        Everything here is independent of the *moving* structure -- it depends on the
-        data, the resolution grid and the model's element composition and iso partition,
-        but not on coordinates or B factors. So it is built once and reused across
-        refinement steps, and rebuilt only when one of those actually changes.
+        Everything here depends on the data, the resolution grid and the model's element
+        composition and iso partition -- not on coordinates or B factors -- so it is
+        built once
+        and rebuilt only when one of those changes.
 
         Parameters
         ----------
         s_half_sq
             ``(|s|/2)**2`` per reflection, i.e. the scaler's convention.
         sigma_obs
-            Per-reflection experimental sigma. Only its valid-set mean enters, as the
+            Per-reflection experimental sigma; only its valid-set mean enters, as the
             Fisher-information normaliser.
         validity
-            Boolean per-reflection validity. Invalid reflections are zeroed out of the
-            tables rather than dropped, so every array stays aligned to ``data.hkl``.
+            Boolean per-reflection validity. Invalid reflections are zeroed out of the tables
+            rather than dropped, so every array stays aligned to ``data.hkl``.
         A_iso, B_iso
-            ITC92 five-Gaussian scattering parameters of the isotropic atoms,
-            ``(n_iso, 5)`` each. Rows are hashed to identify unique element types.
+            ITC92 five-Gaussian scattering parameters of the isotropic atoms, ``(n_iso, 5)``
+            each. Rows are hashed to identify unique element types.
         """
         fp = _fingerprint(s_half_sq, sigma_obs, validity, A_iso, B_iso)
         if self._fp == fp and self.ready:

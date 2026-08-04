@@ -1,17 +1,12 @@
-"""
-Target Functions for Crystallographic Refinement
+"""Base classes for the crystallographic refinement target (loss) functions.
 
-This module provides target (loss) functions for crystallographic refinement.
-Each target is instantiated once with a reference to the refinement object,
-then evaluated on each iteration by calling the target.
-
-Target Types:
-- X-ray targets: Least Squares, Maximum Likelihood, Gaussian NLL
-- Geometry restraint targets: Bonds, Angles, Torsions
-- ADP restraint targets: Similarity (SIMU), Rigid Bond (DELU)
-
-LossState Integration:
-- Targets can optionally receive a LossState and add their loss to it
+A target is constructed once against the objects it scores, then called each
+iteration -- directly, or via :meth:`Target.add_to_state` so its loss lands in a
+:class:`~torchref.refinement.loss_state.LossState`. :class:`ModelTarget` adds a
+``Model`` reference (geometry, ADP restraints); :class:`DataTarget` adds
+``ReflectionData`` and an optional ``Scaler`` (X-ray targets). Also home to the
+shared NLL primitives :func:`gaussian_nll`, :func:`von_mises_nll` and
+:func:`adp_similarity_nll`.
 """
 
 from typing import TYPE_CHECKING, Dict, Tuple
@@ -46,21 +41,11 @@ if TYPE_CHECKING:
 
 
 class Target(DeviceMixin, nn.Module):
-    """
-    Abstract base class for all target functions.
+    """Abstract base class for all target functions.
 
-    All tunable parameters should be registered as buffers using register_buffer()
-    so they can be accessed/modified via state_dict notation.
-
-    Supports empty initialization for state_dict loading::
-
-        target = Target()  # Creates empty shell
-        target.load_state_dict(torch.load('target.pt'))
-
-    LossState Integration:
-        Targets can work with LossState for the new pipeline::
-
-            state = target.add_to_state(state)  # Adds loss to state
+    Register tunables as buffers (see :meth:`_register_scalar`) so they are
+    reachable by state_dict path. ``Target()`` with no arguments is a valid empty
+    shell for ``load_state_dict``.
 
     Parameters
     ----------
@@ -70,13 +55,10 @@ class Target(DeviceMixin, nn.Module):
     Attributes
     ----------
     name : str
-        Unique name for this target (used as loss key in LossState).
-    verbose : int
-        Verbosity level.
+        Unique name for this target; the loss key in ``LossState``. Subclasses
+        must override it.
     """
 
-    # Class attribute: unique name for this target type
-    # Subclasses should override this
     name: str = "base_target"
 
     def __init__(
@@ -99,18 +81,12 @@ class Target(DeviceMixin, nn.Module):
         """
         super().__init__()
         self.verbose = verbose
-        # Seeded here for two distinct reasons.
-        #
-        # (1) Subclasses allocate their tunables in ``__init__``, so
-        #     ``device=self.device`` / ``dtype=self.dtype_float`` must already
-        #     have an answer at that point. Before this existed, every scalar
-        #     tunable in the package landed on CPU float32 regardless of the
-        #     model's device or the configured dtype.
-        #
-        # (2) ``DeviceMixin._refresh_device_trackers`` early-returns unless one
-        #     of these names is already in ``obj.__dict__``. Merely defining
-        #     them is what switches the mixin on for targets -- it was
-        #     previously a complete no-op for every target in the package.
+        # Do not remove or defer these two assignments. Subclasses allocate
+        # tunables in their own ``__init__``, so ``self.device`` /
+        # ``self.dtype_float`` must already answer by then; and
+        # ``DeviceMixin._refresh_device_trackers`` early-returns unless one of
+        # these names is already in ``obj.__dict__``, so merely defining them is
+        # what switches the mixin on for every target.
         self.device = normalize_device(device)
         self.dtype_float = get_float_dtype()
 
@@ -119,24 +95,11 @@ class Target(DeviceMixin, nn.Module):
     def _adopt_device(self, *sources, device=None):
         """Reconcile this target with the device-bearing objects it wraps.
 
-        Call *after* the sources are attached and *before* allocating any
-        buffer. ``None`` sources are dropped, so the empty-init path used by
-        ``load_state_dict`` keeps the seeded default, and the method stays
-        re-runnable if a source is attached later.
-
-        ``self`` is deliberately **not** passed to
-        :func:`~torchref.utils.resolve_device` -- unlike
-        ``ScalerBase.set_data``, which does pass it. A freshly constructed
-        target owns no tensors, so there is nothing of its own to reconcile,
-        and a target's state is a handful of scalars against a ``Model``'s
-        entire structure. Letting an empty shell's default device outvote a
-        model already on the accelerator would move megabytes to satisfy five
-        floats.
-
-        Returns
-        -------
-        torch.device
-            The resolved device (also stored on ``self.device``).
+        Call *after* attaching the sources and *before* allocating any buffer.
+        ``None`` sources drop out, so empty-init keeps the seeded default and
+        this stays re-runnable. ``self`` is deliberately not a source: an empty
+        shell's default device must not outvote a model already on the
+        accelerator. Returns (and stores on ``self.device``) the resolved device.
         """
         present = [s for s in sources if s is not None]
         if device is None and not present:
@@ -152,10 +115,8 @@ class Target(DeviceMixin, nn.Module):
     def _register_scalar(self, name: str, value, dtype=None) -> None:
         """Register a 0-dim tunable on this target's device and float dtype.
 
-        Scalar tunables reach Triton kernels as tensors, where a CPU-resident
-        buffer is a raw pointer into host memory rather than a promotable
-        scalar. Allocating them correctly here is what lets the lazy ``.to()``
-        repairs inside ``forward()`` go away.
+        Placement is load-bearing: these reach Triton kernels as tensors, where
+        a CPU-resident buffer is a host pointer, not a promotable scalar.
         """
         self.register_buffer(
             name,
@@ -172,11 +133,7 @@ class Target(DeviceMixin, nn.Module):
 
     def add_to_state(self, state: "LossState") -> "LossState":
         """
-        Compute loss and add it to the LossState.
-
-        This method enables the new LossState pipeline pattern where targets
-        receive a state object, compute their loss, add it to the state,
-        and return the state for chaining.
+        Compute this target's loss and add it to ``state`` under :attr:`name`.
 
         Parameters
         ----------
@@ -186,7 +143,7 @@ class Target(DeviceMixin, nn.Module):
         Returns
         -------
         LossState
-            State with this target's loss added.
+            The same state, returned for chaining.
         """
         loss = self.forward()
         state.add_loss(self.name, loss)
@@ -195,22 +152,15 @@ class Target(DeviceMixin, nn.Module):
     def maintenance(self) -> None:
         """Between-step housekeeping hook (no-op by default).
 
-        :class:`~torchref.refinement.loss_state.LossState` calls this on
-        every registered target after each successful outer optimizer
-        step returns. Targets override this to rebuild stale internal
-        state (VDW pair lists, solvent masks, etc.) based on how far
-        parameters have drifted since the last refresh.
+        ``LossState`` calls this on every registered target after each
+        successful outer optimizer step; override it to rebuild internal state
+        that parameter drift has staled (VDW pair lists, solvent masks).
 
-        Contract
-        --------
-        - Must be idempotent: calling it multiple times in a row on an
-          unchanged model should not mutate the target.
-        - Fast path first: cheap staleness check up front, expensive
-          rebuild only when strictly necessary. ``LossState`` calls
-          this every outer step — the happy-path cost is paid every
-          time.
-        - Must not raise on routine drift. If a rebuild fails, let the
-          exception propagate — that's a real bug.
+        Overrides must be idempotent -- a second call on an unchanged model must
+        not mutate the target -- and must put a cheap staleness check ahead of
+        the rebuild, since the happy path is paid every outer step. They must
+        also not raise on routine drift; if a rebuild genuinely fails, let the
+        exception propagate rather than swallowing it -- that is a real bug.
         """
         pass
 
@@ -221,31 +171,17 @@ class Target(DeviceMixin, nn.Module):
 
 
 class ModelTarget(Target):
-    """
-    Base class for targets that only need a Model reference.
+    """Base class for targets that need only a Model reference.
 
-    This class provides a simpler interface for geometry and ADP targets
-    that don't need access to reflection data or refinement machinery.
-    Targets inherit from this class when they only need the atomic model.
-
-    The model is registered as a proper submodule, allowing PyTorch to
-    handle device movement and state_dict operations automatically.
+    For geometry and ADP restraints, which never touch reflection data. The
+    model is a real submodule, so device moves and state_dict follow it.
 
     Parameters
     ----------
     model : Model, optional
-        Reference to the Model object.
+        Reference to the Model object. Omit for an empty shell.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Attributes
-    ----------
-    name : str
-        Unique name for this target (used as loss key in LossState).
-    _model : Model
-        Reference to the model object (registered as submodule).
-    verbose : int
-        Verbosity level.
     """
 
     name: str = "model_target"
@@ -270,8 +206,7 @@ class ModelTarget(Target):
             Explicit device. When omitted, follows ``model``.
         """
         super().__init__(verbose=verbose, device=device)
-        # Register model as a proper submodule (not in state_dict but handles device)
-        # Use add_module to allow None values
+        # add_module, not an attribute assignment: it accepts None.
         self.add_module("_model", model)
         # Follow the model rather than the global default, so subclass buffers
         # allocated below this line land beside the coordinates they act on.
@@ -296,47 +231,23 @@ class ModelTarget(Target):
 
 
 class DataTarget(Target):
-    """
-    Base class for targets that need ReflectionData and optionally Model/Scaler.
+    """Base class for X-ray targets: ReflectionData plus optional Model/Scaler.
 
-    This class provides a flexible interface for X-ray targets that can work
-    in two modes:
-
-    1. With Model: Computes F_calc from the model on each forward pass
-    2. Without Model: Uses pre-computed F_calc passed directly
-
-    This decoupling allows targets to be used for:
-    - Standard refinement (with model)
-    - Analysis/scoring of pre-computed structure factors (without model)
-    - Testing and validation workflows
-
-    All objects (model, data, scaler) are registered as proper submodules,
-    allowing PyTorch to handle device movement and state_dict operations.
+    Works with a model (F_calc recomputed each forward pass) or without one
+    (pre-computed F_calc passed in), which is what lets the same target both
+    refine and score. Model and scaler are real submodules, so device moves and
+    state_dict follow them.
 
     Parameters
     ----------
     data : ReflectionData, optional
-        Reference to the ReflectionData object. Required for forward().
+        Reference to the ReflectionData object. Required for ``forward()``.
     model : Model or ModelFT, optional
-        Reference to a Model object for F_calc computation.
-        If None, F_calc must be provided to forward().
+        Model used for F_calc. If None, F_calc must be passed to ``forward()``.
     scaler : Scaler, optional
-        Reference to the Scaler object for scaling F_calc.
+        Scaler applied to F_calc.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Attributes
-    ----------
-    name : str
-        Unique name for this target (used as loss key in LossState).
-    _model : Model
-        Reference to the model object (registered as submodule).
-    _data : ReflectionData
-        Reference to the reflection data object (registered as submodule).
-    _scaler : Scaler
-        Reference to the scaler object (registered as submodule).
-    verbose : int
-        Verbosity level.
     """
 
     name: str = "data_target"
@@ -369,9 +280,8 @@ class DataTarget(Target):
             reconciled onto one device, the model winning on disagreement.
         """
         super().__init__(verbose=verbose, device=device)
-        # Register as proper submodules (allows None values). Note ``_data`` is
-        # a plain attribute: ReflectionData is a dataclass, not an nn.Module,
-        # so add_module would reject it -- but DeviceMixin still walks it.
+        # ``_data`` is a plain attribute, not a submodule: ReflectionData is a
+        # dataclass, so add_module would reject it. DeviceMixin still walks it.
         self.add_module("_model", model)
         self._data = data
         self.add_module("_scaler", scaler)
@@ -583,13 +493,8 @@ def detach_phases(fcalc: torch.Tensor) -> torch.Tensor:
     """
     Extract phases from complex structure factors with gradient detachment.
 
-    .. note::
-        This helper is not currently exported in ``targets/__init__.__all__``
-        (unlike the sibling ``gaussian_nll`` / ``von_mises_nll`` /
-        ``adp_similarity_nll`` utilities), and callers in ``base.py`` and
-        ``difference.py`` presently inline ``torch.angle(...).detach()``
-        rather than call it. Treat its public-vs-private status as
-        unresolved pending an API-owner decision.
+    Not exported in ``targets/__init__.__all__``; treat its public-vs-private
+    status as unresolved.
 
     Parameters
     ----------

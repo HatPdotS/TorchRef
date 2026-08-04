@@ -1,7 +1,10 @@
-"""
-Grid generation functions for crystallographic calculations.
+"""Real-space and reciprocal-space grid generation.
 
-Functions for creating real-space and reciprocal-space grids.
+Grid points sit at cell edges ``i / N`` (CCTBX/gemmi convention). Unless an
+explicit ``gridsize`` is given, every helper here sizes as
+``floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING)`` -- the same Shannon-Nyquist
+factor used by :meth:`~torchref.symmetry.cell.Cell.compute_grid_size`, so changing
+:data:`torchref.config.NYQUIST_OVERSAMPLING` moves all of them together.
 """
 
 import numpy as np
@@ -39,14 +42,6 @@ def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None,
     -------
     torch.Tensor
         Real space grid of shape (nx, ny, nz, 3) containing Cartesian coordinates.
-
-    Notes
-    -----
-    When ``gridsize`` is not given, grid dimensions are derived as
-    ``floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING)``, the proper
-    Shannon-Nyquist sampling factor (see :data:`torchref.config.NYQUIST_OVERSAMPLING`).
-    All grid-sizing helpers (``find_grid_size``, ``get_real_grid_numpy``,
-    ``get_grids``, ``Cell.compute_grid_size``) share this same factor.
     """
     if device is None:
         if isinstance(fractional_matrix, torch.Tensor):
@@ -66,8 +61,6 @@ def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None,
             .to(dtypes.int)
             .to(device)
         )
-    # Place grid points at grid edges: i / N (CCTBX convention)
-    # This matches how CCTBX/gemmi create maps
     x = torch.arange(nsteps[0], device=device, dtype=dtypes.float) / nsteps[0]
     y = torch.arange(nsteps[1], device=device, dtype=dtypes.float) / nsteps[1]
     z = torch.arange(nsteps[2], device=device, dtype=dtypes.float) / nsteps[2]
@@ -77,7 +70,6 @@ def get_real_grid(cell=None, fractional_matrix=None, max_res=0.8, gridsize=None,
     y = y.reshape((*y.shape, 1))
     z = z.reshape((*z.shape, 1))
     xyz = torch.cat((x, y, z), axis=3).reshape(-1, 3)
-    # Ensure consistent dtype and device for fractional_to_cartesian_torch
     cell_float = (
         cell.to(device=device, dtype=dtypes.float) if cell is not None else None
     )
@@ -105,14 +97,7 @@ def find_grid_size(cell: torch.Tensor, max_res: float):
     Returns
     -------
     torch.Tensor
-        Grid dimensions [nx, ny, nz] as int32.
-
-    Notes
-    -----
-    Grids are sized as ``floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING)``,
-    the proper Shannon-Nyquist sampling factor (see
-    :data:`torchref.config.NYQUIST_OVERSAMPLING`). This matches
-    ``get_real_grid``, ``get_real_grid_numpy`` and ``get_grids``.
+        Grid dimensions [nx, ny, nz] as int32, per the module-level sizing rule.
     """
     return torch.floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING).to(dtypes.int)
 
@@ -144,8 +129,6 @@ def get_real_grid_numpy(cell, max_res=0.8, gridsize=None):
         nsteps = np.array(gridsize, dtype=int)
     else:
         nsteps = np.astype(np.floor(cell[:3] / max_res * NYQUIST_OVERSAMPLING), int)
-    # Place grid points at grid edges: i / N (CCTBX convention)
-    # This matches how CCTBX/gemmi create maps
     x = np.arange(nsteps[0]) / nsteps[0]
     y = np.arange(nsteps[1]) / nsteps[1]
     z = np.arange(nsteps[2]) / nsteps[2]
@@ -200,20 +183,18 @@ def get_grids(cell, max_res=0.8):
 
 def put_hkl_on_grid(real_space_grid, diff, hkl):
     """
-    Place structure factors on a reciprocal space grid.
-
-    Maps structure factor values to their corresponding positions on a
-    3D reciprocal space grid based on Miller indices.
+    Place structure factors on a zero-filled reciprocal space grid.
 
     Parameters
     ----------
     real_space_grid : numpy.ndarray
-        Real-space grid used to determine the reciprocal grid dimensions.
-        Shape should be (nx, ny, nz, 3) or similar.
+        Only its leading three dimensions are used, to size the output.
     diff : numpy.ndarray
-        Structure factor values (complex) to place on the grid.
+        Complex structure factor values to place.
     hkl : numpy.ndarray
-        Miller indices with shape (N, 3), used as grid indices.
+        Miller indices, shape (N, 3), used directly as numpy indices -- negative
+        h wraps to the end of the axis, giving FFT layout, but an index whose
+        magnitude exceeds the grid raises rather than aliasing.
 
     Returns
     -------

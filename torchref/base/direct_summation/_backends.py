@@ -3,35 +3,16 @@
 Companion to ``electron_density/_backends.py``; see :mod:`torchref.utils.backends` for what
 each field means.
 
-Two things about this table are worth reading before changing it.
+There is no Metal direct-summation kernel -- the Metal shader is a *density splat* only --
+so DS on MPS is ``_checkpointed_*`` running on-device, which the table states by having no
+MPS row.
 
-**There is no Metal direct-summation kernel.** The Metal shader is a *density splat* only, so
-DS on MPS is ``_checkpointed_*`` running on-device -- a real production path, and one the
-table states by simply having no MPS row.
-
-**The float32 requirement here is policy, not capability**, and the policy is mild. The
-Triton kernel casts every input to float32 itself (``triton_ds._cols_f32``), so it would
-happily consume float64; the gate declines instead, so that a float64 configuration is not
-silently served at float32 precision. That is a consistency rule, not a rescue: measured on
-a 40-atom / 60-reflection scene, downcasting the real-valued inputs moves ``F`` by 7.2e-06
-relative to ``mean|F|``, three orders of magnitude inside the 1e-2 amplitude tolerance this
-package works to.
-
-It matters even less than that suggests, because the interesting case was never reachable.
-Under a float64 configuration ``xyz_frac`` is float64, and the previous gate probed
-``xyz_frac`` -- so it already declined. The only thing widening the probe set catches is
-hand-mixed dtypes (float32 coordinates beside a float64 ``s`` or ``adp``), which no caller in
-the repo produces. Treat this as making the gate check what its kernel actually consumes,
-consistent with the density table, rather than as a fix for anything observed.
-
-``hkl`` is deliberately **not** probed, and probing it would be wrong. Miller indices are
-integers -- ``int32`` from the MTZ reader, and integer-valued even in a float dtype, since
-symmetry maps ``h -> h.R`` with integer ``R``. The f64->f32 round-trip is bit-exact for any
-\\|h\\| < 2**24 (real structures reach a few hundred), and measurably so: downcasting ``hkl``
-alone changes ``F`` by exactly 0.0. Probing it would only manufacture a false negative.
-
-The dtype rule exempts integer tensors for the same reason -- without that, the ``int32``
-production dtype would read as a capability failure and disable the kernel outright.
+The float32 requirement is policy, not capability: ``triton_ds._cols_f32`` would happily
+downcast a float64 input, so the gate declines instead rather than serve a float64
+configuration silently at float32. ``hkl`` is deliberately *not* probed (Miller indices are
+integer-valued, so their f64->f32 round-trip is bit-exact), and the dtype rule exempts
+integer tensors -- without that the ``int32`` production dtype would read as a capability
+failure and disable the kernel outright.
 """
 
 from __future__ import annotations
@@ -70,10 +51,8 @@ def why_unavailable():
 # ---------------------------------------------------------------------------
 # The two backends do not share a signature: the checkpointed path takes a trailing
 # ``max_memory_gb`` reflection-chunk budget and the Triton kernel has nothing to bound --
-# it forms only a ``(BLOCK_H, N)`` tile in registers. Rather than add a parameter the
-# kernel ignores (a lie in a public signature, and the exact drift just removed from the
-# Metal wrappers), the budget is dropped in a named adapter. Named, not a lambda, so it
-# appears in a traceback and can be patched.
+# it forms only a ``(BLOCK_H, N)`` tile in registers. The budget is dropped in a named
+# adapter (named, not a lambda, so it shows up in a traceback and can be patched).
 def _ds_iso_triton(hkl, s, xyz_frac, occ, adp, A, B, max_memory_gb):
     """Isotropic Triton DS; ``max_memory_gb`` is not applicable and is dropped here."""
     from torchref.base.direct_summation.triton_ds import ds_iso_triton

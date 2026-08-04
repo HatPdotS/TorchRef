@@ -22,12 +22,9 @@ class MixedModel(DeviceMovementMixin, nn.Module):
     """
     Model wrapper combining N ModelFT objects with learnable fractions.
 
-    Computes: F_mixed = Σ w_i * F_i
-    where w_i are learnable weights constrained to sum to 1 via softmax.
-
-    This is useful for time-resolved crystallography where the crystal contains
-    a mixture of conformational states (e.g., dark and light states) with
-    unknown or refinable population fractions.
+    Computes ``F_mixed = Σ w_i F_i`` with the ``w_i`` constrained to sum to 1 via
+    softmax -- for time-resolved data where the crystal holds a mixture of
+    conformational states (e.g. dark and light) at refinable populations.
 
     Parameters
     ----------
@@ -49,22 +46,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         Constituent ModelFT objects (proper submodule registration).
     fraction_params : nn.Parameter
         Raw parameters for fraction computation (softmax applied).
-
-    Examples
-    --------
-    Create a mixed model with two states::
-
-        model_dark = ModelFT().load_pdb('dark.pdb')
-        model_light = ModelFT().load_pdb('light.pdb')
-
-        # 70% dark, 30% light
-        mixed = MixedModel([model_dark, model_light], initial_fractions=[0.7, 0.3])
-
-        # Compute mixed structure factors
-        F_mixed = mixed(hkl)
-
-        # Get current fractions
-        print(mixed.fractions)  # tensor([0.7, 0.3])
     """
 
     def __init__(
@@ -106,17 +87,12 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         self.verbose = verbose
 
         # First-wins reconciliation across the supplied models, and the move
-        # itself: ``resolve_device`` warns when they disagree, which the manual
-        # loop this replaces did silently.
+        # itself; ``resolve_device`` warns when they disagree.
         device = resolve_device(*models, device=device)
 
-        # Store models as ModuleList for proper PyTorch handling
         self.models = nn.ModuleList(models)
-
-        # Validate model compatibility
         self._validate_models()
 
-        # Initialize fractions
         n_models = len(models)
         if initial_fractions is None:
             initial_fractions = [1.0 / n_models] * n_models
@@ -132,9 +108,8 @@ class MixedModel(DeviceMovementMixin, nn.Module):
                     f"Initial fractions must sum to 1.0, got {total:.6f}."
                 )
 
-        # Use inverse softmax to initialize parameters
-        # softmax(theta) = fractions, so theta = log(fractions)
-        # Match the base models' float dtype so the mixing weights stay
+        # Inverse softmax: softmax(theta) = fractions, so theta = log(fractions).
+        # Built at the base models' float dtype so the mixing weights stay
         # consistent with the structure factors under a float64 config.
         fractions_tensor = torch.tensor(
             initial_fractions, dtype=models[0].dtype_float, device=device
@@ -148,13 +123,11 @@ class MixedModel(DeviceMovementMixin, nn.Module):
             print(f"  Fractions frozen: {frozen_fractions}")
 
     def _validate_models(self):
-        """
-        Validate that all models have compatible cell and spacegroup.
+        """Check that the models agree on unit cell and space group.
 
-        Raises
-        ------
-        ValueError
-            If models have incompatible parameters.
+        A space-group mismatch raises ``ValueError``. The cell check is an
+        ``assert`` (1 Å / 1 % tolerance) that compares the reference model with
+        itself, so it never fires -- do not rely on cells being validated here.
         """
         if len(self.models) < 2:
             return  # Single model always compatible with itself
@@ -178,14 +151,7 @@ class MixedModel(DeviceMovementMixin, nn.Module):
 
     @property
     def fractions(self) -> torch.Tensor:
-        """
-        Get normalized population fractions.
-
-        Returns
-        -------
-        torch.Tensor
-            Population fractions that sum to 1.0, shape (n_models,).
-        """
+        """Normalized population fractions, shape ``(n_models,)``, summing to 1."""
         return torch.softmax(self.fraction_params, dim=0)
 
     @property
@@ -280,14 +246,10 @@ class MixedModel(DeviceMovementMixin, nn.Module):
 
     def build_complete_map(self) -> torch.Tensor:
         """
-        Build the mixed electron density map as the weighted sum of
-        constituent model density maps.
+        Mixed electron density ``density_mixed = Σ w_i density_i``.
 
-        density_mixed = Σ w_i * density_i
-
-        Each constituent model builds its own density map on the shared
-        grid, and the results are combined using the current population
-        fractions.
+        Each constituent model builds its own map on the shared grid; the maps
+        are combined at the current population fractions.
 
         Returns
         -------
@@ -349,7 +311,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         """
         fractions = self.fractions
 
-        # Compute structure factors from each model and weight them
         f_mixed = None
         for i, model in enumerate(self.models):
             f_i = model(hkl, recalc=recalc)
@@ -394,14 +355,11 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         MixedModel
             A new MixedModel instance with copied models and parameters.
         """
-        # Deep copy each constituent model
         copied_models = [model.copy() for model in self.models]
 
-        # Get current fractions
         with torch.no_grad():
             current_fractions = self.fractions.tolist()
 
-        # Create new MixedModel
         copied = MixedModel(
             models=copied_models,
             initial_fractions=current_fractions,
@@ -455,7 +413,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         n = len(self.models)
         fracs = self.fractions.detach().cpu().tolist()
 
-        # Build states
         states = []
         for i in range(n):
             name = state_names[i] if state_names and i < len(state_names) else f"state_{i + 1}"
@@ -463,7 +420,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
                 IHMStateInfo(state_id=i + 1, name=name, model_num=i + 1)
             )
 
-        # Build single model group
         state_ids = [s.state_id for s in states]
         state_fractions = dict(zip(state_ids, fracs))
         groups = [
@@ -520,11 +476,10 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         """
         Get atomic coordinates from the first constituent model only.
 
-        This is a single-model compatibility accessor: it returns the
-        coordinates of ``self.models[0]`` and ignores every other state's
-        atoms. It does not concatenate or combine coordinates across the
-        mixed states, so callers that need all atoms in the mixture must
-        iterate over ``self.models`` instead.
+        Single-model compatibility accessor: it returns ``self.models[0]``'s
+        coordinates and ignores every other state's atoms -- it does *not*
+        concatenate or average across the mixture, so callers that need all
+        atoms must iterate over ``self.models``.
 
         Returns
         -------

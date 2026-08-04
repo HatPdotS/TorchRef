@@ -1,23 +1,20 @@
 """Hessian-diagonal estimation for seeding :class:`SeededLBFGS`.
 
-Provides a stochastic (Hutchinson) estimate of the diagonal of the loss Hessian
-and the derived inverse-curvature preconditioner ``1/(|diag|+lambda)`` used to
-seed the first L-BFGS step.
-
-The estimate uses *analytic* double-backward Hessian-vector products::
+Provides a stochastic (Hutchinson) estimate of the loss Hessian's diagonal and the
+inverse-curvature preconditioner ``1/(|diag|+lambda)`` derived from it, via *analytic*
+double-backward Hessian-vector products::
 
     (g,)   = torch.autograd.grad(loss, params, create_graph=True)   # once
     (Hv,)  = torch.autograd.grad((g * v).sum(), params)             # per probe
 
-which is only correct on the pure-torch electron-density path, so everything runs
-under ``use_portable()``. Finite-difference HVPs are deliberately NOT
-used: the production Triton/CUDA kernels emit float32 gradients, so central
-differences ``(g(x+eps v) - g(x-eps v))`` catastrophically cancel. The analytic
-HVP has no such cancellation and float32 is adequate for a preconditioner.
+That is only correct on the pure-torch electron-density path, so everything runs under
+``use_portable()``. Finite-difference HVPs are deliberately NOT used: the production
+Triton/CUDA kernels emit float32 gradients, so central differences catastrophically
+cancel, whereas the analytic HVP does not and float32 is adequate for a preconditioner.
 
-The returned diagonal is flat, aligned to ``cat(p.reshape(-1) for p in params)``
--- the same layout as ``torch.optim.LBFGS._gather_flat_grad`` -- so it can be fed
-straight to :meth:`SeededLBFGS.set_init_hess_diag`.
+The returned diagonal is flat and aligned to ``cat(p.reshape(-1) for p in params)`` --
+the ``_gather_flat_grad`` layout -- so it feeds straight into
+:meth:`SeededLBFGS.set_init_hess_diag`.
 """
 
 from __future__ import annotations
@@ -60,36 +57,37 @@ def hessian_diagonal(
     probe: str = "rademacher",
     basis_max_numel: int = 4096,
 ) -> torch.Tensor:
-    """Estimate the diagonal of the Hessian of ``aggregate()`` w.r.t. ``params``.
+    """Estimate ``diag(H)`` of ``aggregate()`` w.r.t. ``params``, flat and detached.
+
+    Runs the double-backward under :func:`torchref.utils.use_portable`, the only kernel path
+    that composes correctly under ``create_graph=True``.
 
     Parameters
     ----------
     aggregate : callable
-        Zero-argument callable returning the scalar loss tensor (e.g.
-        ``LossState.aggregate``). Called once; the graph is retained so that
-        ``n_probes`` Hessian-vector products can reuse the first-order backward.
+        Zero-argument callable returning the scalar loss (e.g. ``LossState.aggregate``).
+        Called once, with the graph retained so every probe reuses the first-order backward.
     params : sequence of nn.Parameter
-        The leaves to differentiate w.r.t., in the SAME order they are passed to
-        the optimizer (so the flat result matches ``_gather_flat_grad``).
+        The leaves to differentiate w.r.t., in the SAME order the optimizer gets them, so the
+        flat result matches ``_gather_flat_grad``.
     n_probes : int
         Number of Hutchinson probes (ignored when ``probe="basis"``).
     generator : torch.Generator, optional
         For deterministic probes.
     probe : {"rademacher", "gaussian", "basis"}
-        ``"basis"`` computes the EXACT diagonal in ``numel`` HVPs (verification /
-        small problems only; capped by ``basis_max_numel``).
-
-    Notes
-    -----
-    The double-backward runs under :func:`torchref.utils.use_portable`, which
-    pins the portable reference kernel -- the only path that composes correctly
-    under ``create_graph=True`` for the Hessian-vector products.
+        ``"basis"`` computes the EXACT diagonal in ``numel`` HVPs -- verification and small
+        problems only, capped by ``basis_max_numel``.
 
     Returns
     -------
     torch.Tensor
-        Flat detached estimate of ``diag(H)`` aligned to
+        Flat detached estimate of ``diag(H)``, aligned to
         ``cat(p.reshape(-1) for p in params)``.
+
+    Raises
+    ------
+    ValueError
+        If any parameter is complex.
     """
     params = list(params)
     if any(torch.is_complex(p) for p in params):
@@ -182,27 +180,21 @@ def preconditioner_from_diagonal(
 ) -> torch.Tensor:
     """Turn a Hessian diagonal into a positive inverse-curvature preconditioner.
 
-    ``precond = 1 / max(|diag|, lam * max|diag|)`` -- the absolute value makes
-    negative (indefinite) curvature still yield a descent direction, and the
-    **relative** floor ``lam * max|diag|`` caps the preconditioner ratio at
-    ``1/lam`` (default 100:1). This is what keeps the seeded first step safe far
-    from the minimum: an absolute floor lets a near-zero-curvature (flat)
-    direction get an unbounded ``1/lam`` preconditioner, so the Newton-scaled
-    ``t=1`` step blows those directions to non-finite geometry. The relative
-    floor bounds the worst-conditioned direction's step to ``1/lam`` times the
-    stiffest direction's, keeping the whole step in a trust-region-like range.
+    ``precond = 1 / max(|diag|, lam * max|diag|)``. The absolute value makes negative
+    (indefinite) curvature still give a descent direction, and the **relative** floor caps
+    the preconditioner ratio at ``1/lam``. That relative floor is what keeps the seeded
+    first step safe far from the minimum: with an absolute floor a near-flat direction
+    gets an unbounded preconditioner and the Newton-scaled ``t=1`` step blows it to
+    non-finite geometry.
 
     Parameters
     ----------
     group_sizes : sequence of int, optional
-        Contiguous group lengths summing to ``diag.numel()`` (e.g. one entry per
-        ``nn.Parameter``). When given, the relative floor is computed **per group**
-        (each slice floored by its own ``max|diag|``) instead of globally. This
-        matters when groups have curvatures of very different magnitude -- e.g.
-        the few scaler params each touch all reflections and have far larger
-        loss-curvature than a single coordinate, so a global floor would crush the
-        body group to a near-zero step. Per-group flooring gives each group its own
-        Newton scale.
+        Contiguous group lengths summing to ``diag.numel()`` (e.g. one per
+        ``nn.Parameter``). Given these, the relative floor is computed **per group** rather
+        than globally, which matters when groups differ hugely in curvature -- the few scaler
+        params each touch all reflections, so a global floor would crush the body group to a
+        near-zero step.
     """
     if group_sizes is None:
         return _precond_slice(diag, lam)
@@ -238,11 +230,10 @@ def hessian_diagonal_preconditioner(
     generator: Optional[torch.Generator] = None,
     probe: str = "rademacher",
 ) -> torch.Tensor:
-    """Convenience: :func:`hessian_diagonal` then :func:`preconditioner_from_diagonal`.
+    """:func:`hessian_diagonal` then :func:`preconditioner_from_diagonal`.
 
-    When ``per_group=True`` the relative floor is applied per ``params`` entry
-    (each ``nn.Parameter`` floored by its own ``max|diag|``) -- use this when the
-    params span groups of very different curvature magnitude (e.g. body + scaler).
+    ``per_group=True`` floors each ``params`` entry by its own ``max|diag|``; use it when
+    the params span groups of very different curvature magnitude (e.g. body + scaler).
     """
     params = list(params)
     diag = hessian_diagonal(

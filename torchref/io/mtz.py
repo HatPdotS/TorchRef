@@ -1,38 +1,13 @@
 """
-MTZ file format reading and writing.
+MTZ reading and writing: amplitudes, intensities, sigmas and R-free flags.
 
-This module provides functions for reading and writing MTZ files containing
-crystallographic reflection data (structure factor amplitudes, intensities,
-R-free flags, etc.).
+``read`` returns a reader object, not the data -- call it for the tuple::
 
-When reading, the space group is returned as an H-M symbol string (e.g.
-``"P 21 21 21"``); callers wrap it in a SpaceGroup object as needed.
-
-Functions
----------
-read
-    Read an MTZ file and return a reader object.
-write
-    Write reflection data to an MTZ file.
-
-Classes
--------
-MTZReader
-    Reader class for MTZ files.
-
-Examples
---------
-::
-
-    from torchref.io import mtz
-
-    # Reading
-    reader = mtz.read('data.mtz', verbose=1)
-    data_dict, cell, spacegroup = reader()
-    print(spacegroup)  # H-M symbol string, e.g. "P 21 21 21"
-
-    # Writing
+    data_dict, cell, spacegroup = mtz.read('data.mtz')()
     mtz.write(df, cell, spacegroup, 'output.mtz')
+
+The space group comes back as an H-M symbol **string** (``"P 21 21 21"``), not
+a SpaceGroup object; callers wrap it themselves.
 """
 
 from typing import Optional, Tuple, Union
@@ -46,32 +21,22 @@ import torch
 
 class MTZReader:
     """
-    Reader for MTZ files containing crystallographic structure factor data.
+    Reader for MTZ files: Miller indices, amplitudes/intensities, sigmas, flags.
 
-    This class reads MTZ files using reciprocalspaceship and extracts:
-    - Miller indices (h, k, l)
-    - Structure factor amplitudes or intensities
-    - Associated uncertainties (sigma values)
-    - R-free test set flags
+    Column selection is by priority list (``AMPLITUDE_PRIORITY`` etc.) unless
+    ``column_names`` pins it. Populated by :meth:`read`; call the instance for
+    ``(data, cell, spacegroup)``.
 
     Attributes
     ----------
-    verbose : int
-        Verbosity level for logging (0=silent, 1=normal, 2=debug).
     data : dict
-        Dictionary containing extracted data arrays.
+        Extracted arrays; see :meth:`__call__` for the keys.
     cell : np.ndarray
         Unit cell parameters [a, b, c, alpha, beta, gamma].
     spacegroup : str
-        Space group as an H-M symbol string (e.g. ``"P 21 21 21"``).
-
-    Examples
-    --------
-    ::
-
-        reader = mtz.read('data.mtz', verbose=1)
-        data_dict, cell, spacegroup = reader()
-        print(f"Found {len(data_dict['HKL'])} reflections in {spacegroup}")
+        H-M symbol string, e.g. ``"P 21 21 21"``.
+    friedel_merged : bool
+        False once anomalous columns have been stacked into Bijvoet pairs.
     """
 
     AMPLITUDE_PRIORITY = [
@@ -155,11 +120,9 @@ class MTZReader:
             Supported keys: ``"F"``, ``"SIGF"``, ``"I"``, ``"SIGI"``.
             Example: ``{"F": "DFo", "SIGF": "sig_DFo"}``.
         anomalous : bool, optional
-            Controls anomalous (Bijvoet) handling. If None (default), anomalous
-            ``F(+)/F(-)`` (or ``I(+)/I(-)``) columns are auto-detected and stacked
-            into explicit Friedel pairs when present (preferring anomalous data).
-            True forces that behavior (warns if no anomalous columns exist); False
-            forces a merged load (anomalous columns, if any, are not stacked).
+            None (default) stacks ``F(+)/F(-)`` (or ``I(+)/I(-)``) into explicit
+            Friedel pairs when such columns exist; True forces that (warning if
+            none exist); False forces a merged load, averaging the pairs.
         """
         self.verbose = verbose
         self.column_names = column_names or {}
@@ -192,9 +155,6 @@ class MTZReader:
             print(f"Reading MTZ file: {filepath}")
 
         self.mtz_data = rs.read_mtz(filepath)
-        # Auto-detect anomalous F(+)/F(-) (or I(+)/I(-)) columns and stack them into
-        # explicit signed-HKL Bijvoet pairs (one row per Friedel mate). Sets
-        # self.friedel_merged accordingly. No-op for ordinary merged data.
         self._maybe_stack_anomalous()
         self.cell = np.array(
             [
@@ -208,7 +168,6 @@ class MTZReader:
         )
         hkl = self.mtz_data.reset_index()[["H", "K", "L"]].to_numpy().astype(np.int32)
         self.data["HKL"] = hkl
-        # Store as string (the caller wraps in SpaceGroup as needed)
         self.spacegroup = self.mtz_data.spacegroup.hm
 
         self._extract_amplitudes_and_intensities()
@@ -223,14 +182,10 @@ class MTZReader:
     def _maybe_stack_anomalous(self) -> None:
         """Stack anomalous F(+)/F(-) (or I(+)/I(-)) columns into Bijvoet pairs.
 
-        When the MTZ carries two-column anomalous data and is merged, this converts
-        it to one-column form with separate rows for the Friedel-plus and
-        Friedel-minus members (the minus member carries the negated Miller index),
-        using :meth:`reciprocalspaceship.DataSet.stack_anomalous`. Centric
-        reflections are not split (handled by reciprocalspaceship). The chosen base
-        columns are pinned in ``column_names`` so the downstream priority search
-        does not pick a coexisting merged column (e.g. ``FMEAN``) instead of the
-        stacked one. On any failure the original merged data are kept.
+        One row per Friedel mate, the minus member carrying the negated Miller
+        index (centrics are not split). Pins the chosen base columns in
+        ``column_names`` so the priority search cannot pick a coexisting merged
+        column such as ``FMEAN`` instead. On any failure the merged data stand.
         """
         if self.anomalous is False:
             # Caller forced a merged load. If the file carries only anomalous
@@ -303,12 +258,9 @@ class MTZReader:
     def _merge_anomalous_columns(self) -> None:
         """Average F(+)/F(-) (and sigmas) into merged base columns (anomalous=False).
 
-        Only used when a merged load is forced. For each matched anomalous pair
-        whose stripped base name is not already a column, a merged column is
-        created: amplitudes/intensities by mean, sigmas in quadrature
-        (sqrt((s+^2 + s-^2)/4)), with the de-stacked (standard) MTZ dtype. The
-        anomalous (+)/(-) columns are then dropped. No-op when there is no
-        anomalous pair or a merged column already exists.
+        Amplitudes/intensities by mean, sigmas in quadrature
+        ``sqrt((s+^2 + s-^2)/4)``; the (+)/(-) columns are then dropped. No-op
+        when there is no pair or the merged column already exists.
         """
         cols = list(self.mtz_data.columns)
         plus_map = {c[:-3]: c for c in cols if c.endswith("(+)")}
@@ -499,12 +451,10 @@ class MTZReader:
                             )
 
     def _extract_validation_flags(self) -> None:
-        """
-        Extract optional third-class validation flags from the MTZ.
+        """Extract the optional third-class validation flags (1 = validation).
 
-        Validation flags encode reflections held out for tuning regularization
-        strength, distinct from the R-free test set. Convention: 1 marks a
-        validation reflection, 0 marks any other class.
+        Held out for tuning, distinct from the R-free test set. First matching
+        column in ``VALIDATION_FLAG_NAMES`` wins; failures are only warned about.
         """
         available_cols = set(self.mtz_data.columns)
         for col in self.VALIDATION_FLAG_NAMES:
@@ -585,14 +535,9 @@ def read(filepath: str, verbose: int = 0) -> MTZReader:
     Returns
     -------
     MTZReader
-        Reader object with data loaded.
-
-    Notes
-    -----
-    This convenience wrapper forwards only ``verbose``. To set explicit
-    column names or control anomalous (Bijvoet) handling, construct an
-    ``MTZReader(column_names=..., anomalous=...)`` directly and call its
-    ``read`` method.
+        Reader object; call it for ``(data, cell, spacegroup)``. This wrapper
+        forwards only ``verbose`` -- for ``column_names`` or ``anomalous``,
+        build an :class:`MTZReader` yourself.
     """
     return MTZReader(verbose=verbose).read(filepath)
 
@@ -634,7 +579,7 @@ def write(
 
     cell = gemmi.UnitCell(*cell)
 
-    # Handle spacegroup — normalize to gemmi.SpaceGroup for reciprocalspaceship
+    # reciprocalspaceship needs a gemmi.SpaceGroup.
     from torchref.symmetry import SpaceGroup as TorchRefSpaceGroup
 
     if isinstance(spacegroup, TorchRefSpaceGroup):

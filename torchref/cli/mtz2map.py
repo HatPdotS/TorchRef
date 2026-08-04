@@ -1,24 +1,15 @@
 #!/usr/bin/env python3 -u
-"""
-Convert MTZ map coefficients to CCP4 map file.
+"""Convert MTZ map coefficients to a CCP4 map file.
 
-Reads amplitude and phase columns from an MTZ file, expands to P1,
-and computes a real-space electron density map via FFT.
-
-Similar to phenix.mtz2map but with explicit column name control.
+Reads amplitude and phase columns, expands to P1, and computes the real-space electron
+density by FFT. Like phenix.mtz2map, but with explicit column-name control.
 
 Examples
 --------
 ::
 
-    # 2Fo-Fc map from FWT/PHWT columns
     torchref.mtz2map -sf refined.mtz -csf FWT -cphi PHWT -o 2fofc.ccp4
-
-    # Fo-Fc difference map
-    torchref.mtz2map -sf refined.mtz -csf DELFWT -cphi PHDELWT -o fofc.ccp4
-
-    # Custom columns with resolution cutoff
-    torchref.mtz2map -sf data.mtz -csf 2FOFCWT -cphi PH2FOFCWT --dmin 2.0 -o map.ccp4
+    torchref.mtz2map -sf refined.mtz -csf DELFWT -cphi PHDELWT --dmin 2.0 -o fofc.ccp4
 """
 
 import argparse
@@ -36,6 +27,7 @@ from torchref.cli._common import (
 
 
 def main():
+    """Entry point for ``torchref.mtz2map``."""
     parser = argparse.ArgumentParser(
         description="Convert MTZ map coefficients to a CCP4 map.",
         formatter_class=argparse.RawDescriptionHelpFormatter,

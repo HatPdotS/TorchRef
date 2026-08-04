@@ -1,51 +1,45 @@
 Contributing
 ============
 
-Contributions are very welcome. This started as a small personal project but has become quite complex.
-If you have any idea for improvement or find a bug let me know via a github issue or fix it yourself and submit a pull request!
-
+Contributions are very welcome. If you have an idea for an improvement or find a
+bug, open a GitHub issue — or fix it yourself and send a pull request.
 
 Development Setup
 -----------------
 
-1. Clone the repository:
+.. code-block:: bash
 
-   .. code-block:: bash
-
-      git clone https://github.com/HatPdotS/TorchRef.git
-      cd torchref
-
-2. Install in development mode:
-
-   .. code-block:: bash
-
-      pip install -e ".[dev]"
+   git clone https://github.com/HatPdotS/TorchRef.git
+   cd TorchRef
+   pip install -e ".[dev]"
 
 Use of Generative AI
 --------------------
 
-Please feel free to use it; most of the docstrings were written with its help
-and only corrected. I used it a lot for docstrings and refactoring.
+Please feel free to use it, including for docstrings and refactoring. Review what
+it produces against the code before submitting.
 
 Code Style
 ----------
 
-We follow these conventions:
-
-- **Python Style**: PEP 8 with 88 character line length (Black formatter)
-- **Docstrings**: NumPy style (see below)
-- **Type Hints**: Use type hints for all public functions
+- **Python**: PEP 8, 88-character lines (Black)
+- **Type hints**: on all public functions
+- **Docstrings**: NumPy style on every public function, method, and class
 
 Docstring Format
 ----------------
 
-All public functions, methods, and classes must have NumPy-style docstrings:
+A docstring answers "how do I call this and what will it do to me?" for someone
+who is not going to read the body. Document the contract — what it does,
+parameters, returns, raises — and any trap a caller needs to avoid a silently
+wrong result: dtype or device restrictions, in-place mutation, a cache that must
+be invalidated afterwards. Keep design rationale to a clause, and leave benchmark
+numbers and superseded approaches to the commit history.
 
 .. code-block:: python
 
    def compute_structure_factors(hkl, xyz, b_factors):
-       """
-       Compute structure factors for given reflections.
+       """Compute structure factors for the given reflections.
 
        Parameters
        ----------
@@ -65,43 +59,26 @@ All public functions, methods, and classes must have NumPy-style docstrings:
        ------
        ValueError
            If tensor shapes are incompatible.
-
-       Examples
-       --------
-       >>> hkl = torch.tensor([[1, 0, 0], [0, 1, 0]])
-       >>> xyz = torch.tensor([[0.0, 0.0, 0.0]])
-       >>> b = torch.tensor([20.0])
-       >>> F = compute_structure_factors(hkl, xyz, b)
        """
-       pass
+
+Don't restate the signature in prose — types live in the annotations. Don't add
+an ``Examples`` block that is entirely ``# doctest: +SKIP``: it costs lines and
+tests nothing. The examples in :doc:`quickstart` run under
+``sphinx.ext.doctest``, so put runnable examples there and they will be checked.
 
 Running Tests
 -------------
 
-Run the test suite:
-
 .. code-block:: bash
 
-   # All tests
-   pytest tests/
+   pytest tests/                    # all tests
+   pytest tests/ --cov=torchref     # with coverage
+   pytest tests/unit/               # fast unit tests only
 
-   # With coverage
-   pytest tests/ --cov=torchref
-
-   # Specific test categories
-   pytest tests/unit/           # Fast unit tests
-   pytest tests/integration/    # Integration tests
+GPU, slow, and Amber tests are skipped unless enabled. See :doc:`user_guide/testing`.
 
 Submitting Changes
 ------------------
 
-1. Create a branch for your changes
-2. Make your changes with appropriate tests
-3. Ensure all tests pass
-4. Submit a pull request
-
-Please include:
-
-- Clear description of the changes
-- Any relevant issue numbers
-- Tests for new functionality
+1. Branch, change, add tests, confirm the suite passes.
+2. Open a pull request with a clear description and any relevant issue numbers.

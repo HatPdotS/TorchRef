@@ -21,21 +21,28 @@ class ADPSimilarityTarget(ADPTarget):
     """
     ADP Similarity restraint (SIMU in Phenix/SHELX).
 
-    Restrains B-factors of bonded atoms to be similar.
-    NLL = 0.5 * ((B_i - B_j) / σ)² + log(σ) + 0.5 * log(2π)
+    Restrains bonded atoms towards similar B, at
+    ``0.5·((B_i - B_j)/σ)² + log σ + 0.5·log 2π``.
 
-    For anisotropic atoms the restraint acts on the full U tensors via the
-    unified U6 representation (:meth:`Model.adp_u6`): a magnitude channel on
-    ``B_eq`` (which reduces exactly to the isotropic restraint above) plus an
-    anisotropy channel on the traceless (deviatoric) part of the B-tensor,
-    scaled by ``_simu_sigma_aniso``. Iso<->aniso pairs are handled natively
-    (the isotropic atom's deviatoric part is zero). When every atom is
-    isotropic the original (Triton-accelerated) B-factor path is used.
+    With anisotropic atoms present the restraint acts on the full U tensors through the
+    unified U6 (:meth:`Model.adp_u6`): a ``B_eq`` magnitude channel reducing exactly to
+    the above, plus a deviatoric channel at ``_simu_sigma_aniso``. An isotropic atom has
+    zero deviatoric part, so iso<->aniso pairs need no special case; all-isotropic
+    models take the Triton-accelerated B-factor path instead.
 
-    Tunable parameters (as buffers):
-    - _simu_sigma: float, sigma for B_eq differences (default 2.0 Å²)
-    - _simu_sigma_aniso: float, sigma for deviatoric B-tensor differences
-      (default 1.0 Å²); only used when anisotropic atoms are present.
+    Parameters
+    ----------
+    model : Model, optional
+        Reference to Model object.
+    simu_sigma : float, optional
+        Sigma on B_eq differences (Å²). Default 2.0.
+    simu_sigma_aniso : float, optional
+        Sigma on deviatoric B-tensor differences (Å²), used only when anisotropic atoms
+        are present. Default 1.0.
+    verbose : int, optional
+        Verbosity level. Default is 0.
+    device : torch.device, optional
+        Explicit device. When omitted, follows ``model``.
     """
 
     name: str = "adp/simu"
@@ -45,10 +52,8 @@ class ADPSimilarityTarget(ADPTarget):
         simu_sigma_aniso: float = 1.0, verbose: int = 0, device=None
     ):
         super().__init__(model, verbose, device=device)
-        # Both sigmas are handed to adp_simu_math / adp_simu_aniso_math, which
-        # dispatch to Triton on CUDA float32. Allocating them on the target's
-        # resolved device and dtype is what lets the lazy repair inside
-        # forward() go away.
+        # Buffers, not floats: both reach adp_simu_math / adp_simu_aniso_math, which
+        # dispatch to Triton on CUDA float32 and need them already on the right device.
         self._register_scalar("_simu_sigma", float(simu_sigma))
         self._register_scalar("_simu_sigma_aniso", float(simu_sigma_aniso))
 
@@ -73,8 +78,9 @@ class ADPSimilarityTarget(ADPTarget):
         self._simu_sigma_aniso.fill_(value)
 
     def _get_pair_indices(self) -> torch.Tensor:
-        """Concatenate non-"all" bond restraint origins into a single
-        (N, 2) tensor for the SIMU pair list. Cached after first build."""
+        """Non-"all" bond origins concatenated into one (N, 2) SIMU pair list. Cached
+        after the first build, so a rebuilt bond list will not be picked up.
+        """
         cached = getattr(self, "_simu_pair_indices_cache", None)
         if cached is not None:
             return cached
@@ -94,14 +100,13 @@ class ADPSimilarityTarget(ADPTarget):
         return cached
 
     def forward(self) -> torch.Tensor:
-        # Use the adp_simu_math dispatcher (Triton on CUDA fp32).
+        """Summed SIMU NLL over bonded pairs; 0.0 when there are no bonds."""
         pair_indices = self._get_pair_indices()
         adp_t = self.model.adp()
         if pair_indices.shape[0] == 0:
             return torch.zeros((), device=adp_t.device, dtype=adp_t.dtype)
-        # Anisotropic atoms present: restrain the full U tensors. Isotropic-only
-        # models keep the original (Triton-accelerated) B-factor path so they
-        # pay nothing and are numerically unchanged.
+        # With any anisotropic atom, restrain the full U tensors; all-isotropic models
+        # take the cheaper B-factor path and are numerically unchanged.
         if not getattr(self.model, "_aniso_is_empty", True):
             u6 = self.model.adp_u6()
             return adp_simu_aniso_math(

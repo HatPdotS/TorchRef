@@ -1,31 +1,10 @@
-"""
-Table-based ITC92 scattering factor lookup.
+"""Table-based ITC92 scattering factor lookup.
 
-This module provides fast, vectorized lookup of scattering factor parameters
-using a pre-computed table stored as a .pt file. The table eliminates
-runtime gemmi dependency for scattering parameter access.
-
-The table supports:
-- Neutral atoms for Z=1 to 103 (H to Lr)
-- Common ions with various charge states
-- Element symbol to atomic number mapping
-
-Example
--------
-::
-
-    from torchref.base.scattering.scattering_table import (
-        load_scattering_table,
-        get_scattering_params_by_z,
-        get_element_to_z_mapping,
-    )
-
-    # Load the table
-    table = load_scattering_table(device='cuda')
-
-    # Get parameters for multiple atoms at once
-    z_tensor = torch.tensor([6, 7, 8])  # C, N, O
-    A, B = get_scattering_params_by_z(z_tensor)
+Vectorized lookup from a pre-computed ``.pt`` table, which removes gemmi from
+the runtime path: neutral atoms Z=1..103 (H to Lr), common ions at several
+charge states, and the element-symbol/atomic-number mappings.
+:func:`get_scattering_params_by_z` is the batch entry point;
+:func:`load_scattering_table` caches the raw table process-wide.
 """
 
 import os
@@ -52,43 +31,34 @@ def load_scattering_table(
     force_reload: bool = False,
 ) -> dict:
     """
-    Load pre-computed ITC92 scattering factors from .pt file.
+    Load pre-computed ITC92 scattering factors from the packaged ``.pt`` file.
 
-    The table is cached globally after first load for efficiency.
-    Use force_reload=True to reload from disk.
+    The CPU table is cached process-wide after the first load. Only that raw
+    table is cached: passing ``device`` or ``dtype`` builds and returns a fresh
+    converted dict on every call, so hoist it out of hot loops yourself.
 
     Parameters
     ----------
     device : torch.device, optional
-        Device to place tensors on. Default is None (keeps original device).
+        Device to place tensors on. Default None (keep the loaded device).
     dtype : torch.dtype, optional
-        Data type for floating point tensors. Default is None (keeps original dtype).
+        Float dtype for tensors. Default None (keep the loaded dtype).
     force_reload : bool, optional
-        Force reload from disk even if cached. Default is False.
+        Re-read from disk even if cached. Default is False.
 
     Returns
     -------
     dict
-        Dictionary containing:
-        - 'A': Tensor(max_z + 1, 5) - neutral A coefficients indexed by Z
-        - 'B': Tensor(max_z + 1, 5) - neutral B coefficients indexed by Z
-        - 'element_to_z': dict mapping element symbols to atomic numbers
-        - 'z_to_element': dict mapping atomic numbers to element symbols
-        - 'ions': dict mapping ion keys to (A, B) tuples
-        - 'metadata': dict with source information
+        - 'A', 'B': Tensor(max_z + 1, 5), neutral coefficients indexed by Z
+        - 'element_to_z' / 'z_to_element': symbol/number mappings
+        - 'ions': ion key -> (A, B)
+        - 'metadata': source information
 
     Raises
     ------
     FileNotFoundError
-        If the pre-computed table file does not exist.
-
-    Examples
-    --------
-    ::
-
-        table = load_scattering_table(device='cuda', dtype=torch.float32)
-        A = table['A']  # Shape (104, 5)
-        z_to_elem = table['z_to_element']  # {1: 'H', 6: 'C', ...}
+        If the table file is missing (generate it with
+        ``python -m torchref.scripts.generate_scattering_table``).
     """
     global _TABLE_CACHE
 
@@ -105,7 +75,7 @@ def load_scattering_table(
         table = torch.load(table_path, map_location="cpu", weights_only=False)
         _TABLE_CACHE = table
 
-    # Apply device/dtype transformations if requested
+    # Converted copies are built per call, never written back to the cache.
     if device is not None or dtype is not None:
         result = {}
         for key, value in table.items():
@@ -116,7 +86,6 @@ def load_scattering_table(
                     value = value.to(dtype=dtype)
                 result[key] = value
             elif key == "ions" and isinstance(value, dict):
-                # Transform ion tensors
                 ions_result = {}
                 for ion_key, (A, B) in value.items():
                     if device is not None:
@@ -136,23 +105,13 @@ def load_scattering_table(
 
 def get_element_to_z_mapping() -> Dict[str, int]:
     """
-    Return element symbol to atomic number mapping.
-
-    This function loads the scattering table if not already cached
-    and returns the element_to_z dictionary.
+    Return element symbol to atomic number mapping, loading the table if needed.
 
     Returns
     -------
     dict
-        Mapping of element symbols to atomic numbers.
-        Example: {'H': 1, 'C': 6, 'N': 7, 'O': 8, ...}
-
-    Examples
-    --------
-    ::
-
-        element_to_z = get_element_to_z_mapping()
-        z_carbon = element_to_z['C']  # Returns 6
+        ``{'H': 1, 'C': 6, 'N': 7, 'O': 8, ...}``. The live cached dict, not a
+        copy -- do not mutate it.
     """
     table = load_scattering_table()
     return table["element_to_z"]
@@ -165,8 +124,8 @@ def get_z_to_element_mapping() -> Dict[int, str]:
     Returns
     -------
     dict
-        Mapping of atomic numbers to element symbols.
-        Example: {1: 'H', 6: 'C', 7: 'N', 8: 'O', ...}
+        ``{1: 'H', 6: 'C', 7: 'N', 8: 'O', ...}``. The live cached dict, not a
+        copy -- do not mutate it.
     """
     table = load_scattering_table()
     return table["z_to_element"]
@@ -178,45 +137,28 @@ def get_scattering_params_by_z(
     dtype: Optional[torch.dtype] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Fast vectorized lookup of scattering parameters by atomic number.
+    Vectorized lookup of ITC92 scattering parameters by atomic number.
 
-    This function provides efficient batch lookup of ITC92 scattering
-    parameters using tensor indexing. All atoms are looked up in a
-    single operation.
+    One tensor-index operation for all atoms.
 
     Parameters
     ----------
     z_tensor : torch.Tensor
-        Atomic numbers for all atoms, shape (n_atoms,).
-        Each value must be a valid table index in range 0-103 (the table is
-        sized ``max_z + 1`` = 104). Z=1..103 are the elements; Z=0 is the
-        reserved "unknown element" slot that ``elements_to_z`` maps unknown
-        symbols to.
+        Atomic numbers, shape (n_atoms,). Every value must be a valid table
+        index in 0-103 (the table is ``max_z + 1`` = 104 rows): 1..103 are the
+        elements, 0 is the reserved "unknown element" slot that
+        :func:`elements_to_z` assigns. Out-of-range Z raises from the index.
     device : torch.device, optional
-        Device to place output tensors on. Default uses z_tensor's device.
+        Output device. Default is ``z_tensor``'s.
     dtype : torch.dtype, optional
-        Data type for output tensors. Default is the configured float dtype
-        (``get_float_dtype()``).
+        Output dtype. Default is ``get_float_dtype()``.
 
     Returns
     -------
     A : torch.Tensor
-        ITC92 A parameters (amplitudes) with shape (n_atoms, 5).
+        ITC92 A parameters (amplitudes), shape (n_atoms, 5).
     B : torch.Tensor
-        ITC92 B parameters (widths) with shape (n_atoms, 5).
-
-    Examples
-    --------
-    ::
-
-        # Get parameters for C, N, O atoms
-        z = torch.tensor([6, 7, 8, 6, 6, 7])
-        A, B = get_scattering_params_by_z(z)
-        # A.shape == (6, 5), B.shape == (6, 5)
-
-        # Use on GPU
-        z_gpu = z.cuda()
-        A, B = get_scattering_params_by_z(z_gpu, device='cuda')
+        ITC92 B parameters (widths), shape (n_atoms, 5).
     """
     if device is None:
         device = z_tensor.device
@@ -225,10 +167,9 @@ def get_scattering_params_by_z(
 
     table = load_scattering_table(device=device, dtype=dtype)
 
-    # Ensure z_tensor is on the right device and is long type for indexing
+    # Long, not the caller's int32: torch indexing requires it.
     z_idx = z_tensor.to(device=device, dtype=torch.long)
 
-    # Direct tensor indexing for vectorized lookup
     A = table["A"][z_idx]
     B = table["B"][z_idx]
 
@@ -242,46 +183,35 @@ def get_scattering_params_for_ion(
     dtype: Optional[torch.dtype] = None,
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
     """
-    Get scattering parameters for a specific ion.
+    Get ITC92 scattering parameters for one ion, e.g. ``('Fe', 2)``/``('O', -2)``.
 
     Parameters
     ----------
     element : str
-        Element symbol (e.g., 'Fe', 'O').
+        Element symbol (e.g. 'Fe', 'O'). Case-sensitive: it is used verbatim as
+        a table key, unlike :func:`elements_to_z`.
     charge : int
-        Ionic charge (positive or negative integer).
+        Ionic charge. ``0`` falls back to the neutral Z-indexed row.
     device : torch.device, optional
         Device to place tensors on.
     dtype : torch.dtype, optional
-        Data type for tensors.
+        Float dtype for tensors. Default is ``get_float_dtype()``.
 
     Returns
     -------
     tuple or None
-        (A, B) tensors of shape (5,), or None if ion not found.
-
-    Examples
-    --------
-    ::
-
-        # Get Fe2+ parameters
-        A, B = get_scattering_params_for_ion('Fe', 2)
-
-        # Get O2- parameters
-        A, B = get_scattering_params_for_ion('O', -2)
+        (A, B) tensors of shape (5,), or None if the ion is not tabulated.
     """
     if dtype is None:
         dtype = get_float_dtype()
 
     table = load_scattering_table(device=device, dtype=dtype)
 
-    # Build ion key
     if charge > 0:
         key = f"{element}{charge}+"
     elif charge < 0:
         key = f"{element}{abs(charge)}-"
     else:
-        # For neutral, use Z-based lookup
         element_to_z = table["element_to_z"]
         z = element_to_z.get(element)
         if z is None:
@@ -312,18 +242,8 @@ def elements_to_z(elements: list, normalize: bool = True) -> torch.Tensor:
     Returns
     -------
     torch.Tensor
-        Tensor of atomic numbers with shape (n_atoms,).
-        Unknown elements are assigned Z=0.
-
-    Examples
-    --------
-    ::
-
-        z = elements_to_z(['C', 'N', 'O'])
-        # Returns tensor([6, 7, 8])
-
-        z = elements_to_z([' c ', 'N', 'O'], normalize=True)
-        # Returns tensor([6, 7, 8])
+        int32 atomic numbers, shape (n_atoms,). Unknown elements silently
+        become Z=0 (the reserved unknown slot) rather than raising.
     """
     element_to_z = get_element_to_z_mapping()
 

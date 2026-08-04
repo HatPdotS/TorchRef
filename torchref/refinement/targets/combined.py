@@ -32,23 +32,15 @@ if TYPE_CHECKING:
 
 
 class CombinedTargets(Target):
-    """
-    Base class for combined targets.
+    """Base class for combined targets, summing components held in a ModuleDict.
 
-    Uses nn.ModuleDict to store component targets for clean organization
-    and easy access via dictionary-style notation.
-
-    Subclasses should override `_create_targets()` to define their component targets.
+    Subclasses override :meth:`_create_targets`. Components are reachable by
+    name (``self['bond']``) and through ``keys``/``values``/``items``.
 
     Parameters
     ----------
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Attributes
-    ----------
-    _targets : nn.ModuleDict
-        Dictionary of component targets.
     """
 
     def __init__(self, verbose: int = 0):
@@ -64,16 +56,7 @@ class CombinedTargets(Target):
         self._targets = nn.ModuleDict(self._create_targets())
 
     def _create_targets(self) -> Dict[str, "Target"]:
-        """
-        Create and return component targets as a dictionary.
-
-        Subclasses must override this method to define their component targets.
-
-        Returns
-        -------
-        Dict[str, Target]
-            Dictionary mapping target names to Target instances.
-        """
+        """Build the ``{name: Target}`` components. Subclasses must override."""
         raise NotImplementedError("Subclasses must implement _create_targets() method.")
 
     def targets(self) -> nn.ModuleDict:
@@ -126,37 +109,25 @@ class CombinedTargets(Target):
         return self.target_losses()
 
     def add_to_state(self, state):
+        """Add each component's loss to ``state`` under its own name, not one total."""
         for name, target in self._targets.items():
             target.add_to_state(state)
         return state
 
 
 class CombinedModelTargets(ModelTarget):
-    """
-    Base class for combined targets that only need Model (geometry/ADP targets).
+    """Combined-target base for components that need only a Model.
 
-    Uses nn.ModuleDict to store component targets for clean organization
-    and easy access via dictionary-style notation.
-
-    Subclasses should override `_create_targets()` to define their component targets.
-
-    .. note::
-        This is the base of ``TotalGeometryTarget`` and ``TotalADPTarget`` but,
-        unlike its sibling ``CombinedTargets``, it is not listed in
-        ``targets/__init__.__all__``. Whether this asymmetry is intentional
-        (internal-only) or an oversight is left to the API owner to resolve.
+    The :class:`CombinedTargets` counterpart for geometry and ADP restraints;
+    subclasses override :meth:`_create_targets`. Not listed in
+    ``targets/__init__.__all__``, unlike ``CombinedTargets``.
 
     Parameters
     ----------
     model : Model, optional
-        Reference to Model object.
+        Reference to the Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Attributes
-    ----------
-    _targets : nn.ModuleDict
-        Dictionary of component targets.
     """
 
     def __init__(self, model: "Model" = None, verbose: int = 0):
@@ -174,16 +145,7 @@ class CombinedModelTargets(ModelTarget):
         self._targets = nn.ModuleDict(self._create_targets())
 
     def _create_targets(self) -> Dict[str, "Target"]:
-        """
-        Create and return component targets as a dictionary.
-
-        Subclasses must override this method to define their component targets.
-
-        Returns
-        -------
-        Dict[str, Target]
-            Dictionary mapping target names to Target instances.
-        """
+        """Build the ``{name: Target}`` components. Subclasses must override."""
         raise NotImplementedError("Subclasses must implement _create_targets() method.")
 
     def targets(self) -> nn.ModuleDict:
@@ -239,65 +201,30 @@ class CombinedModelTargets(ModelTarget):
         return self.target_losses()
 
     def add_to_state(self, state):
+        """Add each component's loss to ``state`` under its own name, not one total."""
         for name, target in self._targets.items():
             target.add_to_state(state)
         return state
 
 
 class TotalGeometryTarget(CombinedModelTargets):
-    """
-    Computes weighted sum of all geometry restraint NLLs.
+    """Sum of every geometry restraint NLL.
 
-    Uses nn.ModuleDict to store component targets:
-    - 'bond': BondTarget
-    - 'angle': AngleTarget
-    - 'torsion': TorsionTarget
-    - 'planarity': PlanarityTarget
-    - 'chiral': ChiralTarget
-    - 'nonbonded': NonBondedHTarget (includes riding hydrogen VDW)
-    - 'ramachandran': RamachandranTarget
-
-    The torsion weight is reduced because:
-
-    1. Protein torsions naturally deviate from ideal (Ramachandran plot)
-    2. Side chain rotamers have discrete populations, not single ideals
-    3. High torsion weight can over-constrain the structure
-
-    The nonbonded weight is very low because:
-
-    1. PROLSQ repulsion is already steep (E ~ violation^4)
-    2. Most contacts should be satisfied by covalent geometry
-    3. High VDW weight can prevent proper packing
-
-    Set weight to 0 to disable a component.
+    Components, keyed for individual access (``target['bond']()``): 'bond',
+    'angle', 'torsion', 'planarity', 'chiral', 'nonbonded' (a
+    ``NonBondedHTarget``, so riding-hydrogen VDW is included) and
+    'ramachandran'. Set a component's weight to 0 to disable it.
 
     Parameters
     ----------
     model : Model, optional
-        Reference to Model object.
+        Reference to the Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Examples
-    --------
-    ::
-
-        geom_target = TotalGeometryTarget(model)
-        loss = geom_target()
-        bond_loss = geom_target['bond']()
-        for name, target in geom_target.items():
-            print(f"{name}: {target()}")
     """
 
     def _create_targets(self) -> Dict[str, Target]:
-        """
-        Create geometry component targets.
-
-        Returns
-        -------
-        Dict[str, Target]
-            Dictionary of geometry targets.
-        """
+        """Build the seven geometry component targets."""
         print("Initializing TotalGeometryTarget with component targets...")
         return {
             "bond": BondTarget(self.model, self.verbose),
@@ -326,18 +253,15 @@ class TotalGeometryTarget(CombinedModelTargets):
         """
         metrics = {}
 
-        # Total loss (always include)
         total_loss = self.forward()
         metrics["geom_total_loss"] = (
             total_loss.item() if torch.is_tensor(total_loss) else total_loss
         )
 
-        # Get losses from target_losses()
         for name, loss in self.target_losses().items():
             loss_val = loss.item() if torch.is_tensor(loss) else loss
             metrics[f"geom_{name}_loss"] = loss_val
 
-        # Get statistics from parent stats() method and filter here
         filtered_stats = filter_stats(self.stats(), verbosity)
         for name, target_stats in filtered_stats.items():
             for stat_name, stat_val in target_stats.items():
@@ -347,7 +271,7 @@ class TotalGeometryTarget(CombinedModelTargets):
 
     def print_statistics(self):
         """Print REFMAC-style geometry statistics with losses."""
-        # Temporarily disable verbose to prevent duplicate output during loss calculation
+        # Silence sub-target verbosity: the loss calls below would double-print.
         saved_verbose = self.verbose
         self.verbose = 0
 
@@ -355,7 +279,6 @@ class TotalGeometryTarget(CombinedModelTargets):
         print("Geometry Restraint Statistics (REFMAC-style)")
         print("=" * 90)
 
-        # Show component targets
         print(f"Components: {', '.join(self._targets.keys())}")
         print("-" * 90)
         print(
@@ -363,7 +286,6 @@ class TotalGeometryTarget(CombinedModelTargets):
         )
         print("-" * 90)
 
-        # Get losses and stats using parent methods
         losses = self.target_losses()
         all_stats = self.stats()
 
@@ -372,7 +294,6 @@ class TotalGeometryTarget(CombinedModelTargets):
                 loss_val = loss.item() if torch.is_tensor(loss) else loss
                 stats = all_stats.get(name, {})
 
-                # Format based on available stats
                 if "n" in stats:
                     n = stats["n"]
                     rms_delta = stats.get("rms_delta", 0.0)
@@ -399,11 +320,9 @@ class TotalGeometryTarget(CombinedModelTargets):
             except Exception:
                 pass
 
-        # Total loss
         print("-" * 90)
         total_loss = self.forward().item()
 
-        # Restore verbose now
         self.verbose = saved_verbose
 
         print(
@@ -417,64 +336,31 @@ class TotalGeometryTarget(CombinedModelTargets):
 
 
 class TotalADPTarget(CombinedModelTargets):
-    """
-    Total ADP restraint target combining global, similarity, and local components.
+    """Sum of the ADP restraints, from covalent to spatial to distribution-wide.
 
-    Uses nn.ModuleDict to store component targets:
-    - 'simu': ADPSimilarityTarget (SIMU-like bond similarity)
-    - 'locality': ADPLocalityTarget (spatial smoothness)
-    - 'KL': ADPEntropyTarget (KL divergence regularization)
+    Components, keyed for individual access (``target['simu']()``):
 
-    B-factors follow a LOG-NORMAL distribution (B > 0, right-skewed).
-    If B ~ LogNormal(μ, σ), then log(B) ~ Normal(μ, σ).
+    - 'simu': :class:`ADPSimilarityTarget`, bonded atoms should share a B --
+      covalent topology, the strongest local constraint.
+    - 'locality': :class:`ADPLocalityTarget`, K-NN spatial smoothness,
+      inverse-distance weighted, for medium-range correlation.
+    - 'KL': :class:`ADPEntropyTarget`, controls the width of the B
+      distribution, which is where overfitting shows up.
 
-    This target combines:
-
-    1. **Similarity restraint (SIMU-like)**: Bond-based B-factor similarity
-       - Enforces bonded atoms have similar B-factors
-       - Based on covalent bond topology (strongest local constraint)
-
-    2. **Locality restraint**: Spatial smoothness - nearby atoms should have similar B
-       - Uses K-NN with distance-based sigma (d² scaling)
-       - Medium-range spatial correlation
-
-    3. **KL divergence**: Controls the spread of B-factor distribution
-       - Prevents overfitting by controlling distribution width
-
-    Log-normal distribution properties:
-
-    - If log(B) ~ N(μ, σ), then:
-    - Mean of B: exp(μ + σ²/2)
-    - Mode of B: exp(μ - σ²)
-    - For typical proteins: σ_logB ≈ 0.3-0.5 (in log space)
+    'locality' and 'KL' work in log space, since B > 0 and right-skewed
+    (B ~ LogNormal(μ, σ) means log B ~ Normal(μ, σ)); 'simu' restrains the raw
+    ΔB of bonded atoms.
 
     Parameters
     ----------
     model : Model
-        Reference to Model object.
+        Reference to the Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Examples
-    --------
-    ::
-
-        adp_target = TotalADPTarget(model)
-        loss = adp_target()
-        simu_loss = adp_target['simu']()
-        for name, target in adp_target.items():
-            print(f"{name}: {target()}")
     """
 
     def _create_targets(self) -> Dict[str, Target]:
-        """
-        Create ADP component targets.
-
-        Returns
-        -------
-        Dict[str, Target]
-            Dictionary of ADP targets.
-        """
+        """Build the three ADP component targets."""
         print("Initializing TotalADPTarget with component targets...")
         return {
             "simu": ADPSimilarityTarget(self.model, verbose=self.verbose),
@@ -494,13 +380,11 @@ class TotalADPTarget(CombinedModelTargets):
         print("ADP RESTRAINT STATISTICS")
         print("=" * 90)
 
-        # Component losses and statistics
         print(f"\n{'COMPONENT LOSSES':^90}")
         print("-" * 90)
         print(f"{'Component':<25} {'Loss':>15}")
         print("-" * 90)
 
-        # Get losses and stats using parent methods
         losses = self.target_losses()
         all_stats = self.stats()
 
@@ -509,7 +393,6 @@ class TotalADPTarget(CombinedModelTargets):
                 loss_val = loss.item() if torch.is_tensor(loss) else loss
                 print(f"{name:<25} {loss_val:>15.4f}")
 
-                # Print detailed stats from parent stats() method
                 stats = all_stats.get(name, {})
                 for stat_name, stat_val in stats.items():
                     if isinstance(stat_val, float):
@@ -542,18 +425,15 @@ class TotalADPTarget(CombinedModelTargets):
         """
         metrics = {}
 
-        # Total loss (always include)
         total_loss = self.forward()
         metrics["adp_total_loss"] = (
             total_loss.item() if torch.is_tensor(total_loss) else total_loss
         )
 
-        # Get losses from target_losses()
         for name, loss in self.target_losses().items():
             loss_val = loss.item() if torch.is_tensor(loss) else loss
             metrics[f"adp_{name}_loss"] = loss_val
 
-        # Get statistics from parent stats() method (filter here)
         filtered_stats = filter_stats(self.stats(), verbosity)
         for name, target_stats in filtered_stats.items():
             for stat_name, stat_val in target_stats.items():

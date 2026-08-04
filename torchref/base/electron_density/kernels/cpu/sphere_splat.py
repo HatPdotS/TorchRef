@@ -1,55 +1,30 @@
 """Fused per-atom spherical-cutoff density splat for CPU (C++), with autograd.
 
-This is the production CPU path for :func:`build_electron_density`. It is a
-transliteration of the Metal kernels in ``kernels/mps/_shaders.py`` -- deliberately
-so: the point is that CPU, CUDA and Metal implement *one* truncation contract, so
-``torchref.sigma_cutoff_ed`` means the same thing on every device.
-
-The canonical contract, shared with the Triton and Metal kernels:
+The production CPU path for :func:`build_electron_density`, and a deliberate
+transliteration of the Metal kernels in ``kernels/mps/_shaders.py``: CPU, CUDA and Metal
+implement *one* truncation contract, so ``torchref.sigma_cutoff_ed`` means the same thing
+on every device. Canonically:
 
     voxel v receives atom i's full 5-Gaussian density iff  ||w||^2 <= r_i^2,
 
-where ``w`` is the minimum-image **Cartesian atom->voxel** vector (so the sphere is
-centred on the atom, not on its nearest grid node) and ``r_i`` is the raw
-``radius_policy`` radius. Enumeration bound is the triclinic-correct per-axis
-half-width ``ceil(r_i * n_axis * ||inv_frac row_axis||)``. There is no
-grid-dependent requantization of the radius and no diagonal-metric approximation.
+where ``w`` is the minimum-image **Cartesian atom->voxel** vector (sphere centred on the
+atom, not on its nearest grid node) and ``r_i`` is the raw ``radius_policy`` radius,
+enumerated over the triclinic-correct per-axis half-width
+``ceil(r_i * n_axis * ||inv_frac row_axis||)``. No grid-dependent requantization of the
+radius, no diagonal metric.
 
-Why fused rather than the older grouped-separable splat
-------------------------------------------------------
-The separable kernel this replaced (since deleted) factorized the Gaussian into 1D
-per-axis exponentials, which needs a *uniform box per launch* -- hence a cube cutoff and
-all the bucket-by-box-size machinery. Measured on 4000 atoms / 2.3M voxels / 0.40 A
-sampling, the cube touches 19.3M voxels where the sphere touches 8.3M, and
-materializing the ``(C,L,L,L)`` intermediate cube dominates the runtime: this fused
-kernel is ~1.5x faster than the separable one even using ``std::exp``, and ~2.5x
-faster with ``fast_exp``. So the spherical cutoff is not a performance concession
-here -- it is both the correct geometry and the faster one.
+Forward partitions the **output** by x-plane via ``at::parallel_for`` and backward
+partitions over **atoms**, so neither needs atomics. float32 uses a branchless
+``fast_exp`` (the CPU analogue of ``metal::fast::exp``), whose disagreement with
+``std::exp`` is far below the amplitude-truncation floor at the default cutoff; float64
+uses ``std::exp``, a float64 caller being precision-motivated by definition.
 
-Threading
----------
-Forward partitions the **output** by x-plane via ``at::parallel_for``: each thread
-owns a disjoint set of planes, writes only into them, and needs no atomics (a
-cheap wrapped-interval test rejects atoms that miss the partition). Backward
-partitions over **atoms**, so each thread owns its atom's gradient slots
-exclusively -- also no atomics, exactly as in the Metal backward.
-
-Precision
----------
-float32 uses ``fast_exp`` (branchless 2^x bit-trick plus a degree-5 minimax
-polynomial), the CPU analogue of the ``metal::fast::exp`` the Metal kernels already
-use. Measured agreement with ``std::exp`` is rel L2 1.9e-5 -- some 40x below the
-7.9e-4 amplitude-truncation floor at the default 3 sigma. float64 uses ``std::exp``,
-since a float64 caller is precision-motivated by definition.
-
-Gradients flow to ``xyz``, ``adp``/``u`` and ``occ``, with identity to the incoming
-``density_map``; ``A``/``B`` and the cell matrices get none -- the same set as the
-CUDA and Metal kernels. Backward is first-order only; double backward must use
-``force_portable`` (the plain splat in ``variable_radius.py``).
-
-Unlike the CUDA and Metal entry points this kernel takes no per-Gaussian
-``coeff_mask``: that argument is all-ones at every existing call site, so it is
-omitted rather than allocated.
+Gradients flow to ``xyz``, ``adp``/``u`` and ``occ`` with identity to the incoming
+``density_map``; ``A``/``B`` and the cell matrices get none, as in the CUDA and Metal
+kernels. **Backward is first-order only**; a ``create_graph=True`` backward is re-derived
+through the portable splat (:func:`_double_backward_vjp`). Unlike the CUDA and Metal
+entry points this kernel takes no per-Gaussian ``coeff_mask`` -- that argument is
+all-ones at every call site, so it is omitted rather than allocated.
 """
 
 from __future__ import annotations
@@ -534,9 +509,9 @@ def _get_module():
 def why_unavailable() -> Optional[str]:
     """``None`` if the fused CPU splat is usable, else why it is not.
 
-    The single availability probe for this backend -- the shape every backend implements,
-    consumed by :mod:`torchref.utils.backends`. A missing compiler and a compile error are
-    different problems, and the captured diagnostic is the only thing that separates them.
+    The single availability probe for this backend, consumed by
+    :mod:`torchref.utils.backends`. A missing compiler and a compile error are different
+    problems, and the captured diagnostic is the only thing separating them.
     """
     if _get_module() is not None:
         return None
@@ -590,24 +565,21 @@ def _require_module():
 def _double_backward_vjp(plain_fn, ctx, grad_out, leaves, statics, r2cut):
     """Recompute this VJP through the portable differentiable splat.
 
-    The C++ backward is a closed-form first-order formula with no autograd graph, so
-    on its own it cannot supply a second derivative -- the same limitation the CUDA
-    and Metal kernels have. Rather than lose double backward on the CPU default path
-    (``test_kernel_fixes.py`` covers it, and a *silently wrong* Hessian was a real bug
-    here once), detect the double-backward context and re-derive the identical VJP
-    from the portable splat, which is built from differentiable ops.
+    The C++ backward is a closed-form first-order formula with no autograd graph, so it
+    cannot supply a second derivative -- the same limitation the CUDA and Metal kernels
+    have.
+    Rather than lose double backward on the CPU default path (a *silently wrong* Hessian was
+    a real bug here), the double-backward context is detected and the identical VJP
+    re-derived from the portable splat, which is built from differentiable ops.
 
     ``torch.is_grad_enabled()`` is the detector: autograd runs ``backward`` under
-    ``no_grad`` unless the caller passed ``create_graph=True``. ``grad_out``'s own
-    ``requires_grad`` is *not* a usable signal -- at the top of a
-    ``create_graph=True`` backward it is a plain ``ones`` tensor.
-
-    The gradients are taken w.r.t. the **saved** leaves, not detached copies, so the
-    returned VJP stays connected to the caller's graph -- detaching here would
-    silently drop the second-order term, which is precisely the failure mode this
-    guards against. Both paths implement the same truncation contract, so the
-    first-order values agree to float noise; the only cost is that a Hessian
-    workflow runs at the portable splat's speed.
+    ``no_grad``
+    unless the caller passed ``create_graph=True``. ``grad_out.requires_grad`` is **not**
+    usable -- at the top of a ``create_graph=True`` backward it is a plain ``ones`` tensor.
+    Gradients are taken w.r.t. the **saved** leaves, not detached copies, so the VJP stays
+    connected to the caller's graph; detaching would silently drop the second-order term.
+    Both paths share the truncation contract, so first-order values agree to float noise and
+    the only cost is that a Hessian workflow runs at the portable splat's speed.
     """
     A, B, inv_frac, frac = statics
     # Only the leaves that actually require grad may be differentiated; asking for
@@ -747,33 +719,23 @@ class _FusedAnisoSplat(torch.autograd.Function):
 def add_isotropic_cpu_sphere_var(
     density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
 ):
-    """Fused isotropic spherical-cutoff splat; adds into ``density_map``.
+    """Fused isotropic spherical-cutoff splat; returns ``density_map + splat``.
 
     Parameters
     ----------
     density_map : torch.Tensor
-        Running density map, shape (nx, ny, nz), CPU float32/float64. Not mutated;
-        the sum is returned.
-    xyz : torch.Tensor
-        Cartesian atom positions, shape (n, 3).
-    adp : torch.Tensor
-        Isotropic B-factors, shape (n,).
-    occ : torch.Tensor
-        Occupancies, shape (n,).
+        Running map, shape ``(nx, ny, nz)``, CPU float32/float64. **Not mutated.**
+    xyz, adp, occ : torch.Tensor
+        Cartesian positions ``(n, 3)``, isotropic B-factors and occupancies ``(n,)``.
     A, B : torch.Tensor
-        ITC92 amplitudes / widths, shape (n, 5).
+        ITC92 amplitudes / widths, shape ``(n, 5)``.
     inv_frac_matrix, frac_matrix : torch.Tensor
-        Cartesian<->fractional matrices, shape (3, 3). The truncation box is
-        derived from these, so no ``voxel_size`` argument is needed.
+        Cartesian<->fractional, shape ``(3, 3)``. The truncation box comes from these, so
+        there is no ``voxel_size`` argument.
     radius_per_atom : torch.Tensor
-        Per-atom cutoff radius in Angstrom, shape (n,), from
+        Per-atom cutoff in Angstrom, ``(n,)``, from
         :func:`radius_policy.per_atom_radius_iso`. Used raw -- no grid-dependent
-        requantization, so the cutoff means the same thing at any grid sampling.
-
-    Returns
-    -------
-    torch.Tensor
-        ``density_map + splat``, shape (nx, ny, nz).
+        requantization, so the cutoff means the same thing at any sampling.
     """
     _, r2cut = _prep(density_map, xyz, radius_per_atom, adp, occ, A, B)
     return _FusedIsoSplat.apply(
@@ -786,14 +748,12 @@ def add_anisotropic_cpu_sphere_var(
 ):
     """Fused anisotropic spherical-cutoff splat; adds into ``density_map``.
 
-    Identical contract to :func:`add_isotropic_cpu_sphere_var`, but ``u`` carries
-    the 6 anisotropic components ``[U11, U22, U33, U12, U13, U23]`` and the density
-    is the full 3D Gaussian ``exp(-pi^2 w^T Minv w)`` with
-    ``M_g = (B_g*I + 8*pi^2*U)/4``. The *cutoff* remains the Euclidean sphere at
-    ``radius_per_atom`` (the ellipsoid's isotropic bounding radius, from
-    :func:`radius_policy.per_atom_radius_aniso`) -- matching the CUDA and Metal
-    kernels, which likewise cull on Euclidean distance and evaluate the
-    Mahalanobis form.
+    Identical contract to :func:`add_isotropic_cpu_sphere_var`, but ``u`` carries the 6
+    components ``[U11, U22, U33, U12, U13, U23]`` and the density is the full 3D Gaussian
+    ``exp(-pi^2 w^T Minv w)`` with ``M_g = (B_g*I + 8*pi^2*U)/4``. The *cutoff* stays the
+    Euclidean sphere at ``radius_per_atom`` (the ellipsoid's isotropic bounding radius),
+    matching the CUDA and Metal kernels, which likewise cull on Euclidean distance and
+    evaluate the Mahalanobis form.
     """
     _, r2cut = _prep(density_map, xyz, radius_per_atom, u, occ, A, B)
     return _FusedAnisoSplat.apply(

@@ -1,27 +1,16 @@
 #!/usr/bin/env python3 -u
 
-"""
-Standalone CLI tool to add deposition metadata to PDB or mmCIF files.
+"""Standalone CLI tool to add deposition metadata to PDB or mmCIF files.
 
-Reads an existing structure file, applies metadata from CLI arguments
-and/or a JSON file, and writes the output in PDB or mmCIF format
-(determined by the output file extension).
+Reads a structure file, applies metadata from CLI arguments and/or a JSON file (CLI wins),
+and writes PDB or mmCIF according to the output extension.
 
 Examples
 --------
 ::
 
-    # Add title and authors to a PDB file
-    torchref.add-metadata -i input.pdb -o output.pdb --title "My Structure" --authors "A. Person"
-
-    # Convert PDB to mmCIF with metadata
-    torchref.add-metadata -i input.pdb -o output.cif --title "My Structure"
-
-    # Apply metadata from a JSON file
-    torchref.add-metadata -i input.pdb -o output.pdb --metadata stats.json
-
-    # JSON overrides + CLI overrides (CLI takes precedence)
-    torchref.add-metadata -i input.cif -o output.cif --metadata stats.json --title "Override Title"
+    torchref.add-metadata -i in.pdb -o out.pdb --title "My Structure" --authors "A. Person"
+    torchref.add-metadata -i in.pdb -o out.cif --metadata stats.json --title "Override"
 """
 
 import argparse
@@ -35,6 +24,7 @@ configure_unbuffered_output()
 
 
 def main():
+    """Entry point for ``torchref.add-metadata``; returns the process exit code."""
     parser = argparse.ArgumentParser(
         description="Add deposition metadata to PDB or mmCIF files",
         formatter_class=argparse.RawDescriptionHelpFormatter,

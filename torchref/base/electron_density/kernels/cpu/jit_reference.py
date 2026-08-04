@@ -1,29 +1,11 @@
-"""
-Optimized vectorized_add_to_map with automatic CPU/GPU path selection.
+"""``vectorized_add_to_map`` with automatic CPU/GPU path selection.
 
-This module provides optimized implementations for adding atoms to a density map
-using ITC92 Gaussian parameterization. It automatically selects the best
-implementation based on the device (CPU or GPU) and uses JIT-compiled kernels
-for optimal performance.
-
-Architecture:
-- CPU: JIT-scripted kernel using einsum with metric tensor (efficient for CPU)
-- GPU: when the shared targets gate permits Triton (CUDA + float32, dispatch
-  AUTO/TRITON), ``vectorized_add_to_map`` selects the Triton fused branch
-  (``fused_add_to_map_gpu``) first; otherwise it falls back to the pure-torch,
-  double-differentiable ``_add_to_map_gpu_simple`` (JIT-scripted batch matmul).
-
-The CPU JIT and ``_add_to_map_gpu_simple`` paths are fully differentiable and
-compile on import for minimal first-call overhead.
-
-Usage:
-    from torchref.base.electron_density.kernels import vectorized_add_to_map
-
-    # Automatically selects CPU or GPU implementation based on tensor device
-    density_map = vectorized_add_to_map(
-        surrounding_coords, voxel_indices, density_map,
-        xyz, b, inv_frac_matrix, frac_matrix, A, B, occ
-    )
+Adds atoms to a density map under the ITC92 5-Gaussian parameterization, choosing the
+implementation from the tensor device: CPU uses a JIT-scripted einsum kernel with a metric
+tensor; on GPU, when the shared targets gate permits Triton (CUDA + float32, dispatch
+AUTO/TRITON), the fused Triton branch is selected, otherwise the pure-torch,
+double-differentiable ``_add_to_map_gpu_simple``. The CPU JIT and simple GPU paths are
+fully differentiable and compile on import.
 """
 
 import os
@@ -83,22 +65,9 @@ def _get_triton_kernel():
 
 
 def compute_metric_tensor(frac_matrix: torch.Tensor) -> torch.Tensor:
-    """
-    Compute the metric tensor for calculating r² in fractional coordinates.
-
-    The metric tensor G allows computing squared distances in Cartesian space
-    from fractional coordinate differences:
-        r² = diff_frac @ G @ diff_frac.T
-
-    Parameters
-    ----------
-    frac_matrix : torch.Tensor
-        Fractionalization matrix, shape (3, 3).
-
-    Returns
-    -------
-    torch.Tensor
-        Metric tensor G = frac_matrix.T @ frac_matrix, shape (3, 3).
+    """Metric tensor ``G = frac_matrix.T @ frac_matrix``, ``(3, 3)``, so that
+    ``r^2 = diff_frac @ G @ diff_frac.T`` gives Cartesian squared distances from fractional
+    coordinate differences.
     """
     return frac_matrix.T @ frac_matrix
 
@@ -107,20 +76,8 @@ def precompute_fractional_coords(
     coords_cart: torch.Tensor,
     inv_frac_matrix: torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Convert Cartesian voxel coordinates to fractional coordinates.
-
-    Parameters
-    ----------
-    coords_cart : torch.Tensor
-        Cartesian coordinates, shape (N_atoms, N_voxels, 3).
-    inv_frac_matrix : torch.Tensor
-        Inverse fractionalization matrix, shape (3, 3).
-
-    Returns
-    -------
-    torch.Tensor
-        Fractional coordinates, shape (N_atoms, N_voxels, 3).
+    """Cartesian ``(N_atoms, N_voxels, 3)`` coordinates converted to fractional via
+    ``inv_frac_matrix`` ``(3, 3)``.
     """
     N_atoms, N_voxels = coords_cart.shape[:2]
     coords_flat = coords_cart.reshape(-1, 3)
@@ -376,45 +333,32 @@ def vectorized_add_to_map(
     B: torch.Tensor,
     occ: torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Add atoms to density map using ITC92 Gaussian parameterization.
+    """Add atoms to a density map using the ITC92 5-Gaussian parameterization.
 
-    Backend is chosen by the shared targets gate via ``use_triton``: on
-    GPU it uses the Triton fused kernel when Triton is permitted (CUDA+float32,
-    engine AUTO/TRITON) and the pure-torch ``_add_to_map_gpu_simple`` otherwise
-    (force_portable, float64, or Triton unavailable). CPU uses the JIT kernel.
+    The backend follows the shared targets gate: the Triton fused kernel where Triton is
+    permitted (CUDA + float32, engine AUTO/TRITON), the pure-torch
+    ``_add_to_map_gpu_simple`` otherwise (force_portable, float64, no Triton), and the JIT
+    kernel on CPU.
 
     Parameters
     ----------
-    surrounding_coords : torch.Tensor
-        Cartesian coordinates of voxels, shape (N_atoms, N_voxels, 3).
-    voxel_indices : torch.Tensor
-        Indices of voxels in the map, shape (N_atoms, N_voxels, 3).
+    surrounding_coords, voxel_indices : torch.Tensor
+        Cartesian coordinates and map indices of the voxels, ``(N_atoms, N_voxels, 3)``.
     density_map : torch.Tensor
-        Electron density map to update, shape (nx, ny, nz).
-    xyz : torch.Tensor
-        Atom positions in Cartesian coordinates, shape (N_atoms, 3).
-    b : torch.Tensor
-        Isotropic B-factors, shape (N_atoms,).
-    inv_frac_matrix : torch.Tensor
-        Inverse fractionalization matrix, shape (3, 3).
-    frac_matrix : torch.Tensor
-        Fractionalization matrix, shape (3, 3).
-    A : torch.Tensor
-        ITC92 amplitude coefficients, shape (N_atoms, 5).
-    B : torch.Tensor
-        ITC92 width coefficients, shape (N_atoms, 5).
-    occ : torch.Tensor
-        Atomic occupancies, shape (N_atoms,).
+        Map to update, ``(nx, ny, nz)``.
+    xyz, b, occ : torch.Tensor
+        Positions ``(N_atoms, 3)``, isotropic B-factors and occupancies ``(N_atoms,)``.
+    inv_frac_matrix, frac_matrix : torch.Tensor
+        Fractionalization matrix and its inverse, ``(3, 3)``.
+    A, B : torch.Tensor
+        ITC92 amplitudes and widths, ``(N_atoms, 5)`` each.
 
     Returns
     -------
     torch.Tensor
-        The updated electron density map. In-place mutation is **not**
-        guaranteed: the CPU/JIT and ``_add_to_map_gpu_simple`` branches mutate
-        ``density_map`` in place, but the Triton fused branch
-        (``fused_add_to_map_gpu``) returns a NEW cloned tensor and leaves the
-        input unchanged. Callers must always use the returned value.
+        The updated map. **In-place mutation is not guaranteed** -- the CPU/JIT and simple
+        GPU branches mutate ``density_map``, while the Triton branch returns a new clone and
+        leaves the input unchanged, so callers must always use the returned value.
     """
     if density_map.device.type == "cuda":
         # The shared targets gate is the only switch: use the Triton kernel when it
@@ -479,46 +423,10 @@ def build_electron_density(
     B: torch.Tensor,
     occ: torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Build electron density map from atomic parameters.
+    """Alias for :func:`vectorized_add_to_map`, taking the same *voxel-level* arguments.
 
-    This is an alias for vectorized_add_to_map for semantic clarity.
-
-    Note
-    ----
-    This alias takes the *voxel-level* signature (precomputed
-    ``surrounding_coords`` / ``voxel_indices``) and is distinct from the
-    top-level :func:`torchref.base.electron_density.main.build_electron_density`,
-    which takes *atomic* parameters and performs the full table-based
-    variable-radius dispatch.
-
-    Parameters
-    ----------
-    surrounding_coords : torch.Tensor
-        Cartesian coordinates of voxels, shape (N_atoms, N_voxels, 3).
-    voxel_indices : torch.Tensor
-        Indices of voxels in the map, shape (N_atoms, N_voxels, 3).
-    density_map : torch.Tensor
-        Electron density map to update, shape (nx, ny, nz).
-    xyz : torch.Tensor
-        Atom positions in Cartesian coordinates, shape (N_atoms, 3).
-    b : torch.Tensor
-        Isotropic B-factors, shape (N_atoms,).
-    inv_frac_matrix : torch.Tensor
-        Inverse fractionalization matrix, shape (3, 3).
-    frac_matrix : torch.Tensor
-        Fractionalization matrix, shape (3, 3).
-    A : torch.Tensor
-        ITC92 amplitude coefficients, shape (N_atoms, 5).
-    B : torch.Tensor
-        ITC92 width coefficients, shape (N_atoms, 5).
-    occ : torch.Tensor
-        Atomic occupancies, shape (N_atoms,).
-
-    Returns
-    -------
-    torch.Tensor
-        Updated electron density map.
+    Distinct from :func:`torchref.base.electron_density.main.build_electron_density`, which
+    takes *atomic* parameters and performs the full table-based variable-radius dispatch.
     """
     return vectorized_add_to_map(
         surrounding_coords,
@@ -540,13 +448,8 @@ def build_electron_density(
 
 
 def warmup(device: str = "auto") -> None:
-    """
-    Pre-compile kernels to avoid compilation overhead during first use.
-
-    Parameters
-    ----------
-    device : str
-        Device to warmup: "cpu", "cuda", or "auto" (default).
+    """Pre-compile the kernels for ``device`` ("cpu", "cuda" or "auto") so the first
+    real call pays no compilation cost.
     """
     devices = []
     if device == "auto":

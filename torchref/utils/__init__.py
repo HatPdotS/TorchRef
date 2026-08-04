@@ -1,39 +1,15 @@
 """
 Utility functions and classes for TorchRef.
 
-This module provides:
-- TensorMasks and TensorDict for managing tensor collections
-- Device/dtype movement mixins (DeviceMixin) and device resolution
-- Debugging utilities and mixins
-- Statistics formatting and tracking
-- Gradient norm computation
-- PDB/selection parsing utilities
-- Loss-finiteness validation (validate_loss)
-- Autograd introspection (collect_loss_leaves)
-- JSON serialization helpers (convert_to_serializable)
-- Backend dispatch (force_portable / use_portable)
+Tensor containers (``TensorMasks``, ``TensorDict``), device/dtype movement
+(``DeviceMixin``, ``resolve_device``), debugging mixins, statistics formatting, gradient
+norms, PDB/selection parsing, loss-finiteness validation, autograd introspection, JSON
+serialization and backend dispatch.
 
-The names re-exported here are the package's public surface (see
-``__all__``). Some submodule-only helpers (e.g.
-``torchref.utils.timing.register_timing``) are not re-exported and must be
-imported from their submodule.
-
-Example
--------
-::
-
-    from torchref.utils import TensorMasks, DebugMixin, gradnorm
-
-    # Create tensor masks for parameter selection
-    masks = TensorMasks(device='cuda')
-    masks['backbone'] = backbone_mask
-
-    # Use debugging mixin in your class
-    class MyRefinement(DebugMixin):
-        pass
-
-    # Compute gradient norm
-    grad_norm = gradnorm(loss, model.parameters())
+``__all__`` is the package's public surface. Submodule-only helpers -- e.g.
+``torchref.utils.timing.register_timing`` -- are deliberately not re-exported and must be
+imported from their own module. Note that importing ``torchref.utils.stats`` patches the
+stdlib ``json`` encoders process-wide; see that module.
 """
 
 # Autograd introspection

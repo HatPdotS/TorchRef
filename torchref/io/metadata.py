@@ -1,31 +1,12 @@
 """
-Unified metadata dictionary for PDB deposition headers and mmCIF categories.
+Single source of truth for deposition metadata, renderable as either PDB
+REMARK 3 header records or PDBx/mmCIF ``_refine`` category items.
 
-This module provides a ``RefinementMetadata`` dataclass that serves as the
-single source of truth for all deposition-related information. The same
-metadata can be rendered as PDB REMARK 3 header records or as PDBx/mmCIF
-``_refine`` category fields.
-
-Examples
---------
-::
-
-    from torchref.io.metadata import RefinementMetadata
-
-    # Build from a completed refinement
-    meta = RefinementMetadata.from_refinement(refinement)
-
-    # Render for output
-    pdb_header = meta.render_pdb_header()
-    cif_dict   = meta.render_cif_categories()
-
-    # Merge pass-through headers from input file
-    input_meta = RefinementMetadata.from_pdb_file("input.pdb")
-    meta = input_meta.merge(meta)
-
-    # Serialization
-    d = meta.to_dict()
-    meta2 = RefinementMetadata.from_dict(d)
+The usual flow: build with ``from_refinement``, optionally
+``from_pdb_file(...).merge(meta)`` to carry input headers through, then
+``render_pdb_header()`` / ``render_cif_categories()``. The ``from_*`` extractors
+swallow every exception, so a field that could not be read is simply absent --
+never assume a populated result.
 """
 
 from __future__ import annotations
@@ -40,9 +21,8 @@ from typing import Any, Dict, List, Optional
 class RefinementMetadata:
     """Unified metadata for PDB headers and mmCIF categories.
 
-    Each dataclass field maps to both PDB REMARK 3 lines and PDBx/mmCIF
-    ``_refine`` category items.  Only populated (non-None / non-empty)
-    fields are rendered.
+    Each field maps to both a PDB REMARK 3 line and a PDBx/mmCIF ``_refine``
+    item; only populated (non-None, non-empty) fields are rendered.
 
     Attributes
     ----------
@@ -62,18 +42,12 @@ class RefinementMetadata:
         Model atom counts.
     solvent_model_ksol, solvent_model_bsol : float, optional
         Bulk-solvent model parameters.
-    cell : list of float, optional
-        Unit cell ``[a, b, c, alpha, beta, gamma]``.
-    spacegroup : str, optional
-        Space-group name.
-    title : str
-        Structure title.
-    authors : list of str
-        Author names.
-    passthrough_pdb_remarks : list of str
-        Raw REMARK lines carried over from an input PDB file.
-    passthrough_cif_categories : dict
-        Raw mmCIF category items carried over from an input file.
+    cell, spacegroup
+        Unit cell ``[a, b, c, alpha, beta, gamma]`` and space-group name.
+    title, authors
+        Structure title and author names.
+    passthrough_pdb_remarks, passthrough_cif_categories
+        Raw REMARK lines / mmCIF category items carried over from an input file.
     custom_remarks : list of str
         Extra REMARK 3 lines to append.
     """
@@ -163,16 +137,9 @@ class RefinementMetadata:
 
     @classmethod
     def from_refinement(cls, refinement) -> RefinementMetadata:
-        """Extract metadata from a completed Refinement object.
-
-        Reuses existing statistics from ``collect_metrics()``,
-        ``get_rfactor()``, and reflection data attributes.
-        Silently skips any unavailable statistics.
-
-        Parameters
-        ----------
-        refinement : torchref.refinement.Refinement
-            A refinement object (after refinement is complete).
+        """Extract metadata from a completed Refinement, from ``get_rfactor()``,
+        ``collect_metrics()`` and the reflection data. Every statistic is
+        best-effort: anything unavailable is left unset, silently.
         """
         import torch
         from torchref import __version__
@@ -377,19 +344,11 @@ class RefinementMetadata:
     # ------------------------------------------------------------------ #
 
     def merge(self, other: RefinementMetadata) -> RefinementMetadata:
-        """Merge *other* into self. Non-None values in *other* take precedence.
+        """Merge *other* into self, returning a NEW instance (neither is mutated).
 
-        Pass-through containers are combined (not replaced).
-
-        Parameters
-        ----------
-        other : RefinementMetadata
-            Metadata to merge in (takes precedence for non-None fields).
-
-        Returns
-        -------
-        RefinementMetadata
-            A new merged instance.
+        ``other`` wins for any field that is non-None, non-``""`` and non-``[]``;
+        the pass-through / authors / custom-remark containers are concatenated
+        rather than replaced.
         """
         merged = RefinementMetadata()
         for f in fields(RefinementMetadata):

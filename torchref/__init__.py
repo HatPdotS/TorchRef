@@ -1,23 +1,11 @@
-"""
-TorchRef - A PyTorch-based crystallographic refinement library.
+"""TorchRef - GPU-accelerated crystallographic refinement built on PyTorch.
 
-TorchRef provides GPU-accelerated crystallographic structure refinement
-using PyTorch's automatic differentiation and nn.Module architecture.
-
-Key Features
-------------
-- Native PyTorch integration with nn.Module architecture
-- Automatic differentiation for custom target functions
-- GPU acceleration for structure factor calculations
-- Modular design for easy extension
-
-Quick Start
------------
-::
+Refinement as ``nn.Module``s and autograd, so a custom target function
+differentiates itself. Start from :class:`LBFGSRefinement`, which takes the MTZ and
+PDB paths directly::
 
     from torchref import LBFGSRefinement
 
-    # Load data and model directly from file paths, then refine
     refinement = LBFGSRefinement(
         data_file='data.mtz', pdb='model.pdb', device='cuda'
     )
@@ -32,7 +20,8 @@ model
 refinement
     Core refinement framework with targets and weighting schemes.
 restraints
-    Geometry restraints (bonds, angles, torsions, planes). (initialized lazily as it requires downloading the monomer library)
+    Geometry restraints (bonds, angles, torsions, planes); initialized lazily, since it
+    needs the monomer library downloaded.
 scaling
     Structure factor scaling and bulk solvent models.
 symmetry
@@ -56,14 +45,14 @@ __version__ = "0.6.2"
 
 import os
 
-# For now set MPS fallback gloablly
+# Must be set before torch is imported below, or it has no effect.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import warnings
 from pathlib import Path
 
 from torchref._bootstrap import configure_threading, detect_available_cpus
 
-# Configure threading before importing torch
+# Threading must be configured before torch is imported.
 if "TORCHREF_NUM_THREADS" in os.environ:
     N_CPUS = int(os.environ["TORCHREF_NUM_THREADS"])
     warnings.warn(
@@ -84,7 +73,7 @@ import torch
 
 torch.set_num_threads(N_CPUS)
 
-# Dtype and device configuration (must be imported after torch)
+# Must come after torch: reads its dtype/device state at import.
 from torchref.config import device, dtypes, sigma_cutoff_ed
 
 # Project root path for referencing package files

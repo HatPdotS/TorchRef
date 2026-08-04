@@ -1,3 +1,5 @@
+"""Rigid-bond (Hirshfeld / SHELX DELU) ADP restraint."""
+
 import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
@@ -19,30 +21,19 @@ if TYPE_CHECKING:
 
 class RigidBondTarget(ADPTarget):
     """
-    Rigid Bond restraint (DELU in SHELX, Hirshfeld test).
+    Rigid Bond restraint (DELU in SHELX, Hirshfeld's rigid-bond test).
 
-    Based on Hirshfeld's rigid bond test (Acta Cryst. A32, 239, 1976).
+    Atoms joined by a rigid bond move together, so their mean-square displacement
+    amplitudes *along the bond* should match. For anisotropic ADPs::
 
-    For a truly rigid bond, the mean-square displacement amplitudes (MSDA)
-    of the two bonded atoms along the bond direction should be equal.
-    This is because in a rigid bond, the atoms move together.
+        z_12 = l_12^T U_1 l_12 / |l_12|²   (MSDA of atom 1 along the bond)
+        z_21 = l_21^T U_2 l_21 / |l_21|²
+        Δz   = z_12 - z_21  ->  0
 
-    For anisotropic ADPs (U tensors)::
-
-        z_12 = l_12^T U_1 l_12 / |l_12|²  (MSDA of atom 1 along bond)
-        z_21 = l_21^T U_2 l_21 / |l_21|²  (MSDA of atom 2 along bond)
-        Δz = z_12 - z_21 should be ~0
-
-    For isotropic B-factors, the difference in B_iso is used as a proxy::
-
-        ΔB = B_1 - B_2
-
-    This differs from SIMU (ADPSimilarityTarget) which restrains the full
-    ADP tensors to be similar. Rigid bond only restrains the component
-    along the bond direction.
-
-    Energy: E = w * Δz²
-    NLL: NLL = 0.5 * (Δz / σ)² + log(σ) + 0.5 * log(2π)
+    with ΔB = B_1 - B_2 as the isotropic proxy, and
+    NLL = 0.5·(Δz/σ)² + log σ + 0.5·log 2π. Unlike SIMU
+    (:class:`ADPSimilarityTarget`), which restrains the whole tensors to be
+    similar, this constrains only the bond-direction component.
 
     References
     ----------
@@ -54,14 +45,12 @@ class RigidBondTarget(ADPTarget):
     model : Model
         Reference to Model object.
     sigma : float, optional
-        Target standard deviation for Δz. Default is 0.004 Å².
-        Hirshfeld found typical values of 0.001 Å² for good structures;
-        the default is deliberately ~4× looser for numerical stability and
-        to accommodate mixed iso/aniso models, where Δz is noisier than for
-        a fully anisotropic refinement.
+        Target standard deviation for Δz, default 0.004 Å² -- ~4x looser than
+        Hirshfeld's 0.001 Å² for good structures, for numerical stability and
+        because Δz is noisier on mixed iso/aniso models.
     use_aniso : bool, optional
-        If True and model has anisotropic ADPs, use proper tensor calculation.
-        Default is True.
+        Use the tensor calculation when the model has anisotropic ADPs. Default
+        True; setting False forces the isotropic proxy.
     verbose : int, optional
         Verbosity level. Default is 0.
     """
@@ -81,27 +70,16 @@ class RigidBondTarget(ADPTarget):
 
     def forward(self) -> torch.Tensor:
         """
-        Compute rigid bond restraint.
-
-        For isotropic refinement, uses B-factor differences along bonds.
-        For anisotropic refinement, computes proper MSDA differences.
+        Summed rigid-bond NLL: directional MSDA if the model has any anisotropic
+        atoms, the cheaper ΔB proxy otherwise (the two agree for isotropic atoms).
         """
-        # Use the proper directional MSDA (l^T U l) whenever the model has any
-        # anisotropic atoms; isotropic-only models keep the cheap scalar ΔB path
-        # (the two are numerically identical for isotropic atoms). ``use_aniso``
-        # forces the iso proxy if explicitly disabled.
         if self.use_aniso and not getattr(self.model, "_aniso_is_empty", True):
             return self._compute_aniso_rigid_bond()
         return self._compute_iso_rigid_bond()
 
     def _compute_iso_rigid_bond(self) -> torch.Tensor:
-        """
-        Compute rigid bond restraint for isotropic B-factors.
-
-        For isotropic ADPs, the MSDA along any direction is B/(8π²).
-        So the difference in MSDA is proportional to ΔB.
-
-        We use ΔB directly and scale sigma accordingly.
+        """Rigid-bond NLL from ΔB: for isotropic ADPs the MSDA is B/(8π²) in every
+        direction, so Δz is just ΔB/(8π²) and sigma is scaled to match.
         """
         adp = self.model.adp()
         xyz = self.model.xyz()
@@ -120,9 +98,6 @@ class RigidBondTarget(ADPTarget):
                 adp1 = adp[indices[:, 0]]
                 adp2 = adp[indices[:, 1]]
 
-                # For isotropic ADPs: U_iso = B / (8π²)
-                # MSDA along bond = U_iso (same in all directions)
-                # Δz = (B1 - B2) / (8π²)
                 delta_z = (adp1 - adp2) / (8.0 * np.pi**2)
                 delta_z_list.append(delta_z)
 
@@ -131,7 +106,6 @@ class RigidBondTarget(ADPTarget):
 
         delta_z = torch.cat(delta_z_list, dim=0)
 
-        # Gaussian NLL
         log_2pi = torch.log(torch.tensor(2.0 * np.pi, device=device, dtype=xyz.dtype))
         nll = 0.5 * (delta_z / self.sigma) ** 2 + np.log(self.sigma) + 0.5 * log_2pi
 
@@ -151,20 +125,11 @@ class RigidBondTarget(ADPTarget):
         return torch.empty(0, 2, dtype=torch.long, device=self.model.xyz().device)
 
     def _compute_aniso_rigid_bond(self) -> torch.Tensor:
-        """
-        Compute rigid bond restraint for anisotropic ADPs.
+        """Rigid-bond NLL from ``Δz = l^T U_1 l - l^T U_2 l`` along each bond.
 
-        For each bond:
-            l = (r2 - r1) / |r2 - r1|  (unit vector along bond)
-            z_12 = l^T U_1 l  (MSDA of atom 1 along bond direction)
-            z_21 = l^T U_2 l  (MSDA of atom 2 along bond direction)
-            Δz = z_12 - z_21
-
-        Uses the model's unified per-atom U6 (:meth:`Model.adp_u6`): anisotropic
-        atoms contribute their refined ``u``; isotropic atoms their lifted
-        ``U = (B / 8 pi^2) I`` (so ``l^T U l = B / 8 pi^2`` and the result
-        matches :meth:`_compute_iso_rigid_bond` for them). Iso<->aniso bonds are
-        therefore handled with no special case.
+        Driven by the unified per-atom U6 (:meth:`Model.adp_u6`), where isotropic
+        atoms appear as lifted ``U = (B/8π²)I``, so mixed iso/aniso bonds need no
+        special case and agree with :meth:`_compute_iso_rigid_bond`.
         """
         xyz = self.model.xyz()
         pairs = self._bond_pairs()
@@ -175,12 +140,15 @@ class RigidBondTarget(ADPTarget):
 
     def get_delta_z_stats(self) -> Dict[str, float]:
         """
-        Get statistics of Δz values for analysis.
+        Statistics of the Δz values, from the isotropic ΔB path regardless of
+        ``use_aniso`` -- so on an anisotropic model these describe a proxy for what
+        ``forward`` actually minimises, not the same quantity.
 
         Returns
         -------
         dict
-            Dictionary with mean, std, max, min of |Δz| values and Z-scores.
+            ``count``, ``mean``/``std``/``max``/``min``/``rms`` of |Δz|, and the
+            ``mean_z``/``rms_z`` Z-scores. All zero when there are no bonds.
         """
         adp = self.model.adp()
         xyz = self.model.xyz()
@@ -225,7 +193,6 @@ class RigidBondTarget(ADPTarget):
         delta_z_all = torch.cat(delta_z_list, dim=0)
         delta_z_abs = delta_z_all.abs()
 
-        # Z-scores (deviation / sigma)
         z_scores = delta_z_abs / self.sigma
 
         return {
@@ -240,11 +207,7 @@ class RigidBondTarget(ADPTarget):
         }
 
     def stats(self) -> Dict[str, any]:
-        """
-        Get rigid bond restraint statistics.
-
-        Returns statistics including Δz values along bonds.
-        """
+        """Rigid-bond loss plus the Δz summary from :meth:`get_delta_z_stats`."""
         delta_z_stats = self.get_delta_z_stats()
         if delta_z_stats.get("count", 0) == 0:
             return {}

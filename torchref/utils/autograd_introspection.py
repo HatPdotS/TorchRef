@@ -22,11 +22,9 @@ LossLike = Union[
 
 
 def _iter_roots(losses: LossLike):
-    """Flatten losses to an iterable of root tensors.
+    """Flatten a tensor / iterable / mapping (nested, in any combination) to root tensors.
 
-    Accepts a single ``Tensor``, a tuple/list of tensors, a dict whose
-    values are tensors, or any nested combination thereof. Non-tensor
-    entries (``None``, Python scalars, etc.) are silently skipped.
+    Non-tensor entries (``None``, Python scalars) are silently skipped.
     """
     if isinstance(losses, torch.Tensor):
         yield losses
@@ -43,16 +41,10 @@ def _iter_roots(losses: LossLike):
 
 
 def collect_loss_leaves(losses: LossLike) -> Set[nn.Parameter]:
-    """Return the set of leaf ``nn.Parameter``s that gradient will
-    accumulate into when ``backward()`` is called on the given loss(es).
+    """The leaf ``nn.Parameter``s that ``backward()`` on ``losses`` would accumulate into.
 
-    Walks the autograd graph from each root tensor's ``grad_fn`` and
-    finds every ``AccumulateGrad`` node, collecting its ``.variable``
-    when it is an :class:`nn.Parameter`.
-
-    Multiple roots are unioned via a single shared traversal so that
-    shared subgraphs (e.g. two losses both depending on the same model
-    forward) are walked exactly once.
+    Walks each root's ``grad_fn`` for ``AccumulateGrad`` nodes. Multiple roots share one
+    traversal, so a subgraph two losses both depend on is walked once.
 
     Parameters
     ----------
@@ -62,17 +54,12 @@ def collect_loss_leaves(losses: LossLike) -> Set[nn.Parameter]:
     Returns
     -------
     set of nn.Parameter
-        Leaf parameters that backward would accumulate gradient into.
-        A leaf with ``requires_grad=False`` does not appear (no
-        ``AccumulateGrad`` node is created for it). Detached subtrees
-        contribute nothing.
+        A leaf with ``requires_grad=False`` is **absent** -- no ``AccumulateGrad`` node
+        exists for it -- as is anything behind a ``detach()``. So an empty result means
+        "nothing is currently trainable through this loss", not "the loss is constant".
     """
-    # Use the grad_fn object itself as the seen key. grad_fn instances are
-    # hashable and equality-compares to the same underlying C++ Node, so this
-    # is correct. We deliberately avoid id()-keying because Python wrapper
-    # objects returned by ``next_functions`` are short-lived — once popped
-    # off the stack and out of scope, their id can be reused for an unrelated
-    # wrapper, causing the seen set to incorrectly skip live nodes.
+    # Key the seen set on the grad_fn object, never on id(): the Python wrappers from
+    # ``next_functions`` are short-lived, and a reused id would skip a live node.
     seen = set()
     leaves: Set[nn.Parameter] = set()
     stack = []

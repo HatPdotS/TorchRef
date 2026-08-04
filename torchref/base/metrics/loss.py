@@ -1,24 +1,22 @@
 """
-Loss functions for crystallographic refinement.
+Amplitude-space loss/likelihood functions for crystallographic refinement.
 
-Functions for computing various loss/likelihood functions used in
-structure refinement.
+Note the reduction convention: the ``nll_xray`` family returns a **sum** (so it combines
+with the geometry and ADP targets at the intended relative weight) while the lognormal and
+log-space losses return a **mean**.
 """
 
 import torch
 
 
 def _nll_xray_per_refl(F_obs, F_calc, sigma_F_obs):
-    """Shared per-reflection Gaussian NLL and mask for the ``nll_xray`` family.
+    """Per-reflection Gaussian NLL + mask shared by the ``nll_xray`` family.
 
-    ``0.5 (F_obs - |F_calc|)^2 / sigma^2 + log sigma + 0.5 log 2pi``
-
-    The sigma floor is data-dependent: each sigma is clamped to a minimum of
-    ``median(sigma_F_obs) * 0.1`` rather than a fixed constant, so the effective
-    minimum scales with the data.
+    ``0.5 (F_obs - |F_calc|)^2 / sigma^2 + log sigma + 0.5 log 2pi``, each sigma clamped to
+    a data-dependent floor of ``median(sigma_F_obs) * 0.1``.
     """
-    # MaskedTensor inputs: use torch.where rather than boolean indexing, which
-    # triggers nonzero() and forces a CPU-GPU sync.
+    # MaskedTensor inputs: torch.where rather than boolean indexing, which triggers
+    # nonzero() and forces a CPU-GPU sync.
     mask = None
     if hasattr(F_obs, "get_mask"):
         mask = F_obs.get_mask()
@@ -50,6 +48,10 @@ def nll_xray(
     """
     Summed X-ray negative log-likelihood assuming a Gaussian on the amplitude.
 
+    Returns a **sum**, matching every other TorchRef target, so it combines with them at
+    the intended relative weight; :func:`nll_xray_mean` is for reporting only.
+    ``nll_xray_sum`` is an alias. Each sigma is clamped to ``median(sigma_F_obs) * 0.1``.
+
     Parameters
     ----------
     F_obs : torch.Tensor or MaskedTensor
@@ -63,23 +65,6 @@ def nll_xray(
     -------
     torch.Tensor
         Summed negative log-likelihood (scalar).
-
-    Notes
-    -----
-    **This returns a SUM.** Every other target in TorchRef is on an absolute
-    scale -- all five x-ray target maths (``xray_likelihoods``, ``xray_ml_full``,
-    ``xray_ls``, ``xray_nll``), every geometry term
-    (bond, angle, chiral, planarity, torsion, ramachandran, nonbonded) and the ADP
-    terms all return ``.sum()``. This function previously returned a ``.mean()``,
-    which made it the sole exception: any caller combining it with another term
-    (e.g. an anisotropy ``sum(U**2)`` penalty) silently got a relative weight wrong
-    by a factor of the reflection count. It now matches the convention, so absolute
-    magnitudes reported by it are ~n times larger than before.
-
-    ``nll_xray_sum`` is retained as an alias.
-
-    The sigma floor is data-dependent: each sigma is clamped to a minimum of
-    ``median(sigma_F_obs) * 0.1``, so the effective minimum scales with the data.
     """
     nll, mask = _nll_xray_per_refl(F_obs, F_calc, sigma_F_obs)
     if mask is not None:
@@ -102,9 +87,8 @@ def nll_xray_mean(
     return nll.mean()
 
 
-# Alias: `nll_xray` is itself a sum now, so these are the same function. Kept
-# because it is re-exported from torchref.base, torchref.base.math_torch and
-# torchref.base.metrics.
+# Alias kept because it is re-exported from torchref.base,
+# torchref.base.math_torch and torchref.base.metrics.
 nll_xray_sum = nll_xray
 
 
@@ -115,15 +99,11 @@ def nll_xray_lognormal(
     eps: float = 1e-10,
 ) -> torch.Tensor:
     """
-    Compute X-ray negative log-likelihood assuming lognormal distribution.
+    X-ray negative log-likelihood assuming a lognormal on the amplitude.
 
-    This is a more realistic model for structure factor amplitudes, which must
-    be positive. For a lognormal distribution LogNormal(mu, sigma^2), the NLL is:
-    NLL = 0.5*(log(x) - mu)^2/sigma^2 + log(x) + log(sigma) + 0.5*log(2*pi)
-
-    Where mu and sigma are derived from F_obs and sigma_F_obs using:
-    - sigma = sqrt(log(1 + (sigma_F/F)^2))
-    - mu = log(F) - sigma^2/2
+    ``(mu, sigma)`` are moment-matched from ``(F_obs, sigma_F_obs)``:
+    ``sigma = sqrt(log(1 + (sigma_F/F)^2))``, ``mu = log(F) - sigma^2/2``. Note the model
+    is centred on the *observation*, so ``|F_calc|`` is the variate.
 
     Parameters
     ----------
@@ -134,31 +114,26 @@ def nll_xray_lognormal(
     sigma_F_obs : torch.Tensor
         Standard deviations of observed amplitudes.
     eps : float, optional
-        Small value to avoid numerical issues. Default is 1e-10.
+        Floor guarding the logs and the division. Default 1e-10.
 
     Returns
     -------
     torch.Tensor
-        Mean negative log-likelihood.
+        **Mean** negative log-likelihood -- unlike :func:`nll_xray`, which sums.
     """
-    # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
 
-    # Ensure positive values
     F_obs_safe = torch.clamp(F_obs, min=eps)
     F_calc_safe = torch.clamp(F_calc_amp, min=eps)
     sigma_F_safe = torch.clamp(sigma_F_obs, min=eps)
 
-    # Convert Gaussian parameters to lognormal parameters
-    # For lognormal: CV² = exp(σ²) - 1, where CV = sigma_F/F
+    # Gaussian -> lognormal parameters: CV² = exp(σ²) - 1 with CV = sigma_F/F,
+    # μ = log(F) - σ²/2.
     CV = sigma_F_safe / F_obs_safe
     CV_squared = CV**2
-    sigma_ln = torch.sqrt(torch.log1p(CV_squared))  # σ of lognormal
-
-    # μ = log(F) - σ²/2
+    sigma_ln = torch.sqrt(torch.log1p(CV_squared))
     mu_ln = torch.log(F_obs_safe) - 0.5 * sigma_ln**2
 
-    # Lognormal NLL: 0.5*(log(x) - μ)²/σ² + log(x) + log(σ) + 0.5*log(2π)
     log_F_calc = torch.log(F_calc_safe)
     diff = log_F_calc - mu_ln
 
@@ -170,7 +145,6 @@ def nll_xray_lognormal(
         + 0.5 * log_2pi
     )
 
-    # Mean over all reflections
     return nll.mean()
 
 
@@ -178,7 +152,10 @@ def log_loss(
     F_obs: torch.Tensor, F_calc: torch.Tensor, sigma_F_obs: torch.Tensor
 ) -> torch.Tensor:
     """
-    Compute log-space loss between observed and calculated structure factors.
+    Mean absolute difference of ``log F_obs`` and ``log |F_calc|``.
+
+    ``sigma_F_obs`` is accepted for signature compatibility and **ignored**, so this is
+    unweighted; non-positive ``F_obs`` yields non-finite values (there is no clamp).
 
     Parameters
     ----------
@@ -187,26 +164,24 @@ def log_loss(
     F_calc : torch.Tensor
         Calculated structure factors (complex).
     sigma_F_obs : torch.Tensor
-        Standard deviations of observed amplitudes (unused).
+        Unused.
 
     Returns
     -------
     torch.Tensor
         Mean absolute difference in log space.
     """
-    # Compute amplitude of calculated structure factors
     F_calc_amp = torch.abs(F_calc)
-
-    # Compute residual
     diff = torch.log(F_obs) - torch.log(F_calc_amp)
     return torch.mean(torch.abs(diff))
 
 
 def estimate_sigma_I(I):
     """
-    Estimate standard deviation of intensities.
+    Heuristic standard deviation for intensities that carry no measured sigma.
 
-    Separates positive and negative values for robust estimation.
+    5% of the intensity plus a floor: the RMS of the negative intensities when any are
+    present, otherwise 1% of the mean. Not a measurement -- a stand-in.
 
     Parameters
     ----------
@@ -227,19 +202,7 @@ def estimate_sigma_I(I):
 
 
 def estimate_sigma_F(F):
-    """
-    Estimate standard deviation of structure factor amplitudes.
-
-    Parameters
-    ----------
-    F : torch.Tensor
-        Structure factor amplitudes.
-
-    Returns
-    -------
-    torch.Tensor
-        Estimated standard deviations.
-    """
+    """Heuristic sigma for amplitudes: 5% of ``F`` plus 1% of its mean. Not measured."""
     sigma = F * 0.05 + torch.mean(F) * 0.01
     return sigma
 
@@ -248,21 +211,10 @@ def gaussian_to_lognormal_sigma(
     F: torch.Tensor, sigma_F: torch.Tensor, eps: float = 1e-10
 ) -> torch.Tensor:
     """
-    Approximate the sigma parameter of a lognormal distribution from Gaussian statistics.
+    Sigma parameter of a lognormal moment-matched to Gaussian ``(F, sigma_F)``.
 
-    If we assume F comes from a lognormal distribution X ~ LogNormal(mu, sigma^2), then:
-    - Mean: E[X] = F
-    - Std: sqrt(Var[X]) = sigma_F
-
-    For lognormal distribution:
-    - E[X] = exp(mu + sigma^2/2)
-    - Var(X) = exp(2*mu + sigma^2)(exp(sigma^2) - 1)
-
-    We can derive:
-    - CV^2 = Var[X]/E[X]^2 = exp(sigma^2) - 1
-    - sigma = sqrt(log(1 + CV^2))
-
-    where CV = sigma_F/F is the coefficient of variation.
+    ``CV^2 = Var/E^2 = exp(sigma^2) - 1``, hence ``sigma = sqrt(log(1 + CV^2))`` with
+    ``CV = sigma_F/F``.
 
     Parameters
     ----------
@@ -271,25 +223,20 @@ def gaussian_to_lognormal_sigma(
     sigma_F : torch.Tensor
         Standard deviations.
     eps : float, optional
-        Small value to avoid division by zero. Default is 1e-10.
+        Floor on both inputs, guarding the division. Default 1e-10.
 
     Returns
     -------
     torch.Tensor
-        Sigma parameter for lognormal distribution.
+        The lognormal ``sigma``.
     """
-    # Avoid division by zero
     F_safe = torch.clamp(F, min=eps)
     sigma_F_safe = torch.clamp(sigma_F, min=eps)
 
-    # Compute coefficient of variation (CV)
     CV = sigma_F_safe / F_safe
-
-    # Compute CV²
     CV_squared = CV**2
 
-    # For lognormal: CV² = exp(σ²) - 1
-    # Therefore: σ = √(log(1 + CV²))
+    # CV² = exp(σ²) - 1  =>  σ = √(log(1 + CV²))
     sigma_lognormal = torch.sqrt(torch.log1p(CV_squared))
 
     return sigma_lognormal
@@ -299,27 +246,24 @@ def gaussian_to_lognormal_mu(
     F: torch.Tensor, sigma_lognormal: torch.Tensor, eps: float = 1e-10
 ) -> torch.Tensor:
     """
-    Calculate the mu parameter of a lognormal distribution given F and sigma.
+    Mu parameter of a lognormal with mean ``F``: ``mu = log(F) - sigma^2/2``.
 
-    For lognormal distribution X ~ LogNormal(mu, sigma^2):
-    - E[X] = exp(mu + sigma^2/2)
-
-    Solving for mu:
-    - mu = log(E[X]) - sigma^2/2
+    Takes the lognormal ``sigma`` (from :func:`gaussian_to_lognormal_sigma`), not the
+    Gaussian ``sigma_F``.
 
     Parameters
     ----------
     F : torch.Tensor
         Structure factor amplitudes (mean of the distribution).
     sigma_lognormal : torch.Tensor
-        Sigma parameter from lognormal distribution.
+        Sigma parameter of the lognormal.
     eps : float, optional
-        Small value to avoid log of zero. Default is 1e-10.
+        Floor on ``F``, guarding the log. Default 1e-10.
 
     Returns
     -------
     torch.Tensor
-        Mu parameter for lognormal distribution.
+        The lognormal ``mu``.
     """
     F_safe = torch.clamp(F, min=eps)
     mu_lognormal = torch.log(F_safe) - 0.5 * sigma_lognormal**2

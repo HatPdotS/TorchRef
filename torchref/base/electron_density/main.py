@@ -1,46 +1,21 @@
 """
 Central electron density building, dispatched from one declarative table.
 
-One truncation contract, every backend
--------------------------------------
-Every atom is splatted at its own per-atom truncation radius
-(``N_sigma * sigma_eff``, with ``N_sigma = torchref.sigma_cutoff_ed``); there is
-no single global splat radius. Crucially, every production kernel now applies the
-*same* cutoff, so ``sigma_cutoff_ed`` means the same thing on every device:
+**One truncation contract, every backend**, so ``sigma_cutoff_ed`` means the same thing
+on every device: voxel v receives atom i's density iff ``||w||^2 <= r_i^2``, where ``w``
+is the minimum-image **Cartesian atom->voxel** vector (sphere centred on the atom, not
+on its nearest grid node) and ``r_i`` is the raw
+:mod:`~torchref.base.electron_density.radius_policy` radius, enumerated over the
+triclinic-correct per-axis box ``ceil(r_i * n_axis * ||inv_frac row_axis||)``. There is
+no global splat radius, no grid-dependent requantization, no diagonal metric, no cube.
 
-    voxel v receives atom i's density iff ``||w||^2 <= r_i^2``, where ``w`` is the
-    minimum-image **Cartesian atom->voxel** vector (the sphere is centred on the
-    atom, not on its nearest grid node) and ``r_i`` is the raw
-    :mod:`~torchref.base.electron_density.radius_policy` radius,
-
-enumerated over the triclinic-correct per-axis box
-``ceil(r_i * n_axis * ||inv_frac row_axis||)``. No grid-dependent requantization of
-the radius, no diagonal-metric approximation, no cube. Historically the backends
-disagreed here -- Metal inflated the radius to a whole voxel, the portable CPU
-splat used a node-centred diagonal metric, and the CPU fast path splatted a cube --
-by amounts comparable to or larger than the truncation error itself.
-
-Backend dispatch
-----------------
-Which kernel runs is decided from a table, not from an if/elif ladder: see
-:data:`torchref.base.electron_density._backends.DENSITY_BACKENDS`. That table is the only
-place the criteria are written down -- device, dtype, how availability is probed, and whether
-a runtime failure may degrade -- so it is also the only place to look, or to edit when adding
-a backend. The mechanics of reading it live in :mod:`torchref.utils.backends`.
-
-Selection needs no configuration: the fastest kernel that can run for the given device and
-dtype is chosen, and an accelerator that is missing or throws degrades to the portable splat
-(with a warning). There is no environment-variable dispatch and no "tier" knobs.
-
-The one override is ``force_portable``, which pins the portable reference splat. Pass it per
-call or scope it with ``with use_portable(): ...``. Its purpose is the single failure that
-automatic fallback cannot detect -- an accelerator kernel that runs and returns *wrong
-numbers* rather than raising.
-
-The production splats live in ``kernels/cuda/variable_radius.py``,
-``kernels/cpu/sphere_splat.py``, ``kernels/mps/variable_radius.py`` and (portable)
-``kernels/cpu/variable_radius.py``; the per-atom radius policy is in
-:mod:`torchref.base.electron_density.radius_policy`.
+Which kernel runs, and whether a runtime failure may degrade, is read from
+:data:`._backends.DENSITY_BACKENDS` -- the only place those criteria are written down.
+Selection needs no configuration and there are no env-var knobs: the fastest kernel for
+the device and dtype wins, and a missing or throwing accelerator degrades to the
+portable splat with a warning. The one override is ``force_portable`` (per call, or
+``with use_portable(): ...``), for the single failure automatic fallback cannot detect
+-- a kernel that runs and returns *wrong numbers* rather than raising.
 """
 
 from typing import Optional
@@ -79,56 +54,35 @@ def build_electron_density(
     dtype: torch.dtype = None,
     force_portable: Optional[bool] = None,
 ) -> torch.Tensor:
-    """
-    Build an electron density map from atomic parameters.
+    """Build an electron density map, shape ``(nx, ny, nz)``, from atomic parameters.
 
-    Each atom is splatted at its own per-atom truncation radius
-    (``N_sigma * sigma_eff``, with ``N_sigma = torchref.sigma_cutoff_ed``). Which kernel
-    does the splatting is decided from ``DENSITY_BACKENDS``; see the module docstring.
+    Each atom is splatted at its own truncation radius by whichever kernel
+    ``DENSITY_BACKENDS`` selects; see the module docstring.
 
     Parameters
     ----------
     real_space_grid : torch.Tensor
-        Coordinate grid, shape (nx, ny, nz, 3).
-    xyz_iso : torch.Tensor
-        Isotropic atom positions, shape (n_iso, 3).
-    adp_iso : torch.Tensor
-        Isotropic B-factors, shape (n_iso,).
-    occ_iso : torch.Tensor
-        Isotropic occupancies, shape (n_iso,).
+        Coordinate grid, shape ``(nx, ny, nz, 3)``.
+    xyz_iso, adp_iso, occ_iso : torch.Tensor
+        Isotropic positions ``(n_iso, 3)``, B-factors and occupancies ``(n_iso,)``.
     A_iso, B_iso : torch.Tensor
-        ITC92 coefficients, shape (n_iso, 5).
-    inv_frac_matrix : torch.Tensor
-        Cartesian-to-fractional matrix, shape (3, 3).
-    frac_matrix : torch.Tensor
-        Fractional-to-Cartesian matrix, shape (3, 3).
+        ITC92 coefficients, shape ``(n_iso, 5)``.
+    inv_frac_matrix, frac_matrix : torch.Tensor
+        Cartesian-to-fractional and fractional-to-Cartesian, shape ``(3, 3)``.
     voxel_size : torch.Tensor
-        Voxel dimensions, shape (3,). **Unused by every splat** -- the per-atom
-        truncation radius comes from each atom's B/U and ``torchref.sigma_cutoff_ed``
-        via :mod:`~torchref.base.electron_density.radius_policy`, and the enumeration
-        box from ``inv_frac_matrix``. Retained because ``SfFFT`` passes it
-        positionally; dropping it is a wider API change.
-    xyz_aniso : torch.Tensor, optional
-        Anisotropic atom positions, shape (n_aniso, 3).
-    u_aniso : torch.Tensor, optional
-        Anisotropic U parameters, shape (n_aniso, 6).
-    occ_aniso : torch.Tensor, optional
-        Anisotropic occupancies, shape (n_aniso,).
+        **Unused by every splat** -- the truncation radius comes from each atom's B/U and
+        ``torchref.sigma_cutoff_ed``, and the enumeration box from ``inv_frac_matrix``.
+        Retained because ``SfFFT`` passes it positionally.
+    xyz_aniso, u_aniso, occ_aniso : torch.Tensor, optional
+        Anisotropic positions ``(n_aniso, 3)``, U ``(n_aniso, 6)``, occupancies.
     A_aniso, B_aniso : torch.Tensor, optional
-        ITC92 coefficients for anisotropic atoms, shape (n_aniso, 5).
+        ITC92 coefficients for the anisotropic atoms, shape ``(n_aniso, 5)``.
     dtype : torch.dtype, optional
-        Float dtype for the density map. Defaults to the configured float
-        dtype (``get_float_dtype()``), which may be float64.
+        Float dtype of the map; defaults to ``get_float_dtype()``, which may be float64.
     force_portable : bool, optional
-        Pin the portable reference splat instead of the fastest available kernel. ``None``
-        defers to the process-wide setting (see ``torchref.utils.use_portable``). Use it to
-        check whether an accelerator kernel is producing wrong numbers -- the one failure
-        automatic fallback cannot detect.
-
-    Returns
-    -------
-    torch.Tensor
-        Electron density map, shape (nx, ny, nz).
+        Pin the portable reference splat. ``None`` defers to the process-wide setting
+        (``torchref.utils.use_portable``). Use it to check whether an accelerator kernel
+        is producing wrong numbers -- the one failure automatic fallback cannot detect.
     """
     if dtype is None:
         dtype = get_float_dtype()
@@ -186,17 +140,10 @@ def _add_isotropic(
     frac_matrix,
     force_portable=None,
 ):
-    """Add isotropic atoms with a per-atom variable radius.
+    """Add isotropic atoms at per-atom radius ``clamp(ceil(N_sigma * sigma_eff), [2,7])``.
 
-    The per-atom radius is ``clamp(ceil(N_sigma * sigma_eff), [2,7])`` with
-    ``N_sigma = torchref.sigma_cutoff_ed``.
-
-    Which kernel runs, and what happens if it fails, are read from ``DENSITY_BACKENDS``
-    rather than restated here -- there is no branch in this function to keep in sync with
-    the table. Every path applies the identical spherical cutoff, so the choice affects
-    speed, not result.
-
-    Only the first six arguments carry the device/dtype contract; the table names them.
+    Every path applies the identical spherical cutoff, so the backend affects speed, not
+    result. Only the first six arguments carry the device/dtype contract.
     """
     radius_per_atom = per_atom_radius_iso(adp, B, n_sigma=get_sigma_cutoff_ed())
     args = (density_map, xyz, adp, occ, A, B,
@@ -216,15 +163,10 @@ def _add_anisotropic(
     frac_matrix,
     force_portable=None,
 ):
-    """Add anisotropic atoms with a per-atom variable radius (mirrors the iso path).
+    """Add anisotropic atoms, radius = the ellipsoid's largest principal axis.
 
-    The per-atom radius is the isotropic bounding radius of the ellipsoid (largest
-    principal axis, ``per_atom_radius_aniso``). Every path culls on the Euclidean sphere at
-    that radius and evaluates the Mahalanobis form inside it -- one contract, as for the
-    isotropic pass.
-
-    Same table, same selection: the two passes differ only in the radius policy and in
-    which variant of each kernel the table names.
+    Every path culls on the Euclidean sphere at that radius and evaluates the
+    Mahalanobis form inside it; otherwise identical to the isotropic pass.
     """
     radius_per_atom = per_atom_radius_aniso(B, u, n_sigma=get_sigma_cutoff_ed())
     args = (density_map, xyz, u, occ, A, B,

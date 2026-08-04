@@ -2,14 +2,15 @@ Quick Start
 ===========
 
 This guide walks you through a basic crystallographic refinement with TorchRef.
+Every example below is executed by ``sphinx.ext.doctest`` when the docs are
+built, so it reflects the current API.
 
-For interactive examples, see the Jupyter notebooks in ``example_notebooks/``.
+For longer interactive versions, run the notebooks in ``example_notebooks/`` or
+open them in Colab:
 
-For a more detailed explanation check out these Colab notebooks:
-
-- `Quick Start <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/quickstart.ipynb>`_ - Getting started tutorial
-- `Structure Factors <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factors.ipynb>`_ - FFT-based F_calc
-- `Targets and Weighting <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/targets_and_weighting.ipynb>`_ - Refinement targets and weighting
+- `Quick Start <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/quickstart.ipynb>`_ — getting started tutorial
+- `Structure Factors <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factors.ipynb>`_ — FFT-based F_calc
+- `Targets and Weighting <https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/targets_and_weighting.ipynb>`_ — refinement targets and weighting
 
 Basic Refinement
 ----------------
@@ -22,7 +23,7 @@ The simplest way to run a refinement:
 
    # Initialize refinement with data and model
    refinement = LBFGSRefinement(
-       data_file="example.mtz",
+       data_file=f"{ROOT_TORCHREF}/example_notebooks/1DAW.mtz",
        pdb=f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb",
    )
 
@@ -86,11 +87,13 @@ Model parameters can be selectively frozen during refinement:
 
    model = read_pdb(f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb")
 
-   # Freeze/unfreeze by parameter type
-   model.freeze('b')      # Freeze all B-factors
-   model.unfreeze('b')    # Unfreeze B-factors
-   model.freeze('xyz')    # Freeze coordinates
-   model.unfreeze('xyz')  # Unfreeze coordinates
+   # Freeze/unfreeze by parameter type.
+   # Valid names are exactly 'xyz', 'adp', 'u', 'occupancy'. Anything else
+   # (e.g. 'b', 'occ') is silently ignored, not an error.
+   model.freeze('adp')      # Freeze all B-factors
+   model.unfreeze('adp')    # Unfreeze B-factors
+   model.freeze('xyz')      # Freeze coordinates
+   model.unfreeze('xyz')    # Unfreeze coordinates
 
    # Freeze/unfreeze by selection (phenix-style syntax)
    model.freeze_selection("chain A and resseq 10:20")
@@ -226,9 +229,10 @@ Access and inspect geometry restraints:
        pdb=f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb",
    )
 
-   # Access restraint counts
-   bonds = refinement.restraints.restraints['bond']['intra']
-   angles = refinement.restraints.restraints['angle']['intra']
+   # Access restraint counts. Restraints hang off the model, not the refinement,
+   # and are built lazily on first access.
+   bonds = refinement.model.restraints.restraints['bond']['intra']
+   angles = refinement.model.restraints.restraints['angle']['intra']
 
    print(f"Bond restraints: {bonds['indices'].shape[0]}")
    print(f"Angle restraints: {angles['indices'].shape[0]}")
@@ -299,7 +303,9 @@ Define custom refinement targets with automatic gradient computation:
 LossState Workflow
 ------------------
 
-The LossState object manages targets, weights, and metadata for refinement:
+The LossState object manages targets, weights, and metadata for refinement.
+Use ``complete_loss_state()``, which returns the refinement's persistent state
+with its cached losses refreshed, rather than assembling one yourself:
 
 .. testcode::
 
@@ -310,11 +316,7 @@ The LossState object manages targets, weights, and metadata for refinement:
        pdb=f"{ROOT_TORCHREF}/example_notebooks/1DAW.pdb",
    )
 
-   # Create and populate loss state
-   loss_state = refinement.create_loss_state()
-   refinement.add_target_info_to_state(loss_state)
-   refinement.populate_state_meta(loss_state)
-   refinement.update_weights(loss_state)
+   loss_state = refinement.complete_loss_state()
 
    # Compute total loss
    loss = loss_state.aggregate()
@@ -389,9 +391,11 @@ For quick refinements from the command line::
 
    torchref.refine -m structure.pdb -sf reflections.mtz -o output_dir/
 
+See :doc:`user_guide/cli` for the full set of commands and options.
+
 Next Steps
 ----------
 
-- See ``example_notebooks/quickstart.ipynb`` for a complete tutorial
-- See ``example_notebooks/structure_factors.ipynb`` for structure-factor calculation
-- See ``example_notebooks/targets_and_weighting.ipynb`` for targets and weighting
+- :doc:`user_guide/refinement` — parameter selection and monitoring
+- :doc:`user_guide/targets` — the seven X-ray modes, geometry and ADP restraints
+- :doc:`user_guide/scaling` — bulk solvent and anisotropic scaling

@@ -1,25 +1,10 @@
-"""
-Ramachandran NLL surfaces for backbone restraints.
+"""Ramachandran NLL surfaces for backbone restraints.
 
-Pre-computed NLL = -log P(phi, psi | residue_type) surfaces derived from
-MolProbity/cctbx distributions (6 residue-type-dependent surfaces at 1°
-resolution).  The surfaces are stored as a single tensor of shape
-(6, 360, 360) in ``torchref/data/rama_nll_surfaces.pt``.
-
-Notes
------
-The six surface types, indexed along the first tensor axis, are:
-
-==== ============= =================================================
-Index Name          Selection
-==== ============= =================================================
-0     general       Standard amino acids (not GLY, PRO, ILE, VAL, pre-PRO)
-1     glycine       Current residue is GLY
-2     cis-proline   Current residue is PRO with cis peptide bond
-3     trans-proline Current residue is PRO with trans peptide bond
-4     pre-proline   Next residue is PRO
-5     ile/val       Current residue is ILE or VAL
-==== ============= =================================================
+Pre-computed NLL = -log P(phi, psi | residue_type) from MolProbity/cctbx
+distributions, held as one (6, 360, 360) tensor at 1° resolution in
+``torchref/data/rama_nll_surfaces.pt``. The first axis indexes the six residue
+types; see the ``TYPE_*`` constants below for the mapping and
+:func:`classify_residue` for the selection rules.
 """
 
 from pathlib import Path

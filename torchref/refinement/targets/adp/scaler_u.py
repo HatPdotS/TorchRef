@@ -43,11 +43,13 @@ class ScalerURegularizationTarget(Target):
         self._scale = float(n_reflections) / 6.0
 
     def forward(self) -> torch.Tensor:
+        """``(tr U)² · N_ref / 6`` on the scaler's anisotropic U."""
         U = self._scaler.U
         trace = U[0] + U[1] + U[2]
         return self._scale * trace ** 2
 
     def stats(self) -> Dict[str, any]:
+        """Loss plus the trace, isotropic part, and deviatoric norm of the scaler U."""
         U = self._scaler.U.detach()
         trace = (U[0] + U[1] + U[2]).item()
         u_diag = U[:3]
