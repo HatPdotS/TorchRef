@@ -18,61 +18,33 @@ from .reflection_data import ReflectionData
 @dataclass
 class DatasetCollection(CrystalDataset):
     """
-    Container for multiple related crystal datasets.
+    Container for multiple related crystal datasets on a common HKL set.
 
-    All datasets share a common HKL set for efficient computation.
-    Datasets are aligned using the first dataset as a reference, with
-    missing reflections in subsequent datasets masked out.
+    Members are expanded in place onto the reference dataset's HKL grid
+    (:meth:`ReflectionData.validate_hkl`) and moved to the collection's device,
+    so adding a dataset MUTATES it. Dict-like access via ``[]``, ``keys()``,
+    ``values()``, ``items()``, ``get()``, and iteration yields
+    ``(name, dataset)`` in insertion order.
 
     Parameters
     ----------
     verbose : int, optional
         Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
     device : str, optional
-        Device for tensors ('cpu', 'cuda', etc.). Defaults to the configured
-        default device (``get_default_device()``).
+        Device for tensors. Defaults to ``get_default_device()``.
 
     Attributes
     ----------
     hkl : torch.Tensor
         Common HKL set for all datasets.
     n_datasets : int
-        Number of datasets in collection.
+        Number of datasets in the collection.
     datasets : Dict[str, ReflectionData]
         All member datasets keyed by name.
     reference_dataset : str or None
         Name of the reference dataset (drives HKL alignment).
     spacegroup : str or None
         Space group of the reference dataset.
-
-    Methods
-    -------
-    add_dataset(name, dataset, set_as_reference=False)
-        Add a dataset, aligning its HKL to the reference.
-    scale()
-        L-BFGS optimization of non-reference scale/anisotropy onto the reference.
-    keys() / values() / items() / get(name, default=None)
-        Dict-like accessors over the member datasets.
-
-    Examples
-    --------
-    ::
-
-        from torchref.io import DatasetCollection, ReflectionData
-
-        collection = DatasetCollection(device='cuda')
-
-        native = ReflectionData().load_mtz('native.mtz')
-        derivative = ReflectionData().load_mtz('derivative.mtz')
-
-        collection.add_dataset('native', native, set_as_reference=True)
-        collection.add_dataset('derivative', derivative)
-
-        for name, dataset in collection:
-            print(f"{name}: {len(dataset)} reflections")
-
-        # Access by name
-        native_F = collection['native'].F
     """
 
     # Collection-specific fields (not inherited from CrystalDataset)
@@ -89,7 +61,7 @@ class DatasetCollection(CrystalDataset):
         self, name: str, dataset: ReflectionData, set_as_reference: bool = False
     ) -> "DatasetCollection":
         """
-        Add a dataset to the collection.
+        Add a dataset, expanding it onto the reference HKL grid **in place**.
 
         Parameters
         ----------
@@ -98,9 +70,8 @@ class DatasetCollection(CrystalDataset):
         dataset : ReflectionData
             The dataset to add.
         set_as_reference : bool, optional
-            If True, use this dataset's HKL as the reference.
-            Default is False, but the first dataset added automatically
-            becomes the reference.
+            If True, this dataset's HKL becomes the reference. The first dataset
+            added becomes the reference regardless.
 
         Returns
         -------
@@ -111,19 +82,10 @@ class DatasetCollection(CrystalDataset):
         ------
         ValueError
             If a dataset with the same name already exists.
-
-        Examples
-        --------
-        ::
-
-            collection = DatasetCollection()
-            collection.add_dataset('native', native_data, set_as_reference=True)
-            collection.add_dataset('derivative', derivative_data)
         """
         if name in self._datasets:
             raise ValueError(f"Dataset '{name}' already exists in collection")
 
-        # First dataset or explicit reference becomes the reference
         if len(self._datasets) == 0 or set_as_reference:
             self._reference_dataset = name
             self._common_hkl = dataset.hkl.clone()
@@ -131,13 +93,9 @@ class DatasetCollection(CrystalDataset):
                 self._cell = dataset.cell.clone()
             self._spacegroup = dataset.spacegroup
 
-        # Validate HKL against reference
         if self._common_hkl is not None and dataset.hkl is not None:
             dataset.validate_hkl(self._common_hkl)
 
-        # Move dataset to same device as collection. ``.to`` is a no-op when
-        # the dataset is already on this device (handles cuda/mps/cpu uniformly
-        # and avoids the ``mps`` vs ``mps:0`` index-mismatch edge case).
         dataset.to(self.device)
 
         self._datasets[name] = dataset
@@ -184,35 +142,11 @@ class DatasetCollection(CrystalDataset):
         self._spacegroup = value
 
     def __getitem__(self, name: str) -> ReflectionData:
-        """
-        Get dataset by name.
-
-        Parameters
-        ----------
-        name : str
-            Name of the dataset.
-
-        Returns
-        -------
-        ReflectionData
-            The requested dataset.
-
-        Raises
-        ------
-        KeyError
-            If dataset name not found.
-        """
+        """Get a member dataset by name; ``KeyError`` if absent."""
         return self._datasets[name]
 
     def __iter__(self) -> Iterator[Tuple[str, ReflectionData]]:
-        """
-        Iterate over (name, dataset) pairs in order of addition.
-
-        Yields
-        ------
-        tuple of (str, ReflectionData)
-            Name and dataset for each dataset in collection.
-        """
+        """Iterate over ``(name, dataset)`` pairs in order of addition."""
         for name in self._dataset_order:
             yield name, self._datasets[name]
 
@@ -243,18 +177,10 @@ class DatasetCollection(CrystalDataset):
     ) -> "DatasetCollection":
         """Make the work/free (and validation) partition identical across members.
 
-        In a collection every member is expanded onto the same common HKL grid, so
-        a single work/free/validation assignment can be shared by all datasets.
-        Sharing it is also *correct*: per-dataset free sets would let a reflection
-        that is free in one timepoint leak into the work set of another, biasing the
-        cross-dataset R-free. This copies one canonical ``rfree_flags`` and
-        ``validation_flags`` onto every member (row-aligned; cheap clone).
-
-        The canonical partition is taken from a ``source`` member (default: the
-        reference dataset), whose ``rfree_flags`` define the common work/free split.
-        When ``val_fraction_of_free`` is given, a common validation set is carved out
-        of that member's free reflections (resolution-stratified via
-        :meth:`ReflectionData.generate_validation_set`) before broadcasting.
+        Overwrites every non-source member's ``rfree_flags`` /
+        ``validation_flags`` with the source's (row-aligned clones), because
+        per-dataset free sets would let a reflection that is free in one member
+        leak into another's work set and bias the cross-dataset R-free.
 
         Parameters
         ----------
@@ -287,7 +213,6 @@ class DatasetCollection(CrystalDataset):
                 f"Source dataset {src_name!r} has no rfree_flags to harmonize on."
             )
 
-        # Optionally carve a common validation set out of the source's free set.
         if val_fraction_of_free is not None:
             src.generate_validation_set(
                 val_fraction_of_free=val_fraction_of_free, seed=seed
@@ -331,34 +256,25 @@ class DatasetCollection(CrystalDataset):
         Returns
         -------
         dict
-            Dictionary mapping name to (hkl, F, F_sigma, rfree) tuples. The
-            values come from the deprecated ``ReflectionData.__call__``, so
-            F and F_sigma are MaskedTensors (not plain tensors) and each
-            dataset emits the same DeprecationWarning.
+            Name -> ``(hkl, F, F_sigma, rfree)``. Routed through the deprecated
+            ``ReflectionData.__call__``, so F/F_sigma are MaskedTensors and each
+            member emits a DeprecationWarning.
         """
         return {name: ds(mask=mask, scale=True) for name, ds in self}
 
     def scale(self):
         """
-        Scale all non-reference datasets onto the reference dataset.
+        Least-squares fit every non-reference dataset's scale and anisotropy
+        onto the reference, whose own parameters are left untouched.
 
-        Optimizes the scaling parameters of every non-reference dataset to
-        minimize the summed squared error between their corrected structure
-        factors and those of the reference dataset, correcting for both
-        overall scale and anisotropy. Uses an L-BFGS optimizer with strong
-        Wolfe line search: 10 outer ``optimizer.step`` calls, each with
-        ``max_iter=100``.
+        L-BFGS with strong-Wolfe line search, 10 outer steps of ``max_iter=100``.
+        Members' ``log_scale``/``U_aniso`` are mutated, and ``requires_grad`` is
+        turned on and back off around the fit.
 
         Raises
         ------
         ValueError
-            If no reference dataset has been set, or if the collection
-            contains only the reference dataset (nothing to scale).
-
-        Notes
-        -----
-        Scaling parameters of the reference dataset are left untouched; only
-        the non-reference datasets are optimized.
+            If no reference dataset is set, or there is nothing else to scale.
         """
         if self._reference_dataset is None:
             raise ValueError("No reference dataset set for scaling")
@@ -381,14 +297,12 @@ class DatasetCollection(CrystalDataset):
         def closure():
             optimizer.zero_grad()
             loss = 0.0
-            # Get scaled reference data (bypassing MaskedTensor which doesn't support autograd)
+            # get_corrected_data, not __call__: MaskedTensor has no autograd.
             ref_F_scaled, _ = ref_ds.get_corrected_data()
 
             for ds, ds_mask in zip(to_scale, ds_masks):
                 F_scaled, _ = ds.get_corrected_data()
-                # Combine masks
                 combined_mask = ds_mask & ref_mask
-                # Compute loss on valid reflections only
                 F_data = F_scaled[combined_mask]
                 ref_F_data = ref_F_scaled[combined_mask]
                 loss = loss + torch.sum((F_data - ref_F_data) ** 2)

@@ -1,6 +1,12 @@
-# =============================================================================
-# Difference Targets for Time-Resolved Crystallography
-# =============================================================================
+"""Difference targets for time-resolved crystallography.
+
+Four ways to compare a light/dark pair: :class:`DifferenceXrayTarget` (Gaussian
+NLL on amplitude differences), :class:`PhaseInformedDifferenceTarget` and
+:class:`TaylorCorrectedDifferenceTarget` (complex differences built from model
+phases), and :class:`RiceDifferenceTarget` (Rice likelihood on the non-negative
+complex-difference magnitude). All grafted phases are detached -- gradients must
+reach only ΔF_calc.
+"""
 
 import torch
 from torch import nn
@@ -24,57 +30,34 @@ if TYPE_CHECKING:
 
 
 class DifferenceXrayTarget(Target):
-    """
-    Target for time-resolved crystallography comparing light/dark states.
+    """Time-resolved difference target: Gaussian NLL on amplitude differences.
 
-    Compares calculated and observed difference amplitudes via a Gaussian NLL
-    with propagated error:
+    With ΔF_calc = |F_light_calc| - |F_dark_calc|, ΔF_obs = F_light_obs -
+    F_dark_obs and σ_diff = sqrt(σ_light² + σ_dark²), the loss is
+    0.5·(ΔF_obs - ΔF_calc)²/σ_diff² + log σ_diff + 0.5·log 2π, summed.
 
-    - ΔF_calc = |F_light_calc| - |F_dark_calc|
-    - ΔF_obs = F_light_obs - F_dark_obs
-    - σ_diff = sqrt(σ_light² + σ_dark²)
-    - NLL = 0.5 * (ΔF_obs - ΔF_calc)² / σ_diff² + log(σ_diff) + 0.5*log(2π)
-
-    Two initialization modes are supported: pass a ``dataset_collection`` with
-    pre-aligned 'dark' and 'light' datasets (recommended; lets scalers be shared
-    with other targets), or pass individual ``data_light``/``data_dark``
-    ReflectionData objects, in which case HKL matching is performed
-    automatically.
+    Either pass a ``dataset_collection`` of pre-aligned 'dark'/'light' datasets
+    (preferred; lets scalers be shared with other targets) or individual
+    ``data_light``/``data_dark``, which are HKL-matched automatically. The two
+    modes return arrays of different length -- see :meth:`get_delta_F_obs`.
 
     Parameters
     ----------
     dataset_collection : DatasetCollection, optional
         Collection containing 'dark' and 'light' datasets (pre-aligned HKL).
-        If provided, data_light and data_dark are ignored.
-    data_light : ReflectionData, optional
-        Reflection data for the light (excited) state.
-    data_dark : ReflectionData, optional
-        Reflection data for the dark (ground) state.
+        If provided, ``data_light``/``data_dark`` are ignored.
+    data_light, data_dark : ReflectionData, optional
+        Per-state reflection data; used only without a collection.
     model_light : ModelFT or MixedModel
-        Model for the light state structure factor calculation.
+        Model for the light (excited) state.
     model_dark : ModelFT
-        Model for the dark state structure factor calculation.
-    scaler_light : ScalerBase, optional
-        Scaler for the light state F_calc. Can be shared with other targets.
-    scaler_dark : ScalerBase, optional
-        Scaler for the dark state F_calc. Can be shared with other targets.
+        Model for the dark (ground) state.
+    scaler_light, scaler_dark : Scaler, optional
+        Per-state F_calc scalers. May be shared with other targets.
     use_work_set : bool, optional
-        If True, compute loss on work set. Default is True.
+        Loss on the work set if True (default), else on the test set.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Examples
-    --------
-    Using a DatasetCollection with shared scalers::
-
-        diff_target = DifferenceXrayTarget(
-            dataset_collection=collection,
-            model_light=model_mixed,
-            model_dark=model_dark,
-            scaler_light=scaler_light,
-            scaler_dark=scaler_dark,
-        )
-        loss = diff_target()
     """
 
     name: str = "difference_xray"
@@ -94,10 +77,8 @@ class DifferenceXrayTarget(Target):
         """Initialize DifferenceXrayTarget."""
         super().__init__(verbose=verbose)
 
-        # Store collection reference
         self._dataset_collection = dataset_collection
 
-        # Handle DatasetCollection mode
         if dataset_collection is not None:
             if "dark" not in dataset_collection:
                 raise ValueError(
@@ -167,12 +148,7 @@ class DifferenceXrayTarget(Target):
 
     @property
     def hkl(self) -> torch.Tensor:
-        """
-        Common HKL indices for both datasets.
-
-        Returns the aligned HKL from DatasetCollection if available,
-        otherwise the matched HKL computed from separate datasets.
-        """
+        """Common HKL: the collection's if aligned, else the matched subset."""
         if self._use_collection:
             return self._dataset_collection.hkl
         else:
@@ -181,26 +157,10 @@ class DifferenceXrayTarget(Target):
             return self._common_hkl
 
     def _hkl_to_hash(self, hkl: torch.Tensor) -> torch.Tensor:
+        """Hash (n, 3) Miller indices to ``h*p1 + k*p2 + l``. Not injective --
+        large or negative indices can alias, so the sorted merge below relies on
+        the actual indices not colliding.
         """
-        Convert HKL indices to hash values for efficient matching.
-
-        Uses a simple linear combination: hash = h * p1 + k * p2 + l
-        where p1 and p2 are large primes. This is not collision-free for
-        general Miller indices (negative or large indices can alias); the
-        downstream sorted-merge relies on the indices in practice not
-        colliding rather than on the hash being injective.
-
-        Parameters
-        ----------
-        hkl : torch.Tensor
-            Miller indices with shape (n_reflections, 3).
-
-        Returns
-        -------
-        torch.Tensor
-            Hash values with shape (n_reflections,).
-        """
-        # Use large primes for hashing
         p1 = 1000003
         p2 = 1000033
 
@@ -208,31 +168,22 @@ class DifferenceXrayTarget(Target):
         return h * p1 + k * p2 + l
 
     def _match_reflections(self):
-        """
-        Find common HKL indices between light and dark datasets.
+        """Cache the light/dark matched-index pair via an O(N log N) hash merge.
 
-        Uses hash-based matching for O(N log N) efficiency.
-        Stores matched indices for both datasets.
-
-        This method is only used when datasets are not pre-aligned
-        via DatasetCollection.
+        No-op in collection mode, where the datasets are already aligned.
         """
         if self._use_collection:
-            # Datasets are already aligned - no matching needed
             return
 
         hkl_light = self._data_light.hkl
         hkl_dark = self._data_dark.hkl
 
-        # Compute hashes
         hash_light = self._hkl_to_hash(hkl_light)
         hash_dark = self._hkl_to_hash(hkl_dark)
 
-        # Sort hashes and get indices
         sorted_light, sort_idx_light = torch.sort(hash_light)
         sorted_dark, sort_idx_dark = torch.sort(hash_dark)
 
-        # Find intersection using sorted merge
         matched_light = []
         matched_dark = []
 
@@ -245,13 +196,12 @@ class DifferenceXrayTarget(Target):
             elif sorted_light[i] > sorted_dark[j]:
                 j += 1
             else:
-                # Match found - map back to original indices
+                # Map back to pre-sort positions.
                 matched_light.append(sort_idx_light[i].item())
                 matched_dark.append(sort_idx_dark[j].item())
                 i += 1
                 j += 1
 
-        # Store matched indices as tensors
         device = hkl_light.device
         self._matched_indices_light = torch.tensor(
             matched_light, dtype=torch.long, device=device
@@ -298,7 +248,6 @@ class DifferenceXrayTarget(Target):
         self,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Get delta F_obs when using DatasetCollection (aligned HKL)."""
-        # Get observed data - datasets are already aligned
         F_obs_light, sigma_light = self._data_light.get_corrected_data()
         rfree_light = self._data_light.rfree_flags
         validity_light = self._data_light.masks().to(torch.bool)
@@ -306,22 +255,19 @@ class DifferenceXrayTarget(Target):
         rfree_dark = self._data_dark.rfree_flags
         validity_dark = self._data_dark.masks().to(torch.bool)
 
-        # Compute difference and propagated error
         delta_F_obs = F_obs_light - F_obs_dark
         sigma_diff = torch.sqrt(sigma_light**2 + sigma_dark**2)
 
-        # Combined mask: valid in both datasets AND in work/test set
-        # Reflections must be valid (not masked) in BOTH datasets
+        # A reflection counts only if valid in BOTH datasets.
         valid_both = validity_light & validity_dark
 
-        # Work/test set selection
-        # Note: rfree masks may be int32 (0/1), must convert to bool for proper masking
+        # rfree flags may be int32 0/1; ``&`` on ints is bitwise, not logical.
         rfree_light_bool = rfree_light.bool()
         rfree_dark_bool = rfree_dark.bool()
         if self.use_work_set:
-            set_mask = rfree_light_bool & rfree_dark_bool  # Work set in both
+            set_mask = rfree_light_bool & rfree_dark_bool
         else:
-            set_mask = ~rfree_light_bool & ~rfree_dark_bool  # Test set in both
+            set_mask = ~rfree_light_bool & ~rfree_dark_bool
 
         mask = valid_both & set_mask
 
@@ -334,7 +280,6 @@ class DifferenceXrayTarget(Target):
         if self._matched_indices_light is None:
             self._match_reflections()
 
-        # Get observed data (corrected amplitudes + validity from masks)
         F_obs_light, sigma_light = self._data_light.get_corrected_data()
         rfree_light = self._data_light.rfree_flags
         validity_light = self._data_light.masks().to(torch.bool)
@@ -342,7 +287,6 @@ class DifferenceXrayTarget(Target):
         rfree_dark = self._data_dark.rfree_flags
         validity_dark = self._data_dark.masks().to(torch.bool)
 
-        # Extract matched reflections
         F_light = F_obs_light[self._matched_indices_light]
         F_dark = F_obs_dark[self._matched_indices_dark]
         sig_light = sigma_light[self._matched_indices_light]
@@ -350,19 +294,16 @@ class DifferenceXrayTarget(Target):
         valid_light = validity_light[self._matched_indices_light]
         valid_dark = validity_dark[self._matched_indices_dark]
 
-        # Compute difference and propagated error
         delta_F_obs = F_light - F_dark
         sigma_diff = torch.sqrt(sig_light**2 + sig_dark**2)
 
-        # Combined validity: must be valid in BOTH datasets
+        # A reflection counts only if valid in BOTH datasets.
         valid_both = valid_light & valid_dark
 
-        # Work/test set mask (use intersection of both masks)
         rfree_light_matched = rfree_light[self._matched_indices_light]
         rfree_dark_matched = rfree_dark[self._matched_indices_dark]
 
-        # Only include reflections that are valid AND in work/test set for BOTH
-        # Note: rfree masks may be int32 (0/1), must convert to bool for proper masking
+        # rfree flags may be int32 0/1; ``&`` on ints is bitwise, not logical.
         rfree_light_bool = rfree_light_matched.bool()
         rfree_dark_bool = rfree_dark_matched.bool()
         if self.use_work_set:
@@ -399,10 +340,8 @@ class DifferenceXrayTarget(Target):
         torch.Tensor
             ΔF_calc for all reflections (full size, use mask from get_delta_F_obs).
         """
-        # Get HKL to use
         hkl = self.hkl
 
-        # Compute F_calc for light state
         if fcalc_light is None:
             if self._model_light is None:
                 raise RuntimeError(
@@ -410,21 +349,17 @@ class DifferenceXrayTarget(Target):
                 )
             fcalc_light = self._model_light(hkl, recalc=recalc)
 
-        # Apply scaler if available
         if self._scaler_light is not None:
             fcalc_light = self._scaler_light(fcalc_light)
 
-        # Compute F_calc for dark state
         if fcalc_dark is None:
             if self._model_dark is None:
                 raise RuntimeError("Cannot compute F_calc_dark: no model_dark set.")
             fcalc_dark = self._model_dark(hkl, recalc=recalc)
 
-        # Apply scaler if available
         if self._scaler_dark is not None:
             fcalc_dark = self._scaler_dark(fcalc_dark)
 
-        # Compute amplitude difference
         F_light_amp = torch.abs(fcalc_light)
         F_dark_amp = torch.abs(fcalc_dark)
         delta_F_calc = F_light_amp - F_dark_amp
@@ -456,23 +391,20 @@ class DifferenceXrayTarget(Target):
         torch.Tensor
             Summed Gaussian NLL over included reflections (scalar).
         """
-        # Get observed differences
         delta_F_obs, sigma_diff, mask = self.get_delta_F_obs()
 
-        # Get calculated differences
         delta_F_calc = self.get_delta_F_calc(
             fcalc_light=fcalc_light, fcalc_dark=fcalc_dark, recalc=recalc
         )
 
-        # Apply mask using torch.where to avoid boolean indexing (no nonzero sync)
+        # Mask via torch.where, not boolean indexing: no nonzero() device sync.
         delta_F_obs = torch.where(mask, delta_F_obs, torch.zeros_like(delta_F_obs))
         delta_F_calc = torch.where(mask, delta_F_calc, torch.zeros_like(delta_F_calc))
         sigma_diff = torch.where(mask, sigma_diff, torch.ones_like(sigma_diff))
 
-        # Compute Gaussian NLL
         diff = delta_F_obs - delta_F_calc
 
-        # Avoid division by zero
+        # Floor sigma at 10% of its median so a zero sigma cannot blow up.
         eps = torch.median(sigma_diff) * 1e-1
         sigma_safe = torch.clamp(sigma_diff, min=eps)
 
@@ -551,25 +483,17 @@ class DifferenceXrayTarget(Target):
 
 
 class PhaseInformedDifferenceTarget(Target):
-    """
-    Phase-informed difference target for time-resolved crystallography.
+    """Difference target comparing complex differences via grafted model phases.
 
-    Uses (detached) model phases to build a complex observed difference, then
-    compares with the calculated complex difference:
+    Detached model phases φ turn the observed amplitude difference into a
+    complex one, which is then compared with the calculated complex difference::
 
-        ΔF_calc = F_light_calc - F_dark_calc  (complex)
-        ΔF_obs_complex = ΔF_obs * exp(i * φ)  (amplitude difference
-            ΔF_obs = |F_light_obs| - |F_dark_obs| grafted with phase φ)
-        Loss = |ΔF_obs_complex - ΔF_calc|² / σ_diff²
+        ΔF_calc      = F_light_calc - F_dark_calc
+        ΔF_obs_cplx  = (|F_light_obs| - |F_dark_obs|) * exp(i·φ)
+        Loss         = |ΔF_obs_cplx - ΔF_calc|² / σ_diff²
 
-    Naming note: the "light" state is named consistently here and in the
-    Parameters / ``forward`` (``model_light``, ``fcalc_light``); when the
-    light model is a mixed/excited-state model it may be referred to as
-    "mixed" elsewhere, but the symbol is ``F_light_calc`` throughout.
-
-    The phase source is selected by ``phase_source``: "dark" (dark model
-    phases), "difference" (phase of the calculated difference ΔF_calc), or
-    "mixed" (mixed/light model phases).
+    The light state is ``F_light_calc`` throughout even when the light model is
+    a mixed/excited-state model (called "mixed" elsewhere).
 
     Parameters
     ----------
@@ -579,27 +503,15 @@ class PhaseInformedDifferenceTarget(Target):
         Model for the light/excited state.
     model_dark : ModelFT
         Model for the dark/ground state.
-    scaler_light : Scaler, optional
-        Scaler for light state F_calc.
-    scaler_dark : Scaler, optional
-        Scaler for dark state F_calc.
-    phase_source : str, optional
-        Source for phases: "dark", "difference", or "mixed". Default is "difference".
+    scaler_light, scaler_dark : Scaler, optional
+        Per-state F_calc scalers.
+    phase_source : {"dark", "difference", "mixed"}, optional
+        Where φ comes from: the dark model, the calculated difference ΔF_calc,
+        or the mixed/light model. Default is "difference".
     use_work_set : bool, optional
-        If True, compute loss on work set only. Default is True.
+        Loss on the work set if True (default), else on the test set.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Examples
-    --------
-    Using difference phases (recommended)::
-
-        target = PhaseInformedDifferenceTarget(
-            dataset_collection=collection,
-            model_light=mixed_model,
-            model_dark=model_dark,
-            phase_source="difference",
-        )
     """
 
     name: str = "phase_informed_difference"
@@ -670,32 +582,15 @@ class PhaseInformedDifferenceTarget(Target):
         F_dark_calc: torch.Tensor,
         F_mixed_calc: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Get phases based on phase_source setting.
-
-        IMPORTANT: Phases are detached from the computation graph so that
-        gradients only flow through ΔF_calc, not through the reconstructed
-        ΔF_obs_complex. Otherwise we get spurious gradients that can cause
-        refinement to stop at ~50%.
-
-        Parameters
-        ----------
-        F_dark_calc : complex tensor
-            Dark model structure factors
-        F_mixed_calc : complex tensor
-            Mixed/light model structure factors
-
-        Returns
-        -------
-        torch.Tensor
-            Phases to use for observed difference (detached from gradient graph)
+        """Phase for the observed difference, per ``phase_source``; detached, so
+        gradients reach only ΔF_calc -- letting them into the reconstructed
+        ΔF_obs adds spurious terms that stall refinement part-way.
         """
         if self.phase_source == "dark":
             return torch.angle(F_dark_calc).detach()
         elif self.phase_source == "mixed":
             return torch.angle(F_mixed_calc).detach()
         elif self.phase_source == "difference":
-            # Use phase of calculated difference
             delta_F_calc = F_mixed_calc - F_dark_calc
             return torch.angle(delta_F_calc).detach()
         else:
@@ -726,7 +621,6 @@ class PhaseInformedDifferenceTarget(Target):
         """
         hkl = self.hkl
 
-        # Get F_calc for light/mixed
         if fcalc_light is None:
             if self._model_light is None:
                 raise RuntimeError("No model_light set")
@@ -735,7 +629,6 @@ class PhaseInformedDifferenceTarget(Target):
         if self._scaler_light is not None:
             fcalc_light = self._scaler_light(fcalc_light)
 
-        # Get F_calc for dark
         if fcalc_dark is None:
             if self._model_dark is None:
                 raise RuntimeError("No model_dark set")
@@ -744,27 +637,19 @@ class PhaseInformedDifferenceTarget(Target):
         if self._scaler_dark is not None:
             fcalc_dark = self._scaler_dark(fcalc_dark)
 
-        # Get phases based on phase_source setting
         phi = self._get_phases(fcalc_dark, fcalc_light)
 
-        # Observed amplitude difference
         delta_F_obs = self._F_obs_light - self._F_obs_dark
-
-        # Make observed difference complex using model phases
         delta_F_obs_complex = delta_F_obs * torch.exp(1j * phi)
-
-        # Calculated complex difference
         delta_F_calc = fcalc_light - fcalc_dark
 
-        # Apply mask
         delta_F_obs_complex = delta_F_obs_complex[self._mask]
         delta_F_calc = delta_F_calc[self._mask]
         sigma_diff = self._sigma_diff[self._mask]
 
-        # Complex difference
         diff = delta_F_obs_complex - delta_F_calc
 
-        # Weighted sum of squared residuals (χ²-style NLL, unnormalised)
+        # χ²-style NLL: summed, unnormalised.
         loss = (torch.abs(diff)**2 / sigma_diff**2).sum()
 
         return loss
@@ -829,20 +714,17 @@ class PhaseInformedDifferenceTarget(Target):
 
 
 class TaylorCorrectedDifferenceTarget(Target):
-    """
-    Taylor-corrected difference target for time-resolved crystallography.
+    """Difference target using the exact complex-exponential phase-shift identity.
 
-    Builds the observed complex difference from an exact complex-exponential
-    expansion of the model phase shift between dark and light states (no
-    small-angle approximation). Note: the "Taylor" name is historical; the
-    expression below is an exact algebraic identity, not a truncated Taylor
-    series.
+    Builds the observed complex difference from the model phase rotation with no
+    small-angle approximation -- the "Taylor" name is historical, the expression
+    is an exact algebraic identity::
 
-        ΔF_obs = exp(i*φ_dark) * [F_obs_dark * (exp(i*dφ) - 1) + dF_obs * exp(i*dφ)]
+        ΔF_obs = exp(i·φ_dark)·[F_obs_dark·(exp(i·dφ) - 1) + dF_obs·exp(i·dφ)]
 
-    where dφ = φ_light_calc - φ_dark_calc is the model phase rotation and
-    dF_obs = F_obs_light - F_obs_dark is the observed amplitude difference. The
-    loss is Loss = |ΔF_obs - ΔF_calc|² / σ_diff².
+    with dφ = φ_light_calc - φ_dark_calc the model phase rotation and
+    dF_obs = F_obs_light - F_obs_dark the observed amplitude difference. The loss
+    is |ΔF_obs - ΔF_calc|² / σ_diff², summed.
 
     Parameters
     ----------
@@ -852,24 +734,12 @@ class TaylorCorrectedDifferenceTarget(Target):
         Model for the light/excited state.
     model_dark : ModelFT
         Model for the dark/ground state.
-    scaler_light : Scaler, optional
-        Scaler for light state F_calc.
-    scaler_dark : Scaler, optional
-        Scaler for dark state F_calc.
+    scaler_light, scaler_dark : Scaler, optional
+        Per-state F_calc scalers.
     use_work_set : bool, optional
-        If True, compute loss on work set only. Default is True.
+        Loss on the work set if True (default), else on the test set.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Examples
-    --------
-    Basic usage::
-
-        target = TaylorCorrectedDifferenceTarget(
-            dataset_collection=collection,
-            model_light=mixed_model,
-            model_dark=model_dark,
-        )
     """
 
     name: str = "taylor_corrected_difference"
@@ -955,12 +825,7 @@ class TaylorCorrectedDifferenceTarget(Target):
         recalc: bool = True,
     ) -> torch.Tensor:
         """
-        Compute Taylor-corrected difference loss.
-
-        The observed complex difference is constructed using the exact
-        complex-exponential identity (the "Taylor" label is historical; this
-        is exact, not a truncated series):
-            ΔF_obs = exp(i*φ_dark) * [F_obs_dark * (exp(i*dφ) - 1) + dF_obs * exp(i*dφ)]
+        Compute the Taylor-corrected difference loss (identity in the class doc).
 
         Parameters
         ----------
@@ -978,7 +843,6 @@ class TaylorCorrectedDifferenceTarget(Target):
         """
         hkl = self.hkl
 
-        # Get F_calc for light/mixed
         if fcalc_light is None:
             if self._model_light is None:
                 raise RuntimeError("No model_light set")
@@ -987,7 +851,6 @@ class TaylorCorrectedDifferenceTarget(Target):
         if self._scaler_light is not None:
             fcalc_light = self._scaler_light(fcalc_light)
 
-        # Get F_calc for dark
         if fcalc_dark is None:
             if self._model_dark is None:
                 raise RuntimeError("No model_dark set")
@@ -996,34 +859,22 @@ class TaylorCorrectedDifferenceTarget(Target):
         if self._scaler_dark is not None:
             fcalc_dark = self._scaler_dark(fcalc_dark)
 
-        # Dark phase (dark model is typically frozen, but detach anyway for safety)
+        # Both phases are detached so gradients reach only ΔF_calc, never the
+        # reconstructed ΔF_obs -- spurious terms there stall refinement.
         phi_dark = torch.angle(fcalc_dark).detach()
-
-        # Phase difference as complex exponential exp(i*dφ)
-        # This is exact, no small-angle approximation needed
-        # IMPORTANT: Detach phi_light so gradients only flow through ΔF_calc,
-        # not through the reconstructed ΔF_obs_complex. Otherwise we get
-        # spurious gradients that can cause refinement to stop at ~50%.
         phi_light = torch.angle(fcalc_light).detach()
-        dphi = torch.exp(1j * (phi_light - phi_dark))  # complex unit vector (no gradients)
+        dphi = torch.exp(1j * (phi_light - phi_dark))
 
-        # Observed amplitude difference
         dF_obs = self._F_obs_light - self._F_obs_dark
 
-        # Exact Taylor expansion of F_light - F_dark:
-        # ΔF = (F + dF) * exp(i*φ) * exp(i*dφ) - F * exp(i*φ)
-        #    = exp(i*φ) * [(F + dF) * exp(i*dφ) - F]
-        #    = exp(i*φ) * [F * (exp(i*dφ) - 1) + dF * exp(i*dφ)]
-        #
-        # Substituting observed values:
+        # exp(iφ)·[(F + dF)·exp(i·dφ) - F], regrouped, with observed F and dF.
         delta_F_obs_complex = torch.exp(1j * phi_dark) * (
             self._F_obs_dark * (dphi - 1) + dF_obs * dphi
         )
 
-        # Calculated complex difference
         delta_F_calc = fcalc_light - fcalc_dark
 
-        # Apply mask using torch.where to avoid boolean indexing (no nonzero sync)
+        # Mask via torch.where, not boolean indexing: no nonzero() device sync.
         zero_c = torch.zeros_like(delta_F_obs_complex)
         delta_F_obs_complex = torch.where(self._mask, delta_F_obs_complex, zero_c)
         delta_F_calc = torch.where(self._mask, delta_F_calc, zero_c)
@@ -1175,43 +1026,19 @@ class TaylorCorrectedDifferenceTarget(Target):
 
 
 class RiceDifferenceTarget(Target):
-    """
-    Rice-distribution difference target for time-resolved crystallography.
+    """Rice-likelihood difference target for time-resolved crystallography.
 
-    Works in complex space by grafting detached model phases onto observed
-    amplitudes, then taking the complex difference. The magnitude of this
-    complex difference is always non-negative, enabling a proper Rice
-    distribution likelihood.
+    Grafts detached model phases onto the observed amplitudes, differences in
+    complex space, then takes magnitudes -- non-negative by construction, so a
+    Rice likelihood (magnitude of a complex signal plus Gaussian noise) applies
+    where an amplitude difference could not::
 
-    The procedure:
+        A_obs = |F_obs_light·exp(i·φ_light) - F_obs_dark·exp(i·φ_dark)|
+        ν     = |F_calc_light - F_calc_dark|
+        NLL   = -log(A_obs/σ²) + (A_obs² + ν²)/(2σ²) - log I₀(A_obs·ν/σ²)
 
-    1. Reconstruct complex observed structure factors using detached model phases::
-
-        F_obs_light_complex = F_obs_light * exp(i * φ_calc_light)
-        F_obs_dark_complex  = F_obs_dark  * exp(i * φ_calc_dark)
-
-    2. Form complex differences::
-
-        ΔF_obs_complex = F_obs_light_complex - F_obs_dark_complex
-        ΔF_calc        = F_calc_light - F_calc_dark
-
-    3. Compute strictly positive amplitudes::
-
-        A_obs = |ΔF_obs_complex|   (always ≥ 0)
-        ν     = |ΔF_calc|          (always ≥ 0)
-
-    4. Apply Rice distribution NLL::
-
-        NLL = -log(A) + log(σ²) + (A² + ν²)/(2σ²)
-              - log(I₀(A·ν/σ²))
-
-    For numerical stability the implementation evaluates the Bessel term via
-    the exponentially-scaled ``torch.special.i0e``, using the identity
-    ``log(I₀(x)) = log(i0e(x)) + x`` (see ``forward``); the math is equivalent.
-
-    The Rice distribution naturally models the magnitude of a complex signal
-    plus Gaussian noise, making it statistically appropriate for comparing
-    amplitudes that are always positive by construction.
+    ``forward`` evaluates the Bessel term as ``log(i0e(x)) + x`` for numerical
+    stability; the math is equivalent.
 
     Parameters
     ----------
@@ -1221,34 +1048,12 @@ class RiceDifferenceTarget(Target):
         Model for the light/excited state.
     model_dark : ModelFT
         Model for the dark/ground state.
-    scaler_light : Scaler, optional
-        Scaler for light state F_calc.
-    scaler_dark : Scaler, optional
-        Scaler for dark state F_calc.
+    scaler_light, scaler_dark : Scaler, optional
+        Per-state F_calc scalers.
     use_work_set : bool, optional
-        If True, compute loss on work set only. Default is True.
+        Loss on the work set if True (default), else on the test set.
     verbose : int, optional
         Verbosity level. Default is 0.
-
-    Examples
-    --------
-    Basic usage::
-
-        target = RiceDifferenceTarget(
-            dataset_collection=collection,
-            model_light=mixed_model,
-            model_dark=model_dark,
-        )
-
-    With scalers::
-
-        target = RiceDifferenceTarget(
-            dataset_collection=collection,
-            model_light=mixed_model,
-            model_dark=model_dark,
-            scaler_light=scaler_light,
-            scaler_dark=scaler_dark,
-        )
     """
 
     name: str = "rice_difference"
@@ -1350,7 +1155,6 @@ class RiceDifferenceTarget(Target):
         """
         hkl = self.hkl
 
-        # Compute F_calc for light/mixed
         if fcalc_light is None:
             if self._model_light is None:
                 raise RuntimeError("No model_light set")
@@ -1359,7 +1163,6 @@ class RiceDifferenceTarget(Target):
         if self._scaler_light is not None:
             fcalc_light = self._scaler_light(fcalc_light)
 
-        # Compute F_calc for dark
         if fcalc_dark is None:
             if self._model_dark is None:
                 raise RuntimeError("No model_dark set")
@@ -1368,28 +1171,22 @@ class RiceDifferenceTarget(Target):
         if self._scaler_dark is not None:
             fcalc_dark = self._scaler_dark(fcalc_dark)
 
-        # Graft detached phases onto observed amplitudes
+        # Phases detached: gradients must reach only ΔF_calc.
         phi_light = torch.angle(fcalc_light).detach()
         phi_dark = torch.angle(fcalc_dark).detach()
 
         F_obs_light_complex = self._F_obs_light * torch.exp(1j * phi_light)
         F_obs_dark_complex = self._F_obs_dark * torch.exp(1j * phi_dark)
 
-        # Complex differences
         delta_F_obs_complex = F_obs_light_complex - F_obs_dark_complex
         delta_F_calc = fcalc_light - fcalc_dark
 
-        # Strictly positive amplitudes
         A_obs = torch.abs(delta_F_obs_complex)
         nu = torch.abs(delta_F_calc)
 
-        # Rice NLL: -log P(A | ν, σ)
-        #   = -log(A/σ²) + (A² + ν²)/(2σ²) - log(I₀(A·ν/σ²))
-        # Using i0e for numerical stability: log(I₀(x)) = log(i0e(x)) + x
+        # Rice NLL via i0e: log(I₀(x)) = log(i0e(x)) + x.
         sigma_sq = self._sigma_diff**2
         sigma_sq_safe = torch.clamp(sigma_sq, min=1e-8)
-
-        # Clamp A_obs to avoid log(0)
         A_safe = torch.clamp(A_obs, min=1e-12)
 
         term1 = -torch.log(A_safe / sigma_sq_safe)

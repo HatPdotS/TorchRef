@@ -1,41 +1,24 @@
-"""
-Centralized configuration for TorchRef.
+"""Centralized configuration for TorchRef.
 
-Default dtypes can be set via environment variables at import time:
-- TORCHREF_DTYPE_FLOAT: float32 (default) or float64
-- TORCHREF_DTYPE_INT: int32 (default) or int64
-- TORCHREF_DTYPE_COMPLEX: complex64 (default) or complex128
+Set at import time from the environment -- ``TORCHREF_DTYPE_FLOAT`` (float32 default /
+float64), ``TORCHREF_DTYPE_INT`` (int32 / int64), ``TORCHREF_DTYPE_COMPLEX``
+(complex64 / complex128), ``TORCHREF_DEVICE`` ('auto' default / 'cuda' / 'mps' / 'cpu'),
+``TORCHREF_SIGMA_CUTOFF_ED`` (3.0) and ``TORCHREF_COMPILE_TARGETS`` -- or at runtime by
+attribute assignment::
 
-Default device is auto-detected at import time using cuda -> mps -> cpu.
-A CUDA device is only picked automatically if it satisfies *both*:
-  * compute capability >= the minimum sm_* compiled into the current
-    PyTorch build (``torch.cuda.get_arch_list()``), and
-  * total VRAM >= ``_MIN_CUDA_VRAM_GB`` (10 GB).
-Otherwise auto-detection falls back to MPS or CPU with a warning that
-names the failing requirement. Override the resolved device with the
-TORCHREF_DEVICE environment variable ('auto' (default), 'cuda', 'mps',
-'cpu'); an explicit value bypasses the capability/VRAM gates but still
-fails fast if the requested backend is unavailable on this host.
-
-Users can also change dtypes/device/density-cutoff at runtime via attribute
-assignment:
-    import torchref
     torchref.dtypes.float = torch.float64
     torchref.device.current = torch.device('cpu')
-    torchref.sigma_cutoff_ed.value = 4.0   # density splat truncation (sigmas)
+    torchref.sigma_cutoff_ed.value = 4.0   # density splat truncation, in sigmas
 
-Or read current values:
-    torchref.dtypes.float        # torch.float32
-    torchref.device.current      # torch.device('cuda')
-    torchref.sigma_cutoff_ed.value  # 3.0
+The default device is auto-detected cuda -> mps -> cpu, and a CUDA device is picked only
+if its compute capability is >= the minimum sm_* in this PyTorch build *and* its VRAM is
+>= ``_MIN_CUDA_VRAM_GB``; otherwise auto-detection falls back with a warning naming the
+failing requirement. An explicit ``TORCHREF_DEVICE`` bypasses those gates but still fails
+fast if the backend is unavailable.
 
-The density-splat sigma cutoff can also be set at import time via the
-TORCHREF_SIGMA_CUTOFF_ED environment variable (default 3.0).
-
-MPS caveat: Apple's MPS backend does not support float64 / complex128. If
-the resolved device is MPS and the configured float dtype is float64, a
-warning is emitted at import time. Either set TORCHREF_DTYPE_FLOAT=float32
-or TORCHREF_DEVICE=cpu to silence it.
+**MPS supports neither float64 nor complex128.** Resolving to MPS with float64
+configured warns at import; set ``TORCHREF_DTYPE_FLOAT=float32`` or
+``TORCHREF_DEVICE=cpu``.
 """
 
 import os
@@ -79,18 +62,8 @@ _COMPLEX_DTYPE_MAP = {
 
 
 class DtypeConfig:
-    """
-    Dtype configuration with property-based access.
-
-    Access dtypes as attributes:
-        dtypes.float    # get current float dtype
-        dtypes.int      # get current int dtype
-        dtypes.complex  # get current complex dtype
-
-    Set dtypes via assignment:
-        dtypes.float = torch.float64
-        dtypes.int = torch.int64
-        dtypes.complex = torch.complex128
+    """Dtype configuration by attribute: ``dtypes.float``, ``.int``, ``.complex``,
+    readable and assignable (``dtypes.float = torch.float64``).
     """
 
     def __init__(self):
@@ -206,17 +179,10 @@ _DEFAULT_SIGMA_CUTOFF_ED = 3.0
 
 
 class SigmaCutoffConfig:
-    """
-    Density-splat sigma cutoff with property-based access.
+    """Number of sigmas at which the per-atom electron-density Gaussian is truncated.
 
-    Read/set the number of sigmas at which the per-atom electron-density
-    Gaussian is truncated::
-
-        sigma_cutoff_ed.value          # get current cutoff (default 3.0)
-        sigma_cutoff_ed.value = 4.0     # set at runtime
-
-    Initialised from the ``TORCHREF_SIGMA_CUTOFF_ED`` environment variable at
-    import time (default ``3.0``). Must be a positive number.
+    ``sigma_cutoff_ed.value`` reads or sets it; initialised from
+    ``TORCHREF_SIGMA_CUTOFF_ED`` (default 3.0). Must be positive.
     """
 
     def __init__(self):
@@ -266,6 +232,66 @@ def get_sigma_cutoff_ed() -> float:
     return sigma_cutoff_ed.value
 
 
+_DEFAULT_COMPILE_TARGETS = False
+
+
+class CompileTargetsConfig:
+    """Whether to ``torch.compile`` the quadrature X-ray target kernels.
+
+    ``compile_targets.value`` reads or sets it; initialised from
+    ``TORCHREF_COMPILE_TARGETS`` ("1"/"true"/"yes"/"on"). Applies to the full-form MLF
+    target (``--xray-mode ml_full``), whose per-reflection fixed-node quadrature is bound by
+    dispatch and memory traffic in eager mode, so fusing it is worth roughly an order of
+    magnitude.
+
+    **Off by default because of compile latency, which autograd dominates**: compiling the
+    backward costs ~2 minutes on the first call, so a short refinement of a small structure
+    gets slower, not faster. It pays off for big datasets (the target scales with reflection
+    count) and for long or repeated runs in one process (ensembles, collection/PanDDA
+    refinements, interactive sessions) where the compile amortises.
+
+    Only the reflection-count dimension varies, so the kernels compile with ``dynamic=True``
+    and **one** compilation serves every dataset size, work/free subset and gathered tensor
+    -- no chunking or padding layer is needed. To cut latency point
+    ``TORCHINDUCTOR_CACHE_DIR`` at node-local disk (never gpfs) so codegen is reused across
+    processes; artifacts are ~22 MB.
+
+    **Keep it off for float64 and gradient-verification work regardless**: that path is the
+    eager reference and is deliberately unfused.
+    """
+
+    def __init__(self):
+        raw = os.environ.get("TORCHREF_COMPILE_TARGETS")
+        if raw is None:
+            self._value = _DEFAULT_COMPILE_TARGETS
+        else:
+            self._value = raw.strip().lower() in ("1", "true", "yes", "on")
+
+    @property
+    def value(self) -> bool:
+        """Whether quadrature target kernels are ``torch.compile``d."""
+        return self._value
+
+    @value.setter
+    def value(self, flag: bool) -> None:
+        if not isinstance(flag, bool):
+            raise TypeError(
+                f"compile_targets must be a bool, got {type(flag).__name__}"
+            )
+        self._value = flag
+
+    def __repr__(self) -> str:
+        return f"CompileTargetsConfig(value={self._value})"
+
+
+compile_targets = CompileTargetsConfig()
+
+
+def get_compile_targets() -> bool:
+    """Whether quadrature X-ray target kernels should be ``torch.compile``d."""
+    return compile_targets.value
+
+
 # ---------------------------------------------------------------------------
 # Device configuration
 # ---------------------------------------------------------------------------
@@ -279,25 +305,13 @@ _MIN_CUDA_VRAM_GB = 10
 
 
 def _cuda_is_usable() -> bool:
-    """Return True iff at least one visible CUDA device is suitable for
-    auto-selection as the default TorchRef device.
+    """True iff a visible CUDA device is fit to auto-select as the default.
 
-    A device qualifies when all of the following hold:
-
-    * ``torch.cuda.is_available()`` is True.
-    * Its compute capability is >= the minimum sm_* compiled into the
-      current PyTorch wheel (introspected via ``torch.cuda.get_arch_list()``).
-      Older GPUs would trigger runtime warnings and fail at the first
-      kernel launch.
-    * Its total VRAM is >= ``_MIN_CUDA_VRAM_GB``. Smaller GPUs typically
-      cannot fit useful refinement workloads and tend to surprise users
-      with OOMs, so we prefer CPU over a too-small GPU.
-
-    If introspection fails on an older torch build (no ``get_arch_list``)
-    or the arch list is empty, we trust ``is_available()`` and return True
-    without the capability check. On failure a single ``warnings.warn``
-    explains which requirement was missed before auto-detection falls
-    through to MPS or CPU.
+    Requires ``torch.cuda.is_available()``, a compute capability >= the minimum sm_* in this
+    PyTorch wheel (older GPUs fail at the first kernel launch), and VRAM >=
+    ``_MIN_CUDA_VRAM_GB`` (a too-small GPU OOMs on real refinements, so CPU is preferred).
+    If ``get_arch_list`` is missing or empty the capability check is skipped and
+    ``is_available()`` trusted. On failure one warning names the requirement missed.
     """
     if not torch.cuda.is_available():
         return False
@@ -358,30 +372,64 @@ def _auto_detect_device() -> torch.device:
     return torch.device("cpu")
 
 
-class DeviceConfig:
+def canonical_device(dev):
+    """Return ``dev`` with its default index filled in (``None`` passes through).
+
+    ``torch.device('cuda') != torch.device('cuda:0')`` although both name one physical
+    device, and a device read off a real tensor always carries an index -- so without a
+    shared normal form ``obj.device == tensor.device`` is False on a fresh object and True
+    after its first ``.to()``. ``cpu`` deliberately stays bare, since a CPU tensor's device
+    has no index and ``cpu:0`` would recreate the mismatch.
+
+    This is the allocation-free form of ``torch.empty(0, device=d).device``, which matters
+    on constructor and comparison paths. Deliberately **not** memoised:
+    ``torch.cuda.current_device()`` is mutable via ``set_device``, so a cache would freeze
+    a stale answer.
     """
-    Device configuration with property-based access.
+    if dev is None:
+        return None
+    d = dev if isinstance(dev, torch.device) else torch.device(dev)
+    if d.index is not None:
+        return d
+    if d.type == "cpu":
+        return d
+    if d.type == "cuda":
+        return torch.device("cuda", torch.cuda.current_device())
+    if d.type == "mps":
+        return torch.device("mps", 0)
+    # Unknown/future backend: fall back to asking PyTorch directly.
+    return torch.empty(0, device=d).device
 
-    Resolved once at import time using cuda -> mps -> cpu via
-    :func:`_auto_detect_device`, which gates CUDA on both compute
-    capability and a minimum of ``_MIN_CUDA_VRAM_GB`` of VRAM. Override
-    the resolved default via the ``TORCHREF_DEVICE`` environment variable
-    (``'auto'`` (default), ``'cuda'``, ``'mps'``, or ``'cpu'``); explicit
-    values bypass the auto-selection gates and instead raise if the
-    requested backend is unavailable on this host.
 
-        device.current              # get the active device
-        device.current = "cpu"      # set at runtime (string or torch.device)
+def normalize_device(dev=None) -> torch.device:
+    """Coerce a user-supplied ``device`` (or ``None``) to a canonical device.
 
-    Setter behaviour mirrors the env-var override: a bad value raises
-    ``ValueError`` / ``RuntimeError`` rather than silently falling back,
-    so callers can decide how to recover.
+    ``None`` resolves to :func:`get_default_device`. The pure, side-effect-free counterpart
+    of :func:`torchref.utils.resolve_device`, which *moves* the objects it is given: use
+    this for one device source, that one to reconcile several.
+    """
+    if dev is None:
+        return get_default_device()
+    return canonical_device(dev)
+
+
+class DeviceConfig:
+    """The active device: ``device.current`` reads it, assignment sets it.
+
+    Resolved once at import cuda -> mps -> cpu by :func:`_auto_detect_device`, which gates
+    CUDA on compute capability and ``_MIN_CUDA_VRAM_GB`` of VRAM; ``TORCHREF_DEVICE``
+    overrides that, bypassing the gates but raising if the backend is unavailable. The
+    setter mirrors it -- a bad value raises ``ValueError``/``RuntimeError`` rather than
+    silently falling back, so callers can decide how to recover.
     """
 
     def __init__(self):
         override = os.environ.get("TORCHREF_DEVICE", "auto").lower()
         if override == "auto":
-            self._device = _auto_detect_device()
+            # Canonicalise here too, not just in ``_coerce``: the ``auto``
+            # branch bypasses ``_coerce`` entirely, and it is the branch almost
+            # every user takes.
+            self._device = canonical_device(_auto_detect_device())
         else:
             self._device = self._coerce(override)
         self._warn_if_mps_dtype_mismatch()
@@ -408,7 +456,7 @@ class DeviceConfig:
             hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
         ):
             raise RuntimeError("MPS requested but not available on this system.")
-        return dev
+        return canonical_device(dev)
 
     def _warn_if_mps_dtype_mismatch(self) -> None:
         if self._device.type == "mps" and dtypes.float == torch.float64:

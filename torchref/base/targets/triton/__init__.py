@@ -21,20 +21,16 @@ from .nonbonded import nonbonded_heavy_math_triton
 from .planarity import planarity_math_triton
 from .ramachandran import ramachandran_math_triton
 from .torsion import torsion_omega_math_triton
-from .xray_bhattacharyya import bhattacharyya_xray_loss_math_triton
-from .xray_gaussian import gaussian_xray_loss_math_triton
+from .xray_nll import nll_sigma_obs_math_triton
 from .xray_ls import ls_xray_loss_math_triton
-from .xray_ml import ml_xray_loss_math_triton
 
 __all__ = [
     "adp_simu_math_triton",
     "angle_math_triton",
-    "bhattacharyya_xray_loss_math_triton",
     "bond_math_triton",
     "chiral_math_triton",
-    "gaussian_xray_loss_math_triton",
+    "nll_sigma_obs_math_triton",
     "ls_xray_loss_math_triton",
-    "ml_xray_loss_math_triton",
     "nonbonded_heavy_math_triton",
     "planarity_math_triton",
     "ramachandran_math_triton",

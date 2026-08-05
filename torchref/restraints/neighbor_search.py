@@ -210,13 +210,11 @@ _NEIGHBOR_OFFSETS_14 = None
 
 
 def _get_canonical_offsets_14(device: torch.device) -> torch.Tensor:
-    """Return (14, 3) lex-positive half of the 27-offset cube, including self.
+    """Return (14, 3): the self-offset plus the lex-positive half of the 26 others.
 
-    For each mirror pair ``(d, -d)`` in the 26 non-zero offsets, keep the
-    direction whose first non-zero component is positive. Plus the (0,0,0)
-    self-offset. Processing only this half covers every unique cell pair
-    exactly once, with the symmetric partner reached by swapping source
-    and target indices. Net cdist work is ~half of the 27-offset path.
+    Keeping one of each mirror pair ``(d, -d)`` visits every unique cell pair once;
+    the symmetric partner must be recovered by swapping source and target indices.
+    Cached per device in a module global.
     """
     global _NEIGHBOR_OFFSETS_14
     if _NEIGHBOR_OFFSETS_14 is None or _NEIGHBOR_OFFSETS_14.device != device:
@@ -248,16 +246,12 @@ def _build_padded_cells(
     identity_combo: int,
     max_per_cell: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Build one padded ``(C, max_per_cell, 3)`` tensor + per-slot masks.
-
-    Precomputes everything we need for the cdist loop: positions padded
-    to a fixed row length, a validity mask (``True`` for real atoms,
-    ``False`` for padding), and an ASU-membership mask (``True`` for
-    entries whose combo is the identity).
+    """Pad the CSR cell list to fixed rows for the cdist loop.
 
     Returns
     -------
-    padded_xyz : (C, max_per_cell, 3) float, padding filled with ``inf``
+    padded_xyz : (C, max_per_cell, 3) float, padding filled with ``inf`` so
+        padded slots can never fall within any cutoff
     valid_mask : (C, max_per_cell) bool, True for real entries
     asu_mask   : (C, max_per_cell) bool, True for identity-combo entries
     """
@@ -307,11 +301,9 @@ def find_pairs_periodic_grid_v2(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Find candidate VDW pairs on a periodic grid with batched cdist.
 
-    Sweeps the 14 canonical neighbour offsets (the self-cell plus the 13
-    lex-positive half of the 26 non-zero offsets), so each unique cell pair
-    is visited once; the symmetric partner is reached by swapping source and
-    target indices on emission. Distances are computed with ``torch.cdist``
-    over a precomputed padded ``(C, max_per_cell, 3)`` tensor.
+    Sweeps the 14 canonical neighbour offsets so each unique cell pair is visited
+    once, recovering the symmetric partner by swapping source and target indices
+    on emission.
 
     Parameters
     ----------
@@ -357,14 +349,9 @@ def find_pairs_periodic_grid_v2(
     counts = starts[1:] - starts[:-1]
     max_per_cell = counts.max().item()
 
-    # Device-adaptive chunk size. The cdist tile per chunk is
-    # (chunk_size, max_per_cell, max_per_cell) float32 = chunk_size *
-    # max_per_cell**2 * 4 bytes. For sparsely-packed crystals
-    # (max_per_cell ~ 135) this stays well under a GB even with
-    # chunk_size=1M, but for densely-packed crystals (e.g. tubulin-like
-    # cells with max_per_cell > 600) a single 1M-cell tile blows up to
-    # multi-GB and dominates the LBFGS-step memory budget. Cap the tile
-    # at ~256 MB so the same call site stays bounded across cell sizes.
+    # The cdist tile is chunk_size * max_per_cell**2 * 4 bytes, and max_per_cell
+    # varies several-fold with packing density, so cap the tile rather than the
+    # chunk count -- a fixed chunk_size reaches multi-GB on dense cells.
     if chunk_size is None:
         if device.type == "cuda":
             max_tile_bytes = 256 * 1024 * 1024
@@ -708,11 +695,8 @@ def build_vdw_restraints_gpu(
               f"{n_occupied}/{n_grid_total} cells occupied, "
               f"max {counts.max().item()} entries/cell")
 
-    # Step 4: find pairs via periodic grid + batched cdist.
-    # Uses the canonical-14-offset path; this covers each unique cell
-    # pair exactly once (see find_pairs_periodic_grid_v2), so the raw
-    # output is already (nearly) dedup-free — the downstream hash dedup
-    # still runs as a safety net for the small number of intra-cell
+    # Step 4: find pairs via periodic grid + batched cdist. Nearly dedup-free by
+    # construction, but the hash dedup below still catches intra-cell
     # swap-canonicalisation collisions.
     pair_atom_i, pair_atom_j, pair_combo_j = find_pairs_periodic_grid_v2(
         cart_sorted, atom_idx_sorted, combo_idx_sorted,
@@ -826,11 +810,10 @@ def find_h_vdw_pairs_gpu(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Find VDW pairs involving at least one hydrogen atom.
 
-    Uses the same periodic-grid spatial hash as the heavy-atom search but
-    operates on a combined (heavy + H) coordinate set and only returns
-    pairs where at least one participant is a hydrogen (index >= n_heavy).
-
-    Called at every forward evaluation — designed for low latency.
+    The heavy-atom search run over a combined (heavy + H) coordinate set, keeping
+    only pairs with a participant at index >= ``n_heavy``. Called on every forward
+    evaluation, so it reuses the cached grid and symop combos rather than
+    re-deriving them.
 
     Parameters
     ----------

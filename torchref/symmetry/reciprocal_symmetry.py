@@ -1,27 +1,16 @@
-"""
-Reciprocal space symmetry operations for structure factor grids.
+"""Reciprocal space symmetry operations for structure factor grids.
 
-This module provides efficient symmetry operations for reciprocal space data (h, k, l grids),
-analogous to map_symmetry.py for real space density maps.
+The reciprocal-space counterpart to ``map_symmetry.py``: :func:`ReciprocalSymmetry`
+(grid operator), :func:`expand_hkl` / :func:`expand_reflections` /
+:func:`expand_reciprocal_grid` (ASU -> P1), :func:`reduce_hkl` (P1 -> ASU),
+:func:`complete_hkl` (find reflections missing from a dataset, same space group)
+and :func:`canonicalize_hkl` (CCP4 ASU representative). Space groups accept
+strings, ints 1-230 or ``gemmi.SpaceGroup``.
 
-Key concepts:
-- Miller indices transform as h' = h @ R = R^T @ h under rotation R, where R is
-  the real-space rotation matrix (the code transposes it into
-  ``reciprocal_matrices``); R here is not the already-transposed reciprocal matrix.
-- Systematic absences occur when translation causes destructive interference
-- Centric reflections have phases restricted to 0 or π
-- Friedel pairs: F(h,k,l) = F*(-h,-k,-l) for normal scattering
-
-Main interfaces:
-- ReciprocalSymmetry: Factory function for grid-based reciprocal space symmetry
-- expand_reflections: Expand ReflectionData from asymmetric unit to P1
-- expand_reciprocal_grid: Expand a reciprocal space grid from asymmetric unit to P1
-- expand_hkl: Expand Miller indices from the asymmetric unit to P1
-- complete_hkl: Identify reflections missing from a dataset (same space group)
-- reduce_hkl: Reduce Miller indices to the asymmetric unit
-- canonicalize_hkl: Map Miller indices to a canonical representative
-
-Space groups can be specified as strings, integers (1-230), or gemmi.SpaceGroup objects.
+Miller indices transform as h' = h @ R = R^T @ h with R the *real-space* rotation;
+``reciprocal_matrices`` already holds the transpose, so do not transpose again.
+Translations become phase shifts of -2π h·t; the sign is load-bearing and wrong
+signs are invisible in P21/P212121/C2 (see :func:`expand_hkl`).
 """
 
 from typing import TYPE_CHECKING, Optional, Tuple
@@ -30,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype, normalize_device
 from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -74,17 +63,10 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
     """
     Reciprocal space symmetry operations for Miller index grids.
 
-    Handles symmetry operations in reciprocal space including:
-    - Miller index transformation under symmetry operations
-    - Systematic absence detection
-    - Centric reflection identification
-    - Friedel pair handling
-    - Symmetry expansion/averaging of structure factors
-
-    In reciprocal space, symmetry operations transform Miller indices as:
-        (h', k', l') = (h, k, l) @ R = R^T @ (h, k, l)
-
-    where R is the rotation matrix from real space symmetry.
+    Covers Miller-index transformation, systematic absences, centric reflections,
+    Friedel pairs and symmetry expansion/averaging of structure factors. The
+    per-operation index maps, phase shifts, absence mask and centric mask are all
+    precomputed in ``__init__`` for the fixed ``grid_shape``.
 
     Attributes
     ----------
@@ -133,20 +115,16 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         super().__init__()
         if dtype_float is None:
             dtype_float = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
         self.dtype_float = dtype_float
         self.space_group = space_group
         self.grid_shape = tuple(grid_shape)
         self.verbose = verbose
         self.device = device
 
-        # Get symmetry operations from base class
         self.symmetry = SpaceGroup(space_group, dtype=dtype_float, device=device)
         self.n_ops = self.symmetry.matrices.shape[0]
 
-        # Precompute reciprocal space rotation matrices (transpose of real space)
-        # In reciprocal space: h' = R^T @ h  (or equivalently h' = h @ R)
         self._setup_reciprocal_matrices()
 
         if self.verbose > 0:
@@ -154,16 +132,9 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
             print(f"  Number of symmetry operations: {self.n_ops}")
             print(f"  Grid shape: {self.grid_shape}")
 
-        # Setup Miller index grid
         self._setup_hkl_grid()
-
-        # Precompute index mappings for each symmetry operation
         self._setup_symmetry_index_grids()
-
-        # Compute systematic absences mask
         self._setup_systematic_absences()
-
-        # Compute centric reflection mask
         self._setup_centric_reflections()
 
         if self.verbose > 0:
@@ -174,28 +145,15 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
             print(f"  Centric reflections: {n_centric} ({100*n_centric/n_total:.2f}%)")
 
     def _setup_reciprocal_matrices(self):
-        """
-        Setup rotation matrices for reciprocal space.
-
-        In reciprocal space, the transformation is h' = R^T @ h
-        where R is the real-space rotation matrix.
-        """
-        # Transpose each rotation matrix for reciprocal space
-        # Real space: r' = R @ r + t
-        # Reciprocal space: h' = R^T @ h (translations cause phase shifts, not index changes)
+        """Cache ``reciprocal_matrices`` = R^T, for h' = R^T @ h."""
+        # Translations cause phase shifts, not index changes, so they are not folded in.
         recip_matrices = self.symmetry.matrices.transpose(-2, -1).contiguous()
         self.register_buffer("reciprocal_matrices", recip_matrices)
 
     def _setup_hkl_grid(self):
-        """
-        Setup Miller index grid.
-
-        Creates a grid where indices span from -n//2 to n//2 for each dimension,
-        following the FFT convention (0...n//2, -n//2+1...-1).
-        """
+        """Build ``hkl_grid`` in FFT index order (0...n//2, -n//2+1...-1)."""
         nh, nk, nl = self.grid_shape
 
-        # Create index arrays following FFT convention
         h = torch.fft.fftfreq(nh, d=1.0) * nh  # gives 0,1,2,...,n//2,-n//2+1,...,-1
         k = torch.fft.fftfreq(nk, d=1.0) * nk
         l = torch.fft.fftfreq(nl, d=1.0) * nl
@@ -204,22 +162,19 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         k = k.to(dtype=torch.int64, device=self.device)
         l = l.to(dtype=torch.int64, device=self.device)
 
-        # Create 3D grid of Miller indices
         grid_h, grid_k, grid_l = torch.meshgrid(h, k, l, indexing="ij")
         hkl_grid = torch.stack([grid_h, grid_k, grid_l], dim=-1)
 
         self.register_buffer("hkl_grid", hkl_grid)
 
-        # Also store as float for matrix operations
+        # Float copy for the matmuls; the int copy stays authoritative for indexing.
         hkl_grid_float = hkl_grid.to(dtype=self.dtype_float)
         self.register_buffer("hkl_grid_float", hkl_grid_float)
 
     def _setup_symmetry_index_grids(self):
-        """
-        Precompute index grids mapping each (h,k,l) to its symmetry equivalents.
+        """Precompute ``index_grids`` (n_ops, nh, nk, nl, 3) and ``phase_shifts``.
 
-        For each symmetry operation, computes where each reflection maps to
-        in the grid, allowing efficient gathering/scattering operations.
+        The grid path uses the +2π h·t convention, unlike :func:`expand_hkl`.
         """
         nh, nk, nl = self.grid_shape
         hkl_flat = self.hkl_grid_float.reshape(-1, 3)  # (N, 3)
@@ -228,46 +183,35 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         phase_shift_grids_list = []
 
         for i in range(self.n_ops):
-            # Transform Miller indices: h' = R^T @ h
-            # Using batch matrix multiply: (N, 3) @ (3, 3) -> (N, 3)
             transformed = torch.matmul(hkl_flat, self.reciprocal_matrices[i].T)
-
-            # Round to nearest integer (should be exact for valid symmetry ops)
+            # Exact for valid symmetry ops; round only mops up float error.
             transformed_int = torch.round(transformed).to(torch.int64)
 
-            # Compute phase shift from translation: phase = 2π * h · t
-            # This phase modifies the structure factor: F(h') = F(h) * exp(2πi h·t)
+            # F(h') = F(h) * exp(2πi h·t)
             translation = self.symmetry.translations[i]
             phase_shift = 2.0 * np.pi * torch.matmul(hkl_flat, translation)
             phase_shift = phase_shift.reshape(nh, nk, nl)
             phase_shift_grids_list.append(phase_shift)
 
-            # Convert to grid indices (wrap with periodic boundary)
+            # Wrap with periodic boundary to get grid indices.
             idx_h = transformed_int[:, 0] % nh
             idx_k = transformed_int[:, 1] % nk
             idx_l = transformed_int[:, 2] % nl
 
-            # Stack indices
             index_grid = torch.stack([idx_h, idx_k, idx_l], dim=-1)
             index_grid = index_grid.reshape(nh, nk, nl, 3)
             index_grids_list.append(index_grid)
 
-        # Stack all grids: (n_ops, nh, nk, nl, 3)
         index_grids = torch.stack(index_grids_list, dim=0)
         self.register_buffer("index_grids", index_grids)
 
-        # Stack phase shifts: (n_ops, nh, nk, nl)
         phase_shifts = torch.stack(phase_shift_grids_list, dim=0)
         self.register_buffer("phase_shifts", phase_shifts)
 
     def _setup_systematic_absences(self):
-        """
-        Compute mask for systematic absences.
+        """Mask reflections with some op mapping h -> h at h·t not integral.
 
-        A reflection (h,k,l) is systematically absent if for some symmetry operation
-        with translation t: h' = h (maps to itself) AND h·t ≠ 0 (mod 1).
-
-        This causes destructive interference from the translation component.
+        Such a reflection is destroyed by interference from the translation.
         """
         nh, nk, nl = self.grid_shape
         absences = torch.zeros(self.grid_shape, dtype=torch.bool, device=self.device)
@@ -275,48 +219,34 @@ class ReciprocalSymmetryGrid(DeviceMixin, nn.Module):
         hkl_flat = self.hkl_grid_float.reshape(-1, 3)
 
         for i in range(self.n_ops):
-            # Transform indices
             transformed = torch.matmul(hkl_flat, self.reciprocal_matrices[i].T)
             transformed_int = torch.round(transformed).to(torch.int64)
 
-            # Check if h' ≡ h (reflection maps to itself)
             hkl_int = self.hkl_grid.reshape(-1, 3)
             same_reflection = (transformed_int == hkl_int).all(dim=-1)
 
-            # Compute phase shift h·t
             translation = self.symmetry.translations[i]
             h_dot_t = torch.matmul(hkl_flat, translation)
 
-            # Check if phase is non-integer (mod 1 ≠ 0)
-            # A reflection is absent if it maps to itself with non-zero phase
             phase_mod = torch.abs(h_dot_t - torch.round(h_dot_t))
             non_zero_phase = phase_mod > 1e-6
 
-            # Mark as absent
             absent_mask = (same_reflection & non_zero_phase).reshape(self.grid_shape)
             absences = absences | absent_mask
 
         self.register_buffer("systematic_absences", absences)
 
     def _setup_centric_reflections(self):
-        """
-        Compute mask for centric reflections.
-
-        A reflection is centric if there exists a symmetry operation that maps
-        h to -h (including Friedel mate consideration). Centric reflections
-        have phases restricted to 0 or π.
-        """
+        """Mask reflections with some op mapping h -> -h (phase restricted to 0/π)."""
         nh, nk, nl = self.grid_shape
         centric = torch.zeros(self.grid_shape, dtype=torch.bool, device=self.device)
 
         hkl_flat = self.hkl_grid_float.reshape(-1, 3)
 
         for i in range(self.n_ops):
-            # Transform indices
             transformed = torch.matmul(hkl_flat, self.reciprocal_matrices[i].T)
             transformed_int = torch.round(transformed).to(torch.int64)
 
-            # Check if h' ≡ -h (maps to Friedel mate)
             hkl_int = self.hkl_grid.reshape(-1, 3)
             maps_to_minus_h = (transformed_int == -hkl_int).all(dim=-1)
 
@@ -699,12 +629,10 @@ def expand_hkl(
     remove_absences: bool = True,
     device: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Expand Miller indices under crystallographic symmetry.
+    """Expand Miller indices under crystallographic symmetry (ASU -> P1).
 
-    This is the core low-level function for HKL expansion. It takes Miller
-    indices and a space group, and returns the expanded indices along with
-    an index mapping and phase offsets needed to expand any associated data.
+    The low-level primitive: returns the expanded indices plus the index map and
+    phase offsets needed to expand any associated per-reflection data.
 
     Parameters
     ----------
@@ -724,29 +652,10 @@ def expand_hkl(
     expanded_hkl : torch.Tensor, shape (M, 3), dtype=int32
         All unique expanded Miller indices.
     orig_indices : torch.Tensor, shape (M,), dtype=int64
-        Index mapping expanded → original reflection.
-        Use to expand any data: ``F_expanded = F_orig[orig_indices]``
+        Index mapping expanded → original: ``F_expanded = F_orig[orig_indices]``.
     phase_shifts : torch.Tensor, shape (M,), dtype=float32
-        Phase offsets from translations (radians).
-        Apply to phases: ``phase_expanded = phase_orig[orig_indices] + phase_shifts``
-
-    Examples
-    --------
-    ::
-
-        import torch
-        from torchref.symmetry import expand_hkl
-
-        hkl_asu = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]], dtype=torch.int32)
-        hkl_p1, indices, phases = expand_hkl(hkl_asu, 'P21')
-
-        # Expand amplitude data
-        F_asu = torch.tensor([100.0, 80.0, 75.0])
-        F_p1 = F_asu[indices]
-
-        # Expand phase data (apply phase shifts)
-        phi_asu = torch.tensor([0.0, 1.5, 2.0])
-        phi_p1 = phi_asu[indices] + phases
+        Translation phase offsets in radians:
+        ``phase_expanded = phase_orig[orig_indices] + phase_shifts``.
     """
     if device is None:
         device = hkl.device
@@ -772,8 +681,11 @@ def expand_hkl(
         hkl_transformed = torch.round(torch.matmul(hkl_float, recip_matrices[i].T)).to(
             torch.int32
         )
-        # Phase shift from translation: 2π × h·t
-        phase_shift = 2.0 * np.pi * torch.matmul(hkl_float, translations[i])
+        # Phase shift from translation: -2π h·t, for h' = hR under the convention
+        # F(h) = Σ_j f_j exp(+2πi h·x_j). Do NOT "simplify" the sign: the wrong sign
+        # costs 4π h·t mod 2π, which is exactly zero for 2₁ screws and centring, so
+        # P21/P212121/C2 cannot see it. tests/unit/symmetry/test_phase_convention.py.
+        phase_shift = -2.0 * np.pi * torch.matmul(hkl_float, translations[i])
 
         all_hkl.append(hkl_transformed)
         all_phases.append(phase_shift)
@@ -838,15 +750,11 @@ def complete_hkl(
     d_min: float,
     device: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Complete a set of Miller indices by identifying missing reflections.
+    """Complete a set of Miller indices by identifying missing reflections.
 
-    Generates all possible reflections within the resolution limit for the
-    given spacegroup (removing systematic absences), then maps the input
-    reflections to this complete set.
-
-    NOTE: This does NOT expand symmetry - stays in the same spacegroup.
-    Use this to identify which reflections are missing from a dataset.
+    Generates every reflection within ``d_min`` for ``spacegroup`` (minus
+    systematic absences), then maps the input onto that complete set. This does
+    *not* expand symmetry -- the output stays in the input space group.
 
     Parameters
     ----------
@@ -866,30 +774,10 @@ def complete_hkl(
     complete_hkl : torch.Tensor, shape (M, 3), dtype int32
         All possible Miller indices within resolution (minus systematic absences).
     input_indices : torch.Tensor, shape (M,), dtype int64
-        Index mapping: complete → input. For present reflections, gives
-        the index in input_hkl. For missing reflections, gives -1.
-        Use: ``F_complete[~missing] = F_input[input_indices[~missing]]``
+        Index mapping complete → input, or -1 where missing. Use as
+        ``F_complete[~missing] = F_input[input_indices[~missing]]``.
     missing_mask : torch.Tensor, shape (M,), dtype bool
         True where reflection is missing from input.
-
-    Examples
-    --------
-    ::
-
-        import torch
-        from torchref.symmetry import complete_hkl
-
-        # Incomplete dataset
-        input_hkl = torch.tensor([[1, 0, 0], [0, 1, 0]], dtype=torch.int32)
-        cell = torch.tensor([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
-
-        complete, indices, missing = complete_hkl(input_hkl, cell, 'P21', d_min=10.0)
-
-        # Fill F values
-        F_input = torch.tensor([100.0, 80.0])
-        F_complete = torch.zeros(len(complete))
-        present_mask = ~missing
-        F_complete[present_mask] = F_input[indices[present_mask]]
     """
     from torchref.base.reciprocal import generate_possible_hkl
 
@@ -942,15 +830,12 @@ def expand_reflections(
     remove_absences: bool = True,
     verbose: int = 1,
 ) -> "ReflectionData":
-    """
-    Expand reflection data from asymmetric unit to P1 using symmetry operations.
+    """Expand ReflectionData from the asymmetric unit to P1.
 
-    Takes a ReflectionData object containing reflections in the asymmetric unit
-    and generates all symmetry-equivalent reflections, returning a new
-    ReflectionData object with the expanded set.
-
-    This is a high-level wrapper around expand_hkl() that handles all
-    ReflectionData fields automatically.
+    A :func:`expand_hkl` wrapper that carries every ReflectionData field (F,
+    sigmas, I, phases, FOM, R-free flags) through the expansion. Phases receive
+    the translation shift; resolution is recomputed and ``bin_indices`` cleared,
+    since expansion invalidates them.
 
     Parameters
     ----------
@@ -966,23 +851,11 @@ def expand_reflections(
     Returns
     -------
     ReflectionData
-        New ReflectionData object with expanded reflections.
-        The spacegroup is set to 'P1' since symmetry has been expanded.
+        New object holding the expanded reflections, spacegroup set to 'P1'.
 
     See Also
     --------
     expand_hkl : Low-level function for HKL expansion without ReflectionData.
-
-    Examples
-    --------
-    ::
-
-        from torchref.io.datasets.reflection_data import ReflectionData
-        from torchref.symmetry import expand_reflections
-
-        data = ReflectionData().load_mtz('data.mtz')
-        data_p1 = expand_reflections(data)
-        print(f"Expanded from {len(data)} to {len(data_p1)} reflections")
     """
     from torchref.io.datasets.reflection_data import ReflectionData as RefData
 
@@ -999,7 +872,6 @@ def expand_reflections(
         print(f"  Original reflections: {n_orig}")
         print(f"  Symmetry operations: {symmetry.n_ops}")
 
-    # Use low-level expand_hkl for core expansion
     hkl_expanded, orig_idx_tensor, phase_shifts = expand_hkl(
         reflection_data.hkl,
         space_group,
@@ -1011,17 +883,14 @@ def expand_reflections(
     if verbose > 0:
         print(f"  After expansion: {len(hkl_expanded)} unique reflections")
 
-    # Create new ReflectionData
     expanded = RefData(verbose=reflection_data.verbose, device=device)
 
-    # Copy and expand data fields using orig_idx_tensor
     expanded.hkl = hkl_expanded
     expanded.cell = (
         reflection_data.cell.clone() if reflection_data.cell is not None else None
     )
     expanded.spacegroup = SpaceGroup("P1")  # Now in P1 since symmetry is expanded
 
-    # Expand amplitude data
     if reflection_data.F is not None:
         expanded.F = reflection_data.F[orig_idx_tensor]
 
@@ -1034,35 +903,29 @@ def expand_reflections(
     if hasattr(reflection_data, "I_sigma") and reflection_data.I_sigma is not None:
         expanded.I_sigma = reflection_data.I_sigma[orig_idx_tensor]
 
-    # Handle phases - apply phase shift from translation
+    # Phases must absorb the translation shift; with no phases present, stash the
+    # shifts so a later phase assignment can still apply them.
     if hasattr(reflection_data, "phase") and reflection_data.phase is not None:
         expanded.phase = reflection_data.phase[orig_idx_tensor] + phase_shifts
     else:
-        # Store phase shifts for potential later use
         expanded._expansion_phase_shifts = phase_shifts
 
-    # Figure of merit - expand from original
     if hasattr(reflection_data, "fom") and reflection_data.fom is not None:
         expanded.fom = reflection_data.fom[orig_idx_tensor]
 
-    # R-free flags - expand from original
     if reflection_data.rfree_flags is not None:
         expanded.rfree_flags = reflection_data.rfree_flags[orig_idx_tensor]
 
-    # Recalculate resolution
     if expanded.cell is not None:
         expanded._calculate_resolution()
 
-    # Clear bin indices (invalidated by expansion)
-    expanded.bin_indices = None
+    expanded.bin_indices = None  # invalidated by expansion
 
-    # Copy metadata
     expanded.amplitude_source = reflection_data.amplitude_source
     expanded.intensity_source = reflection_data.intensity_source
     expanded.phase_source = reflection_data.phase_source
     expanded.rfree_source = reflection_data.rfree_source
 
-    # Track provenance
     expanded.source = reflection_data
     expanded.last_op = f"expand_to_p1(include_friedel={include_friedel})"
 
@@ -1075,27 +938,10 @@ def _check_systematic_absences(
     translations: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
-    """
-    Check which reflections are systematically absent.
+    """Bool mask over ``hkl``, True where some op maps h -> h at non-integer h·t.
 
-    A reflection is absent if some symmetry operation maps h to h
-    with a non-integer phase shift (h·t not integer).
-
-    Parameters
-    ----------
-    hkl : torch.Tensor, shape (N, 3)
-        Miller indices to check.
-    matrices : torch.Tensor, shape (n_ops, 3, 3)
-        Rotation matrices.
-    translations : torch.Tensor, shape (n_ops, 3)
-        Translation vectors.
-    device : torch.device
-        Computation device.
-
-    Returns
-    -------
-    torch.Tensor
-        Boolean mask, True for systematically absent reflections.
+    ``matrices`` are the *real-space* rotations (n_ops, 3, 3); the transpose is
+    taken here.
     """
     n_refl = len(hkl)
     n_ops = matrices.shape[0]
@@ -1111,21 +957,16 @@ def _check_systematic_absences(
         R = recip_matrices[i]
         t = translations[i]
 
-        # Transform: h' = h @ R^T
         hkl_transformed = torch.matmul(hkl_float, R.T)
         hkl_transformed_int = torch.round(hkl_transformed).to(torch.int32)
 
-        # Check if h' == h (maps to itself)
         same_reflection = (hkl_transformed_int == hkl).all(dim=-1)
 
-        # Compute phase shift h·t
         h_dot_t = torch.matmul(hkl_float, t)
 
-        # Check if phase is non-integer (indicates absence)
         phase_mod = torch.abs(h_dot_t - torch.round(h_dot_t))
         non_integer_phase = phase_mod > 1e-6
 
-        # Absent if maps to itself with non-integer phase
         absent = absent | (same_reflection & non_integer_phase)
 
     return absent
@@ -1137,16 +978,13 @@ def reduce_hkl(
     include_friedel: bool = True,
     device: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Reduce P1 Miller indices to asymmetric unit of a target spacegroup.
+    """Reduce P1 Miller indices to the asymmetric unit of a target space group.
 
-    This is the inverse of expand_hkl(). Takes a complete set of P1 reflections
-    and maps them back to the asymmetric unit of the target spacegroup. Multiple
-    P1 reflections that are symmetry-equivalent merge into single ASU reflections.
-
-    The return uses a 2D index mapping with "constant multiplicity" design:
-    each ASU reflection has exactly n_ops slots (for symmetry operations),
-    enabling simple vectorized aggregation.
+    The inverse of :func:`expand_hkl`: symmetry-equivalent P1 reflections merge
+    into one ASU reflection. The index map has *constant multiplicity* -- its
+    second dimension is always ``n_equiv = n_ops * (2 if include_friedel else 1)``
+    however many equivalents actually exist in ``hkl_p1`` -- so aggregation needs
+    no variable-length ops.
 
     Parameters
     ----------
@@ -1163,40 +1001,12 @@ def reduce_hkl(
     -------
     hkl_asu : torch.Tensor, shape (M, 3), dtype int32
         Unique Miller indices in the asymmetric unit.
-    reduction_indices : torch.Tensor, shape (M, n_ops * (2 if include_friedel else 1)), dtype int64
-        For each ASU reflection, indices into hkl_p1 for its symmetry equivalents.
-        Value of -1 indicates no P1 reflection at that position.
-        Use: ``F_asu = aggregate(F_p1[reduction_indices], dim=1)``
-    phase_shifts : torch.Tensor, shape (M, n_ops * (2 if include_friedel else 1)), dtype float32
-        Phase shifts to apply before aggregation.
-        For Friedel mates, the phase is negated.
-
-    Examples
-    --------
-    ::
-
-        import torch
-        from torchref.symmetry import expand_hkl, reduce_hkl
-
-        # Start with ASU, expand to P1, then reduce back
-        hkl_asu = torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 1]], dtype=torch.int32)
-        hkl_p1, exp_idx, exp_phase = expand_hkl(hkl_asu, 'P21')
-
-        # Reduce back to ASU
-        hkl_asu_back, red_idx, red_phase = reduce_hkl(hkl_p1, 'P21')
-
-        # Aggregate F values from P1 to ASU
-        F_p1 = torch.randn(len(hkl_p1))
-        valid_mask = red_idx >= 0
-        F_gathered = torch.where(valid_mask, F_p1[red_idx.clamp(min=0)], torch.zeros_like(F_p1[0]))
-        F_asu = F_gathered.sum(dim=1) / valid_mask.sum(dim=1).clamp(min=1)
-
-    Notes
-    -----
-    The "constant multiplicity" design means the second dimension is always
-    n_ops (or 2*n_ops with Friedel), regardless of whether all equivalent
-    reflections exist in hkl_p1. Missing positions are marked with -1.
-    This enables efficient batch aggregation without variable-length operations.
+    reduction_indices : torch.Tensor, shape (M, n_equiv), dtype int64
+        Indices into ``hkl_p1`` for each ASU reflection's equivalents, **-1 where
+        no P1 reflection exists** -- mask or clamp before gathering, or a -1 will
+        silently read the last row: ``F_asu = aggregate(F_p1[reduction_indices], dim=1)``.
+    phase_shifts : torch.Tensor, shape (M, n_equiv), dtype float32
+        Phase shifts to apply before aggregation; negated for Friedel mates.
     """
     if device is None:
         device = hkl_p1.device
@@ -1267,7 +1077,8 @@ def reduce_hkl(
             t = translations[equiv_idx]
 
             hkl_trans = torch.round(torch.matmul(hkl_single, R.T)).to(torch.int32)
-            phase_shift = 2.0 * np.pi * torch.matmul(hkl_single, t)
+            # -2π h·t, same convention as expand_hkl (see the derivation there).
+            phase_shift = -2.0 * np.pi * torch.matmul(hkl_single, t)
 
             if tuple(hkl_trans.cpu().numpy()) == canonical:
                 asu_reflections[canonical].append(
@@ -1303,20 +1114,11 @@ def reduce_hkl(
 
 
 def _asu_condition_vectorized(h, k, l, condition_key):
-    """Vectorized CCP4 ASU membership check.
+    """Vectorized CCP4 ASU membership test over numpy ``h``/``k``/``l`` arrays.
 
-    Parameters
-    ----------
-    h, k, l : np.ndarray, shape ``(...,)``
-        Miller index components (any broadcastable shape).
-    condition_key : str
-        ASU condition identifier (CCP4 condition string from
-        ``gemmi.ReciprocalAsu.condition_str()``).
-
-    Returns
-    -------
-    np.ndarray, same shape as input, dtype bool
-        True where (h, k, l) is inside the CCP4 reciprocal ASU.
+    ``condition_key`` is a condition string from
+    ``gemmi.ReciprocalAsu.condition_str()``; an unrecognised one raises
+    ``ValueError``, which callers catch to fall back on ``gemmi``'s own scalar check.
     """
     # Map the 10 distinct CCP4 ASU conditions (covers all 230 space groups).
     _conditions = {
@@ -1365,11 +1167,11 @@ def canonicalize_hkl(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Map Miller indices to canonical CCP4 ASU representatives.
 
-    Uses the standard CCP4 asymmetric unit convention to select a unique
-    representative for each reflection.  The implementation is fully
-    vectorized — symmetry equivalents are generated via batched matrix
-    multiply and the ASU membership check is evaluated as a numpy boolean
-    expression over all reflections at once.
+    Selects one representative per reflection under the standard CCP4 asymmetric
+    unit convention. Runs on CPU/numpy regardless of ``device`` (the ASU lookup
+    tables are numpy-backed), returning tensors on ``device``. Raises
+    ``ValueError`` if any reflection has no ASU representative, which happens for
+    the Friedel half of reciprocal space when ``include_friedel=False``.
 
     Parameters
     ----------
@@ -1395,10 +1197,8 @@ def canonicalize_hkl(
 
     Notes
     -----
-    Phase correction contract — to convert structure factors to the
-    canonical basis, the caller applies::
-
-        phi_new = torch.where(friedel_flags, -phi_old, phi_old) + phase_shifts
+    ``phase_shifts`` assumes the caller conjugates first — the contract is
+    ``phi_new = torch.where(friedel_flags, -phi_old, phi_old) + phase_shifts``.
     """
     import gemmi
 
@@ -1427,10 +1227,8 @@ def canonicalize_hkl(
     # Reciprocal-space rotation matrices are always integer-valued (0, ±1).
     recip_mats_i = np.round(recip_mats).astype(np.int32)
 
-    # --- Early-exit loop: process one op (+ Friedel) at a time ---
-    # For high-symmetry groups this avoids computing equivalents for ops
-    # that are never needed (most reflections are resolved by the first
-    # few operators).  Benchmarks show 2-3x speedup for n_ops >= 6.
+    # One op (+ its Friedel mate) at a time, so high-symmetry groups exit early:
+    # most reflections are resolved by the first few operators.
     canonical_np = np.empty_like(hkl_np)
     op_idx = np.empty(n_refl, dtype=np.int32)
     friedel_np = np.zeros(n_refl, dtype=bool)
@@ -1483,12 +1281,8 @@ def canonicalize_hkl(
                 friedel_np[global_idx_f] = True
                 remaining[global_idx_f] = False
 
-    # Every reflection must have been assigned a canonical representative.
-    # ``canonical_np``/``op_idx`` start as uninitialized ``np.empty`` buffers, so
-    # any unmapped row would otherwise propagate garbage Miller indices and phase
-    # shifts (silent corruption). This happens with ``include_friedel=False`` for
-    # the Friedel/"minus" half of reflections, which has no pure-rotation
-    # representative in the Laue-based CCP4 reciprocal ASU. Fail loudly instead.
+    # ``canonical_np``/``op_idx`` are uninitialized ``np.empty`` buffers, so an
+    # unmapped row would propagate garbage indices and phases. Fail loudly instead.
     if remaining.any():
         n_unmapped = int(remaining.sum())
         example = hkl_np[np.where(remaining)[0][0]].tolist()
@@ -1500,11 +1294,17 @@ def canonicalize_hkl(
             f"pure-rotation representative in the Laue-based CCP4 ASU."
         )
 
-    # --- Compute phase shifts vectorially ---
-    # phase_shift[i] = 2*pi * hkl_orig[i] . translations[op_idx[i]]
+    # Sign depends on whether the row was Friedel-flipped, because the consumer
+    # already negated phi for those rows: -2π h·t normally, +2π h·t for Friedel.
+    # A single uniform sign is wrong for one half and invisible in P21/P212121/C2,
+    # where every shift is 0 or π. tests/unit/symmetry/test_phase_convention.py.
     t_selected = translations_np[op_idx]  # (N, 3)
+    friedel_sign = np.where(friedel_np, 1.0, -1.0).astype(np.float32)
     phase_shifts_np = (
-        2.0 * np.pi * np.sum(hkl_np.astype(np.float32) * t_selected, axis=1)
+        friedel_sign
+        * 2.0
+        * np.pi
+        * np.sum(hkl_np.astype(np.float32) * t_selected, axis=1)
     ).astype(np.float32)
 
     # --- Convert to tensors and sort ---
@@ -1537,11 +1337,11 @@ def expand_reciprocal_grid(
     include_friedel: bool = True,
     device: Optional[torch.device] = None,
 ) -> torch.Tensor:
-    """
-    Expand or symmetrize a reciprocal space grid using crystallographic symmetry.
+    """Expand or symmetrize a reciprocal space grid using crystallographic symmetry.
 
-    This is a convenience function that creates a ReciprocalSymmetryGrid
-    and applies it to the input grid.
+    Convenience wrapper that builds a :class:`ReciprocalSymmetryGrid` for
+    ``F_grid.shape`` and applies it, so it re-pays the whole precompute on every
+    call -- hold the class yourself inside a loop.
 
     Parameters
     ----------
@@ -1550,11 +1350,9 @@ def expand_reciprocal_grid(
     space_group : str, int, or gemmi.SpaceGroup
         Space group specification (e.g., 'P21', 'P212121'). The type hint is
         narrowed to ``str``, but any ``SpaceGroupLike`` value is accepted.
-    mode : str, default 'average'
-        Operation mode:
-        - 'average': Average over all symmetry equivalents (symmetrize)
-        - 'expand': Expand from asymmetric unit to full grid
-        - 'sum': Sum all symmetry mates
+    mode : {'average', 'expand', 'sum'}, default 'average'
+        Average over all symmetry equivalents (symmetrize), expand from the
+        asymmetric unit to the full grid, or sum all symmetry mates.
     include_friedel : bool, default True
         If True, also apply Friedel symmetry after space group symmetry.
     device : torch.device, optional
@@ -1564,23 +1362,6 @@ def expand_reciprocal_grid(
     -------
     torch.Tensor, shape (nh, nk, nl)
         Symmetrized or expanded structure factor grid.
-
-    Examples
-    --------
-    ::
-
-        import torch
-        from torchref.symmetry import expand_reciprocal_grid
-
-        # Create a test grid with some values in asymmetric unit
-        F = torch.zeros(32, 32, 32, dtype=torch.complex64)
-        F[5, 3, 2] = 1.0 + 0.5j
-
-        # Expand to full grid
-        F_full = expand_reciprocal_grid(F, 'P21', mode='expand')
-
-        # Or symmetrize an existing full grid
-        F_sym = expand_reciprocal_grid(F_noisy, 'P21', mode='average')
     """
     if device is None:
         device = F_grid.device
@@ -1588,7 +1369,6 @@ def expand_reciprocal_grid(
     grid_shape = F_grid.shape
     dtype = get_float_dtype() if not F_grid.is_complex() else F_grid.real.dtype
 
-    # Create symmetry handler
     recip_sym = ReciprocalSymmetryGrid(
         space_group=space_group,
         grid_shape=grid_shape,
@@ -1597,10 +1377,8 @@ def expand_reciprocal_grid(
         device=device,
     )
 
-    # Apply symmetry operation
     F_result = recip_sym(F_grid, mode=mode)
 
-    # Apply Friedel symmetry if requested
     if include_friedel:
         F_result = recip_sym.apply_friedel(F_result)
 

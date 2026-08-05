@@ -1,17 +1,11 @@
-"""
-Multi-resolution rigid-body refinement strategy.
+"""Multi-resolution rigid-body refinement strategy.
 
-Wraps an existing :class:`~torchref.refinement.lbfgs_refinement.LBFGSRefinement`,
-swaps the model's ``xyz`` container for a
-:class:`~torchref.model.rigid_xyz.RigidXYZTensor` via
-:meth:`~torchref.model.model.Model.use_rigid_xyz`, and runs an LBFGS step
-at each cutoff in a coarse → fine resolution schedule.
-
-At coarse resolutions (d > 6 Å) the xray target is Phenix-style
-``ls_wunit_k1`` — least squares with unit weights and a per-bin optimal
-scale recomputed at every gradient call (no external scaler). At high
-resolutions (d ≤ 6 Å) the target switches to ``ml`` with the
-normal Scaler module.
+Wraps an :class:`~torchref.refinement.lbfgs_refinement.LBFGSRefinement`, swaps the
+model's ``xyz`` for a :class:`~torchref.model.rigid_xyz.RigidXYZTensor` via
+:meth:`~torchref.model.model.Model.use_rigid_xyz`, and runs one LBFGS step per cutoff
+coarse to fine. Above 6 Å the xray target is Phenix-style ``ls_wunit_k1`` (unit weights,
+per-bin optimal scale recomputed every gradient call, no external scaler); at 6 Å and
+below it switches to ``ml`` with the normal Scaler.
 """
 
 from typing import List, Optional
@@ -22,29 +16,23 @@ from torchref.scaling.scaler import Scaler
 
 
 class RigidBodyRefinementStep:
-    """
-    Multi-resolution rigid-body refinement.
+    """Multi-resolution rigid-body refinement.
 
     Parameters
     ----------
     refinement : LBFGSRefinement
-        Refinement object whose ``model`` will be swapped for a rigid model
-        for the duration of the run.
+        Its ``model`` is swapped for a rigid model for the duration of the run.
     cutoffs : list of float, optional
-        High-resolution cutoffs (Å) to step through, coarse → fine. If
-        ``None``, a default schedule is generated from the native data
-        resolution via :meth:`default_cutoffs`.
+        High-resolution cutoffs (Å), coarse to fine. ``None`` generates a schedule from the
+        native data resolution via :meth:`default_cutoffs`.
     iterations_per_step : int, optional
-        ``max_iter`` for the per-cutoff LBFGS step. Default 30. Note that 30
-        under-converges in practice (e.g. 9RTS needs >= 100); raise it for
-        production runs. Under the solvent-only (``ls_wunit_k1``) inner-cycle
-        path this is the per-*inner* ``max_iter``, so total rigid-body
-        iterations become ``n_inner * iterations_per_step``.
+        ``max_iter`` per cutoff. The default 30 **under-converges** in practice (9RTS needs
+        >= 100); raise it for production. Under the solvent-only (``ls_wunit_k1``)
+        inner-cycle path this is per *inner* cycle, so total rigid-body iterations are
+        ``n_inner * iterations_per_step``.
     commit : bool, optional
-        If ``True`` (default), the final rotated/translated coordinates are
-        baked back into a plain ``ModelFT`` so subsequent regular refinement
-        sees a normal per-atom xyz. If ``False``, the rigid model is left
-        installed on the refinement.
+        If True (default), bake the final coordinates into a plain ``ModelFT`` so later
+        refinement sees normal per-atom xyz; False leaves the rigid model installed.
     """
 
     DEFAULT_LBFGS_KWARGS = dict(
@@ -101,6 +89,13 @@ class RigidBodyRefinementStep:
     # Run
     # -----------------------------------------------------------------------
     def run(self):
+        """Step through every cutoff coarse to fine and return
+        ``[(d_min, LossState), ...]``.
+
+        Restores the original ``reflection_data`` on exit, and bakes the final transform
+        back
+        into a plain ``ModelFT`` unless ``commit=False``.
+        """
         ref = self.refinement
         original_data = ref.reflection_data
 
@@ -140,13 +135,12 @@ class RigidBodyRefinementStep:
     # Internal helpers
     # -----------------------------------------------------------------------
     def _rebind_for_data(self, data, model=None, xray_mode=None):
-        """Point scaler + targets + loss-state at the given ReflectionData.
+        """Point scaler, targets and loss state at ``data``.
 
-        For ``ls_wunit_k1`` cutoffs the Scaler is built with ``nbins=1``: the
-        bulk-solvent term (mask-based, Phenix-style) is added to F_calc, and
-        the closed-form per-bin scale ``c[bins]`` in the LS target owns the
-        overall scaling. For ``ml`` and other modes a fresh full
-        Scaler is built with ``ref.nbins`` bins.
+        For ``ls_wunit_k1`` cutoffs the Scaler is built with ``nbins=1`` -- the mask-based
+        bulk-solvent term is added to F_calc and the LS target's closed-form ``c[bins]``
+        owns
+        the overall scaling. Other modes get a fresh full Scaler with ``ref.nbins`` bins.
         """
         ref = self.refinement
         if model is None:
@@ -253,22 +247,16 @@ class RigidBodyRefinementStep:
         return state
 
     def _run_inner_cycles(self, d_min, state, rigid_params, n_inner: int = 5):
-        """Phenix-style inner cycle: refresh mask + refit solvent + rigid LBFGS.
+        """Phenix-style inner cycle: refresh mask, refit solvent, then rigid LBFGS.
 
-        Used at coarse cutoffs with a solvent-only scaler. Each inner cycle:
-
-        1. Rebuild the bulk-solvent mask FFT at current atom positions
-           (``SolventModel.update_solvent`` + invalidate ``_f_sol_raw``).
-        2. Run a short LBFGS over the solvent parameters (``log_k_solvent``,
-           ``b_solvent``, and ``phase_offset`` if it's a Parameter) to refit
-           the solvent contribution against the current F_calc.
-        3. Run the rigid-body LBFGS for ``iterations_per_step`` iterations
-           over rigid params only (mask frozen here, matching Phenix's
-           per-inner-cycle locality assumption). The total rigid LBFGS work
-           per cutoff is therefore ``n_inner * iterations_per_step``.
-        4. ``bake()`` the current rigid transform into ``original_xyz`` and
-           zero the euler / translation params — matching Phenix's
-           per-macro-cycle reset (mmtbx/refinement/rigid_body.py:344-370).
+        Used at coarse cutoffs with a solvent-only scaler. Each cycle rebuilds the
+        bulk-solvent mask FFT at the current positions, runs a short LBFGS over the solvent
+        parameters, runs the rigid-body LBFGS for ``iterations_per_step`` iterations
+        with the
+        mask frozen, then ``bake()``s the transform into ``original_xyz`` and zeroes the
+        euler/translation params (matching Phenix's per-macro-cycle reset). Total rigid
+        LBFGS
+        work per cutoff is therefore ``n_inner * iterations_per_step``.
         """
         ref = self.refinement
         rigid_model = ref.model

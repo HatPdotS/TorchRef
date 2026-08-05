@@ -20,28 +20,21 @@ if TYPE_CHECKING:
 
 
 class BaseWeighting(DeviceMixin, nn.Module, ABC):
-    """
-    Abstract base class for weighting schemes using LossState.
+    """Abstract base for weighting schemes driven by a LossState.
 
-    Weighting schemes:
-    - Are set up without state (only device and hyperparameters)
-    - Receive state only when computing weights via forward()
-    - Return weights dict (do not modify state directly)
-
-    All tunable parameters should be registered as buffers using register_buffer()
-    so they can be accessed/modified via state_dict notation.
+    A scheme is constructed with only a device and hyperparameters, receives the state only
+    when computing weights, and **returns** a weights dict rather than mutating the state.
+    Register tunable parameters as buffers so they are reachable through ``state_dict``.
 
     Parameters
     ----------
     device : torch.device, optional
-        Computation device. Defaults to the configured default device.
+        Computation device. Defaults to the configured default.
 
     Attributes
     ----------
     name : str
-        Unique name for this weighting scheme.
-    device : torch.device
-        Computation device.
+        Unique name for this scheme.
     """
 
     name: str = "base_weighting"
@@ -52,39 +45,16 @@ class BaseWeighting(DeviceMixin, nn.Module, ABC):
 
     @abstractmethod
     def forward(self, state: "LossState") -> Dict[str, float]:
-        """
-        Compute weights from the current LossState.
+        """The ``{component: weight}`` dict for the current ``state``.
 
-        Access data via state["key"] or state.get("key", default).
-        Meta data (rwork, rfree, etc.) is in state.meta.
-        Cached losses are in state._losses.
-
-        Parameters
-        ----------
-        state : LossState
-            Current loss state with meta and _losses populated.
-
-        Returns
-        -------
-        Dict[str, float]
-            Dictionary mapping component names to weights.
+        Read data through ``state["key"]`` / ``state.get(...)``; model-level metrics live in
+        ``state.meta`` and cached per-target losses in ``state._losses``.
         """
         raise NotImplementedError
 
     def stats(self, state: "LossState" = None) -> Dict[str, StatEntry]:
-        """
-        Return statistics for reporting.
-
-        Parameters
-        ----------
-        state : LossState, optional
-            If provided, can pull data from LossState.
-
-        Returns
-        -------
-        Dict[str, StatEntry]
-            Statistics dictionary with StatEntry objects.
-        """
+        """Reporting statistics as ``{name: StatEntry}``, optionally drawn from
+        ``state``."""
         return {}
 
 

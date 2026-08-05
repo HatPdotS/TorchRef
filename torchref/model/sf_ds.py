@@ -1,13 +1,8 @@
-"""
-SfDS - Structure Factor calculation via Direct Summation.
+"""SfDS -- structure factors by direct summation.
 
-This module provides a PyTorch nn.Module that handles:
-- Direct summation structure factor calculations
-- Support for both isotropic and anisotropic atoms
-- Crystallographic symmetry handling
-
-The SfDS class provides an alternative to SfFFT for computing structure
-factors without requiring a grid-based FFT approach.
+An nn.Module alternative to :class:`~torchref.model.SfFFT` that needs no grid:
+it sums atomic contributions (isotropic and anisotropic) directly and applies
+crystallographic symmetry in reciprocal space.
 """
 
 from typing import Optional, Tuple
@@ -16,7 +11,6 @@ import torch
 import torch.nn as nn
 
 from torchref.base.direct_summation import (
-    Engine,
     ds_aniso,
     ds_iso,
 )
@@ -28,19 +22,18 @@ from torchref.config import dtypes, get_complex_dtype, get_default_device
 from torchref.symmetry import Cell, SpaceGroup
 from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMovementMixin
-from torchref.utils.device_resolution import resolve_device
+from torchref.utils.device_resolution import require_cell_dtype, resolve_device
 
 
 class SfDS(DeviceMovementMixin, nn.Module):
     """
     Structure Factor calculator using Direct Summation.
 
-    This module computes structure factors by directly summing atomic
-    contributions without building an intermediate electron density map.
-    It is initialized with a Cell and optionally a SpaceGroup.
-
-    Includes automatic batching to handle memory constraints for large
-    structures or high-resolution data.
+    Sums atomic contributions without building an intermediate electron-density
+    map, batching automatically to stay inside ``max_memory_gb``. Unlike
+    :class:`SfFFT` it needs no grid setup, computes scattering factors from the
+    ITC92 A/B coefficients internally, and returns ``(sf, None)`` where SfFFT
+    returns ``(sf, density_map)``.
 
     Parameters
     ----------
@@ -62,10 +55,10 @@ class SfDS(DeviceMovementMixin, nn.Module):
 
     Attributes
     ----------
-    cell : Cell
-        Unit cell object.
-    spacegroup : SpaceGroup
-        Space group object (SpaceGroup nn.Module with matrices and translations).
+    cell, spacegroup : Cell, SpaceGroup
+        The unit cell and the space group as an nn.Module carrying its symmetry
+        matrices and translations; setting ``cell`` drops the cached
+        reciprocal basis.
 
     Examples
     --------
@@ -77,20 +70,6 @@ class SfDS(DeviceMovementMixin, nn.Module):
         sf, _ = sf_ds.compute_structure_factors(
             hkl, xyz_iso, adp_iso, occ_iso, A_iso, B_iso
         )
-
-    With memory limit for large structures::
-
-        sf_ds = SfDS(cell, spacegroup='P212121', max_memory_gb=4.0)
-        sf, _ = sf_ds.compute_structure_factors(...)  # Auto-batches if needed
-
-    Notes
-    -----
-    Key differences from SfFFT:
-    - No grid setup required
-    - No build_density_map() or map_to_structure_factors() methods
-    - Computes scattering factors internally from A/B ITC92 coefficients
-    - Returns (sf, None) instead of (sf, density_map)
-    - Automatic batching for memory management
     """
 
     def __init__(
@@ -101,7 +80,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
         device: torch.device = None,
         verbose: int = 0,
         max_memory_gb: float = 2.0,
-        engine: Engine = Engine.AUTO,
+        force_portable: Optional[bool] = None,
     ):
         """
         Initialize the SfDS module with cell and spacegroup.
@@ -120,29 +99,31 @@ class SfDS(DeviceMovementMixin, nn.Module):
             Verbosity level for logging. Default is 0.
         max_memory_gb : float, optional
             Maximum memory for intermediate tensors in GB. Default is 2.0.
-        engine : Engine, optional
-            Structure-factor backend selector. ``Engine.AUTO`` (default)
-            derives the backend from device/dtype/availability (Triton on
-            CUDA+float32, else checkpointed eager). ``Engine.TRITON`` and
-            ``Engine.EAGER`` force a path (for tests/benchmarks).
+        force_portable : bool, optional
+            Pin the portable reference path instead of the fastest usable backend,
+            per instance. ``None`` (default) defers to the process-wide setting,
+            so ``with use_portable():`` steers an unconfigured instance.
         """
         super().__init__()
         if dtype_float is None:
             dtype_float = dtypes.float
-        if device is None:
-            device = get_default_device()
         self.dtype_float = dtype_float
-        self.device = device
+        # Derive from ``cell`` when no device is given, instead of jumping to
+        # the global default and leaving a caller-supplied cell behind on
+        # another device. An explicit ``device`` still wins and moves the cell.
+        self.device = resolve_device(cell, device=device)
         self.verbose = verbose
         self.max_memory_gb = max_memory_gb
-        self.engine = engine
+        self.force_portable = force_portable
 
         # Store cell and spacegroup
         self._cell = cell
         self._spacegroup = None
 
         if spacegroup is not None or cell is not None:
-            self._spacegroup = SpaceGroup(spacegroup, dtype=dtype_float, device=device)
+            self._spacegroup = SpaceGroup(
+                spacegroup, dtype=dtype_float, device=self.device
+            )
 
         # Cache reciprocal basis matrix
         self._recB: Optional[torch.Tensor] = None
@@ -201,7 +182,13 @@ class SfDS(DeviceMovementMixin, nn.Module):
             Unit cell object.
         spacegroup : SpaceGroupLike, optional
             Space group specification.
+
+        Notes
+        -----
+        Receiver wins: an incoming cell on another device is moved to match
+        this module rather than the other way round.
         """
+        self.device = resolve_device(self, cell)
         self._cell = cell
         self._recB = None  # Invalidate cache
         self.spacegroup = spacegroup
@@ -211,21 +198,14 @@ class SfDS(DeviceMovementMixin, nn.Module):
     # =========================================================================
 
     def _get_reciprocal_basis_matrix(self) -> torch.Tensor:
-        """
-        Get or compute the reciprocal basis matrix.
+        """Cached ``(3, 3)`` reciprocal basis (a*, b*, c* as rows).
 
-        Returns
-        -------
-        torch.Tensor
-            Reciprocal basis matrix of shape (3, 3) with a*, b*, c* as rows.
-
-        Raises
-        ------
-        RuntimeError
-            If cell has not been set.
+        Raises ``RuntimeError`` if no cell is set, and refuses a cell whose dtype
+        differs from ``self.dtype_float``.
         """
         if self._cell is None:
             raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
+        require_cell_dtype(self._cell, self.dtype_float, type(self).__name__)
 
         if self._recB is None:
             self._recB = reciprocal_basis_matrix(self._cell.data)
@@ -235,41 +215,17 @@ class SfDS(DeviceMovementMixin, nn.Module):
     def _compute_scattering_factors(
         self, s: torch.Tensor, A: torch.Tensor, B: torch.Tensor
     ) -> torch.Tensor:
+        """``f(s) = sum_i A_i exp(-B_i s^2 / 4)``, shape ``(N_refl, N_atoms)``.
+
+        Unused by the production path: the active backends
+        (``ds_iso``/``ds_aniso``, dispatched from :meth:`_compute_p1_sf`) work
+        from raw A/B and never materialize this ``(N_refl, N_atoms)`` array.
         """
-        Compute atomic scattering factors from ITC92 A and B coefficients.
-
-        .. note::
-            Legacy/unused helper. The active backends (``ds_iso``/``ds_aniso``,
-            dispatched from :meth:`_compute_p1_sf`) compute scattering factors
-            internally from raw A/B and never materialize the large
-            ``(N_reflections, N_atoms)`` intermediate that this method returns.
-
-        The scattering factor is computed as:
-            f(s) = sum_i A_i * exp(-B_i * s^2 / 4)
-
-        Parameters
-        ----------
-        s : torch.Tensor
-            Scattering vector magnitudes of shape (N_reflections,).
-        A : torch.Tensor
-            ITC92 A parameters (amplitudes) with shape (N_atoms, 5).
-        B : torch.Tensor
-            ITC92 B parameters (widths) with shape (N_atoms, 5).
-
-        Returns
-        -------
-        torch.Tensor
-            Atomic scattering factors of shape (N_reflections, N_atoms).
-        """
-        # s: (N_refl,) -> (N_refl, 1, 1)
-        # A, B: (N_atoms, 5)
         s_sq = (s.reshape(-1, 1, 1) ** 2) / 4  # (N_refl, 1, 1)
-        # B: (N_atoms, 5) -> (1, N_atoms, 5)
         B_expanded = B.unsqueeze(0)  # (1, N_atoms, 5)
         A_expanded = A.unsqueeze(0)  # (1, N_atoms, 5)
 
-        # Compute exponential terms: (N_refl, N_atoms, 5)
-        exp_terms = torch.exp(-B_expanded * s_sq)
+        exp_terms = torch.exp(-B_expanded * s_sq)  # (N_refl, N_atoms, 5)
 
         # Sum over Gaussian components: (N_refl, N_atoms)
         f = torch.sum(A_expanded * exp_terms, dim=-1)
@@ -277,22 +233,10 @@ class SfDS(DeviceMovementMixin, nn.Module):
         return f
 
     def _get_spacegroup_callable(self):
-        """
-        Create a callable for direct summation functions.
+        """Symmetry-application callable for the direct-summation kernels.
 
-        The direct summation functions expect a callable that takes
-        fractional coordinates with shape (3, N) and returns coordinates
-        with shape (3, N, n_ops).
-
-        This allows the structure factor summation to:
-        1. Compute h.r for all (reflection, atom, symop) combinations
-        2. Sum exp(2*pi*i*h.r) over symmetry operations for each (reflection, atom)
-        3. Multiply by atom-specific factors and sum over atoms
-
-        Returns
-        -------
-        callable
-            Function that applies symmetry operations.
+        They expect ``(3, N)`` fractional coordinates in and ``(3, N, n_ops)``
+        out; identity-only when no space group is set.
         """
         if self._spacegroup is None:
             # P1 symmetry - identity operation only
@@ -318,23 +262,13 @@ class SfDS(DeviceMovementMixin, nn.Module):
         return apply_symmetry
 
     def _cartesian_to_fractional(self, xyz_cartesian: torch.Tensor) -> torch.Tensor:
-        """
-        Convert Cartesian coordinates to fractional coordinates.
-
-        Parameters
-        ----------
-        xyz_cartesian : torch.Tensor
-            Cartesian coordinates with shape (N, 3).
-
-        Returns
-        -------
-        torch.Tensor
-            Fractional coordinates with shape (N, 3).
+        """``(N, 3)`` Cartesian coordinates to fractional; needs a cell whose
+        dtype matches ``self.dtype_float``.
         """
         if self._cell is None:
             raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
+        require_cell_dtype(self._cell, self.dtype_float, type(self).__name__)
 
-        # Use Cell's to_fractional method via inv_fractional_matrix
         # fractional = cartesian @ inv_frac_matrix.T
         return torch.matmul(xyz_cartesian, self.inv_fractional_matrix.T)
 
@@ -360,36 +294,24 @@ class SfDS(DeviceMovementMixin, nn.Module):
         """
         Compute structure factors from atomic parameters using direct summation.
 
-        Uses "late symmetry" approach (same as SfFFT): first computes P1 structure
-        factors at symmetry-equivalent HKLs, then combines them with phase shifts.
-
-        The symmetry formula is:
-            F_sym(h) = Σ_ops exp(2πi h.t) * F_P1(R^T @ h)
+        Late symmetry, as in :class:`SfFFT`: P1 structure factors are computed at
+        the symmetry-equivalent HKLs and combined as
+        ``F_sym(h) = Σ_ops exp(2πi h.t) * F_P1(R^T @ h)``.
 
         Parameters
         ----------
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
-        xyz_iso : torch.Tensor
-            Isotropic atom coordinates (Cartesian) with shape (n_iso, 3).
-        adp_iso : torch.Tensor
-            Isotropic ADPs (atomic displacement parameters) with shape (n_iso,).
-        occ_iso : torch.Tensor
-            Isotropic occupancies with shape (n_iso,).
-        A_iso : torch.Tensor
-            ITC92 A parameters for isotropic atoms with shape (n_iso, 5).
-        B_iso : torch.Tensor
-            ITC92 B parameters for isotropic atoms with shape (n_iso, 5).
-        xyz_aniso : torch.Tensor, optional
-            Anisotropic atom coordinates (Cartesian) with shape (n_aniso, 3).
-        u_aniso : torch.Tensor, optional
-            Anisotropic U parameters with shape (n_aniso, 6).
-        occ_aniso : torch.Tensor, optional
-            Anisotropic occupancies with shape (n_aniso,).
-        A_aniso : torch.Tensor, optional
-            ITC92 A parameters for anisotropic atoms with shape (n_aniso, 5).
-        B_aniso : torch.Tensor, optional
-            ITC92 B parameters for anisotropic atoms with shape (n_aniso, 5).
+        xyz_iso, adp_iso, occ_iso : torch.Tensor
+            Isotropic atoms: Cartesian coordinates ``(n_iso, 3)``, isotropic ADPs
+            ``(n_iso,)``, occupancies ``(n_iso,)``.
+        A_iso, B_iso : torch.Tensor
+            ITC92 amplitudes / widths for the isotropic atoms, ``(n_iso, 5)``.
+        xyz_aniso, u_aniso, occ_aniso : torch.Tensor, optional
+            Anisotropic atoms: coordinates ``(n_aniso, 3)``, U components
+            ``(n_aniso, 6)``, occupancies ``(n_aniso,)``.
+        A_aniso, B_aniso : torch.Tensor, optional
+            ITC92 amplitudes / widths for the anisotropic atoms, ``(n_aniso, 5)``.
         apply_symmetry : bool, optional
             If True, apply crystallographic symmetry. Default is True.
 
@@ -402,6 +324,9 @@ class SfDS(DeviceMovementMixin, nn.Module):
         """
         if self._cell is None:
             raise RuntimeError("Cell not set. Call set_cell_and_spacegroup() first.")
+        # Refused, not reconciled: unlike the device normalization just below, a dtype cast
+        # is lossy, so the cell is the caller's to fix. See ``require_cell_dtype``.
+        require_cell_dtype(self._cell, self.dtype_float, type(self).__name__)
 
         # Normalize the input hkl onto this module's device. The symmetry
         # helpers derive equiv_hkls/phases from hkl.device while sf_total is
@@ -522,7 +447,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
                 adp_iso,
                 A_iso,
                 B_iso,
-                engine=self.engine,
+                force_portable=self.force_portable,
                 max_memory_gb=self.max_memory_gb,
             )
             sf_total = sf_total + sf_iso.to(sf_total.dtype)
@@ -537,7 +462,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
                 u_aniso,
                 A_aniso,
                 B_aniso,
-                engine=self.engine,
+                force_portable=self.force_portable,
                 max_memory_gb=self.max_memory_gb,
             )
             sf_total = sf_total + sf_aniso.to(sf_total.dtype)
@@ -576,7 +501,7 @@ class SfDS(DeviceMovementMixin, nn.Module):
             device=self.device,
             verbose=self.verbose,
             max_memory_gb=self.max_memory_gb,
-            engine=self.engine,
+            force_portable=self.force_portable,
         )
 
         return new_ds

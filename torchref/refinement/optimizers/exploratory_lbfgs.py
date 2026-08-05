@@ -153,42 +153,29 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
     ----------
     params : iterable
         Parameters to optimize.
-    lr : float
-        Learning rate used to construct the internal LBFGS. Default: 1.0.
-        Note: this only seeds the internal LBFGS at construction; it is not
-        re-read as a live per-group hyperparameter after that.
-    max_iter : int
-        Max line search iterations per step, used to construct the internal
-        LBFGS at initialization. Default: 20.
-    history_size : int
-        Hessian approximation memory, used to construct the internal LBFGS
-        at initialization. Default: 100.
+    lr, max_iter, history_size : float, int, int
+        Passed to the internal LBFGS **at construction only** -- unlike a normal
+        optimizer these are not re-read as live per-group hyperparameters.
     m_modes : int
-        Number of lowest eigenmodes to compute. Default: 10.
+        Number of lowest eigenmodes to compute.
     m_lanczos_iter : int, optional
-        Lanczos iterations. Default: 2*m_modes + 10.
+        Lanczos iterations. Default ``2*m_modes + 10``.
     eigenvalue_threshold : float
-        Mode is degenerate if eigenvalue < threshold * median(positive). Default: 0.01.
+        Mode is degenerate if eigenvalue < threshold * median(positive).
     participation_threshold : float
-        Parameter participates if |component| > threshold * ||mode||. Default: 0.05.
-    scan_points : int
-        Evaluation points per scan direction. Default: 20.
-    scan_step_size : float
-        Step size in parameter space units. Default: 0.1.
+        Parameter participates if ``|component| > threshold * ||mode||``.
+    scan_points, scan_step_size : int, float
+        Evaluation points per scan direction, and step size in parameter-space units.
     max_exploration_cycles : int
-        Cap on explore-hop cycles. Default: 5.
+        Cap on explore-hop cycles.
     hvp_epsilon : float
-        Finite-difference epsilon for Hessian-vector products. Default: 1e-4.
-    convergence_grad_threshold : float
-        Gradient norm convergence threshold. Default: 1e-5.
-    convergence_loss_threshold : float
-        Loss change convergence threshold. Default: 1e-7.
-    convergence_param_threshold : float
-        Parameter change convergence threshold. Default: 1e-6.
-    n_stable : int
-        Consecutive converged steps required. Default: 3.
+        Finite-difference epsilon for Hessian-vector products.
+    convergence_grad_threshold, convergence_loss_threshold,
+    convergence_param_threshold, n_stable
+        Gradient-norm, loss-change and parameter-change thresholds, all of which
+        must hold for ``n_stable`` consecutive steps.
     verbose : int
-        Verbosity level: 0=silent, 1=summary, 2=detailed. Default: 1.
+        0=silent, 1=summary, 2=detailed.
     """
 
     def __init__(
@@ -321,22 +308,10 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
     def _hvp_finite_difference(
         self, closure: Callable, v: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Compute Hessian-vector product using central finite differences.
+        """``H @ v ~ (grad(x + eps*v) - grad(x - eps*v)) / (2 eps)``, flat.
 
-        H @ v ~ (grad(x + eps*v) - grad(x - eps*v)) / (2 * eps)
-
-        Parameters
-        ----------
-        closure : callable
-            Evaluates loss and computes gradients. Must call zero_grad + backward.
-        v : torch.Tensor
-            Direction vector (flat, same size as all params).
-
-        Returns
-        -------
-        torch.Tensor
-            Hessian-vector product (flat).
+        ``closure`` must itself call ``zero_grad()`` and ``backward()``. Parameters
+        are perturbed in place and restored before returning.
         """
         eps = self._hvp_epsilon
         x0 = self._gather_flat_params()
@@ -363,28 +338,22 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
     def _lanczos(
         self, closure: Callable
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Lanczos algorithm with full reorthogonalization.
+        """Lowest Hessian eigenpairs by Lanczos with full reorthogonalization.
 
-        Builds a Krylov subspace and tridiagonal matrix T, then extracts
-        Ritz values/vectors as approximate eigenpairs of the Hessian.
-
-        Parameters
-        ----------
-        closure : callable
-            Evaluates loss and computes gradients.
+        Builds a Krylov subspace and tridiagonal ``T``, then takes Ritz
+        values/vectors as approximate eigenpairs.
 
         Returns
         -------
         eigenvalues : torch.Tensor
-            Shape (k,) — lowest eigenvalues, sorted ascending.
+            Shape ``(k,)``, ascending.
         eigenvectors : torch.Tensor
-            Shape (k, n_params) — corresponding eigenvectors.
+            Shape ``(k, n_params)``.
 
         Raises
         ------
         LanczosError
-            If the algorithm fails to produce valid results.
+            If the iteration produces no valid results.
         """
         n = self._total_params
         m = min(self._m_lanczos_iter, n)
@@ -469,21 +438,8 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
     def _identify_degenerate_modes(
         self, eigenvalues: torch.Tensor, eigenvectors: torch.Tensor
     ) -> List[Mode]:
-        """
-        Classify eigenmodes as negative (saddle) or degenerate (flat).
-
-        Parameters
-        ----------
-        eigenvalues : torch.Tensor
-            Eigenvalues from Lanczos.
-        eigenvectors : torch.Tensor
-            Corresponding eigenvectors.
-
-        Returns
-        -------
-        list of Mode
-            Modes classified as interesting for exploration.
-        """
+        """The :class:`Mode` list worth exploring: negative (saddle) eigenvalues plus
+        those flat relative to ``eigenvalue_threshold * median(positive)``."""
         modes = []
 
         # Compute threshold from positive eigenvalues
@@ -516,18 +472,8 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
     # =========================================================================
 
     def _discover_groups(self, modes: List[Mode]) -> List[ParameterGroup]:
-        """
-        For each mode, group parameters with significant participation.
-
-        Parameters
-        ----------
-        modes : list of Mode
-            Degenerate/negative modes to analyze.
-
-        Returns
-        -------
-        list of ParameterGroup
-        """
+        """One :class:`ParameterGroup` per mode, holding the parameters whose
+        component exceeds ``participation_threshold``."""
         groups = []
         for mode in modes:
             direction = mode.direction
@@ -559,24 +505,10 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
     def _scan_group(
         self, group: ParameterGroup, eval_fn: Callable
     ) -> List[ScanPoint]:
-        """
-        Scan along a mode direction, evaluating loss at each point.
+        """:class:`ScanPoint` losses both ways along ``group.direction``.
 
-        Scans both positive and negative directions from current position.
-        Restores parameters after scanning.
-
-        Parameters
-        ----------
-        group : ParameterGroup
-            The parameter group with direction to scan.
-        eval_fn : callable
-            Forward-only loss evaluation (no backward). Called inside
-            torch.no_grad(). Must return a scalar loss value.
-
-        Returns
-        -------
-        list of ScanPoint
-            Loss evaluations along the scan direction.
+        ``eval_fn`` is forward-only, called inside ``torch.no_grad()``, and must
+        return a scalar. Parameters are restored after scanning.
         """
         x0 = self._gather_flat_params()
         direction = group.direction
@@ -616,23 +548,9 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
         direction: torch.Tensor,
         current_loss: float,
     ) -> List[Basin]:
-        """
-        Find local minima in a 1D loss profile by neighbor comparison.
-
-        Parameters
-        ----------
-        scan_results : list of ScanPoint
-            Loss values along the scan.
-        direction : torch.Tensor
-            The scan direction.
-        current_loss : float
-            Loss at the starting point (t=0).
-
-        Returns
-        -------
-        list of Basin
-            Detected basins, sorted by loss (best first).
-        """
+        """Local minima of a 1-D loss profile by neighbour comparison, as
+        :class:`Basin` records sorted best-first and scored against
+        ``current_loss`` (the loss at ``t=0``)."""
         if len(scan_results) < 3:
             return []
 
@@ -669,23 +587,8 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
     def _handle_saddle_modes(
         self, saddle_modes: List[Mode], eval_fn: Callable, current_loss: float
     ) -> List[Basin]:
-        """
-        Scan along negative-eigenvalue directions and find basins.
-
-        Parameters
-        ----------
-        saddle_modes : list of Mode
-            Modes with negative eigenvalues.
-        eval_fn : callable
-            Forward-only loss evaluation (no backward).
-        current_loss : float
-            Current loss value.
-
-        Returns
-        -------
-        list of Basin
-            Best basins found along saddle directions.
-        """
+        """Best :class:`Basin` per negative-eigenvalue direction; ``eval_fn`` is
+        forward-only, as for :meth:`_scan_group`."""
         all_basins = []
         for mode in saddle_modes:
             group = ParameterGroup(
@@ -713,23 +616,20 @@ class ExploratoryLBFGS(torch.optim.Optimizer):
         return self._phase
 
     def step(self, closure: Callable) -> Optional[float]:
-        """
-        Perform one step of the state machine.
+        """Perform one step of the state machine.
 
         Parameters
         ----------
         closure : callable
-            A closure that re-evaluates the model loss. Should call
-            ``optimizer.zero_grad()``, compute the loss, call ``loss.backward()``,
-            and return the loss.
+            Re-evaluates the model loss; must call ``optimizer.zero_grad()``,
+            ``loss.backward()``, and return the loss.
 
         Returns
         -------
         torch.Tensor, float, or None
-            The loss value. The type passes through from the closure: the
-            OPTIMIZING/EXPLORING paths return the closure's loss tensor
-            unchanged (``.item()`` is not applied), so callers may receive a
-            0-d tensor rather than a Python float.
+            The loss, with the type passed through from the closure -- the
+            OPTIMIZING/EXPLORING paths do not apply ``.item()``, so callers may get
+            a 0-d tensor rather than a float.
         """
         if self._phase == OptimizerPhase.OPTIMIZING:
             return self._step_optimizing(closure)

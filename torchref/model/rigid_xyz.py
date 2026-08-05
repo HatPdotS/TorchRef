@@ -18,6 +18,7 @@ import torch
 from torch import nn
 
 from torchref.base.alignment.rotation import rotation_matrix_euler_xyz
+from torchref.config import get_float_dtype, normalize_device
 from torchref.utils.caching import CachedForwardMixin
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -56,14 +57,22 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         self._name = name
 
         if original_xyz is None:
-            # Empty init for state_dict loading.
-            self.register_buffer("original_xyz", torch.empty(0, 3))
-            self.register_buffer("chain_indices", torch.empty(0, dtype=torch.long))
-            self.register_buffer("chain_centers", torch.empty(0, 3))
-            self.register_buffer("mobile_mask", torch.empty(0, dtype=torch.bool))
-            self.register_buffer("atom_weights", torch.empty(0))
-            self.euler_angles = nn.Parameter(torch.empty(0, 3))
-            self.translations = nn.Parameter(torch.empty(0, 3))
+            # Empty init for state_dict loading. Honour the requested
+            # device/dtype: otherwise every buffer lands on CPU regardless of
+            # what the caller asked for, and only a later ``.to()`` repairs it.
+            device = normalize_device(device)
+            dtype = dtype if dtype is not None else get_float_dtype()
+            self.register_buffer("original_xyz", torch.empty(0, 3, device=device, dtype=dtype))
+            self.register_buffer(
+                "chain_indices", torch.empty(0, dtype=torch.long, device=device)
+            )
+            self.register_buffer("chain_centers", torch.empty(0, 3, device=device, dtype=dtype))
+            self.register_buffer(
+                "mobile_mask", torch.empty(0, dtype=torch.bool, device=device)
+            )
+            self.register_buffer("atom_weights", torch.empty(0, device=device, dtype=dtype))
+            self.euler_angles = nn.Parameter(torch.empty(0, 3, device=device, dtype=dtype))
+            self.translations = nn.Parameter(torch.empty(0, 3, device=device, dtype=dtype))
             self._n_chains = 0
             self._chain_id_order: list = []
             return
@@ -168,6 +177,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     # Forward — reconstruct full xyz
     # -----------------------------------------------------------------------
     def forward(self) -> torch.Tensor:
+        """Full ``(N, 3)`` coordinates: each chain rotated about its weighted
+        centroid and translated. Non-mobile atoms keep ``original_xyz``.
+        """
         # XYZ Euler — same convention as Phenix's default rigid-body
         # parametrization. Critical near macro-cycle resets (after bake()
         # the angles are exactly zero): XYZ keeps the Jacobian full-rank
@@ -296,6 +308,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
         self.update_fixed_values(new_xyz)
 
     def update_fixed_values(self, new_values: torch.Tensor):
+        """Adopt ``new_values`` as the reference pose, ZEROING the rigid-body
+        parameters and recomputing the chain centroids (see :meth:`bake`).
+        """
         # Update the reference coordinates and reset the per-chain transforms
         # so forward() reproduces these new values.
         if new_values.shape != self.shape:
@@ -359,6 +374,9 @@ class RigidXYZTensor(DeviceMixin, CachedForwardMixin, nn.Module):
     # Materialize back into a regular MixedTensor.
     # -----------------------------------------------------------------------
     def to_mixed_tensor(self):
+        """A per-atom :class:`MixedTensor` holding the current transformed
+        coordinates, for handing per-atom refinement back to ``Model``.
+        """
         from torchref.model.parameter_wrappers import MixedTensor
 
         with torch.no_grad():

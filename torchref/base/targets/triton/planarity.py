@@ -1,20 +1,15 @@
 """Triton forward + analytic backward for the planarity target.
 
-The plane normals are computed on the host via a detached ``eigh`` on the
-per-plane (P, 3, 3) covariance (chosen over SVD for speed), promoted to
-float64 for the eigendecomposition only and then cast back — that step is
-not Triton-able and already runs without autograd. (The eager path in
-``torchref.base.targets.planarity`` uses SVD in the input dtype.) The Triton
-kernel handles the per-plane gather
-+ centroid + (pos - centroid)·normal + Gaussian NLL + sum, and the
-backward kernel scatters the analytic gradient back to ``xyz``.
+Plane normals come from a detached float64 ``eigh`` on the per-plane (P, 3, 3)
+covariance, on the host: that step is not Triton-able and already runs without
+autograd. Note this differs from the eager path in
+``torchref.base.targets.planarity``, which uses SVD in the input dtype. The kernels
+handle the per-plane gather + centroid + ``(pos - centroid)·normal`` + Gaussian NLL,
+and scatter back
 
-Backward derivation. NLL_p = sum_a 0.5 (d_pa / σ_p)^2 + n (log σ_p + 0.5 log 2π)
-where d_pa = (pos_pa - centroid_p) · n_p. Because centroid_p depends on
-every atom in the plane via the mean, the gradient w.r.t. each member
-atom c is
+  ∂NLL_p/∂pos_pc = [d_pc / σ_p² - mean_a(d_pa / σ_p²)] · n_p
 
-  ∂NLL_p/∂pos_pc = [d_pc / σ_p² - mean_a(d_pa / σ_p²)] · n_p .
+-- the mean term is there because ``centroid_p`` itself depends on every member atom.
 """
 
 from __future__ import annotations
@@ -140,34 +135,18 @@ def _plan_nll_bwd_kernel(
 def _plane_normals_via_eigh(
     covariances: torch.Tensor,
 ) -> torch.Tensor:
-    """Smallest-eigenvalue eigenvector of a batch of 3×3 SPD covariances.
+    """Smallest-eigenvalue eigenvector of a batch of 3x3 SPD covariances.
 
-    For an (n_atoms, 3) centered matrix, the right singular vector with
-    smallest singular value coincides with the eigenvector of smallest
-    eigenvalue of ``centeredᵀ centered``. Working on the (P, 3, 3)
-    covariance and using ``eigh`` (faster than ``svd`` for symmetric
-    inputs, batches well across plane-size buckets) cuts the
-    plane-normal cost ~5× on A100 vs the per-bucket fp64 SVD on the
-    full ``centered`` matrix.
+    Equivalent to the smallest right singular vector of ``centered``, since the
+    covariance is ``centeredᵀ centered``, but ~5x cheaper: ``eigh`` beats ``svd`` on
+    symmetric inputs and batches across plane-size buckets. Done in fp64 -- the eager
+    helper's regime -- because near collinear atoms the eigenvector lives in an
+    ambiguous 2-D subspace and the choice is implementation-defined.
 
-    Promoted to fp64 for the eigh itself, matching the eager helper's
-    precision regime — important near collinear-atom degeneracies
-    where the smallest-eigvec lives in a 2-D ambiguous subspace and
-    the chosen direction is implementation-defined. The fp64 cost
-    is still negligible relative to the SVD it replaces.
-
-    Robustness — LBFGS line search occasionally probes wild trial steps
-    that can drive ``xyz`` (and hence the covariance) to NaN / Inf. In
-    that regime ``eigh`` raises ``torch._C._LinAlgError`` whereas SVD
-    on the original ``centered`` returns a finite (arbitrary) vector.
-    To keep the trial step well-defined we catch the LinAlgError and
-    return zero normals; the resulting deviations are zero, the NLL
-    contribution is finite (``per-atom-const · n_atoms``), the gradient
-    w.r.t. atom positions is exactly zero (the trial step gets a
-    finite loss with no pull from planarity → validate_loss /
-    line-search reject it on its own). Bit-perfect collinearity, by
-    contrast, doesn't trigger this path — both ``eigh`` and ``svd``
-    return a finite unit vector in the ambiguous subspace.
+    A NaN/Inf covariance (LBFGS does probe wild trial steps) makes ``eigh`` raise where
+    SVD would return an arbitrary finite vector, so that is caught and zero normals are
+    returned: deviations zero, NLL finite, gradient exactly zero, and the line search
+    rejects the step on its own. Bit-perfect collinearity does not reach this path.
     """
     in_dtype = covariances.dtype
     try:

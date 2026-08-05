@@ -10,44 +10,28 @@ from torchref.config import dtypes
 
 
 def find_relevant_voxels(real_space_grid, xyz, radius_angstrom=4, inv_frac_matrix=None):
-    """
-    Identify surrounding voxels of atoms in a real space grid.
-
-    This is a vectorized function that finds all voxels within a spherical
-    radius around each atom position.
+    """Voxels within ``radius_angstrom`` of each atom, vectorized over atoms.
 
     Parameters
     ----------
     real_space_grid : torch.Tensor
-        Real space grid containing xyz coordinates at each grid point,
-        of shape (nx, ny, nz, 3).
+        Cartesian coordinate at each grid point, shape ``(nx, ny, nz, 3)``.
     xyz : torch.Tensor
-        Atom coordinates in real space (Cartesian coordinates),
-        of shape (N, 3) or (3,).
+        Cartesian atom coordinates, shape ``(N, 3)`` or ``(3,)``.
     radius_angstrom : float, optional
-        Radius around each atom in Angstroms. Default is 4. This single fixed
-        radius is a legacy fallback: the production density splat
-        (``main.build_electron_density``) derives a per-atom truncation radius
-        from each atom's B/U and ``torchref.sigma_cutoff_ed`` rather than using a
-        global 4 A cutoff. This helper is only reached via the legacy
+        A single fixed radius, and a **legacy fallback**: the production splat
+        (``main.build_electron_density``) derives a per-atom radius from each atom's B/U and
+        ``torchref.sigma_cutoff_ed``. This helper is reached only from the legacy
         reference/JIT splat path.
     inv_frac_matrix : torch.Tensor, optional
-        Matrix to convert Cartesian to fractional coordinates of shape (3, 3).
-        Required for proper handling of non-orthogonal cells.
+        Cartesian-to-fractional, shape ``(3, 3)``. Required for non-orthogonal cells.
 
     Returns
     -------
-    surrounding_coords : torch.Tensor
-        Coordinates of surrounding voxels for each atom of shape (N, R, 3),
-        where R is the number of voxels within the radius.
-    voxel_indices_wrapped : torch.Tensor
-        Wrapped voxel indices of shape (N, R, 3).
-
-    Notes
-    -----
-    Atom coordinates are NOT wrapped here - periodic boundary conditions are
-    handled in smallest_diff() which finds the minimum image distance. We only
-    wrap voxel indices to ensure they're valid array indices.
+    tuple
+        ``(surrounding_coords, voxel_indices_wrapped)``, each ``(N, R, 3)`` for the ``R``
+        voxels inside the radius. Only the voxel indices are wrapped -- atom coordinates are
+        NOT, because ``smallest_diff()`` does the minimum-image work.
     """
     # Ensure xyz is 2D (N, 3)
     if xyz.ndim == 1:
@@ -91,28 +75,10 @@ def find_relevant_voxels(real_space_grid, xyz, radius_angstrom=4, inv_frac_matri
 def excise_angstrom_radius_around_coord(
     real_space_grid, start_indices, radius_angstrom=4.0
 ):
-    """
-    Identify voxel indices within an Angstrom radius around specified grid positions.
+    """Wrapped voxel indices ``(N, R, 3)`` within ``radius_angstrom`` of each of
+    ``start_indices`` ``(N, 3)`` on ``real_space_grid`` ``(nx, ny, nz, 3)``.
 
-    Parameters
-    ----------
-    real_space_grid : torch.Tensor
-        Real space grid of shape (nx, ny, nz, 3) containing xyz coordinates.
-    start_indices : torch.Tensor
-        Starting grid indices of shape (N, 3) or (3,).
-    radius_angstrom : float, optional
-        Radius in Angstroms. Default is 4.0.
-
-    Returns
-    -------
-    torch.Tensor
-        Wrapped voxel indices of shape (N, R, 3), where R is the number of
-        voxels within the radius.
-
-    Notes
-    -----
-    Periodic boundary conditions are handled by wrapping the indices to
-    ensure they're valid array indices.
+    Indices are wrapped for periodic boundaries so they stay valid array indices.
     """
     # Ensure xyz is 2D (N, 3)
     if start_indices.ndim == 1:

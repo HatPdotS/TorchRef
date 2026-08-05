@@ -133,7 +133,7 @@ class TestMixedTensorDeviceHandling:
         mixed = MixedTensor(values, device=gpu_device)
         
         result = mixed()
-        assert result.device.type == 'cuda'
+        assert result.device.type == gpu_device.type
 
 
 class TestMixedTensorSet:

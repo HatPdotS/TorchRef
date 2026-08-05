@@ -1,17 +1,10 @@
-"""
-A class for scaling and post corrections of scattering factors.
+"""Scaling and post-corrections of calculated structure factors.
 
-Enabled by default in ``initialize()``:
-- Overall scale per resolution bin
-- Anisotropy correction
-- Solvent model correction
-
-Optional (must be enabled explicitly, not part of the default pipeline):
-- B-factor per resolution bin (via ``setup_bin_wise_bfactor`` /
-  ``bin_wise_bfactor_correction``; never called by ``initialize()``)
-
-This module provides the full-featured `Scaler` class that maintains a reference
-to a Model object. For a model-independent scaler, see `ScalerBase`.
+The full-featured :class:`Scaler`, which holds a reference to a ``Model`` and
+computes ``F_calc`` itself; see :class:`~torchref.scaling.ScalerBase` for the
+model-independent version. ``initialize()`` enables the per-bin overall scale,
+the anisotropy correction and the solvent model. The per-bin B-factor
+(``setup_bin_wise_bfactor``) is opt-in and never set up by ``initialize()``.
 """
 
 from typing import Optional, TYPE_CHECKING
@@ -19,10 +12,9 @@ from typing import Optional, TYPE_CHECKING
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device
 from torchref.io import ReflectionData
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.scaling.scaler_base import ScalerBase
+from torchref.scaling.scaler_base import DEFAULT_SCALE_TARGET, ScalerBase
 from torchref.scaling.solvent import SolventModel
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference
@@ -35,21 +27,10 @@ class Scaler(ScalerBase):
     """
     Full-featured scaler with Model integration.
 
-    Extends ScalerBase by maintaining a reference to a Model object
-    and providing convenience methods that automatically compute F_calc
-    when not provided.
-
-    Supports two initialization patterns:
-
-    1. Empty initialization (for state_dict loading)::
-
-        scaler = Scaler()  # Creates empty shell
-        scaler.load_state_dict(torch.load('scaler.pt'))
-
-    2. Full initialization with model and data::
-
-        scaler = Scaler(model, reflection_data, nbins=20)
-        scaler.initialize()
+    Extends :class:`ScalerBase` with a reference to a ``Model``, so every
+    method that needs ``F_calc`` computes it when not given one. Constructed
+    either fully (``Scaler(model, data, nbins=20)`` then ``initialize()``) or
+    empty (``Scaler()`` then ``load_state_dict``).
 
     Parameters
     ----------
@@ -115,7 +96,6 @@ class Scaler(ScalerBase):
         # registers buffers from ``data.hkl`` / ``data.cell``.
         resolved_device = resolve_device(model, data, device=device)
 
-        # Initialize base class with data
         super(Scaler, self).__init__(
             data=data,
             nbins=nbins,
@@ -136,11 +116,7 @@ class Scaler(ScalerBase):
 
     @model.setter
     def model(self, value):
-        """Set the model reference.
-
-        Note: Uses object.__setattr__ to bypass PyTorch's nn.Module.__setattr__,
-        which would intercept nn.Module assignments and register them as submodules.
-        """
+        """Set the model reference, bypassing nn.Module submodule registration."""
         ref = ModuleReference(value) if value is not None else None
         object.__setattr__(self, "_model_ref", ref)
 
@@ -157,12 +133,16 @@ class Scaler(ScalerBase):
             Model object for structure factor calculation.
         data : ReflectionData
             ReflectionData object with observed data.
+
+        Notes
+        -----
+        Receiver wins: the scaler already owns buffers by this point, so
+        ``model`` and ``data`` are moved onto *its* device.
         """
-        # Set _model_ref directly: nn.Module.__setattr__ intercepts assignments
-        # of nn.Module instances (like `self.model = model`) and registers them
-        # as submodules, bypassing the property setter entirely.
+        resolve_device(self, model, data)
+        # Set _model_ref directly: `self.model = model` would be intercepted by
+        # nn.Module.__setattr__ and registered as a submodule.
         self._model_ref = ModuleReference(model) if model is not None else None
-        # Use parent class method for data
         self.set_data(data)
 
     def initialize(self, fcalc: torch.Tensor = None):
@@ -322,6 +302,7 @@ class Scaler(ScalerBase):
         max_iter: int = 200,
         history_size: int = 10,
         verbose: bool = True,
+        scale_target: str = DEFAULT_SCALE_TARGET,
     ):
         """
         Refine scale parameters using LBFGS optimizer.
@@ -342,6 +323,10 @@ class Scaler(ScalerBase):
             Number of previous gradients to store for Hessian approximation.
         verbose : bool, default True
             Print progress information.
+        scale_target : {'nll', 'ml_noalpha'}, default 'nll'
+            Scale-fit objective, an :data:`XRAY_TARGETS` row; see
+            :meth:`torchref.scaling.scaler_base.ScalerBase.refine_lbfgs` for why no
+            ``alpha``-centred row is selectable.
 
         Returns
         -------
@@ -357,6 +342,7 @@ class Scaler(ScalerBase):
             max_iter=max_iter,
             history_size=history_size,
             verbose=verbose,
+            scale_target=scale_target,
         )
 
     def get_binwise_mean_intensity(self, fcalc: torch.Tensor = None):
@@ -381,30 +367,11 @@ class Scaler(ScalerBase):
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         """
-        Return a dictionary containing the complete state of the Scaler.
-
-        This is a pure pass-through to ``ScalerBase.state_dict``; the actual
-        serialization (registered buffers/parameters, nbins/verbose metadata,
-        and solvent model state) is performed by the parent. See
-        :meth:`ScalerBase.state_dict` for the authoritative behavior.
-
-        Note: Model and data references are NOT saved (managed separately).
-
-        Parameters
-        ----------
-        destination : dict, optional
-            Optional dict to populate.
-        prefix : str, default ''
-            Prefix for parameter names.
-        keep_vars : bool, default False
-            Whether to keep variables in computational graph.
-
-        Returns
-        -------
-        dict
-            Complete state dictionary.
+        Complete state of the Scaler; a pure pass-through to
+        :meth:`ScalerBase.state_dict`, which does the serialization
+        (buffers/parameters, nbins/verbose metadata, solvent state).
+        Model and data references are NOT saved -- they are managed separately.
         """
-        # Use parent class implementation
         return super().state_dict(
             destination=destination, prefix=prefix, keep_vars=keep_vars
         )
@@ -422,17 +389,14 @@ class Scaler(ScalerBase):
         strict : bool, default True
             Whether to strictly enforce that keys match.
         """
-        # Extract and load solvent model state if it exists
         solvent_state = state_dict.get("solvent", None)
 
-        # If solvent state exists but module doesn't, instantiate it
+        # A saved solvent state needs a SolventModel to load into.
         if solvent_state is not None and not hasattr(self, "solvent"):
-            # We need to instantiate SolventModel.
-            # It requires: model, radius, k_solvent, b_solvent, etc.
             if hasattr(self, "model") and self.model is not None:
                 self.solvent = SolventModel(
                     model=self.model, device=self.device, verbose=self.verbose
                 )
 
-        # Use parent class implementation (handles removing 'solvent' from state_dict)
+        # Parent removes 'solvent' from state_dict before the strict key check.
         return super().load_state_dict(state_dict, strict=strict)

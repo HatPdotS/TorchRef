@@ -38,7 +38,6 @@ from torchref.refinement.targets import RiceXrayTarget
 from torchref.base import rotation_matrix_euler_zyz
 from torchref.config import get_default_device
 from torchref.model import SfFFT
-from torchref.refinement.targets import MaximumLikelihoodXrayTarget
 from torchref.scaling import ScalerBase
 from torchref.symmetry import spacegroup
 from torchref.utils.device_mixin import DeviceMixin
@@ -88,7 +87,9 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
 
     Optimizes 6 parameters (3 rotation + 3 translation) to maximize
     agreement between calculated and observed structure factors using a
-    Rice maximum-likelihood X-ray target (``RiceXrayTarget``).
+    Rice maximum-likelihood X-ray target (``RiceXrayTarget`` -- a PRIVATE target, not a
+    selectable ``--xray-mode``; see its docstring for why it still exists and why this
+    caller should probably move to ``nll`` once it has a test).
 
     Key design: Extracts all tensors from Model once at init, then uses
     FFT.compute_structure_factors() directly. This maintains gradient flow:

@@ -15,40 +15,26 @@ def interpolate_structure_factor_from_grid(
     interpolate_amplitude: bool = True,
 ) -> torch.Tensor:
     """
-    Interpolate structure factors from reciprocal space grid at non-integer positions.
+    Trilinearly interpolate structure factors at non-integer HKL positions.
 
     Parameters
     ----------
     reciprocal_grid : torch.Tensor
-        Complex tensor of shape (Nx, Ny, Nz).
+        Complex tensor of shape (Nx, Ny, Nz). Indices wrap periodically.
     hkl_float : torch.Tensor
-        Non-integer HKL positions of shape (N, 3).
+        Non-integer HKL positions of shape (N, 3). For a rotation ``R`` applied to
+        the model, pass ``hkl @ R`` -- the same row-vector convention as
+        :func:`interpolate_for_rotation`.
     interpolate_amplitude : bool, optional
-        If True (default), interpolate amplitudes instead of complex values.
-        This avoids phase cancellation issues where linear interpolation of
-        complex numbers with different phases can give incorrect magnitudes
-        (e.g., interpolating F=1 and F=-1 gives 0 instead of 1).
+        Interpolate ``|F|`` rather than complex ``F`` (default). Complex
+        interpolation cancels phases: F=+A and F=-A in adjacent voxels give
+        magnitude 0 at the midpoint instead of A, so leave this True for rotation
+        functions where only magnitudes matter.
 
     Returns
     -------
     torch.Tensor
-        Interpolated structure factors of shape (N,).
-        If interpolate_amplitude=True, returns real-valued amplitudes.
-        If interpolate_amplitude=False, returns complex values (use with caution).
-
-    Notes
-    -----
-    For a rotation R applied to the model, the structure factor at hkl becomes
-    F(R^T @ hkl), so you would call this with hkl_float = hkl @ R. This is the
-    same row-vector ``h @ R`` convention used by
-    :func:`interpolate_for_rotation` and
-    :func:`~torchref.base.reciprocal.symmetry.compute_symmetry_equivalent_hkls`.
-
-    WARNING: Complex interpolation (interpolate_amplitude=False) can give
-    incorrect results when neighboring voxels have very different phases.
-    For example, if F1 = A*exp(i*0) and F2 = A*exp(i*π), linear interpolation
-    gives magnitude 0 at the midpoint instead of A. Use interpolate_amplitude=True
-    for rotation functions where only magnitudes matter.
+        Shape (N,); real amplitudes if ``interpolate_amplitude``, else complex.
     """
     device = reciprocal_grid.device
     Nx, Ny, Nz = reciprocal_grid.shape
@@ -141,16 +127,17 @@ def interpolate_complex_from_grid(
     hkl_float: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Interpolate complex structure factors from reciprocal space grid.
+    Trilinearly interpolate *complex* structure factors, preserving phase.
 
-    Unlike amplitude interpolation, this preserves phase information, which is
-    essential for translation searches where phases are used to compute
-    correlation functions.
+    For translation searches, which depend on the F_obs/F_calc phase relationship.
+    Interpolating complex values shrinks magnitudes where adjacent voxels disagree
+    in phase -- tolerable for a correlation function, wrong for a rotation search,
+    so use :func:`interpolate_structure_factor_from_grid` there.
 
     Parameters
     ----------
     reciprocal_grid : torch.Tensor
-        Complex tensor of shape (Nx, Ny, Nz).
+        Complex tensor of shape (Nx, Ny, Nz). Indices wrap periodically.
     hkl_float : torch.Tensor
         Non-integer HKL positions of shape (N, 3).
 
@@ -158,19 +145,6 @@ def interpolate_complex_from_grid(
     -------
     torch.Tensor
         Interpolated complex structure factors of shape (N,).
-
-    Notes
-    -----
-    This function performs trilinear interpolation of complex values.
-    For rotation-only searches (where only magnitudes matter), use
-    `interpolate_structure_factor_from_grid(interpolate_amplitude=True)` instead.
-
-    For translation searches, complex interpolation is needed because the
-    translation function depends on the phase relationship between F_obs and F_calc.
-
-    WARNING: Complex interpolation can give reduced magnitudes when neighboring
-    voxels have very different phases. This is acceptable for translation searches
-    where we're computing correlation functions, but not for rotation searches.
     """
     device = reciprocal_grid.device
     Nx, Ny, Nz = reciprocal_grid.shape
@@ -238,31 +212,25 @@ def trilinear_interpolate_patterson(
     grid: torch.Tensor, points: torch.Tensor, chunk_size: int = 10_000_000
 ) -> torch.Tensor:
     """
-    Memory-efficient trilinear interpolation on a 3D grid.
+    Memory-efficient, differentiable trilinear interpolation on a 3D grid.
 
-    Pure torch implementation for GPU acceleration and gradient flow.
-    Replaces scipy.ndimage.map_coordinates for torch tensors.
+    The torch equivalent of ``scipy.ndimage.map_coordinates`` in wrap mode;
+    chunked with in-place accumulation, so it never materializes 8 corner arrays.
 
     Parameters
     ----------
     grid : torch.Tensor
         3D grid of values with shape (nx, ny, nz).
     points : torch.Tensor
-        Coordinates to sample with shape (n_points, 3).
-        Should be in fractional coordinates [0, 1) for 'wrap' mode.
-        Or batch K, n_points, 3 for multiple batches.
+        Fractional coordinates, shape (n_points, 3) or (K, n_points, 3). Values
+        outside [0, 1) wrap.
     chunk_size : int, optional
-        Number of points to process at once. Default is 10,000,000 (10M).
+        Points processed at once. Default 10,000,000.
 
     Returns
     -------
     torch.Tensor
         Interpolated values with shape (n_points,) or (batch, n_points).
-
-    Notes
-    -----
-    Supports automatic differentiation for gradient-based optimization.
-    Uses chunked processing and in-place accumulation to reduce memory.
     """
     original_shape = points.shape[:-1]
     points = points.reshape(-1, 3)
@@ -358,7 +326,7 @@ def smooth_reciprocal_grid(
     mode: str = "amplitude_phase",
 ) -> torch.Tensor:
     """
-    Apply Gaussian smoothing to a reciprocal space grid using native PyTorch.
+    Gaussian-smooth a reciprocal space grid by FFT convolution (wrap boundaries).
 
     Parameters
     ----------
@@ -366,26 +334,16 @@ def smooth_reciprocal_grid(
         Complex tensor of shape (Nx, Ny, Nz).
     sigma : float
         Standard deviation of the Gaussian kernel in voxel units.
-    mode : str, optional
-        Smoothing mode. Options:
-        - "amplitude_phase": Smooth amplitude and phase separately using
-          circular mean for phases. This avoids phase cancellation while
-          preserving the relationship between amplitude and phase. Default.
-        - "amplitude_only": Smooth only amplitudes, preserve original phases.
-          Useful when phase accuracy is critical.
-        - "complex": Smooth real and imaginary parts separately.
-          WARNING: This can cause phase cancellation when neighboring voxels
-          have different phases (e.g., averaging exp(i*0) and exp(i*π) gives 0).
+    mode : {'amplitude_phase', 'amplitude_only', 'complex'}, optional
+        ``amplitude_phase`` (default) smooths amplitude and phase separately, the
+        phase by amplitude-weighted circular mean; ``amplitude_only`` keeps the
+        original phases; ``complex`` smooths real and imaginary parts, which
+        cancels phases where neighbours disagree (exp(i·0) + exp(i·π) -> 0).
 
     Returns
     -------
     torch.Tensor
         Smoothed reciprocal space grid of shape (Nx, Ny, Nz).
-
-    Notes
-    -----
-    Uses FFT-based convolution for efficient 3D Gaussian smoothing with
-    periodic (wrap) boundary conditions.
     """
     if mode == "complex":
         return _smooth_complex_cartesian(reciprocal_grid, sigma)
@@ -398,35 +356,19 @@ def smooth_reciprocal_grid(
 
 
 def _create_gaussian_kernel_fft(shape: tuple, sigma: float, device: torch.device) -> torch.Tensor:
-    """
-    Create the FFT of a 3D Gaussian kernel for convolution.
+    """FFT of a 3D Gaussian of width ``sigma`` voxels, on ``shape``.
 
-    Parameters
-    ----------
-    shape : tuple
-        Shape of the grid (Nx, Ny, Nz).
-    sigma : float
-        Standard deviation of the Gaussian in voxel units.
-    device : torch.device
-        Device to create the kernel on.
-
-    Returns
-    -------
-    torch.Tensor
-        FFT of the Gaussian kernel (real tensor since Gaussian is symmetric).
+    Real-valued, because the Gaussian is symmetric.
     """
     Nx, Ny, Nz = shape
 
-    # Create frequency grids (shifted so DC is at center conceptually, but we use fftfreq)
     fx = torch.fft.fftfreq(Nx, device=device)
     fy = torch.fft.fftfreq(Ny, device=device)
     fz = torch.fft.fftfreq(Nz, device=device)
 
-    # Create 3D frequency grid
     FX, FY, FZ = torch.meshgrid(fx, fy, fz, indexing='ij')
 
-    # Gaussian in Fourier space: exp(-2 * pi^2 * sigma^2 * |f|^2)
-    # This is the FT of a Gaussian with std=sigma
+    # FT of a real-space Gaussian with std=sigma: exp(-2 pi^2 sigma^2 |f|^2)
     freq_sq = FX**2 + FY**2 + FZ**2
     gaussian_fft = torch.exp(-2.0 * (np.pi * sigma) ** 2 * freq_sq)
 
@@ -434,43 +376,25 @@ def _create_gaussian_kernel_fft(shape: tuple, sigma: float, device: torch.device
 
 
 def _convolve_3d_fft(grid: torch.Tensor, kernel_fft: torch.Tensor) -> torch.Tensor:
-    """
-    Convolve a 3D grid with a kernel using FFT (periodic boundary conditions).
+    """FFT convolution with periodic boundaries; result matches ``grid``'s dtype.
 
-    Parameters
-    ----------
-    grid : torch.Tensor
-        Input grid (real or complex).
-    kernel_fft : torch.Tensor
-        FFT of the convolution kernel (real tensor).
-
-    Returns
-    -------
-    torch.Tensor
-        Convolved grid with same shape and dtype as input.
+    ``kernel_fft`` must already be the transformed kernel on ``grid``'s shape.
     """
     grid_fft = torch.fft.fftn(grid)
     convolved_fft = grid_fft * kernel_fft
     convolved = torch.fft.ifftn(convolved_fft)
 
-    # Return real part if input was real, otherwise complex
     if not grid.is_complex():
         return convolved.real
     return convolved
 
 
 def _smooth_complex_cartesian(reciprocal_grid: torch.Tensor, sigma: float) -> torch.Tensor:
-    """
-    Smooth by convolving real and imaginary parts separately.
-
-    WARNING: This causes phase cancellation when neighboring voxels have
-    different phases.
-    """
+    """Smooth real and imaginary parts separately; cancels opposed phases."""
     kernel_fft = _create_gaussian_kernel_fft(
         reciprocal_grid.shape, sigma, reciprocal_grid.device
     )
 
-    # Smooth real and imaginary parts separately
     smoothed_real = _convolve_3d_fft(reciprocal_grid.real, kernel_fft)
     smoothed_imag = _convolve_3d_fft(reciprocal_grid.imag, kernel_fft)
 
@@ -478,48 +402,34 @@ def _smooth_complex_cartesian(reciprocal_grid: torch.Tensor, sigma: float) -> to
 
 
 def _smooth_amplitude_only(reciprocal_grid: torch.Tensor, sigma: float) -> torch.Tensor:
-    """
-    Smooth only the amplitudes, preserving original phases.
-    """
+    """Smooth only the amplitudes, preserving original phases."""
     kernel_fft = _create_gaussian_kernel_fft(
         reciprocal_grid.shape, sigma, reciprocal_grid.device
     )
 
-    # Get amplitude and phase
     amplitude = torch.abs(reciprocal_grid)
     phase = torch.angle(reciprocal_grid)
 
-    # Smooth only the amplitude
     smoothed_amplitude = _convolve_3d_fft(amplitude, kernel_fft)
 
-    # Reconstruct with original phases
     return smoothed_amplitude * torch.exp(1j * phase)
 
 
 def _smooth_amplitude_and_phase(reciprocal_grid: torch.Tensor, sigma: float) -> torch.Tensor:
-    """
-    Smooth amplitude and phase separately, using circular mean for phases.
+    """Smooth amplitude, and phase by amplitude-weighted circular mean.
 
-    This avoids phase cancellation by treating phase as a circular quantity.
-    The circular mean is computed as: atan2(mean(sin(phi)), mean(cos(phi)))
-    which is equivalent to averaging unit vectors and taking their angle.
+    Treating phase as circular -- atan2(Σ w·sin φ, Σ w·cos φ) with w = |F| --
+    avoids the cancellation that smoothing real/imaginary parts would cause.
     """
     kernel_fft = _create_gaussian_kernel_fft(
         reciprocal_grid.shape, sigma, reciprocal_grid.device
     )
 
-    # Get amplitude and phase
     amplitude = torch.abs(reciprocal_grid)
     phase = torch.angle(reciprocal_grid)
 
-    # Smooth the amplitude
     smoothed_amplitude = _convolve_3d_fft(amplitude, kernel_fft)
 
-    # For phase: use amplitude-weighted circular mean
-    # This weights the phase contribution by the amplitude (stronger reflections
-    # contribute more to the smoothed phase)
-    # Circular mean: atan2(sum(w*sin(phi)), sum(w*cos(phi)))
-    # where w is the weight (amplitude in this case)
     weighted_sin = amplitude * torch.sin(phase)
     weighted_cos = amplitude * torch.cos(phase)
 
@@ -528,5 +438,4 @@ def _smooth_amplitude_and_phase(reciprocal_grid: torch.Tensor, sigma: float) -> 
 
     smoothed_phase = torch.atan2(smoothed_weighted_sin, smoothed_weighted_cos)
 
-    # Reconstruct complex values
     return smoothed_amplitude * torch.exp(1j * smoothed_phase)

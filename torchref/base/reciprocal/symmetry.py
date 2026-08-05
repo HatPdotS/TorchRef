@@ -1,32 +1,15 @@
-"""
-Reciprocal space symmetry application for structure factor calculation.
+"""Reciprocal-space ("late") symmetry for structure factor calculation.
 
-This module provides an alternative to the MapSymmetry-based approach for
-structure factor calculation. Instead of symmetrizing the density map in
-real space ("early symmetry"), we apply symmetry directly in reciprocal space
-after FFT ("late symmetry").
+The alternative to symmetrizing the density map before the FFT ("early" symmetry,
+:func:`~torchref.symmetry.MapSymmetry`): here symmetry is applied to the P1
+transform afterwards, avoiding the map symmetrization entirely. Per operation
+{R|t},
 
-Late symmetry is approximately 5x faster for structure factor calculation
-because it avoids the expensive map symmetrization step.
+    F_sym(h) = Σ_ops exp(2πi h·t) · F_P1(Rᵀ·h)
 
-Mathematical Background
------------------------
-For a symmetry operation {R|t} (rotation R, translation t):
-
-    F_sym(h) = sum_ops exp(2*pi*i * h.t) * F_P1(R^T @ h)
-
-Where:
-- F_sym(h) = structure factor with symmetry at Miller index h
-- F_P1(h') = P1 structure factor at h' = R^T @ h
-- exp(2*pi*i * h.t) = translation phase shift
-
-Since R is an integer matrix (crystallographic), R^T @ h gives integer indices
-that can be extracted directly from the reciprocal space grid.
-
-Terminology
------------
-- Early symmetry: Apply symmetry to density map before FFT (MapSymmetry approach)
-- Late symmetry: Apply symmetry in reciprocal space after FFT (this module)
+and because crystallographic R is integer-valued, Rᵀ·h lands exactly on grid
+points and needs no interpolation. **Every grid or map argument here is the P1
+one** -- feeding in an already-symmetrized grid double-counts.
 """
 
 from typing import Optional, TYPE_CHECKING
@@ -34,7 +17,7 @@ from typing import Optional, TYPE_CHECKING
 import numpy as np
 import torch
 
-from torchref.config import get_float_dtype
+from torchref.config import canonical_device, get_float_dtype
 from torchref.utils.autograd_ops import gather_with_index_add
 
 from .grid_operations import extract_structure_factor_from_grid
@@ -50,10 +33,8 @@ def compute_symmetry_equivalent_hkls(
     """
     Compute symmetry-equivalent HKLs for each operation.
 
-    In reciprocal space, Miller indices transform as h' = h @ R using the
-    row-vector convention (equivalently h' = R^T @ h when treating h as a
-    column vector). The implementation uses ``rotation_matrices`` directly
-    with ``h @ R`` and does NOT transpose them.
+    Row-vector convention: h' = h @ R, equivalently Rᵀ·h for column h. The
+    matrices are used as given -- do **not** pre-transpose them.
 
     Parameters
     ----------
@@ -71,26 +52,16 @@ def compute_symmetry_equivalent_hkls(
     device = hkl.device
     dtype = get_float_dtype()
 
-    # Ensure correct types
     hkl_float = hkl.to(dtype=dtype, device=device)  # (N, 3)
-
-    # For reciprocal space: F_sym(h) = sum_ops exp(2πi h·t) * F_P1(R^T @ h)
-    # With row vector convention: h' = h @ R equals (R^T @ h) in column notation
-    # So we use rotation_matrices directly (no transpose)
     rot_matrices = rotation_matrices.to(dtype=dtype, device=device)  # (n_ops, 3, 3)
 
     n_ops = rot_matrices.shape[0]
 
-    # Compute h' = h @ R for each operation
-    # hkl_float: (N, 3) -> (1, N, 3)
-    # rot_matrices: (n_ops, 3, 3)
-    # Result: (n_ops, N, 3)
     hkl_expanded = hkl_float.unsqueeze(0).expand(n_ops, -1, -1)  # (n_ops, N, 3)
 
-    # Batch matrix multiply: (n_ops, N, 3) @ (n_ops, 3, 3) -> (n_ops, N, 3)
     equiv_hkl = torch.bmm(hkl_expanded, rot_matrices)
 
-    # Round to nearest integer (should be exact for valid crystallographic ops)
+    # Exact for valid crystallographic ops; round only mops up float error.
     equiv_hkl = torch.round(equiv_hkl).to(torch.int64)
 
     return equiv_hkl
@@ -101,10 +72,7 @@ def compute_translation_phases(
     translations: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Compute phase shifts: exp(2*pi*i * h.t) for each operation.
-
-    The translation component of a symmetry operation causes a phase shift
-    in the structure factor.
+    Compute the translation phase shifts exp(2πi h·t) for each operation.
 
     Parameters
     ----------
@@ -121,20 +89,13 @@ def compute_translation_phases(
     device = hkl.device
     dtype = get_float_dtype()
 
-    # Ensure correct types
     hkl_float = hkl.to(dtype=dtype, device=device)  # (N, 3)
     translations = translations.to(dtype=dtype, device=device)  # (n_ops, 3)
 
-    # Compute h.t for each operation
-    # hkl_float: (N, 3), translations: (n_ops, 3)
-    # We want: (n_ops, N) where each entry is h.t
-    # h.t = hkl_float @ translations.T -> (N, n_ops)
-    # Then transpose to get (n_ops, N)
     h_dot_t = torch.matmul(hkl_float, translations.T).T  # (n_ops, N)
 
-    # Phase factor: exp(2*pi*i * h.t). `phase` already carries the configured
-    # float dtype (from hkl_float/translations above), so keep it rather than
-    # forcing float32 (which would give complex64 even under a float64 config).
+    # Leave ``phase`` at the configured float dtype; casting it to float32 would
+    # force complex64 output even under a float64 configuration.
     phase = 2.0 * np.pi * h_dot_t
     phase_factor = torch.exp(1j * phase)
 
@@ -150,15 +111,14 @@ def extract_structure_factors_with_symmetry(
     """
     Extract structure factors with symmetry applied in reciprocal space.
 
-    This is the main function that replaces the MapSymmetry approach for
-    structure factor extraction. Instead of symmetrizing the density map
-    and then extracting F(hkl), we extract F at all symmetry-equivalent
-    positions and sum with phases.
+    Sums F over the symmetry-equivalent positions with their translation phases,
+    replacing the symmetrize-then-extract MapSymmetry route. For repeated calls
+    with the same hkl and symmetry, use :class:`ReciprocalSymmetryExtractor`.
 
     Parameters
     ----------
     reciprocal_grid : torch.Tensor, shape (Nx, Ny, Nz)
-        Complex reciprocal space grid from FFT of P1 density map.
+        Complex reciprocal space grid from FFT of the **P1** density map.
     hkl : torch.Tensor, shape (N, 3)
         Target Miller indices.
     rotation_matrices : torch.Tensor, shape (n_ops, 3, 3)
@@ -182,22 +142,18 @@ def extract_structure_factors_with_symmetry(
     n_ops = rotation_matrices.shape[0]
     N = hkl.shape[0]
 
-    # 1. Compute equivalent HKLs: (n_ops, N, 3)
     equiv_hkls = compute_symmetry_equivalent_hkls(hkl, rotation_matrices)
 
-    # 2. Vectorized extraction: single flat gather for all symops at once.
-    # Use gather_with_index_add so the gradient back into reciprocal_grid
-    # is a single index_add_ (no radix-sort + dedup scatter).
+    # One flat gather for all symops. gather_with_index_add keeps the backward a
+    # single index_add_ instead of a radix-sort + dedup scatter.
     flat_indices = _equiv_hkls_to_flat_indices(equiv_hkls, Nx, Ny, Nz)
     f_all = gather_with_index_add(
         reciprocal_grid.reshape(-1), flat_indices,
     )  # (n_ops * N,)
     f_p1 = f_all.view(n_ops, N)
 
-    # 3. Compute phase shifts: (n_ops, N)
     phases = compute_translation_phases(hkl, translations)
 
-    # 4. Apply phases and sum: (N,)
     f_sym = (f_p1 * phases).sum(dim=0)
 
     return f_sym
@@ -221,11 +177,11 @@ class ReciprocalSymmetryExtractor(DeviceMixin):
     """
     Class-based interface for reciprocal space symmetry extraction.
 
-    This provides a more efficient interface when computing structure factors
-    multiple times with the same symmetry and HKLs (e.g., during refinement).
-    Precomputes equivalent HKLs, phase factors, and flat grid indices so that
-    each call reduces to a single gather + multiply + sum (~3 GPU kernels
-    instead of ~28).
+    For repeated structure-factor evaluation at fixed hkl and symmetry, as in
+    refinement: the equivalent HKLs, phase factors and flat grid indices are
+    precomputed here, so each call is one gather, multiply and sum. The
+    precomputation binds ``grid_shape`` -- a differently shaped grid needs a new
+    extractor.
 
     Parameters
     ----------
@@ -251,7 +207,12 @@ class ReciprocalSymmetryExtractor(DeviceMixin):
         grid_shape: tuple,
         device: Optional[torch.device] = None,
     ):
-        self.device = device or hkl.device
+        # ``is not None``, not ``or``: ``device=0`` means cuda:0/mps:0 and is
+        # falsy, so ``or`` silently discarded it. ``hkl`` is a bare tensor, so
+        # this reads its device rather than going through ``resolve_device``.
+        self.device = canonical_device(
+            device if device is not None else hkl.device
+        )
         self.hkl = hkl.to(device=self.device)
         self.symmetry = symmetry
         self.n_ops = symmetry.n_ops
@@ -277,61 +238,45 @@ class ReciprocalSymmetryExtractor(DeviceMixin):
         )  # (n_ops * N,) int64
 
     def __call__(self, density_map: torch.Tensor) -> torch.Tensor:
-        """
-        Compute structure factors from P1 density map.
-
-        Parameters
-        ----------
-        density_map : torch.Tensor, shape (Nx, Ny, Nz)
-            P1 electron density map (NO symmetry applied).
-
-        Returns
-        -------
-        torch.Tensor, shape (N,)
-            Complex structure factors with symmetry applied.
-        """
+        """Alias for :meth:`extract`."""
         return self.extract(density_map)
 
     def extract(self, density_map: torch.Tensor) -> torch.Tensor:
         """
-        Extract structure factors from P1 density map.
+        Transform a P1 density map and extract symmetrized structure factors.
 
         Parameters
         ----------
         density_map : torch.Tensor, shape (Nx, Ny, Nz)
-            P1 electron density map (NO symmetry applied).
+            **P1** electron density map -- passing a symmetrized map double-counts.
 
         Returns
         -------
         torch.Tensor, shape (N,)
             Complex structure factors with symmetry applied.
         """
-        # FFT the density map
         from torchref.base.fourier.fft import ifft
         reciprocal_grid = ifft(density_map)
 
-        # Extract from grid
         return self.extract_from_grid(reciprocal_grid)
 
     def extract_from_grid(self, reciprocal_grid: torch.Tensor) -> torch.Tensor:
         """
-        Extract structure factors from precomputed reciprocal grid.
-
-        Uses precomputed flat indices for a single vectorized gather,
-        avoiding per-symop Python loops and kernel launches.
+        Extract structure factors from an already-transformed P1 grid.
 
         Parameters
         ----------
         reciprocal_grid : torch.Tensor, shape (Nx, Ny, Nz)
-            Complex reciprocal space grid from FFT.
+            Complex reciprocal space grid from FFT of the **P1** map; its shape
+            must match the ``grid_shape`` this extractor was built for.
 
         Returns
         -------
         torch.Tensor, shape (N,)
             Complex structure factors with symmetry applied.
         """
-        # Gather via custom autograd op so the backward is a single
-        # ``index_add_`` (atomic scatter, no radix sort + dedup).
+        # gather_with_index_add keeps the backward a single ``index_add_``
+        # (atomic scatter, no radix sort + dedup).
         f_all = gather_with_index_add(
             reciprocal_grid.reshape(-1), self._flat_indices,
         )  # (n_ops * N,)

@@ -176,7 +176,7 @@ class TestRestraintDeviceHandling:
         
         distance = torch.sqrt(torch.sum((coords[0] - coords[1]) ** 2))
         
-        assert distance.device.type == 'cuda'
+        assert distance.device.type == gpu_device.type
 
 
 class TestRestraintNumericStability:

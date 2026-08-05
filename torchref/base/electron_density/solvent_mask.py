@@ -16,30 +16,28 @@ from .map_building import scatter_add_nd
 def add_to_solvent_mask(
     surrounding_coords, voxel_indices, mask, xyz, radius, inv_frac_matrix, frac_matrix
 ):
-    """
-    Create solvent mask by placing spheres around atom positions.
+    """Set the solvent mask True inside ``radius`` of every atom.
 
     Parameters
     ----------
-    surrounding_coords : torch.Tensor
-        Coordinates of voxels around each atom of shape (N_atoms, N_voxels, 3).
-    voxel_indices : torch.Tensor
-        Indices of voxels in the map of shape (N_atoms, N_voxels, 3).
+    surrounding_coords, voxel_indices : torch.Tensor
+        Coordinates and map indices of the voxels around each atom,
+        ``(N_atoms, N_voxels, 3)``.
     mask : torch.Tensor
-        Solvent mask to be updated of shape (nx, ny, nz).
+        Solvent mask to update, ``(nx, ny, nz)``. Cast to ``dtypes.int`` first, so a
+        mask *already* at that dtype is scatter-added into **in place** while any
+        other dtype is copied -- use the return value either way.
     xyz : torch.Tensor
-        Atom positions of shape (N_atoms, 3).
+        Atom positions, ``(N_atoms, 3)``.
     radius : float
-        Radius of the sphere around each atom in Angstroms.
-    inv_frac_matrix : torch.Tensor
-        Inverse fractionalization matrix of shape (3, 3).
-    frac_matrix : torch.Tensor
-        Fractionalization matrix of shape (3, 3).
+        Sphere radius per atom, in Angstrom.
+    inv_frac_matrix, frac_matrix : torch.Tensor
+        Fractionalization matrix and its inverse, ``(3, 3)``.
 
     Returns
     -------
     torch.Tensor
-        Updated solvent mask as boolean tensor.
+        The updated mask, always ``torch.bool`` whatever dtype came in.
     """
     mask = mask.to(dtype=dtypes.int)
     # Calculate squared distances with periodic boundary conditions
@@ -74,46 +72,30 @@ def add_to_phenix_mask(
     grid_shape,
     device,
 ):
-    """
-    Create Phenix-style three-valued mask by placing spheres around atom positions.
+    """Phenix-style three-valued solvent mask, vectorized over all atoms and voxels.
 
-    This is a vectorized implementation that processes all atoms and voxels at once.
-    Creates two binary masks:
-    - protein_mask: 1 where inside VdW radius (protein core)
-    - boundary_mask: 1 where between VdW and VdW+solvent_radius (accessible surface)
-
-    Final three-valued mask:
-    - 0: protein_mask == 1 (protein core)
-    - -1: boundary_mask == 1 and protein_mask == 0 (accessible surface)
-    - 1: both masks == 0 (bulk solvent)
+    Returns ``(protein_mask, boundary_mask)`` of shape ``grid_shape``: True inside the VdW
+    radius, and True between VdW and ``VdW + solvent_radius`` (the accessible surface).
+    Downstream those combine to 0 in the protein core, -1 on the accessible surface, and 1
+    in bulk solvent.
 
     Parameters
     ----------
-    surrounding_coords : torch.Tensor
-        Fractional coordinates of voxels around each atom of shape (N_atoms, N_voxels, 3).
-    voxel_indices : torch.Tensor
-        Grid indices of voxels in the map of shape (N_atoms, N_voxels, 3).
+    surrounding_coords, voxel_indices : torch.Tensor
+        **Fractional** coordinates and grid indices of the voxels around each atom,
+        ``(N_atoms, N_voxels, 3)``.
     xyz : torch.Tensor
-        Atom positions in fractional coordinates of shape (N_atoms, 3).
+        Atom positions in **fractional** coordinates, ``(N_atoms, 3)``.
     vdw_radii : torch.Tensor
-        VdW radius for each atom in Angstroms of shape (N_atoms,).
+        Per-atom VdW radius in Angstrom, ``(N_atoms,)``.
     solvent_radius : float
-        Probe radius in Angstroms (added to VdW to get accessible surface).
-    inv_frac_matrix : torch.Tensor
-        Inverse fractional matrix for distance calculations of shape (3, 3).
-    frac_matrix : torch.Tensor
-        Fractional matrix for distance calculations of shape (3, 3).
+        Probe radius in Angstrom, added to VdW for the accessible surface.
+    inv_frac_matrix, frac_matrix : torch.Tensor
+        Fractionalization matrix and its inverse, ``(3, 3)``.
     grid_shape : tuple
-        Shape of the output mask (nx, ny, nz).
+        Output mask shape ``(nx, ny, nz)``.
     device : torch.device
-        Device for tensor operations.
-
-    Returns
-    -------
-    protein_mask : torch.Tensor
-        Boolean mask for protein core of shape grid_shape.
-    boundary_mask : torch.Tensor
-        Boolean mask for accessible surface of shape grid_shape.
+        Device for the tensor operations.
     """
     # Calculate distances for all atom-voxel pairs
     diff = surrounding_coords - xyz.unsqueeze(1)
@@ -152,52 +134,25 @@ def add_to_phenix_mask(
 
 
 def find_solvent_voids(mask, periodic=True):
-    """
-    Identify void regions in a 3D boolean tensor using connected component analysis.
+    """Void regions of a 3D boolean mask, by 26-connected component analysis.
 
-    A void is defined as a connected region of False values (solvent). With periodic
-    boundary conditions, voids can wrap around the edges of the array (like in a
-    crystallographic unit cell). Without periodic boundaries, only enclosed voids
-    are detected.
+    A void is a connected region of False (solvent). Uses ``scipy.ndimage.label``, and runs
+    in O(n) over voxels.
 
     Parameters
     ----------
     mask : torch.Tensor or numpy.ndarray
-        Boolean tensor of shape (nx, ny, nz) where True indicates solid regions
-        (e.g., protein) and False indicates empty regions (e.g., solvent).
-        Can be either PyTorch tensor or NumPy array.
+        Shape ``(nx, ny, nz)``, True for solid (protein), False for empty (solvent).
     periodic : bool, optional
-        If True, apply periodic boundary conditions (voids can wrap around edges).
-        If False, only detect voids that are completely enclosed and don't touch
-        the boundaries. Default is True.
+        True (default) wraps the array when padding, so voids crossing a cell boundary --
+        including large percolating ones -- are found; False detects only fully enclosed
+        voids that never touch the boundary.
 
     Returns
     -------
     dict
-        Dictionary where keys are int volumes (number of voxels) of each void in
-        the original array, and values are boolean masks (torch.Tensor or
-        numpy.ndarray) of same shape as input with True only for that specific
-        void region. Returns an empty dict if no voids are found.
-
-    Examples
-    --------
-    ::
-
-        import torch
-        # Create a simple 5x5x5 grid with a void in the center
-        mask = torch.ones(5, 5, 5, dtype=torch.bool)
-        mask[2, 2, 2] = False  # Single void voxel
-        voids = find_solvent_voids(mask)
-        print(voids)
-    {1: tensor([[[False, False, ...]], dtype=torch.bool)}
-
-    Notes
-    -----
-    - Uses scipy.ndimage.label for connected component analysis.
-    - Connectivity is 26-connected (face, edge, and corner neighbors).
-    - With periodic=True, the array is padded by wrapping to detect cross-boundary voids.
-    - Performance is O(n) where n is the total number of voxels.
-    - With periodic boundaries, large percolating voids are still detected.
+        ``{volume_in_voxels: boolean mask of that one void}``, in the input's array type and
+        shape; empty if there are no voids.
     """
     from scipy import ndimage
 

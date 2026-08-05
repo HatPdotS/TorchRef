@@ -1,45 +1,14 @@
 """
-PDB file format reading and writing.
+PDB file reading and writing (atoms, ANISOU, CRYST1, LINK records).
 
-This module provides functions for reading and writing PDB files containing
-atomic coordinate data.
+``read`` returns a reader object, not the data -- call it for the tuple::
 
-Functions
----------
-read
-    Read a PDB file and return a reader object.
-write
-    Write atomic coordinates to a PDB file.
-write_multi_model
-    Write multiple models to a single PDB file with MODEL/ENDMDL records.
-find_header_length
-    Find the number of header lines in a PDB file.
-load_as_dataframe
-    Load a PDB file into a pandas DataFrame.
-read_crystallographic_info
-    Extract unit cell and space group from a PDB file.
-extract_pdb_headers
-    Read all header lines (before the first ATOM/HETATM) from a PDB file.
-extract_link_records
-    Parse LINK records from a PDB file into a DataFrame.
-
-Classes
--------
-PDBReader
-    Reader class for PDB files.
-
-Examples
---------
-::
-
-    from torchref.io import pdb
-
-    # Reading
-    reader = pdb.read('structure.pdb', verbose=1)
-    df, cell, spacegroup = reader()
-
-    # Writing
+    df, cell, spacegroup = pdb.read('structure.pdb')()
     pdb.write(df, 'output.pdb')
+
+Cell and space group travel on ``df.attrs`` (``cell`` / ``spacegroup`` / ``z``),
+not in columns, so a DataFrame rebuilt from scratch loses them and
+:func:`write` then emits no CRYST1 record.
 """
 
 from typing import List, Optional, Tuple
@@ -51,11 +20,9 @@ import pandas as pd
 def _format_pdb_atom_name(name, element="") -> str:
     """Format an atom name into the 4-character PDB atom-name field (cols 13-16).
 
-    Follows the PDB / gemmi convention: 4-character names (or atoms whose
-    element symbol is two letters, e.g. FE, MG) start in column 13; shorter
-    single-letter-element names are indented by one space (start in column 14).
-    Names are never truncated below 4 characters (the previous behaviour
-    silently dropped a character from 4-character names such as ``HD11``).
+    PDB / gemmi convention: 4-character names, and atoms with a two-letter
+    element symbol (FE, MG), start in column 13; shorter single-letter-element
+    names are indented one space. Never truncates below 4 characters.
 
     Parameters
     ----------
@@ -82,10 +49,9 @@ def find_header_length(filepath: str, max_header_length: int = 100000) -> int:
     """
     Find the number of header lines in a PDB file.
 
-    Scans the file line by line until the first line whose leading columns
-    contain ``"ATOM"`` (within the first 4 characters) or ``"HETATM"``
-    (within the first 6 characters). This is a positional-substring test,
-    not a strict record-type ``startswith`` check.
+    Stops at the first line whose leading columns *contain* ``"ATOM"`` (cols
+    1-4) or ``"HETATM"`` (cols 1-6) -- a substring test, not a record-type
+    ``startswith``, so a header line with those letters there ends the scan.
 
     Parameters
     ----------
@@ -171,8 +137,7 @@ def load_as_dataframe(
     """
     Load a PDB file into a pandas DataFrame.
 
-    Parses ATOM, HETATM, and ANISOU records from a PDB file and returns
-    a structured DataFrame with all atomic properties.
+    Parses ATOM, HETATM and ANISOU records by fixed column positions.
 
     Parameters
     ----------
@@ -328,40 +293,29 @@ def load_as_dataframe(
 
 class PDBReader:
     """
-    Reader for PDB files containing atomic coordinate data.
+    Reader for PDB files: atoms, crystallographic metadata and LINK records.
 
-    This class reads PDB files and extracts atomic coordinates, properties,
-    and crystallographic metadata.
+    Populated by :meth:`read`; calling the instance returns
+    ``(dataframe, cell, spacegroup)`` and raises if ``read`` has not run.
+
+    Parameters
+    ----------
+    verbose : int, optional
+        Verbosity level (0=silent, 1=normal, 2=debug). Default is 0.
 
     Attributes
     ----------
-    verbose : int
-        Verbosity level for logging.
     dataframe : pd.DataFrame
-        DataFrame containing atomic data.
+        Atomic data.
     cell : list or None
         Unit cell parameters [a, b, c, alpha, beta, gamma].
     spacegroup : str or None
         Space group symbol.
-
-    Examples
-    --------
-    ::
-
-        reader = pdb.read('structure.pdb', verbose=1)
-        df, cell, spacegroup = reader()
-        print(f"Loaded {len(df)} atoms")
+    z, links
+        Molecules per cell, and the parsed LINK records.
     """
 
     def __init__(self, verbose: int = 0):
-        """
-        Initialize PDB reader.
-
-        Parameters
-        ----------
-        verbose : int, optional
-            Verbosity level (0=silent, 1=normal, 2=debug). Default is 0.
-        """
         self.verbose = verbose
         self.dataframe = None
         self.cell = None
@@ -428,7 +382,7 @@ def read(filepath: str, verbose: int = 0) -> PDBReader:
     Returns
     -------
     PDBReader
-        Reader object with data loaded.
+        Reader object; call it for ``(df, cell, spacegroup)``.
     """
     return PDBReader(verbose=verbose).read(filepath)
 

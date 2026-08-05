@@ -1,38 +1,14 @@
-"""
-Symmetry operations module for TorchRef.
+"""Crystallographic symmetry: space groups, unit cells, map and HKL symmetry.
 
-Provides crystallographic symmetry operations for:
-- Space group handling via SpaceGroup class (nn.Module with buffers)
-- Symmetry alias for backward compatibility (same as SpaceGroup)
-- Real space density maps (MapSymmetry)
-- Reciprocal space structure factor grids (ReciprocalSymmetry)
+:class:`SpaceGroup` (``nn.Module`` holding the operations as buffers) is the entry
+point, with ``Symmetry`` a bare alias for it. :func:`MapSymmetry` handles real-space
+density and :func:`ReciprocalSymmetry` structure-factor grids; all three accept a
+space group as a string, an int 1-230, or a gemmi object. :class:`Cell` is separate
+-- it wraps the six cell parameters, not a space group.
 
-Example
--------
-::
-
-    from torchref.symmetry import SpaceGroup, Symmetry, MapSymmetry, ReciprocalSymmetry
-
-    # SpaceGroup is the unified class for space group handling
-    sg = SpaceGroup('P21')        # From string
-    sg = SpaceGroup(4)            # From number
-    sg = SpaceGroup(gemmi_sg)     # Pass-through gemmi object
-
-    # SpaceGroup is an nn.Module with symmetry operations
-    transformed_coords = sg(fractional_coords)
-    print(sg.n_ops)               # Number of symmetry operations
-    print(sg.matrices.shape)      # (n_ops, 3, 3) rotation matrices
-
-    # Symmetry is now an alias for SpaceGroup (backward compatibility)
-    sym = Symmetry('P21')         # Same as SpaceGroup('P21')
-
-    # Real space map symmetry
-    map_sym = MapSymmetry('P21', map_shape=(64, 64, 64), cell_params=cell)
-    symmetric_map = map_sym(density_map)
-
-    # Reciprocal space symmetry
-    recip_sym = ReciprocalSymmetry('P21', grid_shape=(64, 64, 64))
-    F_averaged = recip_sym(F_grid, mode='average')
+The grid utilities re-exported here come from ``grid_utils``, which delegates to
+``spacegroup``. ``spacegroup`` also defines its own same-named copies, which are
+the source of truth and are *not* re-exported.
 """
 
 from .cell import Cell, CellTensor
@@ -69,13 +45,6 @@ from .spacegroup import (
 )
 from .symmetry import Symmetry
 
-# Note: the grid-utility names re-exported below (``check_grid_compatibility``,
-# ``find_fft_friendly_size``, ``is_fft_friendly``, etc.) come from ``grid_utils``,
-# which are thin wrappers delegating into ``spacegroup``. The ``spacegroup`` module
-# additionally defines its own canonical, independent copies
-# (``get_grid_requirements``, ``check_grid_compatibility``, ``suggest_grid_size``,
-# and a separate ``is_fft_friendly`` / ``find_fft_friendly_size`` pair) that are NOT
-# re-exported here; the ``spacegroup`` copies are the source of truth.
 __all__ = [
     # Unit cell
     "Cell",

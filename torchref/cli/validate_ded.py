@@ -1,48 +1,23 @@
 #!/usr/bin/env python3 -u
-"""
-Validate difference electron density (DED) by correlating DFo and DFc maps.
+"""Validate difference electron density (DED) by correlating DFo and DFc maps.
 
-Takes separate dark and light MTZ files, computes weighted difference
-amplitudes internally, then compares weighted DFo and DFcalc maps using
-dark-state phases.
-
-Supports Phenix-style atom selections for regional correlation analysis
-(e.g., around a ligand binding site).
+Takes separate dark and light MTZ files, computes weighted difference amplitudes
+internally, then compares the weighted DFo and DFcalc maps using dark-state phases.
+Phenix-style atom selections give regional correlations, e.g. around a ligand site.
 
 Examples
 --------
 ::
 
-    # Basic validation (full cell correlation)
-    torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
-        -dm dark.pdb -lm light.pdb
+    torchref.validate-ded -dsf dark.mtz -lsf light.mtz -dm dark.pdb -lm light.pdb \\
+        --fraction 0.20 --selection "chain B and resname IBL" --mask-radius 2.5 \\
+        --mask-source light --plot --write-maps -o validation/
 
-    # With light fraction and ligand masking (both models, default)
-    torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
-        -dm dark.pdb -lm light.pdb \\
-        --fraction 0.20 --selection "chain B and resname IBL" --mask-radius 2.5
-
-    # Mask from light model only
-    torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
-        -dm dark.pdb -lm light.pdb \\
-        --fraction 0.20 --selection "resname IBL" --mask-source light
-
-    # Full output with plots and CCP4 maps
-    torchref.validate-ded -dsf dark.mtz -lsf light.mtz \\
-        -dm dark.pdb -lm light.pdb \\
-        --fraction 0.20 --selection "resname IBL" --plot --write-maps -o validation/
-
-Programmatic usage
-------------------
-::
-
-    from torchref.cli.validate_ded import setup_ded_context, compute_ded_maps
+Or programmatically::
 
     ctx = setup_ded_context("dark.mtz", "light.mtz", dmin=2.2)
-    result = compute_ded_maps(
-        ctx, model_dark, model_light, fraction=0.18,
-        selection="resname IBL", mask_radius=2.5,
-    )
+    result = compute_ded_maps(ctx, model_dark, model_light, fraction=0.18,
+                              selection="resname IBL", mask_radius=2.5)
     print(result["reciprocal_cc_overall"])
 """
 
@@ -80,25 +55,11 @@ configure_unbuffered_output()
 
 
 def build_atom_mask(selection_xyz, real_space_grid, cell, mask_radius, device):
-    """Build a boolean voxel mask around selected atom positions.
+    """Boolean voxel mask of shape ``grid_shape[:3]``, True within ``mask_radius``
+    Angstrom of any atom in ``selection_xyz`` ``(N, 3)``.
 
-    Parameters
-    ----------
-    selection_xyz : torch.Tensor
-        Cartesian coordinates of selected atoms, shape (N, 3).
-    real_space_grid : torch.Tensor
-        Real-space grid from ``get_real_grid()``.
-    cell : Cell or torch.Tensor
-        Unit cell parameters (or Cell object with ``.data`` attribute).
-    mask_radius : float
-        Radius in Angstroms around each atom to include.
-    device : torch.device
-        Device for tensor operations.
-
-    Returns
-    -------
-    torch.Tensor
-        Boolean mask of shape ``grid_shape[:3]``.
+    ``real_space_grid`` comes from ``get_real_grid()`` and ``cell`` may be a ``Cell`` or the
+    raw parameter tensor.
     """
     from torchref.base.coordinates.transforms_torch import (
         get_fractional_matrix,
@@ -143,23 +104,10 @@ def compute_correlation(map1, map2, mask):
 
 
 def compute_map_from_coefficients(amplitudes, phases_rad, hkl_p1, gridsize):
-    """Compute a real-space map from Fourier coefficients.
+    """Real-space 3D map from Fourier coefficients on a ``gridsize`` grid.
 
-    Parameters
-    ----------
-    amplitudes : torch.Tensor
-        Structure factor amplitudes (can be signed), shape (N,).
-    phases_rad : torch.Tensor
-        Phases in radians, shape (N,).
-    hkl_p1 : torch.Tensor
-        P1-expanded Miller indices, shape (N, 3).
-    gridsize : tuple
-        Grid dimensions (nx, ny, nz).
-
-    Returns
-    -------
-    torch.Tensor
-        Real-space 3D map.
+    Takes ``amplitudes`` ``(N,)`` (which may be signed), ``phases_rad`` ``(N,)`` and
+    P1-expanded ``hkl_p1`` ``(N, 3)``.
     """
     from torchref.base.reciprocal.grid_operations import place_on_grid
 
@@ -169,20 +117,10 @@ def compute_map_from_coefficients(amplitudes, phases_rad, hkl_p1, gridsize):
 
 
 def generate_plots(results, map_dfo, map_dfc, mask_dict, outdir, verbose):
-    """Generate a 2-panel validation figure.
+    """Write the 2-panel validation figure for ``results`` into ``outdir``.
 
-    Parameters
-    ----------
-    results : dict
-        Correlation results dictionary.
-    map_dfo, map_dfc : torch.Tensor
-        Real-space DFo and DFc maps.
-    mask_dict : dict
-        Mapping of region name to boolean mask tensor.
-    outdir : Path
-        Output directory for plots.
-    verbose : int
-        Verbosity level.
+    ``map_dfo``/``map_dfc`` are the real-space maps and ``mask_dict`` maps region name to a
+    boolean mask.
     """
     import matplotlib
 
@@ -292,10 +230,9 @@ def setup_ded_context(
     from torchref.symmetry.grid_utils import calculate_optimal_grid_size
     from torchref.symmetry.reciprocal_symmetry import expand_hkl
 
-    if device is None:
-        from torchref.config import get_default_device
+    from torchref.config import normalize_device
 
-        device = get_default_device()
+    device = normalize_device(device)
 
     # Load and scale
     data_dark = load_reflection_data(
@@ -767,6 +704,7 @@ def run_validation(args):
 
 
 def main():
+    """Entry point for ``torchref.validate-ded``; returns the exit code."""
     parser = argparse.ArgumentParser(
         description="Validate difference electron density by correlating "
         "weighted DFo and DFcalc maps.",

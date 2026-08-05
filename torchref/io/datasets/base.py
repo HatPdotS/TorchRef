@@ -1,26 +1,20 @@
 """
-Base dataclass for crystallographic datasets.
+Base dataclass for crystallographic datasets: every optional tensor field,
+device management and save/load.
 
-This module defines the CrystalDataset dataclass that provides:
-- All possible tensor fields for crystallographic data (optional)
-- Device management (to, cuda, cpu)
-- Serialization (save, load)
-
-On the base class the ``spacegroup`` field is annotated ``Optional[str]``.
-``FcalcDataset`` overrides the field annotation to hold a
-``torchref.symmetry.SpaceGroup`` object. ``ReflectionData`` does NOT override
-the annotation (it inherits ``Optional[str]``) yet at runtime its ``load`` /
-``from_tensors`` paths populate the field with a ``SpaceGroup`` object, so the
-stored value is a ``SpaceGroup`` despite the ``str`` annotation.
+Beware the ``spacegroup`` field: annotated ``Optional[str]`` here, but at
+runtime ``FcalcDataset`` *and* ``ReflectionData`` (which does not override the
+annotation) both store a ``torchref.symmetry.SpaceGroup`` object in it.
 """
 
+import warnings
 from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import gemmi
 import torch
 
-from torchref.config import get_default_device
+from torchref.config import get_default_device, normalize_device
 from torchref.symmetry import Cell
 from torchref.utils.device_mixin import DeviceMovementMixin
 
@@ -33,27 +27,16 @@ class CrystalDataset(DeviceMovementMixin):
     """
     Base dataclass for crystallographic datasets.
 
-    Defines all possible tensor fields (optional) and handles device management
-    and serialization. Subclasses add domain-specific methods.
-
-    This lightweight design enables scaling to 1000s of datasets without
-    the overhead of torch.nn.Module.
+    Declares every optional tensor field and handles device movement and
+    serialization; subclasses add the domain methods. Deliberately not an
+    ``nn.Module``, so thousands of datasets stay affordable.
 
     Parameters
     ----------
     device : torch.device
-        Device for tensors ('cpu', 'cuda', etc.). Defaults to the configured
-        default device (``get_default_device()``).
+        Device for tensors. Defaults to ``get_default_device()``.
     verbose : int
         Verbosity level (0=silent, 1=normal, 2=debug). Default is 1.
-
-    Examples
-    --------
-    Basic usage::
-
-        data = CrystalDataset(device='cuda')
-        data.hkl = torch.tensor([[1, 0, 0], [0, 1, 0]], dtype=torch.int32, device='cuda')
-        data.cpu()  # Move all tensors to CPU
     """
 
     # === Core reflection tensors ===
@@ -69,7 +52,6 @@ class CrystalDataset(DeviceMovementMixin):
     validation_flags: Optional[torch.Tensor] = None  # (N,), bool
     resolution: Optional[torch.Tensor] = None  # Resolution per reflection (N,)
     bin_indices: Optional[torch.Tensor] = None  # Resolution bin assignments (N,), int32
-    outlier_flags: Optional[torch.Tensor] = None  # Outlier flags (N,), bool
     phase: Optional[torch.Tensor] = None  # Phases in radians (N,)
     fom: Optional[torch.Tensor] = None  # Figure of merit (N,)
     _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool
@@ -112,39 +94,28 @@ class CrystalDataset(DeviceMovementMixin):
     wilson_b_solvent: Optional[float] = None
     wilson_k_sol: Optional[float] = None
 
-    # === Outlier detection parameters ===
-    outlier_detection_params: Optional[Dict[str, Any]] = None
-
     # === Masks (initialized in __post_init__) ===
     # Note: masks is not a dataclass field to avoid serialization issues
     # It's initialized in __post_init__ and handled specially
 
     def __post_init__(self):
         """Initialize non-field attributes after dataclass init."""
-        # Ensure device is a torch.device object
-        if isinstance(self.device, str):
-            object.__setattr__(self, "device", torch.device(self.device))
-        # Import here to avoid circular imports
+        # Canonicalise, don't merely coerce: ``torch.device("mps")`` has no
+        # index and so compares unequal to the ``mps:0`` every tensor reports,
+        # which makes ``resolve_device``'s equality checks misfire.
+        object.__setattr__(self, "device", normalize_device(self.device))
+        # Imported here to avoid a circular import.
         from torchref.utils.utils import TensorMasks
 
-        # Initialize masks as TensorMasks (dict subclass)
         if not hasattr(self, "masks") or self.masks is None:
             self.masks = TensorMasks(device=self.device)
 
     # ========== DEVICE MANAGEMENT ==========
 
     def _tensor_fields(self):
-        """
-        Yield (name, tensor) for all tensor attributes.
+        """Yield ``(name, tensor)`` for every tensor field.
 
-        Yields
-        ------
-        Tuple[str, torch.Tensor]
-            Field name and tensor value for each tensor field.
-
-        Note
-        ----
-        Cell objects are excluded; they are handled separately in to().
+        ``Cell`` objects are NOT included -- ``to()`` moves those separately.
         """
         for f in fields(self):
             val = getattr(self, f.name)
@@ -154,13 +125,8 @@ class CrystalDataset(DeviceMovementMixin):
     # ========== SERIALIZATION ==========
 
     def _get_state(self) -> Dict[str, Any]:
-        """
-        Get serializable state dictionary.
-
-        Returns
-        -------
-        Dict[str, Any]
-            State dictionary with all tensor and metadata fields.
+        """State dict of all fields, tensors on CPU, cell/device/spacegroup
+        flattened to tensor/str, plus a ``"masks"`` entry.
         """
 
         state = {}
@@ -169,63 +135,61 @@ class CrystalDataset(DeviceMovementMixin):
             if isinstance(val, torch.Tensor):
                 state[f.name] = val.cpu()
             elif f.name == "cell" and val is not None:
-                # Store Cell tensor data for serialization
                 state[f.name] = val.data.cpu()
             elif f.name == "device":
-                # Store device as string
                 state[f.name] = str(val)
             elif f.name == "spacegroup" and val is not None:
-                # Store spacegroup as string for serialization
                 state[f.name] = val.xhm()  # Extended Hermann-Mauguin
             else:
                 state[f.name] = val
-        # Handle masks specially
+        # Masks are not a dataclass field, so handle them separately.
         if hasattr(self, "masks") and self.masks is not None:
             state["masks"] = {k: v.cpu() for k, v in self.masks.items()}
         return state
 
     @classmethod
-    def _from_state(cls, state: Dict[str, Any], device=None) -> "CrystalDataset":
+    def _drop_stale_state_keys(cls, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop state keys that are no longer dataclass fields, warning about each.
+
+        :meth:`_from_state` splats the state straight into the constructor, so a field
+        removed after a checkpoint was written would otherwise make that checkpoint
+        permanently unloadable with a bare ``TypeError``. Returns a filtered copy; the
+        caller's dict is left alone.
         """
-        Reconstruct from state dictionary.
+        known = {f.name for f in fields(cls)}
+        stale = sorted(set(state) - known)
+        if stale:
+            warnings.warn(
+                f"{cls.__name__}: dropping state keys that are no longer fields: "
+                f"{stale}. Written by an older TorchRef version.",
+                stacklevel=3,
+            )
+            state = {k: v for k, v in state.items() if k in known}
+        return state
 
-        Parameters
-        ----------
-        state : Dict[str, Any]
-            State dictionary from _get_state().
-        device : torch.device, optional
-            Device to load tensors onto. If None, defaults to the configured
-            device via get_default_device().
-
-        Returns
-        -------
-        CrystalDataset
-            Reconstructed dataset.
+    @classmethod
+    def _from_state(cls, state: Dict[str, Any], device=None) -> "CrystalDataset":
+        """Rebuild from a :meth:`_get_state` dict, on ``device`` (default the
+        configured one). Pops ``"masks"`` from ``state``, so the caller's dict
+        is mutated.
         """
         from torchref.utils.utils import TensorMasks
 
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
 
-        # Extract masks before creating object
         masks_state = state.pop("masks", {})
+        state = cls._drop_stale_state_keys(state)
 
-        # Convert device string back to torch.device
         if "device" in state:
             state["device"] = torch.device(state["device"])
 
-        # Spacegroup is stored as string — keep as-is
-        # (no conversion needed since CrystalDataset.spacegroup is now str)
-
-        # Convert cell tensor back to Cell object
+        # Spacegroup stays a string here; subclasses that want an object rewrap.
         if "cell" in state and state["cell"] is not None:
             if isinstance(state["cell"], torch.Tensor):
                 state["cell"] = Cell(state["cell"], dtype=torch.float32, device=device)
 
-        # Create object with remaining state
         obj = cls(**state)
 
-        # Restore masks
         if masks_state:
             obj.masks = TensorMasks(data=masks_state, device=device)
 
@@ -239,12 +203,6 @@ class CrystalDataset(DeviceMovementMixin):
         ----------
         path : str
             Output file path.
-
-        Examples
-        --------
-        Save to file::
-
-            data.save_state('reflection_data.pt')
         """
         state = self._get_state()
         state["__class__"] = self.__class__.__name__
@@ -268,16 +226,9 @@ class CrystalDataset(DeviceMovementMixin):
         Returns
         -------
         CrystalDataset
-            Loaded dataset.
-
-        Examples
-        --------
-        Load from file::
-
-            data = ReflectionData.load_state('reflection_data.pt', device='cuda')
+            Loaded dataset, of the class this was called on.
         """
         state = torch.load(path, map_location="cpu")
-        # Remove class marker if present
         state.pop("__class__", None)
         obj = cls._from_state(state, device)
         if obj.verbose > 0:

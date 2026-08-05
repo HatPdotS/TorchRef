@@ -1,27 +1,14 @@
 """Collection (multi-dataset) X-ray targets.
 
-Apply a single X-ray likelihood across a paired ``DatasetCollection`` +
-``ModelCollection``.  Keys are matched automatically so each timepoint dataset
-is paired with its corresponding mixed model.
+One X-ray likelihood across a paired ``DatasetCollection`` + ``ModelCollection``, keys
+matched so each timepoint dataset meets its own mixed model:
+:class:`CollectionDifferenceTarget` (mean-based differences, the primary optimization
+driver), :class:`CollectionRiceTarget` (per-timepoint Rice at ``beta = sigma**2``) and
+:class:`CollectionMLTarget` (Rice with one shared Luzzati ``beta`` pooled over all
+datasets' free reflections, owned by the target rather than the scaler).
 
-All three targets subclass :class:`~torchref.refinement.targets.collection.base.CollectionXrayTarget`,
-so they share the single-dataset subset/masking/R-factor contract: reflections
-are selected through each member's ``data.work`` / ``data.free`` / ``data.validation``
-accessors (validity mask applied, validation carved out of both), and R-factors
-are reported through ``stats()`` via the one shared
-:func:`~torchref.base.metrics.rfactor.rfactor_work_free` source of truth.
-
-Targets
--------
-CollectionDifferenceTarget
-    Mean-based difference target (primary optimization driver).
-CollectionRiceTarget
-    Multi-timepoint Rice maximum-likelihood amplitude target (beta = sigma^2).
-CollectionMLTarget
-    Like CollectionRiceTarget but with a Luzzati/Read sigma_A term: one shared
-    model-error variance ``beta`` (Luzzati ``alpha`` fixed at 1), estimated by
-    maximum likelihood on the pooled free reflections of all datasets. The
-    estimator is owned by the target, not the scaler.
+All three inherit the single-dataset subset/masking/R-factor contract from
+:class:`~torchref.refinement.targets.collection.base.CollectionXrayTarget`.
 """
 
 from typing import TYPE_CHECKING, Dict
@@ -30,11 +17,8 @@ import numpy as np
 import torch
 
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.base.targets.xray_ml_sigmaa import (
-    SigmaAEstimator,
-    epsilon_from_hkl,
-    ml_xray_loss_beta_math,
-)
+from torchref.base.targets.xray_likelihoods import complex_var_from_beta, rice_math
+from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator, epsilon_from_hkl
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
 from ._util import _LOG_2PI, _scale_fcalc
@@ -53,11 +37,11 @@ if TYPE_CHECKING:
 
 class CollectionDifferenceTarget(CollectionXrayTarget):
     """
-    Mean-based difference target using DatasetCollection + ModelCollection.
+    Mean-based difference target over a DatasetCollection + ModelCollection.
 
-    Computes differences relative to the **mean** across all N datasets
-    (dark + timepoints), with proper error propagation accounting for the
-    covariance between each dataset and the mean::
+    Differences are taken against the **mean** of all N datasets (dark +
+    timepoints), with the error propagation that the dataset/mean covariance
+    demands::
 
         F_mean(h) = (1/N) Σ_i F_obs_i(h)
         ΔF_obs_i  = F_obs_i - F_mean
@@ -65,15 +49,13 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
 
         Var(F_i - F_mean) = σ_i²·(1 - 2/N) + (Σ_j σ_j²)/N²
 
-    For N=2 (dark + one timepoint) this gives identical gradients to the
-    direct dark-reference subtraction.  For N>2 the mean reference has
-    lower noise.
+    At N=2 the gradients are identical to direct dark-reference subtraction; above
+    that the mean reference is the quieter one.
 
-    This is a cross-dataset-coupled target: the per-reflection mean couples all
-    datasets, so it works on aligned ``(N, n_hkl)`` stacks on the common HKL grid
-    (not the flat concatenate-then-mask form the independent targets use). The
-    combined mask requires a reflection to be in this target's subset in **every**
-    dataset.
+    Cross-dataset-coupled, unlike its siblings: the per-reflection mean ties all
+    datasets together, so it works on aligned ``(N, n_hkl)`` stacks on the common HKL
+    grid rather than the flat concatenate-then-mask form, and a reflection counts only
+    if it is in this target's subset in **every** dataset.
 
     Parameters
     ----------
@@ -116,6 +98,7 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         self.normalize = normalize
 
     def forward(self) -> torch.Tensor:
+        """Summed Gaussian NLL of the difference-from-mean; 0.0 if fewer than 2 sets."""
         dc = self._dataset_collection
         mc = self._model_collection
 
@@ -128,7 +111,6 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         # leave a detached tensor that breaks the loss backward.
         self._reset_model_caches()
 
-        # --- Gather per-dataset full-size tensors on the common HKL grid ---
         F_obs_list, sigma_list, mask_list, F_calc_list = [], [], [], []
 
         for key in all_keys:
@@ -137,8 +119,7 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
 
             F_obs, sigma = data.get_corrected_data()
             F_calc = self._scaled_amp_full(data, model, recalc=False)
-            # Subset boolean mask: validity + work/free/val selection, validation
-            # carved out of both work and free.
+            # Validity + work/free/val selection, validation carved out of both.
             mask = self._subset(data).mask
 
             F_obs_list.append(F_obs)
@@ -146,37 +127,33 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
             mask_list.append(mask)
             F_calc_list.append(F_calc)
 
-        # --- Stack into (N, n_hkl) tensors ---
         F_obs_stack = torch.stack(F_obs_list)  # (N, n_hkl)
         sigma_stack = torch.stack(sigma_list)  # (N, n_hkl)
         mask_stack = torch.stack(mask_list)  # (N, n_hkl)
         F_calc_stack = torch.stack(F_calc_list)  # (N, n_hkl)
 
-        # Combined mask: reflection must be in this subset in ALL datasets
+        # A reflection must be in this subset in ALL datasets.
         mask_all = mask_stack.all(dim=0)  # (n_hkl,)
 
-        # --- Mean across datasets ---
         F_mean_obs = F_obs_stack.mean(dim=0)  # (n_hkl,)
         F_calc_mean = F_calc_stack.mean(dim=0)  # (n_hkl,)
 
-        # --- Differences from mean: (N, n_hkl) ---
         delta_F_obs = F_obs_stack - F_mean_obs
         delta_F_calc = F_calc_stack - F_calc_mean
 
-        # --- Error propagation: Var(F_i - F_mean) ---
-        # = σ_i²·(1 - 2/N) + (Σ_j σ_j²) / N²
+        # Var(F_i - F_mean) = σ_i²·(1 - 2/N) + (Σ_j σ_j²) / N²
         sum_sigma_sq = (sigma_stack**2).sum(dim=0)  # (n_hkl,)
         sigma_diff_sq = sigma_stack**2 * (1 - 2.0 / N) + sum_sigma_sq / (N**2)
         sigma_diff = torch.sqrt(sigma_diff_sq.clamp(min=1e-12))  # (N, n_hkl)
 
-        # --- Apply mask via torch.where ---
+        # Mask via torch.where, not boolean indexing: no nonzero() device sync.
         delta_F_obs = torch.where(mask_all, delta_F_obs, torch.zeros_like(delta_F_obs))
         delta_F_calc = torch.where(
             mask_all, delta_F_calc, torch.zeros_like(delta_F_calc)
         )
         sigma_diff = torch.where(mask_all, sigma_diff, torch.ones_like(sigma_diff))
 
-        # Safe sigma clamping
+        # Floor sigma at 10% of its median so a zero sigma cannot blow up.
         eps = (
             torch.median(sigma_diff[:, mask_all].reshape(-1)) * 1e-1
             if mask_all.any()
@@ -184,14 +161,12 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         )
         sigma_safe = sigma_diff.clamp(min=eps)
 
-        # --- Gaussian NLL: (N, n_hkl) ---
         diff = delta_F_obs - delta_F_calc
         nll = 0.5 * (diff / sigma_safe) ** 2 + torch.log(sigma_safe) + 0.5 * _LOG_2PI
 
-        # NaN/Inf protection
+        # A single NaN would poison the whole gradient; 1e6 lets the step be rejected.
         nll = torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
 
-        # Sum over all datasets and reflections (unnormalised NLL)
         total_nll = (nll * mask_all).sum()
 
         return total_nll
@@ -206,11 +181,10 @@ class CollectionRiceTarget(CollectionXrayTarget):
     """
     Multi-timepoint Rice maximum-likelihood amplitude target.
 
-    Computes Rice-distribution NLL (acentric) and the corresponding
-    centric NLL for each timepoint, with proper subset masking and
-    NaN/Inf protection.  The per-timepoint losses are independent, so the
-    reflections and boolean masks are **concatenated across timepoints and
-    masked once** (flat vectorization) rather than summed in a Python loop.
+    Rice NLL for acentrics and the folded-normal form for centrics, per timepoint.
+    The per-timepoint losses are independent, so reflections and masks are
+    concatenated across timepoints and masked once rather than reduced in a
+    Python loop.
 
     Parameters
     ----------
@@ -258,6 +232,7 @@ class CollectionRiceTarget(CollectionXrayTarget):
         return [n for n in mc.timepoint_names if n in dc]
 
     def forward(self) -> torch.Tensor:
+        """Summed Rice NLL over every timepoint's reflections in this subset."""
         dc = self._dataset_collection
         mc = self._model_collection
 
@@ -267,7 +242,6 @@ class CollectionRiceTarget(CollectionXrayTarget):
 
         self._reset_model_caches()
 
-        # --- Gather per-timepoint full-size tensors, then concatenate + mask ---
         fo_parts, fc_parts, sig_parts, cen_parts, mask_parts = [], [], [], [], []
         for tp_name in tp_names:
             data = dc[tp_name]
@@ -287,8 +261,7 @@ class CollectionRiceTarget(CollectionXrayTarget):
             cen_parts.append(centric)
             mask_parts.append(self._subset(data).mask)
 
-        # Concatenate the data and the boolean masks, then mask the flat arrays
-        # once (compact — no MaskedTensors, no per-dataset Python reduction).
+        # Mask the flat arrays once: compact, no per-dataset Python reduction.
         mask = torch.cat(mask_parts)
         F_obs = torch.cat(fo_parts)[mask]
         F_calc = torch.cat(fc_parts)[mask]
@@ -298,7 +271,7 @@ class CollectionRiceTarget(CollectionXrayTarget):
         if F_obs.numel() == 0:
             return torch.tensor(0.0, device=mc.device)
 
-        # ML parameters (defaults): plain Rice, beta = sigma^2
+        # Plain Rice: the model-error variance IS the measurement variance here.
         beta = sigma**2
         eb = beta.clamp(min=1e-6)
 
@@ -319,11 +292,10 @@ class CollectionRiceTarget(CollectionXrayTarget):
         term5_c = -torch.log((1 + torch.exp(arg_exp)) / 2 + 1e-12)
         loss_centric = term1_c + term2_c + term3_c + term4_c + term5_c
 
-        # Combine
         loss = torch.where(centric, loss_centric, loss_acentric)
+        # A single NaN would poison the whole gradient; 1e6 lets the step be rejected.
         loss = torch.where(torch.isfinite(loss), loss, torch.full_like(loss, 1e6))
 
-        # Sum over all masked reflections (unnormalised NLL)
         return loss.sum()
 
 
@@ -337,19 +309,17 @@ class CollectionMLTarget(CollectionXrayTarget):
     Multi-dataset maximum-likelihood σ_A (Read MLF) target.
 
     The collection analogue of
-    :class:`~torchref.refinement.targets.xray.maximum_likelihood.MaximumLikelihoodXrayTarget`:
-    instead of ``beta = sigma**2`` (plain Rice), it uses one **shared** Luzzati
-    model-error variance ``beta``.  ``beta`` is estimated by maximum likelihood on
-    the **pooled** free reflections of every data–model pair and mapped back onto
-    the common HKL, so a single per-reflection ``beta`` applies to every dataset.
+    :class:`~torchref.refinement.targets.xray.ml_noalpha.MLNoAlphaXrayTarget`: instead
+    of plain Rice's ``beta = sigma**2`` it uses one **shared** Luzzati model-error
+    variance, fitted by maximum likelihood on the **pooled** free reflections of every
+    data-model pair and mapped back onto the common HKL, so one per-reflection ``beta``
+    serves all datasets. The estimator belongs to this target, not the scaler, which
+    owns scaling only.
 
-    The estimate is owned by **this target** (a :class:`SigmaAEstimator`), not the
-    scaler — the scaler owns scaling only.  The per-dataset loss is the Read MLF
-    form (``mean = |Fc|``, variance ``epsilon*beta``) from
-    :func:`torchref.base.targets.xray_ml_sigmaa.ml_xray_loss_beta_math`. Because
-    the loss is an independent per-dataset sum, the datasets are concatenated and
-    masked once (flat vectorization).  ``beta`` is detached (a constant in
-    autograd); gradients reach the models only through ``F_calc``.
+    Per-dataset loss is the Read MLF form (``mean = |Fc|``, variance ``epsilon*beta``)
+    from :func:`torchref.base.targets.xray_likelihoods.rice_math`, and since those sums
+    are independent the datasets are concatenated and masked once. ``beta`` is detached,
+    so gradients reach the models only through ``F_calc``.
 
     Parameters
     ----------
@@ -358,8 +328,8 @@ class CollectionMLTarget(CollectionXrayTarget):
     scaler : ScalerBase
         Scaling layer applied to F_calc (``forward_mixed`` when available).
     normalize : bool
-        Unused placeholder (kept for signature parity with the other collection
-        targets, where the flag is also non-functional). TODO: remove from all three.
+        Unused placeholder, as on the other two collection targets.
+        TODO: remove from all three.
     use_work_set : bool
         Legacy bool; superseded by ``use_set``. If True, loss on the work set.
     use_set : str, optional
@@ -425,6 +395,7 @@ class CollectionMLTarget(CollectionXrayTarget):
         return self._eps_common, self._dss_common
 
     def forward(self) -> torch.Tensor:
+        """Summed Read-MLF loss over all datasets at the shared beta, work-set weighted."""
         dc = self._dataset_collection
         mc = self._model_collection
 
@@ -440,16 +411,17 @@ class CollectionMLTarget(CollectionXrayTarget):
         # F_calc computed below carries a live graph.
         self._reset_model_caches()
 
-        # Compute each pair's F_calc once (with grad — used by the loss), and
-        # collect detached copies to pool the free reflections for ONE shared
-        # beta estimate across all datasets.
+        # Each pair's F_calc is computed once WITH grad for the loss; detached copies
+        # feed the pooled single-beta estimate.
         fo_parts, fc_parts, cen_parts, msk_parts = [], [], [], []
-        eps_parts, dss_parts, free_parts = [], [], []
+        eps_parts, dss_parts, free_parts, sig_parts = [], [], [], []
         for key in all_keys:
             data = dc[key]
             model = mc[key]
 
-            F_obs = data.get_corrected_data()[0].to(dtype)
+            F_obs, sig_obs = data.get_corrected_data()
+            F_obs = F_obs.to(dtype)
+            sig_parts.append(sig_obs.to(dtype).reshape(-1))
             F_calc = self._scaled_amp_full(data, model, recalc=False).to(dtype)
             centric = data.centric
             if centric is None:
@@ -462,14 +434,14 @@ class CollectionMLTarget(CollectionXrayTarget):
             cen_parts.append(centric)
             msk_parts.append(self._subset(data).mask)
 
-            # Beta is estimated on the free set (validation excluded by data.free).
+            # Beta is estimated on the free set; data.free excludes validation.
             free_parts.append(data.free.mask)
             eps_parts.append(eps_common.to(dtype))
             dss_parts.append(dss_common.to(dtype))
 
-        # One shared (beta, epsilon) for all datasets, mapped onto the common
-        # HKL via target_dss. Detached; cached until maintenance() resets it.
-        beta, eps = self._sigma_a.get(
+        # One shared (beta, epsilon) for all datasets, mapped onto the common HKL via
+        # target_dss. Detached; cached until maintenance() resets it.
+        _est = self._sigma_a.get(
             torch.cat(fo_parts),
             torch.cat([fc.detach() for fc in fc_parts]),  # beta needs no gradient
             torch.cat(cen_parts),
@@ -478,11 +450,14 @@ class CollectionMLTarget(CollectionXrayTarget):
             torch.cat(free_parts),
             out_epsilon=eps_common.to(dtype),
             target_dss=dss_common,
+            # Always passed, as at every other call site: it is what makes sigma_A the
+            # correlation with the noise-free amplitudes rather than with the noisy data.
+            sigma_obs=torch.cat(sig_parts),
         )
+        beta, eps = _est.beta, _est.epsilon
 
-        # Concatenate data + boolean masks across datasets and evaluate the
-        # Read-MLF loss once. beta/eps are on the common HKL, so they are tiled
-        # once per dataset to align with the concatenation order.
+        # beta/eps live on the common HKL, so they are tiled once per dataset to line
+        # up with the concatenation order.
         n_ds = len(all_keys)
         F_obs_cat = torch.cat(fo_parts)
         F_calc_cat = torch.cat(fc_parts)
@@ -491,8 +466,11 @@ class CollectionMLTarget(CollectionXrayTarget):
         beta_cat = beta.to(F_obs_cat.dtype).repeat(n_ds)
         eps_cat = eps.to(F_obs_cat.dtype).repeat(n_ds) if eps is not None else None
 
-        total = ml_xray_loss_beta_math(
-            F_obs_cat, F_calc_cat, beta_cat, centric_cat, mask_cat, eps_cat
+        # TOTAL variance (`est.beta`, not `beta_model`): this likelihood does not
+        # account for sigma_obs itself, so the measurement variance must stay inside beta.
+        total = rice_math(
+            F_obs_cat, F_calc_cat, complex_var_from_beta(beta_cat, eps_cat),
+            centric_cat, mask=mask_cat,
         )
 
         # Base weight drives refinement; applied on the work set only.

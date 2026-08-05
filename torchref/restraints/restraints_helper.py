@@ -10,20 +10,10 @@ from torchref.io import cif
 
 
 def validate_restraint_data(residue_data, cif_path):
-    """
-    Validate that the CIF file contains actual restraint parameters.
+    """Raise ``ValueError`` unless every compound carries real restraint parameters.
 
-    Parameters
-    ----------
-    residue_data : dict
-        Dictionary of residue restraint data from CIF file.
-    cif_path : str or Path
-        Path to the CIF file being validated.
-
-    Raises
-    ------
-    ValueError
-        If the file doesn't contain proper restraint data.
+    Rejects structure-only CIFs: a compound must have a bond section, and that
+    section must carry ``value`` and ``sigma`` columns.
     """
     if not residue_data:
         raise ValueError(f"CIF file {cif_path} contains no compound definitions")
@@ -35,7 +25,6 @@ def validate_restraint_data(residue_data, cif_path):
                 f"This may be a structure-only CIF file without restraint parameters."
             )
 
-        # Check if bond data exists and has restraint parameters (standardized column names)
         if "bonds" in data or "bond" in data:
             bond_key = "bonds" if "bonds" in data else "bond"
             bond_df = data[bond_key]
@@ -54,7 +43,6 @@ def validate_restraint_data(residue_data, cif_path):
                     f"proper restraint parameters (from the CCP4 Monomer Library)."
                 )
         else:
-            # No bond data at all - definitely not a restraint file
             raise ValueError(
                 f"CIF file {cif_path}: Compound '{comp_id}' has no bond restraint data.\n"
                 f"Available data types: {list(data.keys())}\n\n"
@@ -65,60 +53,27 @@ def validate_restraint_data(residue_data, cif_path):
 
 def read_cif(cif_path):
     """
-    Read restraint CIF file using RestraintCIFReader.
+    Read a restraint CIF into ``{comp_id: {section: DataFrame}}``.
 
-    Returns dictionary with standardized keys for compatibility with restraints.py.
-
-    Parameters
-    ----------
-    cif_path : str or Path
-        Path to restraint CIF file.
-
-    Returns
-    -------
-    dict
-        Dictionary mapping compound IDs to restraint data with standardized keys::
-
-            {
-                'comp_id': {
-                    'bond': DataFrame with bond restraints,
-                    'angle': DataFrame with angle restraints,
-                    'torsion': DataFrame with torsion restraints,
-                    'plane': DataFrame with planarity restraints,
-                    'chiral': DataFrame with chirality definitions,
-                    'atom': DataFrame with atom definitions
-                }
-            }
+    Sections are the standardized keys ``bond``, ``angle``, ``torsion``, ``plane``,
+    ``chiral`` and ``atom``. Runs :func:`validate_restraint_data`, so a
+    structure-only CIF raises ``ValueError`` here rather than yielding empty
+    restraints later.
     """
-    # Use the new RestraintCIFReader
     reader = cif.RestraintCIFReader(cif_path)
 
-    # Get all restraints
     all_restraints = reader.get_all_restraints()
 
-    # Validate the data
     validate_restraint_data(all_restraints, cif_path)
 
     return all_restraints
 
 
 def find_cif_file_in_library(resname):
-    """
-    Find a CIF file in the monomer library based on residue name.
+    """Path to ``resname``'s CIF in the monomer library, or None.
 
-    Resolves files using the MonomerLibraryManager priority chain:
-    environment variable > bundled package data > user cache >
-    legacy external_monomer_library > on-demand download.
-
-    Parameters
-    ----------
-    resname : str
-        Residue name (e.g., 'ALA', 'GLY', 'ATP').
-
-    Returns
-    -------
-    Path or None
-        Path object pointing to the CIF file, or None if not found.
+    Delegates to :meth:`MonomerLibraryManager.get_cif_file`, whose last resort is
+    an on-demand download.
     """
     from torchref.restraints.library import get_library_manager
 
@@ -127,23 +82,15 @@ def find_cif_file_in_library(resname):
 
 def read_link_definitions():
     """
-    Read link definitions from mon_lib_list.cif.
+    Read inter-residue link definitions from mon_lib_list.cif.
 
     Returns
     -------
-    tuple
-        A tuple of (link_dict, link_list) where:
-
-        - link_dict : dict
-            Dictionary where keys are link IDs (e.g., 'TRANS', 'CIS')
-            and values are dictionaries containing:
-
-            - 'bonds': DataFrame of inter-residue bonds
-            - 'angles': DataFrame of inter-residue angles
-            - 'torsions': DataFrame of inter-residue torsions
-
-        - link_list : DataFrame
-            DataFrame containing the list of all link definitions.
+    link_dict : dict
+        Keyed by link ID ('TRANS', 'CIS', 'disulf', ...), each holding DataFrames
+        under 'bonds', 'angles', 'torsions', 'planes' and 'chirals'.
+    link_list : DataFrame or None
+        The ``chem_link`` table, or None if the file has no ``link_list`` block.
     """
     from torchref.io.cif_readers import CIFReader
     from torchref.restraints.library import get_library_manager
@@ -221,33 +168,14 @@ def read_link_definitions():
 
 
 def _standardize_link_columns(df, section_type):
-    """
-    Standardize column names in link definitions to match restraint CIF format.
+    """Rename ``_chem_link`` columns to the restraint-CIF names, on a copy.
 
-    Converts from _chem_link format to standardized format:
-
-    - atom_id_1/2/3/4 -> atom1/2/3/4
-    - value_dist -> value
-    - value_dist_esd -> sigma
-    - value_angle -> value
-    - value_angle_esd -> sigma
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        DataFrame with link restraint data.
-    section_type : str
-        Type of restraint section ('bonds', 'angles', 'torsions', 'planes').
-
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame with standardized column names.
+    ``atom_id_N -> atomN``, and ``value_dist``/``value_angle`` plus their ``_esd``
+    partners to ``value``/``sigma``; ``section_type`` picks which pair applies.
     """
     if df.empty:
         return df
 
-    # Create a copy to avoid modifying original
     df = df.copy()
 
     # Column mapping

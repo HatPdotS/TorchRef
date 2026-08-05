@@ -1,51 +1,14 @@
 """
 Centralized loss finiteness validator for refinement closures.
 
-Exports
--------
-validate_loss
-    Check that a loss tensor (and optionally grads / parameters) is finite.
-    On failure, dumps a per-target breakdown via ``LossState.format_breakdown``.
-    Supports two modes:
+:func:`validate_loss` checks a loss tensor (and optionally grads and parameters) and, on
+failure, dumps a per-target breakdown via ``LossState.format_breakdown``. With
+``raise_on_fail=True`` it raises :class:`NonFiniteLossError`; with ``False`` it warns and
+returns ``False``, and **the caller must then reject the step itself** -- inside an LBFGS
+closure that means zeroing grads and returning ``+inf`` so strong-Wolfe backtracks.
 
-    - ``raise_on_fail=True`` (default): raise :class:`NonFiniteLossError`.
-      Use in contexts where a non-finite loss means the run is broken.
-    - ``raise_on_fail=False``: print a warning (full diagnostic on the
-      first few failures, one-line summary thereafter) and return ``False``.
-      The caller is expected to reject the step — e.g. inside an LBFGS
-      closure, zero out gradients and return ``+inf`` so the strong-Wolfe
-      line search backtracks.
-NonFiniteLossError
-    Typed exception so callers can distinguish numerical blow-ups from
-    other ``RuntimeError``s.
-
-Usage
------
-Soft-failure closure (recommended for production LBFGS refinement)::
-
-    from torchref.utils import validate_loss
-
-    def closure():
-        optimizer.zero_grad()
-        loss = state.aggregate()
-        loss.backward()
-        ok = validate_loss(
-            loss, state=state, parameters=params,
-            context="lbfgs", raise_on_fail=False,
-        )
-        if not ok:
-            # Tell LBFGS this step is invalid: zero grads + return +inf,
-            # the strong-Wolfe line search will backtrack.
-            for p in params:
-                if p.grad is not None:
-                    p.grad.zero_()
-            return torch.full_like(loss, float("inf"))
-        return loss
-
-Fast path is one GPU→CPU sync on ``torch.isfinite(loss)`` plus, when
-``check_grads=True``, a per-gradient-tensor finiteness reduction fused into
-a single bool accumulator with one further sync (see
-``_any_nonfinite_grads``). Diagnostic path only runs on failure.
+The happy path costs one GPU->CPU sync, plus one more when ``check_grads=True``; the
+diagnostic path runs only on failure.
 """
 
 from collections import defaultdict
@@ -85,13 +48,10 @@ def _is_finite_scalar(t: torch.Tensor) -> bool:
 
 
 def _any_nonfinite_grads(parameters: List[torch.Tensor]) -> bool:
-    """Check whether any parameter gradient contains a non-finite entry.
+    """Whether any parameter gradient contains a non-finite entry.
 
-    Iterates over the gradient tensors in a plain Python loop, OR-ing a
-    per-tensor ``~torch.isfinite(g).all()`` reduction into a single device
-    bool accumulator, then performs one ``.item()`` GPU->CPU sync at the
-    end. The result is one reduction *per* gradient tensor fused into one
-    bool, not a single batched ``torch._foreach_*`` dispatch.
+    One reduction per gradient tensor, OR-ed into a device bool, with a single sync at the
+    end. Parameters without a gradient are skipped, so no grads at all returns ``False``.
     """
     grads = [p.grad for p in parameters if p.grad is not None]
     if not grads:
@@ -106,10 +66,8 @@ def _any_nonfinite_grads(parameters: List[torch.Tensor]) -> bool:
 def _nonfinite_counts(parameters: List[torch.Tensor]) -> List[tuple]:
     """``(label, non_finite_count)`` entries for diagnostics only.
 
-    Returns one entry per parameter (label ``param[i] shape=...``) and, when
-    that parameter has a gradient, an additional entry for the gradient
-    (label ``  .grad shape=...``) — so parameters with grads contribute two
-    entries, not one.
+    One entry per parameter, plus a second for its gradient when it has one -- so the list
+    is longer than ``parameters``.
     """
     out = []
     for i, p in enumerate(parameters):
@@ -137,48 +95,35 @@ def validate_loss(
     Parameters
     ----------
     loss : torch.Tensor
-        The scalar loss returned by the closure. Must be a zero-dim or
-        one-element tensor.
+        The scalar loss returned by the closure; zero-dim or one-element.
     state : LossState, optional
-        If provided, the diagnostic path re-runs
-        ``state.aggregate(log_values=True)`` to repopulate per-target losses
-        and formats them via ``state.format_breakdown()``. Safe to omit for
-        closures that don't use a LossState (e.g. scalers, alignment).
+        The diagnostic path re-runs ``state.aggregate(log_values=True)``, so it **calls
+        the targets again**. Omit for closures with no LossState.
     parameters : iterable of torch.Tensor, optional
-        Parameters to inspect. When ``check_grads=True``, their gradients
-        are checked for finiteness on the fast path. On failure, both
-        parameters and their grads are reported with non-finite entry counts.
+        Parameters to inspect; their grads are checked when ``check_grads=True``, and both
+        are reported with non-finite counts on failure.
     check_grads : bool, default True
-        Check parameter gradients for finiteness after backward(). This is
-        the usual pathology (backward produces NaN even when forward was
-        finite), so leave it on unless a hot benchmark proves it's costly.
+        Check gradients after backward(). The usual pathology is a NaN grad from a finite
+        forward, so leave it on.
     context : str, default ""
-        Short label written into the diagnostic header and returned in the
-        warning / exception message (e.g. ``"collection_difference_refine"``).
-        Also keys the per-context diagnostic budget.
+        Label for the diagnostic header and messages; also keys the diagnostic budget.
     raise_on_fail : bool, default True
-        If True, raise :class:`NonFiniteLossError` on failure (strict mode).
-        If False, print a warning and return ``False`` — the caller is
-        responsible for rejecting the LBFGS step (e.g. by zeroing grads and
-        returning +inf so strong-Wolfe backtracks).
+        True raises :class:`NonFiniteLossError`; False warns and returns ``False``, leaving
+        the caller to reject the step.
     max_full_diagnostics : int, default 3
-        Per-context budget for the full per-target breakdown. After this
-        many failures in the same context, only a compact one-line warning
-        is printed. Prevents log flooding when LBFGS bounces around a
-        persistent NaN region. Pass ``0`` to always print compact.
+        Per-context budget for the full breakdown; later failures print one compact line.
+        ``0`` always prints compact.
 
     Returns
     -------
     bool
-        ``True`` if everything is finite (happy path), ``False`` otherwise.
-        When ``raise_on_fail=True``, a False result raises instead of
-        returning.
+        ``True`` if everything is finite. ``False`` only reaches the caller when
+        ``raise_on_fail=False``.
 
     Raises
     ------
     NonFiniteLossError
-        If ``raise_on_fail=True`` and any of loss / grads / params is
-        non-finite.
+        If ``raise_on_fail=True`` and any of loss / grads / params is non-finite.
     """
     if not torch.is_tensor(loss):
         raise TypeError(f"validate_loss: expected tensor, got {type(loss)!r}")
@@ -243,12 +188,7 @@ def _emit_diagnostic(
     full: bool,
     count: int,
 ) -> None:
-    """Print a diagnostic block (full or compact) without raising.
-
-    When ``full=False`` (budget exhausted for this context), emit a single
-    WARN line so the log doesn't flood when LBFGS bounces around a
-    pathological region for many consecutive line-search probes.
-    """
+    """Print a diagnostic block without raising; ``full=False`` emits one WARN line."""
     try:
         loss_val = loss.item()
     except Exception:

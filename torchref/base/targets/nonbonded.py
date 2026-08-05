@@ -67,16 +67,11 @@ def nonbonded_heavy_math(
 ) -> torch.Tensor:
     """Heavy-heavy VDW prolsq repulsion NLL.
 
-    Matches the prolsq branch of ``NonBondedTarget.forward`` and the
-    symmetry-aware pair-position gather from
-    ``NonBondedTarget._compute_positions``. The H-VDW contribution added by
-    ``NonBondedHTarget`` is excluded — see :mod:`nonbonded_h` (TBD) for that.
-
-    Dispatches to
-    :func:`torchref.base.targets.triton.nonbonded_heavy_math_triton` on
-    CUDA float32 (~1.4× faster fwd+bw on A100 — forward kernel is
-    memory-bound but the analytic backward saves most of the win).
-    Falls back to eager otherwise.
+    Matches the prolsq branch of ``NonBondedTarget.forward`` plus the symmetry-aware
+    gather of ``NonBondedTarget._compute_positions``. The H-VDW term ``NonBondedHTarget``
+    adds is **not** included here. Dispatches to
+    :func:`torchref.base.targets.triton.nonbonded_heavy_math_triton` on CUDA float32
+    (~1.4x on fwd+bw, mostly from the analytic backward), eager otherwise.
 
     Parameters
     ----------

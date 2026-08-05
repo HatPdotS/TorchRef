@@ -1,23 +1,16 @@
 """Shared base for collection (multi-dataset) X-ray targets.
 
-``CollectionXrayTarget`` gives the multi-dataset targets the same subset and
-R-factor contract as the single-dataset :class:`~torchref.refinement.targets.xray.base.XrayTarget`:
+:class:`CollectionXrayTarget` gives them the same subset and R-factor contract as
+the single-dataset
+:class:`~torchref.refinement.targets.xray.base.XrayTarget`: the 3-way ``use_set``
+selector over each member's ``data.work``/``free``/``validation`` accessors, the one
+shared :func:`~torchref.base.metrics.rfactor.rfactor_work_free` computed through the
+same scaling the loss sees, and the standard ``loss``/``n``/``rwork``/``rfree``
+``stats()`` dict.
 
-* a canonical 3-way subset selector ``use_set`` in ``{"work", "free", "val"}``
-  that maps onto each member :class:`~torchref.io.datasets.reflection_data.ReflectionData`'s
-  ``data.work`` / ``data.free`` / ``data.validation`` accessors (validity mask
-  applied, validation carved out of both work and free);
-* one shared R-factor source of truth
-  (:func:`~torchref.base.metrics.rfactor.rfactor_work_free`) computed per dataset
-  through the scaler's scaling, exactly what the loss sees;
-* a standard ``stats()`` dict (``loss`` / ``n`` / ``rwork`` / ``rfree``) so the
-  refinement logger surfaces R-factors for the collection just like it does for a
-  single dataset.
-
-Because every member of a :class:`~torchref.io.datasets.collection.DatasetCollection`
-is expanded onto one common HKL grid, per-dataset R-factors form a distribution;
-the headline ``rwork`` / ``rfree`` is the median and the 10/25/75/90 percentiles are
-reported at higher verbosity.
+Since every member is expanded onto one common HKL grid, per-dataset R-factors form a
+distribution: headline ``rwork``/``rfree`` are its median, with the 10/25/75/90
+percentiles at higher verbosity.
 """
 
 from typing import TYPE_CHECKING, Dict, List, Optional
@@ -95,10 +88,9 @@ class CollectionXrayTarget(Target):
     # ------------------------------------------------------------------
 
     def _keys(self) -> List[str]:
-        """Matched dataset keys this target fits: dark + present timepoints.
-
-        Overridden by targets that fit only a subset of the collection (e.g.
-        :class:`CollectionRiceTarget` drops the dark reference).
+        """Matched dataset keys this target fits: dark + present timepoints. Targets
+        fitting only part of the collection override it (``CollectionRiceTarget``
+        drops the dark reference).
         """
         dc = self._dataset_collection
         mc = self._model_collection
@@ -115,24 +107,19 @@ class CollectionXrayTarget(Target):
         return data.work
 
     def _reset_model_caches(self) -> None:
-        """Clear cached forwards on every base model.
-
-        Called at the start of each ``forward`` so a preceding no-grad R-factor
-        evaluation (which may leave a detached, grad-less tensor in the cache)
-        cannot starve the loss backward.
+        """Clear cached forwards on every base model. Call at the start of each
+        ``forward``: a preceding no-grad R-factor evaluation can leave a detached
+        tensor in the cache, which would silently kill the loss backward.
         """
         for bm in getattr(self._model_collection, "base_models", []):
             if hasattr(bm, "reset_cache"):
                 bm.reset_cache()
 
     def _scaled_amp_full(self, data, model, recalc: bool = True) -> torch.Tensor:
-        """Full-size, scaled ``|F_calc|`` for one data-model pair.
-
-        Uses ``hkl_for_sf()`` (signed indices) so anomalous mates get distinct
-        amplitudes. ``recalc=True`` (the default, used by the no-grad R-factor
-        path) forces a fresh compute so it cannot reuse — or leave behind — a
-        cached tensor that would break gradient flow; the loss path passes
-        ``recalc=False`` after :meth:`_reset_model_caches` has cleared the cache.
+        """Full-size, scaled ``|F_calc|`` for one data-model pair, off ``hkl_for_sf()``
+        so anomalous mates stay distinct. ``recalc=True`` (default) is for the no-grad
+        R-factor path -- it neither reuses nor leaves a cached tensor that would break
+        gradient flow. The loss path passes False, after ``_reset_model_caches()``.
         """
         fcalc = model(data.hkl_for_sf(), recalc=recalc)
         return torch.abs(_scale_fcalc(self._scaler, fcalc, model))

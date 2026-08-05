@@ -1,17 +1,8 @@
-"""
-Non-bonded target with transient riding hydrogen VDW contacts.
+"""Non-bonded target with transient riding hydrogen VDW contacts.
 
-Inherits from ``NonBondedTarget`` — all heavy-heavy VDW logic is unchanged.
-On each ``forward()`` call, riding hydrogen positions are generated from
-the current heavy-atom coordinates, and VDW repulsion is computed on
-precomputed candidate H-heavy pairs.
-
-Candidate pairs are derived at restraint-build time from the heavy-atom
-VDW pair list, so the forward pass only computes distances and energy
-on a fixed set of candidates — no spatial hashing at evaluation time.
-
-Hydrogen atoms are never stored in the model; they exist only during
-this evaluation step and are discarded immediately after.
+Hydrogens are never stored on the model: each ``forward()`` places them from the
+current heavy-atom coordinates, scores VDW repulsion on a candidate H-heavy pair
+list fixed at restraint-build time, and discards them.
 """
 
 import numpy as np
@@ -35,16 +26,11 @@ if TYPE_CHECKING:
 class NonBondedHTarget(NonBondedTarget):
     """Non-bonded target with transient riding hydrogen VDW contacts.
 
-    Drop-in replacement for ``NonBondedTarget``.  The heavy-heavy VDW
-    loss is computed by the parent class; this subclass adds an H-VDW
-    term from precomputed candidate H-heavy pairs.
-
-    Candidate pairs are derived at build time from the heavy-heavy VDW
-    pair list.  At forward time, only H placement + vectorized distance
-    computation is needed — no spatial hashing.
-
-    Uses the same generalized-Gaussian NLL as the parent class; see
-    :class:`NonBondedTarget` for the sigma calibration.
+    Drop-in replacement for :class:`NonBondedTarget`, which still computes the
+    heavy-heavy loss; this adds an H-VDW term over candidate pairs derived at build
+    time from the heavy-heavy list, so a forward costs only H placement and a
+    vectorized distance pass. Same generalized-Gaussian NLL as the parent, including
+    its sigma calibration.
 
     Parameters
     ----------
@@ -97,30 +83,20 @@ class NonBondedHTarget(NonBondedTarget):
         xyz: torch.Tensor,
         h_topo: "HydrogenTopology",
     ) -> torch.Tensor:
-        """Compute VDW loss from precomputed H-heavy candidate pairs.
+        """VDW loss over the precomputed H-heavy candidate pairs.
 
-        Steps:
-        1. Place riding hydrogens (differentiable)
-        2. Gather H and heavy-atom positions for all candidates
-        3. Apply symmetry transforms for symmetry-mate heavy atoms
-        4. Compute PROLSQ repulsion energy
-
-        Gradient flow: loss → H_pos → xyz[parent_idx] → model params
-
-        For ``mode == "prolsq"`` (the default), routes everything from
-        the gather through the prolsq energy to
-        :func:`torchref.base.targets.nonbonded_heavy_math`, which
-        dispatches to a Triton kernel on CUDA fp32. The candidate list
-        is already pre-sorted ASU-then-sym; passing ``cand_symop_idx``
-        directly lets the kernel apply the identity transform on the
-        ASU half and the real symmetry transform on the sym half in one
-        pass. Other modes keep the inline eager path.
+        Places riding hydrogens differentiably, so the gradient runs
+        loss -> H_pos -> ``xyz[parent_idx]`` -> model parameters. The candidate list
+        must stay sorted ASU-then-sym: the ``prolsq`` fast path hands
+        ``cand_symop_idx`` straight to
+        :func:`torchref.base.targets.nonbonded_heavy_math`, which relies on that
+        ordering to do identity and real symmetry transforms in one pass. Other modes
+        take the inline eager path below.
         """
         from torchref.restraints.hydrogen_topology import place_riding_hydrogens
 
         device = xyz.device
 
-        # 1. Place riding hydrogens and build combined coordinate array
         xyz_h = place_riding_hydrogens(xyz, h_topo)
         xyz_all = torch.cat([xyz, xyz_h], dim=0)  # [heavy | H]
 
@@ -128,7 +104,7 @@ class NonBondedHTarget(NonBondedTarget):
         if n_cand == 0:
             return torch.tensor(0.0, device=device)
 
-        # --- Fast path: prolsq → routed dispatcher (Triton on CUDA fp32) ---
+        # Fast path: prolsq goes through the dispatcher (Triton on CUDA fp32).
         if self.mode == "prolsq":
             from torchref.base.targets.nonbonded import nonbonded_heavy_math
             indices = torch.stack(
@@ -145,8 +121,7 @@ class NonBondedHTarget(NonBondedTarget):
                 float(self._buffer), self._sigma_vdw,
             )
 
-        # --- Slow path: gaussian / soft modes keep the inline eager
-        # logic. Recompute positions and distances exactly as before.
+        # Slow path: gaussian / soft modes, inline eager.
         pos_i = xyz_all[h_topo.cand_idx_i]
         n_asu = getattr(h_topo, 'n_asu_candidates', n_cand)
         n_sym = n_cand - n_asu
@@ -204,10 +179,9 @@ class NonBondedHTarget(NonBondedTarget):
     # ------------------------------------------------------------------
 
     def forward(self) -> torch.Tensor:
-        # Heavy-heavy VDW (delegates to parent)
+        """Heavy-heavy VDW loss plus the riding-hydrogen term, when H are available."""
         heavy_loss = super().forward()
 
-        # Riding hydrogen VDW via precomputed candidates
         restraints = self.restraints
         if restraints is None:
             return heavy_loss
@@ -220,7 +194,12 @@ class NonBondedHTarget(NonBondedTarget):
         return heavy_loss + h_loss
 
     def get_violations(self, threshold: float = 0.0) -> Dict[str, torch.Tensor]:
-        """Get violations including H-involving contacts."""
+        """Parent VDW violations plus ``h_*`` entries for H-involving contacts.
+
+        The H distances here ignore symmetry -- both positions are read straight out of
+        ``xyz_all`` -- so symmetry-mate H contacts are reported at their intra-ASU
+        separation, unlike in the loss.
+        """
         from torchref.restraints.hydrogen_topology import place_riding_hydrogens
 
         result = super().get_violations(threshold)

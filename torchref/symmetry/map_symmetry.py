@@ -1,20 +1,16 @@
-"""
-Map-level symmetry operations for electron density maps.
+"""Map-level symmetry operations for electron density maps.
 
-This module provides efficient symmetry operations applied directly to density maps,
-which is much faster than applying symmetry to individual atoms.
-
-This module uses a factory pattern: calling MapSymmetry() will automatically
-return either MapSymmetryDirect (fast, no interpolation) or MapSymmetryInterpolation
-(fallback with interpolation) depending on grid compatibility.
-
-Space groups can be specified as strings, integers (1-230), or gemmi.SpaceGroup objects.
+Applying symmetry to the map is far cheaper than generating symmetry mates per
+atom. :func:`MapSymmetry` is a factory, not a class: it returns
+:class:`MapSymmetryDirect` (exact integer indexing) when the grid allows, else the
+interpolating implementation from ``map_symmetry_interpolation``. Space groups
+accept strings, ints 1-230 or ``gemmi.SpaceGroup``.
 """
 
 import torch
 import torch.nn as nn
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype, normalize_device
 from torchref.symmetry.spacegroup import SpaceGroup, SpaceGroupLike
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -28,11 +24,12 @@ def MapSymmetry(
     device=None,
 ):
     """
-    Factory function to create the appropriate MapSymmetry implementation.
+    Build the appropriate MapSymmetry implementation for ``map_shape``.
 
-    This function checks if the grid size is compatible with direct indexing
-    (no interpolation needed). If compatible, returns MapSymmetryDirect for
-    maximum performance. Otherwise, returns MapSymmetryInterpolation as fallback.
+    Returns :class:`MapSymmetryDirect` when the grid permits exact integer
+    indexing, otherwise the interpolating fallback -- so the return *type*
+    depends on the grid, and a mis-sized grid costs accuracy silently (at
+    ``verbose > 0`` a compatible grid is suggested).
 
     Parameters
     ----------
@@ -57,14 +54,16 @@ def MapSymmetry(
     """
     if dtype_float is None:
         dtype_float = get_float_dtype()
-    if device is None:
-        device = get_default_device()
-    # Check grid compatibility
+    # ``cell_params`` is documented as a tensor, so follow it when no device is
+    # given rather than jumping to the global default and leaving the caller's
+    # cell behind.
+    if device is None and isinstance(cell_params, torch.Tensor):
+        device = cell_params.device
+    device = normalize_device(device)
     symmetry = SpaceGroup(space_group, dtype=dtype_float, device=device)
     compat = symmetry.check_grid_compatibility(map_shape)
 
     if compat["can_use_direct_indexing"]:
-        # Use fast direct indexing implementation
         if verbose > 0:
             print(
                 f"MapSymmetry: Using direct indexing (no interpolation) for {space_group}"
@@ -73,7 +72,6 @@ def MapSymmetry(
             space_group, map_shape, cell_params, dtype_float, verbose, device
         )
     else:
-        # Use interpolation-based fallback
         if verbose > 0:
             print("MapSymmetry: Grid not compatible with direct indexing")
             print(f"  Using interpolation-based fallback for {space_group}")
@@ -83,7 +81,6 @@ def MapSymmetry(
             suggested = symmetry.suggest_grid_size(map_shape, make_fft_friendly=True)
             print(f"    Suggested grid for direct indexing: {suggested}")
 
-        # Import and return interpolation version
         from torchref.symmetry.map_symmetry_interpolation import (
             MapSymmetry as MapSymmetryInterpolation,
         )
@@ -117,14 +114,22 @@ class MapSymmetryDirect(DeviceMixin, nn.Module):
         super().__init__()
         if dtype_float is None:
             dtype_float = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        if device is None and isinstance(cell_params, torch.Tensor):
+            device = cell_params.device
         self.dtype_float = dtype_float
         self.space_group = space_group
         self.map_shape = tuple(map_shape)
-        self.cell_params = cell_params
         self.verbose = verbose
-        self.device = device
+        self.device = normalize_device(device)
+        # Coerce ``cell_params`` onto this module's device: it is a plain attribute,
+        # so ``DeviceMixin`` cannot see it and would never repair a mismatch.
+        if isinstance(cell_params, torch.Tensor):
+            cell_params = cell_params.to(device=self.device, dtype=self.dtype_float)
+        else:
+            cell_params = torch.as_tensor(
+                cell_params, device=self.device, dtype=self.dtype_float
+            )
+        self.cell_params = cell_params
 
         self.symmetry = SpaceGroup(
             space_group, dtype=self.dtype_float, device=self.device
@@ -142,11 +147,7 @@ class MapSymmetryDirect(DeviceMixin, nn.Module):
     # ------------------------------------------------------------------
 
     def _compute_index_grid(self, op_index: int) -> torch.Tensor:
-        """Compute the integer index grid for one symmetry operation.
-
-        Returns shape (nx, ny, nz, 3) int64.  The result is temporary
-        and not stored as a buffer.
-        """
+        """Integer index grid (nx, ny, nz, 3) int64 for one op; not cached."""
         nx, ny, nz = self.map_shape
         device = self.symmetry.matrices.device
 

@@ -1,12 +1,8 @@
-"""
-Reciprocal space functions for crystallography.
+"""Reciprocal space functions: basis, Miller indices, symmetry, grids, interpolation.
 
-This submodule provides functions for working with reciprocal space:
-- Reciprocal basis matrix calculations
-- Miller index operations (HKL generation, d-spacing)
-- Symmetry operations in reciprocal space
-- Grid operations for structure factor placement/extraction
-- Interpolation functions for rotation/translation searches
+Covers the reciprocal basis matrix, HKL generation and d-spacings, reciprocal-space
+("late") symmetry, structure-factor placement/extraction on a grid, and the
+interpolators used by rotation and translation searches.
 """
 
 from .basis import (

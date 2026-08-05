@@ -10,22 +10,6 @@ neither raise nor silently downcast. See TORCHREF_AUDIT.md cluster 1.
 import pytest
 import torch
 
-from torchref.config import device, dtypes
-
-
-@pytest.fixture
-def double_cpu():
-    """float64/complex128 on CPU for the duration of a test; restore after."""
-    f0, c0, d0 = dtypes.float, dtypes.complex, device.current
-    dtypes.float = torch.float64
-    dtypes.complex = torch.complex128
-    device.current = torch.device("cpu")
-    try:
-        yield
-    finally:
-        dtypes.float = f0
-        dtypes.complex = c0
-        device.current = d0
 
 
 @pytest.mark.unit

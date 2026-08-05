@@ -442,51 +442,28 @@ def fused_add_to_map_gpu(
     B: torch.Tensor,
     occ: torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Fused GPU density computation using Triton.
+    """Fused Triton density splat; returns a NEW map, leaving ``density_map`` unchanged.
 
-    Fuses PBC wrapping, r² computation, 5-Gaussian evaluation, and scatter-add
-    into a single GPU kernel launch, with full autograd support for xyz, b, and
-    occ (no anisotropic ``u`` gradient).
+    Fuses PBC wrapping, r^2, the 5-Gaussian evaluation and scatter-add into one launch, with
+    autograd for ``xyz``, ``b`` and ``occ`` (no anisotropic ``u`` gradient).
 
     .. note::
-        Legacy / benchmark-only fixed-radius kernel. It is **not** on the
-        production dispatch path: ``main.build_electron_density`` now routes the
-        CUDA float32 path through the per-atom variable-radius
-        ``WorkQueueGridDensity`` in
-        :mod:`torchref.base.electron_density.kernels.cuda.variable_radius`. This
-        kernel operates at a single fixed splat radius and is retained for
-        benchmarking only.
+        Legacy / benchmark-only **fixed-radius** kernel, not on the production dispatch
+        path: ``main.build_electron_density`` routes CUDA float32 through the per-atom
+        variable-radius ``WorkQueueGridDensity``.
 
     Parameters
     ----------
-    surrounding_coords : torch.Tensor
-        Cartesian coordinates of voxels, shape (N_atoms, N_voxels, 3).
-    voxel_indices : torch.Tensor
-        Grid indices of voxels, shape (N_atoms, N_voxels, 3).
+    surrounding_coords, voxel_indices : torch.Tensor
+        Cartesian coordinates and grid indices of the voxels, ``(N_atoms, N_voxels, 3)``.
     density_map : torch.Tensor
-        Base electron density map, shape (nx, ny, nz). Not modified in
-        place; a clone is taken and the atomic density is accumulated onto it.
-    xyz : torch.Tensor
-        Atom positions in Cartesian space, shape (N_atoms, 3).
-    b : torch.Tensor
-        Isotropic B-factors, shape (N_atoms,).
-    inv_frac_matrix : torch.Tensor
-        Inverse fractionalization matrix, shape (3, 3).
-    frac_matrix : torch.Tensor
-        Fractionalization matrix, shape (3, 3).
-    A : torch.Tensor
-        ITC92 amplitude coefficients, shape (N_atoms, 5).
-    B : torch.Tensor
-        ITC92 width coefficients, shape (N_atoms, 5).
-    occ : torch.Tensor
-        Atomic occupancies, shape (N_atoms,).
-
-    Returns
-    -------
-    torch.Tensor
-        A new density map equal to ``density_map`` plus the accumulated
-        atomic density. The input ``density_map`` is left unchanged.
+        Base map, ``(nx, ny, nz)``; cloned, not mutated.
+    xyz, b, occ : torch.Tensor
+        Positions ``(N_atoms, 3)``, isotropic B-factors and occupancies ``(N_atoms,)``.
+    inv_frac_matrix, frac_matrix : torch.Tensor
+        Fractionalization matrix and its inverse, ``(3, 3)``.
+    A, B : torch.Tensor
+        ITC92 amplitudes and widths, ``(N_atoms, 5)`` each.
     """
     return _FusedDensityFunction.apply(
         surrounding_coords, voxel_indices, density_map,

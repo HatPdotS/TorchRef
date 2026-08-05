@@ -1,3 +1,5 @@
+"""Torsion-angle restraints, including the cis/trans mixture for omega."""
+
 import numpy as np
 import torch
 from typing import TYPE_CHECKING, Dict
@@ -17,19 +19,8 @@ if TYPE_CHECKING:
 
 
 def _von_mises_nll(deviations_rad, sigmas_deg):
-    """Unimodal von Mises NLL for torsion deviations.
-
-    Parameters
-    ----------
-    deviations_rad : torch.Tensor
-        Wrapped angular deviations in radians.
-    sigmas_deg : torch.Tensor
-        Standard deviations in degrees.
-
-    Returns
-    -------
-    torch.Tensor
-        Per-restraint NLL values.
+    """Per-restraint unimodal von Mises NLL. Deviations must arrive already
+    wrapped, in radians; sigmas are in degrees.
     """
     sigmas_rad = sigmas_deg * (np.pi / 180.0)
     kappa = torch.clamp(1.0 / (sigmas_rad**2), min=1e-3, max=1e4)
@@ -45,34 +36,15 @@ def _von_mises_nll(deviations_rad, sigmas_deg):
 
 def _omega_mixture_nll(omega_rad, sigmas_deg, is_proline,
                        w_cis_proline=0.05, w_cis_general=0.0005):
-    """Cis/trans von Mises mixture NLL for omega torsions.
+    """Per-restraint cis/trans von Mises mixture NLL for omega torsions.
 
-    Models each omega angle as:
+    ``P(ω) = w_trans·VM(ω; 180°, κ) + w_cis·VM(ω; 0°, κ)``, and since
+    ``cos(ω − π) = −cos(ω)`` this is
+    ``log 2π + log I₀(κ) − logsumexp(log w_trans − κ cos ω, log w_cis + κ cos ω)``.
 
-        P(ω) = w_trans · VM(ω; 180°, κ) + w_cis · VM(ω; 0°, κ)
-
-    Since cos(ω − π) = −cos(ω), the NLL simplifies to:
-
-        NLL = log(2π) + log I₀(κ)
-              − logsumexp(log w_trans − κ cos ω,  log w_cis + κ cos ω)
-
-    Parameters
-    ----------
-    omega_rad : torch.Tensor
-        Current omega angles in radians.
-    sigmas_deg : torch.Tensor
-        Standard deviations in degrees (from monomer library, typically 5°).
-    is_proline : torch.Tensor
-        Boolean mask — True where the next residue is proline.
-    w_cis_proline : float
-        Prior weight for cis at pre-proline bonds (~5% in PDB).
-    w_cis_general : float
-        Prior weight for cis at non-proline bonds (~0.05% in PDB).
-
-    Returns
-    -------
-    torch.Tensor
-        Per-restraint NLL values.
+    ``omega_rad`` in radians, ``sigmas_deg`` in degrees (monomer library, typically 5°),
+    ``is_proline`` True where the NEXT residue is proline. The cis priors default to the
+    PDB frequencies: ~5% pre-proline, ~0.05% elsewhere.
     """
     sigmas_rad = sigmas_deg * (np.pi / 180.0)
     kappa = torch.clamp(1.0 / (sigmas_rad**2), min=1e-3, max=1e4)
@@ -145,17 +117,15 @@ class TorsionTarget(GeometryTarget):
         return restraints["torsion"]["omega"]
 
     def forward(self) -> torch.Tensor:
+        """Summed torsion NLL: unimodal for ordinary torsions, cis/trans for omega."""
         from torchref.base.targets.torsion import torsion_omega_math
         from torchref.base.targets._dispatch import use_triton
         xyz = self.model.xyz()
         device = xyz.device
-        # GPU-only scalar zero: capture-safe (no host→device copy).
+        # Allocated on device, not from a Python float: keeps this capture-safe.
         total = torch.zeros((), device=device, dtype=xyz.dtype)
 
         # --- Intra-residue + disulfide torsions (unimodal von Mises) ---
-        # On CUDA fp32 the full dihedral + periodic wrap + von Mises NLL
-        # is one Triton kernel; otherwise we fall back to the eager
-        # Restraints.torsion_deviations_with_sigmas() + _von_mises_nll path.
         if use_triton(xyz):
             from torchref.base.targets.triton.torsion import (
                 torsion_unimodal_full_math_triton,

@@ -1,13 +1,8 @@
-"""
-Coordinate Similarity Target for Difference Refinement
+"""Coordinate similarity target for difference refinement.
 
-Implements a spike-and-slab prior on per-atom displacements between
-dark and light models. The loss is quadratic for small displacements
-(likely noise) and completely flat for large displacements (likely
-genuine conformational changes).
-
-Per-atom coordinate uncertainty sigma is derived from B-factors:
-    sigma = sqrt(B / (8*pi^2))
+A spike-and-slab prior on per-atom dark-to-light displacement: quadratic where the
+displacement looks like noise, flat where it looks like real conformational change.
+Per-atom coordinate uncertainty comes from the B-factors, ``sigma = sqrt(B/8π²)``.
 """
 
 import torch
@@ -30,26 +25,15 @@ class CoordinateSimilarityTarget(Target):
     """
     Spike-and-slab similarity restraint between dark and light models.
 
-    For each atom, two hypotheses are considered:
+    Each atom is either static (its displacement is noise) or genuinely moved, and the
+    loss is the negative log marginal likelihood over the two::
 
-    - **Static** (prob 1-p): atom did not move, displacement is noise
-    - **Moved** (prob p): atom genuinely displaced
+        L(d) = -logsumexp(-d²/(2σ²) + alpha, 0)
 
-    The loss is the negative log marginal likelihood:
-
-        L(d) = -logsumexp(-d^2/(2*sigma^2) + alpha, 0)
-
-    where d = ||xyz_light - xyz_dark|| and sigma = sqrt(B / (8*pi^2))
-    is the per-atom coordinate uncertainty from B-factors.
-
-    Gradient: (d / sigma^2) * sigmoid(-d^2/(2*sigma^2) + alpha)
-    This is an L2 restraint weighted by the posterior probability
-    that the atom is static.
-
-    Behavior:
-    - d << sigma: ~0.5 * d^2 / sigma^2  (quadratic, tight restraint)
-    - d >> sigma: plateaus completely (no penalty for genuine moves)
-    - Crossover at d ~ sigma * sqrt(2*alpha)
+    with ``d = ||xyz_light - xyz_dark||`` and ``σ = sqrt(B/8π²)``. Its gradient,
+    ``(d/σ²)·sigmoid(-d²/(2σ²) + alpha)``, is an L2 restraint weighted by the posterior
+    probability that the atom is static: quadratic for ``d << σ``, fully plateaued for
+    ``d >> σ`` so real moves go unpenalised, crossing over at ``d ~ σ·sqrt(2·alpha)``.
 
     Parameters
     ----------
@@ -72,11 +56,23 @@ class CoordinateSimilarityTarget(Target):
         model_light: "Model" = None,
         alpha: float = 2.0,
         verbose: int = 0,
+        device=None,
     ):
-        super().__init__(verbose=verbose)
+        super().__init__(verbose=verbose, device=device)
         self.add_module("_model_dark", model_dark)
         self.add_module("_model_light", model_light)
-        self.register_buffer("_alpha", torch.tensor(alpha))
+        self._adopt_device(model_dark, model_light, device=device)
+        self._register_scalar("_alpha", float(alpha))
+        # Registered unconditionally, BEFORE the map is built: ``_build_atom_map``
+        # runs only when both models are present, so without these the empty-init
+        # path (the one ``load_state_dict`` uses) would have no such buffers at all.
+        # ``_build_atom_map`` overwrites them rather than creating them.
+        self.register_buffer(
+            "_idx_dark", torch.zeros(0, dtype=torch.long, device=self.device)
+        )
+        self.register_buffer(
+            "_idx_light", torch.zeros(0, dtype=torch.long, device=self.device)
+        )
         if model_dark is not None and model_light is not None:
             self._build_atom_map()
 
@@ -101,10 +97,9 @@ class CoordinateSimilarityTarget(Target):
         self._alpha.fill_(value)
 
     def _build_atom_map(self):
-        """Match atoms between dark and light models by identity.
-
-        Creates index arrays mapping corresponding atoms between the two
-        models based on (chainid, resseq, icode, name, altloc) keys.
+        """Match atoms between the two models on
+        ``(chainid, resseq, icode, name, altloc)``, overwriting the index buffers.
+        Warns when nothing matches or fewer than 90% of atoms do.
         """
         import pandas as pd
         import warnings
@@ -112,7 +107,6 @@ class CoordinateSimilarityTarget(Target):
         pdb_dark = self._model_dark.pdb.copy()
         pdb_light = self._model_light.pdb.copy()
 
-        # Build unique atom key
         for df in (pdb_dark, pdb_light):
             df["_key"] = (
                 df["chainid"].astype(str)
@@ -126,11 +120,9 @@ class CoordinateSimilarityTarget(Target):
                 + df["altloc"].astype(str).str.strip()
             )
 
-        # Add integer index columns
         pdb_dark["_idx"] = range(len(pdb_dark))
         pdb_light["_idx"] = range(len(pdb_light))
 
-        # Inner merge to find matching atoms
         merged = pd.merge(
             pdb_dark[["_key", "_idx"]],
             pdb_light[["_key", "_idx"]],
@@ -148,10 +140,10 @@ class CoordinateSimilarityTarget(Target):
                 "dark and light models"
             )
             self.register_buffer(
-                "_idx_dark", torch.zeros(0, dtype=torch.long)
+                "_idx_dark", torch.zeros(0, dtype=torch.long, device=self.device)
             )
             self.register_buffer(
-                "_idx_light", torch.zeros(0, dtype=torch.long)
+                "_idx_light", torch.zeros(0, dtype=torch.long, device=self.device)
             )
             return
 
@@ -168,43 +160,44 @@ class CoordinateSimilarityTarget(Target):
                 f"(dark={n_dark}, light={n_light})"
             )
 
+        # Must be on ``self.device``: as 1-D index tensors they get no
+        # scalar-promotion, so a CPU-resident index against accelerator coordinates
+        # costs a host sync every forward.
         self.register_buffer(
             "_idx_dark",
-            torch.tensor(merged["_idx_dark"].values, dtype=torch.long),
+            torch.tensor(
+                merged["_idx_dark"].values, dtype=torch.long, device=self.device
+            ),
         )
         self.register_buffer(
             "_idx_light",
-            torch.tensor(merged["_idx_light"].values, dtype=torch.long),
+            torch.tensor(
+                merged["_idx_light"].values, dtype=torch.long, device=self.device
+            ),
         )
 
     def forward(self) -> torch.Tensor:
-        """Compute spike-and-slab similarity loss.
-
-        Returns
-        -------
-        torch.Tensor
-            Scalar mean loss over all matched atom pairs.
+        """Spike-and-slab similarity loss, summed over matched atom pairs (0.0 if
+        none matched). The dark model's coordinates and B-factors are detached.
         """
         if len(self._idx_dark) == 0:
-            device = self._alpha.device
-            return torch.tensor(0.0, device=device)
+            # ``self.device``, not ``self._alpha.device``: an empty target must
+            # still hand back a loss on the refinement's device.
+            return torch.tensor(0.0, device=self.device, dtype=self.dtype_float)
 
         xyz_dark = self._model_dark.xyz()
         xyz_light = self._model_light.xyz()
 
-        # Select matched atoms; detach dark (frozen reference)
+        # Dark is the frozen reference, so it is detached.
         pos_dark = xyz_dark[self._idx_dark].detach()
         pos_light = xyz_light[self._idx_light]
 
-        # Per-atom squared displacement
         delta_sq = (pos_light - pos_dark).pow(2).sum(dim=-1)
 
-        # Per-atom sigma^2 from dark model B-factors
         B = self._model_dark.adp()[self._idx_dark].detach()
         sigma_sq = B / (8.0 * torch.pi**2)
         sigma_sq = torch.clamp(sigma_sq, min=1e-4)
 
-        # Spike-and-slab: -logsumexp(-delta^2/(2*sigma^2) + alpha, 0)
         z_static = -0.5 * delta_sq / sigma_sq + self._alpha
         loss = -torch.logaddexp(z_static, torch.zeros_like(z_static))
 

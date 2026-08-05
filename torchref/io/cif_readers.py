@@ -1,17 +1,10 @@
 """
-CIF readers for the different data types used in crystallographic refinement.
+CIF readers, one per data type: :class:`CIFReader` (base, dict-like),
+:class:`ReflectionCIFReader` (structure factors), :class:`ModelCIFReader`
+(coordinates) and :class:`RestraintCIFReader` (monomer dictionaries).
 
-This module provides four main classes:
-- CIFReader: Base class for reading CIF/mmCIF files
-- ReflectionCIFReader: For reading structure factor data (reflection data)
-- ModelCIFReader: For reading atomic coordinate data (model structures)
-- RestraintCIFReader: For reading chemical restraint dictionaries
-
-Space groups are returned as plain Python ``str`` Hermann-Mauguin names
-(e.g. ``"P 1"``), validated against gemmi.
-
-These specialized classes are type-safe and handle the common edge cases in
-CIF files.
+Space groups always come back as plain ``str`` Hermann-Mauguin names
+(``"P 1"``), validated against gemmi -- never as objects.
 """
 
 from pathlib import Path
@@ -58,18 +51,7 @@ class CIFReader:
         data_block: Optional[str] = None,
         parse_all_blocks: bool = False,
     ):
-        """
-        Initialize CIF reader.
-
-        Parameters
-        ----------
-        filepath : str, optional
-            Path to CIF file to load immediately.
-        data_block : str, optional
-            Specific data block name to read.
-        parse_all_blocks : bool, default False
-            If True, parse all data blocks and merge.
-        """
+        """See the class docstring for the parameters."""
         self.data = {}
         self.filepath = None
         self.data_block = data_block
@@ -88,14 +70,7 @@ class CIFReader:
         return reader
 
     def load(self, filepath: str):
-        """
-        Load and parse a CIF file.
-
-        Parameters
-        ----------
-        filepath : str
-            Path to CIF file.
-        """
+        """Load and parse ``filepath``, replacing any previously loaded data."""
         self.filepath = Path(filepath)
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
@@ -103,18 +78,10 @@ class CIFReader:
         self._parse(content)
 
     def _parse(self, content: str):
-        """
-        Parse CIF file content.
+        """Parse the file text into ``self.data``.
 
-        Handles multiple data blocks. Behavior depends on parse_all_blocks flag:
-        - If parse_all_blocks=True: Parse all blocks and merge into single dictionary
-        - If data_block is specified: Only parse that specific block
-        - Otherwise: Parse only the first block
-
-        Parameters
-        ----------
-        content : str
-            String content of CIF file.
+        Which blocks: all merged when ``parse_all_blocks``, else the named
+        ``data_block``, else only the first.
         """
         lines = content.split("\n")
         i = 0
@@ -198,21 +165,7 @@ class CIFReader:
             )
 
     def _parse_loop(self, lines: List[str], start_idx: int) -> int:
-        """
-        Parse a loop structure into a pandas DataFrame.
-
-        Parameters
-        ----------
-        lines : list of str
-            All lines of the file.
-        start_idx : int
-            Starting line index (after 'loop_').
-
-        Returns
-        -------
-        int
-            Index of the next line to process.
-        """
+        """Parse one ``loop_`` into a DataFrame; returns the next line index."""
         # Collect column names
         columns = []
         i = start_idx
@@ -303,21 +256,7 @@ class CIFReader:
         return i
 
     def _parse_keyvalue(self, lines: List[str], start_idx: int) -> int:
-        """
-        Parse a single key-value pair.
-
-        Parameters
-        ----------
-        lines : list of str
-            All lines of the file.
-        start_idx : int
-            Starting line index.
-
-        Returns
-        -------
-        int
-            Index of the next line to process.
-        """
+        """Parse one key-value pair; returns the next line index."""
         line = lines[start_idx].strip()
 
         # Handle multiline values
@@ -351,19 +290,7 @@ class CIFReader:
         return start_idx + 1
 
     def _tokenize_line(self, line: str) -> List[str]:
-        """
-        Tokenize a data line, handling quoted strings.
-
-        Parameters
-        ----------
-        line : str
-            Line to tokenize.
-
-        Returns
-        -------
-        list of str
-            List of tokens.
-        """
+        """Split a data line into tokens, keeping quoted strings intact."""
         tokens = []
         current_token = []
         in_quotes = False
@@ -406,19 +333,7 @@ class CIFReader:
         return tokens
 
     def _extract_category(self, key: str) -> str:
-        """
-        Extract category from a CIF key.
-
-        Parameters
-        ----------
-        key : str
-            CIF key (e.g., '_atom_site.id').
-
-        Returns
-        -------
-        str
-            Category name (e.g., 'atom_site').
-        """
+        """Category of a CIF key: ``'_atom_site.id'`` -> ``'atom_site'``."""
         if key.startswith("_"):
             key = key[1:]
 
@@ -428,16 +343,7 @@ class CIFReader:
         return key
 
     def _store_keyvalue(self, key: str, value: str):
-        """
-        Store a key-value pair in the hierarchical dictionary.
-
-        Parameters
-        ----------
-        key : str
-            CIF key (e.g., '_entry.id').
-        value : str
-            Value to store.
-        """
+        """Store one key-value pair into the hierarchical ``self.data`` dict."""
         # Extract category and attribute
         if key.startswith("_"):
             key = key[1:]
@@ -454,14 +360,7 @@ class CIFReader:
             self.data[key] = value
 
     def write(self, filepath: str):
-        """
-        Write the CIF data back to a file.
-
-        Parameters
-        ----------
-        filepath : str
-            Output file path.
-        """
+        """Write the parsed data back out as CIF."""
         with open(filepath, "w") as f:
             f.write("data_structure\n")
             f.write("#\n")
@@ -569,33 +468,18 @@ class CIFReader:
 
 class ReflectionCIFReader:
     """
-    Reader for structure factor CIF files (e.g., *-sf.cif from PDB).
+    Reader for structure factor CIF files (e.g. ``*-sf.cif`` from the PDB):
+    Miller indices, F/σF, I/σI, phases, figures of merit, R-free flags, cell and
+    space group.
 
-    Handles extraction of:
-    - Miller indices (h, k, l)
-    - Structure factor amplitudes (F) and uncertainties (σF)
-    - Intensities (I) and uncertainties (σI)
-    - Phases and figures of merit
-    - R-free flags
-    - Unit cell and space group metadata
+    Calling the instance gives the same unpack order as ``MTZReader.__call__``::
 
-    Compatible with legacy MTZ reader interface (same unpack order as
-    ``MTZReader.__call__``):
-        reader = ReflectionCIFReader('7JI4-sf.cif').read()
-        data_dict, cell, spacegroup = reader()
+        data_dict, cell, spacegroup = ReflectionCIFReader('7JI4-sf.cif')()
 
-    Example:
-        reader = ReflectionCIFReader('7JI4-sf.cif')
-        refln_data = reader.get_reflection_data()
-        h, k, l = refln_data['h'], refln_data['k'], refln_data['l']
-        F_obs = refln_data['F_obs']
-
-    Note
-    ----
-    The ``get_reflection_data`` DataFrame uses keys ``F_obs``/``sigma_F_obs``
-    and ``I_obs``/``sigma_I_obs``, whereas the standalone ``get_amplitudes``
-    and ``get_intensities`` helpers return dicts keyed ``'F'``/``'sigma_F'``
-    and ``'I'``/``'sigma_I'`` respectively.
+    Mind the two naming schemes: the :meth:`get_reflection_data` DataFrame uses
+    ``F_obs``/``sigma_F_obs`` and ``I_obs``/``sigma_I_obs``, while the standalone
+    :meth:`get_amplitudes` / :meth:`get_intensities` dicts use ``'F'``/
+    ``'sigma_F'`` and ``'I'``/``'sigma_I'``.
     """
 
     def __init__(
@@ -749,19 +633,7 @@ class ReflectionCIFReader:
             print(f"  Spacegroup: {self.spacegroup}")
 
     def read(self, filepath: str = None):
-        """
-        Read a CIF file (for compatibility with legacy interface).
-
-        Parameters
-        ----------
-        filepath : str, optional
-            Path to CIF file. Uses the initialization path if not provided.
-
-        Returns
-        -------
-        ReflectionCIFReader
-            ``self``, for method chaining.
-        """
+        """Re-read ``filepath`` (default: the init path); returns ``self``."""
         if filepath is not None:
             self.__init__(filepath, verbose=self.verbose)
         return self
@@ -1177,25 +1049,10 @@ class ReflectionCIFReader:
         required: bool = False,
         target_type: str = "float",
     ) -> pd.Series:
-        """
-        Extract numeric data from DataFrame, trying multiple column names.
+        """First of ``possible_cols`` present in ``df``, coerced to ``target_type``.
 
-        Parameters
-        ----------
-        df : pandas.DataFrame
-            Source DataFrame.
-        possible_cols : list of str
-            List of possible column names to try.
-        required : bool, default False
-            If True, raise error if no column found.
-        target_type : str, default 'float'
-            Target data type ('int', 'float', or 'None' for string).
-
-        Returns
-        -------
-        tuple
-            (Series with numeric data, column name used) or (NaN series, 'None')
-            if not found.
+        Returns ``(series, column_name)``, or an all-NaN series paired with the
+        string ``'None'`` when nothing matched and ``required`` is False.
         """
         for col in possible_cols:
             if col in df.columns:
@@ -1236,8 +1093,8 @@ class ReflectionCIFReader:
     def has_amplitudes(self) -> bool:
         """Check if file contains structure factor amplitudes.
 
-        Note
-        ----
+        Notes
+        -----
         This counts *calculated* amplitudes (``_refln.F_calc``) as well as
         observed ones, so it is not equivalent to "has observed amplitudes".
         A calc-only file returns ``True`` here but is still rejected by the
@@ -1287,28 +1144,14 @@ class ReflectionCIFReader:
         return any(col in df.columns for col in flag_cols)
 
     def get_miller_indices(self) -> Optional[np.ndarray]:
-        """
-        Get Miller indices as Nx3 array.
-
-        Returns
-        -------
-        numpy.ndarray or None
-            Array of shape (N, 3) with h, k, l indices, or None if absent.
-        """
+        """Miller indices as an (N, 3) array, or None if absent."""
         data = self.get_reflection_data()
         if data is None or "h" not in data.columns:
             return None
         return data[["h", "k", "l"]].values
 
     def get_amplitudes(self) -> Optional[Dict[str, np.ndarray]]:
-        """
-        Get structure factor amplitudes and uncertainties.
-
-        Returns
-        -------
-        dict or None
-            Dict with keys 'F' and 'sigma_F', or None if not available.
-        """
+        """``{'F': ..., 'sigma_F': ...}``, or None if absent."""
         data = self.get_reflection_data()
         if data is None or "F_obs" not in data.columns:
             return None
@@ -1317,14 +1160,7 @@ class ReflectionCIFReader:
         return {"F": data["F_obs"].values, "sigma_F": data["sigma_F_obs"].values}
 
     def get_intensities(self) -> Optional[Dict[str, np.ndarray]]:
-        """
-        Get intensities and uncertainties.
-
-        Returns
-        -------
-        dict or None
-            Dict with keys 'I' and 'sigma_I', or None if not available.
-        """
+        """``{'I': ..., 'sigma_I': ...}``, or None if absent."""
         data = self.get_reflection_data()
         if data is None or "I_obs" not in data.columns:
             return None
@@ -1333,14 +1169,7 @@ class ReflectionCIFReader:
         return {"I": data["I_obs"].values, "sigma_I": data["sigma_I_obs"].values}
 
     def get_cell_parameters(self) -> Optional[List[float]]:
-        """
-        Extract unit cell parameters [a, b, c, alpha, beta, gamma].
-
-        Returns
-        -------
-        list of float or None
-            List of 6 floats, or None if not found.
-        """
+        """Unit cell ``[a, b, c, alpha, beta, gamma]`` as 6 floats, or None."""
         if "cell" not in self.cif_reader:
             return None
 
@@ -1363,14 +1192,7 @@ class ReflectionCIFReader:
             return None
 
     def get_space_group(self) -> str:
-        """
-        Extract space group name.
-
-        Returns
-        -------
-        str
-            Space group name string. Returns "P 1" if not found.
-        """
+        """Hermann-Mauguin space group name, falling back to ``"P 1"``."""
         sg_name = "P 1"
         if "symmetry" in self.cif_reader:
             sym_data = self.cif_reader["symmetry"]
@@ -1410,35 +1232,19 @@ class ReflectionCIFReader:
 
 class ModelCIFReader:
     """
-    Reader for model/structure CIF files (e.g., *.cif from PDB).
+    Reader for model/structure CIF files (e.g. ``*.cif`` from the PDB):
+    coordinates, altlocs, ANISOU, cell and space group.
 
-    Handles extraction of:
-    - Atomic coordinates and properties
-    - Alternative conformations
-    - Anisotropic displacement parameters
-    - Unit cell and space group
+    Calling the instance gives the same unpack order as the PDB reader::
 
-    Compatible with legacy PDB reader interface:
-        reader = ModelCIFReader('3E98.cif').read()
-        dataframe, cell, spacegroup = reader()
+        dataframe, cell, spacegroup = ModelCIFReader('3E98.cif')()
 
-    Example:
-        reader = ModelCIFReader('3E98.cif')
-        atom_df = reader.get_atom_data()
-        cell = reader.get_cell_parameters()
+    Multi-model files come out concatenated from :meth:`get_atom_data`; use
+    :meth:`get_atom_data_by_model` to keep them apart.
     """
 
     def __init__(self, filepath: str, verbose: int = 0):
-        """
-        Initialize and load model CIF file.
-
-        Parameters
-        ----------
-        filepath : str
-            Path to model CIF file.
-        verbose : int, default 0
-            Verbosity level (0=silent, 1=info, 2=debug).
-        """
+        """Load ``filepath`` immediately; ``verbose`` is 0=silent, 1=info, 2=debug."""
         self.filepath = Path(filepath)
         self.verbose = verbose
         self.cif = CIFReader(filepath)
@@ -1480,19 +1286,7 @@ class ModelCIFReader:
             print(f"  Spacegroup: {self.spacegroup}")
 
     def read(self, filepath: str = None):
-        """
-        Read a CIF file (for compatibility with legacy interface).
-
-        Parameters
-        ----------
-        filepath : str, optional
-            Path to CIF file. Uses initialization path if not provided.
-
-        Returns
-        -------
-        ModelCIFReader
-            Self for method chaining.
-        """
+        """Re-read ``filepath`` (default: the init path); returns ``self``."""
         if filepath is not None:
             self.__init__(filepath, verbose=self.verbose)
         return self
@@ -1776,14 +1570,7 @@ class ModelCIFReader:
             return None
 
     def get_space_group(self) -> str:
-        """
-        Extract space group name.
-
-        Returns
-        -------
-        str
-            Space group name string. Returns "P 1" if not found.
-        """
+        """Hermann-Mauguin space group name, falling back to ``"P 1"``."""
         sg_name = "P 1"
         if "symmetry" in self.cif.data:
             sym_data = self.cif.data["symmetry"]
@@ -1859,14 +1646,7 @@ class ModelCIFReader:
         return all(col in self.cif.data["atom_site"].columns for col in aniso_cols)
 
     def get_coordinates(self) -> Optional[np.ndarray]:
-        """
-        Extract atomic coordinates as numpy array.
-
-        Returns
-        -------
-        numpy.ndarray or None
-            Nx3 array of [x, y, z] coordinates, or None if not available.
-        """
+        """Coordinates as an (N, 3) array of [x, y, z], or None if absent."""
         if not self.has_coordinates():
             return None
 
@@ -1874,14 +1654,7 @@ class ModelCIFReader:
         return atom_data[["x", "y", "z"]].values
 
     def get_atom_info(self) -> pd.DataFrame:
-        """
-        Extract atom information (without coordinates).
-
-        Returns
-        -------
-        pandas.DataFrame
-            DataFrame with atom names, residue info, elements, etc.
-        """
+        """Atom names, residue info and elements, without the coordinates."""
         atom_data = self.get_atom_data()
         return atom_data[
             [
@@ -1900,33 +1673,18 @@ class ModelCIFReader:
 
 class RestraintCIFReader:
     """
-    Reader for chemical restraint dictionary CIF files (e.g., from monomer library).
+    Reader for monomer-library restraint dictionaries: bonds, angles, torsions,
+    planes and chirality, each with its ideal value and ESD.
 
-    Handles extraction of:
-    - Bond restraints (ideal lengths and ESDs)
-    - Angle restraints
-    - Torsion/dihedral restraints
-    - Planarity restraints
-    - Chirality definitions
+    Validates that the file really carries restraint parameters, not just a
+    structure definition::
 
-    Validates that the file contains proper restraint parameters
-    (not just structure definitions).
-
-    Example:
-        reader = RestraintCIFReader('external_monomer_library/a/ALA.cif')
-        comp_data = reader.get_all_restraints()
+        comp_data = RestraintCIFReader('.../ALA.cif').get_all_restraints()
         bond_df = comp_data['ALA']['bonds']
     """
 
     def __init__(self, filepath: str):
-        """
-        Initialize and load restraint CIF file.
-
-        Parameters
-        ----------
-        filepath : str
-            Path to restraint dictionary CIF file.
-        """
+        """Load the restraint dictionary at ``filepath`` immediately."""
         self.filepath = Path(filepath)
         # Use parse_all_blocks=True because restraint files often have multiple blocks
         # (e.g., data_comp_list and data_comp_PRO)
@@ -1935,14 +1693,7 @@ class RestraintCIFReader:
         self._validate()
 
     def _extract_compounds(self) -> List[str]:
-        """
-        Extract list of compound IDs from the file.
-
-        Returns
-        -------
-        list of str
-            List of compound IDs (e.g., ['ALA'], ['2BA']).
-        """
+        """Compound IDs present in the file, e.g. ``['ALA']``."""
         compounds = []
 
         # Check for comp_list (monomer library format)
@@ -2367,21 +2118,7 @@ class RestraintCIFReader:
         return result
 
     def _filter_by_comp(self, df: pd.DataFrame, comp_id: str) -> pd.DataFrame:
-        """
-        Filter DataFrame to only rows matching the compound ID.
-
-        Parameters
-        ----------
-        df : pandas.DataFrame
-            Source DataFrame.
-        comp_id : str
-            Compound ID to filter for.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Filtered DataFrame.
-        """
+        """Rows of ``df`` belonging to ``comp_id``."""
         if df.empty:
             return df
 

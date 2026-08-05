@@ -1,22 +1,17 @@
 """Variable-radius GPU density-splatting kernels (Triton).
 
-One program per atom (``grid=(n_atoms,)``); each program iterates the cubic voxel
-per-axis bounding box (sized in-kernel from ``r2cut`` + the inverse-cell metric)
-around its atom, **decoding each voxel offset
+One program per atom (``grid=(n_atoms,)``); each iterates the cubic per-axis voxel box
+(sized in-kernel from ``r2cut`` and the inverse-cell metric), **decoding each voxel offset
 arithmetically** from the lane index, and truncates to the per-atom sphere
-(``r2 <= r2cut``). So every atom is splatted at its own ``N_sigma * sigma_eff``
-radius with no host-built work plan / offset buffer. This is the production CUDA
-float32 path, replacing the old single-radius ``fused_find_and_place_atoms``.
+(``r2 <= r2cut``). So every atom is splatted at its own ``N_sigma * sigma_eff`` radius
+with no host-built work plan or offset buffer. This is the production CUDA float32 path.
 
-The per-voxel Gaussian math, PBC wrapping, and gradient formulae match the
-reference fused kernel bit-for-bit (modulo atomic ordering); the only change vs the
-earlier CSR-plan version is that offsets are computed in-kernel and the sphere
-truncation is applied per voxel (``wmask``). The isotropic kernels carry the scalar
-ADP ``b``; the anisotropic kernels carry the 6-component ``U`` and evaluate the 3D
-quadratic form ``q = w^T Minv w`` with ``M = (B_g*I + 8*pi^2*U)/4`` inverted in-kernel.
-
-Backward accumulates per-atom grads with ``atomic_add``; out-of-sphere voxels are
-masked identically to the forward so they contribute neither density nor gradient.
+Per-voxel Gaussian math, PBC wrapping and gradient formulae match the reference fused
+kernel bit-for-bit modulo atomic ordering. Isotropic kernels carry the scalar ADP ``b``;
+anisotropic ones carry the 6-component ``U`` and evaluate ``q = w^T Minv w`` with
+``M = (B_g*I + 8*pi^2*U)/4`` inverted in-kernel. Backward accumulates per-atom grads with
+``atomic_add``, masking out-of-sphere voxels exactly as the forward does so they
+contribute neither density nor gradient.
 """
 
 from __future__ import annotations
@@ -811,3 +806,101 @@ class WorkQueueGridDensityAniso(torch.autograd.Function):
         # out = density_map + splat -> grad wrt density_map is identity.
         return (grad_density_map, None, grad_xyz, grad_u, grad_occ, None, None,
                 None, None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# Canonical-signature wrappers
+# ---------------------------------------------------------------------------
+# Every production splat exposes the same signature:
+#
+#     (density_map, xyz, adp_or_u, occ, A, B, inv_frac_matrix, frac_matrix,
+#      radius_per_atom)
+#
+# so the dispatch in ``electron_density/main.py`` is four structurally identical
+# calls per ladder and a test can drive any backend through one code path. These
+# wrappers do for CUDA what ``add_*_mps_var`` already did for Metal: square the
+# radius and build the coefficient mask, rather than leaving that to the caller.
+#
+# ``density_map`` is passed where the ``autograd.Function`` wants
+# ``real_space_grid``. That is exact, not a convenience: ``forward``/``backward``
+# use that argument only for ``.shape[:3]`` and for a ``grid_flat`` pointer handed
+# to the kernel as ``grid_ptr`` -- which none of the four Triton kernels ever
+# loads, because voxel coordinates are derived arithmetically from ``frac`` and the
+# grid dims. ``density_map`` has the same ``(nx, ny, nz)`` shape, so both uses are
+# satisfied. If a kernel is ever changed to actually read ``grid_ptr``, this breaks
+# and the right fix is to delete that dead parameter, not to thread a real grid
+# back through here.
+
+
+def why_unavailable():
+    """``None`` if these kernels can run, else why they cannot.
+
+    The reason-returning half of the availability protocol every backend implements (see
+    :mod:`torchref.utils.backends`). Not a restatement of ``triton_available()``: the
+    ``@triton.jit`` bodies live under ``if _HAVE_TRITON:`` but the wrappers are defined
+    unconditionally, so without Triton the module imports cleanly and the failure would
+    otherwise surface as a bare ``NameError`` from inside ``_launch_grid_fwd``.
+    """
+    if not _HAVE_TRITON:
+        return (
+            "triton is not importable, so the work-queue kernel bodies were never "
+            "compiled into this module"
+        )
+    return None
+
+
+def _coeff_mask(xyz):
+    """All-ones per-atom ITC92 coefficient mask, ``(n, 5)``.
+
+    Every call site passes all ones; the mask exists so a caller *could* disable individual
+    Gaussians, and it is kept because it is part of the kernel's argument list.
+    """
+    return torch.ones(xyz.shape[0], 5, dtype=xyz.dtype, device=xyz.device)
+
+
+def add_isotropic_cuda_var(
+    density_map, xyz, adp, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
+):
+    """Isotropic variable-radius Triton splat; returns ``density_map + splat``.
+
+    Canonical splat signature, identical to ``add_isotropic_plain_var``,
+    ``add_isotropic_cpu_sphere_var`` and ``add_isotropic_mps_var``. CUDA float32
+    only -- the gate is ``should_use_triton``; this wrapper does not re-check.
+    """
+    return WorkQueueGridDensity.apply(
+        density_map,
+        density_map,  # stands in for real_space_grid; see the note above
+        xyz,
+        adp,
+        occ,
+        A,
+        B,
+        radius_per_atom * radius_per_atom,
+        _coeff_mask(xyz),
+        inv_frac_matrix,
+        frac_matrix,
+    )
+
+
+def add_anisotropic_cuda_var(
+    density_map, xyz, u, occ, A, B, inv_frac_matrix, frac_matrix, radius_per_atom
+):
+    """Anisotropic variable-radius Triton splat; returns ``density_map + splat``.
+
+    Canonical splat signature. ``u`` carries ``[U11, U22, U33, U12, U13, U23]``; the
+    cutoff stays the Euclidean sphere at ``radius_per_atom`` while the density is the
+    full Mahalanobis form, matching the Metal and fused-CPU kernels.
+    """
+    return WorkQueueGridDensityAniso.apply(
+        density_map,
+        density_map,  # stands in for real_space_grid; see the note above
+        xyz,
+        u,
+        occ,
+        A,
+        B,
+        radius_per_atom * radius_per_atom,
+        _coeff_mask(xyz),
+        inv_frac_matrix,
+        frac_matrix,
+    )

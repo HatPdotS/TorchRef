@@ -1,24 +1,15 @@
-"""Shared autograd helpers that wrap common ``tensor[indices]`` gathers
-with cheap, deterministic backwards.
+"""Shared autograd helper wrapping a 1-D ``tensor[indices]`` gather with a cheap backward.
 
-PyTorch's default backward for a 1-D ``tensor[indices]`` lowers to
-``aten::_index_put_impl_(accumulate=True)``. On CUDA that path uses
-``cub::DeviceRadixSortOnesweepKernel`` to sort the indices and then runs
-a deduplicated scatter — a meaningful constant overhead that shows up
-prominently in profiles even for small accumulator buffers (e.g.
-``log_scale[bins]`` indexing into a 20-element vector).
+PyTorch's default backward for that pattern lowers to
+``_index_put_impl_(accumulate=True)``, which radix-sorts the indices before scattering --
+a constant overhead that dominates profiles even for a 20-element accumulator like
+``log_scale[bins]``. :func:`gather_with_index_add` routes the backward through
+``index_add_`` instead. Correct on every device; the forward is identical to plain
+indexing.
 
-Wrapping the gather in this autograd op routes the backward through
-``index_add_`` instead: a single atomic-accumulating scatter with no
-radix sort. The forward output is identical to ``buffer[indices]``.
-
-The op is device-agnostic: the forward and backward are correct on any
-device (the backward uses ``index_add_`` on both CPU and CUDA). The
-``cub::DeviceRadixSortOnesweepKernel`` note above is only the CUDA
-performance rationale that motivated the op, not a device restriction.
-
-Use via :func:`gather_with_index_add` (drop-in replacement for
-``buffer[indices]`` in differentiable code paths).
+Trap: on CUDA ``index_add_`` accumulates atomically, so the gradient is **not
+bit-reproducible** across runs. Anything that must be deterministic needs
+``torch.use_deterministic_algorithms(True)``.
 """
 
 from __future__ import annotations
@@ -52,20 +43,20 @@ def gather_with_index_add(
 ) -> torch.Tensor:
     """``buffer[indices]`` with a fast ``index_add_`` backward.
 
-    Drop-in replacement for the 1-D gather pattern when the forward is
-    differentiable and the indices may contain duplicates.
+    Drop-in for the 1-D gather pattern when the forward is differentiable and the indices
+    may contain duplicates. See the module docstring for the CUDA determinism caveat.
 
     Parameters
     ----------
     buffer : torch.Tensor
-        Source tensor (1-D, or higher-D with indexing on dim 0).
+        Source tensor (1-D, or higher-D indexed on dim 0).
     indices : torch.Tensor
-        Integer LongTensor of indices into ``buffer`` along dim 0.
+        LongTensor of indices into ``buffer`` along dim 0. Not bounds-checked; the gradient
+        is only defined with respect to ``buffer``.
 
     Returns
     -------
     torch.Tensor
-        ``buffer[indices]`` — identical to plain indexing in forward,
-        with a cheaper backward path.
+        ``buffer[indices]``.
     """
     return _GatherWithIndexAdd.apply(buffer, indices)

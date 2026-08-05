@@ -8,10 +8,7 @@
 import pytest
 import torch
 
-from torchref.base.targets.xray_ml_sigmaa import (
-    epsilon_from_hkl,
-    estimate_beta,
-)
+from torchref.refinement.model_error_estimation.sigma_a import epsilon_from_hkl, estimate_beta
 
 
 @pytest.mark.unit
@@ -45,21 +42,53 @@ class TestEstimateBeta:
             torch.stack(BT),
         )
 
-    def test_recovers_known_beta(self):
+    def test_recovers_known_sigma_a(self):
+        """sigma_A is the one estimated parameter, so recovery is tested on IT.
+
+        The tolerance is the analytic sampling sd ``(1-sA^2)/(sA*sqrt(2n))``, not an
+        arbitrary percentage: with ``per`` reflections per shell there is a floor on how
+        well sigma_A can be known, and a tighter assertion would be testing luck.
+        ``shrink=False`` so this measures the solve alone -- the stability shrinkage
+        deliberately trades per-shell fidelity for stability and is tested separately.
+        """
         FO, FC, DSS, sA_true, beta_true = self._synthetic()
         cen = torch.zeros_like(FO, dtype=torch.bool)
         eps = torch.ones_like(FO)
         free = torch.ones_like(FO, dtype=torch.bool)
-        beta, bbin, bdss = estimate_beta(FO, FC, cen, eps, DSS, free, per_bin=1000)
-        assert beta.shape == FO.shape
-        assert (beta > 0).all()
-        # per-reflection beta tracks the per-shell truth (rises with resolution as
-        # sigma_A falls). Correlation + mid-range magnitude.
-        beta_per_refl = beta_true.repeat_interleave(FO.numel() // beta_true.numel())
-        cc = torch.corrcoef(torch.stack([beta, beta_per_refl]))[0, 1]
-        assert cc > 0.95
-        rel = (beta - beta_per_refl).abs() / beta_per_refl
-        assert rel.mean() < 0.20
+        # per_bin == per so the fitted shells line up 1:1 with the truth shells
+        sh = estimate_beta(
+            FO, FC, cen, eps, DSS, free, per_bin=2000, shrink=False
+        )
+        assert sh.sigma_a.numel() == sA_true.numel()
+        sd = (1 - sA_true**2) / (sA_true * torch.sqrt(2 * sh.counts))
+        err = (sh.sigma_a - sA_true).abs()
+        assert (err < 4 * sd).all(), (
+            f"sigma_A off by {err.tolist()} vs 4*sd {(4 * sd).tolist()}"
+        )
+        # beta follows from sigma_A, so it recovers too
+        rel = (sh.beta - beta_true).abs() / beta_true
+        assert float(rel.mean()) < 0.15, rel.tolist()
+        # and it falls with resolution, because Sigma_N does
+        assert sh.beta[0] > sh.beta[-1]
+
+    def test_per_reflection_interpolation_preserves_the_identity(self):
+        """The per-reflection derivation must keep ``alpha**2 Sigma_P + beta_model + S2``
+        consistent, which is why sigma_A / log Sigma_N / log Sigma_P are interpolated and
+        beta is not: interpolating beta directly can produce a value consistent with no
+        ``sigma_A <= 1`` at all."""
+        from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator
+
+        FO, FC, DSS, sA_true, _bt = self._synthetic()
+        cen = torch.zeros_like(FO, dtype=torch.bool)
+        eps = torch.ones_like(FO)
+        free = torch.ones_like(FO, dtype=torch.bool)
+        sig = torch.full_like(FO, 3.0)
+        est = SigmaAEstimator().get(FO, FC, cen, eps, DSS, free, sigma_obs=sig)
+        assert est.beta.shape == FO.shape
+        assert (est.beta > 0).all() and (est.beta_model > 0).all()
+        assert (est.beta >= est.beta_model).all()
+        assert (est.sigma_a >= 0).all() and (est.sigma_a <= 1).all()
+        assert (est.alpha > 0).all() and torch.isfinite(est.alpha).all()
 
     def test_degenerate_free_set(self):
         n = 100
@@ -69,7 +98,7 @@ class TestEstimateBeta:
         eps = torch.ones(n, dtype=torch.float64)
         dss = torch.rand(n, dtype=torch.float64) * 0.3 + 0.02
         free = torch.zeros(n, dtype=torch.bool)  # no free reflections
-        beta, *_ = estimate_beta(FO, FC, cen, eps, dss, free)
+        beta = estimate_beta(FO, FC, cen, eps, dss, free).beta
         assert torch.isfinite(beta).all()
         assert (beta > 0).all()
 
@@ -87,7 +116,7 @@ class TestSigmaAEstimator:
     """The stateful, target-owned beta estimator: lazy cache + reset contract."""
 
     def _inputs(self, n=4000, seed=1):
-        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator  # noqa: F401
+        from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator  # noqa: F401
 
         g = torch.Generator().manual_seed(seed)
         dt = torch.float64
@@ -100,23 +129,26 @@ class TestSigmaAEstimator:
         return F_obs, F_calc, centric, eps, dss, free
 
     def test_lazy_cache_and_reset(self):
-        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator
+        from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator
 
         est = SigmaAEstimator()
         assert est._cache is None
         args = self._inputs()
-        b1, e1 = est.get(*args)
+        r1 = est.get(*args)
+        b1, e1 = r1.beta, r1.epsilon
         assert est._cache is not None
-        b2, e2 = est.get(*args)  # cached: identical objects (args ignored)
+        r2 = est.get(*args)  # cached: identical object (args ignored)
+        b2, e2 = r2.beta, r2.epsilon
         assert b1 is b2 and e1 is e2
         assert not b1.requires_grad
         est.reset()
         assert est._cache is None
 
     def test_beta_positive(self):
-        from torchref.base.targets.xray_ml_sigmaa import SigmaAEstimator
+        from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator
 
         est = SigmaAEstimator()
-        beta, eps = est.get(*self._inputs())
+        _r = est.get(*self._inputs())
+        beta, eps = _r.beta, _r.epsilon
         assert (beta > 0).all()
         assert torch.isfinite(beta).all()

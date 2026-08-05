@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 import torch
 from torch import nn
 
-from torchref.config import get_default_device
 from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.utils.device_resolution import resolve_device
 
 if TYPE_CHECKING:
     from torchref.model.model_ft import ModelFT
@@ -69,8 +69,10 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         # Normalize to handle floating point drift
         initial_fractions = [f / total for f in initial_fractions]
 
-        if device is None:
-            device = base_models[0].device if hasattr(base_models[0], "device") else get_default_device()
+        # Reconcile across *all* base models, not just the first: otherwise a
+        # mixed-device list stays unreconciled and ``fractions_tensor`` below can
+        # land on a device the later models are not on.
+        device = resolve_device(*base_models, device=device)
 
         # Match base models' float dtype (consistent under a float64 config).
         fractions_tensor = torch.tensor(
@@ -90,11 +92,8 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
 
     @property
     def fractions(self) -> torch.Tensor:
-        """Normalized population fractions (sum to 1).
-
-        When a fraction override is active (set by ``set_fraction_override``),
-        returns the override tensor instead of softmax(fraction_params).
-        This allows kinetic model predictions to flow directly into F_calc.
+        """Normalized population fractions -- the override tensor while one is
+        set (see ``set_fraction_override``), else ``softmax(fraction_params)``.
         """
         if self._fraction_override is not None:
             return self._fraction_override
@@ -265,12 +264,7 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         models = ModelCollection([model_dark, model_light])
         models.add_dark()                             # fractions=[1, 0]
         models.add_timepoint("1ps", [0.9, 0.1])
-        models.add_timepoint("5ps", [0.7, 0.3])
-
-        # Access
-        mixed = models["1ps"]
-        fcalc = mixed(hkl)
-        print(mixed.fractions)
+        fcalc = models["1ps"](hkl)
     """
 
     def __init__(

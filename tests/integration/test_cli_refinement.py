@@ -72,7 +72,7 @@ class TestCLIRefine:
 
     @pytest.mark.integration
     @pytest.mark.slow
-    @pytest.mark.gpu
+    @pytest.mark.cuda
     def test_cli_refine_cuda_end_to_end(self, cli_script, h_structure_pair, tmp_path):
         """Run the refine CLI on CUDA end-to-end on an H-bearing structure.
 
@@ -83,8 +83,6 @@ class TestCLIRefine:
         previously crashed when VDW buffers were left on CPU after a
         mid-refinement rebuild (PR #19).
         """
-        if not torch.cuda.is_available():
-            pytest.skip("CUDA not available")
 
         outdir = tmp_path / "refine_cuda"
 

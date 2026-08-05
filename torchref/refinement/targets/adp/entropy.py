@@ -19,16 +19,13 @@ class ADPEntropyTarget(ADPTarget):
     """
     ADP distribution regularization target.
 
-    Penalizes deviation of the B-factor (ADP) distribution from a target
-    spread. ``forward()`` returns ``model.adp_kl_divergence_loss()``, the KL
-    divergence between the distribution of log-ADPs and a Gaussian with the
-    same (detached) mean and a fixed target log-space standard deviation
-    (``target_log_std=0.2``). The loss is zero when the log-ADP spread matches
-    the target and grows as the distribution becomes tighter or broader.
+    Penalizes the B-factor distribution for departing from a target spread: the KL
+    divergence between the log-ADPs and a Gaussian at the same (detached) mean and a
+    fixed ``target_log_std=0.2``, so the loss is zero at a matching spread and rises as
+    the distribution tightens or broadens either way.
 
-    Note: despite the class name "Entropy", the loss is a KL divergence to a
-    fixed-spread Gaussian (hence ``name = "adp/KL"``), not an entropy term;
-    the "distribution regularization" description above is the accurate one.
+    Despite the class name, this is a KL divergence to a fixed-spread Gaussian, not an
+    entropy term -- hence ``name = "adp/KL"``.
     """
 
     name: str = "adp/KL"
@@ -37,6 +34,7 @@ class ADPEntropyTarget(ADPTarget):
         super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
+        """The model's log-ADP KL divergence from the fixed-spread target Gaussian."""
         return self.model.adp_kl_divergence_loss()
 
     def stats(self) -> Dict[str, any]:

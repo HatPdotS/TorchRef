@@ -1,39 +1,15 @@
 """
 Utility functions and classes for TorchRef.
 
-This module provides:
-- TensorMasks and TensorDict for managing tensor collections
-- Device/dtype movement mixins (DeviceMixin) and device resolution
-- Debugging utilities and mixins
-- Statistics formatting and tracking
-- Gradient norm computation
-- PDB/selection parsing utilities
-- Loss-finiteness validation (validate_loss)
-- Autograd introspection (collect_loss_leaves)
-- JSON serialization helpers (convert_to_serializable)
-- Triton/eager backend dispatch (Engine)
+Tensor containers (``TensorMasks``, ``TensorDict``), device/dtype movement
+(``DeviceMixin``, ``resolve_device``), debugging mixins, statistics formatting, gradient
+norms, PDB/selection parsing, loss-finiteness validation, autograd introspection, JSON
+serialization and backend dispatch.
 
-The names re-exported here are the package's public surface (see
-``__all__``). Some submodule-only helpers (e.g.
-``torchref.utils.timing.register_timing``) are not re-exported and must be
-imported from their submodule.
-
-Example
--------
-::
-
-    from torchref.utils import TensorMasks, DebugMixin, gradnorm
-
-    # Create tensor masks for parameter selection
-    masks = TensorMasks(device='cuda')
-    masks['backbone'] = backbone_mask
-
-    # Use debugging mixin in your class
-    class MyRefinement(DebugMixin):
-        pass
-
-    # Compute gradient norm
-    grad_norm = gradnorm(loss, model.parameters())
+``__all__`` is the package's public surface. Submodule-only helpers -- e.g.
+``torchref.utils.timing.register_timing`` -- are deliberately not re-exported and must be
+imported from their own module. Note that importing ``torchref.utils.stats`` patches the
+stdlib ``json`` encoders process-wide; see that module.
 """
 
 # Autograd introspection
@@ -47,7 +23,7 @@ from .debug_utils import DebugMixin, print_module_summary
 
 # Device movement
 from .device_mixin import DeviceMixin, DeviceMovementMixin
-from .device_resolution import resolve_device
+from .device_resolution import require_cell_dtype, resolve_device
 
 # Gradient utilities
 from .gradnorm import gradnorm
@@ -71,14 +47,12 @@ from .stats import (
 # Serialization
 from .serialization import convert_to_serializable
 
-# Triton/eager backend dispatch
-from .triton_dispatch import (
-    Engine,
-    get_engine,
-    set_engine,
-    should_use_triton,
+# Backend dispatch
+from .backends import (
+    force_portable,
+    set_force_portable,
     triton_available,
-    use_engine,
+    use_portable,
 )
 
 # Core utilities
@@ -99,6 +73,7 @@ __all__ = [
     "DeviceMixin",
     "DeviceMovementMixin",
     "resolve_device",
+    "require_cell_dtype",
     # Core utilities
     "TensorMasks",
     "TensorDict",
@@ -125,11 +100,9 @@ __all__ = [
     "reset_diagnostic_budget",
     # Autograd introspection
     "collect_loss_leaves",
-    # Triton/eager backend dispatch
-    "Engine",
-    "get_engine",
-    "set_engine",
-    "use_engine",
+    # Backend dispatch
+    "force_portable",
+    "set_force_portable",
+    "use_portable",
     "triton_available",
-    "should_use_triton",
 ]

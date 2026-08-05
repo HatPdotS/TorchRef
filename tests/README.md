@@ -92,7 +92,10 @@ Tests are marked with the following pytest markers:
 
 - `@pytest.mark.unit` - Fast unit tests, no I/O
 - `@pytest.mark.integration` - Integration tests with file I/O
-- `@pytest.mark.gpu` - Tests requiring GPU (not run by default)
+- `@pytest.mark.gpu` - Needs any accelerator (CUDA *or* MPS); runs automatically
+  wherever one is present, skipped otherwise
+- `@pytest.mark.cuda` - Needs CUDA specifically (e.g. Triton kernels)
+- `@pytest.mark.mps` - Needs MPS specifically (Metal kernels)
 - `@pytest.mark.slow` - Slow tests (>30 seconds)
 
 ### Running by marker
@@ -146,8 +149,16 @@ See `.github/workflows/tests.yml` for configuration.
    - Can use real files from `tests/files/`
    - Mark with `@pytest.mark.integration`
 
-3. **GPU tests**: Add `@pytest.mark.gpu` marker
-   - Will be skipped if no GPU available
+3. **Accelerator tests**: pick the marker that matches what the test actually
+   needs -- `@pytest.mark.cuda` if it hardcodes CUDA, `@pytest.mark.mps` if it
+   hardcodes MPS, `@pytest.mark.gpu` only if it works on either (take the device
+   from the `cuda_device` / `mps_device` / `gpu_device` fixture accordingly).
+   - The marker is the *only* gate. Do not also check availability inside the
+     test: a second `pytest.skip` can only mask a forgotten or wrong marker,
+     turning "this host cannot run it" into a silent pass.
+   - Missing backend -> skipped with a reason naming it. `--run-cuda` /
+     `--run-mps` instead warn and let the tests run, so they error with the real
+     backend error -- for CI that must not go green on a runner that lost its GPU.
 
 ## Test Data
 

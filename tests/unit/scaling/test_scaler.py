@@ -81,7 +81,7 @@ class TestScalerDeviceHandling:
         
         scaler = Scaler(device=gpu_device)
         
-        assert scaler.device.type == 'cuda'
+        assert scaler.device.type == gpu_device.type
 
 
 class TestScalingCalculations:

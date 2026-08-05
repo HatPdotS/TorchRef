@@ -15,22 +15,8 @@ from torchref.base.coordinates.periodic_boundary import (
 
 
 def scatter_add_nd_super_slow(source, index, map):
-    """
-    Non-vectorized n-dimensional scatter add operation (slow reference implementation).
-
-    Parameters
-    ----------
-    source : torch.Tensor
-        Values to add to the map of shape (N,).
-    index : torch.Tensor
-        Indices where values should be added of shape (N, ndim).
-    map : torch.Tensor
-        N-dimensional tensor to add values into.
-
-    Returns
-    -------
-    torch.Tensor
-        Modified map with values added.
+    """Slow reference n-dimensional scatter-add: ``source`` ``(N,)`` into ``map`` at
+    ``index`` ``(N, ndim)``, returning the modified map.
     """
     for i in range(source.shape[0]):
         idx = tuple(index[i].tolist())
@@ -39,22 +25,8 @@ def scatter_add_nd_super_slow(source, index, map):
 
 
 def scatter_add_nd(source, index, map):
-    """
-    Vectorized n-dimensional scatter add operation.
-
-    Parameters
-    ----------
-    source : torch.Tensor
-        Values to add to the map of shape (N,).
-    index : torch.Tensor
-        Indices where values should be added of shape (N, ndim).
-    map : torch.Tensor
-        N-dimensional tensor of shape (d1, d2, ..., dn) to add values into.
-
-    Returns
-    -------
-    torch.Tensor
-        Modified map with values added.
+    """Vectorized n-dimensional scatter-add: ``source`` ``(N,)`` into ``map``
+    ``(d1..dn)`` at ``index`` ``(N, ndim)``, returning the modified map.
     """
     map_shape = torch.tensor(map.shape, device=index.device, dtype=torch.int64)
 
@@ -104,37 +76,26 @@ def vectorized_add_to_map(
     B,
     occ,
 ):
-    """
-    Add atoms to density map using ITC92 Gaussian parameterization.
+    """Add isotropic atoms to a density map using the ITC92 5-Gaussian parameterization.
 
     Parameters
     ----------
-    surrounding_coords : torch.Tensor
-        Coordinates of voxels around each atom of shape (N_atoms, N_voxels, 3).
-    voxel_indices : torch.Tensor
-        Indices of voxels in the map of shape (N_atoms, N_voxels, 3).
+    surrounding_coords, voxel_indices : torch.Tensor
+        Coordinates and map indices of the voxels around each atom,
+        ``(N_atoms, N_voxels, 3)``.
     map : torch.Tensor
-        Electron density map of shape (nx, ny, nz).
-    xyz : torch.Tensor
-        Atom positions of shape (N_atoms, 3).
-    b : torch.Tensor
-        B-factors (thermal parameters) in Angstroms squared of shape (N_atoms,).
-    inv_frac_matrix : torch.Tensor
-        Inverse fractionalization matrix of shape (3, 3).
-    frac_matrix : torch.Tensor
-        Fractionalization matrix of shape (3, 3).
-    A : torch.Tensor
-        ITC92 amplitude coefficients for each atom of shape (N_atoms, 5).
-    B : torch.Tensor
-        ITC92 width coefficients (b parameters) in Angstroms squared
-        for each atom of shape (N_atoms, 5).
-    occ : torch.Tensor
-        Occupancies for each atom of shape (N_atoms,).
+        Electron density map, ``(nx, ny, nz)``.
+    xyz, b, occ : torch.Tensor
+        Atom positions ``(N_atoms, 3)``, B-factors in A^2 and occupancies ``(N_atoms,)``.
+    inv_frac_matrix, frac_matrix : torch.Tensor
+        Fractionalization matrix and its inverse, ``(3, 3)``.
+    A, B : torch.Tensor
+        ITC92 amplitudes and widths (A^2), ``(N_atoms, 5)`` each.
 
     Returns
     -------
     torch.Tensor
-        Updated electron density map.
+        The updated map.
     """
     # Calculate squared distances with periodic boundary conditions
     # diff_coords shape: (N_atoms, N_voxels)
@@ -181,53 +142,38 @@ def vectorized_add_to_map_aniso(
     B,
     occ,
 ):
-    """
-    Add anisotropic atoms to density map using ITC92 Gaussian parameterization.
+    """Add anisotropic atoms to a density map, ITC92 5-Gaussian parameterization.
 
-    Uses the same convention as the isotropic case for consistency:
-    - B_total = (B_itc92 + B_atomic) / 4
-    - rho = A × (π/B_total)^(3/2) × exp(-π² r² / B_total)
+    Same convention as the isotropic case (``B_total = (B_itc92 + B_atomic) / 4``,
+    ``rho = A (pi/B_total)^(3/2) exp(-pi^2 r^2 / B_total)``), generalised to::
 
-    For anisotropic atoms, this generalizes to:
-    - B_atomic_ij = 8π² × U_atomic_ij (standard crystallographic conversion)
-    - B_total_ij = (B_itc92 × δ_ij + 8π² × U_atomic_ij) / 4
-    - Normalization: (π³ / det(B_total))^(1/2)
-    - Exponent: exp(-π² × r^T × B_total^(-1) × r)
+        B_total_ij = (B_itc92 * delta_ij + 8pi^2 * U_atomic_ij) / 4
+        norm       = (pi^3 / det(B_total))^(1/2)
+        exponent   = exp(-pi^2 * r^T B_total^-1 r)
 
-    The isotropic ITC92 ``B`` is scalar and therefore adds only to the diagonal
-    of ``B_total`` (via ``δ_ij``); the off-diagonal entries come solely from the
-    anisotropic ``8π² × U_atomic_ij`` term. All 5 ITC92 Gaussian components are
-    summed (``A``/``B`` have shape ``(N_atoms, 5)``).
+    The isotropic ITC92 ``B`` is scalar and so adds only to the **diagonal** of ``B_total``;
+    the off-diagonals come solely from the ``8pi^2 U_atomic_ij`` term. All 5 Gaussian
+    components are summed.
 
     Parameters
     ----------
-    surrounding_coords : torch.Tensor
-        Coordinates of voxels around each atom of shape (N_atoms, N_voxels, 3).
-    voxel_indices : torch.Tensor
-        Indices of voxels in the map of shape (N_atoms, N_voxels, 3).
+    surrounding_coords, voxel_indices : torch.Tensor
+        Coordinates and map indices of the voxels around each atom,
+        ``(N_atoms, N_voxels, 3)``.
     map : torch.Tensor
-        Electron density map of shape (nx, ny, nz).
-    xyz : torch.Tensor
-        Atom positions in Cartesian coordinates of shape (N_atoms, 3).
-    U : torch.Tensor
-        Anisotropic displacement parameters in Angstroms squared
-        (u11, u22, u33, u12, u13, u23) of shape (N_atoms, 6).
-    inv_frac_matrix : torch.Tensor
-        Inverse fractionalization matrix of shape (3, 3).
-    frac_matrix : torch.Tensor
-        Fractionalization matrix of shape (3, 3).
-    A : torch.Tensor
-        ITC92 amplitude coefficients for each atom of shape (N_atoms, 5).
-    B : torch.Tensor
-        ITC92 width coefficients (b parameters) in Angstroms squared
-        for each atom of shape (N_atoms, 5).
-    occ : torch.Tensor
-        Occupancies for each atom of shape (N_atoms,).
+        Electron density map, ``(nx, ny, nz)``.
+    xyz, U, occ : torch.Tensor
+        Cartesian positions ``(N_atoms, 3)``, ADPs ``(u11, u22, u33, u12, u13, u23)`` in A^2
+        ``(N_atoms, 6)``, and occupancies ``(N_atoms,)``.
+    inv_frac_matrix, frac_matrix : torch.Tensor
+        Fractionalization matrix and its inverse, ``(3, 3)``.
+    A, B : torch.Tensor
+        ITC92 amplitudes and widths (A^2), ``(N_atoms, 5)`` each.
 
     Returns
     -------
     torch.Tensor
-        Updated electron density map.
+        The updated map.
     """
     # Calculate distance vectors with periodic boundary conditions
     diff_coords = surrounding_coords - xyz.unsqueeze(1)

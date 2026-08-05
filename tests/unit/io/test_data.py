@@ -80,14 +80,14 @@ class TestReflectionDataDeviceMovement:
 
     @pytest.mark.unit
     @pytest.mark.gpu
-    def test_reflection_data_cuda(self, gpu_device):
-        """Test CUDA movement."""
+    def test_reflection_data_accelerator(self, gpu_device):
+        """Movement onto whichever accelerator this host has."""
         from torchref.io import ReflectionData
 
         data = ReflectionData()
-        data = data.cuda()
+        data = data.to(gpu_device)
 
-        assert data.device.type == "cuda"
+        assert data.device.type == gpu_device.type
 
 
 class TestReflectionDataAttributes:

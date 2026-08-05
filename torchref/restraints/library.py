@@ -1,19 +1,13 @@
-"""
-Monomer Library Manager for TorchRef.
+"""Monomer Library Manager: CCP4 restraint dictionaries with priority resolution.
 
-Manages access to the CCP4 Monomer Library restraint dictionaries with a
-priority-based resolution strategy. Standard amino acids and nucleotides
-are bundled as package data; non-standard residues are downloaded on demand
-from the MonomerLibrary GitHub repository and cached locally.
+Supplies the ideal geometry (bond lengths, angles, torsions, planes, chirals)
+used to build restraints. Standard amino acids and nucleotides are bundled as
+package data; anything else is fetched on demand from a pinned commit of the
+MonomerLibrary GitHub repository and cached under ``~/.cache/torchref`` -- so
+first use of a novel ligand needs network access unless
+``TORCHREF_MONOMER_LIB`` points at a local install.
 
-The monomer library provides ideal geometry parameters (bond lengths, angles,
-torsions, planes, chirals) derived from the Cambridge Structural Database.
-
-References
-----------
-Long, F., et al. (2017). AceDRG: a stereochemical description generator
-    for ligands. Acta Cryst. D73, 112-122.
-
+Reference: Long, F., et al. (2017). AceDRG. Acta Cryst. D73, 112-122.
 """
 
 import os
@@ -126,18 +120,10 @@ class MonomerLibraryManager:
         return self._download_cif(resname)
 
     def get_link_definitions_path(self):
-        """
-        Resolve the path to mon_lib_list.cif (inter-residue link definitions).
+        """Path to mon_lib_list.cif (inter-residue link definitions).
 
-        Returns
-        -------
-        Path
-            Path to mon_lib_list.cif.
-
-        Raises
-        ------
-        FileNotFoundError
-            If the file cannot be found or downloaded.
+        Same five-step chain as :meth:`get_cif_file`; raises ``FileNotFoundError``
+        rather than returning None if even the download fails.
         """
         relative = Path("list") / "mon_lib_list.cif"
 
@@ -169,20 +155,12 @@ class MonomerLibraryManager:
         )
 
     def ensure_gemmi_base(self):
-        """Return a directory usable as a gemmi monomer-library root.
+        """A directory holding ``ener_lib.cif`` and ``list/mon_lib_list.cif``.
 
-        ``gemmi.read_monomer_lib`` needs ``ener_lib.cif`` at the root and
-        ``list/mon_lib_list.cif``. If a complete local library is configured
-        (``TORCHREF_MONOMER_LIB`` / legacy install) that already has both, return
-        it. Otherwise stage both into the user cache (downloading from the pinned
-        mirror) and return the cache directory. Per-residue component CIFs are
-        resolved separately via :meth:`get_cif_file`, so this only provides the
-        global energy/link files that the bundled per-residue data lacks.
-
-        Returns
-        -------
-        Path
-            A directory containing ``ener_lib.cif`` and ``list/mon_lib_list.cif``.
+        What ``gemmi.read_monomer_lib`` requires at its root. Returns a configured
+        local library if it already has both, else stages them into the user cache
+        (downloading if needed) and returns that. Provides only these global files
+        -- per-residue CIFs still resolve through :meth:`get_cif_file`.
         """
         for base in (self._env_path, _LEGACY_PATH):
             if (
@@ -205,19 +183,11 @@ class MonomerLibraryManager:
 
     @property
     def monomer_dir(self):
-        """
-        Return a directory path suitable for monomer library access.
+        """Monomer library root: env var, then bundled data, then legacy path.
 
-        Prefers environment variable, then bundled data, then legacy path.
-        This is provided for backward compatibility with code that expects
-        a directory path rather than individual file resolution.
-
-        Returns
-        -------
-        Path
-            Path to the monomer library root directory. As a last resort the
-            bundled-data path is returned even if it does not exist or is not
-            fully populated, so the returned path is not guaranteed to be usable.
+        For callers that want a directory rather than per-file resolution. The
+        bundled path is returned as a last resort even when absent or incomplete,
+        so the result is **not** guaranteed usable -- check before relying on it.
         """
         if self._env_path:
             return self._env_path
@@ -228,18 +198,9 @@ class MonomerLibraryManager:
         return _BUNDLED_PATH  # fallback to bundled even if not fully populated
 
     def _download_cif(self, resname):
-        """
-        Download a single CIF file from the MonomerLibrary GitHub repo.
+        """Download ``resname``'s CIF into the cache; None if unavailable.
 
-        Parameters
-        ----------
-        resname : str
-            Residue name.
-
-        Returns
-        -------
-        Path or None
-            Path to downloaded file, or None if download failed.
+        Retries with an upper-cased filename before giving up.
         """
         first_char = resname[0].lower()
         url = f"{_MONOMER_LIB_RAW_URL}/{first_char}/{resname}.cif"
@@ -253,22 +214,10 @@ class MonomerLibraryManager:
         return result
 
     def _download_file(self, url, dest, required=True):
-        """
-        Download a file from a URL and save to dest.
+        """Download ``url`` to ``dest`` (parents created); returns ``dest`` or None.
 
-        Parameters
-        ----------
-        url : str
-            URL to download from.
-        dest : Path
-            Local destination path.
-        required : bool
-            If True, raise FileNotFoundError on failure.
-
-        Returns
-        -------
-        Path or None
-            Path to the downloaded file, or None if failed and not required.
+        With ``required=True`` a failure raises ``FileNotFoundError`` instead of
+        returning None.
         """
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -302,17 +251,9 @@ _manager = None
 
 
 def get_library_manager(verbose=1):
-    """
-    Get the global MonomerLibraryManager singleton.
+    """Get the global MonomerLibraryManager singleton.
 
-    Parameters
-    ----------
-    verbose : int, optional
-        Verbosity level (only used on first call).
-
-    Returns
-    -------
-    MonomerLibraryManager
+    ``verbose`` takes effect only on the first call, which creates the instance.
     """
     global _manager
     if _manager is None:

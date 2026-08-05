@@ -1,29 +1,15 @@
-"""
-Fast Restraint Builder Classes with Internal Build Logic
+"""Restraint builders that walk the whole structure inside a single ``build()``.
 
-This module provides high-performance restraint builders that handle
-the entire build process internally. No external looping required.
+One ``build(pdb, cif_dict, device)`` call per restraint type handles every residue
+internally -- callers do not loop -- or :func:`build_all_restraints` does all the
+intra-residue types at once. Inter-residue links go through the
+``InterResidue*Builder`` classes, whose ``build()`` returns directly like the others;
+only their disulfide path is stateful -- it accumulates over ``process_disulfide_*``
+calls and emits nothing until ``finalize()`` (``finalize_disulfide()`` on the torsion
+builder).
 
-Usage:
-    from torchref.restraints.builders_fast import (
-        BondRestraintBuilder,
-        AngleRestraintBuilder,
-        TorsionRestraintBuilder,
-        PlaneRestraintBuilder,
-        ChiralRestraintBuilder,
-    )
-
-    # Simple API - just call build() once
-    bond_builder = BondRestraintBuilder()
-    bond_restraints = bond_builder.build(pdb, cif_dict, device)
-
-    # Or use the all-in-one function
-    from torchref.restraints.builders_fast import build_all_restraints
-    restraints = build_all_restraints(pdb, cif_dict, device)
-
-Note that these builders and ``build_all_restraints`` are not re-exported at
-the ``torchref.restraints`` package level; import them from this module
-(``torchref.restraints.builders_fast``) directly.
+Nothing here is re-exported at the ``torchref.restraints`` level; import from
+``torchref.restraints.builders_fast``.
 """
 
 from abc import ABC, abstractmethod
@@ -269,13 +255,12 @@ class PreprocessedCIF:
     _BACKBONE_ATOMS = frozenset({"N", "CA", "C", "O", "OXT"})
 
     def _preprocess_torsions(self, torsions_df: pd.DataFrame) -> Dict[str, np.ndarray]:
-        """Convert torsions DataFrame to NumPy arrays.
+        """Convert torsions to NumPy arrays, dropping backbone-only torsions.
 
-        Filters out torsions where all four atoms are backbone heavy atoms
-        (N, CA, C, O, OXT), since those are phi/psi-equivalent and would
-        conflict with Ramachandran-favored conformations.
+        A torsion over four backbone heavy atoms (N, CA, C, O, OXT) is
+        phi/psi-equivalent and would fight the Ramachandran term, so it is removed
+        here rather than downweighted.
         """
-        # Filter out backbone-only torsions (e.g. sp2_sp3_1: O-C-CA-N)
         bb = self._BACKBONE_ATOMS
         keep = np.array([
             not ({a1, a2, a3, a4} <= bb)
@@ -959,34 +944,18 @@ def build_all_restraints(
     pdb: pd.DataFrame, cif_dict: Dict, device: torch.device, verbose: int = 0
 ) -> Dict[str, Any]:
     """
-    Build all intra-residue restraints at once.
-
-    Parameters
-    ----------
-    pdb : pd.DataFrame
-        PDB DataFrame with atom data.
-    cif_dict : dict
-        CIF dictionary with restraints per residue type.
-    device : torch.device
-        Target device for output tensors.
-    verbose : int
-        Verbosity level.
+    Build every intra-residue restraint type at once, on ``device``.
 
     Returns
     -------
     dict
-        Dictionary with all restraint types:
-        {
-            'bond': {'indices': ..., 'references': ..., 'sigmas': ...},
-            'angle': {...},
-            'torsion': {..., 'periods': ...},
-            'plane': {'4_atoms': {...}, '5_atoms': {...}, ...},
-            'chiral': {..., 'ideal_volumes': ...}
-        }
+        Present keys only, so a type with no matches is absent rather than empty:
+        ``bond``/``angle`` as ``{indices, references, sigmas}``, ``torsion`` also
+        with ``periods``, ``chiral`` also with ``ideal_volumes``, and ``plane``
+        nested by atom count (``{'4_atoms': {...}, '5_atoms': {...}}``).
     """
     result = {}
 
-    # Build each type
     bond_result = BondRestraintBuilder(verbose).build(pdb, cif_dict, device)
     if bond_result:
         result["bond"] = bond_result
@@ -1322,16 +1291,10 @@ class InterResidueBondBuilder:
     def _build_residue_conformation_maps(
         self, pp_pdb: PreprocessedPDB,
     ) -> List[List[Dict[str, int]]]:
-        """Build per-conformation atom-name-to-index maps for each residue.
+        """Atom-name-to-index maps per residue per conformer (outer, then inner list).
 
-        For residues without altlocs, returns a single map.
-        For residues with altlocs A, B, returns one map per conformer,
-        each containing common atoms + that conformer's atoms.
-
-        Returns
-        -------
-        List[List[Dict[str, int]]]
-            Outer list indexed by residue, inner list by conformer.
+        One map for a residue without altlocs; otherwise one per conformer, each
+        holding the common atoms plus that conformer's own.
         """
         all_maps = []
         for res_idx in range(pp_pdb.n_residues):

@@ -166,5 +166,5 @@ class TestDeviceConsistency:
         data.load_mtz(sample_structure_pair["reflections"])
         
         # Everything should be on GPU
-        assert model.xyz().device.type == 'cuda'
-        assert data.hkl.device.type == 'cuda'
+        assert model.xyz().device.type == gpu_device.type
+        assert data.hkl.device.type == gpu_device.type

@@ -49,6 +49,7 @@ class ChiralTarget(GeometryTarget):
         super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
+        """Summed chiral-volume NLL; 0.0 when there are no chiral centres."""
         xyz = self.model.xyz()
         if "chiral" not in self.restraints.restraints:
             return torch.tensor(0.0, device=xyz.device)

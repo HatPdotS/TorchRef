@@ -1,17 +1,11 @@
-"""
-Utilities for determining FFT-compatible grid sizes for crystallographic symmetry.
+"""FFT- and symmetry-compatible grid sizes.
 
-For interpolation-free symmetry expansion, grid dimensions must be compatible
-with the symmetry operations. Specifically:
-- Screw axes require specific divisibility constraints
-- Grid sizes should also be FFT-friendly (factors of 2, 3, 5)
+Interpolation-free symmetry expansion needs grid dimensions divisible by what the
+screw axes demand, and radix-2,3,5 FFTs want factors of 2, 3, 5 only.
 
-This module provides thin convenience wrappers around the FFT-friendly grid
-utilities. The canonical implementations live in the ``spacegroup`` module;
-the wrappers here delegate into it (e.g. ``get_symmetry_grid_requirements``
-calls ``spacegroup.get_grid_requirements``). Note that ``spacegroup`` also
-defines its own ``is_fft_friendly`` / ``find_fft_friendly_size`` standalone;
-those in ``spacegroup`` are the source of truth.
+These are thin wrappers over ``spacegroup``, which holds the canonical
+implementations -- including its own ``is_fft_friendly`` /
+``find_fft_friendly_size`` pair. Prefer ``spacegroup`` for new code.
 """
 
 import numpy as np
@@ -21,24 +15,9 @@ from torchref.config import NYQUIST_OVERSAMPLING
 
 
 def get_symmetry_grid_requirements(space_group: str) -> dict:
-    """
-    Get grid size requirements for a given space group.
+    """Per-axis divisibility ``{'nx_mod', 'ny_mod', 'nz_mod'}`` for ``space_group``.
 
-    This is a convenience wrapper around spacegroup.get_grid_requirements().
-
-    Returns a dict with keys 'nx_mod', 'ny_mod', 'nz_mod' indicating
-    the required divisibility for each axis.
-
-    Parameters
-    ----------
-    space_group : str
-        Space group symbol (e.g., 'P21', 'P212121', 'P41', etc.).
-
-    Returns
-    -------
-    dict
-        {'nx_mod': int, 'ny_mod': int, 'nz_mod': int}
-        Required divisibility for each axis.
+    Wrapper over :func:`~torchref.symmetry.spacegroup.get_grid_requirements`.
     """
     # Import here to avoid circular imports
     from torchref.symmetry.spacegroup import get_grid_requirements
@@ -47,31 +26,25 @@ def get_symmetry_grid_requirements(space_group: str) -> dict:
 
 
 def find_fft_friendly_size(n: int, divisibility: int = 1) -> int:
-    """
-    Find the nearest FFT-friendly size >= n that satisfies divisibility constraint.
-
-    FFT-friendly means factors only of 2, 3, and 5 (radix-2,3,5 FFT algorithms).
+    """Smallest size >= ``n`` factoring into 2, 3, 5 and divisible by ``divisibility``.
 
     Parameters
     ----------
     n : int
         Minimum grid size.
     divisibility : int, default 1
-        Required divisibility (e.g., 2 for screw axes).
+        Required divisibility (e.g. 2 for a screw axis).
 
     Returns
     -------
     int
         Optimal grid size.
     """
-    # Start from n and search upward
     candidate = n
 
-    # Make sure it satisfies divisibility
     if candidate % divisibility != 0:
         candidate = ((candidate // divisibility) + 1) * divisibility
 
-    # Now find nearest FFT-friendly size
     while not is_fft_friendly(candidate):
         candidate += divisibility
 
@@ -101,14 +74,11 @@ def is_fft_friendly(n: int) -> bool:
 
 def calculate_optimal_grid_size(cell_params, max_res: float, space_group: str) -> tuple:
     """
-    Calculate optimal grid size for a given unit cell and space group.
+    Optimal grid for a unit cell and space group.
 
-    Grid sizes are chosen to:
-
-    1. Satisfy Shannon-Nyquist sampling (``NYQUIST_OVERSAMPLING`` × relative
-       to max_res; see :data:`torchref.config.NYQUIST_OVERSAMPLING`)
-    2. Respect symmetry requirements (screw axis divisibility)
-    3. Be FFT-friendly (factors of 2, 3, 5 only)
+    Satisfies Shannon-Nyquist sampling at
+    :data:`torchref.config.NYQUIST_OVERSAMPLING`, the screw-axis divisibility, and
+    FFT-friendliness (factors of 2, 3, 5 only).
 
     Parameters
     ----------
@@ -142,28 +112,11 @@ def calculate_optimal_grid_size(cell_params, max_res: float, space_group: str) -
 
 
 def check_grid_compatibility(grid_shape: tuple, space_group: str) -> dict:
-    """
-    Check if a grid is compatible with the space group symmetry.
+    """Check ``(nx, ny, nz)`` against the space group symmetry and the FFT.
 
-    This is a convenience wrapper around spacegroup.check_grid_compatibility().
-
-    Parameters
-    ----------
-    grid_shape : tuple
-        Grid dimensions (nx, ny, nz).
-    space_group : str
-        Space group symbol.
-
-    Returns
-    -------
-    dict
-        Dictionary with the following keys:
-
-        - 'compatible' : bool
-        - 'issues' : list of str (description of problems)
-        - 'requirements' : dict (required divisibility)
-        - 'can_use_direct_indexing' : bool (True if interpolation not needed)
-        - 'fft_friendly' : bool
+    Wrapper over
+    :func:`~torchref.symmetry.spacegroup.check_grid_compatibility`, which
+    documents the report dict.
     """
     # Import here to avoid circular imports
     from torchref.symmetry.spacegroup import (
@@ -174,21 +127,7 @@ def check_grid_compatibility(grid_shape: tuple, space_group: str) -> dict:
 
 
 def recommend_grid_size(current_shape: tuple, space_group: str) -> tuple:
-    """
-    Recommend a nearby compatible grid size.
-
-    Parameters
-    ----------
-    current_shape : tuple
-        Current (nx, ny, nz).
-    space_group : str
-        Space group symbol.
-
-    Returns
-    -------
-    tuple
-        Recommended (nx, ny, nz).
-    """
+    """Smallest symmetry- and FFT-compatible grid at or above ``current_shape``."""
     # Import here to avoid circular imports
     from torchref.symmetry.spacegroup import suggest_grid_size
 

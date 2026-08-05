@@ -116,23 +116,10 @@ class IHMEnsembleMapping:
         return [g.name for g in sorted(self.model_groups, key=lambda g: g.group_id)]
 
     def get_fractions_for_group(self, group_name: str) -> List[float]:
-        """
-        Return population fractions for a model group, ordered by state_id.
+        """Population fractions for a model group, ordered by ascending state_id.
 
-        Parameters
-        ----------
-        group_name : str
-            Name of the model group.
-
-        Returns
-        -------
-        list of float
-            Fractions ordered by ascending ``state_id``.
-
-        Raises
-        ------
-        KeyError
-            If no group with the given name exists.
+        States the group does not mention contribute 0.0. ``KeyError`` if no
+        group has that name.
         """
         for group in self.model_groups:
             if group.name == group_name:
@@ -154,28 +141,14 @@ class IHMEnsembleMapping:
         return None
 
     def get_state_by_id(self, state_id: int) -> IHMStateInfo:
-        """
-        Look up a state by its ID.
-
-        Raises
-        ------
-        KeyError
-            If no state with the given ID exists.
-        """
+        """Look up a state by its ID; ``KeyError`` if absent."""
         for state in self.states:
             if state.state_id == state_id:
                 return state
         raise KeyError(f"No state with id {state_id}")
 
     def get_group_by_name(self, name: str) -> IHMModelGroupInfo:
-        """
-        Look up a model group by name.
-
-        Raises
-        ------
-        KeyError
-            If no group with the given name exists.
-        """
+        """Look up a model group by name; ``KeyError`` if absent."""
         for group in self.model_groups:
             if group.name == name:
                 return group
@@ -203,14 +176,12 @@ class IHMEnsembleMapping:
         state_ids = set(s.state_id for s in self.states)
 
         for group in self.model_groups:
-            # Check that all referenced state IDs exist
             for sid in group.state_fractions:
                 if sid not in state_ids:
                     raise ValueError(
                         f"Model group '{group.name}' references state_id={sid} "
                         f"which is not in the states list."
                     )
-            # Check fractions sum to ~1.0
             total = sum(group.state_fractions.values())
             if abs(total - 1.0) > 0.05:
                 raise ValueError(

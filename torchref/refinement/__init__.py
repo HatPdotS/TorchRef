@@ -1,26 +1,12 @@
-"""
-Refinement module for crystallographic structure refinement.
-
-This module provides the core refinement framework including:
-- Refinement classes for running optimization
-- Target (loss) functions for X-ray, geometry, and ADP restraints
-- Loss aggregation and state tracking
-
-Example
--------
-Basic refinement::
+"""The core refinement framework: refinement drivers, target (loss) functions for
+X-ray, geometry and ADP restraints, and loss aggregation and state tracking::
 
     from torchref.refinement import LBFGSRefinement
 
-    refinement = LBFGSRefinement(
-        data_file='reflections.mtz',
-        pdb='structure.pdb',
-    )
+    refinement = LBFGSRefinement(data_file='reflections.mtz', pdb='structure.pdb')
     refinement.refine_everything(macro_cycles=5)
 
-Access targets::
-
-    from torchref.refinement.targets import XrayTarget, BondTarget
+Individual targets live in :mod:`torchref.refinement.targets`.
 """
 
 # Submodules

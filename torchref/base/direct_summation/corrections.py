@@ -73,8 +73,6 @@ def anharmonic_correction_no_complex(hkl, c):
     """
     Apply anharmonic (third-order) correction without complex numbers.
 
-    Returns real and imaginary parts as separate rows.
-
     Parameters
     ----------
     hkl : torch.Tensor

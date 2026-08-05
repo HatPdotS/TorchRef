@@ -248,3 +248,100 @@ def test_cell_cache_repopulates_on_target_dtype():
     assert "volume" not in cell._cache, "cache must be cleared after .to()"
     new_volume = cell.volume
     assert new_volume.dtype == torch.float64
+
+
+# ---------------------------------------------------------------------------
+# Probe-driven tracker inference (objects that own no tensors)
+# ---------------------------------------------------------------------------
+
+
+class _TensorFreeTracker(DeviceMixin, nn.Module):
+    """Carries device/dtype trackers but owns no tensor to read them from.
+
+    This is the shape of every geometry target: the trackers say where the
+    object *will* allocate, and nothing it currently holds can confirm it. Such
+    objects are the only consumers of ``_probe_target``.
+    """
+
+    def __init__(self, dtype=torch.float64):
+        super().__init__()
+        self.device = torch.device("cpu")
+        self.dtype_float = dtype
+
+
+@pytest.mark.unit
+def test_device_move_does_not_clobber_dtype_tracker(any_device):
+    """A device-only move must leave ``dtype_float`` alone.
+
+    Regression: the probe used a single float32 scratch for the dtype axis, so
+    a plain ``.to(device)`` reported ``float32`` and overwrote a float64
+    tracker. Both axes need their own contrast pair.
+    """
+    mod = _TensorFreeTracker(dtype=torch.float64)
+    mod.to(any_device)
+    assert mod.dtype_float == torch.float64, "device-only move changed dtype_float"
+    assert mod.device.type == any_device.type
+
+
+@pytest.mark.unit
+def test_dtype_only_move_does_not_clobber_device_tracker():
+    """Mirror case: ``.float()`` must leave the device tracker alone."""
+    mod = _TensorFreeTracker(dtype=torch.float64)
+    mod.device = torch.device("cpu")
+    mod.float()
+    assert mod.dtype_float == torch.float32
+    assert mod.device == torch.device("cpu"), "dtype-only move changed device"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "fn,expected_dtype",
+    [
+        (lambda t: t.to("cpu"), None),
+        (lambda t: t.double(), torch.float64),
+        (lambda t: t.float(), torch.float32),
+        (lambda t: t.half(), torch.float16),
+        (lambda t: t, None),
+    ],
+    ids=["to_cpu", "double", "float", "half", "identity"],
+)
+def test_probe_target_dtype_axis(fn, expected_dtype):
+    """The dtype axis reports only what ``fn`` actually casts to.
+
+    Host-independent: the dtype contrast pair is pinned to CPU, which is also
+    what keeps ``.double()`` probeable on Apple silicon (MPS has no float64, so
+    contrasting dtype on an accelerator scratch would fail outright).
+    """
+    from torchref.utils.device_mixin import _probe_target
+
+    _, dtype = _probe_target(fn)
+    assert dtype == expected_dtype
+
+
+@pytest.mark.unit
+@pytest.mark.gpu
+@pytest.mark.parametrize(
+    "fn,preserves_device",
+    [
+        (lambda t: t.to("cpu"), False),
+        (lambda t: t.double(), True),
+        (lambda t: t.float(), True),
+        (lambda t: t, True),
+    ],
+    ids=["to_cpu", "double", "float", "identity"],
+)
+def test_probe_target_device_axis(fn, preserves_device):
+    """The device axis distinguishes "moves to D" from "keeps its input's device".
+
+    Requires an accelerator: telling those two apart needs two devices to
+    contrast. On a single-device host they are genuinely indistinguishable --
+    and reporting ``cpu`` there is correct, since that is where everything is
+    anyway -- so there is nothing to assert.
+    """
+    from torchref.utils.device_mixin import _probe_target
+
+    device, _ = _probe_target(fn)
+    if preserves_device:
+        assert device is None, "device-preserving fn must not pin a device"
+    else:
+        assert device == torch.device("cpu")

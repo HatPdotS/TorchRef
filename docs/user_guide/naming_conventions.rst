@@ -1,120 +1,85 @@
 Naming Conventions
 ==================
 
-There have been many problems with naming conventions in this project. To avoid this in the future,
-this guide documents standardized variable naming conventions used throughout TorchRef.
-Consistent naming improves code readability and reduces confusion when working with
-crystallographic data.
+Standardized variable names used throughout TorchRef. The crystallographic ones
+matter more than usual here, because ``F`` and ``f`` mean genuinely different
+things and mixing them up produces a plausible-looking wrong answer rather than
+an error.
 
 General Principles
 ------------------
 
-TorchRef follows these general conventions:
-
 - **snake_case** for variables, functions, and methods
 - **CamelCase** for class names only
-- Domain-specific conventions for crystallographic quantities (see below)
+- ``spacegroup`` as one word — not ``space_group``
 
 Structure Factors
 -----------------
 
-Structure factors use case to distinguish between complex and amplitude representations:
+Case distinguishes complex from amplitude:
+
+- ``f_calc``, ``f_obs`` — **complex** structure factors, with phase
+- ``F_calc``, ``F_obs``, ``F`` — **amplitudes**, absolute values
 
 .. code-block:: python
 
-   # Complex structure factors (lowercase f)
-   f_calc = model.forward()      # Complex F_calc with phase
+   f_calc = model(hkl)              # complex, with phase
+   F_calc = torch.abs(f_calc)       # amplitude
 
-   # Amplitude structure factors (uppercase F)
-   F_calc = torch.abs(f_calc)    # |F_calc| amplitude
+   F_obs = dataset.F                # amplitudes
+   F_sigma = dataset.F_sigma        # uncertainty on F
+   I, I_sigma = dataset.I, dataset.I_sigma      # intensities, if present
 
-   # Getting observed data from dataset
-   hkl, F_obs, F_sigma, rfree = dataset()  # Central data access method
+   hkl, F, F_sigma, rfree = dataset()           # legacy accessor (deprecated)
 
-   # Dataset attributes
-   F_obs = dataset.F              # Structure factor amplitudes
-   F_sigma = dataset.F_sigma      # Uncertainties on F
-   I = dataset.I                  # Intensities (if available)
-   I_sigma = dataset.I_sigma      # Uncertainties on I
+The property and the call are not interchangeable. ``dataset.F`` is a plain
+tensor of everything as read; ``dataset()`` returns ``F`` and ``F_sigma`` as
+``torch.masked.MaskedTensor``, scaled, with invalid reflections marked rather
+than removed — so aggregations skip them but indices still line up with ``hkl``.
+Pass ``mask=False`` / ``scale=False`` to opt out.
 
-**Summary**:
-
-- ``f_calc``, ``f_obs`` → complex structure factors (with phase)
-- ``F_calc``, ``F_obs``, ``F`` → amplitudes (absolute values)
+Two traps on the call. The masked ``F`` / ``F_sigma`` are **detached clones**, so
+no gradient flows through them; and the call itself is deprecated (it emits a
+``DeprecationWarning``). Prefer the subset accessor — ``dataset.work.F``,
+``dataset.free.F``, ``.sigF`` / ``.hkl`` / ``.select(...)`` — or
+``dataset.get_corrected_data()`` for the full scaled ``(F, F_sigma)`` with the
+graph intact.
 
 Atomic Displacement Parameters
 ------------------------------
 
-.. code-block:: python
+- ``adp`` — isotropic model ADPs (B-factors, Ų): ``model.adp()``
+- ``u`` — anisotropic U tensor, 6 components per atom: ``model.u()``
+- ``b`` — a B-factor used for *scaling*, not a model parameter (e.g. the
+  scaler's ``b_solvent``)
 
-   # Model-level: use 'adp'
-   adp = model.adp()                    # Isotropic ADPs (B-factors)
-   u = model.u()                        # Anisotropic U tensor (6 components)
+Coordinates and Occupancy
+-------------------------
 
-   # Dataset-level: use 'b' for overall scaling
-   b_overall = scaler.b                 # Overall B-factor for scaling
+- ``xyz`` — Cartesian, Ångströms: ``model.xyz()``
+- ``xyz_fractional`` — fractional, 0–1 within the cell:
+  ``model.xyz_fractional()``
+- occupancies: ``model.occupancy()``
 
-**Summary**:
-
-- ``adp`` → model atomic displacement parameters
-- ``u`` → anisotropic U tensor
-- ``b`` → dataset/scaling B-factor
-
-Coordinates
------------
-
-.. code-block:: python
-
-   # Cartesian coordinates (Angstroms)
-   xyz = model.xyz()                    # Real-space coordinates
-
-   # Fractional coordinates (0-1 within unit cell)
-   xyz_fractional = model.xyz_fractional()
-
-**Summary**:
-
-- ``xyz`` → Cartesian coordinates in Angstroms
-- ``xyz_fractional`` → fractional coordinates
+Note that ``freeze()`` / ``unfreeze()`` take the *parameter-type* names —
+``'xyz'``, ``'adp'``, ``'u'``, ``'occupancy'`` — and silently ignore anything
+else, so an abbreviation like ``'b'`` or ``'occ'`` is a no-op rather than an
+error.
 
 Unit Cell
 ---------
 
-.. code-block:: python
-
-   # Cell object
-   cell = model.cell                    # Cell object with methods
-
-   # Raw parameters tensor
-   cell_params = torch.tensor([a, b, c, alpha, beta, gamma])
+- ``cell`` — a :class:`~torchref.symmetry.cell.Cell` object, ``model.cell``
+- ``cell_params`` — the raw ``[a, b, c, alpha, beta, gamma]`` tensor
 
 Uncertainties
 -------------
 
-Uncertainties follow the ``{quantity}_sigma`` pattern:
-
-.. code-block:: python
-
-   # From dataset
-   F_sigma = dataset.F_sigma            # Uncertainty on F
-   I_sigma = dataset.I_sigma            # Uncertainty on intensity
-
-Space Group
------------
-
-Use ``spacegroup`` as a single word:
-
-.. code-block:: python
-
-   spacegroup = model.spacegroup        # Not 'space_group'
+``{quantity}_sigma``: ``F_sigma``, ``I_sigma``.
 
 Resolution
 ----------
 
-.. code-block:: python
-
-   # Resolution bounds (Angstroms)
-   d_min = 2.0                          # High-resolution limit
-   d_max = 50.0                         # Low-resolution limit
-
-   # Per-reflection resolution from dataset
-   resolution = dataset.resolution      # Resolution for each reflection
+- ``d_min`` — high-resolution limit, Å
+- ``d_max`` — low-resolution limit, Å
+- ``dataset.resolution`` — per-reflection resolution

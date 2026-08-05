@@ -30,10 +30,12 @@ class BondTarget(GeometryTarget):
         super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
-        # Use the bond_math dispatcher (Triton on CUDA fp32, eager
-        # otherwise). Pulls inputs directly from the model + restraints
-        # instead of going through `Restraints.bond_deviations` so the
-        # Triton kernel can also own the gather + distance compute.
+        """Summed bond NLL; 0.0 when the model has no bond restraints.
+
+        Reads the model and restraints directly rather than via
+        ``Restraints.bond_deviations`` so the Triton kernel can own the gather and
+        the distance computation too.
+        """
         if "all" not in self.restraints.restraints["bond"]:
             self.restraints.cat_dict()
         bond = self.restraints.restraints["bond"]["all"]

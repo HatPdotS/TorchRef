@@ -1,10 +1,12 @@
-"""
+"""Numba-accelerated CIF-to-restraint matchers, free of Pandas in the hot loop.
 
-Fast Restraint Builder Classes using NumPy and Numba
+Every ``match_*_numba`` shares one calling convention: the caller pre-allocates
+the ``out_*`` arrays, the function fills entries ``[0:count]`` in place and
+returns ``count``. Anything past ``count`` is stale.
 
-This module provides optimized builder classes that avoid Pandas operations
-in the hot loop.
-
+Numba is optional -- without it ``njit`` degrades to a no-op decorator and
+``prange`` to ``range``, so the same code runs orders of magnitude slower rather
+than failing.
 """
 
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -54,34 +56,16 @@ def match_bonds_numba(
     """
     Match bond restraints for a single residue.
 
-    For each CIF bond definition, both named atoms are looked up in the
-    residue's atom-name list; if both are present the bond is emitted into the
-    pre-allocated output arrays at the current running count.
-
-    Parameters
-    ----------
-    residue_atom_names : np.ndarray
-        Atom names for the atoms of this residue.
-    residue_atom_indices : np.ndarray
-        Global atom indices corresponding to ``residue_atom_names``.
-    bond_atom1, bond_atom2 : np.ndarray
-        CIF bond definition atom names (first and second atom of each bond).
-    bond_values : np.ndarray
-        CIF ideal bond-length reference values.
-    bond_sigmas : np.ndarray
-        CIF bond-length standard deviations.
-    out_idx1, out_idx2 : np.ndarray
-        Pre-allocated output arrays receiving the global indices of the two
-        bonded atoms. Written in-place for entries ``[0:count]``.
-    out_refs, out_sigmas : np.ndarray
-        Pre-allocated output arrays receiving the reference value and sigma
-        for each matched bond. Written in-place for entries ``[0:count]``.
+    A CIF bond is emitted only if both named atoms appear in
+    ``residue_atom_names``; the emitted indices come from
+    ``residue_atom_indices`` (global), and the reference/sigma from
+    ``bond_values``/``bond_sigmas``.
 
     Returns
     -------
     int
-        Number of matched bonds, i.e. the number of valid entries written to
-        the front of each output array.
+        Number of matched bonds. The ``out_*`` arrays are filled in place for
+        entries ``[0:count]`` only -- the tail is left untouched.
     """
     count = 0
     n_bonds = len(bond_atom1)
@@ -134,35 +118,16 @@ def match_angles_numba(
     """
     Match angle restraints for a single residue.
 
-    For each CIF angle definition, all three named atoms are looked up in the
-    residue's atom-name list; if all are present the angle is emitted into the
-    pre-allocated output arrays at the current running count.
-
-    Parameters
-    ----------
-    residue_atom_names : np.ndarray
-        Atom names for the atoms of this residue.
-    residue_atom_indices : np.ndarray
-        Global atom indices corresponding to ``residue_atom_names``.
-    angle_atom1, angle_atom2, angle_atom3 : np.ndarray
-        CIF angle definition atom names (the three atoms of each angle, with
-        ``angle_atom2`` the vertex).
-    angle_values : np.ndarray
-        CIF ideal angle reference values (degrees).
-    angle_sigmas : np.ndarray
-        CIF angle standard deviations (degrees).
-    out_idx1, out_idx2, out_idx3 : np.ndarray
-        Pre-allocated output arrays receiving the global indices of the three
-        atoms. Written in-place for entries ``[0:count]``.
-    out_refs, out_sigmas : np.ndarray
-        Pre-allocated output arrays receiving the reference value and sigma
-        for each matched angle. Written in-place for entries ``[0:count]``.
+    A CIF angle is emitted only if all three named atoms appear in
+    ``residue_atom_names`` (``angle_atom2`` is the vertex); the emitted indices
+    come from ``residue_atom_indices`` (global), and the reference/sigma from
+    ``angle_values``/``angle_sigmas``, both in degrees.
 
     Returns
     -------
     int
-        Number of matched angles, i.e. the number of valid entries written to
-        the front of each output array.
+        Number of matched angles. The ``out_*`` arrays are filled in place for
+        entries ``[0:count]`` only -- the tail is left untouched.
     """
     count = 0
     n_angles = len(angle_atom1)
@@ -215,39 +180,16 @@ def match_torsions_numba(
     """
     Match torsion restraints for a single residue.
 
-    For each CIF torsion definition, all four named atoms are looked up in the
-    residue's atom-name list; torsions with a zero sigma are skipped, and the
-    rest are emitted into the pre-allocated output arrays at the current
-    running count.
-
-    Parameters
-    ----------
-    residue_atom_names : np.ndarray
-        Atom names for the atoms of this residue.
-    residue_atom_indices : np.ndarray
-        Global atom indices corresponding to ``residue_atom_names``.
-    torsion_atom1, torsion_atom2, torsion_atom3, torsion_atom4 : np.ndarray
-        CIF torsion definition atom names (the four atoms of each torsion).
-    torsion_values : np.ndarray
-        CIF ideal torsion reference values (degrees).
-    torsion_sigmas : np.ndarray
-        CIF torsion standard deviations (degrees); entries equal to zero are
-        skipped.
-    torsion_periods : np.ndarray
-        Periodicity for each torsion.
-    out_idx1, out_idx2, out_idx3, out_idx4 : np.ndarray
-        Pre-allocated output arrays receiving the global indices of the four
-        atoms. Written in-place for entries ``[0:count]``.
-    out_refs, out_sigmas, out_periods : np.ndarray
-        Pre-allocated output arrays receiving the reference value, sigma and
-        period for each matched torsion. Written in-place for entries
-        ``[0:count]``.
+    A CIF torsion is emitted only if all four named atoms appear in
+    ``residue_atom_names`` **and** its sigma is non-zero -- zero-sigma torsions
+    are dropped, not clamped. Indices come from ``residue_atom_indices``
+    (global); references and sigmas are in degrees.
 
     Returns
     -------
     int
-        Number of matched torsions, i.e. the number of valid entries written
-        to the front of each output array.
+        Number of matched torsions. The ``out_*`` arrays are filled in place for
+        entries ``[0:count]`` only -- the tail is left untouched.
     """
     count = 0
     n_torsions = len(torsion_atom1)
@@ -306,38 +248,16 @@ def match_chirals_numba(
     """
     Match chiral restraints for a single residue.
 
-    For each CIF chiral definition, the centre and three neighbour atoms are
-    looked up in the residue's atom-name list; chirals with an unknown
-    (``NaN``) volume sign are skipped, and the rest are emitted into the
-    pre-allocated output arrays at the current running count.
-
-    Parameters
-    ----------
-    residue_atom_names : np.ndarray
-        Atom names for the atoms of this residue.
-    residue_atom_indices : np.ndarray
-        Global atom indices corresponding to ``residue_atom_names``.
-    chiral_center : np.ndarray
-        CIF chiral-centre atom names.
-    chiral_atom1, chiral_atom2, chiral_atom3 : np.ndarray
-        CIF chiral neighbour atom names (the three substituents).
-    chiral_volume_signs : np.ndarray
-        Chiral volume sign per definition (``+1``, ``-1``, ``0``, or ``NaN``);
-        ``NaN`` entries are skipped.
-    chiral_sigmas : np.ndarray
-        CIF chiral-volume standard deviations.
-    out_center, out_idx1, out_idx2, out_idx3 : np.ndarray
-        Pre-allocated output arrays receiving the global indices of the centre
-        and three neighbour atoms. Written in-place for entries ``[0:count]``.
-    out_signs, out_sigmas : np.ndarray
-        Pre-allocated output arrays receiving the volume sign and sigma for
-        each matched chiral. Written in-place for entries ``[0:count]``.
+    A CIF chiral is emitted only if its centre and all three substituents appear
+    in ``residue_atom_names`` **and** its volume sign is not ``NaN`` -- unknown
+    signs are dropped. ``+1``/``-1``/``0`` are all kept. Indices come from
+    ``residue_atom_indices`` (global).
 
     Returns
     -------
     int
-        Number of matched chirals, i.e. the number of valid entries written to
-        the front of each output array.
+        Number of matched chirals. The ``out_*`` arrays are filled in place for
+        entries ``[0:count]`` only -- the tail is left untouched.
     """
     count = 0
     n_chirals = len(chiral_center)

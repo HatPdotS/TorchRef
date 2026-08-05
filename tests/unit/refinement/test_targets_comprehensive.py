@@ -60,14 +60,14 @@ class TestXrayTargetBase:
 
 
 @pytest.mark.unit
-class TestGaussianXrayTarget:
-    """Test GaussianXrayTarget (Gaussian NLL loss)."""
+class TestNLLXrayTarget:
+    """Test NLLXrayTarget (the sigma-weighted Gaussian NLL, ``--xray-mode nll``)."""
 
     def test_gaussian_target_initialization(self):
-        """Test GaussianXrayTarget initialization."""
-        from torchref.refinement.targets import GaussianXrayTarget
+        """Test NLLXrayTarget initialization."""
+        from torchref.refinement.targets import NLLXrayTarget
 
-        target = GaussianXrayTarget()
+        target = NLLXrayTarget()
         assert target._model is None
         assert target._data is None
 

@@ -12,7 +12,6 @@ from typing import Optional, Tuple
 import torch
 
 from torchref.base.reciprocal.grid_operations import place_on_grid
-from torchref.config import get_default_device
 from torchref.io.datasets.collection import DatasetCollection
 from torchref.maps.map import Map
 from torchref.symmetry.reciprocal_symmetry import expand_hkl

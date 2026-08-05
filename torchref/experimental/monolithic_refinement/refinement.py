@@ -68,21 +68,27 @@ class MonolithicRefinement(LBFGSRefinement):
         kwargs["target_mode"] = "rice_sigma_m"
         super().__init__(*args, **kwargs)
 
-    def set_xray_target_mode(self, mode: str):
+    def _build_xray_targets(self, mode: str):
         """Build the work/test RiceSigmaMXrayTargets sharing one calibration.
+
+        Hooks ``_build_xray_targets``, which is the ONE place targets are constructed
+        (both ``_init_targets`` and ``set_xray_target_mode`` route through it). This
+        override previously hooked ``set_xray_target_mode``, which stopped being on the
+        construction path when the double-build was fixed -- so `rice_sigma_m` fell
+        through to the factory, which does not know it, and every monolithic test failed
+        with "Unknown X-ray target mode". Keep this hooked to whatever the single
+        construction point is.
 
         Falls back to the base implementation for any non-monolithic mode.
         """
         if mode != "rice_sigma_m":
-            return super().set_xray_target_mode(mode)
+            return super()._build_xray_targets(mode)
 
-        sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
         calib_bins = getattr(self, "_sigma_m_calib_bins", 1)
         common = dict(
             model=self.model,
             data=self.reflection_data,
             scaler=self.scaler,
-            sigma_m_scale=sigma_m_scale,
             sigma_m_calib_bins=calib_bins,
             verbose=self.verbose,
         )

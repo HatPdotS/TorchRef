@@ -152,9 +152,6 @@ pytest tests/unit/math_functions/test_math_torch.py::TestRFactorCalculations -v
 # Grid functions
 pytest tests/unit/math_functions/test_math_torch.py::TestGridFunctions -v
 
-# Outlier detection
-pytest tests/unit/math_functions/test_math_torch.py::TestOutlierDetection -v
-
 # Rotation functions
 pytest tests/unit/math_functions/test_math_torch.py::TestRotation -v
 
@@ -360,8 +357,8 @@ pytest tests/unit --lf -v
 
 | File | Classes |
 |------|---------|
-| `math_functions/test_math_torch.py` | `TestCoordinateTransformations`, `TestRFactorCalculations`, `TestOutlierDetection`, `TestGridFunctions`, `TestTransformationMatrices`, `TestAlignment`, `TestSmallestDiff`, `TestRotation` |
-| `math_functions/test_math_numpy.py` | `TestCoordinateTransformations`, `TestScatteringVectors`, `TestRFactorCalculations`, `TestRotation`, `TestOutlierDetection` |
+| `math_functions/test_math_torch.py` | `TestCoordinateTransformations`, `TestRFactorCalculations`, `TestGridFunctions`, `TestTransformationMatrices`, `TestAlignment`, `TestSmallestDiff`, `TestRotation` |
+| `math_functions/test_math_numpy.py` | `TestCoordinateTransformations`, `TestScatteringVectors`, `TestRFactorCalculations`, `TestRotation` |
 | `model/test_model.py` | `TestModelInitialization`, `TestModelDeviceHandling` |
 | `model/test_parameter_wrappers.py` | `TestMixedTensorInitialization`, `TestMixedTensorOperations`, `TestMixedTensorDeviceHandling`, `TestOccupancyTensor`, `TestPositiveMixedTensor` |
 | `refinement/test_loss_weighting.py` | `TestFixedWeighting`, `TestResolutionDependentWeighting`, `TestLossWeightingModule` |

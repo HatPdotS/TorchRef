@@ -1,6 +1,20 @@
 Changelog
 =========
 
+Version 0.6.2
+-------------
+- Deprecated outlier flagging strategy 
+- Rewrote X‑ray targets into five independent classes (nll, nll_beta, ml, ml_noalpha, ml_full) and XRAY_TARGETS.by_name.
+- Consolidated X‑ray loss math into Gaussian, Rice, marginalised Rice primitives; NLLXrayTarget replaces GaussianXrayTarget.
+- Fixed crash in difference refinement with mismatched reflection files: HKL reindexing (``validate_hkl``/``remap``/``reduce_to_spacegroup``) now carries all per-reflection fields (including the anomalous bookkeeping read by ``hkl_for_sf()``) instead of a hardcoded subset.
+- Added a metal shader for structure factor calculation
+- Standardized structure factor calculation geometry
+- Split gpu tests into cuda and mps
+- Reworked VDW pair list creation
+- Reworked backend dispatch: which kernel runs is now read from one declarative table per kernel family (device, dtype, availability probe, failure policy), replacing two hand-written if/elif ladders.
+- Added preconditioned L-BFGS optimizer for joined refinement.
+
+
 Version 0.6.1
 -------------
 - Fixed bug in beta estimation that caused instability in GPU refinement
@@ -29,19 +43,19 @@ Version 0.6.0
 - Updated many docstrings, and fixed some bugs
 
 Version 0.5.3.3
--------------
+---------------
 - Fixed U_aniso parametrization and line search instability during refinement with anisotropic b-factor
 - Fixed kinetic module import 
 - Set default similarity weight in difference refinement to 0
 
 Version 0.5.3.2
--------------
+---------------
 - Added 10GB Gram requirement for default gpu device selection
 - Slaved cli device detection to the default device selection
 - Fixed device mismatch crash on CUDA/MPS when the VDW pair list was refreshed mid-refinement: the maintenance-triggered rebuild now migrates the fresh VDW pair list, hydrogen topology, and exclusion hash to the model device (PR #19)
 
 Version 0.5.3.1
--------------
+---------------
 - Fixed problem where TorchRef defaults to old gpus and crashes, now checking if gpu is actually usable, before setting default device to cuda, if not it will default to cpu and print a warning.
 
 Version 0.5.3
@@ -63,7 +77,7 @@ Version 0.5.1
 - Separated out loss functions from targets, logic moved to base/targets
 - Added Triton kernels with analytic backward for all four xray Targets and most other Targets
 - Cached XrayTarget.get_data constants across closures
-- Replaced slow tensor[indices] backwards (sort + dedup scatter) with index_add_ in the symmetry extractor, scaler bin gathers, and MixedTensor; skip the indexing in get_iso / get_aniso when it covers all atoms
+- Replaced slow tensor[indices] backwards (sort + dedup scatter) with ``index_add_`` in the symmetry extractor, scaler bin gathers, and MixedTensor; skip the indexing in get_iso / get_aniso when it covers all atoms
 
 Version 0.5.0
 -------------

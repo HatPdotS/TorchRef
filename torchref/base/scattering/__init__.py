@@ -1,23 +1,8 @@
-"""
-Atomic scattering factor functions.
+"""Atomic scattering factors from the ITC92 parameterization.
 
-This submodule provides functions for computing atomic scattering factors
-using the ITC92 parameterization.
-
-Two approaches are available:
-1. Table-based lookup (recommended): Fast, vectorized, no gemmi dependency at runtime
-2. Runtime gemmi calls (legacy): Slower, requires gemmi
-
-Example using table lookup::
-
-    from torchref.base.scattering import (
-        load_scattering_table,
-        get_scattering_params_by_z,
-        elements_to_z,
-    )
-
-    z = elements_to_z(['C', 'N', 'O'])
-    A, B = get_scattering_params_by_z(z)
+Table-based lookup (:func:`get_scattering_params_by_z` after
+:func:`elements_to_z`) is the recommended path -- vectorized and gemmi-free at
+runtime. Anomalous f'/f'' corrections come from ``anomalous_table``.
 """
 
 from .scattering_table import (

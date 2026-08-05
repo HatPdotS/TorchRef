@@ -31,42 +31,27 @@ class ParameterFingerprint:
         return self._entries == other
 
     def __bool__(self):
-        """True iff the fingerprint captured at least one tensor.
-
-        Note this reports whether the fingerprint is *non-empty*, not
-        whether it *matches* anything — use :meth:`matches` for comparison.
-        """
+        """Non-empty, **not** "matches" -- use :meth:`matches` to compare."""
         return len(self._entries) > 0
 
 
 class CachedForwardMixin:
     """Mixin that caches ``forward()`` results with automatic invalidation.
 
-    Overrides ``__call__`` to return a cached result when the module's
-    parameters, buffers, and call arguments have not changed since the
-    last invocation — and no backward pass has propagated through the
-    cached output.
+    Overrides ``__call__`` to return a cached result while the module's parameters, buffers
+    and call arguments are unchanged and no backward has propagated through the cached
+    output. Invalidated by: any parameter/buffer ``(data_ptr, _version)`` change (so
+    optimizer in-place updates and parameter replacement are both covered); any input
+    tensor ``(data_ptr, _version)`` or non-tensor argument change; or a backward through
+    the cached output, via a gradient hook that bumps a generation counter.
 
-    Cache invalidation triggers:
+    The cached tensor **keeps its autograd graph**, so gradients flow on the first backward
+    and the cache is invalidated after it -- a second backward on the same result needs
+    ``retain_graph``. A caller that reads the result under ``no_grad`` and stores it will
+    poison the cache with a detached tensor; call :meth:`reset_forward_cache` after.
 
-    * Any parameter or buffer ``data_ptr`` or ``_version`` change
-      (covers optimizer in-place updates and mask/parameter replacement).
-    * Input tensor ``data_ptr`` or ``_version`` change, or non-tensor
-      argument value change.
-    * A backward pass through the cached output (increments generation
-      counter via a gradient hook).
-
-    The cached tensor retains its autograd graph — gradients flow correctly
-    on the first backward pass, after which the cache is invalidated.
-
-    Notes
-    -----
-    This mixin does **not** use :class:`ParameterFingerprint`. The two
-    change-detection mechanisms are independent: ``ParameterFingerprint``
-    captures a ``(data_ptr, _version, numel)`` triple per tensor, whereas
-    this mixin fingerprints inline via ``_fingerprint_state`` /
-    ``_fingerprint_inputs`` using a ``(data_ptr, _version)`` pair (no
-    ``numel``).
+    Fingerprints inline rather than via :class:`ParameterFingerprint`, which is a separate
+    mechanism and also tracks ``numel``.
     """
 
     # ---- internal helpers ------------------------------------------------
@@ -100,25 +85,14 @@ class CachedForwardMixin:
     # ---- public API ------------------------------------------------------
 
     def __call__(self, *args, recalc=False, **kwargs):
-        """Return cached ``forward()`` result, or recompute on cache miss.
+        """Return the cached ``forward()`` result, or recompute on a cache miss.
 
         Parameters
         ----------
-        *args
-            Positional arguments forwarded to ``forward()`` (and fingerprinted
-            for cache validity).
+        *args, **kwargs
+            Forwarded to ``forward()`` and fingerprinted for cache validity.
         recalc : bool, optional
-            If True, invalidate the cache and force recomputation.
-            Not forwarded to ``forward()``.
-        **kwargs
-            Keyword arguments forwarded to ``forward()`` (and fingerprinted
-            for cache validity).
-
-        Returns
-        -------
-        object
-            The cached ``forward()`` result on a cache hit, otherwise the
-            freshly computed result.
+            Invalidate the cache and recompute. Consumed here, not forwarded.
         """
         if recalc:
             self.reset_forward_cache()

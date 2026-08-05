@@ -44,9 +44,10 @@ class IHMReader:
     """
     Read IHM mmCIF files into torchref ModelCollection + IHMEnsembleMapping.
 
-    Uses ``python-ihm`` to parse IHM-specific categories
-    (``_ihm_multi_state_modeling``, ``_ihm_model_group``, etc.) and gemmi /
-    ``ModelCIFReader`` to parse standard ``_atom_site`` data.
+    ``python-ihm`` parses the IHM categories, ``ModelCIFReader`` the standard
+    ``_atom_site`` data. Calling the instance does the whole job; the three
+    stages (:meth:`read_mapping`, :meth:`read_atom_data`,
+    :meth:`build_model_collection`) can also be driven in order by hand.
 
     Parameters
     ----------
@@ -61,18 +62,6 @@ class IHMReader:
         If the optional ``python-ihm`` dependency is not installed.
     FileNotFoundError
         If ``filepath`` does not exist.
-
-    Examples
-    --------
-    ::
-
-        reader = IHMReader("ensemble.cif")
-        model_collection, mapping = reader(max_res=1.5)
-
-        # Or step by step:
-        mapping = reader.read_mapping()
-        mapping.atom_data_per_state = reader.read_atom_data(mapping)
-        model_collection = reader.build_model_collection(mapping)
     """
 
     def __init__(self, filepath: str, verbose: int = 0):
@@ -89,10 +78,9 @@ class IHMReader:
     @staticmethod
     def is_ihm_file(filepath: str) -> bool:
         """
-        Quick check whether a CIF file contains IHM categories.
+        Quick check for ``_ihm_model_list`` / ``_ihm_multi_state_modeling`` loops.
 
-        Uses gemmi to avoid requiring ``python-ihm`` for detection.
-        Looks for ``_ihm_model_list`` or ``_ihm_multi_state_modeling`` loops.
+        Uses gemmi only, so detection does not require ``python-ihm``.
 
         Parameters
         ----------
@@ -121,15 +109,13 @@ class IHMReader:
 
     def read_mapping(self) -> IHMEnsembleMapping:
         """
-        Parse IHM categories and build an ``IHMEnsembleMapping``.
+        Parse the IHM categories into an ``IHMEnsembleMapping``.
 
-        Reads the following IHM categories:
-        - ``_ihm_multi_state_modeling`` -> states
-        - ``_ihm_model_list`` -> model enumeration
-        - ``_ihm_model_group`` + ``_ihm_model_group_link`` -> groups
-        - ``_ihm_multi_state_model_group_link`` -> state-group fractions
-
-        Also extracts cell and spacegroup from standard mmCIF categories.
+        ``_ihm_multi_state_modeling`` gives the states, ``_ihm_model_group``
+        (+ ``_ihm_model_group_link``) the groups and
+        ``_ihm_multi_state_model_group_link`` the per-group state fractions;
+        cell and spacegroup come from the standard categories. Atom data is
+        NOT read -- see :meth:`read_atom_data`.
 
         Returns
         -------
@@ -377,20 +363,17 @@ class IHMReader:
 
     def read_atom_data(self, mapping: IHMEnsembleMapping) -> Dict[int, pd.DataFrame]:
         """
-        Extract per-state atom DataFrames using ``pdbx_PDB_model_num``.
-
-        Reuses ``ModelCIFReader`` for robust ``_atom_site`` parsing, then
-        splits by model number and maps to state IDs.
+        Split ``_atom_site`` into per-state DataFrames by ``pdbx_PDB_model_num``.
 
         Parameters
         ----------
         mapping : IHMEnsembleMapping
-            Mapping with state info (specifically ``model_num`` per state).
+            Mapping whose states carry the ``model_num`` to select on.
 
         Returns
         -------
         dict of int -> pandas.DataFrame
-            Mapping of ``state_id`` -> atom DataFrame.
+            ``state_id`` -> atom DataFrame.
         """
         from torchref.io.cif_readers import ModelCIFReader
 
@@ -445,15 +428,14 @@ class IHMReader:
         device: "Optional[torch.device]" = None,
     ) -> "ModelCollection":
         """
-        Build a ``ModelCollection`` from parsed IHM data.
-
-        For each state, creates a ``ModelFT`` and loads atom data.
-        Then assembles a ``ModelCollection`` with one timepoint per model group.
+        Build a ``ModelCollection``: one ``ModelFT`` per state, one timepoint
+        per model group.
 
         Parameters
         ----------
         mapping : IHMEnsembleMapping
-            Must have ``atom_data_per_state`` populated.
+            Must already have ``atom_data_per_state`` populated by
+            :meth:`read_atom_data`.
         max_res : float
             Maximum resolution for FFT grid setup, in Angstroms.
         device : torch.device, optional
@@ -474,10 +456,9 @@ class IHMReader:
                 "Call read_atom_data() first."
             )
 
-        if device is None:
-            from torchref.config import get_default_device
+        from torchref.config import normalize_device
 
-            device = get_default_device()
+        device = normalize_device(device)
 
         # Build one ModelFT per state
         base_models = []
@@ -585,41 +566,22 @@ class IHMWriter:
     """
     Write a torchref ``ModelCollection`` to IHM mmCIF format.
 
-    Uses ``python-ihm`` to build a complete IHM System object and write
-    it as a compliant mmCIF file.
+    Builds a ``python-ihm`` System and writes it as compliant mmCIF; see
+    :meth:`write` for what the output does and does not round-trip.
 
     Parameters
     ----------
     model_collection : ModelCollection
         The collection to write.
     mapping : IHMEnsembleMapping, optional
-        Original mapping for round-tripping metadata. If ``None``,
-        creates a minimal mapping from the collection structure.
+        Original mapping, for round-tripping metadata. If None, a minimal one
+        is derived from the collection structure.
     datasets : dict of {str: ReflectionData}, optional
-        Per-timepoint reflection data keyed by timepoint name. When
-        provided, the corresponding per-timepoint ``_refln`` blocks are
-        appended to the output file by ``write()``. If ``None`` (default),
-        no reflection blocks are written.
-
-        Note: ``ReflectionData`` appears only as a forward-reference string
-        annotation here and is not imported by this module.
+        Per-timepoint reflection data keyed by timepoint name; when given,
+        matching per-timepoint ``_refln`` blocks are appended by
+        :meth:`write`. None (default) writes no reflection blocks.
     verbose : int
         Verbosity level.
-
-    Examples
-    --------
-    ::
-
-        writer = IHMWriter(model_collection, mapping=mapping)
-        writer.write("refined_ensemble.cif")
-
-        # Or without a pre-existing mapping:
-        writer = IHMWriter(model_collection)
-        writer.write("refined_ensemble.cif")
-
-        # With per-timepoint reflection data (writes _refln blocks):
-        writer = IHMWriter(model_collection, datasets=datasets)
-        writer.write("refined_ensemble.cif")
     """
 
     def __init__(
@@ -699,30 +661,15 @@ class IHMWriter:
 
     def write(self, filepath: str) -> None:
         """
-        Write IHM mmCIF file.
+        Write the IHM mmCIF file: entity/assembly, multi-state definitions,
+        model groups, and per-state coordinates keyed by ``pdbx_PDB_model_num``.
 
-        Builds a ``python-ihm`` System object with:
-        - Entity and assembly from base model atom data
-        - Multi-state definitions from mapping states
-        - Model groups from mapping groups
-        - Atom coordinates per state via ``pdbx_PDB_model_num``
-
-        Notes
-        -----
-        Population fractions are written onto ``ihm.model.State`` via its
-        single ``population_fraction`` scalar. Because that attribute is
-        per-state (not per-(state, group)), assigning fractions while
-        linking multiple groups to a state overwrites earlier values, so
-        the per-group ``state_fractions`` in the mapping are not fully
-        round-tripped.
-
-        After ``python-ihm`` writes the IHM categories, the file is
-        re-read and rewritten via gemmi to append the multi-model
-        ``_atom_site`` data (always) and, when ``datasets`` was supplied
-        at construction, per-timepoint ``_refln`` blocks. This means the
-        output file is opened and rewritten more than once.
-
-        This method returns ``None``.
+        Two caveats. Population fractions go onto ``ihm.model.State``, whose
+        ``population_fraction`` is a single per-state scalar, so linking several
+        groups to one state overwrites earlier values -- the mapping's per-group
+        ``state_fractions`` are NOT fully round-tripped. And the file is written
+        more than once: gemmi re-reads and rewrites it to append the multi-model
+        ``_atom_site`` loop, plus ``_refln`` blocks when ``datasets`` was given.
 
         Parameters
         ----------
@@ -832,10 +779,8 @@ class IHMWriter:
         verbose: int = 0,
     ) -> "IHMWriter":
         """
-        Create an IHMWriter from a MixedModel (instead of ModelCollection).
-
-        Wraps the MixedModel's constituent models in a lightweight adapter
-        that provides the interface expected by the writer.
+        Create an IHMWriter from a MixedModel instead of a ModelCollection,
+        wrapping its constituent models in :class:`_MixedModelAdapter`.
 
         Parameters
         ----------

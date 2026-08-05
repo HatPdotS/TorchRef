@@ -1,45 +1,16 @@
 """
-Statistics Utilities for torchref.
+Verbosity-aware statistics reporting across refinement components.
 
-Provides verbosity-aware statistics reporting across all refinement components.
+Wrap a number with :func:`stat` at one of ``VERBOSITY_ESSENTIAL`` (0: major weights,
+R-factors), ``_STANDARD`` (1: component weights and losses), ``_DETAILED`` (2: RMSDs,
+per-restraint) or ``_DEBUG`` (3: internals), then :func:`filter_stats` to a level::
 
-Verbosity Levels
-----------------
-- VERBOSITY_ESSENTIAL (0): Major weights (ADP, GEOM, Xray targets), R-factors
-- VERBOSITY_STANDARD (1): Component weights and component losses
-- VERBOSITY_DETAILED (2): Detailed stats (RMSDs, per-restraint statistics)
-- VERBOSITY_DEBUG (3): All internal parameters for debugging
-
-Usage
------
-::
-
-    from torchref.utils.stats import stat, filter_stats, VERBOSITY_STANDARD
-    stats = {
-        'rwork': stat(0.20, VERBOSITY_ESSENTIAL),
-        'bond_rmsd': stat(0.015, VERBOSITY_DETAILED),
-    }
-    filter_stats(stats, VERBOSITY_ESSENTIAL)
+    filter_stats({'rwork': stat(0.20, VERBOSITY_ESSENTIAL)}, VERBOSITY_ESSENTIAL)
     # {'rwork': 0.20}
 
-The JSON example below only works because importing this module installs a
-global ``json.dumps`` / ``json.dump`` patch (see Side Effects). Without that
-side effect, ``json.dumps`` of a dict containing ``StatEntry`` values would
-raise ``TypeError`` unless ``cls=StatEntryEncoder`` is passed explicitly::
-
-    # After importing this module, a plain call already serializes StatEntry
-    # values (and torch/numpy objects) via the patched default encoder:
-    import json
-    json.dumps(stats)
-    # '{"rwork": 0.2, "bond_rmsd": 0.015}'
-
-Side Effects
-------------
-Importing this module replaces the standard-library ``json.dumps`` and
-``json.dump`` with wrappers that default the ``cls`` argument to
-:class:`StatEntryEncoder`. This is a global, process-wide patch: any
-``json.dumps``/``json.dump`` call without an explicit ``cls`` will use the
-custom encoder after this module is imported.
+**Import side effect:** this module replaces the stdlib ``json.dumps``/``json.dump``
+process-wide with wrappers defaulting ``cls`` to :class:`StatEntryEncoder`, so any call
+without an explicit ``cls`` uses the custom encoder once this module is imported anywhere.
 """
 
 import json
@@ -76,34 +47,23 @@ class StatEntry:
         return f"{self.value}"
 
     def __json__(self):
-        """Return a JSON-serializable representation (just the value).
+        """The value, for libraries that look for a ``__json__`` hook.
 
-        Notes
-        -----
-        ``__json__`` is a non-standard, courtesy hook. The stdlib ``json``
-        module does not call it; the bundled :class:`StatEntryEncoder`
-        serializes ``StatEntry`` via its ``default`` method (returning
-        ``.value`` directly), so this method is unused unless an external
-        library happens to look for a ``__json__`` hook.
+        Dead weight for the stdlib, which never calls it -- :class:`StatEntryEncoder` does
+        the real work in its ``default``.
         """
         return self.value
 
 
 class StatEntryEncoder(json.JSONEncoder):
-    """
-    Custom JSON encoder that handles StatEntry and torch tensors.
+    """JSON encoder for ``StatEntry``, torch tensors and numpy scalars/arrays.
 
-    Examples
-    --------
-    ::
-
-        json.dumps(data, cls=StatEntryEncoder)
+    Installed as the default by this module's import patch, so ``cls=`` is rarely needed.
     """
 
     def default(self, obj):
         if isinstance(obj, StatEntry):
             return obj.value
-        # Handle torch tensors
         try:
             import torch
 
@@ -111,7 +71,6 @@ class StatEntryEncoder(json.JSONEncoder):
                 return obj.tolist() if obj.numel() > 1 else obj.item()
         except ImportError:
             pass
-        # Handle numpy arrays
         try:
             import numpy as np
 
@@ -149,27 +108,17 @@ json.dump = _patched_dump
 
 
 def stat(value: Any, verbosity: int = VERBOSITY_STANDARD) -> StatEntry:
-    """
-    Create a StatEntry with given value and verbosity.
-
-    Parameters
-    ----------
-    value : Any
-        The statistic value.
-    verbosity : int, optional
-        Verbosity level. Default is VERBOSITY_STANDARD.
-
-    Returns
-    -------
-    StatEntry
-        A statistics entry object.
-    """
+    """Tag ``value`` with the verbosity level at which it should be reported."""
     return StatEntry(value=value, verbosity=verbosity)
 
 
 def filter_stats(stats: Dict, max_verbosity: int) -> Dict:
     """
-    Filter stats dictionary to only include entries at or below max_verbosity.
+    Keep entries at or below ``max_verbosity``, unwrapping :class:`StatEntry`.
+
+    Recurses into nested dicts and drops any that end up empty. A value that is *not* a
+    ``StatEntry`` has no level to test, so it is treated as ``VERBOSITY_STANDARD`` and kept
+    at level 1 and above.
 
     Parameters
     ----------
@@ -181,7 +130,7 @@ def filter_stats(stats: Dict, max_verbosity: int) -> Dict:
     Returns
     -------
     dict
-        Filtered stats with raw values (StatEntry unwrapped).
+        Filtered stats holding raw values.
     """
     filtered = {}
     for key, val in stats.items():
@@ -201,7 +150,9 @@ def filter_stats(stats: Dict, max_verbosity: int) -> Dict:
 
 def flatten_stats(stats: Dict, prefix: str = "") -> Dict[str, Any]:
     """
-    Flatten nested stats dict into flat dict with dotted keys.
+    Flatten a nested stats dict to dotted keys, unwrapping :class:`StatEntry`.
+
+    Unlike :func:`filter_stats` this keeps every entry regardless of verbosity.
 
     Parameters
     ----------
@@ -209,11 +160,6 @@ def flatten_stats(stats: Dict, prefix: str = "") -> Dict[str, Any]:
         Nested stats dictionary.
     prefix : str, optional
         Prefix for keys. Default is ''.
-
-    Returns
-    -------
-    dict
-        Flattened dictionary with dotted keys.
     """
     flat = {}
     for key, val in stats.items():
@@ -229,7 +175,10 @@ def flatten_stats(stats: Dict, prefix: str = "") -> Dict[str, Any]:
 
 def format_stats_table(stats: Dict, title: str = "", indent: int = 2) -> str:
     """
-    Format stats dictionary as a printable table.
+    Format a stats dictionary as a printable table.
+
+    Expects raw values -- run :func:`filter_stats` first. Nesting is handled to three
+    levels only; anything deeper is rendered with ``str()``.
 
     Parameters
     ----------
@@ -239,11 +188,6 @@ def format_stats_table(stats: Dict, title: str = "", indent: int = 2) -> str:
         Title for the table.
     indent : int, optional
         Indentation spaces. Default is 2.
-
-    Returns
-    -------
-    str
-        Formatted table string.
     """
     lines = []
     ind = " " * indent

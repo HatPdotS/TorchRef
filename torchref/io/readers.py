@@ -1,16 +1,9 @@
 """
-Top-level file readers for object creation.
+Top-level file readers that construct the domain object for a file path.
 
-These thin convenience functions construct the appropriate domain object
-from a file path, wrapping the existing loaders. ``read_cif`` inspects the
-CIF content to dispatch between reflection data, an atomic model, an IHM
-ensemble, or a restraint dictionary.
-
-Examples
---------
-::
-
-    from torchref import read_mtz, read_cif, read_pdb
+Unlike the per-format ``read`` helpers these return the loaded object, not a
+reader. ``read_cif`` inspects the CIF content to dispatch between reflection
+data, an atomic model, an IHM ensemble and a restraint dictionary::
 
     data  = read_mtz("reflections.mtz")   # -> ReflectionData
     model = read_pdb("structure.pdb")     # -> ModelFT

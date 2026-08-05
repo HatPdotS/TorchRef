@@ -1,14 +1,9 @@
 """Triton forward + analytic backward for riding-hydrogen placement.
 
-The eager helper (``_place_h_jit`` in :mod:`torchref.restraints.hydrogen_topology`)
-is a ``@torch.jit.script`` that fuses the forward pass into ~30 launches.
-Its backward, however, flows through PyTorch autograd op-by-op (cross
-products, normalisations, ``where``-branch routing); for ~3 k hydrogens
-that's ~100 launches and dominates the non-bonded backward cost (1.9 ms
-out of 5.3 ms total fwd+bw on 1DAW / A100).
-
-This kernel does both forward and analytic backward in one launch each.
-The math mirrors ``_place_h_jit`` exactly:
+One launch each way, where the eager helper (``_place_h_jit`` in
+:mod:`torchref.restraints.hydrogen_topology`) fuses only the forward and leaves its
+backward to run op-by-op through autograd -- ~100 launches at 3k hydrogens, which
+dominates the non-bonded backward. The math mirrors ``_place_h_jit`` exactly:
 
     pp        = xyz[parent_idx]
     nb_pos[i] = xyz[nb_idx[i]]

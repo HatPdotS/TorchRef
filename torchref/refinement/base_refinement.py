@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 import torch
 from torch.nn import Module as nnModule
 
-from torchref.config import get_default_device
+from torchref.config import normalize_device
 from torchref.io import ReflectionData
 from torchref.model.model_ft import ModelFT
 from torchref.refinement.logger import Logger
@@ -22,9 +22,11 @@ from torchref.refinement.targets.combined import (
 )
 
 # Target system imports
+from torchref.refinement.model_error_estimation.sigma_a import SHRINK_ENABLED, SIGMA_A_MAX
 from torchref.refinement.targets.xray import create_xray_target
 from torchref.refinement.weighting import ManualWeighting
 from torchref.scaling.scaler import Scaler
+from torchref.scaling.scaler_base import DEFAULT_SCALE_TARGET
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
@@ -35,18 +37,11 @@ from torchref.utils.device_resolution import resolve_device
 # MULTIPLICATIVE: a target's effective weight is the product of its path levels
 # (e.g. geometry/ramachandran = weight[geometry] * weight[geometry/ramachandran];
 # see LossState.get_effective_weight), so a component key scales *within* its
-# group. Tuned on the AlphaFold-start benchmark (paper/figure2_alphafold_start,
-# 10x10 log weight screen over geometry x adp, validation-landscape analysis):
-# geometry=0.2 pulls bond/angle RMSZ close to the ideal 1.0 (vs ~1.4 at 0.1) at no
-# R-free cost, and adp=0.02 keeps the main-chain B-factor distribution near ideal
-# (MC-bond B RMSZ ~1.6, vs a badly under-restrained ~3.5 at adp=0.005) — also
-# essentially free in R-free. (The earlier reference xray=10/geometry=1/adp=0.1
-# normalizes — divide by 10 — to xray=1/geometry=0.1/adp=0.01.)
+# group. Calibrated on the AlphaFold-start benchmark against geometry/ADP RMSZ.
 #
 # geometry/ramachandran=0 DISABLES the Ramachandran restraint by default (0.2 * 0
-# = 0, so aggregate() skips it): the AF-start ablation (745 paired structures)
-# showed it has no measurable effect (median dR-free +0.0002, geometry RMSZ
-# unchanged). Set it back to a positive value via --weights to re-enable.
+# = 0, so aggregate() skips it). Set it back to a positive value via --weights to
+# re-enable.
 DEFAULT_GROUP_WEIGHTS = {
     "xray": 1.0,
     "geometry": 0.2,
@@ -70,41 +65,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
         refinement = Refinement(data_file='data.mtz', pdb='model.pdb')
 
-    Parameters
-    ----------
-    data_file : str, optional
-        Path to MTZ or CIF file containing reflection data.
-    pdb : str, optional
-        Path to PDB or CIF file containing initial model.
-    cif : str, optional
-        Path to CIF file for restraints.
-    verbose : int, optional
-        Verbosity level. Default is 1.
-    max_res : float, optional
-        Maximum resolution for reflections.
-    device : torch.device, optional
-        Computation device. Defaults to the configured default device.
-    nbins : int, optional
-        Number of resolution bins. Default is 10.
-    column_names : dict, optional
-        Mapping of logical column roles to MTZ column labels.
-    wavelength : float, optional
-        X-ray wavelength in Angstroms for the anomalous (f'/f'') correction.
-        Default 1.0; ``0`` disables anomalous refinement entirely.
-    anomalous_threshold : float, optional
-        Threshold controlling anomalous data handling. Default 0.5.
-    french_wilson : bool, optional
-        Whether to derive amplitudes from intensities via French-Wilson.
-        Default True.
-    anomalous : bool, optional
-        Anomalous (Bijvoet) load preference; None auto-detects. Default None.
-    adp_mode : str, optional
-        ADP parametrization, ``"isotropic"`` (default) or ``"anisotropic"``.
-    aniso_selection : str, optional
-        Phenix-style selection of atoms refined anisotropically when
-        ``adp_mode="anisotropic"``.
-
-    See the :meth:`__init__` docstring for the full parameter descriptions.
+    Constructor parameters are documented on :meth:`__init__`.
 
     Attributes
     ----------
@@ -122,9 +83,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Loss weighting scheme holding the data/prior group weights. Defaults to
         ``ManualWeighting(DEFAULT_GROUP_WEIGHTS)``; reassign to change the scheme.
     weighter : None
-        Vestigial state-dict placeholder, always ``None``. The live weighting
-        knob is :attr:`weighting`; ``weighter`` is retained only for state-dict
-        compatibility.
+        Vestigial state-dict placeholder, always ``None``; the live weighting knob
+        is :attr:`weighting`.
     """
 
     def __init__(
@@ -142,55 +102,63 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         french_wilson: bool = True,
         anomalous: Optional[bool] = None,
         adp_mode: str = "isotropic",
+        xray_mode: str = "ml",
+        sigma_a_max: float = SIGMA_A_MAX,
+        shrink: bool = SHRINK_ENABLED,
+        scale_target: str = DEFAULT_SCALE_TARGET,
         aniso_selection: Optional[str] = None,
     ):
-        """
-        Initialize Refinement.
+        """Initialize Refinement, fully if ``data_file`` and ``pdb`` are given.
 
-        If data_file and pdb are provided, fully initializes the refinement.
-        If not provided (empty init), creates a shell with empty submodules
-        ready for load_state_dict().
+        Without them this is an empty init: a shell with empty submodules, ready
+        for :meth:`load_state_dict`.
 
         Parameters
         ----------
         data_file : str, optional
-            Path to MTZ or CIF file containing reflection data.
+            Path to the MTZ or CIF file holding reflection data.
         pdb : str, optional
-            Path to PDB or CIF file containing initial model.
+            Path to the PDB or CIF file holding the initial model.
         cif : str, optional
-            Path to CIF file for restraints.
+            Path to a CIF file of restraints (monomer library).
         verbose : int, optional
-            Verbosity level. Default is 1.
+            Verbosity level. Default 1.
         max_res : float, optional
-            Maximum resolution for reflections.
+            High-resolution cutoff; defaults to the data's own limit.
         device : torch.device, optional
             Computation device. Defaults to the configured default device.
         nbins : int, optional
-            Number of resolution bins. Default is 10.
-        french_wilson : bool, optional
-            Whether to derive amplitudes from intensities via French-Wilson.
-            Default True. Set False to use existing French-Wilson-corrected
-            ``F``/``SIGF`` columns directly when the MTZ also carries
-            intensities.
-        anomalous : bool, optional
-            Anomalous (Bijvoet) load preference. If None (default), anomalous
-            ``F(+)/F(-)`` (or ``I(+)/I(-)``) data are auto-detected and loaded as
-            Friedel pairs when present, enabling the model's f'' term. True forces
-            this; False forces a merged load (f'' disabled).
+            Number of resolution bins for the scaler. Default 10.
+        column_names : dict, optional
+            Mapping of logical column roles to MTZ column labels.
         wavelength : float, optional
-            X-ray wavelength in Angstroms for the anomalous (f'/f'') scattering
-            correction. Default 1.0. A value of ``0`` means "no anomalous
-            refinement": it disables the correction (model wavelength ``None``)
-            and forces a Friedel-merged read (overrides ``anomalous`` to False).
+            X-ray wavelength in Angstroms for the anomalous (f'/f'') correction.
+            ``0`` means "no anomalous refinement": it disables the correction and
+            forces a Friedel-merged read, **overriding** ``anomalous`` to False.
+        anomalous_threshold : float, optional
+            Threshold controlling anomalous data handling. Default 0.5.
+        french_wilson : bool, optional
+            Derive amplitudes from intensities via French-Wilson. Set False to use
+            existing ``F``/``SIGF`` columns when the MTZ also carries intensities.
+        anomalous : bool, optional
+            Anomalous (Bijvoet) load preference. None auto-detects ``F(+)/F(-)``
+            (or ``I(+)/I(-)``) and loads Friedel pairs when present, enabling the
+            model's f'' term; True forces it, False forces a merged load.
         adp_mode : str, optional
             ADP parametrization: ``"isotropic"`` (default) refines a per-atom
-            B-factor; ``"anisotropic"`` refines a 6-component U tensor for the
-            atoms selected by ``aniso_selection``. The model is converted between
-            representations accordingly (see :meth:`Model.set_adp_mode`).
+            B-factor, ``"anisotropic"`` a 6-component U tensor for the atoms
+            selected by ``aniso_selection`` (see :meth:`Model.set_adp_mode`).
+        xray_mode : str, optional
+            X-ray target taxonomy row; see :meth:`set_xray_target_mode`.
+        sigma_a_max, shrink : optional
+            ``sigma_A`` estimator knobs; see
+            :mod:`torchref.refinement.model_error_estimation.sigma_a`.
+        scale_target : str, optional
+            Objective the scale fit minimises; see
+            :meth:`torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`.
         aniso_selection : str, optional
-            Phenix-style atom selection of atoms refined anisotropically when
-            ``adp_mode="anisotropic"``. Defaults to
-            ``"not resname HOH and not element H"`` (all non-water heavy atoms).
+            Phenix-style selection of atoms refined anisotropically when
+            ``adp_mode="anisotropic"``. Defaults to all non-water heavy atoms.
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -219,6 +187,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # model right after load, before scaling/restraints/targets.
         self.adp_mode = adp_mode
         self.aniso_selection = aniso_selection
+        # Everything the x-ray targets are built from must be set BEFORE
+        # _init_targets() further down this __init__ (it also calls get_scales()).
+        # They are read back through _xray_target_kwargs(), which is the single
+        # source of truth for target construction -- see the note there.
+        self.scale_target = scale_target
+        self.xray_mode = xray_mode
+        self.sigma_a_max = sigma_a_max
+        self.shrink = shrink
         # A wavelength of 0 means "no anomalous refinement": disable the f'/f''
         # correction (model wavelength None) and force a Friedel-merged read so
         # F(+)/F(-) are not loaded as Bijvoet pairs.
@@ -324,19 +300,13 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             raise e
 
     def _freeze_unrestrained_residues(self):
-        """Freeze xyz of multi-atom, non-water residues that contain an atom with
-        no geometry restraint.
+        """Freeze xyz of multi-atom, non-water residues holding an unrestrained atom.
 
-        After restraints are built, an atom that appears in no bond / angle /
-        torsion / plane / chiral restraint has nothing holding its position;
-        refining it against the X-ray target alone distorts the geometry (the
-        usual cause is a ligand whose monomer-library CIF could not be found).
-        Such an atom's whole residue is frozen in xyz, *except*:
-
-        - waters (legitimately restraint-free), and
-        - single-atom residues (ions: no internal geometry to break).
-
-        B-factors and occupancy remain refinable.
+        An atom in no bond/angle/torsion/plane/chiral restraint has nothing holding
+        its position (usually a ligand whose monomer CIF was not found), so refining
+        it against X-ray alone distorts the geometry. Waters and single-atom residues
+        are exempt; B-factors and occupancy stay refinable. Must run after restraints
+        are built.
         """
         import pandas as pd
 
@@ -405,34 +375,44 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 f"residue(s) with incomplete restraints: {shown}"
             )
 
-    def _init_targets(self, xray_mode: str = "ml"):
-        """
-        Initialize target functions.
+    def _xray_target_kwargs(self) -> dict:
+        """Every configuration value the x-ray targets are built from, in one place.
 
-        Parameters
-        ----------
-        xray_mode : str, optional
-            X-ray target mode. Options are 'gaussian', 'ls', 'ls_wunit_k1',
-            'rice', 'ml', or 'bhattacharyya'. Default is 'ml'
-            (maximum-likelihood Read MLF with Luzzati σ_A).
+        **Keep this the only place the kwargs are spelled out.** Both construction
+        paths go through it; a second build site silently reverts whatever it forgets
+        to pass, which once made five CLI flags no-ops. The ``getattr`` fallbacks are
+        required: the ensemble and ``create_from_state_dict`` paths build targets
+        before these attributes exist.
         """
-        # X-ray targets (now accept model, data, scaler directly)
-        self.xray_target_work = create_xray_target(
+        return dict(
             model=self.model,
             data=self.reflection_data,
             scaler=self.scaler,
-            mode=xray_mode,
-            use_work_set=True,
             verbose=self.verbose,
+            sigma_a_max=getattr(self, "sigma_a_max", SIGMA_A_MAX),
+            shrink=getattr(self, "shrink", SHRINK_ENABLED),
+        )
+
+    def _build_xray_targets(self, mode: str) -> None:
+        """Build the work/test x-ray targets for ``mode`` with the full configuration."""
+        kw = self._xray_target_kwargs()
+        self.xray_target_work = create_xray_target(
+            mode=mode, use_work_set=True, **kw
         )
         self.xray_target_test = create_xray_target(
-            model=self.model,
-            data=self.reflection_data,
-            scaler=self.scaler,
-            mode=xray_mode,
-            use_work_set=False,
-            verbose=self.verbose,
+            mode=mode, use_work_set=False, **kw
         )
+        self.xray_mode = mode
+
+    def _init_targets(self, xray_mode: str = None):
+        """Build the x-ray, geometry and ADP targets and initialise the scales.
+
+        ``xray_mode`` defaults to ``self.xray_mode`` (itself ``'ml'``), so the
+        deserialization path picks up the stored mode rather than the default.
+        """
+        if xray_mode is None:
+            xray_mode = getattr(self, "xray_mode", "ml")
+        self._build_xray_targets(xray_mode)
 
         # Total geometry target (handles bond, angle, torsion internally)
         # Geometry targets now accept model directly instead of refinement
@@ -454,28 +434,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         mode : str
-            X-ray target mode. Options: 'gaussian', 'ls', 'ls_wunit_k1', 'rice',
-            'ml', 'bhattacharyya'.
+            X-ray target mode: 'ml' (default), 'ml_noalpha', 'ml_full', 'nll_beta',
+            'nll', 'ls', 'ls_wunit_k1'. See
+            :mod:`torchref.refinement.targets.xray._specs` for the taxonomy.
         """
-        sigma_m_scale = getattr(self, "sigma_m_scale", 1.0)
-        self.xray_target_work = create_xray_target(
-            model=self.model,
-            data=self.reflection_data,
-            scaler=self.scaler,
-            mode=mode,
-            use_work_set=True,
-            sigma_m_scale=sigma_m_scale,
-            verbose=self.verbose,
-        )
-        self.xray_target_test = create_xray_target(
-            model=self.model,
-            data=self.reflection_data,
-            scaler=self.scaler,
-            mode=mode,
-            use_work_set=False,
-            sigma_m_scale=sigma_m_scale,
-            verbose=self.verbose,
-        )
+        self._build_xray_targets(mode)
         # Reset loss state since targets changed
         self.reset_loss_state()
         if self.verbose > 0:
@@ -483,43 +446,20 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     @property
     def data(self):
-        """
-        Expose reflection_data as 'data' for weighting module compatibility.
-
-        Returns
-        -------
-        ReflectionData
-            The reflection data container.
-        """
+        """``reflection_data`` under the name the weighting modules expect."""
         return self.reflection_data
 
     @property
     def loss_state(self) -> LossState:
-        """
-        Get or create the persistent LossState.
-
-        The LossState is created once and reused across refinement cycles.
-        Targets are registered once; weights are updated each cycle.
-
-        Returns
-        -------
-        LossState
-            The persistent loss state with targets registered.
-        """
+        """The persistent :class:`LossState`, created on first access and reused
+        across refinement cycles (targets registered once, weights re-applied)."""
         if self._loss_state is None:
             self._loss_state = self._create_loss_state()
         return self._loss_state
 
     @property
     def logger(self) -> Logger:
-        """
-        Get or create the Logger for this refinement.
-
-        Returns
-        -------
-        Logger
-            Logger instance linked to the persistent LossState.
-        """
+        """The :class:`Logger` bound to :attr:`loss_state`, created on first access."""
         if self._logger is None:
             self._logger = Logger(
                 state=self.loss_state,
@@ -528,43 +468,66 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return self._logger
 
     def reset_loss_state(self) -> None:
-        """
-        Reset the persistent LossState and Logger.
+        """Drop the persistent LossState and Logger so targets are re-registered.
 
-        Call this if targets need to be re-registered (e.g., after changing
-        target modes or reinitializing targets).
+        Required after changing target modes or reinitializing targets; without it
+        the stale state keeps serving the old targets and weights.
         """
         self._loss_state = None
         self._logger = None
 
-    def get_scales(self):
-        """
-        Initialize and refit the scaler against the current model.
+    def refine_scaler(self):
+        """Refit the scaler against the current model.
 
-        Calls ``scaler.initialize()``, flags outliers in the reflection data
-        (``z_threshold=5.0``), refits the scaler with LBFGS, then re-flags
-        outliers against the refitted scales. No-op when the scaler is ``None``
-        (e.g. targets such as ``ls_wunit_k1`` in ``binwise_optimal`` mode that
-        compute their own scale and intentionally leave ``self.scaler`` unset).
+        **The only place a scale gets fitted.** Every driver routes here, so the scale the
+        in-run R-factor is computed from is the one an external 0-cycle score would produce.
+
+        Warm: the existing scale is the starting point and carries across macrocycles. For a
+        cold start -- fresh ``log_scale``, rebuilt solvent and anisotropy -- call
+        :meth:`get_scales`.
+
+        The objective is ``self.scale_target``, not the body target: scaling is a
+        nuisance-magnitude fit that need not carry a model-error term, ``alpha`` is degenerate
+        with the scale being fitted, and for ``ml_full`` the body target would put a 32-node
+        quadrature inside every line-search evaluation. The fit runs on the same
+        :class:`LossState` machinery as the body steps, differing only in the loss and in
+        exposing only the scaler's parameters to the optimizer; see
+        :meth:`~torchref.scaling.scaler_base.ScalerBase.refine_lbfgs`.
+
+        **No-op when the scaler is ``None``** -- targets such as ``ls_wunit_k1`` in
+        ``binwise_optimal`` mode compute their own scale and leave it unset.
+
+        Returns
+        -------
+        dict or None
+            The scaler's per-step metrics, or None when there is no scaler.
+        """
+        if not hasattr(self, "scaler") or self.scaler is None:
+            return None
+        return self.scaler.refine_lbfgs(
+            scale_target=getattr(self, "scale_target", DEFAULT_SCALE_TARGET)
+        )
+
+    def get_scales(self):
+        """Cold-start the scaler against the current model: ``initialize()`` then
+        :meth:`refine_scaler`.
+
+        ``initialize()`` *replaces* ``log_scale`` with a fresh parameter and rebuilds the
+        solvent and anisotropy terms, so this discards a refined scale. Use it at
+        construction, when the model has been swapped, or for a one-shot 0-cycle score;
+        inside a macrocycle loop call :meth:`refine_scaler` instead.
         """
         if not hasattr(self, "scaler") or self.scaler is None:
             # Targets that compute their own scale (e.g. ls_wunit_k1 in
             # binwise_optimal mode) intentionally leave ref.scaler=None.
             # Nothing to initialize or refit here.
-            return
+            return None
         self.scaler.initialize()
-        self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
-        self.scaler.refine_lbfgs()
-        self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=5.0)
+        return self.refine_scaler()
 
     def setup_scaler(self):
-        """
-        Construct the scaler and assign it to ``self.scaler``.
-
-        Uses the class named by ``self._scaler_class`` if set, otherwise the
-        default :class:`Scaler`, and wires it to the current model, reflection
-        data, ``nbins``, verbosity, and device.
-        """
+        """Construct ``self.scaler`` from ``self._scaler_class`` (default
+        :class:`Scaler`), wired to the current model, data, ``nbins`` and device."""
         cls = getattr(self, "_scaler_class", None) or Scaler
         self.scaler = cls(
             self.model,
@@ -579,22 +542,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         axis_rtol: float = 0.01,
         angle_atol_deg: float = 1.0,
     ) -> None:
-        """Always cast the reflection-data cell onto the model.
+        """Always cast the reflection-data cell onto the model, warning if it differs.
 
-        Mirrors cctbx's ``xrs.customized_copy(crystal_symmetry=data_sym)``:
-        the data cell is authoritative because HKL indices are defined
-        relative to it. Atoms keep their Cartesian coordinates and are
-        reinterpreted in the new cell — fractional coordinates implicitly
-        shift. Without this sync, ``F_calc`` is computed with the wrong
-        basis at HKLs that mean something else, producing a pose-dependent
-        phase bias that distorts the gradient (9RTS case: a 2.4% b-axis
-        mismatch was pulling rigid-body LBFGS into a worse local minimum).
-
-        The sync runs unconditionally. A warning is emitted only when the
-        disagreement is large enough to flag for the user:
-
-        - any axis differs by ≥ ``axis_rtol`` relative (default 1%)
-        - any angle differs by ≥ ``angle_atol_deg`` absolute (default 1°)
+        Mirrors cctbx's ``xrs.customized_copy(crystal_symmetry=data_sym)``: the data
+        cell is authoritative because HKL indices are defined relative to it. **Atoms
+        keep their Cartesian coordinates**, so fractional coordinates implicitly
+        shift. Skipping the sync computes ``F_calc`` on the wrong basis and biases the
+        gradient. The warning fires only past tolerance: any axis off by
+        ``axis_rtol`` relative, or any angle by ``angle_atol_deg`` absolute.
         """
         if self.model is None or self.model.cell is None:
             return
@@ -632,23 +587,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.model.reset_cache()
 
     def parameters(self, recurse: bool = True):
-        """
-        Return unique parameters from this module and all submodules.
+        """Unique parameters of this module and, with ``recurse``, its submodules.
 
-        Uses the default Module.parameters() to gather parameters, then removes
-        duplicates while preserving order to avoid passing the same tensor
-        multiple times to the optimizer.
-
-        Parameters
-        ----------
-        recurse : bool, optional
-            If True, yields parameters of this module and all submodules.
-            Default is True.
-
-        Returns
-        -------
-        list
-            List of unique parameter tensors.
+        Deduplicates ``Module.parameters()`` in order, so a tensor shared between two
+        submodules is not handed to the optimizer twice. Returns a list, not a
+        generator.
         """
         params = list[Any](super().parameters(recurse))
         seen = set()
@@ -661,22 +604,16 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return unique_params
 
     def get_fcalc(self, hkl=None, recalc=False):
-        """
-        Compute complex structure factors ``F_calc`` from the model.
+        """Complex ``F_calc`` per reflection, from the model.
 
         Parameters
         ----------
         hkl : array_like, optional
-            Reflection indices. If None, uses ``reflection_data.hkl_for_sf()``
-            (signed HKL, so Bijvoet mates at +h/-h get distinct ``|F_calc|``
-            under anomalous scattering; falls back to canonical hkl otherwise).
+            Reflection indices. None uses ``reflection_data.hkl_for_sf()`` -- signed
+            HKL, so Bijvoet mates at +h/-h get distinct ``|F_calc|`` under anomalous
+            scattering (falls back to canonical hkl).
         recalc : bool, optional
-            Force recomputation rather than reusing the cached SF. Default False.
-
-        Returns
-        -------
-        torch.Tensor
-            Complex ``F_calc`` per reflection.
+            Force recomputation rather than reusing the cached SF.
         """
         if hkl is None:
             # Signed HKL so Bijvoet mates (which share a canonical ASU index)
@@ -686,157 +623,55 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return self.model(hkl, recalc=recalc)
 
     def get_fcalc_scaled(self, hkl=None, recalc=False):
-        """
-        Compute scaled complex structure factors (``scaler(F_calc)``).
-
-        See :meth:`get_fcalc` for the ``hkl`` and ``recalc`` parameters.
-
-        Returns
-        -------
-        torch.Tensor
-            Complex scaled ``F_calc`` per reflection.
-        """
+        """``scaler(F_calc)``; see :meth:`get_fcalc` for ``hkl`` and ``recalc``."""
         fcalc = self.get_fcalc(hkl, recalc=recalc)
         fcalc_scaled = self.scaler(fcalc)
         return fcalc_scaled
 
     def adp_loss(self):
-        """
-        Compute total ADP loss using TotalADPTarget.
-
-        This combines the components registered by ``TotalADPTarget``:
-
-        - ``simu``: bond-based B-factor similarity (SIMU-like)
-        - ``locality``: local-neighbourhood B-factor smoothness restraint
-        - ``KL``: KL-divergence spread control of the B-factor distribution
-
-        Returns
-        -------
-        torch.Tensor
-            Total ADP loss value.
-        """
+        """Total ADP loss: bond-based B similarity, locality smoothness, and the
+        KL spread control registered by ``TotalADPTarget``."""
         return self.adp_target()
 
     def get_F_calc(self, hkl=None, recalc=False):
-        """
-        Compute structure-factor amplitudes ``|F_calc|`` from the model.
-
-        See :meth:`get_fcalc` for the ``hkl`` and ``recalc`` parameters.
-
-        Returns
-        -------
-        torch.Tensor
-            Real ``|F_calc|`` per reflection.
-        """
+        """``|F_calc|``; see :meth:`get_fcalc` for ``hkl`` and ``recalc``."""
         return torch.abs(self.get_fcalc(hkl, recalc=recalc))
 
     def get_F_calc_scaled(self, hkl=None, recalc=False):
-        """
-        Compute scaled structure-factor amplitudes ``|scaler(F_calc)|``.
-
-        See :meth:`get_fcalc` for the ``hkl`` and ``recalc`` parameters.
-
-        Returns
-        -------
-        torch.Tensor
-            Real scaled ``|F_calc|`` per reflection.
-        """
+        """``|scaler(F_calc)|``; see :meth:`get_fcalc` for ``hkl`` and ``recalc``."""
         return torch.abs(self.get_fcalc_scaled(hkl, recalc=recalc))
 
     def nll_xray(self):
-        """
-        Compute X-ray negative log-likelihood for work and test sets.
-
-        Returns
-        -------
-        tuple of torch.Tensor
-            Tuple of (work_nll, test_nll) tensors.
-        """
+        """``(work_nll, test_nll)`` from the two instantiated x-ray targets."""
         return self.xray_target_work(), self.xray_target_test()
 
     def xray_loss_work(self) -> torch.Tensor:
-        """
-        Compute X-ray loss on work set using instantiated target.
-
-        Returns
-        -------
-        torch.Tensor
-            X-ray loss on work set.
-        """
+        """X-ray loss on the work set."""
         return self.xray_target_work()
 
     def xray_loss_test(self) -> torch.Tensor:
-        """
-        Compute X-ray loss on test set using instantiated target.
-
-        Returns
-        -------
-        torch.Tensor
-            X-ray loss on test set.
-        """
+        """X-ray loss on the test set."""
         return self.xray_target_test()
 
     def bond_loss(self) -> torch.Tensor:
-        """
-        Compute bond length NLL via geometry_target.
-
-        Returns
-        -------
-        torch.Tensor
-            Bond length NLL loss.
-
-        """
+        """Bond-length NLL component of the geometry target."""
         return self.geometry_target.target_losses()["bond_target"]
 
     def angle_loss(self) -> torch.Tensor:
-        """
-        Compute angle NLL via geometry_target.
-
-        Returns
-        -------
-        torch.Tensor
-            Angle NLL loss.
-        """
+        """Bond-angle NLL component of the geometry target."""
         return self.geometry_target.target_losses()["angle_target"]
 
     def torsion_loss(self) -> torch.Tensor:
-        """
-        Compute torsion angle NLL via geometry_target.
-
-        Returns
-        -------
-        torch.Tensor
-            Torsion angle NLL loss.
-        """
+        """Torsion-angle NLL component of the geometry target."""
         return self.geometry_target.target_losses()["torsion_target"]
 
     def geometry_loss(self) -> torch.Tensor:
-        """
-        Compute total geometry NLL using TotalGeometryTarget.
-
-        Returns
-        -------
-        torch.Tensor
-            Total geometry NLL loss.
-        """
+        """Total geometry NLL (all components of ``TotalGeometryTarget``)."""
         return self.geometry_target()
 
     def _create_loss_state(self) -> LossState:
-        """
-        Create a configured LossState for optimization (internal).
-
-        Sets up a LossState with all targets registered as callables with
-        hierarchical naming (e.g., 'geometry/bond', 'adp/simu'), then applies the
-        default group base weights ``DEFAULT_GROUP_WEIGHTS`` (xray 1 / geometry
-        0.2 / adp 0.02) — the single, transparent source of truth for the
-        data/prior balance (see that constant for the calibration rationale).
-
-        Returns
-        -------
-        LossState
-            Configured LossState with targets registered and default group
-            weights applied.
-        """
+        """Register every target under its hierarchical name and apply
+        :data:`DEFAULT_GROUP_WEIGHTS` via ``self.weighting``."""
         state = LossState(device=self.device)
 
         # Register X-ray target
@@ -864,90 +699,41 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
                 )
 
-        # Apply the weighting scheme (default: ManualWeighting holding the
-        # DEFAULT_GROUP_WEIGHTS — xray 1 / geometry 0.2 / adp 0.02). The scheme
-        # returns a {component: weight} dict; we apply it to the state. This is
-        # the single, transparent place the data/prior balance lives — see
-        # DEFAULT_GROUP_WEIGHTS for the calibration-offset rationale.
+        # The weighting scheme returns a {component: weight} dict. This is the single
+        # place the data/prior balance lives -- see DEFAULT_GROUP_WEIGHTS.
         state.set_weights(self.weighting(state))
 
         return state
 
     def create_loss_state(self) -> LossState:
-        """
-        Create a configured LossState for optimization.
-
-        Prefer the :attr:`loss_state` property for the persistent, reused
-        state. This method is retained for backwards compatibility and simply
-        delegates to :meth:`_create_loss_state` (it does not emit a runtime
-        ``DeprecationWarning``).
-
-        Returns
-        -------
-        LossState
-            Configured LossState with targets registered and the default group
-            weights applied.
-        """
+        """A fresh configured LossState; prefer the persistent :attr:`loss_state`."""
         return self._create_loss_state()
 
     def complete_loss_state(self) -> "LossState":
-        """
-        Update and return the persistent LossState.
+        """Refresh the persistent LossState's cached losses and return it.
 
-        Updates the persistent LossState with current meta, target info,
-        cached losses, and weights. The state is reused across cycles.
-
-        The cached active-parameter leaf set is *not* refreshed here. Stale
-        leaves are not a correctness hazard: a leaf that's in the set but
-        whose Parameter object was replaced externally (e.g. by
-        ``Model.freeze``) just gets ignored by ``_freeze_graph_extras``,
-        which costs a marginal amount of wasted backward work but never
-        produces wrong answers. If you do call ``Model.freeze`` /
-        ``Model.unfreeze`` between LossState creation and a refinement
-        step, call ``state.refresh_loss_leaves()`` explicitly.
-
-        Returns
-        -------
-        LossState
-            Complete LossState with targets, meta, losses, and weights.
+        The cached active-parameter leaf set is *not* refreshed. A stale leaf is
+        only wasted backward work, never a wrong answer -- but after calling
+        ``Model.freeze``/``unfreeze`` mid-run, call ``state.refresh_loss_leaves()``
+        yourself.
         """
         state = self.loss_state
         state.cache_losses()
         return state
 
     def xray_loss(self):
-        """
-        Compute X-ray loss on work set.
-
-        Returns
-        -------
-        torch.Tensor
-            X-ray loss on work set.
-        """
+        """Alias for :meth:`xray_loss_work`."""
         return self.xray_loss_work()
 
     def restraints_loss(self):
-        """
-        Compute total geometry restraints loss.
-
-        Returns
-        -------
-        torch.Tensor
-            Total geometry restraints loss.
-        """
+        """Alias for :meth:`geometry_loss`."""
         return self.geometry_loss()
 
     def collect_metrics(self) -> Dict[str, Any]:
-        """
-        Collect refinement metrics (R-factors, geometry, ADP) for logging.
+        """R-factors, geometry and ADP stats for logging, unfiltered.
 
-        This is the standard method for gathering refinement metrics for logging.
-        Returns full unfiltered stats - filtering is done at display time.
-
-        Returns
-        -------
-        dict
-            Dictionary with all metrics (unfiltered, with StatEntry objects).
+        Filtering by verbosity happens at display time, so the returned dict holds
+        ``StatEntry`` objects rather than plain values.
         """
         metrics = {}
 
@@ -974,22 +760,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return metrics
 
     def add_target_info_to_state(self, state: "LossState") -> "LossState":
-        """
-        Add target information from geometry and ADP targets to LossState.meta.
-
-        .. deprecated::
-            This method is no longer needed. Use :meth:`complete_loss_state`
-            instead, which handles all state setup in one call.
-
-        Parameters
-        ----------
-        state : LossState
-            Current loss state. Meta will be updated with target info.
-        Returns
-        -------
-        LossState
-            Updated loss state (unchanged).
-        """
+        """Deprecated no-op that returns ``state`` unchanged; use
+        :meth:`complete_loss_state`, which does all state setup in one call."""
         import warnings
 
         warnings.warn(
@@ -1011,14 +783,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         return self.xray_target_work.get_rfactor()
 
     def plot_fcalc_vs_fobs(self, outpath="fcalc_vs_fobs.png"):
-        """
-        Scatter-plot calculated vs observed amplitudes and save to ``outpath``.
-
-        Parameters
-        ----------
-        outpath : str, optional
-            Output PNG path. Default ``"fcalc_vs_fobs.png"``.
-        """
+        """Scatter-plot calculated vs observed amplitudes, saved as a PNG at
+        ``outpath``."""
         import matplotlib.pyplot as plt
 
         with torch.no_grad():
@@ -1046,13 +812,11 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         out_mtz_path : str
             Output MTZ path.
         anomalous : bool, optional
-            If True, emit a phenix-style anomalous MTZ: display maps and merged
-            columns in the canonical ASU (Friedel mates merged by mean
-            amplitude) plus unstacked ``F-obs(+/-)`` / ``F-model(+/-)`` columns
-            on the same ASU index. If False, the legacy per-row layout is
-            written. If None (default), chosen automatically from the data:
-            anomalous output when the data were loaded as Bijvoet pairs
-            (``reflection_data.friedel_merged`` is False), legacy otherwise.
+            True emits a phenix-style anomalous MTZ: maps and merged columns in the
+            canonical ASU (Friedel mates merged by mean amplitude) plus unstacked
+            ``F-obs(+/-)`` / ``F-model(+/-)`` on the same ASU index. False writes the
+            per-row layout. None picks anomalous when the data were loaded as Bijvoet
+            pairs (``reflection_data.friedel_merged`` is False).
         """
         with torch.no_grad():
             # Signed HKL so the per-row fcalc carries the anomalous (Bijvoet)
@@ -1062,21 +826,13 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             self.reflection_data.write_mtz(out_mtz_path, fcalc, anomalous=anomalous)
 
     def collect_deposition_metadata(self, metadata=None):
-        """Collect refinement statistics into a RefinementMetadata object.
-
-        Reuses existing statistics from ``collect_metrics()``,
-        ``get_rfactor()``, and reflection data attributes.
+        """Collect refinement statistics into a ``RefinementMetadata``.
 
         Parameters
         ----------
         metadata : RefinementMetadata, optional
-            Existing metadata to merge with (e.g. from input file pass-through).
+            Existing metadata to merge with (e.g. input-file pass-through).
             Refinement statistics take precedence over pass-through values.
-
-        Returns
-        -------
-        RefinementMetadata
-            Metadata populated with final refinement statistics.
         """
         from torchref.io.metadata import RefinementMetadata
 
@@ -1129,28 +885,17 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.model.write_cif(out_cif_path, metadata=metadata)
 
     def save_state(self, path: str):
-        """
-        Save the complete state of the refinement to a file.
-
-        Parameters
-        ----------
-        path : str
-            Path to save the state dictionary to.
-        """
+        """``torch.save`` the full refinement state dict to ``path``."""
         torch.save(self.state_dict(), path)
         if self.verbose > 0:
             print(f"Saved refinement state to {path}")
 
     def load_state(self, path: str, strict: bool = True):
-        """
-        Load the complete state of the refinement from a file.
+        """Load a saved state dict from ``path`` into this instance.
 
-        Parameters
-        ----------
-        path : str
-            Path to load the state dictionary from.
-        strict : bool, optional
-            Whether to strictly enforce that keys match. Default is True.
+        Requires submodules that already match the checkpoint's structure; to build
+        one from scratch use :meth:`create_from_state_dict`. ``strict`` enforces an
+        exact key match.
         """
         state_dict = torch.load(path, map_location=self.device, weights_only=False)
         self.load_state_dict(state_dict, strict=strict)
@@ -1164,51 +909,30 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         device: torch.device = None,
         verbose: int = 1,
     ) -> "Refinement":
-        """
-        Create a fully initialized Refinement from a state dictionary.
+        """Rebuild a fully initialized Refinement from a saved state dict.
 
-        This is the recommended way to restore a Refinement from a saved state.
-        It rebuilds the core submodules (reflection data, model, scaler) using
-        their respective factory methods, then calls PyTorch's default
-        load_state_dict. (Restraints are normally lazy-loaded via
-        ``model.restraints``; the standalone restraints handling here is a
-        legacy state-dict path and does not make restraints a first-class
-        persisted submodule.)
+        The recommended restore path: it rebuilds reflection data, model and scaler
+        through their own factories before calling ``load_state_dict``, which
+        :meth:`load_state` cannot do. Restraints are normally lazy via
+        ``model.restraints``; the standalone handling here is a legacy state-dict
+        path and does not make them a first-class persisted submodule.
 
         Parameters
         ----------
         state_dict : dict
-            State dictionary from torch.save(refinement.state_dict(), ...)
-            or from loading a checkpoint file.
+            From ``torch.save(refinement.state_dict(), ...)`` or a checkpoint file.
         device : torch.device, optional
-            Device to place tensors on. Defaults to the configured default
-            device.
+            Device to place tensors on. Defaults to the configured default device.
         verbose : int, optional
-            Verbosity level. Default is 1.
+            Verbosity level. Default 1.
 
         Returns
         -------
         Refinement
             Fully initialized instance with restored state.
-
-        Examples
-        --------
-        Save and load refinement state::
-
-            # Save
-            torch.save(refinement.state_dict(), 'refinement.pt')
-
-            # Load
-            state = torch.load('refinement.pt')
-            refinement = Refinement.create_from_state_dict(state)
-
-            # Continue refinement
-            rwork, rfree = refinement.get_rfactor()
-            print(f"Restored at R-work={rwork:.4f}, R-free={rfree:.4f}")
         """
 
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
 
         # Helper to extract submodule state from flattened state_dict
         def extract_submodule_state(state_dict: dict, prefix: str) -> dict:

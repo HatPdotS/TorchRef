@@ -1,15 +1,8 @@
-"""
-SfFFT - Structure Factor calculation via FFT (Fast Fourier Transform).
+"""SfFFT -- structure factors via FFT.
 
-This module provides a PyTorch nn.Module that handles:
-- Grid setup for real-space electron density calculations
-- Building electron density maps from atomic parameters
-- FFT-based conversion to structure factors
-
-The SfFFT class can be used standalone (stateless) or with stored grid state
-(stateful), making it flexible for various use cases.
-
-Note: FFT is provided as a backward compatibility alias for SfFFT.
+An nn.Module owning the real-space grid setup, the electron-density build from
+atomic parameters, and the FFT to structure factors. Usable standalone or as
+``ModelFT``'s submodule. ``FFT`` is a deprecated alias for :class:`SfFFT`.
 """
 
 from typing import Optional, Tuple, Union
@@ -25,15 +18,16 @@ from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.symmetry.spacegroup import SpaceGroupLike
 from torchref.utils.caching import ParameterFingerprint
 from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.utils.device_resolution import resolve_device
 
 
 class SfFFT(DeviceMovementMixin, nn.Module):
     """
     Structure Factor calculator using FFT (Fast Fourier Transform).
 
-    This module encapsulates all FFT-related functionality for computing electron
-    density maps and structure factors. It is initialized with a Cell and optionally
-    a SpaceGroup, which are used for grid calculations.
+    Built from a Cell and optionally a SpaceGroup, which drive the grid. Call
+    :meth:`setup_grid` before :meth:`build_density_map`; the higher-level
+    :meth:`compute_structure_factors` does both.
 
     Parameters
     ----------
@@ -54,39 +48,14 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
     Attributes
     ----------
-    cell : Cell
-        Unit cell object.
-    spacegroup : SpaceGroup
-        Space group object (SpaceGroup nn.Module with matrices and translations).
-    symmetry : SpaceGroup
-        Alias for spacegroup (backward compatibility).
-    max_res : float
-        Maximum resolution for grid spacing.
-    gridsize : torch.Tensor or None
-        Grid dimensions (nx, ny, nz) when grid is set up.
-    real_space_grid : torch.Tensor or None
-        Real-space coordinate grid with shape (nx, ny, nz, 3).
-    voxel_size : torch.Tensor or None
-        Voxel dimensions.
+    cell, spacegroup : Cell, SpaceGroup
+        The unit cell and the space group as an nn.Module carrying its symmetry
+        matrices and translations; ``symmetry`` is an alias for ``spacegroup``.
+    gridsize, real_space_grid, voxel_size : torch.Tensor or None
+        Grid dimensions ``(nx, ny, nz)``, coordinate grid ``(nx, ny, nz, 3)`` and
+        voxel dimensions -- all ``None`` until :meth:`setup_grid` runs.
     map_symmetry : MapSymmetry or None
         Symmetry operator for map calculations.
-
-    Examples
-    --------
-    Standalone usage::
-
-        from torchref.symmetry import Cell
-        cell = Cell([50, 60, 70, 90, 90, 90])
-        sf_fft = SfFFT(cell, spacegroup='P212121', max_res=1.5)
-        sf_fft.setup_grid()
-        density_map = sf_fft.build_density_map(xyz, b, occ, A, B, inv_frac, frac)
-        sf = sf_fft.map_to_structure_factors(density_map, hkl)
-
-    With ModelFT (composition)::
-
-        model = ModelFT()
-        model.load_pdb('structure.pdb')
-        sf = model.get_structure_factor(hkl)  # Uses internal SfFFT instance
     """
 
     def __init__(
@@ -127,11 +96,10 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             dtype_float = dtypes.float
         self.dtype_float = dtype_float
 
-        self.device = (
-            device
-            if device is not None
-            else cell.device if cell is not None else get_default_device()
-        )
+        # One device for the module and everything it builds. ``resolve_device``
+        # also moves ``cell`` when an explicit ``device`` disagrees with it, so
+        # the cell and the SpaceGroup below cannot end up split.
+        self.device = resolve_device(cell, device=device)
 
         self.verbose = verbose
         self.use_late_symmetry = use_late_symmetry
@@ -141,7 +109,12 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         self._spacegroup = None
 
         if spacegroup is not None or cell is not None:
-            self._spacegroup = SpaceGroup(spacegroup, dtype=dtype_float, device=device)
+            # ``self.device``, not the raw ``device`` argument: the latter is
+            # ``None`` on the derive-from-cell path, which would silently put
+            # the symmetry matrices on the global default instead.
+            self._spacegroup = SpaceGroup(
+                spacegroup, dtype=dtype_float, device=self.device
+            )
 
         # Buffers (registered during setup_grid)
         self.register_buffer("gridsize", None)
@@ -227,7 +200,14 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             Unit cell object.
         spacegroup : SpaceGroupLike, optional
             Space group specification.
+
+        Notes
+        -----
+        Receiver wins: this module may already own grid buffers, so an incoming
+        cell on another device is moved to match rather than dragging the
+        module after it.
         """
+        self.device = resolve_device(self, cell)
         self._cell = cell
         self.spacegroup = spacegroup
 
@@ -305,8 +285,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         torch.Tensor
             Real-space grid with shape (nx, ny, nz, 3).
         """
-        if device is None:
-            device = get_default_device()
+        # Forward ``device`` as-is, including ``None``: ``get_real_grid`` infers
+        # from ``fractional_matrix`` when no device is given, and resolving the
+        # global default here would preempt that.
         return get_real_grid(
             fractional_matrix=fractional_matrix, gridsize=gridsize, device=device
         )
@@ -398,24 +379,13 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             print(f"Voxel size: {self.voxel_size}")
 
     def _check_late_symmetry_compatible(self) -> bool:
-        """
-        Check if late symmetry can be used (all equiv HKLs land on grid).
-
-        Late symmetry requires that symmetry-equivalent HKL indices map to
-        integer grid points. This is ensured when using MapSymmetryDirect
-        (direct indexing without interpolation), which is created by the
-        MapSymmetry factory when the grid is compatible.
-
-        Returns
-        -------
-        bool
-            True if late symmetry is compatible, False otherwise.
+        """True when every symmetry-equivalent HKL lands on an integer grid
+        point, which the MapSymmetry factory signals by returning a
+        ``MapSymmetryDirect`` (direct indexing, no interpolation).
         """
         if self.map_symmetry is None:
             return False
 
-        # Check if using MapSymmetryDirect (not interpolation)
-        # MapSymmetryDirect has the can_use_direct_indexing attribute set to True
         from torchref.symmetry.map_symmetry import MapSymmetryDirect
 
         return isinstance(self.map_symmetry, MapSymmetryDirect)
@@ -441,30 +411,20 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         """
         Build electron density map from atomic parameters.
 
-        This method requires `setup_grid()` to have been called first.
+        Calls :meth:`setup_grid` itself if no grid has been set up yet.
 
         Parameters
         ----------
-        xyz_iso : torch.Tensor
-            Isotropic atom coordinates with shape (n_iso, 3).
-        adp_iso : torch.Tensor
-            Isotropic ADPs (atomic displacement parameters) with shape (n_iso,).
-        occ_iso : torch.Tensor
-            Isotropic occupancies with shape (n_iso,).
-        A_iso : torch.Tensor
-            ITC92 A parameters for isotropic atoms with shape (n_iso, 5).
-        B_iso : torch.Tensor
-            ITC92 B parameters for isotropic atoms with shape (n_iso, 5).
-        xyz_aniso : torch.Tensor, optional
-            Anisotropic atom coordinates with shape (n_aniso, 3).
-        u_aniso : torch.Tensor, optional
-            Anisotropic U parameters with shape (n_aniso, 6).
-        occ_aniso : torch.Tensor, optional
-            Anisotropic occupancies with shape (n_aniso,).
-        A_aniso : torch.Tensor, optional
-            ITC92 A parameters for anisotropic atoms with shape (n_aniso, 5).
-        B_aniso : torch.Tensor, optional
-            ITC92 B parameters for anisotropic atoms with shape (n_aniso, 5).
+        xyz_iso, adp_iso, occ_iso : torch.Tensor
+            Isotropic atoms: coordinates ``(n_iso, 3)``, ADPs ``(n_iso,)``,
+            occupancies ``(n_iso,)``.
+        A_iso, B_iso : torch.Tensor
+            ITC92 amplitudes / widths for the isotropic atoms, ``(n_iso, 5)``.
+        xyz_aniso, u_aniso, occ_aniso : torch.Tensor, optional
+            Anisotropic atoms: coordinates ``(n_aniso, 3)``, U components
+            ``(n_aniso, 6)``, occupancies ``(n_aniso,)``.
+        A_aniso, B_aniso : torch.Tensor, optional
+            ITC92 amplitudes / widths for the anisotropic atoms, ``(n_aniso, 5)``.
         apply_symmetry : bool, optional
             If True, apply crystallographic symmetry to the map. Default is True.
 
@@ -472,11 +432,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         -------
         torch.Tensor
             Electron density map with shape (nx, ny, nz).
-
-        Raises
-        ------
-        RuntimeError
-            If setup_grid() has not been called.
         """
         if self.real_space_grid is None:
             self.setup_grid()
@@ -578,37 +533,25 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         """
         Compute structure factors from atomic parameters (end-to-end).
 
-        This is a convenience method that builds the density map and computes
-        structure factors in one call.
-
-        When use_late_symmetry=True (default) and the grid is compatible,
-        symmetry is applied in reciprocal space after FFT for ~5x speedup.
-        Otherwise, symmetry is applied to the density map before FFT.
+        Builds the density map and transforms it in one call. With
+        ``use_late_symmetry`` (default) and a compatible grid, symmetry is
+        applied in reciprocal space after the FFT (~5x faster); otherwise it is
+        applied to the density map before it.
 
         Parameters
         ----------
         hkl : torch.Tensor
             Miller indices with shape (n_reflections, 3).
-        xyz_iso : torch.Tensor
-            Isotropic atom coordinates with shape (n_iso, 3).
-        adp_iso : torch.Tensor
-            Isotropic ADPs (atomic displacement parameters) with shape (n_iso,).
-        occ_iso : torch.Tensor
-            Isotropic occupancies with shape (n_iso,).
-        A_iso : torch.Tensor
-            ITC92 A parameters for isotropic atoms.
-        B_iso : torch.Tensor
-            ITC92 B parameters for isotropic atoms.
-        xyz_aniso : torch.Tensor, optional
-            Anisotropic atom coordinates.
-        u_aniso : torch.Tensor, optional
-            Anisotropic U parameters.
-        occ_aniso : torch.Tensor, optional
-            Anisotropic occupancies.
-        A_aniso : torch.Tensor, optional
-            ITC92 A parameters for anisotropic atoms.
-        B_aniso : torch.Tensor, optional
-            ITC92 B parameters for anisotropic atoms.
+        xyz_iso, adp_iso, occ_iso : torch.Tensor
+            Isotropic atoms: coordinates ``(n_iso, 3)``, ADPs ``(n_iso,)``,
+            occupancies ``(n_iso,)``.
+        A_iso, B_iso : torch.Tensor
+            ITC92 amplitudes / widths for the isotropic atoms.
+        xyz_aniso, u_aniso, occ_aniso : torch.Tensor, optional
+            Anisotropic atoms: coordinates, U components ``(n_aniso, 6)``,
+            occupancies.
+        A_aniso, B_aniso : torch.Tensor, optional
+            ITC92 amplitudes / widths for the anisotropic atoms.
         apply_symmetry : bool, optional
             If True, apply crystallographic symmetry. Default is True.
 
@@ -620,14 +563,12 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             Electron density map with shape (nx, ny, nz).
             Note: When using late symmetry, this is the P1 map (without symmetry).
         """
-        # Decide symmetry strategy:
-        # - Late symmetry: build P1 map, apply symmetry in reciprocal space
-        # - Early symmetry: apply symmetry to density map before FFT
+        # Late symmetry: build a P1 map, symmetrize in reciprocal space.
+        # Early symmetry: symmetrize the density map before the FFT.
         use_late = (
             apply_symmetry and self.use_late_symmetry and self._late_symmetry_compatible
         )
 
-        # Build density map (with or without early symmetry)
         density_map = self.build_density_map(
             xyz_iso=xyz_iso,
             adp_iso=adp_iso,
@@ -641,7 +582,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             B_aniso=B_aniso,
             apply_symmetry=not use_late and apply_symmetry,  # Early symmetry
         )
-        # Extract structure factors (with or without late symmetry)
         sf = self.map_to_structure_factors(
             density_map,
             hkl,

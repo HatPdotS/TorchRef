@@ -18,7 +18,7 @@ shells.
 import pytest
 import torch
 
-from torchref.base.targets.xray_ml_sigmaa import estimate_beta
+from torchref.refinement.model_error_estimation.sigma_a import estimate_beta
 
 
 def _hard_inputs(dtype=torch.float32):
@@ -47,12 +47,12 @@ def _hard_inputs(dtype=torch.float32):
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.cuda
 class TestEstimateBetaGPUDeterminism:
     def test_gpu_bit_identical_across_calls(self):
         """Same input -> identical beta on every GPU call (was: 15x spread)."""
         args = [t.cuda() for t in _hard_inputs()]
-        betas = [estimate_beta(*args)[1].detach().cpu() for _ in range(8)]
+        betas = [estimate_beta(*args).beta.detach().cpu() for _ in range(8)]
         for b in betas[1:]:
             assert torch.equal(b, betas[0]), "estimate_beta non-deterministic on GPU"
 
@@ -60,8 +60,8 @@ class TestEstimateBetaGPUDeterminism:
         """GPU beta matches CPU beta to float32 rounding (was: totally different)."""
         cpu_args = _hard_inputs()
         gpu_args = [t.cuda() for t in cpu_args]
-        b_cpu = estimate_beta(*cpu_args)[1]
-        b_gpu = estimate_beta(*gpu_args)[1].cpu()
+        b_cpu = estimate_beta(*cpu_args).beta
+        b_gpu = estimate_beta(*gpu_args).beta.cpu()
         torch.testing.assert_close(b_gpu, b_cpu, rtol=1e-4, atol=1e-4)
         # no shell should be spuriously floored while CPU has a finite value
         assert (b_gpu.min() > 1.0 + 1e-6) == (b_cpu.min() > 1.0 + 1e-6)
@@ -74,11 +74,11 @@ class TestEstimateBetaFloat32Accuracy:
         the reformulation is accurate, not just deterministic."""
         args32 = _hard_inputs(torch.float32)
         args64 = _hard_inputs(torch.float64)
-        b32 = estimate_beta(*args32)[1].double()
-        b64 = estimate_beta(*args64)[1]
+        b32 = estimate_beta(*args32).beta.double()
+        b64 = estimate_beta(*args64).beta
         torch.testing.assert_close(b32, b64, rtol=2e-3, atol=1e-2)
 
     def test_beta_non_negative_and_finite(self):
-        _, bbin, _ = estimate_beta(*_hard_inputs())
+        bbin = estimate_beta(*_hard_inputs()).beta
         assert torch.isfinite(bbin).all()
         assert (bbin > 0).all()

@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype, normalize_device
 from torchref.symmetry.spacegroup import SpaceGroup
 from torchref.utils.device_mixin import DeviceMixin
 
@@ -19,15 +19,11 @@ class MapSymmetry(DeviceMixin, nn.Module):
     """
     Applies crystallographic symmetry operations to electron density maps.
 
-    This class handles space group symmetry by:
-
-    1. Taking a density map calculated for the asymmetric unit
-    2. Applying rotation and translation operations in fractional coordinates
-    3. Interpolating the transformed maps
-    4. Summing all symmetry-related maps
-
-    This is much more efficient than generating symmetry mates for each atom
-    and recalculating density.
+    Takes an asymmetric-unit density map, applies each operation in fractional
+    coordinates, interpolates via ``grid_sample`` and sums the mates -- cheaper
+    than generating symmetry mates per atom and recalculating density. The
+    per-operation sampling grids are precomputed in ``__init__`` for the fixed
+    ``map_shape``.
 
     Attributes
     ----------
@@ -82,15 +78,13 @@ class MapSymmetry(DeviceMixin, nn.Module):
         super().__init__()
         if dtype_float is None:
             dtype_float = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        device = normalize_device(device)
         self.dtype_float = dtype_float
         self.space_group = space_group
         self.map_shape = tuple(map_shape)
         self.cell_params = np.array(cell_params)
         self.verbose = verbose
         self.device = device
-        # Get symmetry operations
         self.symmetry = SpaceGroup(
             space_group, dtype=self.dtype_float, device=self.device
         )
@@ -100,57 +94,33 @@ class MapSymmetry(DeviceMixin, nn.Module):
             print(f"  Number of symmetry operations: {self.n_ops}")
             print(f"  Map shape: {self.map_shape}")
 
-        # Precompute grid coordinates in fractional space
         self._setup_fractional_grid()
-
-        # Precompute transformed grids for each symmetry operation
         self._setup_symmetry_grids()
 
     def _setup_fractional_grid(self):
-        """
-        Setup fractional coordinate grid for the map.
-        Each voxel is at grid edge i/N (CCTBX/gemmi convention).
-        """
+        """Fractional grid with voxels at edges i/N (CCTBX/gemmi convention)."""
         nx, ny, nz = self.map_shape
 
-        # Fractional coordinates at grid edges (CCTBX convention)
         fx = torch.arange(nx, dtype=self.dtype_float, device=self.device) / nx
         fy = torch.arange(ny, dtype=self.dtype_float, device=self.device) / ny
         fz = torch.arange(nz, dtype=self.dtype_float, device=self.device) / nz
 
-        # Create 3D grid
-        # IMPORTANT: We want grid shape (nx, ny, nz, 3) where last dim is [fx, fy, fz]
-        # meshgrid with indexing='ij' on (fx, fy, fz) gives (nx, ny, nz)
+        # indexing='ij' so the result is (nx, ny, nz, 3) with the last dim [fx, fy, fz].
         grid_fx, grid_fy, grid_fz = torch.meshgrid(fx, fy, fz, indexing="ij")
         grid_frac = torch.stack([grid_fx, grid_fy, grid_fz], dim=-1)
 
-        # Register as buffer (will be moved to GPU with model)
         self.register_buffer("grid_frac", grid_frac)
 
     def _setup_symmetry_grids(self):
-        """
-        Precompute transformed grid coordinates for all symmetry operations.
-
-        For each symmetry operation:
-        - Apply rotation matrix to fractional coordinates
-        - Add translation
-        - Convert to sampling coordinates for grid_sample
-        """
+        """Precompute per-operation ``grid_sample`` coordinates in [-1, 1]."""
         nx, ny, nz = self.map_shape
 
-        # Flatten grid for easier matrix operations
-        # Shape: (nx*ny*nz, 3)
         grid_flat = self.grid_frac.reshape(-1, 3)
 
-        # Storage for transformed grids
-        # Will convert to [-1, 1] range for grid_sample
         sampling_grids_list = []
 
         for i in range(self.n_ops):
-            # Apply symmetry operation: R @ coords + t
-            # grid_flat.T shape: (3, nx*ny*nz)
-            # matrices[i] shape: (3, 3)
-            # Result shape: (3, nx*ny*nz)
+            # R @ coords + t, on (3, nx*ny*nz)
             transformed = torch.matmul(self.symmetry.matrices[i], grid_flat.T)
             transformed = transformed.T  # (nx*ny*nz, 3)
             transformed = transformed + self.symmetry.translations[i]
@@ -160,33 +130,24 @@ class MapSymmetry(DeviceMixin, nn.Module):
             grid_shape_tensor = torch.tensor(
                 [nx, ny, nz], dtype=self.dtype_float, device=transformed.device
             )
-            # transformed shape: (nx*ny*nz, 3)
-            # For each dimension: grid_coord = -1 + 2*N/(N-1) * frac
+            # grid_coord = -1 + 2*N/(N-1) * frac, per dimension
             sampling_coords = (
                 -1.0 + 2.0 * grid_shape_tensor / (grid_shape_tensor - 1.0) * transformed
             )
 
-            # Reshape back to 3D grid
-            # grid_sample expects (N, D, H, W, 3) for 3D
             sampling_grid = sampling_coords.reshape(nx, ny, nz, 3)
 
-            # CRITICAL: grid_sample coordinate interpretation for 3D data
-            # - Input tensor has shape (N, C, D, H, W) where D=nx, H=ny, W=nz in our case
-            # - Grid coords have shape (N, D_out, H_out, W_out, 3)
-            # - The last dimension [grid_x, grid_y, grid_z] maps to [W, H, D] dimensions
-            # - In our fractional coords: [fx, fy, fz] should map to [W, H, D] = [nz, ny, nx]
-            # - So grid_sample expects coords in order: [fz, fy, fx] NOT [fx, fy, fz]
-            # Therefore we need to reorder our [fx, fy, fz] -> [fz, fy, fx]
+            # grid_sample reads the last axis as [x, y, z] -> [W, H, D], i.e. the
+            # REVERSE of our [fx, fy, fz] -> [D, H, W]. Dropping this reorder still
+            # interpolates, silently against the wrong axes.
             sampling_grid = sampling_grid[
                 ..., [2, 1, 0]
             ]  # [fx, fy, fz] -> [fz, fy, fx]
 
             sampling_grids_list.append(sampling_grid)
 
-        # Stack all grids: (n_ops, nx, ny, nz, 3)
         sampling_grids_stacked = torch.stack(sampling_grids_list, dim=0)
 
-        # Register as buffer (will be moved to GPU with model)
         self.register_buffer("sampling_grids", sampling_grids_stacked)
 
     def get_symmetry_mate(self, density_map, operation_index):

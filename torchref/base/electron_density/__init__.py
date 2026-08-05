@@ -1,15 +1,9 @@
-"""
-Electron density map building functions.
+"""Electron density map building: maps from atomic models, voxel selection around
+atoms, solvent masks and the scatter operations behind them.
 
-This submodule provides functions for:
-- Building electron density maps from atomic models
-- Finding relevant voxels around atoms
-- Solvent mask generation
-- Scatter operations for map building
-
-The headline entry point is :func:`build_electron_density` (from ``main``): the
-central, ``Engine``-dispatched per-atom variable-radius density builder that
-takes atomic parameters and returns the full density map.
+The headline entry point is :func:`build_electron_density` (from ``main``), the central
+table-dispatched per-atom variable-radius builder: atomic parameters in, full density map
+out.
 """
 
 from .map_building import (

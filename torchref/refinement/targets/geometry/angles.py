@@ -30,7 +30,11 @@ class AngleTarget(GeometryTarget):
         super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
-        # Use the angle_math dispatcher (Triton on CUDA fp32).
+        """Summed angle NLL; 0.0 when the model has no angle restraints.
+
+        Restraint references and sigmas are stored in degrees and converted to radians
+        here -- the math layer works in radians throughout.
+        """
         if "all" not in self.restraints.restraints["angle"]:
             self.restraints.cat_dict()
         a = self.restraints.restraints["angle"]["all"]

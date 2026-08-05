@@ -17,7 +17,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from torchref.config import dtypes, get_default_device
+from torchref.config import dtypes, normalize_device
+from torchref.utils.device_resolution import resolve_device
 from torchref.utils.device_mixin import DeviceMixin
 
 # ---------------------------------------------------------------------------
@@ -76,19 +77,23 @@ class HydrogenTopology(DeviceMixin, nn.Module):
 
     Notes
     -----
-    Additional candidate-pair buffers (``cand_idx_i``, ``cand_idx_j``,
-    ``cand_symop_idx``, ``cand_cell_offset``, ``cand_min_dist``,
-    ``n_asu_candidates``, ``type_bounds``) are not registered by
-    ``build_hydrogen_topology``; they are populated later by
-    ``build_h_candidate_pairs`` and checked via :attr:`has_candidates`.
+    The ``cand_*``/``n_asu_candidates``/``type_bounds`` buffers are added later by
+    ``build_h_candidate_pairs``, not by ``build_hydrogen_topology`` -- test
+    :attr:`has_candidates` before touching them.
     """
 
-    def __init__(self):
+    def __init__(self, device=None):
         super().__init__()
-        # Buffers are registered by build_hydrogen_topology()
+        # Buffers are registered later by build_hydrogen_topology(), so this
+        # object is tensor-free at construction. The tracker still has to exist:
+        # ``DeviceMixin._refresh_device_trackers`` only maintains attributes
+        # already present in ``__dict__``, and callers reconcile against
+        # ``h_topo.device`` before attaching buffers to it.
+        self.device = normalize_device(device)
 
     @property
     def n_hydrogens(self) -> int:
+        """Number of riding hydrogens, or 0 before the buffers are attached."""
         if hasattr(self, "h_parent_idx"):
             return self.h_parent_idx.shape[0]
         return 0
@@ -105,18 +110,13 @@ class HydrogenTopology(DeviceMixin, nn.Module):
 
 
 def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
-    """Load per-residue-type H topology from the monomer library.
+    """``{resname: entry | None}`` H topology, ``None`` where the CIF is unusable.
 
-    Re-uses the same CIF cache as ``Model.hydrogenate()``.
-
-    Returns
-    -------
-    cache : dict
-        ``{resname: entry | None}`` where each non-``None`` entry is a dict
-        with keys ``ids``, ``elems``, ``coords``, ``is_h``, ``id_to_idx``,
-        ``heavy_names``, ``heavy_coords``, ``h_names``, ``h_coords``,
-        ``parent_map``, ``ideal_bl`` and ``heavy_neighbor_map``. ``None``
-        marks residue types with no usable CIF data.
+    Populates and returns the shared ``Model._hydrogenate_cif_cache``, so entries
+    from an earlier ``Model.hydrogenate()`` are reused. Each entry carries ``ids``,
+    ``elems``, ``coords``, ``is_h``, ``id_to_idx``, ``heavy_names``,
+    ``heavy_coords``, ``h_names``, ``h_coords``, ``parent_map``, ``ideal_bl`` and
+    ``heavy_neighbor_map``.
     """
     from torchref.model.model import Model
     from torchref.restraints.library import MonomerLibraryManager
@@ -206,11 +206,8 @@ def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
 
 
 def _classify_placement(n_h_on_parent: int, n_heavy_nb: int, slot: int) -> int:
-    """Return placement-type code for an H atom, or -1 to skip.
-
-    Returns -1 when the parent has no heavy neighbours so geometry
-    cannot be determined.
-    """
+    """Placement-type code for an H atom, or -1 if the parent has no heavy
+    neighbour and the geometry is therefore undetermined."""
     if n_heavy_nb == 0:
         return -1  # cannot determine geometry — skip this H
     if n_h_on_parent == 1:
@@ -250,8 +247,7 @@ def build_hydrogen_topology(
     HydrogenTopology
         Module with registered buffer tensors.
     """
-    if device is None:
-        device = get_default_device()
+    device = normalize_device(device)
     cache = _load_cif_hydrogen_info(pdb, verbose)
 
     model_names = pdb["name"].astype(str).str.strip().values
@@ -366,7 +362,9 @@ def build_hydrogen_topology(
                 acc_chainid_enc.append(chainid_enc)
                 acc_resseq.append(resseq)
 
-    topo = HydrogenTopology()
+    # Seed the tracker with the device its buffers are about to be built on,
+    # so a later ``resolve_device(h_topo, ...)`` sees the truth.
+    topo = HydrogenTopology(device=device)
     n_h_total = len(acc_parent_idx)
     fdtype = dtypes.float
 
@@ -478,20 +476,11 @@ def _safe_normalize(v: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 
 
 def _orthonormal_basis(axis: torch.Tensor) -> tuple:
-    """Build two perpendicular unit vectors for each axis vector.
-
-    Parameters
-    ----------
-    axis : (B, 3) unit vectors
-
-    Returns
-    -------
-    perp1, perp2 : each (B, 3) unit vectors forming a right-handed frame
-    """
+    """``(perp1, perp2)``, each (B, 3), right-handed with the (B, 3) unit ``axis``."""
     B = axis.shape[0]
-    # Choose the cardinal axis least aligned with the input axis
+    # Seed from the cardinal direction least aligned with axis, so the cross
+    # product cannot degenerate.
     abs_ax = axis.abs()
-    # Least component → use that cardinal direction
     min_idx = abs_ax.argmin(dim=-1)  # (B,)
     cardinal = torch.zeros_like(axis)
     cardinal[torch.arange(B, device=axis.device), min_idx] = 1.0
@@ -503,11 +492,11 @@ def _orthonormal_basis(axis: torch.Tensor) -> tuple:
 
 
 def _precompute_direction_coefficients(topo: HydrogenTopology) -> torch.Tensor:
-    """Precompute (c_base, c_perp1, c_perp2) per H atom.
+    """(N_h, 3) of ``(c_base, c_perp1, c_perp2)``, zeros if ``type_bounds`` is unset.
 
-    Every riding H direction is  ``c0*base + c1*perp1 + c2*perp2``
-    where (base, perp1, perp2) is a frame built from neighbour vectors.
-    Coefficients depend only on placement type — constant across steps.
+    Every riding-H direction is ``c0·base + c1·perp1 + c2·perp2`` in a frame built
+    from neighbour vectors; the coefficients depend only on placement type, so they
+    are constant across refinement steps.
     """
     device = topo.h_placement_type.device
     fdtype = topo.h_bond_length.dtype
@@ -557,21 +546,12 @@ def _place_h_jit(
     coeffs: torch.Tensor,
     bond_length: torch.Tensor,
 ) -> torch.Tensor:
-    """JIT-compiled H placement kernel — fuses many elementwise ops into a
-    small number of GPU kernels.
+    """JIT-compiled H placement kernel; returns (N_h, 3) H positions.
 
-    Parameters
-    ----------
-    xyz_heavy : (N_heavy, 3)
-    h_parent_idx : (N_h,) long
-    nb_idx_clamped : (N_h, 4) long — neighbour indices (clamped, -1 → 0)
-    nb_valid : (N_h, 4, 1) float — 1.0 where neighbour is valid, 0.0 where pad
-    coeffs : (N_h, 3) float — [c_base, c_perp1, c_perp2]
-    bond_length : (N_h, 1) float
-
-    Returns
-    -------
-    (N_h, 3) H positions
+    ``nb_idx_clamped`` (N_h, 4) must already have -1 padding clamped to 0, with
+    ``nb_valid`` (N_h, 4, 1) carrying 1.0/0.0 to mask those slots back out --
+    passing raw -1 indices reads the wrong atoms instead of failing.
+    ``coeffs`` is (N_h, 3) from :func:`_precompute_direction_coefficients`.
     """
     eps = 1e-8
     N_h = h_parent_idx.shape[0]
@@ -631,6 +611,10 @@ def place_riding_hydrogens(
     -------
     xyz_h : (N_h, 3) float tensor, differentiable w.r.t. xyz_heavy
     """
+    # Function-local, matching every other target dispatch site: importing the gate at
+    # module scope would pull ``torchref.base.targets`` into ``torchref.restraints``.
+    from torchref.base.targets._dispatch import use_triton
+
     N_h = topo.h_parent_idx.shape[0]
     if N_h == 0:
         return torch.zeros(0, 3, dtype=xyz_heavy.dtype, device=xyz_heavy.device)
@@ -651,7 +635,13 @@ def place_riding_hydrogens(
     # backward (the H-VDW backward is a significant fraction of the
     # non-bonded fwd+bw cost). Falls back to the JIT-scripted eager
     # helper otherwise.
-    if xyz_heavy.is_cuda and xyz_heavy.dtype == torch.float32:
+    #
+    # Gated by the shared ``use_triton`` rather than a hand-rolled
+    # ``is_cuda and dtype == float32``. The inline check ignored the shared gate entirely, so
+    # a block that pinned the portable path still ran the Triton kernel here -- and since
+    # EAGER is the documented double-differentiable route, a Hessian taken through hydrogen
+    # placement was silently going through a first-order-only kernel.
+    if use_triton(xyz_heavy):
         try:
             from torchref.base.targets.triton.place_hydrogens import (
                 place_riding_hydrogens_triton,
@@ -691,20 +681,14 @@ def build_h_candidate_pairs(
     device: torch.device = None,
     verbose: int = 0,
 ) -> None:
-    """Precompute candidate H-involving VDW pairs from heavy-atom pair list.
+    """Precompute candidate H-involving VDW pairs from the heavy-atom pair list.
 
-    For each heavy-heavy VDW pair (A, B, symop, offset), derives candidate
-    H-heavy pairs where H rides on A and could interact with B (or vice
-    versa).  Applies exclusion and same-residue filters at build time so
-    that the forward pass only needs to compute distances and energy.
-
-    Results are stored as registered buffers on ``h_topo``:
-
-    * ``cand_idx_i``      (C,) long — first atom (combined index)
-    * ``cand_idx_j``      (C,) long — second atom (combined index)
-    * ``cand_symop_idx``  (C,) long — symop index for the heavy atom
-    * ``cand_cell_offset`` (C, 3) long — cell translation for the heavy atom
-    * ``cand_min_dist``   (C,) float — VDW radius sum (H + heavy)
+    From each heavy-heavy pair (A, B, symop, offset), derives the H-heavy pairs
+    where an H riding on A could reach B and vice versa, applying the exclusion and
+    same-residue filters now so the forward pass only computes distances. Mutates
+    ``h_topo`` in place, registering ``cand_idx_i``/``cand_idx_j`` (combined-array
+    atom indices), ``cand_symop_idx`` and ``cand_cell_offset`` (for the heavy atom)
+    and ``cand_min_dist`` (H + heavy radius sum).
 
     Parameters
     ----------
@@ -719,8 +703,10 @@ def build_h_candidate_pairs(
     device : torch.device
     verbose : int
     """
-    if device is None:
-        device = get_default_device()
+    # Buffers are registered onto ``h_topo`` below, so follow it rather than
+    # the global default -- otherwise they attach to a module living somewhere
+    # else.
+    device = resolve_device(h_topo, device=device)
     n_h = h_topo.n_hydrogens
     n_heavy = len(pdb)
 

@@ -4,21 +4,14 @@ Two ``torch.autograd.Function``s (isotropic + anisotropic) computing the **P1**
 structure factor ``F(h) = Σ_atoms c_j(h)·[cos φ + i·sin φ]`` with
 ``φ = 2π(h·r_frac)`` and ``c_j = occ_j·f_j(s)·DW_j``.
 
-Design (per the plan):
+Forward grids over reflection blocks and loops over atoms; backward grids over
+atoms (one per program, hence no atomics) and recomputes ``c_j``/``φ``/trig. So
+the ``N_atom × N_hkl`` array is never materialized and ``save_for_backward``
+keeps only O(R)+O(N).
 
-- **Forward** grids over *blocks of reflections*. Each program keeps the
-  ``Fr/Fi`` accumulators for its reflection block resident in registers and
-  **loops over atoms**, adding each atom's contribution to all reflections in
-  the block. The ``N_atom × N_hkl`` array is never materialized in DRAM.
-- **Backward** grids over *atoms* (one atom per program). Each program holds
-  its atom's gradient accumulators in registers, **loops over reflections**,
-  and **recomputes** ``c_j``/``φ``/trig from scratch (no per-pair intermediate
-  is saved). Each atom is owned by one program, so there are no atomics.
-- ``save_for_backward`` keeps only the small inputs (O(R)+O(N)), never O(R·N).
-
-float32 only; non-float32 / non-CUDA inputs are handled by the checkpointed
-eager fallback (see :mod:`.dispatch`). Inputs are passed as per-component
-1-D contiguous columns so loads are coalesced.
+float32 and CUDA only; anything else is served by the checkpointed eager
+fallback (see :mod:`.dispatch`). Inputs are passed as per-component 1-D
+contiguous columns so loads are coalesced.
 """
 
 from __future__ import annotations

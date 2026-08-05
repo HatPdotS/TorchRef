@@ -101,7 +101,7 @@ class TestModelDeviceHandling:
         
         model = Model(device=gpu_device)
         
-        assert model.device.type == 'cuda'
+        assert model.device.type == gpu_device.type
 
 
 class TestModelGetSelectionMask:

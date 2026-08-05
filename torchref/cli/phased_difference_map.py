@@ -1,31 +1,19 @@
 #!/usr/bin/env python3 -u
 
-"""
-Command-line script for computing phased difference and extrapolated
-map coefficients from dark/light crystallographic data.
+"""Phased difference and extrapolated map coefficients from dark/light data.
 
-Uses the same pipeline as ``torchref.difference-refine`` but performs
-**no refinement** — the input models are used as-is to compute phases,
-scale factors, and all flavours of extrapolated structure-factor
-amplitudes.  The result is a single MTZ file containing observed,
-calculated, difference, and extrapolated columns.
+Uses the ``torchref.difference-refine`` pipeline but performs **no refinement**: the input
+models are used as-is to compute phases, scale factors and every flavour of extrapolated
+amplitude, and the result is one MTZ holding the observed, calculated, difference and
+extrapolated columns.
 
 Examples
 --------
 ::
 
-    # Basic usage
     torchref.phased-difference-map \\
-        -dm dark.pdb -lm light.pdb \\
-        -dsf dark.mtz -lsf light.mtz \\
-        --fraction 0.37 -o results.mtz
-
-    # With resolution cutoff and restraints
-    torchref.phased-difference-map \\
-        -dm dark.pdb -lm light.pdb \\
-        -dsf dark.mtz -lsf light.mtz \\
-        --fraction 0.37 --dmin 1.7 \\
-        --cif ligand.cif -o results.mtz
+        -dm dark.pdb -lm light.pdb -dsf dark.mtz -lsf light.mtz \\
+        --fraction 0.37 --dmin 1.7 --cif ligand.cif -o results.mtz
 """
 
 import argparse
@@ -51,6 +39,7 @@ configure_unbuffered_output()
 
 
 def main():
+    """Entry point for ``torchref.phased-difference-map``; returns the exit code."""
     parser = argparse.ArgumentParser(
         description="Compute phased difference and extrapolated map "
                     "coefficients (no refinement).",

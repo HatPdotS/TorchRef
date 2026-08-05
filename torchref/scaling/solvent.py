@@ -11,55 +11,41 @@ from torchref.base import (
     ifft,
 )
 from torchref.base.electron_density.main import _get_radius_offsets
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
+from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference, TensorDict
 
 
 class SolventModel(DeviceMixin, DebugMixin, nn.Module):
     """
-    SolventModel to compute solvent contribution to structure factors using Phenix-like approach.
+    Bulk-solvent contribution to structure factors, Phenix-style.
 
-    Supports two initialization patterns:
-
-    1. Empty initialization (for state_dict loading)::
-
-        solvent = SolventModel()  # Creates empty shell
-        solvent.load_state_dict(torch.load('solvent.pt'))
-
-    2. Full initialization with model::
-
-        # NOTE: 0.35 / 46.0 are the production values that ``Scaler``
-        # injects; the bare-constructor defaults are k_solvent=1.1,
-        # b_solvent=50.0.
-        solvent = SolventModel(model, k_solvent=0.35, b_solvent=46.0)
+    Constructed either with a model (``SolventModel(model, k_solvent=0.35,
+    b_solvent=46.0)`` -- the values ``Scaler`` injects; the bare-constructor
+    defaults are 1.1 / 50.0) or empty, as a shell for ``load_state_dict``.
 
     Attributes
     ----------
     model : ModelFT or None
-        The atomic model for structure factor calculations.
+        The atomic model the solvent mask is built from.
     device : torch.device
         Device for tensor operations.
     verbose : int
         Verbosity level.
     float_type : torch.dtype
-        Floating point data type. Defaults to the configured float dtype
-        via ``get_float_dtype()`` (e.g. float64 under a float64 config),
-        not a hard-wired ``torch.float32``.
-    solvent_radius : float
-        Probe radius in Angstroms for dilation.
-    erosion_radius : float
-        Radius in Angstroms for erosion step.
+        Float dtype; defaults to the configured ``get_float_dtype()``, not a
+        hard-wired ``torch.float32``.
+    solvent_radius, erosion_radius : float
+        Probe radius for dilation and radius for the erosion step (Å).
     optimize_phase : bool
-        Whether to optimize phase offset parameter.
-    log_k_solvent : torch.nn.Parameter
-        Log of solvent scattering scale factor.
-    b_solvent : torch.nn.Parameter
-        Solvent B-factor.
+        Whether the phase offset is refined.
+    log_k_solvent, b_solvent : torch.nn.Parameter
+        Log solvent scattering scale and solvent B-factor.
     phase_offset : torch.nn.Parameter or buffer
-        Phase offset in radians. It is a trainable ``nn.Parameter`` when
-        ``optimize_phase=True``, otherwise a registered buffer fixed at 0.0.
+        Phase offset in radians: a trainable parameter when
+        ``optimize_phase=True``, otherwise a buffer fixed at 0.0.
     """
 
     def __init__(
@@ -95,7 +81,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         erosion_radius : float, default 0.9
             Radius in Angstroms for erosion step.
         transition : float, optional
-            Gaussian smoothing sigma for mask edges (default: radius/4 in voxels). Avoids ringing artifacts.
+            Gaussian smoothing sigma for mask edges, in voxels (default
+            ``radius/4``); smoothing avoids ringing artifacts.
         optimize_phase : bool, default True
             Whether to optimize phase offset parameter.
         initial_phase_offset : float, default 0.0
@@ -103,18 +90,18 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         verbose : int, default 1
             Verbosity level.
         float_type : torch.dtype, optional
-            Floating point data type. If ``None`` (default), resolved at
-            runtime to the configured float dtype via ``get_float_dtype()``
-            (e.g. float64 under a float64 config), not a hard-wired
-            ``torch.float32``.
+            Float dtype. ``None`` (default) resolves at runtime to
+            ``get_float_dtype()``, not a hard-wired ``torch.float32``.
         device : torch.device, default: configured device.current
             Device for tensor operations.
         """
         super(SolventModel, self).__init__()
         if float_type is None:
             float_type = get_float_dtype()
-        if device is None:
-            device = get_default_device()
+        # Follow the model when no device is given: the global default would put
+        # the solvent grids on a different device than the structure they are
+        # computed from (``realspace.py`` passes only a model).
+        device = resolve_device(model, device=device)
         self.device = device
         self.verbose = verbose
         self.float_type = float_type
@@ -219,11 +206,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             P1 grid masks.
 
         Step 3 (erosion): a boundary voxel becomes solvent if any voxel
-            within ``erosion_radius`` of it is bulk solvent. Implemented as
-            a single F.conv3d with a precomputed spherical kernel and
-            circular padding — replaces the previous Python-loop +
-            per-voxel-neighbourhood expansion that itself ran out of memory
-            on chunks of 10^6 boundary voxels.
+            within ``erosion_radius`` of it is bulk solvent, computed with a
+            precomputed spherical structuring element under circular padding.
 
         Returns
         -------
@@ -251,20 +235,13 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             n_atoms = xyz.shape[0]
 
             # --- Step 1: dilation, chunked over atoms ---
-            # Plain-scatter sphere splat (same pattern as the variable-radius
-            # CPU splat):
-            #   - cached spherical voxel offsets via _get_radius_offsets
-            #     (avoids rebuilding the meshgrid each call)
-            #   - direct fractional voxel positions from integer indices
-            #     (no real_space_grid gather)
-            #   - PBC via `diff_frac - round(diff_frac)` (no Cartesian
-            #     round-trip via two matmuls)
-            #   - r² via metric-tensor einsum (single fused op)
-            # ATOM_CHUNK caps working memory at ~chunk * N_voxels_in_sphere
-            # times a handful of (float32, 3)-shape transients. 256 keeps
-            # peak in the few-hundred-MB range even on the finest grids;
-            # the SF code's 1024 OOMs on tight cgroups for 1DAW because
-            # our intermediates are denser per atom.
+            # Plain-scatter sphere splat (same pattern as the variable-radius CPU
+            # splat): cached spherical voxel offsets, fractional voxel positions
+            # straight from the integer indices, PBC via
+            # `diff_frac - round(diff_frac)`, and r² from a metric-tensor einsum.
+            # ATOM_CHUNK caps working memory at ~chunk * N_voxels_in_sphere; 256
+            # keeps the peak in the few-hundred-MB range even on the finest
+            # grids, where the SF code's 1024 would OOM (denser intermediates).
             ATOM_CHUNK = 256
 
             voxel_size = self.real_space_grid[3, 3, 3] - self.real_space_grid[2, 2, 2]
@@ -375,19 +352,13 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 )
 
             # --- Step 3: erosion ---
-            # Semantics: a boundary voxel becomes solvent iff any voxel
-            # within `erosion_radius` of it is bulk solvent. Equivalently,
-            # dilate `definitely_solvent` by the spherical structuring
-            # element, then intersect with `boundary_mask`.
-            #
-            # Two paths, dispatched on device — the underlying op picks
-            # extremely different cost profiles on CPU vs GPU:
-            #   - CPU: roll-OR over the ~123 cached sphere offsets is
-            #     memory-bandwidth-bound and ~5x faster than F.conv3d's
-            #     MKLDNN path on a small (~9³) kernel.
-            #   - GPU: F.conv3d fuses to a single launch and beats 123
-            #     separate roll launches (each its own kernel) by ~2x.
-            # Both produce the exact same mask.
+            # A boundary voxel becomes solvent iff any voxel within
+            # `erosion_radius` is bulk solvent: dilate `definitely_solvent` by the
+            # spherical structuring element, then intersect with `boundary_mask`.
+            # Two paths, dispatched on device, producing the exact same mask:
+            # CPU roll-OR over the cached sphere offsets is bandwidth-bound and
+            # beats conv3d on a small kernel, while on GPU conv3d fuses to one
+            # launch instead of one kernel per offset.
             if torch.device(device).type == "cuda":
                 half_k = int(torch.ceil(self.erosion_radius / voxel_size.min()).item())
                 K = 2 * half_k + 1
@@ -443,10 +414,20 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         return self.solvent_mask
 
     def update_solvent(self):
+        """Rebuild the solvent mask and its smoothed form from current coordinates.
+
+        Call after the model's coordinates change; ``Scaler`` also has to drop its
+        cached ``_f_sol_raw`` for the new mask to reach ``F_calc``.
+        """
         self.get_solvent_mask()
         self.smooth_solvent_mask()
 
     def smooth_solvent_mask(self):
+        """Gaussian-smooth ``solvent_mask`` (σ = ``self.transition`` voxels).
+
+        Registers and returns the ``mask_smoothed`` buffer; requires
+        :meth:`get_solvent_mask` to have run.
+        """
         if not hasattr(self, "solvent_mask"):
             raise ValueError(
                 "Solvent mask not computed. Call get_solvent_mask() first."
@@ -469,13 +450,10 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         pad = kernel_size // 2
         mask = mask_float.unsqueeze(0).unsqueeze(0)  # (1, 1, D, H, W)
 
-        # Separable Gaussian: three sequential 1D conv3d passes (one per
-        # spatial axis). For a separable kernel, this is mathematically
-        # identical to the full 3D outer-product conv but costs O(3·K·V)
-        # instead of O(K³·V). Pad once on all three axes with the circular
-        # mode required by periodic crystallographic boundaries; each
-        # successive 1D conv shrinks only its own axis back to the original
-        # size.
+        # Separable Gaussian: three 1D conv3d passes, identical to the full 3D
+        # outer-product conv but O(3·K·V) instead of O(K³·V). Padding is circular
+        # because crystallographic boundaries are periodic; each 1D conv shrinks
+        # only its own axis back to the original size.
         mask = F.pad(mask, (pad, pad, pad, pad, pad, pad), mode="circular")
         mask = F.conv3d(mask, gauss_1d.view(1, 1, 1, 1, kernel_size))
         mask = F.conv3d(mask, gauss_1d.view(1, 1, 1, kernel_size, 1))
@@ -522,31 +500,21 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         """
         Compute solvent contribution to structure factors at given HKL.
 
-        This method is differentiable with respect to k_solvent, b_solvent,
-        and phase_offset parameters.
-
-        The solvent model:
-
-        1. Retrieves the solvent structure factors ``f_sol`` (the FFT of the
-           *smoothed* mask) from a per-hkl cache keyed on the hkl fingerprint;
-           it is computed only when missing or when ``update_fsol=True``. The
-           smoothing itself uses a Gaussian filter with σ = ``self.transition``
-           voxels (structure/grid dependent; default ``radius/4``), applied
-           upstream when the mask is built.
-        2. Applies B-factor damping: exp(-B * s^2) where s = sin(θ)/λ
-        3. If optimize_phase=True and F_protein provided: blends mask phases with protein phases
-           phase_offset controls the blend: 0=use mask phases, ±π=use protein phases
-        4. Scales by k_solvent
+        Differentiable w.r.t. ``k_solvent``, ``b_solvent`` and ``phase_offset``.
+        Takes ``f_sol`` (the FFT of the *smoothed* mask) from a per-hkl cache,
+        applies the B-factor damping ``exp(-B s^2)`` with ``s = sin(θ)/λ``,
+        blends mask phases toward the protein phases when ``optimize_phase`` and
+        ``F_protein`` are both given (``phase_offset`` 0 = mask phases,
+        ±π = protein phases), and scales by ``k_solvent``.
 
         Parameters
         ----------
         hkl : torch.Tensor
             Miller indices, shape (N, 3).
         update_fsol : bool, default False
-            When ``True``, forces recomputation of the cached solvent
-            structure factors for this hkl (FFT of the smoothed mask) and
-            refreshes the per-hkl cache entry. When ``False`` (default), a
-            cached entry keyed on the hkl fingerprint is reused if present.
+            Force recomputation of the cached solvent structure factors for this
+            hkl and refresh the cache entry, instead of reusing a cached entry
+            keyed on the hkl fingerprint.
         F_protein : torch.Tensor, optional
             Protein structure factors, used for phase blending.
 
@@ -574,8 +542,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         s = torch.norm(scattering_vectors, dim=1) / 2.0  # This is sin(θ)/λ
         s_squared = s**2  # Now s² is correct for B-factor formula
 
-        # Apply B-factor damping: exp(-B * s²)
-        # The Debye-Waller factor for isotropic displacement
+        # Isotropic Debye-Waller damping exp(-B * s²)
         b_solvent = self.b_solvent
         k_solvent = torch.exp(self.log_k_solvent.clamp(min=-10.0, max=10.0))
         exp = -b_solvent.clamp(min=-500.0, max=500.0) * s_squared
@@ -615,6 +582,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         return f_solvent
 
     def parameters(self):
+        """Refinable solvent parameters as a list (phase offset only if refined)."""
         return [self.log_k_solvent, self.b_solvent] + (
             [self.phase_offset] if self.optimize_phase else []
         )

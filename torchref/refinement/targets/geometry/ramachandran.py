@@ -35,6 +35,7 @@ class RamachandranTarget(GeometryTarget):
         super().__init__(model, verbose)
 
     def forward(self) -> torch.Tensor:
+        """Summed Ramachandran NLL; 0.0 unless the restraints carry phi/psi indices."""
         xyz = self.model.xyz()
         if not hasattr(self.restraints, "_rama_phi_indices") or self.restraints._rama_phi_indices is None:
             return torch.tensor(0.0, device=xyz.device)
