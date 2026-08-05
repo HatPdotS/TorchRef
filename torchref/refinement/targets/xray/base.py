@@ -1,9 +1,16 @@
 """Shared base for the X-ray targets.
 
 :class:`XrayTarget` owns the work/free/validation subset selection, the compact
-``get_data`` view every subclass' ``forward`` consumes, and the one R-factor
-implementation (:meth:`XrayTarget.get_rfactor`). Subclasses supply only the
-likelihood -- and, if they own their own scale, :meth:`_scaled_F_calc_full`.
+``get_data`` view every subclass' ``forward`` consumes, the model-independent
+per-reflection geometry, and the one R-factor implementation
+(:meth:`XrayTarget.get_rfactor`). Subclasses supply only the likelihood -- and, if
+they own their own scale, :meth:`_scaled_F_calc_full`.
+
+The likelihood is supplied **per reflection**, as :meth:`_per_refl`, so that both
+the summed loss (:meth:`forward`) and the unsummed one (:meth:`residuals`) come
+from one expression and cannot encode different objectives. ``residuals`` is what
+lets anything outside the target ask which reflections the model fails to explain,
+in the target's own currency.
 """
 
 from typing import TYPE_CHECKING, Dict, Tuple
@@ -11,6 +18,8 @@ from typing import TYPE_CHECKING, Dict, Tuple
 import torch
 
 from torchref.base.metrics.rfactor import rfactor_work_free
+from torchref.base.reciprocal import get_scattering_vectors
+from torchref.refinement.model_error_estimation.sigma_a import epsilon_from_hkl
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -91,6 +100,28 @@ class XrayTarget(DataTarget):
             "free": "xray_test",
             "val": "xray_validation",
         }.get(use_set, "xray_work")
+        # Model-independent per-reflection geometry (multiplicity + d*^2), cached per
+        # ReflectionData instance (mirrors the bins cache pattern).
+        self._eps_cache: torch.Tensor = None
+        self._dss_cache: torch.Tensor = None
+        self._geom_dataid: int = None
+
+    def _geom(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """``(epsilon, d_star_sq)`` over the full data HKL. Both are model-independent
+        (pure multiplicity / reciprocal geometry), so they are computed once per
+        :class:`ReflectionData` and cached against its id.
+        """
+        dataid = id(self._data)
+        if self._eps_cache is None or self._geom_dataid != dataid:
+            sg = getattr(self._data, "spacegroup", None)
+            eps = epsilon_from_hkl(self._data.hkl, sg)
+            s = get_scattering_vectors(self._data.hkl, self._data.cell)
+            # d*^2 = |s|^2 = 4 * (|s|/2)^2 (the scaler's _s_half_sq convention).
+            dss = (torch.norm(s, dim=1) ** 2).to(eps.dtype)
+            self._eps_cache = eps
+            self._dss_cache = dss
+            self._geom_dataid = dataid
+        return self._eps_cache, self._dss_cache
 
     def reset_get_data_cache(self):
         """Deprecated no-op, kept for compatibility: the subset indices and scaled
@@ -111,7 +142,7 @@ class XrayTarget(DataTarget):
         return self._data.work
 
     def get_data(
-        self, fcalc: torch.Tensor = None
+        self, fcalc: torch.Tensor = None, sub=None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, object]:
         """
         Get compact F_obs, F_calc, sigma, centric and the subset view for
@@ -128,6 +159,10 @@ class XrayTarget(DataTarget):
         fcalc : torch.Tensor, optional
             Pre-computed structure factors. If provided, uses these instead
             of computing from the model.
+        sub : _ReflectionSubset, optional
+            Which reflections to return. Defaults to this target's own
+            ``use_set``; :meth:`residuals` passes ``data.all`` to get every
+            reflection, masks included.
 
         Returns
         -------
@@ -135,7 +170,8 @@ class XrayTarget(DataTarget):
             ``(F_obs, F_calc, sigma, centric, sub)`` — the first four compact;
             ``sub`` is the ``_ReflectionSubset`` view (``.indices``/``.select``/``.n``).
         """
-        sub = self._subset()
+        if sub is None:
+            sub = self._subset()
 
         F_obs = sub.F
 
@@ -153,6 +189,58 @@ class XrayTarget(DataTarget):
         F_calc = sub.select(F_calc_full)
 
         return F_obs, F_calc, sigma, centric, sub
+
+    # --- the per-reflection seam ---------------------------------------------
+    #
+    # ``_loss_inputs`` gathers what the likelihood reads on ONE subset view, and
+    # ``_per_refl`` evaluates the likelihood on it without reducing. ``forward``
+    # and ``residuals`` differ only in which view they gather and whether they
+    # sum, so the two can never drift apart into different objectives.
+
+    def _loss_inputs(self, fcalc: torch.Tensor = None, sub=None):
+        """Everything this row's :meth:`_per_refl` reads, restricted to ``sub``.
+
+        The default is :meth:`get_data`'s 5-tuple. The sigma_A family overrides it
+        with a :class:`~.sigma_a.SigmaALossInputs`, which additionally carries the
+        model-error estimate; the two shapes never mix because each class pairs its
+        own ``_loss_inputs`` with its own ``_per_refl``.
+        """
+        return self.get_data(fcalc=fcalc, sub=sub)
+
+    def _per_refl(self, ctx) -> torch.Tensor:
+        """The likelihood, per reflection and **unreduced**, on ``ctx``'s subset.
+
+        One per selectable row; no row is a branch. The summed form is
+        ``_masked_sum`` of this -- which is how :meth:`forward` is written wherever
+        the sum is not fused into a kernel.
+        """
+        raise NotImplementedError
+
+    def residuals(self, fcalc: torch.Tensor = None) -> torch.Tensor:
+        """Per-reflection loss over EVERY reflection, aligned to ``data.hkl``.
+
+        The unsummed :meth:`forward`: same mean, same variance, same likelihood.
+        Three deliberate differences, all of them so the result can be used to
+        *judge* the data rather than to fit it:
+
+        * **Full size, not this target's subset.** Length matches ``data.hkl``, so
+          entry ``i`` is reflection ``i`` and the array is directly comparable
+          against masks, resolution or the work/free split.
+        * **Masks are not applied.** A reflection the masks exclude still gets a
+          value, so the array can be used to ask *why* it was excluded rather than
+          only reflecting the answer back; see :attr:`ReflectionData.all`.
+        * **Non-finite values survive.** ``forward`` substitutes ``1e6`` so one NaN
+          cannot poison a gradient; here a NaN is a finding, not a nuisance.
+
+        Not wrapped in ``no_grad`` -- it stays differentiable like any other target
+        expression, so a caller doing diagnostics should wrap it themselves.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(len(data.hkl),)``.
+        """
+        return self._per_refl(self._loss_inputs(fcalc=fcalc, sub=self._data.all))
 
     def _scaled_F_calc_full(self, fcalc: torch.Tensor = None) -> torch.Tensor:
         """Full-size ``|F_calc|`` under THIS target's objective scaling.

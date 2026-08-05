@@ -268,9 +268,10 @@ def test_only_the_estimator_backed_rows_own_an_estimator():
 def test_which_likelihood_each_row_evaluates(monkeypatch):
     """Behavioural replacement for the spec's ``distribution`` column.
 
-    Each row's ``_loss`` must reach exactly one of the three primitives. Checked by
-    capturing stubs rather than by reading source text, so it cannot go vacuous when the
-    call moves.
+    Each row's ``_per_refl`` must reach exactly one of the three primitives, in its
+    per-reflection form -- the rows evaluate the likelihood, the base class sums it.
+    Checked by capturing stubs rather than by reading source text, so it cannot go vacuous
+    when the call moves.
     """
     import torchref.refinement.targets.xray.ml_full as ml_full_mod
     import torchref.refinement.targets.xray.ml_noalpha as ml_noalpha_mod
@@ -290,9 +291,9 @@ def test_which_likelihood_each_row_evaluates(monkeypatch):
             return torch.zeros((), dtype=DT)
         return f
 
-    monkeypatch.setattr(ml_noalpha_mod, "rice_math", _stub("rice"))
-    monkeypatch.setattr(nll_beta_mod, "nll_math", _stub("nll"))
-    monkeypatch.setattr(ml_full_mod, "rice_marginal_math", _stub("rice_marginal"))
+    monkeypatch.setattr(ml_noalpha_mod, "rice_per_refl", _stub("rice"))
+    monkeypatch.setattr(nll_beta_mod, "nll_per_refl", _stub("nll"))
+    monkeypatch.setattr(ml_full_mod, "rice_marginal_per_refl", _stub("rice_marginal"))
 
     n = 8
     ctx = _fake_ctx(n)
@@ -303,15 +304,16 @@ def test_which_likelihood_each_row_evaluates(monkeypatch):
         (MLFullXrayTarget, "rice_marginal"),
     ):
         fired.clear()
-        cls()._loss(ctx)
+        cls()._per_refl(ctx)
         assert [t for t, _ in fired] == [want], f"{cls.__name__}: {fired}"
 
 
 def _fake_ctx(n):
-    """A minimal :class:`SigmaALossInputs` for exercising ``_loss`` in isolation."""
+    """A minimal :class:`SigmaALossInputs` for exercising ``_per_refl`` in isolation."""
     from torchref.refinement.targets.xray import SigmaALossInputs
 
     class _Sub:
+        kind = "all"  # ml_full keys its parity cache on this
         centric = torch.zeros(n, dtype=torch.bool)
 
         def select(self, t):

@@ -4,7 +4,7 @@ from typing import Tuple
 
 import torch
 
-from torchref.base.targets.xray_likelihoods import rice_marginal_math
+from torchref.base.targets.xray_likelihoods import rice_marginal_per_refl
 from torchref.base.targets.xray_ml_full import parity_indices
 
 from .sigma_a import AlphaCentredMixin, SigmaAXrayTarget
@@ -30,8 +30,10 @@ class MLFullXrayTarget(AlphaCentredMixin, SigmaAXrayTarget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Parity split, needed by this row alone. `nonzero()` forces a device sync, so it
-        # must not be recomputed per forward.
-        self._parity_idx = None
+        # must not be recomputed per forward. One entry per subset view rather than a
+        # single slot: `forward` and `residuals` ask for different views of the same data
+        # and would otherwise evict each other on every call.
+        self._parity_cache = {}
         self._parity_dataid = None
 
     def _model_error(self, est):
@@ -49,19 +51,29 @@ class MLFullXrayTarget(AlphaCentredMixin, SigmaAXrayTarget):
         """Cached ``(acentric_idx, centric_idx)``.
 
         The gather/scatter split is far cheaper than a ``torch.where`` over the quadrature,
-        but ``nonzero()`` forces a device sync, so it is cached per (data, subset size).
-        """
-        dataid = (id(self._data), int(sub.centric.shape[0]))
-        if self._parity_idx is None or self._parity_dataid != dataid:
-            self._parity_idx = parity_indices(sub.centric)
-            self._parity_dataid = dataid
-        return self._parity_idx
+        but ``nonzero()`` forces a device sync, so it is cached per (data, subset).
 
-    def _loss(self, ctx):
+        Keyed on ``sub.kind`` and not on the subset size alone: ``forward`` and
+        ``residuals`` reach this with different views of the same data, and two
+        views can hold the same number of reflections while being different
+        reflections in a different order.
+        """
+        dataid = id(self._data)
+        if self._parity_dataid != dataid:
+            self._parity_cache = {}
+            self._parity_dataid = dataid
+        key = (sub.kind, int(sub.centric.shape[0]))
+        idx = self._parity_cache.get(key)
+        if idx is None:
+            idx = parity_indices(sub.centric)
+            self._parity_cache[key] = idx
+        return idx
+
+    def _per_refl(self, ctx):
         # `Sigma` is already `epsilon * beta_model` and `alpha` is already folded into
         # `F_calc` by `_mean`, so neither is passed down again -- passing either twice would
         # apply it twice.
-        return rice_marginal_math(
+        return rice_marginal_per_refl(
             ctx.F_obs,
             ctx.F_calc,
             ctx.Sigma,

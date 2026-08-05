@@ -476,11 +476,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self._loss_state = None
         self._logger = None
 
-    #: Outlier rejection threshold bracketing every scale fit, in sigmas.
-    OUTLIER_Z_THRESHOLD = 5.0
-
     def refine_scaler(self):
-        """Refit the scaler against the current model: flag outliers, fit, re-flag.
+        """Refit the scaler against the current model.
 
         **The only place a scale gets fitted.** Every driver routes here, so the scale the
         in-run R-factor is computed from is the one an external 0-cycle score would produce.
@@ -507,14 +504,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         """
         if not hasattr(self, "scaler") or self.scaler is None:
             return None
-        z = self.OUTLIER_Z_THRESHOLD
-        self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=z)
-        metrics = self.scaler.refine_lbfgs(
+        return self.scaler.refine_lbfgs(
             scale_target=getattr(self, "scale_target", DEFAULT_SCALE_TARGET)
         )
-        # Re-flagged against the refitted scales: the fit moves what counts as an outlier.
-        self.reflection_data.find_outliers(self.model, self.scaler, z_threshold=z)
-        return metrics
 
     def get_scales(self):
         """Cold-start the scaler against the current model: ``initialize()`` then

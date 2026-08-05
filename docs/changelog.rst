@@ -3,7 +3,7 @@ Changelog
 
 Version 0.6.2
 -------------
-- Deduplicated scaler infrastructure and made sure it is fit against the correct loss function (Scaler should not be fit against ML or ML full due to the interaction with alpha)
+- Deprecated outlier flagging strategy 
 - Rewrote X‑ray targets into five independent classes (nll, nll_beta, ml, ml_noalpha, ml_full) and XRAY_TARGETS.by_name.
 - Consolidated X‑ray loss math into Gaussian, Rice, marginalised Rice primitives; NLLXrayTarget replaces GaussianXrayTarget.
 - Fixed crash in difference refinement with mismatched reflection files: HKL reindexing (``validate_hkl``/``remap``/``reduce_to_spacegroup``) now carries all per-reflection fields (including the anomalous bookkeeping read by ``hkl_for_sf()``) instead of a hardcoded subset.

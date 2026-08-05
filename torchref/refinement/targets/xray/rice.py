@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from torchref.base.targets.xray_likelihoods import rice_math
+from torchref.base.targets.xray_likelihoods import rice_math, rice_per_refl
 
 from .base import XrayTarget
 
@@ -51,3 +51,9 @@ class RiceXrayTarget(XrayTarget):
         F_obs, F_calc, sigma, centric_flags, _ = self.get_data(fcalc=fcalc)
         Sigma = torch.clamp(sigma**2, min=self._SIGMA_SQ_FLOOR)
         return rice_math(F_obs, F_calc, Sigma, centric_flags)
+
+    def _per_refl(self, ctx) -> torch.Tensor:
+        """Per-reflection Rice loss at ``Sigma = clamp(sigma**2, 1e-6)``."""
+        F_obs, F_calc, sigma, centric_flags, _ = ctx
+        Sigma = torch.clamp(sigma**2, min=self._SIGMA_SQ_FLOOR)
+        return rice_per_refl(F_obs, F_calc, Sigma, centric_flags)

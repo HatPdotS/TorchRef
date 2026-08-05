@@ -7,6 +7,7 @@ runtime ``FcalcDataset`` *and* ``ReflectionData`` (which does not override the
 annotation) both store a ``torchref.symmetry.SpaceGroup`` object in it.
 """
 
+import warnings
 from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
@@ -51,7 +52,6 @@ class CrystalDataset(DeviceMovementMixin):
     validation_flags: Optional[torch.Tensor] = None  # (N,), bool
     resolution: Optional[torch.Tensor] = None  # Resolution per reflection (N,)
     bin_indices: Optional[torch.Tensor] = None  # Resolution bin assignments (N,), int32
-    outlier_flags: Optional[torch.Tensor] = None  # Outlier flags (N,), bool
     phase: Optional[torch.Tensor] = None  # Phases in radians (N,)
     fom: Optional[torch.Tensor] = None  # Figure of merit (N,)
     _centric_flags: Optional[torch.Tensor] = None  # Centric flags (N,), bool
@@ -93,9 +93,6 @@ class CrystalDataset(DeviceMovementMixin):
     wilson_b_structure: Optional[float] = None
     wilson_b_solvent: Optional[float] = None
     wilson_k_sol: Optional[float] = None
-
-    # === Outlier detection parameters ===
-    outlier_detection_params: Optional[Dict[str, Any]] = None
 
     # === Masks (initialized in __post_init__) ===
     # Note: masks is not a dataclass field to avoid serialization issues
@@ -151,6 +148,26 @@ class CrystalDataset(DeviceMovementMixin):
         return state
 
     @classmethod
+    def _drop_stale_state_keys(cls, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop state keys that are no longer dataclass fields, warning about each.
+
+        :meth:`_from_state` splats the state straight into the constructor, so a field
+        removed after a checkpoint was written would otherwise make that checkpoint
+        permanently unloadable with a bare ``TypeError``. Returns a filtered copy; the
+        caller's dict is left alone.
+        """
+        known = {f.name for f in fields(cls)}
+        stale = sorted(set(state) - known)
+        if stale:
+            warnings.warn(
+                f"{cls.__name__}: dropping state keys that are no longer fields: "
+                f"{stale}. Written by an older TorchRef version.",
+                stacklevel=3,
+            )
+            state = {k: v for k, v in state.items() if k in known}
+        return state
+
+    @classmethod
     def _from_state(cls, state: Dict[str, Any], device=None) -> "CrystalDataset":
         """Rebuild from a :meth:`_get_state` dict, on ``device`` (default the
         configured one). Pops ``"masks"`` from ``state``, so the caller's dict
@@ -161,6 +178,7 @@ class CrystalDataset(DeviceMovementMixin):
         device = normalize_device(device)
 
         masks_state = state.pop("masks", {})
+        state = cls._drop_stale_state_keys(state)
 
         if "device" in state:
             state["device"] = torch.device(state["device"])

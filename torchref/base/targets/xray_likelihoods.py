@@ -215,6 +215,38 @@ def _rice_body(F_obs, F_calc, Sigma, centric_flags):
     return torch.where(centric_flags, loss_centric, loss_acentric)
 
 
+def rice_marginal_per_refl(
+    F_obs: torch.Tensor,
+    F_calc: torch.Tensor,
+    Sigma: torch.Tensor,
+    sigma_obs: torch.Tensor,
+    centric_flags: torch.Tensor,
+    idx=None,
+    n_quad: int = None,
+    n_sigma: float = None,
+    li0=None,
+) -> torch.Tensor:
+    """Per-reflection full-form MLF (NOT masked or summed). See :func:`rice_marginal_math`."""
+    from .xray_ml_full import log_i0, ml_full_nll_per_refl
+
+    # `beta=Sigma, epsilon=None` because Sigma is ALREADY epsilon*beta_model: the callee
+    # would otherwise multiply epsilon in a second time. `alpha=None` for the same reason
+    # the Rice above takes a pre-scaled F_calc -- the caller centres the mean.
+    return ml_full_nll_per_refl(
+        F_obs,
+        sigma_obs,
+        F_calc,
+        Sigma,
+        centric_flags,
+        epsilon=None,
+        alpha=None,
+        n_quad=n_quad,
+        n_sigma=n_sigma,
+        li0=log_i0 if li0 is None else li0,
+        idx=idx,
+    )
+
+
 def rice_marginal_math(
     F_obs: torch.Tensor,
     F_calc: torch.Tensor,
@@ -245,24 +277,17 @@ def rice_marginal_math(
     the Bessel approximation's. The quadrature internals live in
     :mod:`torchref.base.targets.xray_ml_full`; this is their single public entry point.
     """
-    from .xray_ml_full import log_i0, ml_full_nll_per_refl
-
-    # `beta=Sigma, epsilon=None` because Sigma is ALREADY epsilon*beta_model: the callee
-    # would otherwise multiply epsilon in a second time. `alpha=None` for the same reason
-    # the Rice above takes a pre-scaled F_calc -- the caller centres the mean.
     return _masked_sum(
-        ml_full_nll_per_refl(
+        rice_marginal_per_refl(
             F_obs,
-            sigma_obs,
             F_calc,
             Sigma,
+            sigma_obs,
             centric_flags,
-            epsilon=None,
-            alpha=None,
+            idx=idx,
             n_quad=n_quad,
             n_sigma=n_sigma,
-            li0=log_i0 if li0 is None else li0,
-            idx=idx,
+            li0=li0,
         ),
         mask,
     )

@@ -270,10 +270,18 @@ def test_sigma_a_estimator_knobs_reach_the_estimator():
     )
     assert kw["sigma_a_max"] == 0.999 and kw["shrink"] is False
 
-    # 5. forward() actually passes them on, and `get()` accepts them
-    src = inspect.getsource(MLXrayTarget.forward)
+    # 5. the target actually passes them on, and `get()` accepts them.
+    #    Scanned over the whole class hierarchy rather than one named method: the
+    #    estimator call has already moved once (``forward`` -> ``_loss_inputs``, when the
+    #    per-reflection seam was added), and pinning a method name makes this go vacuous
+    #    rather than fail the next time it moves.
+    src = "".join(
+        inspect.getsource(c)
+        for c in MLXrayTarget.__mro__
+        if getattr(c, "__module__", "").startswith("torchref")
+    )
     for kwarg in ("sigma_a_max", "shrink"):
-        assert f"{kwarg}=self.{kwarg}" in src, f"forward() drops {kwarg}"
+        assert f"{kwarg}=self.{kwarg}" in src, f"the target drops {kwarg}"
     params = inspect.signature(SigmaAEstimator.get).parameters
     assert "kwargs" in params or {"sigma_a_max", "shrink"} <= set(params)
 

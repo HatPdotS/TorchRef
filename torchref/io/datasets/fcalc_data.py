@@ -295,6 +295,7 @@ class FcalcDataset(CrystalDataset):
         device = normalize_device(device)
 
         masks_state = state.pop("masks", {})
+        state = cls._drop_stale_state_keys(state)
 
         if "device" in state:
             state["device"] = torch.device(state["device"])

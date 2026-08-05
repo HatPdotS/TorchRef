@@ -70,13 +70,15 @@ Most failures trace to a **special-position pathology** in some placed AF models
 
 ## Figure 3 — F_calc GPU kernel speedup over cctbx
 
-Forward structure-factor calculation, TorchRef GPU (NVIDIA A100-PCIE-40GB) vs cctbx on CPU, over 10 structures. Speedup = cctbx time / TorchRef GPU time (fastest cctbx observed per structure). cctbx has no autodiff, so only the forward pass is compared.
+Forward structure-factor calculation, TorchRef GPU (NVIDIA A100-PCIE-40GB) vs cctbx on **cpu_xeon6230R**, over 10 structures. Speedup = cctbx time / TorchRef GPU time, both best-of-10 (fastest cctbx observed per structure), matching what the panel plots. cctbx has no autodiff, so only the forward pass is compared. This covers all 10 structures; the panel omits 5BOV as a triclinic outlier, so its on-figure median is slightly higher.
+
+The reference CPU is stated because it sets this number: `cpu_xeon6230R` (Cascade Lake, Q1 2020) is contemporaneous with the A100 (mid-2020); a 2024 `cpu_epyc9335` runs the same unchanged cctbx code 1.95x faster and halves the ratio (median 59x on that CPU, against the table below). The generation-matched pair is quoted.
 
 | | speedup | structure |
 |---|---|---|
-| minimum | 27× | 3E98 |
-| maximum | 111× | 3K7M |
-| median | 58× | — |
+| minimum | 52× | 3E98 |
+| maximum | 178× | 2DQ6 |
+| median | 121× | — |
 
 ## Extended Figure 2 — R-factor gap (TorchRef − reference, PHENIX-scored)
 

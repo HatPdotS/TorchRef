@@ -2,14 +2,18 @@
 
 Four selectable modes -- ``ml``, ``ml_noalpha``, ``nll_beta``, ``ml_full`` -- differ only in
 their likelihood, their conditional mean and (for ``ml_full``) which variance field they read.
-Everything else lives here: one estimator, one geometry cache, one estimator call, one
-compaction, one ``maintenance``.
+Everything else lives here: one estimator, one estimator call, one compaction, one
+``maintenance``.
 
 **No code in this module branches on which mode is running**, and none should: the three
 differences are the :meth:`SigmaAXrayTarget._model_error`, :meth:`SigmaAXrayTarget._mean` and
-:meth:`SigmaAXrayTarget._loss` overrides, so a new row is a new class rather than a new
+:meth:`SigmaAXrayTarget._per_refl` overrides, so a new row is a new class rather than a new
 ``elif``. One class per mode is checked at import by
 :class:`~torchref.refinement.targets.xray._specs.XrayTargetTable`.
+
+The likelihood hook is **per reflection**. Summing is
+:meth:`~torchref.refinement.targets.xray.base.XrayTarget.forward`'s job and happens once,
+here, so the summed and unsummed forms cannot encode different objectives.
 
 ``nll`` is deliberately *not* a subclass: it needs no estimate, and it reads amplitudes
 through :meth:`XrayTarget.get_data`, which falls back to **raw** amplitudes when the scaler
@@ -19,16 +23,13 @@ turn that silent fallback into a hard failure and lose its fused Triton kernel a
 """
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import torch
 
-from torchref.base.reciprocal import get_scattering_vectors
-from torchref.base.targets.xray_likelihoods import complex_var_from_beta
+from torchref.base.targets.xray_likelihoods import _masked_sum, complex_var_from_beta
 from torchref.refinement.model_error_estimation.sigma_a import (
     SigmaAEstimate,
     SigmaAEstimator,
-    epsilon_from_hkl,
 )
 
 from .base import XrayTarget
@@ -91,11 +92,6 @@ class SigmaAXrayTarget(XrayTarget):
         # tests/unit/refinement/test_ml_sigmaa.py::test_maintenance_resets_cache; that the
         # construction stays HERE is not asserted anywhere, so read the indentation.
         self._sigma_a = SigmaAEstimator()
-        # Model-independent per-reflection geometry (multiplicity + d*^2), cached per
-        # ReflectionData instance (mirrors the bins cache pattern).
-        self._eps_cache: torch.Tensor = None
-        self._dss_cache: torch.Tensor = None
-        self._geom_dataid: int = None
 
     # --- estimator knobs, read from the one config every x-ray target carries ---
     @property
@@ -125,8 +121,10 @@ class SigmaAXrayTarget(XrayTarget):
         """
         return F_calc
 
-    def _loss(self, ctx: SigmaALossInputs) -> torch.Tensor:
-        """The likelihood. One per selectable row; no row is a branch."""
+    def _per_refl(self, ctx: SigmaALossInputs) -> torch.Tensor:
+        """The likelihood, per reflection and unreduced. One per selectable row; no row
+        is a branch. :meth:`forward` sums it; :meth:`XrayTarget.residuals` does not.
+        """
         raise NotImplementedError
 
     # --- shared helper the hooks may call; forward() never does ----------------
@@ -142,38 +140,30 @@ class SigmaAXrayTarget(XrayTarget):
         return F_calc * sub.select(est.alpha).to(F_calc.dtype)
 
     # --- shared machinery -----------------------------------------------------
-    def _geom(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """``(epsilon, d_star_sq)`` over the full data HKL. Both are model-independent
-        (pure multiplicity / reciprocal geometry), so they are computed once per
-        :class:`ReflectionData` and cached against its id.
-        """
-        dataid = id(self._data)
-        if self._eps_cache is None or self._geom_dataid != dataid:
-            sg = getattr(self._data, "spacegroup", None)
-            eps = epsilon_from_hkl(self._data.hkl, sg)
-            s = get_scattering_vectors(self._data.hkl, self._data.cell)
-            # d*^2 = |s|^2 = 4 * (|s|/2)^2 (the scaler's _s_half_sq convention).
-            dss = (torch.norm(s, dim=1) ** 2).to(eps.dtype)
-            self._eps_cache = eps
-            self._dss_cache = dss
-            self._geom_dataid = dataid
-        return self._eps_cache, self._dss_cache
+    def _loss_inputs(
+        self, fcalc: torch.Tensor = None, sub=None
+    ) -> SigmaALossInputs:
+        """Gather the sigma_A likelihood's inputs on one subset view.
 
-    def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
-        """Read-MLF-family loss with free-set sigma_A variance ``epsilon * beta``.
+        The whole data path -- one estimator call on the full free set, one
+        compaction onto ``sub`` -- lives here, so ``forward`` and
+        :meth:`XrayTarget.residuals` differ only in which view they ask for.
 
         Parameters
         ----------
         fcalc : torch.Tensor, optional
             Pre-computed structure factors. If provided, used instead of computing from the
             model.
+        sub : _ReflectionSubset, optional
+            Which reflections to compact onto. Defaults to this target's own set.
 
         Returns
         -------
-        torch.Tensor
-            Summed loss on this target's set (work, free or validation).
+        SigmaALossInputs
+            Every field compacted onto ``sub`` except ``sigma_obs_full`` and ``est``.
         """
-        sub = self._subset()
+        if sub is None:
+            sub = self._subset()
 
         # Full-size scaled |F_calc| (aligned to data.hkl). beta is estimated on the full
         # free set, so it needs the full-size arrays.
@@ -211,19 +201,33 @@ class SigmaAXrayTarget(XrayTarget):
         F_obs = sub.select(F_obs_full)
         eps = est.epsilon
         eps_c = sub.select(eps).to(F_obs.dtype) if eps is not None else None
-        return self._loss(
-            SigmaALossInputs(
-                F_obs=F_obs,
-                F_calc=self._mean(sub.select(F_calc_full), est, sub),
-                Sigma=complex_var_from_beta(
-                    sub.select(self._model_error(est)).to(F_obs.dtype), eps_c
-                ),
-                centric=sub.centric,
-                sigma_obs_full=sigma_full,
-                est=est,
-                sub=sub,
-            )
+        return SigmaALossInputs(
+            F_obs=F_obs,
+            F_calc=self._mean(sub.select(F_calc_full), est, sub),
+            Sigma=complex_var_from_beta(
+                sub.select(self._model_error(est)).to(F_obs.dtype), eps_c
+            ),
+            centric=sub.centric,
+            sigma_obs_full=sigma_full,
+            est=est,
+            sub=sub,
         )
+
+    def forward(self, fcalc: torch.Tensor = None) -> torch.Tensor:
+        """Read-MLF-family loss with free-set sigma_A variance ``epsilon * beta``.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor, optional
+            Pre-computed structure factors. If provided, used instead of computing from the
+            model.
+
+        Returns
+        -------
+        torch.Tensor
+            Summed loss on this target's set (work, free or validation).
+        """
+        return _masked_sum(self._per_refl(self._loss_inputs(fcalc=fcalc)))
 
     def maintenance(self) -> None:
         """Invalidate the cached estimate so it refits from the updated model on the next

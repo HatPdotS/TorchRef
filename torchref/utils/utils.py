@@ -229,6 +229,23 @@ class TensorMasks(DeviceMovementMixin, dict):
         super().__setitem__(key, tensor)
         self._updated = True
 
+    # Removal must invalidate the combined mask exactly as assignment does.
+    # ``dict`` does not route its removal methods through ``__setitem__``, so each
+    # needs its own override; without them a removed mask keeps constraining
+    # ``__call__``'s cached result until something else happens to assign.
+    def __delitem__(self, key: str):
+        super().__delitem__(key)
+        self._updated = True
+
+    def pop(self, key, *default):
+        out = super().pop(key, *default)
+        self._updated = True
+        return out
+
+    def clear(self):
+        super().clear()
+        self._updated = True
+
     def _apply(self, fn):
         """Move mask tensors stored as ``dict`` items and invalidate the cache.
 
@@ -269,7 +286,12 @@ class TensorMasks(DeviceMovementMixin, dict):
 
     def _get_combined_mask(self) -> torch.Tensor:
         """Compute combined mask using logical AND."""
-        masks = [v for v in self.values() if v is not None]
+        return self._and(self.values())
+
+    @staticmethod
+    def _and(masks) -> torch.Tensor:
+        """Logical AND over an iterable of masks, skipping ``None``."""
+        masks = [v for v in masks if v is not None]
         if not masks:
             return None
 

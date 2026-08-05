@@ -9,13 +9,18 @@ import torch
 from ._dispatch import use_triton
 
 
-def _ls_xray_loss_math_eager(
+def ls_per_refl(
     F_obs: torch.Tensor,
     F_calc: torch.Tensor,
     sigma: torch.Tensor,
-    mask: torch.Tensor,
     weighting: str = "sigma",
 ) -> torch.Tensor:
+    """Per-reflection weighted least-squares residual (NOT masked or summed).
+
+    ``0.5 * w * (F_obs - |F_calc|)**2``, at ``w = 1/sigma**2`` (``"sigma"``, with the
+    ``median(sigma)*0.1`` clamp) or ``w = 1`` (``"unit"``). See
+    :func:`ls_xray_loss_math` for the summed form the targets' ``forward`` returns.
+    """
     F_calc_amp = torch.abs(F_calc)
     diff = F_obs - F_calc_amp
 
@@ -28,8 +33,17 @@ def _ls_xray_loss_math_eager(
     else:
         raise ValueError(f"Unknown weighting scheme: {weighting}")
 
-    loss = 0.5 * weights * (diff ** 2)
-    return (loss * mask).sum()
+    return 0.5 * weights * (diff ** 2)
+
+
+def _ls_xray_loss_math_eager(
+    F_obs: torch.Tensor,
+    F_calc: torch.Tensor,
+    sigma: torch.Tensor,
+    mask: torch.Tensor,
+    weighting: str = "sigma",
+) -> torch.Tensor:
+    return (ls_per_refl(F_obs, F_calc, sigma, weighting=weighting) * mask).sum()
 
 
 def ls_xray_loss_math(

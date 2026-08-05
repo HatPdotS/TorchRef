@@ -40,7 +40,10 @@ if TYPE_CHECKING:
 class _ReflectionSubset:
     """
     Lightweight view of one reflection subset (``work`` / ``free`` /
-    ``validation``) of a :class:`ReflectionData`.
+    ``validation`` / ``all``) of a :class:`ReflectionData`.
+
+    The first three apply the validity masks; ``all`` deliberately does not (see
+    :attr:`ReflectionData.all`).
 
     Returns the **compact** (indexed) subset for any per-reflection field and
     caches the integer index map on the parent (rebuilt when the masks or the
@@ -58,6 +61,16 @@ class _ReflectionSubset:
         self._kind = kind
 
     # -- index / mask -----------------------------------------------------
+    @property
+    def kind(self) -> str:
+        """Which subset this view is: ``work``/``free``/``validation``/``all``.
+
+        Public so a caller keying a cache on "which reflections is this" has a
+        stable label. Length alone does not distinguish the views, and
+        ``indices.data_ptr()`` can be recycled after a rebuild.
+        """
+        return self._kind
+
     @property
     def indices(self) -> torch.Tensor:
         """Cached ``LongTensor`` of positions (into the full array) in this subset."""
@@ -206,7 +219,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Cached integer index maps for the work/free/validation subsets and
         # a cache of the scaled (F, F_sigma). Both are invalidated by
         # fingerprints (see _subset_indices / _corrected_or_raw).
-        self._subset_cache = {"work": None, "free": None, "validation": None}
+        self._subset_cache = {
+            "work": None,
+            "free": None,
+            "validation": None,
+            "all": None,
+        }
         self._subset_fp = None
         self._corrected_cache = None
         self._corrected_fp = None
@@ -227,6 +245,23 @@ class ReflectionData(CrystalDataset, DebugMixin):
     def validation(self) -> "_ReflectionSubset":
         """Validation-set view (``validation_flags``). Empty unless populated."""
         return _ReflectionSubset(self, "validation")
+
+    @property
+    def all(self) -> "_ReflectionSubset":
+        """Every reflection, in storage order, **ignoring the masks entirely**.
+
+        The odd one out: ``work``/``free``/``validation`` are all intersected with
+        ``masks()``, this one is not. It exists for diagnostics that need a value for
+        every reflection -- per-reflection residuals above all -- and for anything
+        aligned to ``hkl``, where storage order is what makes the result addressable
+        at all.
+
+        So it is **not** a drop-in for the other three: reflections here may have
+        been zeroed by ``sanitize_F`` or excluded by any other mask, and feeding them
+        to a loss would undo the masking. ``sub.select`` is a full copy rather than
+        the identity, so the view behaves identically to the others.
+        """
+        return _ReflectionSubset(self, "all")
 
     def _subset_fingerprint(self):
         """Fingerprint of everything the subset index maps depend on:
@@ -253,10 +288,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         )
 
     def _subset_indices(self, kind: str) -> torch.Tensor:
-        """Return cached integer indices for ``kind`` in {work, free, validation}.
+        """Return cached integer indices for ``kind`` in {work, free, validation, all}.
 
-        The three sets are disjoint: validation is carved out of both work
-        and free. Rebuilt whenever :meth:`_subset_fingerprint` changes.
+        The first three are disjoint: validation is carved out of both work
+        and free, and each is intersected with the validity masks. ``all`` is
+        every reflection, masks included -- see the :attr:`all` docstring for why
+        that asymmetry is deliberate. Rebuilt whenever
+        :meth:`_subset_fingerprint` changes.
         """
         fp = self._subset_fingerprint()
         if self._subset_fp != fp or self._subset_cache.get(kind) is None:
@@ -264,7 +302,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
             device = self.device
             if n == 0:
                 empty = torch.empty(0, dtype=torch.long, device=device)
-                self._subset_cache = {"work": empty, "free": empty, "validation": empty}
+                self._subset_cache = {
+                    "work": empty,
+                    "free": empty,
+                    "validation": empty,
+                    "all": empty,
+                }
                 self._subset_fp = fp
                 return self._subset_cache[kind]
 
@@ -284,6 +327,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 "work": torch.nonzero(work_sel, as_tuple=False).squeeze(-1),
                 "free": torch.nonzero(free_sel, as_tuple=False).squeeze(-1),
                 "validation": torch.nonzero(val_sel, as_tuple=False).squeeze(-1),
+                # Mask-independent by construction; rebuilt with the rest only
+                # because the four share one fingerprint.
+                "all": torch.arange(n, device=device),
             }
             self._subset_fp = fp
         return self._subset_cache[kind]
@@ -336,7 +382,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         "rfree_flags": 1,  # missing reflections default to the work set
         "friedel_flags": False,
         "validation_flags": False,
-        "outlier_flags": False,
     }
 
     # Per-reflection fields that are pure functions of (hkl, cell, spacegroup):
@@ -2141,156 +2186,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         self._assert_per_reflection_consistent()
         return self
 
-    def find_outliers(
-        self, model: "ModelFT", scaler, z_threshold: float = 4.0
-    ) -> torch.Tensor:
-        """
-        Identify outlier reflections based on log-ratio distribution.
-
-        Uses the fact that log(F_obs) - log(F_calc) should be normally distributed.
-        Outliers are reflections where |log_ratio - mean| > z_threshold * std_dev.
-
-        Parameters
-        ----------
-        model : ModelFT
-            ModelFT object to compute structure factors.
-        scaler : Scaler
-            Scaler object to scale calculated structure factors.
-        z_threshold : float, optional
-            Z-score threshold to classify outliers. Default is 4.0.
-
-        Notes
-        -----
-        Operates by side effect: stores ``~outlier_mask`` (True = keep) under
-        ``self.masks['outliers']``. The normal code path returns ``None``;
-        only the early no-valid-ratio branch returns a boolean tensor.
-        """
-        hkl, F_obs, _, _ = self._masked_unpack(mask=False)
-        log_ratio = self.get_log_ratio(model, scaler)
-        eps = 1e-10
-
-        # Remove any infinite or NaN values for statistics
-        valid_mask = torch.isfinite(log_ratio)
-        if valid_mask.sum() == 0:
-            if self.verbose > 0:
-                print("Warning: No valid log-ratios found for outlier detection")
-            return torch.zeros_like(F_obs, dtype=torch.bool, device=self.device)
-
-        to_use = valid_mask
-
-        log_ratio_valid = log_ratio[to_use]
-
-        # Compute mean and standard deviation of log-ratio distribution
-        mean_log_ratio = torch.mean(log_ratio_valid)
-        std_log_ratio = torch.std(log_ratio_valid, unbiased=True)
-
-        # Identify outliers using Z-score criterion
-        z_scores = torch.abs(log_ratio - mean_log_ratio) / (std_log_ratio + eps)
-        outlier_mask = z_scores > z_threshold
-
-        # Set invalid ratios as outliers too
-        outlier_mask = outlier_mask | ~valid_mask
-
-        if self.verbose > 0:
-            n_outliers = outlier_mask.sum().item()
-            n_total = len(F_obs)
-            print(
-                f"Outlier detection: {n_outliers}/{n_total} ({100*n_outliers/n_total:.2f}%) outliers found"
-            )
-            print(
-                f"  Log-ratio statistics: mean={mean_log_ratio:.3f}, std={std_log_ratio:.3f}"
-            )
-            print(f"  Z-score threshold: {z_threshold:.1f}")
-
-        # Ensure outlier_mask is on correct device and register
-        outlier_mask = outlier_mask.to(self.device)
-        self.masks["outliers"] = ~outlier_mask
-        if self.verbose > 0:
-            print(
-                f"Outlier detection: {outlier_mask.sum().item()} reflections flagged as outliers out of {len(outlier_mask)}."
-            )
-
-    def get_log_ratio(self, model: "ModelFT", scaler) -> torch.Tensor:
-        """
-        Compute log-ratio between observed and calculated structure factors.
-
-        Parameters
-        ----------
-        model : ModelFT
-            ModelFT object to compute structure factors.
-        scaler : Scaler
-            Scaler object to scale calculated structure factors.
-
-        Returns
-        -------
-        torch.Tensor
-            Log-ratio values: log(F_obs) - log(F_calc).
-        """
-        # Get observed and calculated structure factors
-        eps = 1e-6
-        hkl, F_obs, _, _ = self._masked_unpack(mask=False)
-        F_calc_complex = model.forward(hkl)  # Complex structure factors
-        F_calc_scaled = torch.abs(
-            scaler(F_calc_complex, use_mask=False)
-        )  # Scaled amplitudes
-        # Avoid log of zero by adding small epsilon
-        F_obs_safe = torch.clamp(F_obs, min=eps)
-        F_calc_safe = torch.clamp(F_calc_scaled, min=eps)
-        # Compute log-ratio distribution: log(F_obs) - log(F_calc)
-        log_ratio = torch.log(F_obs_safe) - torch.log(F_calc_safe)
-        return log_ratio
-
-    def get_outlier_statistics(self) -> Dict:
-        """
-        Get statistics about flagged outliers.
-
-        Returns
-        -------
-        dict
-            Dictionary containing:
-            - n_outliers : int
-            - n_total : int
-            - fraction_outliers : float
-            - detection_params : dict or None
-            - outlier_resolution_stats : dict (if resolution available)
-
-        Notes
-        -----
-        Reads ``self.outlier_flags``, which must be populated separately. Note
-        that :meth:`find_outliers` stores its result in ``self.masks['outliers']``
-        and does NOT set ``self.outlier_flags``; these statistics therefore do
-        not automatically reflect a prior ``find_outliers`` call.
-        """
-        if self.outlier_flags is None:
-            return {"n_outliers": 0, "n_total": 0, "fraction_outliers": 0.0}
-
-        n_outliers = self.outlier_flags.sum().item()
-        n_total = len(self.outlier_flags)
-
-        stats = {
-            "n_outliers": n_outliers,
-            "n_total": n_total,
-            "fraction_outliers": n_outliers / n_total if n_total > 0 else 0.0,
-            "detection_params": self.outlier_detection_params,
-        }
-
-        if self.resolution is not None:
-            # Add resolution-dependent statistics
-            outlier_resolutions = (
-                self.resolution[self.outlier_flags]
-                if n_outliers > 0
-                else torch.tensor([])
-            )
-            if len(outlier_resolutions) > 0:
-                stats["outlier_resolution_stats"] = {
-                    "min": outlier_resolutions.min().item(),
-                    "max": outlier_resolutions.max().item(),
-                    "mean": outlier_resolutions.mean().item(),
-                    "median": outlier_resolutions.median().item(),
-                }
-
-        return stats
-
     def unpack_one(self):
         """
         Unpack one level of source.
@@ -2316,7 +2211,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Parameters
         ----------
         z_threshold : float, optional
-            Z-score threshold for flagging outliers. Default is 5.0.
+            Z-score threshold, on ``log(sigma)``, for flagging a sigma as suspicious.
+            Default is 5.0.
         """
         sigmas = self.F_sigma
         log_sigmas = torch.log(sigmas)
@@ -3040,7 +2936,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
         amplitude-weighted complex averaging (so it wraps correctly) with
         ``fom`` from the resultant
         length; ``rfree_flags`` free if any equivalent is free, and
-        validation/outlier flags set if any equivalent is set. Any other
+        ``validation_flags`` set if any equivalent is set. Any other
         per-reflection field takes its first valid equivalent.
         """
         from torchref.symmetry.reciprocal_symmetry import reduce_hkl
@@ -3172,8 +3068,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
             reduced.rfree_flags = rfree_gathered.min(dim=1).values != 0
 
         # Boolean per-reflection flags: an equivalent's flag propagates to the
-        # merged reflection if ANY contributor has it set (validation/outlier
-        # are conservative "exclude if any").
+        # merged reflection if ANY contributor has it set (validation is a
+        # conservative "exclude if any").
         def _aggregate_any(tensor):
             if tensor is None:
                 return None
@@ -3183,8 +3079,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         if self.validation_flags is not None:
             reduced.validation_flags = _aggregate_any(self.validation_flags)
-        if self.outlier_flags is not None:
-            reduced.outlier_flags = _aggregate_any(self.outlier_flags)
 
         # Completeness pass: carry any remaining per-reflection dataclass tensor
         # field not handled above so the merge never silently drops data.
@@ -3202,7 +3096,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             "fom",
             "rfree_flags",
             "validation_flags",
-            "outlier_flags",
         }
         _recomputed = set(self._REINDEX_DERIVED) | {"hkl_anomalous", "friedel_flags"}
         n_src = len(self.hkl)

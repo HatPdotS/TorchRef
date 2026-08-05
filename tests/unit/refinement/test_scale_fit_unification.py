@@ -239,9 +239,9 @@ def test_every_driver_routes_through_refine_scaler():
 def test_refine_fits_the_scale_before_reporting_after_scaling():
     """``after_scaling`` must be recorded *after* the fit, or the label is false.
 
-    It used to be recorded after only a solvent refresh and an outlier re-flag, with the fit
-    at the end of the cycle -- so the field reported the previous cycle's scaler. That field
-    is what the per-cycle benchmark figure plots.
+    It used to be recorded after only a solvent refresh, with the fit at the end of the
+    cycle -- so the field reported the previous cycle's scaler. That field is what the
+    per-cycle benchmark figure plots.
     """
     src = inspect.getsource(LBFGSRefinement.refine)
     fit = src.index("self.refine_scaler()")

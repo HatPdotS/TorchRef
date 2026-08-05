@@ -4,7 +4,7 @@ import torch
 from typing import TYPE_CHECKING
 
 from torchref.base.metrics import binwise_scale
-from torchref.base.targets.xray_ls import ls_xray_loss_math
+from torchref.base.targets.xray_ls import ls_per_refl, ls_xray_loss_math
 
 from .base import XrayTarget
 
@@ -83,6 +83,20 @@ class LeastSquaresXrayTarget(XrayTarget):
             mask=None,
             weighting=self.weighting,
         )
+
+    def _per_refl(self, ctx) -> torch.Tensor:
+        """The eager twin of :meth:`forward`'s fused kernel; see
+        :meth:`~torchref.refinement.targets.xray.nll.NLLXrayTarget._per_refl`.
+
+        Goes through :meth:`_scaled_F_calc_full` rather than
+        :meth:`_scaled_amplitudes` because the two disagree for the ``ls_wunit_k1``
+        row, whose closed-form scale is fit on **whatever view it is handed**. On the
+        full-reflection view that would fit the scale to the free set as well, which
+        is neither what the loss saw nor what the R-factor uses.
+        """
+        F_obs, _, sigma, _, sub = ctx
+        F_calc = sub.select(self._scaled_F_calc_full())
+        return ls_per_refl(F_obs, F_calc, sigma, weighting=self.weighting)
 
 
 class UnitWeightK1XrayTarget(LeastSquaresXrayTarget):

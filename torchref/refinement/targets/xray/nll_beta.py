@@ -1,6 +1,9 @@
 """``--xray-mode nll_beta``: the Read MLF's large-signal Gaussian limit."""
 
-from torchref.base.targets.xray_likelihoods import amplitude_var_from_complex, nll_math
+from torchref.base.targets.xray_likelihoods import (
+    amplitude_var_from_complex,
+    nll_per_refl,
+)
 
 from .sigma_a import SigmaAXrayTarget
 
@@ -21,7 +24,7 @@ class NLLBetaXrayTarget(SigmaAXrayTarget):
     the comparison this row exists for.
     """
 
-    def _loss(self, ctx):
-        return nll_math(
+    def _per_refl(self, ctx):
+        return nll_per_refl(
             ctx.F_obs, ctx.F_calc, amplitude_var_from_complex(ctx.Sigma, ctx.centric)
         )

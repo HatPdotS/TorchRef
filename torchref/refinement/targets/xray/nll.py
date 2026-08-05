@@ -1,6 +1,10 @@
 import torch
 from typing import TYPE_CHECKING
 
+from torchref.base.targets.xray_likelihoods import (
+    amplitude_var_from_sigma_obs,
+    nll_per_refl,
+)
 from torchref.base.targets.xray_nll import nll_sigma_obs_math
 
 from .base import XrayTarget
@@ -55,3 +59,19 @@ class NLLXrayTarget(XrayTarget):
         """
         F_obs, F_calc, sigma, _, _ = self.get_data(fcalc=fcalc)
         return nll_sigma_obs_math(F_obs, F_calc, sigma)
+
+    def _per_refl(self, ctx) -> torch.Tensor:
+        """The eager twin of :meth:`forward`'s fused kernel.
+
+        ``forward`` keeps ``nll_sigma_obs_math``, which on CUDA float32 fuses the
+        per-reflection Gaussian and the sum into one Triton kernel and never
+        materialises this tensor. That fusion is why the two are written out
+        separately instead of ``forward`` being ``_masked_sum(self._per_refl(...))``;
+        ``tests/unit/refinement/test_xray_residuals.py`` pins them to each other.
+
+        The variance builder must stay :func:`amplitude_var_from_sigma_obs` -- it
+        carries the ``median(sigma)*0.1`` clamp that the Triton kernel also applies
+        internally, and dropping it here would make the two disagree on weak data.
+        """
+        F_obs, F_calc, sigma, _, _ = ctx
+        return nll_per_refl(F_obs, F_calc, amplitude_var_from_sigma_obs(sigma))
