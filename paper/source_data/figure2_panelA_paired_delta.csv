@@ -1,0 +1,5 @@
+reference,metric,n,median_delta_paired,ci95_low,ci95_high,wilcoxon_p,torchref_better,torchref_worse,delta_of_medians
+refmac,r_free,723,0.0028,0.0019,0.0037,7.22629538631494e-07,292,430,0.0034
+refmac,r_work,723,0.0006,-0.0003,0.0015,0.0004015574766231774,343,379,0.0014
+phenix,r_free,723,0.0004,-0.0004,0.0012,0.3117202359150214,342,377,0.003
+phenix,r_work,723,0.0003,-0.0014,0.0016,0.0006702636729652163,355,365,0.0004
