@@ -1,6 +1,6 @@
-<img src="assets/torchref-chainbow.svg" alt="TorchRef" width="120" align="right">
-
 # TorchRef
+
+<img src="assets/torchref-chainbow.svg" alt="TorchRef" width="120" align="right">
 
 **A PyTorch-based crystallographic refinement library**
 
