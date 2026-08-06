@@ -1,0 +1,57 @@
+structure,bar,bar_position,target,time_ms
+1DAW,CPU (8T) — Forward,0,xray,33.313132
+1DAW,CPU (8T) — Forward,0,geometry/bond,0.359799
+1DAW,CPU (8T) — Forward,0,geometry/angle,0.541926
+1DAW,CPU (8T) — Forward,0,geometry/torsion,1.376537
+1DAW,CPU (8T) — Forward,0,geometry/planarity,2.803836
+1DAW,CPU (8T) — Forward,0,geometry/chiral,0.341273
+1DAW,CPU (8T) — Forward,0,geometry/nonbonded,5.090571
+1DAW,CPU (8T) — Forward,0,geometry/ramachandran,0.724275
+1DAW,CPU (8T) — Forward,0,adp/simu,0.235923
+1DAW,CPU (8T) — Forward,0,adp/locality,0.477877
+1DAW,CPU (8T) — Forward,0,adp/KL,0.126612
+1DAW,CPU (8T) — Forward,0,adp/scaler_U,0.068996
+1DAW,CPU (8T) — Forward,0,adp/scaler_log_scale,0.091393
+1DAW,CPU (8T) — Forward,0,_aggregate_full_cycle_overlay,44.882622
+1DAW,GPU — Forward,1,xray,3.793907
+1DAW,GPU — Forward,1,geometry/bond,0.261025
+1DAW,GPU — Forward,1,geometry/angle,0.283689
+1DAW,GPU — Forward,1,geometry/torsion,0.529199
+1DAW,GPU — Forward,1,geometry/planarity,1.21761
+1DAW,GPU — Forward,1,geometry/chiral,0.244337
+1DAW,GPU — Forward,1,geometry/nonbonded,1.208472
+1DAW,GPU — Forward,1,geometry/ramachandran,0.270342
+1DAW,GPU — Forward,1,adp/simu,0.245879
+1DAW,GPU — Forward,1,adp/locality,0.325638
+1DAW,GPU — Forward,1,adp/KL,0.207869
+1DAW,GPU — Forward,1,adp/scaler_U,0.113406
+1DAW,GPU — Forward,1,adp/scaler_log_scale,0.214141
+1DAW,GPU — Forward,1,_aggregate_full_cycle_overlay,8.120947
+1DAW,CPU (8T) — Fwd+Bwd,2,xray,51.578735
+1DAW,CPU (8T) — Fwd+Bwd,2,geometry/bond,0.84105
+1DAW,CPU (8T) — Fwd+Bwd,2,geometry/angle,1.411366
+1DAW,CPU (8T) — Fwd+Bwd,2,geometry/torsion,2.740626
+1DAW,CPU (8T) — Fwd+Bwd,2,geometry/planarity,3.940083
+1DAW,CPU (8T) — Fwd+Bwd,2,geometry/chiral,0.793944
+1DAW,CPU (8T) — Fwd+Bwd,2,geometry/nonbonded,11.621047
+1DAW,CPU (8T) — Fwd+Bwd,2,geometry/ramachandran,1.77181
+1DAW,CPU (8T) — Fwd+Bwd,2,adp/simu,0.583153
+1DAW,CPU (8T) — Fwd+Bwd,2,adp/locality,1.761795
+1DAW,CPU (8T) — Fwd+Bwd,2,adp/KL,0.403087
+1DAW,CPU (8T) — Fwd+Bwd,2,adp/scaler_U,0.248444
+1DAW,CPU (8T) — Fwd+Bwd,2,adp/scaler_log_scale,0.330082
+1DAW,CPU (8T) — Fwd+Bwd,2,_aggregate_full_cycle_overlay,77.371659
+1DAW,GPU — Fwd+Bwd,3,xray,7.148158
+1DAW,GPU — Fwd+Bwd,3,geometry/bond,0.57945
+1DAW,GPU — Fwd+Bwd,3,geometry/angle,0.611528
+1DAW,GPU — Fwd+Bwd,3,geometry/torsion,0.940054
+1DAW,GPU — Fwd+Bwd,3,geometry/planarity,1.796192
+1DAW,GPU — Fwd+Bwd,3,geometry/chiral,0.573855
+1DAW,GPU — Fwd+Bwd,3,geometry/nonbonded,1.955875
+1DAW,GPU — Fwd+Bwd,3,geometry/ramachandran,0.590927
+1DAW,GPU — Fwd+Bwd,3,adp/simu,0.588461
+1DAW,GPU — Fwd+Bwd,3,adp/locality,0.920884
+1DAW,GPU — Fwd+Bwd,3,adp/KL,0.652101
+1DAW,GPU — Fwd+Bwd,3,adp/scaler_U,0.470621
+1DAW,GPU — Fwd+Bwd,3,adp/scaler_log_scale,0.70014
+1DAW,GPU — Fwd+Bwd,3,_aggregate_full_cycle_overlay,13.502986
