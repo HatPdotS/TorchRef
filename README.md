@@ -1,10 +1,9 @@
-<img src="assets/torchref-chainbow.svg" alt="TorchRef" width="120" align="right">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/torchref-banner-dark.svg">
+  <img src="assets/torchref-banner.svg" alt="TorchRef" width="440">
+</picture>
 
-### TorchRef
-
----
-
-**A PyTorch-based crystallographic refinement library**
+## A PyTorch-based crystallographic refinement library
 
 [![Tests](https://github.com/HatPdotS/TorchRef/actions/workflows/tests.yml/badge.svg)](https://github.com/HatPdotS/TorchRef/actions/workflows/tests.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -19,7 +18,7 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. By 
 > **Scope 
 TorchRef is a mainly a library/framework to build and experiment with. It is not intended to replace mainline refinement programs for standard problems. 
 
-# Benchmark
+## Benchmark
 
 ![TorchRef AlphaFold-start refinement benchmark](paper/figure2_alphafold_start/figures/figure_af_benchmark.png)
 
@@ -31,7 +30,7 @@ TorchRef is a mainly a library/framework to build and experiment with. It is not
 - **(D) Convergence speed (normalized).** Fraction of the total R-free improvement achieved per macrocycle. The different programs show differing convergence behavior. 
 
 
-# Key Features
+## Key Features
 
 - **Native PyTorch Integration**: Built on PyTorch's `nn.Module` architecture, TorchRef integrates naturally with the PyTorch ecosystem, including machine learning models, optimizers, and GPU acceleration.
 
@@ -43,7 +42,7 @@ TorchRef is a mainly a library/framework to build and experiment with. It is not
 
 - **FFT-based Structure Factors**: Efficient structure factor calculation using Fast Fourier Transform (FFT) methods, enabling rapid F_calc computation even for large unit cells.
 
-# Getting Started
+## Getting Started
 
 | Notebook | Description |
 |----------|-------------|
@@ -51,7 +50,7 @@ TorchRef is a mainly a library/framework to build and experiment with. It is not
 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/structure_factors.ipynb) | Structure factors — one-liner, `FFT` class, and manual voxel pipeline; standalone scaling; autograd |
 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/HatPdotS/TorchRef/blob/main/example_notebooks/targets_and_weighting.ipynb) | Targets and weighting — standard targets, target-offset weighting, X-ray mode comparison, custom targets, driving an optimizer from a `LossState` |
 
-## Installation
+### Installation
 
 ```bash
 
@@ -59,19 +58,19 @@ pip install torchref
 
 ```
 
-### Local installation for development
+#### Local installation for development
 
-### clone the repository
+#### clone the repository
 git clone https://github.com/HatPdotS/TorchRef.git
 cd torchref
 
-### Install with pip
+#### Install with pip
 pip install -e .
 
-### Or install with development dependencies
+#### Or install with development dependencies
 pip install -e ".[dev]"
 
-## Dependencies
+### Dependencies
 
 - Python ≥ 3.10
 - PyTorch ≥ 2.4
@@ -80,7 +79,7 @@ pip install -e ".[dev]"
 - reciprocalspaceship ≥ 0.9.18
 - SciPy ≥ 1.10
 
-## Testing
+### Testing
 
 ```bash
 # Run all tests
@@ -95,7 +94,7 @@ pytest tests/integration/    # Integration tests
 pytest tests/functional/     # Full workflow tests
 ```
 
-## Contributing
+### Contributing
 
 Contributions are welcome! Please follow these guidelines:
 
@@ -103,7 +102,7 @@ Contributions are welcome! Please follow these guidelines:
 2. Add tests for new functionality
 3. Ensure all tests pass before submitting
 
-## License
+### License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
