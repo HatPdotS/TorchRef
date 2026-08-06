@@ -1,4 +1,6 @@
-# TorchRef
+<p align="center">
+  <img src="https://raw.githubusercontent.com/HatPdotS/TorchRef/main/assets/torchref-wordmark-chainbow-on-ink.svg" alt="TorchRef" width="470">
+</p>
 
 **A PyTorch-based crystallographic refinement library**
 
