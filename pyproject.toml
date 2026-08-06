@@ -18,6 +18,16 @@ authors = [
 #   - Python 3.11: numpy 2.0-2.3, pandas 2.0-2.3, torch 2.4-2.9, numba 0.59-0.63, scipy 1.10-1.17
 #   - Python 3.12: numpy 2.0-2.3, pandas 2.2-2.3, torch 2.4-2.9, numba 0.61-0.63, scipy 1.13-1.17
 # Upper bounds set to next minor version above tested maximum
+#
+# 2026-08-06: upper bounds raised for torch (<2.14), numba (<0.67), pyarrow (<26) and
+# tqdm (<4.69) -- the four Dependabot bumps. Validated on Python 3.11 by running the
+# full CPU suite against the new resolution (torch 2.13.0 / triton 3.7.1, numba 0.66.0 /
+# llvmlite 0.48.0, pyarrow 25.0.0, tqdm 4.68.4, with numpy 2.3.5, pandas 2.3.3,
+# scipy 1.17.1, gemmi 0.7.3, reciprocalspaceship 1.0.7) and against the previous
+# resolution (torch 2.9.1, numba 0.65.1, pyarrow 22.0.0, tqdm 4.67.3) as a baseline.
+# Both runs give an identical 1625 passed / 96 skipped, so the bumps are behaviour-neutral
+# on CPU. The CUDA/Triton and MPS kernels were NOT exercised -- the validation host had no
+# accelerator, so those paths are covered only by the GPU CI runners.
 dependencies = [
     "numpy>=2.0.0,<2.4.0",
     "pandas>=2.0.0,<2.4.0",
