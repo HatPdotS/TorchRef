@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<h1 align="center">A PyTorch-based crystallographic refinement library</h1>
+<h1 align="center">A Py<ins>Torch</ins>-based crystallographic <ins>Ref</ins>inement library</h1>
 
 <div align="center">
 
