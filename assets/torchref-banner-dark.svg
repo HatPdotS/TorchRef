@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 120" width="500" height="120" role="img" aria-label="TorchRef">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 6 406 98" width="406" height="98" role="img" aria-label="TorchRef">
   <title>TorchRef</title>
   <!-- Dark-background banner: transparent, full-brightness chainbow. -->
-  <g transform="translate(-8.6 7.4)">
+  <g transform="translate(-10.6 7.4)">
     <g fill="#ec3013">
       <circle cx="50" cy="6" r="3.4"></circle>
       <circle cx="42" cy="16" r="3.4"></circle>
@@ -25,7 +25,7 @@
     <polygon points="36,37.6 54,26 54,34 36,46.4" fill="#4fc27a"></polygon>
     <polygon points="54,26 67,5 54,34" fill="#8fd44a"></polygon>
   </g>
-  <text x="82" y="84" font-family="Archivo, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-weight="800" font-size="72" letter-spacing="-1.5">
+  <text x="84" y="84" textLength="314" lengthAdjust="spacingAndGlyphs" font-family="Archivo, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-weight="800" font-size="72" letter-spacing="-1.5">
     <tspan fill="#ec3013">Torch</tspan><tspan fill="#3fc4e0">R</tspan><tspan fill="#4fc27a">e</tspan><tspan fill="#8fd44a">f</tspan>
   </text>
 </svg>

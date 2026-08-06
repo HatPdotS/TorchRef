@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/torchref-banner-dark.svg">
-  <img src="assets/torchref-banner.svg" alt="TorchRef" width="440">
+  <img src="assets/torchref-banner-light.svg" alt="TorchRef" width="380">
 </picture>
 
 ## A PyTorch-based crystallographic refinement library
