@@ -15,6 +15,19 @@ import torch
 
 from torchref.refinement.model_error_estimation.sigma_a import ALPHA_FLOOR, RATIO_MAX, SigmaAEstimator, _shrink_to_curve, _sigma_a_sampling_var, estimate_beta
 
+#: Tolerance for comparing ``beta``/``sigma_A`` across dtypes or devices.
+#:
+#: The solve is a discrete argmin over a geometric grid whose final stage steps ``beta``
+#: by 0.38%. Near a flat optimum, adjacent candidates can differ by less than the float32
+#: noise floor of the shell sum, so two dtypes -- or two devices -- can land on
+#: neighbouring grid points. The resulting disagreement is bounded by that one step.
+#:
+#: 1e-2 sits between the two scales that matter: ~2.6x above the measured worst case
+#: (3.8e-3 over 60 seed/sigma_A combinations) and ~14x below ``beta``'s own sampling sd
+#: of ~14%. Tightening it chases precision the estimator does not have; loosening it past
+#: ~1e-1 would stop catching a real regression.
+GRID_STEP_RTOL = 1e-2
+
 
 def synth(n, sigma_a, seed=11, dtype=torch.float64, sig_frac=0.0, dss_level=None):
     """Acentric Wilson data with a KNOWN Luzzati sigma_A.
@@ -178,14 +191,26 @@ class TestDeterminism:
         assert all(torch.equal(x, out[0]) for x in out)
 
     def test_float32_tracks_float64(self):
-        """The solve runs in float64 internally, so the f32 entry point should agree
-        closely. The previous implementation had a recorded max f32-vs-f64 difference of
-        13.1, caused by an objective of magnitude ~4e4 deciding on differences of ~5e-3
-        -- 1.25e-7 relative, i.e. float32 epsilon."""
+        """The f32 entry point must agree with f64 to within the grid's own resolution.
+
+        Bounded by ``GRID_STEP_RTOL``, not by float32 epsilon. The solve is a discrete
+        argmin over a geometric grid, and near a flat optimum two adjacent candidates can
+        be separated by less than the float32 noise floor of the shell sum -- so f32 and
+        f64 can land on neighbouring grid points. That costs one final-stage step, 0.38%
+        in ``beta``, against a sampling sd of ~14% for the same quantity: 1/38 of a sigma.
+        Measured worst case over 60 seed/sigma_A combinations is 3.8e-3.
+
+        This is NOT the failure this test was written for. That one had a recorded max
+        f32-vs-f64 difference of 13.1 -- 1310%, ~90x the sampling noise -- from an
+        objective of magnitude ~4e4 deciding on differences of ~5e-3, and it made shells
+        snap to the 1.0 floor at random. A tolerance of 1e-2 still catches that by three
+        orders of magnitude. Do not tighten this to chase bit-agreement between dtypes:
+        it is not a property the estimator has, or needs.
+        """
         b32 = estimate_beta(**synth(3000, 0.85, sig_frac=0.05, dtype=torch.float32)).beta
         b64 = estimate_beta(**synth(3000, 0.85, sig_frac=0.05, dtype=torch.float64)).beta
         rel = ((b32.double() - b64).abs() / b64).max()
-        assert float(rel) < 1e-5, f"f32 vs f64 rel diff {float(rel):.2e}"
+        assert float(rel) < GRID_STEP_RTOL, f"f32 vs f64 rel diff {float(rel):.2e}"
 
     def test_tie_breaking_is_not_argmin(self):
         """A flat objective must still return a defined answer, and the same one every

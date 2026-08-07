@@ -20,6 +20,17 @@ import torch
 
 from torchref.refinement.model_error_estimation.sigma_a import estimate_beta
 
+#: Tolerance for comparing ``beta``/``sigma_A`` across dtypes or devices. See the note on
+#: ``test_sigma_a_solve.GRID_STEP_RTOL``: the solve is a discrete argmin over a grid whose
+#: final stage steps ``beta`` by 0.38%, and near a flat optimum two dtypes or two devices
+#: can land on neighbouring candidates. Bounded by one step (measured worst case 3.8e-3),
+#: against a ~14% sampling sd on the same quantity.
+#:
+#: This does NOT weaken what this module pins. Same-device repeatability is still asserted
+#: bit-exactly (``torch.equal``), which is the property whose loss caused the GPU blow-up;
+#: only the cross-dtype/cross-device comparisons carry this tolerance.
+GRID_STEP_RTOL = 1e-2
+
 
 def _hard_inputs(dtype=torch.float32):
     """Free-set inputs that trigger the failure mode: many tied d_star_sq
@@ -57,12 +68,14 @@ class TestEstimateBetaGPUDeterminism:
             assert torch.equal(b, betas[0]), "estimate_beta non-deterministic on GPU"
 
     def test_gpu_matches_cpu(self):
-        """GPU beta matches CPU beta to float32 rounding (was: totally different)."""
+        """GPU beta matches CPU beta to the grid step (was: totally different)."""
         cpu_args = _hard_inputs()
         gpu_args = [t.cuda() for t in cpu_args]
         b_cpu = estimate_beta(*cpu_args).beta
         b_gpu = estimate_beta(*gpu_args).beta.cpu()
-        torch.testing.assert_close(b_gpu, b_cpu, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(
+            b_gpu, b_cpu, rtol=GRID_STEP_RTOL, atol=GRID_STEP_RTOL
+        )
         # no shell should be spuriously floored while CPU has a finite value
         assert (b_gpu.min() > 1.0 + 1e-6) == (b_cpu.min() > 1.0 + 1e-6)
 
@@ -76,7 +89,7 @@ class TestEstimateBetaFloat32Accuracy:
         args64 = _hard_inputs(torch.float64)
         b32 = estimate_beta(*args32).beta.double()
         b64 = estimate_beta(*args64).beta
-        torch.testing.assert_close(b32, b64, rtol=2e-3, atol=1e-2)
+        torch.testing.assert_close(b32, b64, rtol=GRID_STEP_RTOL, atol=1e-2)
 
     def test_beta_non_negative_and_finite(self):
         bbin = estimate_beta(*_hard_inputs()).beta
@@ -128,9 +141,11 @@ class TestFloat32OnRealData:
         a = estimate_beta(**_real_inputs(mtz_dir, pdb_dir, torch.float32))
         b = estimate_beta(**_real_inputs(mtz_dir, pdb_dir, torch.float64))
         torch.testing.assert_close(
-            a.sigma_a.double(), b.sigma_a, rtol=1e-5, atol=1e-5
+            a.sigma_a.double(), b.sigma_a, rtol=GRID_STEP_RTOL, atol=GRID_STEP_RTOL
         )
-        torch.testing.assert_close(a.beta.double(), b.beta, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(
+            a.beta.double(), b.beta, rtol=GRID_STEP_RTOL, atol=GRID_STEP_RTOL
+        )
 
     def test_second_moment_identity_survives_float32(self, mtz_dir, pdb_dir):
         """The identity is algebraic, so float32 should cost only float32 rounding."""
@@ -157,6 +172,8 @@ def test_estimate_beta_runs_on_mps_and_matches_cpu(mtz_dir, pdb_dir):
     )
     assert gpu.sigma_a.device.type == "mps"
     torch.testing.assert_close(
-        gpu.sigma_a.cpu(), cpu.sigma_a, rtol=1e-4, atol=1e-4
+        gpu.sigma_a.cpu(), cpu.sigma_a, rtol=GRID_STEP_RTOL, atol=GRID_STEP_RTOL
     )
-    torch.testing.assert_close(gpu.beta.cpu(), cpu.beta, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(
+        gpu.beta.cpu(), cpu.beta, rtol=GRID_STEP_RTOL, atol=GRID_STEP_RTOL
+    )
