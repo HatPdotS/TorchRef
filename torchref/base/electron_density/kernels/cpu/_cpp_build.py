@@ -12,7 +12,10 @@ extensions:
   different CPU.
 * **ninja on PATH** -- pip-installed ninja lives next to ``sys.executable``, which is not
   on PATH on compute nodes.
-* **GCC >= 9** via ``/opt/rh/gcc-toolset-*``, required by PyTorch C++ extensions.
+* **A C++20-capable compiler**, required by PyTorch C++ extensions. The default
+  ``c++`` on an HPC image is often far older than the newer GCCs installed beside it
+  (SLES 15 ships GCC 7.5 as ``c++`` with ``g++-13`` in the same directory), so the
+  candidates are probed for ``-std=c++20`` rather than assumed.
 * **No ``-fopenmp`` on macOS** -- Apple Clang rejects it, so kernels must provide a
   ``std::thread`` fallback under ``#ifndef _OPENMP``.
 
@@ -23,11 +26,49 @@ so a missing compiler is a performance problem and not an outage.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 import traceback
 from typing import Optional, Tuple
 
 from torch.utils.cpp_extension import load_inline
+
+# Newest first: the first one that accepts -std=c++20 wins.
+_CXX_CANDIDATES = (
+    [f"/opt/rh/gcc-toolset-{v}/root/usr/bin/g++" for v in ("14", "13", "12")]
+    + [f"g++-{v}" for v in ("14", "13", "12")]
+    + ["g++", "c++"]
+)
+
+
+def find_cxx() -> Optional[str]:
+    """Absolute path to a compiler that accepts ``-std=c++20``, or ``None``.
+
+    A pre-set ``CXX`` is honoured first and is *not* validated -- if the user pointed us
+    at a compiler, that choice stands. Otherwise the candidates are tried in order and
+    each is actually invoked, because a name like ``g++`` says nothing about its vintage:
+    on SLES 15 it is GCC 7.5, which rejects ``-std=c++20`` outright.
+    """
+    preset = os.environ.get("CXX")
+    if preset:
+        return preset
+    for cand in _CXX_CANDIDATES:
+        path = shutil.which(cand)
+        if path is None:
+            continue
+        try:
+            subprocess.run(
+                [path, "-std=c++20", "-E", "-x", "c++", os.devnull],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        return path
+    return None
 
 
 def cpu_tag() -> str:
@@ -79,13 +120,15 @@ def build_extension(
         bin_dir = os.path.dirname(sys.executable)
         if bin_dir not in os.environ.get("PATH", ""):
             os.environ["PATH"] = bin_dir + ":" + os.environ.get("PATH", "")
-        # PyTorch C++ extensions need GCC >= 9.
-        for toolset in ("14", "13", "12"):
-            gcc = f"/opt/rh/gcc-toolset-{toolset}/root/usr/bin/g++"
-            if os.path.isfile(gcc):
-                os.environ["CXX"] = gcc
-                os.environ["CC"] = gcc.replace("g++", "gcc")
-                break
+        # PyTorch C++ extensions are C++20; the default c++ may be far older.
+        if sys.platform != "darwin":
+            cxx = find_cxx()
+            if cxx is None:
+                return None, ("no C++20-capable compiler found", "")
+            os.environ["CXX"] = cxx
+            cc = cxx.replace("g++", "gcc")
+            if cc != cxx and os.path.isfile(cc):
+                os.environ["CC"] = cc
 
         build_dir = os.path.join(
             os.environ.get(
