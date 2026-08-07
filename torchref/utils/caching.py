@@ -4,9 +4,18 @@ Caching utilities for TorchRef modules.
 Provides ``ParameterFingerprint`` for lightweight parameter-change detection
 and ``CachedForwardMixin`` for automatic caching of ``forward()`` results
 with invalidation on parameter mutation or backward propagation.
+
+``CachedForwardMixin`` can be switched off globally via ``torchref.config.caching`` /
+``TORCHREF_CACHING=0``, or for a block via :func:`no_caching`. ``ParameterFingerprint`` is
+unaffected -- it is a standalone helper its users drive themselves.
 """
 
+from contextlib import contextmanager
+
 import torch
+
+from torchref.config import caching as _caching_config
+from torchref.config import get_caching_enabled
 
 
 class ParameterFingerprint:
@@ -52,6 +61,9 @@ class CachedForwardMixin:
 
     Fingerprints inline rather than via :class:`ParameterFingerprint`, which is a separate
     mechanism and also tracks ``numel``.
+
+    Caching is on unless ``torchref.config.caching.value`` (env ``TORCHREF_CACHING``) is
+    False, or the call is inside :func:`no_caching`; off, every call recomputes.
     """
 
     # ---- internal helpers ------------------------------------------------
@@ -93,9 +105,22 @@ class CachedForwardMixin:
             Forwarded to ``forward()`` and fingerprinted for cache validity.
         recalc : bool, optional
             Invalidate the cache and recompute. Consumed here, not forwarded.
+
+        Notes
+        -----
+        With caching disabled (``torchref.config.caching``) this is a plain call to
+        ``forward()``; ``recalc`` is still consumed rather than forwarded.
         """
         if recalc:
             self.reset_forward_cache()
+
+        if not get_caching_enabled():
+            # Drop anything cached before the flag flipped, so re-enabling cannot serve a
+            # result computed under parameters that have since moved on. Guarded rather
+            # than unconditional: this is the hot path and the cache is usually empty.
+            if getattr(self, "_fwd_cached_output", None) is not None:
+                self.reset_forward_cache()
+            return self.forward(*args, **kwargs)
 
         cached = getattr(self, "_fwd_cached_output", None)
         if cached is not None:
@@ -135,3 +160,27 @@ class CachedForwardMixin:
         self._fwd_cached_input_fp = None
         self._fwd_cache_gen = 0
         self._fwd_current_gen = 0
+
+
+@contextmanager
+def no_caching():
+    """Disable :class:`CachedForwardMixin` for the duration of the block.
+
+    Restores the previous value of ``torchref.config.caching`` on exit, including when the
+    body raises. Modules that already hold a cached result drop it on their first call
+    inside the block, so nothing computed before entry survives to be served after it.
+
+    Flips **process-global** state and is therefore not thread-safe: other threads see the
+    change too, and nesting only restores correctly if the blocks are properly nested.
+
+    Examples
+    --------
+    >>> with no_caching():
+    ...     reference = model(hkl)  # doctest: +SKIP
+    """
+    previous = _caching_config.value
+    _caching_config.value = False
+    try:
+        yield
+    finally:
+        _caching_config.value = previous

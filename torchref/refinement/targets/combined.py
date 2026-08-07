@@ -19,7 +19,7 @@ from torchref.refinement.targets.geometry import (
     ChiralTarget, NonBondedHTarget, RamachandranTarget,
 )
 from torchref.refinement.targets.adp import (
-    ADPSimilarityTarget, ADPLocalityTarget, ADPEntropyTarget,
+    ADPSimilarityTarget, ADPLocalityTarget, ADPSigdTarget,
 )
 from torchref.utils.stats import (
     VERBOSITY_DETAILED,
@@ -344,12 +344,15 @@ class TotalADPTarget(CombinedModelTargets):
       covalent topology, the strongest local constraint.
     - 'locality': :class:`ADPLocalityTarget`, K-NN spatial smoothness,
       inverse-distance weighted, for medium-range correlation.
-    - 'KL': :class:`ADPEntropyTarget`, controls the width of the B
-      distribution, which is where overfitting shows up.
+    - 'sigd': :class:`ADPSigdTarget`, a shifted inverse-gamma prior on the whole
+      B distribution, which is where overfitting shows up.
 
-    'locality' and 'KL' work in log space, since B > 0 and right-skewed
-    (B ~ LogNormal(μ, σ) means log B ~ Normal(μ, σ)); 'simu' restrains the raw
-    ΔB of bonded atoms.
+    'locality' works in log space, since B > 0 and right-skewed; 'sigd' uses the
+    shifted inverse-gamma distribution that Masmaliyeva & Murshudov (2019) showed
+    macromolecular B values actually follow -- it shares the log-normal's useful
+    property that shape and scale separate (``std(log B) = sqrt(trigamma(alpha))``
+    is independent of the scale), but fits deposited structures measurably
+    better. 'simu' restrains the raw ΔB of bonded atoms.
 
     Parameters
     ----------
@@ -367,7 +370,7 @@ class TotalADPTarget(CombinedModelTargets):
             "locality": ADPLocalityTarget(
                 self.model, verbose=self.verbose
             ),
-            "KL": ADPEntropyTarget(self.model, verbose=self.verbose),
+            "sigd": ADPSigdTarget(self.model, verbose=self.verbose),
         }
 
     def print_statistics(self) -> None:

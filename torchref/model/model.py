@@ -2429,59 +2429,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         return new_model
 
-    def adp_kl_divergence_loss(self, target_log_std: float = 0.2):
-        """
-        Compute KL divergence between log ADP distribution and target Gaussian.
-
-        Regularizer measuring how far the spread of ``log(B)`` is from a Gaussian
-        of the same (detached, so data-adaptive) mean and fixed
-        ``target_log_std``::
-
-            KL(q || p) = log(sigma_target/sigma_data)
-                         + sigma_data^2 / (2 sigma_target^2) - 0.5
-
-        Parameters
-        ----------
-        target_log_std : float, optional
-            Target standard deviation in log space, default 0.2. Smaller means
-            stronger regularization (a tighter ADP distribution).
-
-        Returns
-        -------
-        torch.Tensor
-            Scalar KL divergence, ``>= 0``, zero when the spreads match.
-
-        Examples
-        --------
-        ::
-
-            loss = xray_loss + w_adp * model.adp_kl_divergence_loss(0.2)
-        """
-
-        # The internal LOG-space values, not self.adp() (which is exp of them).
-        log_adp = super(PositiveMixedTensor, self.adp).forward()
-
-        mu_data = torch.mean(log_adp).detach()  # Detached: adapts to the data
-        # Clamp the std off zero: a uniform ADP distribution (every B reset to one
-        # constant) gives std=0, so KL=+inf, which LBFGS rejects as non-finite --
-        # the B-factors then stay uniform and the divergence recurs every cycle.
-        sigma_data = torch.std(log_adp).clamp(min=1e-6)
-
-        mu_target = mu_data  # Same mean as data
-        sigma_target = target_log_std
-
-        # log(σ_target) as a Python scalar: synthesizing a CUDA tensor from a host
-        # scalar per call is forbidden during CUDA Graph capture.
-        import math
-
-        log_sigma_target = math.log(float(sigma_target))
-        log_sigma_ratio = log_sigma_target - torch.log(sigma_data)
-        variance_ratio = (sigma_data**2) / (2 * sigma_target**2)
-
-        kl_divergence = log_sigma_ratio + variance_ratio - 0.5
-
-        return kl_divergence
-
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         """
         Return a dictionary containing the complete state of the Model.

@@ -573,6 +573,81 @@ class ReflectionData(CrystalDataset, DebugMixin):
             return self.hkl_anomalous
         return self.hkl
 
+    def asu_group_indices(self) -> Tuple[torch.Tensor, int]:
+        """Group rows that describe the same unique reflection.
+
+        After canonicalization :attr:`hkl` holds CCP4-ASU indices and may
+        contain duplicate rows: the two members of a Bijvoet pair share one
+        canonical index and are distinguished only by :attr:`friedel_flags`
+        (and the signed :attr:`hkl_anomalous`). Symmetry-equivalent rows that
+        survive merging collapse the same way.
+
+        Anything that must treat such rows as a *single* observation has to
+        group by canonical index rather than by row -- the work/free partition
+        above all, since splitting a Bijvoet pair across the two sets leaks the
+        held-out reflection into the work set.
+
+        Returns
+        -------
+        group_id : torch.Tensor
+            Shape (N,), int64, on :attr:`device`. Rows sharing a canonical ASU
+            index share a value in ``[0, n_groups)``.
+        n_groups : int
+            Number of distinct canonical reflections.
+
+        Raises
+        ------
+        RuntimeError
+            If :attr:`hkl` is missing, or the data have not been canonicalized.
+            Grouping raw indices would silently fail to unite ``+h`` with
+            ``-h``, which is precisely the case this exists to handle.
+        """
+        if self.hkl is None:
+            raise RuntimeError("No hkl present; cannot group reflections.")
+        if self.friedel_flags is None:
+            raise RuntimeError(
+                "asu_group_indices requires canonicalized data (friedel_flags "
+                "is None). Load via load_mtz/from_tensors, or run "
+                "_canonicalize_in_place first -- grouping raw Miller indices "
+                "would not unite Bijvoet mates."
+            )
+        # On CPU: torch.unique(dim=0) is not reliably supported across
+        # accelerator backends, and this runs once per load on integer data.
+        uniq, inverse = torch.unique(self.hkl.cpu(), dim=0, return_inverse=True)
+        return inverse.to(self.device), int(uniq.shape[0])
+
+    @staticmethod
+    def _group_any(
+        mask: torch.Tensor, group_id: torch.Tensor, n_groups: int
+    ) -> torch.Tensor:
+        """True for each ASU group with at least one row set in ``mask``.
+
+        Uses ``index_add_`` on float rather than ``scatter_reduce_(amax)``: the
+        latter raises "not supported for torch.int64" on the MPS backend.
+        """
+        counts = torch.zeros(n_groups, dtype=torch.float32, device=mask.device)
+        counts.index_add_(0, group_id, mask.to(torch.float32))
+        return counts > 0
+
+    @staticmethod
+    def _group_representative_rows(
+        group_id: torch.Tensor, n_groups: int
+    ) -> torch.Tensor:
+        """One row index per ASU group, ordered by group id.
+
+        The lowest-numbered row of each group, via a stable sort. Used for
+        per-group quantities that are constant within a group -- resolution and
+        therefore the resolution bin, since every row in a group shares a
+        canonical Miller index. Taking a single representative also pins a group
+        that straddles a bin edge (``get_bins`` cuts on sorted position, so rows
+        at identical resolution can fall either side) into exactly one bin.
+        """
+        order = torch.argsort(group_id, stable=True)
+        sorted_gid = group_id[order]
+        first = torch.ones_like(sorted_gid, dtype=torch.bool)
+        first[1:] = sorted_gid[1:] != sorted_gid[:-1]
+        return order[first]
+
     def load(self, reader, french_wilson: bool = True):
         """
         Load reflection data using a data reader.
@@ -656,6 +731,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
             F, F_sigma = self._FrenchWilson(self.I, self.I_sigma)
             self.F = F
             self.F_sigma = F_sigma
+            # Record French-Wilson's own rejection criterion, evaluated on the
+            # true intensities. This is strictly better than anything
+            # reconstructible from the amplitudes afterwards: F is a positive
+            # posterior mean, so it no longer knows which intensities were
+            # inexplicably negative. Set here rather than recomputed in
+            # _post_load_cleanup so the mask is exactly the one French-Wilson
+            # applied; _canonicalize_in_place reorders masks along with
+            # everything else.
+            self._set_wilson_mask(self._FrenchWilson.valid_mask)
         elif "F" in data_dict:
             self.F = torch.tensor(
                 data_dict["F"],
@@ -699,20 +783,21 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     requires_grad=False,
                 ).to(torch.bool)
                 self.rfree_source = "MTZ FreeR+Validation"
-        else:
-            flagged = torch.zeros(
-                len(self.hkl), dtype=torch.bool, device=self.device, requires_grad=False
-            )
-            self.masks["flagged_initial"] = ~flagged
-            self._generate_rfree_flags()
 
         self._post_load_cleanup()
+
+        # Generate only after canonicalization: the free set must be drawn on
+        # unique ASU reflections, and the Bijvoet grouping that requires does
+        # not exist until _canonicalize_in_place has run. See
+        # asu_group_indices / _generate_rfree_flags.
+        if self.rfree_flags is None:
+            self._generate_rfree_flags()
 
         return self
 
     def _post_load_cleanup(self) -> "ReflectionData":
         """Resolution, all-valid mask, ASU canonicalization, F sanitation and
-        suspicious-sigma flagging; returns ``self``. Run by ``load`` /
+        Wilson-probability outlier flagging; returns ``self``. Run by ``load`` /
         ``from_tensors``.
         """
         if self.resolution is None:
@@ -725,7 +810,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         self._canonicalize_in_place()
         self.sanitize_F()
-        self.flag_suspicious_sigma()
+        # No-op when ``load`` already installed French-Wilson's own mask from the
+        # true intensities; this covers the amplitude-only path.
+        self.flag_wilson_outliers()
         return self
 
     @classmethod
@@ -810,18 +897,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             data.rfree_flags = _prep(rfree_flags).to(
                 device=data.device, dtype=torch.bool
             )
-        else:
-            data._calculate_resolution()
-            # Seed an all-valid mask so get_bins (called inside
-            # _generate_rfree_flags) has a validity mask to bin on; the
-            # _post_load_cleanup() below replaces it with the real
-            # suspicious-sigma flagging. Mirrors the no-FreeR path in load().
-            data.masks["flagged_initial"] = torch.ones(
-                len(data.hkl), dtype=torch.bool, device=data.device
-            )
-            data._generate_rfree_flags()
 
         data._post_load_cleanup()
+
+        # As in load(): generate after canonicalization so the draw can group
+        # Bijvoet mates onto a shared canonical index.
+        if data.rfree_flags is None:
+            data._generate_rfree_flags()
 
         # Resolve merge state. Explicit arg wins; otherwise infer from whether
         # canonicalization had to conjugate any Friedel mates (i.e. -h rows were
@@ -942,6 +1024,18 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         Sets ``rfree_flags`` (int32, 1=work/0=free) and ``rfree_source``.
 
+        The draw is over *unique ASU reflections*, not rows: the two members of
+        a Bijvoet pair share a canonical index (see :meth:`asu_group_indices`)
+        and differ only by the anomalous signal, so splitting them across
+        work/free would leak the held-out reflection into the work set and bias
+        R-free downwards. Both members always land in the same set. For merged
+        data every group is a singleton and this is a no-op.
+
+        Only reflections passing the validity masks are drawn from, so the
+        counts below describe usable reflections rather than raw rows.
+
+        Must be called *after* canonicalization -- see :meth:`load`.
+
         Parameters
         ----------
         free_fraction : float, optional
@@ -954,7 +1048,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Minimum reflections per bin (default 1000); bins are coarsened below
             ``n_bins`` on small datasets to honour it.
         min_free_per_bin : int, optional
-            Minimum free reflections per bin, clamped to the bin size.
+            Minimum free unique reflections per bin, clamped to the number the
+            bin holds.
         seed : int, optional
             Random seed for reproducibility. Default is None.
 
@@ -962,6 +1057,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ------
         ValueError
             If resolution information is not available.
+        RuntimeError
+            If the data have not been canonicalized (via
+            :meth:`asu_group_indices`).
         """
         if self.resolution is None:
             raise ValueError("Resolution information required to generate R-free flags")
@@ -986,41 +1084,49 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         print(f"  Created {actual_n_bins} resolution bins")
 
-        # Initialize all flags as work set (1)
+        # Draw on unique ASU reflections rather than rows, so Bijvoet mates
+        # (which share a canonical index) cannot be split across work/free.
+        group_id, n_groups = self.asu_group_indices()
+
+        # A group is eligible if any of its rows survives the validity masks;
+        # spending the free quota on masked-out rows would silently shrink the
+        # usable free set below min_free_per_bin.
+        valid = self.masks().to(torch.bool)
+        group_valid = self._group_any(valid, group_id, n_groups)
+        if not bool(group_valid.any()):
+            warnings.warn(
+                "No reflections pass the validity masks; drawing R-free flags "
+                "from all reflections instead. The input data are likely bad."
+            )
+            group_valid = torch.ones_like(group_valid)
+
+        # One bin per group, from a representative row.
+        group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
+
+        group_free = torch.zeros(n_groups, dtype=torch.bool, device=self.device)
+        for bin_idx in range(actual_n_bins):
+            eligible = torch.where((group_bin == bin_idx) & group_valid)[0]
+            n_bin_groups = int(eligible.numel())
+            if n_bin_groups == 0:
+                continue
+
+            # At least min_free_per_bin unique reflections, otherwise
+            # free_fraction of the bin; never more than the bin holds.
+            n_free_in_bin = min(
+                n_bin_groups,
+                max(min_free_per_bin, int(n_bin_groups * free_fraction)),
+            )
+            perm = torch.randperm(n_bin_groups, device=eligible.device)[:n_free_in_bin]
+            group_free[eligible[perm]] = True
+
+        # Broadcast each group's decision to every row sharing its ASU index.
         flags = torch.ones(
             n_refl, dtype=dtypes.int, device=self.device, requires_grad=False
         )
+        flags[group_free[group_id]] = 0
 
-        # Sample free reflections from each bin
-        total_free = 0
-        for bin_idx in range(actual_n_bins):
-            bin_mask = bin_indices == bin_idx
-            bin_size = bin_mask.sum().item()
-
-            if bin_size == 0:
-                continue
-
-            # Number of free reflections in this bin: at least min_free_per_bin,
-            # otherwise free_fraction of the bin; never more than the bin holds.
-            n_free_in_bin = min(
-                bin_size, max(min_free_per_bin, int(bin_size * free_fraction))
-            )
-
-            # Get indices of reflections in this bin
-            bin_refl_indices = torch.where(bin_mask)[0]
-
-            # Randomly select free reflections
-            perm = torch.randperm(bin_size)[:n_free_in_bin]
-            free_indices = bin_refl_indices[perm]
-
-            # Mark as free (0)
-            flags[free_indices] = 0
-            total_free += n_free_in_bin
-
-        # Move to correct device and assign
-        flags_tensor = flags.to(dtype=dtypes.int, device=self.device)
-        self.rfree_flags = flags_tensor
-        self.rfree_source = "Generated (resolution-binned)"
+        self.rfree_flags = flags
+        self.rfree_source = "Generated (resolution-binned, ASU-grouped)"
 
         n_free = (flags == 0).sum().item()
         n_work = (flags != 0).sum().item()
@@ -1029,7 +1135,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
         print(
             f"  ✓ Generated flags: {n_free} free ({free_pct:.1f}%), {n_work} work ({100-free_pct:.1f}%)"
         )
-        print("  Flags are resolution-binned for unbiased validation")
+        print(
+            f"  Drawn over {int(group_valid.sum())} unique ASU reflections "
+            f"({n_groups} groups total); Bijvoet mates share a flag"
+        )
 
     def get_bins(
         self, n_bins: int = 20, min_per_bin: int = 100
@@ -2071,6 +2180,18 @@ class ReflectionData(CrystalDataset, DebugMixin):
                     nonfinite_sigma.sum().item(),
                 )
             mask |= nonfinite_sigma
+            # A non-positive sigma is not a measurement: it claims either
+            # infinite precision or nonsense, and it is a division by zero in
+            # any weighting scheme (including the Wilson h below). Caught
+            # explicitly rather than relying on F == 0 happening to coincide,
+            # which is what makes it invisible today.
+            nonpositive_sigma = self.F_sigma <= 0
+            if torch.any(nonpositive_sigma) and self.verbose > 0:
+                print(
+                    "found non-positive F_sigma values: ",
+                    nonpositive_sigma.sum().item(),
+                )
+            mask |= nonpositive_sigma
         neg_mask = self.F <= 0
         if torch.any(neg_mask):
             warnings.warn(
@@ -2201,12 +2322,132 @@ class ReflectionData(CrystalDataset, DebugMixin):
             return self.source
         return self
 
+    WILSON_MASK_KEY = "wilson_valid"
+
+    def _set_wilson_mask(self, keep: Optional[torch.Tensor]) -> None:
+        """Install the Wilson/French-Wilson keep-mask, reporting what it costs.
+
+        Raises rather than falling back when nothing survives: an all-False mask
+        means every observation is inexplicable under Wilson statistics, which
+        is a broken dataset or a failed ``Sigma`` estimate. Silently widening it
+        back to all-True would admit exactly the observations the test just
+        identified as garbage.
+        """
+        if keep is None:
+            return
+        keep = keep.to(device=self.device, dtype=torch.bool)
+        n_rejected = int((~keep).sum())
+        if n_rejected == len(keep):
+            raise ValueError(
+                "Wilson outlier rejection would reject all "
+                f"{len(keep)} reflections. Every observation is too improbable "
+                "under Wilson statistics to be a noisy measurement, which "
+                "usually means the intensities/sigmas are corrupt or the "
+                "resolution-shell mean could not be estimated. Refusing to "
+                "guess; inspect the input data."
+            )
+        if self.verbose > 0:
+            pct = 100.0 * n_rejected / max(len(keep), 1)
+            print(
+                f"Wilson outlier rejection: {n_rejected}/{len(keep)} "
+                f"({pct:.4f}%) reflections flagged"
+            )
+        self.masks[self.WILSON_MASK_KEY] = keep
+
+    def flag_wilson_outliers(self, h_min: float = -4.0) -> None:
+        """
+        Flag observations that Wilson statistics cannot explain as noise.
+
+        Asks one question per reflection: *how probable is this observation
+        under Wilson conditions?* The French-Wilson parameter
+        ``h = I/sigma - sigma/Sigma`` is precisely the standardized argument of
+        the Wilson prior convolved with the Gaussian measurement error (see
+        :func:`~torchref.base.french_wilson.french_wilson_h`), so a cut on it is
+        a tail-probability cut that folds the shell mean and the per-reflection
+        sigma into a single number.
+
+        This keeps every negative intensity that noise accounts for. Only
+        observations too negative to be a noisy measurement of *any*
+        Wilson-distributed reflection are rejected.
+
+        A no-op when :meth:`load` already installed French-Wilson's own mask
+        from the true intensities -- that one is strictly better informed, so it
+        is never overwritten with a reconstruction.
+
+        On an amplitude-only dataset the intensities are reconstructed via
+        :func:`~torchref.base.french_wilson.intensities_from_amplitudes`, which
+        is **not** an inverse of French-Wilson: ``F`` is a positive posterior
+        mean, so an inexplicably negative intensity leaves no trace and cannot
+        be recovered. In practice the guard there only fires on an absurd
+        ``sigma_F``. This is inherent to amplitudes as input.
+
+        Parameters
+        ----------
+        h_min : float, optional
+            Rejection threshold on ``h``. Default -4.0, French-Wilson's own.
+            Raising it discards valid weak measurements rather than finding more
+            outliers -- see
+            :func:`~torchref.base.french_wilson.french_wilson_valid_mask`.
+        """
+        from torchref.base.french_wilson import (
+            estimate_mean_intensity_by_resolution,
+            french_wilson_valid_mask,
+            intensities_from_amplitudes,
+        )
+
+        if self.WILSON_MASK_KEY in self.masks:
+            return
+        if self.F is None or self.F_sigma is None or self.resolution is None:
+            return
+
+        I, sigma_I = intensities_from_amplitudes(self.F, self.F_sigma)
+
+        # Rows with no usable sigma cannot enter the shell mean and cannot be
+        # tested; they are rejected outright rather than divided by.
+        usable = torch.isfinite(I) & torch.isfinite(sigma_I) & (sigma_I > 0)
+        if not bool(usable.any()):
+            return
+
+        Sigma_usable = estimate_mean_intensity_by_resolution(
+            I[usable], self.resolution[usable], n_bins=60, min_per_bin=40
+        )
+        # A shell whose mean intensity comes out non-positive (possible when a
+        # shell is dominated by negative observations) would flip the sign of
+        # the sigma/Sigma penalty and let extreme outliers through. Not observed
+        # on well-processed data, but cheap to exclude rather than trust.
+        Sigma = torch.zeros_like(I)
+        Sigma[usable] = Sigma_usable
+        testable = usable & torch.isfinite(Sigma) & (Sigma > 0)
+        if not bool(testable.any()):
+            return
+
+        keep = torch.zeros_like(usable)
+        keep[testable] = french_wilson_valid_mask(
+            I[testable],
+            sigma_I[testable],
+            Sigma[testable],
+            is_centric=(
+                self.centric[testable] if self.centric is not None else None
+            ),
+            h_min=h_min,
+        )
+        self._set_wilson_mask(keep)
+
     def flag_suspicious_sigma(self, z_threshold: float = 5.0) -> None:
         """
         Flag sigma values that deviate significantly from expected distribution.
 
         Sigma values from a detector should follow a log-normal distribution.
         Values with z-scores beyond threshold are flagged as suspicious.
+
+        .. note::
+           No longer run during loading -- :meth:`flag_wilson_outliers`
+           supersedes it. The z-score here is taken against a *global* mean and
+           std of ``log sigma``, but that distribution is a mixture across
+           resolution shells (sigma tracks the intensity fall-off), so the
+           global std is inflated by the resolution trend and the test is
+           correspondingly blunt. It also never looks at ``F`` beside its sigma.
+           Kept for diagnostics and backwards compatibility.
 
         Parameters
         ----------
@@ -2286,8 +2527,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
         flag = self.friedel_flags.detach().cpu()
 
         # Group rows by unique canonical ASU index; inverse maps row -> group.
-        uniq, inverse = torch.unique(hkl, dim=0, return_inverse=True)
-        M = uniq.shape[0]
+        inverse, M = self.asu_group_indices()
+        inverse = inverse.cpu()
+        # One row per group carries that group's canonical index by definition.
+        uniq = hkl[self._group_representative_rows(inverse, M)]
 
         # The (+) member is the unconjugated row, (-) is the Friedel-flagged row.
         arange = torch.arange(N)
@@ -3600,7 +3843,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         :attr:`rfree_flags` untouched. The work/free/validation subsets are
         disjoint (validation is carved out of free) -- see
         :meth:`_subset_indices` and the ``work``/``free``/``validation``
-        accessors.
+        accessors. Like :meth:`_generate_rfree_flags`, the split is over whole
+        ASU groups so Bijvoet mates stay together (see
+        :meth:`asu_group_indices`).
 
         Parameters
         ----------
@@ -3623,19 +3868,30 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Free reflections are those with rfree_flags == 0 (0=free, nonzero=work).
         rwork = self.rfree_flags.to(torch.bool)
         free_mask = ~rwork
-        val_flags = torch.zeros_like(rwork)
+
+        # Split whole ASU groups, exactly as _generate_rfree_flags does -- a
+        # per-row draw here would re-open the Friedel leak at the free/validation
+        # boundary. The free set is already group-consistent, so a group is
+        # wholly free or wholly work.
+        group_id, n_groups = self.asu_group_indices()
+        group_free = self._group_any(free_mask, group_id, n_groups)
 
         # Reuse get_bins for resolution-stratified sampling.
         bin_indices, n_bins = self.get_bins(n_bins=20, min_per_bin=20)
+        group_bin = bin_indices[self._group_representative_rows(group_id, n_groups)]
+
+        group_val = torch.zeros(n_groups, dtype=torch.bool, device=self.device)
         for b in range(n_bins):
-            bin_free = (bin_indices == b) & free_mask
-            n_bin_free = int(bin_free.sum().item())
+            bin_free_groups = torch.where((group_bin == b) & group_free)[0]
+            n_bin_free = int(bin_free_groups.numel())
             if n_bin_free == 0:
                 continue
             n_val = max(1, int(n_bin_free * val_fraction_of_free))
-            bin_free_idx = bin_free.nonzero(as_tuple=True)[0]
-            perm = torch.randperm(n_bin_free, device=bin_free_idx.device)[:n_val]
-            val_flags[bin_free_idx[perm]] = True
+            perm = torch.randperm(n_bin_free, device=bin_free_groups.device)[:n_val]
+            group_val[bin_free_groups[perm]] = True
+
+        # Broadcast to rows, staying within the free set.
+        val_flags = group_val[group_id] & free_mask
 
         self.validation_flags = val_flags
         self.rfree_source = (self.rfree_source or "") + "+val_split"

@@ -75,7 +75,7 @@ DEFAULT_TARGET_WEIGHTS = {
     # "geometry/ramachandran": 1.0,
     # "adp/simu": 1.0,
     # "adp/locality": 1.0,
-    # "adp/KL": 1.0,
+    # "adp/sigd": 1.0,
     "similarity": 1.0,
 }
 

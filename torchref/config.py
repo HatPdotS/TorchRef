@@ -3,12 +3,13 @@
 Set at import time from the environment -- ``TORCHREF_DTYPE_FLOAT`` (float32 default /
 float64), ``TORCHREF_DTYPE_INT`` (int32 / int64), ``TORCHREF_DTYPE_COMPLEX``
 (complex64 / complex128), ``TORCHREF_DEVICE`` ('auto' default / 'cuda' / 'mps' / 'cpu'),
-``TORCHREF_SIGMA_CUTOFF_ED`` (3.0) and ``TORCHREF_COMPILE_TARGETS`` -- or at runtime by
-attribute assignment::
+``TORCHREF_SIGMA_CUTOFF_ED`` (3.0), ``TORCHREF_COMPILE_TARGETS`` and ``TORCHREF_CACHING``
+(on by default) -- or at runtime by attribute assignment::
 
     torchref.dtypes.float = torch.float64
     torchref.device.current = torch.device('cpu')
     torchref.sigma_cutoff_ed.value = 4.0   # density splat truncation, in sigmas
+    torchref.config.caching.value = False  # recompute every cached forward()
 
 The default device is auto-detected cuda -> mps -> cpu, and a CUDA device is picked only
 if its compute capability is >= the minimum sm_* in this PyTorch build *and* its VRAM is
@@ -290,6 +291,85 @@ compile_targets = CompileTargetsConfig()
 def get_compile_targets() -> bool:
     """Whether quadrature X-ray target kernels should be ``torch.compile``d."""
     return compile_targets.value
+
+
+# ---------------------------------------------------------------------------
+# Forward-result caching
+# ---------------------------------------------------------------------------
+
+_TRUE_STRINGS = ("1", "true", "yes", "on")
+_FALSE_STRINGS = ("0", "false", "no", "off")
+
+
+def _parse_bool_env(name: str, raw: str) -> bool:
+    """Parse a boolean environment variable, rejecting anything unrecognised.
+
+    Stricter than the ``in ("1", "true", ...)`` idiom used for
+    ``TORCHREF_COMPILE_TARGETS``, which is safe only for a default-off flag: for a
+    default-on one it would turn a typo into a silent opt-out.
+    """
+    value = raw.strip().lower()
+    if value in _TRUE_STRINGS:
+        return True
+    if value in _FALSE_STRINGS:
+        return False
+    raise ValueError(
+        f"Invalid {name}: {raw!r}. "
+        f"Valid values: {list(_TRUE_STRINGS + _FALSE_STRINGS)}"
+    )
+
+
+_DEFAULT_CACHING = True
+
+
+class CachingConfig:
+    """Whether :class:`torchref.utils.CachedForwardMixin` serves cached results.
+
+    ``caching.value`` reads or sets it; initialised from ``TORCHREF_CACHING``
+    ("1"/"true"/"yes"/"on" vs "0"/"false"/"no"/"off"), on by default. Turning it off makes
+    the mixin inert: every module call runs ``forward()`` again, so ``ModelFT``,
+    ``MixedTensor``, ``RigidXYZTensor`` and their subclasses recompute structure factors and
+    parameter transforms from scratch on each access. The numbers are unchanged -- only the
+    work done to get them.
+
+    Gates that mixin **only**. The other hand-rolled caches (``Cell._cache``,
+    ``SigmaAEstimator._cache``, the bulk-solvent and parity caches, the reflection-data
+    subset views, the symmetry-extractor rebuild in ``sf_fft``) are unaffected.
+
+    Intended for diagnosis rather than production: if refinement produces stale-looking
+    numbers, rerunning with ``TORCHREF_CACHING=0`` says in one step whether the forward cache
+    is responsible. Also useful as an eager reference when changing the mixin's fingerprinting.
+    Use :func:`torchref.utils.no_caching` to scope the change to a block.
+    """
+
+    def __init__(self):
+        raw = os.environ.get("TORCHREF_CACHING")
+        if raw is None:
+            self._value = _DEFAULT_CACHING
+        else:
+            self._value = _parse_bool_env("TORCHREF_CACHING", raw)
+
+    @property
+    def value(self) -> bool:
+        """Whether cached ``forward()`` results are served."""
+        return self._value
+
+    @value.setter
+    def value(self, flag: bool) -> None:
+        if not isinstance(flag, bool):
+            raise TypeError(f"caching must be a bool, got {type(flag).__name__}")
+        self._value = flag
+
+    def __repr__(self) -> str:
+        return f"CachingConfig(value={self._value})"
+
+
+caching = CachingConfig()
+
+
+def get_caching_enabled() -> bool:
+    """Whether ``CachedForwardMixin`` should serve cached ``forward()`` results."""
+    return caching.value
 
 
 # ---------------------------------------------------------------------------

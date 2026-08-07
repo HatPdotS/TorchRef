@@ -285,7 +285,12 @@ class TestStabilityShrinkage:
         assert b == pytest.approx(1.50, abs=1e-9)
         assert float(tau_sq) == 0.0
         assert float(w.min()) == 1.0
-        assert float((out - sa).abs().max()) == 0.0
+        # Not `== 0.0`: with w == 1 the output IS the curve, and the curve is re-evaluated
+        # as exp(-(a_hat + b_hat*x)) from the fitted coefficients rather than being handed
+        # back as `sa`. A fit-then-evaluate round trip through a transcendental cannot be
+        # bit-exact. Held to float32 epsilon, so the bound stays meaningful whatever
+        # precision the estimator is configured for.
+        assert float((out - sa).abs().max()) < torch.finfo(torch.float32).eps
 
     def test_a_badly_determined_shell_is_shrunk_more_than_a_precise_one(self):
         """The mechanism the whole change rests on: ``w_i = var_i/(var_i + tau**2)``.

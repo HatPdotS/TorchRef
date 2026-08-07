@@ -1,6 +1,16 @@
 Changelog
 =========
 
+
+Version 0.6.3
+-------------
+- Added switch to turn off caching mixin
+- Switched the ADP distribution restraint from a Gaussian in log(B) to the shifted inverse-gamma distribution of Masmaliyeva & Murshudov (2019), which macromolecular B values are shown to follow. ``ADPEntropyTarget`` (``adp/KL``) is replaced by ``ADPSigdTarget`` (``adp/sigd``) and ``Model.adp_kl_divergence_loss`` is removed; the new term is a per-atom sum rather than a single scalar, weighted by the new ``adp/sigd`` entry in ``DEFAULT_GROUP_WEIGHTS``.
+- Reworked outlier rejection to follow wilson criteria
+- Reworked free flag generation so Friedel pairs get matching flags
+
+
+
 Version 0.6.2
 -------------
 - Deprecated outlier flagging strategy 

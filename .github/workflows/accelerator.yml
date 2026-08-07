@@ -1,0 +1,122 @@
+# Runs the test suite on a real accelerator (MPS, and CUDA if a runner exists).
+#
+# The CPU workflows (ci.yml / tests.yml) cannot catch the class of bug that has
+# twice shipped in a release: code that is correct on CPU but hits a backend
+# limitation on Metal or CUDA -- hardcoded float64 (MPS has none), an op with no
+# Metal kernel, a device mismatch, an int64 scatter_reduce. Those only surface
+# when the tensors actually live on the device.
+#
+# The suite is run with TORCHREF_DEVICE set, not just with the ~40 gpu-marked
+# tests: the marked tests cover the handful of places that are *known* to be
+# backend-sensitive, and every breakage so far has been somewhere else.
+name: Accelerator
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+  # Lets publish.yml gate a PyPI release on this passing.
+  workflow_call:
+
+env:
+  NUMBA_CACHE_DIR: /tmp/numba_cache
+  # PYTORCH_ENABLE_MPS_FALLBACK is left alone on purpose. torchref/__init__.py
+  # setdefault()s it to 1, so CI runs with the same fallback behaviour users
+  # get. Setting it to 0 here would make an op with no Metal kernel a CI
+  # failure while it stays a silent CPU round-trip in production -- a stricter
+  # policy than the package's, and not one to introduce from a workflow file.
+
+jobs:
+  mps:
+    name: MPS (Apple silicon)
+    # macos-14 and newer are arm64; the runner exposes Metal, so MPS is real.
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/pip
+          key: ${{ runner.os }}-pip-mps-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-pip-mps-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Default PyPI wheel: the macOS arm64 build ships Metal support.
+          # Do NOT use the /whl/cpu index here -- it has no MPS.
+          pip install torch
+          pip install -e ".[dev]"
+          pip install pytest pytest-cov
+
+      # Without this the job goes green on a runner that lost Metal, having
+      # tested nothing. A silent pass is the failure mode being fixed here, so
+      # the absence of the backend has to be a hard error.
+      - name: Assert MPS is really available
+        run: |
+          python - <<'PY'
+          import sys, torch
+          print("torch:", torch.__version__)
+          print("built:", torch.backends.mps.is_built())
+          print("available:", torch.backends.mps.is_available())
+          if not torch.backends.mps.is_available():
+              sys.exit(
+                  "MPS is not available on this runner. Refusing to report a "
+                  "pass: this job would test nothing. Check that the runner is "
+                  "arm64 macOS and that the installed torch wheel is not the "
+                  "CPU-only build."
+              )
+          # Prove a kernel actually executes, not just that the backend reports in.
+          x = torch.randn(64, 64, device="mps")
+          assert torch.allclose((x @ x).cpu(), x.cpu() @ x.cpu(), atol=1e-3)
+          PY
+
+      - name: Confirm torchref resolves to MPS
+        env:
+          TORCHREF_DEVICE: mps
+        run: |
+          python - <<'PY'
+          import sys, torchref
+          dev = torchref.device.current
+          print("torchref device:", dev)
+          if dev.type != "mps":
+              sys.exit(f"TORCHREF_DEVICE=mps resolved to {dev!r}, not MPS.")
+          PY
+
+      - name: Unit tests on MPS
+        env:
+          TORCHREF_DEVICE: mps
+        # --run-mps turns "no MPS" from a skip into a failure for the
+        # mps-marked tests, a second guard on the same silent-pass problem.
+        run: |
+          pytest tests/unit \
+            -m "not slow" \
+            --run-mps \
+            -v \
+            --tb=short \
+            -rf
+
+      - name: Integration tests on MPS
+        env:
+          TORCHREF_DEVICE: mps
+        run: |
+          pytest tests/integration \
+            -m "not slow" \
+            --run-mps \
+            -v \
+            --tb=short \
+            -rf
+
+# CUDA is not covered here. GitHub-hosted runners have no NVIDIA GPU, and a job
+# pointed at an unregistered self-hosted label queues forever rather than
+# failing. Run run_all_tests.sh on the cluster by hand before tagging a release.

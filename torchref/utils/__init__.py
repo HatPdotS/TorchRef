@@ -16,7 +16,7 @@ stdlib ``json`` encoders process-wide; see that module.
 from .autograd_introspection import collect_loss_leaves
 
 # Caching
-from .caching import CachedForwardMixin, ParameterFingerprint
+from .caching import CachedForwardMixin, ParameterFingerprint, no_caching
 
 # Debugging
 from .debug_utils import DebugMixin, print_module_summary
@@ -69,6 +69,7 @@ __all__ = [
     # Caching
     "ParameterFingerprint",
     "CachedForwardMixin",
+    "no_caching",
     # Device movement
     "DeviceMixin",
     "DeviceMovementMixin",

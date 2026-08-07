@@ -1,6 +1,6 @@
-"""ADP (B-factor) restraint NLLs: similarity (SIMU), locality, and rigid-bond
-(DELU), with isotropic and anisotropic variants on the unified per-atom U6
-tensor."""
+"""ADP (B-factor) restraint NLLs: similarity (SIMU), locality, rigid-bond
+(DELU), and the shifted inverse-gamma distribution prior, with isotropic and
+anisotropic variants on the unified per-atom U6 tensor."""
 
 import math
 
@@ -158,6 +158,75 @@ def adp_locality_aniso_math(
     wcomp = u6.new_tensor(_U6_WCOMP)
     dev_term = (w.unsqueeze(-1) * wcomp * (dfrac / sigma_aniso) ** 2).sum()
     return mag + dev_term
+
+
+def adp_sigd_math(
+    b: torch.Tensor,
+    alpha: torch.Tensor,
+    b_shift: torch.Tensor,
+) -> torch.Tensor:
+    """Shifted inverse-gamma (SIGD) prior NLL on the B-factor distribution.
+
+    Masmaliyeva & Murshudov (2019), *Acta Cryst.* D **75**, 505-518, showed that
+    macromolecular B values follow a shifted inverse-gamma distribution rather
+    than the log-normal that a Gaussian-in-log(B) restraint assumes. For
+    ``x = B - B0`` distributed as ``InvGamma(alpha, beta)``::
+
+        -log p(x) = -alpha log(beta) + lgamma(alpha)
+                    + (alpha + 1) log(x) + beta / x
+
+    The scale is set from the **detached** mean so that the prior's mean matches
+    the data's, ``beta = mean(x).detach() * (alpha - 1)``. That is the direct
+    analogue of the detached ``mu_data`` in the log-normal KL term this replaces:
+    the restraint cannot drive the overall B level up or down, it only penalises
+    departures from the SIGD *shape*.
+
+    The returned per-atom NLL is offset by its value at the distribution mode
+    ``x_mode = beta / (alpha + 1)``, so each atom's contribution is ``>= 0``,
+    vanishing only for an atom sitting exactly at the mode. The *sum* does not
+    reach zero for real data: ``beta`` tracks the data mean, so ``x_mode`` is
+    ``(alpha-1)/(alpha+1)`` of it and a uniform B distribution still costs
+    ``(alpha+1) log((alpha+1)/(alpha-1)) - 2`` per atom (0.645 at alpha=3.5).
+    The offset is a fixed reference, not an attainable floor. Because ``beta``
+    is detached, the two
+    B-independent terms (``-alpha log beta`` and ``lgamma(alpha)``) cancel
+    exactly against that offset, leaving::
+
+        loss_i = (alpha + 1) log(x_i / x_mode) + beta (1/x_i - 1/x_mode)
+
+    which is what is evaluated -- algebraically identical to the offset NLL, with
+    no ``lgamma`` call and no large cancelling terms.
+
+    Two properties this form has and the log-normal KL it replaces did not:
+    it is finite for a perfectly uniform B distribution (the KL diverged there),
+    and it is monotonically increasing in ``std(log B)``, so it can never reward
+    spreading the distribution out.
+
+    Parameters
+    ----------
+    b : torch.Tensor
+        (N_atoms,) B-factors (Å²). For anisotropic models pass ``B_eq`` from
+        :func:`u6_b_eq`.
+    alpha : torch.Tensor
+        Scalar shape parameter. Sets the log-width via
+        ``std(log B) = sqrt(trigamma(alpha))`` (independent of ``beta``), the
+        analogue of sigma in the log-normal form. Larger alpha is a narrower
+        reference distribution and so a stronger restraint.
+    b_shift : torch.Tensor
+        Scalar shift ``B0``. Zero corresponds to unsharpened data; a non-zero
+        B0 is the signature of sharpening/blurring, which the same authors
+        recommend avoiding during refinement.
+
+    Returns
+    -------
+    torch.Tensor
+        Scalar sum over atoms, ``>= 0``.
+    """
+    x = (b - b_shift).clamp(min=1e-3)
+    beta = (x.mean() * (alpha - 1.0)).detach()
+    x_mode = beta / (alpha + 1.0)
+    nll = (alpha + 1.0) * torch.log(x / x_mode) + beta * (1.0 / x - 1.0 / x_mode)
+    return nll.sum()
 
 
 def adp_rigid_bond_aniso_math(

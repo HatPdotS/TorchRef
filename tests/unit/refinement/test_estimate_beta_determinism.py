@@ -82,3 +82,81 @@ class TestEstimateBetaFloat32Accuracy:
         bbin = estimate_beta(*_hard_inputs()).beta
         assert torch.isfinite(bbin).all()
         assert (bbin > 0).all()
+
+
+def _real_inputs(mtz_dir, pdb_dir, dtype=torch.float32):
+    """1DAW observations against its own deposited model.
+
+    The synthetic ``_hard_inputs`` fixture above does not reproduce the conditioning
+    regime the fit actually meets: it was built to stress ``wi``/``OMEGA``, not the Rice
+    kernel, and a synthetic scene can badly over- or under-state the cancellation. Real
+    amplitudes against a real model is what settles whether the float32 path is accurate
+    enough to ship.
+    """
+    from torchref.io.datasets.reflection_data import ReflectionData
+    from torchref.model.model_ft import ModelFT
+    from torchref.refinement.model_error_estimation.sigma_a import epsilon_from_hkl
+
+    d = ReflectionData(verbose=0)
+    d.load_mtz(str(mtz_dir / "1DAW.mtz"))
+    m = ModelFT(verbose=0, max_res=2.0)
+    m.load_pdb(str(pdb_dir / "1DAW.pdb"))
+    with torch.no_grad():
+        fc = m(d.hkl_for_sf())
+    cast = lambda t: t.detach().cpu().to(dtype)  # noqa: E731
+    return dict(
+        F_obs=cast(d.F),
+        F_calc=cast(fc.abs()),
+        centric=d.centric.detach().cpu(),
+        epsilon=cast(epsilon_from_hkl(d.hkl, d.spacegroup)),
+        d_star_sq=cast(1.0 / d.resolution**2),
+        free_mask=~d.rfree_flags.detach().cpu().bool(),
+        sigma_obs=cast(d.F_sigma),
+    )
+
+
+@pytest.mark.unit
+class TestFloat32OnRealData:
+    """The float32 path on a deposited structure.
+
+    ``estimate_beta`` used to force float64 internally, which made it unrunnable on MPS
+    (no float64 there at all). The cancellation-free Rice kernel is what makes float32
+    accurate enough to drop that; these pin the accuracy claim on real data.
+    """
+
+    def test_float32_matches_float64_on_1daw(self, mtz_dir, pdb_dir):
+        a = estimate_beta(**_real_inputs(mtz_dir, pdb_dir, torch.float32))
+        b = estimate_beta(**_real_inputs(mtz_dir, pdb_dir, torch.float64))
+        torch.testing.assert_close(
+            a.sigma_a.double(), b.sigma_a, rtol=1e-5, atol=1e-5
+        )
+        torch.testing.assert_close(a.beta.double(), b.beta, rtol=1e-4, atol=1e-4)
+
+    def test_second_moment_identity_survives_float32(self, mtz_dir, pdb_dir):
+        """The identity is algebraic, so float32 should cost only float32 rounding."""
+        sh = estimate_beta(**_real_inputs(mtz_dir, pdb_dir, torch.float32))
+        resid = (
+            sh.alpha**2 * sh.Sigma_P + sh.beta_model + sh.S2 - sh.B
+        ).abs() / sh.B
+        assert float(resid.max()) < 1e-5, f"identity off by {float(resid.max()):.2e}"
+
+
+@pytest.mark.mps
+def test_estimate_beta_runs_on_mps_and_matches_cpu(mtz_dir, pdb_dir):
+    """Regression: the fit was unrunnable on MPS for two independent reasons.
+
+    A hardcoded ``torch.float64`` (MPS has none) and ``torch.segment_reduce`` (not
+    implemented for MPS). The dtype raised first, so the second blocker stayed hidden
+    until the first was fixed -- hence a test that asserts it *runs*, not just that the
+    numbers agree.
+    """
+    args = _real_inputs(mtz_dir, pdb_dir, torch.float32)
+    cpu = estimate_beta(**args)
+    gpu = estimate_beta(
+        **{k: (v.to("mps") if torch.is_tensor(v) else v) for k, v in args.items()}
+    )
+    assert gpu.sigma_a.device.type == "mps"
+    torch.testing.assert_close(
+        gpu.sigma_a.cpu(), cpu.sigma_a, rtol=1e-4, atol=1e-4
+    )
+    torch.testing.assert_close(gpu.beta.cpu(), cpu.beta, rtol=1e-4, atol=1e-4)
