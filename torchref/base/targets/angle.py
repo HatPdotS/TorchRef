@@ -42,8 +42,7 @@ def angle_math(
     """Angle NLL: gather, compute angle, Gaussian NLL, sum.
 
     Dispatches to :func:`torchref.base.targets.triton.angle_math_triton`
-    on CUDA float32 (~4× faster fwd+bw on A100). Falls back to eager
-    otherwise.
+    on CUDA float32. Falls back to eager otherwise.
 
     Parameters
     ----------

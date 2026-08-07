@@ -43,8 +43,7 @@ def chiral_math(
     centers (``ideal_volumes == 0``) are restrained on ``|V|`` against 2.5.
 
     Dispatches to :func:`torchref.base.targets.triton.chiral_math_triton`
-    on CUDA float32 (~4× faster fwd+bw on A100). Falls back to eager
-    otherwise.
+    on CUDA float32. Falls back to eager otherwise.
 
     Parameters
     ----------

@@ -33,7 +33,7 @@ costs a 32-node quadrature per loss evaluation, so it is not the default.
 
 **The ``mean`` column describes the LIKELIHOOD, never the estimator.** The estimator behind
 ``beta`` fits ``alpha`` and ``beta`` *jointly* for every row, including rows whose mean is
-``|F_c|``, because pinning the mean during the fit biases ``sigma_A`` +0.035 high. Read
+``|F_c|``, because pinning the mean during the fit biases ``sigma_A`` high. Read
 ``mean = |F_c|`` as "this row does not *centre* on alpha", not "alpha is absent here".
 
 Nothing else varies by row: same estimator, same ``sigma_obs``, same shrinkage, so a
@@ -151,8 +151,7 @@ XRAY_TARGETS = XrayTargetTable(
         XrayTargetSpec(
             name="ml_noalpha",
             target_cls=MLNoAlphaXrayTarget,
-            doc="As 'ml' with the Luzzati mean coupling fixed at 1. Best R_free of the "
-            "five on the AF-start benchmark.",
+            doc="As 'ml' with the Luzzati mean coupling fixed at 1.",
         ),
         XrayTargetSpec(
             name="ml_full",

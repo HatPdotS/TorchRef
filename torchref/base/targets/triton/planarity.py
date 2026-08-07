@@ -180,8 +180,7 @@ class _PlanarityMathTriton(torch.autograd.Function):
     def forward(ctx, xyz, plane_groups):
         assert xyz.is_cuda and xyz.dtype == torch.float32
         # Build all per-bucket covariances, stack into one tensor, and
-        # run a single batched eigh. Drops the SVD cost from 5.4 ms
-        # to ~0.7 ms on 1DAW / A100.
+        # run a single batched eigh, which is much cheaper than the SVD.
         bucket_normals = []
         bucket_outs = []
         with torch.no_grad():

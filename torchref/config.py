@@ -37,8 +37,8 @@ import torch
 # A value of 2.0 is the bare Nyquist limit, but electron density built from
 # Gaussian atoms is not strictly band-limited, so sampling at exactly 2.0
 # introduces aliasing/interpolation error in the density->F_calc transform that
-# measurably degrades refinement convergence (median R-free regressed ~+0.004,
-# with high-res / large-cell structures hit much harder). 3.0 is the standard
+# measurably degrades refinement convergence, with high-res / large-cell
+# structures hit hardest. 3.0 is the standard
 # crystallographic oversampling (matches gemmi's default sample_rate) and
 # restores accuracy. All grid-sizing helpers reference this single constant so
 # the real-space map grids and the FFT structure-factor grids stay consistent.

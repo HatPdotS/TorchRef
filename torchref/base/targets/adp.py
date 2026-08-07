@@ -39,7 +39,7 @@ def adp_simu_math(
 
     Dispatches to
     :func:`torchref.base.targets.triton.adp_simu_math_triton` on CUDA
-    float32 (~1.6× faster fwd+bw on A100). Falls back to eager
+    float32. Falls back to eager
     otherwise.
 
     Parameters

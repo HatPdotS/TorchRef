@@ -53,7 +53,7 @@ def torsion_omega_math(
 
     Dispatches to
     :func:`torchref.base.targets.triton.torsion_omega_math_triton` on
-    CUDA float32 (~5.6× faster fwd+bw on A100). Falls back to eager
+    CUDA float32. Falls back to eager
     otherwise.
     """
     if use_triton(xyz):
