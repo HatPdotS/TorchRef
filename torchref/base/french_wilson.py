@@ -1209,6 +1209,45 @@ def is_centric_from_hkl(
     return is_centric.reshape(original_shape)
 
 
+def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
+    """Per-reflection epsilon: number of rotation symops mapping h -> +/-h.
+
+    Mirrors ``ReciprocalSymmetry.get_epsilon`` (Friedel-aware) but works directly
+    on the scattered HKL list. Returns ones if ``spacegroup`` is None or lacks
+    ``apply_to_hkl``.
+
+    Unlike :func:`is_centric_from_hkl` this takes a constructed space group rather
+    than a specification, because its callers already hold one.
+
+    Always returns on ``hkl.device``, whatever device the space group's symmetry
+    matrices live on: the caller multiplies this against per-reflection data
+    sitting beside ``hkl``.
+    """
+    n = hkl.shape[0]
+    float_dtype = get_float_dtype()
+    if spacegroup is None or not hasattr(spacegroup, "apply_to_hkl"):
+        return torch.ones(n, device=hkl.device, dtype=float_dtype)
+
+    with torch.no_grad():
+        # Configured float dtype, not float64: MPS has no float64 and casting
+        # there raises. Symmetry arithmetic on Miller indices is exact in
+        # float32 (integer-valued rotation matrices, small indices), so the
+        # exact `==` comparisons below remain valid.
+        #
+        # ``apply_to_hkl`` moves its input onto the matrices' device, so build
+        # ``h`` there too -- otherwise ``Hs`` and ``h0`` land on different
+        # devices and the comparisons below raise. The space group wins for the
+        # arithmetic; the result is handed back on the caller's device.
+        sym_device = getattr(spacegroup, "matrices", hkl).device
+        h = hkl.to(device=sym_device, dtype=float_dtype)
+        Hs = spacegroup.apply_to_hkl(h)  # (N,3,ops)
+        h0 = h.unsqueeze(-1)  # (N,3,1)
+        same = (Hs == h0).all(dim=1)
+        friedel = (Hs == -h0).all(dim=1)
+        eps = (same | friedel).sum(dim=1).clamp(min=1).to(float_dtype)
+    return eps.to(hkl.device)
+
+
 def get_centric_acentric_masks(
     hkl: torch.Tensor, space_group: SpaceGroupLike = "P1"
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1244,6 +1283,11 @@ def estimate_mean_intensity_by_resolution(
 
     Uses linear interpolation between bin centers for smooth mean intensity
     estimates.
+
+    This is an arithmetic mean, which is what the French-Wilson posterior wants
+    and the wrong thing for outlier detection: a strong outlier raises the mean
+    of its own bin and so raises its own ``Sigma``, hiding itself. Use
+    :func:`~torchref.base.wilson_outliers.robust_mean_intensity` there.
 
     Parameters
     ----------

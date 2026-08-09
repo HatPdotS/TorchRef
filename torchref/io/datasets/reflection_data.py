@@ -731,15 +731,17 @@ class ReflectionData(CrystalDataset, DebugMixin):
             F, F_sigma = self._FrenchWilson(self.I, self.I_sigma)
             self.F = F
             self.F_sigma = F_sigma
-            # Record French-Wilson's own rejection criterion, evaluated on the
-            # true intensities. This is strictly better than anything
-            # reconstructible from the amplitudes afterwards: F is a positive
-            # posterior mean, so it no longer knows which intensities were
-            # inexplicably negative. Set here rather than recomputed in
-            # _post_load_cleanup so the mask is exactly the one French-Wilson
-            # applied; _canonicalize_in_place reorders masks along with
-            # everything else.
-            self._set_wilson_mask(self._FrenchWilson.valid_mask)
+            # Record French-Wilson's own input criterion, evaluated on the true
+            # intensities. This is strictly better than anything reconstructible
+            # from the amplitudes afterwards: F is a positive posterior mean, so
+            # it no longer knows which intensities were inexplicably negative.
+            # Set here rather than recomputed in _post_load_cleanup so the mask
+            # is exactly the one French-Wilson applied; _canonicalize_in_place
+            # reorders masks along with everything else. Kept separate from the
+            # outlier mask -- this one guards the posterior integral against
+            # unphysical input, which is a different question from whether an
+            # observation is an outlier.
+            self._set_french_wilson_mask(self._FrenchWilson.valid_mask)
         elif "F" in data_dict:
             self.F = torch.tensor(
                 data_dict["F"],
@@ -2323,15 +2325,20 @@ class ReflectionData(CrystalDataset, DebugMixin):
         return self
 
     WILSON_MASK_KEY = "wilson_valid"
+    FRENCH_WILSON_MASK_KEY = "french_wilson_valid"
 
-    def _set_wilson_mask(self, keep: Optional[torch.Tensor]) -> None:
-        """Install the Wilson/French-Wilson keep-mask, reporting what it costs.
+    def _set_french_wilson_mask(self, keep: Optional[torch.Tensor]) -> None:
+        """Install French-Wilson's own input criterion as a keep-mask.
+
+        This is the ``h >= -4`` guard on intensities too negative to be a noisy
+        measurement of any Wilson-distributed reflection -- it protects the
+        French-Wilson posterior integral. It is not outlier rejection; see
+        :meth:`flag_wilson_outliers` for that.
 
         Raises rather than falling back when nothing survives: an all-False mask
-        means every observation is inexplicable under Wilson statistics, which
-        is a broken dataset or a failed ``Sigma`` estimate. Silently widening it
-        back to all-True would admit exactly the observations the test just
-        identified as garbage.
+        means every intensity is unphysical, which is a broken dataset. Silently
+        widening it back to all-True would admit exactly the observations the
+        test just identified as garbage.
         """
         if keep is None:
             return
@@ -2339,99 +2346,121 @@ class ReflectionData(CrystalDataset, DebugMixin):
         n_rejected = int((~keep).sum())
         if n_rejected == len(keep):
             raise ValueError(
-                "Wilson outlier rejection would reject all "
-                f"{len(keep)} reflections. Every observation is too improbable "
-                "under Wilson statistics to be a noisy measurement, which "
-                "usually means the intensities/sigmas are corrupt or the "
+                f"French-Wilson rejected all {len(keep)} reflections as "
+                "unphysical. Every intensity is too negative to be a noisy "
+                "measurement of a Wilson-distributed reflection, which usually "
+                "means the intensities/sigmas are corrupt or the "
                 "resolution-shell mean could not be estimated. Refusing to "
                 "guess; inspect the input data."
             )
-        if self.verbose > 0:
+        if self.verbose > 0 and n_rejected:
             pct = 100.0 * n_rejected / max(len(keep), 1)
+            # Deliberately not called an outlier count: this lumps together
+            # absent measurements (non-finite in the file) and intensities too
+            # negative to be noise, because French-Wilson rejects both for the
+            # same reason -- it cannot integrate them.
             print(
-                f"Wilson outlier rejection: {n_rejected}/{len(keep)} "
-                f"({pct:.4f}%) reflections flagged"
+                f"French-Wilson input guard: {n_rejected}/{len(keep)} "
+                f"({pct:.4f}%) reflections unusable as intensities "
+                "(absent, or too negative to be a noisy measurement)"
             )
-        self.masks[self.WILSON_MASK_KEY] = keep
+        self.masks[self.FRENCH_WILSON_MASK_KEY] = keep
 
-    def flag_wilson_outliers(self, h_min: float = -4.0) -> None:
+    def flag_wilson_outliers(
+        self, alpha: float = 0.01, d_max: float = 4.0
+    ) -> None:
         """
-        Flag observations that Wilson statistics cannot explain as noise.
+        Flag observations Wilson statistics cannot explain, in either tail.
 
-        Asks one question per reflection: *how probable is this observation
-        under Wilson conditions?* The French-Wilson parameter
-        ``h = I/sigma - sigma/Sigma`` is precisely the standardized argument of
-        the Wilson prior convolved with the Gaussian measurement error (see
-        :func:`~torchref.base.french_wilson.french_wilson_h`), so a cut on it is
-        a tail-probability cut that folds the shell mean and the per-reflection
-        sigma into a single number.
+        Model-free: nothing here has seen an ``F_calc``. Each reflection is
+        compared against what Wilson statistics predict for its resolution
+        shell, multiplicity and centricity, and rejected when the observation
+        sits further into either tail than the size of the dataset can account
+        for. See :mod:`torchref.base.wilson_outliers` for the criterion.
 
-        This keeps every negative intensity that noise accounts for. Only
-        observations too negative to be a noisy measurement of *any*
-        Wilson-distributed reflection are rejected.
+        Runs during loading, and the resulting mask joins the combined
+        :attr:`masks`, so rejected reflections are excluded from scaling,
+        refinement and R-factors. Call again with a different ``alpha`` to
+        loosen it, or ``del data.masks[ReflectionData.WILSON_MASK_KEY]`` to drop
+        it entirely.
 
-        A no-op when :meth:`load` already installed French-Wilson's own mask
-        from the true intensities -- that one is strictly better informed, so it
-        is never overwritten with a reconstruction.
+        Reflections with no usable measurement are not outliers and are left to
+        ``sanitize_F``; the count reported here excludes them.
 
-        On an amplitude-only dataset the intensities are reconstructed via
-        :func:`~torchref.base.french_wilson.intensities_from_amplitudes`, which
-        is **not** an inverse of French-Wilson: ``F`` is a positive posterior
-        mean, so an inexplicably negative intensity leaves no trace and cannot
-        be recovered. In practice the guard there only fires on an absurd
-        ``sigma_F``. This is inherent to amplitudes as input.
+        Tests :attr:`I` when the file carried intensities, since that is the
+        measurement; otherwise the intensities are reconstructed from :attr:`F`
+        via :func:`~torchref.base.french_wilson.intensities_from_amplitudes`,
+        which is **not** an inverse of French-Wilson: ``F`` is a positive
+        posterior mean, so an inexplicably negative intensity leaves no trace.
+        The *negative* tail is therefore blind on amplitude-only data -- the
+        strong tail, where zingers and mis-integrated spots live, is unaffected.
 
         Parameters
         ----------
-        h_min : float, optional
-            Rejection threshold on ``h``. Default -4.0, French-Wilson's own.
-            Raising it discards valid weak measurements rather than finding more
-            outliers -- see
-            :func:`~torchref.base.french_wilson.french_wilson_valid_mask`.
+        alpha : float, optional
+            Family-wise error rate over the whole dataset, default 0.01. The
+            per-reflection threshold is ``alpha/N``, so it tightens as the
+            dataset grows rather than rejecting a fixed fraction.
+        d_max : float, optional
+            Only reflections finer than this are tested, in Å. Default 4.0.
+            Below it bulk solvent dominates and the shells are sparse, so
+            observations depart from Wilson statistics for reasons that have
+            nothing to do with being outliers.
         """
         from torchref.base.french_wilson import (
-            estimate_mean_intensity_by_resolution,
-            french_wilson_valid_mask,
+            epsilon_from_hkl,
             intensities_from_amplitudes,
         )
+        from torchref.base.wilson_outliers import wilson_outlier_mask
 
-        if self.WILSON_MASK_KEY in self.masks:
-            return
         if self.F is None or self.F_sigma is None or self.resolution is None:
             return
+        if self.hkl is None or self.cell is None:
+            return
 
-        I, sigma_I = intensities_from_amplitudes(self.F, self.F_sigma)
+        if self.I is not None and self.I_sigma is not None:
+            I, sigma_I = self.I, self.I_sigma
+        else:
+            I, sigma_I = intensities_from_amplitudes(self.F, self.F_sigma)
 
-        # Rows with no usable sigma cannot enter the shell mean and cannot be
-        # tested; they are rejected outright rather than divided by.
         usable = torch.isfinite(I) & torch.isfinite(sigma_I) & (sigma_I > 0)
-        if not bool(usable.any()):
+        if self.masks.get("sanity_F") is not None:
+            usable = usable & self.masks["sanity_F"]
+        if int(usable.sum()) == 0:
             return
 
-        Sigma_usable = estimate_mean_intensity_by_resolution(
-            I[usable], self.resolution[usable], n_bins=60, min_per_bin=40
+        keep, info = wilson_outlier_mask(
+            I,
+            sigma_I,
+            self.hkl,
+            self.resolution,
+            self.cell.data,
+            epsilon=epsilon_from_hkl(self.hkl, self.spacegroup),
+            is_centric=self.centric,
+            usable=usable,
+            alpha=alpha,
+            d_max=d_max,
         )
-        # A shell whose mean intensity comes out non-positive (possible when a
-        # shell is dominated by negative observations) would flip the sign of
-        # the sigma/Sigma penalty and let extreme outliers through. Not observed
-        # on well-processed data, but cheap to exclude rather than trust.
-        Sigma = torch.zeros_like(I)
-        Sigma[usable] = Sigma_usable
-        testable = usable & torch.isfinite(Sigma) & (Sigma > 0)
-        if not bool(testable.any()):
-            return
 
-        keep = torch.zeros_like(usable)
-        keep[testable] = french_wilson_valid_mask(
-            I[testable],
-            sigma_I[testable],
-            Sigma[testable],
-            is_centric=(
-                self.centric[testable] if self.centric is not None else None
-            ),
-            h_min=h_min,
+        n_rejected = int((~keep).sum())
+        if n_rejected == int(usable.sum()):
+            raise ValueError(
+                f"Wilson outlier rejection would reject all {n_rejected} "
+                "measured reflections. That is a failed Sigma estimate or a "
+                "dataset whose intensities are not Wilson-distributed (severe "
+                "pseudo-translation, twinning, corrupt sigmas) -- not an "
+                "outlier population. Refusing to guess; inspect the input data."
+            )
+        if self.verbose > 0 and info["n_tested"]:
+            pct = 100.0 * n_rejected / info["n_tested"]
+            print(
+                f"Wilson outlier rejection: {n_rejected}/{info['n_tested']} "
+                f"({pct:.4f}%) of tested reflections flagged "
+                f"({info['n_strong']} too strong, {info['n_weak']} too weak)"
+            )
+        self.masks[self.WILSON_MASK_KEY] = keep.to(
+            device=self.device, dtype=torch.bool
         )
-        self._set_wilson_mask(keep)
 
     def flag_suspicious_sigma(self, z_threshold: float = 5.0) -> None:
         """
