@@ -13,17 +13,26 @@ crystallographic convention (units, sign of phases, Å and Å², d-spacing vs re
 
 ## 1. Environment
 
-| Where | Interpreter |
-|---|---|
-| Local dev (macOS) | `/Users/peter/Desktop/torchref/.env/bin/python` |
-| PSI cluster | `module load anaconda && conda activate /das/work/p17/p17490/CONDA/torchref` |
+Use the project's own virtual environment / conda environment — never a bare `python` or
+`python3`. Machines that host this repo usually carry several other interpreters with
+TorchRef's dependencies at the wrong versions, and those fail subtly (wrong numbers) rather
+than loudly. If you don't already know which interpreter is the right one, find it before
+running anything: look for a `.venv`/`.env` beside the repo, check `which -a python`, or
+confirm with `python -c "import torchref, torch; print(torchref.__file__, torch.__version__)"`.
 
-Never call a bare `python`/`python3` — other environments on these machines have TorchRef's
-dependencies at wrong versions and fail silently or subtly wrong.
+**Probe for a batch scheduler before deciding how to run tests.** Don't assume either way:
 
-On the cluster: use `srun -c 8 -p day -t 1-00:00:00` for interactive work and
-`sbatch -c 8 -p day -t 1-00:00:00` for batch. Don't run anything non-trivial on the login
-node, and don't take a GPU node unless the change is actually a CUDA/Triton path.
+```bash
+command -v sinfo && sinfo -s     # SLURM present? which partitions, what's idle
+```
+
+- **No scheduler** (laptop, workstation, CI container): just run the command normally.
+- **SLURM present**: read `sinfo` output and pick a partition from what actually exists and
+  has idle nodes — partition names are site-specific, so never hardcode one. Then use
+  `srun -c 8 --pty …` for short interactive work and `sbatch -c 8 …` for anything long.
+  Keep off the login node for real work, and don't request a GPU node unless the change
+  touches a CUDA/Triton path (`sinfo` also tells you whether GPU nodes exist and are free).
+  Check `squeue -u "$USER"` before queuing more.
 
 ---
 
