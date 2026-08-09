@@ -2,6 +2,8 @@
 and link definitions used by the restraints module.
 """
 
+from functools import lru_cache
+
 import numpy as np
 import pandas as pd
 import torch
@@ -80,6 +82,50 @@ def find_cif_file_in_library(resname):
     return get_library_manager().get_cif_file(resname)
 
 
+def split_data_blocks(content):
+    """Split a multi-block CIF into ``{block_name: block_text}``.
+
+    ``mon_lib_list.cif`` holds hundreds of ``data_`` blocks in one file, so the
+    readers below slice it up themselves and hand each block to
+    :class:`~torchref.io.cif_readers.CIFReader` separately. The ``data_`` prefix
+    is stripped from the name but kept in the text.
+    """
+    import re
+
+    blocks = {}
+    # re.split with a lookahead keeps the "data_" line at the head of each part.
+    for part in re.split(r"(?=^data_)", content, flags=re.MULTILINE):
+        part = part.strip()
+        if not part.startswith("data_"):
+            continue
+        first_newline = part.find("\n")
+        if first_newline == -1:
+            blocks[part[5:].strip()] = ""
+        else:
+            blocks[part[5:first_newline].strip()] = part
+    return blocks
+
+
+@lru_cache(maxsize=1)
+def read_library_blocks():
+    """Return ``mon_lib_list.cif`` split into ``{block_name: block_text}``.
+
+    Shared by :func:`read_link_definitions` and
+    :func:`~torchref.restraints.modifications.read_mod_definitions`, which read
+    disjoint parts of the same 4 MB file.
+
+    Warnings
+    --------
+    Cached process-wide; the returned dict is shared, so do not mutate it.
+    """
+    from torchref.restraints.library import get_library_manager
+
+    path = str(get_library_manager().get_link_definitions_path())
+    with open(path) as handle:
+        return split_data_blocks(handle.read())
+
+
+@lru_cache(maxsize=1)
 def read_link_definitions():
     """
     Read inter-residue link definitions from mon_lib_list.cif.
@@ -91,34 +137,17 @@ def read_link_definitions():
         under 'bonds', 'angles', 'torsions', 'planes' and 'chirals'.
     link_list : DataFrame or None
         The ``chem_link`` table, or None if the file has no ``link_list`` block.
+        Its ``mod_id_1``/``mod_id_2`` columns name the modifications each link
+        applies to its partners -- see :mod:`torchref.restraints.modifications`.
+
+    Warnings
+    --------
+    Parsing the 4 MB library takes a few tenths of a second, so the result is
+    cached process-wide and shared by every caller -- treat it as read-only.
     """
     from torchref.io.cif_readers import CIFReader
-    from torchref.restraints.library import get_library_manager
-    import os
-    import re
 
-    link_file_path = str(get_library_manager().get_link_definitions_path())
-    with open(link_file_path) as f:
-        content = f.read()
-
-    # Split content into blocks at every "data_" line.
-    # re.split keeps the delimiter when using a capture group.
-    parts = re.split(r"(?=^data_)", content, flags=re.MULTILINE)
-
-    blocks = {}  # block_name -> block_text
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        if part.startswith("data_"):
-            first_newline = part.find("\n")
-            if first_newline == -1:
-                block_name = part[5:].strip()
-                block_body = ""
-            else:
-                block_name = part[5:first_newline].strip()
-                block_body = part
-            blocks[block_name] = block_body
+    blocks = read_library_blocks()
 
     # --- Parse the link_list block ---
     link_list = None

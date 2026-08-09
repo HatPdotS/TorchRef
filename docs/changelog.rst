@@ -4,6 +4,7 @@ Changelog
 
 Version 0.6.3
 -------------
+- Fixed peptide-linked residues keeping their free-amino-acid restraints: the monomer library's link modifications (``DEL-OXT``/``DEL-HN1``/``DEL-HNP``) are now applied, correcting the backbone ``CA-C-O`` (117.2 → 120.6°), ``CA-N-H`` (109.6 → 118.7°), ``N-CA`` (1.48 → 1.453 Å) and ``C=O`` (1.251 → 1.229 Å) targets and dropping the carboxylate restraints the link removes. Geometry residuals change for every protein structure.
 - Added switch to turn off caching mixin
 - Switched the ADP distribution restraint from a Gaussian in log(B) to the shifted inverse-gamma distribution of Masmaliyeva & Murshudov (2019)
 - Reworked outlier rejection to follow wilson criteria
