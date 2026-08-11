@@ -27,6 +27,7 @@ Usage
     ./.dev/bin/python paper/figure2_alphafold_start/analysis/aggregate_figure_metrics.py
 """
 
+import argparse
 import json
 import re
 from pathlib import Path
@@ -39,13 +40,22 @@ BASE = SCRIPT_DIR.parent              # paper/figure2_alphafold_start
 RUNS = BASE / "runs"
 OUT = RUNS / "metrics"
 
-# engine -> arm subdirectory under runs/
-ENGINE_DIR = {
+# engine -> arm subdirectory under runs/. Rebound by main() when --arm is given, so the
+# same four parsers serve both Figure 2 (four engines) and ExtFig 5 (four target modes,
+# all of them `torchref`-kind arms) instead of the mode figure carrying a second copy.
+DEFAULT_ENGINE_DIR = {
     "prediction": "af_initial",
     "refmac": "refmac",
     "phenix": "phenix_norb",
     "torchref": "torchref",
 }
+ENGINE_DIR = dict(DEFAULT_ENGINE_DIR)
+#: engine -> which PROGRAM wrote its logs, i.e. which runtime/per-cycle/failure parser
+#: applies. Defaults to the engine name; only differs for renamed arms (`ml_full` is a
+#: `torchref`-kind arm). Rebound by main() alongside ENGINE_DIR.
+PARSER_KIND = {e: e for e in ENGINE_DIR}
+#: output filename prefix, so a second arm set cannot overwrite Figure 2's CSVs.
+PREFIX = "fig"
 
 
 def struct_dir(engine: str, code: str) -> Path:
@@ -115,8 +125,8 @@ RE_PHENIX_EPOCH = re.compile(r"#\s*Date .*?\(([\d.]+)\s*s\)")
 RE_REFMAC_ELAPSED = re.compile(r"Elapsed:\s+(\d+):(\d+)")
 
 
-def runtime_torchref(code: str):
-    p = struct_dir("torchref", code) / "out.log"
+def runtime_torchref(engine: str, code: str):
+    p = struct_dir(engine, code) / "out.log"
     if not p.exists():
         return None
     m = None
@@ -125,22 +135,24 @@ def runtime_torchref(code: str):
     return float(m.group(1)) if m else None
 
 
-def runtime_phenix(code: str):
-    p = struct_dir("phenix", code) / f"{code}_refined_001.log"
+def runtime_phenix(engine: str, code: str):
+    p = struct_dir(engine, code) / f"{code}_refined_001.log"
     if not p.exists():
         return None
     epochs = [float(x) for x in RE_PHENIX_EPOCH.findall(p.read_text(errors="replace"))]
     return (epochs[-1] - epochs[0]) if len(epochs) >= 2 else None
 
 
-def runtime_refmac(code: str):
-    p = struct_dir("refmac", code) / "refmac.log"
+def runtime_refmac(engine: str, code: str):
+    p = struct_dir(engine, code) / "refmac.log"
     if not p.exists():
         return None
     m = RE_REFMAC_ELAPSED.search(p.read_text(errors="replace"))
     return (int(m.group(1)) * 60 + int(m.group(2))) if m else None
 
 
+# Keyed by PARSER KIND (which program wrote the logs), not by engine name -- the
+# target-mode arms are all `torchref` kind under names like `ml_noalpha`.
 RUNTIME = {
     "torchref": runtime_torchref,
     "phenix": runtime_phenix,
@@ -149,9 +161,9 @@ RUNTIME = {
 
 
 # ── per-cycle program-reported R-factors ─────────────────────────────────────
-def percycle_refmac(code: str):
+def percycle_refmac(engine: str, code: str):
     """Refmac Ncyc table: rows '<cyc> <Rfact> <Rfree> ...' until '$$'."""
-    p = struct_dir("refmac", code) / "refmac.log"
+    p = struct_dir(engine, code) / "refmac.log"
     if not p.exists():
         return []
     lines = p.read_text(errors="replace").splitlines()
@@ -169,7 +181,7 @@ def percycle_refmac(code: str):
     return out
 
 
-def percycle_phenix(code: str):
+def percycle_phenix(engine: str, code: str):
     """Phenix per-macrocycle R-FACTORS (work/free in %) from the 'bonds angl' blocks.
 
     Each block's *first* row is the state at the start of that macrocycle and the
@@ -178,7 +190,7 @@ def percycle_phenix(code: str):
     we emit as cycle 0 (matching Refmac's Ncyc row 0) so the start R-factor is not
     silently dropped.
     """
-    p = struct_dir("phenix", code) / f"{code}_refined_001.log"
+    p = struct_dir(engine, code) / f"{code}_refined_001.log"
     if not p.exists():
         return []
     lines = p.read_text(errors="replace").splitlines()
@@ -240,8 +252,8 @@ def _deep_before(entry: dict):
     return None
 
 
-def percycle_torchref(code: str):
-    p = struct_dir("torchref", code) / "refinement_history.json"
+def percycle_torchref(engine: str, code: str):
+    p = struct_dir(engine, code) / "refinement_history.json"
     if not p.exists():
         return []
     try:
@@ -312,12 +324,13 @@ def classify_failure(engine: str, code: str):
         pref += _read_log(g)
 
     # 1) engine refinement failures
-    if engine == "torchref":
+    kind = PARSER_KIND.get(engine, engine)
+    if kind == "torchref":
         if "oom_kill" in err_log or "out of memory" in (err_log + out_log).lower():
             return ("refine", "TorchRef OOM at 8 GB (large structure)")
         if out_log and "Refinement completed successfully" not in out_log:
             return ("refine", "TorchRef refinement error")
-    if engine == "phenix":
+    if kind == "phenix":
         low = pref.lower()
         if "polymer crosses special position" in low:
             return ("refine", "phenix.refine aborts: polymer crosses special position")
@@ -343,8 +356,54 @@ def classify_failure(engine: str, code: str):
     return ("other", "unclassified")
 
 
+def _parse_arm(spec: str):
+    """``NAME=DIR`` or ``NAME=DIR:KIND`` -> ``(name, dir, kind)``.
+
+    ``KIND`` names the program whose logs are being parsed and defaults to ``NAME``, so
+    Figure 2's four engines need no annotation while a renamed arm does:
+    ``ml_full=torchref_ml_full:torchref``.
+    """
+    if "=" not in spec:
+        raise SystemExit(f"--arm expects NAME=DIR[:KIND], got {spec!r}")
+    name, rest = spec.split("=", 1)
+    directory, _, kind = rest.partition(":")
+    return name, directory, (kind or name)
+
+
 def main():
+    global ENGINE_DIR, PARSER_KIND, PREFIX, CONSERVED_NAME
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--arm", action="append", default=None, metavar="NAME=DIR[:KIND]",
+                    help="Override the engine set. Repeatable. KIND selects the log "
+                         "parsers (torchref/phenix/refmac/prediction) and defaults to "
+                         "NAME. With no --arm the Figure 2 default set is used and the "
+                         "output is byte-identical to the un-flagged behaviour.")
+    ap.add_argument("--prefix", default=PREFIX,
+                    help="Output filename prefix (default 'fig'); a second arm set MUST "
+                         "use its own prefix or it overwrites Figure 2's CSVs.")
+    args = ap.parse_args()
+
+    if args.arm:
+        parsed = [_parse_arm(a) for a in args.arm]
+        ENGINE_DIR = {n: d for n, d, _ in parsed}
+        PARSER_KIND = {n: k for n, _, k in parsed}
+        unknown = set(PARSER_KIND.values()) - set(DEFAULT_ENGINE_DIR)
+        if unknown:
+            raise SystemExit(f"unknown parser kind(s) {sorted(unknown)}; "
+                             f"choose from {sorted(DEFAULT_ENGINE_DIR)}")
+        missing = [d for d in ENGINE_DIR.values() if not (RUNS / d).is_dir()]
+        if missing:
+            raise SystemExit(f"arm directories do not exist: {missing}")
+    PREFIX = args.prefix
+    # Figure 2 keeps the historical filename; any other arm set gets its own, so the two
+    # conserved sets (four engines vs four target modes) cannot be confused.
+    CONSERVED_NAME = ("conserved_codes.txt" if PREFIX == "fig"
+                      else f"{PREFIX}_conserved_codes.txt")
+
     OUT.mkdir(parents=True, exist_ok=True)
+    print(f"Arms: {ENGINE_DIR}")
+    print(f"Parsers: {PARSER_KIND}\nPrefix: {PREFIX}\n")
     codes = all_codes()
     print(f"Found {len(codes)} candidate structure codes across arms\n")
 
@@ -364,24 +423,25 @@ def main():
                 geom_rows.append({"code": code, "engine": engine, **geom})
                 counts[engine]["geom"] += 1
 
-            if engine in RUNTIME:
-                w = RUNTIME[engine](code)
+            kind = PARSER_KIND[engine]
+            if kind in RUNTIME:
+                w = RUNTIME[kind](engine, code)
                 if w is not None and w > 0:
                     rt_rows.append({"code": code, "engine": engine, "wall_s": w})
                     counts[engine]["runtime"] += 1
 
-            if engine in PERCYCLE:
-                cyc = PERCYCLE[engine](code)
+            if kind in PERCYCLE:
+                cyc = PERCYCLE[kind](engine, code)
                 if cyc:
                     counts[engine]["percycle"] += 1
                     for c, w, f in cyc:
                         pc_rows.append({"code": code, "engine": engine,
                                         "cycle": c, "r_work": w, "r_free": f})
 
-    pd.DataFrame(rf_rows).to_csv(OUT / "fig_rfactors.csv", index=False)
-    pd.DataFrame(geom_rows).to_csv(OUT / "fig_geometry.csv", index=False)
-    pd.DataFrame(rt_rows).to_csv(OUT / "fig_runtime.csv", index=False)
-    pd.DataFrame(pc_rows).to_csv(OUT / "fig_percycle.csv", index=False)
+    pd.DataFrame(rf_rows).to_csv(OUT / f"{PREFIX}_rfactors.csv", index=False)
+    pd.DataFrame(geom_rows).to_csv(OUT / f"{PREFIX}_geometry.csv", index=False)
+    pd.DataFrame(rt_rows).to_csv(OUT / f"{PREFIX}_runtime.csv", index=False)
+    pd.DataFrame(pc_rows).to_csv(OUT / f"{PREFIX}_percycle.csv", index=False)
 
     # ── conserved set: codes with a PHENIX-validated R-free for ALL engines ──
     # Headline medians MUST be over the same structures or they are not comparable
@@ -392,7 +452,7 @@ def main():
     rf_sets = {e: set(rf[rf.engine == e].code) for e in ENGINE_DIR} if not rf.empty else {}
     conserved = (set.intersection(*rf_sets.values())
                  if rf_sets and all(rf_sets.values()) else set())
-    (OUT / "conserved_codes.txt").write_text("\n".join(sorted(conserved)) + "\n")
+    (OUT / f"{CONSERVED_NAME}").write_text("\n".join(sorted(conserved)) + "\n")
 
     # ── run accounting: per-engine success + grouped failure reasons ──
     # Attempted = candidate codes whose arm dir exists; success = has a validated
@@ -408,7 +468,7 @@ def main():
                               "category": cat, "reason": reason})
     pd.DataFrame(fail_rows,
                  columns=["engine", "code", "category", "reason"]).to_csv(
-        OUT / "fig_failures.csv", index=False)
+        OUT / f"{PREFIX}_failures.csv", index=False)
     print(f"\nRun accounting (candidate N={len(codes)}):")
     for e in ENGINE_DIR:
         succ = len(set(rf[rf.engine == e].code)) if not rf.empty else 0
@@ -437,11 +497,13 @@ def main():
                          "overfit_gap": round(med_f - med_w, 4)})
     print("  * medRfree is over the conserved set (identical structures per engine)")
     # order to match the legacy file: torchref, phenix, refmac, prediction
-    order = ["torchref", "phenix", "refmac", "prediction"]
+    order = [e for e in ("torchref", "phenix", "refmac", "prediction") if e in ENGINE_DIR]
+    order += [e for e in ENGINE_DIR if e not in order]
     res = pd.DataFrame(res_rows).set_index("engine").reindex(order).reset_index()
-    res.to_csv(BASE / "results.csv", index=False)
-    print(f"\nWrote 4 CSVs to {OUT}")
-    print(f"Wrote {BASE / 'results.csv'}  (PHENIX-validated medians)")
+    res_path = BASE / ("results.csv" if PREFIX == "fig" else f"{PREFIX}_results.csv")
+    res.to_csv(res_path, index=False)
+    print(f"\nWrote 4 CSVs to {OUT} with prefix {PREFIX!r}")
+    print(f"Wrote {res_path}  (PHENIX-validated medians)")
 
 
 if __name__ == "__main__":

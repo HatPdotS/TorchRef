@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Publication figure for the AlphaFold-start refinement benchmark (2x2).
 
-Layout (mimics paper/figure2_validation/plot_figure2.py):
+Layout:
   A) R-work vs R-free scatter (PHENIX-validated): prediction vs Refmac/Phenix/TorchRef
   B) Geometry quality strip (bond/angle/chiral RMSZ + main-chain B-factor RMSZ)
   C) Runtime comparison (TorchRef vs Phenix wall-clock, log-log)
@@ -17,6 +17,7 @@ Usage
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -32,6 +33,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 METRICS_DIR = SCRIPT_DIR / "runs" / "metrics"
 OUTPUT_DIR = SCRIPT_DIR / "figures"
 
+sys.path.insert(0, str(SCRIPT_DIR.parent))
+from figure_source_data import dump  # noqa: E402
+
+#: Prefix for this run's source-data CSVs, so Figure 2 ("figure2") and ExtFig 5 ("exF5")
+#: write side by side instead of overwriting each other. Rebound by create_figure().
+SD = "figure2"
+
 # ── Engines: label, color, z-order (drawn last = on top) ─────────────────────
 ENGINES = [
     ("prediction", "Prediction (AlphaFold)", "#4dac26"),  # green
@@ -41,6 +49,44 @@ ENGINES = [
 ]
 COLOR = {e: c for e, _, c in ENGINES}
 LABEL = {e: l for e, l, _ in ENGINES}
+
+#: Prefix of the metric CSVs to read (``<PREFIX>_rfactors.csv`` etc.), matching
+#: ``aggregate_figure_metrics.py --prefix``. Rebound by main().
+PREFIX = "fig"
+
+#: The one engine that is a starting model rather than a refinement, so it has no runtime and
+#: no per-cycle trajectory. Named once instead of being spelled out in each panel.
+PREDICTION = "prediction"
+
+#: Fallback palette for engines introduced via --engines without an explicit colour.
+_PALETTE = ["#b2182b", "#2166ac", "#762a83", "#4dac26", "#e08214", "#01665e", "#8c510a"]
+
+
+def refined_engines():
+    """Engine names that have a runtime and a per-cycle trajectory, in ENGINES order."""
+    return [e for e, _, _ in ENGINES if e != PREDICTION]
+
+
+def set_engines(specs):
+    """Rebind ENGINES/COLOR/LABEL from ``NAME=LABEL[:COLOR]`` strings.
+
+    Lets ExtFig 5 (four x-ray target modes) reuse this module's exact 2x2 layout instead of
+    carrying a second copy of it. Panels C and D derive their engine list from ENGINES via
+    :func:`refined_engines`, so a new engine set reaches every panel -- they used to hold
+    hardcoded ``("refmac", "phenix", "torchref")`` literals and would have silently dropped
+    any engine not in them, blanking three of ExtFig 5's four cells in half the figure.
+    """
+    global ENGINES, COLOR, LABEL
+    out = []
+    for i, spec in enumerate(specs):
+        if "=" not in spec:
+            raise SystemExit(f"--engines expects NAME=LABEL[:COLOR], got {spec!r}")
+        name, rest = spec.split("=", 1)
+        label, _, colour = rest.partition(":")
+        out.append((name, label, colour or _PALETTE[i % len(_PALETTE)]))
+    ENGINES = out
+    COLOR = {e: c for e, _, c in ENGINES}
+    LABEL = {e: l for e, l, _ in ENGINES}
 
 
 def setup_matplotlib():
@@ -61,11 +107,14 @@ def setup_matplotlib():
 # ── Panel A: R-work vs R-free scatter (validated) ────────────────────────────
 def plot_rfactor_scatter(ax, by_engine):
     lo, hi = 0.15, 0.55
+    sd_rows = []
     ax.plot([lo, hi], [lo, hi], "k--", alpha=0.2, linewidth=0.8, zorder=1)
     for i, (engine, _, color) in enumerate(ENGINES):
         df = by_engine.get(engine)
         if df is None or df.empty:
             continue
+        sd_rows.extend({"engine": engine, "code": c, "r_work": w, "r_free": f}
+                       for c, w, f in zip(df["code"], df["r_work"], df["r_free"]))
         ax.scatter(df["r_work"], df["r_free"], color=color, alpha=0.30,
                    s=5, linewidths=0, zorder=2 + i)
         # light median guides
@@ -73,6 +122,7 @@ def plot_rfactor_scatter(ax, by_engine):
                    alpha=0.45, zorder=6)
         ax.axhline(df["r_free"].median(), color=color, ls="--", lw=0.7,
                    alpha=0.45, zorder=6)
+    dump(f"{SD}_panelA_rfactors", sd_rows)
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_xlabel("R-work")
@@ -106,6 +156,7 @@ def plot_quality_strips(ax, by_engine):
     for y in y_positions:
         ax.axhspan(y - row_half, y + row_half, color="0.96", zorder=0)
 
+    sd_rows = []
     for engine, _, color in ENGINES:
         df = by_engine.get(engine)
         if df is None or df.empty:
@@ -117,6 +168,9 @@ def plot_quality_strips(ax, by_engine):
                 med_xs.append(np.nan)
                 continue
             q25, q50, q75 = np.percentile(vals, [25, 50, 75])
+            # The RMSZ quartiles the strip draws, in RMSZ units (not the 0-1 axis fraction).
+            sd_rows.append({"engine": engine, "metric": labels[i], "n": int(len(vals)),
+                            "q25": q25, "median": q50, "q75": q75})
             y = y_positions[i]
             x25, x75 = to_x(m, q25), to_x(m, q75)
             ax.fill_between([x25, x75], y - row_half, y + row_half,
@@ -138,6 +192,7 @@ def plot_quality_strips(ax, by_engine):
             ax.text(x_frac, tick_y, f"{val:g}", ha="center", va="top",
                     fontsize=8, color="0.35")
 
+    dump(f"{SD}_panelB_geometry_rmsz", sd_rows)
     ax.set_xlim(-0.18, 1.05)
     ax.set_ylim(-0.8, n - 1 + 0.8)
     ax.set_xticks([])
@@ -150,13 +205,31 @@ def plot_quality_strips(ax, by_engine):
 # ── Panel C: runtime comparison ──────────────────────────────────────────────
 def plot_runtime_box(ax, runtime_long):
     """Per-engine wall-clock distribution (log y), fastest → slowest."""
-    order = ["refmac", "torchref", "phenix"]  # speed order
     rng = np.random.default_rng(0)             # reproducible jitter
 
-    data = []
-    for e in order:
-        v = runtime_long.loc[runtime_long.engine == e, "wall_s"].dropna().values / 60.0
-        data.append(v)
+    # Speed order is MEASURED, not hardcoded. This used to read
+    # ["refmac", "torchref", "phenix"], which both fixed the ordering to one arm set and
+    # silently dropped any engine absent from the literal.
+    vals = {e: runtime_long.loc[runtime_long.engine == e, "wall_s"].dropna().values / 60.0
+            for e in refined_engines()}
+    order = sorted((e for e in vals if len(vals[e])), key=lambda e: float(np.median(vals[e])))
+    # An engine with no runtime rows would otherwise just be an absent box -- visually
+    # indistinguishable from a deliberate omission. Say so.
+    empty = [e for e in vals if not len(vals[e])]
+    if empty:
+        print(f"  WARNING panel C: no runtime data for {empty} — box(es) omitted")
+    if not order:
+        ax.set_title("Wall-clock runtime (no data)")
+        return
+    data = [vals[e] for e in order]
+
+    # One row per plotted point, in the panel's units (minutes), plus the box position so
+    # the left-to-right speed order is reproducible without re-deriving it.
+    sd = runtime_long.dropna(subset=["wall_s"])
+    dump(f"{SD}_panelC_runtime",
+         [{"engine": e, "box_position": i, "code": r.code,
+           "runtime_min": r.wall_s / 60.0}
+          for i, e in enumerate(order) for r in sd[sd.engine == e].itertuples()])
 
     pos = np.arange(len(order))
     bp = ax.boxplot(data, positions=pos, widths=0.55, patch_artist=True,
@@ -195,9 +268,12 @@ def plot_percycle_normalized(ax, percycle):
     GUARD = 0.02  # min total ΔR-free to be included (Å-free units)
 
     handles = []
-    for engine in ("refmac", "phenix", "torchref"):
+    sd_rows = []
+    # Derived from ENGINES, not a literal, for the same reason as panel C.
+    for engine in refined_engines():
         sub = percycle[percycle.engine == engine]
         if sub.empty:
+            print(f"  WARNING panel D: no per-cycle data for {engine!r} — series omitted")
             continue
         color = COLOR[engine]
         first, last = sub.cycle.min(), sub.cycle.max()
@@ -215,11 +291,16 @@ def plot_percycle_normalized(ax, percycle):
         q1 = np.nanpercentile(frac, 25, axis=0)
         q3 = np.nanpercentile(frac, 75, axis=0)
 
+        sd_rows.extend({"engine": engine, "macrocycle": int(xx),
+                        "median_fraction": mm, "q25": a, "q75": b,
+                        "n_structures": int(keep.sum()), "guard_min_delta_rfree": GUARD}
+                       for xx, mm, a, b in zip(x, med, q1, q3))
         ax.fill_between(x, q1, q3, color=color, alpha=0.12, linewidth=0, zorder=2)
         ax.plot(x, med, "-", color=color, lw=2.2, zorder=4)
         handles.append(Line2D([0], [0], color=color, lw=2.2,
                               label=f"{LABEL[engine]} (n={int(keep.sum())})"))
 
+    dump(f"{SD}_panelD_convergence", sd_rows)
     ax.axhline(1.0, color="0.6", ls=":", lw=0.8, zorder=1)
     ax.set_ylim(-0.05, 1.12)
     ax.set_xlabel("Macrocycle (from start)")
@@ -229,18 +310,32 @@ def plot_percycle_normalized(ax, percycle):
 
 
 # ── Composite ────────────────────────────────────────────────────────────────
-def create_figure(outpath: str, dpi: int = 300):
+def create_figure(outpath: str, dpi: int = 300, prefix: str = None):
+    global SD
     setup_matplotlib()
 
-    rfac = pd.read_csv(METRICS_DIR / "fig_rfactors.csv")
-    geom = pd.read_csv(METRICS_DIR / "fig_geometry.csv")
-    runtime = pd.read_csv(METRICS_DIR / "fig_runtime.csv")
-    percycle = pd.read_csv(METRICS_DIR / "fig_percycle.csv")
+    pre = prefix or PREFIX
+    # "fig" is Figure 2, any other prefix is a reuse of this layout (ExtFig 5 uses "mode").
+    SD = "figure2" if pre == "fig" else f"exF5_{pre}" if pre != "mode" else "exF5"
+    rfac = pd.read_csv(METRICS_DIR / f"{pre}_rfactors.csv")
+    geom = pd.read_csv(METRICS_DIR / f"{pre}_geometry.csv")
+    runtime = pd.read_csv(METRICS_DIR / f"{pre}_runtime.csv")
+    percycle = pd.read_csv(METRICS_DIR / f"{pre}_percycle.csv")
+
+    # Fail loudly on an engine the CSVs do not contain. Every panel filters by engine name, so
+    # a typo in --engines would otherwise render an empty series and look like "that arm has
+    # no data yet" rather than "that name is wrong".
+    have = set(rfac.engine.unique())
+    unknown = [e for e, _, _ in ENGINES if e not in have]
+    if unknown:
+        raise SystemExit(f"{pre}_rfactors.csv has no rows for engine(s) {unknown}; "
+                         f"it contains {sorted(have)}")
 
     # Conserved set: the identical structures every engine has an R-factor for
     # (written by aggregate_figure_metrics.py). Restricting every panel to it makes
     # the medians comparable — no engine is scored on a different/easier subset.
-    conserved_file = METRICS_DIR / "conserved_codes.txt"
+    conserved_file = METRICS_DIR / ("conserved_codes.txt" if pre == "fig"
+                                    else f"{pre}_conserved_codes.txt")
     conserved = set(conserved_file.read_text().split()) if conserved_file.exists() else None
     if conserved:
         for df in (rfac, geom, runtime, percycle):
@@ -275,7 +370,7 @@ def create_figure(outpath: str, dpi: int = 300):
                markersize=10, label=l)
         for _, l, c in ENGINES
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=4, fontsize=14,
+    fig.legend(handles=handles, loc="upper center", ncol=max(1, len(ENGINES)), fontsize=14,
                frameon=True, bbox_to_anchor=(0.5, 1.005))
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
@@ -286,12 +381,28 @@ def create_figure(outpath: str, dpi: int = 300):
 
 
 def main():
-    p = argparse.ArgumentParser(description="AlphaFold-start benchmark figure.")
+    p = argparse.ArgumentParser(
+        description="AlphaFold-start benchmark figure.",
+        epilog="ExtFig 5 (x-ray target modes) reuses this exact layout:\n"
+               "  plot_figure_af.py --prefix mode -o ../extended_figures/exF5/output/"
+               "extended_figure5.png \\\n"
+               "      --engines ml=ml:#b2182b ml_noalpha=ml_noalpha:#2166ac \\\n"
+               "                ml_full=ml_full:#762a83 nll_beta=nll_beta:#e08214",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--output", "-o", default=None)
     p.add_argument("--dpi", type=int, default=300)
+    p.add_argument("--prefix", default=PREFIX,
+                   help="Metric-CSV prefix to read (default 'fig'); matches "
+                        "aggregate_figure_metrics.py --prefix.")
+    p.add_argument("--engines", nargs="+", default=None, metavar="NAME=LABEL[:COLOR]",
+                   help="Engine set, in draw order (last on top). Default is the four "
+                        "Figure-2 engines. Use this for a figure over a different arm set, "
+                        "e.g. the x-ray target modes.")
     args = p.parse_args()
+    if args.engines:
+        set_engines(args.engines)
     outpath = args.output or str(OUTPUT_DIR / "figure_af_benchmark.png")
-    create_figure(outpath, dpi=args.dpi)
+    create_figure(outpath, dpi=args.dpi, prefix=args.prefix)
 
 
 if __name__ == "__main__":

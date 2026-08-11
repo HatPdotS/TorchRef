@@ -18,9 +18,11 @@ Usage
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import re
 import statistics
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -35,9 +37,18 @@ RE_WALL = re.compile(r"wall_s\s+([\d.]+)")
 RE_RC = re.compile(r"rc\s+(-?\d+)")
 
 
-def parse_timing(path: Path):
-    """wall_s (float) if the cell completed with rc 0, else None."""
+def parse_timing(path: Path, since: float | None = None):
+    """wall_s (float) if the cell completed with rc 0, else None.
+
+    ``since`` is a freshness floor as a POSIX timestamp: a ``timing.txt`` older than it
+    counts as stale rather than as a result. Pass it on any re-run.
+    ``submit_singlecore.py`` writes ``timing.txt`` only after the program returns and never
+    clears the previous one, so a cell that dies before that point keeps the earlier run's
+    file -- ``rc 0`` and all -- and is otherwise indistinguishable from a fresh success.
+    """
     if not path.exists():
+        return None
+    if since is not None and path.stat().st_mtime < since:
         return None
     text = path.read_text(errors="replace")
     mw, mr = RE_WALL.search(text), RE_RC.search(text)
@@ -49,16 +60,32 @@ def parse_timing(path: Path):
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--since", default=None, metavar="'YYYY-MM-DD HH:MM'",
+                    help="Treat timing.txt older than this as not-run. Use it on every "
+                         "re-run: a cell that dies leaves the previous run's file behind "
+                         "with rc 0, which would otherwise be aggregated as a result.")
+    args = ap.parse_args()
+    since = (datetime.strptime(args.since, "%Y-%m-%d %H:%M").timestamp()
+             if args.since else None)
+
     codes = [c.strip() for c in CODES_TXT.read_text().split() if c.strip()]
 
     wall = {}          # (program, code) -> wall_s
-    missing, failed = [], []
+    missing, failed, stale = [], [], []
     for program in PROGRAMS:
         for code in codes:
             tpath = RUNS / program / code / LABEL / "timing.txt"
-            w = parse_timing(tpath)
+            w = parse_timing(tpath, since)
             if w is None:
-                (missing if not tpath.exists() else failed).append(f"{program}/{code}")
+                cell = f"{program}/{code}"
+                if not tpath.exists():
+                    missing.append(cell)
+                elif since is not None and tpath.stat().st_mtime < since:
+                    stale.append(cell)
+                else:
+                    failed.append(cell)
                 continue
             wall[(program, code)] = w
 
@@ -80,6 +107,10 @@ def main():
     if failed:
         print(f"  FAILED rc!=0 ({len(failed)}): {', '.join(failed[:8])}"
               + (" ..." if len(failed) > 8 else ""))
+    if stale:
+        print(f"  STALE, older than --since ({len(stale)}): {', '.join(stale[:8])}"
+              + (" ..." if len(stale) > 8 else "")
+              + "\n    -> these cells did NOT complete this run; resubmit them.")
     if missing:
         print(f"  not-yet-run ({len(missing)}): {', '.join(missing[:8])}"
               + (" ..." if len(missing) > 8 else ""))

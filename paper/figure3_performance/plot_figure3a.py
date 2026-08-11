@@ -25,6 +25,7 @@ import argparse
 import csv
 import glob
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -34,6 +35,9 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+sys.path.insert(0, str(SCRIPT_DIR.parent))
+from figure_source_data import dump  # noqa: E402
 
 CORE_DOTS = {1: ("#9ecae1", 55), 4: ("#4292c6", 95), 16: ("#08519c", 140)}
 GPU_C = "#d62728"     # TorchRef GPU
@@ -72,7 +76,12 @@ def load_fcalc(fcalc_dir: Path, drop: set):
                 tr[s][int(r["n_threads"])] = v
             cv = _f(r.get("cctbx_min"))
             if cv is not None:
-                cc[s] = cv
+                # Fastest cctbx observed for this structure. cctbx is single-threaded so its
+                # time is ~flat across the thread sweep, but this used to be a plain
+                # assignment, making the plotted reference whichever row happened to come
+                # last -- arbitrary, row-order dependent, and ~3% off the best observed,
+                # which put the panel and FIGURE_MEDIANS' speedup at odds.
+                cc[s] = cv if s not in cc else min(cc[s], cv)
     return tr, cc, trgpu, natoms, dmin
 
 
@@ -104,11 +113,37 @@ def main():
     drop = set(args.drop)
     tr, cc, trgpu, natoms, dmin = load_fcalc(Path(args.fcalc_dir), drop)
     scgpu = load_sfcalc_gpu(Path(args.sf_dir), drop)
+    # Loaded again without the drop set, for the source-data table only: dropped structures
+    # are still measured, and a CSV that omitted them would disagree with any summary
+    # computed over the full set (FIGURE_MEDIANS quotes all 10; the panel plots 9).
+    tr_all, cc_all, gpu_all, na_all, dmin_all = load_fcalc(Path(args.fcalc_dir), set())
+    sc_all = load_sfcalc_gpu(Path(args.sf_dir), set())
     if not tr:
         raise SystemExit(f"no CPU rows in {args.fcalc_dir}/summary.csv")
 
     order = sorted(tr, key=lambda s: natoms[s])
     ypos = {s: i for i, s in enumerate(order)}
+
+    # Every marker the panel draws, in the panel's units (ms) and row order. Series absent
+    # for a structure are emitted with a blank time so the CSV records the gap -- an omitted
+    # row would read as "not measured" rather than "OOM" / "dropped".
+    sd = []
+    for s in sorted(na_all, key=lambda x: na_all[x]):
+        base = {"structure": s, "row": ypos.get(s, ""), "n_atoms": na_all[s],
+                "d_min": dmin_all[s], "in_plot": s not in drop}
+        for n in (1, 4, 16):
+            sd.append({**base, "series": f"torchref_cpu_{n}core",
+                       "time_ms": tr_all[s][n] * 1e3 if n in tr_all[s] else None})
+        sd.append({**base, "series": "torchref_gpu",
+                   "time_ms": gpu_all[s] * 1e3 if s in gpu_all else None})
+        # Fastest single-threaded cctbx observed across the thread sweep (see load_fcalc);
+        # not the 1-core row specifically, hence the name.
+        sd.append({**base, "series": "cctbx_single_thread",
+                   "time_ms": cc_all[s] * 1e3 if s in cc_all else None})
+        sd.append({**base, "series": "sfcalculator_gpu",
+                   "time_ms": sc_all[s] * 1e3 if s in sc_all else None})
+    dump("figure3a_fcalc_speed", sd,
+         ["structure", "row", "n_atoms", "d_min", "in_plot", "series", "time_ms"])
 
     fig, ax = plt.subplots(figsize=(9.8, 5.6))
     for s in order:

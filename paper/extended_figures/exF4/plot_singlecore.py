@@ -14,6 +14,7 @@ Usage
     ./.dev/bin/python paper/extended_figures/exF4/plot_singlecore.py --dpi 600
 """
 import argparse
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -24,6 +25,8 @@ import numpy as np
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parents[1]))
+from figure_source_data import dump  # noqa: E402
 DATA_CSV = SCRIPT_DIR / "data" / "exF4_singlecore.csv"
 OUTPUT_DIR = SCRIPT_DIR / "output"
 
@@ -48,11 +51,24 @@ def setup_matplotlib():
 
 def plot_runtime_box(ax, runtime_long):
     """Per-engine wall-clock distribution (log y), fastest -> slowest. Mirrors Fig 2c."""
-    order = ["refmac", "torchref", "phenix"]   # speed order
     rng = np.random.default_rng(0)             # reproducible jitter
 
-    data = [runtime_long.loc[runtime_long.program == e, "wall_s"].dropna().values / 60.0
-            for e in order]
+    # Speed order is MEASURED, for the same reason as plot_figure_af.py's panel C: this used
+    # to be the literal ["refmac", "torchref", "phenix"], which silently mislabels the axis
+    # once the ranking changes -- and it did, TorchRef and PHENIX swapped on the 2026-08-04
+    # interleaved run (286.2s vs 263.1s).
+    vals = {e: runtime_long.loc[runtime_long.program == e, "wall_s"].dropna().values / 60.0
+            for e in COLOR}
+    order = sorted((e for e in vals if len(vals[e])),
+                   key=lambda e: float(np.median(vals[e])))
+    data = [vals[e] for e in order]
+
+    # One row per plotted point, in the panel's units (minutes).
+    dump("exF4_singlecore_runtime",
+         [{"program": e, "box_position": i, "code": r.code, "runtime_min": r.wall_s / 60.0}
+          for i, e in enumerate(order)
+          for r in runtime_long[runtime_long.program == e].dropna(subset=["wall_s"])
+          .itertuples()])
 
     pos = np.arange(len(order))
     bp = ax.boxplot(data, positions=pos, widths=0.55, patch_artist=True,

@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -68,6 +69,9 @@ DEFAULT_BREAKDOWN_THREADS = 8
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = SCRIPT_DIR / "data" / "refinement_cycle"
 DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "output"
+
+sys.path.insert(0, str(SCRIPT_DIR.parent))
+from figure_source_data import dump  # noqa: E402
 
 
 def load_per_target_from_json(
@@ -206,6 +210,21 @@ def plot_target_breakdown(results_dir: Path, output_path: Path,
         if gpu_pt is not None:
             bar_labels.append(f"GPU — {mode_label}")
             data_sets.append(gpu_pt)
+
+    # One row per drawn bar segment, in the panel's units (ms), plus the "_aggregate" overlay
+    # so the stack total and the independently measured full-cycle time stay distinguishable.
+    sd = []
+    for pos, (label, ds) in enumerate(zip(bar_labels, data_sets)):
+        for target in all_targets:
+            if target in ds:
+                sd.append({"structure": structure or "", "bar": label, "bar_position": pos,
+                           "target": target, "time_ms": ds[target] * 1e3})
+        if "_aggregate_time" in ds:
+            sd.append({"structure": structure or "", "bar": label, "bar_position": pos,
+                       "target": "_aggregate_full_cycle_overlay",
+                       "time_ms": ds["_aggregate_time"] * 1e3})
+    dump("figure3b_target_breakdown", sd,
+         ["structure", "bar", "bar_position", "target", "time_ms"])
 
     bar_positions = np.arange(len(bar_labels))
     fig, ax = plt.subplots(figsize=(10, 5))
