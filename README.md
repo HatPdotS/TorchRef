@@ -27,9 +27,9 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. Aut
 
 ![TorchRef AlphaFold-start refinement benchmark](paper/figure2_alphafold_start/figures/figure_af_benchmark.png)
 
-*Refinement of Phaser-placed AlphaFold models against experimental data, on a conserved set of ~720 PDB structures (1.4–3.0 Å). All engines start from the same placed models and are scored by one common validator (PHENIX).*
+*Refinement of Phaser-placed AlphaFold models against experimental data, on a conserved set of 723 PDB structures (1.40–3.00 Å). All engines start from the same placed models and are scored by one common validator (PHENIX).*
 
-**(A)** TorchRef reaches essentially the same R-factors as the established programs — median R-free 0.3167 vs 0.3166 (PHENIX) and 0.3161 (REFMAC5). **(B)** Geometry is valid (bond/angle/chiral/main-chain-B RMS Z against REFMAC restraints), though the restraints run slightly looser than PHENIX/REFMAC (bond RMSZ ≈ 1.3). **(C)** Median runtime per structure on 4 CPU cores is 1.65 min, between REFMAC (0.53) and PHENIX (4.63). **(D)** Fraction of the total R-free improvement reached per macrocycle — the programs differ in convergence behaviour.
+**(A)** R-work and R-free per engine. Median R-free 0.3197 (TorchRef), 0.3165 (PHENIX), 0.3136 (REFMAC5); paired median difference, TorchRef minus reference, +0.0006 against PHENIX and +0.0047 against REFMAC. **(B)** Geometry RMS Z against REFMAC restraints, ideal 1.0: bond 0.58 (REFMAC 0.58, PHENIX 0.83), main-chain B 1.56 (REFMAC 0.90, PHENIX 1.03). **(C)** Wall-clock runtime per structure on 4 CPU cores: median 0.77 min (REFMAC 0.25, PHENIX 3.09). **(D)** Fraction of the total R-free improvement reached per macrocycle.
 
 ## Key Features
 
@@ -60,14 +60,19 @@ pip install torchref
 For development:
 
 ```bash
-git clone https://github.com/HatPdotS/TorchRef.git
+git clone --filter=blob:none --sparse https://github.com/HatPdotS/TorchRef.git
 cd TorchRef
+git sparse-checkout set torchref tests
 pip install -e ".[dev]"
 ```
 
+This fetches ~40 MB instead of ~436 MB; most of the repository is `paper/` history. Files outside
+the checkout are fetched on demand, so add paths later with `git sparse-checkout add paper`, or
+`git sparse-checkout disable` for all of it. Requires Git ≥ 2.27.
+
 ### Dependencies
 
-Python ≥ 3.10, PyTorch ≥ 2.4, NumPy ≥ 2.0, Pandas ≥ 2.0, SciPy ≥ 1.10, Gemmi ≥ 0.5, reciprocalspaceship ≥ 0.9.18, Numba ≥ 0.59, Matplotlib ≥ 3.7. `pyproject.toml` carries the authoritative pinned ranges — upper bounds are set one minor version above the tested maximum, so a newer dependency will refuse to install rather than fail at runtime.
+Python ≥ 3.10, PyTorch ≥ 2.4, NumPy ≥ 2.0, Pandas ≥ 2.0, SciPy ≥ 1.10, Gemmi ≥ 0.5, reciprocalspaceship ≥ 0.9.18, Numba ≥ 0.59, Matplotlib ≥ 3.7. `pyproject.toml` carries the authoritative pinned ranges; upper bounds are set one minor version above the tested maximum, so a newer dependency will refuse to install rather than fail at runtime.
 
 ### Testing
 
@@ -85,4 +90,4 @@ Contributions are welcome. Please use [NumPy docstring style](https://numpydoc.r
 
 ### License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
