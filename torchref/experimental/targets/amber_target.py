@@ -25,10 +25,8 @@ Intended workflow::
 
 Performance note
 ----------------
-OpenMM's ``Modeller.addHydrogens()`` is roughly ~4× faster when H atoms are
-already present in the model (it refines positions rather than building from
-scratch).  Indicative timings (approximate, hardware dependent) for pure-protein
-structures: init ~3 s with H, ~11 s from heavy atoms only.
+OpenMM's ``Modeller.addHydrogens()`` is faster when H atoms are already present
+in the model (it refines positions rather than building from scratch).
 Gradient and energy are identical either way (H are stripped from the atom map;
 ``n_model_atoms`` changes only the energy normalisation).
 
@@ -354,7 +352,7 @@ class AmberTarget(ModelTarget):
 
         Passing a model that already has H atoms (via
         ``model.generate_hydrogens()`` or loading a PDB with H) speeds up
-        initialisation ~4× because ``Modeller.addHydrogens()`` converges
+        initialisation because ``Modeller.addHydrogens()`` converges
         faster from existing positions.
 
         **GAFF2 ligands**: antechamber's BCC charge scheme runs a

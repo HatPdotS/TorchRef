@@ -47,6 +47,12 @@ DEFAULT_GROUP_WEIGHTS = {
     "geometry": 0.2,
     "geometry/ramachandran": 0.0,
     "adp": 0.02,
+    # Sub-weight on the SIGD distribution prior. Weights multiply down the path
+    # (see LossState.get_effective_weight), so this scales adp/sigd alone: it is a
+    # per-atom sum, whereas adp/simu and adp/locality already sum over pairs and
+    # neighbours, and the log-normal KL term it replaced was a single intensive
+    # scalar. Pending the R_free weight scan, 1.0 leaves it at the group weight.
+    "adp/sigd": 1.0,
 }
 
 
@@ -630,7 +636,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     def adp_loss(self):
         """Total ADP loss: bond-based B similarity, locality smoothness, and the
-        KL spread control registered by ``TotalADPTarget``."""
+        shifted inverse-gamma distribution prior registered by ``TotalADPTarget``."""
         return self.adp_target()
 
     def get_F_calc(self, hkl=None, recalc=False):

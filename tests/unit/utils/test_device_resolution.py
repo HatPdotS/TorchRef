@@ -23,6 +23,16 @@ def _cpu_cell():
     return Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], device="cpu")
 
 
+def _other_float_dtype(dtype: torch.dtype) -> torch.dtype:
+    """The float dtype that ``dtype`` is not, for provoking a mismatch.
+
+    Derived rather than hardcoded: a cell built at the configured dtype cannot also be
+    pinned to float64, because MPS has no float64 and the constructor would raise there
+    before the dtype-policy assertion under test ever ran.
+    """
+    return torch.float32 if dtype == torch.float64 else torch.float64
+
+
 def _cpu_sg():
     return SpaceGroup("P 21 21 21", device=torch.device("cpu"))
 
@@ -162,10 +172,11 @@ class TestRequireCellDtype:
         require_cell_dtype(None, torch.float32, "SfDS")
 
     def test_disagreement_raises_naming_both_dtypes(self):
-        cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float64)
+        cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
         with pytest.raises(RuntimeError) as exc:
-            require_cell_dtype(cell, torch.float32, "SfDS")
+            require_cell_dtype(cell, _other_float_dtype(cell.dtype), "SfDS")
         message = str(exc.value)
+        # Both names appear whichever way round the pair falls.
         assert "float64" in message and "float32" in message
         assert "SfDS" in message
 
@@ -175,10 +186,11 @@ class TestRequireCellDtype:
         A helper that raised *and* mutated would be the worst of both designs: the caller
         sees an error, retries, and silently gets the precision it was warned about.
         """
-        cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0], dtype=torch.float64)
+        cell = Cell([50.0, 60.0, 70.0, 90.0, 90.0, 90.0])
+        held = cell.dtype
         with pytest.raises(RuntimeError):
-            require_cell_dtype(cell, torch.float32, "SfDS")
-        assert cell.dtype == torch.float64
+            require_cell_dtype(cell, _other_float_dtype(held), "SfDS")
+        assert cell.dtype == held
 
 
 def test_sfds_refuses_a_cell_recast_after_construction():

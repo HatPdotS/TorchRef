@@ -15,6 +15,7 @@ Reads data/exF2_rfactor_by_resolution.csv (collect_exF2_data.py).
 Usage:
     ./.dev/bin/python paper/extended_figures/exF2/plot_exF2.py
 """
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -22,6 +23,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from figure_source_data import dump  # noqa: E402
 
 plt.rcParams.update({
     "font.size": 14,
@@ -63,13 +67,23 @@ def plot_panel(ax, df, metric, label_letter, xlim, ylim):
     """metric = 'rfree' or 'rwork'."""
     d_min = df["d_min"].values
     name = "R-free" if metric == "rfree" else "R-work"
+    codes = df["code"].values if "code" in df else [""] * len(d_min)
     txt = []
+    pts, lines = [], []
     for ref, (sc, mc, disp) in REFS.items():
         dr = df[f"delta_{metric}_{ref}"].values
         ax.scatter(d_min, dr, s=7, alpha=0.22, color=sc, edgecolors="none", zorder=2)
         xm, ym = running_median(d_min, dr)
         ax.plot(xm, ym, color=mc, lw=2.2, zorder=4, label=f"− {disp} (median)")
         txt.append(f"vs {disp}: {np.median(dr):+.2f} pp")
+        # Scatter points and the running-median line vertices, both in the panel's units
+        # (percentage points). The line is a separate file: it has its own x-grid.
+        pts.extend({"metric": name, "reference": disp, "code": c, "d_min": x,
+                    "delta_pp": v} for c, x, v in zip(codes, d_min, dr))
+        lines.extend({"metric": name, "reference": disp, "d_min": x,
+                      "running_median_pp": v} for x, v in zip(xm, ym))
+    dump(f"exF2_panel{label_letter}_{metric}_points", pts)
+    dump(f"exF2_panel{label_letter}_{metric}_runningmedian", lines)
 
     ax.axhline(y=0, color="black", ls="--", lw=0.8, alpha=0.4, zorder=1)
     ax.text(0.97, 0.95, f"Median Δ{name}\n" + "\n".join(txt),

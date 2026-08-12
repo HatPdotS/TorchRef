@@ -300,7 +300,7 @@ UNCOVERED: Dict[str, str] = {
     "CollectionDifferenceTarget": "needs a dataset collection",
     "CollectionMLTarget": "needs a dataset collection",
     "CollectionRiceTarget": "needs a dataset collection",
-    "ADPEntropyTarget": "needs a model with ADPs",
+    "ADPSigdTarget": "needs a model with ADPs",
     "AngleTarget": "needs a model with restraints",
     "ChiralTarget": "needs a model with restraints",
     "ReciprocalSymmetryExtractor": "needs an hkl tensor + SpaceGroup; device is "

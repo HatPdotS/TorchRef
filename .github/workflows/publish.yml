@@ -15,8 +15,19 @@ on:
           - pypi
 
 jobs:
+  # Release gate. Publishing used to run no tests at all, which is how a release
+  # that was only ever exercised on one backend reached PyPI broken on the
+  # other. Nothing is built or uploaded until the suite passes on MPS.
+  #
+  # CUDA is not gated here: it has no runner, and is checked by hand on the
+  # cluster (run_all_tests.sh) before tagging.
+  accelerator:
+    name: Accelerator gate (MPS)
+    uses: ./.github/workflows/accelerator.yml
+
   build:
     name: Build distribution
+    needs: accelerator
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

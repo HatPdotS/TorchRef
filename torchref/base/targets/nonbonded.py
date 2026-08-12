@@ -71,7 +71,7 @@ def nonbonded_heavy_math(
     gather of ``NonBondedTarget._compute_positions``. The H-VDW term ``NonBondedHTarget``
     adds is **not** included here. Dispatches to
     :func:`torchref.base.targets.triton.nonbonded_heavy_math_triton` on CUDA float32
-    (~1.4x on fwd+bw, mostly from the analytic backward), eager otherwise.
+    (the gain coming mostly from the analytic backward), eager otherwise.
 
     Parameters
     ----------

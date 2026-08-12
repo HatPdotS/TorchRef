@@ -5,7 +5,7 @@ This module provides target (loss) functions for X-ray, geometry, and ADP restra
 """
 
 from .adp import (
-    ADPEntropyTarget,
+    ADPSigdTarget,
     ADPLocalityTarget,
     ADPSimilarityTarget,
     ADPTarget,
@@ -109,7 +109,7 @@ __all__ = [
     "ADPTarget",
     "ADPSimilarityTarget",
     "RigidBondTarget",
-    "ADPEntropyTarget",
+    "ADPSigdTarget",
     "ADPLocalityTarget",
     # Combined targets
     "CombinedTargets",

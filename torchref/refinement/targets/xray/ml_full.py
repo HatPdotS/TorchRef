@@ -20,9 +20,7 @@ class MLFullXrayTarget(AlphaCentredMixin, SigmaAXrayTarget):
     Refmac uses. The most principled of the five, and the most expensive: a 32-node
     Gauss-Legendre quadrature per loss evaluation, ~4x the per-gradient cost of ``ml``.
 
-    Measured worth of the marginalisation over the inflation on 766 AF-start structures:
-    ``dR_free = +0.00000``, p=0.055. Kept because it is the correct treatment, not because it
-    wins.
+    It is kept because it is the correct treatment of the two error kinds.
 
     The only row that overrides :meth:`_model_error`, and the only one carrying extra state.
     """

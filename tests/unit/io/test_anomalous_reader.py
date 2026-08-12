@@ -89,17 +89,60 @@ def test_centrics_not_duplicated(anomalous_two_column_mtz):
     assert not bool((d.friedel_flags & centric).any())
 
 
+def _mixed_partition_groups(d, include_validation=False):
+    """Canonical ASU indices whose rows disagree about which set they belong to.
+
+    Bijvoet mates share a canonical index, so a non-empty result means a pair was
+    split across work/free -- the held-out mate has leaked into the work set.
+    """
+    cols = [d.rfree_flags.tolist()]
+    if include_validation:
+        cols.append(d.validation_flags.tolist())
+    groups = collections.defaultdict(set)
+    for h, *state in zip(map(tuple, d.hkl.tolist()), *cols):
+        groups[h].add(tuple(bool(s) for s in state))
+    return [h for h, v in groups.items() if len(v) > 1]
+
+
 def test_rfree_shared_across_mates(anomalous_two_column_mtz):
+    """Flags read from the file keep Bijvoet mates in the same set."""
     path, _ = anomalous_two_column_mtz
     d = ReflectionData(verbose=0)
     d.load_mtz(path)
     if d.rfree_flags is None:
         pytest.skip("no R-free flags in source")
-    groups = collections.defaultdict(set)
-    for h, fr in zip(map(tuple, d.hkl.tolist()), d.rfree_flags.tolist()):
-        groups[h].add(bool(fr))
-    inconsistent = sum(1 for v in groups.values() if len(v) > 1)
-    assert inconsistent == 0
+    assert _mixed_partition_groups(d) == []
+
+
+def test_generated_rfree_shared_across_mates(anomalous_two_column_mtz):
+    """*Generated* flags keep Bijvoet mates together too.
+
+    The read path gets this for free because rs.stack_anomalous duplicates the
+    FreeR column; the generated path has to group by canonical ASU index itself.
+    """
+    path, _ = anomalous_two_column_mtz
+    d = ReflectionData(verbose=0)
+    d.load_mtz(path)
+    # Guard the premise: this fixture really does carry split Bijvoet pairs.
+    assert d.friedel_merged is False
+    assert bool(d.friedel_flags.any())
+
+    d.regenerate_rfree_flags(force=True, seed=0)
+    assert d.rfree_source == "Generated (resolution-binned, ASU-grouped)"
+    assert bool((d.rfree_flags == 0).any())  # a free set actually exists
+    assert _mixed_partition_groups(d) == []
+
+
+def test_generated_validation_set_shared_across_mates(anomalous_two_column_mtz):
+    """The free/validation carve-out must not re-split Bijvoet pairs."""
+    path, _ = anomalous_two_column_mtz
+    d = ReflectionData(verbose=0)
+    d.load_mtz(path)
+    d.regenerate_rfree_flags(force=True, seed=0)
+    d.generate_validation_set(val_fraction_of_free=0.5, seed=0)
+
+    assert bool(d.validation_flags.any())
+    assert _mixed_partition_groups(d, include_validation=True) == []
 
 
 def test_write_auto_anomalous_from_merge_state(

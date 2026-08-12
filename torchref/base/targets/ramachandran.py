@@ -54,7 +54,7 @@ def ramachandran_math(
 
     Dispatches to
     :func:`torchref.base.targets.triton.ramachandran_math_triton` on
-    CUDA float32 (~10× faster fwd+bw on A100). Falls back to eager
+    CUDA float32. Falls back to eager
     otherwise.
 
     Parameters

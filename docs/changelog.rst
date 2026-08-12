@@ -1,6 +1,17 @@
 Changelog
 =========
 
+
+Version 0.6.3
+-------------
+- Fixed peptide-linked residues keeping their free-amino-acid restraint angles
+- Added switch to turn off caching mixin
+- Switched the ADP distribution restraint from a Gaussian in log(B) to the shifted inverse-gamma distribution of Masmaliyeva & Murshudov (2019)
+- Reworked outlier rejection to follow wilson criteria
+- Reworked free flag generation so Friedel pairs get matching flags
+- Fixed breaking bug were sigma_A estimation did not work on mps 
+
+
 Version 0.6.2
 -------------
 - Deprecated outlier flagging strategy 

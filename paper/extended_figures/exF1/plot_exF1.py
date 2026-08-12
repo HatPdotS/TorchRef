@@ -31,6 +31,8 @@ from matplotlib.colors import TwoSlopeNorm  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
 BASE = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE.parent.parent))
+from figure_source_data import dump  # noqa: E402
 CSV = (BASE.parent.parent / "figure2_alphafold_start" / "runs" / "metrics"
        / "weight_grid.csv")
 OUTDIR = BASE / "output"
@@ -90,12 +92,19 @@ def main():
     # Mark the locked default cell (geom=0.2, adp=0.02).
     gi_def, ai_def = nearest(geom_vals, 0.2), nearest(adp_vals, 0.02)
 
+    sd_rows = []
     fig, axes = plt.subplots(2, 2, figsize=(13.5, 11))
     for ax, (title, fn, kind) in zip(axes.flat, panels):
         A = np.full((na, ng), np.nan)
         for ci, gi in enumerate(gis):
             for ri, ai in enumerate(ais):
                 A[ri, ci] = cell_median(gi, ai, fn)
+                sd_rows.append({
+                    "panel": title, "gi": gi, "ai": ai,
+                    "geometry_weight": geom_by_gi[gi], "adp_weight": adp_by_ai[ai],
+                    "value": A[ri, ci],
+                    "n_structures": len(cells.get((gi, ai), [])),
+                    "is_locked_default": (gi == gi_def and ai == ai_def)})
         extend = "neither"
         if kind == "rmsz":
             finite = A[np.isfinite(A)]
@@ -128,6 +137,9 @@ def main():
                                edgecolor="lime", lw=2.2))
         ax.plot([], [], color="lime", lw=2, label="default 0.2/0.02")
     axes.flat[0].legend(loc="upper left", fontsize=7, framealpha=0.85)
+    dump("exF1_weight_grid", sd_rows,
+         ["panel", "gi", "ai", "geometry_weight", "adp_weight", "value",
+          "n_structures", "is_locked_default"])
 
     fig.suptitle("Extended Figure 1 — AF-start loss-weight landscape (xray=1 "
                  "fixed; median over subset)", fontsize=13)

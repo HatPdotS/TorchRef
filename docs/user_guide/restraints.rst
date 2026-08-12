@@ -27,6 +27,30 @@ Residues for which no restraints could be built are frozen in ``xyz`` rather
 than refined unrestrained, so a missing ligand definition shows up as an
 immobile ligand, not as distorted geometry.
 
+Links and Their Modifications
+-----------------------------
+
+The monomer library defines each amino acid **free**, not in-chain: ``ALA``
+carries ``OXT`` and a protonated ``N``, with carboxylate and ammonium geometry.
+Forming a bond to a neighbour therefore does more than add restraints across the
+link — it also *changes* the residue's own. The ``chem_link`` table names a
+modification per partner (``TRANS`` applies ``DEL-OXT`` to the residue donating
+its C and ``DEL-HN1`` to the one donating its N; proline uses ``DEL-HNP``), and
+TorchRef applies them when it builds the peptide links.
+
+What that means for the numbers you will see: a linked residue is restrained to
+``CA-C-O`` 120.6° and ``N-CA`` 1.453 Å, not the free 117.2° and ~1.48 Å, and its
+``C-OXT`` bond, ``CA-C-OXT``/``O-C-OXT`` angles and carboxylate plane are gone.
+The targets are chosen so the restraints close: the intra-residue ``CA-C-O``
+plus the link's ``CA-C-N`` and ``O-C-N`` sum to exactly 360° around the planar
+carbonyl carbon, and ``CA-N-H`` plus ``C-N-CA`` and ``C-N-H`` likewise around the
+amide nitrogen.
+
+Chain termini are left unmodified on purpose — a real C-terminus keeps its
+``OXT`` and carboxylate geometry, a real N-terminus its ammonium — so a
+structure's first and last residues legitimately carry different targets from
+the ones in between.
+
 Restraint Storage
 -----------------
 

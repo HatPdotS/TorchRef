@@ -22,7 +22,14 @@ from torchref.restraints.builders_fast import (
     InterResiduePlaneBuilder,
     InterResidueTorsionBuilder,
     PlaneRestraintBuilder,
+    PreprocessedPDB,
     TorsionRestraintBuilder,
+    find_peptide_link_pairs,
+)
+from torchref.restraints.modifications import (
+    apply_modifications,
+    link_modifications,
+    read_mod_definitions,
 )
 from torchref.restraints.restraints_helper import (
     find_cif_file_in_library,
@@ -509,33 +516,38 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             device = torch.device("cpu")
             pdb = self.pdb
 
+            # Must precede the intra-residue builders: it decides which residues
+            # draw their restraints from a link-modified component instead of the
+            # bare one.
+            comp_dict, res_keys = self._build_residue_variants()
+
             bond_result = BondRestraintBuilder(verbose=self.verbose).build(
-                pdb, self.cif_dict, device
+                pdb, comp_dict, device, residue_keys=res_keys
             )
             if bond_result:
                 self.restraints["bond"]["intra"] = bond_result
 
             angle_result = AngleRestraintBuilder(verbose=self.verbose).build(
-                pdb, self.cif_dict, device
+                pdb, comp_dict, device, residue_keys=res_keys
             )
             if angle_result:
                 self.restraints["angle"]["intra"] = angle_result
 
             torsion_result = TorsionRestraintBuilder(verbose=self.verbose).build(
-                pdb, self.cif_dict, device
+                pdb, comp_dict, device, residue_keys=res_keys
             )
             if torsion_result:
                 self.restraints["torsion"]["intra"] = torsion_result
 
             plane_result = PlaneRestraintBuilder(verbose=self.verbose).build(
-                pdb, self.cif_dict, device
+                pdb, comp_dict, device, residue_keys=res_keys
             )
             if plane_result:
                 for key, data in plane_result.items():
                     self.restraints["plane"][key] = data
 
             chiral_result = ChiralRestraintBuilder(verbose=self.verbose).build(
-                pdb, self.cif_dict, device
+                pdb, comp_dict, device, residue_keys=res_keys
             )
             if chiral_result:
                 self.restraints["chiral"] = chiral_result
@@ -562,6 +574,93 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         except Exception as e:
             self.debug_on_error(e, context="RestraintsNew.build_restraints")
             raise
+
+    def _build_residue_variants(self):
+        """Point peptide-linked residues at link-modified copies of their component.
+
+        The monomer library defines each amino acid free: ``ALA`` carries ``OXT``
+        and a protonated ``N``, with carboxylate and ammonium geometry. Forming a
+        peptide bond applies the modifications the ``chem_link`` table names --
+        ``DEL-OXT`` to the residue donating its C, ``DEL-HN1`` (``DEL-HNP`` for
+        proline) to the residue donating its N -- which delete the restraints the
+        link makes meaningless and overwrite the targets that change, notably
+        ``CA-C-O`` and ``CA-N-H``. Without them the intra-residue restraints fight
+        the link's own: around a peptide carbonyl carbon ``CA-C-O`` + ``CA-C-N`` +
+        ``O-C-N`` only sums to 360 degrees once ``DEL-OXT`` has been applied.
+
+        Chain termini are deliberately left unmodified -- a real C-terminus keeps
+        its ``OXT`` and carboxylate geometry, a real N-terminus its ammonium.
+
+        Returns
+        -------
+        comp_dict : dict
+            :attr:`cif_dict` plus one entry per ``(residue type, modification
+            set)`` in use, keyed ``'ALA:DEL-HN1+DEL-OXT'``. :attr:`cif_dict`
+            itself is left keyed by residue type alone.
+        residue_keys : dict
+            ``{(chain_id, resseq): comp_dict key}`` for the modified residues, as
+            :meth:`~torchref.restraints.builders_fast.RestraintBuilder.build`
+            takes it. Residues absent from it use their residue name.
+        """
+        comp_dict = dict(self.cif_dict)
+        residue_keys = {}
+        if not self.cif_dict or getattr(self, "link_list", None) is None:
+            return comp_dict, residue_keys
+
+        modifications = link_modifications(self.link_list)
+        if "TRANS" not in modifications:
+            return comp_dict, residue_keys
+        trans_mods = modifications["TRANS"]
+        proline_mods = modifications.get("PTRANS", trans_mods)
+
+        polymer = self.pdb[self.pdb["ATOM"] == "ATOM"]
+        if len(polymer) == 0:
+            return comp_dict, residue_keys
+        pp_pdb = PreprocessedPDB(polymer)
+
+        mods_by_residue = {}
+        for res_i, res_next in find_peptide_link_pairs(pp_pdb):
+            donor_mod, acceptor_mod = (
+                proline_mods
+                if pp_pdb.residue_resnames[res_next] == "PRO"
+                else trans_mods
+            )
+            for res_idx, mod_id in ((res_i, donor_mod), (res_next, acceptor_mod)):
+                if mod_id is None:
+                    continue
+                key = (
+                    str(pp_pdb.residue_chain_ids[res_idx]),
+                    int(pp_pdb.residue_resseqs[res_idx]),
+                )
+                mods_by_residue.setdefault(key, set()).add(mod_id)
+
+        if not mods_by_residue:
+            return comp_dict, residue_keys
+
+        mod_dict = read_mod_definitions()
+        for res_idx in range(pp_pdb.n_residues):
+            key = (
+                str(pp_pdb.residue_chain_ids[res_idx]),
+                int(pp_pdb.residue_resseqs[res_idx]),
+            )
+            mods = mods_by_residue.get(key)
+            resname = pp_pdb.residue_resnames[res_idx]
+            if not mods or resname not in comp_dict:
+                continue
+            mods = sorted(mods)
+            variant = f"{resname}:{'+'.join(mods)}"
+            if variant not in comp_dict:
+                comp_dict[variant] = apply_modifications(
+                    comp_dict[resname], mods, mod_dict
+                )
+            residue_keys[key] = variant
+
+        if self.verbose > 1:
+            print(
+                f"Applied link modifications to {len(residue_keys)} residues "
+                f"({len(comp_dict) - len(self.cif_dict)} modified components)"
+            )
+        return comp_dict, residue_keys
 
     def _build_peptide_restraints(self, device: torch.device):
         """Build peptide bond/angle/torsion/plane restraints.

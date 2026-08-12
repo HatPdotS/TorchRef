@@ -231,7 +231,7 @@ def test_triton_matches_eager_per_target(target_name, gpu_refinement, gpu_state)
     portable paths (up to the per-target tolerance).
 
     Four params were removed when this migrated off the ``Engine`` enum:
-    ``adp/locality``, ``adp/KL``, ``adp/scaler_U`` and ``adp/scaler_log_scale`` have **no
+    ``adp/locality``, ``adp/sigd``, ``adp/scaler_U`` and ``adp/scaler_log_scale`` have **no
     Triton implementation at all**, so they were comparing the eager path against itself and
     passing at ``rel == 0``. That was true before the migration too -- forcing an engine had
     never made them non-vacuous, because there was nothing on the other side.

@@ -36,8 +36,8 @@ def bond_math(
     bond-length computation from ``Restraints.bond_lengths``.
 
     On CUDA float32 inputs this dispatches to
-    :func:`torchref.base.targets.triton.bond_math_triton` (~2.5× faster
-    fwd+bw on A100). All other inputs use the eager implementation.
+    :func:`torchref.base.targets.triton.bond_math_triton`. All other inputs
+    use the eager implementation.
 
     Parameters
     ----------

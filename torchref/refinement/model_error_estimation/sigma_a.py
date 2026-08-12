@@ -17,10 +17,12 @@ it *inside* the method that uses it -- stays free of an import cycle.
 
 import math
 from dataclasses import dataclass
-from typing import Optional
+from functools import lru_cache
+from typing import Optional, Tuple
 
 import torch
 
+from torchref.base.french_wilson import epsilon_from_hkl  # noqa: F401  (re-export)
 from torchref.config import get_float_dtype
 
 # --- sigma_A estimator constants -------------------------------------------------
@@ -65,47 +67,6 @@ class SigmaAConfig:
         object.__setattr__(
             self, "shrink", bool(SHRINK_ENABLED if self.shrink is None else self.shrink)
         )
-
-
-# =====================================================================
-# Per-reflection epsilon (multiplicity)
-# =====================================================================
-
-
-def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
-    """Per-reflection epsilon: number of rotation symops mapping h -> +/-h.
-
-    Mirrors ``ReciprocalSymmetry.get_epsilon`` (Friedel-aware) but works directly
-    on the scattered HKL list. Returns ones if ``spacegroup`` is None or lacks
-    ``apply_to_hkl``.
-
-    Always returns on ``hkl.device``, whatever device the space group's symmetry
-    matrices live on: the caller multiplies this against per-reflection data
-    sitting beside ``hkl``.
-    """
-    n = hkl.shape[0]
-    float_dtype = get_float_dtype()
-    if spacegroup is None or not hasattr(spacegroup, "apply_to_hkl"):
-        return torch.ones(n, device=hkl.device, dtype=float_dtype)
-
-    with torch.no_grad():
-        # Configured float dtype, not float64: MPS has no float64 and casting
-        # there raises. Symmetry arithmetic on Miller indices is exact in
-        # float32 (integer-valued rotation matrices, small indices), so the
-        # exact `==` comparisons below remain valid.
-        #
-        # ``apply_to_hkl`` moves its input onto the matrices' device, so build
-        # ``h`` there too -- otherwise ``Hs`` and ``h0`` land on different
-        # devices and the comparisons below raise. The space group wins for the
-        # arithmetic; the result is handed back on the caller's device.
-        sym_device = getattr(spacegroup, "matrices", hkl).device
-        h = hkl.to(device=sym_device, dtype=float_dtype)
-        Hs = spacegroup.apply_to_hkl(h)  # (N,3,ops)
-        h0 = h.unsqueeze(-1)  # (N,3,1)
-        same = (Hs == h0).all(dim=1)
-        friedel = (Hs == -h0).all(dim=1)
-        eps = (same | friedel).sum(dim=1).clamp(min=1).to(float_dtype)
-    return eps.to(hkl.device)
 
 
 @dataclass(frozen=True)
@@ -227,17 +188,87 @@ def _rice_nll_reduced(
     likelihood up to a per-shell constant, but evaluated at the mean ``alpha*|F_c|``
     rather than ``|F_c|`` -- so it is NOT the same objective. ``i0e`` is the exp-scaled
     Bessel: ``log I0(z) = log i0e(z) + z`` for ``z >= 0``.
+
+    **Written to avoid a catastrophic cancellation.** Both branches would otherwise
+    subtract two nearly-equal large terms: the ``+z`` inside ``log I0`` cancels against
+    ``(Fo^2 + Fc^2)/Sigma`` down to ``(Fo - Fc)^2/Sigma``. On a well-refined model those
+    operands are ~20.0 and ~19.99 while the answer is ~0.026 -- 1.3e-3 of their magnitude,
+    so roughly three decimal digits are gone before the result is formed. Folding the
+    cancellation in by hand is an exact algebraic identity (verified bit-identical in
+    float64) and is what lets the fit run in float32. Same collapse in the centric branch
+    via ``log cosh y = y + log1p(exp(-2y)) - log 2``, using ``Fo, Fc >= 0`` (both are
+    amplitudes, and ``alpha >= 0``) so that ``2|Fo Fc| = 2 Fo Fc``.
     """
     Sigma = Sigma.clamp(min=1e-30)
-    z = (2.0 * fo * fc / Sigma).clamp(min=0.0, max=1e8)
-    log_i0 = torch.log(torch.special.i0e(z).clamp(min=1e-300)) + z
-    acen = torch.log(Sigma) + (fo * fo + fc * fc) / Sigma - log_i0
+    q = fo * fo + fc * fc
+    # (|Fo| - |Fc|)**2 == Fo^2 + Fc^2 - 2|Fo Fc| is the cancelled form of both quadratics.
+    dif = fo.abs() - fc.abs()
+    d2 = dif * dif
+
+    # Each branch folds its own linear term, and each guards on its OWN clamp: `z` and `y`
+    # saturate at different raw magnitudes, so they cannot share one folded quantity. Where
+    # a guard is active the fold would change the value, so the literal form is kept -- such
+    # a candidate is at an absurd magnitude and loses either way, but this keeps the rewrite
+    # exact everywhere rather than exact-on-the-data-that-was-tested.
+    raw_z = 2.0 * fo * fc / Sigma
+    z = raw_z.clamp(min=0.0, max=1e8)
+    acen_quad = torch.where(raw_z == z, d2 / Sigma, q / Sigma - z)
+    log_i0e = torch.log(torch.special.i0e(z).clamp(min=1e-300))
+    acen = torch.log(Sigma) + acen_quad - log_i0e
+
     # centric: 0.5 log Sigma + (Fo^2 + Fc^2)/(2 Sigma) - log cosh(Fo Fc / Sigma),
-    # with log cosh written in the overflow-safe shifted form |y| + log1p(exp(-2|y|)).
-    y = (fo * fc / Sigma).abs().clamp(max=1e8)
-    log_cosh = y + torch.log1p(torch.exp(-2.0 * y)) - math.log(2.0)
-    cen = 0.5 * torch.log(Sigma) + (fo * fo + fc * fc) / (2.0 * Sigma) - log_cosh
+    # with log cosh in the overflow-safe shifted form y + log1p(exp(-2y)) - log 2.
+    raw_y = (fo * fc / Sigma).abs()
+    y = raw_y.clamp(max=1e8)
+    cen_quad = torch.where(raw_y == y, d2 / (2.0 * Sigma), q / (2.0 * Sigma) - y)
+    cen = (
+        0.5 * torch.log(Sigma)
+        + cen_quad
+        - torch.log1p(torch.exp(-2.0 * y))
+        + math.log(2.0)
+    )
     return torch.where(centric, cen, acen)
+
+
+@lru_cache(maxsize=8)
+def _segment_layout(lengths: Tuple[int, ...], device_str: str):
+    """``(index, mask)`` placing contiguous segments on a padded ``(n_seg, max_len)`` grid.
+
+    Cached: ``_solve_sigma_a`` reduces ``n_grid * n_stages`` times over one layout.
+    ``lengths`` is a tuple so it can be a cache key.
+    """
+    device = torch.device(device_str)
+    L = torch.tensor(lengths, dtype=torch.long, device=device)
+    total = int(L.sum())
+    max_len = int(L.max()) if L.numel() else 0
+    zero = torch.zeros(1, dtype=torch.long, device=device)
+    starts = torch.cat([zero, L.cumsum(0)[:-1]])
+    ar = torch.arange(max_len, device=device).reshape(1, max_len)
+    # Clamp keeps the gather in bounds for the padding slots; `mask` zeroes them anyway.
+    index = (starts.reshape(-1, 1) + ar).clamp(max=max(total - 1, 0))
+    mask = ar < L.reshape(-1, 1)
+    return index, mask
+
+
+def _segsum(x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    """Sum ``x`` over contiguous segments, reducing along a padded trailing axis.
+
+    Replaces ``torch.segment_reduce``, which is unimplemented on MPS. Keeps the properties
+    that op was chosen for: atomic-free, one fixed reduction order per segment, so the
+    result is bit-stable run to run and does not depend on ``scatter_add``'s CUDA atomicAdd
+    accumulation order (the original GPU non-determinism bug -- see
+    ``tests/unit/refinement/test_estimate_beta_determinism.py``).
+
+    Deliberately NOT ``cumsum[end] - cumsum[start]``, the usual contiguous-segment trick:
+    that recovers each shell sum by subtracting two running totals of the whole array,
+    reintroducing the large-minus-large this module is written to avoid.
+
+    ``x`` reduces over its last axis, so a leading batch dimension (the grid candidates)
+    is handled in one call. Segments here differ in length by at most one element, so the
+    padding overhead is at most ``n_seg`` slots.
+    """
+    index, mask = _segment_layout(tuple(int(v) for v in lengths), str(x.device))
+    return (x[..., index] * mask.to(x.dtype)).sum(dim=-1)
 
 
 def _grid_ladder(n: int, ratio: float, device, dtype) -> torch.Tensor:
@@ -315,12 +346,9 @@ def _solve_sigma_a(
             cen.reshape(1, -1),
         )
         nll = torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e30))
-        f_cand = torch.stack(
-            [
-                torch.segment_reduce(nll[i], "sum", lengths=seg_lengths, unsafe=True)
-                for i in range(n_grid)
-            ]
-        )
+        # All candidates reduce in one call: _segsum reduces over the trailing axis, so
+        # the (n_grid, n_free) block collapses to (n_grid, n_bins) without a Python loop.
+        f_cand = _segsum(nll, seg_lengths)
         f_cand = torch.where(
             torch.isfinite(f_cand), f_cand, torch.full_like(f_cand, float("inf"))
         )
@@ -452,8 +480,13 @@ def estimate_beta(
 
         alpha**2 * Sigma_P + beta_model + S2 == B
 
-    holds **exactly** rather than approximately. Runs under ``torch.no_grad()`` in float64
-    internally, whatever dtype comes in; results are cast back to ``F_obs.dtype``.
+    holds **exactly** rather than approximately -- to ~1e-16 relative in float64 and ~1e-7
+    in float32, which is that dtype's floor for an algebraic identity.
+
+    Runs under ``torch.no_grad()``. The working dtype is the wider of the configured float
+    dtype and ``F_obs.dtype`` (float32 on MPS, which has no float64); results are cast back
+    to ``F_obs.dtype``. It used to force float64 unconditionally, which made the fit
+    unrunnable on MPS -- see the dtype note in the body and ``_rice_nll_reduced``.
 
     Parameters
     ----------
@@ -488,9 +521,12 @@ def estimate_beta(
     """
     device = F_obs.device
     out_dtype = F_obs.dtype
-    # float64 throughout the fit. The objective's magnitude (~4e4) against the
-    # differences that decide the winner (~5e-3) is 1.25e-7 relative -- float32 epsilon.
-    dtype = torch.float64
+
+    dtype = torch.promote_types(get_float_dtype(), out_dtype)
+    if dtype == torch.float64 and device.type == "mps":
+        raise RuntimeError(
+            "MPS has no float64; set the defaults float dtype to float32 or use CPU"
+        )
 
     fo_all = F_obs.reshape(-1).to(dtype)
     fc_all = torch.abs(F_calc).reshape(-1).to(dtype)
@@ -571,9 +607,9 @@ def estimate_beta(
 
     def segsum(x):
         # Contiguous segments (data sorted by resolution, `seg` a non-decreasing ramp),
-        # so this is atomic-free and one program per segment -- bit-stable run to run and
-        # identical CPU/GPU, unlike scatter_add's CUDA atomicAdd accumulation order.
-        return torch.segment_reduce(x, "sum", lengths=seg_lengths, unsafe=True)
+        # so this is atomic-free with one fixed reduction order per segment -- bit-stable
+        # run to run, unlike scatter_add's CUDA atomicAdd accumulation order. See _segsum.
+        return _segsum(x, seg_lengths)
 
     # Lunin-Skovoroda moment weighting. The identity below holds under any consistent
     # positive weighting, so the exact choice is immaterial.

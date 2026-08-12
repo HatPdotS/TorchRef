@@ -87,7 +87,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             Verbosity level for logging. Default is 0.
         use_late_symmetry : bool, optional
             If True (default), apply symmetry in reciprocal space after FFT
-            ("late symmetry") for faster structure factor calculation (~5x speedup).
+            ("late symmetry") for faster structure factor calculation.
             If False, apply symmetry to density map before FFT ("early symmetry").
         """
         super().__init__()
@@ -358,7 +358,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             if self.use_late_symmetry and self._late_symmetry_compatible:
                 if self.verbose > 0:
                     print(
-                        "SfFFT: Using late symmetry (reciprocal space) for ~5x speedup"
+                        "SfFFT: Using late symmetry (reciprocal space)"
                     )
             elif self.use_late_symmetry and not self._late_symmetry_compatible:
                 if self.verbose > 0:
@@ -535,7 +535,7 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
         Builds the density map and transforms it in one call. With
         ``use_late_symmetry`` (default) and a compatible grid, symmetry is
-        applied in reciprocal space after the FFT (~5x faster); otherwise it is
+        applied in reciprocal space after the FFT (faster); otherwise it is
         applied to the density map before it.
 
         Parameters

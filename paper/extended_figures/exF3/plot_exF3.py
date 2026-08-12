@@ -25,6 +25,7 @@ Usage
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -36,6 +37,8 @@ import pandas as pd
 from matplotlib.lines import Line2D
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parents[1]))
+from figure_source_data import dump  # noqa: E402
 AF_ROOT = SCRIPT_DIR.parent.parent / "figure2_alphafold_start"
 METRICS = AF_ROOT / "runs" / "metrics" / "fig_crossscore.csv"
 OUTPUT_DIR = SCRIPT_DIR / "output"
@@ -75,6 +78,13 @@ def panel(ax, df, metric, sx, sy, engines):
         return
     wide = wide.dropna(subset=[sx, sy])
     x, y = wide[sx].values, wide[sy].values
+
+    # One row per plotted point. Taken from `wide` after the pivot and dropna, so the CSV
+    # carries exactly the (code, engine) pairs both scorers actually scored.
+    dump(f"exF3_{metric}_{sx}_vs_{sy}",
+         [{"metric": metric, "scorer_x": sx, "scorer_y": sy,
+           "code": code, "model_engine": eng, "value_x": xv, "value_y": yv}
+          for (code, eng), xv, yv in zip(wide.index, x, y)])
 
     lo = min(x.min(), y.min()) - 0.01
     hi = max(x.max(), y.max()) + 0.01

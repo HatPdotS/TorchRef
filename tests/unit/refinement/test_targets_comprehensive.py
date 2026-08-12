@@ -432,32 +432,145 @@ class TestRigidBondTarget:
 
 
 @pytest.mark.unit
-class TestADPEntropyTarget:
-    """Test ADPEntropyTarget."""
+class TestADPSigdTarget:
+    """Test ADPSigdTarget, the shifted inverse-gamma ADP distribution prior.
 
-    def test_entropy_target_initialization(self):
-        """Test ADPEntropyTarget initialization."""
-        from torchref.refinement.targets import ADPEntropyTarget
+    These exercise ``adp_sigd_math`` directly rather than through a Model: the
+    kernel is the whole of the restraint, and the properties below are what make
+    it a correct replacement for the log-normal KL term it superseded. Two of
+    them (monotonicity in spread, finiteness for uniform B) are regressions
+    against defects in that old term.
+    """
 
-        target = ADPEntropyTarget()
+    def test_sigd_target_initialization(self):
+        """Defaults are M&M's alpha and an unshifted distribution."""
+        from torchref.refinement.targets import ADPSigdTarget
+
+        target = ADPSigdTarget()
         assert target._model is None
+        assert target.alpha == pytest.approx(3.5)
+        assert target.b_shift == pytest.approx(0.0)
 
-    def test_entropy_calculation(self):
-        """Test entropy calculation for B-factors."""
-        # Create mock B-factors
-        b_factors = torch.tensor([20.0, 25.0, 30.0, 35.0], dtype=torch.float32)
-        
-        # Convert B to isotropic U
-        u_iso = b_factors / (8 * np.pi**2)
-        
-        # Entropy of multivariate Gaussian (proportional to log det)
-        # For isotropic, this is proportional to log(U)
-        log_u = torch.log(u_iso)
-        
-        # Entropy contribution
-        entropy = log_u.sum()
-        
-        assert torch.isfinite(entropy)
+    def test_matches_inverse_gamma_nll(self):
+        """The kernel equals scipy's inverse-gamma NLL, offset at the mode."""
+        from scipy import stats as sps
+
+        from torchref.base.targets.adp import adp_sigd_math
+
+        alpha = 3.5
+        rng = np.random.default_rng(0)
+        b = torch.tensor(
+            np.exp(rng.standard_normal(5000) * 0.4) * 30.0, dtype=torch.float64
+        )
+        a = torch.tensor(alpha, dtype=torch.float64)
+        s0 = torch.tensor(0.0, dtype=torch.float64)
+
+        beta = float(b.mean()) * (alpha - 1.0)
+        mode = beta / (alpha + 1.0)
+        expected = (
+            -sps.invgamma.logpdf(b.numpy(), alpha, scale=beta).sum()
+            + sps.invgamma.logpdf(mode, alpha, scale=beta) * len(b)
+        )
+        assert float(adp_sigd_math(b, a, s0)) == pytest.approx(expected, rel=1e-10)
+
+    def test_alpha_sets_log_width(self):
+        """std(log B) = sqrt(trigamma(alpha)), the bridge the design rests on.
+
+        This is what lets alpha play the role the log-normal's sigma played, and
+        is the basis for reporting ``implied_std_log_adp``.
+        """
+        from scipy import stats as sps
+        from scipy.special import polygamma
+
+        for alpha in (3.5, 7.4):
+            draws = sps.invgamma.rvs(alpha, scale=100.0, size=400000, random_state=1)
+            assert np.log(draws).std() == pytest.approx(
+                np.sqrt(polygamma(1, alpha)), rel=2e-2
+            )
+
+    def test_monotonically_increasing_in_spread(self):
+        """The loss must never reward spreading the B distribution out.
+
+        Regression: the log-normal KL this replaced had a negative slope below
+        its 0.2 target, so it actively widened an over-tight distribution.
+        """
+        from torchref.base.targets.adp import adp_sigd_math
+
+        a = torch.tensor(3.5, dtype=torch.float64)
+        s0 = torch.tensor(0.0, dtype=torch.float64)
+        rng = np.random.default_rng(0)
+        base = rng.standard_normal(200000)
+
+        losses = []
+        for sigma in (0.10, 0.20, 0.30, 0.38, 0.45, 0.55, 0.70):
+            b = torch.tensor(np.exp(base * sigma), dtype=torch.float64)
+            b = b * 30.0 / b.mean()  # hold the mean fixed, vary only the spread
+            losses.append(float(adp_sigd_math(b, a, s0)) / len(b))
+
+        assert all(hi > lo for lo, hi in zip(losses, losses[1:])), losses
+
+    def test_finite_for_uniform_b(self):
+        """Uniform B is finite and differentiable.
+
+        Regression: the old KL divided by std(log B) and returned +inf here,
+        which LBFGS rejected as non-finite, leaving the B-factors stuck uniform.
+        """
+        from torchref.base.targets.adp import adp_sigd_math
+
+        alpha = 3.5
+        a = torch.tensor(alpha, dtype=torch.float64)
+        s0 = torch.tensor(0.0, dtype=torch.float64)
+        b = torch.full((500,), 30.0, dtype=torch.float64, requires_grad=True)
+
+        loss = adp_sigd_math(b, a, s0)
+        assert torch.isfinite(loss)
+
+        # Closed form for a uniform distribution:
+        #   (alpha+1) log((alpha+1)/(alpha-1)) - 2   per atom
+        expected = (alpha + 1.0) * np.log((alpha + 1.0) / (alpha - 1.0)) - 2.0
+        assert float(loss.detach()) / 500 == pytest.approx(expected)
+
+        loss.backward()
+        assert torch.isfinite(b.grad).all()
+
+    def test_scale_invariant(self):
+        """Scaling every B leaves the loss unchanged.
+
+        beta tracks the detached mean, so the term restrains the distribution's
+        shape only and can never drive the overall B level up or down.
+        """
+        from torchref.base.targets.adp import adp_sigd_math
+
+        a = torch.tensor(3.5, dtype=torch.float64)
+        s0 = torch.tensor(0.0, dtype=torch.float64)
+        rng = np.random.default_rng(0)
+        b = torch.tensor(
+            np.exp(rng.standard_normal(2000) * 0.4) * 30.0, dtype=torch.float64
+        )
+
+        assert float(adp_sigd_math(b * 7.0, a, s0)) == pytest.approx(
+            float(adp_sigd_math(b, a, s0)), rel=1e-10
+        )
+
+    def test_gradient_pushes_toward_the_mode(self):
+        """Descent raises a B below the mode and lowers one above it."""
+        from torchref.base.targets.adp import adp_sigd_math
+
+        alpha = 3.5
+        a = torch.tensor(alpha, dtype=torch.float64)
+        s0 = torch.tensor(0.0, dtype=torch.float64)
+        # With beta from the detached mean, the mode is (alpha-1)/(alpha+1) of it.
+        mode = 30.0 * (alpha - 1.0) / (alpha + 1.0)
+        b = torch.tensor(
+            [0.4 * mode, 3.0 * mode], dtype=torch.float64, requires_grad=True
+        )
+        # Pad so the mean (and hence beta) is pinned near 30 regardless of the two
+        # probe atoms, isolating the per-atom gradient direction.
+        pad = torch.full((2000,), 30.0, dtype=torch.float64)
+        adp_sigd_math(torch.cat([b, pad]), a, s0).backward()
+
+        assert b.grad[0] < 0  # below the mode -> descent increases B
+        assert b.grad[1] > 0  # above the mode -> descent decreases B
 
 
 # =============================================================================

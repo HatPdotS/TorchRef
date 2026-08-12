@@ -738,6 +738,144 @@ def interpolate_table(
     return result
 
 
+def french_wilson_h(
+    I: torch.Tensor,
+    sigma_I: torch.Tensor,
+    mean_intensity: torch.Tensor,
+    is_centric: torch.Tensor = None,
+) -> torch.Tensor:
+    """
+    The French-Wilson normalized parameter ``h``.
+
+    ``h`` is not merely an interpolation coordinate for the lookup tables: it is
+    the standardized argument of the Wilson-predictive density of the
+    *observation*. Convolving the acentric Wilson prior
+    ``P(J) = (1/S)exp(-J/S)`` with the Gaussian measurement error
+    ``I|J ~ N(J, sigma^2)`` gives
+
+        p(I) = (1/S) exp(sigma^2/(2 S^2) - I/S) Phi(I/sigma - sigma/S)
+
+    whose ``Phi`` argument is exactly the acentric ``h`` below. The centric prior
+    ``J^(-1/2) exp(-J/2S)`` yields the factor of two. So ``h`` answers "how
+    probable is this observation under Wilson conditions", folding the shell mean
+    and the measurement sigma into one number, and a cut on ``h`` is a
+    tail-probability cut (``h >= -4`` corresponds to ``p ~ 3e-5``).
+
+    Parameters
+    ----------
+    I : torch.Tensor
+        Measured intensities (any shape).
+    sigma_I : torch.Tensor
+        Standard deviations of intensities (same shape as I).
+    mean_intensity : torch.Tensor
+        Mean intensity for each reflection's resolution bin (same shape as I).
+    is_centric : torch.Tensor or bool, optional
+        Boolean mask of centric reflections, or a plain ``bool`` when the whole
+        input is known to be one or the other (as it is for the pre-split
+        callers below). If None, all are treated as acentric.
+
+    Returns
+    -------
+    torch.Tensor
+        ``h`` for each reflection (same shape as I).
+    """
+    # A centric reflection's prior has twice the variance per degree of freedom,
+    # which halves the sigma/S penalty.
+    if is_centric is None or is_centric is False:
+        denom = mean_intensity
+    elif is_centric is True:
+        denom = 2.0 * mean_intensity
+    else:
+        denom = torch.where(is_centric, 2.0 * mean_intensity, mean_intensity)
+    return (I / sigma_I) - (sigma_I / denom)
+
+
+def french_wilson_valid_mask(
+    I: torch.Tensor,
+    sigma_I: torch.Tensor,
+    mean_intensity: torch.Tensor,
+    is_centric: torch.Tensor = None,
+    h_min: float = -4.0,
+) -> torch.Tensor:
+    """
+    French-Wilson's own rejection criterion, as a keep-mask.
+
+    ``True`` means the observation is explainable as a noisy measurement of a
+    Wilson-distributed reflection and should be kept. This deliberately keeps
+    negative intensities that noise accounts for -- only observations too
+    negative to be explained by *any* Wilson-distributed true intensity, given
+    their own sigma and their shell's mean, are rejected.
+
+    Parameters
+    ----------
+    I, sigma_I, mean_intensity, is_centric
+        As for :func:`french_wilson_h`.
+    h_min : float, optional
+        Rejection threshold on ``h``. Default -4.0.
+
+        Raising this does **not** find more outliers -- it discards valid weak
+        measurements. On a typical dataset ``h_min=-4`` rejects nothing,
+        ``-2`` rejects ~0.3% and ``0`` rejects ~6%, and those are noise-
+        explainable reflections, not bad ones.
+
+    Returns
+    -------
+    torch.Tensor
+        Boolean keep-mask (same shape as I).
+    """
+    h = french_wilson_h(I, sigma_I, mean_intensity, is_centric)
+    # A non-finite h means sigma_I or mean_intensity was degenerate; such a
+    # reflection carries no information and must not be kept on the strength of
+    # a NaN comparison (which is False anyway, but not by intent).
+    return torch.isfinite(h) & (I / sigma_I >= h_min + 0.3) & (h >= h_min)
+
+
+def intensities_from_amplitudes(
+    F: torch.Tensor, sigma_F: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Approximate intensities from amplitudes, for datasets that supply only F.
+
+    Uses ``I = F^2`` and the delta-method ``sigma_I = 2 F sigma_F``.
+
+    **This is not an inverse of French-Wilson.** In the acentric asymptotic
+    branch the conversion satisfies ``F^2 = h sigma_I = I - sigma_I^2/S``, and
+    the table-driven branch has no closed form at all, so the round trip is
+    lossy in a specific and unavoidable direction: French-Wilson output ``F`` is
+    a strictly positive posterior mean, so every trace of a negative intensity
+    is gone. Measured on 4BX9, a reflection whose true ``h`` is -3.76 comes back
+    with ``h = +0.01``.
+
+    The consequence for outlier detection is that on an amplitude-only dataset
+    the French-Wilson guard cannot detect an inexplicably negative intensity --
+    only an absurd ``sigma_F``. That is a property of amplitudes as input, not a
+    deficiency of this function; nothing can recover information the posterior
+    mean discarded.
+
+    Parameters
+    ----------
+    F : torch.Tensor
+        Structure factor amplitudes.
+    sigma_F : torch.Tensor
+        Their standard deviations (same shape as F).
+
+    Returns
+    -------
+    I : torch.Tensor
+        ``F**2``.
+    sigma_I : torch.Tensor
+        ``2 * F * sigma_F``. Zero wherever ``F`` or ``sigma_F`` is non-positive
+        or non-finite; callers must treat a non-positive ``sigma_I`` as
+        "no usable measurement" rather than dividing by it.
+    """
+    usable = (
+        torch.isfinite(F) & torch.isfinite(sigma_F) & (F > 0) & (sigma_F > 0)
+    )
+    I = torch.where(usable, F * F, torch.zeros_like(F))
+    sigma_I = torch.where(usable, 2.0 * F * sigma_F, torch.zeros_like(F))
+    return I, sigma_I
+
+
 def french_wilson_acentric(
     I: torch.Tensor,
     sigma_I: torch.Tensor,
@@ -779,8 +917,9 @@ def french_wilson_acentric(
     ac_zf = AC_ZF.to(device=device, dtype=dtype)
     ac_zf_sd = AC_ZF_SD.to(device=device, dtype=dtype)
 
-    # Compute normalized parameter h
-    h = (I / sigma_I) - (sigma_I / mean_intensity)
+    # Compute normalized parameter h (shared with the rejection criterion, so
+    # the guard and the conversion can never drift apart)
+    h = french_wilson_h(I, sigma_I, mean_intensity, is_centric=False)
 
     # Clamp h to valid table range [-4.0, ...] to avoid extrapolation issues
     # Very weak reflections (h < h_min) get the boundary value from lookup table
@@ -816,9 +955,9 @@ def french_wilson_acentric(
         F[large_h_mask] = F_large
         sigma_F[large_h_mask] = sigma_F_large
 
-    # Create valid mask for reference (but don't use it to zero out values)
-    i_over_sig = I / sigma_I
-    valid_mask = (i_over_sig >= i_sig_min) & (h >= h_min)
+    # Rejection criterion, computed but not used to zero out values: the caller
+    # decides what to do with it. See french_wilson_valid_mask.
+    valid_mask = torch.isfinite(h) & (I / sigma_I >= i_sig_min) & (h >= h_min)
 
     return F, sigma_F, valid_mask
 
@@ -865,7 +1004,7 @@ def french_wilson_centric(
     c_zf_sd = C_ZF_SD.to(device=device, dtype=dtype)
 
     # Compute normalized parameter h (note factor of 2 for centric!)
-    h = (I / sigma_I) - (sigma_I / (2.0 * mean_intensity))
+    h = french_wilson_h(I, sigma_I, mean_intensity, is_centric=True)
 
     # Clamp h to valid table range [-4.0, ...] to avoid extrapolation issues
     # Very weak reflections (h < h_min) get the boundary value from lookup table
@@ -912,9 +1051,9 @@ def french_wilson_centric(
         F[large_h_mask] = post_F * torch.sqrt(sigma_I_large)
         sigma_F[large_h_mask] = post_sig_F * torch.sqrt(sigma_I_large)
 
-    # Create valid mask for reference (but don't use it to zero out values)
-    i_over_sig = I / sigma_I
-    valid_mask = (i_over_sig >= i_sig_min) & (h >= h_min)
+    # Rejection criterion, computed but not used to zero out values: the caller
+    # decides what to do with it. See french_wilson_valid_mask.
+    valid_mask = torch.isfinite(h) & (I / sigma_I >= i_sig_min) & (h >= h_min)
 
     return F, sigma_F, valid_mask
 
@@ -1070,6 +1209,45 @@ def is_centric_from_hkl(
     return is_centric.reshape(original_shape)
 
 
+def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
+    """Per-reflection epsilon: number of rotation symops mapping h -> +/-h.
+
+    Mirrors ``ReciprocalSymmetry.get_epsilon`` (Friedel-aware) but works directly
+    on the scattered HKL list. Returns ones if ``spacegroup`` is None or lacks
+    ``apply_to_hkl``.
+
+    Unlike :func:`is_centric_from_hkl` this takes a constructed space group rather
+    than a specification, because its callers already hold one.
+
+    Always returns on ``hkl.device``, whatever device the space group's symmetry
+    matrices live on: the caller multiplies this against per-reflection data
+    sitting beside ``hkl``.
+    """
+    n = hkl.shape[0]
+    float_dtype = get_float_dtype()
+    if spacegroup is None or not hasattr(spacegroup, "apply_to_hkl"):
+        return torch.ones(n, device=hkl.device, dtype=float_dtype)
+
+    with torch.no_grad():
+        # Configured float dtype, not float64: MPS has no float64 and casting
+        # there raises. Symmetry arithmetic on Miller indices is exact in
+        # float32 (integer-valued rotation matrices, small indices), so the
+        # exact `==` comparisons below remain valid.
+        #
+        # ``apply_to_hkl`` moves its input onto the matrices' device, so build
+        # ``h`` there too -- otherwise ``Hs`` and ``h0`` land on different
+        # devices and the comparisons below raise. The space group wins for the
+        # arithmetic; the result is handed back on the caller's device.
+        sym_device = getattr(spacegroup, "matrices", hkl).device
+        h = hkl.to(device=sym_device, dtype=float_dtype)
+        Hs = spacegroup.apply_to_hkl(h)  # (N,3,ops)
+        h0 = h.unsqueeze(-1)  # (N,3,1)
+        same = (Hs == h0).all(dim=1)
+        friedel = (Hs == -h0).all(dim=1)
+        eps = (same | friedel).sum(dim=1).clamp(min=1).to(float_dtype)
+    return eps.to(hkl.device)
+
+
 def get_centric_acentric_masks(
     hkl: torch.Tensor, space_group: SpaceGroupLike = "P1"
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1105,6 +1283,11 @@ def estimate_mean_intensity_by_resolution(
 
     Uses linear interpolation between bin centers for smooth mean intensity
     estimates.
+
+    This is an arithmetic mean, which is what the French-Wilson posterior wants
+    and the wrong thing for outlier detection: a strong outlier raises the mean
+    of its own bin and so raises its own ``Sigma``, hiding itself. Use
+    :func:`~torchref.base.wilson_outliers.robust_mean_intensity` there.
 
     Parameters
     ----------
@@ -1319,6 +1502,9 @@ class FrenchWilson(DeviceMixin, nn.Module):
         Resolution for each reflection in Å.
     is_centric : torch.Tensor
         Boolean mask for centric reflections.
+    valid_mask : torch.Tensor or None
+        French-Wilson's rejection criterion from the most recent :meth:`forward`
+        (``True`` = keep). ``None`` before the first call.
 
     Examples
     --------
@@ -1363,6 +1549,10 @@ class FrenchWilson(DeviceMixin, nn.Module):
         is_centric = is_centric_from_hkl(hkl, space_group)
         self.register_buffer("is_centric", is_centric)
 
+        # Set by forward(); None until the first conversion. Not a buffer -- it
+        # is per-call output, not model state to serialize or move.
+        self.valid_mask = None
+
         # Verbosity level 1: Basic initialization info (most important)
         if self.verbose >= 1:
             print("FrenchWilson initialized:")
@@ -1398,22 +1588,30 @@ class FrenchWilson(DeviceMixin, nn.Module):
             Structure factor amplitudes of shape (n_reflections,).
         sigma_F : torch.Tensor
             Standard deviations of F of shape (n_reflections,).
+
+        Notes
+        -----
+        The rejection criterion is recorded on :attr:`valid_mask` (full size,
+        ``True`` = keep, ``False`` for both NaN input and French-Wilson
+        rejections) rather than returned, so this stays a two-tuple for the
+        documented usage above. It is overwritten on each call.
         """
         # Check for NaN values in input
         nan_mask = torch.isnan(I) | torch.isnan(sigma_I)
 
         # If all values are NaN, return NaN arrays
         if nan_mask.all():
+            self.valid_mask = torch.zeros_like(I, dtype=torch.bool)
             return torch.full_like(I, float("nan")), torch.full_like(
                 sigma_I, float("nan")
             )
 
         # Filter out NaN values and corresponding metadata
-        valid_mask = ~nan_mask
-        I_clean = I[valid_mask]
-        sigma_I_clean = sigma_I[valid_mask]
-        d_spacings_clean = self.d_spacings[valid_mask]
-        is_centric_clean = self.is_centric[valid_mask]
+        finite_mask = ~nan_mask
+        I_clean = I[finite_mask]
+        sigma_I_clean = sigma_I[finite_mask]
+        d_spacings_clean = self.d_spacings[finite_mask]
+        is_centric_clean = self.is_centric[finite_mask]
 
         # Estimate mean intensity by resolution (only for valid reflections)
         mean_intensity = estimate_mean_intensity_by_resolution(
@@ -1421,7 +1619,7 @@ class FrenchWilson(DeviceMixin, nn.Module):
         )
 
         # Apply French-Wilson conversion
-        F_clean, sigma_F_clean, _ = french_wilson(
+        F_clean, sigma_F_clean, keep_clean = french_wilson(
             I_clean,
             sigma_I_clean,
             mean_intensity,
@@ -1434,7 +1632,13 @@ class FrenchWilson(DeviceMixin, nn.Module):
         sigma_F_full = torch.full_like(sigma_I, float("nan"))
 
         # Insert computed values for valid reflections
-        F_full[valid_mask] = F_clean
-        sigma_F_full[valid_mask] = sigma_F_clean
+        F_full[finite_mask] = F_clean
+        sigma_F_full[finite_mask] = sigma_F_clean
+
+        # Expand the rejection criterion back to full size. NaN rows are
+        # rejected too -- they were never converted.
+        keep_full = torch.zeros_like(I, dtype=torch.bool)
+        keep_full[finite_mask] = keep_clean
+        self.valid_mask = keep_full
 
         return F_full, sigma_F_full
