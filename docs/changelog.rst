@@ -2,7 +2,7 @@ Changelog
 =========
 
 
-Version 0.6.3
+Version 0.6.4
 ----------
 - Switched the scaler's default scale-fit objective from ``nll`` to unit-weight ``ls``
 - Replaced the per-bin ``log_scale`` with a Chebyshev polynomial ``c_iso`` in sin(theta)/lambda
