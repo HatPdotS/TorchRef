@@ -906,8 +906,8 @@ Examples:
             # Solvent model from CollectionScaler
             if hasattr(scaler, "solvent") and scaler.solvent is not None:
                 sm = scaler.solvent
-                meta.solvent_model_ksol = float(torch.exp(sm.log_k_solvent).item())
-                meta.solvent_model_bsol = float(sm.b_solvent.item())
+                meta.solvent_model_ksol = float(sm.k_solvent().detach())
+                meta.solvent_model_bsol = sm.b_solvent_equivalent(scaler._s_half_sq)
 
             # Cell and spacegroup
             if model.cell is not None:
@@ -980,8 +980,8 @@ Examples:
 
         if hasattr(scaler, "solvent") and scaler.solvent is not None:
             sm = scaler.solvent
-            merged_meta.solvent_model_ksol = float(torch.exp(sm.log_k_solvent).item())
-            merged_meta.solvent_model_bsol = float(sm.b_solvent.item())
+            merged_meta.solvent_model_ksol = float(sm.k_solvent().detach())
+            merged_meta.solvent_model_bsol = sm.b_solvent_equivalent(scaler._s_half_sq)
 
         ensemble_note = (
             f"Mixed-state ensemble from TorchRef difference refinement. "

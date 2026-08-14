@@ -172,7 +172,7 @@ class LBFGSRefinement(Refinement):
     def refine_xyz(self):
         """LBFGS over the ``xyz`` body parameters; returns the LossState with history.
 
-        Scaler parameters (``log_scale``, ``U``, solvent) join this call only when
+        Scaler parameters (``c_iso``, ``U``, solvent) join this call only when
         ``corefine_scaler`` is True; by default they are fixed here and updated by
         :meth:`refine_scaler`.
         """

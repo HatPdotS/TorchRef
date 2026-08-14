@@ -3,6 +3,15 @@ Changelog
 
 
 Version 0.6.3
+----------
+- Switched the scaler's default scale-fit objective from ``nll`` to unit-weight ``ls``
+- Replaced the per-bin ``log_scale`` with a Chebyshev polynomial ``c_iso`` in sin(theta)/lambda
+- Replaced the solvent Debye-Waller factor with ``k_sol exp(-ln2 (ss/ss_half)^n)``, merged sigmoid exponential form
+- Fixed the solvent-mask candidate enumeration, which missed voxels near the atom's grid node
+- Removed the solvent-mask Gaussian smoothing
+
+
+Version 0.6.3
 -------------
 - Fixed peptide-linked residues keeping their free-amino-acid restraint angles
 - Added switch to turn off caching mixin

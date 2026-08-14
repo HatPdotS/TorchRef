@@ -153,6 +153,11 @@ class RigidBodyRefinementStep:
         ref.scaler = Scaler(
             model, data,
             nbins=1 if xray_mode == "ls_wunit_k1" else getattr(ref, "nbins", 20),
+            # T_0 == 1, so a single coefficient IS one global K. ``ls_wunit_k1`` owns its
+            # own closed-form scale, and any further isotropic freedom here double-scales
+            # against it -- silently, since both fits succeed.
+            n_iso_coeff=1 if xray_mode == "ls_wunit_k1" else getattr(
+                ref, "n_iso_coeff", 6),
             verbose=ref.verbose,
             device=ref.device,
         )
@@ -208,7 +213,8 @@ class RigidBodyRefinementStep:
             use_inner_cycles = (
                 ref.scaler is not None
                 and getattr(ref.scaler, "solvent", None) is not None
-                and ref.scaler.log_scale.requires_grad is False
+                and getattr(ref.scaler, "c_iso", None) is not None
+                and ref.scaler.c_iso.requires_grad is False
             )
 
             if use_inner_cycles:
@@ -265,7 +271,7 @@ class RigidBodyRefinementStep:
         # Build the solvent parameter list — only the ones that are
         # actually refinable.
         solvent_params = []
-        for name in ("log_k_solvent", "b_solvent"):
+        for name in ("log_k_solvent", "log_ss_half", "log_n_exp"):
             p = getattr(solvent, name, None)
             if isinstance(p, torch.nn.Parameter) and p.requires_grad:
                 solvent_params.append(p)

@@ -2,7 +2,7 @@
 
 The full-featured :class:`Scaler`, which holds a reference to a ``Model`` and
 computes ``F_calc`` itself; see :class:`~torchref.scaling.ScalerBase` for the
-model-independent version. ``initialize()`` enables the per-bin overall scale,
+model-independent version. ``initialize()`` enables the isotropic overall scale,
 the anisotropy correction and the solvent model. The per-bin B-factor
 (``setup_bin_wise_bfactor``) is opt-in and never set up by ``initialize()``.
 """
@@ -39,7 +39,9 @@ class Scaler(ScalerBase):
     data : ReflectionData, optional
         ReflectionData object with observed data.
     nbins : int, default 20
-        Number of resolution bins.
+        Number of resolution bins used to seed the scale.
+    n_iso_coeff : int, default 6
+        Number of Chebyshev terms in the isotropic scale.
     verbose : int, default 1
         Verbosity level.
     device : torch.device, default: configured device.current
@@ -51,8 +53,9 @@ class Scaler(ScalerBase):
         Current computation device.
     nbins : int
         Number of resolution bins.
-    log_scale : torch.nn.Parameter
-        Per-bin log scale factors (created during ``initialize()``).
+    c_iso : torch.nn.Parameter
+        Chebyshev coefficients of the isotropic log scale (created during
+        ``initialize()``).
     U : torch.nn.Parameter
         Anisotropic scaling parameters (created during ``initialize()``).
     solvent : SolventModel
@@ -67,6 +70,7 @@ class Scaler(ScalerBase):
         model: Optional["Model"] = None,
         data: Optional[ReflectionData] = None,
         nbins: int = 20,
+        n_iso_coeff: int = 6,
         verbose: int = 1,
         device: Optional[torch.device] = None,
     ):
@@ -83,7 +87,9 @@ class Scaler(ScalerBase):
         data : ReflectionData, optional
             ReflectionData object with observed data.
         nbins : int, default 20
-            Number of resolution bins.
+            Number of resolution bins used to seed the scale.
+        n_iso_coeff : int, default 6
+            Number of Chebyshev terms in the isotropic scale.
         verbose : int, default 1
             Verbosity level.
         device : torch.device, optional
@@ -99,6 +105,7 @@ class Scaler(ScalerBase):
         super(Scaler, self).__init__(
             data=data,
             nbins=nbins,
+            n_iso_coeff=n_iso_coeff,
             verbose=verbose,
             device=resolved_device,
         )
@@ -197,28 +204,11 @@ class Scaler(ScalerBase):
         Returns
         -------
         torch.nn.Parameter
-            The log scale parameter for each resolution bin.
+            The Chebyshev coefficient parameter ``c_iso``.
         """
         if fcalc is None:
             fcalc = self.compute_fcalc()
         return super().calc_initial_scale(fcalc)
-
-    def fit_anisotropy(self, fcalc: torch.Tensor = None, nsteps: int = 100):
-        """
-        Fit anisotropic correction.
-
-        If fcalc is not provided, computes it from the internal model.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor, optional
-            Calculated structure factors. If None, computed from model.
-        nsteps : int, default 100
-            Number of optimization steps.
-        """
-        if fcalc is None:
-            fcalc = self.compute_fcalc()
-        return super().fit_anisotropy(fcalc, nsteps=nsteps)
 
     def setup_solvent(self):
         """
@@ -233,26 +223,10 @@ class Scaler(ScalerBase):
             device=self.device,
             radius=1.1,
             k_solvent=0.35,
-            b_solvent=46.0,
             verbose=self.verbose,
         )
         self.solvent.update_solvent()
         self._f_sol_raw = None  # Invalidate cached raw solvent SFs
-
-    def fit_all_scales(self, fcalc: torch.Tensor = None):
-        """
-        Fit all scale parameters.
-
-        If fcalc is not provided, computes it from the internal model.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor, optional
-            Calculated structure factors. If None, computed from model.
-        """
-        if fcalc is None:
-            fcalc = self.compute_fcalc()
-        return super().fit_all_scales(fcalc)
 
     def screen_solvent_params(
         self,

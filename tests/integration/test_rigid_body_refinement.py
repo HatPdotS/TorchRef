@@ -107,3 +107,46 @@ class TestPerChainRecovery:
             f"after-rigid={rwork_after:.4f}"
         )
         assert rfree_after <= rfree0 + 0.1
+
+
+class TestScaleDegreesOfFreedom:
+    """``ls_wunit_k1`` owns its own closed-form overall scale.
+
+    Any *additional* isotropic freedom in the scaler double-scales against it, and
+    both fits succeed, so nothing raises -- the only symptom is a worse result. The
+    rigid-body setup therefore collapses the scaler's isotropic term to a single
+    global constant, which for a Chebyshev basis means one coefficient (``T_0 == 1``).
+    """
+
+    @pytest.mark.integration
+    def test_ls_wunit_k1_scaler_has_one_isotropic_coefficient(self, pdb_dir, mtz_dir):
+        from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
+
+        ref = _build_refinement(pdb_dir, mtz_dir, "1DAW")
+        ref.get_scales()
+
+        step = RigidBodyRefinementStep(ref)
+        step._rebind_for_data(ref.reflection_data, xray_mode="ls_wunit_k1")
+
+        assert ref.scaler.n_iso_coeff == 1, (
+            "ls_wunit_k1 scaler must have exactly one isotropic coefficient, "
+            f"got {ref.scaler.n_iso_coeff}"
+        )
+        with torch.no_grad():
+            log_k = ref.scaler.iso_log_scale()
+        assert torch.allclose(log_k, log_k[0].expand_as(log_k), atol=1e-6), (
+            "ls_wunit_k1 scaler applies a resolution-dependent scale, which "
+            "double-scales against the target's own closed-form k"
+        )
+
+    @pytest.mark.integration
+    def test_other_modes_keep_the_full_isotropic_basis(self, pdb_dir, mtz_dir):
+        from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
+
+        ref = _build_refinement(pdb_dir, mtz_dir, "1DAW")
+        ref.get_scales()
+
+        step = RigidBodyRefinementStep(ref)
+        step._rebind_for_data(ref.reflection_data, xray_mode="ml")
+
+        assert ref.scaler.n_iso_coeff == ref.n_iso_coeff > 1

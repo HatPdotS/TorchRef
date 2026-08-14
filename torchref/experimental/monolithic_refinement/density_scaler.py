@@ -9,12 +9,12 @@ Two pieces:
 ``DensityDerivedSolvent``
     A thin ``nn.Module`` exposing the exact interface ``ScalerBase.forward``
     expects from its ``solvent`` attribute (``get_rec_solvent`` / ``log_k_solvent``
-    / ``b_solvent`` / ``optimize_phase``), backed by a ``DensitySolventModel``.
+    / falloff / ``optimize_phase``), backed by a ``DensitySolventModel``.
     Unlike the vdW-mask ``SolventModel`` (whose mask FFT is detached / static),
     ``get_rec_solvent`` here is **live** -- it stays in the autograd graph, so
     ``F_sol`` tracks atom moves and gradients flow ``rho -> xyz/adp``. The raw
     solvent SF carries only the density *shape* (``rho_s`` frozen at 1); the
-    scaler's ``k_sol`` is the refinable contrast and ``b_solvent`` the residual
+    scaler's ``k_sol`` is the refinable contrast and the falloff the residual
     damping -- identical scaling machinery to the mask.
 
 ``DensitySolventScaler``
@@ -30,7 +30,7 @@ each forward, ``rho0`` could in principle be refined -- but a soft/Babinet-shape
 solvent is rejected by the ML
 target (k_sol -> 0), and the only accepted regime is the sharp mask. Freezing
 ``rho0`` keeps the refinement stable and adds no solvent-shape DOF beyond the
-mask's own ``k_sol`` + ``b_solvent``.
+mask's own ``k_sol`` + falloff.
 """
 
 import torch
@@ -38,6 +38,7 @@ import torch.nn as nn
 
 from torchref.config import get_default_device, get_float_dtype
 from torchref.scaling.scaler import Scaler
+from torchref.scaling.solvent import SolventModel
 from torchref.experimental.monolithic_refinement.density_solvent import (
     DensitySolventModel,
 )
@@ -59,9 +60,12 @@ class DensityDerivedSolvent(nn.Module):
         Occupancy mapping passed to :class:`DensitySolventModel`.
     refine_rho0 : bool, default False
         If True, leave ``rho0`` refinable (co-refined by the host optimizer).
-    k_solvent, b_solvent : float
-        Initial contrast / residual B (init at the mask defaults so the scaler
-        starts in the same basin and avoids the B=0 local-min trap).
+    k_solvent : float
+        Initial contrast (init at the mask default so the scaler starts in the same
+        basin).
+    d_half, n_exp : float
+        Initial solvent falloff, in the same parameterisation
+        :class:`~torchref.scaling.solvent.SolventModel` uses.
     """
 
     def __init__(
@@ -72,7 +76,8 @@ class DensityDerivedSolvent(nn.Module):
         occupancy="exp",
         refine_rho0=False,
         k_solvent=0.35,
-        b_solvent=46.0,
+        d_half=3.59,
+        n_exp=5.0,
         device=None,
         dtype=None,
         verbose=0,
@@ -99,15 +104,28 @@ class DensityDerivedSolvent(nn.Module):
         self.log_k_solvent = nn.Parameter(
             torch.log(torch.tensor(k_solvent, dtype=dtype, device=device))
         )
-        self.b_solvent = nn.Parameter(
-            torch.tensor(b_solvent, dtype=dtype, device=device)
+        self.log_ss_half = nn.Parameter(
+            torch.log(
+                torch.tensor(1.0 / (4.0 * d_half**2), dtype=dtype, device=device)
+            )
         )
+        self.log_n_exp = nn.Parameter(
+            torch.log(torch.tensor(n_exp, dtype=dtype, device=device))
+        )
+
+    # The falloff is the mask model's, borrowed unbound so the two solvents cannot
+    # drift apart: only the SHAPE of F_sol differs here, not how it is damped.
+    ss_half = SolventModel.ss_half
+    n_exp = SolventModel.n_exp
+    k_solvent = SolventModel.k_solvent
+    damping = SolventModel.damping
+    b_solvent_equivalent = SolventModel.b_solvent_equivalent
 
     def get_rec_solvent(self, hkl):
         """Raw (contrast-free) solvent SF, LIVE in the autograd graph.
 
         Not detached: ``F_sol`` follows the moving atoms so gradients reach
-        ``xyz``/``adp``. The scaler applies ``k_sol * exp(-B_sol s^2)`` on top.
+        ``xyz``/``adp``. The scaler applies the contrast and falloff on top.
         """
         return self.density(hkl.to(torch.long))
 
@@ -129,6 +147,7 @@ class DensitySolventScaler(Scaler):
         model=None,
         data=None,
         nbins: int = 20,
+        n_iso_coeff: int = 6,
         verbose: int = 1,
         device=None,
         *,
@@ -146,7 +165,8 @@ class DensitySolventScaler(Scaler):
             refine_rho0=refine_rho0,
         )
         super().__init__(
-            model=model, data=data, nbins=nbins, verbose=verbose, device=device
+            model=model, data=data, nbins=nbins, n_iso_coeff=n_iso_coeff,
+            verbose=verbose, device=device
         )
 
     def setup_solvent(self):

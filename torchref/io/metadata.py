@@ -41,7 +41,7 @@ class RefinementMetadata:
     n_atoms_total, n_atoms_protein, n_atoms_solvent : int, optional
         Model atom counts.
     solvent_model_ksol, solvent_model_bsol : float, optional
-        Bulk-solvent model parameters.
+        Bulk-solvent scale, and the equivalent single ``B`` for the fitted falloff.
     cell, spacegroup
         Unit cell ``[a, b, c, alpha, beta, gamma]`` and space-group name.
     title, authors
@@ -225,16 +225,18 @@ class RefinementMetadata:
             pass
 
         # --- Solvent model parameters ---
-        try:
-            scaler = refinement.scaler
-            if hasattr(scaler, "solvent_model") and scaler.solvent_model is not None:
-                sm = scaler.solvent_model
-                meta.solvent_model_ksol = float(
-                    torch.exp(sm.log_k_solvent).item()
-                )
-                meta.solvent_model_bsol = float(sm.b_solvent.item())
-        except Exception:
-            pass
+        # PDB REMARK 3 and mmCIF carry k_sol and a single solvent B; the fitted falloff
+        # ``k_sol exp(-ln2 (ss/ss_half)^n)`` has no B, so the reported one is back-fitted
+        # from the curve over this dataset's own reflections.
+        scaler = getattr(refinement, "scaler", None)
+        sm = getattr(scaler, "solvent", None)
+        if sm is not None:
+            try:
+                meta.solvent_model_ksol = float(sm.k_solvent().detach())
+                meta.solvent_model_bsol = sm.b_solvent_equivalent(scaler._s_half_sq)
+            except (AttributeError, RuntimeError, ValueError) as exc:
+                if getattr(refinement, "verbose", 0) > 0:
+                    print(f"Could not record solvent parameters: {exc}")
 
         # --- Cell and spacegroup ---
         try:

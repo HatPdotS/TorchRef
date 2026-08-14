@@ -10,21 +10,102 @@ from torchref.base import (
     get_scattering_vectors,
     ifft,
 )
-from torchref.base.electron_density.main import _get_radius_offsets
 from torchref.config import get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
 from torchref.utils.utils import ModuleReference, TensorDict
 
+#: ``ln 2``, so ``s_half_sq = ss_half`` halves the solvent term by construction.
+_LN2 = 0.6931471805599453
+
+#: Bounds on the solvent falloff, applied as clamps inside :meth:`SolventModel.damping`.
+#: ``ss_half`` is the half-point in ``(sin(theta)/lambda)**2``, quoted here as the
+#: resolution ``d_half = 1 / (2 sqrt(ss_half))``; the range spans well beyond the observed
+#: spread while excluding the degenerate slow-power-law fits the unbounded form can reach.
+#: ``n = 1`` is exactly a Debye-Waller factor with ``B = ln2 / ss_half``, so the shipped
+#: exponential is nested at the lower bound rather than merely approximated.
+SS_HALF_BOUNDS = (0.0025, 0.04)   # d_half 10.0 .. 2.5 A
+N_EXP_BOUNDS = (1.0, 20.0)
+
+#: Cache for :func:`_voxel_offsets_within`, keyed on the arguments that determine the
+#: result. Solvent masks are rebuilt every time coordinates move, always on the same grid
+#: and cell, so the offsets are computed once per refinement rather than once per call.
+_OFFSET_CACHE = {}
+
+
+def _voxel_offsets_within(radius, grid_dims, frac, device, strict=False):
+    """Integer voxel offsets whose Cartesian displacement is within ``radius``.
+
+    Offset ``o`` displaces a point by the Cartesian vector ``frac @ (o / grid_dims)``, so
+    its length follows from the cell's metric tensor and the enumerated set is a true
+    Cartesian ball in **any** unit cell, not only orthogonal ones. The per-axis search box
+    comes from the reciprocal basis: ``|o_i| <= grid_dims_i * |a*_i| * radius``.
+
+    Parameters
+    ----------
+    radius : float
+        Cutoff in Angstrom.
+    grid_dims : torch.Tensor
+        Grid dimensions ``(N0, N1, N2)``, integer.
+    frac : torch.Tensor
+        Fractional-to-Cartesian matrix, shape ``(3, 3)``.
+    device : torch.device
+        Device the offsets are built on.
+    strict : bool, default False
+        Use ``<`` rather than ``<=`` against ``radius``.
+
+    Returns
+    -------
+    torch.Tensor
+        Offsets, shape ``(R, 3)``, integer.
+    """
+    key = (
+        float(radius),
+        tuple(int(v) for v in grid_dims.tolist()),
+        tuple(round(float(v), 10) for v in frac.flatten().tolist()),
+        str(device),
+        bool(strict),
+    )
+    cached = _OFFSET_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    dtype = get_float_dtype()
+    frac = frac.to(device=device, dtype=dtype)
+    N = grid_dims.to(device=device, dtype=dtype)
+    # Rows of the Cartesian-to-fractional matrix are the reciprocal basis vectors.
+    recip_norms = torch.linalg.inv(frac).norm(dim=1)
+    bounds = torch.ceil(N * recip_norms * radius).long()
+
+    ranges = [
+        torch.arange(-int(b), int(b) + 1, device=device) for b in bounds.tolist()
+    ]
+    offsets = torch.stack(torch.meshgrid(*ranges, indexing="ij"), dim=-1).reshape(-1, 3)
+
+    disp = (offsets.to(dtype) / N) @ frac.T
+    dist_sq = (disp**2).sum(-1)
+    r_sq = radius**2
+    keep = dist_sq < r_sq if strict else dist_sq <= r_sq
+    local_offsets = offsets[keep]
+
+    _OFFSET_CACHE[key] = local_offsets
+    return local_offsets
+
 
 class SolventModel(DeviceMixin, DebugMixin, nn.Module):
     """
     Bulk-solvent contribution to structure factors, Phenix-style.
 
-    Constructed either with a model (``SolventModel(model, k_solvent=0.35,
-    b_solvent=46.0)`` -- the values ``Scaler`` injects; the bare-constructor
-    defaults are 1.1 / 50.0) or empty, as a shell for ``load_state_dict``.
+    Constructed either with a model (``SolventModel(model, k_solvent=0.35)`` -- the value
+    ``Scaler`` injects; the bare-constructor default is 1.1) or empty, as a shell for
+    ``load_state_dict``.
+
+    The solvent falls off as ``k_sol * exp(-ln2 * (ss / ss_half)**n)`` in
+    ``ss = (sin(theta)/lambda)**2``. ``ss_half`` is where the term is halved and ``n``
+    how sharply it switches off; ``n = 1`` is exactly ``exp(-B ss)`` with
+    ``B = ln2 / ss_half``, so a Debye-Waller solvent is a special case rather than a
+    different model. Both are clamped to :data:`SS_HALF_BOUNDS` / :data:`N_EXP_BOUNDS`.
 
     Attributes
     ----------
@@ -41,8 +122,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         Probe radius for dilation and radius for the erosion step (Å).
     optimize_phase : bool
         Whether the phase offset is refined.
-    log_k_solvent, b_solvent : torch.nn.Parameter
-        Log solvent scattering scale and solvent B-factor.
+    log_k_solvent, log_ss_half, log_n_exp : torch.nn.Parameter
+        Log solvent scattering scale, and the logs of the falloff half-point and
+        exponent. Refined in log space so each stays positive.
     phase_offset : torch.nn.Parameter or buffer
         Phase offset in radians: a trainable parameter when
         ``optimize_phase=True``, otherwise a buffer fixed at 0.0.
@@ -53,9 +135,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         model=None,
         radius=1.1,
         k_solvent=1.1,
-        b_solvent=50.0,
+        d_half=3.59,
+        n_exp=5.0,
         erosion_radius=0.9,
-        transition=None,
         optimize_phase=True,
         initial_phase_offset=0.0,
         verbose=1,
@@ -76,13 +158,13 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             Probe radius in Angstroms for dilation (water radius).
         k_solvent : float, default 1.1
             Solvent scattering scale factor.
-        b_solvent : float, default 50.0
-            Solvent B-factor.
+        d_half : float, default 3.59
+            Resolution (A) at which the solvent term is halved; stored as
+            ``ss_half = 1 / (4 d_half**2)``.
+        n_exp : float, default 5.0
+            Falloff exponent. ``1.0`` reduces the form to ``exp(-B ss)``.
         erosion_radius : float, default 0.9
             Radius in Angstroms for erosion step.
-        transition : float, optional
-            Gaussian smoothing sigma for mask edges, in voxels (default
-            ``radius/4``); smoothing avoids ringing artifacts.
         optimize_phase : bool, default True
             Whether to optimize phase offset parameter.
         initial_phase_offset : float, default 0.0
@@ -114,16 +196,13 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         if model is None:
             self.model = None
             self.max_radius_angstrom = None
-            self.transition = transition
             # Register parameters with default values (will be overwritten by load_state_dict)
             self.log_k_solvent = nn.Parameter(
                 torch.log(
                     torch.tensor(k_solvent, dtype=self.float_type, device=self.device)
                 )
             )
-            self.b_solvent = nn.Parameter(
-                torch.tensor(b_solvent, dtype=self.float_type, device=self.device)
-            )
+            self._init_falloff(d_half, n_exp)
             if self.optimize_phase:
                 self.phase_offset = nn.Parameter(
                     torch.tensor(
@@ -158,21 +237,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             )
         else:
             k_solvent = k_solvent.to(dtype=self.float_type, device=self.device)
-        if not isinstance(b_solvent, torch.Tensor):
-            b_solvent = torch.tensor(
-                b_solvent, dtype=self.float_type, device=self.device
-            )
-        else:
-            b_solvent = b_solvent.to(dtype=self.float_type, device=self.device)
         self.log_k_solvent = nn.Parameter(torch.log(k_solvent))
-        self.b_solvent = nn.Parameter(b_solvent)
-
-        # Transition width for Gaussian smoothing (in voxels)
-        if transition is not None:
-            self.transition = transition
-        else:
-            # Default: use a fraction of solvent_radius converted to voxels
-            self.transition = self.model.get_radius(radius) / 4.0
+        self._init_falloff(d_half, n_exp)
 
         # Phase offset parameter to align solvent phases with protein phases
         # This is critical because FFT of a mask gives arbitrary phases
@@ -189,6 +255,70 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 torch.tensor(0.0, dtype=self.float_type, device=self.device),
             )
         self._cache = TensorDict()
+
+    def _init_falloff(self, d_half, n_exp):
+        """Register ``log_ss_half`` / ``log_n_exp`` from a resolution and an exponent."""
+        ss_half = 1.0 / (4.0 * float(d_half) ** 2)
+        for name, value in (("log_ss_half", ss_half), ("log_n_exp", float(n_exp))):
+            setattr(
+                self,
+                name,
+                nn.Parameter(
+                    torch.log(
+                        torch.tensor(
+                            value, dtype=self.float_type, device=self.device
+                        )
+                    )
+                ),
+            )
+
+    def ss_half(self) -> torch.Tensor:
+        """Half-point of the solvent falloff in ``(sin(theta)/lambda)**2``, clamped."""
+        return torch.exp(self.log_ss_half).clamp(*SS_HALF_BOUNDS)
+
+    def n_exp(self) -> torch.Tensor:
+        """Falloff exponent, clamped. ``1`` is a Debye-Waller factor."""
+        return torch.exp(self.log_n_exp).clamp(*N_EXP_BOUNDS)
+
+    def k_solvent(self) -> torch.Tensor:
+        """Solvent scattering scale."""
+        return torch.exp(self.log_k_solvent.clamp(min=-10.0, max=10.0))
+
+    def damping(self, s_half_sq: torch.Tensor) -> torch.Tensor:
+        """``exp(-ln2 * (ss / ss_half)**n)`` at ``ss = (sin(theta)/lambda)**2``.
+
+        Parameters
+        ----------
+        s_half_sq : torch.Tensor
+            ``(sin(theta)/lambda)**2`` per reflection.
+
+        Returns
+        -------
+        torch.Tensor
+            Falloff factor in ``[0, 1]``, same shape as the input.
+        """
+        ratio = (s_half_sq / self.ss_half()).clamp(min=1e-12)
+        return torch.exp((-_LN2 * ratio.pow(self.n_exp())).clamp(min=-30.0))
+
+    def b_solvent_equivalent(self, s_half_sq: torch.Tensor) -> float:
+        """The single ``B`` whose ``exp(-B ss)`` best matches this falloff.
+
+        A reporting quantity: PDB ``REMARK 3`` and mmCIF have a field for a solvent
+        B-factor and the fitted form has none, so it is back-fitted by least squares on
+        ``log(damping)`` over the reflections actually present, weighted by the damping
+        itself so the fit follows the range where the solvent contributes.
+        """
+        with torch.no_grad():
+            ss = s_half_sq.detach().flatten()
+            ss = ss[ss > 0]
+            if ss.numel() == 0:
+                return 0.0
+            d = self.damping(ss)
+            w = d.clamp(min=1e-6)
+            # log d = -B ss, through the origin: B = -sum(w ss log d) / sum(w ss^2)
+            num = (w * ss * torch.log(d.clamp(min=1e-30))).sum()
+            den = (w * ss * ss).sum().clamp(min=1e-30)
+            return float(-num / den)
 
     def get_solvent_mask(self):
         """
@@ -244,15 +374,32 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             # grids, where the SF code's 1024 would OOM (denser intermediates).
             ATOM_CHUNK = 256
 
-            voxel_size = self.real_space_grid[3, 3, 3] - self.real_space_grid[2, 2, 2]
-            local_offsets = _get_radius_offsets(
-                voxel_size, self.max_radius_angstrom, device
-            )  # (R, 3) int — sphere voxels relative to atom center
-
             grid_dims = torch.tensor(grid_shape, dtype=torch.long, device=device)
             grid_shape_float = grid_dims.float()
             inv_grid = 1.0 / grid_shape_float
             G = frac.T @ frac  # metric tensor: r²_cart = diff_frac · G · diff_frac
+
+            # The offsets are enumerated around the atom's nearest grid NODE, but every
+            # distance is then measured from the atom's true position, which sits up to
+            # half a voxel diagonal away. The search radius carries that slack so the
+            # enumerated set is a guaranteed superset of the voxels the classification
+            # below can accept; without it, voxels genuinely inside
+            # `vdw + solvent_radius` of the atom fall outside the ball around the node,
+            # are never tested, and default to bulk solvent.
+            signs = torch.tensor(
+                [[1.0, 1.0, 1.0], [1.0, 1.0, -1.0], [1.0, -1.0, 1.0], [-1.0, 1.0, 1.0]],
+                dtype=frac.dtype,
+                device=device,
+            )
+            half_voxel_diagonal = 0.5 * float(
+                ((signs * inv_grid.to(frac.dtype)) @ frac.T).norm(dim=1).max()
+            )
+            local_offsets = _voxel_offsets_within(
+                self.max_radius_angstrom + half_voxel_diagonal,
+                grid_dims,
+                frac,
+                device,
+            )  # (R, 3) int — candidate voxels relative to the atom's grid node
 
             xyz_frac = xyz @ inv_frac.T  # (N, 3)
             xyz_frac_wrapped = xyz_frac % 1.0
@@ -352,27 +499,25 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 )
 
             # --- Step 3: erosion ---
-            # A boundary voxel becomes solvent iff any voxel within
+            # A boundary voxel becomes solvent iff any voxel strictly within
             # `erosion_radius` is bulk solvent: dilate `definitely_solvent` by the
             # spherical structuring element, then intersect with `boundary_mask`.
-            # Two paths, dispatched on device, producing the exact same mask:
-            # CPU roll-OR over the cached sphere offsets is bandwidth-bound and
-            # beats conv3d on a small kernel, while on GPU conv3d fuses to one
+            # Two paths, dispatched on device, producing the exact same mask because
+            # both are built from the same offset list: CPU roll-OR is bandwidth-bound
+            # and beats conv3d on a small kernel, while on GPU conv3d fuses to one
             # launch instead of one kernel per offset.
+            sphere_offsets = _voxel_offsets_within(
+                self.erosion_radius, grid_dims, frac, device, strict=True
+            )  # (R, 3) int
             if torch.device(device).type == "cuda":
-                half_k = int(torch.ceil(self.erosion_radius / voxel_size.min()).item())
+                half_k = int(sphere_offsets.abs().max().item())
                 K = 2 * half_k + 1
-                offs = torch.arange(
-                    -half_k, half_k + 1, device=device, dtype=voxel_size.dtype
+                kernel = torch.zeros(
+                    (K, K, K), dtype=self.log_k_solvent.dtype, device=device
                 )
-                dx = offs.view(-1, 1, 1) * voxel_size[0]
-                dy = offs.view(1, -1, 1) * voxel_size[1]
-                dz = offs.view(1, 1, -1) * voxel_size[2]
-                kernel = (
-                    ((dx * dx + dy * dy + dz * dz) <= self.erosion_radius**2)
-                    .to(self.log_k_solvent.dtype)
-                    .view(1, 1, K, K, K)
-                )
+                ki = sphere_offsets + half_k
+                kernel[ki[:, 0], ki[:, 1], ki[:, 2]] = 1.0
+                kernel = kernel.view(1, 1, K, K, K)
                 solv_float = definitely_solvent.to(self.log_k_solvent.dtype).view(
                     1, 1, *grid_shape
                 )
@@ -381,9 +526,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
                 dilated_solvent = neighbour_count.squeeze(0).squeeze(0) > 0.5
                 del solv_float, solv_padded, neighbour_count
             else:
-                sphere_offsets = _get_radius_offsets(
-                    voxel_size, self.erosion_radius, device
-                )  # (R, 3) int
                 dilated_solvent = torch.zeros_like(definitely_solvent)
                 for i in range(sphere_offsets.shape[0]):
                     dz_, dy_, dx_ = sphere_offsets[i].tolist()
@@ -397,7 +539,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             protein_with_boundary = (protein_mask | boundary_mask) & (~voxels_to_flip)
             solvent_mask = ~protein_with_boundary
 
-            self.register_buffer("protein_mask", protein_with_boundary)
             self.register_buffer("solvent_mask", solvent_mask)
 
             if self.verbose > 1:
@@ -414,58 +555,12 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         return self.solvent_mask
 
     def update_solvent(self):
-        """Rebuild the solvent mask and its smoothed form from current coordinates.
+        """Rebuild the solvent mask from current coordinates.
 
         Call after the model's coordinates change; ``Scaler`` also has to drop its
         cached ``_f_sol_raw`` for the new mask to reach ``F_calc``.
         """
         self.get_solvent_mask()
-        self.smooth_solvent_mask()
-
-    def smooth_solvent_mask(self):
-        """Gaussian-smooth ``solvent_mask`` (σ = ``self.transition`` voxels).
-
-        Registers and returns the ``mask_smoothed`` buffer; requires
-        :meth:`get_solvent_mask` to have run.
-        """
-        if not hasattr(self, "solvent_mask"):
-            raise ValueError(
-                "Solvent mask not computed. Call get_solvent_mask() first."
-            )
-        import torch.nn.functional as F
-
-        mask_float = self.solvent_mask.to(dtype=self.log_k_solvent.dtype)
-        sigma = self.transition
-        kernel_size = int(4 * sigma + 1)
-        if kernel_size % 2 == 0:
-            kernel_size += 1
-
-        x = torch.arange(
-            kernel_size, dtype=self.log_k_solvent.dtype, device=self.device
-        )
-        x = x - kernel_size // 2
-        gauss_1d = torch.exp(-(x**2) / (2 * sigma**2))
-        gauss_1d = gauss_1d / gauss_1d.sum()
-
-        pad = kernel_size // 2
-        mask = mask_float.unsqueeze(0).unsqueeze(0)  # (1, 1, D, H, W)
-
-        # Separable Gaussian: three 1D conv3d passes, identical to the full 3D
-        # outer-product conv but O(3·K·V) instead of O(K³·V). Padding is circular
-        # because crystallographic boundaries are periodic; each 1D conv shrinks
-        # only its own axis back to the original size.
-        mask = F.pad(mask, (pad, pad, pad, pad, pad, pad), mode="circular")
-        mask = F.conv3d(mask, gauss_1d.view(1, 1, 1, 1, kernel_size))
-        mask = F.conv3d(mask, gauss_1d.view(1, 1, 1, kernel_size, 1))
-        mask = F.conv3d(mask, gauss_1d.view(1, 1, kernel_size, 1, 1))
-
-        mask_smoothed = mask.squeeze(0).squeeze(0)
-        self.register_buffer("mask_smoothed", mask_smoothed)
-
-        assert torch.isfinite(
-            self.mask_smoothed
-        ).all(), "Non-finite values in solvent mask"
-        return self.mask_smoothed
 
     def get_rec_solvent(self, hkl):
         """
@@ -486,10 +581,11 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         """
 
         assert hasattr(
-            self, "mask_smoothed"
-        ), "Smoothed solvent mask not computed. Call smooth_solvent_mask() first."
+            self, "solvent_mask"
+        ), "Solvent mask not computed. Call get_solvent_mask() first."
+        mask = self.solvent_mask.to(dtype=self.log_k_solvent.dtype)
         fsol = extract_structure_factor_from_grid(
-            ifft(self.mask_smoothed, self.model.cell.volume), hkl
+            ifft(mask, self.model.cell.volume), hkl
         ).detach()
         assert torch.isfinite(
             fsol
@@ -500,9 +596,9 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         """
         Compute solvent contribution to structure factors at given HKL.
 
-        Differentiable w.r.t. ``k_solvent``, ``b_solvent`` and ``phase_offset``.
-        Takes ``f_sol`` (the FFT of the *smoothed* mask) from a per-hkl cache,
-        applies the B-factor damping ``exp(-B s^2)`` with ``s = sin(θ)/λ``,
+        Differentiable w.r.t. ``log_k_solvent``, ``log_ss_half``, ``log_n_exp`` and
+        ``phase_offset``. Takes ``f_sol`` (the FFT of the binary mask) from a per-hkl
+        cache, applies :meth:`damping` at ``ss = (sin(θ)/λ)**2``,
         blends mask phases toward the protein phases when ``optimize_phase`` and
         ``F_protein`` are both given (``phase_offset`` 0 = mask phases,
         ±π = protein phases), and scales by ``k_solvent``.
@@ -542,13 +638,8 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         s = torch.norm(scattering_vectors, dim=1) / 2.0  # This is sin(θ)/λ
         s_squared = s**2  # Now s² is correct for B-factor formula
 
-        # Isotropic Debye-Waller damping exp(-B * s²)
-        b_solvent = self.b_solvent
-        k_solvent = torch.exp(self.log_k_solvent.clamp(min=-10.0, max=10.0))
-        exp = -b_solvent.clamp(min=-500.0, max=500.0) * s_squared
-        b_factor_term = torch.exp(
-            exp.clamp(min=-10.0, max=10.0)
-        )  # Clamp to avoid overflow
+        falloff = self.damping(s_squared)
+        k_solvent = self.k_solvent()
 
         # Phase handling
         if self.optimize_phase and F_protein is not None:
@@ -573,8 +664,7 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
             # No phase adjustment - use mask phases as-is
             phase_adjusted_f_sol = f_sol
 
-        # Scale by k_solvent and apply B-factor
-        f_solvent = k_solvent * phase_adjusted_f_sol * b_factor_term
+        f_solvent = k_solvent * phase_adjusted_f_sol * falloff
 
         assert torch.isfinite(
             f_solvent
@@ -583,6 +673,6 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
 
     def parameters(self):
         """Refinable solvent parameters as a list (phase offset only if refined)."""
-        return [self.log_k_solvent, self.b_solvent] + (
+        return [self.log_k_solvent, self.log_ss_half, self.log_n_exp] + (
             [self.phase_offset] if self.optimize_phase else []
         )

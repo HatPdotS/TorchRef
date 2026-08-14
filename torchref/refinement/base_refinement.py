@@ -102,6 +102,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         max_res: float = None,
         device: Optional[torch.device] = None,
         nbins: int = 10,
+        n_iso_coeff: int = 6,
         column_names: Optional[Dict[str, str]] = None,
         wavelength: Optional[float] = 1.0,
         anomalous_threshold: float = 0.5,
@@ -134,7 +135,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         device : torch.device, optional
             Computation device. Defaults to the configured default device.
         nbins : int, optional
-            Number of resolution bins for the scaler. Default 10.
+            Number of resolution bins used to seed the scaler's scale. Default 10.
+        n_iso_coeff : int, optional
+            Number of Chebyshev terms in the scaler's isotropic scale. Default 6.
         column_names : dict, optional
             Mapping of logical column roles to MTZ column labels.
         wavelength : float, optional
@@ -177,6 +180,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.history = dict()
         self.max_res = max_res
         self.nbins = nbins
+        self.n_iso_coeff = n_iso_coeff
         self.lr = 1e-3
         # Wavelength drives f'/f'' anomalous scattering corrections in ModelFT.
         # Default 1.0 preserves prior behavior; set to the experimental wavelength
@@ -231,7 +235,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                 anomalous_threshold=self.anomalous_threshold,
             )
             self.scaler = Scaler(
-                verbose=self.verbose, device=self.device, nbins=self.nbins
+                verbose=self.verbose, device=self.device, nbins=self.nbins,
+                n_iso_coeff=self.n_iso_coeff,
             )
             # Restraints are now lazy-loaded via model.restraints property
             self.weighter = None
@@ -489,7 +494,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         in-run R-factor is computed from is the one an external 0-cycle score would produce.
 
         Warm: the existing scale is the starting point and carries across macrocycles. For a
-        cold start -- fresh ``log_scale``, rebuilt solvent and anisotropy -- call
+        cold start -- fresh ``c_iso``, rebuilt solvent and anisotropy -- call
         :meth:`get_scales`.
 
         The objective is ``self.scale_target``, not the body target: scaling is a
@@ -518,7 +523,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         """Cold-start the scaler against the current model: ``initialize()`` then
         :meth:`refine_scaler`.
 
-        ``initialize()`` *replaces* ``log_scale`` with a fresh parameter and rebuilds the
+        ``initialize()`` *replaces* ``c_iso`` with a fresh parameter and rebuilds the
         solvent and anisotropy terms, so this discards a refined scale. Use it at
         construction, when the model has been swapped, or for a one-shot 0-cycle score;
         inside a macrocycle loop call :meth:`refine_scaler` instead.
@@ -533,12 +538,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
 
     def setup_scaler(self):
         """Construct ``self.scaler`` from ``self._scaler_class`` (default
-        :class:`Scaler`), wired to the current model, data, ``nbins`` and device."""
+        :class:`Scaler`), wired to the current model, data, ``nbins``,
+        ``n_iso_coeff`` and device."""
         cls = getattr(self, "_scaler_class", None) or Scaler
         self.scaler = cls(
             self.model,
             self.reflection_data,
             nbins=self.nbins,
+            n_iso_coeff=self.n_iso_coeff,
             verbose=self.verbose,
             device=self.device,
         )
@@ -689,8 +696,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # Register ADP targets
         state.register_targets(self.adp_target)
         # Scaler regularization targets require the scaler to actually have
-        # the regularized parameters. Solvent-only scalers (rigid-body
-        # ls_wunit_k1) delete U and freeze log_scale.
+        # the regularized parameters.
         if self.scaler is not None:
             n_ref = int(self.reflection_data.hkl.shape[0])
             if hasattr(self.scaler, "U"):
@@ -698,8 +704,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
                     "adp/scaler_U",
                     ScalerURegularizationTarget(self.scaler, n_reflections=n_ref),
                 )
-            if (hasattr(self.scaler, "log_scale")
-                    and self.scaler.log_scale.requires_grad):
+            if (hasattr(self.scaler, "c_iso")
+                    and self.scaler.c_iso.requires_grad):
                 state.register_target(
                     "adp/scaler_log_scale",
                     ScalerLogScaleTrendTarget(self.scaler, n_reflections=n_ref),
@@ -994,6 +1000,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         instance.history = {}
         instance.max_res = model_state.get("_metadata_max_res", None)
         instance.nbins = 10
+        instance.n_iso_coeff = 6
         instance.lr = 1e-3
         instance.effective_weights = {}
 
