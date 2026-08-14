@@ -9,6 +9,8 @@ Version 0.6.4
 - Replaced the solvent Debye-Waller factor with ``k_sol exp(-ln2 (ss/ss_half)^n)``, merged sigmoid exponential form
 - Fixed the solvent-mask candidate enumeration, which missed voxels near the atom's grid node
 - Removed the solvent-mask Gaussian smoothing
+- Fixed the scale fit's float64 normalisation constant, which broke MPS
+- Batched direct summation now returns ``dtypes.complex`` instead of always ``complex128``
 
 
 Version 0.6.3

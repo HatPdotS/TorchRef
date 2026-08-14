@@ -67,9 +67,8 @@ def aniso_structure_factor_torched(
     Returns
     -------
     torch.Tensor
-        Complex structure factors of shape (N_reflections,). Dtype depends on
-        the path taken: complex derived from ``dtypes.float`` unbatched, but
-        ``complex128`` once ``max_memory_gb`` forces batching.
+        Complex structure factors of shape (N_reflections,), in ``dtypes.complex``
+        whether or not ``max_memory_gb`` forces batching.
     """
     xyz_expanded = spacegroup(xyz_fractional.T)  # (3, N_atoms, n_ops)
     fractional_shape = xyz_expanded.shape
@@ -141,15 +140,17 @@ def _aniso_sf_batched(
 
     ``xyz_flat`` is the symmetry-expanded coordinates flattened to
     (3, N_atoms * n_ops), ``fractional_shape`` its pre-flatten shape
-    (3, N_atoms, n_ops), ``U_matrix`` the expanded U as (3, 3, N_atoms). Output
-    is always ``complex128``, unlike the unbatched path.
+    (3, N_atoms, n_ops), ``U_matrix`` the expanded U as (3, 3, N_atoms). Output is
+    in ``dtypes.complex``, matching the unbatched path.
     """
     n_refl = hkl.shape[0]
     n_atoms = fractional_shape[1]
     device = hkl.device
 
-    # Pre-allocate output tensor to avoid accumulating in list
-    sf_out = torch.zeros(n_refl, dtype=torch.complex128, device=device)
+    # Pre-allocate output tensor to avoid accumulating in list. The configured complex
+    # dtype, not a hardcoded complex128: MPS has neither float64 nor complex128, and
+    # forcing it here made the batched path disagree with the unbatched one.
+    sf_out = torch.zeros(n_refl, dtype=dtypes.complex, device=device)
 
     for start in range(0, n_refl, batch_size):
         end = min(start + batch_size, n_refl)

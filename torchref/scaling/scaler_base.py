@@ -634,10 +634,14 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         # enough out that ``sum(U**2)`` overflows. Dividing by ``sum(F_obs**2)`` makes the
         # loss dimensionless and O(R**2) whatever the structure size or data scale.
         #
-        # The reduction is float64 for precision over ~1e5 terms; the constant is fixed
-        # for the whole fit.
+        # Computed in the configured dtype. Because the constant rescales every term
+        # identically, its own precision does not enter the result: it only has to be
+        # finite, positive and of the right magnitude. float32 gives it to ~5e-8 relative
+        # (``sum`` reduces pairwise, so error grows like log(N)*eps, not N*eps), which
+        # cancels out of the minimiser and the gradient direction alike. Do not cast to
+        # float64 -- MPS has none and raises on ``.double()``.
         _f_obs_work = self._data.work.F.detach()
-        _norm = float(1.0 / _f_obs_work.double().pow(2).sum().clamp(min=1e-30))
+        _norm = float(1.0 / _f_obs_work.pow(2).sum().clamp(min=1e-30))
 
         class _ScalerXrayTarget(nn.Module):
             """The registry row, closed over the detached ``fcalc``."""
