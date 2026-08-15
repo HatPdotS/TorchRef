@@ -622,17 +622,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         Parameters
         ----------
         hkl : array_like, optional
-            Reflection indices. None uses ``reflection_data.hkl_for_sf()`` -- signed
-            HKL, so Bijvoet mates at +h/-h get distinct ``|F_calc|`` under anomalous
-            scattering (falls back to canonical hkl).
+            Reflection indices. None evaluates on the data's own reflections via
+            ``reflection_data.structure_factors``, returning the canonical-ASU
+            convention. An explicit ``hkl`` is used as given.
         recalc : bool, optional
             Force recomputation rather than reusing the cached SF.
         """
         if hkl is None:
-            # Signed HKL so Bijvoet mates (which share a canonical ASU index)
-            # are evaluated at +h/-h and get distinct |F_calc| under anomalous
-            # scattering. Falls back to canonical hkl when unavailable.
-            hkl = self.reflection_data.hkl_for_sf()
+            return self.reflection_data.structure_factors(self.model, recalc=recalc)
         return self.model(hkl, recalc=recalc)
 
     def get_fcalc_scaled(self, hkl=None, recalc=False):
@@ -831,10 +828,9 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             pairs (``reflection_data.friedel_merged`` is False).
         """
         with torch.no_grad():
-            # Signed HKL so the per-row fcalc carries the anomalous (Bijvoet)
-            # difference; write_mtz consumes it row-aligned with reflection_data.
-            hkl = self.reflection_data.hkl_for_sf()
-            fcalc = self.scaler(self.get_fcalc(hkl), use_mask=False)
+            # Canonical-ASU convention, row-aligned with reflection_data.hkl --
+            # the index write_mtz emits as H,K,L.
+            fcalc = self.scaler(self.get_fcalc(), use_mask=False)
             self.reflection_data.write_mtz(out_mtz_path, fcalc, anomalous=anomalous)
 
     def collect_deposition_metadata(self, metadata=None):

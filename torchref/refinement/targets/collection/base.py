@@ -116,12 +116,13 @@ class CollectionXrayTarget(Target):
                 bm.reset_cache()
 
     def _scaled_amp_full(self, data, model, recalc: bool = True) -> torch.Tensor:
-        """Full-size, scaled ``|F_calc|`` for one data-model pair, off ``hkl_for_sf()``
-        so anomalous mates stay distinct. ``recalc=True`` (default) is for the no-grad
-        R-factor path -- it neither reuses nor leaves a cached tensor that would break
-        gradient flow. The loss path passes False, after ``_reset_model_caches()``.
+        """Full-size, scaled ``|F_calc|`` for one data-model pair, on the canonical
+        ASU index with anomalous mates kept distinct. ``recalc=True`` (default) is for
+        the no-grad R-factor path -- it neither reuses nor leaves a cached tensor that
+        would break gradient flow. The loss path passes False, after
+        ``_reset_model_caches()``.
         """
-        fcalc = model(data.hkl_for_sf(), recalc=recalc)
+        fcalc = data.structure_factors(model, recalc=recalc)
         return torch.abs(_scale_fcalc(self._scaler, fcalc, model))
 
     # ------------------------------------------------------------------

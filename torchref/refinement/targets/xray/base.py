@@ -185,7 +185,7 @@ class XrayTarget(DataTarget):
         if fcalc is not None:
             F_calc_full = self.get_F_calc_scaled(fcalc=fcalc)
         else:
-            F_calc_full = self.get_F_calc_scaled(self._data.hkl_for_sf(), recalc=False)
+            F_calc_full = self.get_F_calc_scaled(recalc=False)
         F_calc = sub.select(F_calc_full)
 
         return F_obs, F_calc, sigma, centric, sub
@@ -250,7 +250,7 @@ class XrayTarget(DataTarget):
         """
         if fcalc is not None:
             return self.get_F_calc_scaled(fcalc=fcalc)
-        return self.get_F_calc_scaled(self._data.hkl_for_sf(), recalc=False)
+        return self.get_F_calc_scaled(recalc=False)
 
     def get_rfactor(self, fcalc: torch.Tensor = None):
         """Compute ``(R_work, R_free)`` for this target.

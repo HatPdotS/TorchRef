@@ -408,8 +408,8 @@ Loss weights:
     try:
         work_nll, test_nll = refinement.nll_xray()
         rd = refinement.reflection_data
-        # Signed HKL so |F_calc| matches what refinement optimized (anomalous mates).
-        fcalc = refinement.get_F_calc_scaled(rd.hkl_for_sf(), recalc=True)
+        # Same canonical-convention |F_calc| the refinement optimized.
+        fcalc = refinement.get_F_calc_scaled(recalc=True)
 
         # work/free accessor: scaled, validity-masked |F_obs| per subset; .select()
         # aligns the full-size |F_calc| onto the same subset.

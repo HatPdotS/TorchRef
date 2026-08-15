@@ -186,9 +186,9 @@ class Scaler(ScalerBase):
         """
         if self.model is None:
             raise RuntimeError("No model set and no fcalc provided")
-        # Signed HKL so the scaled fcalc carries the anomalous (Bijvoet)
-        # difference; bulk solvent below is evaluated at the same indices.
-        return self.model(self._data.hkl_for_sf())
+        # Canonical-ASU convention, with the anomalous (Bijvoet) amplitude
+        # difference preserved; bulk solvent below is on the same index.
+        return self._data.structure_factors(self.model)
 
     def calc_initial_scale(self, fcalc: torch.Tensor = None):
         """

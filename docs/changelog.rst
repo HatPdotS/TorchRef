@@ -4,6 +4,8 @@ Changelog
 
 Version 0.6.4
 ----------
+- Fixed written phases (``PH-model``, ``PHWT``, ``PHDELWT``) being negated for reflections whose input Miller indices lay outside the CCP4 ASU
+- Reflections remapped to the CCP4 ASU on load are now reported
 - Switched the scaler's default scale-fit objective from ``nll`` to unit-weight ``ls``
 - Replaced the per-bin ``log_scale`` with a Chebyshev polynomial ``c_iso`` in sin(theta)/lambda
 - Replaced the solvent Debye-Waller factor with ``k_sol exp(-ln2 (ss/ss_half)^n)``, merged sigmoid exponential form
