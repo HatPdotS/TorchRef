@@ -347,12 +347,16 @@ class PreprocessedCIF:
 
     def _preprocess_chirals(self, chirals_df: pd.DataFrame) -> Dict[str, np.ndarray]:
         """Convert chirals DataFrame to NumPy arrays."""
-        # Convert volume_sign strings to floats
+        # Convert volume_sign strings to floats. The CCP4 library writes both the
+        # full and the truncated spelling ("positiv", "negativ"); an unrecognised
+        # sign becomes NaN and the restraint is then dropped in builders_numba,
+        # so the short forms have to be matched here or those chirals vanish.
         volume_signs = []
         for sign in chirals_df["volume_sign"].values:
-            if sign == "positive":
+            sign = str(sign).strip().lower()
+            if sign.startswith("positiv"):
                 volume_signs.append(1.0)
-            elif sign == "negative":
+            elif sign.startswith("negativ"):
                 volume_signs.append(-1.0)
             elif sign in ["both", "either"]:
                 volume_signs.append(0.0)

@@ -12,13 +12,21 @@ from torchref.io import cif
 
 
 def validate_restraint_data(residue_data, cif_path):
-    """Raise ``ValueError`` unless every compound carries real restraint parameters.
+    """Raise ``ValueError`` unless every compound carries a usable bond section.
 
     Rejects structure-only CIFs: a compound must have a bond section, and that
     section must carry ``value`` and ``sigma`` columns.
+
+    A section that has those columns but *no rows* is reported and allowed
+    through. It is not malformed -- a dictionary may legitimately define a
+    single-atom compound -- but it is also what a reader that quietly loses
+    restraints looks like from here, and the residue ends up unrestrained either
+    way, so it is worth saying out loud rather than passing over in silence.
     """
     if not residue_data:
         raise ValueError(f"CIF file {cif_path} contains no compound definitions")
+
+    empty = []
 
     for comp_id, data in residue_data.items():
         if data is None or not data:
@@ -44,6 +52,9 @@ def validate_restraint_data(residue_data, cif_path):
                     f"Solution: Remove this file or use the monomer library files which contain\n"
                     f"proper restraint parameters (from the CCP4 Monomer Library)."
                 )
+
+            if len(bond_df) == 0:
+                empty.append(comp_id)
         else:
             raise ValueError(
                 f"CIF file {cif_path}: Compound '{comp_id}' has no bond restraint data.\n"
@@ -51,6 +62,12 @@ def validate_restraint_data(residue_data, cif_path):
                 f"This is not a valid restraint file. Please use proper restraint files from\n"
                 f"the monomer library or pass None to use the default library."
             )
+
+    if empty:
+        print(
+            f"  Warning: {cif_path}: {len(empty)} of {len(residue_data)} compounds "
+            f"carry no bond restraints and will be unrestrained: {', '.join(empty)}"
+        )
 
 
 def read_cif(cif_path):

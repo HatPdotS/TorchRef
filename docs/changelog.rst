@@ -4,6 +4,9 @@ Changelog
 
 Version 0.6.4
 ----------
+- Fixed restraint dictionaries defining several compounds yielding restraints for only one of them
+- Fixed chirality restraints being dropped for the ``positiv``/``negativ`` spellings used by the CCP4 library
+- Compounds that come back with no bond restraints are now reported
 - Fixed written phases (``PH-model``, ``PHWT``, ``PHDELWT``) being negated for reflections whose input Miller indices lay outside the CCP4 ASU
 - Reflections remapped to the CCP4 ASU on load are now reported
 - Switched the scaler's default scale-fit objective from ``nll`` to unit-weight ``ls``
