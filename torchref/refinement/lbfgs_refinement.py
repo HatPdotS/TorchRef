@@ -282,8 +282,8 @@ class LBFGSRefinement(Refinement):
                 before_scaling = self.collect_metrics()
                 cycle_dict["before_scaling"] = before_scaling
 
-            if getattr(self.scaler, "solvent", None) is not None:
-                self.scaler.solvent.update_solvent()
+            if self.scaler is not None:
+                self.scaler.update_solvent()
             # Before the `after_scaling` metrics below, so that label describes this cycle's
             # scaler rather than the previous one's.
             self.refine_scaler()

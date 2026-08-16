@@ -567,9 +567,12 @@ class CollectionScaler(ScalerBase):
     # Solvent mask updates
     # ------------------------------------------------------------------
 
-    def update_all_solvent(self):
+    def update_solvent(self):
         """
-        Recompute solvent masks for all component models.
+        Recompute solvent masks for all component models and drop the cached ``F_sol``.
+
+        Collection override of :meth:`~torchref.scaling.scaler_base.ScalerBase.update_solvent`
+        -- same contract, but every component has its own mask and cache entry.
 
         Call this after structure refinement changes base-model coordinates.
         """

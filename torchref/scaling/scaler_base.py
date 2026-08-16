@@ -300,6 +300,21 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         self.solvent = solvent_model
         self._f_sol_raw = None  # Invalidate cached raw solvent SFs
 
+    def update_solvent(self) -> None:
+        """Rebuild the solvent mask at the current coordinates and drop the cached ``F_sol``.
+
+        Both halves belong to one operation. :meth:`forward` recomputes ``_f_sol_raw`` only
+        when it is ``None``, so rebuilding the mask without clearing the cache leaves
+        ``F_calc`` on the mask from whenever the cache was last filled -- on a macrocycle
+        loop, the starting coordinates.
+
+        No-op when there is no solvent model, so callers do not need to guard.
+        """
+        if getattr(self, "solvent", None) is None:
+            return
+        self.solvent.update_solvent()
+        self._f_sol_raw = None
+
     def setup_binwise_solvent_scale(self):
         """
         Create ``log_kmask``, a per-bin solvent scale (Phenix-style kmask).

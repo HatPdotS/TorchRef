@@ -794,8 +794,7 @@ Examples:
             )
 
             # Update solvent masks and re-refine scaler jointly
-            scaler.update_all_solvent()
-            scaler.invalidate_solvent_cache()
+            scaler.update_solvent()
             scaler.refine_lbfgs_joint(verbose=(args.verbose > 1))
 
             if args.verbose > 0:

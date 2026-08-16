@@ -286,8 +286,7 @@ class RigidBodyRefinementStep:
 
         for inner in range(n_inner):
             # (a) Refresh the bulk-solvent mask at current positions.
-            solvent.update_solvent()
-            ref.scaler._f_sol_raw = None
+            ref.scaler.update_solvent()
             rigid_model.reset_cache()
 
             # (b) Refit solvent params (k_sol, B_sol[, phase]) against F_obs

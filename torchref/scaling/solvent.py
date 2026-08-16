@@ -555,12 +555,15 @@ class SolventModel(DeviceMixin, DebugMixin, nn.Module):
         return self.solvent_mask
 
     def update_solvent(self):
-        """Rebuild the solvent mask from current coordinates.
+        """Rebuild the solvent mask from current coordinates and drop the mask-derived cache.
 
-        Call after the model's coordinates change; ``Scaler`` also has to drop its
-        cached ``_f_sol_raw`` for the new mask to reach ``F_calc``.
+        Prefer :meth:`~torchref.scaling.scaler_base.ScalerBase.update_solvent`, which also
+        clears the scaler's own ``_f_sol_raw``; that one is what ``F_calc`` reads. Calling
+        this directly refreshes the mask but leaves the scaler on the old ``F_sol``.
         """
         self.get_solvent_mask()
+        # The per-hkl cache is the FFT of the mask, so a new mask invalidates all of it.
+        self._cache = TensorDict()
 
     def get_rec_solvent(self, hkl):
         """

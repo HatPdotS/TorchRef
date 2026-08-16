@@ -4,6 +4,7 @@ Changelog
 
 Version 0.6.4
 ----------
+- Fixed the bulk-solvent ``F_sol`` staying at the starting model's mask for every refinement macrocycle
 - Fixed restraint dictionaries defining several compounds yielding restraints for only one of them
 - Fixed chirality restraints being dropped for the ``positiv``/``negativ`` spellings used by the CCP4 library
 - Compounds that come back with no bond restraints are now reported
