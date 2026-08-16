@@ -7,7 +7,7 @@ and dictionary-style access. Combined targets register their components with a
 ``LossState`` via :meth:`add_to_state`.
 """
 
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import torch
 from torch import nn
@@ -128,9 +128,19 @@ class CombinedModelTargets(ModelTarget):
         Reference to the Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
+    component_config : dict, optional
+        Per-component constructor overrides, ``{component_name: {kwarg: value}}``
+        -- e.g. ``{'simu': {'simu_sigma': 0.4}}``. Applied when the components are
+        built, so they survive every rebuild of this object. See
+        :meth:`_component_kwargs`.
     """
 
-    def __init__(self, model: "Model" = None, verbose: int = 0):
+    def __init__(
+        self,
+        model: "Model" = None,
+        verbose: int = 0,
+        component_config: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
         """
         Initialize CombinedModelTargets.
 
@@ -140,9 +150,36 @@ class CombinedModelTargets(ModelTarget):
             Reference to Model object.
         verbose : int, optional
             Verbosity level. Default is 0.
+        component_config : dict, optional
+            Per-component constructor overrides, ``{component_name: {kwarg: value}}``.
         """
         super().__init__(model, verbose)
+        # Set BEFORE _create_targets(), which reads it through _component_kwargs().
+        # A plain dict, not a Module attribute: these are construction inputs, not
+        # state, and must be re-readable every time the components are rebuilt.
+        self.component_config = {
+            name: dict(kwargs) for name, kwargs in (component_config or {}).items()
+        }
         self._targets = nn.ModuleDict(self._create_targets())
+
+        # A name that never reached a component is a silent no-op -- exactly the
+        # failure this config exists to prevent -- so refuse it loudly.
+        unknown = set(self.component_config) - set(self._targets)
+        if unknown:
+            raise ValueError(
+                f"{type(self).__name__}: no such component(s) "
+                f"{sorted(unknown)}; known components are {sorted(self._targets)}."
+            )
+
+    def _component_kwargs(self, name: str) -> Dict[str, Any]:
+        """Constructor overrides for one component, empty when unconfigured.
+
+        Subclasses must splat this into every component they build. A component
+        that forgets it silently ignores its configuration, which is the bug this
+        machinery exists to prevent -- the same one the note on
+        ``Refinement._xray_target_kwargs`` describes for the x-ray targets.
+        """
+        return dict(self.component_config.get(name, {}))
 
     def _create_targets(self) -> Dict[str, "Target"]:
         """Build the ``{name: Target}`` components. Subclasses must override."""
@@ -360,17 +397,27 @@ class TotalADPTarget(CombinedModelTargets):
         Reference to the Model object.
     verbose : int, optional
         Verbosity level. Default is 0.
+    component_config : dict, optional
+        Per-component constructor overrides, ``{component_name: {kwarg: value}}``.
+        For example ``{'simu': {'simu_sigma': 0.4, 'simu_sigma_aniso': 0.2}}``
+        tightens the ADP similarity restraint. Reaches the components through
+        :meth:`CombinedModelTargets._component_kwargs`, so it survives every
+        rebuild of this target.
     """
 
     def _create_targets(self) -> Dict[str, Target]:
         """Build the three ADP component targets."""
         print("Initializing TotalADPTarget with component targets...")
         return {
-            "simu": ADPSimilarityTarget(self.model, verbose=self.verbose),
-            "locality": ADPLocalityTarget(
-                self.model, verbose=self.verbose
+            "simu": ADPSimilarityTarget(
+                self.model, verbose=self.verbose, **self._component_kwargs("simu")
             ),
-            "sigd": ADPSigdTarget(self.model, verbose=self.verbose),
+            "locality": ADPLocalityTarget(
+                self.model, verbose=self.verbose, **self._component_kwargs("locality")
+            ),
+            "sigd": ADPSigdTarget(
+                self.model, verbose=self.verbose, **self._component_kwargs("sigd")
+            ),
         }
 
     def print_statistics(self) -> None:

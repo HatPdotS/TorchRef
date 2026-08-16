@@ -113,6 +113,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         shrink: bool = SHRINK_ENABLED,
         scale_target: str = DEFAULT_SCALE_TARGET,
         aniso_selection: Optional[str] = None,
+        adp_restraints: Optional[Dict[str, Dict[str, Any]]] = None,
     ):
         """Initialize Refinement, fully if ``data_file`` and ``pdb`` are given.
 
@@ -165,6 +166,19 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         aniso_selection : str, optional
             Phenix-style selection of atoms refined anisotropically when
             ``adp_mode="anisotropic"``. Defaults to all non-water heavy atoms.
+        adp_restraints : dict, optional
+            Per-component overrides for the ADP restraints,
+            ``{component: {kwarg: value}}``. Components are ``'simu'``,
+            ``'locality'`` and ``'sigd'``; an unknown name raises. For example::
+
+                LBFGSRefinement(..., adp_restraints={"simu": {"simu_sigma": 0.4}})
+
+            Set restraint configuration **here** rather than assigning to
+            ``ref.adp_target['simu'].simu_sigma`` after construction. The
+            targets are rebuilt by :meth:`_init_targets` -- once per resolution
+            cutoff inside :meth:`refine_rigid_body`, and again on the ensemble
+            and ``create_from_state_dict`` paths -- and a rebuild resets any
+            post-construction assignment to the component defaults, silently.
         """
         super().__init__()
         # Refinement constructs its own submodules from file paths, so
@@ -201,6 +215,15 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         self.xray_mode = xray_mode
         self.sigma_a_max = sigma_a_max
         self.shrink = shrink
+        # Same contract for the ADP restraints: their configuration lives HERE,
+        # on the Refinement, not on the target. `_init_targets` rebuilds
+        # `adp_target` from scratch -- once per resolution cutoff during
+        # `refine_rigid_body`, and again on the ensemble and state-dict paths --
+        # so anything set on the target object afterwards is silently discarded
+        # on the next rebuild. Setting it here is what makes it stick.
+        self.adp_restraints = {
+            name: dict(kwargs) for name, kwargs in (adp_restraints or {}).items()
+        }
         # A wavelength of 0 means "no anomalous refinement": disable the f'/f''
         # correction (model wavelength None) and force a Friedel-merged read so
         # F(+)/F(-) are not loaded as Bijvoet pairs.
@@ -424,7 +447,14 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         # Geometry targets now accept model directly instead of refinement
         self.geometry_target = TotalGeometryTarget(self.model, verbose=self.verbose)
 
-        self.adp_target = TotalADPTarget(self.model, verbose=self.verbose)
+        # `getattr` fallback for the same reason as _xray_target_kwargs: the
+        # ensemble and create_from_state_dict paths build targets before this
+        # attribute exists.
+        self.adp_target = TotalADPTarget(
+            self.model,
+            verbose=self.verbose,
+            component_config=getattr(self, "adp_restraints", None),
+        )
 
         # Initialize scaler scales (overall scale, anisotropic U, bulk solvent)
         # so the scaler-regularization targets have valid parameters to read.
