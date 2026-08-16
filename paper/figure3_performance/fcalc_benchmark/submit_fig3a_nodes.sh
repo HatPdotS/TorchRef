@@ -8,6 +8,15 @@
 # timed (contention-insensitive), so all structures' GPU points run in one GPU
 # job. A dependent job aggregates every per-structure JSON into summary.csv and
 # renders the figure.
+#
+# CPU_MODEL pins every array task to one CPU model. Exclusivity alone is not
+# enough: `day` spans Xeon 6152/6230/6230R and EPYC 7453/9335, so without a
+# constraint each structure is timed on whatever generation SLURM had free. That
+# makes the cross-structure trend part hardware and part code, and it makes two
+# runs of this script incomparable -- an unchanged cctbx reference moved by 2x
+# between the 2026-07-01 and 2026-08-04 runs for exactly this reason. Check
+# availability before changing it (>= one node per structure must be free):
+#   sinfo -h -o "%n %f %t" -p day | grep <model>
 set -euo pipefail
 
 REPO="/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev"
@@ -16,6 +25,7 @@ PY="${REPO}/.dev/bin/python"
 TS="$(date +%Y%m%d_%H%M%S)"
 OUT="${REPO}/paper/figure3_performance/data/fcalc/results_${TS}"
 THREADS="1 2 4 8 16 32"
+CPU_MODEL="${CPU_MODEL:-cpu_epyc9335}"
 mkdir -p "${OUT}"
 cd "${BENCH}"
 
@@ -24,10 +34,12 @@ cd "${BENCH}"
 N=$(wc -l < "${OUT}/structures.txt"); ARR="0-$((N - 1))"
 echo "Structures (${N}): $(tr '\n' ' ' < "${OUT}/structures.txt")"
 echo "Output: ${OUT}"
+echo "CPU model: ${CPU_MODEL}"
+echo "${CPU_MODEL}" > "${OUT}/cpu_model.txt"
 
-# --- CPU thread-scaling: one exclusive node per structure ---
+# --- CPU thread-scaling: one exclusive node per structure, all the same model ---
 CPU=$(sbatch --parsable --array="${ARR}" --job-name=fig3a_cpu \
-    --partition=day --exclusive --time=04:00:00 \
+    --partition=day --exclusive --constraint="${CPU_MODEL}" --time=04:00:00 \
     --output="${BENCH}/fig3a_cpu_%A_%a.out" \
     --wrap "set -e; STRUCT=\$(sed -n \"\$((SLURM_ARRAY_TASK_ID+1))p\" ${OUT}/structures.txt); \
 echo \"node \$(hostname)  structure \${STRUCT}\"; \

@@ -6,6 +6,11 @@ Reproduces the canonical default arm exactly: ``-n 10 --mode separate
 locked ``DEFAULT_GROUP_WEIGHTS`` (xray 1 / geometry 0.2 / adp 0.02); separate
 scaler (corefine off, the LBFGSRefinement default), no rigid body.
 
+``--xray-mode`` selects the body target so the same submitter also produces the
+target-mode comparison arms (ExtFig 5). Always pair it with a distinct ``--arm``:
+the skip logic keys on ``validate.log``, so two modes under one arm name would
+silently leave whichever ran first in place.
+
 Because this lives under the dev worktree, ``run_af_pipeline``'s ``PYTHON`` /
 ``REFINE_SCRIPT`` already point at the dev build — no override needed.
 
@@ -35,7 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import run_af_pipeline as P  # noqa: E402
 
 
-def build_script(arm, code, pdb, mtz, outdir, n_cycles, mem, weights=None):
+def build_script(arm, code, pdb, mtz, outdir, n_cycles, mem, weights=None,
+                 xray_mode="ml", partition="hour", time="01:00:00",
+                 constraint=P.CPU_MODEL):
     # Group weights default to DEFAULT_GROUP_WEIGHTS (xray=1 / geom=0.2 /
     # adp=0.02) — no flag needed. Pass an explicit {xray, geometry, adp} dict
     # to override and record the exact weights in the job script (merged onto
@@ -46,9 +53,10 @@ def build_script(arm, code, pdb, mtz, outdir, n_cycles, mem, weights=None):
     )
     return f"""#!/bin/bash
 #SBATCH --job-name=af_{arm}_{code}
-#SBATCH --partition=hour
+#SBATCH --partition={partition}
+#SBATCH --constraint={constraint}
 #SBATCH --cpus-per-task=4
-#SBATCH --time=01:00:00
+#SBATCH --time={time}
 #SBATCH --mem={mem}
 #SBATCH --output={outdir / 'out.log'}
 #SBATCH --error={outdir / 'error.log'}
@@ -60,8 +68,7 @@ export TORCHREF_NUM_THREADS=4
     -m {pdb} -sf {mtz} -o {outdir} \\
     -n {n_cycles} \\
     --mode separate \\
-    --xray-mode ml \\
-    --sigma-m-scale 1.0{weights_line}
+    --xray-mode {xray_mode}{weights_line}
 
 # REFMAC 0-cycle validation on the refined model (apples-to-apples R-factors)
 source {P.CCP4_SETUP}
@@ -86,6 +93,12 @@ def main():
     )
     ap.add_argument("--arm", default="torchref",
                     help="Output arm name under runs/ (default torchref).")
+    ap.add_argument("--xray-mode", default="ml",
+                    help="Body target (--xray-mode passed to refine.py). Default 'ml', "
+                         "the canonical arm. Use a distinct --arm for anything else so "
+                         "the modes land in separate directories; 'ml_full' additionally "
+                         "needs --partition day --time 04:00:00 --mem 16G (~4x the "
+                         "per-gradient cost of the 32-node quadrature).")
     ap.add_argument("--n-cycles", type=int, default=10)
     ap.add_argument("--xray-weight", type=float, default=None,
                     help="Override the xray group weight (default 1).")
@@ -103,6 +116,15 @@ def main():
                     help="SLURM --mem per job (8G is the benchmark default, "
                          "matching the exF4 single-core allocation; the largest "
                          "structures OOM at 8G and are reported as failures).")
+    ap.add_argument("--partition", default="hour",
+                    help="SLURM partition (default hour; use day for ml_full).")
+    ap.add_argument("--time", default="01:00:00",
+                    help="SLURM --time per job (default 01:00:00).")
+    ap.add_argument("--constraint", default=P.CPU_MODEL,
+                    help="SLURM --constraint (default run_af_pipeline.CPU_MODEL). "
+                         "Every arm whose runtime is plotted must share one CPU "
+                         "model, or engine identity is confounded with hardware "
+                         "generation.")
     ap.add_argument("--codes", nargs="+", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--dry-run", action="store_true")
@@ -131,7 +153,9 @@ def main():
     weights = weights or None
     wdesc = "DEFAULT_GROUP_WEIGHTS (1/0.2/0.02)" if weights is None else json.dumps(weights)
     print(f"Arm: {args.arm}  build=DEV(in-tree)  n_cycles={args.n_cycles}  "
-          f"xray-mode=ml  weights={wdesc}")
+          f"xray-mode={args.xray_mode}  weights={wdesc}")
+    print(f"SLURM: partition={args.partition} time={args.time} mem={args.mem} "
+          f"constraint={args.constraint}")
     print(f"Python: {P.PYTHON}")
     print(f"Output: {arm_dir}\n{len(codes)} solved structures\n")
 
@@ -148,7 +172,10 @@ def main():
         if not args.dry_run:
             outdir.mkdir(parents=True, exist_ok=True)
         script = build_script(args.arm, code, pdb, mtz, outdir, args.n_cycles,
-                              args.mem, weights=weights)
+                              args.mem, weights=weights,
+                              xray_mode=args.xray_mode,
+                              partition=args.partition, time=args.time,
+                              constraint=args.constraint)
         if args.dry_run and submitted == 0:
             print("── example sbatch script ──")
             print(script)

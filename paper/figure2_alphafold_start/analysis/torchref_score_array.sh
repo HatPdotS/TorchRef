@@ -7,9 +7,15 @@
 #
 #   N=$(wc -l < worklist.txt); sbatch --array=1-$N%96 torchref_score_array.sh
 #
+# `day` + 2 h, not `hour` + 20 min: the median task really is ~20-40 s, but the
+# largest ~60 of 3024 models run far longer and the 20-minute cap silently timed
+# every one of them out (2026-08-11). A timed-out task leaves no
+# torchref_validate.json, which drops that model's row from the TorchRef-scorer
+# column of ExtFig 3 without any error -- the figure just renders short. The
+# walltime is sized for the tail, not the median; `hour` cannot express it (1 h cap).
 #SBATCH --job-name=trscore
-#SBATCH --partition=hour
-#SBATCH --time=00:20:00
+#SBATCH --partition=day
+#SBATCH --time=02:00:00
 #SBATCH --mem=20G
 #SBATCH --cpus-per-task=2
 #SBATCH --output=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure2_alphafold_start/runs/crossscore/slurm_tr/%A_%a.out

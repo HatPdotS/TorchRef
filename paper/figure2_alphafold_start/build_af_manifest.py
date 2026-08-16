@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """Phase A — build a per-structure sequence + UniProt manifest for the
-AlphaFold-start arm of the Figure 2 validation benchmark.
+AlphaFold-start arm of the Figure 2 benchmark.
 
-For every PDB code in ``figure2_validation/structures.json`` this script:
+Input preparation, run once: its outputs (``manifest.json`` /
+``manifest_summary.csv``) are checked-in inputs that the refinement arms consume,
+so a figure re-run does not re-run this.
+
+The code list defaults to the benchmark structures present under ``data/``. It
+used to come from ``figure2_validation/structures.json``; that tree held the
+retired shake-recovery Figure 2 and is gone, so ``data/`` is now the source of
+truth. Pass ``--codes`` to override.
+
+For every PDB code this script:
 
 1. Extracts per-chain protein sequences *locally* from the deposited model
    (``data/{code}/{code}.pdb``, falling back to ``.cif``) via
@@ -17,8 +26,7 @@ Outputs (written next to this script):
 * ``manifest_summary.csv``  — one row per code for a quick coverage view.
 * ``fasta/{code}.fasta``    — one record per protein chain.
 
-This step is read-only against the benchmark; nothing under
-``figure2_validation/`` or ``data/`` is modified.
+This step is read-only against the benchmark; nothing under ``data/`` is modified.
 """
 
 from __future__ import annotations
@@ -39,8 +47,22 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent                       # figure2_alphafold_start/
 PAPER_ROOT = HERE.parent                                     # paper/
-STRUCTURES_FILE = PAPER_ROOT / "figure2_validation" / "structures.json"
 DATA = PAPER_ROOT / "data"                                   # symlink → scientific_testing/data
+
+
+def benchmark_codes():
+    """Benchmark PDB codes: every ``data/{code}/`` holding a deposited model.
+
+    The source of truth since ``figure2_validation/structures.json`` was retired
+    with the shake-recovery figure.
+    """
+    if not DATA.is_dir():
+        raise SystemExit(f"no benchmark data at {DATA}; pass --codes explicitly")
+    return sorted(
+        d.name for d in DATA.iterdir()
+        if d.is_dir() and ((d / f"{d.name}.pdb").exists()
+                           or (d / f"{d.name}.cif").exists())
+    )
 
 FASTA_DIR = HERE / "fasta"
 MANIFEST_JSON = HERE / "manifest.json"
@@ -285,7 +307,7 @@ def main():
     ap.add_argument(
         "--codes",
         nargs="+",
-        help="Explicit PDB codes to process (default: all in structures.json).",
+        help="Explicit PDB codes to process (default: every code under data/).",
     )
     ap.add_argument(
         "--limit", type=int, default=None, help="Process only the first N codes."
@@ -298,10 +320,7 @@ def main():
     )
     args = ap.parse_args()
 
-    if args.codes:
-        codes = list(args.codes)
-    else:
-        codes = json.loads(STRUCTURES_FILE.read_text())
+    codes = list(args.codes) if args.codes else benchmark_codes()
     if args.limit:
         codes = codes[: args.limit]
 

@@ -16,7 +16,7 @@ set +o nounset
 # `module load phenix` errors on these nodes (modulefile uses an unsupported
 # `module-url` command), so source the phenix env directly. Edit PHENIX_ENV to
 # switch versions; this is the only place the version is pinned.
-PHENIX_ENV=/opt/psi/MX/phenix/phenix-1.20-4459/phenix_env.sh
+PHENIX_ENV=/opt/psi/MX/phenix/1.21.1-5286/phenix-1.21.1-5286/phenix_env.sh
 source "$PHENIX_ENV"
 
 WORKLIST=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev/paper/figure2_alphafold_start/runs/crossscore/worklist.txt

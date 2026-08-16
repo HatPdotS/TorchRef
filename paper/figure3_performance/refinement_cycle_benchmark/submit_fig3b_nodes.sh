@@ -6,6 +6,10 @@
 # (loss + gradient over all targets, with a per-target breakdown) is the heavy
 # one, so the CPU jobs get more walltime. GPU points run in one A100 job; a
 # dependent job aggregates + plots.
+#
+# CPU_MODEL pins every array task to one CPU model, for the reason spelled out in
+# submit_fig3a_nodes.sh: `day` is heterogeneous, so exclusivity alone leaves each
+# structure timed on a different CPU generation.
 set -euo pipefail
 
 REPO="/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/dev"
@@ -14,6 +18,7 @@ PY="${REPO}/.dev/bin/python"
 TS="$(date +%Y%m%d_%H%M%S)"
 OUT="${REPO}/paper/figure3_performance/data/refinement_cycle/results_${TS}"
 THREADS="1 2 4 8 16 32"
+CPU_MODEL="${CPU_MODEL:-cpu_epyc9335}"
 mkdir -p "${OUT}"
 cd "${BENCH}"
 
@@ -22,10 +27,12 @@ cd "${BENCH}"
 N=$(wc -l < "${OUT}/structures.txt"); ARR="0-$((N - 1))"
 echo "Structures (${N}): $(tr '\n' ' ' < "${OUT}/structures.txt")"
 echo "Output: ${OUT}"
+echo "CPU model: ${CPU_MODEL}"
+echo "${CPU_MODEL}" > "${OUT}/cpu_model.txt"
 
 # --- CPU thread-scaling: one exclusive node per structure (heavy: longer walltime) ---
 CPU=$(sbatch --parsable --array="${ARR}" --job-name=fig3b_cpu \
-    --partition=day --exclusive --time=12:00:00 \
+    --partition=day --exclusive --constraint="${CPU_MODEL}" --time=12:00:00 \
     --output="${BENCH}/fig3b_cpu_%A_%a.out" \
     --wrap "set -e; STRUCT=\$(sed -n \"\$((SLURM_ARRAY_TASK_ID+1))p\" ${OUT}/structures.txt); \
 echo \"node \$(hostname)  structure \${STRUCT}\"; \
