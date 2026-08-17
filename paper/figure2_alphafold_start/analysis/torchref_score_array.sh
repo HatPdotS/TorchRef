@@ -32,4 +32,11 @@ if [ -z "$LINE" ]; then echo "no line ${SLURM_ARRAY_TASK_ID}"; exit 0; fi
 IFS=$'\t' read -r ENGINE CODE MODEL MTZ OUTJSON <<< "$LINE"
 echo "[$(date)] torchref-scoring $ENGINE/$CODE"
 "$PY" "$SCORE" -m "$MODEL" -sf "$MTZ" -o "$OUTJSON" --device cpu --xray-mode ml
-echo "[$(date)] done rc=$? -> $OUTJSON"
+RC=$?
+# Capture $? into RC on its OWN line, before anything else runs. `rc=$?` inside a
+# string containing $(date) reports the *subshell's* status, not python's -- it read
+# 0 for all 5308 tasks of a sweep in which every single one crashed, and because the
+# script then exited on a successful echo, SLURM recorded COMPLETED throughout. The
+# missing JSONs only surfaced as a nan in one cell of aggregate_crossscore.
+echo "[$(date)] done rc=$RC -> $OUTJSON"
+exit $RC

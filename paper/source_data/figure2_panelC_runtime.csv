@@ -68,6 +68,7 @@ refmac,0,1OBR,0.3
 refmac,0,1OC0,0.183333
 refmac,0,1OE4,0.333333
 refmac,0,1OMW,0.5
+refmac,0,1OQE,1.633333
 refmac,0,1OSC,0.3
 refmac,0,1OY5,0.316667
 refmac,0,1P3C,0.216667
@@ -110,6 +111,7 @@ refmac,0,1VER,0.1
 refmac,0,1VK0,0.616667
 refmac,0,1VLM,0.2
 refmac,0,1VR4,0.216667
+refmac,0,1VRQ,0.9
 refmac,0,1W2Y,0.316667
 refmac,0,1W8A,0.1
 refmac,0,1WD8,0.266667
@@ -1514,6 +1516,7 @@ phenix,2,1OBR,3.320667
 phenix,2,1OC0,2.537833
 phenix,2,1OE4,3.712167
 phenix,2,1OMW,5.120167
+phenix,2,1OQE,14.5835
 phenix,2,1OSC,4.0255
 phenix,2,1OY5,3.701333
 phenix,2,1P3C,2.763833
@@ -1556,6 +1559,7 @@ phenix,2,1VER,1.233
 phenix,2,1VK0,7.901333
 phenix,2,1VLM,2.590167
 phenix,2,1VR4,2.590667
+phenix,2,1VRQ,14.718667
 phenix,2,1W2Y,4.0275
 phenix,2,1W8A,1.418667
 phenix,2,1WD8,2.950333

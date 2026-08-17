@@ -1,0 +1,5 @@
+engine,n,median_rwork,median_rfree,overfit_gap
+ml,750,0.2695,0.317,0.0475
+ml_noalpha,750,0.2652,0.319,0.0539
+ml_full,750,0.271,0.3184,0.0474
+nll_beta,750,0.262,0.3203,0.0584

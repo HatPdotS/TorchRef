@@ -50,7 +50,12 @@ def score_one(model, mtz, out, xray_mode, device):
     ref.get_scales()  # 0-cycle: fit scaler + bulk solvent only
     with torch.no_grad():
         rd = ref.reflection_data
-        fcalc = ref.get_F_calc_scaled(rd.hkl_for_sf(), recalc=True)
+        # hkl=None routes through reflection_data.structure_factors(), the supported
+        # entry point: it evaluates on the signed indices AND conjugates back to the
+        # canonical ASU. Passing _hkl_for_sf() explicitly (as this did until the
+        # accessor went private) returns the signed convention unconjugated, so the
+        # Friedel half of every anomalous dataset carried a negated phase.
+        fcalc = ref.get_F_calc_scaled(recalc=True)
         # work/free accessor (scaled, validity-masked); .select() aligns |F_calc|.
         fobs_w, fobs_f = rd.work.F, rd.free.F
         r_work = (torch.sum(torch.abs(fobs_w - rd.work.select(fcalc)))
