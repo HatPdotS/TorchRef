@@ -36,7 +36,6 @@ import run_af_pipeline as P  # noqa: E402
 
 RUNS = HERE / "runs"
 CODES_TXT = HERE / "codes_conserved.txt"
-PHENIX_MODULE = "phenix/phenix-1.20-4459"
 PROGRAMS = ["torchref", "phenix", "refmac"]
 NCORES = 1                  # single core: the whole point of this figure
 LABEL = "n1"
@@ -49,6 +48,17 @@ MEM = "8G"                  # match the main Figure-2 benchmark allocation
 PARTITION = {"torchref": "day", "phenix": "day", "refmac": "hour"}
 WALLTIME = {"torchref": "24:00:00", "phenix": "24:00:00", "refmac": "01:00:00"}
 
+# One CPU model for all three programs, because this figure compares wall-clock ACROSS
+# programs. EPYC 9335 is 2.2-2.7x faster than EPYC 7453 on identical code, and the
+# partitions above are not the same node pool by default -- refmac on `hour` would draw a
+# different hardware mix than torchref on `day`, which is a systematic per-engine bias, not
+# noise that n=715 averages away. The same 29 epyc9335 nodes belong to hour/day/week, so
+# constraining does not change which partition each program uses. Single-core jobs cannot be
+# --exclusive at this scale, so co-tenancy noise remains -- but it now falls on all three
+# engines from the same pool. Verify before changing:
+#   sinfo -h -p day -o "%n %f" | grep -c <model>
+CPU_MODEL = "cpu_epyc9335"
+
 
 def cell_dir(program, code):
     return RUNS / program / code / LABEL
@@ -58,6 +68,7 @@ def _header(program, code, outdir):
     return f"""#!/bin/bash
 #SBATCH --job-name=exF4sc_{program}_{code}
 #SBATCH --partition={PARTITION[program]}
+#SBATCH --constraint={CPU_MODEL}
 #SBATCH --cpus-per-task={NCORES}
 #SBATCH --time={WALLTIME[program]}
 #SBATCH --mem={MEM}
@@ -68,7 +79,7 @@ def _header(program, code, outdir):
 
 # Uniform timer: wraps the program call (a plain command, NOT a pipe, so $? is the
 # program's own exit code) and writes "wall_s <float>\nrc <int>" to timing.txt. No
-# `set -e`: `module load` / `source ccp4` can return nonzero internally, and the rc field
+# `set -e`: sourcing the phenix / ccp4 env can return nonzero internally, and the rc field
 # lets aggregation drop failed runs rather than record a bogus time.
 def _timed(body):
     return (f"T0=$(date +%s.%N)\n{body}\nRC=$?\nT1=$(date +%s.%N)\n"
@@ -97,8 +108,9 @@ def script_phenix(code, pdb, mtz, outdir):
     # DISABLES automatic target-weight optimization (optimize_xyz/adp_weight=false) and
     # pins a fixed no-rigid-body strategy; phenix DEFAULTS instead run an expensive
     # per-macrocycle weight grid-search (~2.4x slower) that has nothing to do with cores.
-    body = (f'phenix.refine "$WORK/input.pdb" {mtz} \\\n'
-            f"    --overwrite output.prefix=ref \\\n"
+    body = (f'phenix.refine --overwrite --quiet \\\n'
+            f'    "$WORK/input.pdb" {mtz} \\\n'
+            f"    output.prefix=ref \\\n"
             f"    refinement.main.number_of_macro_cycles=10 \\\n"
             f"    refinement.main.nproc={NCORES} \\\n"
             f"    refinement.refine.strategy=individual_sites+individual_adp+occupancies \\\n"
@@ -109,10 +121,10 @@ def script_phenix(code, pdb, mtz, outdir):
             f"    refinement.main.ordered_solvent=false \\\n"
             f"    refinement.ordered_solvent.mode=every_macro_cycle \\\n"
             f"    refinement.pdb_interpretation.ramachandran_plot_restraints.enabled=false \\\n"
-            f"    write_def_file=false write_eff_file=false write_geo_file=false --quiet")
+            f"    write_def_file=false write_eff_file=false write_geo_file=false")
     return _header("phenix", code, outdir) + f"""
 OUTDIR={outdir}
-module load {PHENIX_MODULE}
+source {P.PHENIX_ENV}
 WORK=$(mktemp -d /tmp/exF4sc_phenix_{code}_XXXX)
 cd "$WORK"
 if grep -q "^CRYST1.*None" {pdb}; then
@@ -170,8 +182,16 @@ def main():
 
     submitted = missing = 0
     first = True
-    for program in args.programs:
-        for code in codes:
+    # STRUCTURE-major, not program-major. This benchmark compares wall-clock ACROSS
+    # programs, and a full sweep spans hours during which cluster load changes. Submitting
+    # all of one program before the next times each engine in its own load window, so
+    # engine identity ends up confounded with time -- measured 2026-08-04: on a
+    # program-major sweep two programs whose code had not changed moved by -43% and +31%
+    # against the previous sweep, with per-structure IQRs spanning ~2x. Emitting a
+    # structure's three engines adjacently puts them under near-identical conditions, which
+    # is what makes the per-structure three-way comparison meaningful.
+    for code in codes:
+        for program in args.programs:
             pdb, mtz = P.PLACED / f"{code}_af.pdb", P._mtz(code)
             if not pdb.exists() or not mtz.exists():
                 missing += 1

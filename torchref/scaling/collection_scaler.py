@@ -1,8 +1,8 @@
 """Joint scaler for multi-dataset / multi-model kinetic refinement.
 
 ``CollectionScaler`` extends ``ScalerBase`` to paired ``DatasetCollection`` +
-``ModelCollection`` instances, sharing one set of scale parameters (log_scale,
-U, k_sol, B_sol, phase) across **all** data-model pairs so no artificial scale
+``ModelCollection`` instances, sharing one set of scale parameters (c_iso,
+U and the solvent falloff) across **all** data-model pairs so no artificial scale
 difference corrupts the time-resolved difference signal. One solvent model is
 built per base model; a mixed model's solvent contribution is their linear
 combination at the same population fractions as the structural models.
@@ -18,7 +18,7 @@ from torchref.base.reciprocal import get_scattering_vectors
 from torchref.base.targets.xray_likelihoods import complex_var_from_beta, rice_math
 from torchref.config import get_float_dtype
 from torchref.scaling.scaler_base import ScalerBase
-from torchref.scaling.solvent import SolventModel
+from torchref.scaling.solvent import SS_HALF_BOUNDS, SolventModel
 from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ class CollectionScaler(ScalerBase):
     """
     Joint scaler for DatasetCollection + ModelCollection.
 
-    Shares scale parameters (log_scale, U, k_sol, B_sol, phase) across **all**
+    Shares scale parameters (c_iso, U and the solvent falloff) across **all**
     data-model pairs, and manages per-component solvent models so a mixed
     model's bulk solvent is the fraction-weighted sum of the component solvent
     SFs. The bin-wise B-factor correction is *not* set up by ``initialize()``
@@ -163,8 +163,12 @@ class CollectionScaler(ScalerBase):
             counts.scatter_add_(0, bins, ones)
             n_pairs += 1
 
-        log_scale = scales / (counts + 1e-6)
-        self.log_scale = nn.Parameter(log_scale.detach())
+        per_bin = scales / (counts + 1e-6)
+        with torch.no_grad():
+            target = per_bin.detach()[self.bins.to(torch.int64)]
+            design = self._iso_design.to(target.dtype)
+            coeff = torch.linalg.lstsq(design, target.unsqueeze(1)).solution.squeeze(1)
+        self.c_iso = nn.Parameter(coeff.detach())
 
         if self.verbose > 0:
             print(
@@ -178,7 +182,7 @@ class CollectionScaler(ScalerBase):
 
     def _setup_component_solvent_models(self):
         """Create a SolventModel per base model; the first also becomes
-        ``self.solvent`` and owns the shared k_sol / B_sol / phase parameters.
+        ``self.solvent`` and owns the shared solvent parameters.
         The rest contribute only their mask FFT and are frozen.
         """
         mc = self._model_collection
@@ -191,7 +195,6 @@ class CollectionScaler(ScalerBase):
                 device=self.device,
                 radius=1.1,
                 k_solvent=0.35,
-                b_solvent=46.0,
                 verbose=max(0, self.verbose - 1),
             )
             sol.update_solvent()
@@ -290,7 +293,6 @@ class CollectionScaler(ScalerBase):
         lr: float = 1.0,
         max_iter: int = 200,
         history_size: int = 10,
-        scale_smoothness: float = 1000.0,
         verbose: bool = True,
     ) -> dict:
         """
@@ -309,9 +311,6 @@ class CollectionScaler(ScalerBase):
             Maximum line-search iterations per step.
         history_size : int
             LBFGS history size.
-        scale_smoothness : float, default 1000.0
-            Weight of the Tikhonov first-difference penalty on ``log_scale``
-            (smoothness regularization across resolution bins).
         verbose : bool
             Print progress.
 
@@ -334,7 +333,7 @@ class CollectionScaler(ScalerBase):
         # variance (beta/epsilon). beta is estimated ONCE on each dataset's free
         # set from the currently-scaled |F_calc| and held detached during the fit,
         # as in the single-dataset ``ScalerBase.refine_lbfgs``; that variance is
-        # what stops the per-bin log_scale collapsing toward zero in weak shells.
+        # what stops the scale collapsing toward zero in weak shells.
         fcalc_cache = {}
         fractions_cache = {}
         beta_cache = {}
@@ -421,16 +420,7 @@ class CollectionScaler(ScalerBase):
                 if n > 0:
                     total = total / n
                 u_penalty = torch.sum(scaler_self.U**2)
-                # Smoothness (Tikhonov) penalty on the per-bin log_scale: the σ_A
-                # likelihood is nearly flat in the solvent-dominated lowest-
-                # resolution shells, where a free per-bin scale runs away to -inf
-                # (amplitudes -> 0, R blow-up). Penalising squared first
-                # differences ties under-constrained bins to their neighbours.
-                ls = scaler_self.log_scale
-                smooth_penalty = scale_smoothness * torch.sum(
-                    (ls[1:] - ls[:-1]) ** 2
-                )
-                return total + u_penalty + smooth_penalty
+                return total + u_penalty
 
         state = LossState(device=self.device)
         state.register_target("scaler/joint", _CollectionScalerJointTarget())
@@ -528,18 +518,24 @@ class CollectionScaler(ScalerBase):
 
         sol = self.solvent
         best_log_k = sol.log_k_solvent.clone()
-        best_b = sol.b_solvent.clone()
+        best_log_ss = sol.log_ss_half.clone()
         best_loss = float("inf")
 
         ksol_start = torch.log(torch.tensor(0.1, device=self.device))
         ksol_end = torch.log(torch.tensor(0.6, device=self.device))
+        ss_lo, ss_hi = SS_HALF_BOUNDS
 
         for log_k in torch.linspace(
             ksol_start, ksol_end, steps=steps, device=self.device
         ):
-            for b in torch.linspace(30.0, 100.0, steps=steps, device=self.device):
+            for log_ss in torch.linspace(
+                float(torch.log(torch.tensor(ss_lo))),
+                float(torch.log(torch.tensor(ss_hi))),
+                steps=steps,
+                device=self.device,
+            ):
                 sol.log_k_solvent.data = log_k.to(dtype=sol.log_k_solvent.dtype)
-                sol.b_solvent.data = b.to(dtype=sol.b_solvent.dtype)
+                sol.log_ss_half.data = log_ss.to(dtype=sol.log_ss_half.dtype)
 
                 total = 0.0
                 for fc, fracs, fobs, sigma, work_mask in pairs:
@@ -554,25 +550,29 @@ class CollectionScaler(ScalerBase):
                 if total < best_loss:
                     best_loss = total
                     best_log_k = log_k.clone()
-                    best_b = b.clone()
+                    best_log_ss = log_ss.clone()
 
         sol.log_k_solvent.data = best_log_k.to(dtype=sol.log_k_solvent.dtype)
-        sol.b_solvent.data = best_b.to(dtype=sol.b_solvent.dtype)
+        sol.log_ss_half.data = best_log_ss.to(dtype=sol.log_ss_half.dtype)
 
         if self.verbose > 0:
             k_val = torch.exp(best_log_k).item()
+            d_half = 1.0 / (2.0 * torch.exp(best_log_ss).sqrt().item())
             print(
                 f"Joint solvent screening: k_sol={k_val:.4f}, "
-                f"B_sol={best_b.item():.1f}, NLL={best_loss:.4f}"
+                f"d_half={d_half:.2f} A, NLL={best_loss:.4f}"
             )
 
     # ------------------------------------------------------------------
     # Solvent mask updates
     # ------------------------------------------------------------------
 
-    def update_all_solvent(self):
+    def update_solvent(self):
         """
-        Recompute solvent masks for all component models.
+        Recompute solvent masks for all component models and drop the cached ``F_sol``.
+
+        Collection override of :meth:`~torchref.scaling.scaler_base.ScalerBase.update_solvent`
+        -- same contract, but every component has its own mask and cache entry.
 
         Call this after structure refinement changes base-model coordinates.
         """

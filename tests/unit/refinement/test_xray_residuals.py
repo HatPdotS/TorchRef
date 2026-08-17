@@ -239,7 +239,7 @@ def test_ls_wunit_k1_residuals_use_the_work_fit_scale(refinement):
     t = _target(refinement, "ls_wunit_k1", use_set="free")
     data = refinement.reflection_data
     with torch.no_grad():
-        base = t.get_F_calc_scaled(data.hkl_for_sf(), recalc=False)
+        base = t.get_F_calc_scaled(recalc=False)
         c_from_residual_path = (t._scaled_F_calc_full() / base.clamp(min=1e-12)).median()
         work = data.work
         c_work = t._binwise_scale(

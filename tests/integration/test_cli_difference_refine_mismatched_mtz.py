@@ -3,7 +3,7 @@
 Difference refinement builds a ``DatasetCollection`` from two independent MTZ
 files and aligns the light dataset onto the dark reference via
 ``ReflectionData.validate_hkl``. When the two files had different reflection
-sets, alignment left ``hkl_anomalous`` (read by ``hkl_for_sf``) at the
+sets, alignment left ``hkl_anomalous`` (read by ``_hkl_for_sf``) at the
 pre-alignment length and the run crashed inside the collection difference target
 (``RuntimeError: The size of tensor a (...) must match the size of tensor b``).
 

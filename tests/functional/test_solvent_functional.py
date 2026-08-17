@@ -27,16 +27,20 @@ class TestSolventModelInitialization:
         
         solvent = SolventModel(
             k_solvent=0.35,
-            b_solvent=46.0,
+            d_half=3.6,
+            n_exp=5.0,
             radius=1.2,
             erosion_radius=0.8
         )
-        
+
         assert solvent.solvent_radius == 1.2
         assert solvent.erosion_radius == 0.8
-        # k_solvent is stored as log
+        # every falloff parameter is stored as its log
         assert torch.isfinite(solvent.log_k_solvent)
-        assert torch.isclose(solvent.b_solvent, torch.tensor(46.0))
+        assert torch.isclose(solvent.n_exp(), torch.tensor(5.0))
+        assert torch.isclose(
+            solvent.ss_half(), torch.tensor(1.0 / (4 * 3.6 ** 2)), rtol=1e-5
+        )
 
 
 @pytest.mark.integration
@@ -54,14 +58,16 @@ class TestSolventParameters:
         k_recovered = torch.exp(solvent.log_k_solvent)
         assert torch.isclose(k_recovered, torch.tensor(k_solvent_initial), rtol=1e-5)
 
-    def test_b_solvent_parameter(self):
-        """Test B-solvent parameter."""
+    def test_falloff_parameters(self):
+        """The falloff half-point and exponent round-trip through their logs."""
         from torchref.scaling.solvent import SolventModel
-        
-        b_solvent_initial = 50.0
-        solvent = SolventModel(b_solvent=b_solvent_initial)
-        
-        assert torch.isclose(solvent.b_solvent, torch.tensor(b_solvent_initial))
+
+        solvent = SolventModel(d_half=4.0, n_exp=3.0)
+
+        assert torch.isclose(
+            solvent.ss_half(), torch.tensor(1.0 / 64.0), rtol=1e-5
+        )
+        assert torch.isclose(solvent.n_exp(), torch.tensor(3.0), rtol=1e-5)
 
     def test_phase_offset_parameter(self):
         """Test phase offset parameter."""
@@ -85,7 +91,7 @@ class TestSolventGradients:
         """Test gradients for k_solvent."""
         from torchref.scaling.solvent import SolventModel
         
-        solvent = SolventModel(k_solvent=0.35, b_solvent=46.0)
+        solvent = SolventModel(k_solvent=0.35)
         
         # Create simple loss
         loss = solvent.log_k_solvent.sum()
@@ -93,17 +99,19 @@ class TestSolventGradients:
         
         assert solvent.log_k_solvent.grad is not None
 
-    def test_b_solvent_gradients(self):
-        """Test gradients for b_solvent."""
+    def test_falloff_gradients(self):
+        """Test gradients for the falloff parameters."""
         from torchref.scaling.solvent import SolventModel
         
-        solvent = SolventModel(k_solvent=0.35, b_solvent=46.0)
+        solvent = SolventModel(k_solvent=0.35)
         
         # Create simple loss
-        loss = solvent.b_solvent.sum()
+        ss = torch.linspace(1e-4, 0.25, 64, device=solvent.device)
+        loss = solvent.damping(ss).sum()
         loss.backward()
-        
-        assert solvent.b_solvent.grad is not None
+
+        assert solvent.log_ss_half.grad is not None
+        assert solvent.log_n_exp.grad is not None
 
 
 @pytest.mark.integration
@@ -114,21 +122,22 @@ class TestSolventStateDictFunctional:
         """Test state dict contains expected keys."""
         from torchref.scaling.solvent import SolventModel
         
-        solvent = SolventModel(k_solvent=0.35, b_solvent=46.0, optimize_phase=True)
+        solvent = SolventModel(k_solvent=0.35, optimize_phase=True)
         state_dict = solvent.state_dict()
         
         # Should contain parameters
         assert 'log_k_solvent' in state_dict
-        assert 'b_solvent' in state_dict
+        assert 'log_ss_half' in state_dict
+        assert 'log_n_exp' in state_dict
         assert 'phase_offset' in state_dict
 
     def test_save_and_load_state(self, tmp_path):
         """Test saving and loading state dict."""
         from torchref.scaling.solvent import SolventModel
         
-        solvent = SolventModel(k_solvent=0.35, b_solvent=46.0)
+        solvent = SolventModel(k_solvent=0.35)
         original_k = solvent.log_k_solvent.clone()
-        original_b = solvent.b_solvent.clone()
+        original_ss = solvent.log_ss_half.clone()
         
         # Save
         state_dict = solvent.state_dict()
@@ -139,7 +148,7 @@ class TestSolventStateDictFunctional:
         solvent2.load_state_dict(torch.load(tmp_path / "solvent.pt"))
         
         assert torch.isclose(solvent2.log_k_solvent, original_k)
-        assert torch.isclose(solvent2.b_solvent, original_b)
+        assert torch.isclose(solvent2.log_ss_half, original_ss)
 
 
 @pytest.mark.integration
@@ -153,7 +162,7 @@ class TestSolventDeviceOperations:
         solvent = SolventModel(device=torch.device('cpu'))
         
         assert solvent.log_k_solvent.device.type == 'cpu'
-        assert solvent.b_solvent.device.type == 'cpu'
+        assert solvent.log_ss_half.device.type == 'cpu'
 
     def test_float_type(self):
         """Test solvent model with different float types."""
@@ -186,19 +195,73 @@ class TestSolventCacheOperations:
 class TestSolventBFactorCorrection:
     """Test B-factor correction in solvent model."""
 
-    def test_bfactor_correction_formula(self):
-        """Test B-factor correction calculation."""
-        # B-factor correction: exp(-B * s^2)
-        b_solvent = 46.0
-        s = torch.tensor([0.0, 0.1, 0.2, 0.3])  # |s| values
-        
-        correction = torch.exp(-b_solvent * s ** 2)
-        
-        # At s=0, correction should be 1
-        assert torch.isclose(correction[0], torch.tensor(1.0))
-        
-        # Correction should decrease with increasing s
-        assert torch.all(correction[1:] < correction[:-1])
+    def test_exponent_one_is_exactly_a_debye_waller_factor(self):
+        """The nesting gate: ``n = 1`` must reproduce ``exp(-B ss)`` to machine
+        precision, with ``B = ln2 / ss_half``. That is what makes the fitted form a
+        strict generalisation of the shipped exponential rather than a replacement, so
+        it cannot do worse than it at the optimum."""
+        from torchref.scaling.solvent import SolventModel, _LN2
+
+        for b_target in (20.0, 46.0, 90.0):
+            ss_half = _LN2 / b_target
+            d_half = 1.0 / (2 * ss_half ** 0.5)
+            solvent = SolventModel(d_half=d_half, n_exp=1.0, device=torch.device("cpu"))
+
+            ss = torch.linspace(0.0, 0.25, 128, dtype=solvent.float_type)
+            assert torch.allclose(
+                solvent.damping(ss), torch.exp(-b_target * ss), atol=1e-5
+            ), f"n=1 does not reproduce exp(-{b_target} ss)"
+
+    def test_damping_is_monotone_and_starts_at_one(self):
+        from torchref.scaling.solvent import SolventModel
+
+        solvent = SolventModel(device=torch.device("cpu"))
+        ss = torch.linspace(0.0, 0.3, 64, dtype=solvent.float_type)
+        d = solvent.damping(ss)
+
+        assert torch.isclose(d[0], torch.tensor(1.0, dtype=d.dtype), atol=1e-6)
+        assert torch.all(d.diff() <= 1e-7)
+        assert torch.all((d >= 0.0) & (d <= 1.0))
+
+    def test_falloff_parameters_are_bounded(self):
+        """The unbounded 3-parameter fit reaches degenerate slow power laws on some
+        structures; the clamps are what keep the fitted curve a switch."""
+        from torchref.scaling.solvent import (
+            N_EXP_BOUNDS, SS_HALF_BOUNDS, SolventModel,
+        )
+
+        solvent = SolventModel(device=torch.device("cpu"))
+        with torch.no_grad():
+            solvent.log_ss_half.fill_(10.0)
+            solvent.log_n_exp.fill_(-10.0)
+        assert torch.isclose(
+            solvent.ss_half(), torch.tensor(SS_HALF_BOUNDS[1], dtype=solvent.float_type)
+        )
+        assert torch.isclose(
+            solvent.n_exp(), torch.tensor(N_EXP_BOUNDS[0], dtype=solvent.float_type)
+        )
+
+        with torch.no_grad():
+            solvent.log_ss_half.fill_(-10.0)
+            solvent.log_n_exp.fill_(10.0)
+        assert torch.isclose(
+            solvent.ss_half(), torch.tensor(SS_HALF_BOUNDS[0], dtype=solvent.float_type)
+        )
+        assert torch.isclose(
+            solvent.n_exp(), torch.tensor(N_EXP_BOUNDS[1], dtype=solvent.float_type)
+        )
+
+    def test_b_solvent_equivalent_recovers_a_true_debye_waller(self):
+        """The reported ``B_SOL`` is back-fitted, so at ``n = 1`` -- where the curve IS
+        an exponential -- it must recover that exponential's own B."""
+        from torchref.scaling.solvent import SolventModel, _LN2
+
+        b_target = 46.0
+        d_half = 1.0 / (2 * (_LN2 / b_target) ** 0.5)
+        solvent = SolventModel(d_half=d_half, n_exp=1.0, device=torch.device("cpu"))
+
+        ss = torch.linspace(1e-4, 0.25, 512, dtype=solvent.float_type)
+        assert abs(solvent.b_solvent_equivalent(ss) - b_target) < 0.5
 
     def test_bfactor_with_k_solvent(self):
         """Test combined k_solvent and B-factor correction."""
@@ -229,13 +292,15 @@ class TestSolventTypicalValues:
         k_recovered = torch.exp(solvent.log_k_solvent)
         assert torch.isclose(k_recovered, torch.tensor(k), rtol=1e-5)
 
-    @pytest.mark.parametrize("b", [30.0, 46.0, 50.0, 70.0, 100.0])
-    def test_typical_b_solvent_range(self, b):
-        """Test typical B_solvent values."""
+    @pytest.mark.parametrize("d_half", [2.5, 3.6, 4.5, 6.0, 10.0])
+    def test_typical_d_half_range(self, d_half):
+        """Every value inside the bounds must survive the clamp untouched."""
         from torchref.scaling.solvent import SolventModel
 
-        solvent = SolventModel(b_solvent=b)
-        assert torch.isclose(solvent.b_solvent, torch.tensor(b))
+        solvent = SolventModel(d_half=d_half)
+        assert torch.isclose(
+            solvent.ss_half(), torch.tensor(1.0 / (4 * d_half ** 2)), rtol=1e-4
+        )
 
     def test_default_parameters(self):
         """Test default parameter values are reasonable."""
@@ -245,37 +310,16 @@ class TestSolventTypicalValues:
         
         # Defaults should be within reasonable range
         k = torch.exp(solvent.log_k_solvent)
-        b = solvent.b_solvent
-        
+        d_half = 1.0 / (2 * solvent.ss_half().sqrt())
+
         assert 0.1 <= k <= 2.0
-        assert 10.0 <= b <= 200.0
+        assert 2.0 <= d_half <= 12.0
+        assert 1.0 <= solvent.n_exp() <= 20.0
 
 
 @pytest.mark.integration
 class TestSolventMathOperations:
     """Test mathematical operations used in solvent modeling."""
-
-    def test_gaussian_smoothing_concept(self):
-        """Test Gaussian smoothing concept used in mask."""
-        # Create a simple 1D step function
-        x = torch.linspace(-2, 2, 100)
-        step = (x > 0).float()
-        
-        # Gaussian kernel for smoothing
-        sigma = 0.5
-        kernel_x = torch.linspace(-3*sigma, 3*sigma, 21)
-        kernel = torch.exp(-kernel_x**2 / (2 * sigma**2))
-        kernel = kernel / kernel.sum()
-        
-        # Simple smoothing (conceptual test)
-        smoothed = torch.conv1d(
-            step.unsqueeze(0).unsqueeze(0),
-            kernel.unsqueeze(0).unsqueeze(0),
-            padding=len(kernel)//2
-        ).squeeze()
-        
-        # Smoothed should be between 0 and 1
-        assert torch.all((smoothed >= -0.1) & (smoothed <= 1.1))
 
     def test_exponential_b_factor_scaling(self):
         """Test exponential B-factor scaling."""

@@ -1,401 +1,401 @@
 panel,gi,ai,geometry_weight,adp_weight,value,n_structures,is_locked_default
-Geometry quality  (mean bond/angle RMSZ),0,0,0.001,0.001,12.112191,47,0
-Geometry quality  (mean bond/angle RMSZ),0,1,0.001,0.002154,12.282418,47,0
-Geometry quality  (mean bond/angle RMSZ),0,2,0.001,0.004642,12.361247,47,0
-Geometry quality  (mean bond/angle RMSZ),0,3,0.001,0.01,12.83996,47,0
-Geometry quality  (mean bond/angle RMSZ),0,4,0.001,0.021544,12.920254,47,0
-Geometry quality  (mean bond/angle RMSZ),0,5,0.001,0.046416,13.179697,47,0
-Geometry quality  (mean bond/angle RMSZ),0,6,0.001,0.1,13.559481,47,0
-Geometry quality  (mean bond/angle RMSZ),0,7,0.001,0.215443,13.408764,47,0
-Geometry quality  (mean bond/angle RMSZ),0,8,0.001,0.464159,13.437157,47,0
-Geometry quality  (mean bond/angle RMSZ),0,9,0.001,1.0,12.980338,47,0
-Geometry quality  (mean bond/angle RMSZ),1,0,0.002154,0.001,8.284119,47,0
-Geometry quality  (mean bond/angle RMSZ),1,1,0.002154,0.002154,8.319316,47,0
-Geometry quality  (mean bond/angle RMSZ),1,2,0.002154,0.004642,8.440147,47,0
-Geometry quality  (mean bond/angle RMSZ),1,3,0.002154,0.01,8.683259,47,0
-Geometry quality  (mean bond/angle RMSZ),1,4,0.002154,0.021544,8.861247,47,0
-Geometry quality  (mean bond/angle RMSZ),1,5,0.002154,0.046416,9.014795,47,0
-Geometry quality  (mean bond/angle RMSZ),1,6,0.002154,0.1,9.178085,47,0
-Geometry quality  (mean bond/angle RMSZ),1,7,0.002154,0.215443,9.374924,47,0
-Geometry quality  (mean bond/angle RMSZ),1,8,0.002154,0.464159,9.200955,47,0
-Geometry quality  (mean bond/angle RMSZ),1,9,0.002154,1.0,8.984208,47,0
-Geometry quality  (mean bond/angle RMSZ),2,0,0.004642,0.001,5.488269,47,0
-Geometry quality  (mean bond/angle RMSZ),2,1,0.004642,0.002154,5.5,47,0
-Geometry quality  (mean bond/angle RMSZ),2,2,0.004642,0.004642,5.698068,47,0
-Geometry quality  (mean bond/angle RMSZ),2,3,0.004642,0.01,5.728394,47,0
-Geometry quality  (mean bond/angle RMSZ),2,4,0.004642,0.021544,5.826004,47,0
-Geometry quality  (mean bond/angle RMSZ),2,5,0.004642,0.046416,5.925785,47,0
-Geometry quality  (mean bond/angle RMSZ),2,6,0.004642,0.1,6.060188,47,0
-Geometry quality  (mean bond/angle RMSZ),2,7,0.004642,0.215443,6.12874,47,0
-Geometry quality  (mean bond/angle RMSZ),2,8,0.004642,0.464159,6.115122,47,0
-Geometry quality  (mean bond/angle RMSZ),2,9,0.004642,1.0,5.99569,47,0
-Geometry quality  (mean bond/angle RMSZ),3,0,0.01,0.001,3.520669,47,0
-Geometry quality  (mean bond/angle RMSZ),3,1,0.01,0.002154,3.506122,47,0
-Geometry quality  (mean bond/angle RMSZ),3,2,0.01,0.004642,3.61155,47,0
-Geometry quality  (mean bond/angle RMSZ),3,3,0.01,0.01,3.697212,47,0
-Geometry quality  (mean bond/angle RMSZ),3,4,0.01,0.021544,3.78028,47,0
-Geometry quality  (mean bond/angle RMSZ),3,5,0.01,0.046416,3.854897,47,0
-Geometry quality  (mean bond/angle RMSZ),3,6,0.01,0.1,3.904355,47,0
-Geometry quality  (mean bond/angle RMSZ),3,7,0.01,0.215443,3.899139,47,0
-Geometry quality  (mean bond/angle RMSZ),3,8,0.01,0.464159,3.87767,47,0
-Geometry quality  (mean bond/angle RMSZ),3,9,0.01,1.0,3.700411,47,0
-Geometry quality  (mean bond/angle RMSZ),4,0,0.021544,0.001,2.199212,47,0
-Geometry quality  (mean bond/angle RMSZ),4,1,0.021544,0.002154,2.240338,47,0
-Geometry quality  (mean bond/angle RMSZ),4,2,0.021544,0.004642,2.271114,47,0
-Geometry quality  (mean bond/angle RMSZ),4,3,0.021544,0.01,2.343686,47,0
-Geometry quality  (mean bond/angle RMSZ),4,4,0.021544,0.021544,2.37671,47,0
-Geometry quality  (mean bond/angle RMSZ),4,5,0.021544,0.046416,2.449919,47,0
-Geometry quality  (mean bond/angle RMSZ),4,6,0.021544,0.1,2.464761,47,0
-Geometry quality  (mean bond/angle RMSZ),4,7,0.021544,0.215443,2.464027,47,0
-Geometry quality  (mean bond/angle RMSZ),4,8,0.021544,0.464159,2.43682,47,0
-Geometry quality  (mean bond/angle RMSZ),4,9,0.021544,1.0,2.387983,47,0
-Geometry quality  (mean bond/angle RMSZ),5,0,0.046416,0.001,1.397543,47,0
-Geometry quality  (mean bond/angle RMSZ),5,1,0.046416,0.002154,1.442331,47,0
-Geometry quality  (mean bond/angle RMSZ),5,2,0.046416,0.004642,1.47042,47,0
-Geometry quality  (mean bond/angle RMSZ),5,3,0.046416,0.01,1.466442,47,0
-Geometry quality  (mean bond/angle RMSZ),5,4,0.046416,0.021544,1.542885,47,0
-Geometry quality  (mean bond/angle RMSZ),5,5,0.046416,0.046416,1.564769,47,0
-Geometry quality  (mean bond/angle RMSZ),5,6,0.046416,0.1,1.567019,47,0
-Geometry quality  (mean bond/angle RMSZ),5,7,0.046416,0.215443,1.589329,47,0
-Geometry quality  (mean bond/angle RMSZ),5,8,0.046416,0.464159,1.551319,47,0
-Geometry quality  (mean bond/angle RMSZ),5,9,0.046416,1.0,1.5157,47,0
-Geometry quality  (mean bond/angle RMSZ),6,0,0.1,0.001,0.937538,47,0
-Geometry quality  (mean bond/angle RMSZ),6,1,0.1,0.002154,0.933272,47,0
-Geometry quality  (mean bond/angle RMSZ),6,2,0.1,0.004642,0.957275,47,0
-Geometry quality  (mean bond/angle RMSZ),6,3,0.1,0.01,0.989734,47,0
-Geometry quality  (mean bond/angle RMSZ),6,4,0.1,0.021544,1.017814,47,0
-Geometry quality  (mean bond/angle RMSZ),6,5,0.1,0.046416,1.017421,47,0
-Geometry quality  (mean bond/angle RMSZ),6,6,0.1,0.1,1.025966,47,0
-Geometry quality  (mean bond/angle RMSZ),6,7,0.1,0.215443,1.029287,47,0
-Geometry quality  (mean bond/angle RMSZ),6,8,0.1,0.464159,0.990526,47,0
-Geometry quality  (mean bond/angle RMSZ),6,9,0.1,1.0,0.986415,47,0
-Geometry quality  (mean bond/angle RMSZ),7,0,0.215443,0.001,0.686022,47,0
-Geometry quality  (mean bond/angle RMSZ),7,1,0.215443,0.002154,0.699275,47,0
-Geometry quality  (mean bond/angle RMSZ),7,2,0.215443,0.004642,0.728295,47,0
-Geometry quality  (mean bond/angle RMSZ),7,3,0.215443,0.01,0.734966,47,0
-Geometry quality  (mean bond/angle RMSZ),7,4,0.215443,0.021544,0.73359,47,1
-Geometry quality  (mean bond/angle RMSZ),7,5,0.215443,0.046416,0.743961,47,0
-Geometry quality  (mean bond/angle RMSZ),7,6,0.215443,0.1,0.75554,47,0
-Geometry quality  (mean bond/angle RMSZ),7,7,0.215443,0.215443,0.75,47,0
-Geometry quality  (mean bond/angle RMSZ),7,8,0.215443,0.464159,0.74561,47,0
-Geometry quality  (mean bond/angle RMSZ),7,9,0.215443,1.0,0.729678,47,0
-Geometry quality  (mean bond/angle RMSZ),8,0,0.464159,0.001,0.591486,47,0
-Geometry quality  (mean bond/angle RMSZ),8,1,0.464159,0.002154,0.585852,47,0
-Geometry quality  (mean bond/angle RMSZ),8,2,0.464159,0.004642,0.598339,47,0
-Geometry quality  (mean bond/angle RMSZ),8,3,0.464159,0.01,0.605072,47,0
-Geometry quality  (mean bond/angle RMSZ),8,4,0.464159,0.021544,0.609441,47,0
-Geometry quality  (mean bond/angle RMSZ),8,5,0.464159,0.046416,0.611548,47,0
-Geometry quality  (mean bond/angle RMSZ),8,6,0.464159,0.1,0.615338,47,0
-Geometry quality  (mean bond/angle RMSZ),8,7,0.464159,0.215443,0.615478,47,0
-Geometry quality  (mean bond/angle RMSZ),8,8,0.464159,0.464159,0.609432,47,0
-Geometry quality  (mean bond/angle RMSZ),8,9,0.464159,1.0,0.609547,47,0
-Geometry quality  (mean bond/angle RMSZ),9,0,1.0,0.001,0.521857,47,0
-Geometry quality  (mean bond/angle RMSZ),9,1,1.0,0.002154,0.523676,47,0
-Geometry quality  (mean bond/angle RMSZ),9,2,1.0,0.004642,0.520416,47,0
-Geometry quality  (mean bond/angle RMSZ),9,3,1.0,0.01,0.525541,47,0
-Geometry quality  (mean bond/angle RMSZ),9,4,1.0,0.021544,0.528831,47,0
-Geometry quality  (mean bond/angle RMSZ),9,5,1.0,0.046416,0.528321,47,0
-Geometry quality  (mean bond/angle RMSZ),9,6,1.0,0.1,0.52771,47,0
-Geometry quality  (mean bond/angle RMSZ),9,7,1.0,0.215443,0.528005,47,0
-Geometry quality  (mean bond/angle RMSZ),9,8,1.0,0.464159,0.527618,47,0
-Geometry quality  (mean bond/angle RMSZ),9,9,1.0,1.0,0.524457,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,0,0.001,0.001,6.115599,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,1,0.001,0.002154,4.308333,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,2,0.001,0.004642,3.086327,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,3,0.001,0.01,1.967509,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,4,0.001,0.021544,1.23569,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,5,0.001,0.046416,0.726823,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,6,0.001,0.1,0.441538,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,7,0.001,0.215443,0.311346,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,8,0.001,0.464159,0.227642,47,0
-Main-chain B distribution  (MC-bond B RMSZ),0,9,0.001,1.0,0.186242,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,0,0.002154,0.001,6.368149,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,1,0.002154,0.002154,4.505542,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,2,0.002154,0.004642,3.197248,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,3,0.002154,0.01,2.123288,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,4,0.002154,0.021544,1.297156,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,5,0.002154,0.046416,0.760563,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,6,0.002154,0.1,0.458824,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,7,0.002154,0.215443,0.286713,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,8,0.002154,0.464159,0.253731,47,0
-Main-chain B distribution  (MC-bond B RMSZ),1,9,0.002154,1.0,0.172674,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,0,0.004642,0.001,6.554254,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,1,0.004642,0.002154,4.626604,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,2,0.004642,0.004642,3.397953,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,3,0.004642,0.01,2.131649,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,4,0.004642,0.021544,1.395197,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,5,0.004642,0.046416,0.825403,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,6,0.004642,0.1,0.458035,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,7,0.004642,0.215443,0.310757,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,8,0.004642,0.464159,0.247337,47,0
-Main-chain B distribution  (MC-bond B RMSZ),2,9,0.004642,1.0,0.145546,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,0,0.01,0.001,6.409716,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,1,0.01,0.002154,4.707547,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,2,0.01,0.004642,3.463749,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,3,0.01,0.01,2.325237,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,4,0.01,0.021544,1.442317,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,5,0.01,0.046416,0.859988,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,6,0.01,0.1,0.5,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,7,0.01,0.215443,0.323383,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,8,0.01,0.464159,0.233356,47,0
-Main-chain B distribution  (MC-bond B RMSZ),3,9,0.01,1.0,0.152045,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,0,0.021544,0.001,6.341208,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,1,0.021544,0.002154,4.752343,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,2,0.021544,0.004642,3.566897,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,3,0.021544,0.01,2.416021,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,4,0.021544,0.021544,1.493113,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,5,0.021544,0.046416,0.906706,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,6,0.021544,0.1,0.525641,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,7,0.021544,0.215443,0.316168,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,8,0.021544,0.464159,0.226415,47,0
-Main-chain B distribution  (MC-bond B RMSZ),4,9,0.021544,1.0,0.142488,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,0,0.046416,0.001,6.06875,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,1,0.046416,0.002154,4.604917,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,2,0.046416,0.004642,3.454829,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,3,0.046416,0.01,2.416632,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,4,0.046416,0.021544,1.579245,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,5,0.046416,0.046416,0.965052,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,6,0.046416,0.1,0.53985,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,7,0.046416,0.215443,0.355643,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,8,0.046416,0.464159,0.242545,47,0
-Main-chain B distribution  (MC-bond B RMSZ),5,9,0.046416,1.0,0.157347,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,0,0.1,0.001,5.94193,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,1,0.1,0.002154,4.609045,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,2,0.1,0.004642,3.499324,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,3,0.1,0.01,2.46321,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,4,0.1,0.021544,1.664286,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,5,0.1,0.046416,1.026212,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,6,0.1,0.1,0.589152,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,7,0.1,0.215443,0.346304,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,8,0.1,0.464159,0.227311,47,0
-Main-chain B distribution  (MC-bond B RMSZ),6,9,0.1,1.0,0.122137,47,0
-Main-chain B distribution  (MC-bond B RMSZ),7,0,0.215443,0.001,5.572855,47,0
-Main-chain B distribution  (MC-bond B RMSZ),7,1,0.215443,0.002154,4.503051,47,0
-Main-chain B distribution  (MC-bond B RMSZ),7,2,0.215443,0.004642,3.358785,47,0
-Main-chain B distribution  (MC-bond B RMSZ),7,3,0.215443,0.01,2.485223,47,0
-Main-chain B distribution  (MC-bond B RMSZ),7,4,0.215443,0.021544,1.675423,47,1
-Main-chain B distribution  (MC-bond B RMSZ),7,5,0.215443,0.046416,1.015748,47,0
-Main-chain B distribution  (MC-bond B RMSZ),7,6,0.215443,0.1,0.597477,47,0
-Main-chain B distribution  (MC-bond B RMSZ),7,7,0.215443,0.215443,0.347869,47,0
-Main-chain B distribution  (MC-bond B RMSZ),7,8,0.215443,0.464159,0.194779,47,0
-Main-chain B distribution  (MC-bond B RMSZ),7,9,0.215443,1.0,0.112473,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,0,0.464159,0.001,5.682916,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,1,0.464159,0.002154,4.429803,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,2,0.464159,0.004642,3.346588,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,3,0.464159,0.01,2.402975,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,4,0.464159,0.021544,1.610642,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,5,0.464159,0.046416,1.057488,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,6,0.464159,0.1,0.603348,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,7,0.464159,0.215443,0.359099,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,8,0.464159,0.464159,0.18734,47,0
-Main-chain B distribution  (MC-bond B RMSZ),8,9,0.464159,1.0,0.111869,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,0,1.0,0.001,5.933064,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,1,1.0,0.002154,4.471422,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,2,1.0,0.004642,3.377449,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,3,1.0,0.01,2.372741,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,4,1.0,0.021544,1.603488,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,5,1.0,0.046416,0.988042,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,6,1.0,0.1,0.581388,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,7,1.0,0.215443,0.33263,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,8,1.0,0.464159,0.171387,47,0
-Main-chain B distribution  (MC-bond B RMSZ),9,9,1.0,1.0,0.091905,47,0
-R-free − R-work gap  (overfitting),0,0,0.001,0.001,0.1041,47,0
-R-free − R-work gap  (overfitting),0,1,0.001,0.002154,0.1045,47,0
-R-free − R-work gap  (overfitting),0,2,0.001,0.004642,0.1051,47,0
-R-free − R-work gap  (overfitting),0,3,0.001,0.01,0.1034,47,0
-R-free − R-work gap  (overfitting),0,4,0.001,0.021544,0.1047,47,0
-R-free − R-work gap  (overfitting),0,5,0.001,0.046416,0.1054,47,0
-R-free − R-work gap  (overfitting),0,6,0.001,0.1,0.1067,47,0
-R-free − R-work gap  (overfitting),0,7,0.001,0.215443,0.1112,47,0
-R-free − R-work gap  (overfitting),0,8,0.001,0.464159,0.109,47,0
-R-free − R-work gap  (overfitting),0,9,0.001,1.0,0.1163,47,0
-R-free − R-work gap  (overfitting),1,0,0.002154,0.001,0.0926,47,0
-R-free − R-work gap  (overfitting),1,1,0.002154,0.002154,0.0954,47,0
-R-free − R-work gap  (overfitting),1,2,0.002154,0.004642,0.0926,47,0
-R-free − R-work gap  (overfitting),1,3,0.002154,0.01,0.0916,47,0
-R-free − R-work gap  (overfitting),1,4,0.002154,0.021544,0.0901,47,0
-R-free − R-work gap  (overfitting),1,5,0.002154,0.046416,0.0944,47,0
-R-free − R-work gap  (overfitting),1,6,0.002154,0.1,0.0959,47,0
-R-free − R-work gap  (overfitting),1,7,0.002154,0.215443,0.0935,47,0
-R-free − R-work gap  (overfitting),1,8,0.002154,0.464159,0.0986,47,0
-R-free − R-work gap  (overfitting),1,9,0.002154,1.0,0.1066,47,0
-R-free − R-work gap  (overfitting),2,0,0.004642,0.001,0.0821,47,0
-R-free − R-work gap  (overfitting),2,1,0.004642,0.002154,0.0799,47,0
-R-free − R-work gap  (overfitting),2,2,0.004642,0.004642,0.0809,47,0
-R-free − R-work gap  (overfitting),2,3,0.004642,0.01,0.0797,47,0
-R-free − R-work gap  (overfitting),2,4,0.004642,0.021544,0.0806,47,0
-R-free − R-work gap  (overfitting),2,5,0.004642,0.046416,0.0821,47,0
-R-free − R-work gap  (overfitting),2,6,0.004642,0.1,0.0812,47,0
-R-free − R-work gap  (overfitting),2,7,0.004642,0.215443,0.0817,47,0
-R-free − R-work gap  (overfitting),2,8,0.004642,0.464159,0.0882,47,0
-R-free − R-work gap  (overfitting),2,9,0.004642,1.0,0.0919,47,0
-R-free − R-work gap  (overfitting),3,0,0.01,0.001,0.0737,47,0
-R-free − R-work gap  (overfitting),3,1,0.01,0.002154,0.0733,47,0
-R-free − R-work gap  (overfitting),3,2,0.01,0.004642,0.0716,47,0
-R-free − R-work gap  (overfitting),3,3,0.01,0.01,0.0698,47,0
-R-free − R-work gap  (overfitting),3,4,0.01,0.021544,0.0692,47,0
-R-free − R-work gap  (overfitting),3,5,0.01,0.046416,0.0706,47,0
-R-free − R-work gap  (overfitting),3,6,0.01,0.1,0.0679,47,0
-R-free − R-work gap  (overfitting),3,7,0.01,0.215443,0.0707,47,0
-R-free − R-work gap  (overfitting),3,8,0.01,0.464159,0.0722,47,0
-R-free − R-work gap  (overfitting),3,9,0.01,1.0,0.0755,47,0
-R-free − R-work gap  (overfitting),4,0,0.021544,0.001,0.064,47,0
-R-free − R-work gap  (overfitting),4,1,0.021544,0.002154,0.0639,47,0
-R-free − R-work gap  (overfitting),4,2,0.021544,0.004642,0.063,47,0
-R-free − R-work gap  (overfitting),4,3,0.021544,0.01,0.061,47,0
-R-free − R-work gap  (overfitting),4,4,0.021544,0.021544,0.0599,47,0
-R-free − R-work gap  (overfitting),4,5,0.021544,0.046416,0.0601,47,0
-R-free − R-work gap  (overfitting),4,6,0.021544,0.1,0.0608,47,0
-R-free − R-work gap  (overfitting),4,7,0.021544,0.215443,0.0605,47,0
-R-free − R-work gap  (overfitting),4,8,0.021544,0.464159,0.0623,47,0
-R-free − R-work gap  (overfitting),4,9,0.021544,1.0,0.0651,47,0
-R-free − R-work gap  (overfitting),5,0,0.046416,0.001,0.0594,47,0
-R-free − R-work gap  (overfitting),5,1,0.046416,0.002154,0.0596,47,0
-R-free − R-work gap  (overfitting),5,2,0.046416,0.004642,0.0559,47,0
-R-free − R-work gap  (overfitting),5,3,0.046416,0.01,0.0548,47,0
-R-free − R-work gap  (overfitting),5,4,0.046416,0.021544,0.0542,47,0
-R-free − R-work gap  (overfitting),5,5,0.046416,0.046416,0.0528,47,0
-R-free − R-work gap  (overfitting),5,6,0.046416,0.1,0.0536,47,0
-R-free − R-work gap  (overfitting),5,7,0.046416,0.215443,0.0504,47,0
-R-free − R-work gap  (overfitting),5,8,0.046416,0.464159,0.0541,47,0
-R-free − R-work gap  (overfitting),5,9,0.046416,1.0,0.0553,47,0
-R-free − R-work gap  (overfitting),6,0,0.1,0.001,0.0533,47,0
-R-free − R-work gap  (overfitting),6,1,0.1,0.002154,0.052,47,0
-R-free − R-work gap  (overfitting),6,2,0.1,0.004642,0.0483,47,0
-R-free − R-work gap  (overfitting),6,3,0.1,0.01,0.0481,47,0
-R-free − R-work gap  (overfitting),6,4,0.1,0.021544,0.0451,47,0
-R-free − R-work gap  (overfitting),6,5,0.1,0.046416,0.043,47,0
-R-free − R-work gap  (overfitting),6,6,0.1,0.1,0.0427,47,0
-R-free − R-work gap  (overfitting),6,7,0.1,0.215443,0.045,47,0
-R-free − R-work gap  (overfitting),6,8,0.1,0.464159,0.0449,47,0
-R-free − R-work gap  (overfitting),6,9,0.1,1.0,0.0437,47,0
-R-free − R-work gap  (overfitting),7,0,0.215443,0.001,0.0517,47,0
-R-free − R-work gap  (overfitting),7,1,0.215443,0.002154,0.0481,47,0
-R-free − R-work gap  (overfitting),7,2,0.215443,0.004642,0.0442,47,0
-R-free − R-work gap  (overfitting),7,3,0.215443,0.01,0.0421,47,0
-R-free − R-work gap  (overfitting),7,4,0.215443,0.021544,0.0377,47,1
-R-free − R-work gap  (overfitting),7,5,0.215443,0.046416,0.0376,47,0
-R-free − R-work gap  (overfitting),7,6,0.215443,0.1,0.0374,47,0
-R-free − R-work gap  (overfitting),7,7,0.215443,0.215443,0.0343,47,0
-R-free − R-work gap  (overfitting),7,8,0.215443,0.464159,0.0377,47,0
-R-free − R-work gap  (overfitting),7,9,0.215443,1.0,0.0395,47,0
-R-free − R-work gap  (overfitting),8,0,0.464159,0.001,0.0429,47,0
-R-free − R-work gap  (overfitting),8,1,0.464159,0.002154,0.0426,47,0
-R-free − R-work gap  (overfitting),8,2,0.464159,0.004642,0.0424,47,0
-R-free − R-work gap  (overfitting),8,3,0.464159,0.01,0.0394,47,0
-R-free − R-work gap  (overfitting),8,4,0.464159,0.021544,0.0363,47,0
-R-free − R-work gap  (overfitting),8,5,0.464159,0.046416,0.0313,47,0
-R-free − R-work gap  (overfitting),8,6,0.464159,0.1,0.028,47,0
-R-free − R-work gap  (overfitting),8,7,0.464159,0.215443,0.0251,47,0
-R-free − R-work gap  (overfitting),8,8,0.464159,0.464159,0.0273,47,0
-R-free − R-work gap  (overfitting),8,9,0.464159,1.0,0.0278,47,0
-R-free − R-work gap  (overfitting),9,0,1.0,0.001,0.0405,47,0
-R-free − R-work gap  (overfitting),9,1,1.0,0.002154,0.0398,47,0
-R-free − R-work gap  (overfitting),9,2,1.0,0.004642,0.0365,47,0
-R-free − R-work gap  (overfitting),9,3,1.0,0.01,0.0329,47,0
-R-free − R-work gap  (overfitting),9,4,1.0,0.021544,0.0297,47,0
-R-free − R-work gap  (overfitting),9,5,1.0,0.046416,0.0267,47,0
-R-free − R-work gap  (overfitting),9,6,1.0,0.1,0.0239,47,0
-R-free − R-work gap  (overfitting),9,7,1.0,0.215443,0.0201,47,0
-R-free − R-work gap  (overfitting),9,8,1.0,0.464159,0.0211,47,0
-R-free − R-work gap  (overfitting),9,9,1.0,1.0,0.0204,47,0
-median R-free,0,0,0.001,0.001,0.3582,47,0
-median R-free,0,1,0.001,0.002154,0.3645,47,0
-median R-free,0,2,0.001,0.004642,0.3637,47,0
-median R-free,0,3,0.001,0.01,0.371,47,0
-median R-free,0,4,0.001,0.021544,0.3674,47,0
-median R-free,0,5,0.001,0.046416,0.3713,47,0
-median R-free,0,6,0.001,0.1,0.3759,47,0
-median R-free,0,7,0.001,0.215443,0.3808,47,0
-median R-free,0,8,0.001,0.464159,0.3827,47,0
-median R-free,0,9,0.001,1.0,0.3863,47,0
-median R-free,1,0,0.002154,0.001,0.3479,47,0
-median R-free,1,1,0.002154,0.002154,0.3566,47,0
-median R-free,1,2,0.002154,0.004642,0.3426,47,0
-median R-free,1,3,0.002154,0.01,0.3479,47,0
-median R-free,1,4,0.002154,0.021544,0.3482,47,0
-median R-free,1,5,0.002154,0.046416,0.3564,47,0
-median R-free,1,6,0.002154,0.1,0.3606,47,0
-median R-free,1,7,0.002154,0.215443,0.3739,47,0
-median R-free,1,8,0.002154,0.464159,0.3776,47,0
-median R-free,1,9,0.002154,1.0,0.3711,47,0
-median R-free,2,0,0.004642,0.001,0.3454,47,0
-median R-free,2,1,0.004642,0.002154,0.3384,47,0
-median R-free,2,2,0.004642,0.004642,0.3365,47,0
-median R-free,2,3,0.004642,0.01,0.3369,47,0
-median R-free,2,4,0.004642,0.021544,0.3404,47,0
-median R-free,2,5,0.004642,0.046416,0.3456,47,0
-median R-free,2,6,0.004642,0.1,0.358,47,0
-median R-free,2,7,0.004642,0.215443,0.3675,47,0
-median R-free,2,8,0.004642,0.464159,0.3709,47,0
-median R-free,2,9,0.004642,1.0,0.3679,47,0
-median R-free,3,0,0.01,0.001,0.3304,47,0
-median R-free,3,1,0.01,0.002154,0.3293,47,0
-median R-free,3,2,0.01,0.004642,0.3301,47,0
-median R-free,3,3,0.01,0.01,0.3312,47,0
-median R-free,3,4,0.01,0.021544,0.3329,47,0
-median R-free,3,5,0.01,0.046416,0.3336,47,0
-median R-free,3,6,0.01,0.1,0.3407,47,0
-median R-free,3,7,0.01,0.215443,0.3514,47,0
-median R-free,3,8,0.01,0.464159,0.3555,47,0
-median R-free,3,9,0.01,1.0,0.3579,47,0
-median R-free,4,0,0.021544,0.001,0.328,47,0
-median R-free,4,1,0.021544,0.002154,0.3232,47,0
-median R-free,4,2,0.021544,0.004642,0.3171,47,0
-median R-free,4,3,0.021544,0.01,0.3231,47,0
-median R-free,4,4,0.021544,0.021544,0.3228,47,0
-median R-free,4,5,0.021544,0.046416,0.3298,47,0
-median R-free,4,6,0.021544,0.1,0.3339,47,0
-median R-free,4,7,0.021544,0.215443,0.34,47,0
-median R-free,4,8,0.021544,0.464159,0.3454,47,0
-median R-free,4,9,0.021544,1.0,0.3536,47,0
-median R-free,5,0,0.046416,0.001,0.3127,47,0
-median R-free,5,1,0.046416,0.002154,0.3066,47,0
-median R-free,5,2,0.046416,0.004642,0.3051,47,0
-median R-free,5,3,0.046416,0.01,0.3105,47,0
-median R-free,5,4,0.046416,0.021544,0.3174,47,0
-median R-free,5,5,0.046416,0.046416,0.3213,47,0
-median R-free,5,6,0.046416,0.1,0.3273,47,0
-median R-free,5,7,0.046416,0.215443,0.3334,47,0
-median R-free,5,8,0.046416,0.464159,0.3399,47,0
-median R-free,5,9,0.046416,1.0,0.3454,47,0
-median R-free,6,0,0.1,0.001,0.308,47,0
-median R-free,6,1,0.1,0.002154,0.3059,47,0
-median R-free,6,2,0.1,0.004642,0.3014,47,0
-median R-free,6,3,0.1,0.01,0.3005,47,0
-median R-free,6,4,0.1,0.021544,0.3073,47,0
-median R-free,6,5,0.1,0.046416,0.3094,47,0
-median R-free,6,6,0.1,0.1,0.319,47,0
-median R-free,6,7,0.1,0.215443,0.3299,47,0
-median R-free,6,8,0.1,0.464159,0.336,47,0
-median R-free,6,9,0.1,1.0,0.3412,47,0
-median R-free,7,0,0.215443,0.001,0.3122,47,0
-median R-free,7,1,0.215443,0.002154,0.3033,47,0
-median R-free,7,2,0.215443,0.004642,0.3013,47,0
-median R-free,7,3,0.215443,0.01,0.3013,47,0
-median R-free,7,4,0.215443,0.021544,0.3039,47,1
-median R-free,7,5,0.215443,0.046416,0.3088,47,0
-median R-free,7,6,0.215443,0.1,0.3188,47,0
-median R-free,7,7,0.215443,0.215443,0.3285,47,0
-median R-free,7,8,0.215443,0.464159,0.3382,47,0
-median R-free,7,9,0.215443,1.0,0.3399,47,0
-median R-free,8,0,0.464159,0.001,0.3116,47,0
-median R-free,8,1,0.464159,0.002154,0.3114,47,0
-median R-free,8,2,0.464159,0.004642,0.3028,47,0
-median R-free,8,3,0.464159,0.01,0.3053,47,0
-median R-free,8,4,0.464159,0.021544,0.3054,47,0
-median R-free,8,5,0.464159,0.046416,0.3151,47,0
-median R-free,8,6,0.464159,0.1,0.3222,47,0
-median R-free,8,7,0.464159,0.215443,0.3327,47,0
-median R-free,8,8,0.464159,0.464159,0.3377,47,0
-median R-free,8,9,0.464159,1.0,0.345,47,0
-median R-free,9,0,1.0,0.001,0.3255,47,0
-median R-free,9,1,1.0,0.002154,0.3221,47,0
-median R-free,9,2,1.0,0.004642,0.3222,47,0
-median R-free,9,3,1.0,0.01,0.3222,47,0
-median R-free,9,4,1.0,0.021544,0.3227,47,0
-median R-free,9,5,1.0,0.046416,0.3273,47,0
-median R-free,9,6,1.0,0.1,0.3382,47,0
-median R-free,9,7,1.0,0.215443,0.3401,47,0
-median R-free,9,8,1.0,0.464159,0.3499,47,0
-median R-free,9,9,1.0,1.0,0.3571,47,0
+Geometry quality  (mean bond/angle RMSZ),0,0,0.001,0.001,12.402447,46,0
+Geometry quality  (mean bond/angle RMSZ),0,1,0.001,0.002154,12.927658,45,0
+Geometry quality  (mean bond/angle RMSZ),0,2,0.001,0.004642,12.965686,46,0
+Geometry quality  (mean bond/angle RMSZ),0,3,0.001,0.01,12.830583,47,0
+Geometry quality  (mean bond/angle RMSZ),0,4,0.001,0.021544,13.495658,45,0
+Geometry quality  (mean bond/angle RMSZ),0,5,0.001,0.046416,13.655635,46,0
+Geometry quality  (mean bond/angle RMSZ),0,6,0.001,0.1,13.990552,47,0
+Geometry quality  (mean bond/angle RMSZ),0,7,0.001,0.215443,14.182462,46,0
+Geometry quality  (mean bond/angle RMSZ),0,8,0.001,0.464159,13.865118,47,0
+Geometry quality  (mean bond/angle RMSZ),0,9,0.001,1.0,13.394394,47,0
+Geometry quality  (mean bond/angle RMSZ),1,0,0.002154,0.001,8.591273,47,0
+Geometry quality  (mean bond/angle RMSZ),1,1,0.002154,0.002154,8.571112,47,0
+Geometry quality  (mean bond/angle RMSZ),1,2,0.002154,0.004642,8.791464,47,0
+Geometry quality  (mean bond/angle RMSZ),1,3,0.002154,0.01,8.9929,47,0
+Geometry quality  (mean bond/angle RMSZ),1,4,0.002154,0.021544,9.1883,47,0
+Geometry quality  (mean bond/angle RMSZ),1,5,0.002154,0.046416,9.299531,47,0
+Geometry quality  (mean bond/angle RMSZ),1,6,0.002154,0.1,9.648701,47,0
+Geometry quality  (mean bond/angle RMSZ),1,7,0.002154,0.215443,9.56307,47,0
+Geometry quality  (mean bond/angle RMSZ),1,8,0.002154,0.464159,9.405907,47,0
+Geometry quality  (mean bond/angle RMSZ),1,9,0.002154,1.0,9.420583,47,0
+Geometry quality  (mean bond/angle RMSZ),2,0,0.004642,0.001,5.682732,47,0
+Geometry quality  (mean bond/angle RMSZ),2,1,0.004642,0.002154,5.80929,47,0
+Geometry quality  (mean bond/angle RMSZ),2,2,0.004642,0.004642,5.929464,47,0
+Geometry quality  (mean bond/angle RMSZ),2,3,0.004642,0.01,6.052712,47,0
+Geometry quality  (mean bond/angle RMSZ),2,4,0.004642,0.021544,6.118788,47,0
+Geometry quality  (mean bond/angle RMSZ),2,5,0.004642,0.046416,6.240358,47,0
+Geometry quality  (mean bond/angle RMSZ),2,6,0.004642,0.1,6.445586,47,0
+Geometry quality  (mean bond/angle RMSZ),2,7,0.004642,0.215443,6.374698,47,0
+Geometry quality  (mean bond/angle RMSZ),2,8,0.004642,0.464159,6.363995,47,0
+Geometry quality  (mean bond/angle RMSZ),2,9,0.004642,1.0,6.366102,47,0
+Geometry quality  (mean bond/angle RMSZ),3,0,0.01,0.001,3.642148,47,0
+Geometry quality  (mean bond/angle RMSZ),3,1,0.01,0.002154,3.717275,47,0
+Geometry quality  (mean bond/angle RMSZ),3,2,0.01,0.004642,3.799883,47,0
+Geometry quality  (mean bond/angle RMSZ),3,3,0.01,0.01,3.922576,47,0
+Geometry quality  (mean bond/angle RMSZ),3,4,0.01,0.021544,3.992359,47,0
+Geometry quality  (mean bond/angle RMSZ),3,5,0.01,0.046416,4.096316,47,0
+Geometry quality  (mean bond/angle RMSZ),3,6,0.01,0.1,4.146682,47,0
+Geometry quality  (mean bond/angle RMSZ),3,7,0.01,0.215443,4.212751,47,0
+Geometry quality  (mean bond/angle RMSZ),3,8,0.01,0.464159,4.168772,47,0
+Geometry quality  (mean bond/angle RMSZ),3,9,0.01,1.0,4.130303,46,0
+Geometry quality  (mean bond/angle RMSZ),4,0,0.021544,0.001,2.328746,47,0
+Geometry quality  (mean bond/angle RMSZ),4,1,0.021544,0.002154,2.368788,47,0
+Geometry quality  (mean bond/angle RMSZ),4,2,0.021544,0.004642,2.424329,46,0
+Geometry quality  (mean bond/angle RMSZ),4,3,0.021544,0.01,2.490251,46,0
+Geometry quality  (mean bond/angle RMSZ),4,4,0.021544,0.021544,2.537742,47,0
+Geometry quality  (mean bond/angle RMSZ),4,5,0.021544,0.046416,2.636373,47,0
+Geometry quality  (mean bond/angle RMSZ),4,6,0.021544,0.1,2.700955,47,0
+Geometry quality  (mean bond/angle RMSZ),4,7,0.021544,0.215443,2.653697,46,0
+Geometry quality  (mean bond/angle RMSZ),4,8,0.021544,0.464159,2.689385,47,0
+Geometry quality  (mean bond/angle RMSZ),4,9,0.021544,1.0,2.628047,47,0
+Geometry quality  (mean bond/angle RMSZ),5,0,0.046416,0.001,1.496323,47,0
+Geometry quality  (mean bond/angle RMSZ),5,1,0.046416,0.002154,1.520569,47,0
+Geometry quality  (mean bond/angle RMSZ),5,2,0.046416,0.004642,1.540476,46,0
+Geometry quality  (mean bond/angle RMSZ),5,3,0.046416,0.01,1.583031,47,0
+Geometry quality  (mean bond/angle RMSZ),5,4,0.046416,0.021544,1.630559,47,0
+Geometry quality  (mean bond/angle RMSZ),5,5,0.046416,0.046416,1.672489,47,0
+Geometry quality  (mean bond/angle RMSZ),5,6,0.046416,0.1,1.707879,47,0
+Geometry quality  (mean bond/angle RMSZ),5,7,0.046416,0.215443,1.702902,46,0
+Geometry quality  (mean bond/angle RMSZ),5,8,0.046416,0.464159,1.701528,47,0
+Geometry quality  (mean bond/angle RMSZ),5,9,0.046416,1.0,1.674332,47,0
+Geometry quality  (mean bond/angle RMSZ),6,0,0.1,0.001,0.974406,47,0
+Geometry quality  (mean bond/angle RMSZ),6,1,0.1,0.002154,0.974433,46,0
+Geometry quality  (mean bond/angle RMSZ),6,2,0.1,0.004642,1.017013,46,0
+Geometry quality  (mean bond/angle RMSZ),6,3,0.1,0.01,1.043519,47,0
+Geometry quality  (mean bond/angle RMSZ),6,4,0.1,0.021544,1.08677,47,0
+Geometry quality  (mean bond/angle RMSZ),6,5,0.1,0.046416,1.108424,45,0
+Geometry quality  (mean bond/angle RMSZ),6,6,0.1,0.1,1.12379,47,0
+Geometry quality  (mean bond/angle RMSZ),6,7,0.1,0.215443,1.111413,47,0
+Geometry quality  (mean bond/angle RMSZ),6,8,0.1,0.464159,1.088372,47,0
+Geometry quality  (mean bond/angle RMSZ),6,9,0.1,1.0,1.081505,47,0
+Geometry quality  (mean bond/angle RMSZ),7,0,0.215443,0.001,0.727938,47,0
+Geometry quality  (mean bond/angle RMSZ),7,1,0.215443,0.002154,0.727633,47,0
+Geometry quality  (mean bond/angle RMSZ),7,2,0.215443,0.004642,0.749345,45,0
+Geometry quality  (mean bond/angle RMSZ),7,3,0.215443,0.01,0.757486,47,0
+Geometry quality  (mean bond/angle RMSZ),7,4,0.215443,0.021544,0.764074,47,1
+Geometry quality  (mean bond/angle RMSZ),7,5,0.215443,0.046416,0.768721,46,0
+Geometry quality  (mean bond/angle RMSZ),7,6,0.215443,0.1,0.781993,47,0
+Geometry quality  (mean bond/angle RMSZ),7,7,0.215443,0.215443,0.782609,47,0
+Geometry quality  (mean bond/angle RMSZ),7,8,0.215443,0.464159,0.782301,46,0
+Geometry quality  (mean bond/angle RMSZ),7,9,0.215443,1.0,0.773551,47,0
+Geometry quality  (mean bond/angle RMSZ),8,0,0.464159,0.001,0.592061,47,0
+Geometry quality  (mean bond/angle RMSZ),8,1,0.464159,0.002154,0.601751,47,0
+Geometry quality  (mean bond/angle RMSZ),8,2,0.464159,0.004642,0.613884,47,0
+Geometry quality  (mean bond/angle RMSZ),8,3,0.464159,0.01,0.61506,47,0
+Geometry quality  (mean bond/angle RMSZ),8,4,0.464159,0.021544,0.621446,47,0
+Geometry quality  (mean bond/angle RMSZ),8,5,0.464159,0.046416,0.630967,47,0
+Geometry quality  (mean bond/angle RMSZ),8,6,0.464159,0.1,0.633615,47,0
+Geometry quality  (mean bond/angle RMSZ),8,7,0.464159,0.215443,0.634662,47,0
+Geometry quality  (mean bond/angle RMSZ),8,8,0.464159,0.464159,0.632029,47,0
+Geometry quality  (mean bond/angle RMSZ),8,9,0.464159,1.0,0.620963,47,0
+Geometry quality  (mean bond/angle RMSZ),9,0,1.0,0.001,0.524425,47,0
+Geometry quality  (mean bond/angle RMSZ),9,1,1.0,0.002154,0.524586,47,0
+Geometry quality  (mean bond/angle RMSZ),9,2,1.0,0.004642,0.532005,47,0
+Geometry quality  (mean bond/angle RMSZ),9,3,1.0,0.01,0.534726,47,0
+Geometry quality  (mean bond/angle RMSZ),9,4,1.0,0.021544,0.53442,47,0
+Geometry quality  (mean bond/angle RMSZ),9,5,1.0,0.046416,0.536411,47,0
+Geometry quality  (mean bond/angle RMSZ),9,6,1.0,0.1,0.535899,47,0
+Geometry quality  (mean bond/angle RMSZ),9,7,1.0,0.215443,0.53823,47,0
+Geometry quality  (mean bond/angle RMSZ),9,8,1.0,0.464159,0.536714,47,0
+Geometry quality  (mean bond/angle RMSZ),9,9,1.0,1.0,0.531971,47,0
+Main-chain B distribution  (MC-bond B RMSZ),0,0,0.001,0.001,6.221524,46,0
+Main-chain B distribution  (MC-bond B RMSZ),0,1,0.001,0.002154,4.51227,45,0
+Main-chain B distribution  (MC-bond B RMSZ),0,2,0.001,0.004642,3.088377,46,0
+Main-chain B distribution  (MC-bond B RMSZ),0,3,0.001,0.01,1.913747,47,0
+Main-chain B distribution  (MC-bond B RMSZ),0,4,0.001,0.021544,1.206701,45,0
+Main-chain B distribution  (MC-bond B RMSZ),0,5,0.001,0.046416,0.755965,46,0
+Main-chain B distribution  (MC-bond B RMSZ),0,6,0.001,0.1,0.438298,47,0
+Main-chain B distribution  (MC-bond B RMSZ),0,7,0.001,0.215443,0.270233,46,0
+Main-chain B distribution  (MC-bond B RMSZ),0,8,0.001,0.464159,0.242171,47,0
+Main-chain B distribution  (MC-bond B RMSZ),0,9,0.001,1.0,0.156171,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,0,0.002154,0.001,6.266897,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,1,0.002154,0.002154,4.681944,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,2,0.002154,0.004642,3.171806,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,3,0.002154,0.01,2.084942,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,4,0.002154,0.021544,1.338276,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,5,0.002154,0.046416,0.741935,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,6,0.002154,0.1,0.440299,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,7,0.002154,0.215443,0.3,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,8,0.002154,0.464159,0.233333,47,0
+Main-chain B distribution  (MC-bond B RMSZ),1,9,0.002154,1.0,0.16525,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,0,0.004642,0.001,6.55906,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,1,0.004642,0.002154,4.62236,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,2,0.004642,0.004642,3.421359,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,3,0.004642,0.01,2.177711,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,4,0.004642,0.021544,1.385181,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,5,0.004642,0.046416,0.816464,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,6,0.004642,0.1,0.463816,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,7,0.004642,0.215443,0.306569,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,8,0.004642,0.464159,0.239826,47,0
+Main-chain B distribution  (MC-bond B RMSZ),2,9,0.004642,1.0,0.150766,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,0,0.01,0.001,6.018174,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,1,0.01,0.002154,4.541401,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,2,0.01,0.004642,3.388728,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,3,0.01,0.01,2.365269,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,4,0.01,0.021544,1.463542,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,5,0.01,0.046416,0.901168,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,6,0.01,0.1,0.500544,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,7,0.01,0.215443,0.305889,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,8,0.01,0.464159,0.230863,47,0
+Main-chain B distribution  (MC-bond B RMSZ),3,9,0.01,1.0,0.147495,46,0
+Main-chain B distribution  (MC-bond B RMSZ),4,0,0.021544,0.001,6.117647,47,0
+Main-chain B distribution  (MC-bond B RMSZ),4,1,0.021544,0.002154,4.618746,47,0
+Main-chain B distribution  (MC-bond B RMSZ),4,2,0.021544,0.004642,3.456683,46,0
+Main-chain B distribution  (MC-bond B RMSZ),4,3,0.021544,0.01,2.42279,46,0
+Main-chain B distribution  (MC-bond B RMSZ),4,4,0.021544,0.021544,1.607075,47,0
+Main-chain B distribution  (MC-bond B RMSZ),4,5,0.021544,0.046416,0.97249,47,0
+Main-chain B distribution  (MC-bond B RMSZ),4,6,0.021544,0.1,0.541973,47,0
+Main-chain B distribution  (MC-bond B RMSZ),4,7,0.021544,0.215443,0.315713,46,0
+Main-chain B distribution  (MC-bond B RMSZ),4,8,0.021544,0.464159,0.227914,47,0
+Main-chain B distribution  (MC-bond B RMSZ),4,9,0.021544,1.0,0.143704,47,0
+Main-chain B distribution  (MC-bond B RMSZ),5,0,0.046416,0.001,6.005361,47,0
+Main-chain B distribution  (MC-bond B RMSZ),5,1,0.046416,0.002154,4.38722,47,0
+Main-chain B distribution  (MC-bond B RMSZ),5,2,0.046416,0.004642,3.427978,46,0
+Main-chain B distribution  (MC-bond B RMSZ),5,3,0.046416,0.01,2.464974,47,0
+Main-chain B distribution  (MC-bond B RMSZ),5,4,0.046416,0.021544,1.658147,47,0
+Main-chain B distribution  (MC-bond B RMSZ),5,5,0.046416,0.046416,1.060105,47,0
+Main-chain B distribution  (MC-bond B RMSZ),5,6,0.046416,0.1,0.583447,47,0
+Main-chain B distribution  (MC-bond B RMSZ),5,7,0.046416,0.215443,0.362628,46,0
+Main-chain B distribution  (MC-bond B RMSZ),5,8,0.046416,0.464159,0.248083,47,0
+Main-chain B distribution  (MC-bond B RMSZ),5,9,0.046416,1.0,0.153145,47,0
+Main-chain B distribution  (MC-bond B RMSZ),6,0,0.1,0.001,5.878531,47,0
+Main-chain B distribution  (MC-bond B RMSZ),6,1,0.1,0.002154,4.399463,46,0
+Main-chain B distribution  (MC-bond B RMSZ),6,2,0.1,0.004642,3.435162,46,0
+Main-chain B distribution  (MC-bond B RMSZ),6,3,0.1,0.01,2.477759,47,0
+Main-chain B distribution  (MC-bond B RMSZ),6,4,0.1,0.021544,1.691191,47,0
+Main-chain B distribution  (MC-bond B RMSZ),6,5,0.1,0.046416,1.081633,45,0
+Main-chain B distribution  (MC-bond B RMSZ),6,6,0.1,0.1,0.619919,47,0
+Main-chain B distribution  (MC-bond B RMSZ),6,7,0.1,0.215443,0.352017,47,0
+Main-chain B distribution  (MC-bond B RMSZ),6,8,0.1,0.464159,0.209056,47,0
+Main-chain B distribution  (MC-bond B RMSZ),6,9,0.1,1.0,0.131737,47,0
+Main-chain B distribution  (MC-bond B RMSZ),7,0,0.215443,0.001,5.781178,47,0
+Main-chain B distribution  (MC-bond B RMSZ),7,1,0.215443,0.002154,4.394723,47,0
+Main-chain B distribution  (MC-bond B RMSZ),7,2,0.215443,0.004642,3.305215,45,0
+Main-chain B distribution  (MC-bond B RMSZ),7,3,0.215443,0.01,2.496147,47,0
+Main-chain B distribution  (MC-bond B RMSZ),7,4,0.215443,0.021544,1.68361,47,1
+Main-chain B distribution  (MC-bond B RMSZ),7,5,0.215443,0.046416,1.090411,46,0
+Main-chain B distribution  (MC-bond B RMSZ),7,6,0.215443,0.1,0.634267,47,0
+Main-chain B distribution  (MC-bond B RMSZ),7,7,0.215443,0.215443,0.381947,47,0
+Main-chain B distribution  (MC-bond B RMSZ),7,8,0.215443,0.464159,0.216419,46,0
+Main-chain B distribution  (MC-bond B RMSZ),7,9,0.215443,1.0,0.124424,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,0,0.464159,0.001,5.911011,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,1,0.464159,0.002154,4.522405,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,2,0.464159,0.004642,3.337948,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,3,0.464159,0.01,2.44019,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,4,0.464159,0.021544,1.647182,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,5,0.464159,0.046416,1.055199,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,6,0.464159,0.1,0.644863,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,7,0.464159,0.215443,0.3701,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,8,0.464159,0.464159,0.209055,47,0
+Main-chain B distribution  (MC-bond B RMSZ),8,9,0.464159,1.0,0.119064,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,0,1.0,0.001,6.06587,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,1,1.0,0.002154,4.485064,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,2,1.0,0.004642,3.317413,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,3,1.0,0.01,2.373686,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,4,1.0,0.021544,1.598209,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,5,1.0,0.046416,1.005291,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,6,1.0,0.1,0.631184,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,7,1.0,0.215443,0.368657,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,8,1.0,0.464159,0.191762,47,0
+Main-chain B distribution  (MC-bond B RMSZ),9,9,1.0,1.0,0.100203,47,0
+R-free − R-work gap  (overfitting),0,0,0.001,0.001,0.1099,46,0
+R-free − R-work gap  (overfitting),0,1,0.001,0.002154,0.1106,45,0
+R-free − R-work gap  (overfitting),0,2,0.001,0.004642,0.1056,46,0
+R-free − R-work gap  (overfitting),0,3,0.001,0.01,0.109,47,0
+R-free − R-work gap  (overfitting),0,4,0.001,0.021544,0.1092,45,0
+R-free − R-work gap  (overfitting),0,5,0.001,0.046416,0.10575,46,0
+R-free − R-work gap  (overfitting),0,6,0.001,0.1,0.1111,47,0
+R-free − R-work gap  (overfitting),0,7,0.001,0.215443,0.1083,46,0
+R-free − R-work gap  (overfitting),0,8,0.001,0.464159,0.1109,47,0
+R-free − R-work gap  (overfitting),0,9,0.001,1.0,0.1183,47,0
+R-free − R-work gap  (overfitting),1,0,0.002154,0.001,0.0972,47,0
+R-free − R-work gap  (overfitting),1,1,0.002154,0.002154,0.0992,47,0
+R-free − R-work gap  (overfitting),1,2,0.002154,0.004642,0.0973,47,0
+R-free − R-work gap  (overfitting),1,3,0.002154,0.01,0.0977,47,0
+R-free − R-work gap  (overfitting),1,4,0.002154,0.021544,0.0967,47,0
+R-free − R-work gap  (overfitting),1,5,0.002154,0.046416,0.0976,47,0
+R-free − R-work gap  (overfitting),1,6,0.002154,0.1,0.1004,47,0
+R-free − R-work gap  (overfitting),1,7,0.002154,0.215443,0.1,47,0
+R-free − R-work gap  (overfitting),1,8,0.002154,0.464159,0.1038,47,0
+R-free − R-work gap  (overfitting),1,9,0.002154,1.0,0.1044,47,0
+R-free − R-work gap  (overfitting),2,0,0.004642,0.001,0.0879,47,0
+R-free − R-work gap  (overfitting),2,1,0.004642,0.002154,0.0882,47,0
+R-free − R-work gap  (overfitting),2,2,0.004642,0.004642,0.0883,47,0
+R-free − R-work gap  (overfitting),2,3,0.004642,0.01,0.0863,47,0
+R-free − R-work gap  (overfitting),2,4,0.004642,0.021544,0.0843,47,0
+R-free − R-work gap  (overfitting),2,5,0.004642,0.046416,0.086,47,0
+R-free − R-work gap  (overfitting),2,6,0.004642,0.1,0.0837,47,0
+R-free − R-work gap  (overfitting),2,7,0.004642,0.215443,0.0884,47,0
+R-free − R-work gap  (overfitting),2,8,0.004642,0.464159,0.0917,47,0
+R-free − R-work gap  (overfitting),2,9,0.004642,1.0,0.0954,47,0
+R-free − R-work gap  (overfitting),3,0,0.01,0.001,0.0779,47,0
+R-free − R-work gap  (overfitting),3,1,0.01,0.002154,0.0756,47,0
+R-free − R-work gap  (overfitting),3,2,0.01,0.004642,0.0769,47,0
+R-free − R-work gap  (overfitting),3,3,0.01,0.01,0.0766,47,0
+R-free − R-work gap  (overfitting),3,4,0.01,0.021544,0.0752,47,0
+R-free − R-work gap  (overfitting),3,5,0.01,0.046416,0.0734,47,0
+R-free − R-work gap  (overfitting),3,6,0.01,0.1,0.0718,47,0
+R-free − R-work gap  (overfitting),3,7,0.01,0.215443,0.0732,47,0
+R-free − R-work gap  (overfitting),3,8,0.01,0.464159,0.0769,47,0
+R-free − R-work gap  (overfitting),3,9,0.01,1.0,0.0814,46,0
+R-free − R-work gap  (overfitting),4,0,0.021544,0.001,0.0707,47,0
+R-free − R-work gap  (overfitting),4,1,0.021544,0.002154,0.0693,47,0
+R-free − R-work gap  (overfitting),4,2,0.021544,0.004642,0.06765,46,0
+R-free − R-work gap  (overfitting),4,3,0.021544,0.01,0.06415,46,0
+R-free − R-work gap  (overfitting),4,4,0.021544,0.021544,0.0617,47,0
+R-free − R-work gap  (overfitting),4,5,0.021544,0.046416,0.0613,47,0
+R-free − R-work gap  (overfitting),4,6,0.021544,0.1,0.0632,47,0
+R-free − R-work gap  (overfitting),4,7,0.021544,0.215443,0.06325,46,0
+R-free − R-work gap  (overfitting),4,8,0.021544,0.464159,0.0647,47,0
+R-free − R-work gap  (overfitting),4,9,0.021544,1.0,0.0684,47,0
+R-free − R-work gap  (overfitting),5,0,0.046416,0.001,0.0653,47,0
+R-free − R-work gap  (overfitting),5,1,0.046416,0.002154,0.0635,47,0
+R-free − R-work gap  (overfitting),5,2,0.046416,0.004642,0.05995,46,0
+R-free − R-work gap  (overfitting),5,3,0.046416,0.01,0.0582,47,0
+R-free − R-work gap  (overfitting),5,4,0.046416,0.021544,0.055,47,0
+R-free − R-work gap  (overfitting),5,5,0.046416,0.046416,0.0516,47,0
+R-free − R-work gap  (overfitting),5,6,0.046416,0.1,0.0521,47,0
+R-free − R-work gap  (overfitting),5,7,0.046416,0.215443,0.05355,46,0
+R-free − R-work gap  (overfitting),5,8,0.046416,0.464159,0.0544,47,0
+R-free − R-work gap  (overfitting),5,9,0.046416,1.0,0.0568,47,0
+R-free − R-work gap  (overfitting),6,0,0.1,0.001,0.0597,47,0
+R-free − R-work gap  (overfitting),6,1,0.1,0.002154,0.05825,46,0
+R-free − R-work gap  (overfitting),6,2,0.1,0.004642,0.05635,46,0
+R-free − R-work gap  (overfitting),6,3,0.1,0.01,0.0525,47,0
+R-free − R-work gap  (overfitting),6,4,0.1,0.021544,0.0497,47,0
+R-free − R-work gap  (overfitting),6,5,0.1,0.046416,0.0469,45,0
+R-free − R-work gap  (overfitting),6,6,0.1,0.1,0.0474,47,0
+R-free − R-work gap  (overfitting),6,7,0.1,0.215443,0.0447,47,0
+R-free − R-work gap  (overfitting),6,8,0.1,0.464159,0.0482,47,0
+R-free − R-work gap  (overfitting),6,9,0.1,1.0,0.0475,47,0
+R-free − R-work gap  (overfitting),7,0,0.215443,0.001,0.0526,47,0
+R-free − R-work gap  (overfitting),7,1,0.215443,0.002154,0.0524,47,0
+R-free − R-work gap  (overfitting),7,2,0.215443,0.004642,0.0486,45,0
+R-free − R-work gap  (overfitting),7,3,0.215443,0.01,0.0466,47,0
+R-free − R-work gap  (overfitting),7,4,0.215443,0.021544,0.0421,47,1
+R-free − R-work gap  (overfitting),7,5,0.215443,0.046416,0.0426,46,0
+R-free − R-work gap  (overfitting),7,6,0.215443,0.1,0.0395,47,0
+R-free − R-work gap  (overfitting),7,7,0.215443,0.215443,0.0395,47,0
+R-free − R-work gap  (overfitting),7,8,0.215443,0.464159,0.04025,46,0
+R-free − R-work gap  (overfitting),7,9,0.215443,1.0,0.0411,47,0
+R-free − R-work gap  (overfitting),8,0,0.464159,0.001,0.0484,47,0
+R-free − R-work gap  (overfitting),8,1,0.464159,0.002154,0.0464,47,0
+R-free − R-work gap  (overfitting),8,2,0.464159,0.004642,0.0446,47,0
+R-free − R-work gap  (overfitting),8,3,0.464159,0.01,0.0411,47,0
+R-free − R-work gap  (overfitting),8,4,0.464159,0.021544,0.0378,47,0
+R-free − R-work gap  (overfitting),8,5,0.464159,0.046416,0.0343,47,0
+R-free − R-work gap  (overfitting),8,6,0.464159,0.1,0.0305,47,0
+R-free − R-work gap  (overfitting),8,7,0.464159,0.215443,0.03,47,0
+R-free − R-work gap  (overfitting),8,8,0.464159,0.464159,0.0279,47,0
+R-free − R-work gap  (overfitting),8,9,0.464159,1.0,0.0293,47,0
+R-free − R-work gap  (overfitting),9,0,1.0,0.001,0.0413,47,0
+R-free − R-work gap  (overfitting),9,1,1.0,0.002154,0.0407,47,0
+R-free − R-work gap  (overfitting),9,2,1.0,0.004642,0.0386,47,0
+R-free − R-work gap  (overfitting),9,3,1.0,0.01,0.0367,47,0
+R-free − R-work gap  (overfitting),9,4,1.0,0.021544,0.0312,47,0
+R-free − R-work gap  (overfitting),9,5,1.0,0.046416,0.0279,47,0
+R-free − R-work gap  (overfitting),9,6,1.0,0.1,0.0233,47,0
+R-free − R-work gap  (overfitting),9,7,1.0,0.215443,0.0213,47,0
+R-free − R-work gap  (overfitting),9,8,1.0,0.464159,0.0213,47,0
+R-free − R-work gap  (overfitting),9,9,1.0,1.0,0.0208,47,0
+median R-free,0,0,0.001,0.001,0.3576,46,0
+median R-free,0,1,0.001,0.002154,0.3599,45,0
+median R-free,0,2,0.001,0.004642,0.35475,46,0
+median R-free,0,3,0.001,0.01,0.3588,47,0
+median R-free,0,4,0.001,0.021544,0.36,45,0
+median R-free,0,5,0.001,0.046416,0.36705,46,0
+median R-free,0,6,0.001,0.1,0.3788,47,0
+median R-free,0,7,0.001,0.215443,0.3771,46,0
+median R-free,0,8,0.001,0.464159,0.3742,47,0
+median R-free,0,9,0.001,1.0,0.378,47,0
+median R-free,1,0,0.002154,0.001,0.3469,47,0
+median R-free,1,1,0.002154,0.002154,0.3465,47,0
+median R-free,1,2,0.002154,0.004642,0.3471,47,0
+median R-free,1,3,0.002154,0.01,0.3565,47,0
+median R-free,1,4,0.002154,0.021544,0.3507,47,0
+median R-free,1,5,0.002154,0.046416,0.36,47,0
+median R-free,1,6,0.002154,0.1,0.365,47,0
+median R-free,1,7,0.002154,0.215443,0.3715,47,0
+median R-free,1,8,0.002154,0.464159,0.3723,47,0
+median R-free,1,9,0.002154,1.0,0.3689,47,0
+median R-free,2,0,0.004642,0.001,0.3345,47,0
+median R-free,2,1,0.004642,0.002154,0.3352,47,0
+median R-free,2,2,0.004642,0.004642,0.335,47,0
+median R-free,2,3,0.004642,0.01,0.3347,47,0
+median R-free,2,4,0.004642,0.021544,0.3368,47,0
+median R-free,2,5,0.004642,0.046416,0.3417,47,0
+median R-free,2,6,0.004642,0.1,0.3529,47,0
+median R-free,2,7,0.004642,0.215443,0.3537,47,0
+median R-free,2,8,0.004642,0.464159,0.3589,47,0
+median R-free,2,9,0.004642,1.0,0.3597,47,0
+median R-free,3,0,0.01,0.001,0.3317,47,0
+median R-free,3,1,0.01,0.002154,0.3309,47,0
+median R-free,3,2,0.01,0.004642,0.3282,47,0
+median R-free,3,3,0.01,0.01,0.3281,47,0
+median R-free,3,4,0.01,0.021544,0.3272,47,0
+median R-free,3,5,0.01,0.046416,0.328,47,0
+median R-free,3,6,0.01,0.1,0.3352,47,0
+median R-free,3,7,0.01,0.215443,0.3473,47,0
+median R-free,3,8,0.01,0.464159,0.3532,47,0
+median R-free,3,9,0.01,1.0,0.3542,46,0
+median R-free,4,0,0.021544,0.001,0.3276,47,0
+median R-free,4,1,0.021544,0.002154,0.3262,47,0
+median R-free,4,2,0.021544,0.004642,0.3171,46,0
+median R-free,4,3,0.021544,0.01,0.31495,46,0
+median R-free,4,4,0.021544,0.021544,0.3214,47,0
+median R-free,4,5,0.021544,0.046416,0.3248,47,0
+median R-free,4,6,0.021544,0.1,0.329,47,0
+median R-free,4,7,0.021544,0.215443,0.3354,46,0
+median R-free,4,8,0.021544,0.464159,0.3439,47,0
+median R-free,4,9,0.021544,1.0,0.3464,47,0
+median R-free,5,0,0.046416,0.001,0.317,47,0
+median R-free,5,1,0.046416,0.002154,0.3096,47,0
+median R-free,5,2,0.046416,0.004642,0.30855,46,0
+median R-free,5,3,0.046416,0.01,0.3051,47,0
+median R-free,5,4,0.046416,0.021544,0.3089,47,0
+median R-free,5,5,0.046416,0.046416,0.3152,47,0
+median R-free,5,6,0.046416,0.1,0.3211,47,0
+median R-free,5,7,0.046416,0.215443,0.3296,46,0
+median R-free,5,8,0.046416,0.464159,0.336,47,0
+median R-free,5,9,0.046416,1.0,0.3394,47,0
+median R-free,6,0,0.1,0.001,0.3085,47,0
+median R-free,6,1,0.1,0.002154,0.3023,46,0
+median R-free,6,2,0.1,0.004642,0.30185,46,0
+median R-free,6,3,0.1,0.01,0.3024,47,0
+median R-free,6,4,0.1,0.021544,0.3006,47,0
+median R-free,6,5,0.1,0.046416,0.3042,45,0
+median R-free,6,6,0.1,0.1,0.3143,47,0
+median R-free,6,7,0.1,0.215443,0.3234,47,0
+median R-free,6,8,0.1,0.464159,0.3341,47,0
+median R-free,6,9,0.1,1.0,0.3375,47,0
+median R-free,7,0,0.215443,0.001,0.3087,47,0
+median R-free,7,1,0.215443,0.002154,0.3003,47,0
+median R-free,7,2,0.215443,0.004642,0.2984,45,0
+median R-free,7,3,0.215443,0.01,0.2982,47,0
+median R-free,7,4,0.215443,0.021544,0.2985,47,1
+median R-free,7,5,0.215443,0.046416,0.3049,46,0
+median R-free,7,6,0.215443,0.1,0.3138,47,0
+median R-free,7,7,0.215443,0.215443,0.3192,47,0
+median R-free,7,8,0.215443,0.464159,0.3289,46,0
+median R-free,7,9,0.215443,1.0,0.3343,47,0
+median R-free,8,0,0.464159,0.001,0.3079,47,0
+median R-free,8,1,0.464159,0.002154,0.3062,47,0
+median R-free,8,2,0.464159,0.004642,0.3038,47,0
+median R-free,8,3,0.464159,0.01,0.3007,47,0
+median R-free,8,4,0.464159,0.021544,0.3078,47,0
+median R-free,8,5,0.464159,0.046416,0.3126,47,0
+median R-free,8,6,0.464159,0.1,0.3194,47,0
+median R-free,8,7,0.464159,0.215443,0.3264,47,0
+median R-free,8,8,0.464159,0.464159,0.3355,47,0
+median R-free,8,9,0.464159,1.0,0.341,47,0
+median R-free,9,0,1.0,0.001,0.3203,47,0
+median R-free,9,1,1.0,0.002154,0.3173,47,0
+median R-free,9,2,1.0,0.004642,0.3178,47,0
+median R-free,9,3,1.0,0.01,0.3165,47,0
+median R-free,9,4,1.0,0.021544,0.3214,47,0
+median R-free,9,5,1.0,0.046416,0.3259,47,0
+median R-free,9,6,1.0,0.1,0.3267,47,0
+median R-free,9,7,1.0,0.215443,0.3375,47,0
+median R-free,9,8,1.0,0.464159,0.3481,47,0
+median R-free,9,9,1.0,1.0,0.3535,47,0

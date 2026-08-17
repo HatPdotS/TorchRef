@@ -14,6 +14,14 @@ import gemmi
 import numpy as np
 import pandas as pd
 
+#: Column holding the ``data_`` block a loop row was read from. Added only when
+#: ``parse_all_blocks`` is set, because that is the only mode in which rows from
+#: different blocks share a category. Dictionaries whose loops carry no
+#: ``comp_id`` still have to be split per compound, and the block name is the
+#: only thing that can do it. Stripped again by
+#: :meth:`RestraintCIFReader._filter_by_comp`, so it never reaches a caller.
+_SOURCE_BLOCK_COLUMN = "_source_block"
+
 
 class CIFReader:
     """
@@ -58,6 +66,7 @@ class CIFReader:
         self.parse_all_blocks = parse_all_blocks
         self.available_blocks = []
         self.verbose = 0
+        self._current_block = None
 
         if filepath:
             self.load(filepath)
@@ -85,7 +94,7 @@ class CIFReader:
         """
         lines = content.split("\n")
         i = 0
-        current_block = None
+        self._current_block = None
         target_block_found = False
 
         # First pass: find all data blocks
@@ -123,7 +132,7 @@ class CIFReader:
             # Check for data block
             if line.startswith("data_"):
                 block_name = line[5:].strip()  # Remove 'data_' prefix
-                current_block = block_name
+                self._current_block = block_name
 
                 if parse_all:
                     # Continue parsing - don't skip any blocks
@@ -251,9 +260,32 @@ class CIFReader:
             if columns:
                 category = self._extract_category(columns[0])
                 if category:
-                    self.data[category] = df
+                    self.data[category] = self._merge_category(category, df)
 
         return i
+
+    def _merge_category(self, category: str, df: pd.DataFrame) -> pd.DataFrame:
+        """Combine ``df`` with anything already stored under ``category``.
+
+        Only relevant when ``parse_all_blocks`` is set: a multi-compound restraint
+        dictionary repeats the same category (``chem_comp_bond``, ...) once per
+        ``data_comp_*`` block, and replacing rather than appending would keep only
+        the block that happens to come last. Rows are tagged with their source
+        block so they can be split apart again even when the loop itself carries
+        no ``comp_id`` column.
+
+        Loops of one category with differing columns are aligned by name and
+        NaN-filled; the surplus columns belong to other compounds and are removed
+        by :meth:`RestraintCIFReader._filter_by_comp` before standardisation.
+        """
+        if not self.parse_all_blocks:
+            return df
+
+        df[_SOURCE_BLOCK_COLUMN] = self._current_block
+        previous = self.data.get(category)
+        if isinstance(previous, pd.DataFrame):
+            return pd.concat([previous, df], ignore_index=True)
+        return df
 
     def _parse_keyvalue(self, lines: List[str], start_idx: int) -> int:
         """Parse one key-value pair; returns the next line index."""
@@ -1683,14 +1715,26 @@ class RestraintCIFReader:
         bond_df = comp_data['ALA']['bonds']
     """
 
-    def __init__(self, filepath: str):
-        """Load the restraint dictionary at ``filepath`` immediately."""
+    def __init__(self, filepath: str, verbose: int = 0):
+        """Load the restraint dictionary at ``filepath`` immediately.
+
+        ``verbose`` above 0 reports a dictionary that defines more than one
+        compound, which is otherwise indistinguishable from a single-compound one
+        at the call site.
+        """
         self.filepath = Path(filepath)
-        # Use parse_all_blocks=True because restraint files often have multiple blocks
-        # (e.g., data_comp_list and data_comp_PRO)
+        self.verbose = verbose
+        # Every data block is read, not just the first: a dictionary may define
+        # several compounds, each in its own ``data_comp_<ID>`` block.
         self.cif = CIFReader(filepath, parse_all_blocks=True)
         self.compounds = self._extract_compounds()
         self._validate()
+
+        if self.verbose > 0 and len(self.compounds) > 1:
+            print(
+                f"  {self.filepath.name}: {len(self.compounds)} compounds "
+                f"({', '.join(self.compounds)})"
+            )
 
     def _extract_compounds(self) -> List[str]:
         """Compound IDs present in the file, e.g. ``['ALA']``."""
@@ -1745,7 +1789,19 @@ class RestraintCIFReader:
                     if compounds:
                         break
 
-        return compounds
+        # Last resort before the filename stem: the ``data_comp_<ID>`` block names.
+        # A dictionary can omit both ``comp_list`` and the per-row ``comp_id``
+        # columns, and then the block name is the only record of what it defines.
+        if not compounds:
+            compounds = [
+                block[len("comp_") :]
+                for block in self.cif.available_blocks
+                if block.startswith("comp_") and block != "comp_list"
+            ]
+
+        # A compound may be named by both the header and its own data rows, and
+        # ``get_all_restraints`` would then build it twice.
+        return list(dict.fromkeys(c for c in compounds if c))
 
     def _validate(self):
         """
@@ -2118,9 +2174,18 @@ class RestraintCIFReader:
         return result
 
     def _filter_by_comp(self, df: pd.DataFrame, comp_id: str) -> pd.DataFrame:
-        """Rows of ``df`` belonging to ``comp_id``."""
+        """Rows of ``df`` belonging to ``comp_id``.
+
+        The index is reset because the caller assembles its result column by
+        column: :meth:`_extract_col` preserves this frame's index for a column it
+        finds but returns a fresh ``RangeIndex`` for one it does not, so a
+        non-zero-based index makes those two disagree and pandas aligns the
+        mismatch away to NaN -- dropping values that are present. Rows only reach
+        a non-zero index once several blocks are concatenated, i.e. exactly on the
+        multi-compound dictionaries this reader now supports.
+        """
         if df.empty:
-            return df
+            return df.drop(columns=[_SOURCE_BLOCK_COLUMN], errors="ignore")
 
         # Try different possible column names for compound ID
         # Include all naming conventions: monomer library, eLBOW/phenix, short forms
@@ -2136,12 +2201,27 @@ class RestraintCIFReader:
             "id",
         ]
 
+        selected = None
         for col in id_cols:
             if col in df.columns:
-                return df[df[col] == comp_id].copy()
+                selected = df[df[col] == comp_id]
+                break
 
-        # If no comp_id column, assume all rows belong to this compound
-        return df.copy()
+        # No comp_id column: fall back to the block the rows were read from.
+        # Dictionaries from eLBOW/Grade often omit comp_id, and without this the
+        # compounds in a multi-block file would be indistinguishable.
+        if selected is None and _SOURCE_BLOCK_COLUMN in df.columns:
+            selected = df[df[_SOURCE_BLOCK_COLUMN].isin([f"comp_{comp_id}", comp_id])]
+
+        # Single-compound file with no comp_id anywhere: every row is its own.
+        if selected is None:
+            selected = df
+
+        return (
+            selected.drop(columns=[_SOURCE_BLOCK_COLUMN], errors="ignore")
+            .reset_index(drop=True)
+            .copy()
+        )
 
     def get_bond_restraints(self, comp_id: str) -> pd.DataFrame:
         """

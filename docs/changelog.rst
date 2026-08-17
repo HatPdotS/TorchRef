@@ -2,6 +2,23 @@ Changelog
 =========
 
 
+Version 0.6.4
+----------
+- Fixed the bulk-solvent ``F_sol`` staying at the starting model's mask for every refinement macrocycle
+- Fixed restraint dictionaries defining several compounds yielding restraints for only one of them
+- Fixed chirality restraints being dropped for the ``positiv``/``negativ`` spellings used by the CCP4 library
+- Compounds that come back with no bond restraints are now reported
+- Fixed written phases (``PH-model``, ``PHWT``, ``PHDELWT``) being negated for reflections whose input Miller indices lay outside the CCP4 ASU
+- Reflections remapped to the CCP4 ASU on load are now reported
+- Switched the scaler's default scale-fit objective from ``nll`` to unit-weight ``ls``
+- Replaced the per-bin ``log_scale`` with a Chebyshev polynomial ``c_iso`` in sin(theta)/lambda
+- Replaced the solvent Debye-Waller factor with ``k_sol exp(-ln2 (ss/ss_half)^n)``, merged sigmoid exponential form
+- Fixed the solvent-mask candidate enumeration, which missed voxels near the atom's grid node
+- Removed the solvent-mask Gaussian smoothing
+- Fixed the scale fit's float64 normalisation constant, which broke MPS
+- Batched direct summation now returns ``dtypes.complex`` instead of always ``complex128``
+
+
 Version 0.6.3
 -------------
 - Fixed peptide-linked residues keeping their free-amino-acid restraint angles

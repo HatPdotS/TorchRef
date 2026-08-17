@@ -317,7 +317,8 @@ class DataTarget(Target):
         Parameters
         ----------
         hkl : torch.Tensor, optional
-            Miller indices. If None, uses data's hkl.
+            Miller indices. If None, evaluates on the data's own reflections in
+            the canonical-ASU convention. An explicit ``hkl`` is used as given.
         recalc : bool, optional
             Force recalculation. Default is False.
 
@@ -337,9 +338,7 @@ class DataTarget(Target):
                 "Either provide a model or pass fcalc directly."
             )
         if hkl is None:
-            # Signed HKL so Bijvoet mates get distinct |F_calc| (see
-            # ReflectionData.hkl_for_sf).
-            hkl = self._data.hkl_for_sf()
+            return self._data.structure_factors(self._model, recalc=recalc)
         return self._model(hkl, recalc=recalc)
 
     def get_fcalc_scaled(self, hkl=None, recalc=False, fcalc=None):

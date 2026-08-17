@@ -172,7 +172,7 @@ class LBFGSRefinement(Refinement):
     def refine_xyz(self):
         """LBFGS over the ``xyz`` body parameters; returns the LossState with history.
 
-        Scaler parameters (``log_scale``, ``U``, solvent) join this call only when
+        Scaler parameters (``c_iso``, ``U``, solvent) join this call only when
         ``corefine_scaler`` is True; by default they are fixed here and updated by
         :meth:`refine_scaler`.
         """
@@ -282,8 +282,8 @@ class LBFGSRefinement(Refinement):
                 before_scaling = self.collect_metrics()
                 cycle_dict["before_scaling"] = before_scaling
 
-            if getattr(self.scaler, "solvent", None) is not None:
-                self.scaler.solvent.update_solvent()
+            if self.scaler is not None:
+                self.scaler.update_solvent()
             # Before the `after_scaling` metrics below, so that label describes this cycle's
             # scaler rather than the previous one's.
             self.refine_scaler()

@@ -122,6 +122,11 @@ def parse_geometry(path: Path):
 # ── runtime (program-reported wall-clock, seconds) ───────────────────────────
 RE_TORCHREF_WALL = re.compile(r"Timing:\s+([\d.]+)s wall")
 RE_PHENIX_EPOCH = re.compile(r"#\s*Date .*?\(([\d.]+)\s*s\)")
+# phenix's own total, in either spelling it uses:
+#   "wall clock time: 179.54 s"
+#   "wall clock time: 4 minutes 6.40 seconds (246.40 seconds total)"
+RE_PHENIX_WALL = re.compile(
+    r"wall clock time:\s*(?:.*?\(([\d.]+)\s*seconds total\)|([\d.]+)\s*s)")
 RE_REFMAC_ELAPSED = re.compile(r"Elapsed:\s+(\d+):(\d+)")
 
 
@@ -136,10 +141,20 @@ def runtime_torchref(engine: str, code: str):
 
 
 def runtime_phenix(engine: str, code: str):
+    """Phenix's own reported total, matching how the other two engines are timed.
+
+    Falls back to differencing the ``# Date`` banners, which is only available when
+    phenix prints a start banner as well as a closing one. That measure runs about
+    1 s short of the reported total, so it is a fallback rather than the primary.
+    """
     p = struct_dir(engine, code) / f"{code}_refined_001.log"
     if not p.exists():
         return None
-    epochs = [float(x) for x in RE_PHENIX_EPOCH.findall(p.read_text(errors="replace"))]
+    text = p.read_text(errors="replace")
+    m = RE_PHENIX_WALL.search(text)
+    if m:
+        return float(m.group(1) or m.group(2))
+    epochs = [float(x) for x in RE_PHENIX_EPOCH.findall(text)]
     return (epochs[-1] - epochs[0]) if len(epochs) >= 2 else None
 
 

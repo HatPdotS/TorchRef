@@ -2,34 +2,34 @@
 """Self-contained pipeline for the AlphaFold-start benchmark arm.
 
 Refines the Phaser-placed AlphaFold models (figure2_alphafold_start/placed/) with
-both TorchRef (with/without rigid body) and Phenix, validates every model with a
-REFMAC5 zero-cycle run for a fair R-factor comparison, and collects the metrics.
+TorchRef, REFMAC and phenix.refine, validates every model with a REFMAC5
+zero-cycle run for a fair R-factor comparison, and collects the metrics.
 
 The structure set is the MR-solved subset (mr_status.csv solved==1 / placed/*).
 
 Subcommands
 -----------
-  refine   --refiner {torchref,phenix} [--rigid-body] [--rigid-body-iter N]
+  refine   --refiner {torchref,phenix,refmac} [--rigid-body] [--rigid-body-iter N]
   validate                     REFMAC 0-cycle on af_initial + each refined arm
                                (validate.log co-located in each arm's run dir)
   analyze                      collect R-factors -> metrics/comparison.csv
-  migrate                      adopt in-flight runs + relocate old flat logs
   status                       queue + output summary
 
-REFMAC submit/parse logic mirrors figure2_validation/run_pipeline.py
-(submit_refmac_jobs / _parse_refmac_log); copied here to keep this self-contained.
+For Figure 2 itself, submit the three arms through
+``analysis/submit_fig2_arms.py`` rather than calling ``refine`` once per engine:
+it emits each structure's three arms adjacently, which Panel C's cross-engine
+wall-clock comparison depends on. ``--refiner torchref`` here is the
+weights/rigid-body variant used for side experiments; the canonical Figure-2
+TorchRef arm is ``analysis/submit_local_arm.py``.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import re
-import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -44,19 +44,39 @@ REPO = PAPER.parent                                     # review/
 DATA = PAPER / "data"
 PLACED = HERE / "placed"
 RUNS = HERE / "runs"
-REFMAC_LOGS = RUNS / "refmac_logs"
 METRICS = RUNS / "metrics"
 MANIFEST = HERE / "manifest.json"
 MR_STATUS = HERE / "mr_status.csv"
 
 PYTHON = str(REPO / ".dev" / "bin" / "python")
 REFINE_SCRIPT = str(REPO / "torchref" / "cli" / "refine.py")
-PHENIX_REFINE = str(PAPER / "figure2_validation" / "phenix_refinement" / "phenix_refine.sh")
-CCP4_SETUP = "/afs/psi.ch/sys/psi.ra/MX/ccp4/7.1/ccp4-7.1/bin/ccp4.setup-sh"
+# CCP4 8.0 from the node-local /opt tree. The AFS-hosted 7.1 this used to point at
+# is gone: /afs is mounted only on the `afs-week` nodes now, so every refmac call
+# (the REFMAC arm *and* the 0-cycle validation every arm is scored by) died with
+# "refmac5: command not found". Verified present on epyc9335 (refmac5 reports
+# "library version 8.0.003"). NB this is a REFMAC version change from the runs
+# before 2026-08-11, which moves the validated R-factors and the geometry RMSZ
+# table Figure 2b reads — not only TorchRef changed between those figures.
+CCP4_SETUP = "/opt/psi/MX/ccp4/8.0/ccp4-8.0/bin/ccp4.setup-sh"
+
+# Source the phenix env directly rather than `module load`: the modulefile uses an
+# unsupported `module-url` command and there is no `module` on the batch nodes at
+# all, so `module load phenix/...` fails with "Unable to locate a modulefile".
+# Same approach (and same version) as analysis/crossscore_array.sh, so the
+# refinement and the scoring run one phenix.
+PHENIX_ENV = "/opt/psi/MX/phenix/1.21.1-5286/phenix-1.21.1-5286/phenix_env.sh"
+
+# One CPU model for every refinement arm. Figure 2c compares wall-clock ACROSS
+# engines, and `hour`/`day` span Xeon 6152/6230/6230R and EPYC 7453/9335, so
+# without a constraint each engine draws a different hardware mix — a systematic
+# per-engine bias, not noise that n=767 averages away. The same epyc9335 nodes
+# belong to hour/day/week, so constraining does not change the partition each arm
+# uses. Matches extended_figures/exF4/submit_singlecore.py, which re-times the
+# same refinements at 1 core.
+CPU_MODEL = "cpu_epyc9335"
 
 # Refinement arms (af_initial = the placed search model, before refinement).
-ARMS = ["af_initial", "torchref_norb", "torchref_rb", "phenix_norb", "phenix_rb",
-        "refmac"]
+ARMS = ["af_initial", "refmac", "phenix_norb", "torchref"]
 
 
 def _mtz(code):
@@ -67,11 +87,9 @@ def model_path(code, arm):
     """Resolve the PDB for a given code+arm (may not exist yet)."""
     if arm == "af_initial":
         return PLACED / f"{code}_af.pdb"
-    if arm == "torchref_norb":
-        return RUNS / "torchref_norb" / "results" / code / "default" / "refined.pdb"
-    if arm == "torchref_rb":
-        return RUNS / "torchref_rb" / "results" / code / "default" / "refined.pdb"
-    if arm in ("phenix_norb", "phenix_rb"):
+    if arm == "torchref":
+        return RUNS / "torchref" / code / "refined.pdb"
+    if arm == "phenix_norb":
         return RUNS / arm / code / f"{code}_refined_001.pdb"
     if arm == "refmac":
         return RUNS / "refmac" / code / "refined.pdb"
@@ -125,6 +143,110 @@ def _sbatch(script_text, script_path, dry_run):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# refine — per-arm sbatch script builders
+#
+# Module-level so analysis/submit_fig2_arms.py can emit a structure's arms
+# adjacently (see its docstring for why interleaving matters for Figure 2c)
+# without re-deriving the flag sets.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def script_refmac(code, pdb, mtz, outdir, cycles=10, constraint=CPU_MODEL):
+    """Restrained REFMAC refinement from the placed AF model.
+
+    Same engine / CCP4 setup / MTZ labels as the 0-cycle validation
+    (:func:`cmd_validate`); the only differences are NCYCLES>0 and capturing
+    XYZOUT. AF models are protein-only, so REFMAC's built-in monomer library
+    suffices (no ligand dictionaries needed). REFMAC picks up FreeR_flag
+    automatically, holding out the same free set the validation scores against.
+
+    stdout lands in ``refmac.log``, which is also where the runtime ("Elapsed:")
+    and the per-cycle R-factor table are parsed from.
+    """
+    out = outdir / "refined.pdb"
+    return f"""#!/bin/bash
+#SBATCH --job-name=af_refmac_{code}
+#SBATCH --partition=hour
+#SBATCH --constraint={constraint}
+#SBATCH --cpus-per-task=4
+#SBATCH --time=00:30:00
+#SBATCH --mem=2G
+#SBATCH --output={outdir / 'refmac.log'}
+#SBATCH --error={outdir / 'refmac.log'}
+
+source {CCP4_SETUP}
+TEMP_DIR=/tmp/refmac_refine_{code}_${{SLURM_JOB_ID}}
+mkdir -p $TEMP_DIR && cd $TEMP_DIR
+export CCP4_SCR=$TEMP_DIR
+cp {pdb} input.pdb
+cp {mtz} input.mtz
+refmac5 HKLIN input.mtz HKLOUT output.mtz XYZIN input.pdb XYZOUT output.pdb << EOF
+NCYCLES {cycles}
+MAKE HYDR NO
+END
+EOF
+cp output.pdb {out}
+cd / && rm -rf $TEMP_DIR
+"""
+
+
+def script_phenix(code, pdb, mtz, outdir, cycles=10, constraint=CPU_MODEL):
+    """phenix.refine from the placed AF model, no rigid body.
+
+    The flag set is fixed by what the comparison has to be: automatic
+    target-weight optimization is OFF because phenix's default runs a
+    per-macrocycle weight grid-search (~2.4x slower) that no other engine does,
+    and the Ramachandran restraint is OFF to match. AF models are protein-only,
+    so no ligand restraints are needed.
+
+    Runs in ``outdir`` because phenix writes beside its cwd and
+    ``aggregate_figure_metrics.runtime_phenix`` reads the epoch stamps out of
+    ``{{code}}_refined_001.log`` there. CRYST1 "None" in the Z field is sed-fixed
+    first, or phenix rejects the file.
+
+    Identical flags and phenix version to
+    ``extended_figures/exF4/submit_singlecore.py`` apart from ``nproc``, so exF4 is
+    a like-for-like re-timing of this run at 1 core.
+
+    Every ``--`` flag precedes the positional arguments. phenix.refine's CLI takes
+    two variadic positional groups (``files`` then ``phil``) and cannot split them
+    across an option, so a flag in the middle makes it reject every argument after
+    the model and data files.
+    """
+    return f"""#!/bin/bash
+#SBATCH --job-name=af_phenix_{code}
+#SBATCH --partition=day
+#SBATCH --constraint={constraint}
+#SBATCH --cpus-per-task=4
+#SBATCH --time=04:00:00
+#SBATCH --mem=8G
+#SBATCH --output={outdir / 'phenix_refine.log'}
+#SBATCH --error={outdir / 'phenix_refine.log'}
+
+source {PHENIX_ENV}
+cd {outdir}
+if grep -q "^CRYST1.*None" {pdb}; then
+    sed 's/\\(CRYST1.*P [0-9]* *[0-9]* *[0-9]* *\\)None/\\1   12/' {pdb} > input.pdb
+else
+    cp {pdb} input.pdb
+fi
+phenix.refine --overwrite --quiet \\
+    input.pdb {mtz} \\
+    output.prefix={code}_refined \\
+    refinement.main.number_of_macro_cycles={cycles} \\
+    refinement.main.nproc=4 \\
+    refinement.refine.strategy=individual_sites+individual_adp+occupancies \\
+    refinement.main.simulated_annealing=false \\
+    refinement.target_weights.optimize_xyz_weight=false \\
+    refinement.target_weights.optimize_adp_weight=false \\
+    refinement.main.bulk_solvent_and_scale=true \\
+    refinement.main.ordered_solvent=false \\
+    refinement.ordered_solvent.mode=every_macro_cycle \\
+    refinement.pdb_interpretation.ramachandran_plot_restraints.enabled=false \\
+    write_def_file=false write_eff_file=false write_geo_file=false --quiet
+"""
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # refine
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -163,20 +285,15 @@ def cmd_refine(args):
     -n {args.n_cycles} \\
     --mode separate \\
     --xray-mode {args.xray_mode} \\
-    --weights '{{"adp": {args.adp_weight}}}' \\
-    --sigma-m-scale {args.sigma_m_scale}{rb_line}
+    --weights '{{"adp": {args.adp_weight}}}'{rb_line}
 """
             if _sbatch(script, tmp / f"ref_{code}.sh", args.dry_run) or args.dry_run:
                 submitted += 1
 
-    elif args.refiner == "refmac":
-        # Restrained REFMAC refinement from the placed AF model. Same engine /
-        # CCP4 setup / MTZ labels as the 0-cycle validation (cmd_validate); the
-        # only differences are NCYCLES>0 and capturing XYZOUT. AF models are
-        # protein-only, so REFMAC's built-in monomer library suffices (no
-        # ligand dictionaries needed). REFMAC picks up FreeR_flag automatically,
-        # holding out the same free set the validation scores against.
-        arm = "refmac"
+    else:  # refmac / phenix
+        arm = "refmac" if args.refiner == "refmac" else "phenix_norb"
+        build = script_refmac if args.refiner == "refmac" else script_phenix
+        cycles = args.refmac_cycles if args.refiner == "refmac" else args.n_cycles
         tmp = RUNS / arm / "tmp_scripts"
         for code in codes:
             pdb, mtz = PLACED / f"{code}_af.pdb", _mtz(code)
@@ -184,60 +301,19 @@ def cmd_refine(args):
                 missing += 1
                 continue
             outdir = RUNS / arm / code
-            out = outdir / "refined.pdb"
-            if out.exists() and not args.force:
+            if model_path(code, arm).exists() and not args.force:
                 skipped += 1
                 continue
             if not args.dry_run:
                 outdir.mkdir(parents=True, exist_ok=True)
-            script = f"""#!/bin/bash
-#SBATCH --job-name=af_refmac_{code}
-#SBATCH --partition=hour
-#SBATCH --cpus-per-task=4
-#SBATCH --time=00:30:00
-#SBATCH --mem=2G
-#SBATCH --output={outdir / 'refmac.log'}
-#SBATCH --error={outdir / 'refmac.log'}
-
-source {CCP4_SETUP}
-TEMP_DIR=/tmp/refmac_refine_{code}_${{SLURM_JOB_ID}}
-mkdir -p $TEMP_DIR && cd $TEMP_DIR
-export CCP4_SCR=$TEMP_DIR
-cp {pdb} input.pdb
-cp {mtz} input.mtz
-refmac5 HKLIN input.mtz HKLOUT output.mtz XYZIN input.pdb XYZOUT output.pdb << EOF
-NCYCLES {args.refmac_cycles}
-MAKE HYDR NO
-END
-EOF
-cp output.pdb {out}
-cd / && rm -rf $TEMP_DIR
-"""
-            if _sbatch(script, tmp / f"refmac_{code}.sh", args.dry_run) or args.dry_run:
+            script = build(code, pdb, mtz, outdir, cycles=cycles,
+                           constraint=args.constraint)
+            if args.dry_run and submitted == 0:
+                print("── example sbatch script ──")
+                print(script)
+                print("───────────────────────────")
+            if _sbatch(script, tmp / f"{args.refiner}_{code}.sh", args.dry_run) or args.dry_run:
                 submitted += 1
-
-    else:  # phenix
-        rigid = "rb" if args.rigid_body else "norb"
-        arm = f"phenix_{rigid}"
-        for code in codes:
-            if not (PLACED / f"{code}_af.pdb").exists() or not _mtz(code).exists():
-                missing += 1
-                continue
-            out = RUNS / arm / code / f"{code}_refined_001.pdb"
-            if out.exists() and not args.force:
-                skipped += 1
-                continue
-            if args.dry_run:
-                print(f"  [DRY-RUN] sbatch {PHENIX_REFINE} {code} af {rigid}")
-                submitted += 1
-                continue
-            try:
-                subprocess.run(["sbatch", "--job-name", f"phenix_{rigid}_{code}",
-                                PHENIX_REFINE, code, "af", rigid], check=True,
-                               capture_output=True, text=True)
-                submitted += 1
-            except subprocess.CalledProcessError as e:
-                print(f"  FAILED {code}: {e.stderr.strip()}")
 
     print(f"\n{args.refiner} refine: submitted={submitted}, "
           f"skipped={skipped}, missing={missing}")
@@ -371,59 +447,6 @@ def cmd_analyze(args):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# migrate (adopt in-flight runs)
-# ──────────────────────────────────────────────────────────────────────────────
-
-MIGRATIONS = [
-    (PAPER / "figure2_validation" / "experiments" / "af_start_v1", RUNS / "torchref_norb"),
-    (PAPER / "figure2_validation" / "experiments" / "af_start_rb", RUNS / "torchref_rb"),
-    (PAPER / "phenix_refinements_af", RUNS / "phenix_rb"),
-]
-
-
-def cmd_migrate(args):
-    RUNS.mkdir(parents=True, exist_ok=True)
-    for src, dst in MIGRATIONS:
-        if dst.exists():
-            print(f"SKIP {dst.name}: destination already exists")
-            continue
-        if not src.exists():
-            print(f"SKIP {dst.name}: source {src} not found")
-            continue
-        print(f"MOVE {src}  ->  {dst}")
-        if not args.dry_run:
-            shutil.move(str(src), str(dst))
-
-    # Relocate the old flat validation logs (refmac_logs/{code}_{arm}.log) into
-    # their co-located run dirs so the already-computed validations are reused
-    # rather than re-submitted. Arm names contain underscores and PDB codes do
-    # not, so match the longest arm suffix to split the stem unambiguously.
-    moved = unmatched = collided = 0
-    arms_by_len = sorted(ARMS, key=len, reverse=True)
-    if REFMAC_LOGS.exists():
-        for old in sorted(REFMAC_LOGS.glob("*.log")):
-            stem = old.stem
-            arm = next((a for a in arms_by_len if stem.endswith("_" + a)), None)
-            if arm is None:
-                unmatched += 1
-                continue
-            code = stem[: -(len(arm) + 1)]
-            dst = validate_log(code, arm)
-            if dst.exists():
-                collided += 1
-                continue
-            if not args.dry_run:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(old), str(dst))
-            moved += 1
-        print(f"validation logs: {moved} relocated, {collided} already present, "
-              f"{unmatched} unmatched")
-
-    if args.dry_run:
-        print("(dry-run; nothing moved)")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # status
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -474,7 +497,11 @@ def main():
                    help="Group weight on the entire ADP loss (locked default 0.02; "
                         "see DEFAULT_GROUP_WEIGHTS).")
     p.add_argument("--xray-mode", default="ml")
-    p.add_argument("--sigma-m-scale", type=float, default=1.0)
+    p.add_argument("--constraint", default=CPU_MODEL,
+                   help="SLURM --constraint for the refmac/phenix arms. One CPU "
+                        "model across engines is what makes Figure 2c's "
+                        "cross-engine wall-clock comparison meaningful; see "
+                        "CPU_MODEL.")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_refine)
@@ -488,10 +515,6 @@ def main():
     p = sub.add_parser("analyze")
     common(p)
     p.set_defaults(func=cmd_analyze)
-
-    p = sub.add_parser("migrate")
-    p.add_argument("--dry-run", action="store_true")
-    p.set_defaults(func=cmd_migrate)
 
     p = sub.add_parser("status")
     p.set_defaults(func=cmd_status)

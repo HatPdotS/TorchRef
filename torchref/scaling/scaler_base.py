@@ -25,6 +25,7 @@ from torchref.utils.autograd_ops import gather_with_index_add
 from torchref.utils.debug_utils import DebugMixin
 from torchref.utils.device_mixin import DeviceMixin
 from torchref.utils.device_resolution import resolve_device
+from torchref.scaling.solvent import SS_HALF_BOUNDS
 from torchref.utils.utils import ModuleReference
 
 if TYPE_CHECKING:
@@ -37,12 +38,16 @@ if TYPE_CHECKING:
 #: scale fit and the body refinement evaluate the same likelihood code, and differ only in
 #: which row they pick. Neither row may centre on ``alpha`` -- see
 #: :meth:`ScalerBase.refine_lbfgs`.
-SCALE_TARGETS = ("nll", "ml_noalpha")
+SCALE_TARGETS = ("nll", "ml_noalpha", "ls")
 
 #: The default scale-fit objective, defined ONCE: the constructors, the
 #: ``getattr`` fallbacks and the CLI's ``default=``/``choices=`` must all read it
 #: from here rather than repeating the string.
-DEFAULT_SCALE_TARGET = "nll"
+#:
+#: ``ls`` weights every reflection equally, matching how R itself weights them; ``nll``
+#: divides each residual by ``sigma**2`` and so up-weights weak reflections relative to
+#: their contribution to R.
+DEFAULT_SCALE_TARGET = "ls"
 
 
 class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
@@ -50,17 +55,28 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
     Base scaler class for crystallographic scaling without model dependency.
 
     Construct either fully (``ScalerBase(data=..., nbins=20)`` then ``initialize(fcalc)``)
-    or empty (``ScalerBase()`` then ``load_state_dict``). Note that ``log_scale``, ``U``
+    or empty (``ScalerBase()`` then ``load_state_dict``). Note that ``c_iso``, ``U``
     and ``solvent`` do **not** exist until ``initialize()`` / ``set_solvent_model()`` runs
     -- :meth:`forward` tests for each with ``hasattr`` and silently skips the missing ones,
     so an un-initialized scaler is an identity transform rather than an error.
+
+    The isotropic scale is a Chebyshev polynomial in ``sqrt(s_half_sq)``, evaluated per
+    reflection: ``k_iso = exp(sum_i c_iso[i] T_i(u))``. Every reflection contributes to
+    every coefficient with a continuous weight, so there are no bin boundaries and nothing
+    changes discontinuously when a reflection moves between shells. Bins survive only as
+    the device that seeds ``c_iso`` (:meth:`calc_initial_scale`) and as the sizing oracle
+    for :meth:`forward`'s masking test.
 
     Parameters
     ----------
     data : ReflectionData, optional
         ReflectionData object with observed data.
     nbins : int, default 20
-        Number of resolution bins. Overwritten by the binner's actual count.
+        Number of resolution bins used to seed the scale and to size the per-reflection
+        masking test. Overwritten by the binner's actual count.
+    n_iso_coeff : int, default 6
+        Number of Chebyshev terms in the isotropic scale. ``1`` collapses it to a single
+        global constant, since ``T_0 = 1``.
     verbose : int, default 1
         Verbosity level.
     device : torch.device, optional
@@ -69,20 +85,24 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
     Attributes
     ----------
-    log_scale : torch.nn.Parameter
-        Per-bin log scale factors.
+    c_iso : torch.nn.Parameter
+        Chebyshev coefficients of the isotropic log scale.
     U : torch.nn.Parameter
         Anisotropic scaling parameters, as the 6 unique components.
     solvent : SolventModel
         Bulk-solvent model.
     cell, bins, s
         Cell, per-reflection bin indices and scattering vectors, from the data.
+    _iso_design : torch.Tensor
+        ``(N_reflections, n_iso_coeff)`` Chebyshev design matrix for ``c_iso``. Derived
+        from the reflection set, so it is rebuilt rather than serialised.
     """
 
     def __init__(
         self,
         data: Optional["ReflectionData"] = None,
         nbins: int = 20,
+        n_iso_coeff: int = 6,
         verbose: int = 1,
         device: Optional[torch.device] = None,
     ):
@@ -92,6 +112,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         self.device = resolve_device(data, device=device)
         self.verbose = verbose
         self.nbins = nbins
+        self.n_iso_coeff = n_iso_coeff
 
         # Empty shell: configuration only, ready for load_state_dict().
         if data is None:
@@ -100,6 +121,10 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             self.register_buffer("s", None)
             self.register_buffer("bins", None)
             self.register_buffer("_s_half_sq", None)
+            # Non-persistent: derived from ``_s_half_sq`` and valid only for THIS
+            # reflection set, so a checkpoint rebuilds it rather than carrying a design
+            # matrix belonging to different data.
+            self.register_buffer("_iso_design", None, persistent=False)
             self._f_sol_raw = None
             return
 
@@ -111,11 +136,40 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         self.register_buffer("s", s)
         # Precompute (sin(θ)/λ)^2 for B-factor damping — avoids recomputing per call
         self.register_buffer("_s_half_sq", (torch.norm(s, dim=1) / 2.0) ** 2)
+        self.register_buffer("_iso_design", self._build_iso_design(), persistent=False)
         self._f_sol_raw = None
         bins, self.nbins = self._data.get_bins(self.nbins)
         self.register_buffer("bins", bins)
         if self.verbose > 0:
             print(f"Initialized ScalerBase with {self.nbins} bins.")
+
+    def _build_iso_design(self) -> torch.Tensor:
+        """``(N, n_iso_coeff)`` Chebyshev design matrix for the isotropic scale.
+
+        The abscissa is ``sqrt(s_half_sq)``, i.e. ``sin(theta)/lambda``, mapped onto
+        ``[-1, 1]``. That coordinate rather than ``s**2`` because the modulation is gentle
+        through the bulk of the resolution range but has real structure in the first few
+        percent of ``s**2``; a basis uniform in ``s**2`` spends nearly all its resolution
+        where nothing happens.
+        """
+        x = torch.sqrt(self._s_half_sq.clamp(min=0))
+        lo, hi = x.min(), x.max()
+        u = (2 * (x - lo) / (hi - lo).clamp(min=1e-12) - 1).clamp(-1.0, 1.0)
+        cols = [torch.ones_like(u), u]
+        for _ in range(2, self.n_iso_coeff):
+            cols.append(2 * u * cols[-1] - cols[-2])  # Chebyshev recurrence
+        return torch.stack(cols[: self.n_iso_coeff], dim=1)
+
+    def iso_log_scale(self, design: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Per-reflection isotropic log scale ``design @ c_iso``, clamped to ``[-10, 10]``.
+
+        The clamp is per reflection, not on the coefficients: a polynomial is unbounded at
+        the ends of its range, so without it a single extreme reflection can carry an
+        arbitrarily large scale.
+        """
+        if design is None:
+            design = self._iso_design
+        return (design @ self.c_iso).clamp(min=-10.0, max=10.0)
 
     def set_data(self, data: "ReflectionData"):
         """
@@ -138,13 +192,17 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             s = get_scattering_vectors(data.hkl, data.cell)
             self.register_buffer("s", s)
             self.register_buffer("_s_half_sq", (torch.norm(s, dim=1) / 2.0) ** 2)
+        if getattr(self, "_iso_design", None) is None and self._s_half_sq is not None:
+            self.register_buffer(
+                "_iso_design", self._build_iso_design(), persistent=False
+            )
         self._f_sol_raw = None
         if self.bins is None and data.hkl is not None:
             bins, self.nbins = self._data.get_bins(self.nbins)
             self.register_buffer("bins", bins)
 
     def initialize(self, fcalc: torch.Tensor):
-        """Create ``log_scale`` and ``U`` from the complex ``fcalc``."""
+        """Create ``c_iso`` and ``U`` from the complex ``fcalc``."""
         self.calc_initial_scale(fcalc)
         self.setup_anisotropy_correction()
 
@@ -155,10 +213,12 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
     def calc_initial_scale(self, fcalc: torch.Tensor):
         """
-        Per-bin initial scale from the observed/calculated amplitude ratio.
+        Seed ``c_iso`` from the closed-form observed/calculated amplitude ratio.
 
-        Fitted on the **work set only**, excluding negative-intensity reflections whose
-        French-Wilson F values are biased. Creates and returns ``self.log_scale``.
+        The ratio is evaluated per bin, then projected onto the Chebyshev basis by least
+        squares, so the fit starts from the same scale curve the binned model would have
+        started from. Fitted on the **work set only**, excluding negative-intensity
+        reflections whose French-Wilson F values are biased.
 
         Parameters
         ----------
@@ -168,7 +228,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         Returns
         -------
         torch.nn.Parameter
-            The per-bin log scale parameter.
+            The Chebyshev coefficient parameter ``c_iso``.
         """
         fobs = self._data.get_corrected_data()[0]
         if self.verbose > 0:
@@ -205,8 +265,12 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 "Initial scale factors per bin:",
                 initial_log_scale.detach().cpu().numpy(),
             )
-        self.log_scale = nn.Parameter(initial_log_scale.detach().to(self.device))
-        return self.log_scale
+        with torch.no_grad():
+            target = initial_log_scale.detach().to(self.device)[self.bins.to(torch.int64)]
+            design = self._iso_design.to(target.dtype)
+            coeff = torch.linalg.lstsq(design, target.unsqueeze(1)).solution.squeeze(1)
+        self.c_iso = nn.Parameter(coeff.detach().to(self.device))
+        return self.c_iso
 
     def setup_anisotropy_correction(self):
         """Initialize anisotropic correction parameters."""
@@ -222,41 +286,6 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         exp = -2 * torch.pi**2 * (sU * self.s).sum(dim=1)
         return torch.exp(exp.clamp(max=10.0, min=-10.0))
 
-    def fit_anisotropy(self, fcalc: torch.Tensor, nsteps: int = 100):
-        """
-        Adam-fit ``U`` and ``log_scale`` together against the work set.
-
-        Creates ``U`` if absent. Requires ``log_scale`` to exist already.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor
-            Calculated structure factors (complex).
-        nsteps : int, default 100
-            Number of optimization steps.
-        """
-        if not hasattr(self, "U"):
-            self.U = nn.Parameter(
-                torch.normal(0, 0.01, (6,), dtype=get_float_dtype(), device=self.device)
-            )
-        work = self._data.work
-        F_obs = work.F.to(get_float_dtype()).detach()
-        sigma_w = work.sigF.to(get_float_dtype()).detach()
-        fcalc = torch.abs(fcalc).to(get_float_dtype()).detach()
-
-        optimizer = torch.optim.Adam([self.U, self.log_scale], lr=1e-1)
-        for i in range(nsteps):
-            optimizer.zero_grad()
-            scaled_fcalc = self.forward(fcalc)
-            loss = nll_xray(F_obs, work.select(scaled_fcalc), sigma_w)
-
-            loss.backward()
-            optimizer.step()
-            if self.verbose > 0 and (i % 10 == 0 or i == nsteps - 1):
-                print(
-                    f"Anisotropy fit iteration {i+1}/{nsteps}, Loss: {loss.item():.4f}"
-                )
-
     def set_solvent_model(self, solvent_model: "SolventModel") -> None:
         """
         Attach a pre-configured :class:`SolventModel` and invalidate the ``F_sol`` cache.
@@ -270,6 +299,21 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         """
         self.solvent = solvent_model
         self._f_sol_raw = None  # Invalidate cached raw solvent SFs
+
+    def update_solvent(self) -> None:
+        """Rebuild the solvent mask at the current coordinates and drop the cached ``F_sol``.
+
+        Both halves belong to one operation. :meth:`forward` recomputes ``_f_sol_raw`` only
+        when it is ``None``, so rebuilding the mask without clearing the cache leaves
+        ``F_calc`` on the mask from whenever the cache was last filled -- on a macrocycle
+        loop, the starting coordinates.
+
+        No-op when there is no solvent model, so callers do not need to guard.
+        """
+        if getattr(self, "solvent", None) is None:
+            return
+        self.solvent.update_solvent()
+        self._f_sol_raw = None
 
     def setup_binwise_solvent_scale(self):
         """
@@ -293,78 +337,15 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             torch.log(initial_kmask.clamp(min=1e-6) + 1e-6).to(self.device)
         )
 
-    def fit_all_scales(self, fcalc: torch.Tensor):
-        """
-        Adam-fit **every** scaler parameter on the work set, over three descending LRs.
-
-        Raises ``ValueError`` if the NLL goes NaN.
-
-        Parameters
-        ----------
-        fcalc : torch.Tensor
-            Calculated structure factors (complex).
-        """
-        work = self._data.work
-        F_obs = work.F.to(get_float_dtype()).detach()
-        sigma_w = work.sigF.to(get_float_dtype()).detach()
-        fcalc = fcalc.detach()
-
-        for lr in [1e-1, 5e-2, 1e-2]:
-            optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-            for i in range(20):
-                optimizer.zero_grad()
-                scaled_fcalc = self.forward(fcalc)
-                nll_loss = nll_xray(F_obs, work.select(scaled_fcalc), sigma_w)
-                if torch.isnan(nll_loss):
-                    raise ValueError(
-                        "NaN encountered in NLL loss during scale fitting."
-                    )
-                nll_log_loss_xray = nll_xray_lognormal(
-                    F_obs, work.select(scaled_fcalc), sigma_w
-                )
-                loss = nll_loss
-                loss.backward()
-                optimizer.step()
-            if self.verbose > 1:
-                print(
-                    f"Solvent fit after step, Loss: {loss.item():.4f}, NLL: {nll_loss.item():.4f}, LogLoss: {nll_log_loss_xray.item():.4f}"
-                )
-
-    def fit_simple(self, fobs: torch.Tensor, fcalc: torch.Tensor) -> None:
-        """
-        Set one global scale analytically: ``k = sum(|Fo||Fc|) / sum(|Fc|^2)``.
-
-        For rigid-body refinement, where only an overall scale is wanted. Uses **all**
-        reflections passed, with no work/free split, and writes the single value into every
-        bin of ``log_scale`` (creating it if needed).
-
-        Parameters
-        ----------
-        fobs : torch.Tensor
-            Observed structure factor amplitudes.
-        fcalc : torch.Tensor
-            Calculated structure factors (complex).
-        """
-        fcalc_amp = torch.abs(fcalc)
-        fobs_amp = torch.abs(fobs)
-
-        numerator = torch.sum(fobs_amp * fcalc_amp)
-        denominator = torch.sum(fcalc_amp**2)
-
-        scale = numerator / denominator.clamp(min=1e-10)
-
-        if not hasattr(self, "log_scale") or self.log_scale is None:
-            self.log_scale = nn.Parameter(
-                torch.zeros(self.nbins, dtype=fobs.dtype, device=self.device)
-            )
-
-        with torch.no_grad():
-            self.log_scale.fill_(torch.log(scale.clamp(min=1e-6)))
-
     def get_scale(self) -> float:
-        """``exp`` of the mean per-bin log scale, or 1.0 if unscaled. Not per-bin."""
-        if hasattr(self, "log_scale") and self.log_scale is not None:
-            return torch.exp(self.log_scale.mean().clamp(-10, 10)).item()
+        """``exp`` of the reflection-mean isotropic log scale, or 1.0 if unscaled.
+
+        One number summarising a curve, for callers that want an overall magnitude; it is
+        not the scale applied to any particular reflection.
+        """
+        if hasattr(self, "c_iso") and self.c_iso is not None:
+            with torch.no_grad():
+                return torch.exp(self.iso_log_scale().mean()).item()
         return 1.0
 
     def setup_bin_wise_bfactor(self):
@@ -437,13 +418,16 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         low_res_limit: float = 3.5,
     ):
         """
-        Grid-search ``(k_sol, B_sol)`` and write the best pair into the solvent model.
+        Grid-search ``(k_sol, ss_half)`` and write the best pair into the solvent model.
 
         Mutates ``self.solvent`` in place (``.data`` assignment, so no gradient history) and
-        leaves the winning values behind; there is no restore. Restricting the fit to low
-        resolution keeps high-resolution reflections from pushing ``B_sol`` too low, since
-        the bulk solvent only contributes at low resolution. Falls back to all work
-        reflections if fewer than 100 pass ``low_res_limit``.
+        leaves the winning values behind; there is no restore. The falloff exponent ``n``
+        is left at its current value -- it trades off against ``ss_half`` and a
+        three-dimensional grid costs ``steps**3`` forward passes for a parameter the
+        subsequent L-BFGS fit refines anyway. Restricting the fit to low resolution keeps
+        high-resolution reflections, where the solvent has already switched off, from
+        driving the falloff. Falls back to all work reflections if fewer than 100 pass
+        ``low_res_limit``.
 
         Parameters
         ----------
@@ -508,23 +492,27 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             weights = weights / weights[low_res_mask].sum()
 
         best_log_k_solvent = self.solvent.log_k_solvent.clone()
-        best_b_solvent = self.solvent.b_solvent.clone()
+        best_log_ss_half = self.solvent.log_ss_half.clone()
         best_loss = float("inf")
 
         ksol_start = torch.log(torch.tensor(0.1, device=self.device))
         ksol_end = torch.log(torch.tensor(0.6, device=self.device))
+        ss_lo, ss_hi = SS_HALF_BOUNDS
 
         for log_k_solvent in torch.linspace(
             ksol_start, ksol_end, steps=steps, device=self.device
         ):
-            for b_solvent in torch.linspace(
-                30.0, 100.0, steps=steps, device=self.device
+            for log_ss_half in torch.linspace(
+                float(torch.log(torch.tensor(ss_lo))),
+                float(torch.log(torch.tensor(ss_hi))),
+                steps=steps,
+                device=self.device,
             ):
                 self.solvent.log_k_solvent.data = log_k_solvent.to(
                     dtype=self.solvent.log_k_solvent.dtype
                 )
-                self.solvent.b_solvent.data = b_solvent.to(
-                    dtype=self.solvent.b_solvent.dtype
+                self.solvent.log_ss_half.data = log_ss_half.to(
+                    dtype=self.solvent.log_ss_half.dtype
                 )
 
                 scaled_fcalc = self.forward(fcalc)
@@ -547,20 +535,21 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 if nll_loss.item() < best_loss:
                     best_loss = nll_loss.item()
                     best_log_k_solvent = log_k_solvent.clone()
-                    best_b_solvent = b_solvent.clone()
+                    best_log_ss_half = log_ss_half.clone()
 
         self.solvent.log_k_solvent.data = best_log_k_solvent.to(
             dtype=self.solvent.log_k_solvent.dtype
         )
-        self.solvent.b_solvent.data = best_b_solvent.to(
-            dtype=self.solvent.b_solvent.dtype
+        self.solvent.log_ss_half.data = best_log_ss_half.to(
+            dtype=self.solvent.log_ss_half.dtype
         )
 
         if self.verbose > 0:
             k_sol = torch.exp(best_log_k_solvent).item()
+            d_half = 1.0 / (2.0 * torch.exp(best_log_ss_half).sqrt().item())
             print(
-                f"Optimal solvent parameters found: k_sol={k_sol:.4f}, B_sol={best_b_solvent.item():.1f}, "
-                f"NLL Loss={best_loss:.4f}"
+                f"Optimal solvent parameters found: k_sol={k_sol:.4f}, "
+                f"d_half={d_half:.2f} A, NLL Loss={best_loss:.4f}"
             )
 
     def refine_lbfgs(
@@ -593,21 +582,21 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Number of previous gradients kept for the Hessian approximation.
         verbose : bool, default True
             Print progress; gated by ``self.verbose`` as well.
-        scale_target : {'nll', 'ml_noalpha'}, default 'nll'
+        scale_target : str, default :data:`DEFAULT_SCALE_TARGET`
             Which :data:`~torchref.refinement.targets.xray._specs.XRAY_TARGETS` row to
-            minimise, restricted to :data:`SCALE_TARGETS`. ``'nll'`` is the
-            sigma_obs-weighted Gaussian; ``'ml_noalpha'`` is the Read-MLF sigma_A likelihood.
+            minimise, restricted to :data:`SCALE_TARGETS`. ``'ls'`` is unit-weight least
+            squares; ``'nll'`` is the sigma_obs-weighted Gaussian; ``'ml_noalpha'`` is the
+            Read-MLF sigma_A likelihood.
 
             Only rows whose likelihood centres on ``|F_calc|`` are admissible: ``alpha`` is
             degenerate with the scale being fitted, so an ``alpha*|F_calc|``-centred row
             (``ml``, ``ml_full``) drives the scale to absorb ``1/alpha`` and inflates every
             R-factor computed from ``k*|F_calc|``.
 
-            **Hazard on the default path**: a least-squares fit collapses the per-bin scale
-            toward 0 in shells where ``F_obs`` is noise-dominated and uncorrelated with
-            ``F_calc``, which blows up R. Inspect the per-bin ``log_scale`` spread and the
-            post-scaling R-factors, and switch to ``'ml_noalpha'`` -- whose ``beta`` absorbs
-            the mismatch instead -- if outer or low-resolution shells collapse.
+            A least-squares fit can drive the per-bin scale toward 0 in shells where
+            ``F_obs`` is noise-dominated and uncorrelated with ``F_calc``, which blows up
+            R. The diagnostic is ``min(k)/median(k)`` over the per-bin scales;
+            ``'ml_noalpha'`` absorbs such a mismatch into ``beta`` instead.
 
         Returns
         -------
@@ -648,13 +637,34 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         )
         scaler_self = self
 
+        # One constant applied to EVERY term below, so the objective is an exact
+        # rescaling: same minimiser, same gradient direction, same relative weight
+        # between the likelihood and the U penalty.
+        #
+        # ``torch.optim.LBFGS`` converges on ABSOLUTE tolerances (``tolerance_grad``,
+        # ``tolerance_change``), so the objective has to be O(1) for them to mean
+        # anything. Unnormalised it carries the data's own magnitude -- a large work set
+        # under unit weights reaches ~1e9, where the float32 ulp of the loss exceeds the
+        # decrease the line search is trying to resolve, and the walk leaves ``U`` far
+        # enough out that ``sum(U**2)`` overflows. Dividing by ``sum(F_obs**2)`` makes the
+        # loss dimensionless and O(R**2) whatever the structure size or data scale.
+        #
+        # Computed in the configured dtype. Because the constant rescales every term
+        # identically, its own precision does not enter the result: it only has to be
+        # finite, positive and of the right magnitude. float32 gives it to ~5e-8 relative
+        # (``sum`` reduces pairwise, so error grows like log(N)*eps, not N*eps), which
+        # cancels out of the minimiser and the gradient direction alike. Do not cast to
+        # float64 -- MPS has none and raises on ``.double()``.
+        _f_obs_work = self._data.work.F.detach()
+        _norm = float(1.0 / _f_obs_work.pow(2).sum().clamp(min=1e-30))
+
         class _ScalerXrayTarget(nn.Module):
             """The registry row, closed over the detached ``fcalc``."""
 
             name = "scaler/xray"
 
             def forward(self):
-                return scale_xray(fcalc=fcalc)
+                return scale_xray(fcalc=fcalc) * _norm
 
             def maintenance(self):
                 """Forward the hook so sigma_A rows drop their ``beta`` cache after a step
@@ -674,7 +684,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             name = "scaler/u_penalty"
 
             def forward(self):
-                return torch.sum(scaler_self.U**2)
+                return torch.sum(scaler_self.U**2) * _norm
 
         state = LossState(device=self.device)
         state.register_target("scaler/xray", _ScalerXrayTarget())
@@ -811,9 +821,10 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             # Lazily cache raw solvent SFs (FFT of mask) — only recomputed
             # when invalidated via _f_sol_raw = None (e.g. after update_solvent)
             if self._f_sol_raw is None:
-                # Signed HKL to match the (anomalous) fcalc so the complex sum
-                # k*(F_calc + F_sol) is consistent per Bijvoet mate.
-                self._f_sol_raw = self.solvent.get_rec_solvent(self._data.hkl_for_sf())
+                # The solvent mask is real density with no anomalous term, so
+                # F_sol(-h) is exactly conj(F_sol(h)) and evaluating on the
+                # canonical index already matches the canonical fcalc below.
+                self._f_sol_raw = self.solvent.get_rec_solvent(self.hkl)
 
             f_sol_raw = (
                 self._f_sol_raw[mask] if apply_internal_mask else self._f_sol_raw
@@ -827,17 +838,15 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
                 kmask_per_refl = gather_with_index_add(kmask, bins_to_use)
                 f_sol = kmask_per_refl * f_sol_raw
             else:
-                # k_sol * exp(i*phase) * exp(-B*s^2) * f_mask
+                # k_sol * exp(i*phase) * falloff(ss) * f_mask, with the falloff taken
+                # from the solvent model itself so this path and ``SolventModel.forward``
+                # cannot drift apart.
                 sol = self.solvent
-                k_sol = torch.exp(sol.log_k_solvent.clamp(min=-10.0, max=10.0))
+                k_sol = sol.k_solvent()
                 s_half_sq = (
                     self._s_half_sq[mask] if apply_internal_mask else self._s_half_sq
                 )
-                b_factor = torch.exp(
-                    (-sol.b_solvent.clamp(min=-500.0, max=500.0) * s_half_sq).clamp(
-                        min=-10.0, max=10.0
-                    )
-                )
+                b_factor = sol.damping(s_half_sq)
                 if sol.optimize_phase:
                     # A bare ``1j`` would promote the product to complex128.
                     j = torch.tensor(1j, dtype=get_complex_dtype(), device=self.device)
@@ -846,13 +855,9 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         else:
             f_sol = torch.tensor(0.0, device=self.device, dtype=fcalc.dtype)
 
-        if hasattr(self, "log_scale") and self.log_scale is not None:
-            bins_to_use = self.bins[mask] if apply_internal_mask else self.bins
-            K_overall = torch.exp(
-                gather_with_index_add(self.log_scale, bins_to_use).clamp(
-                    min=-10.0, max=10.0
-                )
-            )
+        if hasattr(self, "c_iso") and self.c_iso is not None:
+            design = self._iso_design[mask] if apply_internal_mask else self._iso_design
+            K_overall = torch.exp(self.iso_log_scale(design))
         else:
             K_overall = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
 
@@ -877,7 +882,8 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         """
-        Buffers and parameters, plus ``nbins``/``verbose`` and the solvent sub-state.
+        Buffers and parameters, plus ``nbins``/``n_iso_coeff``/``verbose`` and the solvent
+        sub-state.
 
         The **data reference is not saved** -- reattach it with :meth:`set_data` after
         loading.
@@ -896,6 +902,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         )
 
         state[prefix + "nbins"] = self.nbins
+        state[prefix + "n_iso_coeff"] = self.n_iso_coeff
         state[prefix + "verbose"] = self.verbose
 
         if hasattr(self, "solvent") and self.solvent is not None:
@@ -918,6 +925,7 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Whether to strictly enforce that keys match.
         """
         self.nbins = state_dict.pop("nbins", 20)
+        self.n_iso_coeff = state_dict.pop("n_iso_coeff", 6)
         self.verbose = state_dict.pop("verbose", 1)
         # Legacy state dicts may contain a "frozen" entry; drop it silently.
         state_dict.pop("frozen", None)

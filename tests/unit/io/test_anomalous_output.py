@@ -1,7 +1,7 @@
 """Tests for anomalous (Bijvoet) refinement support.
 
 Covers the Option B1 changes:
-  * ReflectionData carries a signed HKL (hkl_anomalous / hkl_for_sf) alongside
+  * ReflectionData carries a signed HKL (hkl_anomalous / _hkl_for_sf) alongside
     the canonical ASU index, with friedel_flags bookkeeping.
   * ModelFT produces distinct |F_calc| for Friedel mates when a wavelength and
     anomalous scatterers are present, and identical |F_calc| otherwise.
@@ -61,7 +61,7 @@ class TestDualHklRepresentation:
 
     def test_hkl_for_sf_signs(self, anomalous_data):
         d = anomalous_data
-        sf = d.hkl_for_sf()
+        sf = d._hkl_for_sf()
         flag = d.friedel_flags
         assert torch.equal(sf[~flag], d.hkl[~flag])
         assert torch.equal(sf[flag], -d.hkl[flag])
@@ -75,7 +75,7 @@ class TestDualHklRepresentation:
         """Without canonicalization bookkeeping, falls back to canonical hkl."""
         d = ReflectionData(verbose=0)
         d.hkl = torch.tensor([[1, 0, 0]], dtype=torch.int32)
-        assert torch.equal(d.hkl_for_sf(), d.hkl)
+        assert torch.equal(d._hkl_for_sf(), d.hkl)
 
 
 class TestBijvoetStructureFactors:
@@ -85,7 +85,7 @@ class TestBijvoetStructureFactors:
         )
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
-            return model(data.hkl_for_sf())
+            return data.structure_factors(model)
 
     def test_anomalous_signal_present(self, anomalous_data, pdb_dir):
         # apply_bijvoet=True (the unmerged-data setting) applies the f'' term.
@@ -122,7 +122,7 @@ class TestAnomalousMtzOutput:
         )
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
-            fcalc = model(data.hkl_for_sf())
+            fcalc = data.structure_factors(model)
         out = tmp_path / "anom_out.mtz"
         data.write_mtz(str(out), fcalc=fcalc, anomalous=True)
         return rs.read_mtz(str(out))

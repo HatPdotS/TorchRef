@@ -170,7 +170,7 @@ class SigmaAXrayTarget(XrayTarget):
         if fcalc is not None:
             F_calc_full = self.get_F_calc_scaled(fcalc=fcalc)
         else:
-            F_calc_full = self.get_F_calc_scaled(self._data.hkl_for_sf(), recalc=False)
+            F_calc_full = self.get_F_calc_scaled(recalc=False)
 
         eps_full, dss_full = self._geom()
         eps_full = eps_full.to(F_calc_full.dtype)

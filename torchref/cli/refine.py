@@ -141,14 +141,14 @@ Loss weights:
         type=str,
         default=DEFAULT_SCALE_TARGET,
         choices=list(SCALE_TARGETS),
-        help="Objective for the scaler's own L-BFGS scale fit (NOT the body target). The "
-        "choices are --xray-mode rows, evaluated by the same target classes the body uses; "
-        "only rows that do not centre on alpha are offered, because alpha is degenerate with "
-        "the scale being fitted. 'nll' (default) is the sigma_obs-weighted Gaussian: the "
-        "natural objective for a nuisance-magnitude fit, it avoids coupling the nuisance "
-        "layer to the model-error estimate, and it treats the body targets even-handedly. "
-        "'ml_noalpha' is the Read-MLF sigma_A likelihood; prefer it if the per-bin log_scale "
-        "collapses in weak shells, since its beta absorbs the mismatch instead.",
+        help=f"Objective for the scaler's own L-BFGS scale fit (NOT the body target). The "
+        f"choices are --xray-mode rows, evaluated by the same target classes the body uses; "
+        f"only rows that do not centre on alpha are offered, because alpha is degenerate "
+        f"with the scale being fitted. '{DEFAULT_SCALE_TARGET}' (default) is unit-weight "
+        f"least squares, weighting every reflection as R itself does. 'nll' is the "
+        f"sigma_obs-weighted Gaussian, which up-weights weak reflections. 'ml_noalpha' is "
+        f"the Read-MLF sigma_A likelihood; prefer it if the scale collapses in weak shells, "
+        f"since its beta absorbs the mismatch instead.",
     )
     refine_group.add_argument(
         "--sigma-a-max",
@@ -408,8 +408,8 @@ Loss weights:
     try:
         work_nll, test_nll = refinement.nll_xray()
         rd = refinement.reflection_data
-        # Signed HKL so |F_calc| matches what refinement optimized (anomalous mates).
-        fcalc = refinement.get_F_calc_scaled(rd.hkl_for_sf(), recalc=True)
+        # Same canonical-convention |F_calc| the refinement optimized.
+        fcalc = refinement.get_F_calc_scaled(recalc=True)
 
         # work/free accessor: scaled, validity-masked |F_obs| per subset; .select()
         # aligns the full-size |F_calc| onto the same subset.

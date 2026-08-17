@@ -379,8 +379,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
             self._lbfgs_loop(params, niter=niter, max_iter=max_iter)
 
             # Update solvent masks after structure changes
-            if hasattr(self.scaler, "update_all_solvent"):
-                self.scaler.update_all_solvent()
+            self.scaler.update_solvent()
 
             # Report R-factors through the shared source of truth.
             if self.verbose > 0:
@@ -454,8 +453,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
             self.refine_structures(niter=niter_structures, max_iter=max_iter)
 
             # Update solvent masks after structure changes
-            if hasattr(self.scaler, "update_all_solvent"):
-                self.scaler.update_all_solvent()
+            self.scaler.update_solvent()
 
             # 2. Refine fractions
             self.refine_fractions(niter=niter_fractions, max_iter=max_iter)

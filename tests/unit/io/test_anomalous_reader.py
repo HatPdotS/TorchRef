@@ -39,7 +39,7 @@ def test_merged_mtz_default(mtz_dir):
     d = ReflectionData(verbose=0)
     d.load_mtz(str(mtz_dir / "1DAW.mtz"))
     assert d.friedel_merged is True
-    assert torch.equal(d.hkl_for_sf(), d.hkl)
+    assert torch.equal(d._hkl_for_sf(), d.hkl)
     assert not bool(d.friedel_flags.any())
 
 
@@ -54,7 +54,7 @@ def test_anomalous_mtz_unstacked(anomalous_two_column_mtz):
     assert n_merged < len(d.hkl) <= 2 * n_merged
     # The minus mates are flagged and carry the negated signed HKL.
     assert bool(d.friedel_flags.any())
-    sf = d.hkl_for_sf()
+    sf = d._hkl_for_sf()
     assert torch.equal(sf[d.friedel_flags], -d.hkl[d.friedel_flags])
     assert torch.equal(sf[~d.friedel_flags], d.hkl[~d.friedel_flags])
 
@@ -159,7 +159,7 @@ def test_write_auto_anomalous_from_merge_state(
         )
         model.load_pdb(str(pdb_dir / "1DAW.pdb"))
         with torch.no_grad():
-            fcalc = model(d.hkl_for_sf())
+            fcalc = d.structure_factors(model)
         out = tmp_path / "auto_out.mtz"
         d.write_mtz(str(out), fcalc=fcalc)  # anomalous=None -> auto
         return set(rs.read_mtz(str(out)).columns)

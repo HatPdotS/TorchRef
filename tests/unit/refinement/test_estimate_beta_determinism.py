@@ -115,7 +115,7 @@ def _real_inputs(mtz_dir, pdb_dir, dtype=torch.float32):
     m = ModelFT(verbose=0, max_res=2.0)
     m.load_pdb(str(pdb_dir / "1DAW.pdb"))
     with torch.no_grad():
-        fc = m(d.hkl_for_sf())
+        fc = d.structure_factors(m)
     cast = lambda t: t.detach().cpu().to(dtype)  # noqa: E731
     return dict(
         F_obs=cast(d.F),

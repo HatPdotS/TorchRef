@@ -2,7 +2,7 @@
 
 ``validate_hkl`` / ``remap`` / ``reduce_to_spacegroup`` must carry EVERY
 per-reflection field onto the new HKL grid, not a hand-maintained subset. The
-historical bug left ``hkl_anomalous`` (read by ``hkl_for_sf``) at the
+historical bug left ``hkl_anomalous`` (read by ``_hkl_for_sf``) at the
 pre-alignment length, which crashed difference refinement whenever the dark and
 light datasets had different reflection sets. See docs/changelog.rst 0.6.2.
 """
@@ -58,7 +58,7 @@ class TestValidateHklReindex:
         assert m == len(ref_hkl)
         # The field the old code left stale (the direct cause of the crash):
         assert light.hkl_anomalous.shape[0] == m
-        assert light.hkl_for_sf().shape[0] == m
+        assert light._hkl_for_sf().shape[0] == m
         # Derived-from-HKL fields recompute for the new grid:
         assert light.centric.shape[0] == m
         assert light.friedel_flags.shape[0] == m

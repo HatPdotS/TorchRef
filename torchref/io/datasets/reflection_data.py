@@ -51,7 +51,7 @@ class _ReflectionSubset:
     model-computed array (e.g. ``F_calc``) to the same subset::
 
         F_obs  = data.work.F     # corrected amplitudes, work set only
-        F_calc = data.work.select(scaler(model(data.hkl_for_sf())))
+        F_calc = data.work.select(scaler(data.structure_factors(model)))
     """
 
     __slots__ = ("_parent", "_kind")
@@ -549,13 +549,35 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # self.hkl. hkl_anomalous carries the SIGNED index used for
         # structure-factor evaluation -- canonical for the (+) member, negated
         # for the conjugated (-) mate -- so the model yields a genuine Bijvoet
-        # difference. See ReflectionData.hkl_for_sf.
+        # difference. See ReflectionData.structure_factors.
         self.friedel_flags = friedel_flags
         self.hkl_anomalous = torch.where(
             friedel_flags.unsqueeze(-1), -self.hkl, self.hkl
         )
 
-    def hkl_for_sf(self) -> torch.Tensor:
+        n_flipped = int(friedel_flags.sum())
+        if n_flipped:
+            print(
+                f"  Reindexed {n_flipped}/{len(self.hkl)} reflections to the "
+                f"CCP4 ASU (output is written on that index, not the input one)."
+            )
+            # A row needing conjugation to reach the ASU does NOT by itself mean
+            # the data are Bijvoet-unmerged: a merged dataset indexed in another
+            # convention flags rows while carrying no mate at all. Real mates
+            # show up as one canonical index holding both a flagged and an
+            # unflagged row. Either this or the reader's (+)/(-) columns
+            # declaring unmerged is enough.
+            inverse, n_groups = self.asu_group_indices()
+            has_mates = bool(
+                (
+                    self._group_any(friedel_flags, inverse, n_groups)
+                    & self._group_any(~friedel_flags, inverse, n_groups)
+                ).any()
+            )
+            if has_mates:
+                self.friedel_merged = False
+
+    def _hkl_for_sf(self) -> torch.Tensor:
         """Signed Miller indices for structure-factor evaluation.
 
         Returns ``hkl_anomalous`` when present so the two members of a Bijvoet
@@ -563,6 +585,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         their true ``+h``/``-h`` positions and therefore get distinct
         ``|F_calc|`` under anomalous scattering. Falls back to the canonical
         :attr:`hkl` when anomalous bookkeeping is unavailable (e.g. empty init).
+
+        These indices are a model *input* only. A structure factor evaluated
+        here is in the signed convention, and pairing its phase with :attr:`hkl`
+        negates that phase wherever :attr:`friedel_flags` is set. Convert with
+        :meth:`conjugate_friedel` first, or use :meth:`structure_factors`, which
+        does both and is the supported entry point.
 
         Returns
         -------
@@ -572,6 +600,62 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if self.hkl_anomalous is not None:
             return self.hkl_anomalous
         return self.hkl
+
+    def conjugate_friedel(self, fcalc: torch.Tensor) -> torch.Tensor:
+        """Move complex structure factors between the signed and canonical index.
+
+        Rows flagged in :attr:`friedel_flags` are evaluated at ``-h`` by
+        :meth:`_hkl_for_sf` while :attr:`hkl` holds ``+h``; ``F(-h)`` is the
+        conjugate of ``F(h)`` up to the anomalous ``f''`` term. Conjugating
+        exactly those rows re-expresses the array on the other index. The
+        operation is its own inverse, so it converts in both directions.
+
+        Amplitudes are unaffected -- only phases move.
+
+        Parameters
+        ----------
+        fcalc : torch.Tensor
+            Complex structure factors of shape (N,).
+
+        Returns
+        -------
+        torch.Tensor
+            ``fcalc`` with the Friedel-flagged rows conjugated, or unchanged
+            when no Friedel bookkeeping is present.
+        """
+        if self.friedel_flags is None:
+            return fcalc
+        return torch.where(self.friedel_flags, fcalc.conj(), fcalc)
+
+    def structure_factors(
+        self, model, recalc: bool = False, cached: bool = True
+    ) -> torch.Tensor:
+        """Complex ``F_calc`` from ``model``, on the canonical ASU index.
+
+        Evaluates the model at the signed indices so Bijvoet mates get distinct
+        ``|F_calc|``, then returns the result on :attr:`hkl` -- the index this
+        dataset writes as ``H,K,L``. Structure factors are in this convention
+        everywhere in TorchRef; the signed index does not escape this method.
+
+        Parameters
+        ----------
+        model : ModelFT
+            Model to evaluate.
+        recalc : bool, optional
+            Force recomputation rather than reusing the cached SF. Default False.
+        cached : bool, optional
+            True (default) goes through the model's forward cache. False calls
+            ``model.forward`` directly, leaving the cache untouched.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex structure factors of shape (N,), row-aligned with
+            :attr:`hkl`.
+        """
+        hkl = self._hkl_for_sf()
+        fcalc = model(hkl, recalc=recalc) if cached else model.forward(hkl)
+        return self.conjugate_friedel(fcalc)
 
     def asu_group_indices(self) -> Tuple[torch.Tensor, int]:
         """Group rows that describe the same unique reflection.
@@ -855,9 +939,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Verbosity level. Default is 1.
         friedel_merged : bool, optional
             False means ``hkl`` holds explicit Bijvoet pairs (both ``+h`` and
-            ``-h``), which enables the model's f'' term downstream. If None,
-            inferred after canonicalization from whether any ``-h`` mate had to
-            be conjugated to reach the ASU.
+            ``-h``), which enables the model's f'' term downstream. Default
+            True. Canonicalization overrides it to False when it finds real
+            mates, so passing True is a statement about the input rather than
+            the last word.
         detach : bool, optional
             True (default) stores constant observations, dropping the caller's
             autograd graph; False keeps it so gradients reach whatever produced
@@ -900,6 +985,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 device=data.device, dtype=torch.bool
             )
 
+        # Set before canonicalization, which is what detects real Bijvoet mates
+        # and downgrades this to False -- the same seam load() goes through.
+        data.friedel_merged = True if friedel_merged is None else bool(friedel_merged)
+
         data._post_load_cleanup()
 
         # As in load(): generate after canonicalization so the draw can group
@@ -907,16 +996,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if data.rfree_flags is None:
             data._generate_rfree_flags()
 
-        # Resolve merge state. Explicit arg wins; otherwise infer from whether
-        # canonicalization had to conjugate any Friedel mates (i.e. -h rows were
-        # supplied), which mirrors the reader's stacked-input detection.
-        if friedel_merged is None:
-            has_mates = data.friedel_flags is not None and bool(
-                data.friedel_flags.any()
-            )
-            data.friedel_merged = not has_mates
-        else:
-            data.friedel_merged = bool(friedel_merged)
         return data
 
     def load_mtz(
@@ -2530,12 +2609,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         Parameters
         ----------
         fcalc : torch.Tensor, optional
-            Complex per-row structure factors evaluated at the *signed* HKL
-            (``hkl_for_sf``), row-aligned with :attr:`hkl`. If None, only the
-            observation columns (``F-obs``, ``F-obs(+/-)``, ``SIGF-obs(+/-)``,
-            R-free) are written -- the model-derived columns (``F-model``,
-            ``PHIF-model``, display maps and ``ANOM``/``PANOM``, which need the
-            model phase) are omitted.
+            Complex per-row structure factors in the canonical-ASU convention,
+            row-aligned with :attr:`hkl` (see :meth:`structure_factors`). If
+            None, only the observation columns (``F-obs``, ``F-obs(+/-)``,
+            ``SIGF-obs(+/-)``, R-free) are written -- the model-derived columns
+            (``F-model``, ``PHIF-model``, display maps and ``ANOM``/``PANOM``,
+            which need the model phase) are omitted.
 
         Returns
         -------
@@ -2597,7 +2676,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if has_model:
             fc = fcalc.detach().cpu().numpy()
             Fc_amp = np.abs(fc)
-            Fc_ph = np.angle(fc, deg=True)
+            # The (+)/(-) phase columns describe each mate at its own index, so
+            # they read the signed convention. conjugate_friedel is its own
+            # inverse, so it recovers that from the canonical input.
+            Fc_ph = np.angle(
+                self.conjugate_friedel(fcalc).detach().cpu().numpy(), deg=True
+            )
         F = self.F.detach().cpu().numpy()
         Fsig = self.F_sigma.detach().cpu().numpy() if self.F_sigma is not None else None
         rfree = (
@@ -2651,12 +2735,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Fmod_p_out, Fmod_m_out = mirror_centric(Fmod_p, Fmod_m)
             Phi_p_out, Phi_m_out = mirror_centric(Phi_p, Phi_m)
 
-            # ASU representative structure factor: the + member, else the
-            # conjugate of the - member.
+            # ASU representative structure factor: the + member, else the -
+            # member. Both rows are already on the canonical index.
             fc_disp = np.full(M, np.nan, dtype=complex)
             fc_disp[has_plus] = fc[pi][has_plus]
             only_minus = has_minus & ~has_plus
-            fc_disp[only_minus] = np.conj(fc[mi])[only_minus]
+            fc_disp[only_minus] = fc[mi][only_minus]
 
             Fc_disp_amp = np.abs(fc_disp)
             ph_disp = np.angle(fc_disp, deg=True)
@@ -2732,8 +2816,10 @@ class ReflectionData(CrystalDataset, DebugMixin):
         fname : str
             Output MTZ filename.
         fcalc : torch.Tensor, optional
-            Complex calculated structure factors of shape (N,).
-            If provided, computes phases and map coefficients.
+            Complex calculated structure factors of shape (N,), in the
+            canonical-ASU convention and row-aligned with :attr:`hkl` -- as
+            returned by :meth:`structure_factors`. If provided, computes phases
+            and map coefficients.
         model_ft : ModelFT, optional
             ModelFT object to compute fcalc if not provided.
         anomalous : bool, optional
@@ -2764,11 +2850,19 @@ class ReflectionData(CrystalDataset, DebugMixin):
         if anomalous is None:
             anomalous = not self.friedel_merged
 
+        # One fallback for both layouts, so ``fcalc`` means the same thing
+        # whether the caller supplied it or it was derived here. cached=False
+        # keeps a no-grad write from leaving a detached tensor in the model's
+        # forward cache.
+        if fcalc is None and model_ft is not None:
+            fcalc = self.structure_factors(model_ft, cached=False)
+        if fcalc is not None and fcalc.shape[0] != len(self.hkl):
+            raise ValueError(
+                f"fcalc has {fcalc.shape[0]} rows but this dataset has "
+                f"{len(self.hkl)}; it must be row-aligned with hkl."
+            )
+
         if anomalous:
-            # Signed HKL preserves the anomalous/Bijvoet difference (see
-            # hkl_for_sf) so the two mates get distinct F-model.
-            if fcalc is None and model_ft is not None:
-                fcalc = model_ft.forward(self.hkl_for_sf())
             df = self._build_anomalous_dataframe(fcalc)
             write(df, self.cell.data, self.spacegroup, fname)
             if self.verbose > 0:
@@ -2817,9 +2911,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
                 val_np = self.validation_flags.detach().cpu().numpy()
                 data_dict["Validation_flag"] = (val_np != 0).astype(int)
 
-        # Compute fcalc if model_ft is provided but fcalc is not
-        if fcalc is None and model_ft is not None:
-            fcalc = model_ft.forward(self.hkl)
         mask = self.masks().detach().cpu().numpy()
         # Add map coefficients if fcalc is provided
         if fcalc is not None:
@@ -3396,7 +3487,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
 
         # Invalidate derived-from-HKL fields (recomputed lazily for the new ASU).
         # hkl_anomalous / friedel_flags are left unset: the merged ASU is
-        # Friedel-merged, so hkl_for_sf() correctly falls back to hkl.
+        # Friedel-merged, so _hkl_for_sf() correctly falls back to hkl.
         reduced.bin_indices = None
         reduced._centric_flags = None
 
@@ -3456,7 +3547,7 @@ class ReflectionData(CrystalDataset, DebugMixin):
             )
 
         # Record anomalous bookkeeping for the canonical result (the stale values
-        # carried over by __select__ are recomputed here). See hkl_for_sf.
+        # carried over by __select__ are recomputed here). See _hkl_for_sf.
         result.friedel_flags = friedel_flags
         result.hkl_anomalous = torch.where(
             friedel_flags.unsqueeze(-1), -canonical_hkl, canonical_hkl

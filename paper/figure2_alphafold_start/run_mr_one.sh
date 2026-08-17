@@ -10,7 +10,7 @@ set -o pipefail
 
 REPO=/das/work/p17/p17490/Peter/Library/work_trees_torchref/review
 AFDIR="$REPO/paper/figure2_alphafold_start"
-PHENIX_ENV=/afs/psi.ch/sys/psi.ra/MX/phenix/phenix-1.20-4459/phenix_env.sh
+PHENIX_ENV=/opt/psi/MX/phenix/1.21.1-5286/phenix-1.21.1-5286/phenix_env.sh
 
 code="${1:?usage: run_mr_one.sh CODE}"
 placed="$AFDIR/placed/$code"_af.pdb

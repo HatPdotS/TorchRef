@@ -16,6 +16,18 @@ Usage
 -----
     ./.dev/bin/python analysis/submit_weight_grid.py --dry-run
     ./.dev/bin/python analysis/submit_weight_grid.py            # submit
+
+Stage it rather than firing all 5000 tasks blind: run the locked default cell on its own,
+check it against the previous grid's numbers for the same cell, and release the rest only if
+they agree. Indices and arm names are unaffected by ``--only-cells``, so both halves
+aggregate together.
+
+    ./.dev/bin/python analysis/submit_weight_grid.py --array --only-cells 7,4
+    # ... compare, then:
+    ./.dev/bin/python analysis/submit_weight_grid.py --array
+
+NB ``--dry-run`` still (re)writes the manifest -- pre-existing behaviour, and the reason a
+dry run with a *different* ``--n-geom``/``--n-adp`` would overwrite the real grid's manifest.
 """
 from __future__ import annotations
 
@@ -52,7 +64,6 @@ export TORCHREF_NUM_THREADS=4
     -n {n_cycles} \\
     --mode separate \\
     --xray-mode ml \\
-    --sigma-m-scale 1.0 \\
     --weights '{wjson}'
 
 # REFMAC 0-cycle validation (validate.log -> R-factors + geometry RMS/sigma)
@@ -100,7 +111,6 @@ mkdir -p "$OUTDIR"
     -n {n_cycles} \\
     --mode separate \\
     --xray-mode ml \\
-    --sigma-m-scale 1.0 \\
     --weights "$WEIGHTS"
 
 # REFMAC 0-cycle validation (validate.log -> R-factors + geometry RMS/sigma)
@@ -144,6 +154,16 @@ def main():
                     help="Base directory for this grid's arm output + manifest "
                          "(default: figure2 runs/). Use a dedicated dir for "
                          "ablation grids to keep runs/ uncluttered.")
+    ap.add_argument("--only-cells", nargs="+", default=None, metavar="GI,AI",
+                    help="Submit only these grid cells, e.g. --only-cells 7,4. The axes are "
+                         "built in full first, so indices, arm names and the manifest are "
+                         "IDENTICAL to a full run and the remaining cells can be released "
+                         "later into the same aggregation. Use this to stage the grid: run "
+                         "the locked default cell alone, check it against the previous "
+                         "grid's numbers, and only then release the other 99 -- 50 jobs "
+                         "instead of 5000 before you know whether the build agrees with "
+                         "history. An out-of-range index is an error, not an empty "
+                         "submission.")
     ap.add_argument("--array", action="store_true",
                     help="Submit the whole grid as ONE SLURM job array instead "
                          "of one job per (cell, structure). Much lighter on the "
@@ -169,7 +189,27 @@ def main():
     if args.limit:
         codes = codes[:args.limit]
 
-    # Manifest: arm -> (gi, ai, geometry, adp), exact weights for aggregation.
+    # Parsed AFTER the axes exist, so the indices mean the same thing they would in a full
+    # run and can be validated against the real extent. A typo'd cell must fail here rather
+    # than submit an empty work list and look like "everything was already complete".
+    only = None
+    if args.only_cells:
+        only = set()
+        for spec in args.only_cells:
+            try:
+                gi, ai = (int(x) for x in spec.split(","))
+            except ValueError:
+                raise SystemExit(f"--only-cells: expected GI,AI, got {spec!r}")
+            if not (0 <= gi < args.n_geom and 0 <= ai < args.n_adp):
+                raise SystemExit(
+                    f"--only-cells {spec}: out of range for a "
+                    f"{args.n_geom}x{args.n_adp} grid (gi 0..{args.n_geom - 1}, "
+                    f"ai 0..{args.n_adp - 1})")
+            only.add((gi, ai))
+
+    # Manifest: arm -> (gi, ai, geometry, adp), exact weights for aggregation. Written for
+    # EVERY cell even under --only-cells, so a staged run and the later full release share
+    # one manifest and the aggregator needs no knowledge of the staging.
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with open(manifest_path, "w", newline="") as f:
         w = csv.writer(f)
@@ -184,15 +224,23 @@ def main():
     print(f"  adp      [{args.n_adp}]: {', '.join(f'{a:.4g}' for a in adps)}")
     if disabled:
         print(f"  DISABLED components (weight=0): {', '.join(disabled)}")
-    print(f"  {args.n_geom * args.n_adp} combos x {len(codes)} structures = "
-          f"{args.n_geom * args.n_adp * len(codes)} jobs max")
-    print(f"  manifest: {manifest_path}\n")
+    n_cells = len(only) if only else args.n_geom * args.n_adp
+    if only:
+        print("  STAGED — only these cells:")
+        for gi, ai in sorted(only):
+            print(f"    g{gi}_a{ai}: geometry={geoms[gi]:.4g}  adp={adps[ai]:.4g}")
+    print(f"  {n_cells} combo(s) x {len(codes)} structures = "
+          f"{n_cells * len(codes)} jobs max")
+    print(f"  manifest: {manifest_path} (all "
+          f"{args.n_geom * args.n_adp} cells)\n")
 
     # Collect the (cell x structure) work list, skipping already-complete cells.
     tasks = []  # each: (outdir, pdb, mtz, weights_json)
     skip = miss = 0
     for gi, g in enumerate(geoms):
         for ai, a in enumerate(adps):
+            if only is not None and (gi, ai) not in only:
+                continue
             arm = f"wgrid{suffix}_g{gi}_a{ai}"
             arm_dir = out_root / arm
             weights = {"xray": 1, "geometry": float(g), "adp": float(a),
@@ -247,7 +295,7 @@ def main():
         code = outdir_p.name
         if not args.dry_run:
             outdir_p.mkdir(parents=True, exist_ok=True)
-        script = build_script(arm, code, pdb, mtz, outdir, args.n_cycles,
+        script = build_script(arm, code, pdb, mtz, outdir_p, args.n_cycles,
                               args.mem, json.loads(wjson))
         if args.dry_run and first == 0:
             print("── example sbatch script ──")
