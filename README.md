@@ -14,6 +14,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4+-ee4c2c.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Documentation](https://readthedocs.org/projects/torchref/badge/?version=latest)](https://torchref.readthedocs.io/)
+[![Forum](https://img.shields.io/badge/Forum-rs--station-0088CC.svg?logo=discourse&logoColor=white)](https://discourse.rs-station.org/c/software/torchref/54)
 [![CUDA](https://img.shields.io/badge/CUDA-supported-76b900.svg)](https://developer.nvidia.com/cuda-zone)
 [![Apple Silicon MPS](https://img.shields.io/badge/Apple%20Silicon-MPS-000000.svg?logo=apple)](https://developer.apple.com/metal/pytorch/)
 
@@ -87,6 +88,8 @@ Slow tests need `--run-slow`. Accelerator tests are not opt-in: they run whereve
 ### Contributing
 
 Contributions are welcome. Please use [NumPy docstring style](https://numpydoc.readthedocs.io/en/latest/format.html), add tests for new functionality, and make sure the suite passes before submitting.
+
+Questions, feature ideas and usage discussion are welcome on the [TorchRef category of the rs-station forum](https://discourse.rs-station.org/c/software/torchref/54).
 
 ### License
 
