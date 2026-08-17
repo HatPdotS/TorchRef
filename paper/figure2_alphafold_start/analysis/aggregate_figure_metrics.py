@@ -196,8 +196,19 @@ def percycle_refmac(engine: str, code: str):
     return out
 
 
+_RE_PHENIX_FINAL = re.compile(
+    r"^\s*Final R-work\s*=\s*([0-9.]+)\s*,\s*R-free\s*=\s*([0-9.]+)", re.M
+)
+
+
+def _phenix_final_r(lines):
+    """``(r_work, r_free)`` from the log's ``Final R-work = ..., R-free = ...`` summary."""
+    m = _RE_PHENIX_FINAL.search("\n".join(lines))
+    return (float(m.group(1)), float(m.group(2))) if m else None
+
+
 def percycle_phenix(engine: str, code: str):
-    """Phenix per-macrocycle R-FACTORS (work/free in %) from the 'bonds angl' blocks.
+    """Phenix per-macrocycle R-factors (work/free, already fractions) from the 'bonds angl' blocks.
 
     Each block's *first* row is the state at the start of that macrocycle and the
     *last* row is the post-(geometry-)refinement state. Per Phenix's own legend,
@@ -220,7 +231,11 @@ def percycle_phenix(engine: str, code: str):
             row = None
             if len(toks) >= 5:
                 try:
-                    row = (float(toks[0]) / 100.0, float(toks[1]) / 100.0)
+                    # The log prints fractions, not percent: "work free delta bonds angl"
+                    # / " 0.3234 0.3388 0.0154 0.014 1.3", against that run's own
+                    # "Final R-work = 0.2212". A /100 here made every phenix trajectory
+                    # ~0.003, so Panel D's guard dropped the curve and the legend read n=0.
+                    row = (float(toks[0]), float(toks[1]))
                 except ValueError:
                     row = None
             if row is not None:
@@ -235,8 +250,17 @@ def percycle_phenix(engine: str, code: str):
         blocks.append((first, last))
     if not blocks:
         return []
-    # cycle 0 = pre-refinement start, then end-of-each-macrocycle
-    series = [blocks[0][0]] + [b[1] for b in blocks]
+    # One row per block, so each block IS a cycle: its row is the state at the START of
+    # that macrocycle, i.e. the END of the previous one. Block 0 is therefore cycle 0, the
+    # post-scaling starting state and the analogue of Refmac's Ncyc row 0 (the log's
+    # "Start R-work" is pre-bulk-solvent and not comparable). Emitting blocks[0] a second
+    # time as cycle 1, as this did, gave phenix a flat first macrocycle in Panel D -- the
+    # engine appeared to achieve nothing in the cycle where it in fact moves most.
+    series = [b[0] for b in blocks]
+    final = _phenix_final_r(lines)
+    if final is not None:
+        # End of the LAST macrocycle is reported only in the summary, never in a block.
+        series.append(final)
     return [(i, w, f) for i, (w, f) in enumerate(series)]
 
 
