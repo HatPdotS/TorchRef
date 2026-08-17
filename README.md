@@ -29,7 +29,7 @@ TorchRef is a crystallographic refinement package built entirely on PyTorch. Aut
 
 *Refinement of Phaser-placed AlphaFold models against experimental data, on a conserved set of 723 PDB structures (1.40–3.00 Å). All engines start from the same placed models and are scored by one common validator (PHENIX).*
 
-**(A)** R-work and R-free per engine. Median R-free 0.3197 (TorchRef), 0.3165 (PHENIX), 0.3136 (REFMAC5); paired median difference, TorchRef minus reference, +0.0006 against PHENIX and +0.0047 against REFMAC. **(B)** Geometry RMS Z against REFMAC restraints, ideal 1.0: bond 0.58 (REFMAC 0.58, PHENIX 0.83), main-chain B 1.56 (REFMAC 0.90, PHENIX 1.03). **(C)** Wall-clock runtime per structure on 4 CPU cores: median 0.77 min (REFMAC 0.25, PHENIX 3.09). **(D)** Fraction of the total R-free improvement reached per macrocycle.
+**(A)** R-work and R-free per engine. Median R-free 0.3189 (TorchRef), 0.3164 (PHENIX), 0.3136 (REFMAC5); paired median difference, TorchRef minus reference, +0.0008 against PHENIX and +0.0047 against REFMAC. **(B)** Geometry RMS Z against REFMAC restraints, ideal 1.0: bond 0.58 (REFMAC 0.58, PHENIX 0.83), main-chain B 1.55 (REFMAC 0.90, PHENIX 1.03). **(C)** Wall-clock runtime per structure on 4 CPU cores: median 0.77 min (REFMAC 0.25, PHENIX 3.09). **(D)** Fraction of the total R-free improvement reached per macrocycle.
 
 ## Key Features
 
