@@ -1125,3 +1125,107 @@ Caching trunk outputs across epochs is not viable at scale: `z_trunk` is
 Recompute per visit rather than materialise a cache — and note this is a second,
 independent reason (alongside memory, §3.2) to keep the uncropped X-ray corpus to
 modest ASUs.
+
+---
+
+## 13. Feedback at multiple steps: a resolution ladder on the noise schedule
+
+Stream C (§4.4) is the version worth building, and the cost analysis says it is
+affordable — but *where* in the rollout it can run is fixed by physics, not by taste.
+
+### 13.1 Only the tail of the schedule carries crystallographic signal
+
+OF3's inference schedule is `sigma_data=16`, `s_max=160`, `s_min=4e-4`, `p=7`,
+200 steps. With `B_eff = 8π²t²` and usable `d ≈ 4.44 t` (§11.2):
+
+| step | `t` (Å) | `B_eff` (Å²) | usable `d_min` (Å) |
+|---|---|---|---|
+| 0 | 2560 | 5.2e8 | 11374 |
+| 100 | 56.0 | 2.5e5 | 249 |
+| 140 | 5.06 | 2022 | 22.5 |
+| 150 | 2.38 | 445 | 10.6 |
+| 160 | 1.02 | 82 | 4.5 |
+| 168 | 0.50 | 20 | 2.2 |
+| 180 | 0.13 | 1.3 | 0.56 |
+| 200 | 0.006 | 0.0 | 0.03 |
+
+`p=7` back-loads the schedule hard, which works in our favour:
+
+- steps **0–143** (72% of the rollout): `d_min > 18 Å`. Nothing crystallographic.
+  Do not evaluate here — it is pure cost.
+- step **144** (`t=4 Å`): the lowest-resolution shell — molecular envelope, solvent
+  boundary — becomes meaningful.
+- step **153** (`t=2 Å`): ~9 Å data.
+- step **161** (`t=1 Å`): ~4.4 Å.
+- step **168** (`t=0.5 Å`): 2.2 Å, i.e. the full dataset for a typical structure.
+
+So the feedback window is the last ~57 steps (28%), and only the last ~33 (16%) run
+at full resolution.
+
+### 13.2 The ladder is nearly free at the top
+
+Place feedback events in the tail with `d_min(t) = max(4.44 t, d_min(data))`. Both the
+reflection count and the grid volume scale as `d_min⁻³`, so the early events are
+orders of magnitude cheaper than the late ones. For a 100 Å cell:
+
+| `d_min` | grid | relative cost |
+|---|---|---|
+| 18 Å | ~12³ | ~1e-3 |
+| 9 Å | ~22³ | ~1e-2 |
+| 4.4 Å | ~45³ | ~0.1 |
+| 2.0 Å | ~100³ | 1 |
+
+This is low-resolution-first refinement, and it falls out of the noise schedule rather
+than being imposed. Shape and placement information arrives while the structure is
+still plastic; atomic detail arrives only once the model can represent it.
+
+Per feedback event the work is: Kabsch pose update (3×3 SVD, negligible), density
+build + forward FFT, per-reflection residual algebra, inverse FFT to the residual map,
+trilinear gather at the probe points — plus one more FFT if the likelihood gradient
+(Stream A0) is wanted. Three to four FFTs on a grid no larger than ~128³, so a few
+milliseconds per event and tens of milliseconds for ~20 events, against a 200-step
+rollout of a 24-block token transformer that costs seconds. Low single-digit percent
+overhead. (Order-of-magnitude from the operation counts; not measured here.)
+
+Cache per structure, once, per resolution tier: the grid, the reflection subset, and
+the symmetry extractor. `SfFFT` already caches `_sym_extractor` against an `hkl`
+fingerprint, so a handful of tiers means a handful of cached extractors.
+
+### 13.3 One residual for the ensemble, not one per member
+
+The important design point, and an easy one to get wrong. The physically correct
+object is the coherent sum `F_calc = Σ_m w_m F_m`, which is a single FFT over the
+combined density and therefore **cheaper** than per-member maps — and it gives one
+residual map shared by every member.
+
+That sharing is the mechanism by which members specialise. Each member receives the
+same `∂L/∂F` but its own `∂F_m/∂x_m`, so a member sitting in unexplained density is
+pulled differently from one that is not. Give each member a private residual and every
+member independently fits the whole dataset — the ensemble collapses to the maximum-
+likelihood single structure, which is exactly what an ensemble is supposed to avoid.
+
+Note the shared residual makes specialisation *possible*, not inevitable: the ML
+optimum for equal-weight members is still "every member equals the mean". Something
+has to make collapse unfavourable — `RankPenaltyTarget` and member dropout (§3.5).
+
+### 13.4 Practicalities
+
+- **Nuisances stay on a macro-cycle.** Do not refit scale, bulk solvent and `σ_A` at
+  every feedback event — the solvent mask is grid-based and genuinely expensive, and
+  `σ_A` is a per-shell fit. Refit a few times across the tail and hold fixed between,
+  per §10.3. That also keeps `L̃` smooth in `x`, which a per-step refit would not.
+- **Checkpoint each feedback block.** Inside a differentiable rollout the saved
+  complex grids add up (~16 MB per 128³ complex64 tensor). F_calc is cheap enough that
+  recomputing it in the backward pass is nearly free — this is the ideal case for
+  `checkpoint_section`.
+- **The pose must be re-tracked at every event.** `_sample_rollout` calls
+  `centre_random_augmentation` at the *top of every step*, so the frame is randomly
+  re-oriented throughout. It is a rigid motion, so Kabsch absorbs it and no information
+  is lost — but skipping the re-superposition would silently scramble the residual.
+- **The feedback window is already churn-free.** OF3 applies churn only while
+  `c_tau > gamma_min = 1.0`, i.e. up to about step 161 — which is where 4.4 Å data
+  starts to bite and just before the full-resolution window opens at step 168. The
+  entire high-resolution part of the ladder is deterministic apart from the rigid
+  augmentation, so the residual is a well-behaved function of the trajectory exactly
+  where it matters. For training, use the deterministic DDIM variant with fixed
+  initial noise (§9.4) and this holds by construction.
