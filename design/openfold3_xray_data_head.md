@@ -1229,3 +1229,122 @@ has to make collapse unfavourable — `RankPenaltyTarget` and member dropout (§
   augmentation, so the residual is a well-behaved function of the trajectory exactly
   where it matters. For training, use the deterministic DDIM variant with fixed
   initial noise (§9.4) and this holds by construction.
+
+---
+
+## 14. The 20-step / many-sample regime, and Boltz-2's steering hooks
+
+### 14.1 The throughput is consistent with the compute model
+
+Reported: **128 samples × 20 sampling steps, ~5 s, 1000 aa, single H200.**
+
+Order-of-magnitude check (operation counts, not a measurement). At `N_token = 1000`
+the diffusion module is dominated by the 24-block token transformer at `c_a = 768`:
+QKV and output projections, the `N²·c_z·h` pair-bias projection, the attention itself,
+and the SwiGLU transition come to roughly `1e10` MACs per block, so ~0.5 TFLOP per
+denoiser evaluation. The atom encoder/decoder add ~2% of that, since the block-local
+window keeps them linear in `N_atom`.
+
+```
+128 samples x 20 steps x 0.5 TFLOP  ~  1.3 PFLOP
+H200 BF16 dense ~ 990 TFLOP/s  ->  1.3 s at 100% MFU, ~3-6 s at 20-40%
+```
+
+The trunk is separate and paid once: 48 Pairformer blocks of `O(N³c)` triangle ops
+over 4 recycles is ~0.4 PFLOP at 1000 tokens, so a further ~0.5–1 s. Total lands right
+on ~5 s. The measurement is believable and the split matters: **the trunk is a
+non-trivial fraction at 1000 tokens, but it is amortised across all 128 samples and
+all 20 steps** (§12.3).
+
+### 14.2 Twenty steps gives a three-rung ladder, and that is enough
+
+The schedule is parametrised by `i/N`, so its shape is identical at 20 steps — only
+the sampling is coarser. Recomputing §13.1 for `N = 20`:
+
+| step | `t` (Å) | usable `d_min` (Å) |
+|---|---|---|
+| 13 | 10.01 | 44.5 |
+| 14 | 5.06 | 22.5 |
+| 15 | 2.375 | 10.6 |
+| 16 | 1.017 | 4.5 |
+| 17 | 0.387 | 1.7 |
+| 18 | 0.126 | 0.56 |
+| 20 | 0.006 | 0.03 |
+
+**Steps 0–13 carry nothing crystallographic. The data window is steps 14–20 — seven
+events — and full 2 Å resolution opens at step 17, giving four.** Per-event cost
+therefore stops mattering almost entirely; what matters is placing three or four
+evaluations well:
+
+```
+step 15   ~10 A      shape, placement, solvent boundary
+step 16   ~4.5 A     fold-level agreement
+step 17+  full data  atomic detail
+```
+
+That is the classical low-resolution-first protocol with three rungs, which is what
+most refinement programs actually do. The one wart is the 4.5 Å → 1.7 Å jump between
+steps 16 and 17; if it matters, add steps in the tail rather than raising the global
+count.
+
+### 14.3 Boltz-2 already has the harness — use it for M1
+
+`src/boltz/model/potentials/potentials.py` defines a `Potential` ABC with `compute`
+(energy) and `compute_gradient` (energy gradient w.r.t. coordinates), plus
+`compute_parameters(steering_t)` driven by `ParameterSchedule`
+(`ExponentialInterpolation`, `PiecewiseStepFunction`). `modules/diffusionv2.py` then
+runs two independent mechanisms inside the sampling loop:
+
+- **gradient guidance** — `physical_guidance_update` / `contact_guidance_update`,
+  with `num_gd_steps` inner steps applied to the `x̂₀` prediction;
+- **Feynman–Kac steering** — a sequential Monte Carlo particle filter. Every
+  `fk_resampling_interval` steps it evaluates the energy on `x̂₀`, forms
+  `log_G = E_prev − E_now`, corrects for the guided-vs-unguided transition kernel via
+  `ll_difference`, and resamples with
+  `softmax(ll_difference + fk_lambda · log_G)` within groups of `num_particles`.
+
+So milestone M1 on Boltz-2 is: **write `XrayPotential(Potential)`, register it in
+`get_potentials`, done.** No architectural change, no fork of the sampler.
+
+Three reasons this is a better first target than the OF3 path of §6:
+
+- **FK resampling needs only the energy, not the gradient.** The whole
+  nuisance-fitting stack of §10 can sit inside `no_grad` with no differentiability
+  constraint at all.
+- `steering_t = 1 − step_idx/num_sampling_steps` maps the resolution ladder onto a
+  `PiecewiseStepFunction` directly: set `resampling_weight = 0` for
+  `steering_t > 0.3` so nothing crystallographic is evaluated over steps 0–13.
+- Particles are already the ensemble.
+
+### 14.4 But FK steering is model selection, not ensemble refinement
+
+Worth stating clearly because the two look alike and are not:
+
+- **FK steering scores each particle independently**, `E_m = E(F_calc(x_m))`, as
+  though that member alone had to explain the data. Resampling then concentrates the
+  population on the best few. That is exactly right for deciding *which basin* the
+  structure is in, and exactly wrong for building an ensemble — it collapses the
+  population by selection, the same failure §13.3 describes by a different route.
+- **Ensemble refinement needs the coherent sum** `F_calc = Σ_m w_m F_m` and one shared
+  residual, which is not a per-particle quantity and cannot be expressed as an FK
+  potential.
+
+So use both, for different jobs: FK steering over many particles to select
+conformational basins against the data, then shared-residual refinement (§13.3) on the
+surviving set to build the ensemble. Do not use FK to make the ensemble.
+
+### 14.5 What the throughput implies for the plan
+
+- **M1 and M2 get cheap.** At ~5 s per 128-sample rollout, running the guidance
+  baseline and the ensemble-refinement control across a few hundred structures is
+  hours of GPU time. There is no reason not to do them first.
+- **Training is trunk-bound at 1000 tokens.** A truncated differentiable rollout over
+  the last ~6 steps with 8 samples is ~24 TFLOP, against ~0.4 PFLOP for one `no_grad`
+  trunk pass. Cropping to ~384 tokens cuts the trunk by `(384/1000)³ ≈ 0.06` and
+  rebalances it — a third independent argument for moderate crops, alongside memory
+  (§3.2) and the `z_trunk` size (§12.3).
+- **The design ports.** §4's module placement is written against OF3, but the two
+  architectures are dimension-identical (§12.1): `DiffusionTransformer` ↔
+  `token_transformer`, `AtomAttentionEncoder/Decoder` ↔ `atom_encoder/atom_decoder`.
+  Boltz-2 is the better host for the guidance milestones; whether it is also the
+  better host for the trained head depends on which checkpoint we want to fine-tune.
