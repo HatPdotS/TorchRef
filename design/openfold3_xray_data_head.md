@@ -629,9 +629,8 @@ and they are what tells you whether M3+ is worth building.
 - **Diffuse scattering.** The coherent-average model discards it. It is precisely the
   observable most sensitive to the ensemble. Out of scope, but it is the reason a
   Bragg-only ensemble target is a weaker constraint on disorder than it first looks.
-- **Related work not read here:** `aqlaboratory/confornets` ("latents-based
-  conformational control in OpenFold3") appears to attack ensemble control from the
-  latent side and is worth reading before committing to a design.
+- **Latent-space control (ConforNets)** is a complementary mechanism, not an
+  alternative one — see §9.
 
 ---
 
@@ -646,3 +645,135 @@ Rough, for the recommended path:
   tokens, this is a small-cluster job, not a foundation-model run.
 - M4–M5: the residual feedback loop multiplies the per-step cost by the number of
   map refreshes. Budget accordingly, and only after M3 has shown a signal.
+
+---
+
+## 9. ConforNets, and why latent control is the wrong actuator for data fitting
+
+Lee, Kalicki, Jeon, Qabel, Fadini and AlQuraishi, *ConforNets: Latents-Based
+Conformational Control in OpenFold3*, arXiv:2604.18559 (2026), CC-BY. Code:
+`aqlaboratory/confornets`. The paper's own chassis is OpenFold3-preview, so it is
+directly comparable to everything above.
+
+### 9.1 What it is
+
+A ConforNet is a **channel-wise affine transform of the pre-Pairformer pair
+latents**:
+
+```python
+class ConforNet(nn.Module):                      # confornet/core/confornet.py, verbatim
+    def __init__(self, dim):
+        self.W = nn.Parameter(torch.eye(dim))    # dim = c_z = 128
+        self.b = nn.Parameter(torch.zeros(dim))
+    def forward(self, x):
+        return torch.matmul(x, self.W.t()) + self.b
+```
+
+`W ∈ R^{128×128}`, `b ∈ R^{128}`, identity-initialised, applied to `z_pre` at the
+**last recycle only** (all earlier recycles run under `no_grad`), then propagated
+through the 48-block Pairformer and the diffusion rollout.
+
+Two tasks:
+
+- **Diverse conformation prediction** — `k` ConforNets (k = 21 in the paper) are
+  jointly optimised *per protein* to maximise pairwise distance between the `k`
+  predicted structures. 20 Adam steps, lr 1e-3 halved every 5, grad clipped at 10.
+  Objectives: pairwise coordinate MSE after Kabsch alignment, or pairwise MSE
+  between distogram CDFs. The distogram objective needs no rollout at all.
+- **Conformational transfer** — supervised: train `ϕ` on one protein against a known
+  target state, then apply the *same* `ϕ` to a different protein of the same family.
+  This is the paper's genuinely novel claim, and it only works because `ϕ` carries
+  no positional index.
+
+The location ablation is the informative part: they compared `z_pre`, `z_post`,
+`s_pre`, `s_post`. `z_pre` gives control that survives full diffusion; perturbing
+post-Pairformer latents "can fit the mini rollout but degrade under full diffusion,
+most notably for `s_post`, suggesting shortcut solutions that do not survive longer
+denoising trajectories."
+
+### 9.2 Why it cannot do our job
+
+The reason is not parameter count — 16,512 parameters is *more* than the 3N ≈ 7,000
+coordinate degrees of freedom of a 300-residue protein. It is that the actuator is
+the wrong shape:
+
+1. **It carries no positional index.** The *same* affine map is applied to every
+   `(i, j)` pair of `z_pre`. A ConforNet can say "re-express all contacts in a
+   rotated channel basis"; it structurally cannot say "there is unexplained density
+   near residue 57." That positional specificity is the entire content of a
+   crystallographic residual. It is also exactly what makes transfer across a family
+   work — the property that gives the method its reach is the property that
+   disqualifies it here.
+2. **It selects among priors rather than injecting information.** The paper's own
+   reading of its cryptic-pocket result is that "latent-space exploration focuses on
+   physically feasible and energetically accessible degrees of freedom" — it
+   reweights what the model already believes. A 2.0 Å dataset for that same protein
+   is ~25,000 unique reflections, i.e. ~50,000 independent numbers of *new*
+   information. There is no route by which a global basis change of the pair
+   representation transmits that.
+3. **Wrong resolution.** ConforNets act on token-level pair latents, and the
+   distogram they optimise against is binned 3.25–50.75 Å in 39 bins. X-ray
+   refinement at 1.5–2.5 Å is about atoms — rotamer flips, 0.5–2 Å alternate
+   conformations, occupancies, ADPs. The representation being modulated cannot
+   express the quantities the data constrains.
+4. **The signal has to survive the whole trunk and rollout.** The `s_post` result
+   shows how fragile that channel is even for coarse, whole-domain motions. A
+   sub-Ångström per-atom correction routed through 48 Pairformer blocks is a very
+   long lever on a very small screw.
+5. **No population weights.** ConforNets produce `k` distinct structures with no
+   occupancies. The paper is explicit that calibrated Boltzmann-weighted ensembles
+   are the goal of a *different* line of work. Fitting an ensemble to Bragg data
+   requires weights — `F = Σ_m w_m F_m` is meaningless without them.
+6. **Per-protein optimisation.** In the diversity setting the ConforNets are
+   retrained for each protein. If you are going to run a per-structure optimisation
+   anyway, optimising 3N coordinates directly against the data is strictly more
+   direct, and TorchRef already does it.
+
+So the instinct is right: **latent modulation is a prior-side actuator.** It is a
+poor conditioning channel for an experimental dataset, and it is the wrong place to
+attach an X-ray target.
+
+### 9.3 Where it does earn its place
+
+One thing latent control does that a data gradient never will: **it crosses
+basins.** Any likelihood gradient — guidance, or a data head, or classical
+refinement — is local. It will not carry a kinase from DFG-in to DFG-out or a
+transporter from inward- to outward-open, because the barrier is tens of Ångström
+of coordinate travel through structures of terrible fit.
+
+That suggests a division of labour rather than a competition:
+
+```
+latent / MSA perturbation  ->  k diverse, physically plausible basins   (proposal)
+X-ray likelihood            ->  score each basin by LLG / R_free        (selection)
+X-ray data head or guidance ->  refine the winner(s) within its basin   (refinement)
+```
+
+That is a real workflow, and it is most valuable precisely where crystallography is
+hardest: molecular replacement into a low-resolution or conformationally-ambiguous
+target, where the search model is in the wrong state and no amount of rigid-body or
+restrained refinement will fix it. Generating `k` ConforNet-diversified search
+models and ranking them by translation-function score or LLG is a concrete,
+cheap experiment that needs none of the machinery in §4.
+
+### 9.4 What to reuse from the codebase
+
+`confornet/core/diffusion.py::diffusion_sample` is a **deterministic DDIM rollout
+with a fixed initial-noise argument, fully differentiable end to end** — no
+`no_grad` anywhere. That is milestone M5 of §6, already written and demonstrated.
+Two things follow:
+
+- The gradient path through the rollout is empirically tractable: they report the
+  20 Pairformer backprop steps fitting in 40 GB at ~300 aa and 80 GB at ~600 aa with
+  per-block gradient checkpointing, at roughly 2–3× default OF3p sampling cost. Our
+  case is cheaper on one axis — we do not need to backprop through the Pairformer at
+  all if the head lives in the diffusion module.
+- The **fixed-noise reparametrisation** is the key trick for our problem, and it is
+  worth stating plainly: holding the initial noise fixed makes the sampled ensemble
+  a *deterministic differentiable function* of the conditioning. That is precisely
+  what turns "fine-tune the produced ensemble against data" from a
+  reinforcement-learning problem into a plain gradient-descent one. Adopt it.
+
+`confornet/core/trunk.py::run_trunk_with_confornet` also shows the practical shape of
+"run the recycles under `no_grad`, take the gradient only through the last pass" —
+directly applicable if we ever do want a trunk-side data-quality embedding (§4.3).
