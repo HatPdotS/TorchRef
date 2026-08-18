@@ -1057,3 +1057,71 @@ that supplies the conditioning is also a floor:
   the data at all. The M1/M2 controls exist to detect precisely that, and the metric
   that catches it is not `R_free` but whether the data-guided ensemble differs from
   the unguided one in the places the difference density says it should.
+
+---
+
+## 12. Compute: OpenFold3 versus Boltz-2, and what it means for us
+
+### 12.1 The two architectures are the same size
+
+Read off `openfold3/projects/of3_all_atom/config/model_config.py` and
+`boltz/scripts/train/configs/structure.yaml` (`jwohlwend/boltz`):
+
+| | OpenFold3 | Boltz |
+|---|---|---|
+| single / pair channels | `c_s=384`, `c_z=128` | `token_s=384`, `token_z=128` |
+| atom / atom-pair channels | `c_atom=128`, `c_atom_pair=16` | `atom_s=128`, `atom_z=16` |
+| atom attention window | `n_query=32`, `n_key=128` | `32` / `128` |
+| MSA module | 4 blocks, `c_m=64` | 4 blocks, `msa_s=64` |
+| Pairformer | 48 blocks | 48 blocks |
+| atom encoder / decoder | 3 / 3 blocks | 3 / 3 blocks |
+| token (diffusion) transformer | 24 blocks, 16 heads | 24 blocks, 16 heads |
+| `sigma_data` | 16 | 16 |
+| recycling | `num_recycles=3` → 4 trunk passes | `recycling_steps=3` → 4 passes |
+
+Both are faithful AF3 reproductions, so per-forward-pass FLOPs are essentially
+identical. Both gate the gradient to the final recycle. Both reach for
+cuEquivariance triangle kernels; OF3 additionally carries DeepSpeed
+EvoformerAttention and Triton triangle kernels (`use_triton_triangle_kernels: true`
+in the eval defaults), Boltz additionally supports trifast.
+
+### 12.2 The difference that matters is a default, not the architecture
+
+```
+OpenFold3   no_full_rollout_steps = 200 ,  no_full_rollout_samples = 5
+Boltz       --sampling_steps 200        ,  --diffusion_samples 1
+```
+
+**OF3 runs five diffusion samples out of the box; Boltz runs one.** Diffusion cost is
+linear in samples, so a naive side-by-side comparison charges OF3 5× the structure
+generation for a difference in defaults, not in efficiency. `--diffusion_samples 5`
+on the Boltz side, or dropping OF3 to one sample, is the like-for-like comparison.
+
+Where the remaining time goes depends on size. The trunk is `O(N_token³)` in the
+triangle ops and runs 4×48 blocks once; the diffusion module is `O(N_token²)` per
+block over 24 blocks × 200 steps × samples. So diffusion dominates for small systems
+at 5 samples, the trunk dominates for large ones, with the crossover in the low
+hundreds of tokens. End to end, MSA generation usually dominates both unless MSAs are
+precomputed.
+
+I could not retrieve NVIDIA's OpenFold3 NIM per-GPU latency table (egress-blocked
+here) and there is no GPU in this environment, so the above is a compute-model
+comparison from the two configurations, not a measured wall-clock benchmark. Treat it
+as "the same model at the same size with different sampling defaults", and measure
+locally before believing any published ratio.
+
+### 12.3 The consequence for the fine-tuning budget
+
+The trunk output `(s_input, s_trunk, z_trunk)` **does not depend on the coordinates**.
+With the trunk frozen (§11.4) it is computed once per structure visit under
+`no_grad`, and every noise level and every diffusion sample reuses it. So the cost of
+X-ray fine-tuning is the diffusion module alone — 24-block token transformer plus the
+atom stack, over `k` rollout steps — plus one trunk forward pass amortised across the
+whole step. This is what makes training the head far cheaper than a full prediction,
+and it is the same structure ConforNets exploits in `run_trunk_with_confornet`.
+
+Caching trunk outputs across epochs is not viable at scale: `z_trunk` is
+`N_token² × 128`, which is ~38 MB at 384 tokens but ~580 MB at 1500 tokens in bf16.
+Recompute per visit rather than materialise a cache — and note this is a second,
+independent reason (alongside memory, §3.2) to keep the uncropped X-ray corpus to
+modest ASUs.
