@@ -725,9 +725,13 @@ the wrong shape:
    are the goal of a *different* line of work. Fitting an ensemble to Bragg data
    requires weights — `F = Σ_m w_m F_m` is meaningless without them.
 6. **Per-protein optimisation.** In the diversity setting the ConforNets are
-   retrained for each protein. If you are going to run a per-structure optimisation
-   anyway, optimising 3N coordinates directly against the data is strictly more
-   direct, and TorchRef already does it.
+   retrained for each protein, which limits reuse — though the transfer experiments
+   are precisely the attempt to escape that.
+
+Note what is *not* on this list: "optimising coordinates directly would be more
+direct." Directness is not the merit here — see §11. The objection to ConforNets is
+about information capacity and positional resolution, not about working through the
+model.
 
 So the instinct is right: **latent modulation is a prior-side actuator.** It is a
 poor conditioning channel for an experimental dataset, and it is the wrong place to
@@ -899,3 +903,157 @@ The per-atom probe cross-attention of §4.2 fits that layout natively: queries
 Each atom attends only to its own `P` probes, so it is embarrassingly batched, adds no
 cross-atom coupling, and — like the rest of the atom stack — never materialises
 anything quadratic in `N_atom`.
+
+---
+
+## 11. Fine-tuning: the conditioning argument, and what it forces
+
+### 11.1 The premise
+
+Cartesian refinement against a crystallographic likelihood has a small radius of
+convergence — roughly an Ångström, less at low resolution. The reason is structural:
+the target is a sum over reflections of terms oscillating as `exp(2πi h·x)`, so the
+landscape carries spurious minima spaced at ~`d_min`. The whole history of the field
+is workarounds for this: simulated annealing (CNS, `phenix.refine`), torsion-angle
+refinement (Rice & Brünger — a reparametrisation onto collective coordinates, chosen
+purely for its convergence properties), low-resolution-first protocols.
+
+A diffusion model is a better-conditioned optimiser for the same problem, and not
+incidentally. The denoiser at noise level `σ` is the score of the data distribution
+smoothed at scale `σ`, so annealing the noise schedule *is* a continuation method on
+a learned prior — coarse-to-fine, with each step reprojecting onto the manifold of
+structures that look like refined PDB entries. That is exactly the prior a
+crystallographic target wants, and it is a far better-behaved landscape than 3N
+independent Cartesian shifts under geometry restraints.
+
+So the reason to work through the model is convergence, not convenience. Everything
+below follows from taking that seriously rather than treating the diffusion module as
+a coordinate generator with a loss bolted on.
+
+Two consequences worth stating plainly before the details:
+
+- **The one-step objective of §5.3 is not sufficient.** Training the denoiser to
+  produce a better `x̂₀` from a lightly-noised ground truth teaches local correction —
+  precisely the Cartesian-refinement regime whose conditioning is the problem. The
+  claimed benefit lives in the *trajectory*, so the gradient has to run through
+  several denoising steps. The truncated differentiable rollout moves from "later
+  optimisation" (M5) to a precondition.
+- **The data head has to fire early in the rollout, not just at the end.** A head
+  that only contributes below `t ≈ 0.5 Å` cannot influence which basin the sampler
+  lands in; it can only polish. Stream C (§4.4, residual feedback across steps) is
+  therefore core, not optional.
+
+### 11.2 The noise level is a B-factor — and OF3's default schedule is unusable
+
+This is the quantitative constraint that governs everything else.
+
+Isotropic Gaussian displacement of standard deviation `u` per Cartesian component
+multiplies structure factors by `exp(-2π²u²/d²)`, i.e. it is exactly a Debye–Waller
+factor with
+
+```
+B_eff = 8π² u²           d(e⁻¹ attenuation) = π√2 · u ≈ 4.44 u
+```
+
+A diffusion noise level `t` is such a displacement. So:
+
+| `t` (Å) | `B_eff` (Å²) | resolution where signal survives |
+|---|---|---|
+| 0.3 | 7 | 1.3 Å |
+| 0.5 | 20 | 2.2 Å |
+| 1.0 | 79 | 4.4 Å |
+| 4.8 | 1834 | 21 Å |
+
+OF3 trains with `t = σ_data · exp(-1.2 + 1.5n)`, `n ~ N(0,1)`, `σ_data = 16 Å`. The
+**median training noise level is `16·e^{-1.2} ≈ 4.8 Å`** — an effective B of ~1800 Å²,
+which annihilates everything past 21 Å. And `P(t < 0.5 Å) ≈ 6.5%`: of the 48 noise
+levels drawn per training step, roughly **three** carry any signal at 2 Å resolution.
+
+Two things follow:
+
+1. **Re-weight the noise distribution for the X-ray stage.** Sampling from the stock
+   distribution spends >90% of the compute on samples where the X-ray term is
+   numerically zero. Use a dedicated low-`t` schedule for the X-ray loss (or apply the
+   term only below a `t` threshold and raise `no_samples` in that band), while keeping
+   the stock distribution for the existing diffusion MSE so the model's general
+   denoising is not degraded.
+2. **Use `t` to pre-select reflections.** At noise level `t`, reflections beyond
+   `d ≈ 4.4t` cannot be informative. Dropping them from the minibatch is free
+   efficiency and costs nothing statistically.
+
+### 11.3 Let sigma_A do the annealing
+
+The table above is the right intuition but the wrong statistical object: `t` is the
+blur on the *noisy input* `x_t`, whereas the loss is evaluated on `x̂₀ = E[x₀ | x_t]`,
+a posterior mean whose error is smaller than `t` and is not Gaussian.
+
+The correct treatment already exists, and it is the standard crystallographic one:
+**`σ_A` is exactly the parameter that measures how much of the model to believe at
+each resolution.** With `σ_A` estimated properly, the ML target self-anneals — at high
+`t` the model error is large, `σ_A → 0` at high resolution, and those reflections
+contribute nothing to the gradient without anyone hand-designing a resolution
+schedule. The coarse-to-fine behaviour that makes the diffusion landscape well
+conditioned is thereby mirrored in the target rather than bolted onto it.
+
+The one requirement: **estimate `σ_A` per (resolution shell × noise-level bin)**, on
+the free set, since it varies strongly with `t`. `estimate_beta` in
+`model_error_estimation/sigma_a.py` already fits per shell on a `free_mask`; bin by
+`t` as well and cache per macrocycle (§10.3). Use `t` only for the cheap reflection
+pre-selection of §11.2; let `σ_A` carry the weighting.
+
+### 11.4 What actually gets trained
+
+```
+frozen        MSA module, template embedder, Pairformer trunk
+trained       XrayDataEmbedder + XrayCrossAttention (zero-init gate)
+              LoRA on the diffusion transformer attention projections
+              LoRA or full on AtomAttentionDecoder
+gradient      truncated differentiable rollout, last k ≈ 4–8 steps of a
+              deterministic DDIM trajectory with fixed initial noise
+loss          L_of3 (stock weights)  +  w_xray · L̃_ML  +  w_rank + w_wilson
+```
+
+`L̃_ML` is the profiled likelihood of §10 — pose, scale, solvent, ADPs and `σ_A` fitted
+under `no_grad` and detached, so the gradient reaching the network is a pure
+coordinate signal.
+
+The **fixed-noise reparametrisation** (§9.4) is what makes this a plain
+gradient-descent problem: hold the initial noise fixed and the sampled ensemble is a
+deterministic differentiable function of the conditioning. `diffusion_sample` in the
+ConforNets codebase is a working implementation, with the memory profile measured.
+
+The corpus is small — tens of thousands of entries against OF3's pretraining set — so
+adapters rather than full fine-tuning, EMA on, and hold out whole *structures*, not
+reflections, on a temporal split past the checkpoint cutoff.
+
+### 11.5 The experiment that decides whether any of this is worth building
+
+The conditioning premise is testable directly, and cheaply, before a single weight is
+trained. Take deposited structures at a range of resolutions and construct starting
+models with controlled coordinate error — MR solutions, or perturbed depositions — at
+0.5, 1, 2, 3 Å RMSD. Then compare, on identical starting points:
+
+1. Cartesian LBFGS refinement (TorchRef, stock);
+2. simulated annealing / torsion-angle refinement (PHENIX, as the classical ceiling);
+3. diffusion-mediated refinement — partial noising to `t`, then a data-guided rollout.
+
+Measure the fraction recovered below 1 Å, and final `R_free`, as a function of
+starting error. If (3) does not have a visibly larger radius of convergence than (1)
+and (2), the premise is wrong and none of §11.4 is worth the compute. If it does, the
+size of that gap is the budget the fine-tuning has to work with.
+
+### 11.6 The honest counter-argument
+
+Better conditioning is not the same as being able to reach the answer, and the prior
+that supplies the conditioning is also a floor:
+
+- The prior is over *deposited, refined* structures — extremely well matched to
+  crystallography, but it will resist moving to a data-supported conformation it
+  considers unlikely. Strained loops, genuine alternate conformers, and ligand-induced
+  distortions are exactly the cases where the data is right and the prior is wrong.
+- The model knows nothing about crystal contacts, while deposited conformations are
+  frequently shaped by them. That is a systematic disagreement, not noise.
+- A sampler that lowers `R_free` by reverting to its own dominant mode has not used
+  the data at all. The M1/M2 controls exist to detect precisely that, and the metric
+  that catches it is not `R_free` but whether the data-guided ensemble differs from
+  the unguided one in the places the difference density says it should.
