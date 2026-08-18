@@ -1,0 +1,648 @@
+# An X-ray data head for OpenFold3, and fine-tuning its ensemble against data
+
+Design note. Two codebases are involved:
+
+- **OpenFold3** — `aqlaboratory/openfold-3` (Apache-2.0), inspected at `72fc3a9`.
+  Note the repository name is `openfold-3`, not `openfold3`; the Python package
+  is `openfold3`.
+- **TorchRef** — this repository.
+
+Everything below about OpenFold3 is read off that checkout, not off the AF3 paper,
+so the line references are to code that actually runs.
+
+---
+
+## 0. Summary
+
+OpenFold3 is an AlphaFold3 reproduction: a recycled Pairformer trunk producing
+`(s, z)`, followed by a **conditional diffusion model over all-atom Cartesian
+coordinates**. The diffusion module is the only part that sees coordinates, and it
+is the only sensible attachment point for experimental data.
+
+Three facts dominate the design:
+
+1. **The model has no crystal frame.** `centre_random_augmentation` randomises the
+   global pose at every diffusion step, and the training loss superposes onto the
+   ground truth with a *detached* Kabsch rotation. Nothing in the network is
+   equivariant-aware of a unit cell. A structure-factor target is not
+   pose-invariant, so the pose has to be supplied — or eliminated.
+2. **Training crops to 384 tokens.** A structure-factor calculation needs the whole
+   asymmetric unit, plus bulk solvent over the whole cell.
+3. **The 200-step rollout runs under `torch.no_grad()`.** There is no gradient path
+   from the sampled ensemble back to the weights today; the trainable path is the
+   one-step denoiser `_train_diffusion`.
+
+The recommendation, in one sentence: **bring the data into the model's frame rather
+than the model into the data's frame** — compute F_calc in TorchRef under an
+externally-maintained (detached) MR pose, turn the residual `mFo − DFc` map into
+*frame-invariant, atom-local* probe tokens, and cross-attend to those from the
+diffusion transformer through a zero-initialised gate. Then no part of OpenFold3's
+SE(3) inductive bias has to be retrained, and the pretrained checkpoint is exactly
+recovered at initialisation.
+
+Build it in this order: a **zero-shot guidance baseline first** (no new weights),
+then the head. The baseline exercises the entire crystallographic plumbing — pose,
+scaling, solvent, gradients, R-factors — and is the thing the head must beat.
+
+---
+
+## 1. OpenFold3 as it stands
+
+### 1.1 Layout
+
+```
+openfold3/
+  core/
+    model/
+      feature_embedders/   input_embedders.py, template_embedders.py
+      latent/              pairformer.py, msa_module.py, template_module.py, evoformer.py
+      layers/              attention_pair_bias.py, diffusion_transformer.py,
+                           diffusion_conditioning.py, sequence_local_atom_attention.py,
+                           triangular_*.py, transition.py, outer_product_mean.py, msa.py
+      structure/           diffusion_module.py, augmentation.py, pocket_constraints.py
+      heads/               head_modules.py, prediction_heads.py
+      primitives/          attention.py, linear.py, normalization.py, ...
+    loss/                  loss_module.py, diffusion.py, confidence.py, distogram.py
+    data/                  primitives/, pipelines/{preprocessing,sample_processing,featurization}/,
+                           framework/{data_module,single_datasets}/
+    metrics/, utils/, kernels/
+  projects/of3_all_atom/   model.py, runner.py, config/{model_config,dataset_configs,features}.py
+  entry_points/            experiment_runner.py, validator.py
+```
+
+`projects/of3_all_atom` is the concrete model; `core` is the reusable library. A new
+project (e.g. `of3_xray`) can subclass the model and the config without forking
+`core` — that is the intended extension seam and where the data head should live.
+
+### 1.2 The trunk — `OpenFold3.run_trunk`
+
+`projects/of3_all_atom/model.py:166`. AF3 Algorithm 1 lines 1–14:
+
+```
+InputEmbedderAllAtom(batch)  ->  s_input [*, N_tok, 449], s_init [*, N_tok, 384], z_init [*, N_tok, N_tok, 128]
+for cycle in range(num_recycles + 1):          # num_recycles = 3, sampled 0..3 in training
+    z  = z_init + Linear(LayerNorm(z))
+    z += TemplateEmbedderAllAtom(...)           # 2 pair-stack blocks, c_t = 64
+    m, msa_mask = MSAModuleEmbedder(...)
+    z  = MSAModuleStack(m, z, ...)              # 4 blocks, c_m = 64
+    s  = s_init + Linear(LayerNorm(s))
+    s, z = PairFormerStack(s, z, ...)           # 48 blocks, c_s = 384, c_z = 128
+```
+
+Only the last cycle carries gradient (`enable_grad = is_grad_enabled and is_final_iter`).
+Dimensions come from `config/model_config.py`: `c_s=384`, `c_z=128`, `c_m=64`, `c_t=64`,
+`c_atom=128`, `c_atom_pair=16`, `c_token_embedder=384`, `c_token_diffusion=768`,
+`c_s_input=449`, `n_query=32`, `n_key=128`, `sigma_data=16`.
+
+The trunk is a pure function of sequence, MSA and templates. **It never sees
+coordinates**, so it cannot consume experimental data in any position-dependent way.
+It is the right place for *global* data context (resolution, data quality) and the
+wrong place for anything map-like.
+
+### 1.3 The diffusion module — `core/model/structure/diffusion_module.py`
+
+`DiffusionModule.forward` (AF3 Algorithm 20):
+
+```
+si, zij  = DiffusionConditioning(batch, t, si_input, si_trunk, zij_trunk)   # + relpos, Fourier(t)
+rl_noisy = xl_noisy / sqrt(t^2 + sigma_data^2)
+ai, ql, cl, plm = AtomAttentionEncoder(batch, rl_noisy, si_trunk, zij)      # 3 blocks, atom -> token
+ai = ai + Linear(LayerNorm(si))
+ai = DiffusionTransformer(a=ai, s=si, z=zij, mask=token_mask)               # 24 blocks, c_a = 768, 16 heads
+ai = LayerNorm(ai)
+rl_update = AtomAttentionDecoder(batch, ai, ql, cl, plm)                    # 3 blocks, token -> atom
+xl_out = c_skip(t) * xl_noisy + c_out(t) * rl_update                        # EDM preconditioning
+```
+
+Sampling (`SampleDiffusion._sample_rollout`) is the standard EDM churn loop: recentre
+and randomly rotate, add churn noise, denoise, take an Euler step. Full rollout is
+**200 steps × 5 samples**; the training mini-rollout is **20 steps × 1 sample**.
+The one-step training objective (`OpenFold3._train_diffusion`) draws **48** noise
+levels `t = sigma_data · exp(-1.2 + 1.5·n)`, `n ~ N(0,1)`, and denoises all 48 in
+parallel.
+
+Two things to note for later:
+
+- `DiffusionTransformerBlock` already carries a **cross-attention variant**
+  (`CrossAttentionPairBias`, `layers/attention_pair_bias.py:225`) selected by
+  `n_query is not None`. It is *not* cross-attention to an external modality — it is
+  sequence-local block attention used by the atom transformer. But the underlying
+  `Attention` primitive (`primitives/attention.py:231`) takes separate `q_x` and
+  `kv_x` with independent `c_q`/`c_k`/`c_v` and a list of additive `biases`
+  broadcasting to `[*, H, Q, K]`. Genuine cross-attention to a new token stream
+  needs **no new primitive**.
+- `pocket_constraints.py` is a working precedent for injecting an external,
+  user-supplied conditioning signal end-to-end: a featuriser
+  (`pipelines/featurization/pocket_constraints.py:106`) emits new batch keys, and
+  `SampleDiffusion.forward` branches on them to alter the rollout. Follow that shape.
+
+### 1.4 Heads and losses
+
+`AuxiliaryHeadsAllAtom` (`heads/head_modules.py:40`) runs the distogram head on `z`,
+then **detaches** `si`, `zij` and the predicted coordinates and runs a 4-block
+confidence Pairformer for pLDDT / PAE / PDE / experimentally-resolved. `OpenFold3Loss`
+(`loss/loss_module.py:31`) sums confidence + diffusion + distogram, each weighted
+per-sample by `batch["loss_weights"]`.
+
+`batch["loss_weights"]` is a per-sample dict of scalars (`mse`, `bond`,
+`smooth_lddt`, `plddt`, `pae`, ...) written by
+`pipelines/featurization/loss_weights.py`. **This is the mechanism for mixing an
+X-ray dataset into the existing training mix**: add an `xray` key, set it to 0 for
+every non-crystallographic sample, and the loss silently drops out
+(`if loss_weights[name].any()`).
+
+### 1.5 Training loop
+
+`projects/of3_all_atom/runner.py` is a Lightning module: EMA, manual gradient
+clipping, per-sample parameter freezing for disabled losses
+(`_get_sample_disabled_param_names`), Adam via `configure_optimizers`.
+`entry_points/experiment_runner.py:446` loads checkpoints with
+`strict=self.ckpt_load_settings.strict_loading`, so **new parameters can be added and
+a pretrained checkpoint loaded non-strictly**. That is the fine-tuning entry point.
+
+### 1.6 Data pipeline and cropping
+
+`config/dataset_config_components.py:135` — `TokenCropSettings(enabled=True,
+token_budget=384)` with crop weights `contiguous 0.2 / spatial 0.4 /
+spatial_interface 0.4`. Some dataset configs already set
+`TokenCropSettings(enabled=False)`, so uncropped operation is supported.
+
+Features are declared with their shapes in `config/features.py`
+(`feature_dict.feat`), built per-sample in `pipelines/featurization/*`, and collated
+by `core/data/framework/data_module.py`. A new feature must be registered in all
+three places, and must be **crop-aware** if cropping stays on.
+
+### 1.7 Properties that matter here
+
+| Property | Consequence for an X-ray target |
+|---|---|
+| SE(3)-equivariant by construction; global pose randomised every step | F_calc is *not* pose-invariant — pose must be supplied externally or eliminated |
+| No unit cell, no space group, no symmetry anywhere in the model | Symmetry expansion and solvent stay entirely on the TorchRef side |
+| Crops to 384 tokens | Partial-structure F_calc needed, or cropping disabled |
+| Rollout under `no_grad`; only `_train_diffusion` carries gradient | Train the head on the one-step denoiser, not through the rollout |
+| Predicts elements and coordinates but no ADPs and no occupancies | B-factors and occupancies must be refined by TorchRef, not predicted (initially) |
+| Confidence heads see detached inputs | pLDDT is a natural, already-plumbed proxy for a per-atom weight in the X-ray target |
+
+---
+
+## 2. TorchRef as it stands — the other half of the seam
+
+Everything needed on the crystallographic side already exists and is differentiable:
+
+| Need | Where |
+|---|---|
+| F_calc from coordinates by FFT | `model/sf_fft.py` — `SfFFT.compute_structure_factors(hkl, xyz_iso, adp_iso, occ_iso, A_iso, B_iso, ...)`, a functional call taking raw tensors |
+| F_calc by direct summation | `model/sf_ds.py` — `SfDS.compute_structure_factors`; O(N_atom · N_refl · N_sym), ideal for reflection minibatching |
+| Symmetry | `symmetry/`, late reciprocal-space symmetry via `ReciprocalSymmetryExtractor` |
+| Overall / anisotropic scaling, bulk solvent | `scaling/scaler.py`, `scaling/solvent.py` (`SolventModel`, mask-based) |
+| Likelihood targets | `refinement/targets/xray/` — `ml`, `ml_full`, `ml_noalpha`, `rice`, `nll`, `nll_beta`, `sigma_a`, `least_squares`; `create_xray_target` factory. Every target exposes `_per_refl` (unreduced), `forward` (summed) and `get_rfactor` |
+| Work / free / validation split | `XrayTarget.use_set`, `data.work` / `data.free` / `data.validation` |
+| Ensembles | `experimental/ensemble/` — `EnsembleModel` (flat replicated atom list, `xyz_per_member` view, member dropout, birth/death), `EnsembleRefinement`, `RankPenaltyTarget`, `WilsonPriorTarget` |
+| Multi-state mixtures | `model/model_collection.py` — `_SharedMixedModel.forward` computes `F = Σ_i w_i F_i` with learnable softmax fractions and a `set_fraction_override` hook for external weights |
+| Loss orchestration | `refinement/loss_state.py` — `LossState`, hierarchical weights, lazy evaluation, `run()` closure |
+| Molecular replacement | `experimental/alignment/pipeline.py` — ball-harmonic rotation function + FFT translation + rigid body. Needs the `torchref[alignment]` extra for the rotation search. (Its docstrings point at a consolidated `torchref.alignment` FRF engine that is not in this tree.) |
+| Superposition | `base/alignment/superposition.py` — `align_torch`, `superpose_vectors_robust_torch` |
+
+The crystallographic ensemble semantics TorchRef already encodes are the right ones:
+Bragg intensities come from the **coherent** average `F_Bragg = Σ_m w_m F_m`
+(complex), which is exactly what `EnsembleModel` gets by putting all members in one
+flat atom list at occupancy `1/N`, and what `_SharedMixedModel.forward` computes
+explicitly. Member spread shows up as the fall-off of `|<F>|` — the diffuse part is
+not modelled, which is the standard approximation.
+
+---
+
+## 3. The five obstacles, and what to do about each
+
+### 3.1 There is no crystal frame
+
+`centre_random_augmentation` (`structure/augmentation.py:43`) applies a random
+rotation and translation to the coordinates at **every** rollout step, and
+`weighted_rigid_align` (`loss/diffusion.py:32`) returns `x_align.detach()` — the
+alignment is explicitly outside the gradient. The model is trained to be
+pose-agnostic and there is no signal anywhere that could anchor it.
+
+Three options:
+
+- **(A) Anchor the model.** Disable the augmentation during the X-ray stage and
+  train the network to output crystal-frame coordinates. Cheapest to describe,
+  worst in practice: it destroys the pretrained inductive bias, and the model
+  would have to learn a global 6-DoF regression from scratch.
+- **(B) Predict the pose.** Add an SE(3) head. Adds a hard sub-problem (molecular
+  replacement) that classical software already solves better.
+- **(C) Keep the pose outside the network — recommended.** Maintain a pose
+  `T = (R, t)` as a *detached* bookkeeping variable. Obtain `T₀` by MR on the
+  initial prediction; at each subsequent evaluation re-estimate `T` by Kabsch
+  superposition of the current `x̂₀` onto the placed reference, optionally
+  rigid-body refined every K macro-cycles. Transform `x̂₀` into the crystal frame
+  to compute F_calc, and transform the resulting residual signal **back** into the
+  model frame before feeding it to the network.
+
+With (C), the network only ever sees quantities expressed in its own frame, so full
+SE(3) equivariance is preserved and nothing has to be relearned. The pose is not
+differentiated through — which is fine, because at the optimum
+`∂L/∂T = 0` for a rigid-body-refined pose, and any residual pose error appears as a
+coherent shift that rigid-body refinement removes.
+
+One ensemble-specific detail: superpose the ensemble **as a body** (align the member
+mean, apply one `T` to all members). Aligning members individually would destroy the
+relative displacements that *are* the disorder model.
+
+### 3.2 Cropping versus the unit cell
+
+A 384-token crop is a fragment. Two fixes, use both:
+
+- **Partial-structure background.** `F_total(h) = F_crop(h; x) + F_bg(h)` where
+  `F_bg` is the complex contribution of everything outside the crop (and of the
+  bulk solvent), computed once per macro-cycle from the starting model and held
+  fixed. This is exactly how crystallographers refine partial models, it is one
+  complex tensor of length `N_refl`, and it makes the crop's gradient correct.
+- **Uncropped fine-tuning for small entries.** `TokenCropSettings(enabled=False)`
+  is already supported; restrict the X-ray corpus to entries whose ASU fits the
+  memory budget (roughly ≤ 1500 tokens on 80 GB with checkpointing) and disable
+  cropping there.
+
+Bulk solvent must be recomputed on the full cell periodically — the mask depends on
+the model — but held fixed within a step. Standard macro-cycle practice.
+
+### 3.3 The rollout carries no gradient
+
+`_rollout` is wrapped in `torch.no_grad()`. So "fine-tune the produced ensemble
+against data" cannot mean, at least initially, backpropagating through 200 sampling
+steps. Three tractable strategies, in increasing cost:
+
+1. **One-step objective (recommended first).** Add the X-ray term to
+   `_train_diffusion`: the module already predicts `x̂₀` from a noised ground truth
+   at 48 noise levels. Compute F_calc from `x̂₀` and add the likelihood to the loss.
+   The head learns "given a noisy structure and the residual density, produce a
+   better `x̂₀`". Cheap, stable, uses the existing loss plumbing. Reduce
+   `no_samples` from 48 to 4–8 for this stage.
+2. **Truncated rollout.** Enable gradient over the last k (≈ 4–8) sampling steps
+   with `checkpoint_blocks`, no_grad the rest. Matches train and test conditions
+   better at ~k× the cost.
+3. **Guidance only, no training.** Diffusion posterior sampling: at each rollout
+   step add `−λ(t) ∇_x L_xray(x̂₀)` to the update. No new weights at all.
+
+(3) is not a fallback — it is the **baseline to build first** (§6, M1).
+
+### 3.4 Cost
+
+Per F_calc evaluation, per diffusion sample:
+
+- **FFT path** — a 100 Å cell at 2.0 Å needs a ~128³ grid: density build plus a
+  complex FFT is O(10 ms) on an A100. Times 48 training samples is ~0.5 s/step just
+  for structure factors, on top of a step that is already ~1 s. Too much.
+- **Direct summation with reflection minibatching** — sample 2000 reflections per
+  step: `3000 atoms × 2000 refl × 4 sym ≈ 2.4 × 10⁷` complex MACs. Negligible, and
+  the stochastic gradient over reflections is unbiased.
+
+So: **`SfDS` + reflection minibatch for the training gradient, `SfFFT` for
+full-data R-factors at validation.** Both share the same ITC92 scattering tables
+(`data/itc92_scattering_factors.pt`), so they are consistent by construction — but
+verify that agreement numerically once, as an integration test.
+
+Bulk solvent is mask-based and inherently grid-bound, so `F_sol` is precomputed per
+macro-cycle and gathered for the minibatch's Miller indices.
+
+### 3.5 Ensemble semantics and overfitting
+
+An N-member ensemble multiplies the coordinate parameter count by N. Against a
+typical 2 Å dataset the observation-to-parameter ratio is already near 1 for a
+single copy. `R_work` will fall for free; `R_free` is the only signal that matters.
+TorchRef already has the counter-measures — `RankPenaltyTarget` (penalises the rank
+and magnitude of the displacement matrix), `WilsonPriorTarget` (keeps `<|F_calc|²>`
+on the Wilson curve), and `EnsembleModel.configure_dropout` (each SF evaluation uses
+a random member subset). All three should be on.
+
+Also: the free set must be **fixed per structure and stored**, not resampled, or the
+free R is meaningless across epochs.
+
+---
+
+## 4. The proposed design
+
+### 4.1 Principle
+
+> Compute the crystallographic residual outside the network in the crystal frame;
+> project it into per-atom, frame-invariant features; cross-attend to those.
+
+Concretely, three streams of key/value tokens, in increasing sophistication. They
+are independent and can be shipped one at a time.
+
+### 4.2 Stream A — atom-local density probes (the informative one)
+
+For each atom `l` with current position `x_l` (model frame), build a local frame
+`F_l ∈ SO(3)`:
+
+- protein/nucleic tokens: the standard backbone frame (`core/utils/rigid_utils.py`
+  already has `Rigid`/`Rotation` and `quat_to_rot`);
+- ligand / atomised tokens: Gram–Schmidt on the two nearest bonded neighbours
+  (`batch["token_bonds"]` and the reference conformer give the connectivity);
+- atoms with no definable frame: mask the directional probes and keep only the
+  isotropic scalars.
+
+Place `P` probe points on a fixed pattern in the local frame — e.g. 2 shells at
+0.5 Å and 1.0 Å × 16 directions from a spherical design, plus the atom centre:
+`P = 33`. Map each probe to the crystal frame via `T`, trilinearly sample the
+residual map `Δρ = mF_o − DF_c` (and optionally `2mF_o − DF_c`), and build a token:
+
+```
+kv_A[l, p] = Linear([ Δρ(x_lp), ρ_2fofc(x_lp), shell_id_onehot(p), dir_onehot(p),
+                      σ_level(Δρ), pLDDT_l, element_l ])            # -> c_kv
+```
+
+Every entry is a scalar or a *local-frame* index, so the token set rotates with the
+molecule: SE(3) equivariance is preserved exactly.
+
+Attention is atom-local: queries `[*, N_atom, 1, c_atom]`, keys/values
+`[*, N_atom, P, c_kv]`. Cost is `O(N_atom · P)` — trivial next to the atom
+transformer's `O(N_atom · n_key)`.
+
+**Cheap variant worth measuring first (Stream A0).** The single most informative
+per-atom quantity is the likelihood gradient `g_l = ∂L_xray/∂x_l`, which TorchRef
+gives for free by autograd. Expressed in the local frame it is 3 invariant scalars
+plus a norm — literally the refinement shift direction. Concatenate
+`[F_lᵀ g_l, |g_l|, log|g_l|]` onto the atom conditioning `c_l` in
+`AtomAttentionEncoder`. No attention needed. If this alone recovers most of the
+benefit, the probe machinery may not be worth its complexity.
+
+### 4.3 Stream B — global data-quality tokens
+
+Pool reflections into `S ≈ 40` resolution shells and emit one token per shell:
+
+```
+kv_B[s] = Linear([ d*_s, <|F_o|>_s, <σ_F>_s, completeness_s, <I/σ>_s,
+                   σ_A(s), R_work(s), n_refl_s, is_centric_frac_s ])
+```
+
+plus a handful of global scalars (space group one-hot, cell parameters normalised,
+`V_M`/solvent content, resolution limits, twin fraction, overall B from Wilson).
+`σ_A(s)` and `R_work(s)` come from
+`refinement/model_error_estimation/sigma_a.py` and `XrayTarget.get_rfactor`, and
+they change as the structure improves, which is what makes this stream more than a
+static embedding.
+
+Every token cross-attends to these `S + 1` tokens. This is what lets the model learn
+"3.4 Å data, do not trust the side-chain density" — the single most common failure
+mode of naive real-space fitting.
+
+Stream B is also the only stream that makes sense in the **trunk**: a data-quality
+embedding added to `s_init`/`z_init` would let the Pairformer modulate its own
+confidence. Optional, second-order, and it costs a full trunk fine-tune — leave it
+for later.
+
+### 4.4 Stream C — residual feedback across rollout steps
+
+Streams A and B are static within a step only if the map is static. The interesting
+version recomputes `Δρ` from the **current** `x̂₀` every K rollout steps (K ≈ 10 of
+200), so the head sees its own effect. That turns the sampler into a learned
+refinement loop: predict → compute residual → attend to residual → predict again.
+
+This is where the real gain should be, and also where the cost and the instability
+are. Gate it behind a config flag and enable it only after A and B work.
+
+### 4.5 Modules
+
+Two new modules in a new `openfold3/core/model/xray/` package, plus a project
+`of3_xray` that subclasses `OpenFold3`:
+
+```python
+# core/model/xray/data_embedder.py
+class XrayDataEmbedder(nn.Module):
+    """Turn precomputed X-ray features into cross-attention key/value tokens.
+
+    Consumes only tensors placed in the batch by the featuriser / the TorchRef
+    bridge; performs no crystallography itself.
+    """
+    def forward(self, batch, x_hat=None) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        # returns kv_atom [*, N_atom, P, c_kv], kv_atom_mask [*, N_atom, P],
+        #         kv_global [*, S+1, c_kv],     kv_global_mask [*, S+1]
+```
+
+```python
+# core/model/xray/cross_attention.py
+class XrayCrossAttention(nn.Module):
+    """Gated cross-attention from token/atom representations to X-ray tokens.
+
+    The output projection is zero-initialised and the whole block is wrapped in a
+    learned scalar gate, so at initialisation the module is exactly the identity and
+    a pretrained OpenFold3 checkpoint is reproduced bit-for-bit.
+    """
+    def __init__(self, c_a, c_kv, c_hidden, no_heads, c_s=None, use_ada_layer_norm=True):
+        super().__init__()
+        self.layer_norm_a = AdaLN(c_a=c_a, c_s=c_s) if use_ada_layer_norm else LayerNorm(c_a)
+        self.layer_norm_kv = LayerNorm(c_kv)
+        self.mha = Attention(c_q=c_a, c_k=c_kv, c_v=c_kv,
+                             c_hidden=c_hidden, no_heads=no_heads, gating=True)
+        self.linear_out = Linear(c_a, c_a, init="final")   # zero-init
+        self.gate = nn.Parameter(torch.zeros(1))           # AdaLN-Zero style
+
+    def forward(self, a, kv, kv_mask, s=None):
+        a_n  = self.layer_norm_a(a, s) if self.use_ada_layer_norm else self.layer_norm_a(a)
+        bias = (self.inf * (kv_mask - 1))[..., None, None, :]
+        out  = self.mha(q_x=a_n, kv_x=self.layer_norm_kv(kv), biases=[bias])
+        return self.gate.tanh() * self.linear_out(out)
+```
+
+Note this reuses `core/model/primitives/attention.Attention` unchanged — it already
+takes independent `c_q`/`c_k`/`c_v` and an additive bias list.
+
+### 4.6 Where to attach
+
+| Attachment | Stream | Why |
+|---|---|---|
+| `AtomAttentionEncoder.get_atom_reps`, appended to `c_l` | A0 (gradient scalars) | Cheapest, no attention, atom resolution |
+| Inside the atom transformer, one `XrayCrossAttention` per block | A (probes) | Atom resolution, atom-local KV, this is where coordinates live |
+| `DiffusionTransformerBlock.forward`, after `attention_pair_bias`, before `conditioned_transition` | B (global) | Token resolution, 24 blocks, cheapest place for a global signal |
+| `AtomAttentionDecoder` | A | Directly shapes `rl_update`, i.e. the coordinate update itself |
+
+Start with **B in the diffusion transformer** (simplest, no local frames needed) and
+**A0 in the atom encoder**. Add **A in the atom transformer** once frames are
+validated.
+
+The diffusion-transformer edit is genuinely small:
+
+```python
+# layers/diffusion_transformer.py, DiffusionTransformerBlock.forward
+a = a + self.attention_pair_bias(a=a, z=z, s=s, mask=mask, ...)
+if self.xray_cross_attention is not None:            # None unless configured
+    a = a + self.xray_cross_attention(a=a, kv=xray_kv, kv_mask=xray_kv_mask, s=s)
+a = a + self.conditioned_transition(a=a, s=s, mask=trans_mask)
+```
+
+`xray_kv` threads through `DiffusionTransformer.forward` -> `DiffusionModule.forward`
+-> `SampleDiffusion` / `_train_diffusion` the same way `z` already does, via the
+`partial(...)` list built for `checkpoint_blocks`.
+
+### 4.7 Feature and config plumbing
+
+1. `projects/of3_xray/config/features.py` — extend `feature_dict.feat` with
+   `xray_probe_values [N_ATOMS, P, C_PROBE]`, `xray_probe_mask [N_ATOMS, P]`,
+   `xray_local_frames [N_ATOMS, 3, 3]`, `xray_shell_feats [N_SHELLS, C_SHELL]`,
+   `xray_global_feats [C_GLOBAL]`, `xray_enabled []`.
+2. `pipelines/featurization/xray.py` — the featuriser, mirroring
+   `pocket_constraints.py`: returns `{}` when the query has no diffraction data, so
+   mixed batches work.
+3. `pipelines/featurization/loss_weights.py` — add an `xray` weight, 0 for
+   non-crystallographic samples.
+4. `config/model_config.py` — an `xray_head` block, `enabled: False` by default.
+5. Cropping: the probe tensors are atom-indexed, so they follow the existing atom
+   crop mask; the shell/global features are per-sample and unaffected.
+
+Everything is off unless configured, so the stock model is untouched.
+
+### 4.8 Preserving the pretrained checkpoint
+
+- Zero-init `linear_out` and a zero-init scalar gate ⇒ the augmented model is
+  **numerically identical** to the pretrained one at step 0. Verify this as a test.
+- Load with `strict_loading: false` (`experiment_runner.py:446`).
+- Freeze the trunk (MSA module, template embedder, Pairformer) for the first stage;
+  train the diffusion module + head. `runner.py:131` already has
+  `_freeze_model_params(exempt_submodule=...)` to build on.
+- Consider LoRA on the diffusion transformer's attention projections rather than
+  full fine-tuning — 24 blocks × `c_a=768` is a lot of parameters to move on what
+  will be a comparatively small crystallographic corpus.
+- Keep EMA on; the runner already maintains it.
+
+---
+
+## 5. Fine-tuning the ensemble against data
+
+### 5.1 What "the ensemble" means
+
+`SampleDiffusion` returns `xl [*, N_samples, N_atom, 3]` — 5 samples at inference.
+Treated as a crystallographic ensemble with weights `w_m`:
+
+```
+F_calc(h) = Σ_m w_m · F_m(h)          (coherent, complex — correct for Bragg data)
+```
+
+Two ways to get this in TorchRef:
+
+- **`EnsembleModel`** — one flat atom list of `N_samples × N_atom` at occupancy
+  `1/N`, single FFT. Fastest, and `xyz_per_member` is a live view so gradients flow
+  back to the per-member coordinates.
+- **`_SharedMixedModel`** — one `ModelFT` per member with learnable softmax
+  fractions, and `set_fraction_override` to drive `w_m` from outside (e.g. from a
+  softmax over OpenFold3's own confidence). Useful if you want the *weights* to be
+  predicted rather than uniform.
+
+Start with `EnsembleModel` at uniform weights; add learned weights only once uniform
+works. If you do learn them, the natural source is a small head on `si_trunk`
+pooled per sample — but note that pLDDT is a *geometric* confidence, not a
+population estimate, so do not use it as an occupancy without recalibration.
+
+### 5.2 The loss
+
+```
+L = L_of3                                 # existing: diffusion MSE, bond, smooth-LDDT, distogram, confidence
+  + w_xray   · L_ML(work reflections)     # refinement/targets/xray, 'ml' or 'rice'
+  + w_rank   · L_rank                     # RankPenaltyTarget
+  + w_wilson · L_wilson                   # WilsonPriorTarget
+```
+
+Deliberately: **no geometry restraints added on the OpenFold3 side.** The diffusion
+loss already carries bond and smooth-LDDT terms and the model's own prior is far
+stronger than a bond-length restraint — `EnsembleRefinement` makes the same choice
+and documents it. Adding a second geometry term risks double-counting.
+
+`L_ML` should be normalised per reflection and per asymmetric unit so `w_xray` is
+transferable across datasets of wildly different size. `EnsembleRefinement`'s
+"per-ASU loss scale" (`_create_loss_state`) is the convention to copy.
+
+Free reflections are **never** in the loss — register a `use_set="free"` target for
+monitoring only, at weight 0.
+
+### 5.3 What is actually being optimised
+
+Be explicit about which of three quite different things is meant by "fine-tune the
+ensemble against data", because they need different machinery:
+
+1. **Per-structure inference-time optimisation.** Freeze the weights; optimise the
+   sampled coordinates directly against the data. This is just ensemble refinement
+   with an OpenFold3 starting model, and TorchRef does it today — `EnsembleModel`
+   + `EnsembleRefinement`. No neural training at all. *Do this first; it is the
+   scientific control.*
+2. **Guidance.** Freeze the weights; bias the sampler with `∇_x L_xray`. Changes the
+   distribution the model samples, per structure, at inference. No training.
+3. **Training the head.** Update weights so that the model, given data, produces
+   better ensembles *in general*. This is the actual ask, and it only makes sense if
+   (1) and (2) already demonstrate that the data contains signal the model is
+   missing.
+
+### 5.4 Corpus and evaluation
+
+- **Corpus.** PDB X-ray entries with deposited structure factors, filtered to:
+  resolution ≤ 2.5 Å; ASU matching the OpenFold3 query assembly (or a clean chain
+  mapping); no severe twinning; free flags present. PDB-REDO gives a consistently
+  re-refined version worth using as the label. Expect tens of thousands of usable
+  entries after filtering — an order of magnitude smaller than the OpenFold3
+  training corpus, which is the strongest argument for adapters over full
+  fine-tuning.
+- **Leakage.** OpenFold3 has already seen most of these *structures*. Any claim that
+  the data head helps must be evaluated on a **temporal split** — entries released
+  after the checkpoint's training cutoff — or the head will merely be re-deriving
+  memorised coordinates.
+- **Metrics.** `R_free` first and foremost, against three baselines: (i) deposited
+  model, (ii) the OpenFold3 prediction rigid-body placed and B-factor refined only,
+  (iii) that same prediction put through standard TorchRef refinement. Then
+  real-space CC, and ensemble-specific measures — does the spread reproduce known
+  alternate conformers (compare against qFit / multi-conformer depositions)?
+- **The honest failure mode to watch for:** an ensemble can lower `R_free` purely by
+  acting as a smarter B-factor model, without any of the members being individually
+  meaningful. Check per-member geometry and per-member real-space fit, not just the
+  aggregate.
+
+---
+
+## 6. Staged plan
+
+| Stage | Deliverable | Success criterion |
+|---|---|---|
+| **M0** | Bridge: OpenFold3 prediction → placed, scaled TorchRef model. MR pose, `Scaler.initialize()`, solvent, free-flag handling. Round-trip test `SfDS` vs `SfFFT`. | `R_free` for a rigid-body-placed OpenFold3 model reproduces what PHENIX reports for the same placement, within a percent |
+| **M1** | **Guidance baseline.** `∇_x L_xray` injected into `SampleDiffusion._sample_rollout`, weights frozen. | Guided 5-sample ensemble beats unguided on `R_free` on a 20-structure temporal-split test set |
+| **M2** | **Ensemble refinement control.** OpenFold3 samples → `EnsembleModel` → `EnsembleRefinement`. | Quantifies the ceiling: how much `R_free` is available from these coordinates at all |
+| **M3** | **Stream A0 + B, one-step training.** Gradient scalars on `c_l`, shell tokens cross-attended in the diffusion transformer, trained through `_train_diffusion` with `no_samples` reduced. Zero-init identity test. | Head-on beats head-off at matched compute on held-out `R_free`; identity test passes exactly |
+| **M4** | **Stream A (probe cross-attention).** Local frames, probe sampling, atom-transformer cross-attention. | Beats M3 |
+| **M5** | **Stream C (residual feedback) + truncated-rollout gradient.** | Beats M4; sampler is stable over 200 steps |
+
+M0–M2 need no OpenFold3 changes at all — they are TorchRef work plus a thin adapter,
+and they are what tells you whether M3+ is worth building.
+
+---
+
+## 7. Open questions
+
+- **ADPs and occupancies.** OpenFold3 predicts neither. Without B-factors an X-ray
+  target is badly mis-specified — `R_free` will be dominated by the missing thermal
+  model. Either refine B's in TorchRef inside the loop (cheap, well-posed,
+  recommended) or add a per-atom B head. An ensemble with individually-refined B's
+  double-counts disorder, so pick one: frozen small B + ensemble spread (what
+  `EnsembleModel` does today), or refined B + single copy.
+- **Hydrogens.** OpenFold3 output is heavy-atom; TorchRef can generate riding
+  hydrogens (`Model.hydrogenate`). Matters below ~1.5 Å.
+- **Assembly vs. asymmetric unit.** OpenFold3 predicts a biological assembly; the
+  crystallographic ASU may be a part of it or contain several copies. Needs an
+  explicit mapping step and probably a filter on the corpus.
+- **Anomalous / multi-wavelength data**, twinning, translational NCS — all out of
+  scope for a first version, all present in the PDB corpus, all need filtering.
+- **Diffuse scattering.** The coherent-average model discards it. It is precisely the
+  observable most sensitive to the ensemble. Out of scope, but it is the reason a
+  Bragg-only ensemble target is a weaker constraint on disorder than it first looks.
+- **Related work not read here:** `aqlaboratory/confornets` ("latents-based
+  conformational control in OpenFold3") appears to attack ensemble control from the
+  latent side and is worth reading before committing to a design.
+
+---
+
+## 8. What this would cost
+
+Rough, for the recommended path:
+
+- M0–M2: adapter code, a curated test set, no training. Weeks, one person, no GPU
+  fleet.
+- M3: fine-tuning the diffusion module + head on a few tens of thousands of
+  entries. With the trunk frozen, `no_samples` at 8, and uncropped ASUs under ~1500
+  tokens, this is a small-cluster job, not a foundation-model run.
+- M4–M5: the residual feedback loop multiplies the per-step cost by the number of
+  map refreshes. Budget accordingly, and only after M3 has shown a signal.
