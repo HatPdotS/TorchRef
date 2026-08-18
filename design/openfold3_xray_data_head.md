@@ -777,3 +777,125 @@ Two things follow:
 `confornet/core/trunk.py::run_trunk_with_confornet` also shows the practical shape of
 "run the recycles under `no_grad`, take the gradient only through the last pass" —
 directly applicable if we ever do want a trunk-side data-quality embedding (§4.3).
+
+---
+
+## 10. Nuisance parameters: profile the likelihood, backprop only to coordinates
+
+### 10.1 The formulation
+
+Split the parameters of the crystallographic likelihood into the coordinates we want
+a gradient for and everything else:
+
+```
+L( x , θ )      θ = ( pose T , ADPs B , scale k/U_aniso , solvent k_sol/B_sol , sigma_A )
+```
+
+Define the **profile likelihood** `L̃(x) = L(x, θ*(x))` with `θ*(x) = argmin_θ L(x, θ)`.
+Then
+
+```
+dL̃/dx  =  ∂L/∂x |_{θ*}  +  (∂L/∂θ)|_{θ*} · dθ*/dx
+                              ^^^^^^^^^^^^ = 0 at the inner optimum
+```
+
+The second term vanishes by the envelope (Danskin) theorem. **So the nuisance fit can
+be run under `no_grad`, `.detach()`-ed, and the coordinate gradient is still exact.**
+No unrolling of the inner optimiser, no implicit-function theorem, no backprop through
+LBFGS. This is variable projection, and it is the right shape for the problem.
+
+Three things it buys beyond the obvious cost saving:
+
+- **Conditioning.** Overall scale, overall B and coordinate error are near-degenerate
+  with one another. Profiling them out removes the flattest directions from the outer
+  problem — the classic VarPro result.
+- **Transferable loss scale.** §5.2 flagged that `w_xray` has to be normalised per
+  reflection and per ASU to transfer across datasets. Profiling the scale out fixes
+  that structurally rather than by convention.
+- **A clean training signal.** The gradient reaching the diffusion module is then a
+  pure coordinate signal. Without profiling, the head would partly learn to
+  compensate for a mis-set scale, which is not a transferable skill.
+
+### 10.2 Where the envelope argument actually holds, and where it does not
+
+The theorem needs `∂L/∂θ = 0`. That is a real precondition, not a formality.
+
+- **Scale and solvent — safe.** Small, well-conditioned, converge tightly and cheaply.
+  `Refinement.refine_scaler` already warm-starts across macrocycles.
+- **Pose — needs care.** Kabsch superposition onto a reference minimises RMSD, *not*
+  the likelihood, so `∂L/∂T ≠ 0` and the envelope argument does not hold for it. Use
+  Kabsch only as a cheap inter-step tracker to stop the frame drifting; do an actual
+  rigid-body refinement against the data at macrocycle boundaries
+  (`refinement/rigid_body_refinement.py::RigidBodyRefinementStep`) so the condition
+  genuinely holds. For an ensemble, refine one body pose on the member mean (§3.1).
+- **sigma_A — must be cross-validated.** Fitted on the work set it absorbs model error
+  and flattens exactly the gradient we want. TorchRef already does the right thing:
+  `model_error_estimation/sigma_a.py::estimate_beta` takes a `free_mask` and fits on
+  the free set.
+- **ADPs — the trap.** B-factors and coordinate error are strongly correlated. Freely
+  refined per-atom B will absorb the coordinate error we are trying to backpropagate,
+  and it will do so *preferentially where the model is worst* — attenuating the
+  gradient precisely where it carries the most information. This is the one nuisance
+  that can silently invert the whole scheme.
+
+  Mitigations, in order of preference: restrain B
+  (`ADPSimilarityTarget`, `ADPLocalityTarget`, `RigidBondTarget`); group B per residue
+  or use TLS at lower resolution; or seed B from pLDDT and refine only a global scale
+  on top. Keep the number of B parameters well under what the resolution supports.
+
+  With an ensemble there is a second version of the same problem: **per-atom B and
+  ensemble spread both model disorder, and refining both double-counts.** Pick one.
+  `EnsembleModel` already takes the position that the spread *is* the disorder model
+  and holds a small constant B — keep that, and do not turn per-atom B refinement on
+  for the ensemble path.
+
+### 10.3 Schedule
+
+```
+every N steps, under no_grad:
+    rigid-body refine T against the data          # so dL/dT ~ 0
+    refine k, U_aniso, k_sol, B_sol               # warm-started scaler
+    refine B (restrained / grouped)               # or leave frozen for ensembles
+    estimate sigma_A on the FREE set
+    detach all of the above
+
+every step, with grad:
+    F_calc(x̂0 ; θ*) on a reflection minibatch     # SfDS
+    L̃  ->  x̂0  ->  diffusion module / data head
+```
+
+The nuisances move far more slowly than the coordinates, so `N` in the tens is fine —
+and each refresh is full-data while the coordinate gradient is minibatched, which is
+also the only consistent choice (scale and sigma_A are per-shell quantities and cannot
+be estimated from a random reflection subset).
+
+One practical caution for the neural setting: keep resolution-shell edges and free
+flags **fixed per structure**. If the inner solve changes discretely between steps —
+rebinned shells, a rigid-body solution that jumps — `L̃` becomes non-smooth in `x` and
+the outer optimisation will show it.
+
+### 10.4 Batching, and what batches over what
+
+Three independent axes, easy to conflate:
+
+| Axis | Where | Layout |
+|---|---|---|
+| **Atom blocks** | OF3 atom-level attention | `[*, N_blocks, N_query, ...]`, `n_query=32`, `n_key=128` |
+| **Diffusion samples** | OF3, inserted by `unsqueeze(1)` in `OpenFold3.forward` | `[*, N_samples, N_atom, 3]` |
+| **Reflections** | TorchRef side, our addition | minibatch over `hkl` for the gradient |
+
+The atom axis is the one that matters for where the data head goes. OF3's atom
+attention is **sequence-local block attention**, not full attention: atoms are padded
+to a multiple of `n_query=32` (`get_query_block_padding`), reshaped to
+`[*, N_blocks, N_query, c_atom]`, and each block attends to `n_key=128` keys centred
+on it (`partition_atom_indices` in `core/utils/atom_attention_block_utils.py`). The
+atom pair representation `plm` is carried in that same block layout
+`[*, N_blocks, N_query, N_key, c_atom_pair]` specifically so no `N_atom × N_atom`
+tensor is ever formed. The token-level `DiffusionTransformer` is *not* blocked —
+`n_query=None` there, full attention over `N_token`.
+
+The per-atom probe cross-attention of §4.2 fits that layout natively: queries
+`[*, N_blocks, N_query, 1, c_atom]`, keys/values `[*, N_blocks, N_query, P, c_kv]`.
+Each atom attends only to its own `P` probes, so it is embarrassingly batched, adds no
+cross-atom coupling, and — like the rest of the atom stack — never materialises
+anything quadratic in `N_atom`.
