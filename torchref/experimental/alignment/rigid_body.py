@@ -16,28 +16,26 @@ Gradient flow:
     d_alpha → rotation_matrix → xyz_transformed → FFT.compute_structure_factors() → loss
 
 Uses ScalerBase for proper crystallographic scaling during optimization.
-
-Experimental / unstable API: part of ``torchref.experimental.alignment``,
-the opt-in ball-harmonic MR engine. The production MR entry point is
-``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
-may change without notice.
 """
 
 from dataclasses import dataclass
 from typing import Optional, Tuple
+
+import math
 
 import numpy as np
 import torch
 import torch.nn as nn
 
 from torchref.config import get_default_device
-from torchref.scaling import ScalerBase
+from torchref.scaling import Scaler
 from torchref.model import SfFFT
 from torchref.symmetry import spacegroup
 from torchref.refinement.targets import RiceXrayTarget
 from torchref.base import rotation_matrix_euler_zyz
 from torchref.config import get_default_device
 from torchref.model import SfFFT
+from torchref.refinement.targets import MaximumLikelihoodXrayTarget
 from torchref.scaling import ScalerBase
 from torchref.symmetry import spacegroup
 from torchref.utils.device_mixin import DeviceMixin
@@ -62,10 +60,6 @@ class RigidBodyResult:
         Final ML loss value.
     n_steps : int
         Number of optimization steps performed.
-    LBFGS_iterations : int
-        Number of LBFGS iterations taken by the optimizer.
-    LBFGS_function_evaluations : int
-        Number of objective/closure evaluations performed by the LBFGS optimizer.
     converged : bool
         Whether the refinement converged.
     """
@@ -86,10 +80,8 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
     Rigid body refinement using FFT directly (bypasses Model/MixedTensor).
 
     Optimizes 6 parameters (3 rotation + 3 translation) to maximize
-    agreement between calculated and observed structure factors using a
-    Rice maximum-likelihood X-ray target (``RiceXrayTarget`` -- a PRIVATE target, not a
-    selectable ``--xray-mode``; see its docstring for why it still exists and why this
-    caller should probably move to ``nll`` once it has a test).
+    agreement between calculated and observed structure factors using
+    Maximum Likelihood target.
 
     Key design: Extracts all tensors from Model once at init, then uses
     FFT.compute_structure_factors() directly. This maintains gradient flow:
@@ -101,9 +93,6 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         Model with atomic coordinates (tensors extracted, not stored).
     data : ReflectionData
         Observed reflection data.
-    expected_rotational_error : float, optional
-        Half-width (in radians) of the rotation perturbation; the refinable
-        angles are bounded to +/- this value. Default is 0.1.
     initial_rotation : torch.Tensor, optional
         Initial Euler angles (alpha, beta, gamma) in radians.
         Default is (0, 0, 0).
@@ -111,21 +100,12 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         Initial fractional translation vector (3,).
         Default is [0, 0, 0].
     device : torch.device, optional
-        Computation device. Default is the configured default device.
-    rfactor_converged_threshold : float, optional
-        R-work value below which refinement is treated as converged.
-        Default is 0.45.
-    max_res : float, optional
-        High-resolution limit (Angstrom) for the FFT structure factors.
-        Default is 4.0.
-    verbose : int, optional
-        Verbosity level for progress printing. Default is 1.
+        Computation device. Default is CPU.
 
     Attributes
     ----------
-    rotation_parameters : nn.Parameter
-        Unconstrained rotation perturbation parameters (3,); mapped to bounded
-        Euler-angle perturbations via the ``rotation`` property.
+    d_alpha, d_beta, d_gamma : nn.Parameter
+        Refinable rotation perturbations.
     translation_frac : nn.Parameter
         Refinable fractional translation.
     scaler : ScalerBase
@@ -145,12 +125,22 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         rfactor_converged_threshold: float = 0.45,
         max_res: float = 4.0,
         verbose: int = 1,
+        refine_b: bool = False,
+        sigma_rot_deg: float = 0.0,
+        sigma_trans_ang: float = 0.0,
+        sigma_b: float = 0.0,
     ):
         super().__init__()
         if device is None:
             device = get_default_device()
         self.device = device
         self.data = data
+        # Phase C: B-refine + Phaser-style Gaussian restraints. All off by
+        # default so previously-passing trajectories are unaffected.
+        self.refine_b = bool(refine_b)
+        self.sigma_rot_rad = math.radians(float(sigma_rot_deg)) if sigma_rot_deg > 0 else 0.0
+        self.sigma_trans_ang = float(sigma_trans_ang)
+        self.sigma_b = float(sigma_b)
 
         xyz_iso, adp_iso, occ_iso, A_iso, B_iso = model.get_iso()
 
@@ -162,10 +152,19 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         centroid = torch.mean(self.xyz_initial, dim=0)
         self.register_buffer("centroid", centroid)
 
-        self.cell = data.cell
+        # Move Cell (which holds fractional_matrix etc.) to the target device
+        # so RigidBodyRefinement.get_transformed_xyz can mm a GPU tensor
+        # against fractional_matrix.T without "mat2 on cpu" crashes.
+        self.cell = data.cell.to(device=device) if hasattr(data.cell, "to") else data.cell
         self.spacegroup = data.spacegroup
 
-        self.fft = SfFFT(self.cell, self.spacegroup, max_res=max_res)
+        # Forward `device` to SfFFT — its `setup_grid` reads `self.device`
+        # to allocate the real-space grid; without this, the grid lands on
+        # CPU even when the surrounding RigidBodyRefinement is on cuda, and
+        # the joint refine crashes with "mat2 on cuda, others on cpu" at
+        # the first compute_structure_factors call.
+        self.fft = SfFFT(self.cell, self.spacegroup, max_res=max_res,
+                         device=device)
 
         self.verbose = verbose
         self.rfactor_converged_threshold = rfactor_converged_threshold
@@ -200,10 +199,32 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             initial_translation = initial_translation.to(device=device).clone()
         self.translation_frac = nn.Parameter(initial_translation)
 
-        self.scaler = ScalerBase(data=data, nbins=20, verbose=0, device=device)
-        fcalc_initial = self()
+        # Phase C: per-atom B-factor perturbation. Held as nn.Parameter even
+        # when refine_b=False (gradient just won't flow); cost is negligible
+        # and the codepath stays uniform.
+        n_iso = int(self.adp_iso.shape[0])
+        self.delta_b_iso = nn.Parameter(
+            torch.zeros(n_iso, device=device, dtype=self.adp_iso.dtype),
+        )
 
-        self.scaler.initialize(fcalc_initial)
+        # Use `Scaler` for per-bin scales + anisotropy correction, but skip
+        # the bulk-solvent setup. The solvent mask is computed once from
+        # `model.xyz()` and goes stale as the joint refine moves atoms; the
+        # mismatch then biases the LBFGS gradient. Better to leave solvent
+        # out of the joint refine — `fit_to_data` does a fresh
+        # solvent-aware Scaler refit on the final polished model for the
+        # user-facing R-work.
+        self.scaler = Scaler(model=model, data=data, nbins=20,
+                              verbose=0, device=device)
+        # Initial scaler fit only needs grad through scaler params, not
+        # through the rigid-body forward. Without detaching, the SfFFT
+        # density-build intermediates from the initial forward stay pinned
+        # by the autograd graph until `rb` is freed — and on multi-trial
+        # runs that adds ~5 GB of GPU residue per alignment.
+        with torch.no_grad():
+            fcalc_initial = self().detach()
+        self.scaler.calc_initial_scale(fcalc_initial)
+        self.scaler.setup_anisotropy_correction()
         self.scaler.refine_lbfgs(fcalc=fcalc_initial)
 
         self.xray_target = RiceXrayTarget(data=self.data, scaler=self.scaler)
@@ -264,9 +285,9 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         xyz_centered = self.xyz_initial - self.centroid
         xyz_rotated = xyz_centered @ R.T + self.centroid
 
-        # Apply translation (fractional -> Cartesian). Use the Cell helper
-        # (cart = frac @ B.T) so non-orthogonal cells are handled correctly.
-        t_cart = self.cell.fractional_to_cartesian(self.translation_frac)
+        # Apply translation (fractional → Cartesian via cell.fractional_matrix.T;
+        # see Cell.fractional_to_cartesian for the canonical convention).
+        t_cart = self.translation_frac @ self.cell.fractional_matrix.T
         return xyz_rotated + t_cart
 
     def get_scale(self) -> float:
@@ -277,13 +298,14 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         """
         Compute unscaled structure factors using FFT directly.
 
-        Gradient flows: rotation_parameters → R → xyz → density → SF.
-        Miller indices are read internally from ``self.data.hkl``.
+        Gradient flows: d_alpha/d_beta/d_gamma → R → xyz → density → SF
 
         Parameters
         ----------
-        debug : bool, optional
-            If True, print gradient tracking info. Default is False.
+        hkl : torch.Tensor
+            Miller indices with shape (n_reflections, 3).
+        debug : bool
+            If True, print gradient tracking info.
 
         Returns
         -------
@@ -307,15 +329,23 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
             R = self.get_rotation_matrix()
             xyz_aniso_centered = self.xyz_aniso_original - self.centroid
             xyz_aniso_rotated = xyz_aniso_centered @ R.T + self.centroid
-            t_cart = self.cell.fractional_to_cartesian(self.translation_frac)
+            t_cart = self.translation_frac @ self.cell.fractional_matrix.T
             xyz_aniso = xyz_aniso_rotated + t_cart
+
+        # Phase C: optionally perturb per-atom B-factors. Clamp at 0 so the
+        # density model stays physical even mid-refine; the Gaussian
+        # restraint on delta_b_iso prevents large excursions.
+        if self.refine_b:
+            adp_iso_eff = (self.adp_iso + self.delta_b_iso).clamp(min=0.0)
+        else:
+            adp_iso_eff = self.adp_iso
 
         # Compute structure factors via FFT (bypasses MixedTensor!)
         # Note: fractional matrices are now obtained from FFT's internal Cell object
         sf, _ = self.fft.compute_structure_factors(
             hkl=hkl,
             xyz_iso=xyz_transformed,
-            adp_iso=self.adp_iso,
+            adp_iso=adp_iso_eff,
             occ_iso=self.occ_iso,
             A_iso=self.A_iso,
             B_iso=self.B_iso,
@@ -338,23 +368,26 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         n_iter: int = 100,
     ) -> RigidBodyResult:
         """
-        Run rigid body refinement with an LBFGS optimizer and ML target.
+        Run rigid body refinement using least-squares loss with Adam optimizer.
 
-        Uses a strong-Wolfe line-search LBFGS optimizer and a Rice maximum-
-        likelihood X-ray target, jointly optimizing the rotation, translation,
-        and scaler parameters. If R-work has not dropped below
-        ``rfactor_converged_threshold``, the optimizer is restarted with added
-        gradient noise, up to ``n_tries`` times.
+        Uses analytical scale fitting at each step rather than jointly optimizing
+        the scale parameter with rotation/translation.
 
         Parameters
         ----------
-        n_tries : int, optional
-            Maximum number of optimizer restarts (with gradient noise on
-            non-convergence). Default is 1.
-        n_iter : int, optional
-            Currently a no-op: this argument is not read anywhere in the body.
-            The underlying LBFGS uses a hardcoded ``max_iter=100`` per restart
-            regardless of this value. Default is 100.
+        n_steps : int, optional
+            Maximum number of optimization steps. Default is 100.
+        lr : float, optional
+            Learning rate for Adam optimizer. Default is 0.01.
+        convergence_threshold : float, optional
+            Stop if loss change is below this threshold. Default is 1e-6.
+        print_interval : int, optional
+            Print progress every N steps. Default is 5.
+        verbose : bool, optional
+            Print progress information. Default is True.
+        loss_type : str, optional
+            Loss function to use: "ls" for least-squares, "ml" for ML.
+            Default is "ls".
 
         Returns
         -------
@@ -368,19 +401,42 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
                 f"    Setting up LBFGS optimizer niter = {n_iter} and max tries = {n_tries}"
             )
             sys.stdout.flush()
-        parameters = [
-            self.rotation_parameters,
-            self.translation_frac,
-            *self.scaler.parameters(),
-        ]
+        parameters = [self.rotation_parameters, self.translation_frac, *self.scaler.parameters()]
+        if self.refine_b:
+            parameters.append(self.delta_b_iso)
 
         self.optimizer = torch.optim.LBFGS(
             parameters, lr=1, max_iter=100, line_search_fn="strong_wolfe"
         )
 
+        # Phaser-style Gaussian restraints (0 ⇒ disabled). Pre-square once.
+        sigma_rot_rad = self.sigma_rot_rad
+        sigma_trans_ang = self.sigma_trans_ang
+        sigma_b = self.sigma_b
+        restraints_active = (
+            sigma_rot_rad > 0 or sigma_trans_ang > 0
+            or (self.refine_b and sigma_b > 0)
+        )
+
+        def restraint_loss() -> torch.Tensor:
+            r = torch.zeros((), dtype=self.translation_frac.dtype,
+                            device=self.translation_frac.device)
+            if sigma_rot_rad > 0:
+                r = r + 0.5 * (self.rotation ** 2).sum() / (sigma_rot_rad ** 2)
+            if sigma_trans_ang > 0:
+                # Cartesian translation = T_frac @ fractional_matrix.T (Å).
+                t_cart = self.translation_frac @ self.cell.fractional_matrix.T
+                r = r + 0.5 * (t_cart ** 2).sum() / (sigma_trans_ang ** 2)
+            if self.refine_b and sigma_b > 0:
+                r = r + 0.5 * (self.delta_b_iso ** 2).sum() / (sigma_b ** 2)
+            return r
+
         def loss():
             fcalc = self()
-            return self.xray_target(fcalc)
+            ll = self.xray_target(fcalc)
+            if restraints_active:
+                ll = ll + restraint_loss()
+            return ll
 
         noise = 0
 
@@ -397,7 +453,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
                 )
             return current_loss
 
-        rwork_initial, rfree_initial = self.xray_target.get_rfactor(self())
+        rwork_initial, rfree_initial = self.scaler.rfactor(self())
 
         initial_loss = closure().item()
         if self.verbose > 0:
@@ -420,7 +476,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
                 if self.verbose > 1:
                     print(f"Iter {tries_needed}   Current ML loss: {current_loss:.4f}")
             final_loss = closure().item()
-            final_rwork, final_rfree = self.xray_target.get_rfactor(self())
+            final_rwork, final_rfree = self.scaler.rfactor(self())
             converged = final_rwork < self.rfactor_converged_threshold
 
             if converged or tries_needed >= n_tries:

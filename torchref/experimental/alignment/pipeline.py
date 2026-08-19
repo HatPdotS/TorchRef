@@ -1,83 +1,105 @@
 """
-Molecular replacement pipeline integrating rotation, translation, and refinement.
+Molecular replacement pipeline: the single canonical MR orchestrator.
 
-This module provides a unified pipeline for molecular replacement that chains:
-1. Fast rotation function (ball transform)
-2. FFT-based translation search
-3. Clash filtering
-4. Rigid body refinement
+Implements the classic Phaser-style molecular-replacement tree:
 
-The pipeline supports early stopping when a good solution is found.
+1. **Fast Rotation Function (FRF)** — Phaser-faithful Bessel-radial × SH
+   expansion (dense P1-box calc + auto_lmax), then ML rescoring
+   (``m_letf1_rescore`` / ``sim_mlrf_rescore``) to rank candidate orientations.
+2. **Fast Translation Function (FTF)** — for *each* of the top-N rotation
+   candidates, an amplitude-correlation translation search (optionally
+   re-ranked by a Rice/Woolfson LLG) followed by an analytical-R local refine.
+3. **Post-refinement** — optional dense rotation re-sampling on the ML-LLG
+   surface, then an LBFGS rigid-body polish on (R, t) (with optional B-factor
+   co-refinement and Gaussian restraints).
 
-Experimental / unstable API: this is the opt-in ball-harmonic MR engine in
-``torchref.experimental.alignment``. The production / canonical MR entry point
-is ``torchref.alignment`` (the consolidated FRF engine). Signatures and
-behavior may change without notice.
+Each rotation candidate is carried through translation + refinement
+independently; the candidates are ranked by their refined R-factor and the
+best is returned (a Phaser-style multi-candidate tree, with early-stopping once
+a candidate beats ``rfactor_converged``). The user-facing solvent-aware R-work
+is computed once, on the winner.
+
+``align_model_to_data`` (and therefore ``ModelFT.fit_to_data``) delegates to
+this class — it is the implementation of record. The heavy crystallographic
+stage helpers live in :mod:`torchref.experimental.alignment.align`,
+:mod:`~torchref.experimental.alignment.translation` and
+:mod:`~torchref.experimental.alignment.ml_rotation`; this module owns the
+control flow that wires them together.
 """
 
+from __future__ import annotations
+
+import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, TYPE_CHECKING
+
 import numpy as np
 import torch
 
-from torchref.config import get_default_device, get_float_dtype
+from torchref.config import get_default_device
+from torchref.utils.device_mixin import DeviceMixin
 
-from .ball_transform import (
-    ball_rotation_search_torch,
-    rotation_matrix_from_euler_zyz,
+from ...symmetry import SpaceGroup
+from .align import (
+    _DirectModelEvaluator,
+    _StageTimer,
+    _external_rwork,
+    _prepare_frf_inputs,
+    _rodrigues,
+    _run_frf_separate_rotation,
 )
-from .translation import fft_translation_search_torch, TranslationPeak
-from .rigid_body import RigidBodyRefinement, RigidBodyResult
-from .clashscore import ClashScoreCalculator, AtomSampler
+from .frf.rotation_utils import (
+    edmonds_euler_from_rotation_matrix,
+    rotation_matrix_from_edmonds_euler,
+)
+from .frf.types import RotationPeak
+from .lattman_love import LattmanLoveInterpolator, estimate_interp_var
+from .ml_rotation import (
+    fit_sigma_a_per_shell,
+    m_letf1_rescore,
+    sim_mlrf_rescore,
+)
+from .rigid_body import RigidBodyRefinement
+from .sh import assign_shells, equal_count_shell_edges
+from .translation import (
+    TranslationPeak,
+    amplitude_translation_search,
+    llg_translation_rescore,
+    local_translation_refine,
+    precompute_G_for_rotation,
+)
 
 if TYPE_CHECKING:
-    from torchref.model import ModelFT
     from torchref.io.datasets import ReflectionData
+    from torchref.model import ModelFT
+
+
+def rotation_matrix_from_euler_zyz(alpha, beta, gamma) -> np.ndarray:
+    """Build R = R_z(α) R_y(β) R_z(γ) (Edmonds active ZYZ) as a NumPy 3×3 matrix.
+
+    Compatibility wrapper around `rotation_matrix_from_edmonds_euler`.
+    """
+    R = rotation_matrix_from_edmonds_euler(float(alpha), float(beta), float(gamma))
+    return R.detach().cpu().numpy()
 
 
 def rotation_angular_distance(R1: np.ndarray, R2: np.ndarray) -> float:
-    """
-    Compute angular distance between two rotation matrices in degrees.
+    """Angular distance between two rotation matrices in degrees.
 
-    The angular distance is the angle of the rotation R2 @ R1.T.
-
-    Parameters
-    ----------
-    R1, R2 : np.ndarray
-        3x3 rotation matrices.
-
-    Returns
-    -------
-    float
-        Angular distance in degrees.
+    The angular distance is the angle of the rotation ``R2 @ R1.T``.
     """
     R_diff = R2 @ R1.T
-    # Clamp trace to valid range for arccos
-    trace = np.trace(R_diff)
-    trace = np.clip(trace, -1.0, 3.0)
-    angle_rad = np.arccos((trace - 1.0) / 2.0)
-    return np.degrees(angle_rad)
+    trace = np.clip(np.trace(R_diff), -1.0, 3.0)
+    return np.degrees(np.arccos((trace - 1.0) / 2.0))
 
 
 def euler_angular_distance(
     euler1: Tuple[float, float, float],
     euler2: Tuple[float, float, float],
 ) -> float:
-    """
-    Compute angular distance between two ZYZ Euler angle sets.
-
-    Parameters
-    ----------
-    euler1, euler2 : tuple
-        (alpha, beta, gamma) Euler angles in radians.
-
-    Returns
-    -------
-    float
-        Angular distance in degrees.
-    """
-    R1 = rotation_matrix_from_euler_zyz(euler1[0], euler1[1], euler1[2])
-    R2 = rotation_matrix_from_euler_zyz(euler2[0], euler2[1], euler2[2])
+    """Angular distance between two ZYZ Euler angle sets (degrees)."""
+    R1 = rotation_matrix_from_euler_zyz(*euler1)
+    R2 = rotation_matrix_from_euler_zyz(*euler2)
     return rotation_angular_distance(R1, R2)
 
 
@@ -86,534 +108,836 @@ def cluster_rotation_peaks(
     threshold_deg: float = 6.0,
     symmetry_matrices: Optional[np.ndarray] = None,
 ) -> list:
-    """
-    Cluster rotation peaks by angular distance.
+    """Cluster rotation peaks by angular distance.
 
-    Peaks within threshold_deg of each other are considered the same solution.
-    Only the highest-scoring peak from each cluster is kept.
+    Peaks within ``threshold_deg`` of each other are considered the same
+    solution; only the highest-scoring peak from each cluster is kept. Not on
+    the default pipeline path (the ML rescore already ranks Patterson-
+    equivalents adjacently); retained for callers that want explicit
+    de-duplication.
 
     Parameters
     ----------
     peaks : list
-        List of rotation peaks as tuples (alpha, beta, gamma, score, sigma).
+        Rotation peaks as tuples ``(alpha, beta, gamma, score, sigma)``.
     threshold_deg : float
-        Angular distance threshold for clustering in degrees.
+        Angular distance threshold for clustering (degrees).
     symmetry_matrices : np.ndarray, optional
-        Point group symmetry matrices (N, 3, 3) to check symmetry equivalents.
-
-    Returns
-    -------
-    list
-        Clustered peaks with one representative per cluster.
+        Point-group symmetry matrices (N, 3, 3) to check symmetry equivalents.
     """
     if not peaks:
         return []
 
-    # Sort by sigma (descending) so we keep highest-scoring peaks
     sorted_peaks = sorted(peaks, key=lambda p: p[4], reverse=True)
-
     clustered = []
-    used_rotations = []  # Store rotation matrices of accepted peaks
-
+    used_rotations = []
     for peak in sorted_peaks:
         alpha, beta, gamma, score, sigma = peak
         R = rotation_matrix_from_euler_zyz(alpha, beta, gamma)
-
-        # Check if this rotation is too close to any already accepted rotation
         is_new = True
         for R_used in used_rotations:
-            dist = rotation_angular_distance(R, R_used)
-            if dist < threshold_deg:
+            if rotation_angular_distance(R, R_used) < threshold_deg:
                 is_new = False
                 break
-
-            # Also check symmetry equivalents if provided
-            if symmetry_matrices is not None and is_new:
+            if symmetry_matrices is not None:
                 for sym_op in symmetry_matrices:
-                    R_sym = sym_op @ R
-                    dist_sym = rotation_angular_distance(R_sym, R_used)
-                    if dist_sym < threshold_deg:
+                    if rotation_angular_distance(sym_op @ R, R_used) < threshold_deg:
                         is_new = False
                         break
                 if not is_new:
                     break
-
         if is_new:
             clustered.append(peak)
             used_rotations.append(R)
-
     return clustered
 
 
 @dataclass
 class MRSolution:
-    """
-    Molecular replacement solution.
+    """A molecular-replacement placement.
 
     Attributes
     ----------
     rotation : np.ndarray
-        ZYZ Euler angles (radians), shape (3,).
-    translation : np.ndarray
-        Fractional coordinates, shape (3,).
+        Recovered orientation as a 3×3 rotation matrix (``R_recovered`` — the
+        rotation that maps the *search-model* frame onto the *crystal* frame).
+    translation : np.ndarray or None
+        Fractional translation applied after rotation, shape (3,). ``None`` for
+        a rotation-only solution (``do_translation=False``).
     rotation_score : float
-        FRF sigma (Z-score).
+        ML-LLG score of the rotation candidate (from the rescore).
     translation_score : float
-        Translation function correlation.
-    clash_score : float
-        Steric clash score (lower is better).
+        Analytical-R of the best translation for this candidate (lower better).
     r_factor : float
-        R-factor after refinement.
-    refined_rotation : np.ndarray, optional
-        Refined Euler angles (radians).
-    refined_translation : np.ndarray, optional
-        Refined fractional translation.
+        Ranking key. During the candidate loop this is the rigid-body's own
+        (no-solvent) R-work; for the returned winner it is replaced by the
+        solvent-aware Scaler R-work.
+    model : ModelFT
+        The rotated (+translated +refined) model for this candidate.
+    clash_score : float, optional
+        Steric clash score, only populated when ``clash_filter`` is enabled.
     """
+
     rotation: np.ndarray
-    translation: np.ndarray
+    translation: Optional[np.ndarray]
     rotation_score: float
     translation_score: float
-    clash_score: float
     r_factor: float
-    refined_rotation: Optional[np.ndarray] = None
-    refined_translation: Optional[np.ndarray] = None
+    model: "ModelFT"
+    clash_score: Optional[float] = None
 
 
-class MolecularReplacementPipeline:
-    """
-    Unified MR pipeline: Rotation -> Translation -> Rigid Body Refinement.
+class MolecularReplacementPipeline(DeviceMixin):
+    """Canonical MR pipeline: FRF → FTF (per candidate) → post-refine.
 
-    This pipeline integrates the fast rotation function (ball transform),
-    FFT-based translation search, clash filtering, and rigid body refinement
-    into a single workflow with early stopping.
-
-    Experimental: this is the opt-in ball-harmonic MR engine. The production
-    MR entry point is ``torchref.alignment`` (the consolidated FRF engine).
-    APIs here may change without notice.
+    Parameters mirror :func:`align_model_to_data` (which delegates here), so a
+    caller can either use ``fit_to_data`` for the common case or drive this
+    class directly for finer control / access to the ranked candidate list.
 
     Parameters
     ----------
     data : ReflectionData
         Observed reflection data.
     model : ModelFT
-        Search model with atomic coordinates.
+        Initialised search model.
     device : torch.device, optional
-        Computation device. Default is CPU.
+        Compute device (defaults to the model's device).
     verbose : int
-        Verbosity level (0=silent, 1=summary, 2=detailed).
+        0 silent, 1 summary, ≥2 adds a per-stage wall-clock table.
 
     Examples
     --------
     ::
 
         from torchref.experimental.alignment import MolecularReplacementPipeline
-        from torchref.model import ModelFT
-        from torchref.io.datasets import ReflectionData
 
-        data = ReflectionData().load_mtz('observed.mtz')
-        model = ModelFT().load_pdb('search_model.pdb')
-        pipeline = MolecularReplacementPipeline(data, model)
-        solutions = pipeline.run(n_rotation_peaks=50, min_tries=3, max_tries=10)
-        print(f'Best R: {solutions[0].r_factor:.3f}')
+        pipe = MolecularReplacementPipeline(data, model)
+        solutions = pipe.run()
+        print(f"best R-work: {solutions[0].r_factor:.3f}")
     """
 
     def __init__(
         self,
         data: "ReflectionData",
         model: "ModelFT",
+        *,
         device: Optional[torch.device] = None,
-        verbose: int = 1,
+        verbose: int = 0,
+        # --- data prep / FRF ---
+        d_min: float = 4.0,
+        d_max: float = 15.0,
+        n_shells: int = 20,
+        ll_max_res_A: float = 3.0,
+        ll_padding_factor: float = 2.0,
+        n_rotation_peaks: int = 500,
+        n_ml_refine: int = 20,
+        frf_lmax_cap: int = 48,
+        frf_dense_pad: float = 2.0,
+        # --- rescore ---
+        rescore_engine: str = "m_letf1",
+        rescore_scat_mode: str = "legacy",
+        auto_variance_weights: bool = True,
+        use_interp_var: bool = False,
+        subpeak_refine: bool = False,
+        subpeak_refine_k: int = -1,
+        subpeak_refine_step_deg: float = 1.5,
+        subpeak_refine_iters: int = 1,
+        subpeak_refine_max_move_deg: Optional[float] = 1.5,
+        # --- candidate tree ---
+        n_rotation_candidates: int = 15,
+        n_translation_peaks: int = 20,
+        n_translation_candidates: int = 3,
+        translation_grid_steps: int = 16,
+        use_llg_tf: bool = False,
+        # --- post-refine ---
+        do_joint_refine: bool = True,
+        dense_rotation_refine: bool = True,
+        joint_refine_max_res_A: float = 4.0,
+        joint_refine_expected_rot_error: float = 0.1,
+        refine_b: bool = False,
+        sigma_rot_deg: float = 0.0,
+        sigma_trans_ang: float = 0.0,
+        sigma_b: float = 0.0,
+        # --- early stop ---
+        min_tries: int = 3,
+        max_tries: Optional[int] = None,
+        rfactor_converged: float = 0.45,
+        # --- vestigial FRF knobs (superseded by _run_frf_separate_rotation's
+        # frf_use_* defaults post-consolidation; accepted for API stability) ---
+        L: int = 48,
+        use_sigma_a_frf: bool = False,
+        frf_delta_vrms_A: float = 1.0,
+        frf_weight_combine: str = "sigma_a_only",
+        use_m_symmetry_filter: bool = False,
+        use_lerf1_intensity: bool = False,
+        use_fitted_delta_vrms: bool = False,
+        use_even_l_only: bool = False,
     ):
         self.data = data
         self.model = model
         self.device = device or get_default_device()
         self.verbose = verbose
 
-        # Lazy caches
-        self._clash_calc = None
-        self._e_obs = None
-        self._e_calc = None
-        self._s_vectors = None
-        self._mask = None
+        self.d_min = d_min
+        self.d_max = d_max
+        self.n_shells = n_shells
+        self.ll_max_res_A = ll_max_res_A
+        self.ll_padding_factor = ll_padding_factor
+        self.n_rotation_peaks = n_rotation_peaks
+        self.n_ml_refine = n_ml_refine
+        self.frf_lmax_cap = frf_lmax_cap
+        self.frf_dense_pad = frf_dense_pad
 
-    def run(
-        self,
-        n_rotation_peaks: int = 100,
-        n_translation_peaks: int = 5,
-        min_tries: int = 3,
-        max_tries: int = 10,
-        rfactor_converged: float = 0.45,
-        max_clash_score: float = 100.0,
-        d_min: float = 4.0,
-        d_max: float = 50.0,
-        L: int = 32,
-        P: int = 20,
-        cluster_threshold_deg: float = 6.0,
-    ) -> List[MRSolution]:
-        """
-        Run full MR pipeline with early stopping.
+        self.rescore_engine = rescore_engine
+        self.rescore_scat_mode = rescore_scat_mode
+        self.auto_variance_weights = auto_variance_weights
+        self.use_interp_var = use_interp_var
+        self.subpeak_refine = subpeak_refine
+        self.subpeak_refine_k = subpeak_refine_k
+        self.subpeak_refine_step_deg = subpeak_refine_step_deg
+        self.subpeak_refine_iters = subpeak_refine_iters
+        self.subpeak_refine_max_move_deg = subpeak_refine_max_move_deg
+
+        self.n_rotation_candidates = n_rotation_candidates
+        self.n_translation_peaks = n_translation_peaks
+        self.n_translation_candidates = n_translation_candidates
+        self.translation_grid_steps = translation_grid_steps
+        self.use_llg_tf = use_llg_tf
+
+        self.do_joint_refine = do_joint_refine
+        self.dense_rotation_refine = dense_rotation_refine
+        self.joint_refine_max_res_A = joint_refine_max_res_A
+        self.joint_refine_expected_rot_error = joint_refine_expected_rot_error
+        self.refine_b = refine_b
+        self.sigma_rot_deg = sigma_rot_deg
+        self.sigma_trans_ang = sigma_trans_ang
+        self.sigma_b = sigma_b
+
+        self.min_tries = min_tries
+        self.max_tries = max_tries
+        self.rfactor_converged = rfactor_converged
+
+        # Vestigial; retained so legacy callers/benchmarks do not break.
+        self._vestigial = dict(
+            L=L,
+            use_sigma_a_frf=use_sigma_a_frf,
+            frf_delta_vrms_A=frf_delta_vrms_A,
+            frf_weight_combine=frf_weight_combine,
+            use_m_symmetry_filter=use_m_symmetry_filter,
+            use_lerf1_intensity=use_lerf1_intensity,
+            use_fitted_delta_vrms=use_fitted_delta_vrms,
+            use_even_l_only=use_even_l_only,
+        )
+
+        self._timer = _StageTimer(enabled=verbose >= 2)
+        # Filled in by run().
+        self._frf = None
+        self._F_obs_amp = None
+        self._hkl_keep = None
+        self._tmask = None
+        self._eye3 = torch.eye(3, dtype=torch.float64)
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
+    def run(self, do_translation: bool = True) -> List[MRSolution]:
+        """Run the MR pipeline and return solutions ranked by R-factor.
 
         Parameters
         ----------
-        n_rotation_peaks : int
-            Number of rotation peaks to try.
-        n_translation_peaks : int
-            Number of translation peaks per rotation.
-        min_tries : int
-            Floor on the number of refinements performed before early stopping
-            (convergence-based break) is allowed. It does NOT force additional
-            refinements beyond the available candidates: candidates are capped
-            at ``min(len(candidates), max_tries)``, so ``min_tries`` is not a
-            guaranteed minimum when fewer candidates exist.
-        max_tries : int
-            Maximum number of candidates to refine.
-        rfactor_converged : float
-            R-factor threshold for convergence (early stopping).
-        max_clash_score : float
-            Maximum clash score to accept a candidate.
-        d_min : float
-            High resolution limit for rotation search (Angstroms).
-        d_max : float
-            Low resolution limit for rotation search (Angstroms).
-        L : int
-            Angular bandlimit for rotation search.
-        P : int
-            Radial bandlimit for rotation search.
-        cluster_threshold_deg : float
-            Angular distance threshold for clustering rotation peaks (degrees).
-            Peaks within this angular distance are considered the same solution.
-            Default 6.0 degrees matches rigid body refinement convergence radius.
+        do_translation : bool
+            If ``False``, stop after rotation rescoring and return a single
+            rotation-only solution (the model rotated onto the best
+            orientation, no translation or refinement).
 
         Returns
         -------
-        List[MRSolution]
-            Solutions sorted by R-factor. Early stops if converged.
+        list of MRSolution
+            Sorted by ``r_factor`` (ascending). The first element is the best
+            placement; its ``r_factor`` is the solvent-aware Scaler R-work.
         """
-        # Step 1: Rotation search
-        if self.verbose:
-            print("Step 1: Rotation search...")
-        rotation_peaks = self._rotation_search(n_rotation_peaks, d_min, d_max, L, P)
+        if not self.model.initialized:
+            raise RuntimeError(
+                "Cannot fit an uninitialized ModelFT. Load PDB data first."
+            )
 
-        if not rotation_peaks:
-            if self.verbose:
-                print("  No rotation peaks found!")
-            return []
-
-        # Step 1b: Cluster rotation peaks
-        if self.verbose:
-            print(f"  Found {len(rotation_peaks)} raw peaks, clustering with {cluster_threshold_deg}° threshold...")
-
-        # Get symmetry matrices for clustering
-        sym_matrices = None
-        if hasattr(self.model, 'symmetry') and self.model.symmetry is not None:
-            sym_matrices = np.array([s.numpy() for s in self.model.symmetry.matrices])
-
-        rotation_peaks = cluster_rotation_peaks(
-            rotation_peaks,
-            threshold_deg=cluster_threshold_deg,
-            symmetry_matrices=sym_matrices,
+        timer = self._timer
+        timer.start("0_data_prep")
+        frf = _prepare_frf_inputs(
+            self.model, self.data,
+            d_min=self.d_min, d_max=self.d_max, n_shells=self.n_shells,
+            ll_padding_factor=self.ll_padding_factor,
+            ll_max_res_A=self.ll_max_res_A, verbose=self.verbose,
         )
+        timer.stop("0_data_prep")
+        self._frf = frf
 
-        if self.verbose:
-            print(f"  {len(rotation_peaks)} unique rotation clusters")
+        # --- Stage 1+2: FRF rotation search + ML rescore ---
+        rescored = self._rotation_candidates(frf)
+        if not rescored:
+            raise RuntimeError("Rotation search produced no peaks.")
 
-        if not rotation_peaks:
-            if self.verbose:
-                print("  No rotation peaks after clustering!")
-            return []
-
-        # Step 2: Translation search for each rotation
-        if self.verbose:
-            print(f"Step 2: Translation search for {len(rotation_peaks)} rotations...")
-        candidates = []
-        for i, rot in enumerate(rotation_peaks):
-            trans_peaks = self._translation_search(rot, n_translation_peaks)
-            for trans in trans_peaks:
-                candidates.append((rot, trans))
-            if self.verbose > 1 and (i + 1) % 10 == 0:
-                print(f"  Processed {i+1}/{len(rotation_peaks)} rotations...")
-
-        if self.verbose:
-            print(f"  Generated {len(candidates)} rotation+translation candidates")
-
-        # Step 3: Score and filter by clash
-        if self.verbose:
-            print("Step 3: Clash filtering...")
-        candidates = self._score_and_filter(candidates, max_clash_score)
-
-        if not candidates:
-            if self.verbose:
-                print("  All candidates rejected by clash filter!")
-            return []
-
-        if self.verbose:
-            print(f"  {len(candidates)} candidates passed clash filter")
-
-        # Step 4: Rigid body refinement with early stopping
-        if self.verbose:
-            print(f"Step 4: Refining candidates (min={min_tries}, max={max_tries})...")
-
-        solutions = []
-        best_r_factor = float('inf')
-        converged = False
-
-        n_to_refine = min(len(candidates), max_tries)
-        for i, (rot, trans, clash) in enumerate(candidates[:n_to_refine]):
-            if self.verbose > 1:
-                print(f"  Refining candidate {i+1}/{n_to_refine}...")
-
-            try:
-                result = self._rigid_body_refine(rot, trans)
-
-                solution = MRSolution(
-                    rotation=np.array([rot[0], rot[1], rot[2]]),
-                    translation=trans.translation,
-                    rotation_score=rot[4],  # sigma
-                    translation_score=trans.score,
-                    clash_score=clash,
-                    r_factor=result.final_r_factor,
-                    refined_rotation=np.array(result.final_rotation),
-                    refined_translation=np.array(result.final_translation_frac),
+        if not do_translation:
+            rotated, R_rec = self._make_rotated(rescored[0])
+            top = rescored[0]
+            if self.verbose > 0:
+                print(
+                    f"fit_to_data: top peak LLG = {top.score:.2f} "
+                    f"(σ_Z = {top.sigma:.2f}); applying R⁻¹ to coords.",
+                    flush=True,
                 )
-                solutions.append(solution)
+            if self.verbose >= 2:
+                print("\n" + timer.summary(), flush=True)
+            return [
+                MRSolution(
+                    rotation=R_rec.detach().cpu().numpy(),
+                    translation=None,
+                    rotation_score=float(top.score),
+                    translation_score=float("nan"),
+                    r_factor=float("nan"),
+                    model=rotated,
+                )
+            ]
 
-                # Track best
-                if result.final_r_factor < best_r_factor:
-                    best_r_factor = result.final_r_factor
+        # --- Stage 3+: per-candidate translation + post-refine tree ---
+        self._prepare_translation_arrays()
+        n_rot = min(self.n_rotation_candidates, len(rescored))
+        max_tries = self.max_tries if self.max_tries is not None else n_rot
+        if self.verbose > 0 and n_rot > 1:
+            print(
+                f"fit_to_data: trying up to {n_rot} rotation candidates "
+                f"(early-stop after ≥{self.min_tries} once R < "
+                f"{self.rfactor_converged}).",
+                flush=True,
+            )
 
-                # Check early stopping
-                n_refined = i + 1
-                if n_refined >= min_tries and best_r_factor < rfactor_converged:
-                    converged = True
-                    if self.verbose:
-                        print(f"  Converged! R-factor {best_r_factor:.4f} < {rfactor_converged}")
-                    break
-
-            except Exception as e:
-                if self.verbose > 1:
-                    print(f"  Refinement failed: {e}")
+        solutions: List[MRSolution] = []
+        best_r = float("inf")
+        for k in range(n_rot):
+            peak_k = rescored[k]
+            rotated_k, R_rec_k = self._make_rotated(peak_k)
+            if self.verbose > 0:
+                print(
+                    f"\nfit_to_data: rot{k} "
+                    f"(LLG={peak_k.score:.2f}, σ_Z={peak_k.sigma:.2f})",
+                    flush=True,
+                )
+            placement = self._placement_for_candidate(rotated_k)
+            if placement is None:
+                if self.verbose > 0:
+                    print("  no translation peaks; skipping", flush=True)
                 continue
+            r_analytic, t_refined = placement
 
-        if self.verbose:
-            status = "converged" if converged else f"completed {len(solutions)}/{n_to_refine}"
-            print(f"  Refinement {status}")
-            if solutions:
-                print(f"  Best R-factor: {best_r_factor:.4f}")
+            refined = rotated_k.translate(
+                t_refined.to(self.model.dtype_float), fractional=True,
+            )
+            r_rank = r_analytic
+            if self.do_joint_refine:
+                if self.dense_rotation_refine:
+                    refined = self._dense_rotation_refine(refined)
+                polished, rb_result = self._rigid_body_polish(refined)
+                if rb_result.final_r_factor <= rb_result.initial_r_factor:
+                    refined = polished
+                    r_rank = rb_result.final_r_factor
+                    if self.verbose > 0:
+                        print(
+                            f"  joint polish {rb_result.initial_r_factor:.4f} → "
+                            f"{rb_result.final_r_factor:.4f} (no-solvent R)",
+                            flush=True,
+                        )
+                else:
+                    r_rank = rb_result.initial_r_factor
+                    if self.verbose > 0:
+                        print(
+                            f"  joint polish kept original "
+                            f"({rb_result.initial_r_factor:.4f} ≤ "
+                            f"{rb_result.final_r_factor:.4f} no-solvent R)",
+                            flush=True,
+                        )
+
+            refined.last_alignment_rotation = R_rec_k
+            refined.last_alignment_translation = t_refined
+            solutions.append(
+                MRSolution(
+                    rotation=R_rec_k.detach().cpu().numpy(),
+                    translation=t_refined.detach().cpu().numpy(),
+                    rotation_score=float(peak_k.score),
+                    translation_score=float(r_analytic),
+                    r_factor=float(r_rank),
+                    model=refined,
+                )
+            )
+            best_r = min(best_r, r_rank)
+
+            n_done = k + 1
+            if n_done >= self.min_tries and best_r < self.rfactor_converged:
+                if self.verbose > 0:
+                    print(
+                        f"fit_to_data: converged (R {best_r:.4f} < "
+                        f"{self.rfactor_converged}) after {n_done} candidates.",
+                        flush=True,
+                    )
+                break
+            if n_done >= max_tries:
+                break
+
+        if not solutions:
+            raise RuntimeError("Translation + joint refine produced no candidates.")
 
         solutions.sort(key=lambda s: s.r_factor)
+        winner = solutions[0]
+
+        # Single solvent-aware Scaler refit on the winner for the user-facing R.
+        timer.start("12_final_scaler")
+        rwork_final = _external_rwork(winner.model, self.data)
+        timer.stop("12_final_scaler")
+        winner.model.last_alignment_rfactor = rwork_final
+        winner.r_factor = rwork_final
+        if self.verbose > 0:
+            print(
+                f"fit_to_data: winner analytical-TF R={winner.translation_score:.4f}, "
+                f"final Scaler-fit R-work={rwork_final:.4f}",
+                flush=True,
+            )
+        if self.verbose >= 2:
+            print("\n" + timer.summary(), flush=True)
         return solutions
 
-    def _rotation_search(
-        self,
-        n_peaks: int,
-        d_min: float,
-        d_max: float,
-        L: int,
-        P: int,
-    ) -> list:
-        """Run ball rotation search."""
-        # Prepare E-values
-        E_obs, s_obs = self._get_e_values_obs(d_min, d_max)
-        E_calc, s_calc = self._get_e_values_calc(d_min, d_max)
+    # ------------------------------------------------------------------
+    # Stage 1+2: rotation search + ML rescore
+    # ------------------------------------------------------------------
+    def _rotation_candidates(self, frf) -> list:
+        """FRF rotation search followed by ML rescoring of the top peaks."""
+        data = self.data
+        device = self.device
+        timer = self._timer
 
-        _, _, peaks = ball_rotation_search_torch(
-            E_obs, s_obs, E_calc, s_calc,
-            L=L, P=P, d_min=d_min, d_max=d_max, n_peaks=n_peaks,
-            verbose=self.verbose > 1,
-        )
-        return peaks
-
-    def _translation_search(
-        self,
-        rotation_peak: tuple,
-        n_peaks: int,
-    ) -> List[TranslationPeak]:
-        """Run translation search for a rotation."""
-        alpha, beta, gamma, _, _ = rotation_peak
-
-        # Apply rotation to model coordinates
-        R = torch.tensor(
-            rotation_matrix_from_euler_zyz(alpha, beta, gamma),
-            dtype=get_float_dtype(),
-            device=self.device,
-        )
-        xyz = self.model.xyz()
-        xyz_centered = xyz - xyz.mean(dim=0)
-        xyz_rotated = xyz_centered @ R.T
-
-        # Temporarily update model coordinates and compute F_calc
-        original_xyz = self.model.xyz().clone()
-        self.model.xyz[:] = xyz_rotated
-
-        try:
-            hkl = self.data.hkl
-            F_obs = self.data.F
-            mask = self.data.get_valid_mask()
-
-            with torch.no_grad():
-                F_calc = self.model(hkl)
-
-            # Apply mask
-            F_obs_masked = F_obs[mask]
-            F_calc_masked = F_calc[mask]
-            hkl_masked = hkl[mask]
-
-            _, _, peaks = fft_translation_search_torch(
-                F_obs_masked, F_calc_masked, hkl_masked, n_peaks=n_peaks
+        timer.start("3_rotation_search")
+        if self.verbose > 0:
+            print(
+                f"fit_to_data: frf_separate rotation search "
+                f"(dense calc + auto_lmax cap={self.frf_lmax_cap}, "
+                f"n_peaks={self.n_rotation_peaks})…",
+                flush=True,
             )
-        finally:
-            # Restore original coordinates
-            self.model.xyz[:] = original_xyz
+        peaks = _run_frf_separate_rotation(
+            self.model, data, frf,
+            lmax_cap=self.frf_lmax_cap, dense_pad=self.frf_dense_pad,
+            n_peaks=self.n_rotation_peaks, verbose=self.verbose,
+        )
+        timer.stop("3_rotation_search")
 
-        return peaks
-
-    def _score_and_filter(
-        self,
-        candidates: list,
-        max_clash: float,
-    ) -> list:
-        """Score candidates and filter by clash."""
-        if self._clash_calc is None:
-            self._clash_calc = ClashScoreCalculator(
-                symmetry=self.data.spacegroup,
-                default_clash_radius=4.0,
-                device=self.device,
+        if self.rescore_engine not in ("m_letf1", "sim", "none"):
+            raise ValueError(
+                f"rescore_engine={self.rescore_engine!r}; "
+                "expected 'm_letf1' (default), 'sim' or 'none'."
             )
 
-        scored = []
-        for rot, trans in candidates:
-            clash = self._compute_clash(rot, trans)
-            if clash <= max_clash:
-                scored.append((rot, trans, clash))
+        # No ML rescore: rank candidates by the raw FRF score and let the
+        # multi-candidate tree (FTF + refine + R-ranking) do the discrimination.
+        if self.rescore_engine == "none":
+            if self.verbose > 0:
+                print("fit_to_data: ML rescore DISABLED — using raw FRF peak "
+                      "ranking (RFZ).", flush=True)
+            return sorted(peaks, key=lambda p: p.score, reverse=True)
 
-        # Sort by combined score (rotation_sigma + trans_sigma - clash_penalty)
-        def combined_score(x):
-            rot, trans, clash = x
-            return rot[4] + trans.sigma - clash / 100.0
+        F_obs = frf.F_obs
+        hkl = frf.hkl
+        s_mag = frf.s_mag
+        centric = frf.centric
+        ll = frf.ll
+        rescore_n_shells = max(self.n_shells // 2, 8)
 
-        scored.sort(key=combined_score, reverse=True)
-        return scored
+        interp_var_main: Optional[torch.Tensor] = None
+        if self.use_interp_var:
+            rescore_edges, _ = equal_count_shell_edges(s_mag, rescore_n_shells)
+            rescore_shell_idx = assign_shells(s_mag, rescore_edges)
+            interp_var_main = estimate_interp_var(
+                ll, hkl, data.cell, rescore_shell_idx, rescore_n_shells,
+            ).to(F_obs.dtype)
 
-    def _compute_clash(
-        self,
-        rotation_peak: tuple,
-        trans_peak: TranslationPeak,
-    ) -> float:
-        """Compute clash score for a solution."""
-        alpha, beta, gamma, _, _ = rotation_peak
-        R = torch.tensor(
-            rotation_matrix_from_euler_zyz(alpha, beta, gamma),
-            dtype=get_float_dtype(),
-            device=self.device,
+        timer.start("4_ml_rescore")
+        if self.verbose > 0:
+            print(
+                f"fit_to_data: ML rescoring top "
+                f"{min(len(peaks), self.n_ml_refine)} peaks…",
+                flush=True,
+            )
+        if self.rescore_engine == "m_letf1":
+            rescored = m_letf1_rescore(
+                peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
+                data.spacegroup.matrices.to(torch.float64).to(device),
+                n_shells=rescore_n_shells,
+                n_refine=min(len(peaks), self.n_ml_refine),
+                batch_size=50, verbose=self.verbose,
+                scat_mode=self.rescore_scat_mode,
+            )
+            if self.subpeak_refine:
+                rescored = self._subpeak_refine(rescored, F_obs, hkl, s_mag,
+                                                centric, ll, rescore_n_shells)
+        else:  # legacy Sim/Rice approximation
+            rescored = sim_mlrf_rescore(
+                peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
+                n_shells=rescore_n_shells,
+                n_refine=min(len(peaks), self.n_ml_refine),
+                batch_size=50, verbose=self.verbose,
+                auto_variance_weights=self.auto_variance_weights,
+                interp_var=interp_var_main,
+            )
+        timer.stop("4_ml_rescore")
+        return rescored
+
+    def _subpeak_refine(self, rescored, F_obs, hkl, s_mag, centric, ll,
+                        rescore_n_shells):
+        """Quadratic tangent-space Newton sharpening of the top orientations."""
+        from .ml_rotation import _build_llg_context, quadratic_llg_refine
+
+        data = self.data
+        device = self.device
+        self._timer.start("4b_subpeak_refine")
+        ctx = _build_llg_context(
+            F_obs, hkl, s_mag, centric, ll, data.cell,
+            data.spacegroup.matrices.to(torch.float64).to(device),
+            n_shells=rescore_n_shells, batch_size=50,
+            scat_mode=self.rescore_scat_mode,
+        )
+        k = self.subpeak_refine_k if self.subpeak_refine_k > 0 else self.n_rotation_candidates
+        k = min(k, len(rescored))
+        rescored = quadratic_llg_refine(
+            rescored, ctx, k_refine=k,
+            step_deg=self.subpeak_refine_step_deg,
+            iterations=self.subpeak_refine_iters,
+            max_move_deg=self.subpeak_refine_max_move_deg,
+            verbose=self.verbose,
+        )
+        self._timer.stop("4b_subpeak_refine")
+        if self.verbose > 0:
+            print(
+                f"fit_to_data: sub-peak refined top {k} orientations "
+                f"on the ML-LLG surface (step={self.subpeak_refine_step_deg}°).",
+                flush=True,
+            )
+        return rescored
+
+    def _make_rotated(self, peak: "RotationPeak"):
+        """Rotate the search model onto a candidate orientation.
+
+        Returns ``(rotated_model, R_recovered)`` where ``R_recovered`` maps the
+        search-model frame onto the crystal frame; the applied coordinate
+        rotation is ``R_recovered.T``.
+        """
+        R_rec = rotation_matrix_from_edmonds_euler(peak.alpha, peak.beta, peak.gamma)
+        R_app = R_rec.T.contiguous()
+        rot = self.model.rotate(
+            R_app.to(device=self.model.device, dtype=self.model.dtype_float),
+        )
+        rot.last_alignment_rotation = R_rec
+        return rot, R_rec
+
+    # ------------------------------------------------------------------
+    # Stage 3: per-candidate translation search + local refine
+    # ------------------------------------------------------------------
+    def _prepare_translation_arrays(self) -> None:
+        """Resolution/validity-masked obs amplitudes + Miller indices."""
+        data = self.data
+        device = self.device
+        hkl_full = data.hkl
+        F_obs_full = data.F
+        if hasattr(data, "get_valid_mask"):
+            tmask = data.get_valid_mask()
+        else:
+            tmask = torch.ones(
+                F_obs_full.shape[0], dtype=torch.bool, device=F_obs_full.device,
+            )
+        self._tmask = tmask
+        self._F_obs_amp = F_obs_full[tmask].abs().to(torch.float64).to(device)
+        self._hkl_keep = hkl_full[tmask].to(device)
+
+    def _placement_for_candidate(self, rotated_k) -> Optional[tuple]:
+        """Translation search + analytical-R local refine for one rotation.
+
+        Returns ``(r_analytic, t_refined)`` for the best translation of this
+        rotation candidate, or ``None`` if no translation peaks were found.
+        """
+        data = self.data
+        device = self.device
+        timer = self._timer
+        eye3 = self._eye3
+
+        if str(rotated_k.spacegroup) != str(data.spacegroup):
+            rotated_k.spacegroup = data.spacegroup
+        rotated_p1 = rotated_k.copy()
+        rotated_p1.spacegroup = SpaceGroup("P 1")
+        evaluator = _DirectModelEvaluator(rotated_p1)
+
+        timer.start("5_precompute_G")
+        G_pre, h_R_pre = precompute_G_for_rotation(
+            evaluator, eye3, self._hkl_keep, data.spacegroup, data.cell,
+        )
+        timer.stop("5_precompute_G")
+
+        timer.start("6_amplitude_TF")
+        _, _, t_peaks = amplitude_translation_search(
+            F_obs=self._F_obs_amp, interpolator=evaluator,
+            R_rotation=eye3, hkl=self._hkl_keep,
+            spacegroup=data.spacegroup, real_cell=data.cell,
+            grid_steps=self.translation_grid_steps,
+            n_peaks=self.n_translation_peaks,
+            cluster_radius=0.05,
+            precomputed_G=G_pre, precomputed_h_R=h_R_pre,
+        )
+        timer.stop("6_amplitude_TF")
+        if not t_peaks:
+            return None
+
+        if self.use_llg_tf:
+            t_peaks = self._llg_tf_rescore(t_peaks, G_pre, h_R_pre)
+
+        if self.verbose > 0:
+            tt = tuple(round(float(x), 3) for x in t_peaks[0].translation.tolist())
+            print(f"  top translation t={tt} score={t_peaks[0].score:.4f}",
+                  flush=True)
+
+        # do_joint_refine=False: take the top translation peak directly (no
+        # local refine), rank by its correlation score (negated so lower=better
+        # like an R-factor).
+        if not self.do_joint_refine:
+            t_top = torch.as_tensor(t_peaks[0].translation, dtype=torch.float64)
+            return -float(t_peaks[0].score), t_top
+
+        best = None
+        for k_t, tp in enumerate(t_peaks[:self.n_translation_candidates]):
+            t_init = torch.as_tensor(tp.translation, dtype=torch.float64)
+            timer.start("7_local_TF_refine")
+            t_refined, r_analytic = local_translation_refine(
+                F_obs=self._F_obs_amp, interpolator=evaluator,
+                R_rotation=eye3, hkl=self._hkl_keep,
+                spacegroup=data.spacegroup, real_cell=data.cell,
+                t_init=t_init, radius=0.06, grid_steps=13,
+                n_refinement_passes=1,
+                precomputed_G=G_pre, precomputed_h_R=h_R_pre,
+            )
+            timer.stop("7_local_TF_refine")
+            if self.verbose > 0:
+                print(
+                    f"    trans{k_t}: R(analytic)={r_analytic:.4f}, "
+                    f"t={[round(float(x), 3) for x in t_refined.tolist()]}",
+                    flush=True,
+                )
+            if best is None or r_analytic < best[0]:
+                best = (r_analytic, t_refined)
+        return best
+
+    def _llg_tf_rescore(self, t_peaks, G_pre, h_R_pre):
+        """Re-rank translation peaks by a shared-σA Rice/Woolfson LLG.
+
+        Mirrors Phaser's FTF — the cheap amplitude correlation is a fast
+        pre-filter but ranks poorly for partial models; the LLG ranks
+        consistently with the rotation rescore.
+        """
+        data = self.data
+        device = self.device
+        F_obs_amp = self._F_obs_amp
+        hkl_keep = self._hkl_keep
+        tmask = self._tmask
+        self._timer.start("6b_llg_tf_rescore")
+
+        rec_basis_keep = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)
+        s_mag_keep_tf = (hkl_keep.to(torch.float64) @ rec_basis_keep).norm(dim=-1)
+        tf_n_shells = max(self.n_shells // 2, 8)
+        tf_edges, _ = equal_count_shell_edges(s_mag_keep_tf, tf_n_shells)
+        tf_shell_idx = assign_shells(s_mag_keep_tf, tf_edges)
+        centric_keep_tf = (
+            data.centric[tmask].to(torch.bool).to(device)
+            if hasattr(data, "centric")
+            else torch.zeros_like(F_obs_amp, dtype=torch.bool)
         )
 
-        xyz = self.model.xyz()
-        xyz_centered = xyz - xyz.mean(dim=0)
-        xyz_rotated = xyz_centered @ R.T
+        cnt_tf = torch.bincount(tf_shell_idx, minlength=tf_n_shells).to(torch.float64)
+        sum_F2 = torch.zeros(tf_n_shells, dtype=torch.float64, device=device)
+        sum_F2.scatter_add_(0, tf_shell_idx, F_obs_amp * F_obs_amp)
+        mean_F2 = (sum_F2 / cnt_tf.clamp(min=1.0)).clamp(min=1e-30)
+        E_obs_tf = F_obs_amp / mean_F2.sqrt().index_select(0, tf_shell_idx)
 
-        # Apply translation (fractional -> Cartesian)
-        trans_frac = torch.tensor(
-            trans_peak.translation,
-            dtype=get_float_dtype(),
-            device=self.device,
+        t_top_t = torch.as_tensor(
+            t_peaks[0].translation, dtype=torch.float64, device=device,
         )
-        # cart = frac @ B.T (B = fractional_matrix); the transpose is required
-        # for non-orthogonal cells.
-        trans_cart = trans_frac @ self.data.cell.fractional_matrix.T.to(self.device)
-        xyz_final = xyz_rotated + trans_cart
+        phase_top = torch.exp(
+            2j * torch.pi * torch.einsum(
+                "ind,d->in", h_R_pre.to(torch.float64), t_top_t,
+            ).to(G_pre.dtype),
+        )
+        Fc_top = (G_pre * phase_top).sum(dim=0).abs().to(torch.float64)
+        sum_Fc2 = torch.zeros(tf_n_shells, dtype=torch.float64, device=device)
+        sum_Fc2.scatter_add_(0, tf_shell_idx, Fc_top * Fc_top)
+        mean_Fc2 = (sum_Fc2 / cnt_tf.clamp(min=1.0)).clamp(min=1e-30)
+        E_calc_top = Fc_top / mean_Fc2.sqrt().index_select(0, tf_shell_idx)
+        sigma_a_tf = fit_sigma_a_per_shell(
+            E_obs_tf, E_calc_top, centric_keep_tf,
+            tf_shell_idx, tf_n_shells, n_grid=81,
+        )
 
-        atom_mask = AtomSampler.from_model(self.model, mode='ca_only')
-        with torch.no_grad():
-            clash = self._clash_calc(
-                xyz=xyz_final,
-                cell=self.data.cell.data,
-                atom_mask=atom_mask,
-            ).item()
-        return clash
+        t_cands = torch.as_tensor(
+            np.stack([p.translation for p in t_peaks]),
+            dtype=torch.float64, device=device,
+        )
+        llg_tf = llg_translation_rescore(
+            F_obs=F_obs_amp, hkl=hkl_keep, centric=centric_keep_tf,
+            shell_idx=tf_shell_idx, n_shells=tf_n_shells,
+            G=G_pre, h_R=h_R_pre, t_candidates=t_cands,
+            sigma_a=sigma_a_tf, interp_var=None,
+        )
+        self._timer.stop("6b_llg_tf_rescore")
 
-    def _rigid_body_refine(
-        self,
-        rotation_peak: tuple,
-        trans_peak: TranslationPeak,
-    ) -> RigidBodyResult:
-        """Run rigid body refinement."""
-        alpha, beta, gamma, _, _ = rotation_peak
+        llg_list = llg_tf.detach().cpu().tolist()
+        order = sorted(range(len(t_peaks)), key=lambda i: llg_list[i], reverse=True)
+        return [
+            TranslationPeak(
+                translation=t_peaks[i].translation,
+                score=float(llg_list[i]),
+                sigma=float(llg_list[i]),
+            )
+            for i in order
+        ]
 
+    # ------------------------------------------------------------------
+    # Stage 4+5: dense rotation re-sampling + rigid-body polish
+    # ------------------------------------------------------------------
+    def _dense_rotation_refine(self, refined):
+        """Two-pass dense rotation re-sampling on the ML-LLG surface.
+
+        Zooms the orientation onto the (sharper) ML-LLG basin at the found
+        translation before the LBFGS polish. Returns the re-rotated model.
+        """
+        data = self.data
+        device = self.device
+        timer = self._timer
+
+        timer.start("8_dense_R_ll_build")
+        refined_p1 = refined.copy()
+        refined_p1.spacegroup = SpaceGroup("P 1")
+        ll_refine = LattmanLoveInterpolator(
+            refined_p1, padding_factor=self.ll_padding_factor,
+            max_res_A=self.ll_max_res_A, verbose=0,
+        )
+        timer.stop("8_dense_R_ll_build")
+
+        tmask = self._tmask
+        hkl_keep = self._hkl_keep
+        F_obs_amp = self._F_obs_amp
+        centric_keep = (
+            data.centric[tmask].to(torch.bool).to(device) if hasattr(data, "centric")
+            else torch.zeros(hkl_keep.shape[0], dtype=torch.bool, device=device)
+        )
+        rec_basis_keep = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)
+        s_mag_keep = (hkl_keep.to(torch.float64) @ rec_basis_keep).norm(dim=-1)
+        rescore_n_shells = max(self.n_shells // 2, 8)
+
+        n_per_axis_pass = [9, 5]
+        zoom_factor = 4.0
+        radii = [
+            float(self.joint_refine_expected_rot_error),
+            float(self.joint_refine_expected_rot_error) / zoom_factor,
+        ]
+        R_accumulated = torch.eye(3, dtype=torch.float64)
+
+        interp_var_dense: Optional[torch.Tensor] = None
+        if self.use_interp_var:
+            dense_edges, _ = equal_count_shell_edges(s_mag_keep, rescore_n_shells)
+            dense_shell_idx = assign_shells(s_mag_keep, dense_edges)
+            interp_var_dense = estimate_interp_var(
+                ll_refine, hkl_keep, data.cell, dense_shell_idx, rescore_n_shells,
+            ).to(F_obs_amp.dtype)
+
+        for pass_idx, max_perturb_rad in enumerate(radii):
+            n_per_axis = n_per_axis_pass[pass_idx]
+            coords_r = torch.linspace(
+                -max_perturb_rad, max_perturb_rad, n_per_axis, dtype=torch.float64,
+            )
+            wx, wy, wz = torch.meshgrid(coords_r, coords_r, coords_r, indexing="ij")
+            omegas = torch.stack([wx.flatten(), wy.flatten(), wz.flatten()], dim=-1)
+            R_perturbs = _rodrigues(omegas)
+            R_cand_full = R_perturbs @ R_accumulated
+            cand_peaks = []
+            for R_c in R_cand_full:
+                a, b, g = edmonds_euler_from_rotation_matrix(R_c)
+                cand_peaks.append(RotationPeak(alpha=a, beta=b, gamma=g,
+                                               score=0.0, sigma=0.0))
+            if self.verbose > 0:
+                print(
+                    f"  dense R pass {pass_idx + 1} "
+                    f"({n_per_axis}³={omegas.shape[0]} perturbations, "
+                    f"±{math.degrees(max_perturb_rad):.2f}°)…",
+                    flush=True,
+                )
+            rescore_batch = max(4, min(100, 1_000_000 // max(hkl_keep.shape[0], 1)))
+            timer.start("9_dense_R_rescore")
+            if self.rescore_engine == "m_letf1":
+                rescored_refine = m_letf1_rescore(
+                    cand_peaks, F_obs_amp, hkl_keep, s_mag_keep, centric_keep,
+                    ll_refine, data.cell,
+                    data.spacegroup.matrices.to(torch.float64).to(device),
+                    n_shells=rescore_n_shells,
+                    n_refine=len(cand_peaks), batch_size=rescore_batch, verbose=0,
+                )
+            else:
+                rescored_refine = sim_mlrf_rescore(
+                    cand_peaks, F_obs_amp, hkl_keep, s_mag_keep, centric_keep,
+                    ll_refine, data.cell,
+                    n_shells=rescore_n_shells,
+                    n_refine=len(cand_peaks), batch_size=rescore_batch,
+                    verbose=0, n_D_grid=11, interp_var=interp_var_dense,
+                )
+            timer.stop("9_dense_R_rescore")
+            top = rescored_refine[0]
+            best_idx = next(
+                i for i, p in enumerate(cand_peaks)
+                if p.alpha == top.alpha and p.beta == top.beta
+                and p.gamma == top.gamma
+            )
+            R_accumulated = R_cand_full[best_idx]
+            if self.verbose > 0:
+                print(
+                    f"    pass {pass_idx + 1} best LLG={top.score:.2f}, "
+                    f"|ω|={omegas[best_idx].norm().item() * 180 / math.pi:.3f}°",
+                    flush=True,
+                )
+
+        return refined.rotate(
+            R_accumulated.T.to(self.model.dtype_float).contiguous(),
+        )
+
+    def _rigid_body_polish(self, refined):
+        """LBFGS rigid-body polish on (R, t) — returns ``(polished, result)``.
+
+        The model is pre-rotated/translated; the refinement optimises a small
+        delta with ``initial_translation=0``. ``result`` carries the no-solvent
+        initial/final R-work used by the caller's accept/reject gate.
+        """
+        timer = self._timer
+        timer.start("11_lbfgs_polish")
         rb = RigidBodyRefinement(
-            model=self.model,
-            data=self.data,
-            initial_rotation=torch.tensor([alpha, beta, gamma], dtype=get_float_dtype()),
-            initial_translation=torch.tensor(
-                trans_peak.translation, dtype=get_float_dtype()
+            refined, self.data,
+            initial_translation=torch.zeros(
+                3, dtype=torch.float32, device=refined.device,
             ),
-            device=self.device,
+            expected_rotational_error=self.joint_refine_expected_rot_error,
+            max_res=self.joint_refine_max_res_A,
+            device=refined.device,
             verbose=max(0, self.verbose - 1),
+            refine_b=self.refine_b,
+            sigma_rot_deg=self.sigma_rot_deg,
+            sigma_trans_ang=self.sigma_trans_ang,
+            sigma_b=self.sigma_b,
         )
-        return rb.refine()
-
-    def _get_e_values_obs(
-        self,
-        d_min: float,
-        d_max: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get E-values for observed data (cached)."""
-        if self._e_obs is None:
-            from torchref.base.alignment import F_squared_to_E_values
-
-            F_obs = self.data.F
-            mask = self.data.get_valid_mask()
-            F_obs_masked = F_obs[mask]
-
-            F2 = (F_obs_masked ** 2).to(torch.float64)
-            s = self._get_s_vectors()[mask]
-
-            E_values, E_squared, _ = F_squared_to_E_values(
-                F2, s, n_shells=20, d_min=d_min, d_max=d_max
-            )
-            self._e_obs = E_squared  # Use E² for correlation
-            self._s_obs = s
-            self._mask = mask  # Cache mask for later use
-        return self._e_obs, self._s_obs
-
-    def _get_e_values_calc(
-        self,
-        d_min: float,
-        d_max: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get E-values for calculated data (cached)."""
-        if self._e_calc is None:
-            from torchref.base.alignment import F_squared_to_E_values
-
-            hkl = self.data.hkl
-            mask = self.data.get_valid_mask()
-
-            with torch.no_grad():
-                F_calc = self.model(hkl).abs()
-
-            F_calc_masked = F_calc[mask]
-            F2 = (F_calc_masked ** 2).to(torch.float64)
-            s = self._get_s_vectors()[mask]
-
-            E_values, E_squared, _ = F_squared_to_E_values(
-                F2, s, n_shells=20, d_min=d_min, d_max=d_max
-            )
-            self._e_calc = E_squared
-            self._s_calc = s
-        return self._e_calc, self._s_calc
-
-    def _get_s_vectors(self) -> torch.Tensor:
-        """Get scattering vectors (cached)."""
-        if self._s_vectors is None:
-            from torchref.base import reciprocal_basis_matrix
-            rec_basis = reciprocal_basis_matrix(self.model.cell)
-            self._s_vectors = self.data.hkl.to(torch.float64) @ rec_basis.to(torch.float64)
-        return self._s_vectors
-
-    def clear_cache(self):
-        """Clear cached E-values and s-vectors."""
-        self._e_obs = None
-        self._e_calc = None
-        self._s_vectors = None
-        self._s_obs = None
-        self._s_calc = None
-        self._mask = None
+        rb_result = rb.refine()
+        with torch.no_grad():
+            R_polish = rb.get_rotation_matrix().detach()
+            t_polish = rb.translation_frac.detach()
+        polished = refined.rotate(R_polish.to(self.model.dtype_float))
+        polished = polished.translate(
+            t_polish.to(self.model.dtype_float), fractional=True,
+        )
+        timer.stop("11_lbfgs_polish")
+        return polished, rb_result

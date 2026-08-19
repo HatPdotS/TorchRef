@@ -3,11 +3,6 @@ Clash score calculator for crystallographic alignment.
 
 Provides clash-based scoring to complement Patterson alignment by detecting
 steric clashes between symmetry-related molecules.
-
-Experimental / unstable API: part of ``torchref.experimental.alignment``,
-the opt-in ball-harmonic MR engine. The production MR entry point is
-``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
-may change without notice.
 """
 
 from typing import TYPE_CHECKING, List, Optional
@@ -109,10 +104,7 @@ class ClashScoreCalculator(DeviceMixin, nn.Module):
     symmetry : str, int, gemmi.SpaceGroup, or SpaceGroup
         Space group specification for symmetry expansion.
     default_clash_radius : float, default 5.0
-        Minimum allowed distance between atoms stored on the instance. Note:
-        ``forward`` does NOT read this attribute; it uses its own
-        ``clash_radius`` argument (also defaulting to 5.0), so this stored value
-        is currently unused and ``forward(clash_radius=...)`` is authoritative.
+        Default minimum allowed distance between atoms (can be overridden in forward).
     dtype : torch.dtype, default torch.float32
         Data type for computations.
     device : torch.device, default 'cpu'
@@ -192,12 +184,6 @@ class ClashScoreCalculator(DeviceMixin, nn.Module):
         -------
         List[RigidTransform]
             List of symmetry transforms that could produce clashes.
-
-        Notes
-        -----
-        The 7 cell offsets in ``_cell_offsets`` (central + 6 face neighbours)
-        are crossed with every symmetry operation, so up to ``7 * n_ops``
-        candidate transforms are examined, not just 7 neighbours.
         """
         # Compute fractionalization matrix using Cell. Pin to CPU because the
         # rest of this method does CPU-only float64 symmetry math.

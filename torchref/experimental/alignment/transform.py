@@ -3,11 +3,6 @@ Rigid body transformations for crystallographic alignment.
 
 Provides unified handling of rotations and translations with quaternion-based
 internal storage and multiple representation formats.
-
-Experimental / unstable API: part of ``torchref.experimental.alignment``,
-the opt-in ball-harmonic MR engine. The production MR entry point is
-``torchref.alignment`` (the consolidated FRF engine). Signatures and behavior
-may change without notice.
 """
 
 from typing import Optional, Union
@@ -42,28 +37,15 @@ def get_inverse_rotation_matrix(R: torch.Tensor) -> torch.Tensor:
 
 def sample_angles(sampling_pitch_rad, max_angles_rad):
     """
-    Sample a regular grid of Euler angles (in radians).
+    Sample Euler angles (in radians) up to the specified maximum angles with the given sampling pitch.
+    Returns a tensor of shape (N, 3) where N is the number of sampled angles.
 
-    Builds the Cartesian product of per-axis ranges from 0 to each maximum
-    angle (inclusive) with the given step.
+    Args:
+        sampling_pitch_rad (float): Sampling pitch in radians.
+        max_angles_rad (tuple): Maximum angles (alpha, beta, gamma) in radians.
+    Returns:
+        torch.Tensor: Sampled angles of shape (N, 3).
 
-    Parameters
-    ----------
-    sampling_pitch_rad : float
-        Sampling pitch (step size) in radians, used for all three axes.
-    max_angles_rad : tuple of float
-        Maximum angles (alpha, beta, gamma) in radians.
-
-    Returns
-    -------
-    torch.Tensor
-        Sampled angles of shape (N, 3), where N is the number of grid points.
-
-    See Also
-    --------
-    torchref.experimental.alignment.sampling : Related atom-pair sampling
-        utilities (this Euler-angle grid sampler is thematically a sampling
-        helper but lives here in ``transform``).
     """
 
     angles = []
@@ -79,20 +61,12 @@ def sample_angles(sampling_pitch_rad, max_angles_rad):
 def rotation_matrix_from_euler(angles):
     """
     Compute rotation matrices from Euler angles (in radians).
+    Angles should be of shape (N, 3) where N is the number of angle sets.
 
-    Each row of ``angles`` is (alpha, beta, gamma) and the matrix is built as
-    ``Rz(gamma) @ Ry(beta) @ Rz(alpha)`` (an intrinsic ZYZ composition applied
-    in the order alpha, then beta, then gamma).
-
-    Parameters
-    ----------
-    angles : torch.Tensor
-        Euler angles of shape (N, 3), columns [alpha, beta, gamma].
-
-    Returns
-    -------
-    torch.Tensor
-        Rotation matrices of shape (N, 3, 3).
+    Args:
+        angles (torch.Tensor): Euler angles of shape (N, 3).
+    Returns:
+        torch.Tensor: Rotation matrices of shape (N, 3, 3).
     """
     alpha = angles[:, 0]
     beta = angles[:, 1]
