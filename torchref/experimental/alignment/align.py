@@ -109,28 +109,6 @@ class _StageTimer:
 # ---------------------------------------------------------------------------
 
 
-def _shellbin_norm_etrick(
-    F: torch.Tensor, smag: torch.Tensor, P: int
-) -> torch.Tensor:
-    """Per-shell E-trick normalisation: ``E = F / sqrt(<F²>_shell)``.
-
-    Equal-count shell binning by sorted ``smag``; small-count shells just
-    inherit their normaliser from the local mean.
-    """
-    order = torch.argsort(smag)
-    idx = torch.zeros_like(smag, dtype=torch.int64)
-    chunk = smag.numel() // P
-    for k in range(P):
-        a = k * chunk
-        b = (k + 1) * chunk if k < P - 1 else smag.numel()
-        idx[order[a:b]] = k
-    norm = torch.zeros_like(smag, dtype=F.dtype)
-    for k in range(P):
-        m = idx == k
-        norm[m] = (F[m] ** 2).mean().clamp(min=1e-30).sqrt()
-    return F / norm
-
-
 def _external_rwork(model: "ModelFT", data: "ReflectionData") -> float:
     """Full-resolution scaled R-work via the standard Scaler.
 
@@ -224,26 +202,18 @@ def _rodrigues(omega: torch.Tensor) -> torch.Tensor:
 
 @dataclass
 class FRFInputs:
-    """Container for the spherical-harmonic rotation-search inputs.
+    """Prepared reflection arrays shared by the rotation-search stages.
 
-    `*_sym` arrays are symmetry-expanded across the spacegroup rotation
-    operators (so the Patterson SH expansion samples the full sphere).
-    Un-suffixed `F_obs / hkl / s_vec / s_mag / centric` are the resolution-
-    masked, anisotropy-corrected reflection arrays — used downstream by
-    the MLRF rescore, translation search and rigid-body polish.
+    The resolution-masked, anisotropy-corrected reflection arrays, plus the
+    overall anisotropy tensor and the Lattman-Love interpolator. The rotation
+    search reads `U_aniso` and `device`; the ML rescore, translation search and
+    rigid-body polish read the rest.
     """
-    # FRF (symmetry-expanded) inputs
-    s_vec_for_search: torch.Tensor   # (n_ops·N, 3)
-    s_mag_sym: torch.Tensor          # (n_ops·N,)
-    patt_obs: torch.Tensor           # (n_ops·N,) = |E_obs|² − 1
-    patt_calc: torch.Tensor          # (n_ops·N,) = |E_calc|² − 1
-    # Per-reflection inputs (un-expanded)
-    F_obs: torch.Tensor              # (N,) anisotropy-corrected? See `F_obs_aniso` flag
+    F_obs: torch.Tensor              # (N,) anisotropy-corrected amplitudes
     hkl: torch.Tensor                # (N, 3) integer Miller indices
     s_vec: torch.Tensor              # (N, 3) reciprocal-space Cartesian
     s_mag: torch.Tensor              # (N,) Å⁻¹
     centric: torch.Tensor            # (N,) bool
-    # Other state used downstream
     ll: "LattmanLoveInterpolator"
     U_aniso: torch.Tensor            # (3, 3) Popov-Bourenkov U
     device: torch.device
@@ -260,14 +230,11 @@ def _prepare_frf_inputs(
     ll_max_res_A: float = 3.0,
     verbose: int = 0,
 ) -> FRFInputs:
-    """Build the symmetry-expanded SH-rotation-search inputs.
+    """Prepare the reflection arrays the rotation-search stages share.
 
-    Encapsulates the data prep / anisotropy / symmetry-expansion logic
-    previously inlined in `align_model_to_data`. The returned dataclass
-    feeds both the live FRF call and the benchmark scripts.
-
-    `F_obs` on the returned dataclass is the *anisotropy-corrected* value
-    (matches what previously was the `F_obs_aniso` local variable).
+    Masks the observations to ``[d_min, d_max]``, fits and applies the overall
+    anisotropy correction, and builds the Lattman-Love interpolator for the
+    model. ``F_obs`` on the returned dataclass is anisotropy-corrected.
     """
     device = model.xyz().device
 
@@ -316,37 +283,7 @@ def _prepare_frf_inputs(
         verbose=verbose,
     )
 
-    # Symmetry-expand reciprocal-space points so the Patterson SH expansion
-    # samples the full sphere (spacegroup-invariant by construction). See
-    # the long comment in `align_model_to_data` for the rationale.
-    sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
-    n_ops_sg = int(sg_mats.shape[0])
-    # h' = h.R, NOT R.h -- reciprocal space transforms with the transpose
-    # (SpaceGroup.apply_to_hkl). The two agree only when the symmetry matrices
-    # are orthogonal, which they are in orthorhombic/tetragonal/cubic and
-    # monoclinic settings but NOT in a hexagonal basis, where S.S^T != I. Using
-    # R.h there mixes non-equivalent reflections into one orbit and writes
-    # conflicting |F| onto the same Miller index.
-    hkl_sym = torch.einsum("kji,nj->kni", sg_mats, hkl.to(torch.float64))
-    hkl_sym_flat = hkl_sym.reshape(-1, 3)
-    s_vec_sym = hkl_sym_flat @ rec_basis.to(device)
-    s_mag_sym = s_vec_sym.norm(dim=-1)
-    F_obs_aniso_sym = F_obs_aniso.unsqueeze(0).expand(n_ops_sg, -1).reshape(-1)
-    E_obs_sym = _shellbin_norm_etrick(F_obs_aniso_sym, s_mag_sym, n_shells)
-    patt_obs = E_obs_sym ** 2 - 1.0
-
-    F_calc_sym = ll.evaluate(
-        torch.eye(3, dtype=torch.float32), hkl_sym_flat, data.cell,
-        return_amplitude=True,
-    ).to(torch.float64)
-    E_calc_sym = _shellbin_norm_etrick(F_calc_sym, s_mag_sym, n_shells)
-    patt_calc = E_calc_sym ** 2 - 1.0
-
     return FRFInputs(
-        s_vec_for_search=s_vec_sym,
-        s_mag_sym=s_mag_sym,
-        patt_obs=patt_obs,
-        patt_calc=patt_calc,
         F_obs=F_obs_aniso,
         hkl=hkl,
         s_vec=s_vec,
@@ -603,7 +540,6 @@ def align_model_to_data(
     *,
     d_min: float = 4.0,
     d_max: float = 15.0,
-    L: int = 48,
     n_shells: int = 20,
     n_rotation_peaks: int = 500,
     n_ml_refine: int = 20,  # rescore only the top-20 FRF peaks (refinement use case)
@@ -625,13 +561,6 @@ def align_model_to_data(
     sigma_rot_deg: float = 0.0,
     sigma_trans_ang: float = 0.0,
     sigma_b: float = 0.0,
-    use_sigma_a_frf: bool = False,
-    frf_delta_vrms_A: float = 1.0,
-    frf_weight_combine: str = "sigma_a_only",
-    use_m_symmetry_filter: bool = False,
-    use_lerf1_intensity: bool = False,
-    use_fitted_delta_vrms: bool = False,
-    use_even_l_only: bool = False,
     frf_lmax_cap: int = 48,
     frf_dense_pad: float = 2.0,
     rescore_engine: str = "m_letf1",
@@ -656,11 +585,10 @@ def align_model_to_data(
             "Cannot fit an uninitialized ModelFT. Load PDB data first."
         )
 
-    # `MolecularReplacementPipeline` is the implementation of record. This
-    # function preserves the historical kwarg surface (so the benchmark
-    # scripts keep working unchanged) and returns the single
-    # best `ModelFT`; drive the pipeline directly to get the ranked candidate
-    # list. Imported lazily to avoid an import cycle — `pipeline` imports the
+    # `MolecularReplacementPipeline` is the implementation of record; this
+    # function returns its single best `ModelFT`. Drive the pipeline directly to
+    # get the ranked candidate list. Imported lazily to avoid an import cycle --
+    # `pipeline` imports the
     # stage helpers (`_prepare_frf_inputs`, `_run_frf_separate_rotation`,
     # `_external_rwork`, `_DirectModelEvaluator`, `_rodrigues`, `_StageTimer`)
     # from this module.
@@ -692,13 +620,6 @@ def align_model_to_data(
         refine_b=refine_b,
         sigma_rot_deg=sigma_rot_deg, sigma_trans_ang=sigma_trans_ang,
         sigma_b=sigma_b,
-        L=L,
-        use_sigma_a_frf=use_sigma_a_frf, frf_delta_vrms_A=frf_delta_vrms_A,
-        frf_weight_combine=frf_weight_combine,
-        use_m_symmetry_filter=use_m_symmetry_filter,
-        use_lerf1_intensity=use_lerf1_intensity,
-        use_fitted_delta_vrms=use_fitted_delta_vrms,
-        use_even_l_only=use_even_l_only,
     )
     solutions = pipeline.run(do_translation=do_translation)
     return solutions[0].model

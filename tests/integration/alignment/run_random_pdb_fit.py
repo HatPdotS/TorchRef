@@ -96,14 +96,7 @@ def run(pdb_key: str, seed: int, verbose: int = 1,
          sigma_rot_deg: float = 0.0,
          sigma_trans_ang: float = 0.0,
          sigma_b: float = 0.0,
-         use_sigma_a_frf: bool = False,
-         frf_delta_vrms_A: float = 1.0,
-         frf_weight_combine: str = "sigma_a_only",
          n_rotation_candidates: int = 15,
-         use_m_symmetry_filter: bool = False,
-         use_lerf1_intensity: bool = False,
-         use_fitted_delta_vrms: bool = False,
-         use_even_l_only: bool = False,
          rescore_engine: str = "m_letf1") -> dict:
     pdb_path, mtz_path = PAIRS[pdb_key]
     print(f"\n=== {pdb_key}: {pdb_path.name} + {mtz_path.name} ===", flush=True)
@@ -162,7 +155,7 @@ def run(pdb_key: str, seed: int, verbose: int = 1,
         rotated_search,
         data,
         d_min=4.0, d_max=15.0,
-        L=32, n_shells=20,
+        n_shells=20,
         n_rotation_peaks=200, n_ml_refine=200,
         verbose=verbose,
         use_interp_var=use_interp_var,
@@ -171,14 +164,7 @@ def run(pdb_key: str, seed: int, verbose: int = 1,
         sigma_rot_deg=sigma_rot_deg,
         sigma_trans_ang=sigma_trans_ang,
         sigma_b=sigma_b,
-        use_sigma_a_frf=use_sigma_a_frf,
-        frf_delta_vrms_A=frf_delta_vrms_A,
-        frf_weight_combine=frf_weight_combine,
         n_rotation_candidates=n_rotation_candidates,
-        use_m_symmetry_filter=use_m_symmetry_filter,
-        use_lerf1_intensity=use_lerf1_intensity,
-        use_fitted_delta_vrms=use_fitted_delta_vrms,
-        use_even_l_only=use_even_l_only,
         rescore_engine=rescore_engine,
     )
     fit_time = time.time() - t1
@@ -242,29 +228,9 @@ def main():
     ap.add_argument("--sigma-b", type=float, default=0.0,
                     help="Phase C: Gaussian B-factor restraint sigma (Å²). "
                          "0 = no restraint. Phaser default ~15.")
-    ap.add_argument("--use-sigma-a-frf", action="store_true",
-                    help="E3: σA-weight the FRF input field (Phaser FastRot "
-                         "Eterm/Vterm analogue). Default off.")
-    ap.add_argument("--frf-delta-vrms", type=float, default=1.0,
-                    help="ΔVRMS for Luzzati σA(s) = exp(−2π²s²ΔVRMS²), Å. "
-                         "Default 1.0.")
-    ap.add_argument("--frf-weight-combine", default="sigma_a_only",
-                    choices=["sigma_a_only", "sigma_a_x_variance"],
-                    help="How to combine σA² and empirical variance weights.")
     ap.add_argument("--n-rotation-candidates", type=int, default=15,
                     help="Top-N rotations from MLRF rescore that get full "
                          "translation+polish. Default 15.")
-    ap.add_argument("--use-m-symmetry-filter", action="store_true",
-                    help="F1: zero SH coefficients with m not divisible by "
-                         "ZSYMM (Phaser-style symmetry-aware denoiser).")
-    ap.add_argument("--use-lerf1-intensity", action="store_true",
-                    help="F2: replace patt_obs = E²−1 with "
-                         "cweight·(E²−1)·DFAC² (Phaser LERF1 form).")
-    ap.add_argument("--use-fitted-delta-vrms", action="store_true",
-                    help="F3: fit ΔVRMS from <B>/(8π²) instead of "
-                         "frf_delta_vrms_A.")
-    ap.add_argument("--use-even-l-only", action="store_true",
-                    help="F4: skip odd-l SH coefficients (perf, no SNR).")
     args = ap.parse_args()
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -296,14 +262,7 @@ def main():
                     sigma_rot_deg=args.sigma_rot_deg,
                     sigma_trans_ang=args.sigma_trans_ang,
                     sigma_b=args.sigma_b,
-                    use_sigma_a_frf=args.use_sigma_a_frf,
-                    frf_delta_vrms_A=args.frf_delta_vrms,
-                    frf_weight_combine=args.frf_weight_combine,
-                    n_rotation_candidates=args.n_rotation_candidates,
-                    use_m_symmetry_filter=args.use_m_symmetry_filter,
-                    use_lerf1_intensity=args.use_lerf1_intensity,
-                    use_fitted_delta_vrms=args.use_fitted_delta_vrms,
-                    use_even_l_only=args.use_even_l_only)
+                    n_rotation_candidates=args.n_rotation_candidates)
             results.append(r)
         except Exception as exc:
             import traceback

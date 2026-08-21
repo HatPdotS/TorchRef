@@ -261,16 +261,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         min_tries: int = 3,
         max_tries: Optional[int] = None,
         rfactor_converged: float = 0.45,
-        # --- vestigial FRF knobs (superseded by _run_frf_separate_rotation's
-        # frf_use_* defaults post-consolidation; accepted for API stability) ---
-        L: int = 48,
-        use_sigma_a_frf: bool = False,
-        frf_delta_vrms_A: float = 1.0,
-        frf_weight_combine: str = "sigma_a_only",
-        use_m_symmetry_filter: bool = False,
-        use_lerf1_intensity: bool = False,
-        use_fitted_delta_vrms: bool = False,
-        use_even_l_only: bool = False,
     ):
         self.data = data
         self.model = model
@@ -315,18 +305,6 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.min_tries = min_tries
         self.max_tries = max_tries
         self.rfactor_converged = rfactor_converged
-
-        # Vestigial; retained so legacy callers/benchmarks do not break.
-        self._vestigial = dict(
-            L=L,
-            use_sigma_a_frf=use_sigma_a_frf,
-            frf_delta_vrms_A=frf_delta_vrms_A,
-            frf_weight_combine=frf_weight_combine,
-            use_m_symmetry_filter=use_m_symmetry_filter,
-            use_lerf1_intensity=use_lerf1_intensity,
-            use_fitted_delta_vrms=use_fitted_delta_vrms,
-            use_even_l_only=use_even_l_only,
-        )
 
         self._timer = _StageTimer(enabled=verbose >= 2)
         # Filled in by run().

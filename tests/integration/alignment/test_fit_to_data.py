@@ -90,7 +90,7 @@ def test_fit_to_data_real_1daw(real_setup, trial):
         search,
         data,
         d_min=4.0, d_max=15.0,
-        L=32, n_shells=20,
+        n_shells=20,
         n_rotation_peaks=200, n_ml_refine=200,
         do_translation=False,  # this test only checks rotation accuracy
         verbose=0,

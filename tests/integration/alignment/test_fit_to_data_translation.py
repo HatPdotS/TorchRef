@@ -67,7 +67,7 @@ def test_fit_to_data_recovers_rotation_and_translation():
         perturbed,
         data,
         d_min=4.0, d_max=15.0,
-        L=32, n_shells=20,
+        n_shells=20,
         n_rotation_peaks=200, n_ml_refine=200,
         do_translation=True,
         do_joint_refine=True,
