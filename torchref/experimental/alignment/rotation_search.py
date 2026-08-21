@@ -23,7 +23,7 @@ one's provenance is in its own comment.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 
@@ -37,6 +37,7 @@ from .sh import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ...io.datasets.reflection_data import ReflectionData
     from ...model.model_ft import ModelFT
+    from .frf.types import RotationPeak
 
 __all__ = ["RotationSolutions", "rotation_search"]
 
@@ -210,7 +211,7 @@ def search_peaks(
     U_aniso: torch.Tensor,
     n_peaks: int,
     verbose: int = 0,
-):
+) -> Tuple[List["RotationPeak"], int, float]:
     """Run the rotation function, returning the engine's own peak list.
 
     Returns ``(peaks, lmax, d_min)``, where ``peaks`` is a list of
@@ -325,7 +326,7 @@ def search_peaks(
     return peaks, int(L - 1), float(d_min)
 
 
-def _solutions(peaks, lmax: int, d_min: float,
+def _solutions(peaks: List["RotationPeak"], lmax: int, d_min: float,
                model_error_A: float) -> RotationSolutions:
     """Package a peak list as the public return type."""
     from .frf.rotation_utils import rotation_matrix_from_edmonds_euler_batch
