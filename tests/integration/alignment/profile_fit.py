@@ -22,10 +22,10 @@ from pathlib import Path
 
 import torch
 
+from torchref.experimental.alignment.align import align_model_to_data
 from torchref.experimental.alignment.frf.rotation_utils import rotation_matrix_from_edmonds_euler
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
-from torchref.symmetry import SpaceGroup
 
 
 TEST_FILES = Path("/das/work/p17/p17490/Peter/Library/work_trees_torchref/fix_alignment/tests/files")
@@ -91,7 +91,7 @@ def main():
 
     data = ReflectionData().load_mtz(str(mtz_path))
     canonical = ModelFT().load_pdb(str(pdb_path))
-    canonical.spacegroup = SpaceGroup("P 1")
+    canonical.spacegroup = "P 1"
     R_true = rotation_matrix_from_edmonds_euler(0.6, 0.4, 1.2)
     rotated_p = canonical.rotate(
         R_true.to(canonical.dtype_float), center=canonical.xyz().mean(dim=0),
@@ -106,7 +106,8 @@ def main():
     profiler = cProfile.Profile()
     t0 = time.time()
     profiler.enable()
-    aligned = perturbed.fit_to_data(
+    aligned = align_model_to_data(
+        perturbed,
         data,
         n_rotation_candidates=args.n_rotation_candidates,
         n_translation_candidates=args.n_translation_candidates,

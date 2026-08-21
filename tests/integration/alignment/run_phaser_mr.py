@@ -40,6 +40,7 @@ from typing import Optional
 
 import torch
 
+from torchref.base.metrics.rfactor import rfactor_work_free
 from torchref.experimental.alignment.frf.rotation_utils import rotation_angular_distance_deg
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
@@ -299,7 +300,7 @@ def run(pdb_key: str, seed: int, *, work_root: Path,
             scaler.initialize(fcalc)
             scaler.refine_lbfgs(fcalc=fcalc)
             with torch.no_grad():
-                rw, rf = scaler.rfactor(fcalc)
+                rw, rf = rfactor_work_free(data, torch.abs(scaler.forward(fcalc)))
             rwork_torchref_scaler = (
                 rw.item() if hasattr(rw, "item") else float(rw)
             )

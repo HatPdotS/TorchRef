@@ -59,8 +59,6 @@ class LattmanLoveInterpolator(DeviceMixin):
     max_res_A : float, optional
         Resolution limit (Å). The dense grid will resolve features down to this.
         Default: 2.0 Å (suitable for proteins up to that resolution).
-    radius_angstrom : float, default 3.0
-        Atomic-density support radius for SfFFT.
     device : torch.device, optional
         Target device. Defaults to the model's device.
     """
@@ -71,7 +69,6 @@ class LattmanLoveInterpolator(DeviceMixin):
         padding_factor: float = 2.0,
         min_cell_size_A: Optional[float] = None,
         max_res_A: float = 2.0,
-        radius_angstrom: float = 3.0,
         device: Optional[torch.device] = None,
         verbose: int = 0,
     ):
@@ -123,7 +120,6 @@ class LattmanLoveInterpolator(DeviceMixin):
                 cell=self.cubic_cell,
                 spacegroup=SpaceGroup("P 1"),
                 max_res=max_res_A,
-                radius_angstrom=radius_angstrom,
                 dtype_float=torch.float32,
                 device=device,
                 verbose=verbose,

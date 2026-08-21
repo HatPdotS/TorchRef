@@ -793,7 +793,7 @@ def local_rotation_translation_refine(
     llg_best : float
         Sim MLRF LLG at the returned (R_best, t_best).
     """
-    from torchref.alignment.ml_rotation import llg_for_rotation_batch
+    from .ml_rotation import llg_for_rotation_batch
     device = getattr(interpolator, "device", hkl.device)
     real_dtype = torch.float64
     complex_dtype = torch.complex128

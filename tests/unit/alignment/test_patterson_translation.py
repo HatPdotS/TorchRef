@@ -17,7 +17,6 @@ import torch
 from torchref.experimental.alignment.translation import amplitude_translation_search
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
-from torchref.symmetry import SpaceGroup
 
 
 TEST_FILES = Path(__file__).resolve().parents[2] / "files"

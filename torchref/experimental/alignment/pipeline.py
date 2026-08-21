@@ -39,7 +39,6 @@ import torch
 from torchref.config import get_default_device
 from torchref.utils.device_mixin import DeviceMixin
 
-from ...symmetry import SpaceGroup
 from .align import (
     _DirectModelEvaluator,
     _StageTimer,

@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 import torch
 
+from torchref.base.metrics.rfactor import rfactor_work_free
+from torchref.experimental.alignment.align import align_model_to_data
 from torchref.experimental.alignment.frf.rotation_utils import (
     rotation_angular_distance_deg,
     rotation_matrix_from_edmonds_euler,
@@ -22,7 +24,6 @@ from torchref.experimental.alignment.frf.rotation_utils import (
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
 from torchref.scaling import Scaler
-from torchref.symmetry import SpaceGroup
 
 
 TEST_FILES = Path(__file__).resolve().parents[2] / "files"
@@ -35,7 +36,7 @@ def _scale_and_rwork(model: ModelFT, data) -> float:
     fcalc = model(data.hkl)
     scaler.initialize(fcalc)
     scaler.refine_lbfgs(fcalc=fcalc)
-    rw, _ = scaler.rfactor(fcalc)
+    rw, _ = rfactor_work_free(data, torch.abs(scaler.forward(fcalc)))
     return rw.item() if hasattr(rw, "item") else float(rw)
 
 
@@ -49,18 +50,21 @@ def _wrap_frac(t: torch.Tensor) -> torch.Tensor:
 def test_fit_to_data_recovers_rotation_and_translation():
     data = ReflectionData().load_mtz(str(MTZ_1DAW))
     canonical = ModelFT().load_pdb(str(PDB_1DAW))
-    canonical.spacegroup = SpaceGroup("P 1")
+    canonical.spacegroup = "P 1"
 
     # Apply a known random rotation + fractional translation.
     R_true = rotation_matrix_from_edmonds_euler(0.6, 0.4, 1.2)
     R_apply = R_true.to(canonical.dtype_float)
-    rotated = canonical.rotate(R_apply, center=canonical.xyz().mean(dim=0))
+    # .copy() first: Model.rotate mutates in place, so rotating `canonical`
+    # directly would perturb the very reference this test compares against.
+    rotated = canonical.copy().rotate(R_apply, center=canonical.xyz().mean(dim=0))
     t_frac_true = torch.tensor([0.18, -0.07, 0.23], dtype=canonical.dtype_float)
     perturbed = rotated.translate(t_frac_true, fractional=True)
 
     rwork_pre = _scale_and_rwork(perturbed, data)
 
-    aligned = perturbed.fit_to_data(
+    aligned = align_model_to_data(
+        perturbed,
         data,
         d_min=4.0, d_max=15.0,
         L=32, n_shells=20,

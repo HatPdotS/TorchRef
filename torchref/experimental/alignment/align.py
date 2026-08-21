@@ -139,6 +139,7 @@ def _external_rwork(model: "ModelFT", data: "ReflectionData") -> float:
     candidates correctly but isn't the user-facing R-work). We compute the
     proper Scaler-fit R-work once per finalist.
     """
+    from ...base.metrics.rfactor import rfactor_work_free
     from ...scaling import Scaler
 
     # Build the Scaler on the model's device so that its anisotropy U
@@ -156,7 +157,8 @@ def _external_rwork(model: "ModelFT", data: "ReflectionData") -> float:
     s.initialize(fc)
     s.refine_lbfgs(fcalc=fc)
     with torch.no_grad():
-        rw, _ = s.rfactor(fc)
+        # rfactor_work_free takes already-scaled amplitudes, not complex F_calc.
+        rw, _ = rfactor_work_free(data, torch.abs(s.forward(fc)))
     return rw.item() if hasattr(rw, "item") else float(rw)
 
 

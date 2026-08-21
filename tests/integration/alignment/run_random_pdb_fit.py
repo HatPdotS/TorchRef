@@ -27,6 +27,8 @@ from pathlib import Path
 
 import torch
 
+from torchref.base.metrics.rfactor import rfactor_work_free
+from torchref.experimental.alignment.align import align_model_to_data
 from torchref.experimental.alignment.frf.rotation_utils import rotation_angular_distance_deg
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
@@ -131,7 +133,7 @@ def run(pdb_key: str, seed: int, verbose: int = 1,
         s.initialize(fcalc)
         s.refine_lbfgs(fcalc=fcalc)
         with torch.no_grad():
-            rw, rf = s.rfactor(fcalc)
+            rw, rf = rfactor_work_free(data, torch.abs(s.forward(fcalc)))
         rw = rw.item() if hasattr(rw, "item") else float(rw)
         rf = rf.item() if hasattr(rf, "item") else float(rf)
         return rw, rf
@@ -156,7 +158,8 @@ def run(pdb_key: str, seed: int, verbose: int = 1,
 
     # 3. Run fit_to_data: recover the alignment.
     t1 = time.time()
-    aligned = rotated_search.fit_to_data(
+    aligned = align_model_to_data(
+        rotated_search,
         data,
         d_min=4.0, d_max=15.0,
         L=32, n_shells=20,

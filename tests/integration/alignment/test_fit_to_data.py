@@ -17,10 +17,10 @@ from pathlib import Path
 import pytest
 import torch
 
+from torchref.experimental.alignment.align import align_model_to_data
 from torchref.experimental.alignment.frf.rotation_utils import rotation_angular_distance_deg
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model import ModelFT
-from torchref.symmetry import SpaceGroup
 
 
 TEST_FILES = Path(__file__).resolve().parents[2] / "files"
@@ -31,7 +31,7 @@ MTZ_1DAW = TEST_FILES / "mtz" / "1DAW.mtz"
 def _load_p1_search_model() -> ModelFT:
     """Load 1DAW and force spacegroup to P1 via the proper setter."""
     m = ModelFT().load_pdb(str(PDB_1DAW))
-    m.spacegroup = SpaceGroup("P 1")
+    m.spacegroup = "P 1"
     return m
 
 
@@ -86,7 +86,8 @@ def test_fit_to_data_real_1daw(real_setup, trial):
     R_true = _random_rotation(seed=5000 + trial)
     search = canonical.rotate(R_true.to(canonical.dtype_float), center=centroid)
 
-    aligned = search.fit_to_data(
+    aligned = align_model_to_data(
+        search,
         data,
         d_min=4.0, d_max=15.0,
         L=32, n_shells=20,
