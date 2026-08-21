@@ -237,58 +237,94 @@ def bessel_sh_expand(
     if _PROFILE:
         prof["cluster"] += _tick(t0); t0 = time.perf_counter()
 
-    # ---- D[c, m] = Σ_{h∈c} I_h · conj(C(m, φ_h)) ----------------------------
-    # Y_lm = barP_{l,|m|}(cosθ) · C(m, φ) with C(m,φ) = (-1)^m e^{imφ} (m≥0) /
-    # e^{imφ} (m<0) — the sh.evaluate_ylm convention. So conj(C) = sign(m) e^{-imφ}
-    # with sign(m)=(-1)^m for m≥0 else 1. D folds the φ-phase, sign and intensity,
-    # accumulated per cluster — O(M·L), the only remaining per-reflection work.
-    m_idx = torch.arange(-(L - 1), L, device=device)               # (2L-1,)
-    # sign(m) = (-1)^m for m≥0 else 1. clamp(min=0) keeps the (unused) negative
-    # entries' base-pow well-defined (no NaN from (-1)^(neg float)).
-    sign_m = torch.where(
-        m_idx >= 0,
-        ((-1.0) ** m_idx.clamp(min=0).to(comp_real)),
-        torch.ones_like(m_idx, dtype=comp_real),
-    ).to(einsum_dtype)
-    Dc = torch.zeros((n_clusters, 2 * L - 1), dtype=einsum_dtype, device=device)
+    # ---- S[c, p] = Σ_{h∈c} I_h e^{-i p φ_h}, for p = 0 .. L-1 ---------------
+    # Only the non-negative half of m is built. The coefficients obey
+    #     c[n, l, -p] = (-1)^p conj(c[n, l, +p])
+    # exactly -- the intensity, the Bessel weight and the Legendre factor are all
+    # real, so m enters only through the azimuthal phase, and P_{l,|m|} does not
+    # distinguish +p from -p. Verified bit-exact against the full-range build.
+    # That halves both this sum and the contraction below.
+    #
+    # The Y_lm convention (sh.evaluate_ylm) carries C(m, φ) = (-1)^m e^{imφ} for
+    # m >= 0, so conj(C) contributes a (-1)^p factor. It is applied once per
+    # (cluster, p) after the sum rather than once per (reflection, p) -- the same
+    # number for a factor of M/n_clusters less work.
+    p_idx = torch.arange(L, device=device)                          # (L,)
+    Sp = torch.zeros((n_clusters, L), dtype=einsum_dtype, device=device)
     dchunk = 262_144
-    mrow = m_idx.to(comp_real).unsqueeze(0)                         # (1, 2L-1)
-    for start in range(0, M, dchunk):
-        stop = min(start + dchunk, M)
-        ph = phi_all[start:stop].to(comp_real).unsqueeze(1)        # (c, 1)
-        i_c = intensity[start:stop].to(comp_real).unsqueeze(1)     # (c, 1)
-        e_neg = torch.exp((-1j) * (mrow * ph)).to(einsum_dtype)    # (c, 2L-1) = e^{-imφ}
-        f = (i_c.to(einsum_dtype) * sign_m.unsqueeze(0)) * e_neg
-        Dc.index_add_(0, inverse[start:stop], f)
+    prow = p_idx.to(comp_real).unsqueeze(0)                         # (1, L)
+    for start_i in range(0, M, dchunk):
+        stop = min(start_i + dchunk, M)
+        ph = phi_all[start_i:stop].to(comp_real).unsqueeze(1)      # (c, 1)
+        i_c = intensity[start_i:stop].to(comp_real).unsqueeze(1)   # (c, 1)
+        ang = -(prow * ph)
+        # polar(r, angle) is one sincos; exp of a complex number additionally
+        # evaluates exp() of a real part that is always zero here.
+        e_neg = torch.polar(i_c.expand(-1, L).contiguous(), ang).to(einsum_dtype)
+        Sp.index_add_(0, inverse[start_i:stop], e_neg)
+    sign_p = ((-1.0) ** p_idx.to(comp_real)).to(einsum_dtype)      # (L,)
+    Dp = Sp * sign_p.unsqueeze(0)                                   # (n_clusters, L)
     if _PROFILE:
         prof["dbuild"] += _tick(t0); t0 = time.perf_counter()
 
-    # ---- per-cluster Bessel (radial) ----------------------------------------
-    x_c = (bessel_h_scale * rep_smag).clamp(min=1e-30)
-    j_all = spherical_bessel_table(x_c, u_max)                     # (n_clusters, u_max+1)
-    bessel = torch.zeros((n_clusters, L, N_radial), dtype=comp_real, device=device)
-    bessel[:, l_idx, n_idx] = w_vec.unsqueeze(0) * j_all[:, u_idx] / x_c.unsqueeze(-1)
-    bessel_e = bessel[:, even_l_idx, :].to(einsum_dtype)           # (n_clusters, n_even, N_radial)
-    if _PROFILE:
-        prof["bessel"] += _tick(t0); t0 = time.perf_counter()
-
-    # ---- per-cluster Legendre (even l), expanded over m via |m| --------------
-    bar_P = _bar_legendre_recurrence(rep_cos, rep_sin, L)          # (n_clusters, L, L)
-    bar_P_e = bar_P[:, even_l_idx, :]                              # (n_clusters, n_even, L)
-    abs_m = m_idx.abs()
-    if _PROFILE:
-        prof["ylm"] += _tick(t0); t0 = time.perf_counter()
-
-    # ---- factored contraction over clusters ---------------------------------
-    # c[n,l,m] = Σ_c bessel[c,l,n] · barP[c,l,|m|] · D[c,m]. Chunk over clusters to
-    # bound the (n_even, 2L-1) intermediate when n_clusters is large (singletons).
-    c_e = torch.zeros((N_radial, len(even_ls), 2 * L - 1), dtype=einsum_dtype, device=device)
-    cbytes = (8 if einsum_dtype == torch.complex64 else 16)
-    cstep = max(1, min(n_clusters, 256_000_000 // max(1, cbytes * len(even_ls) * (2 * L - 1))))
+    # ---- per-cluster precompute + contraction, chunked over clusters --------
+    # The radial and Legendre tables are built inside this loop, not ahead of
+    # it. Built for every cluster at once they are the function's peak memory
+    # and, being touched exactly once, pure memory traffic: on a 114k-cluster
+    # calc set at L=65 that is 3.9 GB of Legendre plus 1.9 GB of Bessel. Per
+    # chunk they stay in cache.
+    #
+    # Only the even-l rows are allocated. The Patterson is centrosymmetric so
+    # the odd-l coefficients vanish (DataMR.cc:863-870); the recurrence still
+    # steps through odd l internally, since P_l needs P_{l-1}, but nothing
+    # downstream keeps them.
+    n_even = len(even_ls)
+    le_idx = (l_idx - 2) // 2                    # l value -> even-l row index
+    c_pos = torch.zeros((N_radial, n_even, L), dtype=einsum_dtype, device=device)
+    rbytes = 4 if comp_real == torch.float32 else 8
+    # The largest transient is the (chunk, L, L) Legendre table.
+    cstep = max(1, min(n_clusters, 256_000_000 // max(1, rbytes * L * L)))
     for cs in range(0, n_clusters, cstep):
         ce = min(cs + cstep, n_clusters)
-        G = bar_P_e[cs:ce].to(einsum_dtype)[:, :, abs_m] * Dc[cs:ce].unsqueeze(1)
-        c_e += torch.einsum("cln,clm->nlm", bessel_e[cs:ce], G)
+        if _PROFILE:
+            t0 = time.perf_counter()
+
+        x_c = (bessel_h_scale * rep_smag[cs:ce]).clamp(min=1e-30)
+        j_all = spherical_bessel_table(x_c, u_max)                 # (chunk, u_max+1)
+        B = torch.zeros((ce - cs, n_even, N_radial), dtype=comp_real, device=device)
+        B[:, le_idx, n_idx] = w_vec.unsqueeze(0) * j_all[:, u_idx] / x_c.unsqueeze(-1)
+        if _PROFILE:
+            prof["bessel"] += _tick(t0); t0 = time.perf_counter()
+
+        # Ask for the even rows only: the odd-l coefficients vanish for a
+        # centrosymmetric Patterson, and an all-l table is twice the write.
+        P_D = _bar_legendre_recurrence(
+            rep_cos[cs:ce], rep_sin[cs:ce], L, keep_l=even_l_idx)   # (chunk, n_even, L)
+        if _PROFILE:
+            prof["ylm"] += _tick(t0); t0 = time.perf_counter()
+
+        # c[n,l,p] = Σ_c bessel[c,l,n] · barP[c,l,p] · D[c,p], for p >= 0.
+        #
+        # `bessel` and `barP` are real. Contracting them as complex would spend
+        # four real multiplies per multiply-add where two suffice, so the real
+        # and imaginary halves of D go through as two REAL contractions and are
+        # recombined. l is a batch index and c the summed one, so each is a
+        # stack of small GEMMs.
+        Dr = Dp[cs:ce].real.unsqueeze(1)                            # (chunk, 1, L)
+        Di = Dp[cs:ce].imag.unsqueeze(1)
+        acc_r = torch.einsum("cln,clm->nlm", B, P_D * Dr)
+        acc_i = torch.einsum("cln,clm->nlm", B, P_D * Di)
+        c_pos += torch.complex(acc_r, acc_i).to(einsum_dtype)
+        if _PROFILE:
+            prof["einsum"] += _tick(t0)
+
+    # Mirror onto m < 0: c[-p] = (-1)^p conj(c[+p]).
+    c_e = torch.zeros((N_radial, n_even, 2 * L - 1), dtype=einsum_dtype,
+                      device=device)
+    c_e[:, :, (L - 1):] = c_pos
+    if L > 1:
+        mirror = c_pos[:, :, 1:].conj() * sign_p[1:].view(1, 1, -1)
+        c_e[:, :, :(L - 1)] = torch.flip(mirror, dims=(-1,))
     c_nlm = torch.zeros((N_radial, L, 2 * L - 1), dtype=complex_dtype, device=device)
     c_nlm[:, even_l_idx, :] = c_e.to(complex_dtype)
     if _PROFILE:

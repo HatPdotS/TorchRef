@@ -31,6 +31,7 @@ def _bar_legendre_recurrence(
     cos_theta: torch.Tensor,
     sin_theta: torch.Tensor,
     L: int,
+    keep_l: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Compute fully-normalized associated Legendre `bar_P_l^m(cos θ)` for
@@ -40,20 +41,33 @@ def _bar_legendre_recurrence(
         bar_P_l^m(x) = √[(2l+1)/(4π) · (l-m)!/(l+m)!] · P_l^m(x)
     where P_l^m is the *unsigned* associated Legendre (no Condon-Shortley phase).
 
+    The recurrence needs only levels ``l-1`` and ``l-2``, so it carries two
+    rolling rows rather than reading back out of the full table. That matters at
+    the sizes the rotation function uses: an all-l table is ``(batch, L, L)``,
+    which for 1e5 batch entries at L=65 is several GB touched once.
+
+    Parameters
+    ----------
+    cos_theta, sin_theta : torch.Tensor
+        Matching real tensors of any batch shape.
+    L : int
+        Bandwidth; l runs over [0, L).
+    keep_l : torch.Tensor, optional
+        Which ``l`` rows to return, as an increasing index tensor. ``None``
+        returns all of them. Passing only the rows the caller needs -- the even
+        ones, for a centrosymmetric Patterson -- halves the output.
+
     Returns
     -------
     bar_P : torch.Tensor, real
-        Shape (..., L, L). `bar_P[..., l, m]` is bar_P_l^m for m <= l, else 0.
+        Shape ``(..., L, L)``, or ``(..., len(keep_l), L)`` when ``keep_l`` is
+        given. Entries with m > l are zero.
     """
     batch_shape = cos_theta.shape
     dtype = cos_theta.dtype
     device = cos_theta.device
 
-    bar_P = torch.zeros((*batch_shape, L, L), dtype=dtype, device=device)
-
-    # Seed: bar_P_0^0 = 1 / sqrt(4π)
     inv_sqrt_4pi = 1.0 / math.sqrt(4.0 * math.pi)
-    bar_P[..., 0, 0] = inv_sqrt_4pi
 
     # Precompute the recurrence coefficients as (L, L) tables, indexed [l, m]:
     #   a_l^m = sqrt((2l-1)(2l+1)/((l-m)(l+m)))
@@ -77,23 +91,39 @@ def _bar_legendre_recurrence(
     sect = torch.sqrt((2.0 * m_arange + 1.0) / (2.0 * m_arange).clamp(min=1.0)).to(dtype)
 
     cos_e = cos_theta.unsqueeze(-1)  # (..., 1)
-    # Single loop over l; at each l update all m ∈ [0, l] at once. The vertical
-    # recurrence (m < l) and the sectoral diagonal (m = l) both read only level
-    # l-1 (and l-2), already computed — so this is the same recurrence as the
-    # original double loop, just reordered to vectorise over m.
-    for l in range(1, L):
-        prev1 = bar_P[..., l - 1, :l]                       # (..., l)
-        if l >= 2:
-            prev2 = bar_P[..., l - 2, :l]                   # (..., l)
-        else:
-            prev2 = torch.zeros_like(prev1)
-        bar_P[..., l, :l] = (
-            a_coef[l, :l] * cos_e * prev1 - b_coef[l, :l] * prev2
-        )
-        # Sectoral m == l.
-        bar_P[..., l, l] = sect[l] * sin_theta * bar_P[..., l - 1, l - 1]
+    sin_e = sin_theta.unsqueeze(-1)
 
-    return bar_P
+    if keep_l is None:
+        rows = torch.arange(L, device=device)
+    else:
+        rows = keep_l.to(device=device, dtype=torch.long)
+    # l -> its position in the output, or -1 when it is not kept.
+    where = torch.full((L,), -1, dtype=torch.long, device=device)
+    where[rows] = torch.arange(rows.numel(), device=device)
+    where_list = where.tolist()
+
+    out = torch.zeros((*batch_shape, rows.numel(), L), dtype=dtype, device=device)
+    prev2 = torch.zeros((*batch_shape, L), dtype=dtype, device=device)
+    prev1 = torch.zeros((*batch_shape, L), dtype=dtype, device=device)
+    prev1[..., 0] = inv_sqrt_4pi                             # bar_P_0^0
+    if where_list[0] >= 0:
+        out[..., where_list[0], :] = prev1
+
+    # One loop over l, updating every m in [0, l] at once. The vertical
+    # recurrence (m < l) and the sectoral diagonal (m = l) read only levels l-1
+    # and l-2, which is what the two rolling rows hold.
+    for l in range(1, L):
+        cur = torch.zeros_like(prev1)
+        cur[..., :l] = (
+            a_coef[l, :l] * cos_e * prev1[..., :l] - b_coef[l, :l] * prev2[..., :l]
+        )
+        cur[..., l] = sect[l] * sin_e[..., 0] * prev1[..., l - 1]
+        pos = where_list[l]
+        if pos >= 0:
+            out[..., pos, :] = cur
+        prev2, prev1 = prev1, cur
+
+    return out
 
 
 def evaluate_ylm(
