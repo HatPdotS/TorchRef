@@ -108,6 +108,105 @@ def compare(rows: List[dict], key: str, base: str = None) -> None:
                   f"benchmark needs; treat as indicative only")
 
 
+def _cmp_rank(row: dict, n_peaks_default: int = 500) -> float:
+    """Rank for pairing: a miss counts as worse than the worst hit.
+
+    ``compare`` drops pairs where either side missed, which silently removes
+    exactly the cases an arm is being blamed for. The sweep writes
+    ``rank_for_compare`` for this; fall back to the peak-list length.
+    """
+    try:
+        return float(int(row["rank_for_compare"]))
+    except (KeyError, ValueError):
+        pass
+    try:
+        r = int(row["truth_rank"])
+    except (KeyError, ValueError):
+        return float("nan")
+    if r >= 0:
+        return float(r)
+    try:
+        return float(int(row["n_peaks"]))
+    except (KeyError, ValueError):
+        return float(n_peaks_default)
+
+
+def gate(rows: List[dict], key: str = "arm", base: str = "production",
+         top_n: int = 20, min_hits: int = 9) -> None:
+    """Report each arm against the shipping criterion, per structure.
+
+    The criterion is not "truth at rank 0": the pipeline carries the top ~20
+    candidates forward, so rank 7 and rank 0 are the same outcome and rank 223
+    is not. An arm passes when truth lands in the top ``top_n`` on at least
+    ``min_hits`` of the trials for **every** structure -- so one bad structure
+    cannot be averaged away by nine good ones.
+    """
+    arms = sorted({r.get(key, "") for r in rows})
+    pdbs = sorted({r.get("pdb", "?") for r in rows})
+    per: Dict[tuple, List[dict]] = defaultdict(list)
+    for r in rows:
+        per[(r.get(key, ""), r.get("pdb", "?"))].append(r)
+
+    def _in_top(r: dict) -> bool:
+        try:
+            v = int(r["truth_rank"])
+        except (KeyError, ValueError):
+            return False
+        return 0 <= v < top_n
+
+    print(f"\n# shipping gate: truth in the top {top_n} on >= {min_hits} trials, "
+          f"for every structure")
+    print(f"{key:<26} {'pass':>5} {'worst structure':>16} {'total':>7} "
+          f"{'rank0':>6} {'median':>7}")
+    verdicts = {}
+    for arm in arms:
+        worst_pdb, worst_hits, tot, hits, rank0, ranks = None, None, 0, 0, 0, []
+        for pdb in pdbs:
+            rs = per.get((arm, pdb), [])
+            if not rs:
+                continue
+            h = sum(1 for r in rs if _in_top(r))
+            if worst_hits is None or h < worst_hits:
+                worst_hits, worst_pdb = h, f"{pdb} {h}/{len(rs)}"
+            tot += len(rs); hits += h
+            rank0 += sum(1 for r in rs if str(r.get("truth_rank")) == "0")
+            ranks += [_cmp_rank(r) for r in rs]
+        ok = worst_hits is not None and worst_hits >= min_hits
+        verdicts[arm] = ok
+        med = statistics.median(ranks) if ranks else float("nan")
+        print(f"{arm:<26} {'PASS' if ok else 'fail':>5} {worst_pdb or '-':>16} "
+              f"{hits}/{tot:<5} {rank0:>6} {med:>7.1f}")
+
+    # Paired against the shipped configuration, misses included as worst.
+    cells: Dict[tuple, Dict[str, float]] = defaultdict(dict)
+    for r in rows:
+        cells[(r.get("pdb"), r.get("trial"))][r.get(key, "")] = _cmp_rank(r)
+    if base not in arms:
+        print(f"\n# no {key}={base!r} rows; skipping the paired report")
+        return
+    print(f"\n# paired against {key}={base!r} over every (structure, trial) cell; "
+          f"+ means worse")
+    for arm in arms:
+        if arm == base:
+            continue
+        d = [by[arm] - by[base] for by in cells.values()
+             if arm in by and base in by]
+        if not d:
+            print(f"  {arm:<26} no comparable cells")
+            continue
+        print(f"  {arm:<26} n={len(d):<4} better={sum(x < 0 for x in d):<4} "
+              f"same={sum(x == 0 for x in d):<4} worse={sum(x > 0 for x in d):<4} "
+              f"median={statistics.median(d):+8.1f}")
+    dup = f"{base}_dup"
+    if dup in arms:
+        d = [by[dup] - by[base] for by in cells.values()
+             if dup in by and base in by]
+        moved = sum(1 for x in d if x != 0)
+        print(f"\n# control: {dup} repeats {base} verbatim. {moved}/{len(d)} cells "
+              f"differ -- that is the engine's own spread, and no effect smaller "
+              f"than it is resolvable here.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("patterns", nargs="+", help="CSV glob(s)")
@@ -117,8 +216,19 @@ def main() -> int:
     ap.add_argument("--compare", default=None,
                     help="column whose values are the arms to pair on, "
                          "e.g. obs_mode or lmax_cap")
+    ap.add_argument("--gate", action="store_true",
+                    help="report each arm against the shipping criterion "
+                         "(truth in the top N on most trials, every structure)")
+    ap.add_argument("--top-n", type=int, default=20,
+                    help="how many candidates the downstream pipeline carries")
+    ap.add_argument("--min-hits", type=int, default=9,
+                    help="trials per structure that must land in the top N")
     args = ap.parse_args()
     rows = load(args.patterns)
+    if args.gate:
+        gate(rows, key=args.compare or "arm", base=args.base or "production",
+             top_n=args.top_n, min_hits=args.min_hits)
+        return 0
     summarise(rows)
     if args.compare:
         compare(rows, args.compare, args.base)
