@@ -40,65 +40,49 @@ __all__ = ["FastRotationFunction", "phaser_lmax_resolution"]
 def phaser_lmax_resolution(
     model_radius_A: float,
     d_min_data: float,
-    lmax_cap: int = 48,
+    lmax_cap: int = 64,
 ):
-    """Phaser's coupling of SH bandwidth to rotation-function resolution.
-
-    Phaser source: ``runMR_FRF.cc:407-419``::
+    """Couple the spherical-harmonic bandwidth to the rotation-function
+    resolution, as Phaser does (``runMR_FRF.cc:427-448``)::
 
         sphereOuter = 2 * mean_radius
-        LMAX = ceil(2*pi*sphereOuter / HIRES)      # HIRES = data d_min
-        if LMAX odd: LMAX++
-        LMAX = min(LMAX, DEF_CLMN_LMAX=100)
-        LMAX_RESO = (LMAX capped) ? 2*pi*sphereOuter/LMAX : HIRES
+        LMAX = ceil(2 pi sphereOuter / HIRES)      # HIRES = the data's d_min
+        if LMAX is odd: LMAX += 1
+        LMAX = min(LMAX, lmax_cap)
+        LMAX_RESO = (LMAX hit the cap) ? 2 pi sphereOuter / LMAX : HIRES
 
-    The point: including data finer than the bandwidth can represent only
-    adds aliasing background (the discrete Y_lm are not orthogonal over
-    scattered reflections), which buries the symmetry-diluted true peak on
-    large / high-symmetry structures. So Phaser either raises LMAX to match
-    the resolution, or — when LMAX hits the cap — coarsens the resolution to
-    ``LMAX_RESO`` and drops finer reflections (DataMR.cc:984).
+    Data finer than the bandwidth can represent contributes aliasing rather than
+    signal -- the discrete ``Y_lm`` are not orthogonal over scattered
+    reflections -- and that background buries the symmetry-diluted true peak on
+    large or high-symmetry structures. So either the bandwidth rises to meet the
+    resolution, or, once it is capped, the resolution is coarsened to
+    ``LMAX_RESO`` and the finer reflections are dropped (``DataMR.cc:984``).
 
-    **In practice this is a per-structure high-resolution cutoff.** For real
-    protein search models ``LMAX_ideal = ceil(2*pi*2r/d_min)`` is ~100-170, so
-    it always hits ``lmax_cap`` and the function reduces to: use ``L=lmax_cap``
-    and keep only data coarser than ``d_min_eff = 2*pi*(2r)/lmax_cap`` — the
-    finest resolution that bandwidth can faithfully represent for a molecule of
-    radius ``r``. Bigger molecule -> coarser cutoff. The variable-L branch only
-    matters for tiny models / low-res data (``LMAX_ideal < lmax_cap``).
-
-    **lmax_cap default is 48, NOT Phaser's 100 — for a different reason than
-    before.** The contraction now uses ``frf_separate.wigner_d.small_d_stable``
-    (J_y eigendecomposition = π/2 / SOFT basis), validated stable+correct to
-    l=128, so there is no longer a *numerical* ceiling (the old Edmonds-sum
-    ``small_d_packed`` exploded to |d|~1e11 at l>=50). BUT raising L empirically
-    makes high-symmetry cases WORSE in this pipeline: at L=100/4.4Å on 4BX9 the
-    truth went from #taller=158 (cap=48) to 39084, and σA weighting did not
-    suppress it. Cause: at high L the SH modes (~L² per shell) are
-    under-determined by the obs sampled on the sparse crystal lattice (~10⁴
-    reflections), so high-l coefficients are noise. Phaser avoids this by
-    computing the *model* transform on a dense P1-box FFT grid; we sample the
-    calc at the crystal lattice. Until that is changed, lmax_cap≈48 is the sweet
-    spot. small_d_stable is kept regardless (correct + removes the ceiling, and
-    is the prerequisite for any future dense-sampling high-L work).
+    For real protein search models ``ceil(2 pi 2r / d_min)`` is 100 to 170, so
+    the cap binds and this reduces to: use ``L = lmax_cap``, and keep only data
+    coarser than ``2 pi (2r) / lmax_cap`` -- the finest resolution that
+    bandwidth can carry for a molecule of that radius. Bigger molecule, coarser
+    cutoff. The variable-``L`` branch matters only for small models or
+    low-resolution data.
 
     Parameters
     ----------
     model_radius_A : float
-        The search model's mean atomic radius from its centroid (Å).
+        Mean distance of the model's atoms from its centroid (Angstrom).
         ``sphereOuter = 2 * model_radius_A``.
     d_min_data : float
-        High-resolution limit of the data (Å).
+        High-resolution limit of the data (Angstrom).
     lmax_cap : int
-        Hard bandwidth cap. Default 100 (Phaser's DEF_CLMN_LMAX). The stable
-        small_d_stable Wigner-d makes higher caps safe at increasing compute cost
-        (~L^3); for very large assemblies one may even exceed Phaser's 100.
+        Bandwidth ceiling. The production value lives in
+        :data:`torchref.experimental.alignment.rotation_search.LMAX_CAP`, which
+        carries the measurement behind it; this default exists only for direct
+        callers. Cost grows about as ``l^3`` in time and ``l^2`` in memory.
 
     Returns
     -------
     (L, d_min_eff) : Tuple[int, float]
-        ``L`` is the frf_separate bandwidth (lmax = L-1, even), ``d_min_eff``
-        is the resolution to actually use for the expansion.
+        ``L`` is the bandwidth in this package's convention (``lmax = L - 1``,
+        even); ``d_min_eff`` is the resolution to expand at.
     """
     sphere_outer = 2.0 * float(model_radius_A)
     lmax = int(math.ceil(2.0 * math.pi * sphere_outer / float(d_min_data)))
@@ -111,9 +95,9 @@ def phaser_lmax_resolution(
         d_min_eff = float(d_min_data)
     if lmax >= 256:
         warnings.warn(
-            f"phaser_lmax_resolution chose lmax={lmax} (>=256): small_d_stable "
-            "is stable here but the contraction cost grows ~l^3 and memory ~l^2; "
-            "consider a tighter lmax_cap if this is slow.",
+            f"phaser_lmax_resolution chose lmax={lmax} (>=256): the Wigner "
+            f"contraction is numerically fine here, but its cost grows about as "
+            f"l^3 in time and l^2 in memory. Consider a tighter lmax_cap.",
             RuntimeWarning, stacklevel=2,
         )
     return lmax + 1, d_min_eff           # L = lmax + 1 (our bandwidth convention)
