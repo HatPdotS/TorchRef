@@ -58,7 +58,9 @@ _GROUP_SCALE_S = 10_000_000
 #: approximation and needs its own evidence.
 _GROUP_SCALE_COS = 10_000_000
 
-from ..sh import LEGENDRE_SEED, legendre_recurrence_coefficients
+from ....utils.backends import run_or_degrade, select
+from ..sh import legendre_recurrence_coefficients
+from ._backends import LEGENDRE_BACKENDS
 
 from .types import BesselSHCoefficients
 
@@ -416,32 +418,18 @@ def bessel_sh_expand(
         Tr = torch.zeros((n_even, nb, L), dtype=comp_real, device=device)
         Ti = torch.zeros((n_even, nb, L), dtype=comp_real, device=device)
 
-        cos_e = rep_cos[cs:ce].unsqueeze(-1)                     # (chunk, 1)
-        sin_c = rep_sin[cs:ce]                                   # (chunk,)
-        Dr = Dp[cs:ce].real                                      # (chunk, L)
-        Di = Dp[cs:ce].imag
-        prev2 = torch.zeros((ce - cs, L), dtype=comp_real, device=device)
-        prev1 = torch.zeros((ce - cs, L), dtype=comp_real, device=device)
-        prev1[:, 0] = LEGENDRE_SEED                              # bar_P_0^0
-        for l in range(1, L):
-            # `a_coef` and `b_coef` are zero for m >= l, so this runs at full
-            # width; slicing to [:l] instead makes every iteration a differently
-            # shaped, mostly tiny kernel.
-            cur = a_coef[l] * cos_e * prev1 - b_coef[l] * prev2
-            # The sectoral term must land BEFORE the products below are formed:
-            # it is the m = l entry of this very row. Computing `cur * Dr` first
-            # silently drops that entry for every even l -- which moved 3K7M's
-            # truth rank from 8 to 13 when a refactor got the order wrong.
-            cur[:, l] = sect[l] * sin_c * prev1[:, l - 1]         # sectoral m = l
-            if l >= 2 and (l % 2 == 0):
-                if _PROFILE:
-                    prof["legendre"] += _tick(t0); t0 = time.perf_counter()
-                pos = (l - 2) // 2
-                Tr[pos].index_add_(0, sh, cur * Dr)
-                Ti[pos].index_add_(0, sh, cur * Di)
-                if _PROFILE:
-                    prof["scatter"] += _tick(t0); t0 = time.perf_counter()
-            prev2, prev1 = prev1, cur
+        # Legendre recurrence and per-shell accumulation. Both stages are
+        # memory-bound in plain torch -- every row of the recurrence makes a
+        # round trip -- so this dispatches to a fused kernel where the row stays
+        # in cache, and falls back to the torch reference when none is built.
+        # `shell_of_cluster` is sorted, which the fused kernel requires: it
+        # partitions work by shell so that no two threads write the same
+        # accumulator row.
+        args = (Tr, Ti, rep_cos[cs:ce], rep_sin[cs:ce],
+                Dp[cs:ce].real.contiguous(), Dp[cs:ce].imag.contiguous(),
+                sh, a_coef, b_coef, sect)
+        backend = select(LEGENDRE_BACKENDS, args[:6])
+        run_or_degrade(LEGENDRE_BACKENDS, backend, False, *args)
         if _PROFILE:
             prof["legendre"] += _tick(t0); t0 = time.perf_counter()
 

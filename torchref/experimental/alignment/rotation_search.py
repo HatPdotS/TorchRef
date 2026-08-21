@@ -310,11 +310,14 @@ def search_peaks(
             model_radius_A=model_radius_A,
             auto_lmax=True,
             lmax_cap=LMAX_CAP,
-            # The spherical-harmonic contraction dominates the runtime and is
-            # rate-limited in double precision on accelerators. Its float32 path
-            # keeps the Bessel recurrence and the cross-chunk accumulator at
-            # full precision.
-            compute_dtype=torch.complex64 if device.type == "cuda" else None,
+            # The angular half of the expansion runs in single precision on
+            # every device. It is the runtime bottleneck, it is memory-bound, and
+            # single precision is this codebase's kernel dtype -- a float64-only
+            # path would make the fused CPU kernel unreachable. The radial Bessel
+            # recurrence keeps its float64 internals, where the downward
+            # recurrence's cancellation needs them, and the cross-chunk
+            # accumulator stays at full precision.
+            compute_dtype=torch.complex64,
         )
         _arf, peaks = engine.score_model(
             s_calc, F_calc, n_peaks=n_peaks,
