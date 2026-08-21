@@ -27,6 +27,48 @@ _PROFILE = bool(os.environ.get("FRF_PROFILE"))
 _YLM_PROF = {"recurrence": 0.0, "assembly": 0.0}
 
 
+def legendre_recurrence_coefficients(L: int, dtype, device):
+    """Coefficient tables for the fully-normalised Legendre recurrence.
+
+    Returns ``(a, b, sect)`` with ``a``, ``b`` of shape ``(L, L)`` indexed
+    ``[l, m]`` and ``sect`` of shape ``(L,)``::
+
+        a_l^m = sqrt((2l-1)(2l+1) / ((l-m)(l+m)))
+        b_l^m = sqrt((2l+1)(l+m-1)(l-m-1) / ((l-m)(l+m)(2l-3)))
+        sect_m = sqrt((2m+1) / (2m))
+
+    ``a`` and ``b`` are **zero wherever m >= l**, which lets a caller run the
+    vertical recurrence at full width instead of slicing to ``[:l]``: the
+    out-of-support entries come out zero on their own. ``b`` also vanishes at
+    l = m+1 through its ``(l-m-1)`` factor, so that case needs no special
+    handling.
+
+    Split out of :func:`_bar_legendre_recurrence` because the rotation function
+    runs this recurrence itself, fused with its own accumulation, and two copies
+    of these formulae would be two chances to get them subtly different.
+    """
+    ll = torch.arange(L, dtype=torch.float64, device=device).view(L, 1)
+    mm = torch.arange(L, dtype=torch.float64, device=device).view(1, L)
+    valid = ll > mm
+    denom = (ll - mm) * (ll + mm)
+    denom_safe = torch.where(valid, denom, torch.ones_like(denom))
+    a = torch.sqrt((2.0 * ll - 1.0) * (2.0 * ll + 1.0) / denom_safe)
+    b_num = (2.0 * ll + 1.0) * (ll + mm - 1.0) * (ll - mm - 1.0)
+    b_den = denom_safe * (2.0 * ll - 3.0)
+    b = torch.sqrt(torch.clamp(
+        b_num / torch.where(b_den == 0, torch.ones_like(b_den), b_den), min=0.0))
+    a = torch.where(valid, a, torch.zeros_like(a)).to(dtype)
+    b = torch.where(valid, b, torch.zeros_like(b)).to(dtype)
+    m_arange = torch.arange(L, dtype=torch.float64, device=device)
+    sect = torch.sqrt(
+        (2.0 * m_arange + 1.0) / (2.0 * m_arange).clamp(min=1.0)).to(dtype)
+    return a, b, sect
+
+
+#: bar_P_0^0.
+LEGENDRE_SEED = 1.0 / math.sqrt(4.0 * math.pi)
+
+
 def _bar_legendre_recurrence(
     cos_theta: torch.Tensor,
     sin_theta: torch.Tensor,
@@ -67,28 +109,10 @@ def _bar_legendre_recurrence(
     dtype = cos_theta.dtype
     device = cos_theta.device
 
-    inv_sqrt_4pi = 1.0 / math.sqrt(4.0 * math.pi)
+    inv_sqrt_4pi = LEGENDRE_SEED
 
-    # Precompute the recurrence coefficients as (L, L) tables, indexed [l, m]:
-    #   a_l^m = sqrt((2l-1)(2l+1)/((l-m)(l+m)))
-    #   b_l^m = sqrt((2l+1)(l+m-1)(l-m-1)/((l-m)(l+m)(2l-3)))   [0 when l = m+1]
-    # b vanishes at l = m+1 (factor l-m-1 = 0), so no special-casing is needed.
-    # Computed in float64 then cast to `dtype` (matches the original, which used
-    # float64 python scalars multiplied into the working-dtype tensors).
-    ll = torch.arange(L, dtype=torch.float64, device=device).view(L, 1)
-    mm = torch.arange(L, dtype=torch.float64, device=device).view(1, L)
-    valid = (ll > mm)  # l > m (vertical recurrence region)
-    denom = (ll - mm) * (ll + mm)
-    denom_safe = torch.where(valid, denom, torch.ones_like(denom))
-    a_coef = torch.sqrt((2.0 * ll - 1.0) * (2.0 * ll + 1.0) / denom_safe)
-    b_num = (2.0 * ll + 1.0) * (ll + mm - 1.0) * (ll - mm - 1.0)
-    b_den = denom_safe * (2.0 * ll - 3.0)
-    b_coef = torch.sqrt(torch.clamp(b_num / torch.where(b_den == 0, torch.ones_like(b_den), b_den), min=0.0))
-    a_coef = torch.where(valid, a_coef, torch.zeros_like(a_coef)).to(dtype)
-    b_coef = torch.where(valid, b_coef, torch.zeros_like(b_coef)).to(dtype)
-    # Sectoral diagonal factor sqrt((2m+1)/(2m)) for m = l.
-    m_arange = torch.arange(L, dtype=torch.float64, device=device)
-    sect = torch.sqrt((2.0 * m_arange + 1.0) / (2.0 * m_arange).clamp(min=1.0)).to(dtype)
+    a_coef, b_coef, sect = legendre_recurrence_coefficients(
+        L, dtype, device)
 
     cos_e = cos_theta.unsqueeze(-1)  # (..., 1)
     sin_e = sin_theta.unsqueeze(-1)

@@ -21,12 +21,18 @@ import torch
 
 _PROFILE = bool(os.environ.get("FRF_PROFILE"))
 
-#: Byte budget for the per-chunk transients in :func:`bessel_sh_expand`. It
-#: trades peak memory against throughput: too small and the contraction
-#: degenerates into many small GEMMs and many Legendre recurrence calls, too
-#: large and the tables fall out of cache and the function's peak memory is set
-#: by this instead of by the result.
-CLUSTER_CHUNK_BYTES = 256_000_000
+#: Byte budget for the per-chunk transients in :func:`bessel_sh_expand`.
+#:
+#: The chunk holds the Legendre recurrence's rolling rows, so this is really a
+#: cache-residency knob, and it has an interior optimum. Measured on an EPYC
+#: 9335 at four threads, seconds for the whole rotation function at cap 100 on
+#: 3K7M: 24.9 at 2 MB, 12.1 at 8, **9.6 at 32**, 9.9 at 128, 11.0 at 256, 12.3
+#: at 1024. Same shape at cap 64. Below the optimum the 100-iteration loop over
+#: l is re-run for too many chunks and Python and dispatch overhead dominate;
+#: above it the rolling rows stop fitting in cache and the recurrence becomes
+#: memory-bound. The truth rank was identical at every setting.
+CLUSTER_CHUNK_BYTES = 32_000_000
+
 
 #: Grouping resolution for |s|, i.e. for the RADIAL factor. Reflections whose |s|
 #: agrees to 1/this share one Bessel evaluation.
@@ -52,7 +58,7 @@ _GROUP_SCALE_S = 10_000_000
 #: approximation and needs its own evidence.
 _GROUP_SCALE_COS = 10_000_000
 
-from ..sh import _bar_legendre_recurrence, evaluate_ylm
+from ..sh import LEGENDRE_SEED, legendre_recurrence_coefficients
 
 from .types import BesselSHCoefficients
 
@@ -229,7 +235,8 @@ def bessel_sh_expand(
     M = s_vectors.shape[0]
     einsum_dtype = compute_dtype if compute_dtype is not None else complex_dtype
 
-    prof = {"cluster": 0.0, "dbuild": 0.0, "bessel": 0.0, "ylm": 0.0, "einsum": 0.0} if _PROFILE else None
+    prof = {"cluster": 0.0, "dbuild": 0.0, "bessel": 0.0, "legendre": 0.0,
+            "scatter": 0.0, "contract": 0.0} if _PROFILE else None
 
     def _tick(t0):
         if device.type == "cuda":
@@ -286,6 +293,16 @@ def bessel_sh_expand(
     shell_of_cluster = torch.zeros(n_clusters, dtype=torch.long, device=device)
     shell_of_cluster[inverse] = inv_s
     shell_smag = _group_mean(s_mag_all.to(comp_real), inv_s, n_shells)
+
+    # Reorder the clusters so each shell's members are adjacent. The angular
+    # accumulation below scatters every cluster into its shell's row of T; in
+    # cluster order those writes land all over T, in shell order they sweep it
+    # once. Same arithmetic, and the sort is one pass over n_clusters against a
+    # scatter of n_clusters x n_even x L.
+    order = torch.argsort(shell_of_cluster)
+    shell_of_cluster = shell_of_cluster[order]
+    rep_cos = rep_cos[order]
+    rep_sin = rep_sin[order]
     if _PROFILE:
         prof["cluster"] += _tick(t0); t0 = time.perf_counter()
 
@@ -302,18 +319,29 @@ def bessel_sh_expand(
     # (cluster, p) after the sum rather than once per (reflection, p) -- the same
     # number for a factor of M/n_clusters less work.
     p_idx = torch.arange(L, device=device)                          # (L,)
+    # `inverse` maps a reflection to its cluster in the ORIGINAL cluster order;
+    # the clusters were just permuted into shell order, so compose the two.
+    rank_of_cluster = torch.empty_like(order)
+    rank_of_cluster[order] = torch.arange(n_clusters, device=device)
+    cluster_of_refl = rank_of_cluster[inverse]
     Sp = torch.zeros((n_clusters, L), dtype=einsum_dtype, device=device)
     dchunk = 262_144
-    prow = p_idx.to(comp_real).unsqueeze(0)                         # (1, L)
     for start_i in range(0, M, dchunk):
         stop = min(start_i + dchunk, M)
-        ph = phi_all[start_i:stop].to(comp_real).unsqueeze(1)      # (c, 1)
-        i_c = intensity[start_i:stop].to(comp_real).unsqueeze(1)   # (c, 1)
-        ang = -(prow * ph)
-        # polar(r, angle) is one sincos; exp of a complex number additionally
-        # evaluates exp() of a real part that is always zero here.
-        e_neg = torch.polar(i_c.expand(-1, L).contiguous(), ang).to(einsum_dtype)
-        Sp.index_add_(0, inverse[start_i:stop], e_neg)
+        ph = phi_all[start_i:stop].to(comp_real)                   # (c,)
+        i_c = intensity[start_i:stop].to(comp_real)                # (c,)
+        # e^{-i p phi} = z^p with z = e^{-i phi}, so one transcendental per
+        # reflection and a running product over p, rather than a transcendental
+        # per (reflection, p). At L=101 over 2.6e6 reflections that is 2.6e8
+        # sincos calls replaced by 2.6e6 of them plus a complex multiply each.
+        # The product accumulates about L * eps of relative error, ~2e-14, six
+        # orders below what the grouping already costs.
+        z = torch.polar(torch.ones_like(ph), -ph)                  # (c,)
+        ladder = z.unsqueeze(1).expand(-1, L).clone()
+        ladder[:, 0] = 1.0                                          # p = 0
+        e_neg = torch.cumprod(ladder, dim=1)                        # (c, L) = z^p
+        e_neg = (e_neg * i_c.unsqueeze(1)).to(einsum_dtype)
+        Sp.index_add_(0, cluster_of_refl[start_i:stop], e_neg)
     sign_p = ((-1.0) ** p_idx.to(comp_real)).to(einsum_dtype)      # (L,)
     Dp = Sp * sign_p.unsqueeze(0)                                   # (n_clusters, L)
     if _PROFILE:
@@ -330,47 +358,99 @@ def bessel_sh_expand(
     # which trades n_clusters·N_radial for n_clusters + n_shells·N_radial. On the
     # benchmark that is 2.5x to 18x fewer multiply-adds, and it shrinks the Bessel
     # table by the same clusters-per-shell factor. Exact, not an approximation.
+    #
+    # The Legendre recurrence is run here rather than called, so each row can be
+    # accumulated into T the moment it exists and the (chunk, n_even, L) table is
+    # never built. That table was what bounded the chunk width, and the loop over
+    # l had to be repeated for every chunk -- 100 iterations of a handful of
+    # small kernels, 71 times over, which cost more in launch overhead than the
+    # arithmetic did. Without it the chunks are wide enough that the loop runs
+    # once or twice in total.
+    #
+    # `a_coef` and `b_coef` are zero for m >= l, so the vertical recurrence runs
+    # at full width; slicing to [:l] instead makes every iteration a differently
+    # shaped, mostly tiny kernel.
     n_even = len(even_ls)
     le_idx = (l_idx - 2) // 2                    # l value -> even-l row index
-    T = torch.zeros((n_shells, n_even, L), dtype=einsum_dtype, device=device)
+    a_coef, b_coef, sect = legendre_recurrence_coefficients(L, comp_real, device)
+
+    # The whole per-shell sum T and the whole radial table B used to be built at
+    # full size, and both are large: at L=101 with 35k shells they are 2.8 GB and
+    # 0.7 GB. They are also touched once each, so that is pure memory traffic --
+    # and the scatter into a 2.8 GB target misses cache on essentially every
+    # write.
+    #
+    # The clusters are sorted by shell, so a chunk of clusters spans a
+    # *contiguous* range of shells. That lets both be per-chunk, and lets the
+    # radial contraction be folded into the same loop: once a chunk's shells are
+    # complete, contract them and drop them. The arithmetic is identical -- the
+    # contraction still costs n_shells x n_even x N_radial x L in total -- but the
+    # scatter target is now tens of MB rather than gigabytes, and the running
+    # answer c_pos is a few MB, so both stay in cache.
+    c_pos = torch.zeros((N_radial, n_even, L), dtype=einsum_dtype, device=device)
 
     rbytes = 4 if comp_real == torch.float32 else 8
-    per_cluster = rbytes * (n_even * L + 2 * L)
+    per_cluster = rbytes * 6 * L
     cstep = max(1, min(n_clusters, CLUSTER_CHUNK_BYTES // max(1, per_cluster)))
     for cs in range(0, n_clusters, cstep):
         ce = min(cs + cstep, n_clusters)
         if _PROFILE:
             t0 = time.perf_counter()
-        # Even rows only: the odd-l coefficients vanish for a centrosymmetric
-        # Patterson, and an all-l table is twice the write.
-        P = _bar_legendre_recurrence(
-            rep_cos[cs:ce], rep_sin[cs:ce], L, keep_l=even_l_idx)   # (chunk, n_even, L) real
-        if _PROFILE:
-            prof["ylm"] += _tick(t0); t0 = time.perf_counter()
-        # P is real; carrying D's halves separately keeps this two real
-        # multiplies per element instead of a complex multiply's four.
-        Dc = Dp[cs:ce].unsqueeze(1)                                 # (chunk, 1, L)
-        T.index_add_(0, shell_of_cluster[cs:ce],
-                     torch.complex(P * Dc.real, P * Dc.imag).to(einsum_dtype))
-        if _PROFILE:
-            prof["einsum"] += _tick(t0)
+        sh_abs = shell_of_cluster[cs:ce]
+        s0 = int(sh_abs[0])
+        s1 = int(sh_abs[-1]) + 1                 # sorted, so this is the range
+        nb = s1 - s0
+        sh = sh_abs - s0                         # shell index within the chunk
 
-    if _PROFILE:
-        t0 = time.perf_counter()
-    # Radial weights per shell: sqrt(2u+1) j_u(x)/x at u = l + 2n + 1.
-    x_s = (bessel_h_scale * shell_smag).clamp(min=1e-30)
-    j_all = spherical_bessel_table(x_s, u_max)                      # (n_shells, u_max+1)
-    B = torch.zeros((n_shells, n_even, N_radial), dtype=comp_real, device=device)
-    B[:, le_idx, n_idx] = w_vec.unsqueeze(0) * j_all[:, u_idx] / x_s.unsqueeze(-1)
-    if _PROFILE:
-        prof["bessel"] += _tick(t0); t0 = time.perf_counter()
+        # Radial weights for this chunk's shells only.
+        x_s = (bessel_h_scale * shell_smag[s0:s1]).clamp(min=1e-30)
+        j_all = spherical_bessel_table(x_s, u_max)               # (nb, u_max+1)
+        B = torch.zeros((nb, n_even, N_radial), dtype=comp_real, device=device)
+        B[:, le_idx, n_idx] = w_vec.unsqueeze(0) * j_all[:, u_idx] / x_s.unsqueeze(-1)
+        if _PROFILE:
+            prof["bessel"] += _tick(t0); t0 = time.perf_counter()
 
-    c_pos = torch.complex(
-        torch.einsum("iln,ilm->nlm", B, T.real),
-        torch.einsum("iln,ilm->nlm", B, T.imag),
-    ).to(einsum_dtype)
-    if _PROFILE:
-        prof["einsum"] += _tick(t0)
+        # (n_even, nb, L) each, so Tr[pos] is contiguous for index_add_. Two real
+        # accumulators rather than one complex: the scatter stays a real
+        # operation and no complex temporary is allocated per (l, chunk).
+        Tr = torch.zeros((n_even, nb, L), dtype=comp_real, device=device)
+        Ti = torch.zeros((n_even, nb, L), dtype=comp_real, device=device)
+
+        cos_e = rep_cos[cs:ce].unsqueeze(-1)                     # (chunk, 1)
+        sin_c = rep_sin[cs:ce]                                   # (chunk,)
+        Dr = Dp[cs:ce].real                                      # (chunk, L)
+        Di = Dp[cs:ce].imag
+        prev2 = torch.zeros((ce - cs, L), dtype=comp_real, device=device)
+        prev1 = torch.zeros((ce - cs, L), dtype=comp_real, device=device)
+        prev1[:, 0] = LEGENDRE_SEED                              # bar_P_0^0
+        for l in range(1, L):
+            # `a_coef` and `b_coef` are zero for m >= l, so this runs at full
+            # width; slicing to [:l] instead makes every iteration a differently
+            # shaped, mostly tiny kernel.
+            cur = a_coef[l] * cos_e * prev1 - b_coef[l] * prev2
+            # The sectoral term must land BEFORE the products below are formed:
+            # it is the m = l entry of this very row. Computing `cur * Dr` first
+            # silently drops that entry for every even l -- which moved 3K7M's
+            # truth rank from 8 to 13 when a refactor got the order wrong.
+            cur[:, l] = sect[l] * sin_c * prev1[:, l - 1]         # sectoral m = l
+            if l >= 2 and (l % 2 == 0):
+                if _PROFILE:
+                    prof["legendre"] += _tick(t0); t0 = time.perf_counter()
+                pos = (l - 2) // 2
+                Tr[pos].index_add_(0, sh, cur * Dr)
+                Ti[pos].index_add_(0, sh, cur * Di)
+                if _PROFILE:
+                    prof["scatter"] += _tick(t0); t0 = time.perf_counter()
+            prev2, prev1 = prev1, cur
+        if _PROFILE:
+            prof["legendre"] += _tick(t0); t0 = time.perf_counter()
+
+        c_pos += torch.complex(
+            torch.einsum("iln,lim->nlm", B, Tr),
+            torch.einsum("iln,lim->nlm", B, Ti),
+        ).to(einsum_dtype)
+        if _PROFILE:
+            prof["contract"] += _tick(t0)
 
     # Mirror onto m < 0: c[-p] = (-1)^p conj(c[+p]).
     c_e = torch.zeros((N_radial, n_even, 2 * L - 1), dtype=einsum_dtype,
@@ -382,11 +462,12 @@ def bessel_sh_expand(
     c_nlm = torch.zeros((N_radial, L, 2 * L - 1), dtype=complex_dtype, device=device)
     c_nlm[:, even_l_idx, :] = c_e.to(complex_dtype)
     if _PROFILE:
-        prof["einsum"] += _tick(t0)
+        prof["contract"] += _tick(t0)
 
     if _PROFILE:
         tot = sum(prof.values()) + 1e-30
         print(f"[FRF_PROFILE] M={M} n_clusters={n_clusters} ({M/max(1,n_clusters):.1f}x) "
+              f"n_shells={n_shells} ({n_clusters/max(1,n_shells):.1f} clu/shell) "
               f"L={L} dtype={comp_real} | "
               + " ".join(f"{k}={v*1000:.0f}ms({100*v/tot:.0f}%)" for k, v in prof.items()),
               flush=True)

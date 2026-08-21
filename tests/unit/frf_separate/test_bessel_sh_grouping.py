@@ -132,3 +132,66 @@ def test_the_group_representative_is_the_mean_not_a_member():
         f"reordering two reflections in the same bin changed the result by "
         f"{rel:.2e}; the representative is order-dependent, so it is not the mean"
     )
+
+
+def _reference_expansion(s_vec, intensity, L, bessel_h_scale):
+    """A slow, obvious expansion, built from independently-checked parts.
+
+    Sums over reflections one at a time, taking the Legendre factor from
+    ``sh._bar_legendre_recurrence`` -- which ``tests/unit/alignment/test_sh.py``
+    pins against ``scipy`` -- and the radial factor from
+    ``spherical_bessel_table``. No grouping, no shells, no fused loop.
+
+    This exists because the other tests in this file compare
+    ``bessel_sh_expand`` against *itself* at a different grouping resolution, so
+    a term dropped from the sum appears identically on both sides and cancels.
+    One did: a refactor formed the products that feed the shell accumulation
+    before writing the sectoral (m = l) entry of the Legendre row, silently
+    losing that entry for every even l. Every test here passed, and the only
+    signal was a benchmark truth rank moving from 8 to 13.
+    """
+    from torchref.experimental.alignment.frf.data_mr import spherical_bessel_table
+    from torchref.experimental.alignment.sh import _bar_legendre_recurrence
+
+    s_vec = torch.cat([s_vec, -s_vec], dim=0)          # enforce_friedel
+    intensity = torch.cat([intensity, intensity], dim=0)
+
+    lmax = L - 1
+    lmax_even = lmax if lmax % 2 == 0 else lmax - 1
+    N_radial = (lmax_even - 2) // 2 + 1
+    u_max = lmax_even + 1
+
+    smag = s_vec.norm(dim=-1).clamp(min=1e-30)
+    cos_t = (s_vec[:, 2] / smag).clamp(-1.0, 1.0)
+    sin_t = (1.0 - cos_t * cos_t).clamp(min=0.0).sqrt()
+    phi = torch.atan2(s_vec[:, 1], s_vec[:, 0])
+
+    barP = _bar_legendre_recurrence(cos_t, sin_t, L)     # (M, L, L)
+    x = (bessel_h_scale * smag).clamp(min=1e-30)
+    j = spherical_bessel_table(x, u_max)                # (M, u_max+1)
+
+    out = torch.zeros((N_radial, L, 2 * L - 1), dtype=torch.complex128)
+    for l in range(2, lmax_even + 1, 2):
+        for n in range((lmax_even - l) // 2 + 1):
+            u = l + 2 * n + 1
+            radial = math.sqrt(2 * u + 1) * j[:, u] / x
+            for m in range(-l, l + 1):
+                # Y_lm = barP_{l,|m|} * C(m, phi), with C = (-1)^m e^{i m phi}
+                # for m >= 0 and e^{i m phi} for m < 0; the expansion uses the
+                # conjugate.
+                sign = (-1.0) ** m if m >= 0 else 1.0
+                phase = torch.polar(torch.ones_like(phi), -m * phi)
+                term = (intensity * radial * barP[:, l, abs(m)] * sign) * phase
+                out[n, l, (L - 1) + m] = term.sum()
+    return out
+
+
+@pytest.mark.parametrize("L", [9, 13])
+def test_matches_an_independent_direct_summation(L):
+    """The whole expansion, against a reference that shares no code with it."""
+    s, I = _random_set(seed=31, n=120)
+    ref = _reference_expansion(s, I, L, 24.0)
+    got = bessel_sh_expand(s, I, L=L, bessel_h_scale=24.0).coeffs
+    assert got.shape == ref.shape
+    rel = (got - ref).abs().max().item() / max(ref.abs().max().item(), 1e-300)
+    assert rel < 1e-10, f"L={L}: differs from a direct summation by {rel:.2e}"
