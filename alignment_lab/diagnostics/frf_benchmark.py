@@ -63,8 +63,35 @@ def _shipped_lmax_cap() -> int:
         "torchref.experimental.alignment.rotation_search").LMAX_CAP
 
 
+def warmup_run(pdb: str, lmax_cap: int, n_peaks: int) -> float:
+    """One discarded search, to move the process's start-up out of the way.
+
+    On this cluster the first real computation in a process is dominated by
+    PyTorch loading its backend libraries. That happens lazily on first use
+    rather than at ``import torch``, and the environment lives on GPFS, where it
+    is tens of seconds of many small reads. Measured on 3A5V: **41.4 s for the
+    first search against 1.8 s for the same search afterwards**, with 39.4 of
+    those seconds attributable to no stage at all.
+
+    Without this, whichever arm runs first carries the lot and reads as an order
+    of magnitude slower than it is. Run at full fidelity rather than on a token
+    problem, so the kernels and FFT plans the measured searches use are the ones
+    already paid for.
+
+    Returns the seconds it took. Every row carries it: the cost is real and
+    worth reporting, it just is not the search's.
+    """
+    model, data, _ = rotated_case(pdb, seed_for(pdb, 0))
+    t0 = time.perf_counter()
+    run_frf(model, data, FRFConfig(n_peaks=n_peaks, lmax_cap=lmax_cap),
+            capture_arf=False, verbose=0)
+    return time.perf_counter() - t0
+
+
 def run_one(pdb: str, trial: int, arm: str, *, n_peaks: int, top_n: int,
-            thr_deg: float, warmup: bool, mem_interval_s: float) -> dict:
+            thr_deg: float, warmup: bool, mem_interval_s: float,
+            prewarm_seconds: float = float("nan"),
+            first_in_process: bool = False) -> dict:
     """One measurement: accuracy, memory and runtime for a single search."""
     lmax_cap = ARMS[arm] if ARMS[arm] is not None else _shipped_lmax_cap()
     seed = seed_for(pdb, trial)
@@ -88,7 +115,10 @@ def run_one(pdb: str, trial: int, arm: str, *, n_peaks: int, top_n: int,
         reciprocal_basis=data.cell.reciprocal_basis_matrix.to(torch.float64).cpu(),
         side="left", frame="cart", thr_deg=thr_deg,
     )
-    attributed = sum(totals.values())
+    # Exclusive, not inclusive: the nested stages would otherwise be counted
+    # twice and "unattributed" could come out negative.
+    excl = exclusive_times(totals)
+    attributed = sum(v for v in excl.values() if v == v)
 
     row = {"experiment": EXPERIMENT, "pdb": pdb, "trial": trial, "arm": arm,
            "seed": seed}
@@ -114,7 +144,14 @@ def run_one(pdb: str, trial: int, arm: str, *, n_peaks: int, top_n: int,
         "n_peaks_found": len(res.peaks),
         "orbit_side": "left", "orbit_frame": "cart", "thr_deg": thr_deg,
         # --- runtime ---
-        "timing_kind": "steady" if warmup else "cold",
+        "timing_kind": "steady" if warmup else "post_warmup",
+        "prewarm_seconds": round(prewarm_seconds, 2),
+        # Flagged rather than assumed away: if the warm-up ever misses a shared
+        # cost, it lands in this row and stays identifiable.
+        "first_in_process": int(first_in_process),
+        # Flagged rather than assumed away: if the pre-warm ever misses a shared
+        # cost, it lands here and is identifiable.
+        "first_in_process": int(first_in_process),
         "seconds": round(wall, 3),
         "seconds_attributed": round(attributed, 3),
         "seconds_unattributed": round(wall - attributed, 3),
@@ -125,7 +162,6 @@ def run_one(pdb: str, trial: int, arm: str, *, n_peaks: int, top_n: int,
         "stages_unresolved": "|".join(unresolved),
     })
     # Inclusive time for reading a single stage, exclusive for adding them up.
-    excl = exclusive_times(totals)
     for _, attr in FRF_STAGES:
         row[f"t_{attr}"] = round(totals.get(attr, float("nan")), 4)
         row[f"x_{attr}"] = round(excl.get(attr, float("nan")), 4)
@@ -155,6 +191,9 @@ def main() -> int:
     ap.add_argument("--thr-deg", type=float, default=5.0)
     ap.add_argument("--warmup", action="store_true",
                     help="discard one search first and report steady state")
+    ap.add_argument("--no-warmup-run", dest="prewarm", action="store_false",
+                    help="skip the discarded warm-up search; the first "
+                         "measurement then carries the process start-up cost")
     ap.add_argument("--mem-interval", type=float, default=0.02,
                     help="RSS sampling period in seconds")
     ap.add_argument("--out-csv", default=None)
@@ -171,13 +210,22 @@ def main() -> int:
         csv_path = Path(args.out_csv)
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
+    prewarm_s = float("nan")
+    if args.prewarm:
+        prewarm_s = warmup_run(args.pdb, ARMS[arms[0]] or _shipped_lmax_cap(),
+                               args.n_peaks)
+        print(f"warm-up search: {prewarm_s:.1f}s -- the process's start-up, "
+              f"mostly PyTorch loading its backend off GPFS. Excluded from the "
+              f"measurements below and reported as prewarm_seconds.", flush=True)
+
     info = host_info()
     print(f"{args.pdb}: {len(arms)} arm(s) x {len(trials)} trial(s), "
-          f"{'steady-state' if args.warmup else 'cold'}", flush=True)
+          f"{'steady-state' if args.warmup else 'post-warm-up'}", flush=True)
     print(f"  host {info['host']} / {info['torch_threads']} threads / "
           f"{info['cpu_model'] or 'unknown cpu'}", flush=True)
 
     rows, n_fail = [], 0
+    first = True
     for trial in trials:
         print(f" trial {trial}", flush=True)
         for arm in arms:
@@ -185,7 +233,9 @@ def main() -> int:
                 row = run_one(args.pdb, trial, arm, n_peaks=args.n_peaks,
                               top_n=args.top_n, thr_deg=args.thr_deg,
                               warmup=args.warmup,
-                              mem_interval_s=args.mem_interval)
+                              mem_interval_s=args.mem_interval,
+                              first_in_process=first)
+                first = False
             except Exception as exc:
                 n_fail += 1
                 print(f"  {arm:<8} FAILED {type(exc).__name__}: {exc}", flush=True)
