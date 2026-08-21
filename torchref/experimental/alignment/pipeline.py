@@ -429,7 +429,7 @@ class MolecularReplacementPipeline(DeviceMixin):
                 continue
             r_analytic, t_refined = placement
 
-            refined = rotated_k.translate(
+            refined = rotated_k.copy().translate(
                 t_refined.to(self.model.dtype_float), fractional=True,
             )
             r_rank = r_analytic
@@ -534,20 +534,27 @@ class MolecularReplacementPipeline(DeviceMixin):
                 "expected 'm_letf1' (default), 'sim' or 'none'."
             )
 
-        # No ML rescore: rank candidates by the raw FRF score and let the
-        # multi-candidate tree (FTF + refine + R-ranking) do the discrimination.
-        if self.rescore_engine == "none":
-            if self.verbose > 0:
-                print("fit_to_data: ML rescore DISABLED — using raw FRF peak "
-                      "ranking (RFZ).", flush=True)
-            return sorted(peaks, key=lambda p: p.score, reverse=True)
-
         F_obs = frf.F_obs
         hkl = frf.hkl
         s_mag = frf.s_mag
         centric = frf.centric
         ll = frf.ll
         rescore_n_shells = max(self.n_shells // 2, 8)
+
+        # No ML rescore: rank candidates by the raw FRF score and let the
+        # multi-candidate tree (FTF + refine + R-ranking) do the discrimination.
+        # Sub-peak refinement is still available here: it sharpens each
+        # orientation in place and does not reorder, so it is independent of
+        # which engine (if any) ranks the candidates.
+        if self.rescore_engine == "none":
+            if self.verbose > 0:
+                print("fit_to_data: ML rescore DISABLED — using raw FRF peak "
+                      "ranking (RFZ).", flush=True)
+            ranked = sorted(peaks, key=lambda p: p.score, reverse=True)
+            if self.subpeak_refine:
+                ranked = self._subpeak_refine(ranked, F_obs, hkl, s_mag,
+                                              centric, ll, rescore_n_shells)
+            return ranked
 
         interp_var_main: Optional[torch.Tensor] = None
         if self.use_interp_var:
@@ -629,7 +636,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         """
         R_rec = rotation_matrix_from_edmonds_euler(peak.alpha, peak.beta, peak.gamma)
         R_app = R_rec.T.contiguous()
-        rot = self.model.rotate(
+        # .copy() first: Model.rotate mutates in place and returns self, so
+        # rotating self.model directly would compound candidate k+1 onto k.
+        rot = self.model.copy().rotate(
             R_app.to(device=self.model.device, dtype=self.model.dtype_float),
         )
         rot.last_alignment_rotation = R_rec
@@ -666,9 +675,12 @@ class MolecularReplacementPipeline(DeviceMixin):
         eye3 = self._eye3
 
         if str(rotated_k.spacegroup) != str(data.spacegroup):
-            rotated_k.spacegroup = data.spacegroup
+            # NOTE: assign the space-group NAME, not a SpaceGroup object. SpaceGroup is an
+            # nn.Module, so nn.Module.__setattr__ intercepts object assignment, stores it in
+            # _modules and never runs the property setter -- a silent no-op.
+            rotated_k.spacegroup = data.spacegroup.hm
         rotated_p1 = rotated_k.copy()
-        rotated_p1.spacegroup = SpaceGroup("P 1")
+        rotated_p1.spacegroup = "P 1"
         evaluator = _DirectModelEvaluator(rotated_p1)
 
         timer.start("5_precompute_G")
@@ -816,7 +828,7 @@ class MolecularReplacementPipeline(DeviceMixin):
 
         timer.start("8_dense_R_ll_build")
         refined_p1 = refined.copy()
-        refined_p1.spacegroup = SpaceGroup("P 1")
+        refined_p1.spacegroup = "P 1"
         ll_refine = LattmanLoveInterpolator(
             refined_p1, padding_factor=self.ll_padding_factor,
             max_res_A=self.ll_max_res_A, verbose=0,
@@ -904,7 +916,7 @@ class MolecularReplacementPipeline(DeviceMixin):
                     flush=True,
                 )
 
-        return refined.rotate(
+        return refined.copy().rotate(
             R_accumulated.T.to(self.model.dtype_float).contiguous(),
         )
 
@@ -935,7 +947,9 @@ class MolecularReplacementPipeline(DeviceMixin):
         with torch.no_grad():
             R_polish = rb.get_rotation_matrix().detach()
             t_polish = rb.translation_frac.detach()
-        polished = refined.rotate(R_polish.to(self.model.dtype_float))
+        # .copy() first: the caller keeps `refined` when the polish does not
+        # improve R, so `polished` must not be the same object.
+        polished = refined.copy().rotate(R_polish.to(self.model.dtype_float))
         polished = polished.translate(
             t_polish.to(self.model.dtype_float), fractional=True,
         )

@@ -59,7 +59,7 @@ def test_amplitude_tf_zero_translation(setup):
     with torch.no_grad():
         F_obs = canonical(data.hkl[mask]).abs().to(torch.float64)
     model_p1 = canonical.copy()
-    model_p1.spacegroup = SpaceGroup("P 1")
+    model_p1.spacegroup = "P 1"
     evaluator = _ModelEvaluator(model_p1)
 
     R_id = torch.eye(3, dtype=torch.float64)
@@ -93,7 +93,7 @@ def test_amplitude_tf_recovers_known_translation(setup):
     with torch.no_grad():
         F_obs = canonical(data.hkl[mask]).abs().to(torch.float64)
     model_p1 = canonical.copy()
-    model_p1.spacegroup = SpaceGroup("P 1")
+    model_p1.spacegroup = "P 1"
     model_p1 = model_p1.translate(
         torch.tensor(t_true, dtype=canonical.dtype_float), fractional=True,
     )
