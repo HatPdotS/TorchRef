@@ -227,6 +227,81 @@ def gate(rows: List[dict], key: str = "arm", base: str = "production",
               f"than it is resolvable here.")
 
 
+def bench(rows: List[dict], key: str = "arm") -> None:
+    """Accuracy, memory and runtime side by side, per structure and per arm.
+
+    All three together on purpose: a bandwidth that halves the runtime while
+    dropping the true orientation out of the carried window is not a win, and
+    neither is one that finds it using memory the machine does not have.
+
+    Runtime is reported both raw and divided by the calibration workload each row
+    carries. If the rows span several hosts the raw column is not comparable and
+    the header says so.
+    """
+    def num(r, k, default=float("nan")):
+        try:
+            return float(r[k])
+        except (KeyError, TypeError, ValueError):
+            return default
+
+    hosts = sorted({r.get("host", "?") for r in rows})
+    threads = sorted({r.get("torch_threads", "?") for r in rows})
+    print(f"\n# {len(rows)} rows from {len(hosts)} host(s) {hosts}, "
+          f"threads {threads}")
+    if len(hosts) > 1:
+        print("# rows span several hosts: compare s/cal, not seconds")
+    kinds = sorted({r.get("timing_kind", "?") for r in rows})
+    if len(kinds) > 1:
+        print(f"# WARNING: mixed timing kinds {kinds} -- cold and steady-state "
+              f"numbers are not comparable")
+
+    arms = sorted({r.get(key, "") for r in rows})
+    pdbs = sorted({r.get("pdb", "?") for r in rows})
+    cells = defaultdict(list)
+    for r in rows:
+        cells[(r.get(key, ""), r.get("pdb", "?"))].append(r)
+
+    for arm in arms:
+        mine = [r for r in rows if r.get(key) == arm]
+        if not mine:
+            continue
+        print(f"\n## {key}={arm}")
+        print(f"  {'pdb':7s} {'sg':11s} {'n':>3s} {'top-N':>6s} {'med rank':>9s} "
+              f"{'med s':>8s} {'s/cal':>8s} {'peak MB':>9s} {'delta MB':>9s}")
+        for pdb in pdbs:
+            rs = cells.get((arm, pdb), [])
+            if not rs:
+                continue
+            hits = sum(1 for r in rs if str(r.get("in_top_n")) == "1")
+            print(f"  {pdb:7s} {rs[0].get('spacegroup', '?'):11s} {len(rs):3d} "
+                  f"{hits:>3d}/{len(rs):<2d} "
+                  f"{statistics.median(_cmp_rank(r) for r in rs):9.1f} "
+                  f"{statistics.median(num(r, 'seconds') for r in rs):8.2f} "
+                  f"{statistics.median(num(r, 'seconds_per_calibration') for r in rs):8.1f} "
+                  f"{statistics.median(num(r, 'rss_peak_mb') for r in rs):9.0f} "
+                  f"{statistics.median(num(r, 'rss_delta_mb') for r in rs):9.0f}")
+        worst = min(
+            (sum(1 for r in cells[(arm, p)] if str(r.get("in_top_n")) == "1")
+             / max(len(cells[(arm, p)]), 1), p)
+            for p in pdbs if cells.get((arm, p)))
+        print(f"  worst structure: {worst[1]} at {100 * worst[0]:.0f}% in the "
+              f"carried window | peak memory across structures "
+              f"{max(num(r, 'rss_peak_mb', 0) for r in mine):.0f} MB | "
+              f"slowest {max(num(r, 'seconds', 0) for r in mine):.1f} s")
+
+    # Where the time goes, if the stage columns are present.
+    xcols = sorted({k for r in rows for k in r if k.startswith("x_")})
+    if xcols:
+        print("\n## exclusive stage time, median over every row (seconds)")
+        meds = sorted(((statistics.median(num(r, c, 0.0) for r in rows), c)
+                       for c in xcols), reverse=True)
+        tot = statistics.median(num(r, "seconds") for r in rows)
+        for m, c in meds:
+            if m <= 0:
+                continue
+            print(f"  {c[2:]:32s} {m:8.3f} {100 * m / max(tot, 1e-9):6.1f}%")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("patterns", nargs="+", help="CSV glob(s)")
@@ -236,6 +311,9 @@ def main() -> int:
     ap.add_argument("--compare", default=None,
                     help="column whose values are the arms to pair on, "
                          "e.g. obs_mode or lmax_cap")
+    ap.add_argument("--bench", action="store_true",
+                    help="accuracy, memory and runtime side by side "
+                         "(frf_benchmark rows)")
     ap.add_argument("--gate", action="store_true",
                     help="report each arm against the shipping criterion "
                          "(truth in the top N on most trials, every structure)")
@@ -245,6 +323,9 @@ def main() -> int:
                     help="trials per structure that must land in the top N")
     args = ap.parse_args()
     rows = load(args.patterns)
+    if args.bench:
+        bench(rows, key=args.compare or "arm")
+        return 0
     if args.gate:
         gate(rows, key=args.compare or "arm", base=args.base or "production",
              top_n=args.top_n, min_hits=args.min_hits)

@@ -63,12 +63,31 @@ per-trial values visible, never a bare median, and prints whatever it dropped.
   neighbour under 1°), so "the closest sample is within a degree" means nothing
   by itself.
 
-## Known gap
+## The benchmark
 
-`bench_stages.py` currently attributes time only to `phaser_rotation_search`
-(~81–85%) and `dense_calc_via_box` (~14–17%). The inner Bessel/Wigner/peak
-stages register **0 calls** — the separated engine does not route through those
-module-level symbols, so wrapping them there intercepts nothing. They are
-printed with their zero counts rather than omitted, because an absent row reads
-as a free stage. Getting the inner breakdown needs different instrumentation
-points.
+`diagnostics/frf_benchmark.py` is the standing benchmark: accuracy, memory and
+runtime in one row per (structure, trial, arm), so a change cannot buy one at the
+silent expense of another. `analysis/benchmark_array.sh` runs it one structure
+per **exclusive** node.
+
+Three things it is careful about, each of which has bitten this harness before:
+
+- **Instrumentation points.** `frf/api.py` binds `bessel_sh_expand` and its
+  neighbours into its own namespace at import, so wrapping them in the module
+  that *defines* them intercepts nothing and the stage reports zero calls —
+  indistinguishable from a free stage. `lab/profile.FRF_STAGES` names the module
+  where each call is **resolved**. Getting this wrong left 85% of the runtime
+  unattributed.
+- **Nested stages.** `evaluate_rotation_function` contains
+  `build_dense_map_per_beta`, which contains `wigner_contraction_per_beta`; and
+  `bessel_sh_expand` contains `spherical_bessel_table`. The report gives
+  exclusive time alongside inclusive, so the column sums.
+- **Wall clock on a shared cluster measures the cluster.** Every row carries a
+  fixed calibration workload timed in the same process plus the host identity.
+  Compare `seconds_per_calibration` across nodes, or raw seconds only within
+  one.
+
+Peak memory comes from an RSS sampler, so a spike shorter than the sampling
+interval is invisible, and glibc may not return freed pages — which makes a later
+window in the same process look cheaper than it is. `vm_hwm_mb` is the
+process-lifetime high-water mark for absolute numbers.
