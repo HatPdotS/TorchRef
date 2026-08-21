@@ -245,11 +245,18 @@ def bench(rows: List[dict], key: str = "arm") -> None:
             return default
 
     hosts = sorted({r.get("host", "?") for r in rows})
+    models = sorted({r.get("cpu_model", "") for r in rows})
     threads = sorted({r.get("torch_threads", "?") for r in rows})
-    print(f"\n# {len(rows)} rows from {len(hosts)} host(s) {hosts}, "
-          f"threads {threads}")
-    if len(hosts) > 1:
-        print("# rows span several hosts: compare s/cal, not seconds")
+    print(f"\n# {len(rows)} rows, {len(hosts)} host(s), threads {threads}")
+    print(f"# cpu: {', '.join(m or 'unknown' for m in models)}")
+    # What breaks comparability is a different CPU, not a different hostname:
+    # several nodes of one pinned model are interchangeable, and warning about
+    # them trains the reader to ignore the warning that matters.
+    if len(models) > 1:
+        print("# rows span several CPU models: compare s/cal, not seconds")
+    elif len(hosts) > 1:
+        print(f"# {len(hosts)} nodes, all {models[0] or 'unknown'} -- seconds "
+              f"are comparable")
     kinds = sorted({r.get("timing_kind", "?") for r in rows})
     if len(kinds) > 1:
         print(f"# WARNING: mixed timing kinds {kinds} -- cold and steady-state "
