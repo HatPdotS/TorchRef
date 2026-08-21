@@ -205,7 +205,7 @@ class RigidBodyRefinement(DeviceMixin, nn.Module):
         # the bulk-solvent setup. The solvent mask is computed once from
         # `model.xyz()` and goes stale as the joint refine moves atoms; the
         # mismatch then biases the LBFGS gradient. Better to leave solvent
-        # out of the joint refine — `fit_to_data` does a fresh
+        # out of the joint refine — `align_model_to_data` does a fresh
         # solvent-aware Scaler refit on the final polished model for the
         # user-facing R-work.
         self.scaler = Scaler(model=model, data=data, nbins=20,

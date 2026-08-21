@@ -7,7 +7,7 @@ posterior moments via Parabolic-cylinder ratios) and the Halley-iteration
 from raw ``(F, σF, |s|, centric)``.
 
 Everything except ``french_wilson_preprocess`` is module-private; expose
-the public name through :mod:`torchref.alignment.frf.preprocessing`.
+the public name through :mod:`torchref.experimental.alignment.frf.preprocessing`.
 
 References (paths under
 ``…/reverse_engineering/phenix/.../phaser/src/``):

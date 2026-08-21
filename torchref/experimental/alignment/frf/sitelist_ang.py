@@ -3,8 +3,8 @@
 Mirrors ``SiteListAng`` from
 ``reverse_engineering/phenix/phenix-1.20-4459/modules/phaser/codebase/phaser/src/FastRot.cc``.
 
-The crucial point — and the bug that broke v13 of the legacy adaptive
-grid — is that **the FFT itself is NOT per-β-adaptive**. Phaser does:
+The crucial point is that **the FFT itself is NOT per-β-adaptive**.
+Phaser does:
 
 1. ``get_FRF`` (FastRot.cc:90-167) loops over a uniform β grid
    ``β_b = b · Δ`` for ``b ∈ [0, bmax)``, ``bmax = ceil(180/Δ)``.
@@ -29,10 +29,9 @@ grid — is that **the FFT itself is NOT per-β-adaptive**. Phaser does:
 5. ``M_β`` is **bilinearly interpolated** at each ``(α, γ)`` sample point
    to give the RF value (FastRot.cc:146-152, ``four_point_interpolation``).
 
-v13's mistake was making the FFT shape itself ``(pmax(β), qmax(β))`` —
-which collapses to ``(N, 1)`` at small β and loses all γ Fourier
-information. Phaser keeps the FFT dense; adaptivity is only in the
-sample list and the interpolation.
+Making the FFT shape itself ``(pmax(β), qmax(β))`` would collapse to
+``(N, 1)`` at small β and lose all γ Fourier information. The FFT stays
+dense; adaptivity is only in the sample list and the interpolation.
 """
 from __future__ import annotations
 

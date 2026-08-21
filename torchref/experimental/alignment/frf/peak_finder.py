@@ -10,10 +10,7 @@ routines). Phaser's strategy is essentially:
      rotations (not by α, β, γ box distance — that would double-count
      near the poles).
 
-We implement the same flow in PyTorch, vectorised where possible. The
-SO(3) angular-distance NMS is identical to the v13 ``_so3_greedy_nms``
-in ``ball_search.py`` — that part of v13 was correct; the bug was in
-the FFT/grid, not the NMS.
+We implement the same flow in PyTorch, vectorised where possible.
 """
 from __future__ import annotations
 

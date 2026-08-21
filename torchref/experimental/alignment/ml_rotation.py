@@ -77,7 +77,7 @@ def _normalize_to_e_epsilon(
     """ε-corrected Wilson E: ``E²_h = (F²_h/ε_h) / ⟨F²/ε⟩_shell``.
 
     Matches Phaser's obs E (``E = F/sqrt(ε·Σ_N)``) and the FRF's
-    :func:`torchref.alignment.frf.preprocessing.wilson_normalise_epsilon`. The
+    :func:`torchref.experimental.alignment.frf.preprocessing.wilson_normalise_epsilon`. The
     plain :func:`_normalize_to_e` (no ε) over-counts axial reflections (ε>1) on
     high-symmetry spacegroups, letting them dominate the ``-(E²+eImove)/V`` term
     and blind the m_LETF1 orientation discrimination.
@@ -599,7 +599,7 @@ def _build_llg_context(
 
     * **Unique-orbit calc sum.** The moving-model intensity sums ``|E_calc|²`` over
       the **distinct** orbit mates via
-      :func:`torchref.alignment.frf.preprocessing.epsilon_aware_unroll`
+      :func:`torchref.experimental.alignment.frf.preprocessing.epsilon_aware_unroll`
       (Phaser's ``if(!duplicate(isym))``), not all ``n_ops`` raw mates. Summing all
       mates over-weights axial reflections (ε>1) by ε(h) and orientation-blinds
       high-symmetry spacegroups (the 4BX9/6G9X rank-360+ failure).
@@ -1101,12 +1101,12 @@ def m_letf1_rescore(
        ``eImove(h) = ε(h)·σ_A²·(1/n_ops)·Σ_{distinct mates} |E_calc(R^T·S_k·h)|²``
        summed over the **distinct** orbit mates only (Phaser's
        ``if(!duplicate(isym))``, DataMR.cc:1371-1404), via
-       :func:`torchref.alignment.frf.preprocessing.epsilon_aware_unroll` +
+       :func:`torchref.experimental.alignment.frf.preprocessing.epsilon_aware_unroll` +
        ``scatter_add``. Summing all ``n_ops`` raw mates over-weights axial
        reflections by ε(h) and orientation-blinds high-symmetry spacegroups.
 
     2. **Per-reflection variance budget** ``V(h) = ε(h) − σ_A²(s)·n_mol`` from
-       :func:`torchref.alignment.frf.preprocessing.compute_v_budget`
+       :func:`torchref.experimental.alignment.frf.preprocessing.compute_v_budget`
        (DataMR.cc:949,1411). For cross-rotation with no fixed model.
 
     3. **Phaser ``logRelRice`` / ``logRelWoolfson``** as the per-reflection LL
@@ -1135,7 +1135,7 @@ def m_letf1_rescore(
         per shell.
     eps_factor : (N,) tensor, optional
         Per-reflection multiplicity ε(h). If ``None``, computed via
-        :func:`torchref.alignment.frf.preprocessing.compute_epsilon`.
+        :func:`torchref.experimental.alignment.frf.preprocessing.compute_epsilon`.
     n_refine, batch_size, verbose
         As in :func:`sim_mlrf_rescore`.
     """

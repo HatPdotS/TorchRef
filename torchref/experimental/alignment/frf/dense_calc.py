@@ -1,7 +1,6 @@
 """Dense P1-box sampling of a model's molecular transform.
 
-This is the "dense calc" lever from the high-symmetry FRF investigation
-(see ``FRF_CONSOLIDATION.md``): the Fast Rotation Function correlates the obs
+The Fast Rotation Function correlates the obs
 Patterson against the *model* transform, and sampling that transform at the
 sparse crystal lattice under-determines the high-l spherical-harmonic modes for
 large molecules. Phaser avoids this by computing the model transform on a dense,

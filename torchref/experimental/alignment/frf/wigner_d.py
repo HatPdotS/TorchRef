@@ -8,7 +8,7 @@ Edmonds (4.1.23) direct-sum formula, already validated against Phaser's
 output by the convention tests in
 ``tests/unit/alignment/test_wigner.py``. To avoid duplicating maths,
 this module re-exports the existing implementation from
-``torchref.alignment.wigner`` (which is the same convention) and adds
+``torchref.experimental.alignment.wigner`` (which is the same convention) and adds
 Phaser-specific helpers on top.
 """
 from __future__ import annotations

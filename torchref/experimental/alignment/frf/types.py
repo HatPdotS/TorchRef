@@ -1,4 +1,4 @@
-"""Dataclasses shared across frf_separate.
+"""Dataclasses shared across the fast rotation function.
 
 Mirrors the small "data carrier" structs in Phaser
 (phenix-1.20-4459/modules/phaser/codebase/phaser/src/SiteListAng.h,

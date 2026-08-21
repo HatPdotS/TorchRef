@@ -6,7 +6,7 @@ Conventions (locked, asserted by tests/unit/alignment/test_wigner.py):
     D^l_{m,n}(α, β, γ) = e^{-i m α} · d^l_{m,n}(β) · e^{-i n γ}                    (Edmonds)
 
 with the Euler angles paired to the rotation matrix used by
-`torchref.alignment.transform.rotation_matrix_from_euler` — i.e. ZYZ.
+`torchref.experimental.alignment.transform.rotation_matrix_from_euler` — i.e. ZYZ.
 
 Small-d uses the direct sum formula (Edmonds 4.1.23) with log-factorials so the
 recurrence never forms `(2l)!` explicitly:

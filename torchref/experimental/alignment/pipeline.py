@@ -19,7 +19,7 @@ best is returned (a Phaser-style multi-candidate tree, with early-stopping once
 a candidate beats ``rfactor_converged``). The user-facing solvent-aware R-work
 is computed once, on the winner.
 
-``align_model_to_data`` (and therefore ``ModelFT.fit_to_data``) delegates to
+``align_model_to_data`` delegates to
 this class — it is the implementation of record. The heavy crystallographic
 stage helpers live in :mod:`torchref.experimental.alignment.align`,
 :mod:`~torchref.experimental.alignment.translation` and
@@ -190,7 +190,7 @@ class MolecularReplacementPipeline(DeviceMixin):
     """Canonical MR pipeline: FRF → FTF (per candidate) → post-refine.
 
     Parameters mirror :func:`align_model_to_data` (which delegates here), so a
-    caller can either use ``fit_to_data`` for the common case or drive this
+    caller can either use ``align_model_to_data`` for the common case or drive this
     class directly for finer control / access to the ranked candidate list.
 
     Parameters
@@ -381,7 +381,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             top = rescored[0]
             if self.verbose > 0:
                 print(
-                    f"fit_to_data: top peak LLG = {top.score:.2f} "
+                    f"mr: top peak LLG = {top.score:.2f} "
                     f"(σ_Z = {top.sigma:.2f}); applying R⁻¹ to coords.",
                     flush=True,
                 )
@@ -404,7 +404,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         max_tries = self.max_tries if self.max_tries is not None else n_rot
         if self.verbose > 0 and n_rot > 1:
             print(
-                f"fit_to_data: trying up to {n_rot} rotation candidates "
+                f"mr: trying up to {n_rot} rotation candidates "
                 f"(early-stop after ≥{self.min_tries} once R < "
                 f"{self.rfactor_converged}).",
                 flush=True,
@@ -473,7 +473,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             if n_done >= self.min_tries and best_r < self.rfactor_converged:
                 if self.verbose > 0:
                     print(
-                        f"fit_to_data: converged (R {best_r:.4f} < "
+                        f"mr: converged (R {best_r:.4f} < "
                         f"{self.rfactor_converged}) after {n_done} candidates.",
                         flush=True,
                     )
@@ -495,7 +495,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         winner.r_factor = rwork_final
         if self.verbose > 0:
             print(
-                f"fit_to_data: winner analytical-TF R={winner.translation_score:.4f}, "
+                f"mr: winner analytical-TF R={winner.translation_score:.4f}, "
                 f"final Scaler-fit R-work={rwork_final:.4f}",
                 flush=True,
             )
@@ -515,7 +515,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer.start("3_rotation_search")
         if self.verbose > 0:
             print(
-                f"fit_to_data: frf_separate rotation search "
+                f"mr: frf_separate rotation search "
                 f"(dense calc + auto_lmax cap={self.frf_lmax_cap}, "
                 f"n_peaks={self.n_rotation_peaks})…",
                 flush=True,
@@ -547,7 +547,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         # which engine (if any) ranks the candidates.
         if self.rescore_engine == "none":
             if self.verbose > 0:
-                print("fit_to_data: ML rescore DISABLED — using raw FRF peak "
+                print("mr: ML rescore DISABLED — using raw FRF peak "
                       "ranking (RFZ).", flush=True)
             ranked = sorted(peaks, key=lambda p: p.score, reverse=True)
             if self.subpeak_refine:
@@ -566,7 +566,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer.start("4_ml_rescore")
         if self.verbose > 0:
             print(
-                f"fit_to_data: ML rescoring top "
+                f"mr: ML rescoring top "
                 f"{min(len(peaks), self.n_ml_refine)} peaks…",
                 flush=True,
             )
@@ -620,7 +620,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._timer.stop("4b_subpeak_refine")
         if self.verbose > 0:
             print(
-                f"fit_to_data: sub-peak refined top {k} orientations "
+                f"mr: sub-peak refined top {k} orientations "
                 f"on the ML-LLG surface (step={self.subpeak_refine_step_deg}°).",
                 flush=True,
             )

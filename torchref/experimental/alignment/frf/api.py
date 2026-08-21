@@ -1,8 +1,4 @@
-"""Top-level FastRotationFunction class + drop-in ``phaser_rotation_search``.
-
-Signature matches ``torchref.alignment.phaser_frf.phaser_rotation_search``
-so ``tests/integration/alignment/benchmark_phaser_frf.py`` can swap
-implementations via a single ``--engine`` flag.
+"""Top-level ``FastRotationFunction`` class + the ``phaser_rotation_search`` wrapper.
 
 Pipeline (mirrors Phaser ``run_FRF()``):
   1. Resolution mask (both sides).
@@ -417,13 +413,11 @@ def phaser_rotation_search(
     solvent_bsol: float = 300.0,
     compute_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[AdaptiveRotationFunction, List[RotationPeak]]:
-    """Drop-in for ``torchref.alignment.phaser_frf.phaser_rotation_search``.
+    """Construct a :class:`FastRotationFunction` and score one model.
 
-    Same signature, same return-shape. Sub-voxel refinement parameters
-    are accepted for signature parity but currently not implemented in
-    the frf_separate path — the per-β fixed-shape FFT already provides
-    sub-voxel precision via the bilinear interpolation, and Phaser
-    itself does not run an extra quadratic refinement.
+    ``refine_subvoxel`` and ``n_refine`` are accepted and ignored: the per-β
+    fixed-shape FFT already provides sub-voxel precision through its bilinear
+    interpolation, and Phaser runs no extra quadratic refinement either.
 
     Extra (non-legacy) kwargs:
       hkl_obs : integer Miller indices aligned with s_obs, needed for ε(h).

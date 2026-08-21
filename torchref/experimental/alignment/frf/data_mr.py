@@ -102,10 +102,9 @@ def bessel_sh_expand(
 ) -> BesselSHCoefficients:
     """Phaser-style ``c_nlm = Σ_h Y*_lm(ŝ) · I · sqrt(2u+1) · j_u(h)/h``.
 
-    Memory-bounded chunked reimplementation of
-    ``torchref.alignment.phaser_frf.bessel_sh_expand`` (identical math,
-    verified element-wise by ``tests/unit/frf_separate``). The legacy
-    version materialises the full ``(M, L, N_radial)`` Bessel table and
+    Memory-bounded and chunked, verified element-wise by
+    ``tests/unit/frf_separate``. A direct implementation materialises the full
+    ``(M, L, N_radial)`` Bessel table and
     ``(M, u_max+1)`` j-table for *all* reflections at once — at L≈100 with
     a symmetry-unrolled obs set (≳10⁶ reflections) that is tens of GB and
     OOMs. Here the j-table, Bessel weights and Y_lm are all computed
@@ -174,6 +173,11 @@ def bessel_sh_expand(
     even_ls = list(range(2, lmax_even + 1, 2))
     l_list, n_list, u_list, w_list = [], [], [], []
     for l in even_ls:
+        # Phaser's per-l radial band: nmax = (lmax - l + 2)/2 (DataMR.cc:894),
+        # narrowing from N_radial terms at l=2 to a single term at l=lmax, so
+        # the high-l bands cannot carry more radial detail than the reflection
+        # set supports. `N_radial` above is only the allocated width (Phaser's
+        # widest band); the populated support is this per-l count.
         n_l = (lmax_even - l) // 2 + 1
         for n in range(n_l):
             u = l + 2 * n + 1
@@ -320,7 +324,7 @@ def cross_correlate_xi(
     happens inside ``DataMR::dataMR_FRF`` before being fed into
     ``SiteListAng::DoRfftStuff`` as the ``clmn`` tensor (FastRot.cc:39).
 
-    Convention (matches torchref's existing ball_search.py:182):
+    Convention:
         xi[l, m, n] = Σ_r c_obs[r, l, n] · conj(c_calc[r, l, m])
     so that the peak Euler triple satisfies ``s_calc = R · s_obs``.
 

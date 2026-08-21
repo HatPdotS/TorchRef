@@ -9,9 +9,8 @@ data prep (`_prepare_frf_inputs`), the Phaser-faithful rotation search
 timer (`_StageTimer`) — that are shared by the rotation-ranking benchmarks and
 by the orchestrator.
 
-`align_model_to_data` is the public entry point that `ModelFT.fit_to_data`
-delegates to; it in turn delegates the FRF → FTF(per-candidate) → post-refine
-control flow to
+`align_model_to_data` is the public entry point. It delegates the
+FRF → FTF(per-candidate) → post-refine control flow to
 :class:`torchref.experimental.alignment.pipeline.MolecularReplacementPipeline`,
 returning that pipeline's single best `ModelFT`.
 """
@@ -649,8 +648,8 @@ def align_model_to_data(
     ``last_alignment_rotation``, ``last_alignment_translation`` and
     ``last_alignment_rfactor`` provenance attributes.
 
-    See `ModelFT.fit_to_data` for full kwarg semantics — this function is the
-    canonical implementation; `fit_to_data` is a thin wrapper.
+    `MolecularReplacementPipeline` is the implementation of record; this
+    function returns its single best solution.
     """
     if not model.initialized:
         raise RuntimeError(
@@ -658,8 +657,8 @@ def align_model_to_data(
         )
 
     # `MolecularReplacementPipeline` is the implementation of record. This
-    # function preserves the historical kwarg surface (so `ModelFT.fit_to_data`
-    # and the benchmark scripts keep working unchanged) and returns the single
+    # function preserves the historical kwarg surface (so the benchmark
+    # scripts keep working unchanged) and returns the single
     # best `ModelFT`; drive the pipeline directly to get the ranked candidate
     # list. Imported lazily to avoid an import cycle — `pipeline` imports the
     # stage helpers (`_prepare_frf_inputs`, `_run_frf_separate_rotation`,

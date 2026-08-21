@@ -14,7 +14,7 @@ Pure-PyTorch Patterson-based molecular replacement:
 4. Canonical Pipeline (``pipeline.MolecularReplacementPipeline``) — the
    multi-candidate FRF → FTF → post-refine tree with early-stopping; the
    implementation that ``align.align_model_to_data`` /
-   ``ModelFT.fit_to_data`` delegate to.
+   ``align.align_model_to_data`` delegates to.
 
 Example — full MR pipeline
 --------------------------

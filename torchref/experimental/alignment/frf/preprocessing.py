@@ -2,10 +2,9 @@
 
 Mirrors the chain in Phaser ``DataMR::dataMR_FRF`` (DataMR.cc:863-1133)
 and the auxiliary helpers in ``lib/math_FrenchWilson.cc`` and
-``lib/math_RiceLLG.cc``. The PyTorch ports of these algorithms already
-live in ``torchref.alignment.phaser_frf``; rather than duplicate the
-~600 LoC implementations here, we import them and re-document the
-Phaser source citations.
+``lib/math_RiceLLG.cc``. The heavier ports live in sibling modules
+(:mod:`~torchref.experimental.alignment.frf.french_wilson` in particular);
+this module imports them and carries the Phaser source citations.
 
 If a specific preprocessing piece turns out to be wrong (per Tier 2
 synthetic tests), the fix lives here — replace the import with a fresh
