@@ -320,7 +320,13 @@ def _prepare_frf_inputs(
     # the long comment in `align_model_to_data` for the rationale.
     sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
     n_ops_sg = int(sg_mats.shape[0])
-    hkl_sym = torch.einsum("kij,nj->kni", sg_mats, hkl.to(torch.float64))
+    # h' = h.R, NOT R.h -- reciprocal space transforms with the transpose
+    # (SpaceGroup.apply_to_hkl). The two agree only when the symmetry matrices
+    # are orthogonal, which they are in orthorhombic/tetragonal/cubic and
+    # monoclinic settings but NOT in a hexagonal basis, where S.S^T != I. Using
+    # R.h there mixes non-equivalent reflections into one orbit and writes
+    # conflicting |F| onto the same Miller index.
+    hkl_sym = torch.einsum("kji,nj->kni", sg_mats, hkl.to(torch.float64))
     hkl_sym_flat = hkl_sym.reshape(-1, 3)
     s_vec_sym = hkl_sym_flat @ rec_basis.to(device)
     s_mag_sym = s_vec_sym.norm(dim=-1)
@@ -475,7 +481,8 @@ def _run_frf_separate_rotation(
         else:
             n_ops = int(sg_mats.shape[0])
             hkl_keep = hkl_all.to(torch.float64)[keep]
-            hkl_unroll = torch.einsum("kij,nj->kni", sg_mats, hkl_keep).reshape(-1, 3)
+            # h' = h.R (transpose) -- see the note at the `hkl_sym` unroll.
+            hkl_unroll = torch.einsum("kji,nj->kni", sg_mats, hkl_keep).reshape(-1, 3)
             s_obs = hkl_unroll @ rec_basis
             hkl_obs_int = hkl_unroll
             F_obs = F_obs.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()

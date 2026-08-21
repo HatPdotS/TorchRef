@@ -556,7 +556,14 @@ def hkl_symops_to_cartesian(
     M = rec_basis.to(dtype).transpose(-1, -2)            # (3, 3)
     M_inv = torch.linalg.inv(M)
     S = sg_mats.to(dtype)                                 # (n_ops, 3, 3)
-    return torch.einsum("ij,kjl,lm->kim", M, S, M_inv)
+    # S^T, not S: reciprocal space transforms as h' = h.S, so the operator
+    # acting on Cartesian s as a column vector is (B^-1 S B)^T = M S^T M^-1
+    # with M = B^T. Using S here returns matrices that are not rotations at all
+    # in a non-orthogonal basis -- measured orthogonality error 5.33 for
+    # P 3_1 2 1 and P 6_5 2 2, versus 2e-7 with the transpose. The two agree
+    # whenever the symmetry matrices are orthogonal, i.e. everywhere except
+    # trigonal/hexagonal, which is why this survived.
+    return torch.einsum("ij,klj,lm->kim", M, S, M_inv)
 
 
 def symmetrize_anisotropy(

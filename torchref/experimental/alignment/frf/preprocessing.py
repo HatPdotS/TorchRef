@@ -127,14 +127,17 @@ def epsilon_aware_unroll(
     hkl_int = hkl_int.to(torch.long)
     sym_mats = sym_mats.round().to(torch.long)
     N, n_ops = hkl_int.shape[0], sym_mats.shape[0]
-    # Orbits: (N, n_ops, 3) — S_k applied to each h (row-vector convention,
-    # matching the existing `einsum("kij,nj->nki", ...)` unroll site).
+    # Orbits: (N, n_ops, 3) — h.S_k, the row-vector (reciprocal-space)
+    # convention, matching the unroll sites in `align.py`. Note this is the
+    # TRANSPOSE contraction: `kji`, not `kij`. They coincide only for
+    # orthogonal symmetry matrices, so `kij` silently works everywhere except
+    # trigonal/hexagonal.
     # Integer einsum dispatches to baddbmm, which CUDA does not implement for
     # Long; compute in float64 (exact for symop 0/±1 × small Miller indices)
     # and round back so the GPU path works.
     orbits = (
         torch.einsum(
-            "kij,nj->nki", sym_mats.to(torch.float64), hkl_int.to(torch.float64),
+            "kji,nj->nki", sym_mats.to(torch.float64), hkl_int.to(torch.float64),
         )
         .round()
         .to(torch.long)
