@@ -21,6 +21,37 @@ import torch
 
 _PROFILE = bool(os.environ.get("FRF_PROFILE"))
 
+#: Byte budget for the per-chunk transients in :func:`bessel_sh_expand`. It
+#: trades peak memory against throughput: too small and the contraction
+#: degenerates into many small GEMMs and many Legendre recurrence calls, too
+#: large and the tables fall out of cache and the function's peak memory is set
+#: by this instead of by the result.
+CLUSTER_CHUNK_BYTES = 256_000_000
+
+#: Grouping resolution for |s|, i.e. for the RADIAL factor. Reflections whose |s|
+#: agrees to 1/this share one Bessel evaluation.
+#:
+#: This one has to be fine. The Bessel argument is `bessel_h_scale * |s|`, of
+#: order 250 for a protein at L=64, and j_u oscillates on a scale of 2*pi in its
+#: argument -- so an error in |s| is amplified by ~250 before it reaches j_u.
+#: Against an ungrouped reference the expansion is bitwise exact at 1e9 and
+#: 1.8e-8 to 7.5e-8 relative at 1e7, where this used to sit: a systematic error
+#: at or above the engine's own run-to-run spread. Costs nothing where the
+#: grouping pays most: the dense P1 calc box is exactly degenerate, so it groups
+#: identically at 1e7, 1e9 and 1e11 alike.
+_GROUP_SCALE_S = 10_000_000
+
+#: Grouping resolution for cos(theta), i.e. for the ANGULAR factor.
+#:
+#: This one can be coarse, and that is where the speed is. The Legendre factor
+#: varies smoothly in cos(theta) with no amplification, and Phaser -- the
+#: reference this engine is validated against -- buckets cos(theta) at 1e-3
+#: (`lib/sphericalY.h:43`, COSTHETA_LIMIT), evaluating the Legendre polynomials
+#: once per bucket. Setting this finer than Phaser buys accuracy the rest of the
+#: chain does not have; setting it coarser than Phaser would be a new
+#: approximation and needs its own evidence.
+_GROUP_SCALE_COS = 10_000_000
+
 from ..sh import _bar_legendre_recurrence, evaluate_ylm
 
 from .types import BesselSHCoefficients
@@ -222,18 +253,39 @@ def bessel_sh_expand(
     s_mag_all = s_vectors.norm(dim=-1).clamp(min=1e-30)
     cos_all = (s_vectors[..., 2] / s_mag_all).clamp(min=-1.0, max=1.0)
     phi_all = torch.atan2(s_vectors[..., 1], s_vectors[..., 0])
-    KSCALE = 10_000_000  # ~1e-7 grouping resolution → exact for grid-degenerate sets
-    k_s = (s_mag_all * KSCALE).round().to(torch.int64)
-    k_c = (cos_all * KSCALE).round().to(torch.int64) + KSCALE  # shift ≥ 0
-    key = k_s * (2 * KSCALE + 1) + k_c
+    # Separate resolutions for the two factors: the radial term needs a fine
+    # |s| key, the angular term does not. One shared key forces the finer of the
+    # two on both, which costs merges the angular part never needed.
+    k_s = (s_mag_all * _GROUP_SCALE_S).round().to(torch.int64)
+    k_c = (cos_all * _GROUP_SCALE_COS).round().to(torch.int64) + _GROUP_SCALE_COS
+    key = k_s * (2 * _GROUP_SCALE_COS + 1) + k_c
     uniq_key, inverse = torch.unique(key, return_inverse=True)
     n_clusters = int(uniq_key.shape[0])
-    # Per-cluster representative geometry (all members are equal by construction).
-    rep_cos = torch.empty(n_clusters, dtype=comp_real, device=device)
-    rep_smag = torch.empty(n_clusters, dtype=comp_real, device=device)
-    rep_cos[inverse] = cos_all.to(comp_real)
-    rep_smag[inverse] = s_mag_all.to(comp_real)
+    # Per-group geometry: the MEAN over the group's members, not an arbitrary
+    # one of them. Members agree to the key's resolution but not exactly, so a
+    # scatter-assignment leaves whichever member was written last -- an error up
+    # to the full bin width, and biased. The mean costs one extra reduction and
+    # centres it.
+    def _group_mean(values, index, n_groups):
+        tot = torch.zeros(n_groups, dtype=values.dtype, device=device)
+        cnt = torch.zeros(n_groups, dtype=values.dtype, device=device)
+        tot.index_add_(0, index, values)
+        cnt.index_add_(0, index, torch.ones_like(values))
+        return tot / cnt.clamp(min=1.0)
+
+    rep_cos = _group_mean(cos_all.to(comp_real), inverse, n_clusters)
     rep_sin = torch.sqrt((1.0 - rep_cos * rep_cos).clamp(min=0.0))
+
+    # Resolution shells: the distinct |s| values, and which shell each cluster
+    # belongs to. The radial factor depends on |s| alone, so it is applied once
+    # per shell rather than once per cluster -- and there are far fewer shells
+    # than clusters, because many directions share a |s| on a lattice. Measured
+    # over the benchmark: 2.7 to 39 clusters per shell.
+    uniq_ks, inv_s = torch.unique(k_s, return_inverse=True)
+    n_shells = int(uniq_ks.shape[0])
+    shell_of_cluster = torch.zeros(n_clusters, dtype=torch.long, device=device)
+    shell_of_cluster[inverse] = inv_s
+    shell_smag = _group_mean(s_mag_all.to(comp_real), inv_s, n_shells)
     if _PROFILE:
         prof["cluster"] += _tick(t0); t0 = time.perf_counter()
 
@@ -267,56 +319,58 @@ def bessel_sh_expand(
     if _PROFILE:
         prof["dbuild"] += _tick(t0); t0 = time.perf_counter()
 
-    # ---- per-cluster precompute + contraction, chunked over clusters --------
-    # The radial and Legendre tables are built inside this loop, not ahead of
-    # it. Built for every cluster at once they are the function's peak memory
-    # and, being touched exactly once, pure memory traffic: on a 114k-cluster
-    # calc set at L=65 that is 3.9 GB of Legendre plus 1.9 GB of Bessel. Per
-    # chunk they stay in cache.
-    #
-    # Only the even-l rows are allocated. The Patterson is centrosymmetric so
-    # the odd-l coefficients vanish (DataMR.cc:863-870); the recurrence still
-    # steps through odd l internally, since P_l needs P_{l-1}, but nothing
-    # downstream keeps them.
+    # ---- contraction, in two steps ------------------------------------------
+    # Direct:
+    #     c[n,l,p] = Σ_c B[c,l,n] · P[c,l,p] · D[c,p]
+    # but B depends only on |s| and P only on cos(theta), while the cluster index
+    # carries both. Summing that way re-multiplies the radial factor once per
+    # distinct direction at the same resolution. Grouping the clusters by shell i:
+    #     T[i,l,p] = Σ_{c in shell i} P[c,l,p] · D[c,p]      (no radial axis)
+    #     c[n,l,p] = Σ_i          B[i,l,n] · T[i,l,p]        (shells, not clusters)
+    # which trades n_clusters·N_radial for n_clusters + n_shells·N_radial. On the
+    # benchmark that is 2.5x to 18x fewer multiply-adds, and it shrinks the Bessel
+    # table by the same clusters-per-shell factor. Exact, not an approximation.
     n_even = len(even_ls)
     le_idx = (l_idx - 2) // 2                    # l value -> even-l row index
-    c_pos = torch.zeros((N_radial, n_even, L), dtype=einsum_dtype, device=device)
+    T = torch.zeros((n_shells, n_even, L), dtype=einsum_dtype, device=device)
+
     rbytes = 4 if comp_real == torch.float32 else 8
-    # The largest transient is the (chunk, L, L) Legendre table.
-    cstep = max(1, min(n_clusters, 256_000_000 // max(1, rbytes * L * L)))
+    per_cluster = rbytes * (n_even * L + 2 * L)
+    cstep = max(1, min(n_clusters, CLUSTER_CHUNK_BYTES // max(1, per_cluster)))
     for cs in range(0, n_clusters, cstep):
         ce = min(cs + cstep, n_clusters)
         if _PROFILE:
             t0 = time.perf_counter()
-
-        x_c = (bessel_h_scale * rep_smag[cs:ce]).clamp(min=1e-30)
-        j_all = spherical_bessel_table(x_c, u_max)                 # (chunk, u_max+1)
-        B = torch.zeros((ce - cs, n_even, N_radial), dtype=comp_real, device=device)
-        B[:, le_idx, n_idx] = w_vec.unsqueeze(0) * j_all[:, u_idx] / x_c.unsqueeze(-1)
-        if _PROFILE:
-            prof["bessel"] += _tick(t0); t0 = time.perf_counter()
-
-        # Ask for the even rows only: the odd-l coefficients vanish for a
-        # centrosymmetric Patterson, and an all-l table is twice the write.
-        P_D = _bar_legendre_recurrence(
-            rep_cos[cs:ce], rep_sin[cs:ce], L, keep_l=even_l_idx)   # (chunk, n_even, L)
+        # Even rows only: the odd-l coefficients vanish for a centrosymmetric
+        # Patterson, and an all-l table is twice the write.
+        P = _bar_legendre_recurrence(
+            rep_cos[cs:ce], rep_sin[cs:ce], L, keep_l=even_l_idx)   # (chunk, n_even, L) real
         if _PROFILE:
             prof["ylm"] += _tick(t0); t0 = time.perf_counter()
-
-        # c[n,l,p] = Σ_c bessel[c,l,n] · barP[c,l,p] · D[c,p], for p >= 0.
-        #
-        # `bessel` and `barP` are real. Contracting them as complex would spend
-        # four real multiplies per multiply-add where two suffice, so the real
-        # and imaginary halves of D go through as two REAL contractions and are
-        # recombined. l is a batch index and c the summed one, so each is a
-        # stack of small GEMMs.
-        Dr = Dp[cs:ce].real.unsqueeze(1)                            # (chunk, 1, L)
-        Di = Dp[cs:ce].imag.unsqueeze(1)
-        acc_r = torch.einsum("cln,clm->nlm", B, P_D * Dr)
-        acc_i = torch.einsum("cln,clm->nlm", B, P_D * Di)
-        c_pos += torch.complex(acc_r, acc_i).to(einsum_dtype)
+        # P is real; carrying D's halves separately keeps this two real
+        # multiplies per element instead of a complex multiply's four.
+        Dc = Dp[cs:ce].unsqueeze(1)                                 # (chunk, 1, L)
+        T.index_add_(0, shell_of_cluster[cs:ce],
+                     torch.complex(P * Dc.real, P * Dc.imag).to(einsum_dtype))
         if _PROFILE:
             prof["einsum"] += _tick(t0)
+
+    if _PROFILE:
+        t0 = time.perf_counter()
+    # Radial weights per shell: sqrt(2u+1) j_u(x)/x at u = l + 2n + 1.
+    x_s = (bessel_h_scale * shell_smag).clamp(min=1e-30)
+    j_all = spherical_bessel_table(x_s, u_max)                      # (n_shells, u_max+1)
+    B = torch.zeros((n_shells, n_even, N_radial), dtype=comp_real, device=device)
+    B[:, le_idx, n_idx] = w_vec.unsqueeze(0) * j_all[:, u_idx] / x_s.unsqueeze(-1)
+    if _PROFILE:
+        prof["bessel"] += _tick(t0); t0 = time.perf_counter()
+
+    c_pos = torch.complex(
+        torch.einsum("iln,ilm->nlm", B, T.real),
+        torch.einsum("iln,ilm->nlm", B, T.imag),
+    ).to(einsum_dtype)
+    if _PROFILE:
+        prof["einsum"] += _tick(t0)
 
     # Mirror onto m < 0: c[-p] = (-1)^p conj(c[+p]).
     c_e = torch.zeros((N_radial, n_even, 2 * L - 1), dtype=einsum_dtype,
