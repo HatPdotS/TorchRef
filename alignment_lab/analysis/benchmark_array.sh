@@ -7,12 +7,20 @@
 # carries a calibration workload and the host identity so that is checkable
 # rather than assumed.
 #
-#   sbatch --array=0-9 --partition=hour --time=00:55:00 --exclusive \
-#          --mem=200G alignment_lab/analysis/benchmark_array.sh \
+#   sbatch --array=0-9 --partition=hour --time=00:55:00 --exclusive --mem=0 \
+#          --constraint=cpu_epyc9335 alignment_lab/analysis/benchmark_array.sh \
 #          --arms cap48,cap64,cap100 --trials 3
 #
-# --mem must cover the largest arm: cap100 on the P432 structures needs well
+# `--mem=0` takes the node's memory: cap100 on the P432 structures needs well
 # over 32 GB, which is what the OOMs in job 489988 were.
+#
+# **Pin the CPU model.** `--exclusive` stops neighbours interfering but does not
+# stop SLURM handing out whatever generation is free -- this cluster mixes Xeon
+# 6152/6230/6230r/6248r/6530 with EPYC 7452/7453/9334/9335, and two runs on
+# different generations are not comparable at all. `cpu_epyc9335` is the newest
+# available (28 nodes on `hour`, 64 cores). Any before/after pair has to name the
+# same constraint, and the CPU model is recorded in every row so a mismatch is
+# visible after the fact.
 #SBATCH --job-name=frf_bench
 #SBATCH --output=alignment_lab/slurm/%x_%A_%a.out
 #SBATCH --error=alignment_lab/slurm/%x_%A_%a.err
