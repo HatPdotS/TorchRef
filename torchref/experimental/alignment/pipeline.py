@@ -45,13 +45,13 @@ from .align import (
     _external_rwork,
     _prepare_frf_inputs,
     _rodrigues,
-    _run_frf_separate_rotation,
 )
 from .frf.rotation_utils import (
     edmonds_euler_from_rotation_matrix,
     rotation_matrix_from_edmonds_euler,
 )
 from .frf.types import RotationPeak
+from .rotation_search import search_peaks
 from .lattman_love import LattmanLoveInterpolator, estimate_interp_var
 from .ml_rotation import (
     fit_sigma_a_per_shell,
@@ -230,8 +230,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         ll_padding_factor: float = 2.0,
         n_rotation_peaks: int = 500,
         n_ml_refine: int = 20,
-        frf_lmax_cap: int = 48,
-        frf_dense_pad: float = 2.0,
+        model_error_A: Optional[float] = None,
         # --- rescore ---
         rescore_engine: str = "m_letf1",
         rescore_scat_mode: str = "legacy",
@@ -274,8 +273,16 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.ll_padding_factor = ll_padding_factor
         self.n_rotation_peaks = n_rotation_peaks
         self.n_ml_refine = n_ml_refine
-        self.frf_lmax_cap = frf_lmax_cap
-        self.frf_dense_pad = frf_dense_pad
+        # Expected r.m.s. coordinate error of the search model, in Angstrom:
+        # it sets the sigma_A fall-off in the rotation function. When the caller
+        # does not know it, estimate it from the model's length the way Phaser
+        # does (Oeffner et al. 2013), assuming the sequence is the target's --
+        # roughly 8 heavy atoms per residue.
+        if model_error_A is None:
+            from .frf.preprocessing import oeffner_vrms
+            n_residues = max(1, int(model.xyz().shape[0] / 8))
+            model_error_A = oeffner_vrms(n_residues, 1.0)
+        self.model_error_A = float(model_error_A)
 
         self.rescore_engine = rescore_engine
         self.rescore_scat_mode = rescore_scat_mode
@@ -493,15 +500,14 @@ class MolecularReplacementPipeline(DeviceMixin):
         timer.start("3_rotation_search")
         if self.verbose > 0:
             print(
-                f"mr: frf_separate rotation search "
-                f"(dense calc + auto_lmax cap={self.frf_lmax_cap}, "
-                f"n_peaks={self.n_rotation_peaks})…",
+                f"mr: rotation search (n_peaks={self.n_rotation_peaks}, "
+                f"model error {self.model_error_A:.2f} A)…",
                 flush=True,
             )
-        peaks = _run_frf_separate_rotation(
-            self.model, data, frf,
-            lmax_cap=self.frf_lmax_cap, dense_pad=self.frf_dense_pad,
-            n_peaks=self.n_rotation_peaks, verbose=self.verbose,
+        peaks, _lmax, _d_min = search_peaks(
+            self.model, data, self.model_error_A,
+            U_aniso=frf.U_aniso, n_peaks=self.n_rotation_peaks,
+            verbose=self.verbose,
         )
         timer.stop("3_rotation_search")
 

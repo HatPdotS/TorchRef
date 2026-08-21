@@ -10,10 +10,12 @@ gets a number first:
     under-determines the SH modes" argument for 48 predates the dense P1-box
     calc, so it is not evidence about the current engine.
 anisotropy
-    ``production`` is the log-space fit with no intercept; ``fixed_fit`` is the
-    intensity-space replacement; ``iso_only`` keeps its radial part; ``no_aniso``
-    drops the correction. Measured before at seven structures, where
-    ``fixed_fit`` was indistinguishable from ``no_aniso`` in aggregate.
+    ``production`` is the shipped intensity-space fit; ``legacy_log`` is the
+    biased log-space fit it replaced; ``iso_only`` keeps only the radial part of
+    the shipped fit; ``no_aniso`` drops the correction. On this panel
+    ``production`` and ``no_aniso`` are indistinguishable except on 3GR5,
+    because most of the structures carry less anisotropy than the estimator can
+    resolve.
 ``_orbit_unroll``
     Off, on the strength of a run that predates the reciprocal-space
     convention fix, so its evidence is void.
@@ -47,64 +49,43 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 torch.set_grad_enabled(False)
 
-from lab import (BENCH_PDBS, FRFConfig, aniso_arm, merge_peak_lists,  # noqa: E402
-                 orbit_rank, rotated_case, run_frf, seed_for, tensor_report)
+from lab import (BENCH_PDBS, FRFConfig, aniso_arm, orbit_rank,  # noqa: E402
+                 rotated_case, run_frf, seed_for, tensor_report)
 from lab.results import append_row, provenance  # noqa: E402
 
 EXPERIMENT = "frf_config_sweep"
 
-#: Suppression radius for the union merge. The engine uses
-#: ``max(2 * grid_sampling_deg, 6)`` internally, and the production sampling is
-#: 3 degrees, so 6 degrees keeps the merged list on the same footing.
-UNION_NMS_DEG = 6.0
-
-
 @dataclass(frozen=True)
 class Arm:
-    """One engine configuration to measure.
-
-    ``radius_scales`` with more than one entry means the union arm: one FRF
-    evaluation per scale, merged by z-score.
-    """
+    """One engine configuration to measure."""
 
     name: str
     lmax_cap: int = 64
     aniso: str = "production"
-    orbit_unroll: bool = False
-    radius_scales: Tuple[float, ...] = (1.0,)
 
     def config(self, base: FRFConfig) -> Tuple[FRFConfig, ...]:
-        out = []
-        for scale in self.radius_scales:
-            extra: Dict[str, object] = {"_orbit_unroll": self.orbit_unroll}
-            if scale != 1.0:
-                extra["frf_patterson_radius_scale"] = scale
-            out.append(FRFConfig(
-                d_min=base.d_min, d_max=base.d_max, n_shells=base.n_shells,
-                n_peaks=base.n_peaks, lmax_cap=self.lmax_cap,
-                dense_pad=base.dense_pad, extra=extra,
-            ))
-        return tuple(out)
+        return (FRFConfig(
+            d_min=base.d_min, d_max=base.d_max, n_shells=base.n_shells,
+            n_peaks=base.n_peaks, lmax_cap=self.lmax_cap,
+            dense_pad=base.dense_pad,
+        ),)
 
 
 def _factorial_arms() -> Tuple[Arm, ...]:
     """lmax_cap x anisotropy, plus the repeat-baseline control."""
     arms = [Arm("production_dup")]
     for cap in (48, 64, 100):
-        for aniso in ("production", "fixed_fit", "iso_only", "no_aniso"):
+        for aniso in ("production", "legacy_log", "iso_only", "no_aniso"):
             arms.append(Arm(f"cap{cap}_{aniso}", lmax_cap=cap, aniso=aniso))
     return tuple(arms)
 
 
-def _followup_arms(cap: int, aniso: str) -> Tuple[Arm, ...]:
-    """One-at-a-time from the winning cell of stage 1."""
-    base = Arm(f"cap{cap}_{aniso}", lmax_cap=cap, aniso=aniso)
-    return (
-        base,
-        Arm(f"{base.name}_unroll", lmax_cap=cap, aniso=aniso, orbit_unroll=True),
-        Arm(f"{base.name}_union", lmax_cap=cap, aniso=aniso,
-            radius_scales=(1.0, 0.5)),
-    )
+#: Stage 2 measured the orbit-dedup unroll and the two-radius Patterson union.
+#: Both were arguments of the engine wrapper that the API collapse removed, so
+#: those arms cannot be built against this tree; they were measured against the
+#: pre-collapse tree (a git worktree pinned at 133bd565) and the outcome is
+#: recorded in the changelog. Re-measuring them means restoring the arguments
+#: first, which is the point: they are not switches any more.
 
 
 #: The baseline every paired difference is taken against: today's shipped
@@ -119,19 +100,13 @@ def run_one(pdb: str, trial: int, arm: Arm, base: FRFConfig,
     configs = arm.config(base)
 
     captured: dict = {}
-    peak_lists = []
+    cfg = configs[0]
     t0 = time.time()
-    for cfg in configs:
-        with aniso_arm(arm.aniso if arm.aniso != "production" else "production",
-                       data, d_min=cfg.d_min, d_max=cfg.d_max,
-                       captured=captured):
-            res = run_frf(model, data, cfg, capture_arf=False, verbose=0)
-        peak_lists.append(res.peaks)
+    with aniso_arm(arm.aniso, data, d_min=cfg.d_min, d_max=cfg.d_max,
+                   captured=captured):
+        res = run_frf(model, data, cfg, capture_arf=False, verbose=0)
     seconds = time.time() - t0
-
-    peaks = (peak_lists[0] if len(peak_lists) == 1 else
-             merge_peak_lists(peak_lists, n_peaks=base.n_peaks,
-                              nms_radius_deg=UNION_NMS_DEG))
+    peaks = res.peaks
 
     rank, ang = orbit_rank(
         peaks, R_true, data.spacegroup.matrices.to(torch.float64).cpu(),
@@ -145,9 +120,6 @@ def run_one(pdb: str, trial: int, arm: Arm, base: FRFConfig,
     row.update({
         "arm_lmax_cap": arm.lmax_cap,
         "arm_aniso": arm.aniso,
-        "arm_orbit_unroll": int(arm.orbit_unroll),
-        "arm_radius_scales": "|".join(f"{s:g}" for s in arm.radius_scales),
-        "n_frf_calls": len(configs),
         "spacegroup": str(data.spacegroup.hm),
         "truth_rank": rank,
         # orbit_rank returns -1 for "no peak within thr_deg". A miss must not
@@ -164,7 +136,7 @@ def run_one(pdb: str, trial: int, arm: Arm, base: FRFConfig,
     # Emit both tensor reports for every arm, blank where the arm does not
     # produce one: a row carrying columns the file's header lacks is a schema
     # error, and silently-widened rows lose exactly these values.
-    for tag in ("raw", "fixed"):
+    for tag in ("raw", "legacy"):
         if tag in captured:
             row.update(tensor_report(captured[tag], tag))
         else:
@@ -179,10 +151,8 @@ def main() -> int:
     ap.add_argument("--trial", type=int, default=None,
                     help="single trial index; omit to run --trials of them")
     ap.add_argument("--trials", type=int, default=10)
-    ap.add_argument("--stage", type=int, default=1, choices=(1, 2),
-                    help="1 = lmax x aniso factorial; 2 = follow-ups")
-    ap.add_argument("--stage2-cap", type=int, default=64)
-    ap.add_argument("--stage2-aniso", default="fixed_fit")
+    ap.add_argument("--stage", type=int, default=1, choices=(1,),
+                    help="1 = lmax x aniso factorial")
     ap.add_argument("--d-min", type=float, default=4.0)
     ap.add_argument("--d-max", type=float, default=15.0)
     ap.add_argument("--n-peaks", type=int, default=500)
@@ -191,10 +161,11 @@ def main() -> int:
     ap.add_argument("--outdir", default=None)
     args = ap.parse_args()
 
-    arms = (BASELINE,) + (
-        _factorial_arms() if args.stage == 1
-        else _followup_arms(args.stage2_cap, args.stage2_aniso)
-    )
+    if args.stage != 1:
+        raise SystemExit(
+            "stage 2 measured engine arguments that no longer exist; see the "
+            "note above _factorial_arms.")
+    arms = (BASELINE,) + _factorial_arms()
     base = FRFConfig(d_min=args.d_min, d_max=args.d_max, n_peaks=args.n_peaks)
 
     if args.out_csv:

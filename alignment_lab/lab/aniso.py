@@ -1,32 +1,30 @@
-"""The overall-anisotropy correction: the production fit, and a corrected one.
+"""Arms for the overall-anisotropy correction.
 
-``sh.py:445 fit_overall_anisotropy`` regresses ``ln|F|^2 - ln<|F|^2>_shell`` on
-``-2 pi^2 s.U.s`` by unweighted least squares **with no intercept**, and that is
-the FRF's remaining defect (job 489540/489548). Three faults, all visible in its
+``sh.fit_overall_anisotropy`` now fits in intensity space with a free constant.
+The version it replaced regressed ``ln|F|^2 - ln<|F|^2>_shell`` on
+``-2 pi^2 s.U.s`` by unweighted least squares **with no intercept**, and that was
+the rotation function's last real defect. Three faults, all visible in its
 output:
 
 * ``E[ln(I/<I>)]`` is ``-gamma = -0.577`` for acentric reflections and
   ``-gamma - ln 2 = -1.270`` for centric ones, not zero. With no intercept the
-  offset can only be absorbed by the quadratic form, which is why the fitted
-  tensor's SMALLEST B eigenvalue is 35-64 A^2 on every benchmark structure
-  instead of near zero. The centric part is worse than a constant: centric
-  reflections lie on the zones perpendicular to the symmetry axes, so the bias
-  is direction-dependent.
+  offset can only be absorbed by the quadratic form. The centric part is worse
+  than a constant: centric reflections lie on the zones perpendicular to the
+  symmetry axes, so the bias is direction-dependent.
 * ``clamp(min=1e-30)`` turns a vanishing amplitude into ``y ~ -69``; a handful of
   those outweigh thousands of ordinary reflections in an unweighted fit.
 * ``ln`` of a single-reflection intensity has variance ``pi^2/6`` (acentric) or
   ``pi^2/2`` (centric) with a heavy left tail, so the fit is dominated by the
   weak reflections carrying the least information.
 
-Raw fitted B eigenvalue spreads come out at 70 to 5461 A^2.
-``symmetrize_anisotropy`` then projects onto the point-group-invariant subspace,
-which annihilates the garbage where that subspace is small (cubic -> 1 DOF) and
-leaves it where it is not (trigonal/hexagonal -> diag(lambda, lambda, mu), where
-a uniaxial tensor along c is symmetry-allowed).
+Raw fitted B eigenvalue spreads came out at 70 to 5461 A^2 over the ten
+benchmark structures. ``symmetrize_anisotropy`` then annihilated the garbage
+where the point-group-invariant subspace is small (cubic -> one degree of
+freedom) and left it standing where it is not (trigonal/hexagonal -> two).
 
-One definition of the replacement lives here rather than in a diagnostic, since
-several diagnostics need to A/B against it and it is the candidate production
-change.
+:func:`fit_aniso_log_space` reproduces that version, so the measurement that
+justified replacing it can be re-run against the current tree rather than taken
+on trust.
 """
 
 from __future__ import annotations
@@ -36,77 +34,68 @@ from contextlib import contextmanager
 
 import torch
 
+from torchref.experimental.alignment.sh import fit_overall_anisotropy
+
 #: U (A^2) -> B (A^2).
 B_PER_U = 8.0 * math.pi ** 2
 
-#: Arm names accepted by :func:`aniso_arm`.
-ARMS = ("production", "no_aniso", "iso_only", "fixed_fit")
+#: Arm names accepted by :func:`aniso_arm`. ``production`` is whatever
+#: ``sh.fit_overall_anisotropy`` currently does; ``legacy_log`` is the biased
+#: fit it replaced.
+ARMS = ("production", "legacy_log", "no_aniso", "iso_only")
 
 
-def fit_aniso_intensity_space(
+def fit_aniso_log_space(
     F_obs: torch.Tensor,
-    s_vec: torch.Tensor,
+    s_vectors: torch.Tensor,
     shell_idx: torch.Tensor,
-    centric: torch.Tensor,
     P: int,
     *,
     min_count: int = 20,
-    n_iter: int = 12,
 ) -> torch.Tensor:
-    """Unbiased replacement for ``fit_overall_anisotropy``.
+    """The superseded log-space fit, verbatim, for A/B against the current one.
 
-    Fits in INTENSITY space, where ``E[I/<I>_shell] = c * exp(-2 pi^2 s.U.s)``
-    holds exactly with no distributional correction. ``Var(I/<I>)`` is 1 for
-    acentric and 2 for centric reflections, which gives the weights; a free
-    constant ``c`` absorbs the overall scale so it cannot leak into ``U``;
-    non-finite and non-positive amplitudes are dropped rather than clamped.
-    Gauss-Newton from ``U = 0``.
-
-    Returns ``U`` in A^2 in the same convention as ``fit_overall_anisotropy``
-    (applied as ``exp(+pi^2 s.U.s)``), so the caller's symmetrisation and
-    application are unchanged.
+    Unweighted least squares of ``ln|F|^2 - ln<|F|^2>_shell`` on
+    ``-2 pi^2 s.U.s`` with no constant term, and vanishing amplitudes clamped
+    rather than dropped. Returns ``U`` in A^2 in the same convention as
+    :func:`~torchref.experimental.alignment.sh.fit_overall_anisotropy`.
     """
+    dtype = F_obs.dtype
+    device = F_obs.device
     valid = shell_idx >= 0
-    F = F_obs[valid].to(torch.float64)
-    s = s_vec[valid].to(torch.float64)
+    F = F_obs[valid]
+    s = s_vectors[valid].to(dtype)
     idx = shell_idx[valid]
-    cen = centric[valid].bool()
-    ok = torch.isfinite(F) & (F > 0)
-    F, s, idx, cen = F[ok], s[ok], idx[ok], cen[ok]
 
-    I = F * F
-    cnt = torch.zeros(P, dtype=torch.int64, device=F.device)
-    tot = torch.zeros(P, dtype=torch.float64, device=F.device)
-    cnt.index_add_(0, idx, torch.ones_like(idx))
-    tot.index_add_(0, idx, I)
-    mean_I = (tot / cnt.clamp(min=1).to(torch.float64)).clamp(min=1e-30)
-    keep = (cnt >= min_count)[idx]
-    if int(keep.sum()) < 50:
-        return torch.zeros((3, 3), dtype=F_obs.dtype, device=F_obs.device)
-    r = I[keep] / mean_I[idx[keep]]
-    sk, cenk = s[keep], cen[keep]
+    count = torch.zeros(P, dtype=torch.int64, device=device)
+    count.index_add_(0, idx, torch.ones_like(idx))
+    F2 = F * F
+    sum_F2 = torch.zeros(P, dtype=dtype, device=device)
+    sum_F2.index_add_(0, idx, F2)
+    mean_F2 = sum_F2 / count.clamp(min=1).to(dtype)
 
-    x, y, z = sk[:, 0], sk[:, 1], sk[:, 2]
-    quad = torch.stack([x * x, y * y, z * z,
-                        2 * x * y, 2 * x * z, 2 * y * z], dim=1)
-    A = torch.cat([torch.ones_like(x).unsqueeze(1),
-                   -2.0 * (torch.pi ** 2) * quad], dim=1)
-    w = torch.where(cenk, torch.full_like(r, 0.5), torch.ones_like(r))
+    good = count >= min_count
+    if int(good.sum()) == 0:
+        return torch.zeros((3, 3), dtype=dtype, device=device)
+    keep = good[idx]
+    F2k = F2[keep].clamp(min=1e-30)
+    sk = s[keep].to(torch.float64)
+    mean_F2_k = mean_F2[idx[keep]].clamp(min=1e-30)
 
-    theta = torch.zeros(7, dtype=torch.float64, device=F.device)
-    for _ in range(n_iter):
-        m = torch.exp((A @ theta).clamp(min=-20.0, max=20.0))
-        J = m.unsqueeze(1) * A
-        Jw = J * w.unsqueeze(1)
-        H = J.transpose(0, 1) @ Jw
-        g = Jw.transpose(0, 1) @ (r - m)
-        H = H + torch.eye(7, dtype=H.dtype, device=H.device) * 1e-12 * float(
-            torch.diagonal(H).abs().max().clamp(min=1e-30))
-        theta = theta + torch.linalg.solve(H, g)
-    u = theta[1:]
+    y = (torch.log(F2k) - torch.log(mean_F2_k)).to(torch.float64)
+    X = torch.stack([
+        sk[:, 0] ** 2, sk[:, 1] ** 2, sk[:, 2] ** 2,
+        2.0 * sk[:, 0] * sk[:, 1],
+        2.0 * sk[:, 0] * sk[:, 2],
+        2.0 * sk[:, 1] * sk[:, 2],
+    ], dim=-1)
+    A = -2.0 * (torch.pi ** 2) * X
+    u, _, _, _ = torch.linalg.lstsq(A, y.unsqueeze(-1))
+    Uxx, Uyy, Uzz, Uxy, Uxz, Uyz = u.squeeze(-1).tolist()
     return torch.tensor(
-        [[u[0], u[3], u[4]], [u[3], u[1], u[5]], [u[4], u[5], u[2]]],
-        dtype=F_obs.dtype, device=F_obs.device)
+        [[Uxx, Uxy, Uxz], [Uxy, Uyy, Uyz], [Uxz, Uyz, Uzz]],
+        dtype=dtype, device=device,
+    )
 
 
 def tensor_report(U: torch.Tensor, tag: str) -> dict:
@@ -121,15 +110,24 @@ def tensor_report(U: torch.Tensor, tag: str) -> dict:
 def aniso_arm(arm: str, data, *, d_min: float, d_max: float, captured: dict):
     """Swap the anisotropy fit for the duration of one FRF call.
 
-    ``captured`` receives the tensors actually fitted (``raw``, and ``fixed``
-    when the arm uses the replacement) so a caller can report the artefact size
-    alongside the rank it costs.
+    ``captured`` receives the tensor actually fitted under the key ``raw``, so a
+    caller can report the artefact size alongside the rank it costs.
 
-    The ``fixed_fit`` arm needs ``centric``, which ``fit_overall_anisotropy``
-    is not given. ``_prepare_frf_inputs`` masks ``F_obs`` and ``centric`` with
-    the same resolution window, so it is recomputed here from the same
-    ``d_min``/``d_max`` and checked against the amplitude count -- a mismatch
-    raises rather than silently misaligning.
+    Patches ``align.fit_overall_anisotropy``, which is the symbol
+    ``_prepare_frf_inputs`` calls and whose result is handed to the rotation
+    search as ``U_aniso``.
+
+    Parameters
+    ----------
+    arm : str
+        One of :data:`ARMS`.
+    data : ReflectionData
+        Used to recompute the centric mask over the same resolution window the
+        fit sees. A length mismatch raises rather than misaligning silently.
+    d_min, d_max : float
+        The window ``_prepare_frf_inputs`` was called with.
+    captured : dict
+        Filled in by the wrapper.
     """
     if arm not in ARMS:
         raise ValueError(f"unknown aniso arm {arm!r}; expected one of {ARMS}")
@@ -139,11 +137,11 @@ def aniso_arm(arm: str, data, *, d_min: float, d_max: float, captured: dict):
     rec = data.cell.reciprocal_basis_matrix.to(torch.float64)
     smag = (data.hkl.to(torch.float64) @ rec).norm(dim=-1)
     keep = (smag >= 1.0 / d_max) & (smag <= 1.0 / d_min)
-    centric = (data.centric[keep].to(torch.bool)
-               if hasattr(data, "centric") else None)
+    centric_window = (data.centric[keep].to(torch.bool)
+                      if hasattr(data, "centric") else None)
 
-    def wrapped(F_obs, s_vec, shell_idx, **kw):
-        U = original(F_obs, s_vec, shell_idx, **kw)
+    def wrapped(F_obs, s_vec, shell_idx, centric, **kw):
+        U = original(F_obs, s_vec, shell_idx, centric, **kw)
         captured.setdefault("raw", U.detach().clone())
         if arm == "production":
             return U
@@ -153,20 +151,24 @@ def aniso_arm(arm: str, data, *, d_min: float, d_max: float, captured: dict):
             # Radial part only; symmetrisation leaves lambda*I unchanged.
             return torch.eye(3, dtype=U.dtype, device=U.device) * (
                 torch.diagonal(U).sum() / 3.0)
-        if centric is None or centric.numel() != F_obs.shape[0]:
-            n = 0 if centric is None else centric.numel()
+        if centric_window is None or centric_window.numel() != F_obs.shape[0]:
+            n = 0 if centric_window is None else centric_window.numel()
             raise RuntimeError(
                 f"centric mask has {n} entries against {F_obs.shape[0]} "
                 f"amplitudes -- the resolution window assumed here "
                 f"([{d_min}, {d_max}] A) is not the engine's")
-        Ufix = fit_aniso_intensity_space(
-            F_obs, s_vec, shell_idx, centric.to(F_obs.device),
-            P=kw.get("P", 20), min_count=kw.get("min_count", 20))
-        captured["fixed"] = Ufix.detach().clone()
-        return Ufix
+        U_legacy = fit_aniso_log_space(
+            F_obs, s_vec, shell_idx, P=kw.get("P", 20),
+            min_count=kw.get("min_count", 20))
+        captured["legacy"] = U_legacy.detach().clone()
+        return U_legacy
 
     setattr(_align, "fit_overall_anisotropy", wrapped)
     try:
         yield
     finally:
         setattr(_align, "fit_overall_anisotropy", original)
+
+
+__all__ = ["ARMS", "B_PER_U", "aniso_arm", "fit_aniso_log_space",
+           "fit_overall_anisotropy", "tensor_report"]

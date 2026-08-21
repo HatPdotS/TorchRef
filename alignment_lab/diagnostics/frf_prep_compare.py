@@ -42,7 +42,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lab import FRFConfig, case_paths, load_case, patched  # noqa: E402
+from lab import FRFConfig, case_paths, load_case, patched, run_frf  # noqa: E402
 from lab.phaser_match import PATCHED_PHASER, write_keywords  # noqa: E402
 from lab.results import append_row, provenance  # noqa: E402
 
@@ -95,7 +95,6 @@ def capture_ours(pdb: str):
     Both go through ``bessel_sh_expand``; the observation call is the one with
     ``zsymm > 1`` (the calc side is deliberately never m-filtered).
     """
-    from torchref.experimental.alignment import align as _align
     from torchref.experimental.alignment.frf import api as _api
 
     pin = PINNED[pdb]
@@ -113,18 +112,11 @@ def capture_ours(pdb: str):
     def _pinned(model_radius_A, d_min_data, lmax_cap=48):
         return int(pin["lmax"]) + 1, float(pin["d_min_eff"])
 
-    cfg = FRFConfig(n_peaks=20, lmax_cap=int(pin["lmax"]))
+    cfg = FRFConfig(n_peaks=20, lmax_cap=int(pin["lmax"]),
+                    grid_sampling_deg=float(pin["sampling_deg"]))
     with patched(_api, "phaser_lmax_resolution", _pinned), \
          patched(_api, "bessel_sh_expand", spy):
-        frf_in = _align._prepare_frf_inputs(
-            model, data, d_min=cfg.d_min, d_max=cfg.d_max,
-            n_shells=cfg.n_shells, verbose=0,
-        )
-        _align._run_frf_separate_rotation(
-            model, data, frf_in, n_peaks=20, verbose=0,
-            lmax_cap=int(pin["lmax"]),
-            grid_sampling_deg=float(pin["sampling_deg"]),
-        )
+        run_frf(model, data, cfg, capture_arf=False, verbose=0)
     return cap
 
 

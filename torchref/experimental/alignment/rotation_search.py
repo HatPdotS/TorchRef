@@ -40,6 +40,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = ["RotationSolutions", "rotation_search"]
 
+# Note for anyone reaching for the constants below programmatically: the package
+# re-exports `rotation_search` (the function) under this module's own name, so
+# `from torchref.experimental.alignment import rotation_search` binds the
+# function, not the module. Use `importlib.import_module` for the module object.
+
 
 #: Spherical-harmonic bandwidth ceiling. Phaser's own limit (``DEF_CLMN_LMAX``)
 #: is 100. Where the model and resolution ask for more, the resolution is
@@ -175,7 +180,7 @@ def fit_anisotropy(
     return symmetrize_anisotropy(U, sym_cart)
 
 
-def _search(
+def search_peaks(
     model: "ModelFT",
     data: "ReflectionData",
     model_error_A: float,
@@ -183,16 +188,18 @@ def _search(
     U_aniso: torch.Tensor,
     n_peaks: int,
     verbose: int = 0,
-) -> RotationSolutions:
-    """Run the rotation function with the anisotropy tensor supplied.
+):
+    """Run the rotation function, returning the engine's own peak list.
 
-    Split out so callers that already fitted the anisotropy for another stage do
-    not fit it twice; :func:`rotation_search` is the entry point.
+    Returns ``(peaks, lmax, d_min)``, where ``peaks`` is a list of
+    :class:`~torchref.experimental.alignment.frf.types.RotationPeak` in Edmonds
+    ZYZ. For the placement pipeline, which consumes peaks directly and has
+    already fitted ``U_aniso`` for its rescore stage; :func:`rotation_search` is
+    the entry point for everything else.
     """
     from .frf.api import phaser_lmax_resolution, phaser_rotation_search
     from .frf.dense_calc import dense_calc_via_box
     from .frf.preprocessing import fit_relative_wilson_b
-    from .frf.rotation_utils import rotation_matrix_from_edmonds_euler_batch
 
     device = model.xyz().device
     with torch.no_grad():
@@ -296,6 +303,14 @@ def _search(
             compute_dtype=torch.complex64 if device.type == "cuda" else None,
         )
 
+    return peaks, int(L - 1), float(d_min)
+
+
+def _solutions(peaks, lmax: int, d_min: float,
+               model_error_A: float) -> RotationSolutions:
+    """Package a peak list as the public return type."""
+    from .frf.rotation_utils import rotation_matrix_from_edmonds_euler_batch
+
     euler = torch.tensor(
         [[p.alpha, p.beta, p.gamma] for p in peaks], dtype=torch.float64,
     ).reshape(-1, 3)
@@ -311,8 +326,8 @@ def _search(
         scores=torch.tensor([p.score for p in peaks], dtype=torch.float64),
         z_scores=torch.tensor([p.sigma for p in peaks], dtype=torch.float64),
         euler_zyz=euler,
-        lmax=int(L - 1),
-        d_min=float(d_min),
+        lmax=lmax,
+        d_min=d_min,
         model_error_A=float(model_error_A),
     )
 
@@ -367,7 +382,8 @@ def rotation_search(
     U_aniso = fit_anisotropy(
         data, d_min=d_min_fit, d_max=d_max_fit, device=model.xyz().device,
     )
-    return _search(
+    peaks, lmax, d_min = search_peaks(
         model, data, model_error_A,
         U_aniso=U_aniso, n_peaks=n_peaks, verbose=verbose,
     )
+    return _solutions(peaks, lmax, d_min, model_error_A)

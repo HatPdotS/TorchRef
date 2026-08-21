@@ -29,6 +29,10 @@ class FRFConfig:
     n_peaks: int = 500
     lmax_cap: int = 48
     dense_pad: float = 2.0
+    grid_sampling_deg: float = 3.0
+    #: Expected r.m.s. coordinate error, in Angstrom. ``None`` uses the Oeffner
+    #: estimate from the model's length, which is what the pipeline does.
+    model_error_A: Optional[float] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def as_row(self) -> Dict[str, Any]:
@@ -168,8 +172,17 @@ def run_frf(
     """
     import time
 
+    import importlib
+
     from torchref.experimental.alignment import align as _align
     from torchref.experimental.alignment.frf import api as _api
+
+    # `from ...alignment import rotation_search` gives the FUNCTION, which the
+    # package re-exports under the module's own name. Patching constants needs
+    # the module object.
+    _rs = importlib.import_module(
+        "torchref.experimental.alignment.rotation_search")
+    from torchref.experimental.alignment.frf.preprocessing import oeffner_vrms
 
     cfg = cfg or FRFConfig()
     captured: Dict[str, Any] = {}
@@ -179,24 +192,41 @@ def run_frf(
         captured["arf"] = arf
         return arf, peaks
 
+    # The engine takes no tuning arguments any more: `lmax_cap`, `dense_pad` and
+    # the SO(3) sampling are module constants of `rotation_search`. The lab
+    # sweeps them by rebinding those constants for the duration of one call, so
+    # the production API stays switch-free while the measurements that chose the
+    # values remain reproducible.
     frf_inputs = _align._prepare_frf_inputs(
         model, data,
         d_min=cfg.d_min, d_max=cfg.d_max, n_shells=cfg.n_shells, verbose=verbose,
     )
+    model_error_A = cfg.model_error_A
+    if model_error_A is None:
+        model_error_A = oeffner_vrms(max(1, int(model.xyz().shape[0] / 8)), 1.0)
+    if cfg.extra:
+        raise ValueError(
+            f"FRFConfig.extra is no longer plumbed anywhere: {sorted(cfg.extra)}. "
+            f"The engine knobs it reached were deleted; patch the constants in "
+            f"torchref.experimental.alignment.rotation_search instead."
+        )
 
     t0 = time.time()
-    if capture_arf:
-        _original = _api.phaser_rotation_search
-        with patched(_api, "phaser_rotation_search", _wrapped):
-            peaks = _align._run_frf_separate_rotation(
-                model, data, frf_inputs, n_peaks=cfg.n_peaks, verbose=verbose,
-                lmax_cap=cfg.lmax_cap, dense_pad=cfg.dense_pad, **cfg.extra,
+    with patched(_rs, "LMAX_CAP", int(cfg.lmax_cap)), \
+         patched(_rs, "DENSE_CALC_PAD", float(cfg.dense_pad)), \
+         patched(_rs, "GRID_SAMPLING_DEG", float(cfg.grid_sampling_deg)):
+        if capture_arf:
+            _original = _api.phaser_rotation_search
+            with patched(_api, "phaser_rotation_search", _wrapped):
+                peaks, _lmax, _dmin = _rs.search_peaks(
+                    model, data, model_error_A, U_aniso=frf_inputs.U_aniso,
+                    n_peaks=cfg.n_peaks, verbose=verbose,
+                )
+        else:
+            peaks, _lmax, _dmin = _rs.search_peaks(
+                model, data, model_error_A, U_aniso=frf_inputs.U_aniso,
+                n_peaks=cfg.n_peaks, verbose=verbose,
             )
-    else:
-        peaks = _align._run_frf_separate_rotation(
-            model, data, frf_inputs, n_peaks=cfg.n_peaks, verbose=verbose,
-            lmax_cap=cfg.lmax_cap, dense_pad=cfg.dense_pad, **cfg.extra,
-        )
     seconds = time.time() - t0
 
     arf = captured.get("arf")

@@ -24,7 +24,7 @@ from .truth import (
 from .aniso import (
     ARMS as ANISO_ARMS,
     aniso_arm,
-    fit_aniso_intensity_space,
+    fit_aniso_log_space,
     tensor_report,
 )
 from .frf import (FRFConfig, FRFResult, merge_peak_lists, patched,
@@ -45,7 +45,7 @@ __all__ = [
     "symmetry_orbit",
     "ANISO_ARMS",
     "aniso_arm",
-    "fit_aniso_intensity_space",
+    "fit_aniso_log_space",
     "tensor_report",
     "FRFConfig",
     "FRFResult",

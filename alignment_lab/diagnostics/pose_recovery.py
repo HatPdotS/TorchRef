@@ -73,12 +73,20 @@ def residual_rotation_deg(aligned_xyz, canonical_xyz, symops) -> float:
                for k in range(symops.shape[0]))
 
 
+#: The rotation search's own bandwidth constant. Recorded in every row because
+#: `align_model_to_data` has no bandwidth argument, so a `--lmax-cap` flag here
+#: would name a value the engine never saw.
+import importlib as _importlib  # noqa: E402
+
+_LMAX_CAP = _importlib.import_module(
+    "torchref.experimental.alignment.rotation_search").LMAX_CAP
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pdb", default="1DAW", choices=list(BENCH_PDBS))
     ap.add_argument("--trial", type=int, default=0)
     ap.add_argument("--arms", default="m_letf1,none,none+subpeak")
-    ap.add_argument("--lmax-cap", type=int, default=64)
     ap.add_argument("--n-rotation-candidates", type=int, default=15)
     ap.add_argument("--n-rotation-peaks", type=int, default=200)
     ap.add_argument("--success-deg", type=float, default=8.0)
@@ -118,11 +126,11 @@ def main() -> int:
         t0 = time.time()
         try:
             aligned = align_model_to_data(
-                search, data, d_min=4.0, d_max=15.0, L=32, n_shells=20,
+                search, data, d_min=4.0, d_max=15.0, n_shells=20,
                 n_rotation_peaks=args.n_rotation_peaks, n_ml_refine=200,
                 do_translation=True, do_joint_refine=True,
                 n_rotation_candidates=args.n_rotation_candidates,
-                frf_lmax_cap=args.lmax_cap, verbose=args.verbose, **flags,
+                verbose=args.verbose, **flags,
             )
             resid = residual_rotation_deg(aligned.xyz(), canonical_xyz, symops)
             err = ""
@@ -138,7 +146,7 @@ def main() -> int:
                          truth_rank="", truth_angle_deg=(round(resid, 4)
                                                          if resid == resid else ""),
                          orbit_side="kabsch", orbit_frame="cart",
-                         lmax_cap=args.lmax_cap, d_min=4.0, d_max=15.0,
+                         lmax_cap=_LMAX_CAP, d_min=4.0, d_max=15.0,
                          device="cpu", arm=arm,
                          rescore_engine=flags["rescore_engine"],
                          subpeak_refine=int(flags["subpeak_refine"]),

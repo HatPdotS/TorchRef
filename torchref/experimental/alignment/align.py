@@ -2,8 +2,7 @@
 Molecular replacement: data-prep / FRF stage helpers + the public entry point.
 
 This module hosts the heavy, reusable stage helpers — Lattman-Love / anisotropy
-data prep (`_prepare_frf_inputs`), the Phaser-faithful rotation search
-(`_run_frf_separate_rotation`), the solvent-aware R-work
+data prep (`_prepare_frf_inputs`), the solvent-aware R-work
 (`_external_rwork`), the direct-SF translation evaluator
 (`_DirectModelEvaluator`), the Rodrigues helper (`_rodrigues`) and the stage
 timer (`_StageTimer`) — that are shared by the rotation-ranking benchmarks and
@@ -294,240 +293,6 @@ def _prepare_frf_inputs(
     )
 
 
-def _run_frf_separate_rotation(
-    model: "ModelFT",
-    data: "ReflectionData",
-    frf: "FRFInputs",
-    *,
-    lmax_cap: int = 48,
-    dense_pad: float = 2.0,
-    n_peaks: int = 500,
-    grid_sampling_deg: float = 3.0,
-    delta_vrms_A: float = 0.5,
-    verbose: int = 0,
-    _orbit_unroll: bool = False,
-    # --- Phaser model-prep knobs (defaults ON post v26 validation: see
-    # the SLURM v26 sweep in slurm_logs/rescore_v26_103820_*.csv). ---
-    apply_bulk_solvent: bool = True,
-    solvent_fsol: float = 0.95,
-    solvent_bsol: float = 300.0,
-    vrms_strategy: str = "oeffner",
-    vrms_identity: float = 1.0,
-    apply_wilson_b: bool = True,
-    use_epsilon: bool = False,
-    # obs-side term toggles (all default ON = production) for knockout bisection
-    frf_use_m_filter: bool = True,
-    frf_use_shell_variance: bool = True,
-    frf_use_french_wilson: bool = True,
-    frf_use_lerf1: bool = True,
-    frf_acentric_only: bool = False,
-    frf_d_max: float = 100.0,
-    frf_obs_lmax: Optional[int] = None,
-    frf_obs_solid_angle: bool = False,
-    frf_patterson_radius_scale: float = 1.0,
-    # Run the dominant SH-Bessel expansion (Legendre/Y_lm precompute + radial
-    # contraction) in single precision. The contraction is the FRF's bottleneck;
-    # FP64 is rate-limited on GPUs and SIMD-narrower on CPUs. The spherical-Bessel
-    # downward recurrence keeps its float64 internals and the cross-chunk
-    # accumulator stays full-precision, so only the contraction loses precision.
-    # `None` (default) → float32 on CUDA, full precision on CPU. Set explicitly
-    # to True/False to force single/double precision on either device.
-    frf_einsum_float32: Optional[bool] = None,
-):
-    """Phaser-faithful (validated) rotation search — the production default.
-
-    Reproduces the v19 benchmark config that solved the high-symmetry cases
-    (4BX9 342→4-7, 6G9X 77→1-4; see ``FRF_CONSOLIDATION.md``):
-
-    * obs taken at the **full data resolution** — ``auto_lmax`` coarsens the SH
-      bandwidth to ``cap`` internally (the resolution↔bandwidth coupling that
-      removes the aliasing background), so we do not pre-restrict resolution;
-    * Popov-Bourenkov **anisotropy correction** (reuses ``frf.U_aniso``);
-    * obs **symmetry-unroll** to the full reciprocal sphere (critical for
-      high-symmetry spacegroups — the SH invariant subspace is otherwise
-      under-sampled);
-    * **dense P1-box calc** (single molecular transform, not unrolled) at the
-      coarsened resolution — fixes high-l SH under-determination on large models;
-    * French-Wilson + shell-variance weights; stable Wigner-d; all under no_grad.
-
-    Returns the validated engine's peak list (``frf.types.RotationPeak``, whose
-    ``.score`` aliases ``.value`` so it is drop-in for the ball-search peaks).
-    """
-    from .frf.api import phaser_lmax_resolution, phaser_rotation_search
-    from .frf.dense_calc import dense_calc_via_box
-
-    device = frf.device
-    with torch.no_grad():
-        rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)
-        hkl_all = data.hkl.to(device)
-        s_vec_all = hkl_all.to(torch.float64) @ rec_basis
-        s_mag_all = s_vec_all.norm(dim=-1)
-        # Full data resolution window; auto_lmax coarsens d_min to match the cap.
-        # d_max ≈ no low-res cutoff (matches the validated config's d_max_mimic).
-        d_min_eff = float(1.0 / s_mag_all.max().item())
-        d_max_eff = float(frf_d_max)  # low-resolution cutoff (default 100 ≈ none)
-        keep = (s_mag_all >= 1.0 / d_max_eff) & (s_mag_all <= 1.0 / d_min_eff)
-
-        s_obs = s_vec_all[keep]
-        # Anisotropy correction (reuse the tensor fitted in _prepare_frf_inputs).
-        F_obs = apply_overall_anisotropy(
-            data.F.to(torch.float64).abs().to(device)[keep], s_obs, frf.U_aniso,
-        )
-        sigF = (
-            data.F_sigma.to(torch.float64).to(device)[keep]
-            if getattr(data, "F_sigma", None) is not None
-            else None
-        )
-        centric = (
-            data.centric[keep].to(torch.bool).to(device)
-            if hasattr(data, "centric")
-            else torch.zeros_like(F_obs, dtype=torch.bool)
-        )
-
-        # Obs symmetry-unroll → full reciprocal space (each ASU reflection becomes
-        # n_ops entries carrying the same |F|², centric, σF — |F(Sh)|=|F(h)|).
-        #
-        # The `_orbit_unroll=True` path uses `epsilon_aware_unroll` (Phaser
-        # DataMR.cc:954-986's `!duplicate(isym, rhkl)` skip — keeps only unique
-        # orbit positions). It is OFF by default: as a standalone change it
-        # regressed the rebench (job 103409: 3K7M 18->189, 3GR5 47->204, 2DQ6
-        # 202->324). The dedup is correct only as part of a coordinated Phaser-
-        # faithful preprocessing chain (ε-Wilson + V(h) + σ_A), pending.
-        sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
-        # NOTE: centered lattices (I/C/F) list each point-group rotation once per
-        # centering op, so the raw matrices over-replicate the obs orbit (C2/I422
-        # → ×2). Deduping to unique rotations is the correct point group and saves
-        # that compute, BUT it is NOT result-neutral: the equal-COUNT Wilson shells
-        # rebin when the obs count changes, perturbing the normalisation (3A5V
-        # 3→4). Left as-is to keep FRF behaviour stable; tracked in
-        # GHOST_INVESTIGATION.md as a follow-up (fix needs count-independent shells).
-        # Integer unrolled Miller indices aligned with s_obs — needed for the
-        # ε(h) multiplicity correction (use_epsilon), which down-weights the
-        # axial/zonal reflections that otherwise over-weight the m=0 SH column
-        # and feed high-symmetry rotation-function ghosts (compute_epsilon docstring).
-        if _orbit_unroll:
-            from .frf.preprocessing import epsilon_aware_unroll
-            hkl_keep_int = hkl_all.to(torch.long).to(device)[keep]
-            unrolled_hkl, asu_idx = epsilon_aware_unroll(hkl_keep_int, sg_mats)
-            s_obs = unrolled_hkl.to(torch.float64) @ rec_basis
-            hkl_obs_int = unrolled_hkl.to(torch.float64)
-            F_obs = F_obs[asu_idx]
-            centric = centric[asu_idx]
-            if sigF is not None:
-                sigF = sigF[asu_idx]
-        else:
-            n_ops = int(sg_mats.shape[0])
-            hkl_keep = hkl_all.to(torch.float64)[keep]
-            # h' = h.R (transpose) -- see the note at the `hkl_sym` unroll.
-            hkl_unroll = torch.einsum("kji,nj->kni", sg_mats, hkl_keep).reshape(-1, 3)
-            s_obs = hkl_unroll @ rec_basis
-            hkl_obs_int = hkl_unroll
-            F_obs = F_obs.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
-            centric = centric.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
-            if sigF is not None:
-                sigF = sigF.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
-
-        # Optional: restrict the obs to ACENTRIC reflections before the SH
-        # expansion. Centric reflections lie on the reciprocal-space zones
-        # perpendicular to symmetry axes and carry concentrated symmetry-axis
-        # signal (and a heavier Wilson tail); pooling them into the obs over-
-        # weights the symmetry-axis channel that produces high-symmetry ghosts.
-        # Dropping them also makes the Wilson normalisation acentric-only.
-        if frf_acentric_only:
-            acen = ~centric
-            s_obs = s_obs[acen]
-            F_obs = F_obs[acen]
-            centric = centric[acen]
-            hkl_obs_int = hkl_obs_int[acen]
-            if sigF is not None:
-                sigF = sigF[acen]
-            if verbose > 0:
-                print(f"  FRF acentric-only: kept {int(acen.sum())}/{acen.numel()} obs",
-                      flush=True)
-
-        # Dense P1-box calc on the (un-rotated) search model at the coarsened res.
-        model_radius_A = float(
-            (model.xyz() - model.xyz().mean(0)).norm(dim=-1).mean().item()
-        )
-        dmin_dense = phaser_lmax_resolution(model_radius_A, d_min_eff, lmax_cap)[1]
-        s_calc, F_calc = dense_calc_via_box(
-            model, d_max_eff, dmin_dense, pad=dense_pad, verbose=verbose > 0,
-        )
-        s_calc = s_calc.to(device)
-        F_calc = F_calc.to(device)
-
-        # Optional Wilson-B match on the dense calc (EnsemblePDB.cc:793-851).
-        # Bin obs and calc into the same shells (defined by obs s-distribution),
-        # regress log(<F_obs²>/<F_calc²>) vs s², apply DW `exp(-B·s²/4)` to F_calc.
-        if apply_wilson_b:
-            from .frf.preprocessing import fit_relative_wilson_b
-            s_obs_mag = s_obs.norm(dim=-1)
-            s_calc_mag = s_calc.norm(dim=-1)
-            B_rel = fit_relative_wilson_b(
-                F_obs.to(torch.float64), F_calc.to(torch.float64),
-                s_obs_mag.to(torch.float64), n_shells=20,
-                s_mag_calc=s_calc_mag.to(torch.float64),
-            )
-            if abs(B_rel) > 1e-6:
-                F_calc = F_calc * torch.exp(-B_rel * (s_calc_mag * s_calc_mag) / 4.0)
-                if verbose > 0:
-                    print(f"  FRF Wilson-B applied: B_rel = {B_rel:+.2f} Å²", flush=True)
-
-        # Optional Oeffner vrms (rms_estimate.cc:37) — depends on n_residues
-        # estimated from atom count (≈ 8 heavy atoms / residue).
-        delta_vrms_for_frf = delta_vrms_A
-        if vrms_strategy == "oeffner":
-            from .frf.preprocessing import oeffner_vrms
-            n_residues_est = max(1, int(model.xyz().shape[0] / 8))
-            delta_vrms_for_frf = oeffner_vrms(n_residues_est, vrms_identity)
-            if verbose > 0:
-                print(
-                    f"  FRF Oeffner vrms = {delta_vrms_for_frf:.3f} Å "
-                    f"(n_res≈{n_residues_est}, ident={vrms_identity})",
-                    flush=True,
-                )
-        elif vrms_strategy != "fixed":
-            raise ValueError(
-                f"vrms_strategy={vrms_strategy!r}; expected 'fixed' or 'oeffner'."
-            )
-
-        _arf, peaks = phaser_rotation_search(
-            s_obs, F_obs, centric,
-            s_calc, F_calc,
-            sg_mats,
-            d_min=d_min_eff, d_max=d_max_eff, n_peaks=n_peaks,
-            delta_vrms_A=delta_vrms_for_frf,
-            sigma_threshold=-5.0,
-            use_lerf1_intensity=frf_use_lerf1,
-            use_m_symmetry_filter=frf_use_m_filter,
-            sig_F_obs=sigF,
-            use_french_wilson=(frf_use_french_wilson and (sigF is not None)),
-            use_shell_variance_weights=frf_use_shell_variance,
-            use_epsilon=use_epsilon,
-            hkl_obs=hkl_obs_int,
-            grid_sampling_deg=grid_sampling_deg,
-            model_radius_A=model_radius_A,
-            auto_lmax=True,
-            lmax_cap=lmax_cap,
-            obs_lmax=frf_obs_lmax,
-            obs_solid_angle=frf_obs_solid_angle,
-            patterson_radius_scale=frf_patterson_radius_scale,
-            apply_bulk_solvent=apply_bulk_solvent,
-            solvent_fsol=solvent_fsol,
-            solvent_bsol=solvent_bsol,
-            compute_dtype=(
-                torch.complex64
-                if (
-                    frf_einsum_float32
-                    if frf_einsum_float32 is not None
-                    else (device.type == "cuda")  # default: fp32 on GPU only
-                )
-                else None
-            ),
-        )
-    return peaks
-
-
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -560,8 +325,7 @@ def align_model_to_data(
     sigma_rot_deg: float = 0.0,
     sigma_trans_ang: float = 0.0,
     sigma_b: float = 0.0,
-    frf_lmax_cap: int = 48,
-    frf_dense_pad: float = 2.0,
+    model_error_A: Optional[float] = None,
     rescore_engine: str = "m_letf1",
     rescore_scat_mode: str = "legacy",
     subpeak_refine: bool = False,
@@ -584,13 +348,9 @@ def align_model_to_data(
             "Cannot fit an uninitialized ModelFT. Load PDB data first."
         )
 
-    # `MolecularReplacementPipeline` is the implementation of record; this
-    # function returns its single best `ModelFT`. Drive the pipeline directly to
-    # get the ranked candidate list. Imported lazily to avoid an import cycle --
-    # `pipeline` imports the
-    # stage helpers (`_prepare_frf_inputs`, `_run_frf_separate_rotation`,
-    # `_external_rwork`, `_DirectModelEvaluator`, `_rodrigues`, `_StageTimer`)
-    # from this module.
+    # Imported lazily to avoid an import cycle: `pipeline` imports the stage
+    # helpers (`_prepare_frf_inputs`, `_external_rwork`,
+    # `_DirectModelEvaluator`, `_rodrigues`, `_StageTimer`) from this module.
     from .pipeline import MolecularReplacementPipeline
 
     pipeline = MolecularReplacementPipeline(
@@ -600,7 +360,7 @@ def align_model_to_data(
         d_min=d_min, d_max=d_max, n_shells=n_shells,
         ll_max_res_A=ll_max_res_A, ll_padding_factor=ll_padding_factor,
         n_rotation_peaks=n_rotation_peaks, n_ml_refine=n_ml_refine,
-        frf_lmax_cap=frf_lmax_cap, frf_dense_pad=frf_dense_pad,
+        model_error_A=model_error_A,
         rescore_engine=rescore_engine, rescore_scat_mode=rescore_scat_mode,
         auto_variance_weights=auto_variance_weights,
         use_interp_var=use_interp_var,
