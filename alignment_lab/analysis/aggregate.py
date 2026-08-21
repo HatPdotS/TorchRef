@@ -154,6 +154,26 @@ def gate(rows: List[dict], key: str = "arm", base: str = "production",
             return False
         return 0 <= v < top_n
 
+    # A structure appearing with more trials than the others means rows were
+    # collected twice -- a re-run after a partial failure, say -- and the
+    # per-structure hit counts are then not comparable. That has to be loud: it
+    # silently flips which arms pass.
+    counts = {}
+    for arm in arms:
+        for pdb in pdbs:
+            n = len(per.get((arm, pdb), []))
+            if n:
+                counts.setdefault(n, []).append(f"{arm}/{pdb}")
+    if len(counts) > 1:
+        detail = ", ".join(
+            f"{n} trials: {len(v)} cell(s) e.g. {v[0]}"
+            for n, v in sorted(counts.items()))
+        raise SystemExit(
+            f"inconsistent trial counts across cells ({detail}). Deduplicate the "
+            f"inputs -- comparing 10 trials of one structure against 20 of "
+            f"another makes the gate meaningless."
+        )
+
     print(f"\n# shipping gate: truth in the top {top_n} on >= {min_hits} trials, "
           f"for every structure")
     print(f"{key:<26} {'pass':>5} {'worst structure':>16} {'total':>7} "

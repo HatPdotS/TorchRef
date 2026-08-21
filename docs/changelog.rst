@@ -2,6 +2,18 @@ Changelog
 =========
 
 
+Unreleased
+----------
+- Fixed the reciprocal-space symmetry convention in the alignment package (``h.S``, not ``S.h``)
+- Fixed ``hkl_symops_to_cartesian`` returning non-rotations in trigonal and hexagonal settings, which corrupted the anisotropy projection
+- Fixed the overall-anisotropy fit, which regressed log intensities with no constant term and so absorbed the ``-gamma`` offset into the tensor
+- Fixed molecular-replacement rotation candidates being composed onto each other instead of onto the search model
+- Fixed assigning a ``SpaceGroup`` object to ``Model.spacegroup`` being a silent no-op that then made the correct name assignment raise
+- Fixed ``Model.copy()`` dropping the iso/aniso partition, so a copy raised from ``get_iso()``
+- Fixed ``Model.copy()`` registering the original's space group as a second submodule of the copy
+- Replaced the fast rotation function's keyword surface with ``rotation_search(model, data, model_error_A)``; the caller's coordinate error is now used rather than overwritten by an estimate from the atom count
+- Removed the rotation function's dead modules, engine variants, debug environment switches and unreachable knobs
+
 Version 0.6.4
 ----------
 - Fixed the bulk-solvent ``F_sol`` staying at the starting model's mask for every refinement macrocycle

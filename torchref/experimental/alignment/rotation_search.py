@@ -46,13 +46,22 @@ __all__ = ["RotationSolutions", "rotation_search"]
 # function, not the module. Use `importlib.import_module` for the module object.
 
 
-#: Spherical-harmonic bandwidth ceiling. Phaser's own limit (``DEF_CLMN_LMAX``)
-#: is 100. Where the model and resolution ask for more, the resolution is
-#: coarsened to match the bandwidth instead -- see ``phaser_lmax_resolution``.
+#: Spherical-harmonic bandwidth ceiling. Where the model and the resolution ask
+#: for more, the resolution is coarsened to match instead -- see
+#: ``phaser_lmax_resolution``.
+#:
+#: Chosen by measurement, and the optimum is interior: over ten structures at
+#: ten seeded orientations, truth lands in the top twenty on 95/100 cells at 48,
+#: 98/100 at 64 and 98/100 at 100, but the binding case is 1AK5 (P 4 3 2), which
+#: manages 6/10, 9/10 and 8/10. Only 64 clears nine of ten on every structure.
+#: Phaser's own ceiling is 100 (``DEF_CLMN_LMAX``); here that is both worse on
+#: 1AK5 and six to ten times slower, and it needs more than 32 GB on three of
+#: the ten.
 LMAX_CAP = 64
 
 #: SO(3) sample spacing in degrees for the rotation-function grid. Also sets the
-#: peak-suppression radius, as ``max(2 * this, 6)`` degrees.
+#: peak-suppression radius, as ``max(2 * this, 6)`` degrees. Inherited from the
+#: configuration every measurement on this engine was made with.
 GRID_SAMPLING_DEG = 3.0
 
 #: Edge of the P1 box the model's transform is sampled in, as a multiple of the
@@ -77,6 +86,19 @@ SOLVENT_BSOL = 300.0
 #: Low-resolution cutoff in Angstrom. Effectively none: the rotation function
 #: wants the low-resolution terms, which carry the molecular envelope.
 LOW_RESOLUTION_CUTOFF_A = 100.0
+
+# Two things deliberately absent, both measured and rejected on the same panel:
+#
+# * **Orbit-deduplicated obs unroll.** Keeping only the distinct positions in
+#   each reflection's orbit, as Phaser does, rather than all n_ops copies. It
+#   moves 28 of 100 cells and in both directions -- 26 better, 13 worse against
+#   the shipped configuration -- with the binding structure unchanged at 9/10. A
+#   quarter of the results churned for no net gain.
+# * **Two-radius Patterson union.** Running the search at two integration radii
+#   and merging the peak lists by z-score. Exactly double the cost (8.7 s
+#   against 4.4 s median) and it changes 1 cell in 100, which is the engine's own
+#   run-to-run spread. An earlier measurement had favoured it; that result does
+#   not survive the anisotropy fix.
 
 #: Resolution window ``(d_max, d_min)`` the overall anisotropy is fitted in.
 #: The tensor is then applied across the full range. Inherited from the range
