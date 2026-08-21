@@ -2,7 +2,7 @@
 
 Every rank/ghost diagnostic needs the dense adaptive sample list as well as the
 peaks, and the engine only returns the peaks. The capture below wraps the
-engine's search entry point for the duration of one call; nine scripts each
+engine's scoring method for the duration of one call; nine scripts each
 carried their own copy of this monkeypatch.
 """
 
@@ -187,8 +187,8 @@ def run_frf(
     cfg = cfg or FRFConfig()
     captured: Dict[str, Any] = {}
 
-    def _wrapped(*args, **kwargs):
-        arf, peaks = _original(*args, **kwargs)
+    def _wrapped(self, *args, **kwargs):
+        arf, peaks = _original(self, *args, **kwargs)
         captured["arf"] = arf
         return arf, peaks
 
@@ -216,8 +216,8 @@ def run_frf(
          patched(_rs, "DENSE_CALC_PAD", float(cfg.dense_pad)), \
          patched(_rs, "GRID_SAMPLING_DEG", float(cfg.grid_sampling_deg)):
         if capture_arf:
-            _original = _api.phaser_rotation_search
-            with patched(_api, "phaser_rotation_search", _wrapped):
+            _original = _api.FastRotationFunction.score_model
+            with patched(_api.FastRotationFunction, "score_model", _wrapped):
                 peaks, _lmax, _dmin = _rs.search_peaks(
                     model, data, model_error_A, U_aniso=frf_inputs.U_aniso,
                     n_peaks=cfg.n_peaks, verbose=verbose,

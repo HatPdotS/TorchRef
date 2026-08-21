@@ -3,7 +3,7 @@ Alignment module for TorchRef.
 
 Pure-PyTorch Patterson-based molecular replacement:
 
-1. Fast Rotation Function (``frf.phaser_rotation_search`` /
+1. Fast Rotation Function (``rotation_search``, over
    ``frf.FastRotationFunction``) — Phaser-faithful Bessel-radial × SH
    expansion, stable Wigner-d, dense P1-box calc — then ML rescoring
    (``ml_rotation.m_letf1_rescore``) to rank candidate orientations.
@@ -48,7 +48,6 @@ from .frf import (
     dense_calc_via_box,
     edmonds_euler_from_rotation_matrix,
     phaser_lmax_resolution,
-    phaser_rotation_search,
     rotation_angular_distance_deg,
     rotation_matrix_from_edmonds_euler,
 )
@@ -138,7 +137,6 @@ from .sampling import VectorSampler, get_rotation_sampling_range
 __all__ = [
     # Rotation search
     "FastRotationFunction",
-    "phaser_rotation_search",
     "phaser_lmax_resolution",
     "dense_calc_via_box",
     "RotationPeak",

@@ -197,7 +197,7 @@ def search_peaks(
     already fitted ``U_aniso`` for its rescore stage; :func:`rotation_search` is
     the entry point for everything else.
     """
-    from .frf.api import phaser_lmax_resolution, phaser_rotation_search
+    from .frf.api import FastRotationFunction, phaser_lmax_resolution
     from .frf.dense_calc import dense_calc_via_box
     from .frf.preprocessing import fit_relative_wilson_b
 
@@ -242,8 +242,9 @@ def search_peaks(
         sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
         n_ops = int(sg_mats.shape[0])
         hkl_keep = hkl_all.to(torch.float64)[keep]
-        hkl_obs = torch.einsum("kji,nj->kni", sg_mats, hkl_keep).reshape(-1, 3)
-        s_obs = hkl_obs @ rec_basis
+        hkl_unrolled = torch.einsum(
+            "kji,nj->kni", sg_mats, hkl_keep).reshape(-1, 3)
+        s_obs = hkl_unrolled @ rec_basis
         F_obs = F_obs.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
         centric = centric.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
         if sigF is not None:
@@ -276,31 +277,27 @@ def search_peaks(
             if verbose > 0:
                 print(f"  relative Wilson B = {B_rel:+.2f} A^2", flush=True)
 
-        arf, peaks = phaser_rotation_search(
-            s_obs, F_obs, centric,
-            s_calc, F_calc,
-            sg_mats,
-            d_min=d_min_data, d_max=d_max, n_peaks=n_peaks,
+        engine = FastRotationFunction(
+            s_obs, F_obs, centric, sg_mats,
+            d_min=d_min_data, d_max=d_max,
             delta_vrms_A=float(model_error_A),
-            sigma_threshold=SIGMA_THRESHOLD,
-            use_lerf1_intensity=True,
-            use_m_symmetry_filter=True,
+            n_wilson_shells=N_WILSON_SHELLS,
             sig_F_obs=sigF,
-            use_french_wilson=sigF is not None,
-            use_shell_variance_weights=True,
-            hkl_obs=hkl_obs,
             grid_sampling_deg=GRID_SAMPLING_DEG,
             model_radius_A=model_radius_A,
             auto_lmax=True,
             lmax_cap=LMAX_CAP,
-            apply_bulk_solvent=True,
-            solvent_fsol=SOLVENT_FSOL,
-            solvent_bsol=SOLVENT_BSOL,
             # The spherical-harmonic contraction dominates the runtime and is
             # rate-limited in double precision on accelerators. Its float32 path
             # keeps the Bessel recurrence and the cross-chunk accumulator at
             # full precision.
             compute_dtype=torch.complex64 if device.type == "cuda" else None,
+        )
+        _arf, peaks = engine.score_model(
+            s_calc, F_calc, n_peaks=n_peaks,
+            sigma_threshold=SIGMA_THRESHOLD,
+            apply_bulk_solvent=True,
+            solvent_fsol=SOLVENT_FSOL, solvent_bsol=SOLVENT_BSOL,
         )
 
     return peaks, int(L - 1), float(d_min)

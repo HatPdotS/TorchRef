@@ -1,4 +1,4 @@
-"""Top-level ``FastRotationFunction`` class + the ``phaser_rotation_search`` wrapper.
+"""The fast rotation function engine: obs-side preprocessing, then scoring.
 
 Pipeline (mirrors Phaser ``run_FRF()``):
   1. Resolution mask (both sides).
@@ -16,7 +16,6 @@ Pipeline (mirrors Phaser ``run_FRF()``):
 from __future__ import annotations
 
 import math
-import os
 import warnings
 from typing import List, Optional, Tuple
 
@@ -27,18 +26,15 @@ from .peak_finder import find_rotation_peaks
 from .preprocessing import (
     apply_shell_variance_weights,
     build_lerf1_intensity,
-    compute_epsilon,
     detect_zsymm,
     eterm_sigma_a,
     french_wilson_preprocess,
-    solid_angle_weights,
     wilson_normalise,
-    wilson_normalise_epsilon,
 )
 from .sitelist_ang import evaluate_rotation_function
 from .types import AdaptiveRotationFunction, RotationPeak
 
-__all__ = ["FastRotationFunction", "phaser_rotation_search", "phaser_lmax_resolution"]
+__all__ = ["FastRotationFunction", "phaser_lmax_resolution"]
 
 
 def phaser_lmax_resolution(
@@ -155,23 +151,12 @@ class FastRotationFunction:
         d_max: Optional[float] = None,
         delta_vrms_A: float = 1.0,
         n_wilson_shells: int = 20,
-        bessel_h_scale: Optional[float] = None,
-        use_lerf1_intensity: bool = True,
-        use_m_symmetry_filter: bool = True,
         sig_F_obs: Optional[torch.Tensor] = None,
-        use_french_wilson: bool = False,
-        use_shell_variance_weights: bool = False,
-        n_var_shells: int = 20,
         grid_sampling_deg: float = 2.0,
-        hkl_obs: Optional[torch.Tensor] = None,
-        use_epsilon: bool = False,
         model_radius_A: Optional[float] = None,
         auto_lmax: bool = False,
-        lmax_cap: int = 48,  # sweet spot: higher L under-determines SH modes on sparse lattice
-        obs_lmax: Optional[int] = None,  # cap obs SH bandwidth below calc (determinacy test)
-        obs_solid_angle: bool = False,  # angular quadrature weight to de-bias the obs SH
-        patterson_radius_scale: float = 1.0,  # <1 tightens the Patterson integration sphere
-        compute_dtype: Optional[torch.dtype] = None,  # complex64 → faster einsum (GPU)
+        lmax_cap: int = 64,
+        compute_dtype: Optional[torch.dtype] = None,
     ):
         self.device = s_obs.device
         self.real_dtype = s_obs.dtype
@@ -180,7 +165,6 @@ class FastRotationFunction:
         # Phaser-faithful coupling of bandwidth to resolution (runMR_FRF.cc:408).
         # Overrides L and d_min so the SH expansion is not flooded with data
         # finer than L can represent (the high-symmetry failure mode).
-        self.auto_lmax = auto_lmax
         if auto_lmax:
             if model_radius_A is None or d_min is None:
                 raise ValueError(
@@ -195,26 +179,14 @@ class FastRotationFunction:
         self.n_wilson_shells = n_wilson_shells
         self.grid_sampling_deg = grid_sampling_deg
 
-        # 1. Resolution mask on obs. hkl_obs (if given) is masked in lock-step
-        #    so the ε(h) computation below stays aligned with F_obs.
+        # 1. Resolution mask on obs.
         extras = (F_obs, centric_obs)
         if sig_F_obs is not None:
             extras = extras + (sig_F_obs,)
-        if hkl_obs is not None:
-            extras = extras + (hkl_obs,)
         s_obs, extras, smag_obs = _resolution_mask(s_obs, extras, d_min, d_max)
-        F_obs = extras[0]
-        centric_obs = extras[1]
-        if os.environ.get("FRF_DEBUG"):
-            import sys as _sys
-            print(f"[FRF_DEBUG] auto_lmax={auto_lmax} L={self.L} d_min={d_min} "
-                  f"d_max={d_max} n_obs_after_mask={s_obs.shape[0]} "
-                  f"model_radius_A={model_radius_A}", file=_sys.stderr, flush=True)
-        ei = 2
+        F_obs, centric_obs = extras[0], extras[1]
         if sig_F_obs is not None:
-            sig_F_obs = extras[ei]; ei += 1
-        if hkl_obs is not None:
-            hkl_obs = extras[ei]; ei += 1
+            sig_F_obs = extras[2]
 
         if s_obs.shape[0] < n_wilson_shells * 5:
             raise ValueError(
@@ -222,100 +194,51 @@ class FastRotationFunction:
                 f"{n_wilson_shells} Wilson shells in [{d_min}, {d_max}] Å."
             )
 
-        # 1b. Multiplicity ε(h). Needs integer hkl + spacegroup operators.
-        epsilon = None
-        if use_epsilon:
-            if hkl_obs is None or sym_mats is None:
-                raise ValueError("use_epsilon=True requires hkl_obs and sym_mats.")
-            epsilon = compute_epsilon(hkl_obs, sym_mats)
+        # 2. Bessel scaling — Phaser's lmax · d_min (DataMR.cc:1107).
+        #    `bessel_h_scale = 2 pi R_patt` is the Patterson integration radius
+        #    (the chi_Omega sphere): the Bessel argument is
+        #    `h = bessel_h_scale |s|`, so the radial basis represents the
+        #    Patterson out to `R_patt = bessel_h_scale / (2 pi)`. Under
+        #    `auto_lmax` that comes to `R_patt ~ sphereOuter = 2 x mean radius`.
+        if d_min is None:
+            raise ValueError("d_min is required to set the Bessel scaling")
+        lmax = L - 1
+        lmax_even = lmax if lmax % 2 == 0 else lmax - 1
+        self.bessel_h_scale = float(lmax_even) * float(d_min)
 
-        # 2. Bessel scaling default — Phaser's lmax · d_min (DataMR.cc:1107).
-        #    bessel_h_scale = 2π·R_patt is the Patterson integration radius (the
-        #    χ_Ω sphere): the Bessel argument is h = bessel_h_scale·|s|, so the
-        #    radial basis represents the Patterson out to R_patt = bessel_h_scale
-        #    /(2π). With auto_lmax this defaults to R_patt ≈ sphereOuter = 2·mean
-        #    radius. `patterson_radius_scale` < 1 tightens it toward the
-        #    short-range intra-molecular self-Patterson (excludes the noisy
-        #    long-vector / inter-molecular tail that carries crystal symmetry).
-        if bessel_h_scale is None:
-            if d_min is None:
-                raise ValueError("bessel_h_scale must be set when d_min is None")
-            lmax = L - 1
-            lmax_even = lmax if lmax % 2 == 0 else lmax - 1
-            bessel_h_scale = float(lmax_even) * float(d_min)
-        bessel_h_scale = bessel_h_scale * float(patterson_radius_scale)
-        self.bessel_h_scale = bessel_h_scale
-
-        # 3. Wilson + optional FW + DFAC on obs. French-Wilson does its own
-        #    per-shell normalisation; ε-correction only applies to the plain
-        #    Wilson path (FW handles axial reflections via its posterior).
-        if use_french_wilson:
-            if sig_F_obs is None:
-                raise ValueError("use_french_wilson=True requires sig_F_obs.")
+        # 3. Wilson normalisation. With sigmas, through the French-Wilson
+        #    posterior, which does its own per-shell normalisation and handles
+        #    the axial reflections; without them, plain per-shell Wilson.
+        if sig_F_obs is not None:
             fw = french_wilson_preprocess(
                 F_obs, sig_F_obs, smag_obs, centric_obs,
                 n_wilson_shells=n_wilson_shells,
             )
-            eEobs = fw["eEobs"]
-            dfac = fw["DFAC"]
-            # Fold ε into eEobs² post-hoc: divide by sqrt(ε) so the effective
-            # intensity is I/ε (axial reflections de-weighted).
-            if epsilon is not None:
-                eEobs = eEobs / epsilon.sqrt().to(eEobs.dtype)
-        elif epsilon is not None:
-            E_obs, _ = wilson_normalise_epsilon(
-                F_obs, smag_obs, epsilon, n_wilson_shells,
-            )
-            eEobs = E_obs
-            dfac = torch.ones_like(E_obs)
+            eEobs, dfac = fw["eEobs"], fw["DFAC"]
         else:
-            E_obs, _ = wilson_normalise(F_obs, smag_obs, n_wilson_shells)
-            eEobs = E_obs
-            dfac = torch.ones_like(E_obs)
+            eEobs, _ = wilson_normalise(F_obs, smag_obs, n_wilson_shells)
+            dfac = torch.ones_like(eEobs)
 
-        # 4. LERF1 obs intensity.
+        # 4. LERF1 obs intensity, and the per-shell variance reweight.
         intensity_obs = build_lerf1_intensity(
-            eEobs, centric_obs, dfac=dfac,
-            use_centric_weight=use_lerf1_intensity,
+            eEobs, centric_obs, dfac=dfac, use_centric_weight=True,
+        )
+        intensity_obs = apply_shell_variance_weights(
+            intensity_obs, smag_obs, n_var_shells=n_wilson_shells,
         )
 
-        # 5. Optional shell-variance reweight.
-        if use_shell_variance_weights:
-            intensity_obs = apply_shell_variance_weights(
-                intensity_obs, smag_obs, n_var_shells=n_var_shells,
-            )
+        # 5. ZSYMM m-filter on the obs SH coefficients. The calc side is never
+        #    filtered -- see score_model.
+        zsymm = detect_zsymm(sym_mats)
 
-        # 5b. Optional angular quadrature weight: de-bias the obs SH expansion
-        #     for the non-uniform reciprocal-lattice point distribution (denser
-        #     along symmetry directions → amplified symmetry-axis/ghost channel).
-        if obs_solid_angle:
-            w_ang = solid_angle_weights(s_obs).to(intensity_obs.dtype)
-            intensity_obs = intensity_obs * w_ang
-
-        # 6. ZSYMM detection + m-symmetry filter on obs SH coefficients.
-        zsymm = detect_zsymm(sym_mats) if use_m_symmetry_filter else 1
-        self._zsymm = zsymm  # also reused on the calc side when enabled (score_model)
-
-        # 7. Bessel-SH expand obs side.
+        # 6. Bessel-SH expand the obs side.
         self._c_obs = bessel_sh_expand(
             s_obs, intensity_obs.to(self.real_dtype),
-            L=L, bessel_h_scale=bessel_h_scale,
+            L=L, bessel_h_scale=self.bessel_h_scale,
             zsymm=zsymm, enforce_friedel=True,
             compute_dtype=self.compute_dtype,
         )
 
-        # Optional: cap the obs SH bandwidth BELOW the calc's by zeroing high-l
-        # obs coefficients. The obs is expanded over the sparse, anisotropically-
-        # distributed reciprocal crystal lattice (denser along symmetry
-        # directions), so its high-l coefficients are aliased/under-determined
-        # and over-represent the symmetry-axis (ghost) channel. Truncating obs-l
-        # while keeping calc-l full tests whether that aliasing drives the
-        # high-symmetry ghosts. L (and the contraction) are unchanged; the rows
-        # l > obs_lmax just contribute nothing.
-        if obs_lmax is not None and obs_lmax < (L - 1):
-            l_idx = torch.arange(L, device=self.device)
-            self._c_obs.coeffs[:, l_idx > int(obs_lmax), :] = 0.0
-        self._obs_lmax = obs_lmax
 
     def score_model(
         self,
@@ -371,93 +294,3 @@ class FastRotationFunction:
             nms_radius_deg=max(2.0 * self.grid_sampling_deg, 6.0),
         )
         return arf, peaks
-
-
-def phaser_rotation_search(
-    s_obs: torch.Tensor,
-    F_obs: torch.Tensor,
-    centric_obs: torch.Tensor,
-    s_calc: torch.Tensor,
-    F_calc: torch.Tensor,
-    sym_mats: torch.Tensor,
-    *,
-    L: int = 24,
-    d_min: Optional[float] = None,
-    d_max: Optional[float] = None,
-    delta_vrms_A: float = 1.0,
-    n_wilson_shells: int = 20,
-    n_peaks: int = 500,
-    refine_subvoxel: bool = True,           # accepted for signature parity; ignored
-    n_refine: int = 50,                      # ignored
-    sigma_threshold: float = -5.0,
-    bessel_h_scale: Optional[float] = None,
-    use_lerf1_intensity: bool = True,
-    use_m_symmetry_filter: bool = True,
-    sig_F_obs: Optional[torch.Tensor] = None,
-    use_french_wilson: bool = False,
-    use_shell_variance_weights: bool = False,
-    n_var_shells: int = 20,
-    grid_sampling_deg: float = 2.0,
-    hkl_obs: Optional[torch.Tensor] = None,
-    use_epsilon: bool = False,
-    model_radius_A: Optional[float] = None,
-    auto_lmax: bool = False,
-    lmax_cap: int = 48,  # sweet spot: higher L under-determines SH modes on sparse lattice
-    obs_lmax: Optional[int] = None,  # cap obs SH bandwidth below calc (determinacy test)
-    obs_solid_angle: bool = False,  # angular quadrature weight to de-bias the obs SH
-    patterson_radius_scale: float = 1.0,  # <1 tightens the Patterson integration sphere
-    # Phaser bulk-solvent (Babinet) folded into σ_A on the calc side
-    # (EnsemblePDB.cc:96-100; solTerm.h:9). Default OFF; flip after sweep.
-    apply_bulk_solvent: bool = False,
-    solvent_fsol: float = 0.95,
-    solvent_bsol: float = 300.0,
-    compute_dtype: Optional[torch.dtype] = None,
-) -> Tuple[AdaptiveRotationFunction, List[RotationPeak]]:
-    """Construct a :class:`FastRotationFunction` and score one model.
-
-    ``refine_subvoxel`` and ``n_refine`` are accepted and ignored: the per-β
-    fixed-shape FFT already provides sub-voxel precision through its bilinear
-    interpolation, and Phaser runs no extra quadratic refinement either.
-
-    Extra (non-legacy) kwargs:
-      hkl_obs : integer Miller indices aligned with s_obs, needed for ε(h).
-      use_epsilon : apply the ε(h) multiplicity correction to Wilson
-        normalisation (de-weights axial reflections). Requires hkl_obs.
-    """
-    # The FRF is forward-only (peak search, no backprop). Without no_grad the
-    # SH-Bessel expansion, the per-l Wigner contraction recurrence, and the FFT
-    # accumulate an autograd graph across every loop iteration — the dominant
-    # memory cost (tens to >100 GB at L≈100 / dense grids), and the cause of the
-    # OOMs. Disable grad for the whole engine.
-    with torch.no_grad():
-        frf = FastRotationFunction(
-            s_obs, F_obs, centric_obs, sym_mats,
-            L=L, d_min=d_min, d_max=d_max,
-            delta_vrms_A=delta_vrms_A,
-            n_wilson_shells=n_wilson_shells,
-            bessel_h_scale=bessel_h_scale,
-            use_lerf1_intensity=use_lerf1_intensity,
-            use_m_symmetry_filter=use_m_symmetry_filter,
-            sig_F_obs=sig_F_obs,
-            use_french_wilson=use_french_wilson,
-            use_shell_variance_weights=use_shell_variance_weights,
-            n_var_shells=n_var_shells,
-            grid_sampling_deg=grid_sampling_deg,
-            hkl_obs=hkl_obs,
-            use_epsilon=use_epsilon,
-            model_radius_A=model_radius_A,
-            auto_lmax=auto_lmax,
-            lmax_cap=lmax_cap,
-            obs_lmax=obs_lmax,
-            obs_solid_angle=obs_solid_angle,
-            patterson_radius_scale=patterson_radius_scale,
-            compute_dtype=compute_dtype,
-        )
-        return frf.score_model(
-            s_calc, F_calc,
-            n_peaks=n_peaks,
-            sigma_threshold=sigma_threshold,
-            apply_bulk_solvent=apply_bulk_solvent,
-            solvent_fsol=solvent_fsol,
-            solvent_bsol=solvent_bsol,
-        )

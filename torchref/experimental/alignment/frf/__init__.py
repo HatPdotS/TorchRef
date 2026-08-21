@@ -9,11 +9,7 @@ and Phaser-mimic engines (4BX9 342→4–7, 6G9X 77→1–4).
 Shared leaf math (``..sh``, ``..wigner``) lives in the parent ``alignment``
 package; this sub-package imports it "up".
 """
-from .api import (
-    FastRotationFunction,
-    phaser_lmax_resolution,
-    phaser_rotation_search,
-)
+from .api import FastRotationFunction, phaser_lmax_resolution
 from .dense_calc import dense_calc_via_box, model_sf_abs
 from .rotation_utils import (
     edmonds_euler_from_rotation_matrix,
@@ -30,7 +26,6 @@ from .types import (
 __all__ = [
     # Engine
     "FastRotationFunction",
-    "phaser_rotation_search",
     "phaser_lmax_resolution",
     "dense_calc_via_box",
     "model_sf_abs",

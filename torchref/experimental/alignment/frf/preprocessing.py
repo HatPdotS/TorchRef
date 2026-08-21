@@ -259,46 +259,6 @@ def build_lerf1_intensity(
     return cw * (eEobs * eEobs - 1.0) * (dfac * dfac)
 
 
-def solid_angle_weights(
-    s_vec: torch.Tensor,
-    n_cos_theta: int = 16,
-    n_phi: int = 32,
-) -> torch.Tensor:
-    """Per-reflection angular quadrature weight to de-bias the SH expansion.
-
-    The obs SH coefficient is a discretised ``∫ Y*_lm I dΩ`` over the reciprocal
-    crystal lattice. The lattice points are NOT uniform on the sphere — they
-    cluster along the cell's symmetry directions — so the unweighted sum
-    over-represents those directions and amplifies the symmetry-axis (ghost)
-    channel. This returns a weight ``w_i = 1 / (count in i's equal-area angular
-    cell)`` (normalised so ``Σ w = N``), which equalises each direction's
-    contribution — a crude spherical-quadrature / inverse-density correction.
-
-    Bins are equal-area on the sphere (uniform in ``cos θ`` and ``φ``).
-
-    Parameters
-    ----------
-    s_vec : (N, 3) reciprocal-space Cartesian vectors.
-    n_cos_theta, n_phi : int — angular bin counts (equal-area cells).
-
-    Returns
-    -------
-    w : (N,) weights, dtype = s_vec.dtype, normalised to ``Σ w = N``.
-    """
-    s_mag = s_vec.norm(dim=-1).clamp(min=1e-30)
-    hat = s_vec / s_mag.unsqueeze(-1)
-    cos_t = hat[..., 2].clamp(-1.0, 1.0)
-    phi = torch.atan2(hat[..., 1], hat[..., 0])            # [-π, π]
-    ti = ((cos_t + 1.0) * 0.5 * n_cos_theta).floor().clamp(0, n_cos_theta - 1).to(torch.int64)
-    pi = ((phi + math.pi) / (2.0 * math.pi) * n_phi).floor().clamp(0, n_phi - 1).to(torch.int64)
-    cell = ti * n_phi + pi                                  # (N,)
-    n_cells = n_cos_theta * n_phi
-    count = torch.bincount(cell, minlength=n_cells).clamp(min=1)
-    w = 1.0 / count[cell].to(torch.float64)
-    w = w * (float(s_vec.shape[0]) / w.sum().clamp(min=1e-30))
-    return w.to(s_vec.dtype)
-
-
 def apply_shell_variance_weights(
     intensity: torch.Tensor,
     s_mag: torch.Tensor,
