@@ -195,8 +195,16 @@ def build_adaptive_sample_list(
         beta_rad = b * grid_sampling_deg * deg2rad        # plain math: no sync
         cosb = math.cos(beta_rad / 2.0)
         sinb = math.sin(beta_rad / 2.0)
-        pmax = max(1, int(720.0 / grid_sampling_deg * cosb))
-        qmax = max(1, int(360.0 / grid_sampling_deg * sinb))
+        # Truncation toward zero, with NO clamp to a minimum of 1 -- Phaser
+        # has none (FastRot.cc:214-215). Near beta = 180 deg, cos(beta/2) drives
+        # pmax to 0 and Phaser's `for (p=0; p<pmax; p++)` body never runs, so
+        # the beta section is genuinely empty. Clamping to 1 invents a section
+        # Phaser does not sample.
+        pmax = int(720.0 / grid_sampling_deg * cosb)
+        qmax = int(360.0 / grid_sampling_deg * sinb)
+        if pmax == 0 or (b > 0 and qmax == 0):
+            beta_starts.append(beta_starts[-1])
+            continue
 
         if b == 0:
             # β=0: only α = γ = p/pmax for p < pmax/2 (FastRot.cc:189-207).
