@@ -446,81 +446,110 @@ def fit_overall_anisotropy(
     F_obs: torch.Tensor,
     s_vectors: torch.Tensor,
     shell_idx: torch.Tensor,
+    centric: torch.Tensor,
     P: int,
     min_count: int = 20,
+    n_iter: int = 12,
 ) -> torch.Tensor:
     """
     Fit the overall anisotropy tensor U from F_obs alone (no model needed).
 
-    The Popov-Bourenkov anisotropy correction models the observed structure-
-    factor amplitudes as a per-shell isotropic Wilson piece modulated by an
-    overall anisotropic Debye-Waller term:
+    The Popov-Bourenkov correction models the observed intensities as a
+    per-shell isotropic Wilson piece modulated by an overall anisotropic
+    Debye-Waller term::
 
-        |F_obs(h)|² ≈ <|F_iso|²>(s) · exp(−2π²·s·U·s)
+        E[ I(h) / <I>_shell ] = c * exp(-2 pi^2 s.U.s)
 
-    Taking logs and fitting the linear regression
-        ln |F_obs|² − ln<|F_iso|²>(s) = −2π² s·U·s
-    over all reflections gives the 6-parameter U directly (linear in U). We
-    parametrise as U_xx, U_yy, U_zz, U_xy, U_xz, U_yz and ignore reflections
-    in shells with fewer than `min_count` entries (poor shell mean estimate).
+    That expectation is exact in **intensity** space, which is where this fits
+    it: a free constant ``c`` absorbs the overall scale, the weights come from
+    ``Var(I/<I>)`` -- 1 for acentric reflections and 2 for centric ones -- and
+    non-positive or non-finite amplitudes are dropped. Gauss-Newton from
+    ``U = 0``.
 
-    The returned U is the correction to *apply* in the form
-        F_obs_corrected(h) = F_obs(h) · exp(+π²·s·U·s)
-    so that the resulting amplitudes have the same per-shell mean square
-    regardless of direction.
+    Fitting the same relation in log space instead is what the earlier version
+    did, and it is biased: ``E[ln(I/<I>)]`` is ``-gamma = -0.577`` for acentric
+    and ``-gamma - ln 2`` for centric reflections, not zero. Without a constant
+    term that offset can only be absorbed by the quadratic form, so U comes back
+    with a large spurious component -- and because centric reflections lie on
+    the zones perpendicular to the symmetry axes, the bias is
+    direction-dependent rather than a harmless overall scale.
+
+    The returned U is the correction to *apply* in the form::
+
+        F_obs_corrected(h) = F_obs(h) * exp(+pi^2 s.U.s)
+
+    so the corrected amplitudes have the same mean square in every direction.
+    Project it onto the point group with :func:`symmetrize_anisotropy` before
+    applying it: an unconstrained six-component fit can return a tensor the
+    lattice forbids.
 
     Parameters
     ----------
     F_obs : (N,) real
-    s_vectors : (N, 3) real (1/Å)
-    shell_idx : (N,) int64 — assigns each reflection to a shell in [0, P)
+    s_vectors : (N, 3) real, reciprocal-space Cartesian (1/Angstrom)
+    shell_idx : (N,) int64 -- shell of each reflection, in [0, P); negative
+        entries are excluded
+    centric : (N,) bool
     P : int, number of shells
+    min_count : int, optional
+        Shells with fewer reflections than this are dropped, since their mean
+        intensity is too noisy to normalise against.
+    n_iter : int, optional
+        Gauss-Newton iterations.
 
     Returns
     -------
-    U : (3, 3) symmetric real tensor (Å²)
+    U : (3, 3) symmetric real tensor (Angstrom squared). Zero if too few
+        reflections survive to constrain seven parameters.
     """
-    device = F_obs.device
-    dtype = F_obs.dtype
     valid = shell_idx >= 0
-    F = F_obs[valid]
-    s = s_vectors[valid].to(dtype)
+    F = F_obs[valid].to(torch.float64)
+    s = s_vectors[valid].to(torch.float64)
     idx = shell_idx[valid]
-    count = torch.zeros(P, dtype=torch.int64, device=device)
+    cen = centric[valid].bool()
+
+    ok = torch.isfinite(F) & (F > 0)
+    F, s, idx, cen = F[ok], s[ok], idx[ok], cen[ok]
+
+    I = F * F
+    count = torch.zeros(P, dtype=torch.int64, device=F.device)
+    total = torch.zeros(P, dtype=torch.float64, device=F.device)
     count.index_add_(0, idx, torch.ones_like(idx))
-    F2 = F * F
-    sum_F2 = torch.zeros(P, dtype=dtype, device=device)
-    sum_F2.index_add_(0, idx, F2)
-    mean_F2 = sum_F2 / count.clamp(min=1).to(dtype)
-    # Mask shells with too few reflections
-    good = count >= min_count
-    if good.sum() == 0:
-        return torch.zeros((3, 3), dtype=dtype, device=device)
-    keep = good[idx]
-    F2k = F2[keep].clamp(min=1e-30)
-    sk = s[keep]
-    mean_F2_k = mean_F2[idx[keep]].clamp(min=1e-30)
-    # y = ln|F|² - ln<|F|²> = -2π² · sUs
-    y = (torch.log(F2k) - torch.log(mean_F2_k)).to(torch.float64)
-    sk = sk.to(torch.float64)
-    # Design matrix X for u = (Uxx, Uyy, Uzz, Uxy, Uxz, Uyz):
-    # s·U·s = Uxx sx² + Uyy sy² + Uzz sz² + 2 Uxy sx sy + 2 Uxz sx sz + 2 Uyz sy sz
-    X = torch.stack([
-        sk[:, 0] ** 2, sk[:, 1] ** 2, sk[:, 2] ** 2,
-        2.0 * sk[:, 0] * sk[:, 1],
-        2.0 * sk[:, 0] * sk[:, 2],
-        2.0 * sk[:, 1] * sk[:, 2],
-    ], dim=-1)
-    A = -2.0 * (torch.pi ** 2) * X                           # y ≈ A · u
-    # Least-squares solve A u = y
-    u_vec, _, _, _ = torch.linalg.lstsq(A, y.unsqueeze(-1))
-    u_vec = u_vec.squeeze(-1)
-    Uxx, Uyy, Uzz, Uxy, Uxz, Uyz = u_vec.tolist()
-    U = torch.tensor(
-        [[Uxx, Uxy, Uxz], [Uxy, Uyy, Uyz], [Uxz, Uyz, Uzz]],
-        dtype=dtype, device=device,
+    total.index_add_(0, idx, I)
+    mean_I = (total / count.clamp(min=1).to(torch.float64)).clamp(min=1e-30)
+
+    keep = (count >= min_count)[idx]
+    if int(keep.sum()) < 50:
+        return torch.zeros((3, 3), dtype=F_obs.dtype, device=F_obs.device)
+    ratio = I[keep] / mean_I[idx[keep]]
+    sk, cenk = s[keep], cen[keep]
+
+    x, y, z = sk[:, 0], sk[:, 1], sk[:, 2]
+    # s.U.s = Uxx sx^2 + Uyy sy^2 + Uzz sz^2
+    #         + 2 Uxy sx sy + 2 Uxz sx sz + 2 Uyz sy sz
+    quad = torch.stack([x * x, y * y, z * z,
+                        2 * x * y, 2 * x * z, 2 * y * z], dim=1)
+    # Column 0 is the free constant ln(c); the rest carry -2 pi^2 s.U.s.
+    A = torch.cat([torch.ones_like(x).unsqueeze(1),
+                   -2.0 * (torch.pi ** 2) * quad], dim=1)
+    w = torch.where(cenk, torch.full_like(ratio, 0.5), torch.ones_like(ratio))
+
+    theta = torch.zeros(7, dtype=torch.float64, device=F.device)
+    for _ in range(n_iter):
+        model = torch.exp((A @ theta).clamp(min=-20.0, max=20.0))
+        J = model.unsqueeze(1) * A
+        Jw = J * w.unsqueeze(1)
+        H = J.transpose(0, 1) @ Jw
+        grad = Jw.transpose(0, 1) @ (ratio - model)
+        H = H + torch.eye(7, dtype=H.dtype, device=H.device) * 1e-12 * float(
+            torch.diagonal(H).abs().max().clamp(min=1e-30))
+        theta = theta + torch.linalg.solve(H, grad)
+
+    u = theta[1:]
+    return torch.tensor(
+        [[u[0], u[3], u[4]], [u[3], u[1], u[5]], [u[4], u[5], u[2]]],
+        dtype=F_obs.dtype, device=F_obs.device,
     )
-    return U
 
 
 def hkl_symops_to_cartesian(

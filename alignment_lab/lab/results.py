@@ -69,8 +69,12 @@ def provenance() -> Dict[str, str]:
 def append_row(csv_path: str | os.PathLike, row: Mapping[str, Any]) -> None:
     """Append one row, writing the header only when the file is new.
 
-    Uses ``fh.tell() == 0`` rather than an existence check so a file created
-    but not yet written still gets its header.
+    The header is taken from the file once it exists, not from each row. Taking
+    it per row silently loses data: a later row carrying a column the first row
+    lacked gets written wider than the header, and ``DictReader`` then drops the
+    surplus values into ``restkey``. That is how a sweep's anisotropy columns
+    went missing while every other column still read back correctly. A row with
+    an unknown column now raises; a row missing a known one gets a blank.
 
     Parameters
     ----------
@@ -78,11 +82,29 @@ def append_row(csv_path: str | os.PathLike, row: Mapping[str, Any]) -> None:
         Destination CSV. Parent directories are created.
     row : mapping
         Column name -> value.
+
+    Raises
+    ------
+    ValueError
+        If ``row`` carries a column the file's header does not have.
     """
     path = Path(csv_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    header: Optional[list] = None
+    if path.exists() and path.stat().st_size > 0:
+        with open(path, newline="") as fh:
+            header = next(csv.reader(fh), None)
+    if header:
+        unknown = [k for k in row if k not in header]
+        if unknown:
+            raise ValueError(
+                f"{path.name}: row has columns absent from the header: "
+                f"{unknown}. Emit a stable set of columns for every row, using "
+                f"blanks where a value does not apply."
+            )
     with open(path, "a", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(row.keys()))
+        writer = csv.DictWriter(fh, fieldnames=header or list(row.keys()),
+                                restval="")
         if fh.tell() == 0:
             writer.writeheader()
         writer.writerow(dict(row))

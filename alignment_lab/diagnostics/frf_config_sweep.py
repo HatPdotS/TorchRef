@@ -161,9 +161,15 @@ def run_one(pdb: str, trial: int, arm: Arm, base: FRFConfig,
         "orbit_side": "left", "orbit_frame": "cart", "thr_deg": thr_deg,
         "seconds": round(seconds, 1),
     })
+    # Emit both tensor reports for every arm, blank where the arm does not
+    # produce one: a row carrying columns the file's header lacks is a schema
+    # error, and silently-widened rows lose exactly these values.
     for tag in ("raw", "fixed"):
         if tag in captured:
             row.update(tensor_report(captured[tag], tag))
+        else:
+            row.update({f"{tag}_B_min": "", f"{tag}_B_max": "",
+                        f"{tag}_B_spread": ""})
     return row
 
 

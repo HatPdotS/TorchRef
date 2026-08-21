@@ -262,16 +262,15 @@ def _prepare_frf_inputs(
     aniso_edges, _ = equal_count_shell_edges(s_mag, n_shells)
     aniso_idx = assign_shells(s_mag, aniso_edges)
     U_aniso = fit_overall_anisotropy(
-        F_obs, s_vec, aniso_idx, P=n_shells, min_count=20,
+        F_obs, s_vec, aniso_idx, centric, P=n_shells, min_count=20,
     )
-    # Project U onto the spacegroup's point-group-invariant subspace
-    # (Phaser RefineANO.cc:116-142 via cctbx `site_symmetry.average_u_star`).
-    # Without this constraint a 6-component unconstrained regression can
-    # fit physically impossible anisotropy on high-symmetry cells — e.g.
-    # 3K7M (cubic) fits eigenvalues (0.8, 17, 70) Å² which then blows up
-    # the per-reflection exp(π²·s·U·s) multiplier and destroys the FRF.
-    # After projection, cubic → U = λI (1 DOF), tetragonal → diag(λ,λ,μ),
-    # orthorhombic → diag(λ,μ,ν), etc.
+    # Project U onto the point-group-invariant subspace (Phaser
+    # RefineANO.cc:116-142, via cctbx `site_symmetry.average_u_star`). An
+    # unconstrained six-component fit can return a tensor the lattice forbids,
+    # and applying that modulates the observations by a direction-dependent
+    # factor the crystal cannot have. After projection: cubic -> U = lambda I
+    # (one degree of freedom), tetragonal/trigonal/hexagonal -> diag(l, l, m),
+    # orthorhombic -> diag(l, m, n).
     from .sh import hkl_symops_to_cartesian, symmetrize_anisotropy
     _sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
     _sym_mats_cart = hkl_symops_to_cartesian(_sg_mats, rec_basis.to(device))

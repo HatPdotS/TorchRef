@@ -75,6 +75,7 @@ from .pipeline import (
     euler_angular_distance,
 )
 from .align import align_model_to_data
+from .rotation_search import RotationSolutions, rotation_search
 
 # =============================================================================
 # Translation search
@@ -165,6 +166,8 @@ __all__ = [
     "rotation_angular_distance",
     "euler_angular_distance",
     "align_model_to_data",
+    "rotation_search",
+    "RotationSolutions",
     # Translation
     "fft_translation_search",
     "fft_translation_search_torch",
