@@ -32,6 +32,13 @@ def _euler_to_matrix_edmonds_zyz(
     """R = R_z(α) R_y(β) R_z(γ) — Edmonds ZYZ convention.
 
     Returns shape (*alpha.shape, 3, 3) real.
+
+    Algebraically ``rotation_utils.rotation_matrix_from_edmonds_euler_batch``,
+    but written as one fused pass rather than three matrix products. The NMS
+    below evaluates it over ~1e4 candidates, and the two forms round
+    differently in the last bit, which flips the suppression decision for pairs
+    sitting on the threshold. Every measurement on this engine was made with
+    this form, so it stays.
     """
     ca, sa = torch.cos(alpha), torch.sin(alpha)
     cb, sb = torch.cos(beta), torch.sin(beta)
@@ -46,16 +53,6 @@ def _euler_to_matrix_edmonds_zyz(
         dim=-2,
     )
     return R
-
-
-def _so3_angular_distance_deg(R1: torch.Tensor, R2: torch.Tensor) -> torch.Tensor:
-    """Angular distance between two rotation matrices, in degrees.
-
-    R1: (..., 3, 3), R2: (..., 3, 3). Returns (...,) real.
-    """
-    trace = torch.einsum("...ij,...ij->...", R1, R2)
-    cos_theta = ((trace - 1.0) * 0.5).clamp(min=-1.0, max=1.0)
-    return torch.arccos(cos_theta) * (180.0 / math.pi)
 
 
 def _so3_greedy_nms(

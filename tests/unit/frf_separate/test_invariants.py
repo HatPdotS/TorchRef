@@ -17,7 +17,8 @@ from torchref.experimental.alignment.frf.sitelist_ang import (
     build_dense_map_per_beta,
     evaluate_rotation_function,
 )
-from torchref.experimental.alignment.frf.wigner_d import small_d_packed, wigner_contraction_per_beta
+from torchref.experimental.alignment.frf.wigner_d import wigner_contraction_per_beta
+from torchref.experimental.alignment.wigner import small_d_packed
 
 
 def _make_xi(L: int, seed: int = 42) -> torch.Tensor:

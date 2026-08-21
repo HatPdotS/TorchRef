@@ -59,7 +59,6 @@ def adjust_gridding(target: int, max_prime: int = 5) -> int:
     """
     if target <= 1:
         return 1
-    primes = [2, 3, 5, 7, 11, 13][: min(max(max_prime // 2, 1), 6)]
     primes = [p for p in [2, 3, 5, 7, 11, 13] if p <= max_prime]
     n = int(target)
     while True:
@@ -132,16 +131,6 @@ def build_dense_map_per_beta(
     #    so the Euler labels are already in the right sign.
     M = torch.fft.fft2(pad, dim=(-2, -1))
     return M
-
-
-def _build_beta_grid(grid_sampling_deg: float) -> Tuple[torch.Tensor, int]:
-    """Return (β_grid in radians, bmax). β = b · Δ for b ∈ [0, bmax)."""
-    bmax = int(math.ceil(180.0 / grid_sampling_deg))
-    if bmax < 1:
-        raise ValueError(f"grid_sampling_deg={grid_sampling_deg} too coarse")
-    b = torch.arange(bmax, dtype=torch.float64)
-    betas_rad = b * grid_sampling_deg * (math.pi / 180.0)
-    return betas_rad, bmax
 
 
 # Module-level memo for the data-independent sample list, keyed on

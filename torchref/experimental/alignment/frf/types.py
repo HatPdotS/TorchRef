@@ -8,7 +8,6 @@ crystallographic intent first, C++ naming second.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
 
 import torch
 
@@ -26,21 +25,7 @@ class BesselSHCoefficients:
 
     coeffs: torch.Tensor          # (N_radial, L, 2L-1), complex
     L: int                         # angular bandlimit (lmax = L - 1)
-    N_radial: int                  # number of radial nodes
     bessel_h_scale: float          # h = bessel_h_scale * |s|
-
-
-@dataclass
-class WignerContraction:
-    """The per-β ``S_{m1,m2}(β) = Σ_l ξ_{l,m1,m2} · d^l_{m1,m2}(β)``.
-
-    Phaser source: ``SiteListAng::DoRfftStuff`` (FastRot.cc:39-59) builds
-    this sum into the ``rot`` accumulator before pushing into a pseudo-SF
-    array for FFT.
-    """
-
-    S: torch.Tensor                # (n_beta, 2L-1, 2L-1), complex
-    betas: torch.Tensor            # (n_beta,), real
 
 
 @dataclass
@@ -64,9 +49,6 @@ class AdaptiveRotationFunction:
     beta_starts: torch.Tensor      # (n_beta + 1,) int — slice indices per β
     beta_grid: torch.Tensor        # (n_beta,) real — the β values themselves
     grid_sampling_deg: float
-
-    def total_samples(self) -> int:
-        return int(self.values.numel())
 
 
 @dataclass

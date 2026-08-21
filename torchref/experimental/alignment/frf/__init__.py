@@ -25,7 +25,6 @@ from .types import (
     AdaptiveRotationFunction,
     BesselSHCoefficients,
     RotationPeak,
-    WignerContraction,
 )
 
 __all__ = [
@@ -44,5 +43,4 @@ __all__ = [
     "AdaptiveRotationFunction",
     "BesselSHCoefficients",
     "RotationPeak",
-    "WignerContraction",
 ]

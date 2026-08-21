@@ -309,7 +309,6 @@ def bessel_sh_expand(
     return BesselSHCoefficients(
         coeffs=c_nlm,
         L=L,
-        N_radial=N_radial,
         bessel_h_scale=float(bessel_h_scale),
     )
 

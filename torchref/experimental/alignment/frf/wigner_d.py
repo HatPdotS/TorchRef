@@ -3,76 +3,20 @@
 Phaser source: ``phaser/lib/wigner.h`` (the C++ template
 ``djmn_recursive_table`` used in ``FastRot.cc:41`` per-l, per-β).
 
-Phaser uses the Sakurai recurrence convention; we use the equivalent
-Edmonds (4.1.23) direct-sum formula, already validated against Phaser's
-output by the convention tests in
-``tests/unit/alignment/test_wigner.py``. To avoid duplicating maths,
-this module re-exports the existing implementation from
-``torchref.experimental.alignment.wigner`` (which is the same convention) and adds
-Phaser-specific helpers on top.
+Phaser uses the Sakurai recurrence convention; the equivalent Edmonds
+(4.1.23) convention is used throughout this package and is pinned against
+Phaser's output by ``tests/unit/alignment/test_wigner.py``.
+``wigner_contraction_per_beta`` builds the small-d table it needs from the
+``J_y`` eigendecomposition inline, which stays bounded to any ``l``.
 """
 from __future__ import annotations
 
-from typing import Tuple
-
 import torch
 
-# Re-export the existing validated implementations.
-from ..wigner import (
-    _build_half_angle_pow_tables,
-    small_d_block,
-    small_d_packed,
-    small_d_table,
-    wigner_D_pointwise,
-)
+__all__ = ["wigner_contraction_per_beta"]
 
-__all__ = [
-    "small_d_block",
-    "small_d_packed",
-    "small_d_stable",
-    "small_d_table",
-    "wigner_D_pointwise",
-    "wigner_contraction_per_beta",
-]
-
-
-def small_d_stable(L: int, betas: torch.Tensor) -> torch.Tensor:
-    """Numerically stable Wigner small-d table via J_y diagonalization.
-
-    ``d^l(β) = exp(-iβ J_y^{(l)})``. J_y is a tiny real tridiagonal generator,
-    so ``eigh(i·J_y)`` gives integer eigenvalues μ ∈ [-l, l] and a basis V with
-        ``d^l_{m n}(β) = Σ_μ V_{m μ} e^{-iβ μ} V*_{n μ}``  (real).
-    This is exactly the π/2 / SOFT Fourier-over-μ decomposition (V are the π/2
-    matrices up to phase), and it has NO catastrophic cancellation — unlike the
-    Edmonds direct-sum ``small_d_packed`` which explodes to |d|~1e11 at l≥50.
-
-    Returns ``(n_beta, L, 2L-1, 2L-1)`` with ``d[k, l, m+L-1, n+L-1] = d^l_{m,n}(β_k)``,
-    matching ``small_d_packed`` exactly (same convention, verified at l≤40).
-    """
-    betas = betas.to(torch.float64)
-    n_beta = betas.shape[0]
-    dim = 2 * L - 1
-    device = betas.device
-    out = torch.zeros((n_beta, L, dim, dim), dtype=torch.float64, device=device)
-    out[:, 0, L - 1, L - 1] = 1.0  # l=0
-    for l in range(1, L):
-        sz = 2 * l + 1
-        p = torch.arange(sz - 1, dtype=torch.float64, device=device)
-        sup = 0.5 * torch.sqrt((2 * l - p) * (p + 1.0))          # J_y off-diagonal magnitudes
-        A = torch.diag(sup, 1) - torch.diag(sup, -1)            # A = -i J_y, real antisymmetric
-        H = 1j * A.to(torch.complex128)                          # Hermitian
-        w, V = torch.linalg.eigh(H)                              # w≈[-l..l], V complex
-        # d_l(β) = Re( V · diag(e^{-iβ w}) · V^H ), batched over β
-        phase = torch.exp(-1j * betas.unsqueeze(1) * w.unsqueeze(0))   # (n_beta, sz)
-        d_l = torch.einsum("ma,ka,na->kmn", V, phase, V.conj()).real   # (n_beta, sz, sz)
-        lo, hi = L - 1 - l, L - 1 + l + 1
-        out[:, l, lo:hi, lo:hi] = d_l
-    return out
-
-
-# Cache of the J_y eigendecomposition per l. (w_l, V_l) depend only on l (and
-# device), not on β or the data, so they are computed once per (L, device) and
-# reused across every FRF call. Keyed on (L, device-str).
+#: Memo for the per-l J_y eigendecomposition, keyed on (L, device-str).
+#: It depends only on the bandwidth, so repeat calls at the same L reuse it.
 _WIGNER_EIG_CACHE: dict = {}
 
 

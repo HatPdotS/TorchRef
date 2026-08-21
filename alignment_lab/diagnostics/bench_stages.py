@@ -34,9 +34,11 @@ from lab.frf import patched  # noqa: E402
 STAGES = [
     ("torchref.experimental.alignment.frf.dense_calc", "dense_calc_via_box"),
     ("torchref.experimental.alignment.frf.api", "phaser_rotation_search"),
-    ("torchref.experimental.alignment.frf.bessel", "spherical_bessel_table"),
-    ("torchref.experimental.alignment.frf.wigner_d", "small_d_stable"),
+    ("torchref.experimental.alignment.frf.data_mr", "spherical_bessel_table"),
+    ("torchref.experimental.alignment.frf.data_mr", "bessel_sh_expand"),
+    ("torchref.experimental.alignment.frf.data_mr", "cross_correlate_xi"),
     ("torchref.experimental.alignment.frf.wigner_d", "wigner_contraction_per_beta"),
+    ("torchref.experimental.alignment.frf.sitelist_ang", "evaluate_rotation_function"),
     ("torchref.experimental.alignment.frf.peak_finder", "find_rotation_peaks"),
 ]
 
