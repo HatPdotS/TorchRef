@@ -911,6 +911,9 @@ class ModelFT(CachedForwardMixin, Model):
 
         # Don't share cached structure factors with the original.
         model_copy.reset_cache()
+        # The iso/aniso partition is derived state, not a buffer, so it is not
+        # carried by the buffer loop above; get_iso()/get_aniso() read it.
+        model_copy._rebuild_sf_indices()
 
         if self.verbose > 0:
             print(f"✓ ModelFT copied successfully ({len(model_copy.pdb)} atoms)")

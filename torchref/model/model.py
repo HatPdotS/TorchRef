@@ -928,8 +928,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         model_copy.pdb = self.pdb.copy(deep=True)
 
-        # Setter also sets symmetry; gemmi.SpaceGroup is immutable, so shared.
-        model_copy.spacegroup = self.spacegroup
+        # Assign ``_spacegroup`` directly, as ``ModelFT.copy`` does. ``spacegroup``
+        # is a property, but ``SpaceGroup`` is an ``nn.Module``, so assigning the
+        # object goes through ``nn.Module.__setattr__``, lands in ``_modules``
+        # under the property's own name and never runs the setter -- registering
+        # the *original's* SpaceGroup as a second submodule of the copy.
+        if self._spacegroup is not None:
+            model_copy._spacegroup = self._spacegroup.copy()
+        else:
+            model_copy._spacegroup = None
         model_copy.initialized = True
 
         if self.cell is not None:
@@ -941,7 +948,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Parameter wrappers via their own .copy(), which preserves each
         # wrapper's parametrization (log-space, Cholesky, collapsed logits).
+        # ``_spacegroup`` is already copied above.
+        skip_modules = {"_spacegroup", "spacegroup", "_symmetry", "symmetry"}
         for module_name, module in self._modules.items():
+            if module_name in skip_modules:
+                continue
             if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
 
@@ -951,6 +962,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ]
         else:
             model_copy.altloc_pairs = []
+
+        # The iso/aniso partition is derived state, not a buffer, so it is not
+        # carried by the buffer loop above; get_iso()/get_aniso() read it.
+        model_copy._rebuild_sf_indices()
 
         if self.verbose > 0:
             print(f"✓ Model copied successfully ({len(model_copy.pdb)} atoms)")
