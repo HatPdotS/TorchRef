@@ -137,3 +137,47 @@ def test_api_returns_correct_types():
     assert isinstance(arf, AdaptiveRotationFunction)
     assert len(peaks) > 0
     assert all(isinstance(p, RotationPeak) for p in peaks)
+
+
+def test_search_is_bit_reproducible_single_threaded():
+    """The engine itself is deterministic: no RNG, no order-dependent atomics.
+
+    Repeat runs at the default thread count are NOT bit-identical -- the
+    structure-factor reduction is float32 and its parallel summation order
+    varies, which on a real high-symmetry case (3GR5, P 6_5 2 2) perturbs peak
+    scores by ~5e-8 relative and reorders roughly a dozen of 500 peaks. Truth
+    rank was stable there, but nothing guarantees it for two peaks that close.
+
+    Pinning one thread removes the only source of variation, so any future
+    difference under this test is a real change in the maths. It is also the
+    configuration to use when comparing peak lists across a refactor.
+    """
+    import torch as _torch
+
+    s_calc, F_calc, centric = _make_random_reflections(seed=3, n=800)
+    sym_mats = _torch.eye(3, dtype=_torch.float64).unsqueeze(0)
+    kwargs = dict(
+        sym_mats=sym_mats, L=12, d_min=4.0, d_max=15.0, delta_vrms_A=0.5,
+        grid_sampling_deg=8.0, n_peaks=25, sigma_threshold=-100.0,
+        use_french_wilson=False, use_m_symmetry_filter=False,
+    )
+
+    n_threads = _torch.get_num_threads()
+    _torch.set_num_threads(1)
+    try:
+        _, first = phaser_rotation_search(s_calc, F_calc, centric,
+                                          s_calc, F_calc, **kwargs)
+        _, second = phaser_rotation_search(s_calc, F_calc, centric,
+                                           s_calc, F_calc, **kwargs)
+    finally:
+        _torch.set_num_threads(n_threads)
+
+    assert len(first) == len(second) > 0
+    for i, (a, b) in enumerate(zip(first, second)):
+        assert a.alpha == b.alpha and a.beta == b.beta and a.gamma == b.gamma, (
+            f"peak {i} moved between two identical single-threaded runs"
+        )
+        assert a.score == b.score, (
+            f"peak {i} score changed by {abs(a.score - b.score):.3g} between "
+            f"two identical single-threaded runs"
+        )
