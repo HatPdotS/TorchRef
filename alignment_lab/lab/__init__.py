@@ -27,7 +27,8 @@ from .aniso import (
     fit_aniso_intensity_space,
     tensor_report,
 )
-from .frf import FRFConfig, FRFResult, patched, run_frf
+from .frf import (FRFConfig, FRFResult, merge_peak_lists, patched,
+                  run_frf)
 from .rescore import ENGINES, RescoreResult, paired_ranks, run_rescore
 from .results import ResultWriter, append_row, provenance
 
@@ -48,6 +49,7 @@ __all__ = [
     "tensor_report",
     "FRFConfig",
     "FRFResult",
+    "merge_peak_lists",
     "patched",
     "run_frf",
     "ENGINES",

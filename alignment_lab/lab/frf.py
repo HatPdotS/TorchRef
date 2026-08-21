@@ -97,6 +97,48 @@ class FRFResult:
         return float(self.sigma.max()) if self.sigma is not None else float("nan")
 
 
+def merge_peak_lists(peak_lists, *, n_peaks: int, nms_radius_deg: float):
+    """Merge several peak lists into one, ranked by z-score.
+
+    Used for the Patterson-radius union: the same obs expanded to two different
+    integration radii give two rotation functions whose absolute values are not
+    comparable, but whose per-run standardised heights (``RotationPeak.sigma``)
+    are. Peaks are pooled, sorted by sigma, and greedily suppressed by SO(3)
+    angular distance so the same orientation found by both radii appears once.
+
+    Parameters
+    ----------
+    peak_lists : sequence of list of RotationPeak
+        One list per run.
+    n_peaks : int
+        Cap on the merged list.
+    nms_radius_deg : float
+        Suppression radius, in degrees of SO(3) geodesic distance.
+
+    Returns
+    -------
+    list of RotationPeak
+    """
+    from torchref.experimental.alignment.frf.rotation_utils import (
+        rotation_angular_distance_deg,
+        rotation_matrix_from_edmonds_euler,
+    )
+
+    pooled = [p for pl in peak_lists for p in pl]
+    pooled.sort(key=lambda p: p.sigma, reverse=True)
+    kept, kept_R = [], []
+    for p in pooled:
+        R = rotation_matrix_from_edmonds_euler(p.alpha, p.beta, p.gamma)
+        if any(rotation_angular_distance_deg(R, Rk) < nms_radius_deg
+               for Rk in kept_R):
+            continue
+        kept.append(p)
+        kept_R.append(R)
+        if len(kept) >= n_peaks:
+            break
+    return kept
+
+
 def run_frf(
     model,
     data,
