@@ -6,18 +6,29 @@ Phaser source: ``phaser/lib/wigner.h`` (the C++ template
 Phaser uses the Sakurai recurrence convention; the equivalent Edmonds
 (4.1.23) convention is used throughout this package and is pinned against
 Phaser's output by ``tests/unit/alignment/test_wigner.py``.
-``wigner_contraction_per_beta`` builds the small-d table it needs from the
-``J_y`` eigendecomposition inline, which stays bounded to any ``l``.
+``wigner_contraction_per_beta`` builds the small-d blocks it needs from the
+``J_y`` eigendecomposition, which stays bounded to any ``l``. The blocks depend
+only on the bandwidth and the β grid, so they are memoised for reuse across
+searches -- see ``_WIGNER_D_CACHE`` for what that costs in memory.
 """
 from __future__ import annotations
 
 import torch
 
-__all__ = ["wigner_contraction_per_beta"]
+__all__ = ["clear_wigner_d_cache", "wigner_contraction_per_beta"]
 
 #: Memo for the per-l J_y eigendecomposition, keyed on (L, device-str).
 #: It depends only on the bandwidth, so repeat calls at the same L reuse it.
 _WIGNER_EIG_CACHE: dict = {}
+
+#: Memo for the per-l small-d blocks, keyed on (L, betas, device-str). Holds at
+#: most one entry, because the blocks are large: the per-l blocks together are
+#: ``n_beta * sum_l (2l+1)^2`` float64 scalars, 176 MB at L=65 and 659 MB at
+#: L=101 for the 60-value beta grid. One entry is all production wants --
+#: ``LMAX_CAP`` and ``GRID_SAMPLING_DEG`` in ``rotation_search`` are constants,
+#: so every call arrives with the same key. A caller that alternates bandwidths
+#: rebuilds each time, which is the uncached cost and not worse.
+_WIGNER_D_CACHE: dict = {}
 
 
 def _wigner_eig_table(L: int, device: torch.device):
@@ -40,6 +51,46 @@ def _wigner_eig_table(L: int, device: torch.device):
         table.append((w, V))
     _WIGNER_EIG_CACHE[key] = table
     return table
+
+
+def clear_wigner_d_cache() -> None:
+    """Drop the memoised small-d blocks, releasing their memory."""
+    _WIGNER_D_CACHE.clear()
+
+
+def _wigner_d_blocks(L: int, betas: torch.Tensor, device: torch.device):
+    """Per-l real ``d^l(β)`` blocks for ``l ∈ [1, L)``, memoised.
+
+    Each entry is ``(n_beta, 2l+1, 2l+1)`` float64. They depend only on the
+    bandwidth and the β grid, not on the data, so a process that runs more than
+    one rotation search at the same bandwidth builds them once. A single search
+    asks for them exactly once and so pays the full build.
+
+    The build is the dominant cost of :func:`wigner_contraction_per_beta`: it is
+    a batched ``(n_beta, sz, sz) @ (sz, sz)`` product per l, against the
+    contraction's elementwise ``(n_beta, sz, sz)``. See ``_WIGNER_D_CACHE`` for
+    the footprint that buys.
+    """
+    key = (
+        int(L),
+        str(device),
+        tuple(betas.detach().to(torch.float64).cpu().tolist()),
+    )
+    hit = _WIGNER_D_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    eig_table = _wigner_eig_table(L, device)                   # cached (w_l, V_l)
+    blocks = []
+    for l in range(1, L):
+        w, V = eig_table[l - 1]                                # data-independent
+        phase = torch.exp(-1j * betas.unsqueeze(1) * w.unsqueeze(0))   # (n_beta, sz)
+        VP = V.unsqueeze(0) * phase.unsqueeze(1)               # (n_beta, sz, sz) = (k,m,a)
+        blocks.append((VP @ V.conj().transpose(-1, -2)).real)  # (n_beta, sz, sz)
+
+    _WIGNER_D_CACHE.clear()          # one entry only; see the footprint note
+    _WIGNER_D_CACHE[key] = blocks
+    return blocks
 
 
 def wigner_contraction_per_beta(
@@ -75,20 +126,16 @@ def wigner_contraction_per_beta(
     n_beta = betas.shape[0]
     xi = xi_lmn.to(torch.complex128)
 
-    # Fused per-l loop: compute each d^l(β) block via J_y eigendecomposition
-    # (small_d_stable's method, stable to any l) and contract it into S
-    # immediately. Never materialises the full (n_beta, L, 2L-1, 2L-1) table
-    # (~19 GB at L=100) nor a 4-D einsum intermediate — peak memory is one
-    # (n_beta, 2l+1, 2l+1) block (~0.4 GB at l=99).
+    # Per-l loop over the small-d blocks, which come from the J_y
+    # eigendecomposition (small_d_stable's method, stable to any l). Contract
+    # each into S in turn: the full (n_beta, L, 2L-1, 2L-1) table is never
+    # materialised as one array, nor is a 4-D einsum intermediate.
     S = torch.zeros((n_beta, dim, dim), dtype=torch.complex128, device=device)
     c = L - 1
     S[:, c, c] += xi[0, c, c]                                  # l=0: d^0 = 1
-    eig_table = _wigner_eig_table(L, device)                   # cached (w_l, V_l)
+    blocks = _wigner_d_blocks(L, betas, device)
     for l in range(1, L):
-        w, V = eig_table[l - 1]                                # data-independent
-        phase = torch.exp(-1j * betas.unsqueeze(1) * w.unsqueeze(0))   # (n_beta, sz)
-        VP = V.unsqueeze(0) * phase.unsqueeze(1)               # (n_beta, sz, sz) = (k,m,a)
-        d_l = (VP @ V.conj().transpose(-1, -2)).real           # (n_beta, sz, sz)
+        d_l = blocks[l - 1]                                    # (n_beta, sz, sz)
         lo, hi = c - l, c + l + 1
         S[:, lo:hi, lo:hi] += xi[l, lo:hi, lo:hi].unsqueeze(0) * d_l.to(torch.complex128)
     return S

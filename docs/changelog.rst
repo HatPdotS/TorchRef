@@ -14,6 +14,7 @@ Unreleased
 - Replaced the fast rotation function's keyword surface with ``rotation_search(model, data, model_error_A)``; the caller's coordinate error is now used rather than overwritten by an estimate from the atom count
 - Removed the rotation function's dead modules, engine variants, debug environment switches and unreachable knobs
 - Fixed the rotation function's dense model transform building a real-space grid and map-symmetry operator that its next three lines discarded; ``ModelFT.copy`` gained ``build_grid``
+- The rotation function's Wigner small-d blocks are memoised, so a process running more than one search builds them once
 
 Version 0.6.4
 ----------
