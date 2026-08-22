@@ -827,7 +827,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         return sf
 
-    def copy(self, detach: bool = True) -> "ModelFT":
+    def copy(self, detach: bool = True, build_grid: bool = True) -> "ModelFT":
         """
         Create a deep copy of the ModelFT.
 
@@ -841,11 +841,20 @@ class ModelFT(CachedForwardMixin, Model):
         detach : bool, optional
             If True, the copy's parameters will be detached from the
             computation graph (default: True).
+        build_grid : bool, optional
+            If True (default), give the copy a real-space grid whenever the
+            original has one. Building it also builds the map-symmetry operator,
+            which precomputes one sampling grid per symmetry operation over the
+            whole map. Pass False when the caller is about to replace the cell,
+            spacegroup or ``max_res``: each of those setters rebuilds the FFT
+            submodule, so a grid built here would be discarded unused.
 
         Returns
         -------
         ModelFT
-            A new, fully independent ModelFT instance with copied data.
+            A new, fully independent ModelFT instance with copied data. With
+            ``build_grid=False`` it has no real-space grid until the cell and
+            spacegroup are set and :meth:`setup_grid` runs.
         """
         if not self.initialized:
             raise RuntimeError("Cannot copy an uninitialized ModelFT. Load data first.")
@@ -906,7 +915,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         if self._fft is not None:
             model_copy._fft = self._fft.copy()
-            if self._fft.real_space_grid is not None:
+            if build_grid and self._fft.real_space_grid is not None:
                 model_copy.setup_grid(max_res=self.max_res)
 
         # Don't share cached structure factors with the original.

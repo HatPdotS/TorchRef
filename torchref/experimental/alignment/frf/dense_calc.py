@@ -56,7 +56,11 @@ def dense_calc_via_box(
     """
     from torchref.symmetry.cell import Cell
 
-    m = model.copy()  # isolate the box mutation from the caller
+    # Isolate the box mutation from the caller. No grid: the three setters
+    # below replace the FFT submodule, so a grid built for the crystal cell and
+    # the data resolution would be discarded -- along with the per-operation
+    # map-symmetry sampling grids that dominate the cost of building it.
+    m = model.copy(build_grid=False)
     with torch.no_grad():
         coords = m.xyz()
         dev = coords.device
