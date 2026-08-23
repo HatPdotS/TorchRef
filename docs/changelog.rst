@@ -15,6 +15,12 @@ Unreleased
 - Removed the rotation function's dead modules, engine variants, debug environment switches and unreachable knobs
 - Fixed the rotation function's dense model transform building a real-space grid and map-symmetry operator that its next three lines discarded; ``ModelFT.copy`` gained ``build_grid``
 - The rotation function's Wigner small-d blocks are memoised, so a process running more than one search builds them once
+- The rotation function now takes its working precision from ``dtypes.float`` and its device from ``resolve_device``, instead of hardcoding float64 and reading one input's device
+- The rotation function's spherical-Bessel recurrence rescales by a power of two as it runs, so the ladder no longer needs float64's exponent range
+- The rotation function's Wigner eigendecomposition and anisotropy fit moved to the host, so neither requires float64 on the accelerator
+- Removed the rotation function's duplicate Euler, Rodrigues and reciprocal-symmetry helpers in favour of the shared primitives
+- Removed the rotation function's redundant calc-side resolution mask and its second bandwidth/resolution coupling call
+- ``bessel_sh_expand`` lost its unread ``chunk_size`` argument and ``french_wilson_preprocess`` its unread ``sqrt_mean_F2`` output
 
 Version 0.6.4
 ----------

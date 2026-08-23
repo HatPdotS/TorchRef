@@ -64,8 +64,8 @@ def test_different_data_at_the_same_bandwidth_still_differs():
 def test_a_different_key_is_not_served_the_cached_blocks(L2, n_beta2):
     """Changing either the bandwidth or the β grid must rebuild."""
     clear_wigner_d_cache()
-    ref_blocks = _wigner_d_blocks(9, _betas(12), torch.device("cpu"))
-    got = _wigner_d_blocks(L2, _betas(n_beta2), torch.device("cpu"))
+    ref_blocks = _wigner_d_blocks(9, _betas(12), torch.device("cpu"), torch.float64)
+    got = _wigner_d_blocks(L2, _betas(n_beta2), torch.device("cpu"), torch.float64)
     assert len(got) == L2 - 1
     assert got[0].shape[0] == n_beta2
     assert got is not ref_blocks
@@ -77,7 +77,7 @@ def test_the_cache_holds_one_entry():
     allowed to accumulate across keys."""
     clear_wigner_d_cache()
     for L in (7, 9, 11):
-        _wigner_d_blocks(L, _betas(12), torch.device("cpu"))
+        _wigner_d_blocks(L, _betas(12), torch.device("cpu"), torch.float64)
         assert len(_WIGNER_D_CACHE) == 1
     clear_wigner_d_cache()
     assert len(_WIGNER_D_CACHE) == 0
@@ -94,7 +94,7 @@ def test_the_blocks_are_the_wigner_small_d_matrices():
     clear_wigner_d_cache()
     L = 7
     betas = torch.tensor([0.0, 0.4, 1.7, 3.0], dtype=torch.float64)
-    blocks = _wigner_d_blocks(L, betas, torch.device("cpu"))
+    blocks = _wigner_d_blocks(L, betas, torch.device("cpu"), torch.float64)
     for l, d in enumerate(blocks, start=1):
         sz = 2 * l + 1
         assert d.shape == (betas.numel(), sz, sz)

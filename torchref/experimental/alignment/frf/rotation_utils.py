@@ -87,9 +87,12 @@ def axis_angle_to_matrix(omega: torch.Tensor) -> torch.Tensor:
     Accepts ``(3,)`` for a single rotation or ``(..., 3)`` for a batched stack
     and returns ``(3, 3)`` or ``(..., 3, 3)``. The small-θ limit is handled
     implicitly (sin θ→0, (1−cos θ)→0 ⇒ R→I); ``clamp(min=1e-30)`` guards the
-    axis normalisation at θ=0. Mirrors ``align._rodrigues`` but lives here so
-    both the rescore and the alignment pipeline can share it without a circular
-    import.
+    axis normalisation at θ=0.
+
+    Preferred over ``base.alignment.rotation.axis_angle_to_rotation_matrix``,
+    which accepts only ``(3,)``/``(N, 3)`` and switches the axis to ``[0, 0, 1]``
+    below θ = 1e-10 rather than letting the trigonometric factors vanish. Above
+    that threshold the two agree term for term.
     """
     if omega.dtype not in (torch.float32, torch.float64):
         omega = omega.to(torch.float64)

@@ -137,25 +137,14 @@ class FastRotationFunction:
         n_wilson_shells: int = 20,
         sig_F_obs: Optional[torch.Tensor] = None,
         grid_sampling_deg: float = 2.0,
-        model_radius_A: Optional[float] = None,
-        auto_lmax: bool = False,
-        lmax_cap: int = 64,
-        compute_dtype: Optional[torch.dtype] = None,
     ):
         self.device = s_obs.device
-        self.real_dtype = s_obs.dtype
-        self.compute_dtype = compute_dtype
 
-        # Phaser-faithful coupling of bandwidth to resolution (runMR_FRF.cc:408).
-        # Overrides L and d_min so the SH expansion is not flooded with data
-        # finer than L can represent (the high-symmetry failure mode).
-        if auto_lmax:
-            if model_radius_A is None or d_min is None:
-                raise ValueError(
-                    "auto_lmax=True requires model_radius_A and d_min (data res)."
-                )
-            L, d_min = phaser_lmax_resolution(model_radius_A, d_min, lmax_cap=lmax_cap)
-
+        # `L` and `d_min` arrive already coupled: the caller runs
+        # `phaser_lmax_resolution` because it needs the same pair to size the
+        # dense calc box, so re-deriving them here would only rediscover what it
+        # computed a line earlier. `d_min` is therefore the *coarsened* limit --
+        # the resolution this bandwidth can represent -- not the data's own.
         self.L = L
         self.d_min = d_min
         self.d_max = d_max
@@ -182,8 +171,9 @@ class FastRotationFunction:
         #    `bessel_h_scale = 2 pi R_patt` is the Patterson integration radius
         #    (the chi_Omega sphere): the Bessel argument is
         #    `h = bessel_h_scale |s|`, so the radial basis represents the
-        #    Patterson out to `R_patt = bessel_h_scale / (2 pi)`. Under
-        #    `auto_lmax` that comes to `R_patt ~ sphereOuter = 2 x mean radius`.
+        #    Patterson out to `R_patt = bessel_h_scale / (2 pi)`. With the
+        #    bandwidth-coupled `d_min` the caller passes, that comes to
+        #    `R_patt ~ sphereOuter = 2 x mean radius`.
         if d_min is None:
             raise ValueError("d_min is required to set the Bessel scaling")
         lmax = L - 1
@@ -216,11 +206,13 @@ class FastRotationFunction:
         zsymm = detect_zsymm(sym_mats)
 
         # 6. Bessel-SH expand the obs side.
+        # `s_obs` stays at the caller's (wider) dtype so the expansion's
+        # clustering keys keep their resolution; the intensity does not need to,
+        # and the expansion casts it to the working precision anyway.
         self._c_obs = bessel_sh_expand(
-            s_obs, intensity_obs.to(self.real_dtype),
+            s_obs, intensity_obs,
             L=L, bessel_h_scale=self.bessel_h_scale,
             zsymm=zsymm, enforce_friedel=True,
-            compute_dtype=self.compute_dtype,
         )
 
 
@@ -235,10 +227,17 @@ class FastRotationFunction:
         solvent_fsol: float = 0.95,
         solvent_bsol: float = 300.0,
     ) -> Tuple[AdaptiveRotationFunction, List[RotationPeak]]:
-        # Resolution mask + Wilson + Eterm on calc.
-        s_calc, (F_calc,), smag_calc = _resolution_mask(
-            s_calc, (F_calc,), self.d_min, self.d_max,
-        )
+        """Score one model's transform against the prepared observations.
+
+        ``s_calc`` / ``F_calc`` must already lie inside ``[d_max, d_min]`` --
+        this method does not re-mask them. The window is the caller's because
+        the caller had to know it to build the calc set in the first place.
+        """
+        # The caller owns the calc-side resolution window: `dense_calc_via_box`
+        # samples the box over `[d_max, d_min]` already, and re-masking here was
+        # measured to drop 0 of 339040 reflections on 3K7M and 0 of 271630 on
+        # 1DAW. So take `s_calc` as given and only derive |s| from it.
+        smag_calc = s_calc.norm(dim=-1)
         E_calc, _ = wilson_normalise(F_calc, smag_calc, self.n_wilson_shells)
         eterm = eterm_sigma_a(smag_calc, self.delta_vrms_A)
         # Optional Babinet bulk-solvent factor: Phaser folds it into σ_A as
@@ -258,10 +257,9 @@ class FastRotationFunction:
         # discriminates truth — a calc-side m-filter was tested and is strongly
         # harmful on high-symmetry cases (3K7M rank 8→92), so the knob was removed.
         c_calc = bessel_sh_expand(
-            s_calc, intensity_calc.to(self.real_dtype),
+            s_calc, intensity_calc,
             L=self.L, bessel_h_scale=self.bessel_h_scale,
             zsymm=1, enforce_friedel=True,
-            compute_dtype=self.compute_dtype,
         )
 
         # 8. Cross-correlate over the radial axis.

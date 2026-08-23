@@ -44,9 +44,9 @@ from .align import (
     _StageTimer,
     _external_rwork,
     _prepare_frf_inputs,
-    _rodrigues,
 )
 from .frf.rotation_utils import (
+    axis_angle_to_matrix,
     edmonds_euler_from_rotation_matrix,
     rotation_matrix_from_edmonds_euler,
 )
@@ -852,7 +852,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             )
             wx, wy, wz = torch.meshgrid(coords_r, coords_r, coords_r, indexing="ij")
             omegas = torch.stack([wx.flatten(), wy.flatten(), wz.flatten()], dim=-1)
-            R_perturbs = _rodrigues(omegas)
+            R_perturbs = axis_angle_to_matrix(omegas)
             R_cand_full = R_perturbs @ R_accumulated
             cand_peaks = []
             for R_c in R_cand_full:

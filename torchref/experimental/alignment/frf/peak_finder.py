@@ -19,40 +19,12 @@ from typing import List
 
 import torch
 
+from ....base.alignment.rotation import rotation_matrix_euler_zyz
 from .types import AdaptiveRotationFunction, RotationPeak
 
 __all__ = [
     "find_rotation_peaks",
 ]
-
-
-def _euler_to_matrix_edmonds_zyz(
-    alpha: torch.Tensor, beta: torch.Tensor, gamma: torch.Tensor,
-) -> torch.Tensor:
-    """R = R_z(α) R_y(β) R_z(γ) — Edmonds ZYZ convention.
-
-    Returns shape (*alpha.shape, 3, 3) real.
-
-    Algebraically ``rotation_utils.rotation_matrix_from_edmonds_euler_batch``,
-    but written as one fused pass rather than three matrix products. The NMS
-    below evaluates it over ~1e4 candidates, and the two forms round
-    differently in the last bit, which flips the suppression decision for pairs
-    sitting on the threshold. Every measurement on this engine was made with
-    this form, so it stays.
-    """
-    ca, sa = torch.cos(alpha), torch.sin(alpha)
-    cb, sb = torch.cos(beta), torch.sin(beta)
-    cg, sg = torch.cos(gamma), torch.sin(gamma)
-    # R = Rz(a) * Ry(b) * Rz(g)
-    R = torch.stack(
-        [
-            torch.stack([ca * cb * cg - sa * sg, -ca * cb * sg - sa * cg, ca * sb], dim=-1),
-            torch.stack([sa * cb * cg + ca * sg, -sa * cb * sg + ca * cg, sa * sb], dim=-1),
-            torch.stack([-sb * cg,                sb * sg,                cb       ], dim=-1),
-        ],
-        dim=-2,
-    )
-    return R
 
 
 def _so3_greedy_nms(
@@ -77,8 +49,13 @@ def _so3_greedy_nms(
     # preallocated kept-buffer (no repeated torch.stack), and a cosine threshold
     # (no per-iteration arccos). Result is identical to the original distance test.
     order = torch.argsort(values, descending=True).cpu().tolist()
+    # `rotation_matrix_euler_zyz` is the same fused single-pass form, term for
+    # term, so it rounds identically. That matters here and not only for tidiness:
+    # the NMS threshold test below flips for pairs sitting exactly on it, and the
+    # three-matrix-product form in `rotation_utils` rounds differently in the last
+    # bit. Every measurement on this engine was made with the fused form.
     R_all = (
-        _euler_to_matrix_edmonds_zyz(alphas, betas, gammas)
+        rotation_matrix_euler_zyz(torch.stack([alphas, betas, gammas], dim=-1))
         .to(torch.float64).cpu()
     )  # (n, 3, 3)
     # angle > nms_radius  ⇔  cos(angle) < cos(nms_radius); cos(angle) from trace.

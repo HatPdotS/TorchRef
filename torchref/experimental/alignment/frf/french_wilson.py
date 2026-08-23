@@ -3,8 +3,8 @@
 Pure ports of Phaser's ``lib/math_FrenchWilson.cc`` (centric/acentric
 posterior moments via Parabolic-cylinder ratios) and the Halley-iteration
 ``getDfactor`` in ``lib/math_RiceLLG.cc``. The public entry point
-:func:`french_wilson_preprocess` returns ``(eEobs, DFAC, sqrt_mean_F2)``
-from raw ``(F, σF, |s|, centric)``.
+:func:`french_wilson_preprocess` returns ``(eEobs, DFAC)`` from raw
+``(F, σF, |s|, centric)``.
 
 Everything except ``french_wilson_preprocess`` is module-private; expose
 the public name through :mod:`torchref.experimental.alignment.frf.preprocessing`.
@@ -449,7 +449,6 @@ def french_wilson_preprocess(
     Returns a dict with torch tensors back on the input device:
       eEobs: (N,) effective normalised amplitude
       DFAC : (N,) per-reflection D-factor ∈ [1e-7, 1−1e-7]
-      sqrt_mean_F2: (N,) per-reflection √<F²>_p
     """
     import numpy as np
 
@@ -475,7 +474,6 @@ def french_wilson_preprocess(
     mean_F2 = mean_F2 / np.maximum(counts, 1)
     mean_F2 = np.maximum(mean_F2, 1e-12)
     mean_I_per_h = mean_F2[shell_idx]
-    sqrt_mean_F2 = np.sqrt(mean_I_per_h)
 
     eosq = F2 / mean_I_per_h
     sigesq = 2.0 * F_np * sigF_np / mean_I_per_h
@@ -501,5 +499,4 @@ def french_wilson_preprocess(
     return {
         "eEobs": torch.from_numpy(eEobs).to(device=device, dtype=F.dtype),
         "DFAC": torch.from_numpy(DFAC).to(device=device, dtype=F.dtype),
-        "sqrt_mean_F2": torch.from_numpy(sqrt_mean_F2).to(device=device, dtype=F.dtype),
     }

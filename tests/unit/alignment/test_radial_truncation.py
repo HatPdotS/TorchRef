@@ -16,6 +16,12 @@ The ``(l, n) -> u = l + 2n + 1`` index build populates only
 
 These tests pin that invariant against the formula, so the agreement is
 asserted rather than inferred from the array shape.
+
+They run under ``double_cpu`` because the band's *width* and its *populated
+extent* only coincide in double precision. At the working precision the radial
+weight ``sqrt(2u+1) j_u(x)/x`` underflows for high ``u`` at small ``x`` -- see
+``test_the_working_precision_truncates_the_band_further`` -- so counting
+non-zeros there measures float32's exponent range, not Phaser's formula.
 """
 
 import pytest
@@ -42,7 +48,7 @@ def _phaser_nmax(lmax_even: int, l: int) -> int:
 
 
 @pytest.mark.parametrize("L", [21, 41, 67])
-def test_radial_band_matches_phaser_width(L):
+def test_radial_band_matches_phaser_width(L, double_cpu):
     """Non-zero radial indices at each ``l`` must stop at Phaser's ``nmax``.
 
     Our ``n`` index is 0-based against Phaser's 1-based, so the condition is
@@ -64,7 +70,7 @@ def test_radial_band_matches_phaser_width(L):
 
 
 @pytest.mark.parametrize("L", [21, 41, 67])
-def test_band_narrows_to_a_single_term_at_lmax(L):
+def test_band_narrows_to_a_single_term_at_lmax(L, double_cpu):
     """The top band keeps exactly one radial term, the widest keeps them all."""
     lmax_even = L - 1 if (L - 1) % 2 == 0 else L - 2
     assert _phaser_nmax(lmax_even, lmax_even) == 1
@@ -78,7 +84,7 @@ def test_band_narrows_to_a_single_term_at_lmax(L):
 
 
 @pytest.mark.parametrize("L", [21, 41, 67])
-def test_band_is_exactly_phasers_width_not_merely_bounded(L):
+def test_band_is_exactly_phasers_width_not_merely_bounded(L, double_cpu):
     """The populated band must *equal* Phaser's ``nmax(l)``, not just fit inside.
 
     A bound alone would also pass for an expansion that silently drops radial
@@ -95,7 +101,7 @@ def test_band_is_exactly_phasers_width_not_merely_bounded(L):
         )
 
 
-def test_allocated_width_exceeds_the_populated_band():
+def test_allocated_width_exceeds_the_populated_band(double_cpu):
     """The array is wider than the support at every l above the first.
 
     This is the fact that makes the array shape misleading, and the reason the
@@ -109,4 +115,29 @@ def test_allocated_width_exceeds_the_populated_band():
     assert _phaser_nmax(lmax_even, lmax_even) == 1
     assert N_radial > _phaser_nmax(lmax_even, lmax_even), (
         "allocated width should exceed the top band's single term"
+    )
+
+
+def test_the_working_precision_truncates_the_band_further():
+    """At float32 the tail of the radial band is not small, it is *absent*.
+
+    ``j_u(x)`` for ``u >> x`` is genuinely negligible -- at ``x = 1.9`` every
+    ``u >= 33`` is below float32's smallest normal -- so at the working precision
+    the populated band is narrower than Phaser's ``nmax(l)`` wherever the shell's
+    Bessel argument is small. That is a property of the engine as shipped, not a
+    defect, and it is pinned here so it is not rediscovered as a regression: the
+    structural tests above deliberately run in double precision, which would
+    otherwise leave the shipped configuration untested.
+    """
+    L = 67
+    c = _expand(L)                      # working precision, no double_cpu
+    lmax_even = L - 1 if (L - 1) % 2 == 0 else L - 2
+    populated = (c[:, 2, :].abs() > 0).any(dim=-1).nonzero().flatten()
+    assert populated.numel(), "l=2 band is entirely empty"
+    got = int(populated.max()) + 1
+    phaser = _phaser_nmax(lmax_even, 2)
+    assert got < phaser, (
+        f"expected the float32 tail to underflow: got {got} terms, Phaser has "
+        f"{phaser}. If this now matches, the working precision widened and the "
+        f"structural tests above no longer need double_cpu."
     )

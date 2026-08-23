@@ -157,12 +157,20 @@ def fit_anisotropy(
     d_min: float,
     d_max: float,
     n_shells: int = N_WILSON_SHELLS,
-    device: Optional[torch.device] = None,
 ) -> torch.Tensor:
     """Fit the overall anisotropy tensor and project it onto the point group.
 
-    Returns ``U`` in Angstrom squared, in the convention
-    ``F_corrected = F * exp(+pi^2 s.U.s)``.
+    Returns ``U`` in Angstrom squared as a **host** float64 ``(3, 3)``, in the
+    convention ``F_corrected = F * exp(+pi^2 s.U.s)``.
+    :func:`~torchref.experimental.alignment.sh.apply_overall_anisotropy` moves
+    and casts it to wherever the amplitudes are.
+
+    Deliberately host-side and in double precision. It is a seven-parameter
+    Gauss-Newton fit over the ``[d_max, d_min]`` window -- of order 1e4
+    reflections, once per search -- so the cost of doing it here is not
+    measurable, while a broken anisotropy fit is worth hundreds of ranks on
+    high-symmetry cases. Keeping it off the accelerator also means the engine
+    needs no float64 there.
 
     The projection matters: an unconstrained six-component fit can return a
     tensor the lattice forbids, and applying it then modulates the observations
@@ -172,9 +180,9 @@ def fit_anisotropy(
     """
     from .sh import hkl_symops_to_cartesian, symmetrize_anisotropy
 
-    device = device or data.hkl.device
-    rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64)
-    s_vec_all = data.hkl.to(torch.float64) @ rec_basis
+    rec_basis = data.cell.reciprocal_basis_matrix.detach().cpu().to(torch.float64)
+    hkl = data.hkl.detach().cpu().to(torch.float64)
+    s_vec_all = hkl @ rec_basis
     s_mag_all = s_vec_all.norm(dim=-1)
     keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
     if int(keep.sum()) < n_shells * 5:
@@ -182,11 +190,11 @@ def fit_anisotropy(
             f"Only {int(keep.sum())} reflections in [{d_min}, {d_max}] A, too "
             f"few for {n_shells} shells."
         )
-    F_obs = data.F.to(torch.float64).abs()[keep].to(device)
-    s_vec = s_vec_all[keep].to(device)
-    s_mag = s_mag_all[keep].to(device)
+    F_obs = data.F.detach().cpu().to(torch.float64).abs()[keep]
+    s_vec = s_vec_all[keep]
+    s_mag = s_mag_all[keep]
     centric = (
-        data.centric[keep].to(torch.bool).to(device)
+        data.centric.detach().cpu()[keep].to(torch.bool)
         if hasattr(data, "centric")
         else torch.zeros_like(F_obs, dtype=torch.bool)
     )
@@ -197,8 +205,7 @@ def fit_anisotropy(
         F_obs, s_vec, shell_idx, centric, P=n_shells, min_count=20,
     )
     sym_cart = hkl_symops_to_cartesian(
-        data.spacegroup.matrices.to(torch.float64).to(device),
-        rec_basis.to(device),
+        data.spacegroup.matrices.detach().cpu().to(torch.float64), rec_basis,
     )
     return symmetrize_anisotropy(U, sym_cart)
 
@@ -211,6 +218,7 @@ def search_peaks(
     U_aniso: torch.Tensor,
     n_peaks: int,
     verbose: int = 0,
+    device: Optional[torch.device] = None,
 ) -> Tuple[List["RotationPeak"], int, float]:
     """Run the rotation function, returning the engine's own peak list.
 
@@ -220,11 +228,16 @@ def search_peaks(
     already fitted ``U_aniso`` for its rescore stage; :func:`rotation_search` is
     the entry point for everything else.
     """
+    from ...utils import resolve_device
     from .frf.api import FastRotationFunction, phaser_lmax_resolution
     from .frf.dense_calc import dense_calc_via_box
     from .frf.preprocessing import fit_relative_wilson_b
 
-    device = model.xyz().device
+    # One device for both inputs, rather than whichever one this function
+    # happened to read first: `resolve_device` moves them into agreement (with a
+    # warning) and falls back to the configured default. Data first, matching
+    # the rest of the codebase.
+    device = resolve_device(data, model, device=device)
     with torch.no_grad():
         rec_basis = data.cell.reciprocal_basis_matrix.to(torch.float64).to(device)
         hkl_all = data.hkl.to(device)
@@ -234,6 +247,11 @@ def search_peaks(
         # Take the observations at the full data resolution: the bandwidth
         # coupling below coarsens the limit to whatever the harmonics can
         # represent, so pre-restricting here would only lose the terms it keeps.
+        #
+        # The high-resolution half of the mask below is a no-op by construction
+        # (`s_mag <= 1/(1/max(s_mag))`, measured to drop nothing) but the
+        # LOW-resolution half is live: 3K7M carries two reflections beyond 100 A
+        # that it removes. Do not fold the pair away as redundant.
         d_min_data = float(1.0 / s_mag_all.max().item())
         d_max = float(LOW_RESOLUTION_CUTOFF_A)
         keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min_data)
@@ -264,9 +282,21 @@ def search_peaks(
         # one orbit.
         sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
         n_ops = int(sg_mats.shape[0])
-        hkl_keep = hkl_all.to(torch.float64)[keep]
-        hkl_unrolled = torch.einsum(
-            "kji,nj->kni", sg_mats, hkl_keep).reshape(-1, 3)
+        # `apply_to_hkl` is the package's one implementation of this contraction
+        # and its docstring carries the convention. It returns (N, 3, n_ops); the
+        # permute restores the op-major flattening the accumulations downstream
+        # were measured with -- a different row order changes the summation order
+        # in the later index_add_/unique and the last bits with it. Symops are
+        # 0/+-1 and Miller indices are small, so the products are exact at the
+        # space group's own dtype and the cast below loses nothing.
+        # `apply_to_hkl` returns on the SPACE GROUP's device, not the caller's,
+        # so the move back is load-bearing whenever the two differ.
+        hkl_unrolled = (
+            data.spacegroup.apply_to_hkl(hkl_all[keep])
+            .permute(2, 0, 1)
+            .reshape(-1, 3)
+            .to(device=device, dtype=rec_basis.dtype)
+        )
         s_obs = hkl_unrolled @ rec_basis
         F_obs = F_obs.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
         centric = centric.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
@@ -302,22 +332,11 @@ def search_peaks(
 
         engine = FastRotationFunction(
             s_obs, F_obs, centric, sg_mats,
-            d_min=d_min_data, d_max=d_max,
+            L=L, d_min=d_min, d_max=d_max,
             delta_vrms_A=float(model_error_A),
             n_wilson_shells=N_WILSON_SHELLS,
             sig_F_obs=sigF,
             grid_sampling_deg=GRID_SAMPLING_DEG,
-            model_radius_A=model_radius_A,
-            auto_lmax=True,
-            lmax_cap=LMAX_CAP,
-            # The angular half of the expansion runs in single precision on
-            # every device. It is the runtime bottleneck, it is memory-bound, and
-            # single precision is this codebase's kernel dtype -- a float64-only
-            # path would make the fused CPU kernel unreachable. The radial Bessel
-            # recurrence keeps its float64 internals, where the downward
-            # recurrence's cancellation needs them, and the cross-chunk
-            # accumulator stays at full precision.
-            compute_dtype=torch.complex64,
         )
         _arf, peaks = engine.score_model(
             s_calc, F_calc, n_peaks=n_peaks,
@@ -362,6 +381,7 @@ def rotation_search(
     *,
     n_peaks: int = 500,
     verbose: int = 0,
+    device: Optional[torch.device] = None,
 ) -> RotationSolutions:
     """Find the orientations of ``model`` consistent with ``data``.
 
@@ -386,6 +406,10 @@ def rotation_search(
         bounds the answer, not the search.
     verbose : int, optional
         Progress reporting. Default 0, silent.
+    device : torch.device, optional
+        Where to run. Default ``None`` takes ``data``'s device, moving ``model``
+        to match; an explicit value moves both. With neither carrying one, the
+        configured default applies.
 
     Returns
     -------
@@ -402,11 +426,9 @@ def rotation_search(
     if not model.initialized:
         raise RuntimeError("model has no coordinates; load a PDB first.")
     d_max_fit, d_min_fit = ANISO_FIT_WINDOW_A
-    U_aniso = fit_anisotropy(
-        data, d_min=d_min_fit, d_max=d_max_fit, device=model.xyz().device,
-    )
+    U_aniso = fit_anisotropy(data, d_min=d_min_fit, d_max=d_max_fit)
     peaks, lmax, d_min = search_peaks(
         model, data, model_error_A,
-        U_aniso=U_aniso, n_peaks=n_peaks, verbose=verbose,
+        U_aniso=U_aniso, n_peaks=n_peaks, verbose=verbose, device=device,
     )
     return _solutions(peaks, lmax, d_min, model_error_A)

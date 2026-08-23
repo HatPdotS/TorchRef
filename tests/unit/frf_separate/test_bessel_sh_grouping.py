@@ -14,6 +14,12 @@ The reference for the second is an expansion with a grouping key so fine that
 every reflection is its own group -- i.e. the ungrouped sum. Comparing against
 the previous implementation instead would only show that two approximations
 agree with each other.
+
+The claims about the grouping being *loss-free* are only meaningful at a
+precision finer than the loss being ruled out, so the tests that assert
+1e-10-and-below take ``double_cpu``. At the working precision (float32) the
+floor is float32 epsilon times the accumulation depth -- measured 1.4e-06 and
+3.6e-07 on these cases -- which says nothing about the grouping.
 """
 
 import math
@@ -82,7 +88,7 @@ def test_grouping_error_stays_far_below_the_reference_implementation(
     )
 
 
-def test_a_lattice_groups_without_loss(ungrouped):
+def test_a_lattice_groups_without_loss(ungrouped, double_cpu):
     """On a lattice the degeneracy is exact, so the grouping is free."""
     s, I = _grid_set()
     ref = ungrouped(s, I, L=65, bessel_h_scale=64.0)
@@ -187,7 +193,7 @@ def _reference_expansion(s_vec, intensity, L, bessel_h_scale):
 
 
 @pytest.mark.parametrize("L", [9, 13])
-def test_matches_an_independent_direct_summation(L):
+def test_matches_an_independent_direct_summation(L, double_cpu):
     """The whole expansion, against a reference that shares no code with it."""
     s, I = _random_set(seed=31, n=120)
     ref = _reference_expansion(s, I, L, 24.0)

@@ -40,6 +40,7 @@ from typing import List, Tuple
 
 import torch
 
+from ....config import canonical_device
 from .types import AdaptiveRotationFunction
 from .wigner_d import wigner_contraction_per_beta
 
@@ -164,7 +165,7 @@ def build_adaptive_sample_list(
     Python scan), so there is no host sync inside the loop.
     """
     device = torch.device(device) if not isinstance(device, torch.device) else device
-    cache_key = (float(grid_sampling_deg), str(device), dtype)
+    cache_key = (float(grid_sampling_deg), str(canonical_device(device)), dtype)
     cached = _SAMPLE_LIST_CACHE.get(cache_key)
     if cached is not None:
         return cached

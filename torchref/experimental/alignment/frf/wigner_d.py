@@ -15,10 +15,16 @@ from __future__ import annotations
 
 import torch
 
+from ....config import canonical_device
+
 __all__ = ["clear_wigner_d_cache", "wigner_contraction_per_beta"]
 
-#: Memo for the per-l J_y eigendecomposition, keyed on (L, device-str).
-#: It depends only on the bandwidth, so repeat calls at the same L reuse it.
+#: Memo for the per-l J_y eigendecomposition, keyed on L alone.
+#: It depends only on the bandwidth, so repeat calls at the same L reuse it. Held
+#: on the HOST in float64/complex128: it is an eigendecomposition, the most
+#: precision-sensitive step here, and it is small (L-1 matrices, the largest
+#: 129x129) and data-independent. Keeping it off the accelerator costs nothing
+#: measurable and means no float64 is required there.
 _WIGNER_EIG_CACHE: dict = {}
 
 #: Memo for the per-l small-d blocks, keyed on (L, betas, device-str). Holds at
@@ -31,20 +37,21 @@ _WIGNER_EIG_CACHE: dict = {}
 _WIGNER_D_CACHE: dict = {}
 
 
-def _wigner_eig_table(L: int, device: torch.device):
+def _wigner_eig_table(L: int):
     """Return [(w_l, V_l)] for l ∈ [1, L) — the J_y eigendecomposition per l.
 
     ``d^l(β) = Re(V_l · diag(e^{-iβ w_l}) · V_l^H)``. ``w_l ≈ [-l..l]`` and
-    ``V_l`` are independent of β and the data, so they are memoised.
+    ``V_l`` are independent of β and the data, so they are memoised. Built and
+    kept on the host; see ``_WIGNER_EIG_CACHE``.
     """
-    key = (int(L), str(device))
+    key = int(L)
     cached = _WIGNER_EIG_CACHE.get(key)
     if cached is not None:
         return cached
     table = []
     for l in range(1, L):
         sz = 2 * l + 1
-        p = torch.arange(sz - 1, dtype=torch.float64, device=device)
+        p = torch.arange(sz - 1, dtype=torch.float64)
         sup = 0.5 * torch.sqrt((2 * l - p) * (p + 1.0))
         A = torch.diag(sup, 1) - torch.diag(sup, -1)           # A = -i J_y
         w, V = torch.linalg.eigh(1j * A.to(torch.complex128))  # w∈[-l..l]
@@ -58,35 +65,48 @@ def clear_wigner_d_cache() -> None:
     _WIGNER_D_CACHE.clear()
 
 
-def _wigner_d_blocks(L: int, betas: torch.Tensor, device: torch.device):
+def _wigner_d_blocks(L: int, betas: torch.Tensor, device: torch.device,
+                     dtype: torch.dtype):
     """Per-l real ``d^l(β)`` blocks for ``l ∈ [1, L)``, memoised.
 
-    Each entry is ``(n_beta, 2l+1, 2l+1)`` float64. They depend only on the
-    bandwidth and the β grid, not on the data, so a process that runs more than
-    one rotation search at the same bandwidth builds them once. A single search
-    asks for them exactly once and so pays the full build.
+    Each entry is ``(n_beta, 2l+1, 2l+1)`` in ``dtype``, on ``device``. They
+    depend only on the bandwidth and the β grid, not on the data, so a process
+    that runs more than one rotation search at the same bandwidth builds them
+    once. A single search asks for them exactly once and so pays the full build.
+
+    Built on the host in float64 from the cached eigendecomposition and moved
+    once: the ``d^l`` entries are bounded in [-1, 1], so storing them at the
+    working precision loses nothing structural, and it halves the memo.
 
     The build is the dominant cost of :func:`wigner_contraction_per_beta`: it is
     a batched ``(n_beta, sz, sz) @ (sz, sz)`` product per l, against the
     contraction's elementwise ``(n_beta, sz, sz)``. See ``_WIGNER_D_CACHE`` for
     the footprint that buys.
     """
+    # `canonical_device` fills in the default index: torch.device('cuda') and
+    # torch.device('cuda:0') name one physical device but stringify differently,
+    # and this memo holds exactly ONE entry -- so a mixed spelling would not add
+    # an entry, it would clear and rebuild the whole table on every call.
     key = (
         int(L),
-        str(device),
+        str(canonical_device(device)),
+        dtype,
         tuple(betas.detach().to(torch.float64).cpu().tolist()),
     )
     hit = _WIGNER_D_CACHE.get(key)
     if hit is not None:
         return hit
 
-    eig_table = _wigner_eig_table(L, device)                   # cached (w_l, V_l)
+    eig_table = _wigner_eig_table(L)                           # host, cached
+    betas_host = betas.detach().to(torch.float64).cpu()
     blocks = []
     for l in range(1, L):
         w, V = eig_table[l - 1]                                # data-independent
-        phase = torch.exp(-1j * betas.unsqueeze(1) * w.unsqueeze(0))   # (n_beta, sz)
+        phase = torch.exp(-1j * betas_host.unsqueeze(1) * w.unsqueeze(0))  # (n_beta, sz)
         VP = V.unsqueeze(0) * phase.unsqueeze(1)               # (n_beta, sz, sz) = (k,m,a)
-        blocks.append((VP @ V.conj().transpose(-1, -2)).real)  # (n_beta, sz, sz)
+        blocks.append(
+            (VP @ V.conj().transpose(-1, -2)).real.to(device=device, dtype=dtype)
+        )
 
     _WIGNER_D_CACHE.clear()          # one entry only; see the footprint note
     _WIGNER_D_CACHE[key] = blocks
@@ -122,20 +142,23 @@ def wigner_contraction_per_beta(
     L = xi_lmn.shape[0]
     dim = 2 * L - 1
     device = xi_lmn.device
-    betas = betas.to(torch.float64)
     n_beta = betas.shape[0]
-    xi = xi_lmn.to(torch.complex128)
+    # Follow the input rather than forcing double: `xi` carries the expansion's
+    # working precision, so widening here would buy nothing and cost a 2x
+    # complex buffer in this stage and in the FFT it feeds.
+    xi = xi_lmn
+    real_dtype = torch.float64 if xi.dtype == torch.complex128 else torch.float32
 
     # Per-l loop over the small-d blocks, which come from the J_y
     # eigendecomposition (small_d_stable's method, stable to any l). Contract
     # each into S in turn: the full (n_beta, L, 2L-1, 2L-1) table is never
     # materialised as one array, nor is a 4-D einsum intermediate.
-    S = torch.zeros((n_beta, dim, dim), dtype=torch.complex128, device=device)
+    S = torch.zeros((n_beta, dim, dim), dtype=xi.dtype, device=device)
     c = L - 1
     S[:, c, c] += xi[0, c, c]                                  # l=0: d^0 = 1
-    blocks = _wigner_d_blocks(L, betas, device)
+    blocks = _wigner_d_blocks(L, betas, device, real_dtype)
     for l in range(1, L):
         d_l = blocks[l - 1]                                    # (n_beta, sz, sz)
         lo, hi = c - l, c + l + 1
-        S[:, lo:hi, lo:hi] += xi[l, lo:hi, lo:hi].unsqueeze(0) * d_l.to(torch.complex128)
+        S[:, lo:hi, lo:hi] += xi[l, lo:hi, lo:hi].unsqueeze(0) * d_l
     return S

@@ -4,7 +4,7 @@ Molecular replacement: data-prep / FRF stage helpers + the public entry point.
 This module hosts the heavy, reusable stage helpers — Lattman-Love / anisotropy
 data prep (`_prepare_frf_inputs`), the solvent-aware R-work
 (`_external_rwork`), the direct-SF translation evaluator
-(`_DirectModelEvaluator`), the Rodrigues helper (`_rodrigues`) and the stage
+(`_DirectModelEvaluator`) and the stage
 timer (`_StageTimer`) — that are shared by the rotation-ranking benchmarks and
 by the orchestrator.
 
@@ -154,43 +154,6 @@ class _DirectModelEvaluator:
         with torch.no_grad():
             f = self._m(hkl_int)
         return f.abs() if return_amplitude else f
-
-
-def _rodrigues(omega: torch.Tensor) -> torch.Tensor:
-    """Rodrigues axis-angle → SO(3). `omega = θ · axis` (radians).
-
-    Accepts shape (3,) for a single rotation or (..., 3) for a batched stack
-    and returns matching (3, 3) or (..., 3, 3). The small-θ limit is handled
-    implicitly: sin(θ)→0 and (1-cos θ)→0 zero out the K and K² contributions
-    so R→I as θ→0; `clamp(min=1e-30)` prevents NaN from axis=0/0.
-    """
-    if omega.dtype != torch.float64:
-        omega = omega.to(torch.float64)
-    is_single = omega.dim() == 1
-    if is_single:
-        omega = omega.unsqueeze(0)
-
-    th = omega.norm(dim=-1, keepdim=True)           # (..., 1)
-    axis = omega / th.clamp(min=1e-30)              # (..., 3)
-    zeros = torch.zeros_like(axis[..., 0])
-    K = torch.stack([
-        torch.stack([zeros, -axis[..., 2], axis[..., 1]], dim=-1),
-        torch.stack([axis[..., 2], zeros, -axis[..., 0]], dim=-1),
-        torch.stack([-axis[..., 1], axis[..., 0], zeros], dim=-1),
-    ], dim=-2)                                      # (..., 3, 3)
-
-    th_b = th.unsqueeze(-1)                         # (..., 1, 1)
-    sin_th = torch.sin(th_b)
-    cos_th = torch.cos(th_b)
-
-    eye = torch.eye(3, dtype=omega.dtype, device=omega.device)
-    eye_b = eye.expand(*omega.shape[:-1], 3, 3)
-    KK = torch.matmul(K, K)
-    R = eye_b + sin_th * K + (1.0 - cos_th) * KK
-
-    if is_single:
-        R = R.squeeze(0)
-    return R
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +313,7 @@ def align_model_to_data(
 
     # Imported lazily to avoid an import cycle: `pipeline` imports the stage
     # helpers (`_prepare_frf_inputs`, `_external_rwork`,
-    # `_DirectModelEvaluator`, `_rodrigues`, `_StageTimer`) from this module.
+    # `_DirectModelEvaluator`, `_StageTimer`) from this module.
     from .pipeline import MolecularReplacementPipeline
 
     pipeline = MolecularReplacementPipeline(
