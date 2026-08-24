@@ -4,6 +4,14 @@ Changelog
 
 Version 0.6.4
 ----------
+- ``ModelCollection`` now stores populations as a shared activation fraction plus a per-timepoint branching, instead of free fractions per timepoint
+- Freezing and unfreezing fractions is now collection-wide; timepoints needing independent populations use ``set_fraction_override``
+- ``add_timepoint`` raises when the requested fractions imply an activation that conflicts with one already set
+- Added ``ModelCollection.sigma_alpha_sq`` and ``lambda_twin`` for the spread of activation across crystals
+- Added batched ``compute_component_fcalcs`` / ``mix_component_fcalcs`` and ``DatasetCollection.component_structure_factors``
+- Added ``CollectionScaler.forward_batched`` for scaling several mixtures in one pass
+- Added ``ReflectionData.get_corrected_intensities`` and scaled ``I``/``sigI`` subset views, with the unscaled values as ``I_raw``/``sigI_raw``
+- Added batched ``stack_F_obs`` / ``stack_I_obs`` / ``stack_masks`` accessors on ``DatasetCollection``
 - Fixed ``f_sol_override`` overwriting the scaler's cached ``F_sol``, so a later call without an override read the wrong solvent
 - Fixed a batched ``f_sol_override`` gaining a spurious leading axis, which changed the rank of the scaled structure factors
 - Fixed the bulk-solvent ``F_sol`` staying at the starting model's mask for every refinement macrocycle

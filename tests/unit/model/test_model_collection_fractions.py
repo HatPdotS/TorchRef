@@ -60,13 +60,15 @@ def hkl():
     return torch.tensor([[1, 0, 0], [0, 1, 0], [1, 1, 0], [2, 0, 1]])
 
 
-class TestSoftmaxStorage:
+class TestPopulationFactorisation:
     @pytest.mark.unit
-    def test_fractions_are_the_softmax_of_the_stored_logits(self, two_model_collection):
+    def test_fractions_are_the_activation_times_the_branching(
+        self, two_model_collection
+    ):
         mc = two_model_collection
-        mixed = mc["light"]
-        expected = torch.softmax(mixed.fraction_params, dim=0)
-        assert torch.allclose(mixed.fractions, expected)
+        alpha = mc.alpha_mean
+        expected = torch.stack([1.0 - alpha, alpha * mc.branching()[0][0]])
+        assert torch.allclose(mc["light"].fractions, expected)
 
     @pytest.mark.unit
     @pytest.mark.parametrize("f", [0.01, 0.22, 0.3, 0.5, 0.99])
@@ -80,16 +82,18 @@ class TestSoftmaxStorage:
         assert mc["t"].fractions.sum().item() == pytest.approx(1.0, abs=1e-6)
 
     @pytest.mark.unit
-    def test_dark_excited_fraction_is_the_clamp_floor_not_zero(
-        self, two_model_collection
-    ):
-        """``add_dark`` asks for exactly 0, but the log-clamp at 1e-6 means the stored
-        value is 1e-6. Anything deriving a bound from the dark's fraction inherits that
-        floor rather than a true zero.
+    def test_the_reference_row_is_exactly_e_ref(self, two_model_collection):
+        """The dark is the alpha = 0 evaluation, so its excited fraction is exactly
+        zero -- not a clamp floor.
+
+        Under a softmax over per-timepoint logits it could not be: ``log(0)`` forces a
+        clamp, which left the dark sitting at 1e-6. Anything deriving a bound from the
+        reference's fraction (``sigma_alpha_sq <= alpha (1 - alpha)``) inherited that
+        floor instead of a true zero.
         """
         dark = two_model_collection["dark"]
-        assert dark.fractions[1].item() == pytest.approx(1e-6, rel=1e-3)
-        assert dark.fractions[1].item() > 0.0
+        assert dark.fractions[1].item() == 0.0
+        assert dark.fractions[0].item() == 1.0
 
     @pytest.mark.unit
     def test_fraction_dtype_and_device_follow_the_base_models(self):
@@ -98,8 +102,8 @@ class TestSoftmaxStorage:
         models = [_StubModel(0), _StubModel(1)]
         mc = ModelCollection(models, verbose=0)
         mc.add_timepoint("t", [0.6, 0.4])
-        assert mc["t"].fraction_params.dtype == models[0].dtype_float
-        assert mc["t"].fraction_params.device == models[0].device
+        assert mc._activation_logit.dtype == models[0].dtype_float
+        assert mc._activation_logit.device == models[0].device
 
 
 class TestValidation:
@@ -129,32 +133,36 @@ class TestFreezing:
     @pytest.mark.unit
     def test_dark_is_frozen_and_timepoints_are_not(self, two_model_collection):
         mc = two_model_collection
-        assert mc["dark"].fraction_params.requires_grad is False
-        assert mc["light"].fraction_params.requires_grad is True
+        # Frozen by default: population refinement is opt-in.
+        assert mc._activation_logit.requires_grad is False
+        assert mc.fraction_parameters() == [mc._activation_logit,
+                                            mc._branching_logits[0]]
 
     @pytest.mark.unit
     def test_freeze_and_unfreeze_flip_the_flag(self, two_model_collection):
         mixed = two_model_collection["light"]
         mixed.freeze_fractions()
-        assert mixed.fraction_params.requires_grad is False
+        assert mixed.collection._activation_logit.requires_grad is False
         mixed.unfreeze_fractions()
-        assert mixed.fraction_params.requires_grad is True
+        assert mixed.collection._activation_logit.requires_grad is True
 
     @pytest.mark.unit
-    def test_unfreeze_all_leaves_the_dark_frozen(self, two_model_collection):
-        """The dark reference must not become refinable through the bulk call."""
+    def test_the_reference_carries_no_population_parameter(
+        self, two_model_collection
+    ):
+        """The reference is the alpha = 0 evaluation, not a row with pinned logits,
+        so there is nothing of its own to freeze or refine."""
         mc = two_model_collection
         mc.unfreeze_all_fractions()
-        assert mc["dark"].fraction_params.requires_grad is False
-        assert mc["light"].fraction_params.requires_grad is True
+        assert "dark" not in mc._branching_rows
+        assert "light" in mc._branching_rows
+        assert mc._activation_logit.requires_grad is True
 
     @pytest.mark.unit
     def test_freeze_all_freezes_every_timepoint(self, two_model_collection):
         mc = two_model_collection
         mc.freeze_all_fractions()
-        assert all(
-            mc[k].fraction_params.requires_grad is False for k in mc.keys()
-        )
+        assert all(not p.requires_grad for p in mc.fraction_parameters())
 
 
 class TestOverride:
@@ -168,7 +176,7 @@ class TestOverride:
 
         mixed.clear_fraction_override()
         assert torch.allclose(
-            mixed.fractions, torch.softmax(mixed.fraction_params, dim=0)
+            mixed.fractions, mixed.collection.fractions_matrix()[mixed._index]
         )
 
     @pytest.mark.unit
@@ -227,9 +235,9 @@ class TestCollectionLevelViews:
         ``ModuleList``, so a timepoint must not re-register their parameters.
         """
         mixed = two_model_collection["light"]
-        owned = list(mixed.parameters())
-        assert len(owned) == 1
-        assert owned[0] is mixed.fraction_params
+        assert list(mixed.parameters()) == [], (
+            "a timepoint view registered a parameter of its own"
+        )
 
     @pytest.mark.unit
     def test_shared_base_parameters_are_counted_once(self, two_model_collection):
@@ -239,7 +247,8 @@ class TestCollectionLevelViews:
         """
         mc = two_model_collection
         params = list(mc.parameters())
-        assert len(params) == 2 + 2
+        # two base anchors + activation + lambda + one branching row
+        assert len(params) == 2 + 3
 
         base_anchors = [m.anchor for m in mc.base_models]
         for anchor in base_anchors:
@@ -259,18 +268,195 @@ class TestForwardAndGradient:
         assert torch.allclose(mixed(hkl, recalc=True), expected)
 
     @pytest.mark.unit
-    def test_gradient_reaches_the_fraction_params(self, two_model_collection, hkl):
-        mixed = two_model_collection["light"]
+    def test_gradient_reaches_the_activation(self, two_model_collection, hkl):
+        mc = two_model_collection
+        mc.unfreeze_all_fractions()
+        mixed = mc["light"]
         mixed(hkl, recalc=True).abs().sum().backward()
 
-        grad = mixed.fraction_params.grad
+        grad = mc._activation_logit.grad
         assert grad is not None
         assert torch.isfinite(grad).all()
 
     @pytest.mark.unit
-    def test_frozen_dark_fractions_receive_no_gradient(
+    def test_the_reference_contributes_no_activation_gradient(
         self, two_model_collection, hkl
     ):
-        dark = two_model_collection["dark"]
-        dark(hkl, recalc=True).abs().sum().backward()
-        assert dark.fraction_params.grad is None
+        """The dark dataset carries no activation information, so its row must be
+        exactly e_ref with no path back to the shared parameter."""
+        mc = two_model_collection
+        mc.unfreeze_all_fractions()
+        mc["dark"](hkl, recalc=True).abs().sum().backward()
+        assert mc._activation_logit.grad is None or float(
+            mc._activation_logit.grad.abs().max()
+        ) == 0.0
+
+
+class TestSharedActivation:
+    """One activation serves every timepoint; only the branching varies with time."""
+
+    @pytest.mark.unit
+    def test_a_second_timepoint_may_rebranch_at_the_same_activation(self):
+        """Three components, two timepoints, same 30% activated but split differently
+        between the two excited states."""
+        from torchref.model.model_collection import ModelCollection
+
+        mc = ModelCollection([_StubModel(i) for i in range(3)], verbose=0)
+        mc.add_dark()
+        mc.add_timepoint("early", [0.7, 0.3, 0.0])
+        mc.add_timepoint("late", [0.7, 0.0, 0.3])
+
+        assert float(mc.alpha_mean) == pytest.approx(0.3, abs=1e-5)
+        assert torch.allclose(
+            mc["early"].fractions,
+            torch.tensor([0.7, 0.3, 0.0]),
+            atol=1e-5,
+        )
+        assert torch.allclose(
+            mc["late"].fractions,
+            torch.tensor([0.7, 0.0, 0.3]),
+            atol=1e-5,
+        )
+
+    @pytest.mark.unit
+    def test_a_conflicting_activation_is_rejected_not_projected(self):
+        """A silent least-squares projection here would produce populations nobody
+        asked for, so this raises and names the escape hatch."""
+        from torchref.model.model_collection import ModelCollection
+
+        mc = ModelCollection([_StubModel(0), _StubModel(1)], verbose=0)
+        mc.add_dark()
+        mc.add_timepoint("early", [0.7, 0.3])
+
+        with pytest.raises(ValueError, match="set_fraction_override"):
+            mc.add_timepoint("late", [0.5, 0.5])
+
+    @pytest.mark.unit
+    def test_the_rejection_message_names_both_activations(self):
+        from torchref.model.model_collection import ModelCollection
+
+        mc = ModelCollection([_StubModel(0), _StubModel(1)], verbose=0)
+        mc.add_dark()
+        mc.add_timepoint("early", [0.7, 0.3])
+
+        with pytest.raises(ValueError) as excinfo:
+            mc.add_timepoint("late", [0.5, 0.5])
+        text = str(excinfo.value)
+        assert "0.5000" in text and "0.3000" in text and "early" in text
+
+    @pytest.mark.unit
+    def test_adding_the_reference_after_a_timepoint_leaves_activation_alone(self):
+        """A pure-reference row carries no activation information."""
+        from torchref.model.model_collection import ModelCollection
+
+        mc = ModelCollection([_StubModel(0), _StubModel(1)], verbose=0)
+        mc.add_timepoint("light", [0.78, 0.22])
+        mc.add_dark()
+        assert float(mc.alpha_mean) == pytest.approx(0.22, abs=1e-5)
+
+
+class TestActivationJacobian:
+    @pytest.mark.unit
+    def test_rows_sum_to_zero_and_the_reference_row_vanishes(
+        self, two_model_collection
+    ):
+        """Fractions stay on the simplex, so the derivative is tangent to it; and the
+        reference does not move with the activation at all."""
+        mc = two_model_collection
+        jac = mc.activation_jacobian()
+
+        assert jac.shape == (len(mc), mc.n_base_models)
+        assert torch.allclose(jac.sum(dim=1), torch.zeros(len(mc)), atol=1e-6)
+        assert torch.equal(jac[0], torch.zeros(mc.n_base_models))
+        assert float(jac[1][0]) == pytest.approx(-1.0)
+
+    @pytest.mark.unit
+    def test_fractions_matrix_is_e_ref_plus_alpha_times_the_jacobian(
+        self, two_model_collection
+    ):
+        mc = two_model_collection
+        e_ref = torch.zeros(mc.n_base_models)
+        e_ref[0] = 1.0
+        expected = e_ref.unsqueeze(0) + mc.alpha_mean * mc.activation_jacobian()
+        assert torch.allclose(mc.fractions_matrix(), expected)
+
+    @pytest.mark.unit
+    def test_the_mixture_is_exactly_linear_in_the_activation(
+        self, two_model_collection
+    ):
+        """The property the second moment rests on: the secant equals the derivative,
+        so there is no truncation term anywhere downstream."""
+        mc = two_model_collection
+        jac = mc.activation_jacobian()
+
+        mc.set_activation(0.6)
+        w1 = mc.fractions_matrix().clone()
+        mc.set_activation(0.1)
+        w2 = mc.fractions_matrix().clone()
+
+        assert torch.allclose(w1 - w2, (0.6 - 0.1) * jac, atol=1e-6)
+
+
+class TestActivationDispersion:
+    @pytest.mark.unit
+    def test_lambda_is_exactly_zero_by_default(self, two_model_collection):
+        """Exactly, not approximately: sigmoid can never return 0, so a fixed float is
+        the only way to reproduce the coherent single-moment model."""
+        mc = two_model_collection
+        assert float(mc.lambda_twin) == 0.0
+        assert float(mc.sigma_alpha_sq) == 0.0
+
+    @pytest.mark.unit
+    def test_lambda_is_not_a_live_parameter_until_asked_for(
+        self, two_model_collection
+    ):
+        mc = two_model_collection
+
+        def _present():
+            # Identity, not ``in``: ``==`` on tensors is elementwise.
+            return any(p is mc._lambda_logit for p in mc.fraction_parameters())
+
+        assert not _present()
+
+        mc.set_lambda_twin(0.3, refinable=True)
+        assert _present()
+        assert mc._lambda_logit.requires_grad is True
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("lam", [0.0, 0.25, 0.5, 1.0])
+    def test_the_variance_bound_holds_by_construction(
+        self, two_model_collection, lam
+    ):
+        mc = two_model_collection
+        mc.set_lambda_twin(lam)
+        alpha = float(mc.alpha_mean)
+        bound = alpha * (1.0 - alpha)
+
+        # The bound holds algebraically; the tolerance is float32 ulp, since the two
+        # sides reach alpha (1 - alpha) by different arithmetic.
+        sigma_sq = float(mc.sigma_alpha_sq)
+        assert 0.0 <= sigma_sq <= bound * (1.0 + 1e-6)
+        assert sigma_sq == pytest.approx(bound * lam, rel=1e-5)
+
+    @pytest.mark.unit
+    def test_lambda_one_saturates_the_bound(self, two_model_collection):
+        """The fully incoherent limit: every crystal either fully activated or dark."""
+        mc = two_model_collection
+        mc.set_lambda_twin(1.0)
+        alpha = float(mc.alpha_mean)
+        assert float(mc.sigma_alpha_sq) == pytest.approx(alpha * (1.0 - alpha), rel=1e-5)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad", [-0.1, 1.1])
+    def test_out_of_range_lambda_is_rejected(self, two_model_collection, bad):
+        with pytest.raises(ValueError, match=r"\[0, 1\]"):
+            two_model_collection.set_lambda_twin(bad)
+
+    @pytest.mark.unit
+    def test_refined_lambda_stays_strictly_interior(self, two_model_collection):
+        """Once refinable it is a sigmoid, so it can approach but never reach the
+        bounds -- which is why the fixed path exists."""
+        mc = two_model_collection
+        mc.set_lambda_twin(0.0, refinable=True)
+        value = float(mc.lambda_twin.detach())
+        assert 0.0 < value < 1.0

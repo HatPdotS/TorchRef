@@ -761,7 +761,7 @@ Examples:
 
     if args.refine_fractions:
         params = list(itertools.chain(
-            model_light.parameters(), [mixed.fraction_params]
+            model_light.parameters(), mc.fraction_parameters()
         ))
     else:
         params = list(model_light.parameters())

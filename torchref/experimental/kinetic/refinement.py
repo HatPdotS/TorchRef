@@ -30,6 +30,7 @@ Example
     ref.refine(macro_cycles=5)
 """
 
+import warnings
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 import torch
@@ -321,10 +322,9 @@ class KineticRefinement(DeviceMixin, nn.Module):
                 )
 
         if fractions:
-            for name in mc.timepoint_names:
-                p = mc[name].fraction_params
-                if p.requires_grad:
-                    params.append(p)
+            # One shared activation plus a branching row per timepoint, owned by the
+            # collection rather than by any single timepoint.
+            params.extend(p for p in mc.fraction_parameters() if p.requires_grad)
 
         # Scaler parameters (if not frozen)
         if self.scaler is not None:
@@ -560,16 +560,40 @@ class KineticRefinement(DeviceMixin, nn.Module):
             if self.verbose > 1 and (step + 1) % 10 == 0:
                 print(f"    Kinetic opt step {step+1}/{niter}: loss = {loss.item():.6f}")
 
-        # Update free fraction parameters to match final kinetic predictions
+        # Update the population parameters to match the final kinetic predictions.
+        #
+        # The collection stores one shared activation plus a per-timepoint branching,
+        # so a predicted population vector is decomposed into the two. A kinetic model
+        # whose reactive fraction is genuinely constant gives the same activation at
+        # every timepoint; if it does not, the shared value cannot represent all of
+        # them and the closest one is kept, with the spread reported.
         with torch.no_grad():
             kinetic_occ = kinetic_model()
+            implied = {}
             for tp_name, t_idx in all_overrides.items():
                 if tp_name == mc.dark_key:
-                    continue  # dark fractions stay frozen at [1,0,...,0]
+                    continue  # the reference is the alpha = 0 evaluation
                 predicted = kinetic_occ[:, t_idx]
-                mc[tp_name].fraction_params.data = torch.log(
-                    predicted.clamp(min=1e-6)
-                )
+                alpha = float(1.0 - predicted[0])
+                if alpha <= 1e-6:
+                    continue
+                implied[tp_name] = alpha
+                mc.set_branching(tp_name, predicted[1:])
+
+            if implied:
+                alphas = list(implied.values())
+                spread = max(alphas) - min(alphas)
+                mean_alpha = sum(alphas) / len(alphas)
+                mc.set_activation(mean_alpha)
+                if spread > 1e-3:
+                    warnings.warn(
+                        f"Kinetic populations imply activations spanning {spread:.4f} "
+                        f"across timepoints, but one activation is shared by all of "
+                        f"them; using the mean {mean_alpha:.4f}. Drive the timepoints "
+                        f"with set_fraction_override() to keep them independent.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
         mc.unfreeze_structures()
 

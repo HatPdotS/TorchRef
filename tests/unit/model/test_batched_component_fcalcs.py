@@ -189,11 +189,12 @@ class TestContraction:
 
     def test_gradient_flows_through_the_contraction(self, pair):
         dc, mc = pair
+        mc.unfreeze_all_fractions()
         stacked = dc.component_structure_factors(mc, recalc=True)
         w = mc.get_fractions_matrix()
 
         mc.mix_component_fcalcs(stacked, w).abs().sum().backward()
 
-        grad = mc["light"].fraction_params.grad
+        grad = mc._activation_logit.grad
         assert grad is not None
         assert torch.isfinite(grad).all()
