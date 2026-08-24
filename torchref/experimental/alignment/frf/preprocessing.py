@@ -263,15 +263,21 @@ def apply_shell_variance_weights(
     intensity: torch.Tensor,
     s_mag: torch.Tensor,
     n_var_shells: int = 20,
+    shell_idx: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Per-shell empirical variance reweight.
 
     Downweights shells whose observed Patterson intensity is dominated
     by noise. Mean-normalised so total scale doesn't shift. Closest
     Phaser analog is per-shell BINS + ``best(r)`` in ``Ensemble.cc``.
+
+    ``shell_idx`` reuses an assignment the caller already made. Worth passing:
+    binning here independently of the Wilson normalisation puts the two on
+    edges that disagree for the reflections sitting on a boundary.
     """
-    edges, _ = equal_count_shell_edges(s_mag, n_var_shells)
-    shell_idx = assign_shells(s_mag, edges)
+    if shell_idx is None:
+        edges, _ = equal_count_shell_edges(s_mag, n_var_shells)
+        shell_idx = assign_shells(s_mag, edges)
     valid = shell_idx >= 0
     var_p = compute_patterson_shell_variance(
         intensity[valid].to(torch.float64),

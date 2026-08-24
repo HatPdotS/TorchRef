@@ -137,6 +137,8 @@ class FastRotationFunction:
         n_wilson_shells: int = 20,
         sig_F_obs: Optional[torch.Tensor] = None,
         grid_sampling_deg: float = 2.0,
+        asu_idx: Optional[torch.Tensor] = None,
+        s_mag_asu: Optional[torch.Tensor] = None,
     ):
         self.device = s_obs.device
 
@@ -152,18 +154,41 @@ class FastRotationFunction:
         self.n_wilson_shells = n_wilson_shells
         self.grid_sampling_deg = grid_sampling_deg
 
-        # 1. Resolution mask on obs.
-        extras = (F_obs, centric_obs)
-        if sig_F_obs is not None:
-            extras = extras + (sig_F_obs,)
-        s_obs, extras, smag_obs = _resolution_mask(s_obs, extras, d_min, d_max)
-        F_obs, centric_obs = extras[0], extras[1]
-        if sig_F_obs is not None:
-            sig_F_obs = extras[2]
+        # 1. Resolution window.
+        #
+        # With `asu_idx` the caller has already masked, and `F_obs` / `sig_F_obs`
+        # / `centric_obs` are ONE ROW PER UNIQUE REFLECTION while `s_obs` carries
+        # the full symmetry-unrolled geometry. Everything from here to the
+        # expansion is a per-reflection function of (F, sigma_F, |s|, centric),
+        # all four of which are symmetry-invariant, so the chain runs on the
+        # unique set and is broadcast at the end. That is exact -- not an
+        # approximation -- and it is the difference between doing the
+        # French-Wilson posterior once and doing it n_ops times.
+        #
+        # Without `asu_idx` every array is per-row of `s_obs` and the window is
+        # applied here, which is the path direct callers and the synthetic tests
+        # take.
+        if asu_idx is None:
+            extras = (F_obs, centric_obs)
+            if sig_F_obs is not None:
+                extras = extras + (sig_F_obs,)
+            s_obs, extras, smag_src = _resolution_mask(s_obs, extras, d_min, d_max)
+            F_obs, centric_obs = extras[0], extras[1]
+            if sig_F_obs is not None:
+                sig_F_obs = extras[2]
+        else:
+            if s_mag_asu is None:
+                raise ValueError("asu_idx requires s_mag_asu (|s| per unique row)")
+            if int(asu_idx.shape[0]) != int(s_obs.shape[0]):
+                raise ValueError(
+                    f"asu_idx has {int(asu_idx.shape[0])} entries for "
+                    f"{int(s_obs.shape[0])} unrolled reflections"
+                )
+            smag_src = s_mag_asu
 
-        if s_obs.shape[0] < n_wilson_shells * 5:
+        if F_obs.shape[0] < n_wilson_shells * 5:
             raise ValueError(
-                f"Too few obs reflections ({s_obs.shape[0]}) for "
+                f"Too few obs reflections ({F_obs.shape[0]}) for "
                 f"{n_wilson_shells} Wilson shells in [{d_min}, {d_max}] Å."
             )
 
@@ -180,17 +205,31 @@ class FastRotationFunction:
         lmax_even = lmax if lmax % 2 == 0 else lmax - 1
         self.bessel_h_scale = float(lmax_even) * float(d_min)
 
-        # 3. Wilson normalisation. With sigmas, through the French-Wilson
-        #    posterior, which does its own per-shell normalisation and handles
-        #    the axial reflections; without them, plain per-shell Wilson.
+        # 3. ONE shell assignment, shared by everything below.
+        #
+        # The French-Wilson posterior, the LERF1 build and the variance reweight
+        # all normalise per resolution shell, and each used to derive its own
+        # equal-count edges from the same |s| -- one in numpy, one in torch, with
+        # different quantile-rank rounding. That put a handful of boundary
+        # reflections in different shells depending on which consumer asked,
+        # which is a difference of ~2e-4 relative on their normalisation for no
+        # reason. Assign once, pass it down.
+        from ..sh import assign_shells, equal_count_shell_edges
+
+        shell_edges, _ = equal_count_shell_edges(smag_src, n_wilson_shells)
+        obs_shell_idx = assign_shells(smag_src, shell_edges)
+
+        # 3b. Wilson normalisation. With sigmas, through the French-Wilson
+        #    posterior, which handles the axial reflections; without them, plain
+        #    per-shell Wilson.
         if sig_F_obs is not None:
             fw = french_wilson_preprocess(
-                F_obs, sig_F_obs, smag_obs, centric_obs,
-                n_wilson_shells=n_wilson_shells,
+                F_obs, sig_F_obs, smag_src, centric_obs,
+                n_wilson_shells=n_wilson_shells, shell_idx=obs_shell_idx,
             )
             eEobs, dfac = fw["eEobs"], fw["DFAC"]
         else:
-            eEobs, _ = wilson_normalise(F_obs, smag_obs, n_wilson_shells)
+            eEobs, _ = wilson_normalise(F_obs, smag_src, n_wilson_shells)
             dfac = torch.ones_like(eEobs)
 
         # 4. LERF1 obs intensity, and the per-shell variance reweight.
@@ -198,8 +237,12 @@ class FastRotationFunction:
             eEobs, centric_obs, dfac=dfac, use_centric_weight=True,
         )
         intensity_obs = apply_shell_variance_weights(
-            intensity_obs, smag_obs, n_var_shells=n_wilson_shells,
+            intensity_obs, smag_src, n_var_shells=n_wilson_shells,
+            shell_idx=obs_shell_idx,
         )
+        if asu_idx is not None:
+            # One value per unique reflection -> one per unrolled reflection.
+            intensity_obs = intensity_obs[asu_idx]
 
         # 5. ZSYMM m-filter on the obs SH coefficients. The calc side is never
         #    filtered -- see score_model.

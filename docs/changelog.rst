@@ -21,6 +21,10 @@ Unreleased
 - Removed the rotation function's duplicate Euler, Rodrigues and reciprocal-symmetry helpers in favour of the shared primitives
 - Removed the rotation function's redundant calc-side resolution mask and its second bandwidth/resolution coupling call
 - ``bessel_sh_expand`` lost its unread ``chunk_size`` argument and ``french_wilson_preprocess`` its unread ``sqrt_mean_F2`` output
+- The rotation function's observed-side chain (French-Wilson, LERF1, shell variance weights, relative Wilson B) now runs once per unique reflection instead of once per symmetry copy; only the geometry is unrolled
+- The rotation function assigns resolution shells once and shares them, instead of the Wilson normalisation and the variance reweight deriving edges that disagreed at the shell boundaries
+- The rotation function masks observations to the bandwidth-coupled resolution before the symmetry unroll rather than after
+- The rotation function warns on Bijvoet-unmerged data, whose shared canonical index would weight those reflections twice
 
 Version 0.6.4
 ----------

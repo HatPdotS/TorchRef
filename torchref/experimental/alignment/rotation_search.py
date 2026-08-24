@@ -22,6 +22,7 @@ one's provenance is in its own comment.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -244,21 +245,31 @@ def search_peaks(
         s_vec_all = hkl_all.to(torch.float64) @ rec_basis
         s_mag_all = s_vec_all.norm(dim=-1)
 
-        # Take the observations at the full data resolution: the bandwidth
-        # coupling below coarsens the limit to whatever the harmonics can
-        # represent, so pre-restricting here would only lose the terms it keeps.
-        #
-        # The high-resolution half of the mask below is a no-op by construction
-        # (`s_mag <= 1/(1/max(s_mag))`, measured to drop nothing) but the
-        # LOW-resolution half is live: 3K7M carries two reflections beyond 100 A
-        # that it removes. Do not fold the pair away as redundant.
         d_min_data = float(1.0 / s_mag_all.max().item())
         d_max = float(LOW_RESOLUTION_CUTOFF_A)
-        keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min_data)
 
-        s_obs = s_vec_all[keep]
+        # Couple the bandwidth to the resolution FIRST, because the mask below is
+        # the only place the coarsened limit is applied -- the engine takes the
+        # window as given. Data finer than L can represent contributes aliasing
+        # rather than signal and buries the symmetry-diluted true peak, so
+        # dropping this cut is not a small error: on 3K7M it moved truth from
+        # rank 18 to rank 238 and doubled the runtime.
+        model_radius_A = float(
+            (model.xyz() - model.xyz().mean(0)).norm(dim=-1).mean().item()
+        )
+        L, d_min = phaser_lmax_resolution(model_radius_A, d_min_data, LMAX_CAP)
+
+        # Masking before the unroll rather than after: |s| is symmetry-invariant
+        # (symmetry operations are isometries), so the two commute -- and this way
+        # the discarded high-resolution tail is not first replicated n_ops times.
+        # The low-resolution half is live, not decorative: 3K7M carries two
+        # reflections beyond 100 A that it removes.
+        keep = (s_mag_all >= 1.0 / d_max) & (s_mag_all <= 1.0 / d_min)
+
+        s_asu = s_vec_all[keep]
+        s_mag_asu = s_mag_all[keep]
         F_obs = apply_overall_anisotropy(
-            data.F.to(torch.float64).abs().to(device)[keep], s_obs, U_aniso,
+            data.F.to(torch.float64).abs().to(device)[keep], s_asu, U_aniso,
         )
         sigF = (
             data.F_sigma.to(torch.float64).to(device)[keep]
@@ -270,6 +281,17 @@ def search_peaks(
             if hasattr(data, "centric")
             else torch.zeros_like(F_obs, dtype=torch.bool)
         )
+        # Unmerged Bijvoet data puts two rows on one canonical index, so the
+        # unroll below would weight those reflections twice. Detectable, so say
+        # so rather than quietly double-counting.
+        if getattr(data, "friedel_merged", True) is False:
+            warnings.warn(
+                "data are Bijvoet-unmerged: both members of a pair share a "
+                "canonical index, so the symmetry unroll weights those "
+                "reflections twice in the Patterson. Merge first for a clean "
+                "rotation function.",
+                RuntimeWarning, stacklevel=2,
+            )
 
         # Expand the observations over the space group's rotations to fill
         # reciprocal space. |F(hS)| = |F(h)|, and the harmonics need the full
@@ -298,18 +320,23 @@ def search_peaks(
             .to(device=device, dtype=rec_basis.dtype)
         )
         s_obs = hkl_unrolled @ rec_basis
-        F_obs = F_obs.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
-        centric = centric.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
-        if sigF is not None:
-            sigF = sigF.unsqueeze(0).expand(n_ops, -1).reshape(-1).contiguous()
+        # Only the GEOMETRY is unrolled. The amplitudes, sigmas and centric
+        # flags stay one row per unique reflection and the engine broadcasts
+        # them after its per-reflection chain, which is symmetry-invariant. The
+        # op-major flattening above means unrolled row `k * N + n` came from
+        # unique row `n`, so the map is `arange(N)` tiled n_ops times.
+        n_unique = int(F_obs.shape[0])
+        asu_idx = (
+            torch.arange(n_unique, device=device)
+            .unsqueeze(0)
+            .expand(n_ops, -1)
+            .reshape(-1)
+        )
 
         # The model's transform on a dense P1 grid rather than at the crystal's
         # own reflections: the crystal lattice is too sparse to determine the
-        # high-l harmonics for a large molecule.
-        model_radius_A = float(
-            (model.xyz() - model.xyz().mean(0)).norm(dim=-1).mean().item()
-        )
-        L, d_min = phaser_lmax_resolution(model_radius_A, d_min_data, LMAX_CAP)
+        # high-l harmonics for a large molecule. `L` / `d_min` came from the
+        # bandwidth coupling above, which the obs mask also used.
         s_calc, F_calc = dense_calc_via_box(
             model, d_max, d_min, pad=DENSE_CALC_PAD, verbose=verbose > 0,
         )
@@ -320,9 +347,12 @@ def search_peaks(
         # (EnsemblePDB.cc:793-851), so the radial fall-off does not by itself
         # discriminate between orientations.
         s_calc_mag = s_calc.norm(dim=-1)
+        # Fitted on the unique set. The unroll replicates every reflection
+        # exactly n_ops times, so the per-shell means are identical to the
+        # unrolled fit while the sort and the binning are n_ops times smaller.
         B_rel = fit_relative_wilson_b(
             F_obs.to(torch.float64), F_calc.to(torch.float64),
-            s_obs.norm(dim=-1).to(torch.float64), n_shells=N_WILSON_SHELLS,
+            s_mag_asu.to(torch.float64), n_shells=N_WILSON_SHELLS,
             s_mag_calc=s_calc_mag.to(torch.float64),
         )
         if abs(B_rel) > 1e-6:
@@ -337,6 +367,8 @@ def search_peaks(
             n_wilson_shells=N_WILSON_SHELLS,
             sig_F_obs=sigF,
             grid_sampling_deg=GRID_SAMPLING_DEG,
+            asu_idx=asu_idx,
+            s_mag_asu=s_mag_asu,
         )
         _arf, peaks = engine.score_model(
             s_calc, F_calc, n_peaks=n_peaks,

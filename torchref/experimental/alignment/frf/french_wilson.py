@@ -432,12 +432,18 @@ def french_wilson_preprocess(
     centric: torch.Tensor,
     *,
     n_wilson_shells: int = 20,
+    shell_idx: "torch.Tensor | None" = None,
 ) -> dict:
     """Phaser-style preprocessing from raw ``(F, σF, centric)`` to ``(eEobs, DFAC)``.
 
     Implements the chain:
 
-    1. equal-count Wilson shells over ``s_mag``
+    1. equal-count Wilson shells over ``s_mag`` -- or ``shell_idx``, when the
+       caller has already assigned them. Pass it: this routine's own quantile
+       edges (``np.linspace(0, N-1, P+1).round()``) pick a different rank than
+       ``equal_count_shell_edges`` does for the same distribution at a different
+       N, so two independently-binned consumers disagree about a handful of
+       reflections at the shell boundaries (measured: 7 of 55078 on 3K7M).
     2. per-shell ``<F²>_p`` (Phaser's ``SIGMAN.BINS``)
     3. per-reflection normalised intensity ``eosq = F² / <F²>`` and σ
        ``sigesq = σI / <I> ≈ 2·F·σF / <F²>``
@@ -458,14 +464,25 @@ def french_wilson_preprocess(
     s_np = s_mag.detach().to("cpu").to(torch.float64).numpy()
     cen_np = centric.detach().to("cpu").bool().numpy()
 
-    sorted_idx = np.argsort(s_np)
-    edges_idx = np.linspace(0, len(s_np) - 1, n_wilson_shells + 1).round().astype(np.int64)
-    s_edges = s_np[sorted_idx][edges_idx]
-    s_edges[0] -= 1e-6
-    s_edges[-1] += 1e-6
-    shell_idx = np.clip(
-        np.searchsorted(s_edges, s_np, side="right") - 1, 0, n_wilson_shells - 1,
-    )
+    if shell_idx is None:
+        sorted_idx = np.argsort(s_np)
+        edges_idx = np.linspace(
+            0, len(s_np) - 1, n_wilson_shells + 1).round().astype(np.int64)
+        s_edges = s_np[sorted_idx][edges_idx]
+        s_edges[0] -= 1e-6
+        s_edges[-1] += 1e-6
+        shell_idx = np.clip(
+            np.searchsorted(s_edges, s_np, side="right") - 1,
+            0, n_wilson_shells - 1,
+        )
+    else:
+        # Out-of-range rows come back as -1 from `assign_shells`; clamp them into
+        # the end shells rather than dropping them, which is what this routine's
+        # own edge nudge did.
+        shell_idx = np.clip(
+            shell_idx.detach().to("cpu").to(torch.int64).numpy(),
+            0, n_wilson_shells - 1,
+        )
     F2 = F_np * F_np
     mean_F2 = np.zeros(n_wilson_shells, dtype=np.float64)
     counts = np.zeros(n_wilson_shells, dtype=np.int64)
