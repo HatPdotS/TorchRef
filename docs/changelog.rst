@@ -25,6 +25,8 @@ Unreleased
 - The rotation function assigns resolution shells once and shares them, instead of the Wilson normalisation and the variance reweight deriving edges that disagreed at the shell boundaries
 - The rotation function masks observations to the bandwidth-coupled resolution before the symmetry unroll rather than after
 - The rotation function warns on Bijvoet-unmerged data, whose shared canonical index would weight those reflections twice
+- The rotation function no longer concatenates the antipodal copy onto either reflection set: only even harmonic degrees are computed, for which it is an exact factor of two, so it scaled the rotation function by four and changed no ranking. Raw ``RotationPeak.score`` and ``RotationSolutions.scores`` are therefore a quarter of their previous values; z-scores are unchanged
+- Kept the rotation function's relative Wilson-B fit: knocking it out was measured rank-neutral but worth only 2% of the runtime once the fit moved to the unique reflection set
 
 Version 0.6.4
 ----------

@@ -47,7 +47,9 @@ Expected relation, if our encoder is right. Phaser projects with ``Y_lm``
 we project with ``conj(C(m,phi))``; ``bar_P`` carries no CS phase and our
 ``sign_m`` restores it. Both are real-weighted sums, so
 
-    ours[n, l, m] = k * conj(phaser[l, m, n+1]),   k = 2 if enforce_friedel else 1
+    ours[n, l, m] = k * conj(phaser[l, m, n+1]),   k = 1 (was 2 while the
+expansion concatenated the antipodal copy, which Phaser does via cctbx's
+conjugate_flag and we no longer do -- see bessel_sh_expand)
 
 with the factor 2 because appending ``-s`` doubles every even-l coefficient
 exactly (``Y_lm(-s) = (-1)^l Y_lm(s)``). ``k`` is therefore a prediction, not a
@@ -295,11 +297,10 @@ def compare_coeffs(ours: torch.Tensor, phaser: torch.Tensor, L: int,
 # ---------------------------------------------------------------------------
 
 def encode(s: torch.Tensor, intensity: torch.Tensor, *, L: int,
-           h_scale: float, zsymm: int, friedel: bool) -> torch.Tensor:
+           h_scale: float, zsymm: int) -> torch.Tensor:
     from torchref.experimental.alignment.frf.data_mr import bessel_sh_expand
     return bessel_sh_expand(
         s, intensity, L=L, bessel_h_scale=h_scale, zsymm=zsymm,
-        enforce_friedel=friedel,
     ).coeffs
 
 
@@ -428,13 +429,13 @@ def run(pdb: str, outdir: Path, *, reuse: Path | None = None) -> list:
 
     # --- arm 1: Phaser's own observations through our encoder ---------------
     t0 = time.time()
-    c = encode(s_obs, i_obs, L=L, h_scale=h_obs, zsymm=zsymm, friedel=False)
+    c = encode(s_obs, i_obs, L=L, h_scale=h_obs, zsymm=zsymm)
     emit("obs_phaser_pts", c, data_elmn,
          n_points=s_obs.shape[0], seconds=time.time() - t0, extra=obs_clu)
 
     # --- arm 2: Phaser's observations WITH Phaser's own theta approximation --
     t0 = time.time()
-    c = encode(s_obs_clu, i_obs, L=L, h_scale=h_obs, zsymm=zsymm, friedel=False)
+    c = encode(s_obs_clu, i_obs, L=L, h_scale=h_obs, zsymm=zsymm)
     emit("obs_phaser_clustered", c, data_elmn,
          n_points=s_obs_clu.shape[0], seconds=time.time() - t0, extra=obs_clu)
 
@@ -445,15 +446,14 @@ def run(pdb: str, outdir: Path, *, reuse: Path | None = None) -> list:
     # recoverable from the dumped theta.
     t0 = time.time()
     flip = (cos_calc.abs() > 1e-12).to(torch.float64) + 1.0
-    c = encode(s_calc, i_calc * flip, L=L, h_scale=h_calc, zsymm=1, friedel=False)
+    c = encode(s_calc, i_calc * flip, L=L, h_scale=h_calc, zsymm=1)
     emit("calc_phaser_pts", c, search_elmn, n_points=s_calc.shape[0],
          seconds=time.time() - t0,
          extra=dict(calc_clu, n_l0_plane=int((cos_calc.abs() <= 1e-12).sum())))
 
     # --- arm 4: the same, with Phaser's theta approximation -----------------
     t0 = time.time()
-    c = encode(s_calc_clu, i_calc * flip, L=L, h_scale=h_calc, zsymm=1,
-               friedel=False)
+    c = encode(s_calc_clu, i_calc * flip, L=L, h_scale=h_calc, zsymm=1)
     emit("calc_phaser_clustered", c, search_elmn, n_points=s_calc_clu.shape[0],
          seconds=time.time() - t0, extra=calc_clu)
 
@@ -466,7 +466,7 @@ def run(pdb: str, outdir: Path, *, reuse: Path | None = None) -> list:
     for arm, (s, val) in arms.items():
         t0 = time.time()
         fc = frame_check(s, s_obs)
-        c = encode(s, val, L=L, h_scale=h_obs, zsymm=zsymm, friedel=False)
+        c = encode(s, val, L=L, h_scale=h_obs, zsymm=zsymm)
         emit(arm, c, data_elmn, n_points=s.shape[0], seconds=time.time() - t0,
              extra=dict(ustats, **fc))
 

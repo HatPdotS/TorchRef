@@ -255,7 +255,7 @@ class FastRotationFunction:
         self._c_obs = bessel_sh_expand(
             s_obs, intensity_obs,
             L=L, bessel_h_scale=self.bessel_h_scale,
-            zsymm=zsymm, enforce_friedel=True,
+            zsymm=zsymm,
         )
 
 
@@ -302,7 +302,7 @@ class FastRotationFunction:
         c_calc = bessel_sh_expand(
             s_calc, intensity_calc,
             L=self.L, bessel_h_scale=self.bessel_h_scale,
-            zsymm=1, enforce_friedel=True,
+            zsymm=1,
         )
 
         # 8. Cross-correlate over the radial axis.

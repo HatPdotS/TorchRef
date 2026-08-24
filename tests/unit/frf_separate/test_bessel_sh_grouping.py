@@ -159,9 +159,6 @@ def _reference_expansion(s_vec, intensity, L, bessel_h_scale):
     from torchref.experimental.alignment.frf.data_mr import spherical_bessel_table
     from torchref.experimental.alignment.sh import _bar_legendre_recurrence
 
-    s_vec = torch.cat([s_vec, -s_vec], dim=0)          # enforce_friedel
-    intensity = torch.cat([intensity, intensity], dim=0)
-
     lmax = L - 1
     lmax_even = lmax if lmax % 2 == 0 else lmax - 1
     N_radial = (lmax_even - 2) // 2 + 1
@@ -201,3 +198,29 @@ def test_matches_an_independent_direct_summation(L, double_cpu):
     assert got.shape == ref.shape
     rel = (got - ref).abs().max().item() / max(ref.abs().max().item(), 1e-300)
     assert rel < 1e-10, f"L={L}: differs from a direct summation by {rel:.2e}"
+
+
+def test_the_antipodal_copy_would_only_double_the_result(double_cpu):
+    """Why the expansion no longer concatenates ``-s``.
+
+    Only even ``l`` are computed, and ``Y_lm(-s_hat) = (-1)^l Y_lm(s_hat)``, so
+    for even ``l`` the antipodal copy contributes exactly what the original does.
+    The intensity is duplicated verbatim and ``|s|`` is unchanged, so the whole
+    coefficient array doubles and nothing about its *shape* changes -- which is
+    why removing it rescales the rotation function by four and reorders nothing.
+
+    Pinned here rather than argued in a comment: if a future change made odd ``l``
+    carry signal, this equality would break and the removal would need revisiting.
+    """
+    s, I = _random_set(seed=17, n=300)
+    single = bessel_sh_expand(s, I, L=17, bessel_h_scale=30.0).coeffs
+    doubled = bessel_sh_expand(
+        torch.cat([s, -s], dim=0), torch.cat([I, I], dim=0),
+        L=17, bessel_h_scale=30.0,
+    ).coeffs
+    scale = single.abs().max().clamp(min=1e-300)
+    rel = ((doubled - 2.0 * single).abs().max() / scale).item()
+    assert rel < 1e-12, (
+        f"the antipodal copy is not an exact factor of two: {rel:.2e} relative. "
+        f"Removing it was justified on that being exact."
+    )
