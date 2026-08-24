@@ -283,6 +283,60 @@ class CollectionScaler(ScalerBase):
         f_sol_raw_mixed = self.get_mixed_solvent_raw(fractions)
         return super().forward(fcalc, f_sol_override=f_sol_raw_mixed)
 
+    def compute_component_solvent_raw(self) -> torch.Tensor:
+        """Raw (un-damped) complex solvent SFs for every component, stacked.
+
+        The solvent counterpart of
+        :meth:`~torchref.model.model_collection.ModelCollection.compute_component_fcalcs`.
+        Each component's mask FFT is cached, so repeated calls are cheap.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex tensor of shape ``(n_components, n_reflections)``.
+        """
+        return torch.stack(
+            [
+                self._get_component_f_sol_raw(i)
+                for i in range(len(self._component_solvent_models))
+            ],
+            dim=0,
+        )
+
+    def forward_batched(
+        self,
+        fcalc_batch: torch.Tensor,
+        fractions_matrix: torch.Tensor,
+    ) -> torch.Tensor:
+        """Scale a batch of mixtures, each with its own fraction-weighted solvent.
+
+        The batched form of :meth:`forward_mixed`: one shared set of scale parameters
+        applied to ``T`` mixtures at once, with the bulk solvent mixed per row by the
+        same weights. Since ``ScalerBase.forward`` is affine in ``fcalc`` and the mixed
+        solvent is linear in the weights, passing a *derivative* of the fractions in
+        place of the fractions returns the corresponding derivative of the scaled
+        structure factors.
+
+        Parameters
+        ----------
+        fcalc_batch : torch.Tensor
+            Complex structure factors of shape ``(T, n_reflections)``.
+        fractions_matrix : torch.Tensor
+            Weights of shape ``(T, n_components)``, one row per member of the batch.
+
+        Returns
+        -------
+        torch.Tensor
+            Scaled complex structure factors of shape ``(T, n_reflections)``.
+        """
+        component_sol_raw = self.compute_component_solvent_raw()
+        f_sol_batch = torch.einsum(
+            "tk,kr->tr",
+            fractions_matrix.to(component_sol_raw.dtype),
+            component_sol_raw,
+        )
+        return super().forward(fcalc_batch, f_sol_override=f_sol_batch)
+
     # ------------------------------------------------------------------
     # Joint LBFGS refinement
     # ------------------------------------------------------------------
