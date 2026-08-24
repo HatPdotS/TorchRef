@@ -58,7 +58,8 @@ _GROUP_SCALE_S = 10_000_000
 #: approximation and needs its own evidence.
 _GROUP_SCALE_COS = 10_000_000
 
-from ....config import get_complex_dtype, get_float_dtype
+from ....config import (get_complex_dtype, get_float_dtype,
+                        widest_complex_dtype, widest_float_dtype)
 from ....utils.backends import run_or_degrade, select
 from ..sh import legendre_recurrence_coefficients
 from ._backends import LEGENDRE_BACKENDS
@@ -122,7 +123,12 @@ def spherical_bessel_table(
     """
     real_dtype = x.dtype
     device = x.device
-    x64 = x.to(torch.float64)
+    # Double where the device has it. The rescaling above is what makes a
+    # narrower working dtype survivable here at all -- without it the ladder
+    # overflows float32 for every x below ~35 -- but double is still preferable
+    # where it is available, since the recurrence runs ~90 steps.
+    work_dtype = widest_float_dtype(device)
+    x64 = x.to(work_dtype)
     safe_x = x64.clamp(min=1e-30)
     inv_x = 1.0 / safe_x
 
@@ -130,7 +136,7 @@ def spherical_bessel_table(
     j_high = torch.zeros_like(x64)
     j_mid = torch.ones_like(x64)
     j_table = torch.zeros(
-        (u_max + 1, *x64.shape), dtype=torch.float64, device=device,
+        (u_max + 1, *x64.shape), dtype=work_dtype, device=device,
     )
     threshold = float(2 ** _BESSEL_RESCALE_EXP)
     inv_threshold = 1.0 / threshold
@@ -553,12 +559,12 @@ def cross_correlate_xi(
     """
     if c_obs.L != c_calc.L:
         raise ValueError(f"L mismatch: obs={c_obs.L} calc={c_calc.L}")
-    acc = (
-        torch.complex128
-        if c_obs.coeffs.dtype in (torch.complex64, torch.complex128)
-        and torch.finfo(c_obs.coeffs.real.dtype).bits <= 32
-        else c_obs.coeffs.dtype
-    )
+    # One step wider than the coefficients where the device allows it. On a
+    # backend without float64 this falls back to the coefficients' own dtype and
+    # the run pays the accuracy noted above -- there is no third option there.
+    acc = widest_complex_dtype(c_obs.coeffs.device)
+    if c_obs.coeffs.dtype == torch.complex128:
+        acc = torch.complex128          # never narrow what the caller widened
     return torch.einsum(
         "rln,rlm->lmn",
         c_obs.coeffs.to(acc),

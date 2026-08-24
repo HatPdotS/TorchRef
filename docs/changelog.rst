@@ -27,6 +27,7 @@ Unreleased
 - The rotation function warns on Bijvoet-unmerged data, whose shared canonical index would weight those reflections twice
 - The rotation function no longer concatenates the antipodal copy onto either reflection set: only even harmonic degrees are computed, for which it is an exact factor of two, so it scaled the rotation function by four and changed no ranking. Raw ``RotationPeak.score`` and ``RotationSolutions.scores`` are therefore a quarter of their previous values; z-scores are unchanged
 - Kept the rotation function's relative Wilson-B fit: knocking it out was measured rank-neutral but worth only 2% of the runtime once the fit moved to the unique reflection set
+- Added ``supports_double`` / ``widest_float_dtype`` / ``widest_complex_dtype``: where precision is load-bearing the width now comes from the device rather than a hardcoded ``float64``, so a backend without it gets the working dtype instead of an error
 
 Version 0.6.4
 ----------

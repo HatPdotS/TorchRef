@@ -52,6 +52,23 @@ FRF_STAGES: Tuple[Tuple[str, str], ...] = (
     ("torchref.experimental.alignment.frf.sitelist_ang",
      "build_dense_map_per_beta"),
     ("torchref.experimental.alignment.frf.data_mr", "spherical_bessel_table"),
+    # Added once the named stages stopped accounting for the run: after the obs
+    # chain moved to the unique set, French-Wilson fell from 29.9% to 3.6% and
+    # the unattributed remainder became the second largest item at 29%. These are
+    # the rest of the per-reflection work, patched where each call RESOLVES --
+    # `api` imports the preprocessing names at module top, `rotation_search`
+    # imports `apply_overall_anisotropy` from `sh` at module top, and
+    # `fit_relative_wilson_b` is imported inside `search_peaks` so it has to be
+    # patched on the defining module.
+    ("torchref.experimental.alignment.frf.api", "wilson_normalise"),
+    ("torchref.experimental.alignment.frf.api", "eterm_sigma_a"),
+    ("torchref.experimental.alignment.frf.api", "build_lerf1_intensity"),
+    ("torchref.experimental.alignment.frf.api", "apply_shell_variance_weights"),
+    ("torchref.experimental.alignment.frf.api", "detect_zsymm"),
+    ("torchref.experimental.alignment.frf.preprocessing",
+     "fit_relative_wilson_b"),
+    ("torchref.experimental.alignment.rotation_search",
+     "apply_overall_anisotropy"),
 )
 
 #: Which stage each nested stage sits inside. A parent's time *includes* its
