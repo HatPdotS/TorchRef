@@ -1,0 +1,307 @@
+"""Two-moment intensity target for time-resolved collections.
+
+Merged Bragg intensities see the crystal-to-crystal activation distribution only through
+its first two moments. With the branching among excited components conserved, the mixture
+is exactly linear in the activation fraction, so the intensity is exactly quadratic and::
+
+    <I> = |F(alpha_mean)|^2  +  sigma_alpha^2 |dF/dalpha|^2
+
+holds for *any* activation distribution and any number of components -- an identity, not a
+truncation. The first term is what every existing target models; the second is the variance
+the coherent model discards, and it is strictly positive, phase-blind, and largest exactly
+where the difference signal is.
+
+The target works in **intensities** rather than amplitudes on purpose: the French-Wilson
+conversion reshapes precisely the quadratic information the second moment lives in, so an
+amplitude formulation would fit a distorted version of the quantity it is trying to measure.
+Members must therefore carry ``I``/``SIGI``; there is no ``F**2`` fallback, because that
+would silently reintroduce the distortion.
+"""
+
+from typing import TYPE_CHECKING, Dict, List
+
+import numpy as np
+import torch
+
+from torchref.base.metrics.rfactor import rfactor_work_free
+from torchref.utils.stats import (
+    VERBOSITY_DEBUG,
+    VERBOSITY_ESSENTIAL,
+    VERBOSITY_STANDARD,
+    StatEntry,
+    stat,
+)
+
+from .base import CollectionXrayTarget
+
+if TYPE_CHECKING:
+    from torchref.io.datasets.collection import DatasetCollection
+    from torchref.model.model_collection import ModelCollection
+    from torchref.scaling.scaler_base import ScalerBase
+
+
+_LOG_2PI = float(np.log(2.0 * np.pi))
+
+#: Floor on the intensity sigma, as a fraction of the median over the fitted subset. A
+#: merged intensity sigma can be reported as zero; unfloored it would dominate the sum.
+_SIGMA_FLOOR_FRAC = 0.1
+
+
+class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
+    """
+    Gaussian intensity likelihood at the two-moment forward model.
+
+    Inherits the subset selector, the cache-reset discipline and the stats shape from
+    :class:`~torchref.refinement.targets.collection.base.CollectionXrayTarget`, so it
+    cannot disagree with the amplitude targets about which reflections it fits.
+
+    The forward model is built from **one** set of per-component structure factors,
+    contracted twice: once with the fractions to get the mean, once with the activation
+    Jacobian to get its derivative. Both contractions go through the shared scaler, which
+    is affine in ``F_calc`` and mixes the bulk solvent linearly in the weights -- so the
+    second contraction returns the correctly scaled derivative rather than needing a
+    separate differentiation path.
+
+    With ``lambda_twin`` fixed at zero the variance branch is not built at all. That makes
+    the coherent limit identical rather than merely equal: multiplying a live ``dF`` branch
+    by exactly zero would still propagate a non-finite ``F_calc`` into the loss.
+
+    Parameters
+    ----------
+    dataset_collection : DatasetCollection
+        Members must all carry intensities.
+    model_collection : ModelCollection
+        Supplies the components, the fractions and the activation moments.
+    scaler : ScalerBase, optional
+        Shared scaler. Needs ``forward_batched`` to scale the batch in one pass; without
+        one the unscaled mixture is used.
+    use_work_set : bool, optional
+        Legacy bool; superseded by ``use_set``.
+    use_set : str, optional
+        Canonical 3-way subset selector ``"work"``/``"free"``/``"val"``.
+    verbose : int, optional
+        Verbosity level.
+
+    Raises
+    ------
+    ValueError
+        On construction, if any fitted dataset carries no intensities.
+    """
+
+    name: str = "collection_two_moment_intensity"
+
+    def __init__(
+        self,
+        dataset_collection: "DatasetCollection",
+        model_collection: "ModelCollection",
+        scaler: "ScalerBase" = None,
+        use_work_set: bool = True,
+        use_set: str = None,
+        verbose: int = 0,
+    ):
+        super().__init__(
+            dataset_collection,
+            model_collection,
+            scaler=scaler,
+            use_work_set=use_work_set,
+            use_set=use_set,
+            verbose=verbose,
+        )
+        # Fail here rather than inside the first loss evaluation: LossState probes a
+        # target's forward at registration, and a traceback from there is much harder to
+        # trace back to "this MTZ had no intensity columns".
+        missing = [
+            key for key in self._keys() if dataset_collection[key].I is None
+        ]
+        if missing:
+            raise ValueError(
+                f"Datasets {missing} carry no intensities. The two-moment target fits "
+                f"merged intensities directly -- converting amplitudes back with F**2 "
+                f"would reintroduce the French-Wilson distortion it exists to avoid. "
+                f"Supply reflection files with I/SIGI columns."
+            )
+
+    # ------------------------------------------------------------------
+    # Forward model
+    # ------------------------------------------------------------------
+
+    def _row_indices(self, keys: List[str]) -> List[int]:
+        """Rows of the collection's fraction matrix corresponding to ``keys``."""
+        order = self._model_collection.keys()
+        return [order.index(k) for k in keys]
+
+    def _scale_batch(self, fcalc_batch, weights):
+        """Apply the shared scaler to a ``[T, R]`` batch with per-row weights."""
+        scaler = self._scaler
+        if scaler is None:
+            return fcalc_batch
+        return scaler.forward_batched(fcalc_batch, weights)
+
+    def intensity_model(self, recalc: bool = False) -> torch.Tensor:
+        """The two-moment predicted intensities, shape ``(n_datasets, n_reflections)``.
+
+        Parameters
+        ----------
+        recalc : bool, optional
+            Force recomputation of the component structure factors.
+
+        Returns
+        -------
+        torch.Tensor
+            Predicted intensities, rows aligned with :meth:`_keys`.
+        """
+        dc, mc = self._dataset_collection, self._model_collection
+        keys = self._keys()
+        rows = self._row_indices(keys)
+
+        components = dc.component_structure_factors(mc, recalc=recalc)
+        weights = mc.fractions_matrix()[rows]
+
+        mean = self._scale_batch(
+            mc.mix_component_fcalcs(components, weights), weights
+        )
+        intensity = mean.abs() ** 2
+
+        sigma_alpha_sq = mc.sigma_alpha_sq
+        if self._variance_is_live(sigma_alpha_sq):
+            jacobian = mc.activation_jacobian()[rows]
+            derivative = self._scale_batch(
+                mc.mix_component_fcalcs(components, jacobian), jacobian
+            )
+            intensity = intensity + sigma_alpha_sq * derivative.abs() ** 2
+        return intensity
+
+    def _variance_is_live(self, sigma_alpha_sq) -> bool:
+        """Whether the second moment contributes.
+
+        False only when the dispersion is *exactly* zero and not refinable, in which case
+        the derivative branch is skipped entirely rather than multiplied by zero.
+        """
+        mc = self._model_collection
+        if mc._lambda_fixed is None:
+            return True
+        return bool(sigma_alpha_sq.detach().ne(0).any())
+
+    def forward(self) -> torch.Tensor:
+        """Summed Gaussian NLL of the observed intensities under the two-moment model."""
+        dc = self._dataset_collection
+        keys = self._keys()
+        if not keys:
+            return torch.zeros((), device=dc.hkl.device)
+
+        # Clear cached forwards so a preceding no-grad stats()/get_rfactor() call cannot
+        # leave a detached tensor that breaks the loss backward.
+        self._reset_model_caches()
+
+        model = self.intensity_model(recalc=False)
+        obs = dc.stack_I_obs(keys).to(model.dtype)
+        sigma = dc.stack_I_sigma(keys).to(model.dtype)
+        mask = dc.stack_masks(keys, use_set=self.use_set)
+
+        sigma = self._floor_sigma(sigma, mask)
+
+        residual = obs - model
+        nll = (
+            0.5 * (residual / sigma) ** 2
+            + torch.log(sigma)
+            + 0.5 * _LOG_2PI
+        )
+        # A single non-finite entry would poison the whole gradient; a large finite
+        # penalty lets the step be rejected instead.
+        nll = torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
+        return (nll * mask).sum()
+
+    @staticmethod
+    def _floor_sigma(sigma: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """Clamp sigma away from zero, at a fraction of its median over the subset."""
+        selected = sigma[mask]
+        if selected.numel() == 0:
+            return sigma.clamp(min=1e-6)
+        floor = torch.median(selected) * _SIGMA_FLOOR_FRAC
+        floor = torch.clamp(floor, min=1e-12)
+        return sigma.clamp(min=floor)
+
+    # ------------------------------------------------------------------
+    # Reporting
+    # ------------------------------------------------------------------
+
+    def get_rfactor(self) -> Dict[str, object]:
+        """Per-dataset R-work / R-free against the two-moment amplitudes.
+
+        The reported amplitude is ``sqrt(I_model)``, the RMS amplitude the two-moment
+        model actually predicts -- not ``|F(alpha_mean)|``, which is only its first term
+        and would not correspond to the loss being minimised.
+
+        Overrides the base implementation, which is per-pair and would recompute the
+        component stack once per dataset.
+        """
+        dc = self._dataset_collection
+        keys = self._keys()
+        per_dataset: Dict[str, tuple] = {}
+        rworks: List[float] = []
+        rfrees: List[float] = []
+
+        with torch.no_grad():
+            model = self.intensity_model(recalc=True)
+            amplitudes = model.clamp(min=0.0).sqrt()
+            for row, key in enumerate(keys):
+                rwork, rfree = rfactor_work_free(dc[key], amplitudes[row])
+                per_dataset[key] = (rwork, rfree)
+                rworks.append(rwork)
+                rfrees.append(rfree)
+
+        return {
+            "per_dataset": per_dataset,
+            "rwork_pct": self._percentiles(rworks),
+            "rfree_pct": self._percentiles(rfrees),
+        }
+
+    def stats(self) -> Dict[str, StatEntry]:
+        """Base collection X-ray stats plus the activation moments.
+
+        ``dI_frac`` is the mean fraction of the predicted intensity carried by the second
+        moment. It is what separates "the dispersion refined to zero" from "the dispersion
+        was never refined", which are otherwise indistinguishable in the summary.
+        """
+        out = super().stats()
+        mc = self._model_collection
+
+        with torch.no_grad():
+            alpha = float(mc.alpha_mean)
+            lam = float(mc.lambda_twin)
+            sigma_sq = float(mc.sigma_alpha_sq)
+
+            out["alpha_mean"] = stat(alpha, VERBOSITY_ESSENTIAL)
+            out["lambda_twin"] = stat(lam, VERBOSITY_ESSENTIAL)
+            out["sigma_alpha_sq"] = stat(sigma_sq, VERBOSITY_STANDARD)
+            out["alpha_sd"] = stat(sigma_sq**0.5, VERBOSITY_STANDARD)
+
+            keys = self._keys()
+            if keys and self._variance_is_live(mc.sigma_alpha_sq):
+                rows = self._row_indices(keys)
+                components = self._dataset_collection.component_structure_factors(
+                    mc, recalc=True
+                )
+                jacobian = mc.activation_jacobian()[rows]
+                derivative = self._scale_batch(
+                    mc.mix_component_fcalcs(components, jacobian), jacobian
+                )
+                variance_term = mc.sigma_alpha_sq * derivative.abs() ** 2
+                total = self.intensity_model(recalc=False)
+                mask = self._dataset_collection.stack_masks(
+                    keys, use_set=self.use_set
+                )
+                denom = total[mask].abs().clamp(min=1e-12)
+                out["dI_frac"] = stat(
+                    float((variance_term[mask] / denom).mean()), VERBOSITY_STANDARD
+                )
+            else:
+                out["dI_frac"] = stat(0.0, VERBOSITY_STANDARD)
+
+            branching = mc.branching()
+            for name, row in mc._branching_rows.items():
+                for k in range(branching.shape[1]):
+                    out[f"q_{name}_{k + 1}"] = stat(
+                        float(branching[row, k]), VERBOSITY_DEBUG
+                    )
+        return out

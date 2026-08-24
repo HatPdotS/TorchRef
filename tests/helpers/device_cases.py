@@ -298,6 +298,7 @@ UNCOVERED: Dict[str, str] = {
     "CholeskyMixedTensor": "needs a valid ADP tensor; shares MixedTensor's paths",
     "CollectionScaler": "needs a dataset collection",
     "CollectionDifferenceTarget": "needs a dataset collection",
+    "CollectionTwoMomentIntensityTarget": "needs a dataset collection",
     "CollectionMLTarget": "needs a dataset collection",
     "CollectionRiceTarget": "needs a dataset collection",
     "ADPSigdTarget": "needs a model with ADPs",

@@ -21,6 +21,7 @@ from .base import (
 )
 from .collection import (
     CollectionDifferenceTarget,
+    CollectionTwoMomentIntensityTarget,
     CollectionMLTarget,
     CollectionRiceTarget,
     MultiModelADPTarget,
@@ -86,6 +87,7 @@ __all__ = [
     "create_xray_target",
     # Collection (multi-dataset) targets
     "CollectionDifferenceTarget",
+    "CollectionTwoMomentIntensityTarget",
     "CollectionRiceTarget",
     "CollectionMLTarget",
     "MultiModelGeometryTarget",
