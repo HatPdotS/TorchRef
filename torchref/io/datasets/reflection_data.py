@@ -1065,6 +1065,37 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ).read(str(path))
         return self.load(reader, french_wilson=french_wilson)
 
+    def load_crystfel_hkl(
+        self, path: str, cell, spacegroup,
+    ) -> "ReflectionData":
+        """
+        Load a CrystFEL ``partialator`` ``.hkl`` reflection list.
+
+        Unlike MTZ, the CrystFEL format carries no cell or space-group metadata, so both
+        must be supplied by the caller -- they usually live in a ``.cell`` file alongside.
+
+        The format is intensity-native, so amplitudes are derived by French-Wilson on
+        load exactly as they are for an MTZ carrying I/SIGI columns.
+
+        Parameters
+        ----------
+        path : str
+            Path to the ``.hkl`` file.
+        cell : list | tuple | np.ndarray | Cell | torch.Tensor
+            Unit cell (a, b, c, alpha, beta, gamma).
+        spacegroup : str | gemmi.SpaceGroup | SpaceGroup
+            Space group identifier.
+
+        Returns
+        -------
+        ReflectionData
+            Self, for method chaining.
+        """
+        from torchref.io import hkl as _hkl
+
+        reader = _hkl.HKLReader(verbose=self.verbose).read(path, cell, spacegroup)
+        return self.load(reader)
+
     def load_cif(
         self,
         path: Union[str, Path],
