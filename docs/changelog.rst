@@ -4,6 +4,8 @@ Changelog
 
 Version 0.6.4
 ----------
+- Fixed ``f_sol_override`` overwriting the scaler's cached ``F_sol``, so a later call without an override read the wrong solvent
+- Fixed a batched ``f_sol_override`` gaining a spurious leading axis, which changed the rank of the scaled structure factors
 - Fixed the bulk-solvent ``F_sol`` staying at the starting model's mask for every refinement macrocycle
 - Fixed restraint dictionaries defining several compounds yielding restraints for only one of them
 - Fixed chirality restraints being dropped for the ``positiv``/``negativ`` spellings used by the CCP4 library

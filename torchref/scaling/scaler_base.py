@@ -782,9 +782,10 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
             Deprecated and inert -- never read. Masking follows the input shape, so
             ``use_mask=False`` does *not* disable it.
         f_sol_override : torch.Tensor, optional
-            Raw solvent structure factors replacing the cached ``_f_sol_raw`` (k_sol / B_sol
-            / phase damping still applied). **Overwrites the cache**, so it persists into
-            later calls until invalidated. Used by ``CollectionScaler``.
+            Raw solvent structure factors used instead of the cached ``_f_sol_raw`` for this
+            call only (k_sol / B_sol / phase damping still applied); the cache is left
+            untouched. Shape ``(N,)`` or ``(B, N)`` -- a batched override keeps the batch
+            axis of the result. Used by ``CollectionScaler``.
 
         Returns
         -------
@@ -814,20 +815,25 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         else:
             aniso_correction = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
 
-        if f_sol_override is not None:
-            self._f_sol_raw = f_sol_override
+        # An override is consumed locally and never displaces the cache: it may carry a
+        # leading batch axis, and it belongs to one caller's fraction mixture rather than
+        # to this scaler's solvent model.
+        f_sol_raw_local = f_sol_override
 
         if hasattr(self, "solvent") and self.solvent is not None:
             # Lazily cache raw solvent SFs (FFT of mask) — only recomputed
             # when invalidated via _f_sol_raw = None (e.g. after update_solvent)
-            if self._f_sol_raw is None:
-                # The solvent mask is real density with no anomalous term, so
-                # F_sol(-h) is exactly conj(F_sol(h)) and evaluating on the
-                # canonical index already matches the canonical fcalc below.
-                self._f_sol_raw = self.solvent.get_rec_solvent(self.hkl)
+            if f_sol_raw_local is None:
+                if self._f_sol_raw is None:
+                    # The solvent mask is real density with no anomalous term, so
+                    # F_sol(-h) is exactly conj(F_sol(h)) and evaluating on the
+                    # canonical index already matches the canonical fcalc below.
+                    self._f_sol_raw = self.solvent.get_rec_solvent(self.hkl)
+                f_sol_raw_local = self._f_sol_raw
 
+            # Index the reflection axis, which is last for both (N,) and (B, N).
             f_sol_raw = (
-                self._f_sol_raw[mask] if apply_internal_mask else self._f_sol_raw
+                f_sol_raw_local[..., mask] if apply_internal_mask else f_sol_raw_local
             )
 
             if hasattr(self, "log_kmask"):
@@ -869,10 +875,13 @@ class ScalerBase(DeviceMixin, DebugMixin, nn.Module):
         else:
             b_overall = torch.tensor(1.0, device=self.device, dtype=fcalc.dtype)
 
+        # f_sol already carries the batch axis when it came from a batched override;
+        # only a per-reflection (N,) solvent needs one added to broadcast.
+        f_sol_expanded = f_sol if f_sol.ndim >= 2 else f_sol.unsqueeze(0)
         fcalc = (
             K_overall.unsqueeze(0)
             * b_overall.unsqueeze(0)
-            * (aniso_correction.unsqueeze(0) * fcalc + f_sol.unsqueeze(0))
+            * (aniso_correction.unsqueeze(0) * fcalc + f_sol_expanded)
         )
 
         if not batched:
