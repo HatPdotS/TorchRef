@@ -563,6 +563,92 @@ class ModelCollection(DeviceMovementMixin, nn.Module):
         )
 
     # ------------------------------------------------------------------
+    # Batched structure factors
+    # ------------------------------------------------------------------
+
+    def compute_component_fcalcs(
+        self, hkl: torch.Tensor, recalc: bool = False
+    ) -> torch.Tensor:
+        """Per-base-model structure factors, stacked.
+
+        Each base model is evaluated once, so a caller that needs several fraction
+        mixtures of the same models pays for the structure factors once rather than
+        once per mixture.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices of shape (n_reflections, 3). These reach the models
+            unchanged, so pass the *signed* indices when Bijvoet mates must be
+            distinguished -- or go through
+            :meth:`~torchref.io.datasets.collection.DatasetCollection.component_structure_factors`,
+            which handles the convention.
+        recalc : bool, optional
+            Force recomputation rather than reusing each model's cached SF.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex structure factors of shape ``(n_base_models, n_reflections)``.
+        """
+        return torch.stack(
+            [m(hkl, recalc=recalc) for m in self._base_models], dim=0
+        )
+
+    def mix_component_fcalcs(
+        self, component_fcalcs: torch.Tensor, weights: torch.Tensor
+    ) -> torch.Tensor:
+        """Contract stacked per-component SFs with a weight matrix.
+
+        ``weights [T, K] @ component_fcalcs [K, R] -> [T, R]``. Separated from
+        :meth:`compute_component_fcalcs` because the same component stack is contracted
+        with more than one weight matrix -- the fractions themselves, and any derivative
+        of them with respect to a shared parameter.
+
+        Parameters
+        ----------
+        component_fcalcs : torch.Tensor
+            Complex SFs of shape ``(K, n_reflections)``.
+        weights : torch.Tensor
+            Real weights of shape ``(T, K)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex SFs of shape ``(T, n_reflections)``.
+        """
+        return torch.einsum(
+            "tk,kr->tr", weights.to(component_fcalcs.dtype), component_fcalcs
+        )
+
+    def compute_all_fcalc(
+        self, hkl: torch.Tensor, recalc: bool = False
+    ) -> torch.Tensor:
+        """Mixed ``F_calc`` for every timepoint at once.
+
+        Equivalent to calling each timepoint's ``forward`` in turn, but evaluates each
+        shared base model once instead of once per timepoint. Rows follow
+        :meth:`get_fractions_matrix`, i.e. insertion order.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Miller indices of shape (n_reflections, 3); see
+            :meth:`compute_component_fcalcs` on the index convention.
+        recalc : bool, optional
+            Force recomputation rather than reusing each model's cached SF.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex SFs of shape ``(n_timepoints, n_reflections)``.
+        """
+        component_fcalcs = self.compute_component_fcalcs(hkl, recalc=recalc)
+        return self.mix_component_fcalcs(
+            component_fcalcs, self.get_fractions_matrix()
+        )
+
+    # ------------------------------------------------------------------
     # Freeze / unfreeze helpers
     # ------------------------------------------------------------------
 

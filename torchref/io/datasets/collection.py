@@ -314,6 +314,53 @@ class DatasetCollection(CrystalDataset):
         [p.requires_grad_(False) for p in parameters]
 
 
+    def component_structure_factors(
+        self, model_collection, recalc: bool = False
+    ) -> torch.Tensor:
+        """Per-base-model ``F_calc`` on the common HKL, in the canonical convention.
+
+        The batched counterpart of :meth:`ReflectionData.structure_factors`: models are
+        evaluated at the **signed** indices so Bijvoet mates get distinct ``|F_calc|``,
+        and the result is returned on the canonical ASU index that :attr:`hkl` holds.
+        Use this rather than calling
+        :meth:`~torchref.model.model_collection.ModelCollection.compute_component_fcalcs`
+        on :attr:`hkl` directly, which would skip both halves of that convention.
+
+        The convention is taken from the reference dataset. Members are all expanded onto
+        one HKL grid, but a member with different completeness can still carry different
+        ``friedel_flags`` (absent rows are filled ``False``); where they differ, the
+        returned **phases** follow the reference. Amplitudes are unaffected, so a target
+        working in moduli or intensities is insensitive to this.
+
+        Parameters
+        ----------
+        model_collection : ModelCollection
+            Supplies the shared base models.
+        recalc : bool, optional
+            Force recomputation rather than reusing each model's cached SF.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex SFs of shape ``(n_base_models, n_reflections)``, row-aligned with
+            :attr:`hkl` on the reflection axis.
+
+        Raises
+        ------
+        ValueError
+            If the collection has no reference dataset.
+        """
+        if self._reference_dataset is None:
+            raise ValueError(
+                "No reference dataset set; add a dataset before computing "
+                "component structure factors."
+            )
+        ref = self._datasets[self._reference_dataset]
+        stacked = model_collection.compute_component_fcalcs(
+            ref._hkl_for_sf(), recalc=recalc
+        )
+        return ref.conjugate_friedel(stacked)
+
     def keys(self) -> List[str]:
         """Return list of dataset names."""
         return list(self._dataset_order)
