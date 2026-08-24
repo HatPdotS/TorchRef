@@ -314,6 +314,119 @@ class DatasetCollection(CrystalDataset):
         [p.requires_grad_(False) for p in parameters]
 
 
+    # ------------------------------------------------------------------
+    # Batched observation accessors
+    # ------------------------------------------------------------------
+    #
+    # Every member is expanded onto the common HKL grid by ``add_dataset``, so these
+    # stack cleanly on a leading dataset axis. All of them return the **scaled**
+    # observations -- the per-dataset ``log_scale``/``U_aniso`` that ``scale()`` fits
+    # exists only in the corrected accessors, and a target reading the raw tensors
+    # would silently ignore the inter-dataset scaling.
+
+    def _keys_or_all(self, keys: Optional[List[str]]) -> List[str]:
+        if keys is None:
+            return list(self._dataset_order)
+        missing = [k for k in keys if k not in self._datasets]
+        if missing:
+            raise KeyError(f"Unknown dataset keys: {missing}")
+        return list(keys)
+
+    def stack_F_obs(self, keys: Optional[List[str]] = None) -> torch.Tensor:
+        """Scaled observed amplitudes, shape ``(n_datasets, n_reflections)``."""
+        return torch.stack(
+            [self._datasets[k]._corrected_or_raw()[0] for k in self._keys_or_all(keys)],
+            dim=0,
+        )
+
+    def stack_F_sigma(self, keys: Optional[List[str]] = None) -> torch.Tensor:
+        """Scaled amplitude sigmas, shape ``(n_datasets, n_reflections)``."""
+        return torch.stack(
+            [self._datasets[k]._corrected_or_raw()[1] for k in self._keys_or_all(keys)],
+            dim=0,
+        )
+
+    def stack_I_obs(self, keys: Optional[List[str]] = None) -> torch.Tensor:
+        """Scaled observed intensities, shape ``(n_datasets, n_reflections)``.
+
+        Raises
+        ------
+        ValueError
+            If any selected dataset carries no intensities.
+        """
+        return torch.stack(
+            [
+                self._require_intensities(k)[0]
+                for k in self._keys_or_all(keys)
+            ],
+            dim=0,
+        )
+
+    def stack_I_sigma(self, keys: Optional[List[str]] = None) -> torch.Tensor:
+        """Scaled intensity sigmas, shape ``(n_datasets, n_reflections)``.
+
+        Raises
+        ------
+        ValueError
+            If any selected dataset carries no intensities.
+        """
+        return torch.stack(
+            [
+                self._require_intensities(k)[1]
+                for k in self._keys_or_all(keys)
+            ],
+            dim=0,
+        )
+
+    def _require_intensities(self, key: str):
+        """``(I, I_sigma)`` scaled, with the dataset named in the error."""
+        data = self._datasets[key]
+        if data.I is None:
+            raise ValueError(
+                f"Dataset {key!r} carries no intensities; its reflection file had no "
+                f"I/SIGI columns. An intensity-space target needs them on every member."
+            )
+        return data._corrected_or_raw_intensities()
+
+    def stack_masks(
+        self, keys: Optional[List[str]] = None, use_set: str = "work"
+    ) -> torch.Tensor:
+        """Per-dataset boolean subset masks, shape ``(n_datasets, n_reflections)``.
+
+        Uses the 3-way ``work``/``free``/``validation`` accessors, so validation
+        reflections are excluded from both work and free -- matching what the
+        collection targets fit. The 2-way ``rfree_flags`` cannot express that.
+
+        Parameters
+        ----------
+        keys : list of str, optional
+            Datasets to stack; all of them in insertion order by default.
+        use_set : {"work", "free", "val"}, optional
+            Which subset to select. Default ``"work"``.
+        """
+        if use_set not in ("work", "free", "val"):
+            raise ValueError(
+                f"use_set must be 'work', 'free' or 'val'; got {use_set!r}"
+            )
+        attr = {"work": "work", "free": "free", "val": "validation"}[use_set]
+        return torch.stack(
+            [
+                getattr(self._datasets[k], attr).mask
+                for k in self._keys_or_all(keys)
+            ],
+            dim=0,
+        )
+
+    def get_centric_flags(self) -> Optional[torch.Tensor]:
+        """Centric flags on the common HKL, from the reference dataset.
+
+        A pure function of ``(hkl, spacegroup)``, so it is shared by every member and
+        needs no dataset axis.
+        """
+        if self._reference_dataset is None:
+            return None
+        return self._datasets[self._reference_dataset].centric
+
     def component_structure_factors(
         self, model_collection, recalc: bool = False
     ) -> torch.Tensor:
