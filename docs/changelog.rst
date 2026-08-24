@@ -4,6 +4,10 @@ Changelog
 
 Version 0.6.4
 ----------
+- Added ``CollectionTwoMomentIntensityTarget``, fitting merged intensities as ``|F(alpha)|^2 + sigma_alpha^2 |dF|^2`` to account for crystal-to-crystal spread in activation
+- Added ``--two-moment`` / ``--lambda-twin`` / ``--refine-lambda-twin`` to ``torchref.difference-refine``, and the activation moments to its JSON summary
+- ``torchref.difference-refine`` writes thirteen further MTZ columns under ``--two-moment``, including decontaminated difference amplitudes and the ``DDF`` diagnostic
+- Fixed ``torchref.difference-refine`` crashing at ``--verbose 0``, where the R-factors written into the deposition metadata were only computed for printing
 - ``ModelCollection`` now stores populations as a shared activation fraction plus a per-timepoint branching, instead of free fractions per timepoint
 - Freezing and unfreezing fractions is now collection-wide; timepoints needing independent populations use ``set_fraction_override``
 - ``add_timepoint`` raises when the requested fractions imply an activation that conflicts with one already set
