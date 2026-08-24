@@ -124,8 +124,32 @@ class _ReflectionSubset:
     def rfree(self) -> torch.Tensor:
         return self._parent.rfree_flags.index_select(0, self.indices)
 
+    # -- intensities, corrected to match F/sigF above -----------------------
+    @property
+    def I(self) -> torch.Tensor:  # noqa: E743 - crystallographic name
+        """Scaled intensities, or None when this dataset carries no intensities.
+
+        Corrected, like :attr:`F` -- both the anisotropy factor and the overall scale
+        enter squared. Use :attr:`I_raw` for the unscaled values.
+        """
+        I_corr, _ = self._parent._corrected_or_raw_intensities()
+        return I_corr.index_select(0, self.indices) if I_corr is not None else None
+
     @property
     def sigI(self):
+        """Scaled intensity sigmas, or None. See :attr:`I`."""
+        _, sig_corr = self._parent._corrected_or_raw_intensities()
+        return sig_corr.index_select(0, self.indices) if sig_corr is not None else None
+
+    @property
+    def I_raw(self):
+        """Unscaled intensities, or None."""
+        i = self._parent.I
+        return i.index_select(0, self.indices) if i is not None else None
+
+    @property
+    def sigI_raw(self):
+        """Unscaled intensity sigmas, or None."""
         si = self._parent.I_sigma
         return si.index_select(0, self.indices) if si is not None else None
 
@@ -228,6 +252,8 @@ class ReflectionData(CrystalDataset, DebugMixin):
         self._subset_fp = None
         self._corrected_cache = None
         self._corrected_fp = None
+        self._corrected_I_cache = None
+        self._corrected_I_fp = None
 
     # ===================== work / free / validation =====================
 
@@ -3946,6 +3972,80 @@ class ReflectionData(CrystalDataset, DebugMixin):
         F_sigma_scaled = F_sigma_corrected * scale_factor
 
         return F_scaled, F_sigma_scaled
+
+    def get_corrected_intensities(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get the anisotropy-corrected, scaled ``(I, I_sigma)``.
+
+        The intensity counterpart of :meth:`get_corrected_data`. Both the anisotropy
+        factor and the overall scale enter **squared**, because they are defined on
+        amplitudes: an amplitude scaled by ``corr * exp(log_scale)`` corresponds to an
+        intensity scaled by ``(corr * exp(log_scale))**2``. Applying the amplitude
+        factors to intensities instead would leave a resolution-dependent error that
+        looks exactly like a scale or B-factor mismatch.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor]
+            Full-size ``I`` and ``I_sigma`` on the same scale as
+            ``get_corrected_data()`` squared.
+
+        Raises
+        ------
+        ValueError
+            If this dataset carries no intensities (the input had no ``I``/``SIGI``
+            columns), or if ``setup_scale`` / ``setup_anisotropy`` have not run.
+        """
+        from torchref.base.alignment.normalization import (
+            compute_anisotropy_correction,
+        )
+
+        if self.I is None:
+            raise ValueError(
+                "No intensities on this dataset. The input reflection file had no "
+                "I/SIGI columns, so only amplitudes are available; use "
+                "get_corrected_data() or supply intensity data."
+            )
+        if not hasattr(self, "log_scale") or self.log_scale is None:
+            raise ValueError("Scale not set up. Call setup_scale() first.")
+        if not hasattr(self, "U_aniso") or self.U_aniso is None:
+            raise ValueError(
+                "No anisotropy parameters available. Call fit_anisotropy() first."
+            )
+
+        s_vectors = self.get_scattering_vectors()
+        correction = compute_anisotropy_correction(s_vectors, self.U_aniso)
+        factor = (correction * torch.exp(self.log_scale)) ** 2
+
+        I_scaled = self.I * factor
+        I_sigma_scaled = (
+            self.I_sigma * factor if self.I_sigma is not None else None
+        )
+        return I_scaled, I_sigma_scaled
+
+    def _corrected_or_raw_intensities(self):
+        """Return the scaled ``(I, I_sigma)``, cached against the
+        ``(log_scale, U_aniso)`` fingerprint. ``(None, None)`` when this dataset
+        carries no intensities, and the raw pair if scaling is not set up.
+        """
+
+        def _tv(t):
+            return (t.data_ptr(), t._version) if isinstance(t, torch.Tensor) else None
+
+        if self.I is None:
+            return (None, None)
+
+        fp = (
+            _tv(getattr(self, "log_scale", None)),
+            _tv(getattr(self, "U_aniso", None)),
+        )
+        if self._corrected_I_fp != fp or self._corrected_I_cache is None:
+            try:
+                self._corrected_I_cache = self.get_corrected_intensities()
+            except Exception:
+                self._corrected_I_cache = (self.I, self.I_sigma)
+            self._corrected_I_fp = fp
+        return self._corrected_I_cache
 
     def generate_validation_set(
         self,
