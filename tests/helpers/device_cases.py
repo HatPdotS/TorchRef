@@ -84,6 +84,67 @@ def _map_symmetry_interpolation(device):
     return _MapSymmetryInterpolation(SpaceGroup(_SG, device=device), (15, 15, 15))
 
 
+def _edge_block(device):
+    """A small bond block, origin-sorted, built straight from index arrays."""
+    import numpy as np
+
+    from torchref.topology import EdgeBlock
+
+    return EdgeBlock.from_origins(
+        {"intra": np.array([[0, 1], [1, 2], [2, 3]], dtype=np.int64)},
+        2,
+        "bond",
+        device=device,
+    )
+
+
+def _atom_graph(device):
+    """A four-atom chain: enough to exercise the edge blocks and the CSR adjacency."""
+    import numpy as np
+
+    from torchref.topology import EdgeBlock
+    from torchref.topology.atom_graph import AtomGraph
+
+    def block(rows, arity, edge_type):
+        return EdgeBlock.from_origins(
+            {"intra": np.asarray(rows, dtype=np.int64).reshape(-1, arity)},
+            arity,
+            edge_type,
+            device=device,
+        )
+
+    return AtomGraph(
+        name=np.array(["N", "CA", "C", "O"]),
+        element=np.array(["N", "C", "C", "O"]),
+        altloc=np.array([" ", " ", " ", " "]),
+        residue_of=torch.zeros(4, dtype=torch.int64, device=device),
+        bonds=block([[0, 1], [1, 2], [2, 3]], 2, "bond"),
+        angles=block([[0, 1, 2], [1, 2, 3]], 3, "angle"),
+        torsions=block([[0, 1, 2, 3]], 4, "torsion"),
+        chirals=block([[1, 0, 2, 3]], 4, "chiral"),
+        planes={3: block([[1, 2, 3]], 3, "plane")},
+    )
+
+
+def _topology(device):
+    """The atom graph above under a one-residue sequence."""
+    import numpy as np
+
+    from torchref.topology.residue_graph import ResidueGraph
+    from torchref.topology.topology import Topology
+
+    residues = ResidueGraph(
+        chain=np.array(["A"]),
+        resseq=np.array([1], dtype=np.int64),
+        icode=np.array([""]),
+        resname=np.array(["GLY"]),
+        template_key=np.array(["GLY"], dtype=object),
+        atom_start=np.array([0], dtype=np.int64),
+        atom_end=np.array([4], dtype=np.int64),
+    )
+    return Topology(residues=residues, atoms=_atom_graph(device))
+
+
 def _cell(device):
     from torchref.symmetry import Cell
 
@@ -91,6 +152,9 @@ def _cell(device):
 
 
 CASES: List[DeviceCase] = [
+    DeviceCase("EdgeBlock", _edge_block, "EdgeBlock"),
+    DeviceCase("AtomGraph", _atom_graph, "AtomGraph"),
+    DeviceCase("Topology", _topology, "Topology"),
     DeviceCase("Cell", _cell, "Cell"),
     DeviceCase(
         "SpaceGroup",

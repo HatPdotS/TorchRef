@@ -19,6 +19,9 @@ Unreleased
 - ``Model.copy`` and ``ModelFT.copy`` now copy the context in one step, cloning the space group instead of sharing it
 - Removed ``Model.symmetry``; use ``Model.spacegroup``
 - ``HydrogenTopology`` is a dataclass with optional fields instead of an ``nn.Module`` whose buffers were attached after construction
+- Added ``torchref.topology``: a ``Topology`` of a ``ResidueGraph`` over an ``AtomGraph``, holding the model's connectivity as typed edge blocks with a bond adjacency that answers ``neighbors(i)``
+- Topology residues are identified by ``(chain, resseq, icode)``, so a residue with an insertion code is no longer merged with the one it was inserted after
+- Added ``AtomGraph.exclusions_12_13_14``, deriving non-bonded exclusions from bond connectivity rather than from which angles and torsions the monomer library happens to restrain
 
 
 Version 0.6.4
