@@ -25,7 +25,9 @@ from torchref.utils.device_mixin import DeviceMixin
 ORIGIN_ORDER: Dict[str, Tuple[str, ...]] = {
     "bond": ("intra", "peptide", "disulfide", "link"),
     "angle": ("intra", "peptide", "disulfide"),
-    "torsion": ("intra", "phi", "psi", "omega", "disulfide"),
+    # intra and disulfide lead because together they are the ``all`` group the
+    # torsion target reads; adjacent origins make that group a view rather than a copy.
+    "torsion": ("intra", "disulfide", "phi", "psi", "omega"),
     "chiral": ("intra",),
     "plane": ("intra", "peptide"),
 }
@@ -48,6 +50,82 @@ def _lexsort_rows(rows: np.ndarray) -> np.ndarray:
     if rows.size == 0:
         return np.zeros(0, dtype=np.int64)
     return np.lexsort(tuple(rows[:, c] for c in reversed(range(rows.shape[1]))))
+
+
+def assemble_origins(
+    per_origin: Dict[str, np.ndarray],
+    arity: int,
+    edge_type: str,
+    payload: Dict[str, Dict[str, np.ndarray]] = None,
+) -> Tuple[np.ndarray, Dict[str, Tuple[int, int]], Dict[str, Dict[str, np.ndarray]]]:
+    """Lay origins out in canonical order, carrying per-edge values through the sort.
+
+    Origins follow :data:`ORIGIN_ORDER` for ``edge_type``, and rows within an origin
+    are sorted lexicographically. Anything in ``payload`` is permuted by the same order,
+    so a value array stays aligned row-for-row with the indices it belongs to, which
+    is the whole reason values cannot be concatenated separately.
+
+    Parameters
+    ----------
+    per_origin : dict
+        ``{origin: (E_o, k) integer array}``. Empty entries are skipped.
+    arity : int
+        Atoms per edge.
+    edge_type : str
+        Key into :data:`ORIGIN_ORDER`.
+    payload : dict, optional
+        ``{origin: {property: array}}``, each array indexed by row on axis 0. A property
+        need not be present for every origin -- ``phi`` and ``psi`` carry no reference
+        value or sigma, and must not acquire one here.
+
+    Returns
+    -------
+    indices : numpy.ndarray
+        Shape ``(E, k)``, canonical order.
+    bounds : dict
+        ``{origin: (start, end)}``, contiguous and covering the block.
+    sorted_payload : dict
+        ``{origin: {property: array}}``, permuted to match ``indices``.
+    """
+    order = ORIGIN_ORDER.get(edge_type, tuple(sorted(per_origin)))
+    unknown = set(per_origin) - set(order)
+    if unknown:
+        raise ValueError(
+            f"{edge_type}: origins {sorted(unknown)} are not in ORIGIN_ORDER"
+            f"[{edge_type!r}] = {order}. Add them there so the layout stays "
+            f"deterministic."
+        )
+
+    payload = payload or {}
+    chunks: List[np.ndarray] = []
+    bounds: Dict[str, Tuple[int, int]] = {}
+    sorted_payload: Dict[str, Dict[str, np.ndarray]] = {}
+    cursor = 0
+
+    for origin in order:
+        rows = per_origin.get(origin)
+        if rows is None or len(rows) == 0:
+            continue
+        rows = np.asarray(rows, dtype=np.int64).reshape(-1, arity)
+        permutation = _lexsort_rows(rows)
+        chunks.append(rows[permutation])
+        bounds[origin] = (cursor, cursor + len(rows))
+        cursor += len(rows)
+
+        origin_payload = payload.get(origin) or {}
+        if origin_payload:
+            sorted_payload[origin] = {
+                prop: np.asarray(values)[permutation]
+                for prop, values in origin_payload.items()
+                if values is not None
+            }
+
+    indices = (
+        np.concatenate(chunks, axis=0)
+        if chunks
+        else np.zeros((0, arity), dtype=np.int64)
+    )
+    return indices, bounds, sorted_payload
 
 
 @dataclass(eq=False, repr=False)
@@ -108,34 +186,11 @@ class EdgeBlock(DeviceMixin):
         -------
         EdgeBlock
         """
-        order = ORIGIN_ORDER.get(edge_type, tuple(sorted(per_origin)))
-        unknown = set(per_origin) - set(order)
-        if unknown:
-            raise ValueError(
-                f"{edge_type}: origins {sorted(unknown)} are not in ORIGIN_ORDER"
-                f"[{edge_type!r}] = {order}. Add them there so the layout stays "
-                f"deterministic."
-            )
-
-        chunks: List[np.ndarray] = []
-        bounds: Dict[str, Tuple[int, int]] = {}
-        cursor = 0
-        for origin in order:
-            rows = per_origin.get(origin)
-            if rows is None or len(rows) == 0:
-                continue
-            rows = np.asarray(rows, dtype=np.int64).reshape(-1, arity)
-            rows = rows[_lexsort_rows(rows)]
-            chunks.append(rows)
-            bounds[origin] = (cursor, cursor + len(rows))
-            cursor += len(rows)
-
-        if not chunks:
+        indices, bounds, _ = assemble_origins(per_origin, arity, edge_type)
+        if len(indices) == 0:
             return cls.empty(arity, device=device)
-
-        stacked = np.concatenate(chunks, axis=0)
         return cls(
-            indices=torch.as_tensor(stacked, dtype=torch.int64, device=device),
+            indices=torch.as_tensor(indices, dtype=torch.int64, device=device),
             origin_bounds=bounds,
         )
 
@@ -202,4 +257,4 @@ class EdgeBlock(DeviceMixin):
         )
 
 
-__all__ = ["EdgeBlock", "ORIGIN_ORDER"]
+__all__ = ["EdgeBlock", "ORIGIN_ORDER", "assemble_origins"]

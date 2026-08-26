@@ -22,6 +22,10 @@ Unreleased
 - Added ``torchref.topology``: a ``Topology`` of a ``ResidueGraph`` over an ``AtomGraph``, holding the model's connectivity as typed edge blocks with a bond adjacency that answers ``neighbors(i)``
 - Topology residues are identified by ``(chain, resseq, icode)``, so a residue with an insertion code is no longer merged with the one it was inserted after
 - Added ``AtomGraph.exclusions_12_13_14``, deriving non-bonded exclusions from bond connectivity rather than from which angles and torsions the monomer library happens to restrain
+- ``Restraints.restraints`` is now a plain nested dict of tensors instead of an accessor object rebuilt on every read; the per-origin indices are views into the topology's contiguous edge blocks
+- Restraint groups are laid out in a fixed order, so a rebuild produces the same row order in any process; previously the origins were concatenated in Python ``set`` iteration order
+- Fixed ``cat_dict`` doubling every bond, angle and torsion restraint when called more than once
+- Geometry restraints are built from the topology, retiring the intra-residue builder calls, the peptide/disulfide/LINK build methods and the ``TensorDict`` restraint storage
 
 
 Version 0.6.4

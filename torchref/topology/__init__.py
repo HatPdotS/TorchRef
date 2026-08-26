@@ -14,9 +14,10 @@ Build one with :func:`build_topology`.
 """
 
 from .atom_graph import AtomGraph
-from .build import build_topology
+from .build import build_topology, build_topology_with_values
 from .edges import ORIGIN_ORDER, EdgeBlock
 from .residue_graph import ResidueGraph
+from .restraint_sets import assemble_entries, max_period
 from .templates import resolve_template_keys
 from .topology import Topology
 
@@ -27,5 +28,8 @@ __all__ = [
     "EdgeBlock",
     "ORIGIN_ORDER",
     "build_topology",
+    "build_topology_with_values",
+    "assemble_entries",
+    "max_period",
     "resolve_template_keys",
 ]

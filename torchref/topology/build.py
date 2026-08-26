@@ -26,13 +26,14 @@ from torchref.restraints.builders_numba import (
     match_torsions_numba,
 )
 from torchref.topology.atom_graph import AtomGraph
-from torchref.topology.edges import EdgeBlock
+from torchref.topology.edges import EdgeBlock, assemble_origins
 from torchref.topology.residue_graph import (
     ResidueGraph,
     build_residue_nodes,
     find_disulfide_links,
     find_peptide_links,
 )
+from torchref.topology.restraint_sets import to_tensor
 from torchref.topology.templates import resolve_template_keys
 from torchref.topology.topology import Topology
 
@@ -112,19 +113,32 @@ def _match_intra(
     nodes: Dict[str, np.ndarray],
     template_key: np.ndarray,
     pp_cif: PreprocessedCIF,
-) -> Dict[str, np.ndarray]:
-    """Intra-residue edge index arrays.
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict[str, np.ndarray]]]:
+    """Intra-residue edges and the ideal values that belong to them.
 
     Keyed ``bonds`` / ``angles`` / ``torsions`` / ``chirals``.
 
     Emitted only where every named atom of a library restraint is present in the
     conformation, which is the condition the matchers apply.
+
+    Returns
+    -------
+    indices : dict
+        ``{kind: (E, k) array}``.
+    values : dict
+        ``{kind: {property: (E,) array}}``, accumulated row-for-row with the indices.
     """
     acc: Dict[str, List[np.ndarray]] = {
         "bonds": [],
         "angles": [],
         "torsions": [],
         "chirals": [],
+    }
+    val: Dict[str, Dict[str, List[np.ndarray]]] = {
+        "bonds": {"references": [], "sigmas": []},
+        "angles": {"references": [], "sigmas": []},
+        "torsions": {"references": [], "sigmas": [], "periods": []},
+        "chirals": {"ideal_volumes": [], "sigmas": []},
     }
     work = {k: np.zeros(_WORK, dtype=np.int64) for k in ("i1", "i2", "i3", "i4", "per")}
     work["f1"] = np.zeros(_WORK, dtype=np.float64)
@@ -165,6 +179,8 @@ def _match_intra(
                     acc["bonds"].append(
                         np.column_stack([work["i1"][:n].copy(), work["i2"][:n].copy()])
                     )
+                    val["bonds"]["references"].append(work["f1"][:n].copy())
+                    val["bonds"]["sigmas"].append(work["f2"][:n].copy())
             if key in pp_cif.angles:
                 a = pp_cif.angles[key]
                 n = match_angles_numba(
@@ -191,6 +207,8 @@ def _match_intra(
                             ]
                         )
                     )
+                    val["angles"]["references"].append(work["f1"][:n].copy())
+                    val["angles"]["sigmas"].append(work["f2"][:n].copy())
             if key in pp_cif.torsions:
                 t = pp_cif.torsions[key]
                 n = match_torsions_numba(
@@ -222,6 +240,9 @@ def _match_intra(
                             ]
                         )
                     )
+                    val["torsions"]["references"].append(work["f1"][:n].copy())
+                    val["torsions"]["sigmas"].append(work["f2"][:n].copy())
+                    val["torsions"]["periods"].append(work["per"][:n].copy())
             if key in pp_cif.chirals:
                 c = pp_cif.chirals[key]
                 n = match_chirals_numba(
@@ -251,12 +272,30 @@ def _match_intra(
                             ]
                         )
                     )
+                    # Ideal volume is the sign times a typical tetrahedral volume. A
+                    # sign of 0 ('both' / 'either') stays exactly 0, which the chiral
+                    # target reads as an achiral centre and restrains |volume| instead.
+                    val["chirals"]["ideal_volumes"].append(work["f1"][:n].copy() * 2.5)
+                    val["chirals"]["sigmas"].append(work["f2"][:n].copy())
 
     arity = {"bonds": 2, "angles": 3, "torsions": 4, "chirals": 4}
-    return {
+    indices = {
         k: (np.concatenate(v, axis=0) if v else np.zeros((0, arity[k]), dtype=np.int64))
         for k, v in acc.items()
     }
+    values: Dict[str, Dict[str, np.ndarray]] = {}
+    for kind, properties in val.items():
+        joined: Dict[str, np.ndarray] = {}
+        for prop, chunks in properties.items():
+            if not chunks:
+                continue
+            array = np.concatenate(chunks)
+            if prop == "sigmas":
+                # A zero sigma divides by zero in the loss, so it is floored.
+                array = np.where(array == 0, 1e-4, array)
+            joined[prop] = array
+        values[kind] = joined
+    return indices, values
 
 
 def _match_intra_planes(
@@ -264,13 +303,15 @@ def _match_intra_planes(
     nodes: Dict[str, np.ndarray],
     template_key: np.ndarray,
     pp_cif: PreprocessedCIF,
-) -> Dict[int, np.ndarray]:
-    """Intra-residue plane index arrays grouped by how many atoms survived matching.
+) -> Tuple[Dict[int, np.ndarray], Dict[int, Dict[str, np.ndarray]]]:
+    """Intra-residue planes grouped by how many atoms survived matching.
 
     Missing atoms are dropped rather than voiding the plane; a plane is kept once at
-    least three of its atoms are present, so its arity depends on the model.
+    least three of its atoms are present, so its arity depends on the model. Sigmas are
+    per atom, not per plane, so they carry the same ``(E, k)`` shape as the indices.
     """
     by_size: Dict[int, List[np.ndarray]] = {}
+    sigmas_by_size: Dict[int, List[np.ndarray]] = {}
     for r in range(len(nodes["chain"])):
         key = str(template_key[r])
         if key not in pp_cif.planes:
@@ -280,58 +321,105 @@ def _match_intra_planes(
             # Last-wins on a duplicate name, matching PlaneRestraintBuilder.
             name_to_idx = dict(zip(names, indices))
             for plane in pp_cif.planes[key]:
-                present = [
-                    name_to_idx[nm] for nm in plane["atoms"] if nm in name_to_idx
-                ]
+                present = []
+                present_sigmas = []
+                for position, atom_name in enumerate(plane["atoms"]):
+                    if atom_name in name_to_idx:
+                        present.append(name_to_idx[atom_name])
+                        present_sigmas.append(plane["sigmas"][position])
                 if len(present) >= 3:
                     by_size.setdefault(len(present), []).append(
                         np.asarray(present, dtype=np.int64)
                     )
-    return {n: np.stack(rows, axis=0) for n, rows in by_size.items()}
+                    sigmas_by_size.setdefault(len(present), []).append(
+                        np.asarray(present_sigmas, dtype=np.float64)
+                    )
+
+    indices_out = {n: np.stack(rows, axis=0) for n, rows in by_size.items()}
+    values_out = {
+        n: {
+            "sigmas": np.where(
+                np.stack(rows, axis=0) == 0, 1e-4, np.stack(rows, axis=0)
+            )
+        }
+        for n, rows in sigmas_by_size.items()
+    }
+    return indices_out, values_out
 
 
 def _inter_residue_edges(
     pdb: pd.DataFrame,
     link_dict: Optional[Dict],
     verbose: int,
-) -> Dict[str, Dict[str, np.ndarray]]:
-    """Peptide edge index arrays from the inter-residue builders.
+) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, Dict], Dict[str, Dict]]:
+    """Peptide edges, their values, and the Ramachandran pairing, from the builders.
 
     Reuses ``InterResidue*Builder`` rather than reimplementing the link geometry.
-    Returns ``{edge type: {origin: (E, k) array}}``.
+
+    Returns
+    -------
+    indices : dict
+        ``{edge type: {origin: (E, k) array}}``.
+    values : dict
+        ``{edge type: {origin: {property: array}}}`` -- every property a builder
+        returned besides the indices, so ``omega``'s ``is_proline`` comes along without
+        being named here.
+    extras : dict
+        Non-edge products of the same pass, currently the ``ramachandran`` phi/psi
+        pairing and its surface types.
     """
-    out: Dict[str, Dict[str, np.ndarray]] = {
+    indices: Dict[str, Dict[str, np.ndarray]] = {
         "bond": {},
         "angle": {},
         "torsion": {},
         "plane": {},
     }
+    values: Dict[str, Dict] = {"bond": {}, "angle": {}, "torsion": {}, "plane": {}}
+    extras: Dict[str, Dict] = {}
     if not link_dict or "TRANS" not in link_dict:
-        return out
+        return indices, values, extras
+
     cpu = torch.device("cpu")
     trans = link_dict["TRANS"]
     ptrans = link_dict.get("PTRANS")
+
+    def split(group):
+        """A builder group as ``(indices array, {property: array})``."""
+        rows = group["indices"].cpu().numpy()
+        rest = {
+            prop: tensor.cpu().numpy()
+            for prop, tensor in group.items()
+            if prop != "indices" and tensor is not None
+        }
+        return rows, rest
 
     bond = InterResidueBondBuilder(verbose=verbose).build(
         pdb, trans, cpu, filter_atom_type="ATOM"
     )
     if bond:
-        out["bond"]["peptide"] = bond["indices"].cpu().numpy()
+        indices["bond"]["peptide"], values["bond"]["peptide"] = split(bond)
 
     ab = InterResidueAngleBuilder(verbose=verbose)
     if ptrans is not None:
-        non_pro = ab.build(
-            pdb, trans, cpu, filter_atom_type="ATOM", exclude_next_resname="PRO"
-        )
-        pro = ab.build(
-            pdb, ptrans, cpu, filter_atom_type="ATOM", next_resname_filter="PRO"
-        )
-        chunks = [r["indices"].cpu().numpy() for r in (non_pro, pro) if r]
+        # PTRANS carries the extra C(i-1)-N-CD angle, so proline pairs are built from it
+        # and excluded from the TRANS pass to avoid two restraints on the same atoms.
+        groups = [
+            ab.build(
+                pdb, trans, cpu, filter_atom_type="ATOM", exclude_next_resname="PRO"
+            ),
+            ab.build(
+                pdb, ptrans, cpu, filter_atom_type="ATOM", next_resname_filter="PRO"
+            ),
+        ]
     else:
-        r = ab.build(pdb, trans, cpu, filter_atom_type="ATOM")
-        chunks = [r["indices"].cpu().numpy()] if r else []
-    if chunks:
-        out["angle"]["peptide"] = np.concatenate(chunks, axis=0)
+        groups = [ab.build(pdb, trans, cpu, filter_atom_type="ATOM")]
+    parts = [split(g) for g in groups if g]
+    if parts:
+        indices["angle"]["peptide"] = np.concatenate([p[0] for p in parts], axis=0)
+        shared = set.intersection(*(set(p[1]) for p in parts))
+        values["angle"]["peptide"] = {
+            prop: np.concatenate([p[1][prop] for p in parts]) for prop in shared
+        }
 
     tors = InterResidueTorsionBuilder(verbose=verbose).build(
         pdb, trans, cpu, filter_atom_type="ATOM"
@@ -339,16 +427,19 @@ def _inter_residue_edges(
     if tors:
         for origin in ("phi", "psi", "omega"):
             if origin in tors:
-                out["torsion"][origin] = tors[origin]["indices"].cpu().numpy()
+                indices["torsion"][origin], values["torsion"][origin] = split(
+                    tors[origin]
+                )
+        if "ramachandran" in tors:
+            extras["ramachandran"] = tors["ramachandran"]
 
     planes = InterResiduePlaneBuilder(verbose=verbose).build(
         pdb, trans, cpu, filter_atom_type="ATOM"
     )
     if planes:
-        out["plane"] = {
-            key: data["indices"].cpu().numpy() for key, data in planes.items()
-        }
-    return out
+        for key, group in planes.items():
+            indices["plane"][key], values["plane"][key] = split(group)
+    return indices, values, extras
 
 
 def _origins(
@@ -376,8 +467,8 @@ def _disulfide_edges(
     pairs: Sequence[Tuple[int, int]],
     link_dict: Optional[Dict],
     verbose: int,
-) -> Dict[str, np.ndarray]:
-    """Bond, angle and torsion edges for the detected disulfide links.
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict[str, np.ndarray]]]:
+    """Bond, angle and torsion edges for the detected disulfide links, with values.
 
     Drives the ``InterResidue*Builder`` disulfide paths from the residue graph's
     ``disulf`` edges, so the link geometry comes from the ``disulf`` dictionary entry
@@ -385,20 +476,22 @@ def _disulfide_edges(
 
     Returns
     -------
-    dict
+    indices : dict
         ``{'bond'|'angle'|'torsion': (E, k) array}``, omitting types with no edges.
+    values : dict
+        ``{edge type: {property: array}}`` for the same edges.
     """
     out: Dict[str, np.ndarray] = {}
     if not pairs or not link_dict or "disulf" not in link_dict:
-        return out
+        return out, {}
 
     disulf = link_dict["disulf"]
     bonds = disulf.get("bonds")
     if bonds is None:
-        return out
+        return out, {}
     sg_sg = bonds[(bonds["atom1"] == "SG") & (bonds["atom2"] == "SG")]
     if len(sg_sg) == 0:
-        return out
+        return out, {}
     length = float(sg_sg["value"].values[0])
     sigma = float(sg_sg["sigma"].values[0])
 
@@ -426,16 +519,21 @@ def _disulfide_edges(
                 atoms_a, atoms_b, disulf["torsions"]
             )
 
-    bond_result = bond_builder.finalize(cpu)
-    if bond_result:
-        out["bond"] = bond_result["indices"].cpu().numpy()
-    angle_result = angle_builder.finalize(cpu)
-    if angle_result:
-        out["angle"] = angle_result["indices"].cpu().numpy()
-    torsion_result = torsion_builder.finalize_disulfide(cpu)
-    if torsion_result:
-        out["torsion"] = torsion_result["indices"].cpu().numpy()
-    return out
+    values: Dict[str, Dict[str, np.ndarray]] = {}
+    for edge_type, group in (
+        ("bond", bond_builder.finalize(cpu)),
+        ("angle", angle_builder.finalize(cpu)),
+        ("torsion", torsion_builder.finalize_disulfide(cpu)),
+    ):
+        if not group:
+            continue
+        out[edge_type] = group["indices"].cpu().numpy()
+        values[edge_type] = {
+            prop: tensor.cpu().numpy()
+            for prop, tensor in group.items()
+            if prop != "indices" and tensor is not None
+        }
+    return out, values
 
 
 def _link_record_edges(
@@ -443,7 +541,7 @@ def _link_record_edges(
     links,
     disulfide_bonds: Optional[np.ndarray],
     verbose: int,
-) -> Tuple[np.ndarray, List[Tuple[int, int]]]:
+) -> Tuple[np.ndarray, List[Tuple[int, int]], Dict[str, np.ndarray]]:
     """Bond edges for the accepted ``LINK`` records, and the atom pairs they join.
 
     Atom resolution goes through ``RestraintsNew._lookup_link_atom`` so a record is
@@ -457,11 +555,14 @@ def _link_record_edges(
         Shape ``(L, 2)``; empty when nothing resolved.
     atom_pairs : list of tuple of int
         The same pairs, for lifting to residue-level link edges.
+    values : dict
+        ``references`` from each record's ``length`` (1.5 A where blank or unusable) and
+        a fixed ``sigmas`` of 0.02 A.
     """
     from torchref.restraints.restraints import RestraintsNew
 
     if links is None or len(links) == 0:
-        return np.zeros((0, 2), dtype=np.int64), []
+        return np.zeros((0, 2), dtype=np.int64), [], {}
 
     existing = set()
     if disulfide_bonds is not None:
@@ -469,6 +570,7 @@ def _link_record_edges(
             existing.add((min(int(a), int(b)), max(int(a), int(b))))
 
     rows: List[Tuple[int, int]] = []
+    lengths: List[float] = []
     n_unresolved = 0
     for _, link in links.iterrows():
         idx1 = RestraintsNew._lookup_link_atom(
@@ -496,12 +598,49 @@ def _link_record_edges(
         if pair in existing:
             continue
         rows.append((idx1, idx2))
+        length = link["length"]
+        usable = isinstance(length, (int, float)) and length == length and length > 0
+        lengths.append(float(length) if usable else 1.5)
 
     if verbose > 1 and n_unresolved:
         print(f"{n_unresolved} LINK records did not resolve to a pair of atoms")
     if not rows:
-        return np.zeros((0, 2), dtype=np.int64), []
-    return np.asarray(rows, dtype=np.int64), rows
+        return np.zeros((0, 2), dtype=np.int64), [], {}
+    values = {
+        "references": np.asarray(lengths, dtype=np.float64),
+        "sigmas": np.full(len(rows), 0.02, dtype=np.float64),
+    }
+    return np.asarray(rows, dtype=np.int64), rows, values
+
+
+def _block_with_values(
+    per_origin: Dict[str, np.ndarray],
+    payload: Dict[str, Dict[str, np.ndarray]],
+    arity: int,
+    edge_type: str,
+    device,
+) -> Tuple[EdgeBlock, Dict[str, Dict[str, torch.Tensor]]]:
+    """One canonical edge block plus its per-origin value tensors.
+
+    The block and the values come out of a single :func:`assemble_origins` call, so the
+    same permutation is applied to both -- which is the only thing keeping a sigma
+    attached to the edge it belongs to.
+    """
+    indices, bounds, sorted_payload = assemble_origins(
+        per_origin, arity, edge_type, payload
+    )
+    block = EdgeBlock(
+        indices=torch.as_tensor(indices, dtype=torch.int64, device=device),
+        origin_bounds=bounds,
+    )
+    values = {
+        origin: {
+            prop: to_tensor(array, prop, device=device)
+            for prop, array in properties.items()
+        }
+        for origin, properties in sorted_payload.items()
+    }
+    return block, values
 
 
 def build_topology(
@@ -514,6 +653,34 @@ def build_topology(
     device=None,
     verbose: int = 0,
 ) -> Topology:
+    """Build a topology, discarding the restraint values built along the way.
+
+    See :func:`build_topology_with_values` for the parameters; this is the connectivity
+    half on its own, for callers that need the graph and no ideal geometry.
+    """
+    topology, _, _ = build_topology_with_values(
+        pdb,
+        cif_dict,
+        link_dict=link_dict,
+        link_list=link_list,
+        links=links,
+        xyz=xyz,
+        device=device,
+        verbose=verbose,
+    )
+    return topology
+
+
+def build_topology_with_values(
+    pdb: pd.DataFrame,
+    cif_dict: Dict,
+    link_dict: Optional[Dict] = None,
+    link_list=None,
+    links=None,
+    xyz: Optional[torch.Tensor] = None,
+    device=None,
+    verbose: int = 0,
+) -> Tuple[Topology, Dict[str, Dict], Dict[str, Dict]]:
     """Build a topology from an atom table and the restraint dictionaries.
 
     Parameters
@@ -540,7 +707,14 @@ def build_topology(
 
     Returns
     -------
-    Topology
+    topology : Topology
+        The connectivity.
+    values : dict
+        ``{edge_type: {origin: {property: tensor}}}`` for bonds, angles and torsions;
+        ``{'chiral': {property: tensor}}`` and ``{'plane': {size: {property: tensor}}}``
+        for the two types that carry no origin. Row-aligned to the edge blocks.
+    extras : dict
+        Products of the same pass that are not edges -- currently ``ramachandran``.
     """
     cols = _atom_columns(pdb)
     nodes = build_residue_nodes(
@@ -570,9 +744,11 @@ def build_topology(
     )
     pp_cif = PreprocessedCIF(comp_dict)
 
-    intra = _match_intra(cols, nodes, template_key, pp_cif)
-    intra_planes = _match_intra_planes(cols, nodes, template_key, pp_cif)
-    inter = _inter_residue_edges(pdb, link_dict, verbose)
+    intra, intra_values = _match_intra(cols, nodes, template_key, pp_cif)
+    intra_planes, intra_plane_values = _match_intra_planes(
+        cols, nodes, template_key, pp_cif
+    )
+    inter, inter_values, extras = _inter_residue_edges(pdb, link_dict, verbose)
 
     residue_of_row = {}
     for r in range(n_res):
@@ -581,6 +757,7 @@ def build_topology(
 
     disulfide_pairs: List[Tuple[int, int]] = []
     disulfide: Dict[str, np.ndarray] = {}
+    disulfide_values: Dict[str, Dict[str, np.ndarray]] = {}
     if xyz is not None:
         sg_rows = [
             row
@@ -588,11 +765,11 @@ def build_topology(
             if cols["name"][row] == "SG" and cols["record"][row] == "ATOM"
         ]
         disulfide_pairs = find_disulfide_links(sg_rows, residue_of_row, xyz)
-        disulfide = _disulfide_edges(
+        disulfide, disulfide_values = _disulfide_edges(
             pdb, nodes, cols, residue_of_row, disulfide_pairs, link_dict, verbose
         )
 
-    link_edges, link_atom_pairs = _link_record_edges(
+    link_edges, link_atom_pairs, link_values = _link_record_edges(
         pdb, links, disulfide.get("bond"), verbose
     )
 
@@ -632,20 +809,84 @@ def build_topology(
     )
 
     plane_blocks: Dict[int, EdgeBlock] = {}
+    plane_values: Dict[int, Dict[str, torch.Tensor]] = {}
     plane_sizes = set(intra_planes)
     for key in inter.get("plane", {}):
         plane_sizes.add(int(str(key).split("_")[0]))
     for size in sorted(plane_sizes):
-        per_origin = {}
+        per_origin: Dict[str, np.ndarray] = {}
+        payload: Dict[str, Dict[str, np.ndarray]] = {}
         if size in intra_planes:
             per_origin["intra"] = intra_planes[size]
+            payload["intra"] = intra_plane_values.get(size, {})
         peptide = inter.get("plane", {}).get(f"{size}_atoms")
         if peptide is not None and len(peptide):
             per_origin["peptide"] = peptide
-        if per_origin:
-            plane_blocks[size] = EdgeBlock.from_origins(
-                per_origin, size, "plane", device=device
+            payload["peptide"] = inter_values["plane"].get(f"{size}_atoms", {})
+        if not per_origin:
+            continue
+        block, per_origin_values = _block_with_values(
+            per_origin, payload, size, "plane", device
+        )
+        plane_blocks[size] = block
+        # Planes carry no origin downstream, so the origins are concatenated back into
+        # one group -- in block order, which is what the block's own layout already is.
+        plane_values[size] = {
+            prop: torch.cat(
+                [
+                    per_origin_values[o][prop]
+                    for o in block.origins()
+                    if prop in per_origin_values.get(o, {})
+                ]
             )
+            for prop in {p for v in per_origin_values.values() for p in v}
+        }
+
+    bond_block, bond_values = _block_with_values(
+        _origins(
+            intra["bonds"],
+            {**inter["bond"], "link": link_edges},
+            disulfide.get("bond"),
+        ),
+        {
+            "intra": intra_values["bonds"],
+            **inter_values["bond"],
+            "link": link_values,
+            "disulfide": disulfide_values.get("bond", {}),
+        },
+        2,
+        "bond",
+        device,
+    )
+    angle_block, angle_values = _block_with_values(
+        _origins(intra["angles"], inter["angle"], disulfide.get("angle")),
+        {
+            "intra": intra_values["angles"],
+            **inter_values["angle"],
+            "disulfide": disulfide_values.get("angle", {}),
+        },
+        3,
+        "angle",
+        device,
+    )
+    torsion_block, torsion_values = _block_with_values(
+        _origins(intra["torsions"], inter["torsion"], disulfide.get("torsion")),
+        {
+            "intra": intra_values["torsions"],
+            **inter_values["torsion"],
+            "disulfide": disulfide_values.get("torsion", {}),
+        },
+        4,
+        "torsion",
+        device,
+    )
+    chiral_block, chiral_values = _block_with_values(
+        _origins(intra["chirals"], {}, None),
+        {"intra": intra_values["chirals"]},
+        4,
+        "chiral",
+        device,
+    )
 
     atoms = AtomGraph(
         name=cols["name"],
@@ -659,35 +900,22 @@ def build_topology(
             dtype=torch.int64,
             device=device,
         ),
-        bonds=EdgeBlock.from_origins(
-            _origins(
-                intra["bonds"],
-                {**inter["bond"], "link": link_edges},
-                disulfide.get("bond"),
-            ),
-            2,
-            "bond",
-            device=device,
-        ),
-        angles=EdgeBlock.from_origins(
-            _origins(intra["angles"], inter["angle"], disulfide.get("angle")),
-            3,
-            "angle",
-            device=device,
-        ),
-        torsions=EdgeBlock.from_origins(
-            _origins(intra["torsions"], inter["torsion"], disulfide.get("torsion")),
-            4,
-            "torsion",
-            device=device,
-        ),
-        chirals=EdgeBlock.from_origins(
-            {"intra": intra["chirals"]}, 4, "chiral", device=device
-        ),
+        bonds=bond_block,
+        angles=angle_block,
+        torsions=torsion_block,
+        chirals=chiral_block,
         planes=plane_blocks,
     )
 
-    return Topology(residues=residues, atoms=atoms)
+    values: Dict[str, Dict] = {
+        "bond": bond_values,
+        "angle": angle_values,
+        "torsion": torsion_values,
+        # Chirals carry no origin downstream, so the single origin is unwrapped.
+        "chiral": chiral_values.get("intra", {}),
+        "plane": plane_values,
+    }
+    return Topology(residues=residues, atoms=atoms), values, extras
 
 
-__all__ = ["build_topology"]
+__all__ = ["build_topology", "build_topology_with_values"]

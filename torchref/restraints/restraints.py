@@ -1,36 +1,22 @@
 """Restraints handler for crystallographic model refinement.
 
-Provides :class:`RestraintsNew`, which builds geometry restraints (bonds,
-angles, torsions, planes, chirals, VDW) using dedicated builder classes.
-It is decoupled from :class:`~torchref.model.Model`: it accepts a pdb
-DataFrame and callable functions for accessing coordinates and ADPs.
+Provides :class:`RestraintsNew`, which holds the geometry restraints (bonds, angles,
+torsions, planes, chirals, VDW) for one structure. The geometry half is a
+:class:`~torchref.topology.topology.Topology` plus the ideal values layered over its
+edges; the non-bonded pair list is separate, because it is distance-derived and rebuilt
+as the model moves.
+
+Decoupled from :class:`~torchref.model.Model`: it accepts a pdb DataFrame and callables
+for coordinates, ADPs and VDW radii.
 """
 
-from typing import Callable, Optional
+from typing import Callable
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.nn import Module
 
-from torchref.restraints.builders_fast import (
-    AngleRestraintBuilder,
-    BondRestraintBuilder,
-    ChiralRestraintBuilder,
-    InterResidueAngleBuilder,
-    InterResidueBondBuilder,
-    InterResiduePlaneBuilder,
-    InterResidueTorsionBuilder,
-    PlaneRestraintBuilder,
-    PreprocessedPDB,
-    TorsionRestraintBuilder,
-    find_peptide_link_pairs,
-)
-from torchref.restraints.modifications import (
-    apply_modifications,
-    link_modifications,
-    read_mod_definitions,
-)
 from torchref.restraints.restraints_helper import (
     find_cif_file_in_library,
     read_cif,
@@ -38,143 +24,8 @@ from torchref.restraints.restraints_helper import (
 )
 from torchref.config import get_float_dtype
 from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.utils import TensorDict
 from torchref.utils.device_mixin import DeviceMixin
 
-
-class _RestraintsAccessor:
-    """
-    Provides backward-compatible dict-like access to restraints stored in TensorDict.
-
-    This class mimics the old nested dict interface:
-        restraints["bond"]["intra"]["indices"]
-
-    While actually accessing the TensorDict with flattened keys:
-        _tensor_storage["bond_intra_indices"]
-    """
-
-    # Types that don't have origin level (assigned directly as dicts)
-    _FLAT_TYPES = {"vdw", "chiral"}
-
-    def __init__(self, parent: "RestraintsNew"):
-        self._parent = parent
-
-    def __getitem__(self, rtype: str) -> "_RestraintTypeAccessor":
-        return _RestraintTypeAccessor(self._parent, rtype)
-
-    def __setitem__(self, rtype: str, value):
-        """Handle direct assignment for flat types like vdw and chiral."""
-        if rtype in self._FLAT_TYPES and isinstance(value, dict):
-            # Store all tensors with empty origin
-            self._parent._set_restraint_group(rtype, "", value)
-        else:
-            raise TypeError(
-                f"Cannot assign directly to restraints['{rtype}']. "
-                f"Use restraints['{rtype}'][origin] = data for nested types."
-            )
-
-    def __contains__(self, rtype: str) -> bool:
-        return len(self._parent._restraint_groups.get(rtype, set())) > 0 or \
-               rtype in self._FLAT_TYPES and self._parent._has_restraint(rtype, "")
-
-    def get(self, rtype: str, default=None):
-        if rtype in self:
-            return self[rtype]
-        return default
-
-    def keys(self):
-        """Return all restraint types that have data."""
-        result = []
-        for rtype in ["bond", "angle", "torsion", "plane"]:
-            if len(self._parent._restraint_groups.get(rtype, set())) > 0:
-                result.append(rtype)
-        # Check for special types (vdw, chiral) which don't have origins
-        for rtype in self._FLAT_TYPES:
-            if self._parent._has_restraint(rtype, ""):
-                result.append(rtype)
-        return result
-
-
-class _RestraintTypeAccessor:
-    """
-    Provides access to origins within a restraint type.
-
-    For regular types (bond, angle, torsion, plane):
-        restraints["bond"]["intra"] -> dict with indices, references, sigmas
-
-    For special types (vdw, chiral), this class acts as the dict itself:
-        restraints["vdw"]["indices"] -> tensor
-        restraints["vdw"] = {"indices": ..., "sigmas": ...}
-    """
-
-    # Types that don't have origin level (accessed directly as dicts)
-    _FLAT_TYPES = {"vdw", "chiral"}
-
-    def __init__(self, parent: "RestraintsNew", rtype: str):
-        self._parent = parent
-        self._rtype = rtype
-
-    def __getitem__(self, key: str):
-        if self._rtype in self._FLAT_TYPES:
-            # For vdw/chiral, key is a property name (indices, sigmas, etc.)
-            tensor = self._parent._get_restraint_tensor(self._rtype, "", key)
-            if tensor is None:
-                raise KeyError(f"No {key} for {self._rtype}")
-            return tensor
-        else:
-            # For bond/angle/torsion/plane, key is an origin name
-            result = self._parent._get_restraint_group(self._rtype, key)
-            if result is None:
-                raise KeyError(f"No restraints for {self._rtype}/{key}")
-            return result
-
-    def __setitem__(self, key: str, value):
-        if self._rtype in self._FLAT_TYPES:
-            # For vdw/chiral, if value is a tensor, store it directly
-            # If value is a dict, store all tensors
-            if isinstance(value, torch.Tensor):
-                self._parent._set_restraint_tensor(self._rtype, "", key, value)
-            elif isinstance(value, dict):
-                # This handles: restraints["vdw"] = {"indices": ..., "sigmas": ...}
-                # But this is called as restraints["vdw"][key] = value, so it won't work
-                # We need special handling in the parent accessor
-                pass
-        else:
-            # For bond/angle/torsion/plane, key is origin, value is dict
-            self._parent._set_restraint_group(self._rtype, key, value)
-
-    def __contains__(self, key: str) -> bool:
-        if self._rtype in self._FLAT_TYPES:
-            return self._parent._get_restraint_tensor(self._rtype, "", key) is not None
-        return self._parent._has_restraint(self._rtype, key)
-
-    def get(self, key: str, default=None):
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def keys(self):
-        if self._rtype in self._FLAT_TYPES:
-            # Return property names for flat types
-            result = []
-            for prop in ["indices", "references", "sigmas", "periods", "min_distances",
-                         "symop_indices", "cell_offsets"]:
-                if self._parent._get_restraint_tensor(self._rtype, "", prop) is not None:
-                    result.append(prop)
-            return result
-        return self._parent._get_origins_for_type(self._rtype)
-
-    def items(self):
-        if self._rtype in self._FLAT_TYPES:
-            for prop in self.keys():
-                yield prop, self._parent._get_restraint_tensor(self._rtype, "", prop)
-        else:
-            for origin in self.keys():
-                yield origin, self._parent._get_restraint_group(self._rtype, origin)
-
-    def __iter__(self):
-        return iter(self.keys())
 
 
 class RestraintsNew(DeviceMixin, DebugMixin, Module):
@@ -211,9 +62,11 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
 
     Attributes
     ----------
-    restraints : _RestraintsAccessor
-        Dict-*like* accessor over the flat TensorDict: it emulates
-        ``restraints["bond"]["intra"]["indices"]`` but is not a plain dict.
+    restraints : dict
+        Restraint groups as ``restraints["bond"]["intra"]["indices"]``. A plain nested
+        dict; the per-origin indices are views into ``topology``'s edge blocks.
+    topology : Topology
+        The connectivity the geometry restraints are defined over.
     cif_dict : dict
         Parsed CIF restraints keyed by residue type; ``missing_residues`` lists
         the types that could not be resolved.
@@ -251,11 +104,15 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         self._cell = cell
         self._spacegroup = spacegroup
 
-        # Initialize TensorDict for restraint storage (registered as submodule)
-        self._tensor_storage = TensorDict()
-
-        # Track which restraint groups exist (for iteration)
-        self._restraint_groups = {"bond": set(), "angle": set(), "torsion": set(), "plane": set()}
+        # Connectivity, the values layered over it, and the non-bonded pair list, which
+        # is rebuilt on displacement and so is kept apart from the rest.
+        self.topology = None
+        self._values = {}
+        self._vdw = {}
+        # Derived: per-origin views into the topology's edge blocks. Rebuilt by
+        # _rebuild_entries, which runs at build time and after any device move.
+        self._entries = {}
+        self._torsion_max_period = 1
 
         # Empty initialization
         if pdb is None:
@@ -353,68 +210,58 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         return self._vdw_radii_fn()
 
     # =========================================================================
-    # TensorDict Helper Methods for Restraint Storage
+    # Restraint storage
     # =========================================================================
 
-    def _make_key(self, rtype: str, origin: str, prop: str) -> str:
-        """Create flattened key for TensorDict storage."""
-        if origin:
-            return f"{rtype}_{origin}_{prop}"
-        else:
-            # For flat types (vdw, chiral) with no origin
-            return f"{rtype}_{prop}"
 
-    def _set_restraint_tensor(
-        self, rtype: str, origin: str, prop: str, tensor: torch.Tensor
-    ):
-        """Store a restraint tensor with flattened key."""
-        key = self._make_key(rtype, origin, prop)
-        self._tensor_storage[key] = tensor
-        # Track that this origin exists for this restraint type
-        if rtype in self._restraint_groups:
-            self._restraint_groups[rtype].add(origin)
 
-    def _get_restraint_tensor(
-        self, rtype: str, origin: str, prop: str
-    ) -> Optional[torch.Tensor]:
-        """Get a restraint tensor by type, origin, and property."""
-        key = self._make_key(rtype, origin, prop)
-        if key in self._tensor_storage:
-            return self._tensor_storage[key]
-        return None
 
-    def _has_restraint(self, rtype: str, origin: str) -> bool:
-        """Check if a restraint group exists."""
-        key = self._make_key(rtype, origin, "indices")
-        return key in self._tensor_storage
 
-    def _set_restraint_group(self, rtype: str, origin: str, data: dict):
-        """Store all tensors from a restraint data dict."""
-        for prop, tensor in data.items():
-            if tensor is not None and isinstance(tensor, torch.Tensor):
-                self._set_restraint_tensor(rtype, origin, prop, tensor)
 
-    def _get_restraint_group(self, rtype: str, origin: str) -> Optional[dict]:
-        """Get all tensors for a restraint group as a dict."""
-        if not self._has_restraint(rtype, origin):
-            return None
-        result = {}
-        # Common properties for different restraint types
-        for prop in ["indices", "references", "sigmas", "periods", "min_distances",
-                     "is_proline"]:
-            tensor = self._get_restraint_tensor(rtype, origin, prop)
-            if tensor is not None:
-                result[prop] = tensor
-        return result if result else None
 
-    def _get_origins_for_type(self, rtype: str) -> list:
-        """Get all origins (e.g., 'intra', 'peptide') for a restraint type."""
-        return list(self._restraint_groups.get(rtype, set()))
 
     @property
-    def restraints(self) -> "_RestraintsAccessor":
-        """Nested-dict-*like* accessor over the flat TensorDict (not a real dict)."""
-        return _RestraintsAccessor(self)
+    def restraints(self) -> dict:
+        """Restraint groups as ``[edge type][origin][property]``.
+
+        A plain nested dict of tensors, assembled once at build time. Reading it costs
+        three dict lookups and no allocation, which matters because the geometry targets
+        do it on every iteration. Per-origin indices are **views** into the topology's
+        contiguous edge blocks, so an in-place edit to a block is visible here at once,
+        and taking a subset costs nothing.
+        """
+        return self._entries
+
+    def _rebuild_entries(self) -> None:
+        """Re-derive the entry views from the topology and its values.
+
+        Cheap -- a handful of slices -- and idempotent. Runs at the end of a build and
+        again after any device or dtype move, because moving a tensor rebinds it and
+        leaves the old views pointing at freed storage.
+        """
+        if self.topology is None:
+            return
+        from torchref.topology import assemble_entries, max_period
+
+        self._entries = assemble_entries(self.topology, self._values)
+        if self._vdw:
+            self._entries["vdw"] = self._vdw
+        self._torsion_max_period = max_period(self._entries)
+
+    def _apply(self, fn, recurse: bool = True):
+        """Drop the derived views before the traversal, re-slice them after.
+
+        ``DeviceMixin``'s ``__dict__`` walk recurses into dicts, so leaving the entries
+        in place would move each slice on its own and quietly turn every view into an
+        independent tensor -- doubling the memory and breaking the aliasing the design
+        rests on. Rebuilding unconditionally rather than in ``_after_device_apply``,
+        because that hook only fires when the device or dtype actually changed, and a
+        ``.to()`` onto the current device must not leave the entries empty.
+        """
+        self._entries = {}
+        result = super()._apply(fn, recurse)
+        self._rebuild_entries()
+        return result
 
     def _load_cif_dictionaries(self, cif_path):
         """Load CIF dictionaries from provided paths and monomer library."""
@@ -507,54 +354,34 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         self.register_buffer("_rama_surfaces", surfaces)
 
     def build_restraints(self):
-        """Build every restraint group; each builder handles all residues at once.
+        """Build the topology, the values over it, and the non-bonded pair list.
 
         Builds on CPU and moves the result to the ``xyz()`` device at the end.
         """
         try:
             target_device = self.xyz().device
             device = torch.device("cpu")
-            pdb = self.pdb
 
-            # Must precede the intra-residue builders: it decides which residues
-            # draw their restraints from a link-modified component instead of the
-            # bare one.
-            comp_dict, res_keys = self._build_residue_variants()
+            from torchref.topology import build_topology_with_values
 
-            bond_result = BondRestraintBuilder(verbose=self.verbose).build(
-                pdb, comp_dict, device, residue_keys=res_keys
+            self.topology, self._values, extras = build_topology_with_values(
+                self.pdb,
+                self.cif_dict,
+                link_dict=self.link_dict,
+                link_list=self.link_list,
+                links=self.links,
+                xyz=self.xyz().detach().to(device),
+                device=device,
+                verbose=self.verbose,
             )
-            if bond_result:
-                self.restraints["bond"]["intra"] = bond_result
+            self._rebuild_entries()
 
-            angle_result = AngleRestraintBuilder(verbose=self.verbose).build(
-                pdb, comp_dict, device, residue_keys=res_keys
-            )
-            if angle_result:
-                self.restraints["angle"]["intra"] = angle_result
-
-            torsion_result = TorsionRestraintBuilder(verbose=self.verbose).build(
-                pdb, comp_dict, device, residue_keys=res_keys
-            )
-            if torsion_result:
-                self.restraints["torsion"]["intra"] = torsion_result
-
-            plane_result = PlaneRestraintBuilder(verbose=self.verbose).build(
-                pdb, comp_dict, device, residue_keys=res_keys
-            )
-            if plane_result:
-                for key, data in plane_result.items():
-                    self.restraints["plane"][key] = data
-
-            chiral_result = ChiralRestraintBuilder(verbose=self.verbose).build(
-                pdb, comp_dict, device, residue_keys=res_keys
-            )
-            if chiral_result:
-                self.restraints["chiral"] = chiral_result
-
-            self._build_peptide_restraints(device)
-            self._build_disulfide_restraints(device)
-            self._build_link_restraints(device)
+            rama = extras.get("ramachandran")
+            if rama is not None:
+                self.register_buffer("_rama_phi_indices", rama["phi_indices"])
+                self.register_buffer("_rama_psi_indices", rama["psi_indices"])
+                self.register_buffer("_rama_surface_type", rama["surface_type"])
+                self._load_rama_surfaces(device)
 
             # cutoff sits ~1 Å beyond the largest heavy-atom VDW sum (~3.6 Å) plus
             # expected drift, so a displacement-triggered rebuild stays inside the
@@ -563,11 +390,6 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
                 cutoff=6.0, sigma=0.05, inter_residue_only=False, use_spatial_hash=True
             )
 
-            # Register the concatenated 'all' buffers here, not lazily in forward:
-            # register_buffer() during a forward pass breaks CUDA-graph capture, and
-            # only registered buffers are moved by model.to(device).
-            self.cat_dict()
-
             if target_device.type != "cpu":
                 self.to(target_device)
 
@@ -575,403 +397,9 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             self.debug_on_error(e, context="RestraintsNew.build_restraints")
             raise
 
-    def _build_residue_variants(self):
-        """Point peptide-linked residues at link-modified copies of their component.
 
-        The monomer library defines each amino acid free: ``ALA`` carries ``OXT``
-        and a protonated ``N``, with carboxylate and ammonium geometry. Forming a
-        peptide bond applies the modifications the ``chem_link`` table names --
-        ``DEL-OXT`` to the residue donating its C, ``DEL-HN1`` (``DEL-HNP`` for
-        proline) to the residue donating its N -- which delete the restraints the
-        link makes meaningless and overwrite the targets that change, notably
-        ``CA-C-O`` and ``CA-N-H``. Without them the intra-residue restraints fight
-        the link's own: around a peptide carbonyl carbon ``CA-C-O`` + ``CA-C-N`` +
-        ``O-C-N`` only sums to 360 degrees once ``DEL-OXT`` has been applied.
 
-        Chain termini are deliberately left unmodified -- a real C-terminus keeps
-        its ``OXT`` and carboxylate geometry, a real N-terminus its ammonium.
 
-        Returns
-        -------
-        comp_dict : dict
-            :attr:`cif_dict` plus one entry per ``(residue type, modification
-            set)`` in use, keyed ``'ALA:DEL-HN1+DEL-OXT'``. :attr:`cif_dict`
-            itself is left keyed by residue type alone.
-        residue_keys : dict
-            ``{(chain_id, resseq): comp_dict key}`` for the modified residues, as
-            :meth:`~torchref.restraints.builders_fast.RestraintBuilder.build`
-            takes it. Residues absent from it use their residue name.
-        """
-        comp_dict = dict(self.cif_dict)
-        residue_keys = {}
-        if not self.cif_dict or getattr(self, "link_list", None) is None:
-            return comp_dict, residue_keys
-
-        modifications = link_modifications(self.link_list)
-        if "TRANS" not in modifications:
-            return comp_dict, residue_keys
-        trans_mods = modifications["TRANS"]
-        proline_mods = modifications.get("PTRANS", trans_mods)
-
-        polymer = self.pdb[self.pdb["ATOM"] == "ATOM"]
-        if len(polymer) == 0:
-            return comp_dict, residue_keys
-        pp_pdb = PreprocessedPDB(polymer)
-
-        mods_by_residue = {}
-        for res_i, res_next in find_peptide_link_pairs(pp_pdb):
-            donor_mod, acceptor_mod = (
-                proline_mods
-                if pp_pdb.residue_resnames[res_next] == "PRO"
-                else trans_mods
-            )
-            for res_idx, mod_id in ((res_i, donor_mod), (res_next, acceptor_mod)):
-                if mod_id is None:
-                    continue
-                key = (
-                    str(pp_pdb.residue_chain_ids[res_idx]),
-                    int(pp_pdb.residue_resseqs[res_idx]),
-                )
-                mods_by_residue.setdefault(key, set()).add(mod_id)
-
-        if not mods_by_residue:
-            return comp_dict, residue_keys
-
-        mod_dict = read_mod_definitions()
-        for res_idx in range(pp_pdb.n_residues):
-            key = (
-                str(pp_pdb.residue_chain_ids[res_idx]),
-                int(pp_pdb.residue_resseqs[res_idx]),
-            )
-            mods = mods_by_residue.get(key)
-            resname = pp_pdb.residue_resnames[res_idx]
-            if not mods or resname not in comp_dict:
-                continue
-            mods = sorted(mods)
-            variant = f"{resname}:{'+'.join(mods)}"
-            if variant not in comp_dict:
-                comp_dict[variant] = apply_modifications(
-                    comp_dict[resname], mods, mod_dict
-                )
-            residue_keys[key] = variant
-
-        if self.verbose > 1:
-            print(
-                f"Applied link modifications to {len(residue_keys)} residues "
-                f"({len(comp_dict) - len(self.cif_dict)} modified components)"
-            )
-        return comp_dict, residue_keys
-
-    def _build_peptide_restraints(self, device: torch.device):
-        """Build peptide bond/angle/torsion/plane restraints.
-
-        TRANS/CIS links for standard peptide bonds; PTRANS/PCIS for bonds to
-        proline, which add the C(i-1)-N-CD angle and proline-specific targets.
-        """
-        if "TRANS" not in self.link_dict:
-            if self.verbose > 0:
-                print(
-                    "Warning: TRANS link not found in link dictionary, skipping peptide bonds"
-                )
-            return
-
-        trans_link = self.link_dict["TRANS"]
-        ptrans_link = self.link_dict.get("PTRANS")
-        pdb = self.pdb
-
-        # Build peptide bonds using fast builder
-        bond_result = InterResidueBondBuilder(verbose=self.verbose).build(
-            pdb, trans_link, device, filter_atom_type="ATOM"
-        )
-        if bond_result:
-            self.restraints["bond"]["peptide"] = bond_result
-            if self.verbose > 0:
-                print(
-                    f"Built {bond_result['indices'].shape[0]} peptide bond restraints"
-                )
-
-        # Build peptide angles.
-        # If PTRANS is available, use it for proline pairs (excludes PRO
-        # from TRANS to avoid duplicate/conflicting restraints) and TRANS
-        # for non-proline pairs.  Otherwise fall back to TRANS for all.
-        angle_builder = InterResidueAngleBuilder(verbose=self.verbose)
-        if ptrans_link is not None:
-            # Non-proline pairs: TRANS angles
-            angle_result = angle_builder.build(
-                pdb, trans_link, device, filter_atom_type="ATOM",
-                exclude_next_resname="PRO",
-            )
-            # Proline pairs: PTRANS angles (includes C-N-CD)
-            pro_angle_result = angle_builder.build(
-                pdb, ptrans_link, device, filter_atom_type="ATOM",
-                next_resname_filter="PRO",
-            )
-            # Merge results
-            if angle_result and pro_angle_result:
-                angle_result = {
-                    "indices": torch.cat([angle_result["indices"], pro_angle_result["indices"]]),
-                    "references": torch.cat([angle_result["references"], pro_angle_result["references"]]),
-                    "sigmas": torch.cat([angle_result["sigmas"], pro_angle_result["sigmas"]]),
-                }
-            elif pro_angle_result:
-                angle_result = pro_angle_result
-        else:
-            angle_result = angle_builder.build(
-                pdb, trans_link, device, filter_atom_type="ATOM"
-            )
-
-        if angle_result:
-            self.restraints["angle"]["peptide"] = angle_result
-            if self.verbose > 0:
-                print(
-                    f"Built {angle_result['indices'].shape[0]} peptide angle restraints"
-                )
-
-        # Build backbone torsions (phi, psi, omega)
-        torsion_result = InterResidueTorsionBuilder(verbose=self.verbose).build(
-            pdb, trans_link, device, filter_atom_type="ATOM"
-        )
-        if torsion_result:
-            if "phi" in torsion_result:
-                self.restraints["torsion"]["phi"] = torsion_result["phi"]
-            if "psi" in torsion_result:
-                self.restraints["torsion"]["psi"] = torsion_result["psi"]
-            if "omega" in torsion_result:
-                self.restraints["torsion"]["omega"] = torsion_result["omega"]
-            if "ramachandran" in torsion_result:
-                rama = torsion_result["ramachandran"]
-                self.register_buffer("_rama_phi_indices", rama["phi_indices"])
-                self.register_buffer("_rama_psi_indices", rama["psi_indices"])
-                self.register_buffer("_rama_surface_type", rama["surface_type"])
-                self._load_rama_surfaces(device)
-
-        # Build peptide planes
-        plane_result = InterResiduePlaneBuilder(verbose=self.verbose).build(
-            pdb, trans_link, device, filter_atom_type="ATOM"
-        )
-        if plane_result:
-            n_planes = 0
-            for key, data in plane_result.items():
-                n_planes += data["indices"].shape[0]
-                if self._has_restraint("plane", key):
-                    # Append to existing planes of same atom count
-                    existing = self.restraints["plane"][key]
-                    self.restraints["plane"][key] = {
-                        "indices": torch.cat(
-                            [existing["indices"], data["indices"]], dim=0
-                        ),
-                        "sigmas": torch.cat(
-                            [existing["sigmas"], data["sigmas"]], dim=0
-                        ),
-                    }
-                else:
-                    self.restraints["plane"][key] = data
-            if self.verbose > 0:
-                print(f"Built {n_planes} peptide plane restraints")
-
-    def _build_disulfide_restraints(self, device: torch.device):
-        """Build disulfide bond restraints."""
-        if "disulf" not in self.link_dict:
-            if self.verbose > 1:
-                print(
-                    "Warning: disulf link not found in link dictionary, skipping disulfide bonds"
-                )
-            return
-
-        disulf_link = self.link_dict["disulf"]
-        disulf_bonds = disulf_link.get("bonds")
-        disulf_angles = disulf_link.get("angles")
-        disulf_torsions = disulf_link.get("torsions")
-
-        if disulf_bonds is None:
-            return
-
-        # Get SG-SG bond parameters
-        sg_sg_bond = disulf_bonds[
-            (disulf_bonds["atom1"] == "SG") & (disulf_bonds["atom2"] == "SG")
-        ]
-
-        if len(sg_sg_bond) == 0:
-            return
-
-        bond_length = float(sg_sg_bond["value"].values[0])
-        bond_sigma = float(sg_sg_bond["sigma"].values[0])
-
-        # Find all SG atoms
-        pdb = self.pdb
-        sg_atoms = pdb[(pdb["name"] == "SG") & (pdb["ATOM"] == "ATOM")]
-
-        if len(sg_atoms) == 0:
-            return
-
-        # Get coordinates and find close pairs
-        xyz = self.xyz()
-        sg_indices = sg_atoms["index"].values
-        sg_coords = xyz[sg_indices]
-        sg_residues = (
-            sg_atoms["chainid"].astype(str) + "_" + sg_atoms["resseq"].astype(str)
-        ).values
-
-        distances = torch.cdist(sg_coords, sg_coords)
-        threshold = 2.5
-        close_pairs = torch.where((distances < threshold) & (distances > 0.1))
-
-        valid_pairs = []
-        for i, j in zip(close_pairs[0].cpu().numpy(), close_pairs[1].cpu().numpy()):
-            if i < j and sg_residues[i] != sg_residues[j]:
-                valid_pairs.append((i, j))
-
-        if len(valid_pairs) == 0:
-            return
-
-        # Create builders
-        bond_builder = InterResidueBondBuilder(verbose=self.verbose)
-        angle_builder = InterResidueAngleBuilder(verbose=self.verbose)
-        torsion_builder = InterResidueTorsionBuilder(verbose=self.verbose)
-
-        # Process each disulfide bond
-        for i_local, j_local in valid_pairs:
-            sg1_idx = int(sg_indices[i_local])
-            sg2_idx = int(sg_indices[j_local])
-
-            # Add bond
-            bond_builder.process_disulfide_bond(
-                sg1_idx, sg2_idx, bond_length, bond_sigma
-            )
-
-            # Get residues for angle/torsion restraints
-            residue1 = pdb[pdb["index"] == sg1_idx].iloc[0]
-            residue2 = pdb[pdb["index"] == sg2_idx].iloc[0]
-
-            res1_atoms = pdb[
-                (pdb["chainid"] == residue1["chainid"])
-                & (pdb["resseq"] == residue1["resseq"])
-            ]
-            res2_atoms = pdb[
-                (pdb["chainid"] == residue2["chainid"])
-                & (pdb["resseq"] == residue2["resseq"])
-            ]
-
-            if disulf_angles is not None:
-                angle_builder.process_disulfide_angles(
-                    res1_atoms, res2_atoms, disulf_angles
-                )
-
-            if disulf_torsions is not None:
-                torsion_builder.process_disulfide_torsions(
-                    res1_atoms, res2_atoms, disulf_torsions
-                )
-
-        # Finalize
-        bond_result = bond_builder.finalize(device)
-        if bond_result:
-            self.restraints["bond"]["disulfide"] = bond_result
-            if self.verbose > 0:
-                print(
-                    f"Built {bond_result['indices'].shape[0]} disulfide bond restraints"
-                )
-
-        angle_result = angle_builder.finalize(device)
-        if angle_result:
-            self.restraints["angle"]["disulfide"] = angle_result
-            if self.verbose > 0:
-                print(
-                    f"Built {angle_result['indices'].shape[0]} disulfide angle restraints"
-                )
-
-        torsion_result = torsion_builder.finalize_disulfide(device)
-        if torsion_result:
-            self.restraints["torsion"]["disulfide"] = torsion_result
-            if self.verbose > 0:
-                print(
-                    f"Built {torsion_result['indices'].shape[0]} disulfide torsion restraints"
-                )
-
-    def _build_link_restraints(self, device: torch.device):
-        """Build one bond restraint per accepted PDB LINK record.
-
-        Target is the record's ``length`` at sigma=0.02 Å, falling back to 1.5 Å
-        when blank. LINKs duplicating an auto-detected CYS SG-SG disulfide are
-        skipped (that builder already added bond + angles + torsions); symmetry-mate
-        links were dropped earlier in ``extract_link_records``. Each bond joins the
-        VDW exclusion set via ``_build_exclusion_set``, so the non-bonded term does
-        not push linked atoms apart.
-        """
-        if self.links is None or len(self.links) == 0:
-            return
-
-        pdb = self.pdb
-
-        # Already-bonded SG-SG pairs from auto-disulfide detection.
-        disulf = self.restraints.get("bond", {}).get("disulfide")
-        existing_disulf_pairs = set()
-        if disulf is not None and "indices" in disulf:
-            for i, j in disulf["indices"].cpu().numpy():
-                existing_disulf_pairs.add((int(min(i, j)), int(max(i, j))))
-
-        bond_builder = InterResidueBondBuilder(verbose=self.verbose)
-        n_skipped_unresolved = 0
-        n_skipped_dedup = 0
-
-        for _, link in self.links.iterrows():
-            idx1 = self._lookup_link_atom(
-                pdb,
-                chainid=link["chainid1"],
-                resseq=int(link["resseq1"]),
-                icode=link["icode1"],
-                resname=link["resname1"],
-                name=link["name1"],
-                altloc=link["altloc1"],
-            )
-            idx2 = self._lookup_link_atom(
-                pdb,
-                chainid=link["chainid2"],
-                resseq=int(link["resseq2"]),
-                icode=link["icode2"],
-                resname=link["resname2"],
-                name=link["name2"],
-                altloc=link["altloc2"],
-            )
-
-            if idx1 is None or idx2 is None:
-                n_skipped_unresolved += 1
-                if self.verbose > 1:
-                    print(
-                        f"Warning: LINK atom not found "
-                        f"({link['chainid1']}/{link['resname1']}{link['resseq1']}/"
-                        f"{link['name1']} -- "
-                        f"{link['chainid2']}/{link['resname2']}{link['resseq2']}/"
-                        f"{link['name2']}); skipping."
-                    )
-                continue
-
-            if idx1 == idx2:
-                n_skipped_unresolved += 1
-                continue
-
-            pair = (min(idx1, idx2), max(idx1, idx2))
-            if pair in existing_disulf_pairs:
-                n_skipped_dedup += 1
-                continue
-
-            length = link["length"]
-            if not (isinstance(length, (int, float)) and length == length and length > 0):
-                length = 1.5
-            bond_builder.process_disulfide_bond(idx1, idx2, float(length), 0.02)
-
-        bond_result = bond_builder.finalize(device)
-        if bond_result:
-            self.restraints["bond"]["link"] = bond_result
-            if self.verbose > 0:
-                print(
-                    f"Built {bond_result['indices'].shape[0]} LINK bond restraints"
-                    + (
-                        f" (skipped {n_skipped_dedup} disulfide-dup,"
-                        f" {n_skipped_unresolved} unresolved)"
-                        if (n_skipped_dedup or n_skipped_unresolved)
-                        else ""
-                    )
-                )
 
     @staticmethod
     def _lookup_link_atom(
@@ -1012,35 +440,6 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
                 return int(hit.iloc[0]["index"])
         return int(sel.iloc[0]["index"])
 
-    def _build_exclusion_set(self):
-        """Build set of atom pairs to exclude from VDW calculations."""
-        exclusions = set()
-
-        # 1-2: Direct bonds
-        for origin in self.restraints.get("bond", {}).keys():
-            indices = self.restraints["bond"][origin].get("indices")
-            if indices is not None and len(indices) > 0:
-                idx_np = indices.cpu().numpy()
-                for i1, i2 in idx_np:
-                    exclusions.add((int(min(i1, i2)), int(max(i1, i2))))
-
-        # 1-3: Angles
-        for origin in self.restraints.get("angle", {}).keys():
-            indices = self.restraints["angle"][origin].get("indices")
-            if indices is not None and len(indices) > 0:
-                idx_np = indices.cpu().numpy()
-                for i1, i2, i3 in idx_np:
-                    exclusions.add((int(min(i1, i3)), int(max(i1, i3))))
-
-        # 1-4: Torsions
-        for origin in self.restraints.get("torsion", {}).keys():
-            indices = self.restraints["torsion"][origin].get("indices")
-            if indices is not None and len(indices) > 0:
-                idx_np = indices.cpu().numpy()
-                for i1, i2, i3, i4 in idx_np:
-                    exclusions.add((int(min(i1, i4)), int(max(i1, i4))))
-
-        return exclusions
 
     def _find_nearby_pairs_spatial_hash(self, xyz, cutoff=6.0):
         """Atom pairs within ``cutoff`` of each other, as (M, 2) rows with i < j.
@@ -1414,8 +813,8 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         if has_symmetry:
             from torchref.restraints.neighbor_search import build_vdw_restraints_gpu
 
-            exclusions = self._build_exclusion_set()
-            self.restraints["vdw"] = build_vdw_restraints_gpu(
+            exclusions = self.topology.atoms.exclusions_from_restraint_edges()
+            self._vdw = build_vdw_restraints_gpu(
                 xyz_fn=xyz_cpu,
                 vdw_radii_fn=vdw_radii_cpu,
                 cell=cell_cpu,
@@ -1433,6 +832,11 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
                 inter_residue_only=inter_residue_only,
                 use_spatial_hash=use_spatial_hash,
             )
+
+        # Publish the new pair list before anything reads it back below. Unlike the
+        # geometry edges it is not derived from the topology, so it is held separately
+        # and re-inserted here and by _rebuild_entries.
+        self._entries["vdw"] = self._vdw
 
         # Build riding hydrogen topology and precompute candidate pairs
         from torchref.restraints.hydrogen_topology import (
@@ -1497,7 +901,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
     ):
         """Legacy VDW restraint builder (no symmetry or CPU fallback)."""
 
-        exclusions = self._build_exclusion_set()
+        exclusions = self.topology.atoms.exclusions_from_restraint_edges()
         vdw_radii = self.get_vdw_radii()
         xyz = self.xyz()
         device = xyz.device
@@ -1542,7 +946,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         }
 
         if len(nearby_pairs) == 0:
-            self.restraints["vdw"] = empty_result
+            self._vdw = empty_result
             return
 
         pairs_np = nearby_pairs.cpu().numpy()
@@ -1660,7 +1064,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         final_offsets = final_offsets[keep_mask]
 
         if len(final_i1) == 0:
-            self.restraints["vdw"] = empty_result
+            self._vdw = empty_result
             return
 
         # Compute min distances using VDW radii of ASU source atoms.
@@ -1669,7 +1073,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
 
         # Store results
         final_pairs = np.stack([final_i1, final_i2], axis=1)
-        self.restraints["vdw"] = {
+        self._vdw = {
             "indices": torch.tensor(final_pairs, dtype=torch.long, device=device),
             "min_distances": torch.tensor(
                 min_distances, dtype=get_float_dtype(), device=device
@@ -1694,8 +1098,8 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
                 msg += f", {n_sym_count} symmetry contacts"
             print(msg)
 
-    # Device movement is handled automatically by TensorDict (registered as _tensor_storage)
-    # through PyTorch's Module.to(), cuda(), and cpu() methods
+    # Device movement goes through DeviceMixin: the topology and the value tensors are
+    # walked and moved, and _apply re-slices the derived entry views afterwards.
 
     def summary(self):
         """Print a detailed summary of all restraints."""
@@ -1797,46 +1201,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
             f"torsions={n_torsions}, peptide_bonds={n_bonds_peptide})"
         )
 
-    def _get_all_indices(self, restraint_type, keys_to_merge=None):
-        """Concatenate the indices of one restraint type across origins, or None.
 
-        ``keys_to_merge`` restricts to those origins; None means all. Rows follow
-        origin iteration order, so pair this only with
-        :meth:`_get_all_property` calls made with the same ``keys_to_merge``.
-        """
-        indices_list = []
-        for origin, data in self.restraints.get(restraint_type, {}).items():
-            indices = data.get("indices")
-            if indices is not None:
-                if keys_to_merge is None:
-                    indices_list.append(indices)
-                elif origin in keys_to_merge:
-                    indices_list.append(indices)
-
-        if not indices_list:
-            return None
-
-        return torch.cat(indices_list, dim=0)
-
-    def _get_all_property(self, restraint_type, property_name, keys_to_merge=None):
-        """Concatenate one property ('references'/'sigmas'/'periods') across origins.
-
-        Returns None if no origin carries it. Row order matches
-        :meth:`_get_all_indices` for the same ``keys_to_merge``.
-        """
-        values_list = []
-        for origin, data in self.restraints.get(restraint_type, {}).items():
-            values = data.get(property_name)
-            if values is not None:
-                if keys_to_merge is None:
-                    values_list.append(values)
-                elif origin in keys_to_merge:
-                    values_list.append(values)
-
-        if not values_list:
-            return None
-
-        return torch.cat(values_list, dim=0)
 
     def bond_lengths(self, idx, xyz: torch.Tensor = None):
         """
@@ -1863,17 +1228,23 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         return torch.linalg.norm(pos2 - pos1, dim=-1)
 
     def copy(self):
-        """
-        Create a deep copy of the Restraints object.
+        """An independent copy, sharing no state with this one.
+
+        The entry views are re-sliced afterwards rather than left as deep-copied
+        tensors: ``deepcopy`` duplicates a view and the block it points into as two
+        unrelated tensors, so the copy would still hold the right values but would no
+        longer alias, and an in-place edit to one would stop being visible through the
+        other.
 
         Returns
         -------
-        Restraints
-            A deep copy of this Restraints instance.
+        RestraintsNew
         """
         import copy
 
-        return copy.deepcopy(self)
+        duplicate = copy.deepcopy(self)
+        duplicate._rebuild_entries()
+        return duplicate
 
     def bond_deviations(self, xyz: torch.Tensor = None):
         """
@@ -2025,48 +1396,20 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         return gaussian_nll(deviations, sigmas)
 
     def cat_dict(self):
-        """
-        Concatenate restraint origins into combined 'all' keys.
+        """Ensure the combined ``all`` groups are present. Idempotent.
 
-        Creates restraints['bond']['all'], restraints['angle']['all'], and
-        restraints['torsion']['all']. Bond and angle 'all' include every
-        origin; torsion 'all' includes only the 'intra' and 'disulfide'
-        origins (phi/psi have no reference values or sigmas, and omega is
-        handled by a dedicated OmegaTarget).
+        They are assembled with everything else at build time, so this normally has
+        nothing to do; it exists because the geometry targets guard their reads with
+        ``if "all" not in ...`` and call it when the guard trips.
+
+        The previous implementation concatenated the origins on each call, and because
+        writing ``restraints['bond']['all']`` also registered ``'all'`` as an origin, a
+        second call folded the combined group into itself and doubled every restraint.
+        Deriving the group from the topology instead makes that impossible: ``all`` is a
+        span of the edge block, never an origin in its own right.
         """
-        self.restraints["bond"]["all"] = {
-            "indices": self._get_all_indices("bond"),
-            "references": self._get_all_property("bond", "references"),
-            "sigmas": self._get_all_property("bond", "sigmas"),
-        }
-        self.restraints["angle"]["all"] = {
-            "indices": self._get_all_indices("angle"),
-            "references": self._get_all_property("angle", "references"),
-            "sigmas": self._get_all_property("angle", "sigmas"),
-        }
-        # Note: phi/psi origins are excluded because they have no reference
-        # values or sigmas (conformationally free). Omega is excluded here
-        # because it is handled by a dedicated OmegaTarget that uses a
-        # cis/trans von Mises mixture model.
-        _torsion_origins = ["intra", "disulfide"]
-        self.restraints["torsion"]["all"] = {
-            "indices": self._get_all_indices("torsion", _torsion_origins),
-            "references": self._get_all_property(
-                "torsion", "references", _torsion_origins
-            ),
-            "sigmas": self._get_all_property(
-                "torsion", "sigmas", _torsion_origins
-            ),
-            "periods": self._get_all_property(
-                "torsion", "periods", _torsion_origins
-            ),
-        }
-        # Cache max period to avoid .item() GPU sync every iteration
-        periods = self.restraints["torsion"]["all"]["periods"]
-        if periods is not None and periods.numel() > 0:
-            self._torsion_max_period = int(periods.max().item())
-        else:
-            self._torsion_max_period = 1
+        if self.topology is not None and "all" not in self._entries.get("bond", {}):
+            self._rebuild_entries()
 
     def torsions(self, idx, xyz: torch.Tensor = None):
         """
