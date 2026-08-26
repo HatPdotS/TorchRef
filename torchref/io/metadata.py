@@ -196,7 +196,7 @@ class RefinementMetadata:
         # --- Geometry deviations (silently skip if no restraints) ---
         try:
             model = refinement.model
-            if model.initialized and model._restraints is not None:
+            if model.ctx.initialized and model._restraints is not None:
                 restraints = model.restraints
                 if hasattr(restraints, "bond_deviations"):
                     with torch.no_grad():

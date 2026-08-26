@@ -113,8 +113,8 @@ class NonBondedHTarget(NonBondedTarget):
             return nonbonded_heavy_math(
                 xyz_all, indices, h_topo.cand_min_dist,
                 h_topo.cand_symop_idx, h_topo.cand_cell_offset,
-                self.model.symmetry.matrices,
-                self.model.symmetry.translations,
+                self.model.spacegroup.matrices,
+                self.model.spacegroup.translations,
                 self.model.cell.fractional_matrix,
                 self.model.cell.inv_fractional_matrix,
                 self._c_rep, self._r_exp,
@@ -134,7 +134,7 @@ class NonBondedHTarget(NonBondedTarget):
 
         if n_sym > 0:
             cell = self.model.cell
-            sg = self.model.symmetry
+            sg = self.model.spacegroup
             sym_source = xyz_all[h_topo.cand_idx_j[n_asu:]]
             frac = cell.cartesian_to_fractional(sym_source)
             R = sg.matrices[h_topo.cand_symop_idx[n_asu:]].to(frac.dtype)

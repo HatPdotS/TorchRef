@@ -14,6 +14,10 @@ Unreleased
 - Removed ``ReciprocalSymmetryGrid``, ``ReciprocalSymmetry``, ``expand_reciprocal_grid``, ``expand_reflections`` and ``extract_structure_factors_with_symmetry``
 - Removed the unused ``Cell`` gradient plumbing (``requires_grad`` argument and property, ``detach``) and the ``CellTensor`` alias
 - Removed the ``Symmetry`` alias for ``SpaceGroup``; the name is now a distinct class
+- Added ``ModelContext``, holding a model's unit cell, space group, atom table, link records and provenance; ``Model.cell`` / ``.spacegroup`` / ``.pdb`` still work and now read through it
+- Moved ``Model``'s configuration and provenance onto the context: ``strip_H``, ``verbose``, ``links``, ``altloc_pairs``, ``initialized``, ``exclude_H_from_sf`` and the input paths are reached as ``model.ctx.*``
+- ``Model.copy`` and ``ModelFT.copy`` now copy the context in one step, cloning the space group instead of sharing it
+- Removed ``Model.symmetry``; use ``Model.spacegroup``
 
 
 Version 0.6.4

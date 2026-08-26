@@ -325,6 +325,8 @@ UNCOVERED: Dict[str, str] = {
     "Map": "needs data + model",
     "DifferenceMap": "needs two datasets + a model",
     "LBFGSRefinement": "full pipeline; covered in integration",
+    "ModelContext": "needs a loaded structure to hold a cell and space group; "
+    "covered through Model in tests/unit/model/test_model_state_dict_device.py",
     "_MapSymmetryDirect": "stateless view over its Symmetry: recomputes index grids "
     "per operation to keep peak memory O(grid), so it owns no tensors to move",
     "CholeskyMixedTensor": "needs a valid ADP tensor; shares MixedTensor's paths",

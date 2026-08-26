@@ -20,7 +20,7 @@ class TestModelInitialization:
 
         model = Model()
 
-        assert model.initialized == False
+        assert model.ctx.initialized is False
         assert model.pdb is None
         assert model.xyz is None
         assert model.adp is None
@@ -59,7 +59,7 @@ class TestModelInitialization:
         
         model = Model()
         
-        assert model.strip_H == True
+        assert model.ctx.strip_H is True
 
     @pytest.mark.unit
     def test_model_bool_uninitialized(self):

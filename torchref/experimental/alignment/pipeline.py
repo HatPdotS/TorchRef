@@ -305,8 +305,8 @@ class MolecularReplacementPipeline:
 
         # Get symmetry matrices for clustering
         sym_matrices = None
-        if hasattr(self.model, 'symmetry') and self.model.symmetry is not None:
-            sym_matrices = np.array([s.numpy() for s in self.model.symmetry.matrices])
+        if getattr(self.model, 'spacegroup', None) is not None:
+            sym_matrices = np.array([s.numpy() for s in self.model.spacegroup.matrices])
 
         rotation_peaks = cluster_rotation_peaks(
             rotation_peaks,

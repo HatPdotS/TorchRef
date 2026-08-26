@@ -851,8 +851,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             return metadata.merge(refinement_meta)
 
         # Merge with pass-through headers from input file
-        if hasattr(self.model, "_input_file") and self.model._input_file:
-            input_file = self.model._input_file
+        if self.model.ctx.input_file:
+            input_file = self.model.ctx.input_file
             if input_file.endswith(".pdb"):
                 input_meta = RefinementMetadata.from_pdb_file(input_file)
             elif input_file.endswith((".cif", ".mmcif")):
@@ -1015,7 +1015,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         instance.scaler.set_model_and_data(instance.model, instance.reflection_data)
 
         # Initialize targets if model is available
-        if instance.model is not None and instance.model.initialized:
+        if instance.model is not None and instance.model.ctx.initialized:
             try:
                 instance._init_targets()
             except Exception as e:

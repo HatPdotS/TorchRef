@@ -892,7 +892,7 @@ Examples:
             meta.n_atoms_solvent = int((pdb["ATOM"] == "HETATM").sum())
 
             # Geometry deviations
-            if model.initialized and model._restraints is not None:
+            if model.ctx.initialized and model._restraints is not None:
                 restraints = model.restraints
                 with torch.no_grad():
                     if hasattr(restraints, "bond_deviations"):

@@ -21,6 +21,7 @@ import torch.nn as nn
 from torchref.base import math_torch
 from torchref.config import get_float_dtype, normalize_device
 from torchref.io import cif, pdb
+from torchref.model.context import ModelContext
 from torchref.model.parameter_wrappers import (
     CholeskyMixedTensor,
     MixedTensor,
@@ -69,10 +70,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     """
     Base model class for atomic structure models using PyTorch.
 
-    Owns the atomic data -- coordinates, atomic displacement parameters and
+    Owns the refinable atomic data -- coordinates, atomic displacement parameters and
     occupancies -- each held in a parameter wrapper that decides which atoms are
-    refinable. Build it empty (``Model()`` then ``load_pdb`` / ``load_cif`` /
-    ``load_state_dict``); ``if model:`` tests *initialization*, not existence.
+    refinable. Everything the structure was *loaded from* rather than refined lives on
+    :attr:`ctx`, a :class:`~torchref.model.context.ModelContext`. Build the model empty
+    (``Model()`` then ``load_pdb`` / ``load_cif`` / ``load_state_dict``); ``if model:``
+    tests *initialization*, not existence.
 
     Parameters
     ----------
@@ -96,15 +99,20 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         positive-definite by construction. Isotropic atoms carry ``U = NaN``.
     occupancy : OccupancyTensor
         Atomic occupancies with values in [0, 1].
+    ctx : ModelContext
+        The unit cell, space group, atom table, link records, provenance and
+        configuration. The fields not forwarded below are reached through it, e.g.
+        ``model.ctx.strip_H`` and ``model.ctx.initialized``.
     pdb : pandas.DataFrame
-        DataFrame containing atomic model data. Only refreshed from the tensors
-        by :meth:`update_pdb`.
+        Atom table, forwarded to :attr:`ctx`. Only refreshed from the tensors by
+        :meth:`update_pdb`.
     cell : Cell
-        Unit cell object with parameters [a, b, c, alpha, beta, gamma].
-    spacegroup, symmetry : SpaceGroup
-        Space group object; ``symmetry`` is the same object under its old name.
-    initialized : bool
-        Whether the model has been initialized with data.
+        Unit cell, forwarded to :attr:`ctx`.
+    spacegroup : SpaceGroup
+        Space group, forwarded to :attr:`ctx`.
+    device : torch.device
+        Where the tensors live. Kept on the model rather than the context because the
+        device-movement machinery rewrites it in place.
     """
 
     def __init__(
@@ -137,21 +145,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if dtype_float is None:
             dtype_float = get_float_dtype()
         device = normalize_device(device)
+        # ``device`` and ``dtype_float`` stay here rather than moving into the context:
+        # they are live ``DeviceMixin`` trackers, rewritten in place by the traversal on
+        # whichever object owns the tensors.
         self.dtype_float = dtype_float
-        self.verbose = verbose
         self.device = device
-        self.strip_H = strip_H
-        self._exclude_H_from_sf = False
 
-        # State tracking
-        self.initialized = False
-        self.altloc_pairs = []
-
-        # These will be set during load() or load_state_dict()
-        self.pdb = None
-        self.links = None
-        self._cell: Optional[Cell] = None
-        self._spacegroup: Optional[SpaceGroup] = None
+        # Everything the model is loaded from and sits in, as opposed to what is
+        # refined. Populated by load() / create_from_state_dict().
+        self.ctx = ModelContext(verbose=verbose, strip_H=strip_H)
 
         # Submodules (created during load or load_state_dict)
         self.xyz = None
@@ -164,7 +166,6 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Restraints (built lazily on first access)
         self._restraints = None
-        self._cif_path = None
 
     def __bool__(self):
         """Return the initialization status when used in boolean context.
@@ -173,20 +174,20 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         an uninitialized (but non-``None``) model is falsy. Use
         ``if model is not None`` when you mean an existence check.
         """
-        return self.initialized
+        return self.ctx.initialized
 
     @property
     def exclude_H_from_sf(self) -> bool:
         """Drop H from ``get_iso()`` / ``get_aniso()`` (so from Fcalc) while
         keeping them in the geometry and VDW restraints. Default False.
         """
-        return self._exclude_H_from_sf
+        return self.ctx.exclude_H_from_sf
 
     @exclude_H_from_sf.setter
     def exclude_H_from_sf(self, value: bool):
-        self._exclude_H_from_sf = bool(value)
+        self.ctx.exclude_H_from_sf = bool(value)
         # The cached iso/aniso indices encode the H choice, so rebuild them.
-        if self.initialized and self.pdb is not None:
+        if self.ctx.initialized and self.pdb is not None:
             self._rebuild_sf_indices()
 
     def _rebuild_sf_indices(self):
@@ -194,7 +195,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         iso_mask = ~self.aniso_flag
         aniso_mask = self.aniso_flag
 
-        if self._exclude_H_from_sf and self.pdb is not None:
+        if self.ctx.exclude_H_from_sf and self.pdb is not None:
             if not hasattr(self, "_heavy_atom_mask"):
                 h_mask = torch.tensor(
                     (self.pdb["element"].str.strip() != "H").values,
@@ -219,19 +220,28 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     # =========================================================================
 
     @property
+    def pdb(self) -> Optional["pandas.DataFrame"]:
+        """Atom table. Only refreshed from the tensors by :meth:`update_pdb`."""
+        return self.ctx.pdb
+
+    @pdb.setter
+    def pdb(self, value):
+        self.ctx.pdb = value
+
+    @property
     def cell(self) -> Optional[Cell]:
         """Unit cell object with parameters [a, b, c, alpha, beta, gamma]."""
-        return self._cell
+        return self.ctx.cell
 
     @cell.setter
     def cell(self, value: Cell):
         """Set the unit cell."""
-        self._cell = value
+        self.ctx.cell = value
 
     @property
-    def spacegroup(self) -> Optional[gemmi.SpaceGroup]:
+    def spacegroup(self) -> Optional[SpaceGroup]:
         """Space group object, or None if not set."""
-        return self._spacegroup
+        return self.ctx.spacegroup
 
     @spacegroup.setter
     def spacegroup(self, value):
@@ -240,19 +250,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             # ``device=self.device``: SpaceGroup falls back to the global
             # default otherwise, so setting a spacegroup on a CPU-pinned Model
             # would silently plant accelerator-resident matrices on it.
-            self._spacegroup = SpaceGroup(value, device=self.device)
+            self.ctx.spacegroup = SpaceGroup(value, device=self.device)
         else:
-            self._spacegroup = None
-
-    @property
-    def symmetry(self) -> Optional[SpaceGroup]:
-        """The same object as :attr:`spacegroup`, under its older name."""
-        return self._spacegroup
-
-    @symmetry.setter
-    def symmetry(self, value: Optional[SpaceGroup]):
-        """Set the space group object directly (no coercion, unlike ``spacegroup``)."""
-        self._spacegroup = value
+            self.ctx.spacegroup = None
 
     # =========================================================================
     # Crystallographic matrix properties (delegated to Cell)
@@ -290,7 +290,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if hasattr(self, "_Z") and self._Z is not None:
             return self._Z
 
-        if not self.initialized or self.pdb is None:
+        if not self.ctx.initialized or self.pdb is None:
             raise RuntimeError(
                 "Cannot build Z tensor: model not initialized. "
                 "Load data first with load_pdb() or load_cif()."
@@ -320,13 +320,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if self._parametrization is not None:
             return self._parametrization
 
-        if not self.initialized or self.pdb is None:
+        if not self.ctx.initialized or self.pdb is None:
             raise RuntimeError(
                 "Cannot build parametrization: model not initialized. "
                 "Load data first with load_pdb() or load_cif()."
             )
 
-        if self.verbose > 1:
+        if self.ctx.verbose > 1:
             print("Building ITC92 parametrization via table lookup...")
 
         from torchref.base.scattering.scattering_table import get_scattering_params_by_z
@@ -351,11 +351,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 B[idx : idx + 1],
             )
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(
                 f"Parametrization built for {len(self._parametrization)} unique atom types"
             )
-        if self.verbose > 1:
+        if self.ctx.verbose > 1:
             print("Elements with parametrization:", list(self._parametrization.keys()))
 
         return self._parametrization
@@ -425,7 +425,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Model
             Self, for method chaining.
         """
-        self._cif_path = cif_path
+        self.ctx.cif_path = cif_path
         # Reset restraints so they will be rebuilt on next access
         self._restraints = None
         return self
@@ -437,7 +437,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if self._restraints is not None:
             return self._restraints
 
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError(
                 "Cannot build restraints: model not initialized. "
                 "Load data first with load_pdb() or load_cif()."
@@ -445,19 +445,19 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         from torchref.restraints.restraints import RestraintsNew
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print("Building restraints...")
 
         self._restraints = RestraintsNew(
             pdb=self.pdb,
-            cif_path=self._cif_path,
+            cif_path=self.ctx.cif_path,
             xyz_fn=self.xyz,
             adp_fn=self.adp,
             vdw_radii_fn=self.get_vdw_radii,
-            cell=self._cell,
-            spacegroup=self._spacegroup,
-            links=self.links,
-            verbose=self.verbose,
+            cell=self.ctx.cell,
+            spacegroup=self.ctx.spacegroup,
+            links=self.ctx.links,
+            verbose=self.ctx.verbose,
         )
 
         return self._restraints
@@ -528,7 +528,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ----------
         reader : callable
             Zero-argument callable returning ``(pdb_df, cell, spacegroup)``. An
-            optional ``.links`` attribute on it is stored on ``self.links``.
+            optional ``.links`` attribute on it is stored on ``self.ctx.links``.
 
         Returns
         -------
@@ -542,11 +542,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         registration and ``initialized = True``.
         """
         self.pdb, cell, spacegroup = reader()
-        self.links = getattr(reader, "links", None)
+        self.ctx.links = getattr(reader, "links", None)
 
         self.pdb = (
             self.pdb.loc[self.pdb["element"] != "H"].reset_index(drop=True)
-            if self.strip_H
+            if self.ctx.strip_H
             else self.pdb
         )
         self.pdb.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"], inplace=True)
@@ -604,7 +604,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         self.set_default_masks()
         self.register_alternative_conformations()
-        self.initialized = True
+        self.ctx.initialized = True
         return self
 
     def load_pdb(self, file):
@@ -621,8 +621,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Model
             Self, for method chaining.
         """
-        self._input_file = str(file)
-        reader = pdb.PDBReader(verbose=self.verbose).read(file)
+        self.ctx.input_file = str(file)
+        reader = pdb.PDBReader(verbose=self.ctx.verbose).read(file)
         return self.load(reader)
 
     def load_cif(self, file):
@@ -639,8 +639,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Model
             Self, for method chaining.
         """
-        self._input_file = str(file)
-        if self.verbose > 0:
+        self.ctx.input_file = str(file)
+        if self.ctx.verbose > 0:
             print(f"Loading CIF file: {file}")
 
         # Read CIF file
@@ -798,7 +798,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         n_collapsed = len(unique_indices)
 
-        if self.verbose > 1:
+        if self.ctx.verbose > 1:
             n_groups = n_collapsed
             n_independent = n_atoms - n_collapsed
             n_refinable = refinable_mask.sum().item()
@@ -901,39 +901,36 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         if getattr(self, "aniso_flag", None) is not None:
             self._rebuild_sf_indices()
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(f"Model moved to device: {self.device}")
 
     def copy(self):
         """
         Create a deep copy of the Model.
 
-        Creates a complete independent copy including all registered buffers,
-        module parameters, PDB DataFrame, and spacegroup information.
+        Independent in every part: the context is copied via
+        :meth:`~torchref.model.context.ModelContext.copy`, buffers are cloned and each
+        parameter wrapper is copied through its own ``copy`` so its parametrization
+        survives.
 
         Returns
         -------
         Model
             A new, fully independent Model instance with copied data.
         """
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError("Cannot copy an uninitialized Model. Load data first.")
 
         model_copy = Model(
             dtype_float=self.dtype_float,
-            verbose=self.verbose,
+            verbose=self.ctx.verbose,
             device=self.device,
-            strip_H=self.strip_H,
+            strip_H=self.ctx.strip_H,
         )
 
-        model_copy.pdb = self.pdb.copy(deep=True)
-
-        # Setter also sets symmetry; gemmi.SpaceGroup is immutable, so shared.
-        model_copy.spacegroup = self.spacegroup
-        model_copy.initialized = True
-
-        if self.cell is not None:
-            model_copy.cell = self.cell.clone()
+        # One call carries the atom table, cell, space group, altloc groups and
+        # provenance, each deep-copied or cloned -- see ``ModelContext.copy``.
+        model_copy.ctx = self.ctx.copy()
 
         for buffer_name, buffer_value in self._buffers.items():
             if buffer_value is not None:
@@ -945,14 +942,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
 
-        if hasattr(self, "altloc_pairs") and self.altloc_pairs:
-            model_copy.altloc_pairs = [
-                tuple(tensor.clone() for tensor in group) for group in self.altloc_pairs
-            ]
-        else:
-            model_copy.altloc_pairs = []
-
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(f"✓ Model copied successfully ({len(model_copy.pdb)} atoms)")
 
         return model_copy
@@ -1160,7 +1150,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Run once at model setup, before scaling / restraints / targets. The
         isotropic result matches a freshly-loaded isotropic-only model.
         """
-        if not getattr(self, "initialized", False) or self.pdb is None:
+        if not self.ctx.initialized or self.pdb is None:
             return
         if mode == "isotropic":
             aniso_mask = torch.zeros(
@@ -1303,7 +1293,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         setattr(self, mask_name, updated_mask)
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             n_selected = selection_mask.sum().item()
             n_refinable = updated_mask.sum().item()
             action = "frozen" if freeze else "unfrozen"
@@ -1347,7 +1337,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 f"Invalid target: '{target}'. Must be 'xyz', 'adp', 'u', or 'occupancy'"
             )
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             n_refinable = getattr(self, f"{target}_mask").sum().item()
             print(f"  Applied mask to {target}: {n_refinable} atoms refinable")
 
@@ -1536,14 +1526,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
     def register_alternative_conformations(self):
         """
-        Rebuild ``self.altloc_pairs`` from the ``altloc`` column.
+        Rebuild ``self.ctx.altloc_pairs`` from the ``altloc`` column.
 
         One tuple per residue that has multiple conformations, holding one
         index tensor per conformation (in sorted altloc order), e.g.
         ``[(tensor([100, 101]), tensor([110, 111])), ...]``. Overwrites any
         previous content, so call it after the atom numbering changes.
         """
-        self.altloc_pairs = []
+        self.ctx.altloc_pairs = []
 
         pdb_with_altlocs = self.pdb[self.pdb["altloc"] != ""]
 
@@ -1565,7 +1555,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                     )
                     conformation_tensors.append(indices)
 
-                self.altloc_pairs.append(tuple(conformation_tensors))
+                self.ctx.altloc_pairs.append(tuple(conformation_tensors))
 
     def shake_coords(self, stddev: float):
         """
@@ -1655,7 +1645,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 # normal path — a CCP4 install is not required.
                 from torchref.restraints.library import get_library_manager
 
-                mgr = get_library_manager(verbose=self.verbose)
+                mgr = get_library_manager(verbose=self.ctx.verbose)
                 mon_lib_path = str(mgr.ensure_gemmi_base())
 
         # gemmi reads from a file, so the live tensors must reach the DataFrame.
@@ -1705,7 +1695,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             # strip_H=False, or the hydrogens we just placed would be dropped again.
             new_model = self.__class__(
                 dtype_float=self.dtype_float,
-                verbose=self.verbose,
+                verbose=self.ctx.verbose,
                 device=self.device,
                 strip_H=False,
             )
@@ -1724,7 +1714,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """Build a fresh model of the same class from a DataFrame."""
         import inspect
 
-        sh = self.strip_H if strip_H is None else strip_H
+        sh = self.ctx.strip_H if strip_H is None else strip_H
         ctor_kw = dict(
             dtype_float=self.dtype_float,
             verbose=0,
@@ -1748,8 +1738,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if hasattr(new_model, "setup_grid"):
             new_model.setup_grid()
         # Propagate CIF restraint paths so restraints are rebuilt correctly
-        if self._cif_path is not None:
-            new_model._cif_path = self._cif_path
+        if self.ctx.cif_path is not None:
+            new_model._cif_path = self.ctx.cif_path
         return new_model
 
     def strip_altlocs(self) -> "Model":
@@ -2456,19 +2446,15 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             destination=destination, prefix=prefix, keep_vars=keep_vars
         )
 
-        state[prefix + "pdb"] = (
-            self.pdb.copy() if hasattr(self, "pdb") and self.pdb is not None else None
-        )
+        state[prefix + "pdb"] = self.pdb.copy() if self.pdb is not None else None
         state[prefix + "cell"] = self.cell.data.cpu() if self.cell is not None else None
         # As a string: gemmi.SpaceGroup is not picklable.
         state[prefix + "spacegroup"] = self.spacegroup.xhm if self.spacegroup else None
-        state[prefix + "initialized"] = self.initialized
+        state[prefix + "initialized"] = self.ctx.initialized
         state[prefix + "dtype_float"] = self.dtype_float
         state[prefix + "device"] = self.device
-        state[prefix + "strip_H"] = self.strip_H
-        state[prefix + "altloc_pairs"] = (
-            self.altloc_pairs if hasattr(self, "altloc_pairs") else []
-        )
+        state[prefix + "strip_H"] = self.ctx.strip_H
+        state[prefix + "altloc_pairs"] = self.ctx.altloc_pairs
 
         return state
 
@@ -2482,7 +2468,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             Path to save the state dictionary to.
         """
         torch.save(self.state_dict(), path)
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(f"Saved model state to {path}")
 
     def load_state(self, path: str, strict: bool = True):
@@ -2499,11 +2485,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         state_dict = torch.load(path, map_location=self.device, weights_only=False)
         loaded = type(self).create_from_state_dict(
-            state_dict, device=self.device, verbose=self.verbose
+            state_dict, device=self.device, verbose=self.ctx.verbose
         )
         # Adopt the fully-built model's state wholesale.
         self.__dict__.update(loaded.__dict__)
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(f"Loaded model state from {path}")
 
     @classmethod
@@ -2561,8 +2547,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         )
 
         instance.pdb = pdb
-        instance.initialized = initialized
-        instance.altloc_pairs = altloc_pairs
+        instance.ctx.initialized = initialized
+        instance.ctx.altloc_pairs = altloc_pairs
 
         # Setter also sets symmetry.
         instance.spacegroup = spacegroup
@@ -2707,7 +2693,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         from torchref.utils.utils import parse_phenix_selection
 
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError(
                 "Cannot get selection mask from an uninitialized Model. Load data first."
             )
@@ -2756,7 +2742,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         from torchref.utils.utils import parse_phenix_selection
 
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError(
                 "Cannot select from an uninitialized Model. Load data first."
             )
@@ -2772,9 +2758,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # type(self), so a subclass returns its own type.
         selected_model = type(self)(
             dtype_float=self.dtype_float,
-            verbose=self.verbose,
+            verbose=self.ctx.verbose,
             device=self.device,
-            strip_H=self.strip_H,
+            strip_H=self.ctx.strip_H,
         )
 
         # ``index`` must be renumbered: the occupancy grouping below reads it.
@@ -2783,7 +2769,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         selected_model.pdb = selected_model.pdb.reset_index(drop=True)
         selected_model.pdb["index"] = selected_model.pdb.index.to_numpy(dtype=int)
 
-        # Setter also sets symmetry; gemmi.SpaceGroup is immutable, so shared.
+        # The setter rebuilds a SpaceGroup, so the selection gets its own.
         selected_model.spacegroup = self.spacegroup
 
         # The fractional / reciprocal matrices are properties over the Cell, so
@@ -2845,9 +2831,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         selected_model.set_default_masks()
         selected_model.register_alternative_conformations()
-        selected_model.initialized = True
+        selected_model.ctx.initialized = True
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(f"Selected {n_selected}/{len(self.pdb)} atoms with '{selection}'")
 
         return selected_model
@@ -2864,7 +2850,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         torch.Tensor
             Tensor of shape (n_atoms, 3) with fractional coordinates.
         """
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError(
                 "Model must be initialized to compute fractional coordinates."
             )
@@ -2901,7 +2887,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Model
             Self, for method chaining.
         """
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError("Model must be initialized to apply rotation.")
 
         xyz = self.xyz()
@@ -2945,7 +2931,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             model.translate(torch.tensor([5.0, 0.0, 0.0]))                  # 5 Å in x
             model.translate(torch.tensor([0.5, 0.5, 0.5]), fractional=True)  # half cell
         """
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError("Model must be initialized to apply translation.")
 
         xyz = self.xyz()
@@ -2974,7 +2960,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         torch.Tensor
             Centroid coordinates with shape (3,).
         """
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError("Model must be initialized to compute centroid.")
 
         return self.xyz().mean(dim=0)
@@ -2999,7 +2985,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         from torchref.model.rigid_xyz import RigidXYZTensor
 
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError(
                 "Model must be initialized before use_rigid_xyz(). "
                 "Load data first with load_pdb() or load_cif()."
@@ -3036,7 +3022,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 "Polymer filter removed every atom — cannot build rigid bodies."
             )
         mobile_mask = torch.from_numpy(mobile_arr).to(device=self.device)
-        if self.verbose > 0 and int(drop.sum()) > 0:
+        if self.ctx.verbose > 0 and int(drop.sum()) > 0:
             n_water = int(is_water.sum())
             n_ion = int((is_single_atom & ~is_std & ~is_water).sum())
             print(
@@ -3080,7 +3066,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         if hasattr(self, "reset_cache"):
             self.reset_cache()
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(
                 f"Switched to rigid-body parametrization: {rigid_xyz} "
                 f"({rigid_xyz.n_chains} chain(s))"
