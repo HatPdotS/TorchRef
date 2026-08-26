@@ -163,20 +163,23 @@ class HydrogenTopology(DeviceMixin):
 # ---------------------------------------------------------------------------
 
 
+#: Parsed monomer templates, keyed by residue name, shared across calls. Values are
+#: None where the CIF is missing or carries no usable atom coordinates.
+_TEMPLATE_CACHE: Dict = {}
+
+
 def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
     """``{resname: entry | None}`` H topology, ``None`` where the CIF is unusable.
 
-    Populates and returns the shared ``Model._hydrogenate_cif_cache``, so entries
-    from an earlier ``Model.hydrogenate()`` are reused. Each entry carries ``ids``,
+    Populates and returns :data:`_TEMPLATE_CACHE`. Each entry carries ``ids``,
     ``elems``, ``coords``, ``is_h``, ``id_to_idx``, ``heavy_names``,
     ``heavy_coords``, ``h_names``, ``h_coords``, ``parent_map``, ``ideal_bl`` and
     ``heavy_neighbor_map``.
     """
-    from torchref.model.model import Model
     from torchref.restraints.library import MonomerLibraryManager
 
     lib = MonomerLibraryManager(verbose=0)
-    cache = Model._hydrogenate_cif_cache
+    cache = _TEMPLATE_CACHE
 
     for rn in pdb["resname"].unique():
         rn_str = str(rn).strip()

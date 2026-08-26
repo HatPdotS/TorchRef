@@ -26,6 +26,11 @@ Unreleased
 - Restraint groups are laid out in a fixed order, so a rebuild produces the same row order in any process; previously the origins were concatenated in Python ``set`` iteration order
 - Fixed ``cat_dict`` doubling every bond, angle and torsion restraint when called more than once
 - Geometry restraints are built from the topology, retiring the intra-residue builder calls, the peptide/disulfide/LINK build methods and the ``TensorDict`` restraint storage
+- Hydrogen generation is now template instantiation over the topology: ``Model.hydrogenate`` aligns each residue's monomer template onto the heavy atoms present and reads its hydrogens off, and the bond graph sets how many hydrogens a parent may carry
+- Fixed hydrogen placement fitting the template over two bond shells, which spans rotatable torsions the model does not share and left 12% of side-chain hydrogens further than 1.5 A from their parent, where they were discarded
+- Hydrogens on a centre whose template omits a real substituent -- a peptide-linked backbone nitrogen -- are now built from the bonded neighbours instead of the template frame
+- Hydrogens with a free torsion (hydroxyl, thiol, amine, methyl) are identified from bond connectivity and their dihedral is scanned, rather than taken from whatever the library deposited
+- Removed ``Model.generate_hydrogens``; ``Model.hydrogenate`` is the single path and no longer takes ``lbfgs_steps`` or ``max_iter``
 
 
 Version 0.6.4
