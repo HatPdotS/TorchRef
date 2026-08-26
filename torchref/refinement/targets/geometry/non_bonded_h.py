@@ -123,7 +123,7 @@ class NonBondedHTarget(NonBondedTarget):
 
         # Slow path: gaussian / soft modes, inline eager.
         pos_i = xyz_all[h_topo.cand_idx_i]
-        n_asu = getattr(h_topo, 'n_asu_candidates', n_cand)
+        n_asu = h_topo.n_asu_candidates
         n_sym = n_cand - n_asu
         min_dist = h_topo.cand_min_dist
 

@@ -18,6 +18,7 @@ Unreleased
 - Moved ``Model``'s configuration and provenance onto the context: ``strip_H``, ``verbose``, ``links``, ``altloc_pairs``, ``initialized``, ``exclude_H_from_sf`` and the input paths are reached as ``model.ctx.*``
 - ``Model.copy`` and ``ModelFT.copy`` now copy the context in one step, cloning the space group instead of sharing it
 - Removed ``Model.symmetry``; use ``Model.spacegroup``
+- ``HydrogenTopology`` is a dataclass with optional fields instead of an ``nn.Module`` whose buffers were attached after construction
 
 
 Version 0.6.4

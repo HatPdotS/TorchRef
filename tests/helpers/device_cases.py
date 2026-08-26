@@ -205,6 +205,17 @@ CASES: List[DeviceCase] = [
         "Symmetry",
     ),
     DeviceCase(
+        "HydrogenTopology_empty",
+        lambda d: __import__(
+            "torchref.restraints.hydrogen_topology",
+            fromlist=["HydrogenTopology"],
+        ).HydrogenTopology(device=d),
+        "HydrogenTopology",
+        # The builders attach every tensor later, so a fresh topology is a bare shell
+        # and only its tracker can be checked.
+        tensor_free=True,
+    ),
+    DeviceCase(
         "_MapSymmetryInterpolation",
         _map_symmetry_interpolation,
         "_MapSymmetryInterpolation",
@@ -318,7 +329,6 @@ UNCOVERED: Dict[str, str] = {
     "_SharedMixedModel": "internal view owned by ModelCollection",
     "Scaler": "needs a loaded model + data; covered in integration",
     "RestraintsNew": "needs a model + monomer library",
-    "HydrogenTopology": "needs a built restraint topology",
     "FrenchWilson": "needs loaded intensities",
     "DatasetCollection": "needs several loaded datasets",
     "FcalcDataset": "needs computed structure factors",
