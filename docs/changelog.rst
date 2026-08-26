@@ -2,6 +2,20 @@ Changelog
 =========
 
 
+Unreleased
+----------
+- Added ``Symmetry``, a crystallography-free symmetry group carrying the operations and every verb derived from them; ``SpaceGroup`` now specialises it
+- ``Symmetry`` exposes the transform primitives ``apply_rotations`` / ``apply_translations`` / ``phase_factors`` and a cached ``reciprocal`` stack, replacing seven separate spellings of ``R^T h``
+- Moved the centric, systematic-absence and epsilon predicates onto ``Symmetry``; ``is_centric_from_hkl`` and ``get_centric_acentric_masks`` are gone
+- Moved the HKL asymmetric-unit verbs onto ``SpaceGroup`` as ``expand_hkl`` / ``reduce_hkl`` / ``complete_hkl`` / ``canonicalize_hkl``; the module-level functions are gone
+- Moved the grid-size helpers onto ``Symmetry``; removed ``torchref.symmetry.grid_utils`` and the duplicate ``spacegroup`` module-level functions
+- Map symmetrization is now ``Symmetry.symmetrize_map``, caching one operator for the most recent grid shape; ``MapSymmetry`` and ``MapSymmetryDirect`` are private
+- Symmetry classes are dataclasses over ``DeviceMixin`` instead of ``nn.Module``, so assigning a ``SpaceGroup`` to a model attribute is no longer intercepted by ``nn.Module.__setattr__``
+- Removed ``ReciprocalSymmetryGrid``, ``ReciprocalSymmetry``, ``expand_reciprocal_grid``, ``expand_reflections`` and ``extract_structure_factors_with_symmetry``
+- Removed the unused ``Cell`` gradient plumbing (``requires_grad`` argument and property, ``detach``) and the ``CellTensor`` alias
+- Removed the ``Symmetry`` alias for ``SpaceGroup``; the name is now a distinct class
+
+
 Version 0.6.4
 ----------
 - Fixed the bulk-solvent ``F_sol`` staying at the starting model's mask for every refinement macrocycle

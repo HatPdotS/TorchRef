@@ -508,13 +508,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
         """Remap HKL to canonical CCP4 ASU form and reorder all data in-place."""
         from dataclasses import fields as dc_fields
 
-        from torchref.symmetry.reciprocal_symmetry import canonicalize_hkl
-
         if self.hkl is None or self.spacegroup is None:
             return
 
-        canonical_hkl, phase_shifts, friedel_flags, sort_indices = canonicalize_hkl(
-            self.hkl, self.spacegroup, include_friedel=True, device=self.device
+        canonical_hkl, phase_shifts, friedel_flags, sort_indices = (
+            self.spacegroup.canonicalize_hkl(
+                self.hkl, include_friedel=True, device=self.device
+            )
         )
 
         n_refl = len(self.hkl)
@@ -2486,11 +2486,11 @@ class ReflectionData(CrystalDataset, DebugMixin):
             observations depart from Wilson statistics for reasons that have
             nothing to do with being outliers.
         """
-        from torchref.base.french_wilson import (
-            epsilon_from_hkl,
-            intensities_from_amplitudes,
-        )
+        from torchref.base.french_wilson import intensities_from_amplitudes
         from torchref.base.wilson_outliers import wilson_outlier_mask
+        from torchref.refinement.model_error_estimation.sigma_a import (
+            epsilon_from_hkl,
+        )
 
         if self.F is None or self.F_sigma is None or self.resolution is None:
             return
@@ -2982,11 +2982,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
         # Cached on the _centric_flags dataclass field, so it survives
         # serialization.
         if not hasattr(self, "_centric_flags") or self._centric_flags is None:
-            from torchref.base.french_wilson import is_centric_from_hkl
+            sg = self.spacegroup or SpaceGroup("P1", device=self.hkl.device)
 
-            sg = self.spacegroup if self.spacegroup else "P1"
-
-            self._centric_flags = is_centric_from_hkl(self.hkl, sg)
+            self._centric_flags = sg.is_centric(self.hkl)
 
         return self._centric_flags
 
@@ -3186,8 +3184,6 @@ class ReflectionData(CrystalDataset, DebugMixin):
             Missing reflections have F/I/phase/fom = 0.0,
             F_sigma/I_sigma = 1.0 and ``masks['missing'] = True``.
         """
-        from torchref.symmetry.reciprocal_symmetry import complete_hkl
-
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
         if self.cell is None:
@@ -3200,8 +3196,9 @@ class ReflectionData(CrystalDataset, DebugMixin):
             d_min = self.resolution.min().item()
 
         # Get complete HKL set with index mapping
-        filled_hkl, indices, missing = complete_hkl(
-            self.hkl, self.cell.data, self.spacegroup or "P1", d_min, device=self.device
+        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
+        filled_hkl, indices, missing = sg.complete_hkl(
+            self.hkl, self.cell.data, d_min, device=self.device
         )
 
         # Use remap to create the new dataset
@@ -3241,15 +3238,13 @@ class ReflectionData(CrystalDataset, DebugMixin):
             shift, ``resolution`` is recomputed and ``bin_indices`` is cleared.
             ``source``/``last_op`` record the provenance.
         """
-        from torchref.symmetry.reciprocal_symmetry import expand_hkl
-
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
 
         # Get expanded HKL set with index mapping and phase shifts
-        hkl_p1, indices, phase_shifts = expand_hkl(
+        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
+        hkl_p1, indices, phase_shifts = sg.expand_hkl(
             self.hkl,
-            self.spacegroup or "P1",
             include_friedel=include_friedel,
             remove_absences=remove_absences,
             device=self.device,
@@ -3302,16 +3297,15 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ``validation_flags`` set if any equivalent is set. Any other
         per-reflection field takes its first valid equivalent.
         """
-        from torchref.symmetry.reciprocal_symmetry import reduce_hkl
         from torchref.symmetry.spacegroup import SpaceGroup
 
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
 
         # Get reduction mapping
-        hkl_asu, reduction_indices, phase_shifts = reduce_hkl(
-            self.hkl, spacegroup, include_friedel=include_friedel, device=self.device
-        )
+        hkl_asu, reduction_indices, phase_shifts = SpaceGroup(
+            spacegroup, device=self.device
+        ).reduce_hkl(self.hkl, include_friedel=include_friedel, device=self.device)
 
         n_asu = len(hkl_asu)
         n_equiv = reduction_indices.shape[1]
@@ -3523,13 +3517,12 @@ class ReflectionData(CrystalDataset, DebugMixin):
         ReflectionData
             New object with canonicalized, sorted Miller indices.
         """
-        from torchref.symmetry.reciprocal_symmetry import canonicalize_hkl
-
         if self.hkl is None:
             raise ValueError("ReflectionData has no Miller indices loaded")
 
-        canonical_hkl, phase_shifts, friedel_flags, sort_indices = canonicalize_hkl(
-            self.hkl, self.spacegroup or "P1", include_friedel, device=self.device
+        sg = self.spacegroup or SpaceGroup("P1", device=self.device)
+        canonical_hkl, phase_shifts, friedel_flags, sort_indices = sg.canonicalize_hkl(
+            self.hkl, include_friedel, device=self.device
         )
 
         # Reorder all fields using __select__

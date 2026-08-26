@@ -19,8 +19,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 import torch
 
 from torchref.base.reciprocal.grid_operations import place_on_grid
-from torchref.symmetry.grid_utils import calculate_optimal_grid_size
-from torchref.symmetry.reciprocal_symmetry import expand_hkl
+from torchref.symmetry import SpaceGroup
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_DETAILED,
@@ -136,9 +135,9 @@ class RealSpaceTarget(DataTarget):
         """Compute and cache the ASU → P1 expansion mapping."""
         if self._hkl_p1 is not None:
             return
-        hkl_p1, indices, phase_shifts = expand_hkl(
+        sg = self._data.spacegroup or SpaceGroup("P1")
+        hkl_p1, indices, phase_shifts = sg.expand_hkl(
             self._data.hkl,
-            self._data.spacegroup or "P1",
             include_friedel=True,
             remove_absences=True,
             device=self._data.hkl.device,
@@ -624,9 +623,8 @@ class RealSpaceExtrapolatedTarget(RealSpaceTarget):
             return
 
         spacegroup = self._data_light.spacegroup
-        hkl_p1, indices, phase_shifts = expand_hkl(
+        hkl_p1, indices, phase_shifts = spacegroup.expand_hkl(
             self._hkl,
-            spacegroup,
             include_friedel=True,
             remove_absences=True,
             device=self._hkl.device,

@@ -145,15 +145,13 @@ class TestModelFTSymmetry:
         # Model should have spacegroup after loading
         assert model.spacegroup is not None
         
-        # Map symmetry can be created if gridsize is available
+        # The map operator comes from the space group, keyed on the grid shape.
         if model.gridsize is not None:
-            from torchref.symmetry.map_symmetry import MapSymmetry
-            
             gridsize = tuple(model.gridsize.tolist())
-            cell_params = model.cell
-            
-            map_sym = MapSymmetry(model.spacegroup, gridsize, cell_params)
-            assert map_sym is not None
+
+            operator = model.spacegroup.map_operator(gridsize)
+            assert operator is not None
+            assert operator.map_shape == gridsize
 
 
 @pytest.mark.integration

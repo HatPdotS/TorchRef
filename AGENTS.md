@@ -190,7 +190,7 @@ Black, 88 columns, `isort` with the black profile. Ruff lint with
 | `refinement/` | Drivers (`Refinement`, `LBFGSRefinement`, `RigidBodyRefinementStep`), `targets/` (`xray/`, `geometry/`, `adp/`, `collection/`, `combined.py`), `weighting/`, `optimizers/` (annealing, Langevin, preconditioned/seeded L-BFGS), `model_error_estimation/` (σ_A, σ_M), `loss_state.py`, `logger.py` |
 | `restraints/` | Bonds, angles, torsions, planes, chirals, VDW. Built from the CCP4 Monomer Library, resolved lazily via `get_library_manager()` — importing this package must not trigger a library download |
 | `scaling/` | `ScalerBase` (model-independent), `Scaler`, `CollectionScaler`, `SolventModel` (k_sol, B_sol) |
-| `symmetry/` | `SpaceGroup` (buffers on `nn.Module`), `Cell`, `MapSymmetry`, `ReciprocalSymmetry`, grid utilities |
+| `symmetry/` | `Symmetry` (operations plus everything derived from them), `SpaceGroup` (adds the crystallographic identity and the CCP4 ASU verbs), `Cell`. All dataclasses over `DeviceMixin`, not `nn.Module` — they hold no refinable parameters. Map and reciprocal-grid operators are private, reached through `Symmetry` |
 | `maps/` | `Map` (2Fo−Fc, Fcalc), `DifferenceMap` |
 | `cli/` | Entry points: `torchref.refine`, `torchref.difference-refine`, `torchref.mtz2map`, `torchref.validate-ded`, `torchref.phased-difference-map`, `torchref.add-metadata`, `torchref.strip-altlocs` |
 | `experimental/` | APIs that may change without notice: `alignment/` (Patterson MR), `kinetic/` (time-resolved), `ensemble/`, `monolithic_refinement/`, `targets/` (AMBER/GAFF2, real-space, sampled-ML phase) |

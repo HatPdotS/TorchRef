@@ -17,7 +17,6 @@ from torchref.config import dtypes, get_float_dtype, normalize_device
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
-from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.utils.caching import CachedForwardMixin
 
 
@@ -60,8 +59,6 @@ class ModelFT(CachedForwardMixin, Model):
         Most recently computed electron density map.
     parametrization : dict
         ITC92 parametrization dictionary {element: (A, B)}.
-    map_symmetry : MapSymmetry
-        Symmetry operator for map calculations.
     """
 
     def __init__(
@@ -315,16 +312,6 @@ class ModelFT(CachedForwardMixin, Model):
     def voxel_size(self, value):
         """Set voxel size (for backward compatibility)."""
         self._fft.voxel_size = value
-
-    @property
-    def map_symmetry(self) -> Optional[MapSymmetry]:
-        """Symmetry operator for map calculations."""
-        return self._fft.map_symmetry
-
-    @map_symmetry.setter
-    def map_symmetry(self, value):
-        """Set map symmetry (for backward compatibility)."""
-        self._fft.map_symmetry = value
 
     def get_iso(self):
         """
@@ -832,7 +819,7 @@ class ModelFT(CachedForwardMixin, Model):
         Create a deep copy of the ModelFT.
 
         Creates a complete independent copy including all Model base class data,
-        FFT submodule state (gridsize, real_space_grid, voxel_size, map_symmetry),
+        FFT submodule state (gridsize, real_space_grid, voxel_size),
         ITC92 parametrization, and scalar attributes.
         Cache is reset to empty.
 

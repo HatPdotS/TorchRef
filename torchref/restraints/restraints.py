@@ -1407,7 +1407,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         if self._spacegroup is not None:
             from torchref.symmetry.spacegroup import SpaceGroup
             sg_cpu = SpaceGroup(self._spacegroup, device=cpu,
-                                dtype=self._spacegroup._dtype)
+                                dtype=self._spacegroup.dtype)
         else:
             sg_cpu = None
 

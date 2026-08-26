@@ -106,7 +106,7 @@ from torchref.model.rigid_xyz import RigidXYZTensor
 # Refinement
 from torchref.refinement import LBFGSRefinement, Refinement
 from torchref.refinement.rigid_body_refinement import RigidBodyRefinementStep
-from torchref.symmetry import Cell, SpaceGroup
+from torchref.symmetry import Cell, SpaceGroup, Symmetry
 
 # Restraints
 # from torchref.restraints import Restraints # Initialized lazily due to monomer library download requirement
@@ -151,6 +151,7 @@ __all__ = [
     # Symmetry
     "Cell",
     "SpaceGroup",
+    "Symmetry",
     # Maps
     "Map",
     "DifferenceMap",

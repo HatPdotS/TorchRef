@@ -133,10 +133,6 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
         return self._base_models[0].gridsize
 
     @property
-    def map_symmetry(self):
-        return self._base_models[0].map_symmetry
-
-    @property
     def inv_fractional_matrix(self):
         return self.cell.inv_fractional_matrix.to(dtype=self.dtype_float)
 

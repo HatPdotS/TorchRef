@@ -56,6 +56,34 @@ class DeviceCase:
     ignore: tuple = field(default_factory=tuple)
 
 
+def _symmetry(device):
+    """A bare Symmetry from an explicit operation list (no space group involved)."""
+    import torch as _torch
+
+    from torchref.config import get_float_dtype
+    from torchref.symmetry import Symmetry
+
+    dtype = get_float_dtype()
+    matrices = _torch.eye(3, dtype=dtype, device=device).unsqueeze(0).repeat(2, 1, 1)
+    matrices[1] = -matrices[1]
+    translations = _torch.zeros(2, 3, dtype=dtype, device=device)
+    return Symmetry(matrices=matrices, translations=translations)
+
+
+def _map_symmetry_interpolation(device):
+    """The interpolating map operator, on a grid that forbids direct indexing.
+
+    P212121 requires even dimensions, so an odd grid forces the interpolating
+    variant rather than the streaming one.
+    """
+    from torchref.symmetry import SpaceGroup
+    from torchref.symmetry.map_symmetry_interpolation import (
+        _MapSymmetryInterpolation,
+    )
+
+    return _MapSymmetryInterpolation(SpaceGroup(_SG, device=device), (15, 15, 15))
+
+
 def _cell(device):
     from torchref.symmetry import Cell
 
@@ -165,20 +193,23 @@ CASES: List[DeviceCase] = [
         "RigidXYZTensor",
     ),
     DeviceCase(
-        "ReciprocalSymmetryGrid",
+        "SpaceGroup",
         lambda d: __import__(
-            "torchref.symmetry", fromlist=["ReciprocalSymmetryGrid"]
-        ).ReciprocalSymmetryGrid(_SG, grid_shape=(16, 16, 16), device=d),
-        "ReciprocalSymmetryGrid",
+            "torchref.symmetry", fromlist=["SpaceGroup"]
+        ).SpaceGroup(_SG, device=d),
+        "SpaceGroup",
     ),
     DeviceCase(
-        "MapSymmetryDirect",
-        lambda d: __import__(
-            "torchref.symmetry", fromlist=["MapSymmetryDirect"]
-        ).MapSymmetryDirect(
-            _SG, map_shape=(16, 16, 16), cell_params=_CELL, device=d
-        ),
-        "MapSymmetryDirect",
+        "Symmetry",
+        _symmetry,
+        "Symmetry",
+    ),
+    DeviceCase(
+        "_MapSymmetryInterpolation",
+        _map_symmetry_interpolation,
+        "_MapSymmetryInterpolation",
+        # ``symmetry`` is the group this operator was built from, not state it owns.
+        ignore=("symmetry",),
     ),
     DeviceCase(
         "TensorMasks",
@@ -294,7 +325,8 @@ UNCOVERED: Dict[str, str] = {
     "Map": "needs data + model",
     "DifferenceMap": "needs two datasets + a model",
     "LBFGSRefinement": "full pipeline; covered in integration",
-    "MapSymmetry": "interpolation variant; needs a real map grid",
+    "_MapSymmetryDirect": "stateless view over its Symmetry: recomputes index grids "
+    "per operation to keep peak memory O(grid), so it owns no tensors to move",
     "CholeskyMixedTensor": "needs a valid ADP tensor; shares MixedTensor's paths",
     "CollectionScaler": "needs a dataset collection",
     "CollectionDifferenceTarget": "needs a dataset collection",

@@ -52,7 +52,6 @@ class Cell(_NonModuleDeviceMixin):
         *,
         dtype: torch.dtype = None,
         device: torch.device | str = None,
-        requires_grad: bool = False,
     ) -> None:
         """
         Create a new Cell.
@@ -66,8 +65,6 @@ class Cell(_NonModuleDeviceMixin):
             Desired data type. Defaults to the configured ``dtypes.float``.
         device : torch.device or str, optional
             Desired device. Defaults to the configured ``device.current``.
-        requires_grad : bool, optional
-            Whether to track gradients. Defaults to False.
 
         Raises
         ------
@@ -93,9 +90,6 @@ class Cell(_NonModuleDeviceMixin):
         # Ensure 1D shape
         tensor = tensor.reshape(6)
 
-        if requires_grad:
-            tensor = tensor.requires_grad_(True)
-
         object.__setattr__(self, "_data", tensor)
         object.__setattr__(self, "_cache", {})
 
@@ -110,21 +104,6 @@ class Cell(_NonModuleDeviceMixin):
     def reset_cache(self) -> None:
         """Clear cached derived quantities (fractional matrix, volume, etc.)."""
         object.__setattr__(self, "_cache", {})
-
-    def detach(self) -> "Cell":
-        """
-        Return a new Cell with detached tensor (no gradient tracking).
-
-        Returns
-        -------
-        Cell
-            New Cell with detached data.
-        """
-        new_data = self._data.detach()
-        new_cell = Cell.__new__(Cell)
-        object.__setattr__(new_cell, "_data", new_data)
-        object.__setattr__(new_cell, "_cache", {})
-        return new_cell
 
     def clone(self) -> "Cell":
         """
@@ -159,11 +138,6 @@ class Cell(_NonModuleDeviceMixin):
     def data(self) -> torch.Tensor:
         """Return the underlying tensor (for buffer registration)."""
         return self._data
-
-    @property
-    def requires_grad(self) -> bool:
-        """Return whether gradients are tracked."""
-        return self._data.requires_grad
 
     # =========================================================================
     # Convenience properties for cell parameters
@@ -409,7 +383,3 @@ class Cell(_NonModuleDeviceMixin):
     def __len__(self) -> int:
         """Return 6 (number of cell parameters)."""
         return 6
-
-
-# Keep CellTensor as an alias for backward compatibility
-CellTensor = Cell

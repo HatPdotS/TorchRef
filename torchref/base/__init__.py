@@ -119,9 +119,6 @@ from .reciprocal import (
     interpolate_for_rotation,
     smooth_reciprocal_grid,
     # Symmetry
-    compute_symmetry_equivalent_hkls,
-    compute_translation_phases,
-    extract_structure_factors_with_symmetry,
     ReciprocalSymmetryExtractor,
 )
 
@@ -283,9 +280,6 @@ __all__ = [
     "interpolate_structure_factor_from_grid",
     "interpolate_complex_from_grid",
     "trilinear_interpolate_patterson",
-    "compute_symmetry_equivalent_hkls",
-    "compute_translation_phases",
-    "extract_structure_factors_with_symmetry",
     "interpolate_for_rotation",
     "smooth_reciprocal_grid",
     # Structure factors
