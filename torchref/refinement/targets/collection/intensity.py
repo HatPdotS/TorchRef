@@ -20,10 +20,13 @@ would silently reintroduce the distortion.
 
 from typing import TYPE_CHECKING, Dict, List
 
-import numpy as np
 import torch
 
 from torchref.base.metrics.rfactor import rfactor_work_free
+from torchref.base.targets.xray_likelihoods import (
+    gaussian_per_refl,
+    intensity_var_from_sigma_obs,
+)
 from torchref.utils.stats import (
     VERBOSITY_DEBUG,
     VERBOSITY_ESSENTIAL,
@@ -38,13 +41,6 @@ if TYPE_CHECKING:
     from torchref.io.datasets.collection import DatasetCollection
     from torchref.model.model_collection import ModelCollection
     from torchref.scaling.scaler_base import ScalerBase
-
-
-_LOG_2PI = float(np.log(2.0 * np.pi))
-
-#: Floor on the intensity sigma, as a fraction of the median over the fitted subset. A
-#: merged intensity sigma can be reported as zero; unfloored it would dominate the sum.
-_SIGMA_FLOOR_FRAC = 0.1
 
 
 class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
@@ -216,13 +212,17 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
         obs = torch.where(valid, obs, torch.zeros_like(obs))
         sigma = torch.where(valid, sigma, torch.ones_like(sigma))
 
-        sigma = self._floor_sigma(sigma, mask)
-
+        # The residual is formed and masked BEFORE the Gaussian, so a masked-out row
+        # contributes an exact zero rather than a value that merely gets multiplied by
+        # zero. That matters if the model is ever non-finite on an unfitted row: here the
+        # `where` discards it, whereas `nll * mask` would propagate NaN into the sum.
+        # Hence the Gaussian is evaluated at (residual, 0) rather than (obs, model).
         residual = torch.where(mask, obs - model, torch.zeros_like(obs))
-        nll = (
-            0.5 * (residual / sigma) ** 2
-            + torch.log(sigma)
-            + 0.5 * _LOG_2PI
+        nll = gaussian_per_refl(
+            residual,
+            torch.zeros_like(residual),
+            intensity_var_from_sigma_obs(sigma, mask),
+            var_floor=0.0,
         )
         total = (nll * mask).sum()
         # Applied on the work set only, matching CollectionMLTarget: the free-set value
@@ -230,16 +230,6 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
         if self.use_work_set:
             total = self.base_weight * total
         return total
-
-    @staticmethod
-    def _floor_sigma(sigma: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """Clamp sigma away from zero, at a fraction of its median over the subset."""
-        selected = sigma[mask]
-        if selected.numel() == 0:
-            return sigma.clamp(min=1e-6)
-        floor = torch.median(selected) * _SIGMA_FLOOR_FRAC
-        floor = torch.clamp(floor, min=1e-12)
-        return sigma.clamp(min=floor)
 
     # ------------------------------------------------------------------
     # Weight calibration
