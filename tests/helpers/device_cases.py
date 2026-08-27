@@ -250,6 +250,34 @@ CASES: List[DeviceCase] = [
         "OccupancyTensor",
     ),
     DeviceCase(
+        "DisorderFieldTensor_empty",
+        lambda d: __import__(
+            "torchref.model.disorder_field", fromlist=["DisorderFieldTensor"]
+        ).DisorderFieldTensor(device=d),
+        "DisorderFieldTensor",
+    ),
+    DeviceCase(
+        "DisorderFieldTensor_populated",
+        lambda d: __import__(
+            "torchref.model.disorder_field", fromlist=["DisorderFieldTensor"]
+        ).DisorderFieldTensor(
+            initial_values=torch.full((8,), 20.0),
+            xyz_fn=__import__(
+                "torchref.model.parameter_wrappers", fromlist=["MixedTensor"]
+            ).MixedTensor(
+                torch.arange(24, dtype=torch.float32).reshape(8, 3), device=d
+            ),
+            n_nodes=3,
+            k_neighbors=2,
+            device=d,
+        ),
+        "DisorderFieldTensor",
+        # The coordinate accessor is borrowed: a ModuleReference is absent from ``.to()``
+        # by design, so in isolation nobody moves the referent alongside the field.
+        # ``Model`` owns both and moves them together.
+        ignore=("->ref",),
+    ),
+    DeviceCase(
         "RigidXYZTensor_empty",
         lambda d: __import__(
             "torchref.model.rigid_xyz", fromlist=["RigidXYZTensor"]
