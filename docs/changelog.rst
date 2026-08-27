@@ -4,6 +4,8 @@ Changelog
 
 Version 0.6.4
 ----------
+- ``CollectionScaler.refine_lbfgs_joint`` builds a row of ``XRAY_TARGETS`` instead of its own Rice likelihood, and takes ``scale_target`` (default ``ls``)
+- ``CollectionScaler.refine_lbfgs_joint`` normalises its objective and registers the U penalty as its own target
 - Fixed ``DatasetCollection.scale`` fitting the inter-dataset scale on the free reflections as well as the work set
 - ``DatasetCollection.scale`` normalises its objective, so L-BFGS's absolute tolerances mean something
 - Added ``DatasetCollection.scale(objective="ls_sigma")``, weighting by the propagated error on the difference being minimised
