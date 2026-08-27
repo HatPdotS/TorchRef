@@ -392,7 +392,7 @@ UNCOVERED: Dict[str, str] = {
     "ModelCollection": "needs several loaded models",
     "_SharedMixedModel": "internal view owned by ModelCollection",
     "Scaler": "needs a loaded model + data; covered in integration",
-    "RestraintsNew": "needs a model + monomer library",
+    "Restraints": "needs a model + monomer library",
     "FrenchWilson": "needs loaded intensities",
     "DatasetCollection": "needs several loaded datasets",
     "FcalcDataset": "needs computed structure factors",

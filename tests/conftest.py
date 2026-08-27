@@ -596,7 +596,7 @@ def initialized_scaler(model_and_data):
 @pytest.fixture
 def model_with_restraints(loaded_model):
     """Fixture providing model with built restraints."""
-    from torchref.restraints import Restraints
+    from torchref.topology.restraints import Restraints
 
     restraints = Restraints(
         pdb=loaded_model.pdb,

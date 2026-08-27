@@ -184,7 +184,7 @@ def test_rebuilding_entries_reslices_onto_the_current_blocks(restraints):
     This is the operation ``_apply`` and ``copy`` both rely on, and the one that has to
     stay cheap: it re-slices rather than recomputing anything.
 
-    ``RestraintsNew.copy`` is not exercised here because it cannot run at all -- it is
+    ``Restraints.copy`` is not exercised here because it cannot run at all -- it is
     ``deepcopy``, which walks the *borrowed* ``_xyz_fn`` wrapper, whose cache holds a
     graph-attached tensor once ``xyz()`` has been evaluated. Verified to fail
     identically at the commit before this change, so it is pre-existing rather than a

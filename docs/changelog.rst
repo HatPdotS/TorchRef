@@ -39,6 +39,8 @@ Unreleased
 - Moved the riding-hydrogen map from ``torchref.restraints.hydrogen_topology`` to ``torchref.topology.riding``, alongside the generation path it is the heavy-atom-only alternative to
 - Added ``Topology.subset`` and ``copy``, plus the same on ``EdgeBlock``, ``ResidueGraph`` and ``AtomGraph``: a subset reindexes the surviving edges rather than re-reading the CIFs and re-matching the templates. An edge is dropped as soon as any of its atoms is, and a residue left with no atoms goes along with its links
 - Fixed residues distinguished only by an insertion code losing their restraints: the builders group on ``(chain, resseq)``, so 100 and 100A merge into one residue whose atom names collide and only the first keeps any intra-residue geometry
+- Moved the restraint orchestrator from ``torchref.restraints.restraints`` to ``torchref.topology.restraints`` and renamed ``RestraintsNew`` to ``Restraints``. ``torchref.restraints`` is now the data layer only -- monomer library, CIF readers, ``chem_mod`` records, matchers, spatial search -- and what is built from that data lives in ``torchref.topology``
+- ``_lookup_link_atom`` moved to ``torchref.topology.build``, which was importing it back out of the restraints module
 
 
 Version 0.6.4

@@ -442,7 +442,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         return self
 
     def _build_restraints(self):
-        """Build and cache ``RestraintsNew`` over this model's DataFrame, wiring in
+        """Build and cache ``Restraints`` over this model's DataFrame, wiring in
         the live ``xyz`` / ``adp`` / ``vdw_radii`` callables.
         """
         if self._restraints is not None:
@@ -454,12 +454,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 "Load data first with load_pdb() or load_cif()."
             )
 
-        from torchref.restraints.restraints import RestraintsNew
+        from torchref.topology.restraints import Restraints
 
         if self.ctx.verbose > 0:
             print("Building restraints...")
 
-        self._restraints = RestraintsNew(
+        self._restraints = Restraints(
             pdb=self.pdb,
             cif_path=self.ctx.cif_path,
             xyz_fn=self.xyz,

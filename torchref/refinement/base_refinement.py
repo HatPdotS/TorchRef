@@ -980,7 +980,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         scaler = Scaler(model, reflection_data, verbose=verbose, device=device)
 
         # Create Restraints with model (required for proper setup)
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         restraints = Restraints(model, verbose=verbose)
 

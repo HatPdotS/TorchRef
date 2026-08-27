@@ -1,13 +1,22 @@
-"""Restraints handler for crystallographic model refinement.
+"""The restraint layer over a topology, and what it takes to build one.
 
-Provides :class:`RestraintsNew`, which holds the geometry restraints (bonds, angles,
-torsions, planes, chirals, VDW) for one structure. The geometry half is a
-:class:`~torchref.topology.topology.Topology` plus the ideal values layered over its
-edges; the non-bonded pair list is separate, because it is distance-derived and rebuilt
-as the model moves.
+:class:`Restraints` is the orchestrator. Given an atom table it resolves the monomer
+dictionaries, builds the :class:`~torchref.topology.topology.Topology`, layers the ideal
+values over its edges, derives the non-bonded pair list, and exposes the whole thing as
+``restraints[edge_type][origin][property]`` -- three dict lookups into a mapping
+assembled once, because the geometry targets read it on every iteration.
 
-Decoupled from :class:`~torchref.model.Model`: it accepts a pdb DataFrame and callables
-for coordinates, ADPs and VDW radii.
+Three kinds of thing live here, and only the first is really connectivity:
+
+* the topology and the values keyed to its edges, which are constants for the lifetime
+  of an atom set;
+* the non-bonded pair list, which is distance-derived and rebuilt as the model moves, so
+  it is held apart from the rest;
+* the Ramachandran map, a residue-level product of the same build.
+
+Deliberately decoupled from :class:`~torchref.model.Model`: it takes an atom table plus
+callables for coordinates, ADPs and van der Waals radii, so it can be built and tested
+without one.
 """
 
 from typing import Callable
@@ -28,7 +37,7 @@ from torchref.utils.device_mixin import DeviceMixin
 
 
 
-class RestraintsNew(DeviceMixin, DebugMixin, Module):
+class Restraints(DeviceMixin, DebugMixin, Module):
     """
     Restraints handler for crystallographic model refinement.
 
@@ -394,51 +403,13 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
                 self.to(target_device)
 
         except Exception as e:
-            self.debug_on_error(e, context="RestraintsNew.build_restraints")
+            self.debug_on_error(e, context="Restraints.build_restraints")
             raise
 
 
 
 
 
-    @staticmethod
-    def _lookup_link_atom(
-        pdb: pd.DataFrame,
-        chainid: str,
-        resseq: int,
-        icode: str,
-        resname: str,
-        name: str,
-        altloc: str,
-    ):
-        """Resolve a LINK atom record to a row index in the model pdb, or None.
-
-        Matches (chainid, resseq, icode, name), resname as tie-breaker; altloc
-        preference is requested, then blank, then 'A', then any.
-        """
-        sel = pdb[
-            (pdb["chainid"].astype(str) == str(chainid))
-            & (pdb["resseq"].astype(int) == int(resseq))
-            & (pdb["icode"].astype(str) == str(icode))
-            & (pdb["name"].astype(str).str.strip() == str(name).strip())
-        ]
-        if len(sel) == 0:
-            return None
-        if resname:
-            tied = sel[sel["resname"].astype(str).str.strip() == str(resname).strip()]
-            if len(tied) > 0:
-                sel = tied
-
-        if altloc:
-            for cand in (altloc, ""):
-                hit = sel[sel["altloc"].astype(str) == cand]
-                if len(hit) > 0:
-                    return int(hit.iloc[0]["index"])
-        for cand in ("", "A"):
-            hit = sel[sel["altloc"].astype(str) == cand]
-            if len(hit) > 0:
-                return int(hit.iloc[0]["index"])
-        return int(sel.iloc[0]["index"])
 
 
     def _find_nearby_pairs_spatial_hash(self, xyz, cutoff=6.0):
@@ -1208,7 +1179,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         n_bonds_peptide = get_count("bond", "peptide")
 
         return (
-            f"RestraintsNew(bonds={n_bonds}, angles={n_angles}, "
+            f"Restraints(bonds={n_bonds}, angles={n_angles}, "
             f"torsions={n_torsions}, peptide_bonds={n_bonds_peptide})"
         )
 
@@ -1249,7 +1220,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
 
         Returns
         -------
-        RestraintsNew
+        Restraints
         """
         import copy
 

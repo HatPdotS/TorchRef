@@ -536,6 +536,47 @@ def _disulfide_edges(
     return out, values
 
 
+def _lookup_link_atom(
+    pdb: pd.DataFrame,
+    chainid: str,
+    resseq: int,
+    icode: str,
+    resname: str,
+    name: str,
+    altloc: str,
+):
+    """Resolve one ``LINK`` record's atom to a row of the atom table, or None.
+
+    Matches on ``(chainid, resseq, icode, name)`` with ``resname`` as a tie-breaker.
+    Where a residue has alternative conformations the requested altloc wins, then the
+    blank one, then ``'A'``, then whatever is left -- a LINK naming a specific conformer
+    should reach that conformer, but one naming none should still resolve.
+    """
+    sel = pdb[
+        (pdb["chainid"].astype(str) == str(chainid))
+        & (pdb["resseq"].astype(int) == int(resseq))
+        & (pdb["icode"].astype(str) == str(icode))
+        & (pdb["name"].astype(str).str.strip() == str(name).strip())
+    ]
+    if len(sel) == 0:
+        return None
+    if resname:
+        tied = sel[sel["resname"].astype(str).str.strip() == str(resname).strip()]
+        if len(tied) > 0:
+            sel = tied
+
+    if altloc:
+        for candidate in (altloc, ""):
+            hit = sel[sel["altloc"].astype(str) == candidate]
+            if len(hit) > 0:
+                return int(hit.iloc[0]["index"])
+    for candidate in ("", "A"):
+        hit = sel[sel["altloc"].astype(str) == candidate]
+        if len(hit) > 0:
+            return int(hit.iloc[0]["index"])
+    return int(sel.iloc[0]["index"])
+
+
 def _link_record_edges(
     pdb: pd.DataFrame,
     links,
@@ -544,10 +585,8 @@ def _link_record_edges(
 ) -> Tuple[np.ndarray, List[Tuple[int, int]], Dict[str, np.ndarray]]:
     """Bond edges for the accepted ``LINK`` records, and the atom pairs they join.
 
-    Atom resolution goes through ``RestraintsNew._lookup_link_atom`` so a record is
-    matched to a row exactly as the restraint builder matches it. A record duplicating
-    an auto-detected disulfide is dropped, since that link already contributed its
-    bond, angles and torsions.
+    A record duplicating an auto-detected disulfide is dropped, since that link already
+    contributed its bond, angles and torsions.
 
     Returns
     -------
@@ -559,8 +598,6 @@ def _link_record_edges(
         ``references`` from each record's ``length`` (1.5 A where blank or unusable) and
         a fixed ``sigmas`` of 0.02 A.
     """
-    from torchref.restraints.restraints import RestraintsNew
-
     if links is None or len(links) == 0:
         return np.zeros((0, 2), dtype=np.int64), [], {}
 
@@ -573,7 +610,7 @@ def _link_record_edges(
     lengths: List[float] = []
     n_unresolved = 0
     for _, link in links.iterrows():
-        idx1 = RestraintsNew._lookup_link_atom(
+        idx1 = _lookup_link_atom(
             pdb,
             chainid=link["chainid1"],
             resseq=int(link["resseq1"]),
@@ -582,7 +619,7 @@ def _link_record_edges(
             name=link["name1"],
             altloc=link["altloc1"],
         )
-        idx2 = RestraintsNew._lookup_link_atom(
+        idx2 = _lookup_link_atom(
             pdb,
             chainid=link["chainid2"],
             resseq=int(link["resseq2"]),

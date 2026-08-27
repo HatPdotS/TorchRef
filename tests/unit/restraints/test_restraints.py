@@ -17,7 +17,7 @@ class TestRestraintsInitialization:
     @pytest.mark.unit
     def test_restraints_empty_init(self):
         """Test Restraints can be initialized empty."""
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
         
         restraints = Restraints()
         
@@ -26,7 +26,7 @@ class TestRestraintsInitialization:
     @pytest.mark.unit
     def test_restraints_is_nn_module(self):
         """Restraints should be a nn.Module."""
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
         
         restraints = Restraints()
         
@@ -35,7 +35,7 @@ class TestRestraintsInitialization:
     @pytest.mark.unit
     def test_restraints_verbose_setting(self):
         """Test verbosity setting."""
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
         
         restraints = Restraints(verbose=2)
         

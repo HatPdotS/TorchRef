@@ -29,6 +29,7 @@ from .hydrogens import (
     plan_hydrogens,
 )
 from .residue_graph import ResidueGraph
+from .restraints import Restraints
 from .riding import (
     HydrogenTopology,
     build_h_candidate_pairs,
@@ -41,6 +42,7 @@ from .topology import Topology
 
 __all__ = [
     "Topology",
+    "Restraints",
     "ResidueGraph",
     "AtomGraph",
     "EdgeBlock",
