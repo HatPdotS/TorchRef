@@ -24,7 +24,7 @@ from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 import pandas as pd
 
-from torchref.restraints.restraints_helper import read_library_blocks
+from torchref.topology.monomer.cif import read_library_blocks
 
 #: CIF category -> section name, matching :func:`read_link_definitions`.
 _CATEGORY_MAP = {
@@ -167,7 +167,7 @@ def link_modifications(link_list: Optional[pd.DataFrame]) -> Dict[str, Tuple]:
     ----------
     link_list : pandas.DataFrame or None
         The ``chem_link`` table returned by
-        :func:`~torchref.restraints.restraints_helper.read_link_definitions`.
+        :func:`~torchref.topology.monomer.cif.read_link_definitions`.
 
     Returns
     -------
@@ -200,7 +200,7 @@ def apply_modifications(
     ----------
     comp : mapping of str to pandas.DataFrame
         One component's restraints, as produced by
-        :func:`~torchref.restraints.restraints_helper.read_cif`.
+        :func:`~torchref.topology.monomer.cif.read_cif`.
     mod_ids : sequence of str
         Modification IDs to apply, in order. Unknown IDs are ignored.
     mod_dict : mapping

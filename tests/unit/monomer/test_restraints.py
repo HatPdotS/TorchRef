@@ -1,5 +1,5 @@
 """
-Unit tests for torchref.restraints.restraints
+Unit tests for torchref.topology.restraints
 
 Tests the Restraints class for geometry restraints.
 Note: Unit tests use mock data, not real file I/O.

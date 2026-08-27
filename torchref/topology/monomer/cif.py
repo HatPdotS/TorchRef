@@ -94,7 +94,7 @@ def find_cif_file_in_library(resname):
     Delegates to :meth:`MonomerLibraryManager.get_cif_file`, whose last resort is
     an on-demand download.
     """
-    from torchref.restraints.library import get_library_manager
+    from torchref.topology.monomer.library import get_library_manager
 
     return get_library_manager().get_cif_file(resname)
 
@@ -128,14 +128,14 @@ def read_library_blocks():
     """Return ``mon_lib_list.cif`` split into ``{block_name: block_text}``.
 
     Shared by :func:`read_link_definitions` and
-    :func:`~torchref.restraints.modifications.read_mod_definitions`, which read
+    :func:`~torchref.topology.monomer.modifications.read_mod_definitions`, which read
     disjoint parts of the same 4 MB file.
 
     Warnings
     --------
     Cached process-wide; the returned dict is shared, so do not mutate it.
     """
-    from torchref.restraints.library import get_library_manager
+    from torchref.topology.monomer.library import get_library_manager
 
     path = str(get_library_manager().get_link_definitions_path())
     with open(path) as handle:
@@ -155,7 +155,7 @@ def read_link_definitions():
     link_list : DataFrame or None
         The ``chem_link`` table, or None if the file has no ``link_list`` block.
         Its ``mod_id_1``/``mod_id_2`` columns name the modifications each link
-        applies to its partners -- see :mod:`torchref.restraints.modifications`.
+        applies to its partners -- see :mod:`torchref.topology.monomer.modifications`.
 
     Warnings
     --------

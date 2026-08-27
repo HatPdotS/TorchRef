@@ -15,7 +15,7 @@ from typing import Dict, Sequence, Tuple
 
 import numpy as np
 
-from torchref.restraints.modifications import (
+from torchref.topology.monomer.modifications import (
     apply_modifications,
     link_modifications,
     read_mod_definitions,
@@ -41,7 +41,7 @@ def resolve_template_keys(
         Restraint dictionary keyed by residue name.
     link_list : pandas.DataFrame or None
         Link-type definitions, as
-        :func:`~torchref.restraints.restraints_helper.read_link_definitions` returns
+        :func:`~torchref.topology.monomer.cif.read_link_definitions` returns
         them. None disables patching.
     verbose : int, default 0
         Verbosity level.

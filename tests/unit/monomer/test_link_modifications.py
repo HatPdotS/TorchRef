@@ -11,12 +11,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from torchref.restraints.modifications import (
+from torchref.topology.monomer.modifications import (
     apply_modifications,
     link_modifications,
     read_mod_definitions,
 )
-from torchref.restraints.restraints_helper import read_link_definitions
+from torchref.topology.monomer.cif import read_link_definitions
 
 TOL = 1e-3
 

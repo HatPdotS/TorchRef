@@ -26,7 +26,7 @@ import pandas as pd
 import torch
 from torch.nn import Module
 
-from torchref.restraints.restraints_helper import (
+from torchref.topology.monomer.cif import (
     find_cif_file_in_library,
     read_cif,
     read_link_definitions,
@@ -357,7 +357,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
     def _load_rama_surfaces(self, device: torch.device):
         """Load pre-computed Ramachandran NLL surfaces as a buffer."""
-        from torchref.restraints.ramachandran import load_nll_surfaces
+        from torchref.topology.ramachandran import load_nll_surfaces
 
         surfaces = load_nll_surfaces(device)
         self.register_buffer("_rama_surfaces", surfaces)
@@ -782,7 +782,7 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             sg_cpu = None
 
         if has_symmetry:
-            from torchref.restraints.neighbor_search import build_vdw_restraints_gpu
+            from torchref.topology.nonbonded import build_vdw_restraints_gpu
 
             exclusions = self.topology.atoms.exclusions_from_restraint_edges()
             self._vdw = build_vdw_restraints_gpu(

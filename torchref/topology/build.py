@@ -1,7 +1,7 @@
 """Assemble a :class:`~torchref.topology.topology.Topology` from an atom table.
 
 Intra-residue edges are matched here, template by template, through the Numba matchers
-in :mod:`torchref.restraints.builders_numba`. Inter-residue edges come from the
+in :mod:`torchref.topology.builders_numba`. Inter-residue edges come from the
 ``InterResidue*Builder`` classes, which already encode the link geometry and are reused
 rather than reimplemented.
 """
@@ -12,14 +12,14 @@ import numpy as np
 import pandas as pd
 import torch
 
-from torchref.restraints.builders_fast import (
+from torchref.topology.builders import (
     InterResidueAngleBuilder,
     InterResidueBondBuilder,
     InterResiduePlaneBuilder,
     InterResidueTorsionBuilder,
     PreprocessedCIF,
 )
-from torchref.restraints.builders_numba import (
+from torchref.topology.builders_numba import (
     match_angles_numba,
     match_bonds_numba,
     match_chirals_numba,

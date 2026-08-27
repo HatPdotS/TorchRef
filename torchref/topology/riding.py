@@ -181,7 +181,7 @@ def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
     ``heavy_coords``, ``h_names``, ``h_coords``, ``parent_map``, ``ideal_bl`` and
     ``heavy_neighbor_map``.
     """
-    from torchref.restraints.library import MonomerLibraryManager
+    from torchref.topology.monomer.library import MonomerLibraryManager
 
     lib = MonomerLibraryManager(verbose=0)
     cache = _TEMPLATE_CACHE
@@ -636,7 +636,7 @@ def place_riding_hydrogens(
     xyz_h : (N_h, 3) float tensor, differentiable w.r.t. xyz_heavy
     """
     # Function-local, matching every other target dispatch site: importing the gate at
-    # module scope would pull ``torchref.base.targets`` into ``torchref.restraints``.
+    # module scope would pull ``torchref.base.targets`` into ``torchref.topology``.
     from torchref.base.targets._dispatch import use_triton
 
     N_h = topo.h_parent_idx.shape[0]

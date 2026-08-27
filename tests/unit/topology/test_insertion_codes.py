@@ -112,7 +112,7 @@ def test_the_builders_merge_them(inserted):
     ``PreprocessedPDB`` groups on ``(chain, resseq)``, so the three residues become one
     with three sets of backbone atom names.
     """
-    from torchref.restraints.builders_fast import PreprocessedPDB
+    from torchref.topology.builders import PreprocessedPDB
 
     _, _, expected, model = inserted
     preprocessed = PreprocessedPDB(model.pdb)
@@ -138,7 +138,7 @@ def _legacy_intra_bonds(model, restraints):
     """
     import torch
 
-    from torchref.restraints.builders_fast import BondRestraintBuilder
+    from torchref.topology.builders import BondRestraintBuilder
 
     built = BondRestraintBuilder(verbose=0).build(
         model.pdb, restraints.cif_dict, torch.device("cpu")

@@ -39,8 +39,10 @@ Unreleased
 - Moved the riding-hydrogen map from ``torchref.restraints.hydrogen_topology`` to ``torchref.topology.riding``, alongside the generation path it is the heavy-atom-only alternative to
 - Added ``Topology.subset`` and ``copy``, plus the same on ``EdgeBlock``, ``ResidueGraph`` and ``AtomGraph``: a subset reindexes the surviving edges rather than re-reading the CIFs and re-matching the templates. An edge is dropped as soon as any of its atoms is, and a residue left with no atoms goes along with its links
 - Fixed residues distinguished only by an insertion code losing their restraints: the builders group on ``(chain, resseq)``, so 100 and 100A merge into one residue whose atom names collide and only the first keeps any intra-residue geometry
-- Moved the restraint orchestrator from ``torchref.restraints.restraints`` to ``torchref.topology.restraints`` and renamed ``RestraintsNew`` to ``Restraints``. ``torchref.restraints`` is now the data layer only -- monomer library, CIF readers, ``chem_mod`` records, matchers, spatial search -- and what is built from that data lives in ``torchref.topology``
+- Moved the restraint orchestrator from ``torchref.restraints.restraints`` to ``torchref.topology.restraints`` and renamed ``RestraintsNew`` to ``Restraints``
 - ``_lookup_link_atom`` moved to ``torchref.topology.build``, which was importing it back out of the restraints module
+- Removed ``torchref.restraints``. Its seven modules moved into ``torchref.topology``, where every one of their importers already lived: the monomer library, CIF reading and ``chem_mod`` patches to ``topology.monomer``, the template matchers to ``topology.builders`` and ``topology.builders_numba``, the non-bonded spatial search to ``topology.nonbonded``, and the Ramachandran surfaces to ``topology.ramachandran``
+- Fixed ``neighbor_search`` annotating locals with ``List`` without importing it
 
 
 Version 0.6.4
