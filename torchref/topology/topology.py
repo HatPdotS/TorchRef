@@ -55,7 +55,79 @@ class Topology(DeviceMixin):
         """Number of residue nodes."""
         return self.residues.n_residues
 
-    def neighbors(self, i: int) -> np.ndarray:
+    def copy(self) -> "Topology":
+        """An independent copy sharing no storage with this one."""
+        return Topology(residues=self.residues.copy(), atoms=self.atoms.copy())
+
+    def subset(self, keep) -> "Topology":
+        """The topology over a subset of the atoms.
+
+        Reindexes what survives instead of rebuilding: no CIF is re-read and no template
+        is re-matched, which is what made ``Model.select`` expensive.
+
+        Parameters
+        ----------
+        keep : torch.Tensor or numpy.ndarray
+            Boolean mask over atoms, shape ``(N,)``, or integer atom indices. Indices
+            are taken as a set, not an order -- the result keeps the topology's own atom
+            order, because the edge blocks stay canonical only under a monotone
+            relabelling.
+
+        Returns
+        -------
+        Topology
+            Atoms in their original relative order. A residue with no surviving atoms is
+            dropped, and any link edge touching it goes with it.
+
+        Notes
+        -----
+        Selecting part of a residue leaves that residue's restraints partial: an edge
+        loses its whole restraint as soon as one of its atoms goes. That is the honest
+        outcome -- half a peptide plane is not a plane -- but it means a subset is a
+        weaker geometric model, not merely a smaller one.
+        """
+        mask = torch.as_tensor(keep)
+        if mask.dtype != torch.bool:
+            selected = torch.zeros(self.n_atoms, dtype=torch.bool)
+            selected[mask.to(torch.int64)] = True
+            mask = selected
+        mask = mask.to(device=self.atoms.residue_of.device)
+
+        if int(mask.sum()) == 0:
+            raise ValueError("subset would keep no atoms")
+
+        n_kept = int(mask.sum())
+        remap = torch.full((self.n_atoms,), -1, dtype=torch.int64, device=mask.device)
+        remap[mask] = torch.arange(n_kept, dtype=torch.int64, device=mask.device)
+
+        # A residue survives if any of its atoms does. Counting per residue also
+        # gives the new atom ranges, contiguous because the atom order is unchanged.
+        residue_of = self.atoms.residue_of
+        per_residue = (
+            torch.bincount(residue_of[mask], minlength=self.n_residues).cpu().numpy()
+        )
+        residue_keep = per_residue > 0
+        counts = per_residue[residue_keep]
+        atom_end = np.cumsum(counts)
+        atom_start = atom_end - counts
+
+        residue_remap = torch.full(
+            (self.n_residues,), -1, dtype=torch.int64, device=mask.device
+        )
+        residue_remap[torch.as_tensor(residue_keep, device=mask.device)] = torch.arange(
+            int(residue_keep.sum()), dtype=torch.int64, device=mask.device
+        )
+
+        return Topology(
+            residues=self.residues.subset(
+                residue_keep,
+                atom_start.astype(np.int64),
+                atom_end.astype(np.int64),
+            ),
+            atoms=self.atoms.subset(remap, residue_remap),
+        )
+
+    def neighbors(self, i: int) -> torch.Tensor:
         """Atoms bonded to atom ``i``. Delegates to :meth:`AtomGraph.neighbors`."""
         return self.atoms.neighbors(i)
 

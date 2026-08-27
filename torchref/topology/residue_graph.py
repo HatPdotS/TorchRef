@@ -98,6 +98,65 @@ class ResidueGraph:
         """Row range of residue ``i``'s atoms."""
         return range(int(self.atom_start[i]), int(self.atom_end[i]))
 
+    def copy(self) -> "ResidueGraph":
+        """An independent copy sharing no arrays with this one."""
+        return ResidueGraph(
+            chain=self.chain.copy(),
+            resseq=self.resseq.copy(),
+            icode=self.icode.copy(),
+            resname=self.resname.copy(),
+            template_key=self.template_key.copy(),
+            atom_start=self.atom_start.copy(),
+            atom_end=self.atom_end.copy(),
+            link_pairs=self.link_pairs.copy(),
+            link_kind=self.link_kind.copy(),
+        )
+
+    def subset(
+        self, keep: np.ndarray, atom_start: np.ndarray, atom_end: np.ndarray
+    ) -> "ResidueGraph":
+        """The residues in ``keep``, with the atom ranges the caller recomputed.
+
+        Parameters
+        ----------
+        keep : numpy.ndarray
+            Boolean mask over residues, shape ``(R,)``.
+        atom_start, atom_end : numpy.ndarray
+            New half-open atom ranges for the surviving residues, in their order, shape
+            ``(R_kept,)``. Passed in rather than derived here because only the caller
+            knows how the atoms were renumbered.
+
+        Returns
+        -------
+        ResidueGraph
+            Link edges are kept only where **both** endpoints survive, and reindexed. A
+            peptide bond to a residue that is gone is not a peptide bond, and keeping it
+            would leave an edge pointing outside the graph.
+        """
+        remap = np.full(self.n_residues, -1, dtype=np.int64)
+        remap[keep] = np.arange(int(keep.sum()), dtype=np.int64)
+
+        if len(self.link_pairs):
+            mapped = remap[self.link_pairs]
+            survives = (mapped >= 0).all(axis=1)
+            link_pairs = mapped[survives]
+            link_kind = self.link_kind[survives]
+        else:
+            link_pairs = np.zeros((0, 2), dtype=np.int64)
+            link_kind = np.zeros(0, dtype="<U8")
+
+        return ResidueGraph(
+            chain=self.chain[keep],
+            resseq=self.resseq[keep],
+            icode=self.icode[keep],
+            resname=self.resname[keep],
+            template_key=self.template_key[keep],
+            atom_start=atom_start,
+            atom_end=atom_end,
+            link_pairs=link_pairs,
+            link_kind=link_kind,
+        )
+
     def links_of_kind(self, kind: str) -> np.ndarray:
         """Link edges of one kind, shape ``(L_k, 2)``."""
         if len(self.link_kind) == 0:

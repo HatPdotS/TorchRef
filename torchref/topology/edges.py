@@ -235,6 +235,58 @@ class EdgeBlock(DeviceMixin):
         start, end = self.origin_bounds[name]
         return self.indices[start:end]
 
+    def copy(self) -> "EdgeBlock":
+        """An independent copy sharing no storage with this one."""
+        return EdgeBlock(
+            indices=self.indices.clone(),
+            origin_bounds=dict(self.origin_bounds),
+        )
+
+    def subset(self, remap: torch.Tensor) -> "EdgeBlock":
+        """Edges whose every atom survives, reindexed by ``remap``.
+
+        Parameters
+        ----------
+        remap : torch.Tensor
+            Old atom index to new, shape ``(N_old,)``, with ``-1`` where the atom is
+            being dropped. An edge is kept only if none of its atoms maps to ``-1``: a
+            bond to a removed atom is not a bond, and an angle missing its apex is not
+            an angle.
+
+        Returns
+        -------
+        EdgeBlock
+            Canonically ordered, with ``origin_bounds`` recomputed over the survivors.
+
+        Notes
+        -----
+        No re-sort is needed. ``remap`` is monotone on the atoms it keeps -- survivors
+        are renumbered in their existing order -- and a monotone relabelling preserves
+        lexicographic order, so each origin's surviving rows stay sorted among
+        themselves.
+        """
+        if self.n_edges == 0:
+            return EdgeBlock.empty(self.arity, device=self.indices.device)
+
+        mapped = remap[self.indices]
+        keep = (mapped >= 0).all(dim=1)
+
+        chunks = []
+        bounds: Dict[str, Tuple[int, int]] = {}
+        cursor = 0
+        for origin in self.origins():
+            start, end = self.origin_bounds[origin]
+            surviving = mapped[start:end][keep[start:end]]
+            if surviving.shape[0] == 0:
+                continue
+            chunks.append(surviving)
+            bounds[origin] = (cursor, cursor + surviving.shape[0])
+            cursor += surviving.shape[0]
+
+        if not chunks:
+            return EdgeBlock.empty(self.arity, device=self.indices.device)
+        return EdgeBlock(indices=torch.cat(chunks, dim=0), origin_bounds=bounds)
+
     def tuple_set(self, origin: str = None) -> set:
         """Edges as a set of index tuples, for order-free comparison.
 

@@ -159,6 +159,55 @@ class AtomGraph(DeviceMixin):
         flags = np.char.upper(np.char.strip(self.element.astype(str))) == "H"
         return torch.as_tensor(flags, device=self.bonds.indices.device)
 
+    def copy(self) -> "AtomGraph":
+        """An independent copy sharing no storage with this one."""
+        return AtomGraph(
+            name=self.name.copy(),
+            element=self.element.copy(),
+            altloc=self.altloc.copy(),
+            residue_of=self.residue_of.clone(),
+            bonds=self.bonds.copy(),
+            angles=self.angles.copy(),
+            torsions=self.torsions.copy(),
+            chirals=self.chirals.copy(),
+            planes={size: block.copy() for size, block in self.planes.items()},
+        )
+
+    def subset(self, remap: torch.Tensor, residue_remap: torch.Tensor) -> "AtomGraph":
+        """The atoms ``remap`` keeps, with every edge set reindexed.
+
+        Parameters
+        ----------
+        remap : torch.Tensor
+            Old atom index to new, shape ``(N_old,)``, ``-1`` where dropped.
+        residue_remap : torch.Tensor
+            Old residue index to new, shape ``(R_old,)``, ``-1`` where dropped.
+
+        Returns
+        -------
+        AtomGraph
+            Adjacency is rebuilt from the surviving bond block rather than subsetted:
+            CSR row offsets are not meaningful once the atoms are renumbered.
+        """
+        keep = (remap >= 0).cpu().numpy()
+        planes = {}
+        for size, block in self.planes.items():
+            reduced = block.subset(remap)
+            if reduced.n_edges:
+                planes[size] = reduced
+
+        return AtomGraph(
+            name=self.name[keep],
+            element=self.element[keep],
+            altloc=self.altloc[keep],
+            residue_of=residue_remap[self.residue_of[torch.as_tensor(keep)]],
+            bonds=self.bonds.subset(remap),
+            angles=self.angles.subset(remap),
+            torsions=self.torsions.subset(remap),
+            chirals=self.chirals.subset(remap),
+            planes=planes,
+        )
+
     def rebuild_adjacency(self) -> None:
         """Rebuild the CSR adjacency from the current bond block."""
         self._adj_indptr, self._adj_indices = _build_csr(
