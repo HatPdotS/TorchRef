@@ -17,7 +17,11 @@ import numpy as np
 import torch
 
 from torchref.base.reciprocal import get_scattering_vectors
-from torchref.base.targets.xray_likelihoods import complex_var_from_beta, rice_math
+from torchref.base.targets.xray_likelihoods import (
+    complex_var_from_beta,
+    gaussian_per_refl,
+    rice_math,
+)
 from torchref.refinement.model_error_estimation.sigma_a import SigmaAEstimator, epsilon_from_hkl
 from torchref.utils.stats import VERBOSITY_STANDARD, StatEntry, stat
 
@@ -76,6 +80,9 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
     """
 
     name: str = "difference_xray"
+
+    #: There is no difference from a single dataset.
+    min_datasets: int = 2
 
     def __init__(
         self,
@@ -144,82 +151,45 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         shift = contamination / (2.0 * F_obs_stack.abs().clamp(min=1e-6))
         return shift**2
 
-    def forward(self) -> torch.Tensor:
-        """Summed Gaussian NLL of the difference-from-mean; 0.0 if fewer than 2 sets."""
-        dc = self._dataset_collection
-        mc = self._model_collection
+    def _loss_inputs(self, recalc: bool = False):
+        """The base's stack, with the mask narrowed across datasets.
 
-        all_keys = self._keys()
-        N = len(all_keys)
-        if N < 2:
-            return torch.tensor(0.0, device=dc.hkl.device)
+        A reflection counts only if it is in this target's subset in **every** dataset:
+        the per-reflection mean ties them together, so a reflection missing from one
+        member would silently shift the reference for all the others. Narrowed here
+        rather than inside :meth:`_per_refl` so ``forward``'s sum and ``residuals``'
+        array agree on which reflections count.
+        """
+        ctx = super()._loss_inputs(recalc=recalc)
+        mask_all = ctx.mask.all(dim=0, keepdim=True).expand_as(ctx.mask)
+        return ctx._replace(mask=mask_all)
 
-        # Clear caches so a preceding no-grad stats()/get_rfactor() call cannot
-        # leave a detached tensor that breaks the loss backward.
-        self._reset_model_caches()
+    def _per_refl(self, ctx) -> torch.Tensor:
+        """Gaussian NLL of the difference-from-mean, per reflection and unreduced."""
+        N = len(ctx.keys)
+        mask_all = ctx.mask[0]  # (n_hkl,) -- every row is the same after _loss_inputs
 
-        F_obs_list, sigma_list, mask_list, F_calc_list = [], [], [], []
+        delta_obs = ctx.obs - ctx.obs.mean(dim=0)
+        delta_calc = ctx.model - ctx.model.mean(dim=0)
 
-        for key in all_keys:
-            data = dc[key]
-            model = mc[key]
-
-            F_obs, sigma = data.get_corrected_data()
-            F_calc = self._scaled_amp_full(data, model, recalc=False)
-            # Validity + work/free/val selection, validation carved out of both.
-            mask = self._subset(data).mask
-
-            F_obs_list.append(F_obs)
-            sigma_list.append(sigma)
-            mask_list.append(mask)
-            F_calc_list.append(F_calc)
-
-        F_obs_stack = torch.stack(F_obs_list)  # (N, n_hkl)
-        sigma_stack = torch.stack(sigma_list)  # (N, n_hkl)
-        mask_stack = torch.stack(mask_list)  # (N, n_hkl)
-        F_calc_stack = torch.stack(F_calc_list)  # (N, n_hkl)
-
-        # A reflection must be in this subset in ALL datasets.
-        mask_all = mask_stack.all(dim=0)  # (n_hkl,)
-
-        F_mean_obs = F_obs_stack.mean(dim=0)  # (n_hkl,)
-        F_calc_mean = F_calc_stack.mean(dim=0)  # (n_hkl,)
-
-        delta_F_obs = F_obs_stack - F_mean_obs
-        delta_F_calc = F_calc_stack - F_calc_mean
-
-        # Var(F_i - F_mean) = σ_i²·(1 - 2/N) + (Σ_j σ_j²) / N²
-        sum_sigma_sq = (sigma_stack**2).sum(dim=0)  # (n_hkl,)
-        sigma_diff_sq = sigma_stack**2 * (1 - 2.0 / N) + sum_sigma_sq / (N**2)
-        sigma_diff_sq = sigma_diff_sq + self._activation_variance(
-            all_keys, F_obs_stack
-        )
-        sigma_diff = torch.sqrt(sigma_diff_sq.clamp(min=1e-12))  # (N, n_hkl)
+        # Var(F_i - F_mean) = sigma_i^2 (1 - 2/N) + (sum_j sigma_j^2) / N^2
+        sum_sigma_sq = (ctx.sigma**2).sum(dim=0)
+        sigma_diff_sq = ctx.sigma**2 * (1 - 2.0 / N) + sum_sigma_sq / (N**2)
+        sigma_diff_sq = sigma_diff_sq + self._activation_variance(ctx.keys, ctx.obs)
+        sigma_diff = torch.sqrt(sigma_diff_sq.clamp(min=1e-12))
 
         # Mask via torch.where, not boolean indexing: no nonzero() device sync.
-        delta_F_obs = torch.where(mask_all, delta_F_obs, torch.zeros_like(delta_F_obs))
-        delta_F_calc = torch.where(
-            mask_all, delta_F_calc, torch.zeros_like(delta_F_calc)
-        )
+        delta_obs = torch.where(mask_all, delta_obs, torch.zeros_like(delta_obs))
+        delta_calc = torch.where(mask_all, delta_calc, torch.zeros_like(delta_calc))
         sigma_diff = torch.where(mask_all, sigma_diff, torch.ones_like(sigma_diff))
 
-        # Floor sigma at 10% of its median so a zero sigma cannot blow up.
-        eps = (
-            torch.median(sigma_diff[:, mask_all].reshape(-1)) * 1e-1
-            if mask_all.any()
-            else 1e-3
-        )
-        sigma_safe = sigma_diff.clamp(min=eps)
+        # Floored on the PROPAGATED difference sigma, not the raw measurement sigma --
+        # that is the quantity dividing the residual here.
+        sigma_safe = sigma_diff.clamp(min=self._sigma_floor(sigma_diff, ctx.mask))
 
-        diff = delta_F_obs - delta_F_calc
-        nll = 0.5 * (diff / sigma_safe) ** 2 + torch.log(sigma_safe) + 0.5 * _LOG_2PI
-
+        nll = gaussian_per_refl(delta_obs, delta_calc, sigma_safe**2, var_floor=0.0)
         # A single NaN would poison the whole gradient; 1e6 lets the step be rejected.
-        nll = torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
-
-        total_nll = (nll * mask_all).sum()
-
-        return total_nll
+        return torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
 
 
 # =========================================================================

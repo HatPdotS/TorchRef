@@ -92,6 +92,11 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
 
     name: str = "collection_two_moment_intensity"
 
+    #: Fits the merged INTENSITIES, so the base reads ``I``/``sigI``. The point of the
+    #: row: French-Wilson reshapes precisely the quadratic information the second moment
+    #: lives in, and there is deliberately no ``F**2`` fallback.
+    observable: str = "intensity"
+
     def __init__(
         self,
         dataset_collection: "DatasetCollection",
@@ -186,50 +191,31 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
             return True
         return bool(sigma_alpha_sq.detach().ne(0).any())
 
-    def forward(self) -> torch.Tensor:
-        """Summed Gaussian NLL of the observed intensities under the two-moment model."""
-        dc = self._dataset_collection
-        keys = self._keys()
-        if not keys:
-            return torch.zeros((), device=dc.hkl.device)
+    def _stack_model(self, keys, recalc: bool = False) -> torch.Tensor:
+        """The two-moment intensity, not a per-dataset squared amplitude.
 
-        # Clear cached forwards so a preceding no-grad stats()/get_rfactor() call cannot
-        # leave a detached tensor that breaks the loss backward.
-        self._reset_model_caches()
+        Overridden because this row's prediction is **not** a function of one dataset at a
+        time: the mean mixes shared components across timepoints and the variance term is
+        built from the activation Jacobian over the same components. ``keys`` is accepted
+        for the base's signature; :meth:`intensity_model` derives the rows itself.
+        """
+        return self.intensity_model(recalc=recalc)
 
-        model = self.intensity_model(recalc=False)
-        obs = dc.stack_I_obs(keys).to(model.dtype)
-        sigma = dc.stack_I_sigma(keys).to(model.dtype)
-        mask = dc.stack_masks(keys, use_set=self.use_set)
-
-        # Real reflection files carry non-finite intensities (excluded rows, and rows
-        # French-Wilson rejected). Masking the *loss* is not enough: a NaN observation
-        # makes the residual NaN, and torch.where selects the finite branch for the
-        # value while still backpropagating NaN through the branch it discarded. So the
-        # observations are sanitised into the mask BEFORE they reach the graph.
-        valid = torch.isfinite(obs) & torch.isfinite(sigma)
-        mask = mask & valid
-        obs = torch.where(valid, obs, torch.zeros_like(obs))
-        sigma = torch.where(valid, sigma, torch.ones_like(sigma))
-
+    def _per_refl(self, ctx) -> torch.Tensor:
+        """Per-reflection Gaussian NLL of the observed intensities under the model."""
         # The residual is formed and masked BEFORE the Gaussian, so a masked-out row
         # contributes an exact zero rather than a value that merely gets multiplied by
         # zero. That matters if the model is ever non-finite on an unfitted row: here the
         # `where` discards it, whereas `nll * mask` would propagate NaN into the sum.
-        # Hence the Gaussian is evaluated at (residual, 0) rather than (obs, model).
-        residual = torch.where(mask, obs - model, torch.zeros_like(obs))
-        nll = gaussian_per_refl(
-            residual,
-            torch.zeros_like(residual),
-            intensity_var_from_sigma_obs(sigma, mask),
-            var_floor=0.0,
+        residual = torch.where(
+            ctx.mask, ctx.obs - ctx.model, torch.zeros_like(ctx.obs)
         )
-        total = (nll * mask).sum()
-        # Applied on the work set only, matching CollectionMLTarget: the free-set value
-        # is a diagnostic and must stay comparable across weightings.
-        if self.use_work_set:
-            total = self.base_weight * total
-        return total
+        var = intensity_var_from_sigma_obs(
+            ctx.sigma, floor=self._sigma_floor(ctx.sigma, ctx.mask)
+        )
+        return gaussian_per_refl(
+            residual, torch.zeros_like(residual), var, var_floor=0.0
+        )
 
     # ------------------------------------------------------------------
     # Weight calibration
