@@ -38,6 +38,7 @@ Unreleased
 - Fixed the hydrogen valence cap counting only heavy neighbours, so a parent that already carried a hydrogen still had budget for another; generation was not idempotent and a save/reload added a spurious second amide hydrogen to every linked residue
 - Moved the riding-hydrogen map from ``torchref.restraints.hydrogen_topology`` to ``torchref.topology.riding``, alongside the generation path it is the heavy-atom-only alternative to
 - Added ``Topology.subset`` and ``copy``, plus the same on ``EdgeBlock``, ``ResidueGraph`` and ``AtomGraph``: a subset reindexes the surviving edges rather than re-reading the CIFs and re-matching the templates. An edge is dropped as soon as any of its atoms is, and a residue left with no atoms goes along with its links
+- Fixed residues distinguished only by an insertion code losing their restraints: the builders group on ``(chain, resseq)``, so 100 and 100A merge into one residue whose atom names collide and only the first keeps any intra-residue geometry
 
 
 Version 0.6.4
