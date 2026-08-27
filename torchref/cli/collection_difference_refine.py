@@ -82,7 +82,10 @@ configure_unbuffered_output()
 
 DEFAULT_TARGET_WEIGHTS = {
     "xray/difference": 1.0,
-    "xray/rice": 0.0,
+    # The absolute channel. Zero by default: the difference refinement fixes the
+    # dark model, so the overall level is already anchored and this term only adds
+    # the systematic errors the difference cancels.
+    "xray/ml": 0.0,
     # Registered only under --two-moment; harmless in the dict either way.
     "xray/two_moment": 1.0,
     # "geometry/bond": 1.0, # geometry restraint should never require tuning, so leave at 1.0
@@ -209,9 +212,9 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
         dataset. Default False.
     """
     from torchref.refinement import LossState
-    from torchref.experimental.kinetic.targets import (
+    from torchref.refinement.targets.collection import (
         CollectionDifferenceTarget,
-        CollectionRiceTarget,
+        CollectionMLTarget,
     )
     from torchref.refinement.targets import TotalADPTarget, TotalGeometryTarget
     from torchref.refinement.targets.similarity import CoordinateSimilarityTarget
@@ -224,7 +227,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     diff_target = CollectionDifferenceTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
-    rice_target = CollectionRiceTarget(
+    ml_target = CollectionMLTarget(
         dataset_collection, model_collection, scaler=scaler,
     )
     geom_target = TotalGeometryTarget(model_light)
@@ -235,7 +238,7 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     )
 
     state.register_target("xray/difference", diff_target)
-    state.register_target("xray/rice", rice_target)
+    state.register_target("xray/ml", ml_target)
     state.register_target("geometry", geom_target)
     state.register_target("adp", adp_target)
     state.register_target("similarity", similarity_target)
@@ -785,10 +788,9 @@ Examples:
         "--lambda-twin", type=float, default=0.0,
         help="Activation dispersion as a fraction of its maximum, in [0, 1]: "
              "sigma_alpha^2 = alpha (1 - alpha) * lambda. 0 (default) is the "
-             "coherent model and reproduces the amplitude-only result. On its own "
-             "this reweights the difference target, down-weighting the reflections "
-             "whose difference is most contaminated; with --two-moment it also "
-             "corrects the predicted intensity.",
+             "coherent model and reproduces the amplitude-only result. Needs "
+             "--two-moment: the dispersion belongs in the predicted intensity, not "
+             "in a weight.",
     )
     two_moment.add_argument(
         "--refine-lambda-twin", action="store_true", default=False,
@@ -824,11 +826,19 @@ Examples:
             file=sys.stderr,
         )
         return 1
-    if args.refine_lambda_twin and not args.two_moment:
+    if (args.lambda_twin > 0.0 or args.refine_lambda_twin) and not args.two_moment:
+        # There is no longer a weighting-only path. Measured on ground truth (inject a
+        # known displacement, refine from the dark model, 8 seeds per regime): putting the
+        # contamination in the VARIANCE lost 8/8 seeds at high contamination, 95% CI
+        # [+0.0066, +0.0102] A, and was null at low. Putting the same quantity in the MEAN
+        # -- which is what --two-moment does -- won 16/16. Structured effects belong in the
+        # mean; only genuine measurement noise belongs in the variance, and down-weighting
+        # by |dF|^2 suppresses exactly the reflections carrying the difference signal.
         print(
-            "Error: --refine-lambda-twin needs --two-moment. The dispersion is only "
-            "identifiable from the intensity likelihood; through the difference "
-            "target it enters as a weight and has no gradient of its own.",
+            "Error: --lambda-twin needs --two-moment. The dispersion enters the predicted "
+            "intensity, not a weight: as a variance it down-weights the reflections whose "
+            "difference signal is largest, which measurably worsens the recovered "
+            "displacement.",
             file=sys.stderr,
         )
         return 1
@@ -882,12 +892,10 @@ Examples:
         print(f"Light data:        {args.light_structure_factor}")
         frac_mode = "refinable" if args.refine_fractions else "frozen"
         print(f"Fractions:         dark={fractions[0]}, light={fractions[1]} ({frac_mode})")
-        if args.lambda_twin > 0.0 or args.two_moment:
+        if args.two_moment:
             lam_mode = "refinable" if args.refine_lambda_twin else "fixed"
-            extra = " + intensity model" if args.two_moment else " (weighting only)"
             print(
-                f"Activation spread: lambda_twin={args.lambda_twin} "
-                f"({lam_mode}){extra}"
+                f"Activation spread: lambda_twin={args.lambda_twin} ({lam_mode})"
             )
         print(f"Output:            {outdir}")
         print(f"Device:            {device}")
