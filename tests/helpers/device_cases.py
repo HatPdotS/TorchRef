@@ -320,6 +320,7 @@ UNCOVERED: Dict[str, str] = {
     "ScalerLogScaleTrendTarget": "needs a scaler",
     "ScalerURegularizationTarget": "needs a scaler",
     "NLLXrayTarget": "needs model + data + scaler",
+    "NLLIntensityXrayTarget": "needs model + data + scaler with intensities",
     "LeastSquaresXrayTarget": "needs model + data + scaler",
     "UnitWeightK1XrayTarget": "needs model + data + scaler",
     "SigmaAXrayTarget": "abstract base; needs model + data + scaler",

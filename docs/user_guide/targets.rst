@@ -20,10 +20,17 @@ grouped into composite targets for geometry and ADP restraints.
 X-ray Targets
 -------------
 
-Seven modes, selected by name. ``XRAY_TARGETS`` (in
+Selected by name. ``XRAY_TARGETS`` (in
 ``torchref.refinement.targets.xray._specs``) is the single table behind both
 :func:`~torchref.refinement.targets.create_xray_target` and
-``torchref.refine --help``, so the list below cannot drift from the CLI:
+``torchref.refine --help``. The authoritative list is ``torchref.refine --help``,
+which is generated from that table; the notes below describe the rows but are
+maintained by hand, so run ``--help`` if the two disagree.
+
+Every row shares one forward model — the scaled complex :math:`F_{calc}` — and
+declares which measured column it compares against (``spec.observable``).
+
+**Amplitude rows** compare :math:`F_{obs}` against :math:`|F_{calc}|`:
 
 - ``ml`` — **default**. Read MLF: variance :math:`\epsilon\beta`, conditional
   mean :math:`\alpha|F_{calc}|`, with a cross-validated per-shell Luzzati
@@ -39,6 +46,24 @@ Seven modes, selected by name. ``XRAY_TARGETS`` (in
 - ``ls`` — least squares, unit weights; the scaler owns the overall scale.
 - ``ls_wunit_k1`` — Phenix-style least squares: unit weights and a single global
   scale recomputed every gradient call, bypassing the scaler.
+
+**Intensity rows** compare :math:`I_{obs}` against :math:`|F_{calc}|^2`:
+
+- ``nll_i`` — Gaussian NLL on the observed intensities, weighted by
+  :math:`\sigma(I)`. As ``nll``, but skips the French–Wilson conversion.
+
+Use an intensity row when the signal lives in the *quadratic* part of the data —
+a population variance, an activation second moment. :math:`F_{obs}` on a merged
+dataset is a French–Wilson posterior rather than a measurement: it is strictly
+positive, so it reshapes the weak tail and erases negative intensities, which is
+precisely the information such a signal is carried by.
+
+The axis is deliberately not square. There is no intensity Rice row, because Rice
+and the folded normal are distributions *of an amplitude* — the intensity
+analogue is the exponential / :math:`\chi^2_1` Wilson distribution, a different
+primitive rather than a different variance. R-factors are reported on amplitudes
+for every row regardless, so they stay comparable across the whole table. Intensity
+rows are not admissible as ``--scale-target``, which fails closed on them.
 
 Geometry Targets
 ----------------

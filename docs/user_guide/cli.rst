@@ -36,8 +36,10 @@ and a ``refinement_history.json`` log.
   ``ml_full`` (marginalises the measurement error rather than inflating the
   variance; ~4× the cost), ``nll_beta`` (the Gaussian large-signal limit of
   ``ml`` — diagnostic), ``nll`` (Gaussian weighted by σ_obs only, no model-error
-  term), ``ls`` (unit-weight least squares) or ``ls_wunit_k1`` (Phenix-style, own
-  global scale). ``--help`` lists them from the taxonomy table itself.
+  term), ``nll_i`` (as ``nll`` but on the observed *intensities*, skipping the
+  French–Wilson conversion), ``ls`` (unit-weight least squares) or ``ls_wunit_k1``
+  (Phenix-style, own global scale). ``--help`` lists them from the taxonomy table
+  itself, which is authoritative.
 * ``--sigma-a-max`` upper bound on the per-shell Luzzati σ_A (default 0.99)
 * ``--no-shrink`` disable the per-shell σ_A stability shrinkage
 * ``--adp-mode`` ``isotropic`` (default) or ``anisotropic``, the latter refining

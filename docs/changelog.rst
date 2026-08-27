@@ -4,6 +4,10 @@ Changelog
 
 Version 0.6.4
 ----------
+- Added ``--xray-mode nll_i``, a Gaussian on the observed intensities, and an ``observable`` column on the target taxonomy
+- Added ``DataTarget.get_I_calc_scaled``, so the observable is a choice rather than an assumption
+- Added ``gaussian_per_refl`` and ``intensity_var_from_sigma_obs``; the amplitude and intensity Gaussians are now one implementation
+- The absolute variance floor in the shared Gaussian is now opt-out, since it distorts any objective whose sigmas fall below it
 - Added a reader for CrystFEL ``partialator`` ``.hkl`` reflection lists, via ``ReflectionData.load_crystfel_hkl``
 - Added ``FcalcDataset.add_noise`` and the ``torchref.simulate-noisy-data`` CLI, which simulate merged intensities from a structure and report R-split and CC between two independent half-datasets
 - Simulated intensities keep their negative values; only the derived amplitude is clamped, since clamping the intensity biases the weak reflections upward
