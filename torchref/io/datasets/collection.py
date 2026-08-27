@@ -14,6 +14,17 @@ import torch
 from .base import CrystalDataset
 from .reflection_data import ReflectionData
 
+#: Objectives for :meth:`DatasetCollection.scale`, the **data-to-data** fit. Least
+#: squares only, and not for want of alternatives: there is no model in that fit, so
+#: there is no model error for a sigma_A or Rice likelihood to account for. ``ls_sigma``
+#: weights by the propagated error on the difference, which is the correct weight
+#: precisely because both sides are measurements.
+DATA_SCALE_OBJECTIVES = ("ls", "ls_sigma")
+
+#: Default for :meth:`DatasetCollection.scale`. Unit-weight least squares, matching
+#: :data:`~torchref.scaling.scaler_base.DEFAULT_SCALE_TARGET` for the model-to-data fit.
+DEFAULT_DATA_SCALE_OBJECTIVE = "ls"
+
 
 @dataclass
 class DatasetCollection(CrystalDataset):
@@ -262,37 +273,101 @@ class DatasetCollection(CrystalDataset):
         """
         return {name: ds(mask=mask, scale=True) for name, ds in self}
 
-    def scale(self):
+    def scale(self, objective: str = DEFAULT_DATA_SCALE_OBJECTIVE):
         """
-        Least-squares fit every non-reference dataset's scale and anisotropy
-        onto the reference, whose own parameters are left untouched.
+        Fit every non-reference dataset's scale and anisotropy onto the reference,
+        whose own parameters are left untouched.
 
-        L-BFGS with strong-Wolfe line search, 10 outer steps of ``max_iter=100``.
-        Members' ``log_scale``/``U_aniso`` are mutated, and ``requires_grad`` is
-        turned on and back off around the fit.
+        **This is the data-to-data fit**, and it is the only one in the library: there
+        is no model here, so there is no model error to account for and nothing for a
+        sigma_A or Rice likelihood to do. Both sides are measurements of the same
+        quantity, which is why the objectives are least squares --
+        :data:`DATA_SCALE_OBJECTIVES`:
+
+        ``ls``
+            ``sum (F - F_ref)**2``, unit weights. The default, matching
+            :data:`~torchref.scaling.scaler_base.DEFAULT_SCALE_TARGET` for the
+            model-to-data fit.
+        ``ls_sigma``
+            ``sum (F - F_ref)**2 / (sigma**2 + sigma_ref**2)``. Both sides being
+            measured is exactly the condition under which inverse-variance weighting is
+            the correct weight rather than a modelling choice: the denominator is the
+            propagated error on the difference being minimised, with no model-error term
+            in it.
+
+        The ``ls_sigma`` weights are computed **once, detached**, from the starting
+        sigmas. They must not be re-derived inside the closure: ``sigma`` carries the
+        same ``log_scale`` as ``F``, so a live denominator rewards inflating the scale to
+        inflate the variance, and without the ``+log(sigma)`` term of a full Gaussian
+        there is nothing to oppose it. Fixed weights are what "weighted least squares"
+        means; see :mod:`torchref.scaling.scaler_base` on the related hazard of fitting a
+        scale against a likelihood that carries the scale in its variance.
+
+        Fitted on the **work set** of both datasets. L-BFGS with strong-Wolfe line
+        search, 10 outer steps of ``max_iter=100``, on an objective normalised to O(1)
+        because those tolerances are absolute. Members' ``log_scale``/``U_aniso`` are
+        mutated, and ``requires_grad`` is turned on and back off around the fit.
+
+        Parameters
+        ----------
+        objective : str, optional
+            One of :data:`DATA_SCALE_OBJECTIVES`.
 
         Raises
         ------
         ValueError
-            If no reference dataset is set, or there is nothing else to scale.
+            If no reference dataset is set, there is nothing else to scale, or
+            ``objective`` is not recognised.
         """
+        if objective not in DATA_SCALE_OBJECTIVES:
+            raise ValueError(
+                f"objective must be one of {DATA_SCALE_OBJECTIVES}, got {objective!r}"
+            )
         if self._reference_dataset is None:
             raise ValueError("No reference dataset set for scaling")
-
 
         ref_ds = self._datasets[self._reference_dataset]
         to_scale = [ds for name, ds in self if name != self._reference_dataset]
 
         if not to_scale:
             raise ValueError("No datasets to scale against reference")
-        
+
         parameters = [p for data in to_scale for p in data.parameters()]
         [p.requires_grad_(True) for p in parameters]
         optimizer = torch.optim.LBFGS(parameters, max_iter=100, line_search_fn='strong_wolfe')
 
-        # Get masks once (they don't change during optimization)
-        ref_mask = ref_ds.masks()
-        ds_masks = [ds.masks() for ds in to_scale]
+        # Masks once (they do not change during the fit). The WORK subset, not
+        # `masks()`: the latter is validity only -- `TensorMasks.__call__` ANDs the
+        # validity masks and carries no work/free notion at all -- so fitting against it
+        # puts the free reflections into the scale parameters, upstream of every target,
+        # and compromises any free-set number the pipeline later reports. Degrades to
+        # all-valid on a dataset with no R-free flags, which is the pre-existing
+        # behaviour for that case.
+        ref_mask = ref_ds.work.mask
+        combined = [ds.work.mask & ref_mask for ds in to_scale]
+
+        # Weights and the normaliser: once, detached, outside the closure.
+        with torch.no_grad():
+            ref_F0, ref_sig0 = ref_ds.get_corrected_data()
+            weights = None
+            if objective == "ls_sigma":
+                # Local import: `torchref.base.targets` is not otherwise reachable from
+                # `torchref.io`, and hoisting it would couple the two packages.
+                from torchref.base.targets.xray_likelihoods import floor_sigma_obs
+
+                weights = []
+                for ds, cm in zip(to_scale, combined):
+                    _, sig0 = ds.get_corrected_data()
+                    var = (
+                        floor_sigma_obs(sig0[cm]) ** 2
+                        + floor_sigma_obs(ref_sig0[cm]) ** 2
+                    )
+                    weights.append(1.0 / var)
+                n_fitted = sum(int(cm.sum()) for cm in combined)
+                norm = 1.0 / max(n_fitted, 1)
+            else:
+                ssq = sum(float(ref_F0[cm].pow(2).sum()) for cm in combined)
+                norm = 1.0 / max(ssq, 1e-30)
 
         def closure():
             optimizer.zero_grad()
@@ -300,12 +375,13 @@ class DatasetCollection(CrystalDataset):
             # get_corrected_data, not __call__: MaskedTensor has no autograd.
             ref_F_scaled, _ = ref_ds.get_corrected_data()
 
-            for ds, ds_mask in zip(to_scale, ds_masks):
+            for i, (ds, cm) in enumerate(zip(to_scale, combined)):
                 F_scaled, _ = ds.get_corrected_data()
-                combined_mask = ds_mask & ref_mask
-                F_data = F_scaled[combined_mask]
-                ref_F_data = ref_F_scaled[combined_mask]
-                loss = loss + torch.sum((F_data - ref_F_data) ** 2)
+                resid_sq = (F_scaled[cm] - ref_F_scaled[cm]) ** 2
+                if weights is not None:
+                    resid_sq = resid_sq * weights[i]
+                loss = loss + torch.sum(resid_sq)
+            loss = loss * norm
             loss.backward()
             return loss
 

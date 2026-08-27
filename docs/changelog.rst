@@ -4,6 +4,9 @@ Changelog
 
 Version 0.6.4
 ----------
+- Fixed ``DatasetCollection.scale`` fitting the inter-dataset scale on the free reflections as well as the work set
+- ``DatasetCollection.scale`` normalises its objective, so L-BFGS's absolute tolerances mean something
+- Added ``DatasetCollection.scale(objective="ls_sigma")``, weighting by the propagated error on the difference being minimised
 - Added ``COLLECTION_XRAY_TARGETS``, the collection target taxonomy, with an intensity difference row
 - Removed ``CollectionRiceTarget``, which set ``beta = sigma_obs**2``; the ``ml`` row is the absolute channel instead
 - Renamed the kinetic ``xray_weight_rice`` / ``xray/rice`` weight to ``xray_weight_ml`` / ``xray/ml``
