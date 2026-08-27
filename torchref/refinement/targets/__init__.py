@@ -20,10 +20,11 @@ from .base import (
     von_mises_nll,
 )
 from .collection import (
+    COLLECTION_XRAY_TARGETS,
+    CollectionDifferenceIntensityTarget,
     CollectionDifferenceTarget,
-    CollectionTwoMomentIntensityTarget,
     CollectionMLTarget,
-    CollectionRiceTarget,
+    CollectionTwoMomentIntensityTarget,
     MultiModelADPTarget,
     MultiModelGeometryTarget,
 )
@@ -88,8 +89,9 @@ __all__ = [
     # Collection (multi-dataset) targets
     "CollectionDifferenceTarget",
     "CollectionTwoMomentIntensityTarget",
-    "CollectionRiceTarget",
     "CollectionMLTarget",
+    "CollectionDifferenceIntensityTarget",
+    "COLLECTION_XRAY_TARGETS",
     "MultiModelGeometryTarget",
     "MultiModelADPTarget",
     # Difference targets

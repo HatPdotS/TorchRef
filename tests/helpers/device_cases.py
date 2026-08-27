@@ -300,7 +300,7 @@ UNCOVERED: Dict[str, str] = {
     "CollectionDifferenceTarget": "needs a dataset collection",
     "CollectionTwoMomentIntensityTarget": "needs a dataset collection",
     "CollectionMLTarget": "needs a dataset collection",
-    "CollectionRiceTarget": "needs a dataset collection",
+    "CollectionDifferenceIntensityTarget": "needs a dataset collection",
     "ADPSigdTarget": "needs a model with ADPs",
     "AngleTarget": "needs a model with restraints",
     "ChiralTarget": "needs a model with restraints",

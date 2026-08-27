@@ -39,7 +39,7 @@ from torch import nn
 from torchref.refinement.loss_state import LossState, create_loss_state
 from torchref.experimental.kinetic.targets import (
     CollectionDifferenceTarget,
-    CollectionRiceTarget,
+    CollectionMLTarget,
     MultiModelGeometryTarget,
     MultiModelADPTarget,
     KineticPriorTarget,
@@ -67,8 +67,10 @@ class KineticRefinement(DeviceMixin, nn.Module):
         Collection of mixed models keyed by timepoint name.
     xray_weight_difference : float
         Weight for the difference X-ray target.
-    xray_weight_rice : float
-        Weight for the Rice amplitude target.
+    xray_weight_ml : float
+        Weight for the absolute (Read MLF) amplitude target. With K free base models a
+        purely relative loss leaves the overall level unconstrained, so this is the
+        anchor.
     geometry_weight : float
         Weight for geometry restraints.
     adp_weight : float
@@ -86,7 +88,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         dataset_collection: "DatasetCollection",
         model_collection: "ModelCollection",
         xray_weight_difference: float = 2.0,
-        xray_weight_rice: float = 1.0,
+        xray_weight_ml: float = 1.0,
         geometry_weight: float = 10.0,
         adp_weight: float = 3.0,
         kinetic_prior_weight: float = 0.0,
@@ -106,7 +108,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         # Default weights
         self._weights = {
             "xray/difference": xray_weight_difference,
-            "xray/rice": xray_weight_rice,
+            "xray/ml": xray_weight_ml,
             "geometry": geometry_weight,
             "adp": adp_weight,
             "kinetic_prior": kinetic_prior_weight,
@@ -117,7 +119,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         self.loss_state: Optional[LossState] = None
         self.kinetic_prior_target: Optional[KineticPriorTarget] = None
         self._diff_target: Optional[CollectionDifferenceTarget] = None
-        self._rice_target: Optional[CollectionRiceTarget] = None
+        self._ml_target: Optional[CollectionMLTarget] = None
         self._kinetic_model = None
         self._timepoints_map: Optional[Dict[str, int]] = None
 
@@ -164,14 +166,14 @@ class KineticRefinement(DeviceMixin, nn.Module):
             scaler=self.scaler,
             verbose=self.verbose,
         )
-        rice_target = CollectionRiceTarget(
+        ml_target = CollectionMLTarget(
             dc, mc,
             scaler=self.scaler,
             verbose=self.verbose,
         )
         # Store direct references for refine_kinetics()
         self._diff_target = diff_target
-        self._rice_target = rice_target
+        self._ml_target = ml_target
         geom_target = MultiModelGeometryTarget(mc, verbose=self.verbose)
         adp_target = MultiModelADPTarget(mc, verbose=self.verbose)
 
@@ -179,7 +181,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         self.loss_state = create_loss_state(device=device)
 
         self.loss_state.register_target("xray/difference", diff_target)
-        self.loss_state.register_target("xray/rice", rice_target)
+        self.loss_state.register_target("xray/ml", ml_target)
         self.loss_state.register_target("geometry", geom_target)
         self.loss_state.register_target("adp", adp_target)
 
@@ -242,7 +244,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         # Map short names to full paths
         mapping = {
             "difference": "xray/difference",
-            "rice": "xray/rice",
+            "ml": "xray/ml",
             "geometry": "geometry",
             "adp": "adp",
             "kinetic_prior": "kinetic_prior",
@@ -528,7 +530,7 @@ class KineticRefinement(DeviceMixin, nn.Module):
         optimizer = torch.optim.Adam(params, lr=lr)
 
         w_diff = self._weights.get("xray/difference", 1.0)
-        w_rice = self._weights.get("xray/rice", 1.0)
+        w_ml = self._weights.get("xray/ml", 1.0)
 
         # Collect all model keys that have kinetic indices (including dark)
         all_overrides = {}
@@ -546,8 +548,8 @@ class KineticRefinement(DeviceMixin, nn.Module):
             for tp_name, t_idx in all_overrides.items():
                 mc[tp_name].set_fraction_override(kinetic_occ[:, t_idx])
 
-            # Compute X-ray loss only (difference + Rice)
-            loss = w_diff * self._diff_target() + w_rice * self._rice_target()
+            # Compute X-ray loss only (difference + the absolute anchor)
+            loss = w_diff * self._diff_target() + w_ml * self._ml_target()
 
             loss.backward()
 

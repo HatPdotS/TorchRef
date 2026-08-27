@@ -78,14 +78,16 @@ def collection(pdb_dir, mtz_dir):
 
 def _targets(dc, mc, scaler):
     from torchref.refinement.targets import (
+        CollectionDifferenceIntensityTarget,
         CollectionDifferenceTarget,
         CollectionMLTarget,
-        CollectionRiceTarget,
     )
 
     return {
         "difference": CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0),
-        "rice": CollectionRiceTarget(dc, mc, scaler=scaler, verbose=0),
+        "difference_i": CollectionDifferenceIntensityTarget(
+            dc, mc, scaler=scaler, verbose=0
+        ),
         "ml": CollectionMLTarget(dc, mc, scaler=scaler, verbose=0),
     }
 
@@ -99,7 +101,7 @@ class TestObservedAmplitudesAreScaled:
     blind to it, so this is a direct test of which accessor is in use.
     """
 
-    @pytest.mark.parametrize("name", ["difference", "rice", "ml"])
+    @pytest.mark.parametrize("name", ["difference", "difference_i", "ml"])
     def test_loss_responds_to_the_datasets_own_log_scale(self, collection, name):
         dc, mc, scaler = collection
         target = _targets(dc, mc, scaler)[name]
@@ -202,28 +204,46 @@ class TestLossesAreSummedNotAveraged:
     -- it looks exactly like a change of X-ray weight.
     """
 
-    def test_adding_a_dataset_grows_the_rice_loss(self, collection, pdb_dir, mtz_dir):
+    def test_adding_a_dataset_grows_the_absolute_loss(self, collection, pdb_dir, mtz_dir):
+        """The expected ratio is n_after / n_before, and that is 3/2, not 2.
+
+        The fixture already holds two datasets (dark + light), so adding a third takes
+        the absolute target from 2 to 3. This test used to expect 2.0 because it ran on
+        ``CollectionRiceTarget``, which overrode ``_keys()`` to drop the dark reference
+        and so went from 1 to 2. ``ml`` fits every dataset including the dark.
+
+        A meaned target would stay near 1.0 either way, which is what this is for.
+        """
         from torchref import ReflectionData
-        from torchref.refinement.targets import CollectionRiceTarget
+        from torchref.refinement.targets import CollectionMLTarget
 
         dc, mc, scaler = collection
-        one = CollectionRiceTarget(dc, mc, scaler=scaler, verbose=0).forward().item()
+        target_before = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
+        n_before = len(target_before._keys())
+        one = target_before.forward().item()
 
         extra = ReflectionData(device="cpu", verbose=0).load_mtz(str(mtz_dir / "1DAW.mtz"))
         dc.add_dataset("light2", extra)
         mc.add_timepoint("light2", [0.7, 0.3])
         try:
-            two = CollectionRiceTarget(dc, mc, scaler=scaler, verbose=0).forward().item()
+            target_after = CollectionMLTarget(dc, mc, scaler=scaler, verbose=0)
+            n_after = len(target_after._keys())
+            two = target_after.forward().item()
         finally:
             dc._datasets.pop("light2")
             dc._dataset_order.remove("light2")
             del mc._timepoints["light2"]
             mc._order.remove("light2")
 
+        assert (n_before, n_after) == (2, 3)
         ratio = two / one
-        assert ratio == pytest.approx(2.0, rel=0.15), (
-            f"two timepoints gave {ratio:.3f}x one timepoint's Rice loss; a summed "
-            f"target should roughly double and a meaned one stay near 1.0"
+        # Tolerance is loose because the shared Luzzati beta is REFITTED on the pooled
+        # free reflections of the larger collection, so the per-reflection loss moves a
+        # little too. That is a property of the target, not slack: the two hypotheses
+        # this test separates are 1.5 and 1.0, which are far apart.
+        assert ratio == pytest.approx(n_after / n_before, rel=0.15), (
+            f"{n_after} datasets gave {ratio:.3f}x the loss of {n_before}; a summed "
+            f"target should scale with the count and a meaned one stay near 1.0"
         )
 
 
@@ -231,7 +251,7 @@ class TestLossesAreSummedNotAveraged:
 class TestReportedNumbers:
     """The shape of what ``get_rfactor`` / ``stats`` promise, plus reproducibility."""
 
-    @pytest.mark.parametrize("name", ["difference", "rice", "ml"])
+    @pytest.mark.parametrize("name", ["difference", "difference_i", "ml"])
     def test_forward_is_finite_and_reproducible(self, collection, name):
         dc, mc, scaler = collection
         target = _targets(dc, mc, scaler)[name]

@@ -85,6 +85,29 @@ class CollectionLossInputs(NamedTuple):
     keys: List[str]
 
 
+class CollectionSigmaALossInputs(NamedTuple):
+    """:class:`CollectionLossInputs` plus one shared model-error estimate.
+
+    The collection twin of
+    :class:`~torchref.refinement.targets.xray.sigma_a.SigmaALossInputs`. ``beta`` and
+    ``epsilon`` live on the **common HKL**, shape ``(n_hkl,)``, and broadcast over the
+    dataset axis: they are fitted once on the pooled free reflections of every data-model
+    pair, so one per-reflection variance serves every member.
+
+    The two shapes never mix, because each class pairs its own ``_loss_inputs`` with its
+    own ``_per_refl``.
+    """
+
+    obs: torch.Tensor
+    model: torch.Tensor
+    sigma: torch.Tensor
+    mask: torch.Tensor
+    keys: List[str]
+    centric: torch.Tensor = None
+    beta: torch.Tensor = None
+    epsilon: torch.Tensor = None
+
+
 class CollectionXrayTarget(Target):
     """Base class for multi-dataset X-ray targets.
 
@@ -149,8 +172,8 @@ class CollectionXrayTarget(Target):
 
     def _keys(self) -> List[str]:
         """Matched dataset keys this target fits: dark + present timepoints. Targets
-        fitting only part of the collection override it (``CollectionRiceTarget``
-        drops the dark reference).
+        fitting only part of the collection override it (a target fitting only the
+        excited timepoints drops the dark reference).
         """
         dc = self._dataset_collection
         mc = self._model_collection

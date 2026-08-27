@@ -65,6 +65,34 @@ primitive rather than a different variance. R-factors are reported on amplitudes
 for every row regardless, so they stay comparable across the whole table. Intensity
 rows are not admissible as ``--scale-target``, which fails closed on them.
 
+Collection X-ray Targets
+------------------------
+
+The multi-dataset analogues, for time-resolved and difference refinement. Same
+taxonomy shape as above — ``COLLECTION_XRAY_TARGETS`` in
+``torchref.refinement.targets.collection._specs``, one class per row, the
+observable declared per row — and the same ``_loss_inputs`` / ``_per_refl`` seam,
+batched over ``(n_datasets, n_hkl)`` on the collection's common HKL grid.
+
+- ``difference`` — Gaussian on each dataset's **amplitude** difference from the
+  collection mean, with the dataset/mean covariance propagated. The primary
+  optimization driver for difference refinement.
+- ``difference_i`` — the same on **intensities**. The entire class is one
+  ``observable`` declaration: the difference-from-mean algebra does not care what
+  the observable is.
+- ``two_moment`` — merged **intensities** as
+  :math:`|F(\bar\alpha)|^2 + \sigma_\alpha^2 |\Delta F|^2`, accounting for
+  crystal-to-crystal spread in activation.
+- ``ml`` — Read MLF per dataset at one shared Luzzati :math:`\beta`, fitted on
+  the pooled free reflections of every data–model pair. The **absolute** channel:
+  with K free base models a purely relative loss leaves the overall level
+  unconstrained.
+
+Both difference rows are offered rather than one being chosen. Amplitudes keep the
+loss in the same space as the output DED map coefficients; intensities avoid the
+French–Wilson posterior reshaping the weak tail a small difference lives in. Which
+wins is a property of a dataset's signal-to-noise.
+
 Geometry Targets
 ----------------
 
