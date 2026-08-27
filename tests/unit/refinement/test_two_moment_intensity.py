@@ -357,3 +357,166 @@ class TestIntensityRequirement:
 
         with pytest.raises(ValueError, match="I/SIGI"):
             CollectionTwoMomentIntensityTarget(dc, mc, verbose=0)
+
+
+@pytest.mark.integration
+class TestNonFiniteObservations:
+    """Real reflection files carry non-finite intensities, and they must not reach the
+    gradient.
+
+    Masking the *loss* is not enough. ``torch.where`` picks the finite branch for the
+    value while still backpropagating through the branch it discarded, so one NaN
+    observation turns every parameter gradient into NaN and every optimizer step is
+    rejected -- a refinement that silently does nothing rather than one that fails.
+    """
+
+    def test_a_nan_observation_does_not_poison_the_gradient(self, collection):
+        dc, mc, scaler = collection
+        data = dc["light"]
+        saved = data.I.clone()
+        try:
+            with torch.no_grad():
+                data.I[5] = float("nan")
+                data.I[11] = float("inf")
+            data._corrected_I_fp = None
+
+            target = _target(dc, mc, scaler)
+            loss = target.forward()
+            assert torch.isfinite(loss), "loss went non-finite"
+
+            loss.backward()
+            grad = mc.base_models[1].xyz.refinable_params.grad
+            assert grad is not None
+            assert torch.isfinite(grad).all(), (
+                "non-finite observations reached the gradient; every optimizer step "
+                "would be rejected and the model would not move"
+            )
+        finally:
+            with torch.no_grad():
+                data.I.copy_(saved)
+            data._corrected_I_fp = None
+            mc.base_models[1].xyz.refinable_params.grad = None
+
+    def test_a_nan_sigma_does_not_poison_the_gradient(self, collection):
+        dc, mc, scaler = collection
+        data = dc["light"]
+        saved = data.I_sigma.clone()
+        try:
+            with torch.no_grad():
+                data.I_sigma[7] = float("nan")
+            data._corrected_I_fp = None
+
+            target = _target(dc, mc, scaler)
+            loss = target.forward()
+            loss.backward()
+            grad = mc.base_models[1].xyz.refinable_params.grad
+            assert torch.isfinite(loss) and torch.isfinite(grad).all()
+        finally:
+            with torch.no_grad():
+                data.I_sigma.copy_(saved)
+            data._corrected_I_fp = None
+            mc.base_models[1].xyz.refinable_params.grad = None
+
+    def test_the_bad_reflections_are_excluded_not_absorbed(self, collection):
+        """They must drop out of the sum, not contribute a large finite penalty --
+        otherwise the loss depends on how many reflections the file happened to reject.
+        """
+        dc, mc, scaler = collection
+        data = dc["light"]
+        saved = data.I.clone()
+        target = _target(dc, mc, scaler)
+        try:
+            baseline = target.forward().item()
+            with torch.no_grad():
+                data.I[3] = float("nan")
+            data._corrected_I_fp = None
+            with_nan = _target(dc, mc, scaler).forward().item()
+        finally:
+            with torch.no_grad():
+                data.I.copy_(saved)
+            data._corrected_I_fp = None
+
+        # One reflection out of tens of thousands: the loss should drop slightly, not
+        # jump by a penalty term.
+        assert with_nan <= baseline
+        assert abs(with_nan - baseline) / baseline < 1e-2
+
+
+@pytest.mark.integration
+class TestWeightCalibration:
+    """Intensities are squared amplitudes, so this target's gradient is orders of
+    magnitude away from the amplitude target beside it. Left uncalibrated it swamps the
+    geometry restraints and buys R-free by moving the model further than the data
+    supports.
+    """
+
+    def test_the_uncalibrated_mismatch_is_large(self, collection):
+        """Anti-vacuity: if the two targets already pushed equally, calibration would
+        be pointless."""
+        dc, mc, scaler = collection
+        from torchref.refinement.targets import CollectionDifferenceTarget
+
+        params = [p for p in mc.base_models[1].parameters() if p.requires_grad]
+        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
+        target = _target(dc, mc, scaler)
+
+        def gnorm(t):
+            g = torch.autograd.grad(t.forward(), params, allow_unused=True)
+            return sum(float((x**2).sum()) for x in g if x is not None) ** 0.5
+
+        ratio = gnorm(target) / gnorm(diff)
+        assert ratio > 10 or ratio < 0.1, (
+            f"gradient ratio is {ratio:.3g}; the two targets are already matched and "
+            f"this fixture cannot show why calibration is needed"
+        )
+
+    def test_calibration_equalises_the_gradient_norms(self, collection):
+        dc, mc, scaler = collection
+        from torchref.refinement.targets import CollectionDifferenceTarget
+
+        params = [p for p in mc.base_models[1].parameters() if p.requires_grad]
+        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
+        target = _target(dc, mc, scaler)
+
+        target.calibrate_base_weight(diff, params)
+
+        def gnorm(t):
+            g = torch.autograd.grad(t.forward(), params, allow_unused=True)
+            return sum(float((x**2).sum()) for x in g if x is not None) ** 0.5
+
+        assert gnorm(target) == pytest.approx(gnorm(diff), rel=0.05)
+
+    def test_the_ratio_argument_scales_the_result(self, collection):
+        dc, mc, scaler = collection
+        from torchref.refinement.targets import CollectionDifferenceTarget
+
+        params = [p for p in mc.base_models[1].parameters() if p.requires_grad]
+        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
+
+        a = _target(dc, mc, scaler)
+        b = _target(dc, mc, scaler)
+        wa = a.calibrate_base_weight(diff, params, ratio=1.0)
+        wb = b.calibrate_base_weight(diff, params, ratio=0.25)
+        assert wb == pytest.approx(0.25 * wa, rel=1e-3)
+
+    def test_base_weight_scales_the_loss_on_the_work_set(self, collection):
+        dc, mc, scaler = collection
+        one = _target(dc, mc, scaler, base_weight=1.0).forward().item()
+        three = _target(dc, mc, scaler, base_weight=3.0).forward().item()
+        assert three == pytest.approx(3.0 * one, rel=1e-5)
+
+    def test_the_free_set_value_is_left_unweighted(self, collection):
+        """The free-set number is a diagnostic and has to stay comparable across
+        weightings."""
+        dc, mc, scaler = collection
+        one = _target(dc, mc, scaler, use_set="free", base_weight=1.0).forward().item()
+        five = _target(dc, mc, scaler, use_set="free", base_weight=5.0).forward().item()
+        assert five == pytest.approx(one, rel=1e-6)
+
+    def test_calibration_needs_refinable_parameters(self, collection):
+        dc, mc, scaler = collection
+        from torchref.refinement.targets import CollectionDifferenceTarget
+
+        diff = CollectionDifferenceTarget(dc, mc, scaler=scaler, verbose=0)
+        with pytest.raises(ValueError, match="No refinable parameters"):
+            _target(dc, mc, scaler).calibrate_base_weight(diff, [])

@@ -81,6 +81,12 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
         Canonical 3-way subset selector ``"work"``/``"free"``/``"val"``.
     verbose : int, optional
         Verbosity level.
+    base_weight : float, optional
+        Multiplies the summed loss on the work set. Intensities are squared amplitudes,
+        so this target's loss and gradient are on a completely different scale from the
+        amplitude targets it sits beside -- left at 1.0 it swamps them and the geometry
+        restraints with it. Default 1.0; use :meth:`calibrate_base_weight` to set it
+        from the data rather than by hand.
 
     Raises
     ------
@@ -98,6 +104,7 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
         use_work_set: bool = True,
         use_set: str = None,
         verbose: int = 0,
+        base_weight: float = 1.0,
     ):
         super().__init__(
             dataset_collection,
@@ -107,6 +114,7 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
             use_set=use_set,
             verbose=verbose,
         )
+        self.base_weight = float(base_weight)
         # Fail here rather than inside the first loss evaluation: LossState probes a
         # target's forward at registration, and a traceback from there is much harder to
         # trace back to "this MTZ had no intensity columns".
@@ -198,18 +206,30 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
         sigma = dc.stack_I_sigma(keys).to(model.dtype)
         mask = dc.stack_masks(keys, use_set=self.use_set)
 
+        # Real reflection files carry non-finite intensities (excluded rows, and rows
+        # French-Wilson rejected). Masking the *loss* is not enough: a NaN observation
+        # makes the residual NaN, and torch.where selects the finite branch for the
+        # value while still backpropagating NaN through the branch it discarded. So the
+        # observations are sanitised into the mask BEFORE they reach the graph.
+        valid = torch.isfinite(obs) & torch.isfinite(sigma)
+        mask = mask & valid
+        obs = torch.where(valid, obs, torch.zeros_like(obs))
+        sigma = torch.where(valid, sigma, torch.ones_like(sigma))
+
         sigma = self._floor_sigma(sigma, mask)
 
-        residual = obs - model
+        residual = torch.where(mask, obs - model, torch.zeros_like(obs))
         nll = (
             0.5 * (residual / sigma) ** 2
             + torch.log(sigma)
             + 0.5 * _LOG_2PI
         )
-        # A single non-finite entry would poison the whole gradient; a large finite
-        # penalty lets the step be rejected instead.
-        nll = torch.where(torch.isfinite(nll), nll, torch.full_like(nll, 1e6))
-        return (nll * mask).sum()
+        total = (nll * mask).sum()
+        # Applied on the work set only, matching CollectionMLTarget: the free-set value
+        # is a diagnostic and must stay comparable across weightings.
+        if self.use_work_set:
+            total = self.base_weight * total
+        return total
 
     @staticmethod
     def _floor_sigma(sigma: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -220,6 +240,81 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
         floor = torch.median(selected) * _SIGMA_FLOOR_FRAC
         floor = torch.clamp(floor, min=1e-12)
         return sigma.clamp(min=floor)
+
+    # ------------------------------------------------------------------
+    # Weight calibration
+    # ------------------------------------------------------------------
+
+    def calibrate_base_weight(
+        self, reference, parameters, ratio: float = 1.0, floor: float = 1e-12
+    ) -> float:
+        """Set ``base_weight`` so this target pushes as hard as ``reference``.
+
+        Matched on the **gradient norm** with respect to the refined parameters, not on
+        the loss value. A large loss with a flat gradient moves nothing, so loss
+        magnitude is the wrong thing to equalise; what competes with the geometry and
+        similarity restraints is the size of the step this term asks for.
+
+        This is the per-cycle gradient-ratio weighting the collection targets' base
+        weights were a stopgap for, applied once at setup rather than every cycle --
+        enough to put an intensity target and an amplitude target on the same footing,
+        which is otherwise a several-orders-of-magnitude mismatch.
+
+        Parameters
+        ----------
+        reference : Target
+            The target to match, normally the difference target already driving the
+            refinement.
+        parameters : iterable of torch.nn.Parameter
+            The parameters actually being refined; only those with ``requires_grad``
+            are used.
+        ratio : float, optional
+            Desired ratio of this target's gradient norm to the reference's. Default
+            1.0 (equal footing); below 1 makes this target the junior partner.
+        floor : float, optional
+            Guard for a vanishing reference gradient.
+
+        Returns
+        -------
+        float
+            The ``base_weight`` that was set.
+        """
+        params = [p for p in parameters if p.requires_grad]
+        if not params:
+            raise ValueError("No refinable parameters given; cannot calibrate.")
+
+        def _grad_norm(target, scale_out=1.0):
+            grads = torch.autograd.grad(
+                target.forward(), params, retain_graph=False, allow_unused=True
+            )
+            total = sum(
+                float((g.detach() ** 2).sum()) for g in grads if g is not None
+            )
+            return (total**0.5) / scale_out
+
+        saved = self.base_weight
+        self.base_weight = 1.0
+        try:
+            own = _grad_norm(self)
+        finally:
+            self.base_weight = saved
+
+        ref = _grad_norm(reference)
+        if own <= floor:
+            if self.verbose:
+                print(
+                    "  two-moment calibration: own gradient is ~0, leaving "
+                    f"base_weight at {self.base_weight:.4g}"
+                )
+            return self.base_weight
+
+        self.base_weight = float(ratio * max(ref, floor) / own)
+        if self.verbose:
+            print(
+                f"  two-moment weight calibration: |grad_ref|={ref:.4g}, "
+                f"|grad_self|={own:.4g}  ->  base_weight={self.base_weight:.4g}"
+            )
+        return self.base_weight
 
     # ------------------------------------------------------------------
     # Reporting
@@ -271,6 +366,7 @@ class CollectionTwoMomentIntensityTarget(CollectionXrayTarget):
             lam = float(mc.lambda_twin)
             sigma_sq = float(mc.sigma_alpha_sq)
 
+            out["base_weight"] = stat(self.base_weight, VERBOSITY_STANDARD)
             out["alpha_mean"] = stat(alpha, VERBOSITY_ESSENTIAL)
             out["lambda_twin"] = stat(lam, VERBOSITY_ESSENTIAL)
             out["sigma_alpha_sq"] = stat(sigma_sq, VERBOSITY_STANDARD)

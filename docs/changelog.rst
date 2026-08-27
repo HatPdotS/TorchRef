@@ -7,6 +7,9 @@ Version 0.6.4
 - Added a reader for CrystFEL ``partialator`` ``.hkl`` reflection lists, via ``ReflectionData.load_crystfel_hkl``
 - Added ``FcalcDataset.add_noise`` and the ``torchref.simulate-noisy-data`` CLI, which simulate merged intensities from a structure and report R-split and CC between two independent half-datasets
 - Simulated intensities keep their negative values; only the derived amplitude is clamped, since clamping the intensity biases the weak reflections upward
+- The difference target now inflates its variance by the activation-derived contamination, so a non-zero ``--lambda-twin`` reweights it without needing intensity data
+- ``CollectionTwoMomentIntensityTarget`` carries a ``base_weight``, calibrated against the difference target's gradient norm so an intensity likelihood does not swamp the restraints
+- Fixed non-finite observed intensities poisoning the two-moment gradient, which silently froze refinement rather than failing
 - Added ``CollectionTwoMomentIntensityTarget``, fitting merged intensities as ``|F(alpha)|^2 + sigma_alpha^2 |dF|^2`` to account for crystal-to-crystal spread in activation
 - Added ``--two-moment`` / ``--lambda-twin`` / ``--refine-lambda-twin`` to ``torchref.difference-refine``, and the activation moments to its JSON summary
 - ``torchref.difference-refine`` writes thirteen further MTZ columns under ``--two-moment``, including decontaminated difference amplitudes and the ``DDF`` diagnostic

@@ -97,6 +97,53 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         )
         self.normalize = normalize
 
+    def _activation_variance(self, keys, F_obs_stack) -> torch.Tensor:
+        """Extra variance from crystal-to-crystal spread in activation.
+
+        A merged light intensity carries a positive, phase-blind contamination
+        ``sigma_alpha^2 |dF/dalpha|^2``. Propagated onto the amplitude it becomes a shift
+        of ``sigma_alpha^2 |dF|^2 / (2 |F|)``, which is a systematic of **known magnitude
+        but unmodelled here**, so it enters as a variance and down-weights exactly the
+        reflections whose difference is most contaminated.
+
+        The resulting weight, ``sigma_meas^2 / (sigma_meas^2 + this)``, is the calibrated
+        form of the empirical k-weighting that difference maps apply by hand -- derived
+        from a fitted or assumed dispersion rather than tuned.
+
+        Returns zeros when the dispersion is zero, so the loss is then unchanged.
+
+        Parameters
+        ----------
+        keys : list of str
+            Datasets in the order they are stacked.
+        F_obs_stack : torch.Tensor
+            Observed amplitudes, shape ``(N, n_hkl)``, used as the propagation denominator.
+
+        Returns
+        -------
+        torch.Tensor
+            Variance to add, shape ``(N, n_hkl)``; a scalar zero when inactive.
+        """
+        mc = self._model_collection
+        sigma_alpha_sq = getattr(mc, "sigma_alpha_sq", None)
+        if sigma_alpha_sq is None:
+            return torch.zeros((), device=F_obs_stack.device)
+        if float(sigma_alpha_sq) == 0.0:
+            return torch.zeros((), device=F_obs_stack.device)
+
+        dc = self._dataset_collection
+        rows = [mc.keys().index(k) for k in keys]
+        components = dc.component_structure_factors(mc, recalc=False)
+        jacobian = mc.activation_jacobian()[rows]
+
+        derivative = mc.mix_component_fcalcs(components, jacobian)
+        if self._scaler is not None and hasattr(self._scaler, "forward_batched"):
+            derivative = self._scaler.forward_batched(derivative, jacobian)
+
+        contamination = sigma_alpha_sq * derivative.abs() ** 2
+        shift = contamination / (2.0 * F_obs_stack.abs().clamp(min=1e-6))
+        return shift**2
+
     def forward(self) -> torch.Tensor:
         """Summed Gaussian NLL of the difference-from-mean; 0.0 if fewer than 2 sets."""
         dc = self._dataset_collection
@@ -144,6 +191,9 @@ class CollectionDifferenceTarget(CollectionXrayTarget):
         # Var(F_i - F_mean) = σ_i²·(1 - 2/N) + (Σ_j σ_j²) / N²
         sum_sigma_sq = (sigma_stack**2).sum(dim=0)  # (n_hkl,)
         sigma_diff_sq = sigma_stack**2 * (1 - 2.0 / N) + sum_sigma_sq / (N**2)
+        sigma_diff_sq = sigma_diff_sq + self._activation_variance(
+            all_keys, F_obs_stack
+        )
         sigma_diff = torch.sqrt(sigma_diff_sq.clamp(min=1e-12))  # (N, n_hkl)
 
         # Mask via torch.where, not boolean indexing: no nonzero() device sync.

@@ -243,12 +243,17 @@ def setup_loss_state(dataset_collection, model_collection, scaler,
     if two_moment:
         from torchref.refinement.targets import CollectionTwoMomentIntensityTarget
 
-        state.register_target(
-            "xray/two_moment",
-            CollectionTwoMomentIntensityTarget(
-                dataset_collection, model_collection, scaler=scaler,
-            ),
+        two_moment_target = CollectionTwoMomentIntensityTarget(
+            dataset_collection, model_collection, scaler=scaler, verbose=1,
         )
+        # Intensities are squared amplitudes, so this target's gradient is on a
+        # completely different scale from the difference target beside it. Match them
+        # once here; left uncalibrated it swamps the geometry restraints and buys
+        # R-free by moving the model far further than the data supports.
+        two_moment_target.calibrate_base_weight(
+            diff_target, list(model_light.parameters())
+        )
+        state.register_target("xray/two_moment", two_moment_target)
 
     state.set_weights(target_weights)
 
@@ -780,7 +785,10 @@ Examples:
         "--lambda-twin", type=float, default=0.0,
         help="Activation dispersion as a fraction of its maximum, in [0, 1]: "
              "sigma_alpha^2 = alpha (1 - alpha) * lambda. 0 (default) is the "
-             "coherent model and reproduces the amplitude-only result.",
+             "coherent model and reproduces the amplitude-only result. On its own "
+             "this reweights the difference target, down-weighting the reflections "
+             "whose difference is most contaminated; with --two-moment it also "
+             "corrects the predicted intensity.",
     )
     two_moment.add_argument(
         "--refine-lambda-twin", action="store_true", default=False,
@@ -818,14 +826,9 @@ Examples:
         return 1
     if args.refine_lambda_twin and not args.two_moment:
         print(
-            "Error: --refine-lambda-twin needs --two-moment; the activation "
-            "dispersion only enters through the two-moment intensity model",
-            file=sys.stderr,
-        )
-        return 1
-    if args.lambda_twin > 0.0 and not args.two_moment:
-        print(
-            "Error: --lambda-twin has no effect without --two-moment",
+            "Error: --refine-lambda-twin needs --two-moment. The dispersion is only "
+            "identifiable from the intensity likelihood; through the difference "
+            "target it enters as a weight and has no gradient of its own.",
             file=sys.stderr,
         )
         return 1
@@ -879,9 +882,13 @@ Examples:
         print(f"Light data:        {args.light_structure_factor}")
         frac_mode = "refinable" if args.refine_fractions else "frozen"
         print(f"Fractions:         dark={fractions[0]}, light={fractions[1]} ({frac_mode})")
-        if args.two_moment:
+        if args.lambda_twin > 0.0 or args.two_moment:
             lam_mode = "refinable" if args.refine_lambda_twin else "fixed"
-            print(f"Two-moment model:  lambda_twin={args.lambda_twin} ({lam_mode})")
+            extra = " + intensity model" if args.two_moment else " (weighting only)"
+            print(
+                f"Activation spread: lambda_twin={args.lambda_twin} "
+                f"({lam_mode}){extra}"
+            )
         print(f"Output:            {outdir}")
         print(f"Device:            {device}")
         if args.dmin:
@@ -973,9 +980,10 @@ Examples:
                 file=sys.stderr,
             )
             return 1
-        mc.set_lambda_twin(
-            args.lambda_twin, refinable=args.refine_lambda_twin
-        )
+
+    # Set unconditionally: a non-zero dispersion also drives the difference target's
+    # per-reflection weighting, which needs no intensity data.
+    mc.set_lambda_twin(args.lambda_twin, refinable=args.refine_lambda_twin)
 
     state = setup_loss_state(dc, mc, scaler, target_weights, device,
                              similarity_alpha=args.similarity_alpha,
