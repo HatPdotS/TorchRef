@@ -845,7 +845,7 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         # parent -- the riding builder counts bonded neighbours by distance, the
         # generator reads them off the bond graph -- so the leftovers are not even the
         # hydrogens the generator declined to add.
-        from torchref.restraints.hydrogen_topology import (
+        from torchref.topology.riding import (
             HydrogenTopology,
             build_h_candidate_pairs,
             build_hydrogen_topology,

@@ -10,8 +10,13 @@ is. Ideal values and sigmas belong to a restraint layer keyed to the same edges,
 connectivity can carry monomer-library targets, force-field parameters, or
 ADP-similarity sigmas without duplicating the edges.
 
-Build one with :func:`build_topology`. :func:`plan_hydrogens` uses it to instantiate
-monomer templates, which is how hydrogens are generated.
+Build one with :func:`build_topology`.
+
+Hydrogens come in two forms over the same graph. :func:`plan_hydrogens` instantiates
+the monomer templates to add them as real atoms, which is the default. For a model
+loaded heavy-only, :mod:`torchref.topology.riding` reconstructs them from their parents
+at each non-bonded evaluation instead, so their sterics still count. Only one applies at
+a time.
 """
 
 from .atom_graph import AtomGraph
@@ -24,6 +29,12 @@ from .hydrogens import (
     plan_hydrogens,
 )
 from .residue_graph import ResidueGraph
+from .riding import (
+    HydrogenTopology,
+    build_h_candidate_pairs,
+    build_hydrogen_topology,
+    place_riding_hydrogens,
+)
 from .restraint_sets import assemble_entries, max_period
 from .templates import resolve_template_keys
 from .topology import Topology
@@ -42,5 +53,9 @@ __all__ = [
     "plan_hydrogens",
     "optimise_free_torsions",
     "augment_atom_table",
+    "HydrogenTopology",
+    "build_hydrogen_topology",
+    "build_h_candidate_pairs",
+    "place_riding_hydrogens",
     "resolve_template_keys",
 ]

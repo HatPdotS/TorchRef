@@ -36,6 +36,7 @@ Unreleased
 - Fixed the lazily-cached per-atom buffers (``vdw_radii``, ``Z``, the ITC92 coefficients) surviving a load that changes the atom count, which left them sized for the previous atom set
 - Riding hydrogens are no longer placed when the model carries real ones, where they acted as phantom atoms in the non-bonded term
 - Fixed the hydrogen valence cap counting only heavy neighbours, so a parent that already carried a hydrogen still had budget for another; generation was not idempotent and a save/reload added a spurious second amide hydrogen to every linked residue
+- Moved the riding-hydrogen map from ``torchref.restraints.hydrogen_topology`` to ``torchref.topology.riding``, alongside the generation path it is the heavy-atom-only alternative to
 
 
 Version 0.6.4

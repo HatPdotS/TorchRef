@@ -1,14 +1,19 @@
-"""
-Riding hydrogen topology and vectorized placement for VDW restraints.
+"""Riding hydrogens: the sterics of hydrogens a model does not carry.
 
-Builds a static topology map at restraints-construction time that describes
-how to generate transient hydrogen atom positions from heavy-atom coordinates.
-At each VDW evaluation the ``place_riding_hydrogens`` function produces H
-positions in a single vectorized pass (no Python loops over atoms).
+For a model loaded with ``strip_H=True``, whose atoms are heavy only. A static map
+built once at restraint-construction time says how to reconstruct each absent hydrogen
+from its parent and the parent's bonded neighbours; ``place_riding_hydrogens`` then
+produces those positions in one vectorized pass at every non-bonded evaluation and
+throws them away again. The positions are a function of the heavy atoms, so gradients
+reach the heavy coordinates through them by ordinary autograd.
 
-Hydrogen positions are fully determined by the parent heavy atom and its
-bonded heavy-atom neighbours, so gradients flow from the VDW loss through
-the H positions back to the heavy-atom coordinates via standard autograd.
+Contrast :mod:`torchref.topology.hydrogens`, which *adds* hydrogens to the model as
+real atoms with their own parameters. That is the default, and where both apply it is
+the better answer: the hydrogen has a refinable position instead of one reconstructed
+each step, and it contributes to the structure factors. Riding hydrogens are what is
+left for the heavy-atom-only mode, and the two must not run together -- riding
+placement alongside real hydrogens puts phantom atoms in the structure that push the
+real ones around.
 """
 
 from dataclasses import dataclass, field

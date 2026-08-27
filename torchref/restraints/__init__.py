@@ -5,10 +5,10 @@ dictionaries resolved through :func:`get_library_manager`; ``MONOMER_LIB_PATH``
 resolves lazily to that manager's ``monomer_dir``. Ideal values come from the CCP4
 Monomer Library (Long et al. 2017, Acta Cryst. D73, 112-122).
 
-The builder classes and topology helpers (``build_all_restraints``,
-``HydrogenTopology``, ``build_hydrogen_topology``, the intra-/inter-residue
-builders) are used across the package but deliberately *not* re-exported here --
-import them from their defining submodules.
+The builder classes and the inter-residue builders are used across the package but
+deliberately *not* re-exported here -- import them from their defining submodules.
+Connectivity itself lives in :mod:`torchref.topology`, which is also where the
+riding-hydrogen map moved to.
 """
 
 from torchref.restraints.library import get_library_manager

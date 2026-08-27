@@ -271,7 +271,7 @@ CASES: List[DeviceCase] = [
     DeviceCase(
         "HydrogenTopology_empty",
         lambda d: __import__(
-            "torchref.restraints.hydrogen_topology",
+            "torchref.topology.riding",
             fromlist=["HydrogenTopology"],
         ).HydrogenTopology(device=d),
         "HydrogenTopology",

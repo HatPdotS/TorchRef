@@ -20,7 +20,7 @@ from .non_bonded import NonBondedTarget
 
 if TYPE_CHECKING:
     from torchref.model.model import Model
-    from torchref.restraints.hydrogen_topology import HydrogenTopology
+    from torchref.topology.riding import HydrogenTopology
 
 
 class NonBondedHTarget(NonBondedTarget):
@@ -93,7 +93,7 @@ class NonBondedHTarget(NonBondedTarget):
         ordering to do identity and real symmetry transforms in one pass. Other modes
         take the inline eager path below.
         """
-        from torchref.restraints.hydrogen_topology import place_riding_hydrogens
+        from torchref.topology.riding import place_riding_hydrogens
 
         device = xyz.device
 
@@ -200,7 +200,7 @@ class NonBondedHTarget(NonBondedTarget):
         ``xyz_all`` -- so symmetry-mate H contacts are reported at their intra-ASU
         separation, unlike in the loss.
         """
-        from torchref.restraints.hydrogen_topology import place_riding_hydrogens
+        from torchref.topology.riding import place_riding_hydrogens
 
         result = super().get_violations(threshold)
 
@@ -234,7 +234,7 @@ class NonBondedHTarget(NonBondedTarget):
 
     def stats(self) -> Dict[str, any]:
         """Get statistics including H-VDW contacts."""
-        from torchref.restraints.hydrogen_topology import place_riding_hydrogens
+        from torchref.topology.riding import place_riding_hydrogens
 
         result = super().stats()
 
