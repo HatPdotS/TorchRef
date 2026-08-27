@@ -86,7 +86,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
     device : torch.device, optional
         Computation device. Defaults to the configured device.current.
     strip_H : bool, optional
-        Whether to strip hydrogen atoms when loading. Default is True.
+        Whether to strip hydrogen atoms when loading. Default False: hydrogens are kept
+        where the file has them and generated where it does not.
+    add_hydrogens : bool, optional
+        Generate hydrogens on load for residues that arrive without them. Default True;
+        ignored when ``strip_H`` is set.
 
     Attributes
     ----------
@@ -120,7 +124,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         dtype_float=None,
         verbose=1,
         device=None,
-        strip_H: bool = True,
+        strip_H: bool = False,
+        add_hydrogens: bool = True,
     ):
         """
         Initialize an empty Model shell.
@@ -137,7 +142,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         device : torch.device, optional
             Computation device. Defaults to the configured device.current.
         strip_H : bool, optional
-            Whether to strip hydrogen atoms when loading. Default is True.
+            Whether to strip hydrogen atoms when loading. Default False: hydrogens are
+            kept where the file has them and generated where it does not.
+        add_hydrogens : bool, optional
+            Generate hydrogens on load for residues that arrive without them. Default
+            True; ignored when ``strip_H`` is set.
         """
         super().__init__()
         # Resolve dtype/device at call time (not import time) so a runtime
@@ -153,7 +162,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         # Everything the model is loaded from and sits in, as opposed to what is
         # refined. Populated by load() / create_from_state_dict().
-        self.ctx = ModelContext(verbose=verbose, strip_H=strip_H)
+        self.ctx = ModelContext(
+            verbose=verbose, strip_H=strip_H, add_hydrogens=add_hydrogens
+        )
 
         # Submodules (created during load or load_state_dict)
         self.xyz = None
@@ -512,7 +523,31 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         return self.restraints.torsion_deviations_with_sigmas(self.xyz())
 
-    def load(self, reader):
+    #: Per-atom buffers built lazily on first use and cached. Each is sized to the atom
+    #: table, so all of them go stale the moment the atom set changes.
+    _ATOM_DERIVED_BUFFERS = (
+        "vdw_radii",
+        "_Z",
+        "_A",
+        "_B",
+        "_heavy_atom_mask",
+    )
+
+    def _invalidate_atom_derived_caches(self) -> None:
+        """Drop the lazily-cached per-atom buffers.
+
+        Each is guarded by ``hasattr`` and returned as-is once built, so a load that
+        changes the atom count would otherwise hand back a buffer sized for the previous
+        one. That surfaced when hydrogen generation began extending the table in place:
+        the van der Waals radii stayed at the heavy-atom count while the pair list
+        indexed the full set, and the non-bonded build raised ``IndexError``. Rebuilding
+        a new model each time had hidden it.
+        """
+        for name in self._ATOM_DERIVED_BUFFERS:
+            if hasattr(self, name):
+                delattr(self, name)
+
+    def load(self, reader, add_hydrogens: bool = None):
         """
         Populate the model from a reader callable.
 
@@ -529,6 +564,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         reader : callable
             Zero-argument callable returning ``(pdb_df, cell, spacegroup)``. An
             optional ``.links`` attribute on it is stored on ``self.ctx.links``.
+        add_hydrogens : bool, optional
+            Whether to top up missing hydrogens once the model is built. Defaults to the
+            context's setting, and is forced off for the re-entry that
+            :meth:`_add_missing_hydrogens` makes, so generation happens once per load.
 
         Returns
         -------
@@ -541,6 +580,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         ``aniso_flag`` buffer, the four wrappers, the default masks, the altloc
         registration and ``initialized = True``.
         """
+        if add_hydrogens is None:
+            add_hydrogens = self.ctx.add_hydrogens and not self.ctx.strip_H
+        self._invalidate_atom_derived_caches()
         self.pdb, cell, spacegroup = reader()
         self.ctx.links = getattr(reader, "links", None)
 
@@ -605,7 +647,59 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.set_default_masks()
         self.register_alternative_conformations()
         self.ctx.initialized = True
+
+        if add_hydrogens:
+            self._add_missing_hydrogens()
         return self
+
+    def _add_missing_hydrogens(self) -> None:
+        """Top up the hydrogens the atom table is missing, in place.
+
+        Per parent, not per file: a structure deposited with some hydrogens gets the
+        rest, because the plan only ever proposes a hydrogen the template names and the
+        model does not have. 1AK5 arrives with 675 of roughly 2500, and a
+        does-it-have-any test would have left it there.
+
+        Re-enters :meth:`load` on the augmented atom table, which rebuilds the parameter
+        wrappers and per-atom buffers at the new size. The re-entry is told not to
+        consider hydrogens again, so this runs once per load rather than recursing to a
+        fixed point.
+
+        Costs a restraint build that is then discarded, because the plan needs the
+        topology and the topology is built over the atoms as loaded. Set
+        ``add_hydrogens=False`` to skip it for a model that will never be refined.
+        """
+        from torchref.topology.hydrogens import (
+            augment_atom_table,
+            optimise_free_torsions,
+            plan_hydrogens,
+        )
+
+        restraints = self.restraints
+        xyz = self.xyz().detach()
+        plan = plan_hydrogens(
+            restraints.topology, restraints.cif_dict, xyz, verbose=self.ctx.verbose
+        )
+        if plan.n_hydrogens == 0:
+            return
+        optimise_free_torsions(plan, restraints.topology, xyz)
+        augmented = augment_atom_table(self.pdb, plan, restraints.topology)
+
+        if self.ctx.verbose > 0:
+            print(f"Generated {plan.n_hydrogens} hydrogens")
+
+        # The topology and every per-atom tensor are sized for the old atom set.
+        self._restraints = None
+        cell, spacegroup = self.cell, self.spacegroup
+        links = self.ctx.links
+
+        def reader():
+            return augmented, cell.data.cpu().numpy(), spacegroup
+
+        # Carried explicitly: ``load`` reads links off the reader, so a bare callable
+        # would drop the LINK records the first read resolved.
+        reader.links = links
+        self.load(reader, add_hydrogens=False)
 
     def load_pdb(self, file):
         """
@@ -820,7 +914,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Copies the live values of ``xyz`` (x/y/z), ``u`` (u11..u23), ``adp``
         (tempfactor), and ``occupancy`` from the parameter wrappers into the
         corresponding columns of the ``self.pdb`` DataFrame. Called by every
-        writer and by ``hydrogenate`` / ``generate_hydrogens`` before output.
+        writer and by ``hydrogenate`` before output.
 
         Returns
         -------
@@ -1588,8 +1682,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         )
 
 
-    def _new_model_from_df(self, df, *, strip_H=None):
-        """Build a fresh model of the same class from a DataFrame."""
+    def _new_model_from_df(self, df, *, strip_H=None, add_hydrogens=False):
+        """Build a fresh model of the same class from a DataFrame.
+
+        ``add_hydrogens`` defaults to False, unlike the constructor: the caller has
+        already settled which atoms the table holds, and generating more would fight
+        that. :meth:`hydrogenate` passes an already-augmented table for the same reason.
+        """
         import inspect
 
         sh = self.ctx.strip_H if strip_H is None else strip_H
@@ -1598,6 +1697,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             verbose=0,
             device=self.device,
             strip_H=sh,
+            add_hydrogens=add_hydrogens,
         )
         sig = inspect.signature(self.__class__.__init__)
         for pname, param in sig.parameters.items():

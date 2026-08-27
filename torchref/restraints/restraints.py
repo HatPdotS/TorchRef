@@ -838,17 +838,28 @@ class RestraintsNew(DeviceMixin, DebugMixin, Module):
         # and re-inserted here and by _rebuild_entries.
         self._entries["vdw"] = self._vdw
 
-        # Build riding hydrogen topology and precompute candidate pairs
+        # Riding hydrogens stand in for the sterics of hydrogens the model does not
+        # carry. Once it carries them they are ordinary atoms in the pair list above, and
+        # placing riding ones as well would put phantom hydrogens in the structure that
+        # push real atoms around. The two also disagree about how many belong on a
+        # parent -- the riding builder counts bonded neighbours by distance, the
+        # generator reads them off the bond graph -- so the leftovers are not even the
+        # hydrogens the generator declined to add.
         from torchref.restraints.hydrogen_topology import (
-            build_hydrogen_topology,
+            HydrogenTopology,
             build_h_candidate_pairs,
+            build_hydrogen_topology,
         )
 
-        self._h_topo = build_hydrogen_topology(
-            pdb=self.pdb,
-            device=cpu,
-            verbose=self.verbose,
-        )
+        elements = self.pdb["element"].astype(str).str.strip().values
+        if (elements == "H").any():
+            self._h_topo = HydrogenTopology(device=cpu)
+        else:
+            self._h_topo = build_hydrogen_topology(
+                pdb=self.pdb,
+                device=cpu,
+                verbose=self.verbose,
+            )
         self._h_excl_hash = self._build_h_exclusion_hash(self._h_topo, cpu)
 
         # Precompute H candidate pairs from heavy-atom VDW pair list

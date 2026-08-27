@@ -254,17 +254,23 @@ def _half_hydrogen_angle(template: Dict, parent_name: str, h_names: List[str]) -
     return 0.5 * np.arccos(-1.0 / 3.0)
 
 
-def _heavy_neighbours(topology, atom_index: int) -> np.ndarray:
-    """Rows of the heavy atoms bonded to ``atom_index``, from the bond graph.
+def _split_neighbours(topology, atom_index: int) -> Tuple[np.ndarray, int]:
+    """Heavy neighbour rows of ``atom_index``, and how many hydrogens it already has.
 
     Coordinate-independent, unlike a distance sweep: a stretched bond in a predicted or
     mid-refinement model still counts, and two atoms that merely sit close do not.
+
+    The hydrogen count is what makes generation idempotent and makes a partially
+    hydrogenated structure top up correctly. Both consume the parent's valence, so
+    subtracting only the heavy neighbours leaves budget for a hydrogen the parent
+    already carries -- which is how a second pass came to add the free-amino-acid ``H2``
+    to every backbone nitrogen that already had its ``H``.
     """
     neighbours = topology.atoms.neighbors(atom_index)
     if neighbours.numel() == 0:
-        return np.zeros(0, dtype=np.int64)
-    heavy = neighbours[~topology.atoms.is_hydrogen[neighbours]]
-    return heavy.cpu().numpy()
+        return np.zeros(0, dtype=np.int64), 0
+    is_h = topology.atoms.is_hydrogen[neighbours]
+    return neighbours[~is_h].cpu().numpy(), int(is_h.sum())
 
 
 def _template_bond_length(template: Dict, parent_name: str, h_name: str) -> float:
@@ -439,15 +445,13 @@ def plan_hydrogens(topology, cif_dict: Dict, xyz, verbose: int = 0) -> HydrogenP
                 parent_row = name_to_row[parent_name]
                 parent_position = coords[parent_row]
 
-                heavy_rows = _heavy_neighbours(topology, parent_row)
+                heavy_rows, existing_h = _split_neighbours(topology, parent_row)
                 heavy_bonded = len(heavy_rows)
                 element = str(
                     template["elements"][template["id_to_index"][parent_name]]
                 ).upper()
-                allowed = max(
-                    0,
-                    STANDARD_VALENCE.get(element, _DEFAULT_VALENCE) - heavy_bonded,
-                )
+                valence = STANDARD_VALENCE.get(element, _DEFAULT_VALENCE)
+                allowed = max(0, valence - heavy_bonded - existing_h)
                 group = group[:allowed]
                 if not group:
                     continue

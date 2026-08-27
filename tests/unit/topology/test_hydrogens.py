@@ -28,7 +28,9 @@ def built(pdb_dir):
 
     def _build(code):
         if code not in cache:
-            model = Model(verbose=0)
+            # add_hydrogens=False: these tests exercise generation itself, so the model
+            # has to arrive without the hydrogens the loader would otherwise add.
+            model = Model(verbose=0, add_hydrogens=False, strip_H=True)
             model.load_pdb(str(pdb_dir / f"{code}.pdb"))
             model.set_restraints_cif(None)
             restraints = model.restraints
@@ -243,7 +245,7 @@ def test_waters_are_not_hydrogenated(built):
 @pytest.mark.unit
 def test_hydrogenate_returns_a_consistent_model(pdb_dir):
     """The end-to-end path yields a model whose tensors, table and restraints agree."""
-    model = Model(verbose=0)
+    model = Model(verbose=0, add_hydrogens=False, strip_H=True)
     model.load_pdb(str(pdb_dir / "7L84.pdb"))
     model.set_restraints_cif(None)
     n_heavy = len(model.pdb)
@@ -275,10 +277,9 @@ def test_hydrogenate_returns_a_consistent_model(pdb_dir):
 
 
 @pytest.mark.unit
-def test_loading_still_strips_hydrogens_by_default(pdb_dir):
-    """``strip_H`` is untouched, so refinement sees the same atoms as before."""
-    model = Model(verbose=0)
+def test_strip_H_removes_deposited_hydrogens(pdb_dir):
+    """The opt-out drops the hydrogens the file carries, as it always did."""
+    model = Model(verbose=0, strip_H=True)
     model.load_pdb(str(pdb_dir / "1AK5_with_H.pdb"))
-    assert model.ctx.strip_H is True
     elements = model.pdb["element"].astype(str).str.strip().values
     assert not (elements == "H").any()

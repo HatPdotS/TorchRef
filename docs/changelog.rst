@@ -31,6 +31,11 @@ Unreleased
 - Hydrogens on a centre whose template omits a real substituent -- a peptide-linked backbone nitrogen -- are now built from the bonded neighbours instead of the template frame
 - Hydrogens with a free torsion (hydroxyl, thiol, amine, methyl) are identified from bond connectivity and their dihedral is scanned, rather than taken from whatever the library deposited
 - Removed ``Model.generate_hydrogens``; ``Model.hydrogenate`` is the single path and no longer takes ``lbfgs_steps`` or ``max_iter``
+- Hydrogens are now present by default: ``strip_H`` defaults to False, and hydrogens a file does not carry are generated on load. New ``add_hydrogens`` argument turns generation off while still keeping any the file has
+- Generation is decided per parent, so a partially hydrogenated structure is topped up rather than left as deposited
+- Fixed the lazily-cached per-atom buffers (``vdw_radii``, ``Z``, the ITC92 coefficients) surviving a load that changes the atom count, which left them sized for the previous atom set
+- Riding hydrogens are no longer placed when the model carries real ones, where they acted as phantom atoms in the non-bonded term
+- Fixed the hydrogen valence cap counting only heavy neighbours, so a parent that already carried a hydrogen still had budget for another; generation was not idempotent and a save/reload added a spurious second amide hydrogen to every linked residue
 
 
 Version 0.6.4

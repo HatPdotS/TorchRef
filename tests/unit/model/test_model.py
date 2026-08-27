@@ -54,12 +54,13 @@ class TestModelInitialization:
 
     @pytest.mark.unit
     def test_model_strip_h_default(self):
-        """Test strip_H defaults to True."""
+        """strip_H defaults to False, and hydrogen generation is on."""
         from torchref.model.model import Model
-        
+
         model = Model()
-        
-        assert model.ctx.strip_H is True
+
+        assert model.ctx.strip_H is False
+        assert model.ctx.add_hydrogens is True
 
     @pytest.mark.unit
     def test_model_bool_uninitialized(self):

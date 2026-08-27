@@ -5,13 +5,15 @@ weighting or connectivity shows up in the trajectory rather than being washed ou
 endpoint. That makes these five structures a sharper probe of a topology or restraint
 change than a converged-structure comparison would be.
 
-The comparison carries a **null-control arm**. TorchRef refinement is not bitwise
-reproducible -- even two forward passes in one process differ -- so a deviation from the
-reference means nothing until it is measured against the deviation between two runs of
-the *same* build. A regression is a deviation larger than that null spread, not a
-deviation from zero.
+TorchRef refinement is not reproducible run to run, so a deviation from the reference
+means nothing on its own. Each structure therefore carries its **own** tolerance,
+measured over :data:`SPREAD_RUNS` independent runs when the reference was written, and
+committed alongside it. Sizing the tolerance from a couple of runs at test time does
+not work: 6JZA is bimodal at this cycle count -- its trajectories land in one of two
+basins about 0.0074 apart -- and two runs that happen to pick the same basin report a
+spread 140 times too small.
 
-Regenerate the reference deliberately, after a change meant to move these numbers::
+Regenerate deliberately, after a change meant to move these numbers::
 
     ./.dev/bin/python tests/functional/test_af_trajectory.py
 """
@@ -19,6 +21,7 @@ Regenerate the reference deliberately, after a change meant to move these number
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -30,19 +33,18 @@ CODES = ["1VER", "6VHI", "1BYW", "6JZA", "6SXW"]
 #: keeping the whole test at a few seconds per structure.
 CYCLES = 2
 
+#: Independent runs used to size each structure's tolerance at regeneration time. Enough
+#: to see a second basin if there is one; two is not.
+SPREAD_RUNS = 5
+
+#: Multiple of the measured spread a deviation may reach before it counts as a change.
+SPREAD_MULTIPLE = 3.0
+
+#: Tolerance floor, so a structure whose runs agree very closely is not held to an
+#: unreasonably tight bound.
+TOLERANCE_FLOOR = 0.002
+
 REFERENCE = Path(__file__).with_name("af_trajectory_reference.json")
-
-#: Largest same-build spread tolerated before the test reports that nondeterminism
-#: itself has grown. Measured spread when the reference was written: 0.0001 to 0.0014.
-NULL_CEILING = 0.006
-
-#: Deviation floor, used when the measured null spread is very small. Keeps a structure
-#: whose two runs happen to agree closely from being held to too tight a bound.
-TOLERANCE_FLOOR = 0.004
-
-#: How many times the measured null spread a deviation may reach before it counts as a
-#: real change rather than run-to-run noise.
-NULL_MULTIPLE = 4.0
 
 
 def trajectory(pdb_path, mtz_path, cycles=CYCLES):
@@ -79,52 +81,41 @@ def _max_deviation(a, b):
 
 @pytest.fixture(scope="module")
 def reference():
-    """The committed reference trajectories."""
+    """The committed reference trajectories and their tolerances."""
     if not REFERENCE.exists():
         pytest.fail(
             f"{REFERENCE.name} is missing. Regenerate it with "
             f"`./.dev/bin/python {Path(__file__).name}`."
         )
-    return json.loads(REFERENCE.read_text())
+    data = json.loads(REFERENCE.read_text())
+    assert (
+        data["cycles"] == CYCLES
+    ), f"reference was written for {data['cycles']} cycles, test runs {CYCLES}"
+    return data
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("code", CODES)
 def test_af_trajectory_matches_reference(code, reference, test_files_dir):
-    """The trajectory sits within the run-to-run noise of the committed reference."""
+    """The trajectory sits inside this structure's own measured run-to-run spread."""
     pdb_path = test_files_dir / "pdb" / f"{code}_af.pdb"
     mtz_path = test_files_dir / "mtz" / f"{code}.mtz"
     assert pdb_path.exists(), f"{pdb_path.name} is not bundled"
     assert mtz_path.exists(), f"{mtz_path.name} is not bundled"
 
-    assert (
-        reference["cycles"] == CYCLES
-    ), f"reference was written for {reference['cycles']} cycles, test runs {CYCLES}"
-    expected = [tuple(p) for p in reference["structures"][code]]
+    entry = reference["structures"][code]
+    expected = [tuple(point) for point in entry["trajectory"]]
+    tolerance = float(entry["tolerance"])
 
-    # The null-control arm: two runs of this build, to size the noise.
-    run_a = trajectory(pdb_path, mtz_path)
-    run_b = trajectory(pdb_path, mtz_path)
-    null = _max_deviation(run_a, run_b)
-
-    assert null <= NULL_CEILING, (
-        f"{code}: two runs of the same build differ by {null:.6f}, above the "
-        f"{NULL_CEILING} ceiling. Refinement nondeterminism has grown, which has to be "
-        f"understood before any comparison against the reference means anything."
-    )
-
-    assert len(run_a) == len(
+    observed = trajectory(pdb_path, mtz_path)
+    assert len(observed) == len(
         expected
-    ), f"{code}: trajectory has {len(run_a)} stages, reference has {len(expected)}"
+    ), f"{code}: trajectory has {len(observed)} stages, reference has {len(expected)}"
 
-    observed = [((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) for a, b in zip(run_a, run_b)]
     deviation = _max_deviation(observed, expected)
-    tolerance = max(TOLERANCE_FLOOR, NULL_MULTIPLE * null)
-
     assert deviation <= tolerance, (
-        f"{code}: trajectory deviates from the reference by {deviation:.6f}, above the "
-        f"{tolerance:.6f} tolerance ({NULL_MULTIPLE}x the {null:.6f} null spread). "
-        f"observed={observed}\nreference={expected}"
+        f"{code}: deviates from the reference by {deviation:.6f}, above its measured "
+        f"tolerance of {tolerance:.6f}.\nobserved={observed}\nreference={expected}"
     )
 
 
@@ -136,30 +127,61 @@ def test_af_starts_actually_descend(reference):
     so the set is only useful while every member descends.
     """
     for code in CODES:
-        series = reference["structures"][code]
-        first_rwork, last_rwork = series[0][0], series[-1][0]
-        assert last_rwork < first_rwork - 0.02, (
-            f"{code} only moves R-work from {first_rwork:.4f} to {last_rwork:.4f}; "
-            f"it is too flat to serve as a trajectory probe"
+        series = reference["structures"][code]["trajectory"]
+        first, last = series[0][0], series[-1][0]
+        assert last < first - 0.02, (
+            f"{code} only moves R-work from {first:.4f} to {last:.4f}; it is too flat "
+            f"to serve as a trajectory probe"
+        )
+
+
+@pytest.mark.integration
+def test_tolerances_are_tight_enough_to_detect_something(reference):
+    """A tolerance so wide it would accept any change is not a test.
+
+    Guards against a future regeneration quietly widening a bound until the structure
+    stops constraining anything. The bound has to stay well inside the descent the
+    trajectory itself shows.
+    """
+    for code in CODES:
+        entry = reference["structures"][code]
+        series = entry["trajectory"]
+        descent = series[0][0] - series[-1][0]
+        assert entry["tolerance"] < descent / 4.0, (
+            f"{code}: tolerance {entry['tolerance']:.4f} is not small against its "
+            f"own R-work descent of {descent:.4f}"
         )
 
 
 def _write_reference():
-    """Regenerate the reference from the mean of two runs per structure."""
+    """Regenerate the reference, sizing each tolerance from independent runs."""
     root = Path(__file__).resolve().parents[1] / "files"
     structures = {}
     for code in CODES:
         pdb_path = root / "pdb" / f"{code}_af.pdb"
         mtz_path = root / "mtz" / f"{code}.mtz"
-        run_a = trajectory(pdb_path, mtz_path)
-        run_b = trajectory(pdb_path, mtz_path)
-        structures[code] = [
-            [round((a[0] + b[0]) / 2, 6), round((a[1] + b[1]) / 2, 6)]
-            for a, b in zip(run_a, run_b)
+
+        runs = [trajectory(pdb_path, mtz_path) for _ in range(SPREAD_RUNS)]
+        mean = [
+            tuple(float(np.mean([run[stage][i] for run in runs])) for i in (0, 1))
+            for stage in range(len(runs[0]))
         ]
-        print(f"{code}: null={_max_deviation(run_a, run_b):.6f}")
+        spread = max(_max_deviation(run, mean) for run in runs)
+        tolerance = max(TOLERANCE_FLOOR, SPREAD_MULTIPLE * spread)
+
+        structures[code] = {
+            "trajectory": [[round(w, 6), round(f, 6)] for w, f in mean],
+            "spread": round(spread, 6),
+            "tolerance": round(tolerance, 6),
+        }
+        print(f"{code}: spread={spread:.6f} tolerance={tolerance:.6f}", flush=True)
+
     REFERENCE.write_text(
-        json.dumps({"cycles": CYCLES, "structures": structures}, indent=2) + "\n"
+        json.dumps(
+            {"cycles": CYCLES, "spread_runs": SPREAD_RUNS, "structures": structures},
+            indent=2,
+        )
+        + "\n"
     )
     print(f"wrote {REFERENCE}")
 
