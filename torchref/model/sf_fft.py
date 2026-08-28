@@ -5,7 +5,7 @@ atomic parameters, and the FFT to structure factors. Usable standalone or as
 ``ModelFT``'s submodule. ``FFT`` is a deprecated alias for :class:`SfFFT`.
 """
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -14,9 +14,7 @@ from torchref.base.fourier import get_real_grid, ifft
 from torchref.base.reciprocal import extract_structure_factor_from_grid
 from torchref.config import dtypes, get_default_device
 from torchref.symmetry import Cell, SpaceGroup
-from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.symmetry.spacegroup import SpaceGroupLike
-from torchref.utils.caching import ParameterFingerprint
 from torchref.utils.device_mixin import DeviceMovementMixin
 from torchref.utils.device_resolution import resolve_device
 
@@ -54,8 +52,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     gridsize, real_space_grid, voxel_size : torch.Tensor or None
         Grid dimensions ``(nx, ny, nz)``, coordinate grid ``(nx, ny, nz, 3)`` and
         voxel dimensions -- all ``None`` until :meth:`setup_grid` runs.
-    map_symmetry : MapSymmetry or None
-        Symmetry operator for map calculations.
     """
 
     def __init__(
@@ -121,18 +117,8 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         self.register_buffer("real_space_grid", None)
         self.register_buffer("voxel_size", None)
 
-        # Map symmetry operator (set during setup_grid)
-        self.map_symmetry: Optional[MapSymmetry] = None
-
         # Late symmetry compatibility flag (set during setup_grid)
         self._late_symmetry_compatible: Optional[bool] = None
-
-        # Cached reciprocal symmetry extractor (precomputed flat indices).
-        # Keyed on a (data_ptr, _version, numel) fingerprint of the HKL tensor
-        # rather than id(hkl): a garbage-collected tensor reallocated at the
-        # same address cannot silently alias a stale extractor.
-        self._sym_extractor = None
-        self._sym_extractor_hkl_fp: Optional[ParameterFingerprint] = None
 
     # =========================================================================
     # Cell and SpaceGroup properties
@@ -242,8 +228,6 @@ class SfFFT(DeviceMovementMixin, nn.Module):
 
         resolution = max_res if max_res is not None else self.max_res
 
-        from torchref.symmetry.spacegroup import suggest_grid_size
-
         # Use Cell's method for base grid size calculation
         gridsize_initial = self._cell.compute_grid_size(resolution)
 
@@ -251,8 +235,8 @@ class SfFFT(DeviceMovementMixin, nn.Module):
             print(f"Initial grid size from cell: {gridsize_initial}")
 
         # Optimize for symmetry and FFT-friendliness
-        gridsize_optimized = suggest_grid_size(
-            gridsize_initial, self._spacegroup, make_fft_friendly=True
+        gridsize_optimized = self._spacegroup.suggest_grid_size(
+            gridsize_initial, make_fft_friendly=True
         )
         if self.verbose > 1 and gridsize_optimized != gridsize_initial:
             print(
@@ -342,18 +326,13 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         # Compute voxel size
         self.voxel_size = self.real_space_grid[2, 2, 2] - self.real_space_grid[1, 1, 1]
 
-        # Initialize map symmetry operator if space group is set
+        # Every symmetry-equivalent HKL lands on an integer grid point exactly when
+        # the grid admits direct indexing, which the space group answers without
+        # building an operator.
         if self._spacegroup is not None:
-            self.map_symmetry = MapSymmetry(
-                space_group=self._spacegroup,
-                map_shape=self.real_space_grid.shape[:-1],
-                cell_params=self._cell.data,
-                verbose=self.verbose,
-                device=self.device,
+            self._late_symmetry_compatible = self._spacegroup.can_index_directly(
+                self.real_space_grid.shape[:-1]
             )
-
-            # Check late symmetry compatibility
-            self._late_symmetry_compatible = self._check_late_symmetry_compatible()
 
             if self.use_late_symmetry and self._late_symmetry_compatible:
                 if self.verbose > 0:
@@ -367,28 +346,15 @@ class SfFFT(DeviceMovementMixin, nn.Module):
                         "(falling back to early symmetry)"
                     )
         else:
-            self.map_symmetry = None
             self._late_symmetry_compatible = False
 
-        # Invalidate cached symmetry extractor (grid shape changed)
-        self._sym_extractor = None
-        self._sym_extractor_hkl_fp = None
+        # The grid shape changed, so the space group's cached operators are stale.
+        if self._spacegroup is not None:
+            self._spacegroup.reset_cache()
 
         if self.verbose > 2:
             print(f"Grid shape: {self.real_space_grid.shape[:-1]}")
             print(f"Voxel size: {self.voxel_size}")
-
-    def _check_late_symmetry_compatible(self) -> bool:
-        """True when every symmetry-equivalent HKL lands on an integer grid
-        point, which the MapSymmetry factory signals by returning a
-        ``MapSymmetryDirect`` (direct indexing, no interpolation).
-        """
-        if self.map_symmetry is None:
-            return False
-
-        from torchref.symmetry.map_symmetry import MapSymmetryDirect
-
-        return isinstance(self.map_symmetry, MapSymmetryDirect)
 
     # =========================================================================
     # Density Map Building Methods
@@ -457,8 +423,8 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         )
 
         # Apply symmetry if requested
-        if apply_symmetry and self.map_symmetry is not None:
-            density_map = self.map_symmetry(density_map)
+        if apply_symmetry and self._spacegroup is not None:
+            density_map = self._spacegroup.symmetrize_map(density_map)
 
         return density_map
 
@@ -497,21 +463,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
         # Use late symmetry if enabled, compatible, and requested
         if apply_symmetry:
             # Lazily build / reuse cached extractor (precomputed flat indices)
-            if self._sym_extractor is None or (
-                self._sym_extractor_hkl_fp is None
-                or not self._sym_extractor_hkl_fp.matches([hkl])
-            ):
-                from torchref.base.reciprocal import ReciprocalSymmetryExtractor
-
-                grid_shape = tuple(int(x) for x in self.gridsize)
-                self._sym_extractor = ReciprocalSymmetryExtractor(
-                    hkl,
-                    self.spacegroup,
-                    grid_shape,
-                    device=reciprocal_space_grid.device,
-                )
-                self._sym_extractor_hkl_fp = ParameterFingerprint([hkl])
-            return self._sym_extractor.extract_from_grid(reciprocal_space_grid)
+            grid_shape = tuple(int(x) for x in self.gridsize)
+            extractor = self._spacegroup.reciprocal_extractor(hkl, grid_shape)
+            return extractor.extract_from_grid(reciprocal_space_grid)
         else:
             return extract_structure_factor_from_grid(reciprocal_space_grid, hkl)
 
@@ -594,9 +548,9 @@ class SfFFT(DeviceMovementMixin, nn.Module):
     # =========================================================================
 
     def reset_cache(self) -> None:
-        """Drop the cached symmetry extractor; recomputed on next use."""
-        self._sym_extractor = None
-        self._sym_extractor_hkl_fp = None
+        """Drop the space group's cached operators; recomputed on next use."""
+        if self._spacegroup is not None:
+            self._spacegroup.reset_cache()
 
     def copy(self) -> "SfFFT":
         """Create a deep copy of this SfFFT module.

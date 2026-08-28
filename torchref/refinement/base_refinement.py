@@ -53,6 +53,16 @@ DEFAULT_GROUP_WEIGHTS = {
     # neighbours, and the log-normal KL term it replaced was a single intensive
     # scalar. Pending the R_free weight scan, 1.0 leaves it at the group weight.
     "adp/sigd": 1.0,
+    # Load balancing for the node-field ADP representation. Sub-weight on the adp
+    # group, and inert on the per-atom path, so it only acts in field mode. Set
+    # above the group weight because it is a barrier against a degenerate direction
+    # rather than a prior competing with the data.
+    "adp/node_load": 10.0,
+    # Magnitude prior on the node values. Off pending its own measurement: the load
+    # barrier acts only on the weights, so this is what actually bounds an extreme
+    # node B, but it has not been screened yet. Same convention as
+    # 'geometry/ramachandran'.
+    "adp/node_smoothness": 0.0,
 }
 
 
@@ -851,8 +861,8 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
             return metadata.merge(refinement_meta)
 
         # Merge with pass-through headers from input file
-        if hasattr(self.model, "_input_file") and self.model._input_file:
-            input_file = self.model._input_file
+        if self.model.ctx.input_file:
+            input_file = self.model.ctx.input_file
             if input_file.endswith(".pdb"):
                 input_meta = RefinementMetadata.from_pdb_file(input_file)
             elif input_file.endswith((".cif", ".mmcif")):
@@ -980,7 +990,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         scaler = Scaler(model, reflection_data, verbose=verbose, device=device)
 
         # Create Restraints with model (required for proper setup)
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         restraints = Restraints(model, verbose=verbose)
 
@@ -1015,7 +1025,7 @@ class Refinement(DeviceMixin, DebugMixin, nnModule):
         instance.scaler.set_model_and_data(instance.model, instance.reflection_data)
 
         # Initialize targets if model is available
-        if instance.model is not None and instance.model.initialized:
+        if instance.model is not None and instance.model.ctx.initialized:
             try:
                 instance._init_targets()
             except Exception as e:

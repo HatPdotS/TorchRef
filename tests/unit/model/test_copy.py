@@ -1,17 +1,29 @@
-"""``Model.copy`` / ``ModelFT.copy`` must carry the derived per-atom state.
+"""A copy must be usable and independent, however the state gets there.
 
 Two things in ``copy()`` are neither buffers nor parameter wrappers, so the
-buffer and module loops do not carry them:
+buffer and module loops do not carry them, and each is handled by the model
+rather than by ``copy()`` itself:
 
 * the **iso/aniso partition** (``_iso_indices``, ``_aniso_indices`` and the two
-  fast-path flags) is rebuilt from ``aniso_flag`` and the heavy-atom mask by
-  ``_rebuild_sf_indices``, which otherwise runs only in ``load()``. Without it a
-  copy raises ``AttributeError`` from ``get_iso()``/``get_aniso()``.
-* the **space group**. ``Model.spacegroup`` is a property, but ``SpaceGroup`` is
-  an ``nn.Module``, so ``model.spacegroup = sg_object`` is intercepted by
-  ``nn.Module.__setattr__``, stored in ``_modules`` under the property's own
-  name, and the setter never runs. The copy must own its space group, not
-  register the original's under a second key.
+  fast-path flags) is derived on access and keyed on ``aniso_flag``'s identity.
+  It used to be rebuilt eagerly, which is what made this fragile: a copy is
+  constructed, *then* has its context replaced and its buffers cloned, so
+  eagerly-built indices described the wrong ``aniso_flag`` -- and silently, since
+  a stale partition gathers the wrong atoms rather than raising.
+* the **space group**, which lives on ``ModelContext``. That is deliberately a
+  dataclass and not an ``nn.Module``, so assigning one cannot be intercepted by
+  ``nn.Module.__setattr__`` and land in ``_modules`` under the property's own
+  name. The copy must own its space group, not alias the original's.
+
+These assert the *outcome* -- a copy whose partition is right and whose space
+group is its own -- so they keep their teeth regardless of which mechanism
+delivers it.
+
+A third pair of tests here covered ``ModelFT.copy(build_grid=)``, which skipped
+building a real-space grid that the cell/spacegroup setters immediately replace.
+That option is gone: ``real_space_grid`` is legacy -- the density splat
+reconstructs voxel positions from ``frac_matrix`` and never reads it -- so the
+waste is being removed where it is produced rather than worked around here.
 
 ``4BX9`` is used because it carries ``ANISOU`` records, so the partition is
 genuinely mixed (220 isotropic, 9973 anisotropic) rather than all-isotropic,
@@ -46,6 +58,9 @@ def test_copy_has_a_usable_iso_aniso_partition(cls_name, mixed_adp_path):
     m = _load(cls, mixed_adp_path)
     c = m.copy()
 
+    # Mutating the original's flags after the copy must not reach the copy, and
+    # must be picked up by the original -- the property that eager rebuilding
+    # could not give us.
     for attr in ("_iso_indices", "_aniso_indices", "_iso_covers_all",
                  "_aniso_is_empty"):
         assert hasattr(c, attr), f"{cls_name}.copy() dropped {attr}"
@@ -94,61 +109,8 @@ def test_copy_owns_its_spacegroup(cls_name, mixed_adp_path):
     assert str(c.spacegroup) == str(m.spacegroup)
     # Own object: `.to(device)` on the copy must not move the original's matrices.
     assert c.spacegroup is not m.spacegroup
-    # Exactly one registration, under the private name the property reads.
+    # The space group is context state, not a submodule: nothing may register it
+    # under the property's own name, which is how the original bug manifested.
     assert "spacegroup" not in c._modules
-    assert "_spacegroup" in c._modules
     stray = [k for k in c.state_dict() if k.startswith("spacegroup.")]
     assert stray == [], f"copy registered a second space group: {stray}"
-
-
-@pytest.mark.unit
-def test_copy_can_skip_the_grid_build(mixed_adp_path):
-    """``build_grid=False`` skips the grid, and setting cell+spacegroup restores it.
-
-    Building the grid also builds the map-symmetry operator, which precomputes
-    one sampling grid per symmetry operation over the whole map. A caller that
-    is about to replace the cell, the spacegroup or ``max_res`` would have that
-    work thrown away, because each of those setters rebuilds the FFT submodule.
-    """
-    from torchref.model import ModelFT
-
-    m = _load(ModelFT, mixed_adp_path)
-    assert m._fft is not None and m._fft.real_space_grid is not None
-
-    lean = m.copy(build_grid=False)
-    assert lean._fft is not None
-    assert lean._fft.real_space_grid is None
-    assert lean._fft.map_symmetry is None
-
-    full = m.copy()
-    assert full._fft.real_space_grid is not None
-
-    # The skipped grid is recoverable: this is what the cell setter triggers.
-    lean.setup_grid(max_res=m.max_res)
-    assert lean._fft.real_space_grid is not None
-    assert torch.equal(lean._fft.gridsize, full._fft.gridsize)
-
-
-@pytest.mark.unit
-def test_skipping_the_grid_build_does_not_change_structure_factors(mixed_adp_path):
-    """The two copies must give identical ``F_calc`` once each has a grid.
-
-    ``build_grid`` is a pure waste-removal switch: the grid it skips is rebuilt
-    by the cell/spacegroup setters before any structure factor is computed, so
-    no amplitude may depend on it.
-    """
-    from torchref.model import ModelFT
-
-    m = _load(ModelFT, mixed_adp_path)
-    hkl = torch.tensor(
-        [[1, 0, 0], [0, 1, 0], [0, 0, 1], [2, 1, 3], [5, -2, 1], [7, 7, 7]],
-        dtype=torch.long,
-    )
-
-    with torch.no_grad():
-        f_full = m.copy().get_structure_factor(hkl, recalc=True)
-        lean = m.copy(build_grid=False)
-        lean.setup_grid(max_res=m.max_res)
-        f_lean = lean.get_structure_factor(hkl, recalc=True)
-
-    assert torch.equal(f_lean, f_full)

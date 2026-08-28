@@ -16,7 +16,6 @@ import pytest
 import reciprocalspaceship as rs
 import torch
 
-from torchref.base.french_wilson import is_centric_from_hkl
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model.model_ft import ModelFT
 
@@ -68,7 +67,7 @@ class TestDualHklRepresentation:
 
     def test_centrics_not_flagged(self, anomalous_data):
         d = anomalous_data
-        centric = is_centric_from_hkl(d.hkl, d.spacegroup)
+        centric = d.spacegroup.is_centric(d.hkl)
         assert not bool((d.friedel_flags & centric).any())
 
     def test_hkl_for_sf_fallback(self):

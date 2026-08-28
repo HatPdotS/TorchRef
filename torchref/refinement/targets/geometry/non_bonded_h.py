@@ -20,7 +20,7 @@ from .non_bonded import NonBondedTarget
 
 if TYPE_CHECKING:
     from torchref.model.model import Model
-    from torchref.restraints.hydrogen_topology import HydrogenTopology
+    from torchref.topology.riding import HydrogenTopology
 
 
 class NonBondedHTarget(NonBondedTarget):
@@ -93,7 +93,7 @@ class NonBondedHTarget(NonBondedTarget):
         ordering to do identity and real symmetry transforms in one pass. Other modes
         take the inline eager path below.
         """
-        from torchref.restraints.hydrogen_topology import place_riding_hydrogens
+        from torchref.topology.riding import place_riding_hydrogens
 
         device = xyz.device
 
@@ -113,8 +113,8 @@ class NonBondedHTarget(NonBondedTarget):
             return nonbonded_heavy_math(
                 xyz_all, indices, h_topo.cand_min_dist,
                 h_topo.cand_symop_idx, h_topo.cand_cell_offset,
-                self.model.symmetry.matrices,
-                self.model.symmetry.translations,
+                self.model.spacegroup.matrices,
+                self.model.spacegroup.translations,
                 self.model.cell.fractional_matrix,
                 self.model.cell.inv_fractional_matrix,
                 self._c_rep, self._r_exp,
@@ -123,7 +123,7 @@ class NonBondedHTarget(NonBondedTarget):
 
         # Slow path: gaussian / soft modes, inline eager.
         pos_i = xyz_all[h_topo.cand_idx_i]
-        n_asu = getattr(h_topo, 'n_asu_candidates', n_cand)
+        n_asu = h_topo.n_asu_candidates
         n_sym = n_cand - n_asu
         min_dist = h_topo.cand_min_dist
 
@@ -134,7 +134,7 @@ class NonBondedHTarget(NonBondedTarget):
 
         if n_sym > 0:
             cell = self.model.cell
-            sg = self.model.symmetry
+            sg = self.model.spacegroup
             sym_source = xyz_all[h_topo.cand_idx_j[n_asu:]]
             frac = cell.cartesian_to_fractional(sym_source)
             R = sg.matrices[h_topo.cand_symop_idx[n_asu:]].to(frac.dtype)
@@ -200,7 +200,7 @@ class NonBondedHTarget(NonBondedTarget):
         ``xyz_all`` -- so symmetry-mate H contacts are reported at their intra-ASU
         separation, unlike in the loss.
         """
-        from torchref.restraints.hydrogen_topology import place_riding_hydrogens
+        from torchref.topology.riding import place_riding_hydrogens
 
         result = super().get_violations(threshold)
 
@@ -234,7 +234,7 @@ class NonBondedHTarget(NonBondedTarget):
 
     def stats(self) -> Dict[str, any]:
         """Get statistics including H-VDW contacts."""
-        from torchref.restraints.hydrogen_topology import place_riding_hydrogens
+        from torchref.topology.riding import place_riding_hydrogens
 
         result = super().stats()
 

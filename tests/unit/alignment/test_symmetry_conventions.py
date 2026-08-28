@@ -1,7 +1,7 @@
 """Guard the reciprocal-space symmetry convention used by the FRF.
 
 Reciprocal space transforms as ``h' = h·R`` (equivalently ``Rᵀ·h``), the rule
-:meth:`SpaceGroup.apply_to_hkl` implements. The alignment package re-derives
+:meth:`SpaceGroup.expand_reciprocal` implements. The alignment package re-derives
 symmetry expansions inline in several places, and each of those inline copies
 once used ``R·h`` instead.
 
@@ -108,13 +108,13 @@ def test_cartesian_symops_are_rotations(hm, non_orthogonal):
 
 
 @pytest.mark.parametrize("hm, non_orthogonal", SPACEGROUPS)
-def test_unroll_matches_apply_to_hkl(hm, non_orthogonal):
+def test_unroll_matches_expand_reciprocal(hm, non_orthogonal):
     """Any inline symmetry expansion must agree with the shared helper.
 
-    ``apply_to_hkl`` is the single definition of the convention; the einsum
-    contraction ``"kji,nj->kni"`` is the same operation with the operator axis
-    first. ``"kij,nj->kni"`` is the bug and differs here for the non-orthogonal
-    settings.
+    ``expand_reciprocal`` is the single definition of the convention, and it
+    returns the operator axis first -- so the einsum contraction
+    ``"kji,nj->kni"`` matches it directly. ``"kij,nj->kni"`` is the bug and
+    differs here for the non-orthogonal settings.
     """
     del non_orthogonal
     sg = SpaceGroup(hm)
@@ -122,10 +122,10 @@ def test_unroll_matches_apply_to_hkl(hm, non_orthogonal):
     g = torch.Generator().manual_seed(7)
     hkl = torch.randint(-12, 13, (200, 3), generator=g).to(torch.float64)
 
-    reference = sg.apply_to_hkl(hkl).detach().cpu().to(torch.float64)          # (N, 3, ops)
+    reference = sg.expand_reciprocal(hkl).detach().cpu().to(torch.float64)     # (ops, N, 3)
     unrolled = torch.einsum("kji,nj->kni", S, hkl)              # (ops, N, 3)
-    assert torch.allclose(unrolled.permute(1, 2, 0), reference, atol=1e-9), (
-        f"{hm}: inline unroll disagrees with SpaceGroup.apply_to_hkl"
+    assert torch.allclose(unrolled, reference, atol=1e-9), (
+        f"{hm}: inline unroll disagrees with SpaceGroup.expand_reciprocal"
     )
 
 
@@ -202,10 +202,10 @@ def test_epsilon_uses_the_row_vector_convention(hm, non_orthogonal):
     eps = compute_epsilon(hkl, S).detach().cpu()
     assert int(eps.min()) >= 1
     # Recompute independently through the shared helper.
-    ref = sg.apply_to_hkl(hkl.to(torch.float64)).detach().cpu()                # (N, 3, ops)
-    same = (ref.round() == hkl.to(torch.float64).unsqueeze(-1)).all(dim=1)
-    assert torch.equal(eps.to(torch.long), same.sum(dim=-1).clamp(min=1)), (
-        f"{hm}: compute_epsilon disagrees with apply_to_hkl"
+    ref = sg.expand_reciprocal(hkl).detach().cpu()                             # (ops, N, 3)
+    same = (ref == hkl.to(torch.int64)).all(dim=-1)
+    assert torch.equal(eps.to(torch.long), same.sum(dim=0).clamp(min=1)), (
+        f"{hm}: compute_epsilon disagrees with expand_reciprocal"
     )
 
 
@@ -229,10 +229,10 @@ def test_epsilon_aware_unroll_stays_within_the_true_orbit(hm, non_orthogonal):
     asu_idx = asu_idx.detach().cpu().to(torch.long)
 
     # true orbit of each parent, via the shared helper
-    orbit = sg.apply_to_hkl(hkl.to(torch.float64)).detach().cpu().round().to(torch.long)
+    orbit = sg.expand_reciprocal(hkl).detach().cpu().to(torch.long)   # (ops, N, 3)
     for i in range(0, unrolled.shape[0], 17):          # stride: full sweep is redundant
         parent = int(asu_idx[i])
-        mates = orbit[parent].T                        # (ops, 3)
+        mates = orbit[:, parent]                       # (ops, 3)
         assert (mates == unrolled[i]).all(dim=-1).any(), (
             f"{hm}: emitted {unrolled[i].tolist()} is not in the orbit of "
             f"{hkl[parent].tolist()}"

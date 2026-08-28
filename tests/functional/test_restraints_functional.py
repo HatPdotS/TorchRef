@@ -15,7 +15,7 @@ class TestRestraintsBuildingFunctional:
     def test_build_restraints_from_cif(self, sample_cif_file):
         """Test building restraints from a real CIF file."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -36,7 +36,7 @@ class TestRestraintsBuildingFunctional:
     def test_bond_restraints_built(self, sample_cif_file):
         """Test that bond restraints are built correctly."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -77,7 +77,7 @@ class TestRestraintsBuildingFunctional:
     def test_angle_restraints_built(self, sample_cif_file):
         """Test that angle restraints are built correctly."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -111,7 +111,7 @@ class TestRestraintsBuildingFunctional:
     def test_torsion_restraints_built(self, sample_cif_file):
         """Test that torsion restraints are built correctly."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -143,7 +143,7 @@ class TestRestraintsBuildingFunctional:
     def test_plane_restraints_built(self, sample_cif_file):
         """Test that plane restraints are built correctly."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -178,7 +178,7 @@ class TestRestraintsDeviationsFunctional:
     def test_bond_deviations(self, sample_cif_file):
         """Test computing bond length deviations."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -205,7 +205,7 @@ class TestRestraintsDeviationsFunctional:
     def test_angle_deviations(self, sample_cif_file):
         """Test computing angle deviations."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -234,7 +234,7 @@ class TestRestraintsMultipleStructures:
     def test_restraints_multiple_cif_files(self, cif_dir):
         """Test building restraints for multiple CIF files."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         cif_files = list(cif_dir.glob("*.cif"))[:3]  # First 3 structures
 
@@ -262,7 +262,7 @@ class TestRestraintsDeviceHandling:
     def test_restraints_device_movement(self, sample_cif_file, cpu_device):
         """Test moving restraints to different devices."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model(device=cpu_device)
         model.load_cif(str(sample_cif_file))
@@ -288,7 +288,7 @@ class TestRestraintsCIFParsing:
     def test_cif_dict_loaded(self, sample_cif_file):
         """Test that CIF dictionary is loaded correctly."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))
@@ -314,7 +314,7 @@ class TestRestraintsCIFParsing:
     def test_unique_residues_detected(self, sample_cif_file):
         """Test that unique residues are detected from model."""
         from torchref.model.model import Model
-        from torchref.restraints import Restraints
+        from torchref.topology.restraints import Restraints
 
         model = Model()
         model.load_cif(str(sample_cif_file))

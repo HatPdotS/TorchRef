@@ -304,18 +304,18 @@ def search_peaks(
         # one orbit.
         sg_mats = data.spacegroup.matrices.to(torch.float64).to(device)
         n_ops = int(sg_mats.shape[0])
-        # `apply_to_hkl` is the package's one implementation of this contraction
-        # and its docstring carries the convention. It returns (N, 3, n_ops); the
-        # permute restores the op-major flattening the accumulations downstream
+        # `expand_reciprocal` is the package's one implementation of this
+        # contraction, and it carries the h.S convention so no call site has to
+        # re-decide the real/reciprocal transpose. It returns (n_ops, N, 3), i.e.
+        # already op-major, which is the flattening the accumulations downstream
         # were measured with -- a different row order changes the summation order
-        # in the later index_add_/unique and the last bits with it. Symops are
-        # 0/+-1 and Miller indices are small, so the products are exact at the
-        # space group's own dtype and the cast below loses nothing.
-        # `apply_to_hkl` returns on the SPACE GROUP's device, not the caller's,
-        # so the move back is load-bearing whenever the two differ.
+        # in the later index_add_/unique and the last bits with it.
+        #
+        # It rounds to int64 internally, so the products are exact and the cast
+        # below loses nothing. It also returns on the SPACE GROUP's device rather
+        # than the caller's, so the move is load-bearing whenever they differ.
         hkl_unrolled = (
-            data.spacegroup.apply_to_hkl(hkl_all[keep])
-            .permute(2, 0, 1)
+            data.spacegroup.expand_reciprocal(hkl_all[keep])
             .reshape(-1, 3)
             .to(device=device, dtype=rec_basis.dtype)
         )

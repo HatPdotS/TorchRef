@@ -103,28 +103,32 @@ def test_spacegroup_name_assignment_works(small_model):
     assert int(m.spacegroup.matrices.shape[0]) == 1
 
 
-def test_spacegroup_object_assignment_bypasses_the_setter_and_poisons_the_name(
-    small_model,
-):
-    """Pin the trap in full: the object form does not just fail to take effect.
+def test_spacegroup_object_assignment_now_takes_effect(small_model):
+    """The trap this used to pin is gone, fixed at the root rather than avoided.
 
-    ``nn.Module.__setattr__`` files the SpaceGroup under ``_modules["spacegroup"]``
-    without running the property setter, so the space group is unchanged. Worse,
-    the name is now a registered child module, so the *correct* string assignment
-    afterwards raises ``TypeError`` instead of working.
+    ``Model.spacegroup`` is a property, but ``SpaceGroup`` is an ``nn.Module``, so
+    ``model.spacegroup = sg_object`` used to be intercepted by
+    ``nn.Module.__setattr__``, filed under ``_modules["spacegroup"]`` with the
+    setter never running -- the assignment silently did nothing, and the name was
+    then a registered child module, so the *correct* string assignment afterwards
+    raised ``TypeError``. Call sites worked around it by passing a name string.
+
+    The space group now lives on ``ModelContext``, which is deliberately a
+    dataclass and not an ``nn.Module``, so there is nothing to intercept. Both
+    forms work and neither registers a submodule.
     """
     from torchref.symmetry import SpaceGroup
 
     m = small_model.copy()
-    original = str(m.spacegroup)
     assert m.spacegroup.number != 1, "1DAW should not already be P1"
 
     m.spacegroup = SpaceGroup("P 1")
-    assert str(m.spacegroup) == original, (
-        "object assignment now reaches the property setter -- the explicit name "
-        "assignments in pipeline.py can be simplified"
+    assert m.spacegroup.number == 1, "object assignment did not take effect"
+    assert "spacegroup" not in m._modules, (
+        "the space group was registered as a child module -- the interception "
+        "this test exists for has come back"
     )
-    assert "spacegroup" in m._modules
 
-    with pytest.raises(TypeError, match="child module"):
-        m.spacegroup = "P 1"
+    # The string form must still work afterwards, which is what used to raise.
+    m.spacegroup = "P 21 21 21"
+    assert m.spacegroup.number == 19

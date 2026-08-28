@@ -56,11 +56,15 @@ def dense_calc_via_box(
     """
     from torchref.symmetry.cell import Cell
 
-    # Isolate the box mutation from the caller. No grid: the three setters
-    # below replace the FFT submodule, so a grid built for the crystal cell and
-    # the data resolution would be discarded -- along with the per-operation
-    # map-symmetry sampling grids that dominate the cost of building it.
-    m = model.copy(build_grid=False)
+    # Isolate the box mutation from the caller: the three setters below replace
+    # the FFT submodule, so the grid this copy builds for the crystal cell is
+    # discarded unused -- 104 ms of it on 3K7M, where the grid is 250**3 x 3.
+    #
+    # That waste is real but it is not ours to work around here. `real_space_grid`
+    # is legacy: the density splat takes `frac_matrix`/`inv_frac_matrix` and
+    # reconstructs voxel positions itself, so on the default path the array is
+    # built to carry a device and a shape. It is being removed at the source.
+    m = model.copy()
     with torch.no_grad():
         coords = m.xyz()
         dev = coords.device

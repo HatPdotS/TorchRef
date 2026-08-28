@@ -33,7 +33,7 @@ N_TYPES = 6
 #: Number of 1° bins per axis, covering [-180, +180).
 GRID_SIZE = 360
 
-_DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "rama_nll_surfaces.pt"
+_DATA_FILE = Path(__file__).resolve().parents[1] / "data" / "rama_nll_surfaces.pt"
 
 
 def load_nll_surfaces(device: torch.device) -> torch.Tensor:

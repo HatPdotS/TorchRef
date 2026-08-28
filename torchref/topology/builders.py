@@ -8,8 +8,8 @@ only their disulfide path is stateful -- it accumulates over ``process_disulfide
 calls and emits nothing until ``finalize()`` (``finalize_disulfide()`` on the torsion
 builder).
 
-Nothing here is re-exported at the ``torchref.restraints`` level; import from
-``torchref.restraints.builders_fast``.
+Nothing here is re-exported at the package level; import from
+``torchref.topology.builders``.
 """
 
 from abc import ABC, abstractmethod
@@ -22,7 +22,7 @@ import torch
 from torchref.config import get_float_dtype
 
 # Import the Numba-accelerated matching functions
-from torchref.restraints.builders_numba import (
+from torchref.topology.builders_numba import (
     match_angles_numba,
     match_bonds_numba,
     match_chirals_numba,
@@ -133,7 +133,7 @@ class PreprocessedPDB:
         mapping : mapping, optional
             ``{(chain_id, resseq): key}`` overriding the residue name for those
             residues -- how a linked residue is pointed at a modified copy of its
-            component (see :mod:`torchref.restraints.modifications`). Residues
+            component (see :mod:`torchref.topology.monomer.modifications`). Residues
             absent from it, and every residue when this is None, key on their own
             residue name, which is the unmodified behaviour.
 
@@ -1858,7 +1858,7 @@ class InterResidueTorsionBuilder:
         torsions = link_data.torsions
         n_torsions = len(torsions["atom1"])
 
-        from torchref.restraints.ramachandran import classify_residue
+        from torchref.topology.ramachandran import classify_residue
 
         for res_i_idx, res_next_idx in pairs:
             resname_i = pp_pdb.residue_resnames[res_i_idx]

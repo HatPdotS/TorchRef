@@ -69,3 +69,33 @@ def test_create_from_state_dict_aniso_u_roundtrip(pdb_dir, cls_name):
     # At least some atoms are anisotropic → finite, non-trivial u values present.
     assert torch.isfinite(u_fresh).any()
     assert torch.allclose(u_fresh, u_restored, equal_nan=True)
+
+
+@pytest.mark.unit
+def test_altloc_pairs_survive_state_dict_round_trip(pdb_dir):
+    """``altloc_pairs`` must reach the state dict and come back.
+
+    It lives on the model's context rather than the model, so a defensive
+    ``hasattr(self, "altloc_pairs")`` in ``state_dict`` silently substituted an empty
+    list -- losing the alternative-conformation grouping on every save without
+    failing anything.
+    """
+    from torchref.model import ModelFT
+
+    cpu = torch.device("cpu")
+    model = ModelFT()
+    model.load_pdb(str(pdb_dir / "7L84.pdb"))  # carries alternative conformations
+    model.to(cpu)
+
+    assert model.ctx.altloc_pairs, "fixture should have alternative conformations"
+
+    sd = model.state_dict()
+    assert sd["altloc_pairs"], "altloc groups must reach the state dict"
+
+    restored = ModelFT.create_from_state_dict(sd, device=cpu, verbose=0)
+
+    assert len(restored.ctx.altloc_pairs) == len(model.ctx.altloc_pairs)
+    for got, want in zip(restored.ctx.altloc_pairs, model.ctx.altloc_pairs):
+        assert len(got) == len(want)
+        for g, w in zip(got, want):
+            assert torch.equal(g, w)

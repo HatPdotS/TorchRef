@@ -14,7 +14,7 @@ import torch
 from torchref.base.reciprocal.grid_operations import place_on_grid
 from torchref.io.datasets.collection import DatasetCollection
 from torchref.maps.map import Map
-from torchref.symmetry.reciprocal_symmetry import expand_hkl
+from torchref.symmetry import SpaceGroup
 from torchref.utils.device_resolution import resolve_device
 
 
@@ -112,9 +112,9 @@ class DifferenceMap(Map):
 
         # Expand to P1 without Friedel mates (expand_to_p1() would reset
         # scaling, so expand manually via expand_hkl)
-        sg = self.data_reference.spacegroup or "P1"
-        hkl_p1, orig_idx, _ = expand_hkl(
-            hkl_asu, sg,
+        sg = self.data_reference.spacegroup or SpaceGroup("P1", device=hkl_asu.device)
+        hkl_p1, orig_idx, _ = sg.expand_hkl(
+            hkl_asu,
             include_friedel=False, remove_absences=True,
             device=hkl_asu.device,
         )

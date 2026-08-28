@@ -9,11 +9,9 @@ Unreleased
 - Fixed the overall-anisotropy fit, which regressed log intensities with no constant term and so absorbed the ``-gamma`` offset into the tensor
 - Fixed molecular-replacement rotation candidates being composed onto each other instead of onto the search model
 - Fixed assigning a ``SpaceGroup`` object to ``Model.spacegroup`` being a silent no-op that then made the correct name assignment raise
-- Fixed ``Model.copy()`` dropping the iso/aniso partition, so a copy raised from ``get_iso()``
-- Fixed ``Model.copy()`` registering the original's space group as a second submodule of the copy
 - Replaced the fast rotation function's keyword surface with ``rotation_search(model, data, model_error_A)``; the caller's coordinate error is now used rather than overwritten by an estimate from the atom count
 - Removed the rotation function's dead modules, engine variants, debug environment switches and unreachable knobs
-- Fixed the rotation function's dense model transform building a real-space grid and map-symmetry operator that its next three lines discarded; ``ModelFT.copy`` gained ``build_grid``
+- ``Model``'s iso/aniso partition is now derived on access instead of being rebuilt eagerly, so a copy cannot inherit a stale one
 - The rotation function's Wigner small-d blocks are memoised, so a process running more than one search builds them once
 - The rotation function now takes its working precision from ``dtypes.float`` and its device from ``resolve_device``, instead of hardcoding float64 and reading one input's device
 - The rotation function's spherical-Bessel recurrence rescales by a power of two as it runs, so the ladder no longer needs float64's exponent range
@@ -28,6 +26,17 @@ Unreleased
 - The rotation function no longer concatenates the antipodal copy onto either reflection set: only even harmonic degrees are computed, for which it is an exact factor of two, so it scaled the rotation function by four and changed no ranking. Raw ``RotationPeak.score`` and ``RotationSolutions.scores`` are therefore a quarter of their previous values; z-scores are unchanged
 - Kept the rotation function's relative Wilson-B fit: knocking it out was measured rank-neutral but worth only 2% of the runtime once the fit moved to the unique reflection set
 - Added ``supports_double`` / ``widest_float_dtype`` / ``widest_complex_dtype``: where precision is load-bearing the width now comes from the device rather than a hardcoded ``float64``, so a backend without it gets the working dtype instead of an error
+Version 0.7.0
+----------
+- Fixed cif reading bug discarding new mmCIF field for aniso ADPs 
+- Separated model configuration and provenance into ``ModelContext``. It now holds the unit cell, space group, atom table, link records, hydrogen settings, and input paths.
+- Refactored ``Symmetry`` as a crystallography-free class with transform primitives, and made ``SpaceGroup`` a specialised subclass.
+- Moved geometry predicates, HKL verbs, and grid-size helpers onto these classes as methods.
+- Rebuilt geometry restraints from the topology instead of intra-residue builders. ``torchref.restraints`` was removed, restraint dictionaries are now plain nested dicts, and residues are identified by ``(chain, resseq, icode)`` to fix insertion-code merging.
+- Reworked hydrogen generation as template instantiation over the topology. ``Model.hydrogenate`` now aligns monomer templates onto heavy atoms present, generation is the default, and ``AtomGraph.exclusions_12_13_14`` derives non-bonded exclusions from bond connectivity.
+- Added ``Topology`` as a ``ResidueGraph`` over an ``AtomGraph`` with typed edge blocks and ``subset`` / ``copy`` operations that reindex surviving edges.
+- Made ``HydrogenTopology`` a dataclass, changed ``Symmetry`` classes to dataclasses over ``DeviceMixin`` instead of ``nn.Module``, and removed unused ``Cell`` gradient plumbing and the ``ReciprocalSymmetryGrid`` / module-level expansion functions.
+
 
 Version 0.6.4
 ----------

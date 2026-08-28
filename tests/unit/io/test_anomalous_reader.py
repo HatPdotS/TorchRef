@@ -15,7 +15,6 @@ import pytest
 import reciprocalspaceship as rs
 import torch
 
-from torchref.base.french_wilson import is_centric_from_hkl
 from torchref.io.datasets.reflection_data import ReflectionData
 from torchref.model.model_ft import ModelFT
 
@@ -81,7 +80,7 @@ def test_centrics_not_duplicated(anomalous_two_column_mtz):
     path, _ = anomalous_two_column_mtz
     d = ReflectionData(verbose=0)
     d.load_mtz(path)
-    centric = is_centric_from_hkl(d.hkl, d.spacegroup)
+    centric = d.spacegroup.is_centric(d.hkl)
     # Centric reflections obey Friedel's law and must appear exactly once each.
     canon = [tuple(h) for h in d.hkl[centric].tolist()]
     assert len(canon) == len(set(canon))

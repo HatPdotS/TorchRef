@@ -1,39 +1,61 @@
-"""Space group utilities using gemmi as the canonical representation.
+"""Crystallographic space groups, using gemmi as the canonical source of truth.
 
-:class:`SpaceGroup` is the interface used throughout torchref: an ``nn.Module``
-that normalizes its input (string, int, ``gemmi.SpaceGroup``, another
-``SpaceGroup``, or None for P1), holds the rotation matrices and translations as
-registered buffers, and applies them. The module-level functions here are
-stateless equivalents plus the FFT/symmetry grid-size helpers.
+:class:`SpaceGroup` is the interface used throughout torchref. It specialises
+:class:`~torchref.symmetry.symmetry.Symmetry` -- which owns the operations and
+everything derivable from them -- with the crystallographic identity (Hermann-Mauguin
+naming, number, point group, crystal system) and the CCP4 asymmetric-unit
+conventions, the two things a bare operation list cannot supply.
 
-Real and reciprocal space use *transposed* conventions -- ``x' = R·x + t`` versus
-``h' = Rᵀ·h`` -- so :meth:`SpaceGroup.apply` and :meth:`SpaceGroup.apply_to_hkl`
-are not interchangeable.
+Construction normalizes any ``SpaceGroupLike``: a Hermann-Mauguin string, a number
+1-230, a ``gemmi.SpaceGroup``, another :class:`SpaceGroup`, or None for P1. Only the
+derived metadata is retained; no persistent ``gemmi`` reference is held, because a
+lasting reference to the C++ singleton produces nanobind leak warnings at shutdown.
+
+Real and reciprocal space use *transposed* conventions. That is handled once, in
+:attr:`~torchref.symmetry.symmetry.Symmetry.reciprocal`, rather than being re-decided
+per call site.
 """
 
 from __future__ import annotations
 
-from typing import Union
+from typing import Optional, Union
 
 import gemmi
 import torch
-import torch.nn as nn
 
 from torchref.config import get_float_dtype, normalize_device
-from torchref.utils.debug_utils import DebugMixin
-from torchref.utils.device_mixin import DeviceMovementMixin
+from torchref.symmetry.symmetry import Symmetry
 
 # Type alias for space group input - includes SpaceGroup class itself
 SpaceGroupLike = Union[str, int, gemmi.SpaceGroup, "SpaceGroup", None]
+
+# gemmi stores rotations and translations as integers scaled by 24.
+_GEMMI_SCALE = 24.0
 
 
 def _normalize_spacegroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
     """Normalize any ``SpaceGroupLike`` to a ``gemmi.SpaceGroup``.
 
-    Accepts a Hermann-Mauguin string (spacing-insensitive, retried upper-cased),
-    a number 1-230, a ``gemmi.SpaceGroup`` (returned unchanged), a
-    :class:`SpaceGroup` (unwrapped), or None (P1). Raises ``ValueError`` for an
-    unrecognised name/number, ``TypeError`` for any other type.
+    Accepts a Hermann-Mauguin string (spacing-insensitive, retried upper-cased), a
+    number 1-230, a ``gemmi.SpaceGroup`` (returned unchanged), a :class:`SpaceGroup`
+    (unwrapped), or None (P1).
+
+    Parameters
+    ----------
+    spacegroup : SpaceGroupLike
+        Space group in any supported form.
+
+    Returns
+    -------
+    gemmi.SpaceGroup
+        The normalized space group.
+
+    Raises
+    ------
+    ValueError
+        For an unrecognised name or number.
+    TypeError
+        For any other type.
     """
     if spacegroup is None:
         return gemmi.SpaceGroup("P 1")
@@ -41,47 +63,29 @@ def _normalize_spacegroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
     if isinstance(spacegroup, gemmi.SpaceGroup):
         return spacegroup
 
-    # Handle SpaceGroup class instances (forward reference resolved at runtime)
+    # Duck-typed rather than an isinstance check against SpaceGroup, so this stays
+    # usable from module scope before the class below is defined.
     if hasattr(spacegroup, "_sg_hm") and hasattr(spacegroup, "matrices"):
         return gemmi.find_spacegroup_by_name(spacegroup._sg_hm)
 
     if isinstance(spacegroup, int):
-        # Space group number
         try:
             return gemmi.SpaceGroup(spacegroup)
         except Exception as e:
             raise ValueError(f"Invalid space group number: {spacegroup}") from e
 
     if isinstance(spacegroup, str):
-        # Try to parse as string
-        # Clean up common variations
         sg_clean = spacegroup.strip()
-
-        # Handle double spaces that sometimes appear
         while "  " in sg_clean:
             sg_clean = sg_clean.replace("  ", " ")
-
-        try:
-            return gemmi.SpaceGroup(sg_clean)
-        except Exception:
-            pass
-
-        # Try without spaces
         sg_nospace = sg_clean.replace(" ", "")
-        try:
-            return gemmi.SpaceGroup(sg_nospace)
-        except Exception:
-            pass
 
-        # Try common substitutions
-        substitutions = [
-            (sg_clean, sg_clean),
-            (sg_nospace, sg_nospace),
-            (sg_clean.upper(), sg_clean.upper()),
-            (sg_nospace.upper(), sg_nospace.upper()),
-        ]
-
-        for _, variant in substitutions:
+        for variant in (
+            sg_clean,
+            sg_nospace,
+            sg_clean.upper(),
+            sg_nospace.upper(),
+        ):
             try:
                 return gemmi.SpaceGroup(variant)
             except Exception:
@@ -99,452 +103,86 @@ def _normalize_spacegroup(spacegroup: SpaceGroupLike) -> gemmi.SpaceGroup:
     )
 
 
-def spacegroup_to_str(spacegroup: SpaceGroupLike, style: str = "short") -> str:
-    """
-    Convert space group to string representation.
+def _operations_as_tensors(
+    sg: gemmi.SpaceGroup,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Extract a gemmi space group's operations as tensors.
 
     Parameters
     ----------
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
-    style : str, default 'short'
-        Output style:
-        - 'short': No spaces (e.g., 'P212121')
-        - 'hm': Hermann-Mauguin with spaces (e.g., 'P 21 21 21')
-        - 'xhm': Extended Hermann-Mauguin, including the setting/cell-choice
-          token where applicable (e.g., 'P 1 21 1' for a unique-axis-b setting)
+    sg : gemmi.SpaceGroup
+        Normalized space group.
+    dtype : torch.dtype
+        Floating dtype for both tensors.
+    device : torch.device
+        Device for both tensors.
 
     Returns
     -------
-    str
-        Space group name in requested style.
+    matrices : torch.Tensor
+        Rotation matrices, shape ``(n_ops, 3, 3)``.
+    translations : torch.Tensor
+        Fractional translations, shape ``(n_ops, 3)``.
     """
-    sg = _normalize_spacegroup(spacegroup)
-
-    if style == "short":
-        return sg.short_name()
-    elif style == "hm":
-        return sg.hm
-    elif style == "xhm":
-        return sg.xhm()
-    else:
-        raise ValueError(f"Unknown style: {style}. Use 'short', 'hm', or 'xhm'.")
-
-
-def get_symmetry_operations(spacegroup: SpaceGroupLike):
-    """
-    Get symmetry operations from a space group.
-
-    Parameters
-    ----------
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
-
-    Returns
-    -------
-    list of gemmi.Op
-        List of symmetry operations.
-    """
-    sg = _normalize_spacegroup(spacegroup)
-    return list(sg.operations())
-
-
-def get_operations_as_tensors(
-    spacegroup: SpaceGroupLike,
-    dtype: torch.dtype = None,
-    device: torch.device = None,
-):
-    """
-    Get symmetry operations as PyTorch tensors.
-
-    Parameters
-    ----------
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
-    dtype : torch.dtype, optional
-        Data type for tensors. Defaults to the configured ``dtypes.float``.
-    device : torch.device, optional
-        Device for tensors. Defaults to the configured ``device.current``.
-
-    Returns
-    -------
-    matrices : torch.Tensor, shape (n_ops, 3, 3)
-        Rotation matrices.
-    translations : torch.Tensor, shape (n_ops, 3)
-        Translation vectors (in fractional coordinates).
-    """
-    if dtype is None:
-        dtype = get_float_dtype()
-    device = normalize_device(device)
-    sg = _normalize_spacegroup(spacegroup)
-
-    # Extract rotation matrices and translations from gemmi operations
-    # gemmi stores values as integers multiplied by 24, divide to get actual values
-    gemmi_ops = [
+    ops = [
         (
-            torch.tensor(op.rot, dtype=dtype, device=device) / 24.0,
-            torch.tensor(op.tran, dtype=dtype, device=device) / 24.0,
+            torch.tensor(op.rot, dtype=dtype, device=device) / _GEMMI_SCALE,
+            torch.tensor(op.tran, dtype=dtype, device=device) / _GEMMI_SCALE,
         )
         for op in sg.operations()
     ]
-    matrices, translations = zip(*gemmi_ops)
-
+    matrices, translations = zip(*ops)
     return torch.stack(matrices), torch.stack(translations)
 
 
-def is_same_spacegroup(sg1: SpaceGroupLike, sg2: SpaceGroupLike) -> bool:
-    """
-    Check if two space groups are the same.
-
-    Parameters
-    ----------
-    sg1, sg2 : SpaceGroupLike
-        Space groups to compare.
-
-    Returns
-    -------
-    bool
-        True if the space groups are identical.
-    """
-    return _normalize_spacegroup(sg1).number == _normalize_spacegroup(sg2).number
-
-
-def get_point_group(spacegroup: SpaceGroupLike) -> str:
-    """
-    Get the point group symbol for a space group.
-
-    Parameters
-    ----------
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
-
-    Returns
-    -------
-    str
-        Point group symbol (e.g., '222', 'mmm', '4/mmm').
-    """
-    sg = _normalize_spacegroup(spacegroup)
-    return sg.point_group_hm()
-
-
-def get_crystal_system(spacegroup: SpaceGroupLike) -> str:
-    """
-    Get the crystal system for a space group.
-
-    Parameters
-    ----------
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
-
-    Returns
-    -------
-    str
-        Crystal system name (triclinic, monoclinic, orthorhombic,
-        tetragonal, trigonal, hexagonal, or cubic).
-    """
-    sg = _normalize_spacegroup(spacegroup)
-    return sg.crystal_system_str()
-
-
-def is_centrosymmetric(spacegroup: SpaceGroupLike) -> bool:
-    """
-    Check if a space group is centrosymmetric.
-
-    Parameters
-    ----------
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
-
-    Returns
-    -------
-    bool
-        True if the space group has an inversion center.
-    """
-    sg = _normalize_spacegroup(spacegroup)
-    return sg.is_centrosymmetric()
-
-
-def n_operations(spacegroup: SpaceGroupLike) -> int:
-    """
-    Get the number of symmetry operations in a space group.
-
-    Parameters
-    ----------
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
-
-    Returns
-    -------
-    int
-        Number of symmetry operations.
-    """
-    sg = _normalize_spacegroup(spacegroup)
-    return len(list(sg.operations()))
-
-
-# =============================================================================
-# Grid size utilities (combined FFT-friendly and symmetry-friendly)
-# =============================================================================
-
-
-def is_fft_friendly(n: int) -> bool:
-    """True if ``n`` factors into 2, 3 and 5 only (radix-2,3,5 FFT sizes).
-
-    ``n <= 0`` is False; 128 and 135 are True, 131 is not.
-    """
-    if n <= 0:
-        return False
-
-    # Remove all factors of 2, 3, 5
-    while n % 2 == 0:
-        n //= 2
-    while n % 3 == 0:
-        n //= 3
-    while n % 5 == 0:
-        n //= 5
-
-    # If we're left with 1, the number is FFT-friendly
-    return n == 1
-
-
-def find_fft_friendly_size(n: int, divisibility: int = 1) -> int:
-    """Smallest size >= ``n`` that is FFT-friendly and divisible by ``divisibility``.
-
-    Parameters
-    ----------
-    n : int
-        Minimum grid size.
-    divisibility : int, default 1
-        Required divisibility (e.g. 2 for a screw axis).
-
-    Returns
-    -------
-    int
-        Optimal grid size (131 -> 135; 131 with divisibility 2 -> 160).
-    """
-    candidate = n
-
-    # Make sure it satisfies divisibility
-    if candidate % divisibility != 0:
-        candidate = ((candidate // divisibility) + 1) * divisibility
-
-    # Now find nearest FFT-friendly size
-    while not is_fft_friendly(candidate):
-        candidate += divisibility
-
-    return candidate
-
-
-def get_grid_requirements(spacegroup: SpaceGroupLike) -> dict:
-    """Per-axis grid divisibility required for interpolation-free symmetry expansion.
-
-    Derived from the denominators of the fractional translations, so a grid meeting
-    them indexes symmetry mates at exact integers.
-
-    Returns
-    -------
-    dict
-        ``{'nx_mod': int, 'ny_mod': int, 'nz_mod': int}`` -- e.g. P21 gives
-        ``(1, 2, 1)``, P212121 gives ``(2, 2, 2)``.
-    """
-    import math
-    from fractions import Fraction
-
-    sg = _normalize_spacegroup(spacegroup)
-
-    # Start with no requirements
-    nx_lcm = 1
-    ny_lcm = 1
-    nz_lcm = 1
-
-    # Analyze each symmetry operation
-    for op in sg.operations():
-        # gemmi stores translations as integers multiplied by 24
-        trans = [t / 24.0 for t in op.tran]
-
-        # For each axis, check if translation has fractional component
-        for axis_idx, t in enumerate(trans):
-            if abs(t) > 1e-9:
-                # Convert to fraction and get denominator
-                frac = Fraction(t).limit_denominator(24)
-                denom = frac.denominator
-
-                if axis_idx == 0:
-                    nx_lcm = math.lcm(nx_lcm, denom)
-                elif axis_idx == 1:
-                    ny_lcm = math.lcm(ny_lcm, denom)
-                else:
-                    nz_lcm = math.lcm(nz_lcm, denom)
-
-    return {"nx_mod": nx_lcm, "ny_mod": ny_lcm, "nz_mod": nz_lcm}
-
-
-def check_grid_compatibility(grid_shape: tuple, spacegroup: SpaceGroupLike) -> dict:
-    """Check a grid against both space-group divisibility and FFT-friendliness.
-
-    Parameters
-    ----------
-    grid_shape : tuple of int
-        Grid dimensions (nx, ny, nz).
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
-
-    Returns
-    -------
-    dict
-        ``compatible`` (both tests pass), ``symmetry_compatible``,
-        ``fft_friendly``, ``can_use_direct_indexing`` (interpolation-free
-        expansion possible -- equal to ``symmetry_compatible``), ``issues``
-        (per-axis descriptions, empty when compatible) and ``requirements``
-        (from :func:`get_grid_requirements`).
-    """
-    nx, ny, nz = grid_shape
-    sg = _normalize_spacegroup(spacegroup)
-    requirements = get_grid_requirements(sg)
-
-    issues = []
-    sg_name = sg.short_name()
-
-    # Check symmetry requirements
-    if nx % requirements["nx_mod"] != 0:
-        issues.append(
-            f"nx={nx} not divisible by {requirements['nx_mod']} "
-            f"(required for {sg_name} symmetry)"
-        )
-
-    if ny % requirements["ny_mod"] != 0:
-        issues.append(
-            f"ny={ny} not divisible by {requirements['ny_mod']} "
-            f"(required for {sg_name} symmetry)"
-        )
-
-    if nz % requirements["nz_mod"] != 0:
-        issues.append(
-            f"nz={nz} not divisible by {requirements['nz_mod']} "
-            f"(required for {sg_name} symmetry)"
-        )
-
-    symmetry_compatible = len(issues) == 0
-
-    # Check FFT-friendly
-    fft_x = is_fft_friendly(nx)
-    fft_y = is_fft_friendly(ny)
-    fft_z = is_fft_friendly(nz)
-    fft_friendly = fft_x and fft_y and fft_z
-
-    if not fft_x:
-        issues.append(f"nx={nx} is not FFT-friendly (not a product of 2, 3, 5)")
-    if not fft_y:
-        issues.append(f"ny={ny} is not FFT-friendly (not a product of 2, 3, 5)")
-    if not fft_z:
-        issues.append(f"nz={nz} is not FFT-friendly (not a product of 2, 3, 5)")
-
-    return {
-        "compatible": symmetry_compatible and fft_friendly,
-        "symmetry_compatible": symmetry_compatible,
-        "fft_friendly": fft_friendly,
-        "can_use_direct_indexing": symmetry_compatible,
-        "issues": issues,
-        "requirements": requirements,
-    }
-
-
-def suggest_grid_size(
-    min_grid_shape: tuple,
-    spacegroup: SpaceGroupLike,
-    make_fft_friendly: bool = True,
-) -> tuple:
-    """Smallest grid >= ``min_grid_shape`` meeting the symmetry divisibility.
-
-    Parameters
-    ----------
-    min_grid_shape : tuple of int
-        Minimum (nx, ny, nz) grid dimensions.
-    spacegroup : SpaceGroupLike
-        Space group in any supported format.
-    make_fft_friendly : bool, default True
-        If True, the result also factors into 2, 3, 5 only.
-
-    Returns
-    -------
-    tuple of int
-        Suggested grid dimensions (nx, ny, nz).
-    """
-    requirements = get_grid_requirements(spacegroup)
-
-    def find_next_valid(n, divisibility):
-        """Find next number >= n that satisfies divisibility and FFT constraints."""
-        if n % divisibility == 0:
-            candidate = n
-        else:
-            candidate = ((n // divisibility) + 1) * divisibility
-
-        if not make_fft_friendly:
-            return candidate
-
-        # Find FFT-friendly size that also satisfies divisibility
-        while not is_fft_friendly(candidate):
-            candidate += divisibility
-
-        return candidate
-
-    nx = find_next_valid(min_grid_shape[0], requirements["nx_mod"])
-    ny = find_next_valid(min_grid_shape[1], requirements["ny_mod"])
-    nz = find_next_valid(min_grid_shape[2], requirements["nz_mod"])
-
-    return (nx, ny, nz)
-
-
-# =============================================================================
-# SpaceGroup class - unified interface combining normalization and operations
-# =============================================================================
-
-
-class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
-    """
-    Unified space group handler for crystallographic symmetry operations.
-
-    Normalizes its input, holds the operations as buffers, applies them to
-    fractional coordinates (``__call__``) or Miller indices, and exposes the
-    grid-size helpers as methods. Only the derived metadata is retained -- no
-    persistent ``gemmi`` reference is held (see :attr:`_gemmi`).
+class SpaceGroup(Symmetry):
+    """A crystallographic space group: symmetry operations plus their identity.
+
+    Inherits the whole operation-derived surface from
+    :class:`~torchref.symmetry.symmetry.Symmetry` -- expansion, phases, reflection
+    predicates, grid sizing, map symmetrization -- and adds the crystallographic
+    naming and the CCP4 asymmetric-unit conventions.
 
     Parameters
     ----------
     space_group : str, int, gemmi.SpaceGroup, SpaceGroup, or None
-        Hermann-Mauguin symbol, number 1-230, gemmi object, another instance,
-        or None for P1.
+        Hermann-Mauguin symbol, number 1-230, gemmi object, another instance, or None
+        for P1.
     dtype : torch.dtype, optional
-        Data type for matrices and translations. Defaults to the configured
-        ``dtypes.float`` (float32 unless ``TORCHREF_DTYPE_FLOAT=float64``).
-    device : torch.device, default: configured device.current
-        Device for computation.
+        Dtype for the operations. Defaults to the configured ``dtypes.float``.
+    device : torch.device, optional
+        Device for the operations. Defaults to the configured ``device.current``.
 
     Attributes
     ----------
-    matrices : torch.Tensor, shape (n_ops, 3, 3)
-        Rotation matrices for all symmetry operations (registered buffer).
-    translations : torch.Tensor, shape (n_ops, 3)
-        Translation vectors for all symmetry operations (registered buffer).
-    n_ops : int
-        Number of symmetry operations.
+    matrices : torch.Tensor
+        Rotation matrices, shape ``(n_ops, 3, 3)``.
+    translations : torch.Tensor
+        Fractional translations, shape ``(n_ops, 3)``.
+
+    Examples
+    --------
+    >>> sg = SpaceGroup("P212121")
+    >>> sg.n_ops
+    4
+    >>> sg.crystal_system
+    'orthorhombic'
     """
 
     def __init__(
         self,
         space_group: SpaceGroupLike = None,
-        dtype: torch.dtype = None,
-        device: torch.device = None,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
     ):
-        super(SpaceGroup, self).__init__()
         if dtype is None:
             dtype = get_float_dtype()
         device = normalize_device(device)
-        self._device = device
-        self._dtype = dtype
 
-        # Normalize to gemmi.SpaceGroup, extract metadata, then release
         gemmi_sg = _normalize_spacegroup(space_group)
+
         self._sg_number: int = gemmi_sg.number
         self._sg_hm: str = gemmi_sg.hm
         self._sg_short_name: str = gemmi_sg.short_name()
@@ -553,254 +191,305 @@ class SpaceGroup(DeviceMovementMixin, DebugMixin, nn.Module):
         self._sg_crystal_system: str = gemmi_sg.crystal_system_str()
         self._sg_centrosymmetric: bool = gemmi_sg.is_centrosymmetric()
 
-        # Get symmetry operations as tensors
-        matrices, translations = get_operations_as_tensors(
-            gemmi_sg, dtype=dtype, device=device
-        )
+        matrices, translations = _operations_as_tensors(gemmi_sg, dtype, device)
+        # gemmi_sg goes out of scope here -- no persistent gemmi reference.
 
-        self.register_buffer("matrices", matrices)
-        self.register_buffer("translations", translations)
-        # gemmi_sg goes out of scope here — no persistent gemmi reference
+        super().__init__(matrices=matrices, translations=translations)
 
     # =========================================================================
-    # Core properties
+    # Crystallographic identity
     # =========================================================================
-
-    @property
-    def n_ops(self) -> int:
-        """Number of symmetry operations."""
-        return self.matrices.shape[0]
 
     @property
     def _gemmi(self) -> gemmi.SpaceGroup:
-        """Fresh gemmi.SpaceGroup each access; never cache it -- a persistent
-        reference to the C++ singleton produces nanobind leak warnings at shutdown."""
+        """A fresh ``gemmi.SpaceGroup`` on each access.
+
+        Never cached: a persistent reference to the C++ singleton produces nanobind
+        leak warnings at interpreter shutdown.
+        """
         return gemmi.find_spacegroup_by_name(self._sg_hm)
 
     @property
     def name(self) -> str:
-        """Short space group name (e.g., 'P21')."""
+        """Short space group name, e.g. ``'P21'``."""
         return self._sg_short_name
 
     @property
     def hm(self) -> str:
-        """Hermann-Mauguin notation with spaces (e.g., 'P 21')."""
+        """Hermann-Mauguin notation with spaces, e.g. ``'P 21'``."""
         return self._sg_hm
 
     @property
     def xhm(self) -> str:
-        """Extended Hermann-Mauguin notation."""
+        """Extended Hermann-Mauguin notation, including the setting token."""
         return self._sg_xhm
 
     @property
     def number(self) -> int:
-        """Space group number (1-230)."""
+        """Space group number, 1-230."""
         return self._sg_number
 
     @property
     def gemmi(self) -> gemmi.SpaceGroup:
-        """Access a gemmi.SpaceGroup object (created on demand, not stored)."""
+        """A ``gemmi.SpaceGroup``, created on demand and not stored."""
         return self._gemmi
 
     @property
     def point_group(self) -> str:
-        """Point group symbol (e.g., '222', 'mmm')."""
+        """Point group symbol, e.g. ``'222'`` or ``'mmm'``."""
         return self._sg_point_group
 
     @property
     def crystal_system(self) -> str:
-        """Crystal system name."""
+        """Crystal system name, e.g. ``'orthorhombic'``."""
         return self._sg_crystal_system
 
     @property
     def centrosymmetric(self) -> bool:
-        """True if space group has inversion center."""
+        """Whether the group has an inversion centre."""
         return self._sg_centrosymmetric
 
-    @property
-    def dtype(self) -> torch.dtype:
-        """Data type used for matrices."""
-        return self._dtype
+    def short_name(self) -> str:
+        """Short space group name; the callable form of :attr:`name`."""
+        return self._sg_short_name
 
-    @property
-    def device(self) -> torch.device:
-        """Device for matrices."""
-        return self._device
+    def operations(self):
+        """The gemmi operations, from a temporary gemmi object.
+
+        Returns
+        -------
+        gemmi.GroupOps
+            The operation list.
+        """
+        return self._gemmi.operations()
 
     # =========================================================================
-    # Backward compatibility aliases
+    # Aliases retained for existing callers
     # =========================================================================
 
     @property
     def spacegroup(self) -> gemmi.SpaceGroup:
-        """Alias for gemmi property (backward compatibility)."""
+        """Alias for :attr:`gemmi`."""
         return self._gemmi
 
     @property
     def space_group(self) -> gemmi.SpaceGroup:
-        """Alias for gemmi property (backward compatibility)."""
+        """Alias for :attr:`gemmi`."""
         return self._gemmi
 
     @property
     def space_group_name(self) -> str:
-        """Alias for name property (backward compatibility)."""
+        """Alias for :attr:`name`."""
         return self.name
 
     @property
     def space_group_number(self) -> int:
-        """Alias for number property (backward compatibility)."""
+        """Alias for :attr:`number`."""
         return self.number
 
     # =========================================================================
-    # Gemmi method delegation for backward compatibility
+    # Asymmetric-unit conventions
     # =========================================================================
+    #
+    # These need the CCP4 asymmetric unit, which is keyed by Laue class, so they live
+    # here rather than on ``Symmetry`` -- "the canonical ASU" is meaningless for a bare
+    # operation list. The algorithms are in ``reciprocal_symmetry``; these methods are
+    # the only public way in.
 
-    def short_name(self) -> str:
-        """Get short space group name."""
-        return self._sg_short_name
-
-    def operations(self):
-        """Get symmetry operations (creates temporary gemmi object on demand)."""
-        return self._gemmi.operations()
-
-    # =========================================================================
-    # Symmetry operation methods
-    # =========================================================================
-
-    def apply(
-        self, xyz_fractional: torch.Tensor, apply_translation: bool = True
-    ) -> torch.Tensor:
-        """
-        Apply symmetry operations to fractional coordinates (rotation + translation).
-
-        For real space coordinates, applies the full symmetry operation: x' = R·x + t
-
-        Parameters
-        ----------
-        xyz_fractional : torch.Tensor
-            Input tensor of shape (N, 3) representing fractional coordinates.
-        apply_translation : bool, default True
-            If True, apply the full operation x' = R·x + t. If False, apply
-            the rotational part only (x' = R·x), as used for Miller indices.
-
-        Returns
-        -------
-        torch.Tensor
-            Transformed coordinates of shape (N, 3, ops) where ops is the
-            number of symmetry operations.
-
-        See Also
-        --------
-        apply_to_hkl : For reciprocal space (Miller indices), rotation only.
-        """
-        coords = xyz_fractional.to(self.matrices.device).to(self.matrices.dtype)
-        # coords: (N, 3), matrices: (ops, 3, 3)
-        # Apply rotation: result[n, i, o] = sum_j(matrices[o, i, j] * coords[n, j])
-        transformed = torch.einsum("oij,nj->nio", self.matrices, coords)
-        # transformed: (N, 3, ops)
-        # Add translations: translations (ops, 3) -> (1, 3, ops) for broadcasting
-        if apply_translation:
-            transformed = transformed + self.translations.T.unsqueeze(0)
-        return transformed  # (N, 3, ops)
-
-    def apply_to_hkl(self, hkl: torch.Tensor) -> torch.Tensor:
-        """
-        Apply symmetry operations to Miller indices (rotation only, no translation).
-
-        Reciprocal space uses the *transpose*: ``h' = h·R = Rᵀ·h``. Substituting
-        ``R·h`` gives the wrong equivalents wherever the fractional rotation is
-        non-symmetric (trigonal, hexagonal, permutation-type cubic ops), silently
-        corrupting centric flags and epsilon multiplicities. Translations shift
-        structure-factor phases, not indices, so they are not applied here.
+    def expand_hkl(
+        self,
+        hkl: torch.Tensor,
+        include_friedel: bool = True,
+        remove_absences: bool = True,
+        device: Optional[torch.device] = None,
+    ):
+        """Expand Miller indices from the asymmetric unit to P1.
 
         Parameters
         ----------
         hkl : torch.Tensor
-            Input tensor of shape (N, 3) representing Miller indices.
+            Input Miller indices, shape ``(N, 3)``.
+        include_friedel : bool, default True
+            Include Friedel mates ``(-h, -k, -l)``.
+        remove_absences : bool, default True
+            Drop systematically absent reflections.
+        device : torch.device, optional
+            Computation device. Defaults to ``hkl``'s.
 
         Returns
         -------
-        torch.Tensor
-            Transformed Miller indices of shape (N, 3, ops).
-
-        See Also
-        --------
-        apply : Real-space coordinates (``R·x + t``), the transposed convention.
+        expanded_hkl : torch.Tensor
+            Expanded indices, shape ``(M, 3)``, dtype ``int32``.
+        orig_indices : torch.Tensor
+            Map expanded -> original, shape ``(M,)``: ``F_exp = F_orig[orig_indices]``.
+        phase_shifts : torch.Tensor
+            Translation phase offsets in radians, shape ``(M,)``:
+            ``phase_exp = phase_orig[orig_indices] + phase_shifts``.
         """
-        coords = hkl.to(self.matrices.device).to(self.matrices.dtype)
-        # result[n, i, o] = sum_j matrices[o, j, i] * coords[n, j] = (Rᵀ·h)_i
-        return torch.einsum("oji,nj->nio", self.matrices, coords)
+        from torchref.symmetry.reciprocal_symmetry import _expand_hkl
 
-    def expand_coords_to_P1(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
-        """
-        Expand fractional coordinates by applying all symmetry operations.
+        return _expand_hkl(
+            self,
+            hkl,
+            include_friedel=include_friedel,
+            remove_absences=remove_absences,
+            device=device,
+        )
+
+    def reduce_hkl(
+        self,
+        hkl_p1: torch.Tensor,
+        include_friedel: bool = True,
+        device: Optional[torch.device] = None,
+    ):
+        """Reduce P1 Miller indices to this group's asymmetric unit.
+
+        The inverse of :meth:`expand_hkl`.
 
         Parameters
         ----------
-        xyz_fractional : torch.Tensor
-            Input tensor of shape (N, 3) representing fractional coordinates.
+        hkl_p1 : torch.Tensor
+            P1 Miller indices, shape ``(N, 3)``.
+        include_friedel : bool, default True
+            Consider Friedel mates when picking the ASU representative.
+        device : torch.device, optional
+            Computation device. Defaults to ``hkl_p1``'s.
 
         Returns
         -------
-        torch.Tensor
-            Expanded coordinates of shape (N * ops, 3).
+        hkl_asu : torch.Tensor
+            Unique ASU indices, shape ``(M, 3)``, dtype ``int32``.
+        reduction_indices : torch.Tensor
+            Indices into ``hkl_p1`` per equivalent, shape ``(M, n_equiv)``, **-1 where
+            no P1 reflection exists** -- mask or clamp before gathering, or a -1
+            silently reads the last row.
+        phase_shifts : torch.Tensor
+            Phase shifts to apply before aggregation, shape ``(M, n_equiv)``.
         """
-        transformed = self.apply(xyz_fractional)  # (N, 3, ops)
-        N = xyz_fractional.shape[0]
-        ops = self.n_ops
-        # (N, 3, ops) -> (N, ops, 3) -> (N * ops, 3)
-        expanded = transformed.permute(0, 2, 1).reshape(N * ops, 3)
-        return expanded
+        from torchref.symmetry.reciprocal_symmetry import _reduce_hkl
 
-    def forward(self, xyz_fractional: torch.Tensor) -> torch.Tensor:
-        """Forward pass applies symmetry operations."""
-        return self.apply(xyz_fractional)
+        return _reduce_hkl(
+            self, hkl_p1, include_friedel=include_friedel, device=device
+        )
 
-    # =========================================================================
-    # Grid utilities
-    # =========================================================================
+    def complete_hkl(
+        self,
+        input_hkl: torch.Tensor,
+        cell: torch.Tensor,
+        d_min: float,
+        device: Optional[torch.device] = None,
+    ):
+        """Identify reflections missing from a dataset, without expanding symmetry.
 
-    def get_grid_requirements(self) -> dict:
-        """Per-axis grid divisibility; see :func:`get_grid_requirements`."""
-        return get_grid_requirements(self)
+        Parameters
+        ----------
+        input_hkl : torch.Tensor
+            Possibly incomplete Miller indices, shape ``(N, 3)``.
+        cell : torch.Tensor
+            Unit cell parameters ``[a, b, c, alpha, beta, gamma]``, shape ``(6,)``.
+        d_min : float
+            High-resolution limit in Angstroms.
+        device : torch.device, optional
+            Computation device. Defaults to ``input_hkl``'s.
 
-    def check_grid_compatibility(self, grid_shape: tuple) -> dict:
-        """Report whether ``(nx, ny, nz)`` suits this group and the FFT.
-
-        Returns the report dict documented in :func:`check_grid_compatibility`.
+        Returns
+        -------
+        complete_hkl : torch.Tensor
+            Every index within ``d_min`` minus systematic absences, shape ``(M, 3)``.
+        input_indices : torch.Tensor
+            Map complete -> input, shape ``(M,)``, ``-1`` where missing.
+        missing_mask : torch.Tensor
+            Boolean, shape ``(M,)``, True where absent from the input.
         """
-        return check_grid_compatibility(grid_shape, self)
+        from torchref.symmetry.reciprocal_symmetry import _complete_hkl
 
-    def suggest_grid_size(
-        self, min_grid_shape: tuple, make_fft_friendly: bool = True
-    ) -> tuple:
-        """Smallest valid grid >= ``min_grid_shape``; see :func:`suggest_grid_size`."""
-        return suggest_grid_size(min_grid_shape, self, make_fft_friendly)
+        return _complete_hkl(self, input_hkl, cell, d_min, device=device)
+
+    def canonicalize_hkl(
+        self,
+        hkl: torch.Tensor,
+        include_friedel: bool = True,
+        device: Optional[torch.device] = None,
+    ):
+        """Map Miller indices onto their canonical CCP4 ASU representatives.
+
+        Parameters
+        ----------
+        hkl : torch.Tensor
+            Input Miller indices, shape ``(N, 3)``.
+        include_friedel : bool, default True
+            Treat Friedel mates as equivalent. With ``False`` the Friedel half of
+            reciprocal space has no pure-rotation representative in the Laue-based
+            CCP4 ASU, and unmappable reflections raise.
+        device : torch.device, optional
+            Output device. Defaults to ``hkl``'s. The lookup itself runs on CPU
+            whatever device this group is on, because the ASU tables are numpy-backed.
+
+        Returns
+        -------
+        canonical_hkl : torch.Tensor
+            Remapped indices sorted lexicographically, shape ``(N, 3)``.
+        phase_shifts : torch.Tensor
+            Additive phase correction in radians, shape ``(N,)``.
+        friedel_flags : torch.Tensor
+            Boolean, shape ``(N,)``, True where Friedel conjugation was applied.
+        sort_indices : torch.Tensor
+            Permutation from original to sorted order, shape ``(N,)``.
+
+        Notes
+        -----
+        ``phase_shifts`` assumes the caller conjugates first: the contract is
+        ``phi_new = torch.where(friedel_flags, -phi_old, phi_old) + phase_shifts``.
+        """
+        from torchref.symmetry.reciprocal_symmetry import _canonicalize_hkl
+
+        return _canonicalize_hkl(
+            self, hkl, include_friedel=include_friedel, device=device
+        )
 
     # =========================================================================
-    # Dunder methods
+    # Copy and dunder
     # =========================================================================
 
-    def __repr__(self) -> str:
-        return f"SpaceGroup('{self.name}', number={self.number}, n_ops={self.n_ops})"
+    def copy(self) -> "SpaceGroup":
+        """An independent copy with cloned operations and an empty cache.
+
+        Returns
+        -------
+        SpaceGroup
+            New instance carrying the same symmetry, dtype and device.
+        """
+        new = SpaceGroup.__new__(SpaceGroup)
+        new._sg_number = self._sg_number
+        new._sg_hm = self._sg_hm
+        new._sg_short_name = self._sg_short_name
+        new._sg_xhm = self._sg_xhm
+        new._sg_point_group = self._sg_point_group
+        new._sg_crystal_system = self._sg_crystal_system
+        new._sg_centrosymmetric = self._sg_centrosymmetric
+        # Through Symmetry's own initializer, so the operand-consistency checks and the
+        # device/dtype reconciliation in ``__post_init__`` run on the copy too.
+        Symmetry.__init__(
+            new,
+            matrices=self.matrices.clone(),
+            translations=self.translations.clone(),
+        )
+        return new
 
     def __hash__(self) -> int:
-        """Hash based on space group number."""
+        """Hash on the space group number."""
         return hash(self._sg_number)
 
     def __eq__(self, other) -> bool:
-        """Equality based on space group number."""
+        """Equality on the space group number; also compares to a ``gemmi.SpaceGroup``."""
         if isinstance(other, SpaceGroup):
             return self._sg_number == other._sg_number
         if isinstance(other, gemmi.SpaceGroup):
             return self._sg_number == other.number
         return False
 
-    # =========================================================================
-    # Device movement
-    # =========================================================================
+    def __repr__(self) -> str:
+        return f"SpaceGroup('{self.name}', number={self.number}, n_ops={self.n_ops})"
 
-    def copy(self) -> "SpaceGroup":
-        """A new SpaceGroup with the same symmetry, dtype and device (fresh buffers)."""
-        new_sg = SpaceGroup(self._sg_hm, dtype=self._dtype, device=self._device)
-        return new_sg
+
+__all__ = ["SpaceGroup", "SpaceGroupLike"]

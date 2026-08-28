@@ -11,12 +11,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from torchref.restraints.modifications import (
+from torchref.topology.monomer.modifications import (
     apply_modifications,
     link_modifications,
     read_mod_definitions,
 )
-from torchref.restraints.restraints_helper import read_link_definitions
+from torchref.topology.monomer.cif import read_link_definitions
 
 TOL = 1e-3
 
@@ -224,10 +224,16 @@ def test_peptide_modifications_carry_the_linked_backbone_targets():
 
 
 def _built(pdb_path, strip_H=True):
-    """Build a model's restraints and return ``(model, table accessor)``."""
+    """Build a model's restraints and return ``(model, table accessor)``.
+
+    ``add_hydrogens=False``: these tests read the restraint targets of the hydrogens the
+    file carries. Generating more would add a chain-terminal ``CA-N-H``, which correctly
+    keeps the free-amino-acid target of 109.6 degrees rather than the linked 118.7 and so
+    is outside what they assert.
+    """
     from torchref import Model
 
-    model = Model(verbose=0, strip_H=strip_H)
+    model = Model(verbose=0, strip_H=strip_H, add_hydrogens=False)
     model.load_pdb(str(pdb_path))
     return model, model.restraints.restraints
 

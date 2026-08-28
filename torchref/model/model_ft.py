@@ -17,7 +17,6 @@ from torchref.config import dtypes, get_float_dtype, normalize_device
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
-from torchref.symmetry.map_symmetry import MapSymmetry
 from torchref.utils.caching import CachedForwardMixin
 
 
@@ -60,8 +59,6 @@ class ModelFT(CachedForwardMixin, Model):
         Most recently computed electron density map.
     parametrization : dict
         ITC92 parametrization dictionary {element: (A, B)}.
-    map_symmetry : MapSymmetry
-        Symmetry operator for map calculations.
     """
 
     def __init__(
@@ -129,18 +126,18 @@ class ModelFT(CachedForwardMixin, Model):
     @property
     def cell(self):
         """Unit cell object with parameters [a, b, c, alpha, beta, gamma]."""
-        return self._cell
+        return self.ctx.cell
 
     @cell.setter
     def cell(self, value):
         """Set the unit cell; also builds the FFT once the spacegroup is set."""
-        self._cell = value
+        self.ctx.cell = value
         self._maybe_initialize_fft()
 
     @property
     def spacegroup(self):
         """Space group object."""
-        return self._spacegroup
+        return self.ctx.spacegroup
 
     @spacegroup.setter
     def spacegroup(self, value):
@@ -148,19 +145,19 @@ class ModelFT(CachedForwardMixin, Model):
         also builds the FFT once the cell is set.
         """
         if value is not None:
-            self._spacegroup = SpaceGroup(
+            self.ctx.spacegroup = SpaceGroup(
                 value, dtype=self.dtype_float, device=self.device
             )
         else:
-            self._spacegroup = None
+            self.ctx.spacegroup = None
         self._maybe_initialize_fft()
 
     def _maybe_initialize_fft(self):
         """(Re)build the SfFFT submodule once both cell and spacegroup are set."""
-        if self._cell is not None and self._spacegroup is not None:
+        if self.ctx.cell is not None and self.ctx.spacegroup is not None:
             self._fft = SfFFT(
-                cell=self._cell,
-                spacegroup=self._spacegroup,
+                cell=self.ctx.cell,
+                spacegroup=self.ctx.spacegroup,
                 device=self.device,
                 max_res=self.max_res,
             )
@@ -256,7 +253,7 @@ class ModelFT(CachedForwardMixin, Model):
             self.max_res = max_res
             self._fft.max_res = max_res
 
-        if self.verbose > 1:
+        if self.ctx.verbose > 1:
             print(f"Defining grid size for max_res={self.max_res} Å")
 
         gridsize = self.cell.compute_grid_size(self.max_res)
@@ -315,16 +312,6 @@ class ModelFT(CachedForwardMixin, Model):
     def voxel_size(self, value):
         """Set voxel size (for backward compatibility)."""
         self._fft.voxel_size = value
-
-    @property
-    def map_symmetry(self) -> Optional[MapSymmetry]:
-        """Symmetry operator for map calculations."""
-        return self._fft.map_symmetry
-
-    @map_symmetry.setter
-    def map_symmetry(self, value):
-        """Set map symmetry (for backward compatibility)."""
-        self._fft.map_symmetry = value
 
     def get_iso(self):
         """
@@ -397,7 +384,7 @@ class ModelFT(CachedForwardMixin, Model):
             self.max_res = max_res
             self._fft.max_res = max_res
 
-        if self.verbose > 1:
+        if self.ctx.verbose > 1:
             print(f"Setting up grids with max_res={self.max_res} Å")
 
         gridsize_to_use = gridsize or self._explicit_gridsize
@@ -407,7 +394,7 @@ class ModelFT(CachedForwardMixin, Model):
             max_res=self.max_res,
         )
 
-        if self.verbose > 2:
+        if self.ctx.verbose > 2:
             print(f"Grid shape: {self._fft.real_space_grid.shape[:-1]}")
             print(f"Voxel size: {self._fft.voxel_size}")
 
@@ -436,7 +423,7 @@ class ModelFT(CachedForwardMixin, Model):
             .to(dtypes.int)
             .item()
         )
-        if self.verbose > 1:
+        if self.ctx.verbose > 1:
             print(
                 f"Calculated radius for density calculation: {min_radius} voxels (voxel size: {voxel_size}), this corresponds to at least {min_radius_Angstrom} Å"
             )
@@ -466,7 +453,7 @@ class ModelFT(CachedForwardMixin, Model):
         """
         self.map = self.build_initial_map(apply_symmetry=apply_symmetry)
 
-        if self.verbose > 2:
+        if self.ctx.verbose > 2:
             print(
                 f"Density map built. Sum: {self.map.sum():.2f}, Max: {self.map.max():.4f}"
             )
@@ -491,12 +478,12 @@ class ModelFT(CachedForwardMixin, Model):
         if self._fft.real_space_grid is None:
             self.setup_grid()
 
-        if self.verbose > 2:
+        if self.ctx.verbose > 2:
             print("Building density map (per-atom variable radius)...")
 
         xyz_iso, adp_iso, occ_iso, A_iso, B_iso = self.get_iso()
 
-        if self.verbose > 3:
+        if self.ctx.verbose > 3:
             assert torch.all(
                 torch.isfinite(A_iso)
             ), "Non-finite values found in A_iso during map building."
@@ -529,7 +516,7 @@ class ModelFT(CachedForwardMixin, Model):
             apply_symmetry=apply_symmetry,
         )
 
-        if self.verbose > 3:
+        if self.ctx.verbose > 3:
             assert torch.all(
                 torch.isfinite(self.map)
             ), "Non-finite values found in map."
@@ -558,7 +545,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         np_map = self.map.detach().cpu().numpy().astype(np.float32)
         cell = self.cell.tolist()
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(f"Saving map to {filename}")
             print(f"  Map shape: {self.map.shape}")
             print(f"  Map sum: {self.map.sum():.2f}")
@@ -571,7 +558,7 @@ class ModelFT(CachedForwardMixin, Model):
         map_ccp.setup(0.0)
         map_ccp.update_ccp4_header()
         map_ccp.write_ccp4_map(filename)
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print("Map saved successfully")
 
     def get_map_statistics(self):
@@ -641,7 +628,7 @@ class ModelFT(CachedForwardMixin, Model):
                 unique_elements, self.wavelength, self.anomalous_threshold
             )
 
-            if self.verbose > 1 and significant:
+            if self.ctx.verbose > 1 and significant:
                 print(
                     f"Anomalous scatterers at {self.wavelength:.4f} Å: "
                     f"{list(significant.keys())}"
@@ -820,19 +807,19 @@ class ModelFT(CachedForwardMixin, Model):
                 sf, hkl, include_fdp=bool(self.anomalous_bijvoet)
             )
 
-        if self.verbose > 2:
+        if self.ctx.verbose > 2:
             assert torch.all(
                 torch.isfinite(sf)
             ), "Non-finite values found while calculating fcalc."
 
         return sf
 
-    def copy(self, detach: bool = True, build_grid: bool = True) -> "ModelFT":
+    def copy(self, detach: bool = True) -> "ModelFT":
         """
         Create a deep copy of the ModelFT.
 
         Creates a complete independent copy including all Model base class data,
-        FFT submodule state (gridsize, real_space_grid, voxel_size, map_symmetry),
+        FFT submodule state (gridsize, real_space_grid, voxel_size),
         ITC92 parametrization, and scalar attributes.
         Cache is reset to empty.
 
@@ -841,46 +828,27 @@ class ModelFT(CachedForwardMixin, Model):
         detach : bool, optional
             If True, the copy's parameters will be detached from the
             computation graph (default: True).
-        build_grid : bool, optional
-            If True (default), give the copy a real-space grid whenever the
-            original has one. Building it also builds the map-symmetry operator,
-            which precomputes one sampling grid per symmetry operation over the
-            whole map. Pass False when the caller is about to replace the cell,
-            spacegroup or ``max_res``: each of those setters rebuilds the FFT
-            submodule, so a grid built here would be discarded unused.
-
         Returns
         -------
         ModelFT
-            A new, fully independent ModelFT instance with copied data. With
-            ``build_grid=False`` it has no real-space grid until the cell and
-            spacegroup are set and :meth:`setup_grid` runs.
+            A new, fully independent ModelFT instance with copied data.
         """
-        if not self.initialized:
+        if not self.ctx.initialized:
             raise RuntimeError("Cannot copy an uninitialized ModelFT. Load data first.")
 
         model_copy = ModelFT(
             dtype_float=self.dtype_float,
-            verbose=self.verbose,
+            verbose=self.ctx.verbose,
             device=self.device,
-            strip_H=self.strip_H,
+            strip_H=self.ctx.strip_H,
             max_res=self.max_res,
             gridsize=self._explicit_gridsize,
             wavelength=self.wavelength,
             anomalous_threshold=self.anomalous_threshold,
         )
 
-        model_copy.pdb = self.pdb.copy(deep=True)
-
-        if self._spacegroup is not None:
-            model_copy._spacegroup = self._spacegroup.copy()
-        else:
-            model_copy._spacegroup = None
-
-        model_copy.initialized = True
-
-        if self.cell is not None:
-            model_copy.cell = self.cell.clone()
+        # Carries the atom table, cell, space group, altloc groups and provenance.
+        model_copy.ctx = self.ctx.copy()
 
         # Own buffers only; the FFT submodule's are handled by its copy() below.
         for buffer_name, buffer_value in self._buffers.items():
@@ -892,21 +860,13 @@ class ModelFT(CachedForwardMixin, Model):
                 else:
                     model_copy.register_buffer(buffer_name, buffer_value.clone())
 
-        # Parameter wrappers via their own .copy(); _fft / _spacegroup are separate.
-        skip_modules = {"_fft", "_spacegroup", "spacegroup", "_symmetry", "symmetry"}
+        # Parameter wrappers via their own .copy(); the FFT submodule is separate.
+        skip_modules = {"_fft"}
         for module_name, module in self._modules.items():
             if module_name in skip_modules:
                 continue
             if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
-
-        # Copy alternative conformation pairs
-        if hasattr(self, "altloc_pairs") and self.altloc_pairs:
-            model_copy.altloc_pairs = [
-                tuple(tensor.clone() for tensor in group) for group in self.altloc_pairs
-            ]
-        else:
-            model_copy.altloc_pairs = []
 
         if hasattr(self, "_parametrization") and self._parametrization is not None:
             import copy as copy_module
@@ -915,16 +875,15 @@ class ModelFT(CachedForwardMixin, Model):
 
         if self._fft is not None:
             model_copy._fft = self._fft.copy()
-            if build_grid and self._fft.real_space_grid is not None:
+            if self._fft.real_space_grid is not None:
                 model_copy.setup_grid(max_res=self.max_res)
 
         # Don't share cached structure factors with the original.
         model_copy.reset_cache()
         # The iso/aniso partition is derived state, not a buffer, so it is not
         # carried by the buffer loop above; get_iso()/get_aniso() read it.
-        model_copy._rebuild_sf_indices()
 
-        if self.verbose > 0:
+        if self.ctx.verbose > 0:
             print(f"✓ ModelFT copied successfully ({len(model_copy.pdb)} atoms)")
 
         return model_copy
@@ -1039,8 +998,8 @@ class ModelFT(CachedForwardMixin, Model):
         )
 
         instance.pdb = pdb
-        instance.initialized = initialized
-        instance.altloc_pairs = altloc_pairs
+        instance.ctx.initialized = initialized
+        instance.ctx.altloc_pairs = altloc_pairs
 
         # Setter also sets symmetry; the cell setter below then builds the FFT.
         instance.spacegroup = spacegroup_str
