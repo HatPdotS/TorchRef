@@ -77,9 +77,14 @@ class NodeSmoothnessTarget(ADPTarget):
 
     @property
     def _field(self):
-        """The disorder field, or ``None`` when the model is not in field mode."""
-        adp = getattr(self.model, "adp", None)
-        return adp if hasattr(adp, "node_load") else None
+        """The disorder field, or ``None`` when the model is not in field mode.
+
+        Reads ``Model.adp_field`` rather than the ``adp`` slot directly: an anisotropic
+        payload lives in ``u`` instead, and looking only at ``adp`` would leave this
+        target silently inert in exactly the mode with the most node parameters to
+        collapse.
+        """
+        return getattr(self.model, "adp_field", None)
 
     def _pair_terms(self):
         """``(weighted mean squared log-B difference, pair weights)``."""

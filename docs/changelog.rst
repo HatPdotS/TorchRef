@@ -5,6 +5,8 @@ Changelog
 Version 0.7.0
 ----------
 - Fixed cif reading bug discarding new mmCIF field for aniso ADPs 
+- Fixed ``ModelFT`` restore dropping a node-field ADP representation, and added the anisotropic ``field_aniso`` case; both models now share one wrapper-rebuild path
+- Fixed the node load and node smoothness restraints being inert in ``field_aniso`` mode
 - Separated model configuration and provenance into ``ModelContext``. It now holds the unit cell, space group, atom table, link records, hydrogen settings, and input paths.
 - Refactored ``Symmetry`` as a crystallography-free class with transform primitives, and made ``SpaceGroup`` a specialised subclass.
 - Moved geometry predicates, HKL verbs, and grid-size helpers onto these classes as methods.

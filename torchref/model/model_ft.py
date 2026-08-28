@@ -959,8 +959,6 @@ class ModelFT(CachedForwardMixin, Model):
         The anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, as in
         :meth:`load`, so the positive-definite parametrization round-trips.
         """
-        from torchref.symmetry import SpaceGroup
-
         # Resolve dtype/device at call time so the fallback below uses the
         # current config rather than an import-time default.
         device = normalize_device(device)
@@ -1008,87 +1006,12 @@ class ModelFT(CachedForwardMixin, Model):
         if cell_tensor is not None:
             instance.cell = Cell(cell_tensor, dtype=saved_dtype, device=device)
 
-        # If PDB exists, create the parameter wrappers with correct shapes
+        # Wrappers and per-atom buffers: shared with Model so the two restores cannot
+        # drift apart again. ModelFT adds only its own scattering buffers below.
         if pdb is not None:
-            from torchref.model.parameter_wrappers import (
-                CholeskyMixedTensor,
-                MixedTensor,
-                OccupancyTensor,
-                PositiveMixedTensor,
+            cls._rebuild_wrappers_from_pdb(
+                instance, pdb, state_dict, saved_dtype, device
             )
-
-            n_atoms = len(pdb)
-
-            xyz_mask = state_dict.get("xyz.refinable_mask")
-            adp_mask = state_dict.get("adp.refinable_mask")
-            u_mask = state_dict.get("u.refinable_mask")
-
-            instance.xyz = MixedTensor(
-                torch.tensor(pdb[["x", "y", "z"]].values, dtype=saved_dtype),
-                refinable_mask=xyz_mask,
-                name="xyz",
-            )
-            instance.adp = PositiveMixedTensor(
-                torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype),
-                refinable_mask=adp_mask,
-                name="adp",
-            )
-            instance.u = CholeskyMixedTensor(
-                torch.tensor(
-                    pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
-                    dtype=saved_dtype,
-                ),
-                refinable_mask=u_mask,
-                name="aniso_U",
-            )
-
-            initial_occ = torch.tensor(pdb["occupancy"].values, dtype=saved_dtype)
-            sharing_groups, altloc_groups, refinable_mask = (
-                instance._create_occupancy_groups(pdb, initial_occ)
-            )
-
-            saved_occ_mask = state_dict.get("occupancy.refinable_mask")
-            if saved_occ_mask is not None:
-                if saved_occ_mask.device != sharing_groups.device:
-                    saved_occ_mask = saved_occ_mask.to(sharing_groups.device)
-                refinable_mask = saved_occ_mask[sharing_groups]
-
-            instance.occupancy = OccupancyTensor(
-                initial_values=initial_occ,
-                sharing_groups=sharing_groups,
-                altloc_groups=altloc_groups,
-                refinable_mask=refinable_mask,
-                dtype=saved_dtype,
-                device=device,
-                name="occupancy",
-            )
-
-            if "aniso_flag" not in instance._buffers or instance.aniso_flag is None:
-                instance.register_buffer(
-                    "aniso_flag",
-                    torch.tensor(pdb["anisou_flag"].values, dtype=torch.bool),
-                )
-
-            # Register mask buffers
-            instance.register_buffer(
-                "xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-            instance.register_buffer(
-                "adp_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-            instance.register_buffer(
-                "u_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-            instance.register_buffer(
-                "occupancy_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-
-            # Register vdw_radii if present
-            if "vdw_radii" in state_dict and state_dict["vdw_radii"] is not None:
-                instance.register_buffer(
-                    "vdw_radii",
-                    torch.zeros_like(state_dict["vdw_radii"], device=device),
-                )
 
             # Scattering buffers: accept both old-style (A, B) and new (_A, _B).
             a_key = "_A" if "_A" in state_dict else "A" if "A" in state_dict else None
