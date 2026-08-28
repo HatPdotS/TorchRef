@@ -154,13 +154,22 @@ def test_m_letf1_rescore_runs_and_ranks_truth_top():
     )
 
 
-def test_scat_mode_absolute_preserves_calc_intershell_shape():
-    """scat_mode='absolute' uses a single GLOBAL calc scale, so a shell where the
-    model scatters weakly keeps a small eImove; 'legacy' flattens every shell to
-    unit variance. Verify the two modes give different (and predictable) eImove
+def test_a_global_calc_convention_preserves_intershell_shape():
+    """`CalcGlobalE` uses a single GLOBAL calc scale, so a shell where the model
+    scatters weakly keeps a small eImove; `CalcShellE` flattens every shell to
+    unit variance. Verify the two give different (and predictable) eImove
     inter-shell weighting on a synthetic with a strong resolution-dependent
-    F_calc falloff."""
-    from torchref.experimental.alignment.ml_rotation import _build_llg_context, _llg_for_orientations
+    F_calc falloff.
+
+    This was `scat_mode="legacy"` vs `"absolute"`. The rescore had two knobs for
+    one decision -- how obs is normalised and how calc is -- which let the two
+    sides be normalised by unrelated rules; the E convention answers for both."""
+    from torchref.experimental.alignment.e_values import (
+        CalcGlobalE, WilsonShellEpsE,
+    )
+    from torchref.experimental.alignment.ml_rotation import (
+        _build_llg_context, _llg_for_orientations,
+    )
 
     N = 300
     torch.manual_seed(3)
@@ -193,15 +202,17 @@ def test_scat_mode_absolute_preserves_calc_intershell_shape():
         interpolator=StubLL(), real_cell=StubCell(), spacegroup=sg,
         n_shells=6, batch_size=64,
     )
-    ctx_leg = _build_llg_context(F_obs, hkl, s_mag, centric, scat_mode="legacy", **common)
-    ctx_abs = _build_llg_context(F_obs, hkl, s_mag, centric, scat_mode="absolute", **common)
+    ctx_leg = _build_llg_context(F_obs, hkl, s_mag, centric,
+                                 e_convention=WilsonShellEpsE, **common)
+    ctx_abs = _build_llg_context(F_obs, hkl, s_mag, centric,
+                                 e_convention=CalcGlobalE, **common)
 
-    # Legacy per-shell normaliser varies across shells (tracks the F_calc decay);
-    # absolute is a single constant. This is the definitional difference.
-    assert ctx_leg.sqrt_mean_per_m.std() > 1e-6, "legacy should vary per shell"
+    # The per-shell normaliser varies across shells (tracks the F_calc decay);
+    # the global one is a single constant. This is the definitional difference.
+    assert ctx_leg.sqrt_mean_per_m.std() > 1e-6, "per-shell should vary per shell"
     assert torch.allclose(
         ctx_abs.sqrt_mean_per_m, ctx_abs.sqrt_mean_per_m[0]
-    ), "absolute should be a single global scale"
+    ), "the global convention should be a single scale"
     # Both modes still produce finite LLGs.
     a = torch.zeros(1, dtype=torch.float64)
     llg_leg = _llg_for_orientations(ctx_leg, a, a, a)

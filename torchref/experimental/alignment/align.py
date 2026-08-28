@@ -24,6 +24,7 @@ from typing import Optional, TYPE_CHECKING
 import torch
 
 from .lattman_love import LattmanLoveInterpolator
+from .e_values import WilsonShellEpsE
 from .sh import (
     apply_overall_anisotropy,
     assign_shells,
@@ -170,8 +171,16 @@ class FRFInputs:
     overall anisotropy tensor and the Lattman-Love interpolator. The rotation
     search reads `U_aniso` and `device`; the ML rescore, translation search and
     rigid-body polish read the rest.
+
+    ``sig_F`` carries the same anisotropy correction as ``F_obs``, which is a
+    multiplicative factor, so ``F/sigma`` is unchanged by it. It is here because
+    the rotation function computes the French-Wilson posterior from the sigmas
+    and then threw them away, leaving the ML rescore -- a likelihood, where
+    measurement error is not a detail -- with no access to them at all.
+    ``None`` when the data carry no sigmas.
     """
     F_obs: torch.Tensor              # (N,) anisotropy-corrected amplitudes
+    sig_F: Optional[torch.Tensor]    # (N,) their sigmas, same correction
     hkl: torch.Tensor                # (N, 3) integer Miller indices
     s_vec: torch.Tensor              # (N, 3) reciprocal-space Cartesian
     s_mag: torch.Tensor              # (N,) Å⁻¹
@@ -212,6 +221,9 @@ def _prepare_frf_inputs(
             f"for {n_shells} shells; widen the resolution range."
         )
     F_obs = F_obs[keep].to(device)
+    sig_F = getattr(data, "F_sigma", None)
+    if sig_F is not None:
+        sig_F = sig_F.to(torch.float64)[keep].to(device)
     hkl = hkl_all[keep].to(device)
     s_vec = s_vec_all[keep].to(device)
     s_mag = s_mag_all[keep].to(device)
@@ -238,6 +250,9 @@ def _prepare_frf_inputs(
     _sym_mats_cart = hkl_symops_to_cartesian(_sg_mats, rec_basis.to(device))
     U_aniso = symmetrize_anisotropy(U_aniso, _sym_mats_cart)
     F_obs_aniso = apply_overall_anisotropy(F_obs, s_vec, U_aniso)
+    # Same multiplicative factor, so F/sigma survives the correction intact.
+    sig_F_aniso = (None if sig_F is None
+                   else apply_overall_anisotropy(sig_F, s_vec, U_aniso))
 
     ll = LattmanLoveInterpolator(
         model, padding_factor=ll_padding_factor, max_res_A=ll_max_res_A,
@@ -246,6 +261,7 @@ def _prepare_frf_inputs(
 
     return FRFInputs(
         F_obs=F_obs_aniso,
+        sig_F=sig_F_aniso,
         hkl=hkl,
         s_vec=s_vec,
         s_mag=s_mag,
@@ -290,7 +306,7 @@ def align_model_to_data(
     sigma_b: float = 0.0,
     model_error_A: Optional[float] = None,
     rescore_engine: str = "m_letf1",
-    rescore_scat_mode: str = "legacy",
+    rescore_e_convention: type = WilsonShellEpsE,
     subpeak_refine: bool = False,
     subpeak_refine_k: int = -1,
     subpeak_refine_step_deg: float = 1.5,
@@ -324,7 +340,8 @@ def align_model_to_data(
         ll_max_res_A=ll_max_res_A, ll_padding_factor=ll_padding_factor,
         n_rotation_peaks=n_rotation_peaks, n_ml_refine=n_ml_refine,
         model_error_A=model_error_A,
-        rescore_engine=rescore_engine, rescore_scat_mode=rescore_scat_mode,
+        rescore_engine=rescore_engine,
+        rescore_e_convention=rescore_e_convention,
         auto_variance_weights=auto_variance_weights,
         use_interp_var=use_interp_var,
         subpeak_refine=subpeak_refine, subpeak_refine_k=subpeak_refine_k,

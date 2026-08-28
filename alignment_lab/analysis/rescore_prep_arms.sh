@@ -2,8 +2,8 @@
 #SBATCH --job-name=resprep
 #SBATCH --output=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/slurm/%x_%A_%a.out
 #SBATCH --error=/das/work/units/LBR-FEL/p17490/Peter/Library/work_trees_torchref/alignement/alignment_lab/slurm/%x_%A_%a.err
-#SBATCH --partition=hour
-#SBATCH --time=00:55:00
+#SBATCH --partition=day
+#SBATCH --time=04:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
 #SBATCH --constraint=cpu_epyc9335
@@ -17,6 +17,6 @@ cd "$REPO"
 export PYTHONPATH="$REPO" TORCHREF_NUM_THREADS=4 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4
 export PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=""
 echo "host=$(hostname) pdb=$PDB"
-"$PY" -u alignment_lab/analysis/rescore_prep_arms.py --pdb "$PDB" --trials 3 2>&1 \
+"$PY" -u alignment_lab/analysis/rescore_prep_arms.py --pdb "$PDB" --trials 10 2>&1 \
   | grep -E "^ROW |Error|Traceback|Warning: " 
 echo "rc=$?"

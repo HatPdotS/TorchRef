@@ -296,6 +296,13 @@ class CalcShellE(WilsonShellE):
     """
 
 
+#: The observed side carries multiplicity; the calculated side is a single
+#: molecular transform sampled at the same Miller indices, where multiplicity
+#: has no meaning. Assigned out of the class body only because `CalcShellE` is
+#: defined below `WilsonShellEpsE`.
+WilsonShellEpsE.calc_companion = CalcShellE
+
+
 class CalcGlobalE(EConvention):
     """Single global scale: ``E = F / rms(F)``, preserving inter-shell shape.
 

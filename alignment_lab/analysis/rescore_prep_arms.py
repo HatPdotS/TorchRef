@@ -46,6 +46,31 @@ from lab import (BENCH_PDBS, FRFConfig, orbit_rank, rotated_case,  # noqa: E402
 #: through `SpaceGroup.epsilon(friedel=False)`. Passing an explicit `eps_factor`
 #: is how the old convention is reproduced without a second worktree, so the
 #: comparison stays paired on one FRF peak list.
+#: The E-convention arms are the reason this harness is being re-run. The
+#: rotation function turned out to be INSENSITIVE to the convention -- 12 of
+#: them, 100 paired cells, median rank 2.0 for every one -- which is what a
+#: correlation should do, since a global scale cancels out of it. The LLG is a
+#: likelihood and has no free scale to cancel, so if the convention matters
+#: anywhere it matters here. `no_sigmas` is the control for that: it withholds
+#: the sigmas the rescore has only just started receiving.
+def _arms():
+    from torchref.experimental.alignment.e_values import (
+        CalcGlobalE, CalcShellE, FrenchWilsonE, SmoothSigmaE, WilsonShellE,
+        WilsonShellEpsE,
+    )
+    import functools
+    return {
+        "fw_sigmas":     {"e_convention": FrenchWilsonE},
+        "no_sigmas":     {"sig_F_obs": None},
+        "wilson":        {"e_convention": WilsonShellE},
+        "calc_shell":    {"e_convention": CalcShellE},
+        "calc_global":   {"e_convention": CalcGlobalE},
+        "smooth6":       {"e_convention": functools.partial(SmoothSigmaE,
+                                                            n_coeff=6)},
+        "eps_wilson":    {"e_convention": WilsonShellEpsE},
+    }
+
+
 ARMS = {
     "none":            None,                      # control: FRF order
     "default":         {},                        # what ships today
@@ -67,11 +92,13 @@ def main() -> int:
     ap.add_argument("--n-refine", type=int, default=20,
                     help="rescore window: the top-N FRF peaks handed to the engine")
     ap.add_argument("--thr-deg", type=float, default=5.0)
-    ap.add_argument("--arms", default=",".join(ARMS))
+    ap.add_argument("--arms", default="")
     args = ap.parse_args()
 
+    ARMS.update(_arms())
+
     cfg = FRFConfig(n_peaks=args.n_peaks, lmax_cap=args.lmax_cap)
-    arms = [a for a in args.arms.split(",") if a]
+    arms = [a for a in args.arms.split(",") if a] or list(ARMS)
 
     for trial in range(args.trials):
         seed = seed_for(args.pdb, trial)

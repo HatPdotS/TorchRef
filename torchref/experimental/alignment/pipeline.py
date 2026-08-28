@@ -45,6 +45,7 @@ from .align import (
     _external_rwork,
     _prepare_frf_inputs,
 )
+from .e_values import WilsonShellEpsE
 from .frf.rotation_utils import (
     axis_angle_to_matrix,
     edmonds_euler_from_rotation_matrix,
@@ -233,7 +234,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         model_error_A: Optional[float] = None,
         # --- rescore ---
         rescore_engine: str = "m_letf1",
-        rescore_scat_mode: str = "legacy",
+        rescore_e_convention: type = WilsonShellEpsE,
         auto_variance_weights: bool = True,
         use_interp_var: bool = False,
         subpeak_refine: bool = False,
@@ -285,7 +286,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self.model_error_A = float(model_error_A)
 
         self.rescore_engine = rescore_engine
-        self.rescore_scat_mode = rescore_scat_mode
+        self.rescore_e_convention = rescore_e_convention
         self.auto_variance_weights = auto_variance_weights
         self.use_interp_var = use_interp_var
         self.subpeak_refine = subpeak_refine
@@ -518,6 +519,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             )
 
         F_obs = frf.F_obs
+        sig_F = frf.sig_F
         hkl = frf.hkl
         s_mag = frf.s_mag
         centric = frf.centric
@@ -561,11 +563,13 @@ class MolecularReplacementPipeline(DeviceMixin):
                 n_shells=rescore_n_shells,
                 n_refine=min(len(peaks), self.n_ml_refine),
                 batch_size=50, verbose=self.verbose,
-                scat_mode=self.rescore_scat_mode,
+                sig_F_obs=sig_F,
+                e_convention=self.rescore_e_convention,
             )
             if self.subpeak_refine:
                 rescored = self._subpeak_refine(rescored, F_obs, hkl, s_mag,
-                                                centric, ll, rescore_n_shells)
+                                                centric, ll, rescore_n_shells,
+                                                sig_F=sig_F)
         else:  # legacy Sim/Rice approximation
             rescored = sim_mlrf_rescore(
                 peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
@@ -579,7 +583,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         return rescored
 
     def _subpeak_refine(self, rescored, F_obs, hkl, s_mag, centric, ll,
-                        rescore_n_shells):
+                        rescore_n_shells, *, sig_F=None):
         """Quadratic tangent-space Newton sharpening of the top orientations."""
         from .ml_rotation import _build_llg_context, quadratic_llg_refine
 
@@ -590,7 +594,8 @@ class MolecularReplacementPipeline(DeviceMixin):
             F_obs, hkl, s_mag, centric, ll, data.cell,
             data.spacegroup,
             n_shells=rescore_n_shells, batch_size=50,
-            scat_mode=self.rescore_scat_mode,
+            sig_F_obs=sig_F,
+            e_convention=self.rescore_e_convention,
         )
         k = self.subpeak_refine_k if self.subpeak_refine_k > 0 else self.n_rotation_candidates
         k = min(k, len(rescored))

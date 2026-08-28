@@ -84,7 +84,7 @@ def run_rescore(
     verbose : int, optional
         Engine verbosity.
     **engine_kwargs
-        Passed through to the engine (e.g. ``scat_mode``).
+        Passed through to the engine (e.g. ``e_convention``).
 
     Returns
     -------
@@ -111,11 +111,18 @@ def run_rescore(
 
     t0 = time.time()
     if engine == "m_letf1":
+        # The sigmas now reach the rescore. They did not before: the FRF
+        # computed the French-Wilson posterior from them and then discarded
+        # them, leaving a likelihood with no measurement-error information.
+        # An explicit `sig_F_obs` in `engine_kwargs` still wins, so an arm can
+        # withhold them as a control.
+        kw = dict(engine_kwargs)
+        kw.setdefault("sig_F_obs", frf_inputs.sig_F)
         out = m_letf1_rescore(
             subset, frf_inputs.F_obs, frf_inputs.hkl, frf_inputs.s_mag,
             frf_inputs.centric, frf_inputs.ll, data.cell,
             data.spacegroup,
-            **common, **engine_kwargs,
+            **common, **kw,
         )
     else:
         out = sim_mlrf_rescore(

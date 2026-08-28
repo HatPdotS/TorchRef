@@ -25,6 +25,8 @@ from typing import Callable, List, Optional
 
 import torch
 
+from .e_values import (CalcShellE, WilsonShellEpsE,
+                       convention_for_calc, convention_uses_sigma_f)
 from .frf.rotation_utils import (
     axis_angle_to_matrix,
     edmonds_euler_from_rotation_matrix,
@@ -69,25 +71,6 @@ def _normalize_to_e(F: torch.Tensor, shell_idx: torch.Tensor,
                     n_shells: int) -> torch.Tensor:
     """E = F / sqrt(<F²> per shell). Vectorised across shells via scatter."""
     return F / _per_shell_sqrt_mean(F, shell_idx, n_shells)
-
-
-def _normalize_to_e_epsilon(
-    F: torch.Tensor, shell_idx: torch.Tensor, n_shells: int, eps: torch.Tensor,
-) -> torch.Tensor:
-    """ε-corrected Wilson E: ``E²_h = (F²_h/ε_h) / ⟨F²/ε⟩_shell``.
-
-    Matches Phaser's obs E (``E = F/sqrt(ε·Σ_N)``) and the FRF's
-    :func:`torchref.experimental.alignment.frf.preprocessing.wilson_normalise_epsilon`. The
-    plain :func:`_normalize_to_e` (no ε) over-counts axial reflections (ε>1) on
-    high-symmetry spacegroups, letting them dominate the ``-(E²+eImove)/V`` term
-    and blind the m_LETF1 orientation discrimination.
-    """
-    I_corr = (F * F) / eps.clamp(min=1.0)
-    sum_shell = torch.zeros(n_shells, dtype=I_corr.dtype, device=F.device)
-    sum_shell.scatter_add_(0, shell_idx, I_corr)
-    count = torch.bincount(shell_idx, minlength=n_shells).to(I_corr.dtype)
-    mean_shell = (sum_shell / count.clamp(min=1.0)).clamp(min=1e-30)
-    return (I_corr / mean_shell.index_select(0, shell_idx)).clamp(min=0.0).sqrt()
 
 
 def _per_shell_sqrt_mean(F: torch.Tensor, shell_idx: torch.Tensor,
@@ -590,7 +573,8 @@ def _build_llg_context(
     vrms_identity: float = 1.0,
     apply_wilson_b: bool = False,
     wilson_b_value: Optional[float] = None,
-    scat_mode: str = "legacy",
+    sig_F_obs: Optional[torch.Tensor] = None,
+    e_convention: type = WilsonShellEpsE,
 ) -> _LLGContext:
     """Build the rotation-independent m_LETF1 LLG context (DataMR.cc:1326-1429).
 
@@ -637,7 +621,13 @@ def _build_llg_context(
     #    both stop axial reflections (ε>1) from being over-weighted on
     #    high-symmetry spacegroups.
     shell_idx = _equal_count_shell_idx(s_mag, n_shells)
-    E_obs = _normalize_to_e_epsilon(F_obs, shell_idx, n_shells, eps_factor)
+    conv_obs = e_convention
+    if sig_F_obs is None and convention_uses_sigma_f(conv_obs):
+        conv_obs = convention_for_calc(conv_obs)
+    E_obs = conv_obs(
+        F_obs, s_mag, centric, sig_F=sig_F_obs, eps=eps_factor,
+        shell_idx=shell_idx, n_shells=n_shells,
+    ).E
 
     # 3. Identity-rotation calc reference → E-normalisation scale for F_calc
     #    (rotation-invariant: sphere permutation, shell sums preserved).
@@ -645,28 +635,22 @@ def _build_llg_context(
     F_calc_ref = interpolator.evaluate(
         I_eye, hkl_real, real_cell, return_amplitude=True,
     ).to(dtype).squeeze(0)  # (N,)
-    if scat_mode == "legacy":
-        # Per-shell unit-variance normalisation: forces <E_calc²>_shell = 1 in
-        # EVERY shell, flattening F_calc's inter-shell amplitude shape.
-        calc_norm_per_h = _per_shell_sqrt_mean(
-            F_calc_ref, shell_idx, n_shells,
-        ).to(device)
-    elif scat_mode == "absolute":
-        # Single GLOBAL scale: preserves F_calc's inter-shell shape (how much the
-        # model actually scatters per resolution) instead of flattening it to 1.
-        # Phaser keeps E_calc physically scaled and carries the model's fraction
-        # of the cell in scatFactor = AtomScatRatio·SCATTERING/TOTAL_SCAT/NSYMP;
-        # for a search model that IS the full ASU (the benchmark case) scatFactor
-        # reduces to 1/n_ops, so the prefactor is unchanged and the only change
-        # here is dropping the per-shell flatten.
-        global_rms = F_calc_ref.pow(2).mean().clamp(min=1e-30).sqrt()
-        calc_norm_per_h = torch.full(
-            (N,), float(global_rms), dtype=dtype, device=device,
-        )
-    else:
-        raise ValueError(
-            f"scat_mode={scat_mode!r}; expected 'legacy' or 'absolute'."
-        )
+    # The calc normaliser is the convention's own choice, which is what the
+    # former `scat_mode` was: "legacy" is CalcShellE (forces <E_calc²>_shell = 1
+    # in every shell, flattening the model's inter-shell amplitude shape) and
+    # "absolute" is CalcGlobalE (one global scale, shape preserved). Two knobs
+    # for one decision meant obs and calc could be normalised by unrelated
+    # rules; now the same class answers for both sides.
+    #
+    # Phaser keeps E_calc physically scaled and carries the model's fraction of
+    # the cell in scatFactor = AtomScatRatio·SCATTERING/TOTAL_SCAT/NSYMP; for a
+    # search model that IS the full ASU (the benchmark case) scatFactor reduces
+    # to 1/n_ops, so the prefactor is unaffected either way.
+    conv_calc = convention_for_calc(e_convention)(
+        F_calc_ref, s_mag, centric, eps=eps_factor,
+        shell_idx=shell_idx, n_shells=n_shells,
+    )
+    calc_norm_per_h = conv_calc.sigma.sqrt().to(dtype).to(device)
 
     # Optional Wilson-B match (EnsemblePDB.cc:793-851), applied as a per-reflection
     # Debye-Waller multiplier on F_calc.
@@ -1096,7 +1080,8 @@ def m_letf1_rescore(
     vrms_identity: float = 1.0,
     apply_wilson_b: bool = False,
     wilson_b_value: Optional[float] = None,  # if None and apply_wilson_b=True, fitted from data
-    scat_mode: str = "legacy",  # "legacy" (per-shell calc norm) | "absolute" (global)
+    sig_F_obs: Optional[torch.Tensor] = None,
+    e_convention: type = WilsonShellEpsE,
 ) -> List[RotationPeak]:
     """Phaser-faithful ``m_LETF1`` rescore (DataMR.cc:1326-1429).
 
@@ -1164,7 +1149,8 @@ def m_letf1_rescore(
         solvent_fsol=solvent_fsol, solvent_bsol=solvent_bsol,
         vrms_strategy=vrms_strategy, vrms_n_residues=vrms_n_residues,
         vrms_identity=vrms_identity, apply_wilson_b=apply_wilson_b,
-        wilson_b_value=wilson_b_value, scat_mode=scat_mode,
+        wilson_b_value=wilson_b_value, sig_F_obs=sig_F_obs,
+        e_convention=e_convention,
     )
 
     alpha_t = torch.tensor([p.alpha for p in head], dtype=torch.float64)
