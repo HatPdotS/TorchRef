@@ -326,7 +326,7 @@ def compute_bayes_extrapolated_amplitudes(
 
 def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
                         *, weights, diff_Fobs, Fcalc_diff_amp, Fobs_dark,
-                        sig_dark):
+                        sig_dark, phi_mixed, F_obs_dark_phased):
     """Two-moment diagnostic columns, or empty dicts when the model is off.
 
     The observed light intensity carries a positive, phase-blind contamination
@@ -405,8 +405,25 @@ def _two_moment_columns(mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
     DDF = DF_corr - diff_Fobs
     sig_DF_corr = np.sqrt(sig_F_corr**2 + sig_dark**2)
 
-    amp_2_corr = (2 * np.abs(DF_corr) - Fcalc_diff_amp) * weights
-    amp_1_corr = (np.abs(DF_corr) - Fcalc_diff_amp) * weights
+    # The phase-AWARE difference, rebuilt with the decontaminated light amplitude.
+    #
+    # It must be the modulus of the complex vector difference
+    # ``|F_corr e^{i phi_light} - F_dark e^{i phi_dark}|``, exactly as the uncorrected
+    # ``Fobs_diff_phased`` is -- NOT ``|F_corr - F_dark|``. The two are different
+    # quantities: the vector form carries the phase rotation between dark and light,
+    # which is the whole point of a phase-aware coefficient, while the scalar form is
+    # phase-blind. Using the scalar one here made the corrected coefficients only 36%
+    # correlated with their uncorrected twins even though the amplitudes behind them
+    # agree to 99.99%.
+    F_corr_phased = torch.as_tensor(
+        F_corr, dtype=F_obs_dark_phased.real.dtype, device=F_obs_dark_phased.device
+    ) * torch.exp(1j * phi_mixed)
+    Fobs_diff_phased_corr = (
+        torch.abs(F_corr_phased - F_obs_dark_phased).detach().cpu().numpy()
+    )
+
+    amp_2_corr = (2 * Fobs_diff_phased_corr - Fcalc_diff_amp) * weights
+    amp_1_corr = (Fobs_diff_phased_corr - Fcalc_diff_amp) * weights
 
     # The sigma_alpha^2-aware weight, on the same normalisation as the inverse-variance
     # weight the existing DED coefficients carry, so the two are directly comparable.
@@ -604,7 +621,8 @@ def write_results_mtz(dc, mc, scaler, filename):
             mc, dc, mask, fcalc_dark_full, fcalc_mixed_full,
             weights=weights, diff_Fobs=diff_Fobs,
             Fcalc_diff_amp=Fcalc_diff_amp, Fobs_dark=Fobs_dark,
-            sig_dark=sig_dark,
+            sig_dark=sig_dark, phi_mixed=phi_mixed,
+            F_obs_dark_phased=F_obs_dark_phased,
         )
     )
 

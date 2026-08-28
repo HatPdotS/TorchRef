@@ -4,6 +4,8 @@ Changelog
 
 Version 0.6.4
 ----------
+- Fixed the ``--two-moment`` corrected DED coefficients using a phase-blind amplitude difference instead of the phase-aware one the uncorrected coefficients use
+- Added ``paper/make_ded_maps.py``, which writes CCP4 maps from a difference-refine results MTZ
 - ``CollectionScaler.refine_lbfgs_joint`` builds a row of ``XRAY_TARGETS`` instead of its own Rice likelihood, and takes ``scale_target`` (default ``ls``)
 - ``CollectionScaler.refine_lbfgs_joint`` normalises its objective and registers the U penalty as its own target
 - Fixed ``DatasetCollection.scale`` fitting the inter-dataset scale on the free reflections as well as the work set
