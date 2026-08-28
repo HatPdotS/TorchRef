@@ -172,6 +172,103 @@ def score(truth_pdb, start_pdb, refined_pdbs, chain, first, last):
     return rows
 
 
+def score_sweep(root, chain, first, last, start_pdb, n_boot=10000, seed=0):
+    """Aggregate a seed sweep, paired seed by seed.
+
+    Paired, not pooled: every arm refines the *same* simulated dataset within a seed, so
+    the seed-to-seed spread of the noise realisation is common to all arms and cancels in
+    the difference. Comparing two distributions of errors instead would drown a real
+    effect in variance that is not there.
+
+    Reports the median paired difference with a bootstrap CI, which is the shape that
+    survives a skewed distribution and a handful of seeds.
+    """
+    import gemmi
+
+    root = Path(root)
+    seeds = sorted(d for d in root.glob("seed_*") if d.is_dir())
+    if not seeds:
+        print(f"no seed_* directories under {root}")
+        return []
+
+    def positions(path):
+        st = gemmi.read_structure(str(path))
+        st.remove_hydrogens()
+        out = {}
+        for ch in st[0]:
+            if ch.name != chain:
+                continue
+            for res in ch:
+                if first <= res.seqid.num <= last:
+                    for atom in res:
+                        out[(res.seqid.num, atom.name)] = np.array(
+                            [atom.pos.x, atom.pos.y, atom.pos.z]
+                        )
+        return out
+
+    start = positions(start_pdb)
+    per_arm = {}
+    injected = []
+    for sd in seeds:
+        truth_p = sd / "light_truth.pdb"
+        if not truth_p.exists():
+            continue
+        truth = positions(truth_p)
+        shared = sorted(set(truth) & set(start))
+        injected.append(
+            np.mean([np.linalg.norm(truth[k] - start[k]) for k in shared])
+        )
+        for arm_dir in sorted(sd.glob("refine_*")):
+            hits = sorted(arm_dir.glob("fractions_*_light.pdb"))
+            if not hits:
+                continue
+            got = positions(hits[0])
+            keys = [k for k in shared if k in got]
+            if not keys:
+                continue
+            err = np.mean([np.linalg.norm(got[k] - truth[k]) for k in keys])
+            rec = np.mean([np.linalg.norm(got[k] - start[k]) for k in keys])
+            per_arm.setdefault(arm_dir.name, {})[sd.name] = (err, rec)
+
+    inj = float(np.mean(injected))
+    complete = set.intersection(*(set(v) for v in per_arm.values())) if per_arm else set()
+    complete = sorted(complete)
+    print(f"\ninjected displacement {inj:.3f} A;  "
+          f"{len(complete)} seeds complete in all {len(per_arm)} arms")
+    if len(complete) < len(seeds):
+        print(f"  ({len(seeds) - len(complete)} seed(s) dropped: not all arms finished)")
+
+    print(f"\n{'arm':<16s} {'err (A)':>16s} {'recovered/injected':>20s}")
+    print("-" * 56)
+    for arm in sorted(per_arm):
+        e = np.array([per_arm[arm][s][0] for s in complete])
+        r = np.array([per_arm[arm][s][1] for s in complete]) / inj
+        print(f"{arm:<16s} {e.mean():8.4f} +- {e.std(ddof=1):5.4f} "
+              f"{r.mean():14.3f} +- {r.std(ddof=1):.3f}")
+
+    base = "refine_coh"
+    if base not in per_arm:
+        return per_arm
+    rng = np.random.default_rng(seed)
+    print(f"\nPaired against {base}, median of per-seed differences "
+          f"({n_boot} bootstrap resamples)")
+    print("-" * 72)
+    print(f"{'arm':<16s} {'median d(err)':>14s} {'95% CI':>22s} {'seeds better':>14s}")
+    for arm in sorted(per_arm):
+        if arm == base:
+            continue
+        d = np.array([per_arm[arm][s][0] - per_arm[base][s][0] for s in complete])
+        boots = np.array([
+            np.median(rng.choice(d, size=len(d), replace=True)) for _ in range(n_boot)
+        ])
+        lo, hi = np.percentile(boots, [2.5, 97.5])
+        print(f"{arm:<16s} {np.median(d):+14.4f} {f'[{lo:+.4f}, {hi:+.4f}]':>22s} "
+              f"{f'{(d < 0).sum()}/{len(d)}':>14s}")
+    print("-" * 72)
+    print("negative = closer to truth than the coherent refinement")
+    return per_arm
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     repo = Path(__file__).resolve().parents[1]
@@ -190,10 +287,16 @@ def main():
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--score", action="store_true",
                     help="Compare refined models against the truth (after refining).")
+    ap.add_argument("--score-sweep", action="store_true",
+                    help="Aggregate a seed sweep under --out, paired seed by seed.")
     args = ap.parse_args()
 
     out = Path(args.out)
     truth_pdb = out / "light_truth.pdb"
+
+    if args.score_sweep:
+        score_sweep(out, args.chain, args.first, args.last, args.pdb)
+        return 0
 
     if args.score:
         arms = []

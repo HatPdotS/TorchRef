@@ -84,15 +84,17 @@ def numeric_columns(params, evaluate, rel_step=1e-3):
         for i in range(flat.numel()):
             step = rel_step * max(abs(float(flat[i])), 1e-3)
             saved = float(flat[i])
+            # No autograd: these are numerical derivatives, and retaining a graph per
+            # evaluation is what pushed this over the memory limit.
             with torch.no_grad():
                 flat[i] = saved + step
-            plus = evaluate()
-            with torch.no_grad():
+                plus = evaluate()
                 flat[i] = saved - step
-            minus = evaluate()
-            with torch.no_grad():
+                minus = evaluate()
                 flat[i] = saved
-            cols.append(((plus - minus) / (2 * step)).detach().cpu().numpy())
+                col = ((plus - minus) / (2 * step)).cpu().numpy()
+            del plus, minus
+            cols.append(col)
     return np.asarray(cols).T  # (n_hkl, n_param)
 
 
