@@ -42,16 +42,17 @@ def main() -> int:
         french_wilson_preprocess,
     )
     from torchref.experimental.alignment.frf.preprocessing import (
-        build_lerf1_obs_intensity, wilson_normalise,
+        build_lerf1_intensity, wilson_normalise,
     )
 
     for pdb in ("1DAW", "3K7M", "2DQ6"):
         model, data = load_case(pdb)
-        F = data.work.F.to(torch.float64).cpu()
-        sig = data.work.sigF.to(torch.float64).cpu()
+        F = data.F.to(torch.float64).abs().cpu()
+        sig = data.F_sigma.to(torch.float64).cpu()
         hkl = data.hkl.cpu()
-        s = data.cell.s_magnitude(hkl).to(torch.float64).cpu()
-        cen = data.spacegroup.is_centric(hkl).cpu().to(torch.bool)
+        rec = data.cell.reciprocal_basis_matrix.to(torch.float64).cpu()
+        s = (hkl.to(torch.float64) @ rec).norm(dim=-1)
+        cen = data.centric.cpu().to(torch.bool)
         keep = torch.isfinite(F) & torch.isfinite(sig) & (sig > 0) & (F > 0)
         F, sig, s, cen = F[keep], sig[keep], s[keep], cen[keep]
 
@@ -60,9 +61,9 @@ def main() -> int:
         # eEsqFW is what eEobs**2 would be before the deconvolution term.
         corr = (dfac * dfac - 1.0) / (dfac * dfac)
         eEsq = eE * eE - corr
-        wil = wilson_normalise(F, s, cen, n_shells=20).to(torch.float64)
-        lerf = build_lerf1_obs_intensity(
-            fw["eEobs"], cen, dfac=fw["DFAC"], use_centric_weight=True,
+        wil = wilson_normalise(F, s, 20)[0].to(torch.float64)
+        lerf = build_lerf1_intensity(
+            fw["eEobs"], cen, weight=dfac * dfac, use_centric_weight=True,
         ).to(torch.float64)
 
         order = torch.argsort(s)

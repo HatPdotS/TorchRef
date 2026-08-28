@@ -52,7 +52,37 @@ __all__ = [
     "SmoothSigmaE",
     "WilsonShellE",
     "WilsonShellEpsE",
+    "convention_class",
+    "convention_for_calc",
+    "convention_uses_sigma_f",
 ]
+
+
+def convention_class(conv) -> type:
+    """The class behind a convention, which may be a ``functools.partial``.
+
+    Configuration rides in as ``partial(SmoothSigmaE, n_coeff=6)``, and a
+    partial forwards ``__call__`` but not class attributes -- so asking one for
+    ``uses_sigma_f`` or ``for_calc`` raises. Every attribute lookup on a
+    convention goes through here for that reason.
+    """
+    return getattr(conv, "func", conv)
+
+
+def convention_for_calc(conv):
+    """The convention to normalise **calculated** amplitudes with.
+
+    Keeps the partial's configuration when the class is its own companion, and
+    drops it when a different class is named -- another class's keywords are not
+    this one's.
+    """
+    companion = convention_class(conv).calc_companion
+    return conv if companion is None else companion
+
+
+def convention_uses_sigma_f(conv) -> bool:
+    """Whether ``conv`` consumes ``sig_F``, partial or not."""
+    return bool(getattr(convention_class(conv), "uses_sigma_f", False))
 
 
 class EConvention:
@@ -87,6 +117,14 @@ class EConvention:
     #: Whether this convention consumes ``sig_F``. The conformance harness skips
     #: the shrinkage test for conventions that do not.
     uses_sigma_f: bool = False
+
+    #: Whether this convention divides the intensity by ``eps``. A convention
+    #: that does not must ignore it on BOTH sides of the ratio: applying it to
+    #: the shell mean alone leaves ``<E**2> = <eps>``, which is 2 on a centred
+    #: lattice and 1 on a primitive one -- a normaliser whose scale depends on
+    #: the space group. Declared rather than implied so the two halves cannot
+    #: drift apart again.
+    uses_epsilon: bool = True
 
     #: The convention to use for **calculated** amplitudes, when it cannot be
     #: this one. A French-Wilson posterior is defined for observations only --
@@ -144,9 +182,13 @@ class EConvention:
     # -- helpers shared by the subclasses ---------------------------------
 
     def _intensity(self) -> torch.Tensor:
-        """``F**2 / eps`` -- the quantity whose shell mean is ``Sigma``."""
+        """``F**2 / eps`` -- the quantity whose shell mean is ``Sigma``.
+
+        Both the numerator of ``E**2`` and its shell mean come through here, so
+        ``uses_epsilon`` reaches the ratio consistently by construction.
+        """
         I = self.F * self.F
-        if self.eps is not None:
+        if self.eps is not None and self.uses_epsilon:
             I = I / self.eps.clamp(min=1.0)
         return I
 
@@ -174,8 +216,17 @@ class WilsonShellE(EConvention):
     """Plain per-shell Wilson: ``E = F / sqrt(<F**2>_shell)``.
 
     What the rotation function uses on the calc side, and on the obs side when
-    the data carry no sigmas. Ignores measurement error entirely.
+    the data carry no sigmas. Ignores measurement error, and multiplicity with
+    it -- both deliberately. The calc side is a single molecular transform
+    sampled in a P1 box, where multiplicity has no meaning; the obs side gets
+    its multiplicity from the symmetry unroll, which puts each reflection into
+    the sum once per operation that reaches it.
+
+    So an ``eps`` passed to this class is *ignored*, not half-applied. Use
+    :class:`WilsonShellEpsE` when it should count.
     """
+
+    uses_epsilon = False
 
     def _compute(self):
         return self.F / self.sigma.sqrt(), self._ones()
@@ -206,9 +257,14 @@ class FrenchWilsonE(EConvention):
 
     Requires ``sig_F``. Falling back silently to plain Wilson would hide exactly
     the difference this class exists to make visible.
+
+    ``french_wilson_preprocess`` takes no multiplicity, so neither does this --
+    declared so the reported ``sigma`` describes what was actually done rather
+    than what the base class would have done.
     """
 
     uses_sigma_f = True
+    uses_epsilon = False
     calc_companion = WilsonShellE
 
     def _compute(self):
@@ -246,7 +302,12 @@ class CalcGlobalE(EConvention):
     The rescore's ``scat_mode="absolute"``. Keeps how much the model actually
     scatters per resolution instead of flattening it, which is what makes a
     relative Wilson-B correction meaningful rather than cancelled.
+
+    Calculated amplitudes, so multiplicity does not apply -- see
+    :class:`WilsonShellE`.
     """
+
+    uses_epsilon = False
 
     def _compute(self):
         rms = self._intensity().mean().clamp(min=1e-30).sqrt()

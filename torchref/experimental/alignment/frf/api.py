@@ -21,6 +21,8 @@ from typing import List, Optional, Tuple
 
 import torch
 
+from ..e_values import (FrenchWilsonE, convention_for_calc,
+                        convention_uses_sigma_f)
 from .data_mr import bessel_sh_expand, cross_correlate_xi
 from .peak_finder import find_rotation_peaks
 from .preprocessing import (
@@ -28,8 +30,6 @@ from .preprocessing import (
     build_lerf1_intensity,
     detect_zsymm,
     eterm_sigma_a,
-    french_wilson_preprocess,
-    wilson_normalise,
 )
 from .sitelist_ang import evaluate_rotation_function
 from .types import AdaptiveRotationFunction, RotationPeak
@@ -139,6 +139,7 @@ class FastRotationFunction:
         grid_sampling_deg: float = 2.0,
         asu_idx: Optional[torch.Tensor] = None,
         s_mag_asu: Optional[torch.Tensor] = None,
+        e_convention: type = FrenchWilsonE,
     ):
         self.device = s_obs.device
 
@@ -153,6 +154,12 @@ class FastRotationFunction:
         self.delta_vrms_A = delta_vrms_A
         self.n_wilson_shells = n_wilson_shells
         self.grid_sampling_deg = grid_sampling_deg
+        # The class, not an instance: a fitted Sigma(s) cannot exist before the
+        # reflections do, so the convention is constructed here -- twice, once
+        # per side. That the same class has to normalise both is the point;
+        # it puts obs and calc on a common footing under test rather than under
+        # assumption. Pass `functools.partial(Cls, ...)` to configure one.
+        self.e_convention = e_convention
 
         # 1. Resolution window.
         #
@@ -222,19 +229,23 @@ class FastRotationFunction:
         # 3b. Wilson normalisation. With sigmas, through the French-Wilson
         #    posterior, which handles the axial reflections; without them, plain
         #    per-shell Wilson.
-        if sig_F_obs is not None:
-            fw = french_wilson_preprocess(
-                F_obs, sig_F_obs, smag_src, centric_obs,
-                n_wilson_shells=n_wilson_shells, shell_idx=obs_shell_idx,
-            )
-            eEobs, dfac = fw["eEobs"], fw["DFAC"]
-        else:
-            eEobs, _ = wilson_normalise(F_obs, smag_src, n_wilson_shells)
-            dfac = torch.ones_like(eEobs)
+        # A convention that reads sigmas cannot run without them. Falling back
+        # to its own calc companion is the same choice the hardcoded branch made
+        # -- French-Wilson with sigmas, plain Wilson without -- just asked of the
+        # convention instead of assumed about it.
+        obs_cls = e_convention
+        if sig_F_obs is None and convention_uses_sigma_f(obs_cls):
+            obs_cls = convention_for_calc(obs_cls)
+        conv_obs = obs_cls(
+            F_obs, smag_src, centric_obs, sig_F=sig_F_obs,
+            shell_idx=obs_shell_idx, n_shells=n_wilson_shells,
+        )
+        self._conv_obs = conv_obs
 
         # 4. LERF1 obs intensity, and the per-shell variance reweight.
         intensity_obs = build_lerf1_intensity(
-            eEobs, centric_obs, dfac=dfac, use_centric_weight=True,
+            conv_obs.E, centric_obs, weight=conv_obs.weight,
+            use_centric_weight=True,
         )
         intensity_obs = apply_shell_variance_weights(
             intensity_obs, smag_src, n_var_shells=n_wilson_shells,
@@ -281,7 +292,9 @@ class FastRotationFunction:
         # measured to drop 0 of 339040 reflections on 3K7M and 0 of 271630 on
         # 1DAW. So take `s_calc` as given and only derive |s| from it.
         smag_calc = s_calc.norm(dim=-1)
-        E_calc, _ = wilson_normalise(F_calc, smag_calc, self.n_wilson_shells)
+        E_calc = convention_for_calc(self.e_convention)(
+            F_calc, smag_calc, n_shells=self.n_wilson_shells,
+        ).E
         eterm = eterm_sigma_a(smag_calc, self.delta_vrms_A)
         # Optional Babinet bulk-solvent factor: Phaser folds it into σ_A as
         # `σ_A_eff = solTerm(s²) · Luzzati(s², vrms)` (EnsemblePDB.cc:96-100).

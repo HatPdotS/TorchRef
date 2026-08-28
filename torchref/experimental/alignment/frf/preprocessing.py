@@ -195,16 +195,26 @@ def wilson_normalise_epsilon(
 def build_lerf1_intensity(
     eEobs: torch.Tensor,
     centric_obs: torch.Tensor,
-    dfac: Optional[torch.Tensor] = None,
+    weight: Optional[torch.Tensor] = None,
     use_centric_weight: bool = True,
 ) -> torch.Tensor:
-    """LERF1 observed intensity: ``cweight · (eEobs² − 1) · DFAC²``.
+    """LERF1 observed intensity: ``cweight · (eEobs² − 1) · weight``.
 
     Phaser source: ``DataMR::m_LETF1`` (DataMR.cc:1326-1431) — the
     intensity that gets fed into the Bessel-SH expansion. cweight is
     ε(h) · (1 for centric, 2 for acentric); we use the centric/acentric
     factor only (the ε(h) multiplicity is implicit in the symmetry
     reduction of the input reflection set).
+
+    ``weight`` is the per-reflection information weight that travels with
+    ``eEobs`` -- ``DFAC**2`` for the French-Wilson convention, ones for a
+    convention that does not model measurement error. It arrives already
+    squared because it is the E convention that decides what the weight *is*;
+    this function's job is to apply one, not to know it came from a D factor.
+
+    Note the ``- 1``: the LERF1 intensity is CENTRED, which is what makes
+    ``<eEobs**2> = 1`` load-bearing rather than cosmetic. A convention whose
+    mean square is not one puts a constant offset into every shell.
     """
     if use_centric_weight:
         cw = torch.where(
@@ -214,9 +224,9 @@ def build_lerf1_intensity(
         )
     else:
         cw = torch.ones_like(eEobs)
-    if dfac is None:
-        dfac = torch.ones_like(eEobs)
-    return cw * (eEobs * eEobs - 1.0) * (dfac * dfac)
+    if weight is None:
+        weight = torch.ones_like(eEobs)
+    return cw * (eEobs * eEobs - 1.0) * weight
 
 
 def apply_shell_variance_weights(

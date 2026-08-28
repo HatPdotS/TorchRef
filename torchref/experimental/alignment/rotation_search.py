@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 
+from .e_values import FrenchWilsonE
 from .sh import (
     apply_overall_anisotropy,
     assign_shells,
@@ -220,6 +221,7 @@ def search_peaks(
     n_peaks: int,
     verbose: int = 0,
     device: Optional[torch.device] = None,
+    e_convention: type = FrenchWilsonE,
 ) -> Tuple[List["RotationPeak"], int, float]:
     """Run the rotation function, returning the engine's own peak list.
 
@@ -369,6 +371,7 @@ def search_peaks(
             grid_sampling_deg=GRID_SAMPLING_DEG,
             asu_idx=asu_idx,
             s_mag_asu=s_mag_asu,
+            e_convention=e_convention,
         )
         _arf, peaks = engine.score_model(
             s_calc, F_calc, n_peaks=n_peaks,
@@ -414,6 +417,7 @@ def rotation_search(
     n_peaks: int = 500,
     verbose: int = 0,
     device: Optional[torch.device] = None,
+    e_convention: type = FrenchWilsonE,
 ) -> RotationSolutions:
     """Find the orientations of ``model`` consistent with ``data``.
 
@@ -442,6 +446,13 @@ def rotation_search(
         Where to run. Default ``None`` takes ``data``'s device, moving ``model``
         to match; an explicit value moves both. With neither carrying one, the
         configured default applies.
+    e_convention : type, optional
+        How amplitudes become E values, given as a class rather than an
+        instance: a fitted ``Sigma(s)`` cannot exist before the reflections do,
+        so the engine constructs it -- once for the observations and once for
+        the model, which is what puts the two on a common footing. The default
+        pairs the French-Wilson posterior on obs (it reads ``sigF``) with plain
+        per-shell Wilson on calc. ``functools.partial`` configures one.
 
     Returns
     -------
@@ -462,5 +473,6 @@ def rotation_search(
     peaks, lmax, d_min = search_peaks(
         model, data, model_error_A,
         U_aniso=U_aniso, n_peaks=n_peaks, verbose=verbose, device=device,
+        e_convention=e_convention,
     )
     return _solutions(peaks, lmax, d_min, model_error_A)

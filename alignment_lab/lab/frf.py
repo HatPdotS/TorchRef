@@ -15,6 +15,18 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 
 
+def e_convention_name(conv) -> str:
+    """Display name for a convention class, a ``partial`` of one, or ``None``."""
+    if conv is None:
+        return "default"
+    inner = getattr(conv, "func", conv)
+    name = getattr(inner, "__name__", str(inner))
+    kw = getattr(conv, "keywords", None)
+    if kw:
+        name += "(" + ",".join(f"{k}={v}" for k, v in sorted(kw.items())) + ")"
+    return name
+
+
 @dataclass
 class FRFConfig:
     """Engine settings for one FRF evaluation.
@@ -33,12 +45,20 @@ class FRFConfig:
     #: Expected r.m.s. coordinate error, in Angstrom. ``None`` uses the Oeffner
     #: estimate from the model's length, which is what the pipeline does.
     model_error_A: Optional[float] = None
+    #: E-value convention, as the CLASS the engine instantiates once per side.
+    #: ``None`` leaves the production default in place; a class (or a
+    #: ``functools.partial`` of one) sweeps it. Unlike the deleted ``extra``
+    #: knobs this is a real production parameter, so the lab passes it through
+    #: rather than patching a constant.
+    e_convention: Optional[type] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def as_row(self) -> Dict[str, Any]:
         """Config fields for a result row (``extra`` flattened out)."""
         d = asdict(self)
         d.pop("extra")
+        # `asdict` cannot render a class or a partial; name it instead.
+        d["e_convention"] = e_convention_name(self.e_convention)
         d.update(self.extra)
         return d
 
@@ -211,6 +231,11 @@ def run_frf(
             f"torchref.experimental.alignment.rotation_search instead."
         )
 
+    # Omitted rather than passed as None, so an unset convention takes the
+    # production default from the signature instead of overriding it with one.
+    conv_kw = {} if cfg.e_convention is None else {
+        "e_convention": cfg.e_convention}
+
     t0 = time.time()
     with patched(_rs, "LMAX_CAP", int(cfg.lmax_cap)), \
          patched(_rs, "DENSE_CALC_PAD", float(cfg.dense_pad)), \
@@ -220,12 +245,12 @@ def run_frf(
             with patched(_api.FastRotationFunction, "score_model", _wrapped):
                 peaks, _lmax, _dmin = _rs.search_peaks(
                     model, data, model_error_A, U_aniso=frf_inputs.U_aniso,
-                    n_peaks=cfg.n_peaks, verbose=verbose,
+                    n_peaks=cfg.n_peaks, verbose=verbose, **conv_kw,
                 )
         else:
             peaks, _lmax, _dmin = _rs.search_peaks(
                 model, data, model_error_A, U_aniso=frf_inputs.U_aniso,
-                n_peaks=cfg.n_peaks, verbose=verbose,
+                n_peaks=cfg.n_peaks, verbose=verbose, **conv_kw,
             )
     seconds = time.time() - t0
 
