@@ -79,8 +79,9 @@ class Restraints(DeviceMixin, DebugMixin, Module):
     cif_dict : dict
         Parsed CIF restraints keyed by residue type; ``missing_residues`` lists
         the types that could not be resolved.
-    h_topo, h_excl_hash
-        Riding-hydrogen topology and its exclusion hash, populated on demand.
+    h_topo
+        Riding-hydrogen map, built only when the model carries no hydrogens of its
+        own. Empty otherwise; see :mod:`torchref.topology.riding`.
     link_dict, link_list
         Link-type definitions from the monomer library, set only when ``pdb``
         was provided.
@@ -330,30 +331,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
                     f"and will have no restraints applied: {self.missing_residues}"
                 )
 
-    def expand_altloc(self, residue):
-        """
-        Expand residue with alternative conformations into separate conformations.
-
-        Yields one DataFrame per altloc (with common atoms included in each).
-        """
-        residue = residue.copy()
-        residue.loc[residue["altloc"].isin(["", " "]), "altloc"] = " "
-
-        alt_conf = residue["altloc"].unique()
-        if " " in alt_conf:
-            residue_no_alt = residue.loc[residue["altloc"] == " "]
-            for alt in alt_conf:
-                if alt == " ":
-                    continue
-                residue_alt = residue.loc[residue["altloc"] == alt]
-                residue_combined = pd.concat(
-                    [residue_no_alt, residue_alt], ignore_index=True
-                )
-                yield residue_combined
-        else:
-            for alt_loc in alt_conf:
-                residue_alt = residue.loc[residue["altloc"] == alt_loc]
-                yield residue_alt
 
     def _load_rama_surfaces(self, device: torch.device):
         """Load pre-computed Ramachandran NLL surfaces as a buffer."""
@@ -666,10 +643,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
         """Access riding hydrogen topology (None if not built)."""
         return getattr(self, "_h_topo", None)
 
-    @property
-    def h_excl_hash(self):
-        """Access H-specific exclusion hash tensor (None if not built)."""
-        return getattr(self, "_h_excl_hash", None)
 
     def _build_h_exclusion_hash(self, h_topo, device):
         """Sorted 1-D hash tensor of H-specific 1-2 and 1-3 exclusions.
@@ -1512,49 +1485,6 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             # All periods are 0 or 1, simple wrapping
             return torch.remainder(diff_rad + torch.pi, 2.0 * torch.pi) - torch.pi
 
-    def torsion_deviations(self, xyz: torch.Tensor = None, wrapped=True):
-        """
-        Compute deviations between calculated and expected torsion angles.
-
-        Parameters
-        ----------
-        xyz : torch.Tensor, optional
-            Coordinates tensor. If None, uses the stored xyz_fn callable.
-        wrapped : bool, default True
-            If True, wrap deviations accounting for periodicity.
-            If False, return raw deviations (calculated - expected).
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (n_torsions,) with deviations in degrees.
-            For wrapped=True, deviations are in range appropriate for the period.
-
-        Notes
-        -----
-        Expected values from the CIF library are discrete (typically -60°, 0°,
-        60°, 90°, 180°) while calculated values from the structure are
-        continuous. Use wrapped=True for meaningful comparison and
-        visualization.
-        """
-        if "all" not in self.restraints["torsion"]:
-            self.cat_dict()
-
-        idx = self.restraints["torsion"]["all"]["indices"]
-        expected = self.restraints["torsion"]["all"]["references"]
-        periods = self.restraints["torsion"]["all"]["periods"]
-        calculated = self.torsions(idx, xyz)
-
-        if not wrapped:
-            # Simple difference
-            return calculated - expected
-        else:
-            # Use the helper function for periodicity handling
-            diff_rad = (calculated - expected) * torch.pi / 180.0
-            diff_wrapped_rad = self._wrap_torsion_periodicity(diff_rad, periods)
-
-            # Convert back to degrees
-            return torch.rad2deg(diff_wrapped_rad)
 
     def torsion_deviations_with_sigmas(self, xyz: torch.Tensor = None):
         """
@@ -1588,143 +1518,8 @@ class Restraints(DeviceMixin, DebugMixin, Module):
 
         return deviations_rad, sigmas_deg
 
-    def nll_torsions(self, xyz: torch.Tensor = None):
-        """
-        Compute negative log-likelihood for torsion angle restraints.
 
-        von Mises: NLL = -κ·cos(θ-μ) + log(I₀(κ)) + log(2π), with κ = 1/σ². This is
-        the true NLL, so exp(-NLL) is a probability density. Deviations are folded
-        by the restraint period first (see :meth:`_wrap_torsion_periodicity`).
 
-        Parameters
-        ----------
-        xyz : torch.Tensor, optional
-            Coordinates tensor. If None, uses the stored xyz_fn callable.
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (n_torsions,) with negative log-likelihood values.
-        """
-        from torchref.refinement.targets import von_mises_nll
-
-        deviations_rad, sigmas_deg = self.torsion_deviations_with_sigmas(xyz)
-        return von_mises_nll(deviations_rad, sigmas_deg)
-
-    def nll_planes(self, xyz: torch.Tensor = None):
-        """
-        Compute negative log-likelihood for plane restraints.
-
-        For each plane, computes the RMSD of atom deviations from the best-fit plane.
-        Uses Gaussian NLL: NLL = 0.5 * (deviation / σ)² + log(σ) + 0.5 * log(2π)
-
-        Parameters
-        ----------
-        xyz : torch.Tensor, optional
-            Coordinates tensor. If None, uses the stored xyz_fn callable.
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (n_planes,) with negative log-likelihood values.
-        """
-        from torchref.refinement.targets import gaussian_nll
-
-        xyz = self.xyz(xyz)
-        device = xyz.device
-
-        all_nlls = []
-
-        if "plane" in self.restraints:
-            for key, plane_data in self.restraints["plane"].items():
-                indices = plane_data.get("indices")
-                sigmas = plane_data.get("sigmas")
-
-                if indices is None or len(indices) == 0:
-                    continue
-
-                # indices shape: (n_planes, n_atoms_per_plane)
-                # sigmas shape: (n_planes, n_atoms_per_plane)
-                n_planes, n_atoms = indices.shape
-
-                for i in range(n_planes):
-                    plane_indices = indices[i]
-                    plane_sigmas = sigmas[i]
-
-                    # Get positions of atoms in this plane
-                    positions = xyz[plane_indices]  # (n_atoms, 3)
-
-                    # Compute centroid
-                    centroid = positions.mean(dim=0)
-                    centered = positions - centroid
-
-                    # SVD to find best-fit plane normal
-                    # The plane normal is the singular vector with smallest singular value
-                    U, S, Vh = torch.linalg.svd(centered)
-                    normal = Vh[-1]  # Normal to best-fit plane
-
-                    # Compute deviations from plane (distance to plane)
-                    deviations = torch.abs(centered @ normal)
-
-                    # Compute NLL for each atom
-                    nll = gaussian_nll(deviations, plane_sigmas)
-                    all_nlls.append(nll)
-
-        if all_nlls:
-            return torch.cat(all_nlls)
-        return torch.tensor([0.0], device=device)
-
-    def nll_vdw(self, xyz: torch.Tensor = None):
-        """
-        Compute negative log-likelihood for VDW (non-bonded) restraints.
-
-        Uses a soft-repulsive potential based on distance violations.
-        NLL = 0.5 * (max(0, min_dist - actual_dist) / σ)² + log(σ) + 0.5 * log(2π)
-
-        Only violations (distances shorter than minimum) contribute to the loss.
-
-        Parameters
-        ----------
-        xyz : torch.Tensor, optional
-            Coordinates tensor. If None, uses the stored xyz_fn callable.
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (n_pairs,) with negative log-likelihood values.
-        """
-        from torchref.refinement.targets import gaussian_nll
-
-        xyz = self.xyz(xyz)
-        device = xyz.device
-
-        if "vdw" not in self.restraints:
-            return torch.tensor([0.0], device=device)
-
-        vdw_data = self.restraints["vdw"]
-        indices = vdw_data.get("indices")
-
-        if indices is None or len(indices) == 0:
-            return torch.tensor([0.0], device=device)
-
-        min_distances = vdw_data["min_distances"]
-        sigmas = vdw_data["sigmas"]
-
-        # Get current positions
-        pos1 = xyz[indices[:, 0]]
-        pos2 = xyz[indices[:, 1]]
-
-        # Compute actual distances
-        actual_distances = torch.norm(pos2 - pos1, dim=-1)
-
-        # Violations: where actual distance is less than minimum
-        # Deviation = max(0, min_dist - actual_dist)
-        deviations = torch.clamp(min_distances - actual_distances, min=0.0)
-
-        # Compute NLL (only non-zero for violations)
-        nll = gaussian_nll(deviations, sigmas)
-
-        return nll
 
     def adp_b_differences(self, adp: torch.Tensor = None):
         """
@@ -1757,28 +1552,3 @@ class Restraints(DeviceMixin, DebugMixin, Module):
             return torch.cat(diffs_list, dim=0)
         return torch.tensor([], device=b_factors.device)
 
-    def adp_similarity_loss(self, adp: torch.Tensor = None, sigma: float = 2.0):
-        """
-        Compute ADP similarity loss (SIMU in Phenix/SHELX).
-
-        This restrains the B-factors of bonded atoms to be similar.
-        Loss = Σ ((B_i - B_j) / sigma)^2
-
-        Parameters
-        ----------
-        adp : torch.Tensor, optional
-            ADP values. If None, uses the stored adp_fn callable.
-        sigma : float, default 2.0
-            Target standard deviation for B-factor differences in Å².
-
-        Returns
-        -------
-        torch.Tensor
-            Mean similarity loss.
-        """
-        from torchref.refinement.targets import adp_similarity_nll
-
-        b_diffs = self.adp_b_differences(adp)
-        if len(b_diffs) == 0:
-            return torch.tensor(0.0, device=self.xyz().device)
-        return adp_similarity_nll(b_diffs, sigma).mean()
