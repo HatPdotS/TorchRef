@@ -24,10 +24,18 @@ import torch
 from torch import nn
 
 from torchref.config import get_float_dtype, normalize_device
-from torchref.model.parameter_wrappers import MixedTensor
+from torchref.model.parameter_wrappers import MixedTensor, raw6_to_u6, u6_to_raw6
 from torchref.utils.utils import ModuleReference
 
-__all__ = ["DisorderFieldTensor", "farthest_point_anchors", "build_neighbor_list"]
+__all__ = [
+    "DisorderFieldTensor",
+    "NodePayload",
+    "IsotropicPayload",
+    "AnisotropicPayload",
+    "farthest_point_anchors",
+    "density_anchor_rows",
+    "build_neighbor_list",
+]
 
 
 def farthest_point_anchors(xyz: torch.Tensor, n_nodes: int) -> torch.Tensor:
@@ -161,6 +169,140 @@ def _wrap_accessor(xyz_fn):
     return xyz_fn
 
 
+# ----------------------------------------------------------------------------------
+# Payload strategies. A payload says what one node carries and how that becomes a
+# per-atom quantity; it knows nothing about where nodes are or how weights arise.
+#
+# Deliberately stateless. Node parameters live in one flat leaf on the field itself,
+# because ``Model.parameters_of_types`` reads a single ``refinable_params`` per type,
+# and a strategy owning parameters would break that. Each strategy declares only how
+# many columns of that leaf it interprets.
+# ----------------------------------------------------------------------------------
+
+
+class NodePayload:
+    """What a node carries, and how it becomes a per-atom ADP.
+
+    Attributes
+    ----------
+    width : int
+        Columns of node storage this payload interprets.
+    out_width : int
+        Components of the per-atom output: 1 for an isotropic B, 6 for a U tensor.
+    """
+
+    width: int = 1
+    out_width: int = 1
+
+    def contributions(self, payload, xyz, node_pos, neighbor_list):
+        """``(n_atoms, k, out_width)``: what each candidate node offers each atom.
+
+        ``xyz`` and ``node_pos`` are passed even though the payloads here ignore them,
+        because a payload with an r-dependence (TLS: constant, linear and quadratic in
+        the displacement from the node) needs them, and giving it the arguments now
+        means adding one later touches no shared code.
+        """
+        raise NotImplementedError
+
+    def fit(self, target, w_dense, epsilon):
+        """``(K, width)`` least-squares payload reproducing ``target``."""
+        raise NotImplementedError
+
+    def log_magnitude(self, payload):
+        """``(K,)`` log of each node's ADP magnitude, for a magnitude restraint.
+
+        Lets a restraint price node values without branching on payload type.
+        """
+        raise NotImplementedError
+
+
+class IsotropicPayload(NodePayload):
+    """One isotropic B per node, stored as ``log B`` so it stays positive.
+
+    The per-atom B is a convex combination of positive node values, so it is positive
+    without a clamp.
+    """
+
+    width = 1
+    out_width = 1
+
+    def contributions(self, payload, xyz, node_pos, neighbor_list):
+        return torch.exp(payload[:, 0])[neighbor_list].unsqueeze(-1)
+
+    def fit(self, target, w_dense, epsilon):
+        b = _ridged_solve(w_dense, target.unsqueeze(-1)).squeeze(-1)
+        return torch.log(b.clamp(min=epsilon)).unsqueeze(-1)
+
+    def log_magnitude(self, payload):
+        return payload[:, 0]
+
+
+class AnisotropicPayload(NodePayload):
+    """A full U tensor per node, positive-definite by construction.
+
+    Stored as the six free parameters of a Cholesky factor, so ``U = L L^T`` is PD for
+    any parameter value -- the same device
+    :class:`~torchref.model.parameter_wrappers.CholeskyMixedTensor` uses for per-atom
+    ADPs, and for the same reason: an indefinite U makes the anisotropic B-matrix
+    singular and the structure-factor FFT returns NaN.
+
+    Positive-definiteness survives the combination for free: the per-atom U is a convex
+    combination of PD matrices. Averaging in U space is what buys that -- averaging the
+    Cholesky parameters instead would be a different object with no such guarantee.
+    """
+
+    width = 6
+    out_width = 6
+
+    def __init__(self, epsilon: float = 1e-3):
+        # Floor on the Cholesky diagonal, which bounds the smallest eigenvalue of U
+        # from below. Same default and same meaning as the per-atom wrapper.
+        self.epsilon = float(epsilon)
+
+    def contributions(self, payload, xyz, node_pos, neighbor_list):
+        return raw6_to_u6(payload, self.epsilon)[neighbor_list]
+
+    def fit(self, target, w_dense, epsilon):
+        """Fit six U components at once, then re-encode as Cholesky parameters.
+
+        The per-atom U is linear in each component independently, so this is the same
+        ridged solve as the isotropic case with a six-column right-hand side. The
+        least-squares result is not constrained to be PD, which is why it goes back
+        through ``u6_to_raw6`` -- that projects onto PD by clamping eigenvalues.
+        """
+        if target.ndim == 1:  # a B target: lift to the equivalent isotropic U
+            u_iso = target / (8.0 * math.pi**2)
+            zero = torch.zeros_like(u_iso)
+            target = torch.stack([u_iso, u_iso, u_iso, zero, zero, zero], dim=1)
+        return u6_to_raw6(_ridged_solve(w_dense, target), self.epsilon)
+
+    def log_magnitude(self, payload):
+        u6 = raw6_to_u6(payload, self.epsilon)
+        b_eq = (8.0 * math.pi**2 / 3.0) * (u6[:, 0] + u6[:, 1] + u6[:, 2])
+        return torch.log(b_eq.clamp(min=1e-6))
+
+
+def _ridged_solve(w_dense, target):
+    """Least squares ``min ||W x - target||`` through the ridged normal equations.
+
+    Non-finite target rows are dropped rather than carried in: deposited models have
+    NaN ADPs, and one NaN row propagates through the normal equations and takes every
+    node with it. Those atoms still receive a fitted value on output.
+    """
+    finite = torch.isfinite(target).all(dim=-1)
+    if not bool(finite.all()):
+        w_dense, target = w_dense[finite], target[finite]
+        if target.shape[0] == 0:
+            return torch.zeros(
+                w_dense.shape[1], target.shape[-1],
+                dtype=w_dense.dtype, device=w_dense.device,
+            )
+    gram = w_dense.T @ w_dense
+    ridge = 1e-6 * torch.diagonal(gram).mean().clamp(min=1e-30)
+    eye = torch.eye(gram.shape[0], dtype=gram.dtype, device=gram.device)
+    return torch.linalg.solve(gram + ridge * eye, w_dense.T @ target)
+
+
 class DisorderFieldTensor(MixedTensor):
     """Per-atom ADPs from a small set of nodes, each atom a weighted mean of its k nearest.
 
@@ -221,6 +363,7 @@ class DisorderFieldTensor(MixedTensor):
         n_nodes: int = 32,
         k_neighbors: int = 12,
         refine_positions: bool = False,
+        payload: Optional["NodePayload"] = None,
         anchor_rows: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         node_values: Optional[torch.Tensor] = None,
         refinable_mask: Optional[torch.Tensor] = None,
@@ -234,6 +377,9 @@ class DisorderFieldTensor(MixedTensor):
         self.epsilon = epsilon
         self._k_neighbors = int(k_neighbors)
         self._refine_positions = bool(refine_positions)
+        # Storage columns are [payload | log sigma | offset]. Payload first keeps the
+        # isotropic layout unchanged, so an existing state dict still loads.
+        self._payload = payload if payload is not None else IsotropicPayload()
         object.__setattr__(self, "_xyz_fn", _wrap_accessor(xyz_fn))
 
         if initial_values is None and node_values is None:
@@ -350,21 +496,24 @@ class DisorderFieldTensor(MixedTensor):
 
     def _fit_nodes(
         self,
-        target_b: torch.Tensor,
+        target: torch.Tensor,
         xyz: torch.Tensor,
         node_pos: torch.Tensor,
         neighbor_list: torch.Tensor,
     ) -> torch.Tensor:
-        """Least-squares node values reproducing ``target_b`` as closely as possible.
+        """Node storage whose field reproduces ``target`` as closely as it can.
 
-        ``sigma`` is seeded at half the median nearest-neighbour node spacing, then the
-        node values are the ridged solution of ``W b = target_b``. Linear in ``b``, so
-        this is a closed-form solve rather than an optimisation loop.
+        Kernel width is seeded at half the median nearest-neighbour node spacing, which
+        makes it a property of the node layout rather than a tuned constant. With the
+        weights fixed at that seed the payload is linear in the target, so the payload
+        half is a closed-form solve rather than an optimisation loop -- delegated,
+        because what "linear in the target" means differs between a scalar B and a
+        six-component U.
 
         Returns
         -------
         torch.Tensor
-            ``(K, 2)`` storage, ``[log b, log sigma]``.
+            ``(K, payload.width + 1 + 3*refine_positions)`` node storage.
         """
         n_k = int(node_pos.shape[0])
         if n_k > 1:
@@ -378,34 +527,16 @@ class DisorderFieldTensor(MixedTensor):
             (n_k,), math.log(sigma0), dtype=xyz.dtype, device=xyz.device
         )
 
-        W_sparse = self._weights(xyz, node_pos, neighbor_list, log_sigma)
-        W = torch.zeros(xyz.shape[0], n_k, dtype=xyz.dtype, device=xyz.device)
-        W.scatter_(1, neighbor_list, W_sparse)
+        w_sparse = self._weights(xyz, node_pos, neighbor_list, log_sigma)
+        w_dense = torch.zeros(xyz.shape[0], n_k, dtype=xyz.dtype, device=xyz.device)
+        w_dense.scatter_(1, neighbor_list, w_sparse)
 
-        # Non-finite targets are dropped from the solve rather than carried into it:
-        # a single NaN row would propagate through the normal equations and take
-        # every node with it. Those atoms still receive a fitted value on output.
-        finite = torch.isfinite(target_b)
-        if not bool(finite.all()):
-            W, target_b = W[finite], target_b[finite]
-            if target_b.numel() == 0:
-                flat = torch.stack([torch.zeros_like(log_sigma), log_sigma], dim=1)
-                if self._refine_positions:
-                    flat = torch.cat([flat, torch.zeros_like(node_pos)], dim=1)
-                return flat
+        payload = self._payload.fit(target, w_dense, self.epsilon)
 
-        gram = W.T @ W
-        ridge = 1e-6 * torch.diagonal(gram).mean().clamp(min=1e-30)
-        eye = torch.eye(n_k, dtype=W.dtype, device=W.device)
-        b = torch.linalg.solve(gram + ridge * eye, W.T @ target_b)
-
-        b = b.clamp(min=self.epsilon)
-        node_values = torch.stack([torch.log(b), log_sigma], dim=1)
+        columns = [payload, log_sigma.unsqueeze(-1)]
         if self._refine_positions:
-            node_values = torch.cat(
-                [node_values, torch.zeros_like(node_pos)], dim=1
-            )
-        return node_values
+            columns.append(torch.zeros_like(node_pos))
+        return torch.cat(columns, dim=1)
 
     @staticmethod
     def _collapse_mask(
@@ -421,6 +552,31 @@ class DisorderFieldTensor(MixedTensor):
     # ------------------------------------------------------------------
     # Public surface.
     # ------------------------------------------------------------------
+
+    @property
+    def payload(self) -> "NodePayload":
+        """What each node carries and how it becomes a per-atom ADP."""
+        return self._payload
+
+    @property
+    def out_width(self) -> int:
+        """Components of the per-atom output: 1 for isotropic B, 6 for a U tensor."""
+        return self._payload.out_width
+
+    def _split(self, raw):
+        """Storage columns as ``(payload, log sigma, offset or None)``."""
+        w = self._payload.width
+        offset = raw[:, w + 1 : w + 4] if self._refine_positions else None
+        return raw[:, :w], raw[:, w], offset
+
+    def log_magnitude(self, raw=None) -> torch.Tensor:
+        """``(K,)`` log ADP magnitude per node, whatever the payload.
+
+        Lets a magnitude restraint price node values without knowing the layout.
+        """
+        if raw is None:
+            raw = super().forward()
+        return self._payload.log_magnitude(self._split(raw)[0])
 
     @property
     def shape(self):
@@ -465,7 +621,8 @@ class DisorderFieldTensor(MixedTensor):
         base = self._segment_mean(
             xyz, self.anchor_atom, self.anchor_node, raw.shape[0]
         )
-        return base + raw[:, 2:5] if self._refine_positions else base
+        offset = self._split(raw)[2]
+        return base if offset is None else base + offset
 
     def weights(self, xyz: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Per-atom weights over candidate nodes, ``(n_atoms, k)``. Rows sum to one."""
@@ -473,7 +630,10 @@ class DisorderFieldTensor(MixedTensor):
             xyz = self._xyz_fn()
         raw = super().forward()
         return self._weights(
-            xyz, self._node_positions_from(xyz, raw), self.neighbor_list, raw[:, 1]
+            xyz,
+            self._node_positions_from(xyz, raw),
+            self.neighbor_list,
+            self._split(raw)[1],
         )
 
     def node_load(self, xyz: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -537,10 +697,16 @@ class DisorderFieldTensor(MixedTensor):
         raw : torch.Tensor
             ``(K, 2)`` node storage, ``[log b, log sigma]``.
         """
-        log_b, log_sigma = raw[:, 0], raw[:, 1]
+        payload, log_sigma, _ = self._split(raw)
         node_pos = self._node_positions_from(xyz, raw)
         W = self._weights(xyz, node_pos, self.neighbor_list, log_sigma)
-        return (W * torch.exp(log_b)[self.neighbor_list]).sum(dim=1)
+        contrib = self._payload.contributions(
+            payload, xyz, node_pos, self.neighbor_list
+        )
+        out = (W.unsqueeze(-1) * contrib).sum(dim=1)
+        # A scalar payload reports per-atom B as (N,), not (N, 1): that is the shape
+        # every consumer of ``adp()`` expects.
+        return out.squeeze(-1) if self._payload.out_width == 1 else out
 
     def forward(self) -> torch.Tensor:
         """Per-atom isotropic B, ``(n_atoms,)``.
@@ -584,7 +750,10 @@ class DisorderFieldTensor(MixedTensor):
         )
 
     def refit(self, target_b: torch.Tensor) -> None:
-        """Re-fit the node values to a per-atom B target, in place.
+        """Re-fit the node values to a per-atom target, in place.
+
+        The target is per-atom B for a scalar payload, or per-atom U6 for a tensor one;
+        an anisotropic payload also accepts a B target and lifts it to ``U_iso * I``.
 
         Replaces ``refinable_params``, so any optimizer state held for it is stale.
         """
@@ -668,6 +837,7 @@ class DisorderFieldTensor(MixedTensor):
             xyz_fn=accessor,
             k_neighbors=self._k_neighbors,
             refine_positions=self._refine_positions,
+            payload=self._payload,
             anchor_rows=(self.anchor_atom.clone(), self.anchor_node.clone()),
             node_values=self.node_values().detach().clone(),
             refinable_mask=self.refinable_mask.clone(),
@@ -686,6 +856,7 @@ class DisorderFieldTensor(MixedTensor):
         name_str = f"'{self.name}', " if self.name is not None else ""
         return (
             f"DisorderFieldTensor({name_str}atoms={self._full_shape}, "
-            f"nodes={self.n_nodes}, k={self._k_neighbors}, dtype={self.dtype}, "
+            f"nodes={self.n_nodes}, k={self._k_neighbors}, "
+            f"payload={type(self._payload).__name__}, dtype={self.dtype}, "
             f"device={self.device}, refinable={self.get_refinable_count()})"
         )

@@ -592,6 +592,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             else self.pdb
         )
         self.pdb.dropna(subset=["x", "y", "z", "tempfactor", "occupancy"], inplace=True)
+        # Reindex before deriving the ``index`` column: every consumer uses it to
+        # address length-N per-atom tensors positionally (see
+        # ``_create_occupancy_groups``), so a gapped index from the drop above sends
+        # them past the end. Only the strip_H branch reset, so a model losing rows to
+        # the dropna instead -- an atom with no coordinates or no B -- raised
+        # IndexError at load. Hit on roughly one PDB-REDO entry in six.
+        self.pdb.reset_index(drop=True, inplace=True)
         self.pdb["index"] = self.pdb.index.to_numpy(dtype=int)
 
         self.cell = Cell(cell, dtype=self.dtype_float, device=self.device)
@@ -911,10 +918,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         Write the current refinable parameters back into ``self.pdb``.
 
-        Copies the live values of ``xyz`` (x/y/z), ``u`` (u11..u23), ``adp``
-        (tempfactor), and ``occupancy`` from the parameter wrappers into the
-        corresponding columns of the ``self.pdb`` DataFrame. Called by every
-        writer and by ``hydrogenate`` before output.
+        Copies the live values of ``xyz`` (x/y/z), ``u`` (u11..u23) and
+        ``occupancy`` from the parameter wrappers into the corresponding columns of
+        the ``self.pdb`` DataFrame. Called by every writer and by ``hydrogenate``
+        before output.
+
+        ``tempfactor`` is the equivalent isotropic B whenever any atom is
+        anisotropic, so the column agrees with the ANISOU records written beside it;
+        with no anisotropic atoms it is the isotropic wrapper directly.
 
         Returns
         -------
@@ -931,7 +942,19 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         self.pdb.loc[:, ["u11", "u22", "u33", "u12", "u13", "u23"]] = (
             self.u().cpu().detach().numpy()
         )
-        self.pdb.loc[:, "tempfactor"] = self.adp().cpu().detach().numpy()
+        # The B column must agree with the ANISOU records beside it: for an
+        # anisotropic atom the PDB convention is B_eq = (8 pi^2 / 3) tr(U), not
+        # whatever the isotropic wrapper still happens to hold. That wrapper stops
+        # being refined the moment an atom goes anisotropic, so writing it directly
+        # emits a stale B alongside a live U.
+        if getattr(self, "_aniso_is_empty", True):
+            self.pdb.loc[:, "tempfactor"] = self.adp().cpu().detach().numpy()
+        else:
+            from torchref.base.targets.adp import u6_b_eq
+
+            self.pdb.loc[:, "tempfactor"] = (
+                u6_b_eq(self.adp_u6()).cpu().detach().numpy()
+            )
         self.pdb.loc[:, "occupancy"] = self.occupancy().cpu().detach().numpy()
         return self.pdb
 
@@ -1244,7 +1267,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Parameters
         ----------
-        mode : {"isotropic", "anisotropic", "field"}, optional
+        mode : {"isotropic", "anisotropic", "field", "field_aniso"}, optional
             ``"isotropic"`` (default) converts every atom, previously anisotropic
             ones to ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"``
             converts those matching ``aniso_selection``, expanding isotropic atoms
@@ -1275,17 +1298,40 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         """
         if not self.ctx.initialized or self.pdb is None:
             return
-        if mode == "field":
-            # Collapse to a clean per-atom isotropic state first. The field is
-            # isotropic in this representation, and the partition owns every buffer
-            # keyed off the iso/aniso split, so reuse it rather than duplicating it.
-            self._apply_adp_partition(
-                torch.zeros(len(self.pdb), dtype=torch.bool, device=self.device)
-            )
+        if mode in ("field", "field_aniso"):
+            aniso = mode == "field_aniso"
+            # Run the partition first either way: it owns every buffer keyed off the
+            # iso/aniso split, and it converts the stored values in the right direction
+            # (B -> U_iso*I entering anisotropic, U -> B_eq entering isotropic), so the
+            # field is fitted to a target that is already in its own representation.
+            if aniso:
+                # Every atom, unless the caller narrows it. A node field is not the
+                # per-atom parametrisation that "not water, not hydrogen" exists to
+                # ration -- its cost is set by node count, not atom count -- and a
+                # partial selection would leave half the ADPs coming from the field and
+                # half from the per-atom wrapper, which is not a representation anyone
+                # asked for.
+                if aniso_selection is None:
+                    target_mask = torch.ones(
+                        len(self.pdb), dtype=torch.bool, device=self.device
+                    )
+                else:
+                    from torchref.utils.utils import create_selection_mask
+
+                    target_mask = torch.as_tensor(
+                        create_selection_mask(aniso_selection, self.pdb),
+                        dtype=torch.bool,
+                    ).to(self.device)
+            else:
+                target_mask = torch.zeros(
+                    len(self.pdb), dtype=torch.bool, device=self.device
+                )
+            self._apply_adp_partition(target_mask)
             self._install_disorder_field(
                 n_nodes=n_nodes,
                 k_neighbors=k_neighbors,
                 refine_node_positions=refine_node_positions,
+                anisotropic=aniso,
             )
             return
         if mode == "isotropic":
@@ -1301,37 +1347,61 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ).to(self.device)
         else:
             raise ValueError(
-                f"Unknown ADP mode: {mode!r}. Use 'isotropic', 'anisotropic' "
-                "or 'field'."
+                f"Unknown ADP mode: {mode!r}. Use 'isotropic', 'anisotropic', "
+                "'field' or 'field_aniso'."
             )
         self._apply_adp_partition(aniso_mask)
 
     @property
     def adp_is_field(self) -> bool:
-        """Whether ``adp`` is a node field rather than a per-atom wrapper."""
+        """Whether either ADP slot holds a node field rather than a per-atom wrapper."""
         from torchref.model.disorder_field import DisorderFieldTensor
 
-        return isinstance(self.adp, DisorderFieldTensor)
+        return isinstance(self.adp, DisorderFieldTensor) or isinstance(
+            self.u, DisorderFieldTensor
+        )
+
+    @property
+    def adp_field(self):
+        """The node field driving the ADPs, or ``None`` if neither slot holds one."""
+        from torchref.model.disorder_field import DisorderFieldTensor
+
+        for wrapper in (self.u, self.adp):
+            if isinstance(wrapper, DisorderFieldTensor):
+                return wrapper
+        return None
 
     def _install_disorder_field(
         self,
         n_nodes: int = None,
         k_neighbors: int = 12,
         refine_node_positions: bool = False,
+        anisotropic: bool = False,
     ):
-        """Replace the per-atom ``adp`` wrapper with a node field fitted to its B.
+        """Replace a per-atom ADP wrapper with a node field fitted to it.
 
-        Expects the model to already be in a per-atom isotropic state, which
-        :meth:`set_adp_mode` arranges by running the partition first.
+        The field lands in the slot its payload feeds: an isotropic payload takes over
+        ``adp`` and leaves the model isotropic, an anisotropic one takes over ``u`` and
+        the model refines every selected atom anisotropically. Both expect the partition
+        to have run first, which :meth:`set_adp_mode` arranges.
         """
         from torchref.model.disorder_field import (
+            AnisotropicPayload,
             DisorderFieldTensor,
+            IsotropicPayload,
             density_anchor_rows,
         )
 
         with torch.no_grad():
-            B = self.adp().detach().clone()
             xyz = self.xyz().detach()
+            # The fit target is whatever the partition just produced: per-atom U6 for
+            # the anisotropic payload, per-atom B for the isotropic one.
+            target = (
+                self.adp_u6().detach().clone()
+                if anisotropic
+                else self.adp().detach().clone()
+            )
+            B = target
         if n_nodes is None:
             n_nodes = max(4, int(round(len(self.pdb) / 25.0)))
 
@@ -1340,25 +1410,34 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # wearing a node's clothes.
         anchor_rows = density_anchor_rows(xyz, min(n_nodes, len(self.pdb)))
 
-        self.adp = DisorderFieldTensor(
-            initial_values=B.to(self.dtype_float),
+        field = DisorderFieldTensor(
+            initial_values=target.to(self.dtype_float),
             xyz_fn=self.xyz,
             n_nodes=n_nodes,
             refine_positions=refine_node_positions,
+            payload=AnisotropicPayload() if anisotropic else IsotropicPayload(),
             anchor_rows=anchor_rows,
             k_neighbors=k_neighbors,
-            name="adp",
+            name="aniso_U" if anisotropic else "adp",
             dtype=self.dtype_float,
             device=self.device,
         )
-        # ``adp_mask`` is in atom space; the field collapses it onto its nodes.
-        self.adp.update_refinable_mask(self.adp_mask)
+        if anisotropic:
+            self.u = field
+            # The mask is in atom space either way; the field collapses it onto nodes.
+            self.u.update_refinable_mask(self.u_mask)
+        else:
+            self.adp = field
+            self.adp.update_refinable_mask(self.adp_mask)
 
         if self.ctx.verbose > 0:
+            kind = "aniso U" if anisotropic else "iso B"
+            was = len(self.pdb) * (6 if anisotropic else 1)
             print(
-                f"ADP field: {self.adp.n_nodes} nodes, k={k_neighbors}, "
-                f"{int(self.adp.get_refinable_count())} refinable "
-                f"(was {len(self.pdb)} per-atom B)"
+                f"ADP field ({kind}): {field.n_nodes} nodes, k={k_neighbors}, "
+                f"{int(field.get_refinable_count())} refinable nodes, "
+                f"{int(field.refinable_params.numel())} parameters "
+                f"(was {was} per-atom)"
             )
         if hasattr(self, "reset_cache"):
             self.reset_cache()

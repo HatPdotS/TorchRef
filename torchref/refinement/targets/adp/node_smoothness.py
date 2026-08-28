@@ -84,8 +84,9 @@ class NodeSmoothnessTarget(ADPTarget):
     def _pair_terms(self):
         """``(weighted mean squared log-B difference, pair weights)``."""
         field = self._field
-        raw = field.node_values()
-        log_b = raw[:, 0]
+        # Through the payload, not by column index: for a tensor payload column 0 is a
+        # Cholesky component, not a magnitude.
+        log_b = field.log_magnitude()
         pos = field.node_positions()
 
         d = torch.cdist(pos, pos)
@@ -126,7 +127,7 @@ class NodeSmoothnessTarget(ADPTarget):
         with torch.no_grad():
             w, diff2, lam = self._pair_terms()
             loss = self.forward()
-            log_b = field.node_values()[:, 0]
+            log_b = field.log_magnitude()
             b = torch.exp(log_b)
         return {
             "node_smoothness_loss": stat(float(loss), VERBOSITY_STANDARD),
