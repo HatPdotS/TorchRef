@@ -14,8 +14,20 @@ same models:
     intensity    obs  Io_light - Io_dark      calc  |Fc_light|^2 - |Fc_dark|^2
 
 If the ranking flips between the two, neither is decisive and the comparison has to be
-made on something neither target optimises. Reported on the FREE set as well as the work
-set, since both targets were fitted on the work set.
+made on something neither target optimises.
+
+**READ THIS BEFORE USING THE FREE-SET NUMBERS.** They are reported for completeness and
+they cannot answer the question. A difference feature is compact in real space and
+therefore spread over ALL of reciprocal space, so a held-out subset of reflections does
+not contain a reduced-precision version of it -- it does not contain it. Measured on this
+pair: the same models score 0.52 on all reflections and 0.21 on the free 3.5%, while
+restricting in the other domain goes the other way, 0.53 over the full cell to 0.85 on the
+0.12% of voxels around the ligand. Localising helps in real space and destroys the signal
+in reciprocal space.
+
+So a reflection-wise hold-out validates a global scalar (R-free) and nothing local. To
+cross-validate a local difference feature, hold out in the domain the feature lives in --
+an omit refinement -- or use an independent dataset, or ground truth.
 
 ``F_calc`` is taken from each run's own results MTZ -- the scaled, mixed amplitudes that
 run produced -- so no model is re-scaled here and each arm is scored on what it actually
