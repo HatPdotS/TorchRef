@@ -1,8 +1,9 @@
 """``DatasetCollection.scale()`` -- the data-to-data scale fit.
 
 The only fit in the library with no model on either side: it puts one dataset onto
-another, both of them measurements of the same quantity. That is why its objectives are
-least squares and there is no sigma_A row -- there is no model error to account for.
+another, both of them measurements of the same quantity. That is why it is least squares
+and takes no objective at all -- there is no model error for a sigma_A row to account for,
+and sigma weighting collapses on a scale fit.
 
 The load-bearing test here is the free-set one. That fit runs *upstream of every target*,
 so a leak there compromises every free-set number the pipeline later reports, and no
@@ -37,8 +38,7 @@ def _fitted(dc):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("objective", ["ls", "ls_sigma"])
-def test_scale_never_touches_the_free_set(pair, objective):
+def test_scale_never_touches_the_free_set(pair):
     """Corrupting the free reflections must not move the fitted parameters at all.
 
     Two *different* garbage values, because a single one could coincide with a
@@ -65,7 +65,7 @@ def test_scale_never_touches_the_free_set(pair, objective):
             d.F_sigma[free] = filler
             d._corrected_fp = None       # drop the cached corrected view
             d._corrected_cache = None
-        dc.scale(objective=objective)
+        dc.scale()
         results.append(_fitted(dc))
 
     (ls_a, u_a), (ls_b, u_b) = results
@@ -78,15 +78,14 @@ def test_scale_never_touches_the_free_set(pair, objective):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("objective", ["ls", "ls_sigma"])
-def test_identical_datasets_fit_a_unit_scale(pair, objective):
+def test_identical_datasets_fit_a_unit_scale(pair):
     """Two copies of one dataset must scale onto each other with no correction.
 
     The sanity check the objectives have to pass before any comparison between them
     means anything.
     """
     dc = pair
-    dc.scale(objective=objective)
+    dc.scale()
     log_scale, U = _fitted(dc)
     assert float(log_scale.abs().max()) < 1e-3, log_scale
     assert float(U.abs().max()) < 1e-3, U
@@ -111,18 +110,25 @@ def test_a_known_scale_is_recovered(pair):
 
 
 @pytest.mark.unit
-def test_unknown_objective_fails_closed():
-    from torchref.io.datasets.collection import (
-        DATA_SCALE_OBJECTIVES,
-        DatasetCollection,
-    )
+def test_the_objective_is_not_selectable():
+    """No objective parameter, and specifically no sigma-weighted one.
 
-    dc = DatasetCollection(verbose=0, device="cpu")
-    with pytest.raises(ValueError, match="objective must be one of"):
-        dc.scale(objective="ml")
-    # No sigma_A / Rice row is offered, and that is a modelling statement: this fit has
-    # no model, so there is no model error for such a likelihood to account for.
-    assert DATA_SCALE_OBJECTIVES == ("ls", "ls_sigma")
+    Two separate reasons, both worth keeping written down. There is no model in this fit,
+    so a sigma_A or Rice likelihood has no model error to account for. And
+    inverse-variance weighting *collapses* on a scale fit -- down-weighting the weak
+    shells is exactly what lets the scale run away in them -- which is why the
+    model-to-data fit's default came back to unit-weight ``ls`` as well. A sigma-weighted
+    variant was built and measured here: it scored slightly better on held-out
+    reflections for one dataset pair, and was still removed, because a small gain on one
+    pair does not outweigh a failure mode found across a panel.
+    """
+    import inspect
+
+    from torchref.io.datasets.collection import DatasetCollection
+
+    assert "objective" not in inspect.signature(DatasetCollection.scale).parameters
+    src = inspect.getsource(DatasetCollection.scale)
+    assert "sigma" in src, "the reason sigma weighting is absent must stay documented"
 
 
 @pytest.mark.integration

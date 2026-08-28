@@ -5,19 +5,14 @@
 side, so there is no model error for a sigma_A or Rice likelihood to account for, and the
 only real choices are the weighting and which reflections the fit is allowed to see.
 
-Two questions, both answerable by holding out the free set:
+The question it answers: **the leak.** The fit used to mask with
+``ReflectionData.masks()`` -- validity only, with no work/free notion -- so the free
+reflections went into the scale parameters, upstream of every target and therefore
+upstream of every free-set number the pipeline reports. How much did that buy it, and
+does removing it move the fitted scale?
 
-1. **The leak.** The fit used to mask with ``ReflectionData.masks()`` -- validity only,
-   with no work/free notion -- so the free reflections went into the scale parameters,
-   upstream of every target. How much did that actually buy it, and does removing it
-   change the fitted scale?
-2. **The weighting.** ``ls`` throws sigma away. ``ls_sigma`` weights by
-   ``1/(sigma**2 + sigma_ref**2)``, which is the propagated error on the very difference
-   being minimised -- the correct weight rather than a modelling choice, precisely because
-   both sides are measurements. Does it generalise better?
-
-Both are scored on reflections the fit never saw, under two yardsticks applied identically
-to every arm, so the comparison is not circular:
+Scored on reflections the fit never saw, under two yardsticks applied identically to
+every arm, so the comparison is not circular:
 
     R_data = sum|F - F_ref| / sum F_ref          scale-free and interpretable
     chi2   = mean[(F - F_ref)**2 / (s**2 + s_ref**2)]   is the disagreement within error?
@@ -160,10 +155,13 @@ def main():
     dev = torch.device(args.device)
     dc = build(args.dark_sf, args.light_sf, args.dmin, dev)
 
+    # A sigma-weighted arm was measured here and removed: it scored slightly better on
+    # held-out reflections for this one pair, but inverse-variance weighting collapses on
+    # a scale fit -- down-weighting the weak shells is what lets the scale run away in
+    # them -- and that failure mode was found across a panel. Unit weights stand.
     arms = [
         ("legacy (validity mask, unnormalised)", lambda: legacy_scale(dc)),
-        ("ls        (work set, normalised)", lambda: dc.scale(objective="ls")),
-        ("ls_sigma  (work set, normalised)", lambda: dc.scale(objective="ls_sigma")),
+        ("ls     (work set, normalised)", lambda: dc.scale()),
     ]
 
     rows = []
@@ -209,7 +207,7 @@ def main():
     print("=" * 86)
     print(f"{'comparison':52s} {'set':6s} {'mean d':>10s} {'95% CI':>22s}")
     print("-" * 86)
-    pairs = [(labels[0], labels[1]), (labels[1], labels[2]), (labels[0], labels[2])]
+    pairs = [(labels[0], labels[1])]
     paired = []
     for a, b in pairs:
         for subset in ("work", "free"):
