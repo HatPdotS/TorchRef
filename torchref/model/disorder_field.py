@@ -87,6 +87,37 @@ def farthest_point_anchors(xyz: torch.Tensor, n_nodes: int) -> torch.Tensor:
     return torch.sort(anchors).values
 
 
+def density_anchor_rows(xyz: torch.Tensor, n_nodes: int):
+    """Anchor each node on its whole density cluster rather than on one atom.
+
+    :func:`farthest_point_anchors` snaps every anchor onto an atom, which puts each node
+    exactly *on* an atom -- so narrowing its kernel isolates the atom it is already
+    standing on, and the node ends up owning a single atom outright. Anchoring on the
+    cluster instead places the node at the cluster centroid, generally between atoms, so
+    there is no atom for it to fall onto.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        ``(atom index per entry, node index per entry)``, flat and ragged, suitable for
+        ``DisorderFieldTensor(anchor_rows=...)``. Every node keeps at least its seed
+        atom, so no node is left with an empty neighbourhood.
+    """
+    seeds = farthest_point_anchors(xyz, n_nodes)
+    assign = torch.cdist(xyz, xyz[seeds]).argmin(dim=1)
+    atom_idx = torch.arange(xyz.shape[0], dtype=torch.int64, device=xyz.device)
+
+    # A seed whose cluster somehow came out empty still needs a position.
+    present = torch.bincount(assign, minlength=seeds.shape[0]) > 0
+    if not bool(present.all()):
+        missing = (~present).nonzero(as_tuple=True)[0]
+        atom_idx = torch.cat([atom_idx, seeds[missing]])
+        assign = torch.cat([assign, missing])
+
+    order = torch.argsort(assign)
+    return atom_idx[order], assign[order]
+
+
 def build_neighbor_list(
     xyz: torch.Tensor, node_pos: torch.Tensor, k: int
 ) -> torch.Tensor:
@@ -189,6 +220,7 @@ class DisorderFieldTensor(MixedTensor):
         xyz_fn: Optional[Callable[[], torch.Tensor]] = None,
         n_nodes: int = 32,
         k_neighbors: int = 12,
+        refine_positions: bool = False,
         anchor_rows: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         node_values: Optional[torch.Tensor] = None,
         refinable_mask: Optional[torch.Tensor] = None,
@@ -201,6 +233,7 @@ class DisorderFieldTensor(MixedTensor):
     ):
         self.epsilon = epsilon
         self._k_neighbors = int(k_neighbors)
+        self._refine_positions = bool(refine_positions)
         object.__setattr__(self, "_xyz_fn", _wrap_accessor(xyz_fn))
 
         if initial_values is None and node_values is None:
@@ -349,13 +382,30 @@ class DisorderFieldTensor(MixedTensor):
         W = torch.zeros(xyz.shape[0], n_k, dtype=xyz.dtype, device=xyz.device)
         W.scatter_(1, neighbor_list, W_sparse)
 
+        # Non-finite targets are dropped from the solve rather than carried into it:
+        # a single NaN row would propagate through the normal equations and take
+        # every node with it. Those atoms still receive a fitted value on output.
+        finite = torch.isfinite(target_b)
+        if not bool(finite.all()):
+            W, target_b = W[finite], target_b[finite]
+            if target_b.numel() == 0:
+                flat = torch.stack([torch.zeros_like(log_sigma), log_sigma], dim=1)
+                if self._refine_positions:
+                    flat = torch.cat([flat, torch.zeros_like(node_pos)], dim=1)
+                return flat
+
         gram = W.T @ W
         ridge = 1e-6 * torch.diagonal(gram).mean().clamp(min=1e-30)
         eye = torch.eye(n_k, dtype=W.dtype, device=W.device)
         b = torch.linalg.solve(gram + ridge * eye, W.T @ target_b)
 
         b = b.clamp(min=self.epsilon)
-        return torch.stack([torch.log(b), log_sigma], dim=1)
+        node_values = torch.stack([torch.log(b), log_sigma], dim=1)
+        if self._refine_positions:
+            node_values = torch.cat(
+                [node_values, torch.zeros_like(node_pos)], dim=1
+            )
+        return node_values
 
     @staticmethod
     def _collapse_mask(
@@ -394,11 +444,28 @@ class DisorderFieldTensor(MixedTensor):
         """
         object.__setattr__(self, "_xyz_fn", _wrap_accessor(xyz_fn))
 
+    @property
+    def refines_positions(self) -> bool:
+        """Whether node positions carry a refinable offset."""
+        return self._refine_positions
+
     def node_positions(self, xyz: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Node positions, ``(K, 3)``, derived from the anchor neighbourhoods."""
+        """Node positions, ``(K, 3)``: anchored centroid plus any refinable offset."""
         if xyz is None:
             xyz = self._xyz_fn()
-        return self._segment_mean(xyz, self.anchor_atom, self.anchor_node, self.n_nodes)
+        return self._node_positions_from(xyz, super().forward())
+
+    def _node_positions_from(self, xyz, raw):
+        """Anchor centroid, displaced by the refinable offset when there is one.
+
+        Keeping the centroid as the base rather than storing absolute coordinates means
+        a node still travels with the model under xyz refinement; the offset only says
+        where it sits *relative* to the atoms it belongs to.
+        """
+        base = self._segment_mean(
+            xyz, self.anchor_atom, self.anchor_node, raw.shape[0]
+        )
+        return base + raw[:, 2:5] if self._refine_positions else base
 
     def weights(self, xyz: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Per-atom weights over candidate nodes, ``(n_atoms, k)``. Rows sum to one."""
@@ -406,8 +473,24 @@ class DisorderFieldTensor(MixedTensor):
             xyz = self._xyz_fn()
         raw = super().forward()
         return self._weights(
-            xyz, self.node_positions(xyz), self.neighbor_list, raw[:, 1]
+            xyz, self._node_positions_from(xyz, raw), self.neighbor_list, raw[:, 1]
         )
+
+    def node_load(self, xyz: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Total weight each node carries across all atoms, ``(K,)``.
+
+        Not obtainable by summing :meth:`weights` over atoms: that returns
+        ``(n_atoms, k)`` over each atom's CANDIDATES, so a column is a candidate *slot*
+        shared by different nodes for different atoms, and summing it gives a length-k
+        vector with no meaning. The weights have to be scattered back into node space
+        through ``neighbor_list`` first, which is what this does.
+
+        Load is what identifies a node that has stopped doing useful work: a node that
+        narrows onto a handful of atoms carries almost none.
+        """
+        W = self.weights(xyz)
+        load = W.new_zeros(self.n_nodes)
+        return load.index_add(0, self.neighbor_list.reshape(-1), W.reshape(-1))
 
     def smallest_candidate_weight(self, xyz: Optional[torch.Tensor] = None) -> float:
         """Largest per-atom minimum candidate weight --- the list-adequacy invariant.
@@ -455,9 +538,7 @@ class DisorderFieldTensor(MixedTensor):
             ``(K, 2)`` node storage, ``[log b, log sigma]``.
         """
         log_b, log_sigma = raw[:, 0], raw[:, 1]
-        node_pos = self._segment_mean(
-            xyz, self.anchor_atom, self.anchor_node, raw.shape[0]
-        )
+        node_pos = self._node_positions_from(xyz, raw)
         W = self._weights(xyz, node_pos, self.neighbor_list, log_sigma)
         return (W * torch.exp(log_b)[self.neighbor_list]).sum(dim=1)
 
@@ -586,6 +667,7 @@ class DisorderFieldTensor(MixedTensor):
             initial_values=None,
             xyz_fn=accessor,
             k_neighbors=self._k_neighbors,
+            refine_positions=self._refine_positions,
             anchor_rows=(self.anchor_atom.clone(), self.anchor_node.clone()),
             node_values=self.node_values().detach().clone(),
             refinable_mask=self.refinable_mask.clone(),

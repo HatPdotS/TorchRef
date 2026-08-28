@@ -1036,6 +1036,13 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
 
+        # A wrapper that borrows the coordinates carries that reference through its
+        # own ``copy``, so it still points at THIS model's ``xyz``. Re-point it, or
+        # the two models silently share coordinates and the copy is not independent.
+        for module in model_copy._modules.values():
+            if module is not None and hasattr(module, "set_xyz_fn"):
+                module.set_xyz_fn(model_copy.xyz)
+
         if self.ctx.verbose > 0:
             print(f"✓ Model copied successfully ({len(model_copy.pdb)} atoms)")
 
@@ -1215,7 +1222,14 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 self.occupancy_mask, in_compressed_space=False
             )
 
-    def set_adp_mode(self, mode: str = "isotropic", aniso_selection: str = None):
+    def set_adp_mode(
+        self,
+        mode: str = "isotropic",
+        aniso_selection: str = None,
+        n_nodes: int = None,
+        k_neighbors: int = 12,
+        refine_node_positions: bool = True,
+    ):
         """Set the atomic displacement parameter (ADP) parametrization.
 
         Repartitions atoms between isotropic (a single B in ``adp``) and
@@ -1230,21 +1244,49 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
 
         Parameters
         ----------
-        mode : {"isotropic", "anisotropic"}, optional
+        mode : {"isotropic", "anisotropic", "field"}, optional
             ``"isotropic"`` (default) converts every atom, previously anisotropic
             ones to ``B_eq = (8 pi^2 / 3)(U11 + U22 + U33)``. ``"anisotropic"``
             converts those matching ``aniso_selection``, expanding isotropic atoms
-            to ``U = (B / 8 pi^2) I``.
+            to ``U = (B / 8 pi^2) I``. ``"field"`` replaces the per-atom isotropic B
+            with a :class:`~torchref.model.disorder_field.DisorderFieldTensor`, whose
+            node values are least-squares fitted to the B it replaces, so the atom
+            count stops setting the ADP parameter count.
         aniso_selection : str, optional
             Phenix-style selection for ``mode="anisotropic"``, default
             ``"not resname HOH and not element H"``; ignored otherwise.
+        n_nodes : int, optional
+            Nodes for ``mode="field"``. Defaults to one per 25 atoms, floored at 4.
+        k_neighbors : int, optional
+            Candidate nodes per atom for ``mode="field"``. Default 12.
+        refine_node_positions : bool, optional
+            Give each node a refinable offset from its anchor centroid, at three extra
+            parameters per node. On by default: it is what lets the load-balancing
+            restraint move a node toward atoms instead of only widening its kernel.
 
         Notes
         -----
         Run once at model setup, before scaling / restraints / targets. The
         isotropic result matches a freshly-loaded isotropic-only model.
+
+        Leaving ``"field"`` needs no special case: the conversion reads ``adp()``,
+        which a field evaluates per atom, so the field materialises into a per-atom
+        wrapper on the way out.
         """
         if not self.ctx.initialized or self.pdb is None:
+            return
+        if mode == "field":
+            # Collapse to a clean per-atom isotropic state first. The field is
+            # isotropic in this representation, and the partition owns every buffer
+            # keyed off the iso/aniso split, so reuse it rather than duplicating it.
+            self._apply_adp_partition(
+                torch.zeros(len(self.pdb), dtype=torch.bool, device=self.device)
+            )
+            self._install_disorder_field(
+                n_nodes=n_nodes,
+                k_neighbors=k_neighbors,
+                refine_node_positions=refine_node_positions,
+            )
             return
         if mode == "isotropic":
             aniso_mask = torch.zeros(
@@ -1259,9 +1301,67 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             ).to(self.device)
         else:
             raise ValueError(
-                f"Unknown ADP mode: {mode!r}. Use 'isotropic' or 'anisotropic'."
+                f"Unknown ADP mode: {mode!r}. Use 'isotropic', 'anisotropic' "
+                "or 'field'."
             )
         self._apply_adp_partition(aniso_mask)
+
+    @property
+    def adp_is_field(self) -> bool:
+        """Whether ``adp`` is a node field rather than a per-atom wrapper."""
+        from torchref.model.disorder_field import DisorderFieldTensor
+
+        return isinstance(self.adp, DisorderFieldTensor)
+
+    def _install_disorder_field(
+        self,
+        n_nodes: int = None,
+        k_neighbors: int = 12,
+        refine_node_positions: bool = False,
+    ):
+        """Replace the per-atom ``adp`` wrapper with a node field fitted to its B.
+
+        Expects the model to already be in a per-atom isotropic state, which
+        :meth:`set_adp_mode` arranges by running the partition first.
+        """
+        from torchref.model.disorder_field import (
+            DisorderFieldTensor,
+            density_anchor_rows,
+        )
+
+        with torch.no_grad():
+            B = self.adp().detach().clone()
+            xyz = self.xyz().detach()
+        if n_nodes is None:
+            n_nodes = max(4, int(round(len(self.pdb) / 25.0)))
+
+        # Anchor on density clusters, not single atoms: a node placed exactly on an atom
+        # can isolate that atom by narrowing its kernel, which is per-atom refinement
+        # wearing a node's clothes.
+        anchor_rows = density_anchor_rows(xyz, min(n_nodes, len(self.pdb)))
+
+        self.adp = DisorderFieldTensor(
+            initial_values=B.to(self.dtype_float),
+            xyz_fn=self.xyz,
+            n_nodes=n_nodes,
+            refine_positions=refine_node_positions,
+            anchor_rows=anchor_rows,
+            k_neighbors=k_neighbors,
+            name="adp",
+            dtype=self.dtype_float,
+            device=self.device,
+        )
+        # ``adp_mask`` is in atom space; the field collapses it onto its nodes.
+        self.adp.update_refinable_mask(self.adp_mask)
+
+        if self.ctx.verbose > 0:
+            print(
+                f"ADP field: {self.adp.n_nodes} nodes, k={k_neighbors}, "
+                f"{int(self.adp.get_refinable_count())} refinable "
+                f"(was {len(self.pdb)} per-atom B)"
+            )
+        if hasattr(self, "reset_cache"):
+            self.reset_cache()
 
     def _apply_adp_partition(self, aniso_mask: torch.Tensor):
         """Convert ADP storage to match a target anisotropic-atom mask.
@@ -1982,11 +2082,47 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                 refinable_mask=xyz_mask,
                 name="xyz",
             )
-            instance.adp = PositiveMixedTensor(
-                torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype),
-                refinable_mask=adp_mask,
-                name="adp",
-            )
+            # A saved node field has 2-D ``adp`` storage (K, 2) where a per-atom
+            # wrapper has 1-D, so the shape says which representation to rebuild.
+            # Built only for its shapes and masks; load_state_dict overwrites values.
+            saved_adp = state_dict.get("adp.fixed_values")
+            if saved_adp is not None and saved_adp.ndim == 2:
+                from torchref.model.disorder_field import DisorderFieldTensor
+
+                saved_nl = state_dict.get("adp.neighbor_list")
+                # Rebuild with the SAVED anchor rows: cluster anchoring makes these
+                # length n_atoms where single-atom anchoring makes them length K, so
+                # reconstructing them from scratch would shape-mismatch on load.
+                saved_anchor_atom = state_dict.get("adp.anchor_atom")
+                saved_anchor_node = state_dict.get("adp.anchor_node")
+                anchor_rows = (
+                    (saved_anchor_atom, saved_anchor_node)
+                    if saved_anchor_atom is not None
+                    else None
+                )
+                instance.adp = DisorderFieldTensor(
+                    initial_values=torch.tensor(
+                        pdb["tempfactor"].values, dtype=saved_dtype
+                    ),
+                    xyz_fn=instance.xyz,
+                    n_nodes=int(saved_adp.shape[0]),
+                    k_neighbors=(
+                        int(saved_nl.shape[1]) if saved_nl is not None else 12
+                    ),
+                    # Storage width says whether positions carry a refinable offset.
+                    refine_positions=bool(saved_adp.shape[1] == 5),
+                    anchor_rows=anchor_rows,
+                    refinable_mask=adp_mask,
+                    mask_in_node_space=True,
+                    name="adp",
+                    dtype=saved_dtype,
+                )
+            else:
+                instance.adp = PositiveMixedTensor(
+                    torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype),
+                    refinable_mask=adp_mask,
+                    name="adp",
+                )
             # Match load(): the anisotropic U is a CholeskyMixedTensor so the
             # restored model refines it in the same positive-definite-by-
             # construction parametrization as a freshly-loaded one.

@@ -235,6 +235,26 @@ def test_list_adequacy_invariant_is_exposed(coords, target_b):
 
 
 @pytest.mark.unit
+def test_node_load_is_in_node_space_and_conserves_total_weight(coords, target_b):
+    """Load must be scattered into node space, not summed over the candidate axis.
+
+    ``weights()`` is ``(n_atoms, k)`` over CANDIDATES, so ``weights().sum(0)`` is a
+    length-k vector of per-slot totals with no meaning -- a trap worth pinning, because
+    it silently returns a plausible-looking tensor of the wrong length.
+    """
+    field, _ = _field(coords, target_b, n_nodes=12, k_neighbors=6)
+    load = field.node_load()
+
+    assert load.shape == (12,), "load must be per node, not per candidate slot"
+    assert field.weights().sum(dim=0).shape == (6,), "the trap this method avoids"
+    # Rows of W sum to 1, so the total load is exactly the atom count.
+    assert torch.allclose(
+        load.sum(), torch.tensor(float(coords.shape[0]), dtype=load.dtype)
+    )
+    assert bool((load >= 0).all())
+
+
+@pytest.mark.unit
 def test_rebuild_neighbor_list_is_explicit_and_refreshes(coords, target_b):
     """Membership only changes when the caller asks; the rebuild then takes effect."""
     field, xyz = _field(coords, target_b)
