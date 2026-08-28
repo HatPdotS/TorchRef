@@ -576,7 +576,7 @@ def _build_llg_context(
     centric: torch.Tensor,
     interpolator: LattmanLoveInterpolator,
     real_cell,
-    sym_mats: torch.Tensor,
+    spacegroup,
     *,
     n_shells: int = 20,
     batch_size: int = 50,
@@ -608,7 +608,6 @@ def _build_llg_context(
       form which falls off ~3× too fast.
     """
     from .frf.preprocessing import (
-        compute_epsilon,
         compute_v_budget,
         epsilon_aware_unroll,
         eterm_sigma_a,
@@ -616,12 +615,21 @@ def _build_llg_context(
 
     device = F_obs.device
     dtype = F_obs.dtype
+    sym_mats = spacegroup.matrices.to(torch.float64).to(device)
     n_ops = int(sym_mats.shape[0])
     N = hkl_real.shape[0]
 
     # 1. ε(h) per reflection (needed for the ε-corrected obs normalisation).
     if eps_factor is None:
-        eps_factor = compute_epsilon(hkl_real.to(torch.long), sym_mats).to(dtype)
+        # `friedel=False`: the conventional count. The variance budget
+        # `V = eps - sigma_A**2` wants operations that add coherently and set the
+        # mean; operations mapping h -> -h change the DISTRIBUTION instead, which
+        # the Woolfson branch below already handles. Counting them here doubles
+        # epsilon on every centric reflection -- 6680 of them on 3K7M -- and
+        # inflates exactly those reflections' variance.
+        eps_factor = spacegroup.epsilon(
+            hkl_real.to(torch.long), friedel=False,
+        ).to(dtype)
     eps_factor = eps_factor.to(device)
 
     # 2. Per-shell ε-corrected Wilson E_obs (Phaser E = F/sqrt(ε·Σ_N)). Dividing
@@ -1071,7 +1079,7 @@ def m_letf1_rescore(
     centric: torch.Tensor,
     interpolator: LattmanLoveInterpolator,
     real_cell,
-    sym_mats: torch.Tensor,
+    spacegroup,
     *,
     n_shells: int = 20,
     n_refine: Optional[int] = None,
@@ -1127,15 +1135,18 @@ def m_letf1_rescore(
     interpolator, real_cell
         ``LattmanLoveInterpolator`` for the model molecular transform and the
         crystal real cell.
-    sym_mats : (n_ops, 3, 3) tensor
-        Spacegroup rotation operators in the reciprocal (hkl) basis.
+    spacegroup : SpaceGroup
+        The crystal's space group. Passed as the object rather than its
+        ``matrices`` because the multiplicity this needs is a method on it:
+        ``epsilon(hkl, friedel=False)``, the conventional count, which a bare
+        tensor of rotations cannot answer.
     sigma_a : (N,) tensor, optional
         Per-reflection σ_A. If ``None``, fitted on-the-fly from the identity
         rotation's |F_calc| via :func:`fit_sigma_a_per_shell` and interpolated
         per shell.
     eps_factor : (N,) tensor, optional
         Per-reflection multiplicity ε(h). If ``None``, computed via
-        :func:`torchref.experimental.alignment.frf.preprocessing.compute_epsilon`.
+        :meth:`torchref.symmetry.symmetry.Symmetry.epsilon` with ``friedel=False``.
     n_refine, batch_size, verbose
         As in :func:`sim_mlrf_rescore`.
     """
@@ -1147,7 +1158,7 @@ def m_letf1_rescore(
     tail = peaks[n_refine:]
 
     ctx = _build_llg_context(
-        F_obs, hkl_real, s_mag, centric, interpolator, real_cell, sym_mats,
+        F_obs, hkl_real, s_mag, centric, interpolator, real_cell, spacegroup,
         n_shells=n_shells, batch_size=batch_size, sigma_a=sigma_a,
         eps_factor=eps_factor, apply_bulk_solvent=apply_bulk_solvent,
         solvent_fsol=solvent_fsol, solvent_bsol=solvent_bsol,

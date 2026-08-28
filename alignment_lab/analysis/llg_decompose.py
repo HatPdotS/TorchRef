@@ -98,7 +98,7 @@ def main() -> int:
                     apply_bulk_solvent=True, apply_wilson_b=True)
     ctx = _build_llg_context(
         inp.F_obs, inp.hkl, inp.s_mag, inp.centric, inp.ll, data.cell,
-        data.spacegroup.matrices.to(torch.float64).to(inp.device),
+        data.spacegroup,
         n_shells=max(20 // 2, 8), batch_size=50, **prep,
     )
 

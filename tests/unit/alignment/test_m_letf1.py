@@ -105,7 +105,8 @@ def test_m_letf1_rescore_runs_and_ranks_truth_top():
     F_obs = (1.0 + 0.1 * torch.randn(N, dtype=torch.float64)).abs()
     hkl = torch.randint(-10, 10, (N, 3), dtype=torch.long)
     centric = torch.zeros(N, dtype=torch.bool)
-    sym_mats = torch.eye(3, dtype=torch.float64).unsqueeze(0)  # P1: only identity
+    from torchref.symmetry import SpaceGroup
+    sg = SpaceGroup("P 1")   # only the identity, so epsilon is 1 throughout
 
     # Stub interpolator: returns F_obs (perfectly correlated) for R = identity,
     # uncorrelated noise for any other R.
@@ -142,7 +143,7 @@ def test_m_letf1_rescore_runs_and_ranks_truth_top():
     peaks = [truth] + random_peaks
 
     rescored = m_letf1_rescore(
-        peaks, F_obs, hkl, s_mag, centric, StubLL(), StubCell(), sym_mats,
+        peaks, F_obs, hkl, s_mag, centric, StubLL(), StubCell(), sg,
         n_shells=5, batch_size=4,
     )
     # Truth (identity) should be among the top 3 rescored peaks (truth=identity
@@ -160,7 +161,6 @@ def test_scat_mode_absolute_preserves_calc_intershell_shape():
     inter-shell weighting on a synthetic with a strong resolution-dependent
     F_calc falloff."""
     from torchref.experimental.alignment.ml_rotation import _build_llg_context, _llg_for_orientations
-    from torchref.experimental.alignment.frf.preprocessing import compute_epsilon
 
     N = 300
     torch.manual_seed(3)
@@ -168,7 +168,8 @@ def test_scat_mode_absolute_preserves_calc_intershell_shape():
     F_obs = (1.0 + 0.1 * torch.randn(N, dtype=torch.float64)).abs()
     hkl = torch.randint(-12, 12, (N, 3), dtype=torch.long)
     centric = torch.zeros(N, dtype=torch.bool)
-    sym_mats = torch.eye(3, dtype=torch.float64).unsqueeze(0)  # P1
+    from torchref.symmetry import SpaceGroup
+    sg = SpaceGroup("P 1")
 
     # F_calc with a strong B-factor falloff → big inter-shell amplitude variation.
     decay = torch.exp(-40.0 * s_mag * s_mag)
@@ -189,7 +190,7 @@ def test_scat_mode_absolute_preserves_calc_intershell_shape():
             return torch.eye(3, dtype=torch.float64)
 
     common = dict(
-        interpolator=StubLL(), real_cell=StubCell(), sym_mats=sym_mats,
+        interpolator=StubLL(), real_cell=StubCell(), spacegroup=sg,
         n_shells=6, batch_size=64,
     )
     ctx_leg = _build_llg_context(F_obs, hkl, s_mag, centric, scat_mode="legacy", **common)

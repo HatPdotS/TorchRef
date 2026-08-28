@@ -42,9 +42,14 @@ from lab import (BENCH_PDBS, FRFConfig, orbit_rank, rotated_case,  # noqa: E402
 #: Each arm is a set of overrides on top of `m_letf1`'s defaults. They are
 #: cumulative on purpose: if the whole Phaser prep helps, the interesting
 #: question is which piece carries it.
+#: `eps_friedel` reproduces the epsilon the rescore used before it was routed
+#: through `SpaceGroup.epsilon(friedel=False)`. Passing an explicit `eps_factor`
+#: is how the old convention is reproduced without a second worktree, so the
+#: comparison stays paired on one FRF peak list.
 ARMS = {
     "none":            None,                      # control: FRF order
     "default":         {},                        # what ships today
+    "eps_friedel":     {"__eps_friedel": True},   # the pre-migration convention
     "vrms":            {"vrms_strategy": "oeffner"},
     "solvent":         {"apply_bulk_solvent": True},
     "vrms_solvent":    {"vrms_strategy": "oeffner", "apply_bulk_solvent": True},
@@ -90,6 +95,12 @@ def main() -> int:
                 rank, seconds = frf_rank, 0.0
             else:
                 kw = dict(overrides)
+                if kw.pop("__eps_friedel", False):
+                    # Friedel-folded epsilon: doubles it on every centric
+                    # reflection, which is what the rescore used to get.
+                    kw["eps_factor"] = data.spacegroup.epsilon(
+                        res.inputs.hkl.to(torch.long), friedel=True,
+                    ).to(res.inputs.F_obs.dtype)
                 if kw.get("vrms_strategy") == "oeffner":
                     kw["vrms_n_residues"] = n_residues
                 t0 = time.time()

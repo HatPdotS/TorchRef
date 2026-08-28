@@ -114,7 +114,7 @@ def run_rescore(
         out = m_letf1_rescore(
             subset, frf_inputs.F_obs, frf_inputs.hkl, frf_inputs.s_mag,
             frf_inputs.centric, frf_inputs.ll, data.cell,
-            data.spacegroup.matrices.to(torch.float64).to(device),
+            data.spacegroup,
             **common, **engine_kwargs,
         )
     else:

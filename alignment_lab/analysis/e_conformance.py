@@ -185,7 +185,16 @@ def check_e_convention(
     if getattr(cls, "uses_sigma_f", False) and sig_F is not None:
         loud = cls(F, s_mag, centric, sig_F=sig_F * 4.0, eps=eps,
                    n_shells=n_shells).E.to(torch.float64)
-        ref = conv.sigma.sqrt().to(torch.float64)     # the shell scale E sits on
+        # The target of the shrinkage is the shell mean IN E-SPACE. Using
+        # sqrt(Sigma) here instead -- the scale E was divided BY -- compares a
+        # dimensionless quantity of order 1 against one in units of F, so every
+        # reflection sits far below the reference and "shrinkage" degenerates
+        # into "did E get bigger".
+        ref = torch.zeros_like(E)
+        for k in range(int(dec.max()) + 1):
+            m = dec == k
+            if bool(m.any()):
+                ref[m] = E[m].mean()
         moved_closer = (loud - ref).abs() <= (E - ref).abs() + 1e-9
         rep["shrinkage_frac_ok"] = float(moved_closer.to(torch.float64).mean())
     else:

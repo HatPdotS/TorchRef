@@ -31,7 +31,6 @@ def main() -> int:
         CalcGlobalE, CalcShellE, FrenchWilsonE, SmoothSigmaE, WilsonShellE,
         WilsonShellEpsE,
     )
-    from torchref.experimental.alignment.frf.preprocessing import compute_epsilon
 
     model, data = load_case(args.pdb)[:2]
     rec = data.cell.reciprocal_basis_matrix.to(torch.float64)
@@ -40,8 +39,7 @@ def main() -> int:
     sig = None if getattr(data, "F_sigma", None) is None else \
         data.F_sigma.to(torch.float64)
     cen = data.centric.to(torch.bool)
-    eps = compute_epsilon(data.hkl.to(torch.long),
-                          data.spacegroup.matrices.to(torch.float64))
+    eps = data.spacegroup.epsilon(data.hkl.to(torch.long), friedel=False)
 
     # A calc set from the deposited coordinates: the "perfect model" case, where
     # obs and calc genuinely should land on the same scale.

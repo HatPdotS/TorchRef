@@ -76,7 +76,6 @@ def eterm_sigma_a(s_mag: torch.Tensor, delta_vrms_A: float) -> torch.Tensor:
 __all__ = [
     "wilson_normalise",
     "wilson_normalise_epsilon",
-    "compute_epsilon",
     "eterm_sigma_a",
     "french_wilson_preprocess",
     "get_high_order_axis",
@@ -159,45 +158,6 @@ def epsilon_aware_unroll(
     asu_idx, op_idx = keep_mask.nonzero(as_tuple=True)
     unrolled_hkl = orbits[asu_idx, op_idx]
     return unrolled_hkl, asu_idx
-
-
-def compute_epsilon(
-    hkl: torch.Tensor,
-    sym_mats: torch.Tensor,
-) -> torch.Tensor:
-    """Reflection multiplicity ε(h) — the order of the stabilizer subgroup.
-
-    Phaser source: the ``epsn`` array in ``DataMR.cc`` (used in
-    ``SIGMAN.sqrt_epsnSN``, DataMR.cc:925) — same role as
-    ``cctbx::miller::index_span`` epsilons.
-
-    ε(h) = number of point-group rotation operators W for which
-    ``h · W = h`` (row-vector convention, no Friedel). For a general
-    reflection ε = 1; reflections on an n-fold symmetry axis get ε = n.
-
-    Used to epsilon-correct Wilson normalisation: axial reflections are
-    systematically stronger (``⟨I_h⟩ = ε_h · Σ``), so without the
-    correction they over-weight the m = 0 SH column and bias the
-    rotation-function map for high-symmetry spacegroups.
-
-    Parameters
-    ----------
-    hkl : (N, 3) integer-valued (any dtype) Miller indices.
-    sym_mats : (n_ops, 3, 3) integer rotation operators (fractional/lattice
-        rotation parts of the spacegroup).
-
-    Returns
-    -------
-    epsilon : (N,) float — multiplicity ε ≥ 1.
-    """
-    h = hkl.to(torch.float64)
-    W = sym_mats.to(torch.float64)
-    eps = torch.zeros(h.shape[0], dtype=torch.float64, device=h.device)
-    for k in range(W.shape[0]):
-        h_t = h @ W[k]                       # row-vector: h' = h · W
-        same = (h_t.round() == h).all(dim=-1)
-        eps += same.to(torch.float64)
-    return eps.clamp(min=1.0)
 
 
 def wilson_normalise_epsilon(
@@ -348,7 +308,7 @@ def compute_v_budget(
     eps_factor : (N,) tensor
         Per-reflection ε(h), the multiplicity (1 for general positions,
         n>1 for reflections on n-fold symmetry axes). From
-        :func:`compute_epsilon`.
+        :meth:`torchref.symmetry.symmetry.Symmetry.epsilon`.
     sigma_a : (N,) tensor
         Per-reflection σ_A(s) (interpolated from the per-shell fit).
     n_mol : int

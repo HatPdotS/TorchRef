@@ -148,7 +148,6 @@ def _fit(A: torch.Tensor, b: torch.Tensor):
 
 
 def run(pdb: str, dumps: Path) -> dict:
-    from torchref.experimental.alignment.frf.preprocessing import compute_epsilon
 
     cap, data = capture_ours(pdb)
     sg = data.spacegroup.matrices.to(torch.float64).cpu()
@@ -173,7 +172,7 @@ def run(pdb: str, dumps: Path) -> dict:
     n = int(y.numel())
     var_tot = float(y.var(unbiased=False))
 
-    eps = compute_epsilon(hkl, sg)
+    eps = sg.epsilon(hkl.to(torch.long), friedel=False)
     # Phaser divides intensity by eps_n and we do not, so its Esqr should be
     # SMALLER by that factor: log ratio carries -log(eps).
     y_eps = y + torch.log(eps)

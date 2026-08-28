@@ -557,7 +557,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         if self.rescore_engine == "m_letf1":
             rescored = m_letf1_rescore(
                 peaks, F_obs, hkl, s_mag, centric, ll, data.cell,
-                data.spacegroup.matrices.to(torch.float64).to(device),
+                data.spacegroup,
                 n_shells=rescore_n_shells,
                 n_refine=min(len(peaks), self.n_ml_refine),
                 batch_size=50, verbose=self.verbose,
@@ -588,7 +588,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         self._timer.start("4b_subpeak_refine")
         ctx = _build_llg_context(
             F_obs, hkl, s_mag, centric, ll, data.cell,
-            data.spacegroup.matrices.to(torch.float64).to(device),
+            data.spacegroup,
             n_shells=rescore_n_shells, batch_size=50,
             scat_mode=self.rescore_scat_mode,
         )
@@ -872,7 +872,7 @@ class MolecularReplacementPipeline(DeviceMixin):
                 rescored_refine = m_letf1_rescore(
                     cand_peaks, F_obs_amp, hkl_keep, s_mag_keep, centric_keep,
                     ll_refine, data.cell,
-                    data.spacegroup.matrices.to(torch.float64).to(device),
+                    data.spacegroup,
                     n_shells=rescore_n_shells,
                     n_refine=len(cand_peaks), batch_size=rescore_batch, verbose=0,
                 )

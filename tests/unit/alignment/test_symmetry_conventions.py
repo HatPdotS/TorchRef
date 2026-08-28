@@ -23,7 +23,6 @@ import pytest
 import torch
 
 from torchref.experimental.alignment.frf.preprocessing import (
-    compute_epsilon,
     epsilon_aware_unroll,
 )
 from torchref.experimental.alignment.sh import (
@@ -188,7 +187,7 @@ def test_symmetrised_anisotropy_obeys_the_lattice(hm):
 
 @pytest.mark.parametrize("hm, non_orthogonal", SPACEGROUPS)
 def test_epsilon_uses_the_row_vector_convention(hm, non_orthogonal):
-    """``compute_epsilon`` counts ops fixing ``h``, which needs ``h·R``.
+    """The multiplicity counts ops fixing ``h``, which needs ``h·R``.
 
     Reflections on a symmetry axis must come out with multiplicity > 1; with
     the wrong convention the wrong reflections are flagged.
@@ -199,13 +198,13 @@ def test_epsilon_uses_the_row_vector_convention(hm, non_orthogonal):
     g = torch.Generator().manual_seed(3)
     hkl = torch.randint(-9, 10, (400, 3), generator=g)
 
-    eps = compute_epsilon(hkl, S).detach().cpu()
+    eps = sg.epsilon(hkl, friedel=False).detach().cpu()
     assert int(eps.min()) >= 1
     # Recompute independently through the shared helper.
     ref = sg.expand_reciprocal(hkl).detach().cpu()                             # (ops, N, 3)
     same = (ref == hkl.to(torch.int64)).all(dim=-1)
     assert torch.equal(eps.to(torch.long), same.sum(dim=0).clamp(min=1)), (
-        f"{hm}: compute_epsilon disagrees with expand_reciprocal"
+        f"{hm}: epsilon(friedel=False) disagrees with expand_reciprocal"
     )
 
 

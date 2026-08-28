@@ -416,13 +416,15 @@ class Symmetry(DeviceMixin):
             absent = (maps_to_self & non_integral).any(dim=0)
         return absent.reshape(original_shape).to(hkl.device)
 
-    def epsilon(self, hkl: torch.Tensor) -> torch.Tensor:
-        """Reflection multiplicity: operations mapping ``h`` to ``h`` or to ``-h``.
+    def epsilon(self, hkl: torch.Tensor, *, friedel: bool = True) -> torch.Tensor:
+        """Reflection multiplicity: operations mapping ``h`` to ``h``, or also to ``-h``.
 
         Parameters
         ----------
         hkl : torch.Tensor
             Miller indices, shape ``(N, 3)``.
+        friedel : bool, default True
+            Whether operations mapping ``h -> -h`` count alongside ``h -> h``.
 
         Returns
         -------
@@ -432,18 +434,42 @@ class Symmetry(DeviceMixin):
 
         Notes
         -----
-        Friedel mates are folded in unconditionally, with no centric/acentric branch.
-        That inflates the count relative to the conventional epsilon, which counts pure
-        rotational multiplicity (``h -> h``) only. Downstream sigma_A estimation is
-        calibrated against this convention.
+        The two settings answer different questions and both are wanted.
+
+        Operations mapping ``h -> h`` add coherently and set the **mean**,
+        ``<|F|^2> = eps * Sigma``. That is the conventional crystallographic epsilon,
+        and what a Wilson normalisation or a likelihood's variance budget asks for.
+        Operations mapping ``h -> -h`` leave the mean alone and instead make ``F``
+        real, changing the **distribution** from exponential to chi2_1 -- that is
+        centricity, and :meth:`is_centric` already carries it. Folding Friedel into
+        epsilon therefore mixes a mean effect with a distribution effect.
+
+        The default keeps Friedel folded in because downstream sigma_A estimation is
+        calibrated against that convention; flipping it would silently decalibrate the
+        refinement path. Pass ``friedel=False`` for the conventional count, as the
+        molecular-replacement likelihood does -- counting Friedel there doubles
+        epsilon on exactly the reflections whose distribution the Woolfson branch is
+        already handling, inflating their ``V = eps - sigma_A**2``.
+
+        The two differ on centric reflections and *only* there: measured across the
+        ten benchmark structures every disagreement was centric, and the counts are
+        not small -- 12360 reflections on 2DQ6, 7555 on 4BX9, 6680 on 3K7M.
+
+        Both settings count lattice-centring cosets, so on a centred lattice every
+        reflection carries the centring order as a factor: C2 gives 2 for general
+        reflections where a primitive lattice gives 1. That is a separate axis from
+        this switch. Being uniform per lattice it is absorbed into ``Sigma`` wherever
+        epsilon is a factor -- which is why the refinement path never saw it -- and
+        bites only where epsilon is a term.
         """
         float_dtype = get_float_dtype()
         with torch.no_grad():
             equivalents = self.expand_reciprocal(hkl)  # (n_ops, N, 3)
             target = hkl.to(device=equivalents.device, dtype=torch.int64)
-            same = (equivalents == target).all(dim=-1)
-            friedel = (equivalents == -target).all(dim=-1)
-            eps = (same | friedel).sum(dim=0).clamp(min=1).to(float_dtype)
+            fixes = (equivalents == target).all(dim=-1)
+            if friedel:
+                fixes = fixes | (equivalents == -target).all(dim=-1)
+            eps = fixes.sum(dim=0).clamp(min=1).to(float_dtype)
         return eps.to(hkl.device)
 
     # =========================================================================
