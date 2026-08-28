@@ -834,15 +834,17 @@ class ModelFT(CachedForwardMixin, Model):
         # Carries the atom table, cell, space group, altloc groups and provenance.
         model_copy.ctx = self.ctx.copy()
 
-        # Own buffers only; the FFT submodule's are handled by its copy() below.
+        # Own persistent buffers only; the FFT submodule's are handled by its
+        # copy() below, and non-persistent buffers are caches the copy
+        # recomputes lazily on first access.
+        non_persistent = getattr(self, "_non_persistent_buffers_set", set())
         for buffer_name, buffer_value in self._buffers.items():
-            if buffer_value is not None:
-                if detach:
-                    model_copy.register_buffer(
-                        buffer_name, buffer_value.clone().detach()
-                    )
-                else:
-                    model_copy.register_buffer(buffer_name, buffer_value.clone())
+            if buffer_value is None or buffer_name in non_persistent:
+                continue
+            if detach:
+                model_copy.register_buffer(buffer_name, buffer_value.clone().detach())
+            else:
+                model_copy.register_buffer(buffer_name, buffer_value.clone())
 
         # Parameter wrappers via their own .copy(); the FFT submodule is separate.
         skip_modules = {"_fft"}
@@ -852,10 +854,8 @@ class ModelFT(CachedForwardMixin, Model):
             if module is not None and hasattr(module, "copy"):
                 setattr(model_copy, module_name, module.copy())
 
-        if hasattr(self, "_parametrization") and self._parametrization is not None:
-            import copy as copy_module
-
-            model_copy._parametrization = copy_module.deepcopy(self._parametrization)
+        # ``_parametrization`` is a cache over the atom table; the copy rebuilds
+        # it lazily on first access rather than carrying a duplicate.
 
         if self._fft is not None:
             model_copy._fft = self._fft.copy()
@@ -875,8 +875,8 @@ class ModelFT(CachedForwardMixin, Model):
         Return a dictionary containing the complete state of the ModelFT.
 
         Extends parent Model.state_dict() with FT-specific parameters:
-        ``max_res``, ``wavelength``, and ``anomalous_threshold``. Grid state
-        is handled by the FFT submodule.
+        ``max_res``, ``wavelength``, ``anomalous_threshold`` and the explicit
+        ``gridsize`` setting. Derived grid tensors are caches and are not saved.
 
         Parameters
         ----------
@@ -900,9 +900,14 @@ class ModelFT(CachedForwardMixin, Model):
         state[prefix + "max_res"] = self.max_res
         state[prefix + "wavelength"] = self.wavelength
         state[prefix + "anomalous_threshold"] = self.anomalous_threshold
+        # The *setting*, not the derived grid: an explicitly requested gridsize
+        # is configuration and must round-trip, while the grid tensors are
+        # non-persistent caches rebuilt lazily.
+        state[prefix + "gridsize"] = self._explicit_gridsize
 
-        # Deliberately not saved, all rebuildable: _parametrization (from _A/_B),
-        # _cache, _anomalous_cache (from the element list).
+        # Deliberately not saved, all rebuildable: _parametrization and _A/_B
+        # (from the element list), the grid tensors (from cell/spacegroup/
+        # max_res), vdw_radii, _cache, _anomalous_cache.
         return state
 
     @classmethod
@@ -1000,18 +1005,9 @@ class ModelFT(CachedForwardMixin, Model):
                 instance, pdb, state_dict, saved_dtype, device
             )
 
-            # Scattering buffers: accept both old-style (A, B) and new (_A, _B).
-            a_key = "_A" if "_A" in state_dict else "A" if "A" in state_dict else None
-            b_key = "_B" if "_B" in state_dict else "B" if "B" in state_dict else None
-
-            if a_key and state_dict[a_key] is not None:
-                instance.register_buffer(
-                    "_A", torch.zeros_like(state_dict[a_key], device=device)
-                )
-            if b_key and state_dict[b_key] is not None:
-                instance.register_buffer(
-                    "_B", torch.zeros_like(state_dict[b_key], device=device)
-                )
+            # Cache buffers (vdw_radii, _A/_B and their old-style A/B keys) are
+            # non-persistent now: not registered here, ignored by the non-strict
+            # load when an old state dict carries them, recomputed lazily.
 
         if gridsize is not None and cell_tensor is not None:
             if isinstance(gridsize, torch.Tensor):
@@ -1019,6 +1015,9 @@ class ModelFT(CachedForwardMixin, Model):
             else:
                 gs_tuple = tuple(int(x) for x in gridsize)
 
+            # Keep the explicit-gridsize *setting*, so it survives the next
+            # save as well; the grid tensors themselves stay lazy caches.
+            instance._explicit_gridsize = gs_tuple
             instance.setup_grid(gridsize=gs_tuple)
 
         # Drop empty placeholders, remapping old-style A/B keys to _A/_B.

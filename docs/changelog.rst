@@ -16,6 +16,7 @@ Version 0.7.0
 - Reworked hydrogen generation as template instantiation over the topology. ``Model.hydrogenate`` now aligns monomer templates onto heavy atoms present, generation is the default, and ``AtomGraph.exclusions_12_13_14`` derives non-bonded exclusions from bond connectivity.
 - Added ``Topology`` as a ``ResidueGraph`` over an ``AtomGraph`` with typed edge blocks and ``subset`` / ``copy`` operations that reindex surviving edges.
 - Made ``HydrogenTopology`` a dataclass, changed ``Symmetry`` classes to dataclasses over ``DeviceMixin`` instead of ``nn.Module``, and removed unused ``Cell`` gradient plumbing and the ``ReciprocalSymmetryGrid`` / module-level expansion functions.
+- Caches are no longer copied or serialized; they are recomputed lazily on access. Derived buffers (``_Z``, ``_A``/``_B``, ``vdw_radii``, ``_heavy_atom_mask``, the FFT grid tensors) are non-persistent, ``Model.copy`` / ``ModelFT.copy`` skip them, pickle and ``deepcopy`` drop ``Symmetry``/``Cell`` caches, ``CachedForwardMixin`` forward caches and the ``AtomGraph`` bond adjacency (now built on first access). An explicitly requested FFT ``gridsize`` still round-trips through ``state_dict`` as a setting.
 
 
 Version 0.6.4

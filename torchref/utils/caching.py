@@ -161,6 +161,26 @@ class CachedForwardMixin:
         self._fwd_cache_gen = 0
         self._fwd_current_gen = 0
 
+    def __getstate__(self):
+        """Pickle and deepcopy carry no cached forward result.
+
+        The cached output can hold an autograd-graph-attached tensor, which
+        ``deepcopy`` refuses to walk, and the fingerprints are ``data_ptr``-based
+        so they could never validate a copy anyway. The copy starts cold and
+        recomputes on first call.
+        """
+        parent = getattr(super(), "__getstate__", None)
+        state = dict(parent()) if parent is not None else dict(self.__dict__)
+        for key in (
+            "_fwd_cached_output",
+            "_fwd_cached_state_fp",
+            "_fwd_cached_input_fp",
+            "_fwd_cache_gen",
+            "_fwd_current_gen",
+        ):
+            state.pop(key, None)
+        return state
+
 
 @contextmanager
 def no_caching():

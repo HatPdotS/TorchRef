@@ -747,6 +747,13 @@ class Symmetry(DeviceMixin):
         self.reset_cache()
         return super()._apply(fn, recurse)
 
+    def __getstate__(self):
+        """Pickle and deepcopy carry an empty cache; derived quantities are
+        recomputed lazily on access, same as after :meth:`copy` or a ``.to()``."""
+        state = dict(self.__dict__)
+        state["_cache"] = {}
+        return state
+
     def copy(self) -> "Symmetry":
         """An independent copy with cloned operations and an empty cache.
 

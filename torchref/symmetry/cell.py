@@ -105,6 +105,13 @@ class Cell(_NonModuleDeviceMixin):
         """Clear cached derived quantities (fractional matrix, volume, etc.)."""
         object.__setattr__(self, "_cache", {})
 
+    def __getstate__(self):
+        """Pickle and deepcopy carry an empty cache; derived quantities are
+        recomputed lazily on access, same as after :meth:`clone` or a ``.to()``."""
+        state = dict(self.__dict__)
+        state["_cache"] = {}
+        return state
+
     def clone(self) -> "Cell":
         """
         Return a new Cell with cloned tensor data.

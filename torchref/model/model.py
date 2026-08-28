@@ -213,7 +213,8 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
                     dtype=torch.bool,
                     device=self.device,
                 )
-                self.register_buffer("_heavy_atom_mask", h_mask)
+                # A cache over the atom table: not serialized, not copied.
+                self.register_buffer("_heavy_atom_mask", h_mask, persistent=False)
             iso_mask = iso_mask & self._heavy_atom_mask
             aniso_mask = aniso_mask & self._heavy_atom_mask
 
@@ -225,6 +226,16 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # macromolecular case.
         self._iso_covers_all = bool(iso_mask.all().item())
         self._aniso_is_empty = int(self._aniso_indices.numel()) == 0
+
+    def _ensure_sf_indices(self):
+        """Build the iso/aniso index cache if this instance never has.
+
+        The indices are a cache over ``aniso_flag`` and the H setting, so they are
+        never copied or serialized -- a fresh instance (``copy()``, or one restored
+        from a state dict) recomputes them here on first use.
+        """
+        if not hasattr(self, "_iso_covers_all"):
+            self._rebuild_sf_indices()
 
     # =========================================================================
     # Cell, SpaceGroup, and Symmetry properties
@@ -314,8 +325,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             element_to_z.get(elem.strip().capitalize(), 0)
             for elem in self.pdb["element"]
         ]
+        # A cache over the element column: not serialized, not copied.
         self.register_buffer(
-            "_Z", torch.tensor(z_values, dtype=torch.int32, device=self.device)
+            "_Z",
+            torch.tensor(z_values, dtype=torch.int32, device=self.device),
+            persistent=False,
         )
         return self._Z
 
@@ -347,8 +361,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             z_tensor, device=self.device, dtype=self.dtype_float
         )
 
-        self.register_buffer("_A", A)
-        self.register_buffer("_B", B)
+        # Caches over Z and the scattering table: not serialized, not copied.
+        self.register_buffer("_A", A, persistent=False)
+        self.register_buffer("_B", B, persistent=False)
 
         # Legacy per-element view: one representative row per element.
         elements = self.pdb.element.tolist()
@@ -394,6 +409,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         :meth:`get_iso`).
         """
         self._build_parametrization()
+        self._ensure_sf_indices()
         idx = self._iso_indices
         return self._A[idx], self._B[idx]
 
@@ -415,6 +431,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         :meth:`get_aniso`).
         """
         self._build_parametrization()
+        self._ensure_sf_indices()
         idx = self._aniso_indices
         return self._A[idx], self._B[idx]
 
@@ -998,9 +1015,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         vdw_radii = (
             vdw_df.set_index("element").loc[elements]["vdW_Radius_Angstrom"].values
         )
+        # A cache over the element column and the radii table: not serialized,
+        # not copied.
         self.register_buffer(
             "vdw_radii",
             torch.tensor(vdw_radii, dtype=self.dtype_float, device=self.device),
+            persistent=False,
         )
         assert len(self.vdw_radii) == len(
             self.pdb
@@ -1026,9 +1046,11 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         Create a deep copy of the Model.
 
         Independent in every part: the context is copied via
-        :meth:`~torchref.model.context.ModelContext.copy`, buffers are cloned and each
-        parameter wrapper is copied through its own ``copy`` so its parametrization
-        survives.
+        :meth:`~torchref.model.context.ModelContext.copy`, persistent buffers are
+        cloned and each parameter wrapper is copied through its own ``copy`` so its
+        parametrization survives. Cache buffers (non-persistent: ``_Z``, ``_A``,
+        ``_B``, ``vdw_radii``, ``_heavy_atom_mask``) are not copied; the copy
+        recomputes them lazily on first access.
 
         Returns
         -------
@@ -1049,8 +1071,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         # provenance, each deep-copied or cloned -- see ``ModelContext.copy``.
         model_copy.ctx = self.ctx.copy()
 
+        non_persistent = getattr(self, "_non_persistent_buffers_set", set())
         for buffer_name, buffer_value in self._buffers.items():
-            if buffer_value is not None:
+            # Non-persistent buffers are caches; the copy rebuilds them lazily.
+            if buffer_value is not None and buffer_name not in non_persistent:
                 model_copy.register_buffer(buffer_name, buffer_value.clone())
 
         # Parameter wrappers via their own .copy(), which preserves each
@@ -1123,6 +1147,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         the wrapper outputs are returned directly, skipping a redundant gather and
         its backward scatter. :meth:`get_aniso` covers the complement.
         """
+        self._ensure_sf_indices()
         if self._iso_covers_all:
             return self.xyz(), self.adp(), self.occupancy()
         # Use pre-computed integer indices to avoid boolean indexing GPU sync.
@@ -1710,6 +1735,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         both their forward ``.clone()`` and the slow ``index_put_`` backward the
         gather would generate.
         """
+        self._ensure_sf_indices()
         if self._aniso_is_empty:
             xyz_buf = self.xyz.fixed_values
             empty_xyz = xyz_buf.new_empty(0, 3)
@@ -2229,11 +2255,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             )
 
         # Note: inv_fractional_matrix, fractional_matrix and recB are properties
-        # delegating to Cell, so they are not registered as buffers.
-        if state_dict.get("vdw_radii") is not None:
-            instance.register_buffer(
-                "vdw_radii", torch.zeros_like(state_dict["vdw_radii"], device=device)
-            )
+        # delegating to Cell, and the ``_ATOM_DERIVED_BUFFERS`` caches (vdw_radii,
+        # _Z, _A, _B, _heavy_atom_mask) are non-persistent: absent from new state
+        # dicts, ignored by the non-strict load when an old one carries them, and
+        # recomputed lazily on first access.
 
     @classmethod
     def create_from_state_dict(

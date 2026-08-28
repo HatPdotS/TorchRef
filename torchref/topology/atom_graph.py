@@ -122,8 +122,9 @@ class AtomGraph(DeviceMixin):
     Notes
     -----
     Holds no refinable parameters, so this is a dataclass rather than an ``nn.Module``.
-    The adjacency is derived from ``bonds`` at construction and rebuilt by
-    :meth:`rebuild_adjacency` if the bond block is replaced.
+    The adjacency is derived from ``bonds`` lazily on first access and is never
+    copied or serialized; call :meth:`rebuild_adjacency` to drop it if the bond
+    block is replaced.
     """
 
     name: np.ndarray
@@ -139,9 +140,12 @@ class AtomGraph(DeviceMixin):
     _adj_indptr: Optional[torch.Tensor] = field(default=None, repr=False)
     _adj_indices: Optional[torch.Tensor] = field(default=None, repr=False)
 
-    def __post_init__(self) -> None:
-        if self._adj_indptr is None:
-            self.rebuild_adjacency()
+    def __getstate__(self):
+        """Pickle and deepcopy carry no adjacency; it is rebuilt on access."""
+        state = dict(self.__dict__)
+        state["_adj_indptr"] = None
+        state["_adj_indices"] = None
+        return state
 
     @property
     def device(self) -> torch.device:
@@ -209,10 +213,21 @@ class AtomGraph(DeviceMixin):
         )
 
     def rebuild_adjacency(self) -> None:
-        """Rebuild the CSR adjacency from the current bond block."""
-        self._adj_indptr, self._adj_indices = _build_csr(
-            self.bonds.indices, self.n_atoms
-        )
+        """Drop the CSR adjacency; the next accessor rebuilds it.
+
+        Call after replacing the bond block. The adjacency is a derived quantity,
+        so it is never copied or serialized -- it is recomputed lazily on access.
+        """
+        self._adj_indptr = None
+        self._adj_indices = None
+
+    def _adjacency(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """The CSR pair, built from the bond block on first access."""
+        if self._adj_indptr is None:
+            self._adj_indptr, self._adj_indices = _build_csr(
+                self.bonds.indices, self.n_atoms
+            )
+        return self._adj_indptr, self._adj_indices
 
     def neighbors(self, i: int) -> torch.Tensor:
         """Atoms bonded to atom ``i``, ascending.
@@ -222,11 +237,13 @@ class AtomGraph(DeviceMixin):
         torch.Tensor
             Neighbour indices, a view into the adjacency, on the graph's device.
         """
-        return self._adj_indices[self._adj_indptr[i] : self._adj_indptr[i + 1]]
+        indptr, indices = self._adjacency()
+        return indices[indptr[i] : indptr[i + 1]]
 
     def degree(self, i: int = None) -> torch.Tensor:
         """Bonded-neighbour count, for atom ``i`` or for every atom."""
-        deg = self._adj_indptr[1:] - self._adj_indptr[:-1]
+        indptr, _ = self._adjacency()
+        deg = indptr[1:] - indptr[:-1]
         return deg if i is None else deg[i]
 
     def _directed_bonds(self) -> torch.Tensor:
@@ -289,9 +306,10 @@ class AtomGraph(DeviceMixin):
         set of tuple of int
             ``(low, high)`` atom index pairs.
         """
+        indptr, indices = self._adjacency()
         p2 = self._directed_bonds()
-        p3 = _extend_paths(self._adj_indptr, self._adj_indices, p2)
-        p4 = _extend_paths(self._adj_indptr, self._adj_indices, p3)
+        p3 = _extend_paths(indptr, indices, p2)
+        p4 = _extend_paths(indptr, indices, p3)
         return (
             self._pair_set(p2)
             | self._pair_set(p3[:, (0, 2)])

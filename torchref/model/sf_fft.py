@@ -115,9 +115,13 @@ class SfFFT(DeviceMovementMixin, nn.Module):
                 spacegroup, dtype=dtype_float, device=self.device
             )
 
-        # Buffers (registered during setup_grid)
-        self.register_buffer("gridsize", None)
-        self.register_buffer("voxel_size", None)
+        # Grid caches, filled by setup_grid. Non-persistent: derived from the
+        # cell, space group and resolution, so they are never serialized or
+        # copied -- callers rebuild them lazily when gridsize is None. An
+        # explicitly requested gridsize round-trips as a setting through
+        # ModelFT.state_dict instead.
+        self.register_buffer("gridsize", None, persistent=False)
+        self.register_buffer("voxel_size", None, persistent=False)
 
         # Late symmetry compatibility flag (set during setup_grid)
         self._late_symmetry_compatible: Optional[bool] = None
