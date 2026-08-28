@@ -4,6 +4,7 @@ Changelog
 
 Version 0.7.0
 ----------
+- Fixed cif reading bug discarding new mmCIF field for aniso ADPs 
 - Separated model configuration and provenance into ``ModelContext``. It now holds the unit cell, space group, atom table, link records, hydrogen settings, and input paths.
 - Refactored ``Symmetry`` as a crystallography-free class with transform primitives, and made ``SpaceGroup`` a specialised subclass.
 - Moved geometry predicates, HKL verbs, and grid-size helpers onto these classes as methods.

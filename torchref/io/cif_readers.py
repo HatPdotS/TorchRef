@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gemmi
 import numpy as np
+import warnings
+
 import pandas as pd
 
 #: Column holding the ``data_`` block a loop row was read from. Added only when
@@ -1445,7 +1447,59 @@ class ModelCIFReader:
             "_atom_site.aniso_U[2][3]",
         ]
 
-        if all(col in atom_df.columns for col in aniso_cols):
+        # The standard mmCIF home for anisotropic ADPs is the SEPARATE
+        # ``_atom_site_anisotrop`` loop, keyed by ``.id`` against ``_atom_site.id``.
+        # Only the legacy in-line ``_atom_site.aniso_U[i][j]`` form was read here, so a
+        # standards-conforming file -- every PDB-REDO entry, and anything the PDB emits
+        # as mmCIF -- silently loaded with no anisotropy at all and every atom marked
+        # isotropic.
+        aniso_df = getattr(self.cif, "data", {}).get("atom_site_anisotrop")
+        std_cols = [f"_atom_site_anisotrop.U[{i}][{j}]"
+                    for i, j in ((1, 1), (2, 2), (3, 3), (1, 2), (1, 3), (2, 3))]
+        key, atom_key = "_atom_site_anisotrop.id", "_atom_site.id"
+        joined = None
+        if (
+            aniso_df is not None
+            and all(c in aniso_df.columns for c in std_cols)
+            and key in aniso_df.columns
+            and atom_key in atom_df.columns
+        ):
+            # Join on the id as a STRING. Coercing to a number first silently produces
+            # NaN keys for any non-integer id and then mis-pairs U tensors with atoms,
+            # which is far worse than having no anisotropy: the model is scrambled but
+            # still refines.
+            left = pd.DataFrame({"_k": atom_df[atom_key].astype(str).str.strip()})
+            right = aniso_df[[key] + std_cols].copy()
+            right["_k"] = right[key].astype(str).str.strip()
+            right = right.drop_duplicates("_k")
+            merged = left.merge(right, on="_k", how="left")
+            if len(merged) == len(atom_df):
+                joined = merged
+
+        if joined is not None:
+            for name, col in zip(("u11", "u22", "u33", "u12", "u13", "u23"), std_cols):
+                result[name] = pd.to_numeric(joined[col].to_numpy(), errors="coerce")
+            result["anisou_flag"] = ~pd.isna(result["u11"])
+            n_hit = int(result["anisou_flag"].sum())
+            frac = n_hit / max(len(aniso_df), 1)
+            if frac < 0.9:
+                # Partial coverage is legitimate in small amounts -- waters and
+                # hydrogens often carry no ANISOU -- but a large shortfall means the two
+                # loops are not labelled the same way, and then the rows that DID match
+                # cannot be trusted to have matched the right atoms. Drop the anisotropy
+                # rather than apply a possibly mis-paired subset: an isotropic model is
+                # merely less informative, a scrambled one still refines and is wrong.
+                warnings.warn(
+                    f"{self.filepath}: matched only {n_hit} of {len(aniso_df)} "
+                    "anisotropic records to atoms, so _atom_site.id and "
+                    "_atom_site_anisotrop.id do not agree; discarding the anisotropy "
+                    "and loading isotropically.",
+                    RuntimeWarning,
+                )
+                for name in ("u11", "u22", "u33", "u12", "u13", "u23"):
+                    result[name] = np.nan
+                result["anisou_flag"] = False
+        elif all(col in atom_df.columns for col in aniso_cols):
             result["u11"] = pd.to_numeric(
                 atom_df["_atom_site.aniso_U[1][1]"], errors="coerce"
             )
@@ -1675,6 +1729,12 @@ class ModelCIFReader:
             "_atom_site.aniso_U[2][2]",
             "_atom_site.aniso_U[3][3]",
         ]
+        aniso_df = self.cif.data.get("atom_site_anisotrop")
+        if aniso_df is not None and all(
+            f"_atom_site_anisotrop.U[{i}][{j}]" in aniso_df.columns
+            for i, j in ((1, 1), (2, 2), (3, 3), (1, 2), (1, 3), (2, 3))
+        ):
+            return True
         return all(col in self.cif.data["atom_site"].columns for col in aniso_cols)
 
     def get_coordinates(self) -> Optional[np.ndarray]:
