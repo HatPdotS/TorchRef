@@ -53,6 +53,16 @@ DEFAULT_GROUP_WEIGHTS = {
     # neighbours, and the log-normal KL term it replaced was a single intensive
     # scalar. Pending the R_free weight scan, 1.0 leaves it at the group weight.
     "adp/sigd": 1.0,
+    # Load balancing for the node-field ADP representation. Sub-weight on the adp
+    # group, and inert on the per-atom path, so it only acts in field mode. Set
+    # above the group weight because it is a barrier against a degenerate direction
+    # rather than a prior competing with the data.
+    "adp/node_load": 10.0,
+    # Magnitude prior on the node values. Off pending its own measurement: the load
+    # barrier acts only on the weights, so this is what actually bounds an extreme
+    # node B, but it has not been screened yet. Same convention as
+    # 'geometry/ramachandran'.
+    "adp/node_smoothness": 0.0,
 }
 
 

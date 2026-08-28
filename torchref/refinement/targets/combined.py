@@ -20,6 +20,8 @@ from torchref.refinement.targets.geometry import (
 )
 from torchref.refinement.targets.adp import (
     ADPSimilarityTarget, ADPLocalityTarget, ADPSigdTarget,
+    NodeLoadTarget,
+    NodeSmoothnessTarget,
 )
 from torchref.utils.stats import (
     VERBOSITY_DETAILED,
@@ -371,6 +373,12 @@ class TotalADPTarget(CombinedModelTargets):
                 self.model, verbose=self.verbose
             ),
             "sigd": ADPSigdTarget(self.model, verbose=self.verbose),
+            # Inert unless the model is in field mode, so it costs a zero tensor
+            # per call on the per-atom path.
+            "node_load": NodeLoadTarget(self.model, verbose=self.verbose),
+            "node_smoothness": NodeSmoothnessTarget(
+                self.model, verbose=self.verbose
+            ),
         }
 
     def print_statistics(self) -> None:
