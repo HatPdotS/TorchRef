@@ -5,6 +5,7 @@ Changelog
 Version 0.7.0
 ----------
 - Fixed cif reading bug discarding new mmCIF field for aniso ADPs 
+- Removed the stored real-space coordinate grid; ``build_electron_density`` takes a grid shape and device, and ``ModelFT.real_space_grid()`` builds one on demand
 - Fixed ``ModelFT`` restore dropping a node-field ADP representation, and added the anisotropic ``field_aniso`` case; both models now share one wrapper-rebuild path
 - Fixed the node load and node smoothness restraints being inert in ``field_aniso`` mode
 - Separated model configuration and provenance into ``ModelContext``. It now holds the unit cell, space group, atom table, link records, hydrogen settings, and input paths.

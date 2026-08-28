@@ -280,10 +280,13 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
         At ``sigma=0`` the kernel is the identity (no smoothing). Differentiable
         w.r.t. ``sigma_shell`` and -- through ``field`` -- w.r.t. atomic xyz/B.
         """
-        grid = self.solvent_fft.real_space_grid  # (nx, ny, nz, 3) Cartesian
-        dx = float((grid[1, 0, 0] - grid[0, 0, 0]).norm())
-        dy = float((grid[0, 1, 0] - grid[0, 0, 0]).norm())
-        dz = float((grid[0, 0, 1] - grid[0, 0, 0]).norm())
+        # Axis spacings: column j of the fractional (frac->cart) matrix is cell edge
+        # vector j, so its norm over the sampling count along that axis is the step
+        # between grid points one index apart -- what differencing the coordinate grid
+        # used to measure, without building the grid.
+        frac = self.solvent_fft.cell.fractional_matrix
+        n = self.solvent_fft.grid_shape
+        dx, dy, dz = (float(frac[:, j].norm()) / n[j] for j in range(3))
         sigma = self.sigma_shell.clamp(min=0.0, max=5.0)
         nx, ny, nz = field.shape
         two_pi2 = 2.0 * torch.pi**2
@@ -316,7 +319,7 @@ class DensitySolventModel(DeviceMixin, DebugMixin, nn.Module):
 
     def _nyquist_mask(self, hkl):
         """True where |h|,|k|,|l| are within the coarse grid Nyquist limit."""
-        nc = self.solvent_fft.real_space_grid.shape[:-1]  # (ncx, ncy, ncz)
+        nc = self.solvent_fft.grid_shape  # (ncx, ncy, ncz)
         nyq = torch.tensor(
             [n // 2 for n in nc], device=hkl.device, dtype=hkl.dtype
         )
