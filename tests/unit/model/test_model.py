@@ -117,3 +117,40 @@ class TestModelGetSelectionMask:
         
         with pytest.raises(RuntimeError, match="uninitialized"):
             model.get_selection_mask("chain A")
+
+
+@pytest.mark.unit
+def test_dropped_rows_leave_a_positional_index(pdb_dir, tmp_path):
+    """A model losing atoms to the NaN drop must still index its own tensors.
+
+    ``load`` derives the ``index`` column from the DataFrame index, and every
+    consumer uses it to address length-N per-atom tensors positionally. Dropping rows
+    without reindexing leaves gaps, so the largest value exceeds N-1 and
+    ``_create_occupancy_groups`` walks off the end of ``initial_occ``. Roughly one
+    PDB-REDO entry in six carries an atom with no coordinates or no B and hit this.
+    """
+    import pandas as pd
+
+    from torchref.model.model import Model
+
+    src = Model(verbose=0)
+    src.load_pdb(str(pdb_dir / "3GR5.pdb"))
+    df = src.pdb.copy()
+    n_before = len(df)
+
+    # Blank the B of a few interior atoms so the dropna removes them.
+    victims = [5, 100, 500]
+    df.loc[victims, "tempfactor"] = float("nan")
+    cell = src.cell.data.cpu().numpy()
+    sg = src.spacegroup
+
+    model = Model(verbose=0)
+    model.load(lambda: (df, cell, sg), add_hydrogens=False)
+
+    assert len(model.pdb) == n_before - len(victims)
+    idx = model.pdb["index"].to_numpy()
+    assert idx.min() == 0
+    assert idx.max() == len(model.pdb) - 1, "index must stay positional after a drop"
+    assert sorted(idx) == list(range(len(model.pdb)))
+    # The occupancy grouping is what actually indexed past the end.
+    assert model.occupancy().shape[0] == len(model.pdb)
