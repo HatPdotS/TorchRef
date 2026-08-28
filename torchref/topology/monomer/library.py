@@ -26,7 +26,12 @@ _MONOMER_LIB_RAW_URL = (
 )
 
 # Bundled package data location
-_BUNDLED_PATH = Path(__file__).parent.parent / "data" / "monomer_library"
+# Three levels up, not two: this module sits at torchref/topology/monomer/, so the
+# package root is its great-grandparent. Computing it by depth is fragile, which is
+# why the level is spelled out rather than left to be counted.
+_BUNDLED_PATH = (
+    Path(__file__).resolve().parents[2] / "data" / "monomer_library"
+)
 
 # Legacy external monomer library path
 _LEGACY_PATH = ROOT_TORCHREF / "external_monomer_library"

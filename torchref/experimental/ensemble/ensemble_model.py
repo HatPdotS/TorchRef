@@ -340,6 +340,10 @@ class EnsembleModel(ModelFT):
         verbose: int = 1,
         device=None,
         strip_H: bool = True,
+        # An ensemble's atom set is the replicated single copy its factories build, and
+        # _finalize_ensemble reshapes by n_atoms_per_member, so generating hydrogens on
+        # load would invalidate that. Off by default here, unlike on the base class.
+        add_hydrogens: bool = False,
         max_res: float = 1.0,
         gridsize: Optional[int] = None,
         wavelength: float = 1.0,
@@ -354,6 +358,7 @@ class EnsembleModel(ModelFT):
             verbose=verbose,
             device=device,
             strip_H=strip_H,
+            add_hydrogens=add_hydrogens,
             max_res=max_res,
             gridsize=gridsize,
             wavelength=wavelength,
@@ -452,6 +457,9 @@ class EnsembleModel(ModelFT):
 
         model = cls(
             verbose=verbose, device=device, strip_H=False,  # already stripped
+            # The replicated table is the atom set; _finalize_ensemble reshapes by
+            # n_atoms_per_member, so generating hydrogens here would invalidate it.
+            add_hydrogens=False,
             max_res=max_res,
             **modelft_kwargs,
         )
@@ -538,6 +546,9 @@ class EnsembleModel(ModelFT):
 
         model = cls(
             verbose=verbose, device=device, strip_H=False,
+            # See from_single: the replicated table is the atom set, and
+            # _finalize_ensemble reshapes by n_atoms_per_member.
+            add_hydrogens=False,
             max_res=max_res,
             **modelft_kwargs,
         )

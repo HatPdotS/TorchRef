@@ -10,7 +10,7 @@ All operations run under ``torch.no_grad()`` on whatever device
 the input coordinates live on (CPU or GPU).
 """
 
-from typing import TYPE_CHECKING, Dict, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch

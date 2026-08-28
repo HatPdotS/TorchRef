@@ -221,18 +221,21 @@ class TestMapSymmetry:
     """Tests for map symmetry operations."""
 
     @pytest.mark.integration
-    def test_map_symmetry_initialization(self, sample_cif_file):
-        """Test map symmetry initialization."""
+    def test_symmetrize_map_round_trip(self, sample_cif_file):
+        """Symmetrizing a map goes through the space group and preserves shape."""
+        import torch
+
         from torchref.model.model import Model
-        from torchref.symmetry.map_symmetry import MapSymmetry
 
         model = Model()
         model.load_cif(str(sample_cif_file))
 
-        # Check if MapSymmetry can be initialized
-        try:
-            map_sym = MapSymmetry(model.spacegroup, model.cell)
-            assert map_sym is not None
-        except (TypeError, AttributeError):
-            # May not support all initialization patterns
-            pass
+        sg = model.spacegroup
+        shape = sg.suggest_grid_size((16, 16, 16))
+        density = torch.rand(shape, device=sg.device, dtype=sg.dtype)
+
+        symmetrized = sg.symmetrize_map(density)
+
+        assert symmetrized.shape == density.shape
+        # The operator is cached for this shape and dropped on a device move.
+        assert sg.map_operator(shape) is sg.map_operator(shape)

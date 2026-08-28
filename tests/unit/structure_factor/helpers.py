@@ -684,8 +684,8 @@ def fft_sf(scene: Scene, sf_fft, xyz=None, occ=None, third=None, *, aniso=False)
 
     ``apply_symmetry=False`` on both calls: P1 isolates the truncation and sampling
     budget, and a symmetric comparison would cancel the symmetry algebra anyway, since
-    both routes call the same ``compute_symmetry_equivalent_hkls`` /
-    ``compute_translation_phases``. Symmetry is validated against gemmi instead, in
+    both routes call the same ``Symmetry.expand_reciprocal`` /
+    ``Symmetry.phase_factors``. Symmetry is validated against gemmi instead, in
     ``test_forward.py``.
     """
     xyz = scene.xyz if xyz is None else xyz

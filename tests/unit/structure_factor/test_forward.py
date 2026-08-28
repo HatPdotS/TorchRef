@@ -245,7 +245,7 @@ def test_sfds_matches_gemmi_with_symmetry(gemmi_iso_symmetry):
 
     This is also the only symmetric comparison in the package. A DS-vs-FFT check cannot
     validate symmetry, because both routes call the same
-    ``compute_symmetry_equivalent_hkls`` / ``compute_translation_phases`` and the shared
+    ``Symmetry.expand_reciprocal`` / ``Symmetry.phase_factors`` and the shared
     algebra cancels; gemmi does not share it.
     """
     scene, structure = gemmi_iso_symmetry

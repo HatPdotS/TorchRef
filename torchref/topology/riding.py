@@ -1,21 +1,26 @@
+"""Riding hydrogens: the sterics of hydrogens a model does not carry.
+
+For a model loaded with ``strip_H=True``, whose atoms are heavy only. A static map
+built once at restraint-construction time says how to reconstruct each absent hydrogen
+from its parent and the parent's bonded neighbours; ``place_riding_hydrogens`` then
+produces those positions in one vectorized pass at every non-bonded evaluation and
+throws them away again. The positions are a function of the heavy atoms, so gradients
+reach the heavy coordinates through them by ordinary autograd.
+
+Contrast :mod:`torchref.topology.hydrogens`, which *adds* hydrogens to the model as
+real atoms with their own parameters. That is the default, and where both apply it is
+the better answer: the hydrogen has a refinable position instead of one reconstructed
+each step, and it contributes to the structure factors. Riding hydrogens are what is
+left for the heavy-atom-only mode, and the two must not run together -- riding
+placement alongside real hydrogens puts phantom atoms in the structure that push the
+real ones around.
 """
-Riding hydrogen topology and vectorized placement for VDW restraints.
 
-Builds a static topology map at restraints-construction time that describes
-how to generate transient hydrogen atom positions from heavy-atom coordinates.
-At each VDW evaluation the ``place_riding_hydrogens`` function produces H
-positions in a single vectorized pass (no Python loops over atoms).
-
-Hydrogen positions are fully determined by the parent heavy atom and its
-bonded heavy-atom neighbours, so gradients flow from the VDW loss through
-the H positions back to the heavy-atom coordinates via standard autograd.
-"""
-
+from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 import numpy as np
 import torch
-from torch import nn
 
 from torchref.config import dtypes, normalize_device
 from torchref.utils.device_resolution import resolve_device
@@ -48,60 +53,114 @@ MAX_HEAVY_NB = 4  # Maximum heavy-atom neighbours to store per parent
 # ---------------------------------------------------------------------------
 
 
-class HydrogenTopology(DeviceMixin, nn.Module):
+@dataclass(eq=False, repr=False)
+class HydrogenTopology(DeviceMixin):
     """Static topology describing riding hydrogens for VDW evaluation.
 
-    All data are stored as registered buffers so they move automatically
-    with ``.to(device)`` and appear in ``state_dict``.
+    Every tensor field starts as ``None``; :func:`build_hydrogen_topology` and
+    :func:`build_h_candidate_pairs` fill them, independently -- a topology can carry
+    hydrogens and no candidate pairs. Test :attr:`n_hydrogens` and
+    :attr:`has_candidates` rather than the fields.
+
+    Holds no refinable parameters, so this is a dataclass rather than an
+    ``nn.Module``; ``DeviceMixin`` still moves every tensor with ``.to(device)``.
+
+    Parameters
+    ----------
+    device : torch.device, optional
+        Where the builders should allocate. Tracked from construction so a
+        ``resolve_device(h_topo, ...)`` called before anything is attached still
+        answers truthfully.
 
     Attributes
     ----------
-    h_parent_idx : (N_h,) long
-        Index into heavy-atom array for each riding H.
-    h_bond_length : (N_h,) float
-        Ideal H–parent bond length (Å).
-    h_vdw_radius : (N_h,) float
-        Van der Waals radius for each H (1.20 Å).
-    h_placement_type : (N_h,) long
-        Placement-geometry enum (see module-level constants).
-    h_slot_in_parent : (N_h,) long
-        Ordinal within sibling H atoms on the same parent (0, 1, 2).
-    parent_neighbor_idx : (N_h, MAX_HEAVY_NB) long
-        Heavy-atom neighbour indices of the parent (-1 = padding).
-    parent_neighbor_count : (N_h,) long
-        Actual number of heavy-atom neighbours for the parent.
-    h_chainid_enc : (N_h,) long
-        Encoded chain ID (for same-residue filtering).
-    h_resseq : (N_h,) long
-        Residue sequence number (for same-residue filtering).
-
-    Notes
-    -----
-    The ``cand_*``/``n_asu_candidates``/``type_bounds`` buffers are added later by
-    ``build_h_candidate_pairs``, not by ``build_hydrogen_topology`` -- test
-    :attr:`has_candidates` before touching them.
+    h_parent_idx : torch.Tensor
+        Heavy-atom index of each riding H's parent, ``(N_h,)`` long.
+    h_bond_length : torch.Tensor
+        Ideal H-parent bond length in Angstroms, ``(N_h,)``.
+    h_vdw_radius : torch.Tensor
+        Van der Waals radius per H (1.20 A), ``(N_h,)``.
+    h_placement_type : torch.Tensor
+        Placement-geometry enum, ``(N_h,)`` long; see the module-level constants.
+    h_slot_in_parent : torch.Tensor
+        Ordinal among sibling H atoms on the same parent (0, 1, 2), ``(N_h,)`` long.
+    parent_neighbor_idx : torch.Tensor
+        Heavy-atom neighbours of the parent, ``(N_h, MAX_HEAVY_NB)`` long, ``-1``
+        padded.
+    parent_neighbor_count : torch.Tensor
+        Heavy-atom neighbour count per parent, ``(N_h,)`` long.
+    h_chainid_enc : torch.Tensor
+        Encoded chain ID, ``(N_h,)`` long, for same-residue filtering.
+    h_resseq : torch.Tensor
+        Residue sequence number, ``(N_h,)`` long, for same-residue filtering.
+    type_bounds : dict
+        ``{placement_type: (start, end)}`` bounds into the type-sorted arrays.
+    cand_idx_i, cand_idx_j, cand_symop_idx, cand_cell_offset : torch.Tensor
+        Precomputed H candidate pairs, sorted so the asymmetric-unit ones come first.
+    cand_min_dist : torch.Tensor
+        Per-pair minimum-distance scratch buffer, ``(P,)``.
+    n_asu_candidates : int
+        How many leading candidate pairs lie inside the asymmetric unit.
     """
 
-    def __init__(self, device=None):
-        super().__init__()
-        # Buffers are registered later by build_hydrogen_topology(), so this
-        # object is tensor-free at construction. The tracker still has to exist:
-        # ``DeviceMixin._refresh_device_trackers`` only maintains attributes
-        # already present in ``__dict__``, and callers reconcile against
-        # ``h_topo.device`` before attaching buffers to it.
-        self.device = normalize_device(device)
+    device: Optional[torch.device] = None
+
+    h_parent_idx: Optional[torch.Tensor] = None
+    h_bond_length: Optional[torch.Tensor] = None
+    h_vdw_radius: Optional[torch.Tensor] = None
+    h_placement_type: Optional[torch.Tensor] = None
+    h_slot_in_parent: Optional[torch.Tensor] = None
+    parent_neighbor_idx: Optional[torch.Tensor] = None
+    parent_neighbor_count: Optional[torch.Tensor] = None
+    h_chainid_enc: Optional[torch.Tensor] = None
+    h_resseq: Optional[torch.Tensor] = None
+    type_bounds: Dict[int, tuple] = field(default_factory=dict)
+
+    cand_idx_i: Optional[torch.Tensor] = None
+    cand_idx_j: Optional[torch.Tensor] = None
+    cand_symop_idx: Optional[torch.Tensor] = None
+    cand_cell_offset: Optional[torch.Tensor] = None
+    cand_min_dist: Optional[torch.Tensor] = None
+    n_asu_candidates: int = 0
+
+    # Derived at first placement and reused across steps; see reset_cache.
+    _dir_coeffs: Optional[torch.Tensor] = field(default=None, repr=False)
+    _nb_idx_clamped: Optional[torch.Tensor] = field(default=None, repr=False)
+    _nb_valid: Optional[torch.Tensor] = field(default=None, repr=False)
+    _bond_len_col: Optional[torch.Tensor] = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        """Resolve the device tracker the builders allocate against."""
+        self.device = normalize_device(self.device)
 
     @property
     def n_hydrogens(self) -> int:
-        """Number of riding hydrogens, or 0 before the buffers are attached."""
-        if hasattr(self, "h_parent_idx"):
-            return self.h_parent_idx.shape[0]
-        return 0
+        """Number of riding hydrogens, or 0 before the builders have run."""
+        if self.h_parent_idx is None:
+            return 0
+        return int(self.h_parent_idx.shape[0])
 
     @property
     def has_candidates(self) -> bool:
         """Whether precomputed H candidate pairs are available."""
-        return hasattr(self, "cand_idx_i") and self.cand_idx_i.shape[0] > 0
+        return self.cand_idx_i is not None and self.cand_idx_i.shape[0] > 0
+
+    def reset_cache(self) -> None:
+        """Drop the derived placement tensors; rebuilt on the next placement call.
+
+        Called by ``DeviceMixin`` on every ``.to()``, which is what keeps the clamped
+        neighbour indices and bond-length column from surviving a device move.
+        """
+        self._dir_coeffs = None
+        self._nb_idx_clamped = None
+        self._nb_valid = None
+        self._bond_len_col = None
+
+    def __repr__(self) -> str:
+        return (
+            f"HydrogenTopology(n_hydrogens={self.n_hydrogens}, "
+            f"has_candidates={self.has_candidates})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -109,20 +168,23 @@ class HydrogenTopology(DeviceMixin, nn.Module):
 # ---------------------------------------------------------------------------
 
 
+#: Parsed monomer templates, keyed by residue name, shared across calls. Values are
+#: None where the CIF is missing or carries no usable atom coordinates.
+_TEMPLATE_CACHE: Dict = {}
+
+
 def _load_cif_hydrogen_info(pdb, verbose: int = 0) -> Dict:
     """``{resname: entry | None}`` H topology, ``None`` where the CIF is unusable.
 
-    Populates and returns the shared ``Model._hydrogenate_cif_cache``, so entries
-    from an earlier ``Model.hydrogenate()`` are reused. Each entry carries ``ids``,
+    Populates and returns :data:`_TEMPLATE_CACHE`. Each entry carries ``ids``,
     ``elems``, ``coords``, ``is_h``, ``id_to_idx``, ``heavy_names``,
     ``heavy_coords``, ``h_names``, ``h_coords``, ``parent_map``, ``ideal_bl`` and
     ``heavy_neighbor_map``.
     """
-    from torchref.model.model import Model
-    from torchref.restraints.library import MonomerLibraryManager
+    from torchref.topology.monomer.library import MonomerLibraryManager
 
     lib = MonomerLibraryManager(verbose=0)
-    cache = Model._hydrogenate_cif_cache
+    cache = _TEMPLATE_CACHE
 
     for rn in pdb["resname"].unique():
         rn_str = str(rn).strip()
@@ -369,34 +431,17 @@ def build_hydrogen_topology(
     fdtype = dtypes.float
 
     if n_h_total == 0:
-        topo.register_buffer(
-            "h_parent_idx", torch.zeros(0, dtype=torch.long, device=device)
+        topo.h_parent_idx = torch.zeros(0, dtype=torch.long, device=device)
+        topo.h_bond_length = torch.zeros(0, dtype=fdtype, device=device)
+        topo.h_vdw_radius = torch.zeros(0, dtype=fdtype, device=device)
+        topo.h_placement_type = torch.zeros(0, dtype=torch.long, device=device)
+        topo.h_slot_in_parent = torch.zeros(0, dtype=torch.long, device=device)
+        topo.parent_neighbor_idx = torch.zeros(
+            0, MAX_HEAVY_NB, dtype=torch.long, device=device
         )
-        topo.register_buffer(
-            "h_bond_length", torch.zeros(0, dtype=fdtype, device=device)
-        )
-        topo.register_buffer(
-            "h_vdw_radius", torch.zeros(0, dtype=fdtype, device=device)
-        )
-        topo.register_buffer(
-            "h_placement_type", torch.zeros(0, dtype=torch.long, device=device)
-        )
-        topo.register_buffer(
-            "h_slot_in_parent", torch.zeros(0, dtype=torch.long, device=device)
-        )
-        topo.register_buffer(
-            "parent_neighbor_idx",
-            torch.zeros(0, MAX_HEAVY_NB, dtype=torch.long, device=device),
-        )
-        topo.register_buffer(
-            "parent_neighbor_count", torch.zeros(0, dtype=torch.long, device=device)
-        )
-        topo.register_buffer(
-            "h_chainid_enc", torch.zeros(0, dtype=torch.long, device=device)
-        )
-        topo.register_buffer(
-            "h_resseq", torch.zeros(0, dtype=torch.long, device=device)
-        )
+        topo.parent_neighbor_count = torch.zeros(0, dtype=torch.long, device=device)
+        topo.h_chainid_enc = torch.zeros(0, dtype=torch.long, device=device)
+        topo.h_resseq = torch.zeros(0, dtype=torch.long, device=device)
         return topo
 
     # Sort all topology arrays by placement type for contiguous slicing
@@ -421,43 +466,22 @@ def build_hydrogen_topology(
             idxs = np.where(mask)[0]
             type_bounds[t] = (int(idxs[0]), int(idxs[-1]) + 1)
 
-    topo.register_buffer(
-        "h_parent_idx",
-        torch.tensor(acc_parent_idx, dtype=torch.long, device=device),
+    topo.h_parent_idx = torch.tensor(acc_parent_idx, dtype=torch.long, device=device)
+    topo.h_bond_length = torch.tensor(acc_bond_length, dtype=fdtype, device=device)
+    topo.h_vdw_radius = torch.full((n_h_total,), 1.20, dtype=fdtype, device=device)
+    topo.h_placement_type = torch.tensor(
+        acc_placement_type, dtype=torch.long, device=device
     )
-    topo.register_buffer(
-        "h_bond_length",
-        torch.tensor(acc_bond_length, dtype=fdtype, device=device),
+    topo.h_slot_in_parent = torch.tensor(acc_slot, dtype=torch.long, device=device)
+    topo.parent_neighbor_idx = torch.tensor(
+        np.stack(acc_nb_idx), dtype=torch.long, device=device
     )
-    topo.register_buffer(
-        "h_vdw_radius",
-        torch.full((n_h_total,), 1.20, dtype=fdtype, device=device),
-    )
-    topo.register_buffer(
-        "h_placement_type",
-        torch.tensor(acc_placement_type, dtype=torch.long, device=device),
-    )
-    topo.register_buffer(
-        "h_slot_in_parent",
-        torch.tensor(acc_slot, dtype=torch.long, device=device),
-    )
-    topo.register_buffer(
-        "parent_neighbor_idx",
-        torch.tensor(np.stack(acc_nb_idx), dtype=torch.long, device=device),
-    )
-    topo.register_buffer(
-        "parent_neighbor_count",
-        torch.tensor(acc_nb_count, dtype=torch.long, device=device),
+    topo.parent_neighbor_count = torch.tensor(
+        acc_nb_count, dtype=torch.long, device=device
     )
     topo.type_bounds = type_bounds  # dict: type_code -> (start, end)
-    topo.register_buffer(
-        "h_chainid_enc",
-        torch.tensor(acc_chainid_enc, dtype=torch.long, device=device),
-    )
-    topo.register_buffer(
-        "h_resseq",
-        torch.tensor(acc_resseq, dtype=torch.long, device=device),
-    )
+    topo.h_chainid_enc = torch.tensor(acc_chainid_enc, dtype=torch.long, device=device)
+    topo.h_resseq = torch.tensor(acc_resseq, dtype=torch.long, device=device)
 
     if verbose > 0:
         print(f"  Hydrogen topology: {n_h_total} riding H atoms")
@@ -612,7 +636,7 @@ def place_riding_hydrogens(
     xyz_h : (N_h, 3) float tensor, differentiable w.r.t. xyz_heavy
     """
     # Function-local, matching every other target dispatch site: importing the gate at
-    # module scope would pull ``torchref.base.targets`` into ``torchref.restraints``.
+    # module scope would pull ``torchref.base.targets`` into ``torchref.topology``.
     from torchref.base.targets._dispatch import use_triton
 
     N_h = topo.h_parent_idx.shape[0]
@@ -620,11 +644,11 @@ def place_riding_hydrogens(
         return torch.zeros(0, 3, dtype=xyz_heavy.dtype, device=xyz_heavy.device)
 
     # Precompute direction coefficients on first call
-    if not hasattr(topo, "_dir_coeffs") or topo._dir_coeffs is None:
+    if topo._dir_coeffs is None:
         topo._dir_coeffs = _precompute_direction_coefficients(topo)
 
     # Precompute static tensors on first call (avoid recomputing every step)
-    if not hasattr(topo, "_nb_idx_clamped"):
+    if topo._nb_idx_clamped is None:
         topo._nb_idx_clamped = topo.parent_neighbor_idx.clamp(min=0)
         topo._nb_valid = (
             (topo.parent_neighbor_idx >= 0).unsqueeze(-1).to(topo.h_bond_length.dtype)
@@ -712,15 +736,9 @@ def build_h_candidate_pairs(
 
     if n_h == 0:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
-            h_topo.register_buffer(
-                name, torch.zeros(0, dtype=torch.long, device=device)
-            )
-        h_topo.register_buffer(
-            "cand_cell_offset", torch.zeros(0, 3, dtype=torch.long, device=device)
-        )
-        h_topo.register_buffer(
-            "cand_min_dist", torch.zeros(0, dtype=dtypes.float, device=device)
-        )
+            setattr(h_topo, name, torch.zeros(0, dtype=torch.long, device=device))
+        h_topo.cand_cell_offset = torch.zeros(0, 3, dtype=torch.long, device=device)
+        h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
     heavy_indices = vdw_data["indices"]  # (P, 2)
@@ -818,15 +836,9 @@ def build_h_candidate_pairs(
 
     if not acc_idx_i:
         for name in ("cand_idx_i", "cand_idx_j", "cand_symop_idx"):
-            h_topo.register_buffer(
-                name, torch.zeros(0, dtype=torch.long, device=device)
-            )
-        h_topo.register_buffer(
-            "cand_cell_offset", torch.zeros(0, 3, dtype=torch.long, device=device)
-        )
-        h_topo.register_buffer(
-            "cand_min_dist", torch.zeros(0, dtype=dtypes.float, device=device)
-        )
+            setattr(h_topo, name, torch.zeros(0, dtype=torch.long, device=device))
+        h_topo.cand_cell_offset = torch.zeros(0, 3, dtype=torch.long, device=device)
+        h_topo.cand_min_dist = torch.zeros(0, dtype=dtypes.float, device=device)
         return
 
     cand_i = torch.tensor(acc_idx_i, dtype=torch.long, device=device)
@@ -889,16 +901,13 @@ def build_h_candidate_pairs(
     cand_off = cand_off[sort_order]
     n_asu_cand = is_asu.sum().item()
 
-    h_topo.register_buffer("cand_idx_i", cand_i)
-    h_topo.register_buffer("cand_idx_j", cand_j)
-    h_topo.register_buffer("cand_symop_idx", cand_sym)
-    h_topo.register_buffer("cand_cell_offset", cand_off)
+    h_topo.cand_idx_i = cand_i
+    h_topo.cand_idx_j = cand_j
+    h_topo.cand_symop_idx = cand_sym
+    h_topo.cand_cell_offset = cand_off
     h_topo.n_asu_candidates = n_asu_cand
 
-    h_topo.register_buffer(
-        "cand_min_dist",
-        torch.zeros(len(cand_i), dtype=dtypes.float, device=device),
-    )
+    h_topo.cand_min_dist = torch.zeros(len(cand_i), dtype=dtypes.float, device=device)
 
     if verbose > 0:
         n_hh = ((cand_i >= n_heavy) & (cand_j >= n_heavy)).sum().item()

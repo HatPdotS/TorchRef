@@ -194,11 +194,6 @@ class MixedModel(DeviceMovementMixin, nn.Module):
         return self.models[0].gridsize
 
     @property
-    def map_symmetry(self):
-        """Map symmetry operator from first model."""
-        return self.models[0].map_symmetry
-
-    @property
     def inv_fractional_matrix(self) -> torch.Tensor:
         """Inverse fractionalization (orthogonalization) matrix."""
         return self.cell.inv_fractional_matrix.to(dtype=self.dtype_float)

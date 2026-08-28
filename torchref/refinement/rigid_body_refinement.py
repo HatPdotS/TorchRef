@@ -8,6 +8,7 @@ per-bin optimal scale recomputed every gradient call, no external scaler); at 6 
 below it switches to ``ml`` with the normal Scaler.
 """
 
+import copy
 from typing import List, Optional
 
 import torch
@@ -88,14 +89,60 @@ class RigidBodyRefinementStep:
     # -----------------------------------------------------------------------
     # Run
     # -----------------------------------------------------------------------
+    @staticmethod
+    def _sandbox(ref):
+        """A shallow clone of ``ref`` that shares its model but owns its namespace.
+
+        Every cutoff calls :meth:`_rebind_for_data`, which assigns
+        ``reflection_data``, builds a fresh ``Scaler``, and calls
+        ``_init_targets`` + ``reset_loss_state``. Run against the real
+        Refinement those assignments are destructive: ``_init_targets``
+        reconstructs ``adp_target`` and ``geometry_target`` from constructor
+        defaults, so anything configured on them post-construction (for instance
+        ``adp_target['simu'].simu_sigma``) is silently reset, and
+        ``reset_loss_state`` discards custom weights registered on the
+        ``LossState``. Neither survives the step, and neither is wanted by it --
+        rigid body drops every non-xray target before optimizing, so those
+        objects are rebuilt only to be thrown away.
+
+        Directing the step at a clone confines all of it. The real Refinement is
+        never written to, so there is nothing to restore and no window in which
+        it is inconsistent.
+
+        The model is deliberately shared, not copied: ``use_rigid_xyz`` swaps its
+        xyz container in place, so refined coordinates reach the caller by object
+        identity and need no copy-back.
+
+        ``nn.Module`` keeps submodules in ``_modules``; copying ``__dict__``
+        alone would leave that dict shared, and a submodule assignment on the
+        clone would write straight through to the original.
+        """
+        sandbox = copy.copy(ref)
+        sandbox.__dict__ = dict(ref.__dict__)
+        for slot in ("_modules", "_parameters", "_buffers"):
+            if slot in sandbox.__dict__:
+                sandbox.__dict__[slot] = dict(ref.__dict__[slot])
+        return sandbox
+
     def run(self):
         """Step through every cutoff coarse to fine and return
         ``[(d_min, LossState), ...]``.
 
-        Restores the original ``reflection_data`` on exit, and bakes the final transform
-        back
-        into a plain ``ModelFT`` unless ``commit=False``.
+        Runs against a sandbox clone of the refinement (see :meth:`_sandbox`), so
+        the caller's targets, weights and ``reflection_data`` are left untouched.
+        Refined coordinates still reach the caller: the model is shared.
+
+        Bakes the final transform back into a plain ``ModelFT`` unless
+        ``commit=False``.
         """
+        real = self.refinement
+        self.refinement = self._sandbox(real)
+        try:
+            return self._run()
+        finally:
+            self.refinement = real
+
+    def _run(self):
         ref = self.refinement
         original_data = ref.reflection_data
 

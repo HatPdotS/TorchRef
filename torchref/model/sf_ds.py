@@ -232,35 +232,6 @@ class SfDS(DeviceMovementMixin, nn.Module):
 
         return f
 
-    def _get_spacegroup_callable(self):
-        """Symmetry-application callable for the direct-summation kernels.
-
-        They expect ``(3, N)`` fractional coordinates in and ``(3, N, n_ops)``
-        out; identity-only when no space group is set.
-        """
-        if self._spacegroup is None:
-            # P1 symmetry - identity operation only
-            def p1_symmetry(coords_3N):
-                # coords_3N: (3, N) -> (3, N, 1)
-                return coords_3N.unsqueeze(2)
-
-            return p1_symmetry
-
-        def apply_symmetry(coords_3N):
-            # coords_3N: (3, N) -> coords_N3: (N, 3)
-            coords_N3 = coords_3N.T
-
-            # Apply symmetry: (N, 3) -> (N, 3, ops)
-            transformed = self._spacegroup.apply(coords_N3)
-
-            # Reorder to (3, N, ops)
-            # (N, 3, ops) -> (3, N, ops)
-            result = transformed.permute(1, 0, 2)
-
-            return result
-
-        return apply_symmetry
-
     def _cartesian_to_fractional(self, xyz_cartesian: torch.Tensor) -> torch.Tensor:
         """``(N, 3)`` Cartesian coordinates to fractional; needs a cell whose
         dtype matches ``self.dtype_float``.
@@ -365,20 +336,9 @@ class SfDS(DeviceMovementMixin, nn.Module):
             return sf_p1, None
 
         # Apply late symmetry: F_sym(h) = Σ_ops exp(2πi h.t) * F_P1(R^T @ h)
-        from torchref.base.reciprocal import (
-            compute_symmetry_equivalent_hkls,
-            compute_translation_phases,
-        )
-
         n_ops = self._spacegroup.n_ops
-        rotation_matrices = self._spacegroup.matrices
-        translations = self._spacegroup.translations
-
-        # Compute equivalent HKLs: (n_ops, N, 3)
-        equiv_hkls = compute_symmetry_equivalent_hkls(hkl, rotation_matrices)
-
-        # Compute translation phase shifts: (n_ops, N)
-        phases = compute_translation_phases(hkl, translations)
+        equiv_hkls = self._spacegroup.expand_reciprocal(hkl)  # (n_ops, N, 3)
+        phases = self._spacegroup.phase_factors(hkl)  # (n_ops, N)
 
         # Compute F_P1 at each equivalent HKL and combine
         sf_total = torch.zeros(

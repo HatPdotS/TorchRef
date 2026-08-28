@@ -183,10 +183,11 @@ def main():
     phi_t = torch.tensor(phases_deg, dtype=torch.float32, device=device) * (np.pi / 180.0)
 
     # --- Expand to P1 ---
-    from torchref.symmetry.reciprocal_symmetry import expand_hkl
+    from torchref.symmetry import Cell, SpaceGroup
 
-    hkl_p1, orig_idx, phase_shifts = expand_hkl(
-        hkl_t, spacegroup, include_friedel=False, remove_absences=True
+    sg = SpaceGroup(spacegroup)
+    hkl_p1, orig_idx, phase_shifts = sg.expand_hkl(
+        hkl_t, include_friedel=False, remove_absences=True
     )
 
     amp_p1 = amp_t[orig_idx]
@@ -199,13 +200,11 @@ def main():
     coefficients = amp_p1 * torch.exp(1j * phi_p1)
 
     # --- Grid size ---
-    from torchref.symmetry.grid_utils import calculate_optimal_grid_size
-
     if args.gridsize is not None:
         gridsize = tuple(args.gridsize)
     else:
         max_res = float(d_spacings.min())
-        gridsize = calculate_optimal_grid_size(cell, max_res, spacegroup)
+        gridsize = sg.optimal_grid_size(Cell(cell), max_res)
 
     if args.verbose >= 1:
         print(f"  Grid size: {gridsize[0]} x {gridsize[1]} x {gridsize[2]}")

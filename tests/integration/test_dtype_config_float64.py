@@ -14,15 +14,16 @@ import torch
 
 @pytest.mark.unit
 def test_translation_phases_complex_dtype_float64(double_cpu):
-    """compute_translation_phases must honor the configured complex dtype."""
-    from torchref.base.reciprocal.symmetry import compute_translation_phases
+    """Symmetry.phase_factors must honor the configured complex dtype."""
+    from torchref.symmetry import SpaceGroup
 
-    hkl = torch.tensor([[1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [0.0, 0.0, 3.0]])
-    translations = torch.tensor([[0.0, 0.0, 0.0], [0.5, 0.5, 0.0]])
+    # P21 gives two operations, one carrying a half translation.
+    sym = SpaceGroup("P 21")
+    hkl = torch.tensor([[1, 0, 0], [2, 1, 0], [0, 0, 3]])
 
-    phases = compute_translation_phases(hkl, translations)
+    phases = sym.phase_factors(hkl)
 
-    # Was complex64 (float32 hardcode); under float64 config must be complex128.
+    # Must not narrow to complex64 under a float64 configuration.
     assert phases.dtype == torch.complex128
     assert phases.shape == (2, 3)
     assert torch.isfinite(phases.real).all()

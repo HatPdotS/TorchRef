@@ -22,8 +22,33 @@ from typing import Optional, Tuple
 
 import torch
 
-from torchref.base.french_wilson import epsilon_from_hkl  # noqa: F401  (re-export)
 from torchref.config import get_float_dtype
+
+
+def epsilon_from_hkl(hkl: torch.Tensor, spacegroup) -> torch.Tensor:
+    """Per-reflection epsilon, tolerating a missing space group.
+
+    Thin adapter over :meth:`~torchref.symmetry.symmetry.Symmetry.epsilon`, which owns
+    the multiplicity count. It exists because reflection data may carry no space group
+    at all, and every consumer here would otherwise repeat the same guard.
+
+    Parameters
+    ----------
+    hkl : torch.Tensor
+        Miller indices, shape ``(N, 3)``.
+    spacegroup : Symmetry or None
+        The group. ``None`` means no symmetry information, which yields ones -- the
+        same answer P1 gives.
+
+    Returns
+    -------
+    torch.Tensor
+        Multiplicities, shape ``(N,)``, at the configured float dtype, on ``hkl``'s
+        device.
+    """
+    if spacegroup is None or not hasattr(spacegroup, "epsilon"):
+        return torch.ones(hkl.shape[0], device=hkl.device, dtype=get_float_dtype())
+    return spacegroup.epsilon(hkl)
 
 # --- sigma_A estimator constants -------------------------------------------------
 #: Upper bound on the per-shell ``sigma_A``, i.e. the floor on the model-error variance at

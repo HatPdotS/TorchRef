@@ -68,4 +68,10 @@ class TestDefaultGroupWeights:
             # Sub-weight on the SIGD prior; 1.0 leaves it at the adp group weight
             # pending the R_free scan. Weights multiply down the path.
             "adp/sigd": 1.0,
+            # Node load balancing, inert unless the ADPs are a node field. Above the
+            # group weight because it bars a degenerate direction rather than
+            # competing with the data.
+            "adp/node_load": 10.0,
+            # Magnitude prior on node values, off pending measurement.
+            "adp/node_smoothness": 0.0,
         }
