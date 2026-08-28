@@ -9,6 +9,10 @@ Unreleased
 - Fixed the overall-anisotropy fit, which regressed log intensities with no constant term and so absorbed the ``-gamma`` offset into the tensor
 - Fixed molecular-replacement rotation candidates being composed onto each other instead of onto the search model
 - Fixed assigning a ``SpaceGroup`` object to ``Model.spacegroup`` being a silent no-op that then made the correct name assignment raise
+- Moved epsilon onto ``SpaceGroup.epsilon(hkl, friedel=)``; the alignment package's own copy disagreed with it in trigonal and hexagonal groups and dropped the centring coset. The default keeps the Friedel-folded count sigma_A is calibrated against, and the molecular-replacement likelihood asks for the conventional one
+- The rotation function and the ML rescore take their E-value convention as a class, so the observed and calculated sides are normalised by one rule rather than by nine private converters
+- The ML rescore now receives the observation sigmas, which the rotation function computed the French-Wilson posterior from and then discarded
+- Removed the rescore's ``scat_mode``, a second knob for the decision the E convention already makes
 - Replaced the fast rotation function's keyword surface with ``rotation_search(model, data, model_error_A)``; the caller's coordinate error is now used rather than overwritten by an estimate from the atom count
 - Removed the rotation function's dead modules, engine variants, debug environment switches and unreachable knobs
 - ``Model``'s iso/aniso partition is now derived on access instead of being rebuilt eagerly, so a copy cannot inherit a stale one
@@ -29,6 +33,9 @@ Unreleased
 Version 0.7.0
 ----------
 - Fixed cif reading bug discarding new mmCIF field for aniso ADPs 
+- Removed the stored real-space coordinate grid; ``build_electron_density`` takes a grid shape and device, and ``ModelFT.real_space_grid()`` builds one on demand
+- Fixed ``ModelFT`` restore dropping a node-field ADP representation, and added the anisotropic ``field_aniso`` case; both models now share one wrapper-rebuild path
+- Fixed the node load and node smoothness restraints being inert in ``field_aniso`` mode
 - Separated model configuration and provenance into ``ModelContext``. It now holds the unit cell, space group, atom table, link records, hydrogen settings, and input paths.
 - Refactored ``Symmetry`` as a crystallography-free class with transform primitives, and made ``SpaceGroup`` a specialised subclass.
 - Moved geometry predicates, HKL verbs, and grid-size helpers onto these classes as methods.

@@ -122,7 +122,7 @@ class RealSpaceTarget(DataTarget):
         """Ensure model's SfFFT grid is set up."""
         if self._model is None:
             raise RuntimeError("No model set for RealSpaceTarget")
-        if self._model.real_space_grid is None:
+        if self._model.gridsize is None:
             self._model.setup_grid()
 
     def _get_data_p1(self) -> "ReflectionData":

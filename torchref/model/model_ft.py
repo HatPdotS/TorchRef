@@ -52,9 +52,10 @@ class ModelFT(CachedForwardMixin, Model):
     ----------
     max_res, wavelength, anomalous_threshold : float
         The constructor arguments above, readable back as attributes.
-    gridsize, real_space_grid : torch.Tensor
-        Grid dimensions ``(nx, ny, nz)`` and coordinate grid
-        ``(nx, ny, nz, 3)``; both live on the ``SfFFT`` submodule.
+    gridsize : torch.Tensor
+        Grid dimensions ``(nx, ny, nz)``, living on the ``SfFFT`` submodule.
+        A coordinate grid is not stored; :meth:`real_space_grid` builds one on
+        demand for the few callers that want the Cartesian positions themselves.
     map : torch.Tensor or None
         Most recently computed electron density map.
     parametrization : dict
@@ -293,15 +294,28 @@ class ModelFT(CachedForwardMixin, Model):
         """Set grid size (for backward compatibility)."""
         self._fft.gridsize = value
 
-    @property
-    def real_space_grid(self) -> Optional[torch.Tensor]:
-        """Real-space coordinate grid with shape (nx, ny, nz, 3)."""
-        return self._fft.real_space_grid
+    def real_space_grid(self) -> torch.Tensor:
+        """Build the Cartesian coordinate of every grid point, ``(nx, ny, nz, 3)``.
 
-    @real_space_grid.setter
-    def real_space_grid(self, value):
-        """Set real space grid (for backward compatibility)."""
-        self._fft.real_space_grid = value
+        Not stored: at ``12 * nx * ny * nz`` bytes it is the largest tensor a model
+        would hold, and no structure-factor path reads it -- every splat derives a
+        voxel's position from its index. Built here for the callers that genuinely
+        want the coordinates, and discarded when they are done with it.
+        """
+        from torchref.base.fourier import get_real_grid
+
+        if self.gridsize is None:
+            self.setup_grid()
+        return get_real_grid(
+            fractional_matrix=self.cell.fractional_matrix,
+            gridsize=self.gridsize,
+            device=self.device,
+        )
+
+    @property
+    def grid_shape(self) -> Optional[tuple]:
+        """Map dimensions ``(nx, ny, nz)``, or ``None`` before the grid is set up."""
+        return self._fft.grid_shape
 
     @property
     def voxel_size(self) -> Optional[torch.Tensor]:
@@ -395,39 +409,8 @@ class ModelFT(CachedForwardMixin, Model):
         )
 
         if self.ctx.verbose > 2:
-            print(f"Grid shape: {self._fft.real_space_grid.shape[:-1]}")
+            print(f"Grid shape: {self._fft.grid_shape}")
             print(f"Voxel size: {self._fft.voxel_size}")
-
-    def get_radius(self, min_radius_Angstrom: float = 4.0):
-        """
-        Get a single fixed splat radius in voxels for the given minimum.
-
-        Vestigial: the density path truncates each atom at its own
-        ``torchref.sigma_cutoff_ed * sigma_eff`` radius and never consults this.
-
-        Parameters
-        ----------
-        min_radius_Angstrom : float, optional
-            Minimum radius in Angstroms. Default is 4.0.
-
-        Returns
-        -------
-        int
-            Radius in voxels.
-        """
-        if not hasattr(self, "real_space_grid") or self.real_space_grid is None:
-            self.setup_grid()
-        voxel_size = self.real_space_grid[1, 1, 1] - self.real_space_grid[0, 0, 0]
-        min_radius = (
-            torch.ceil(min_radius_Angstrom / torch.min(voxel_size))
-            .to(dtypes.int)
-            .item()
-        )
-        if self.ctx.verbose > 1:
-            print(
-                f"Calculated radius for density calculation: {min_radius} voxels (voxel size: {voxel_size}), this corresponds to at least {min_radius_Angstrom} Å"
-            )
-        return min_radius
 
     def build_complete_map(self, radius=None, apply_symmetry=True):
         """
@@ -475,7 +458,7 @@ class ModelFT(CachedForwardMixin, Model):
         torch.Tensor
             Electron density map with shape (nx, ny, nz).
         """
-        if self._fft.real_space_grid is None:
+        if self._fft.gridsize is None:
             self.setup_grid()
 
         if self.ctx.verbose > 2:
@@ -819,7 +802,7 @@ class ModelFT(CachedForwardMixin, Model):
         Create a deep copy of the ModelFT.
 
         Creates a complete independent copy including all Model base class data,
-        FFT submodule state (gridsize, real_space_grid, voxel_size),
+        FFT submodule state (gridsize, voxel_size),
         ITC92 parametrization, and scalar attributes.
         Cache is reset to empty.
 
@@ -875,7 +858,7 @@ class ModelFT(CachedForwardMixin, Model):
 
         if self._fft is not None:
             model_copy._fft = self._fft.copy()
-            if self._fft.real_space_grid is not None:
+            if self._fft.gridsize is not None:
                 model_copy.setup_grid(max_res=self.max_res)
 
         # Don't share cached structure factors with the original.
@@ -960,8 +943,6 @@ class ModelFT(CachedForwardMixin, Model):
         The anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, as in
         :meth:`load`, so the positive-definite parametrization round-trips.
         """
-        from torchref.symmetry import SpaceGroup
-
         # Resolve dtype/device at call time so the fallback below uses the
         # current config rather than an import-time default.
         device = normalize_device(device)
@@ -1009,87 +990,12 @@ class ModelFT(CachedForwardMixin, Model):
         if cell_tensor is not None:
             instance.cell = Cell(cell_tensor, dtype=saved_dtype, device=device)
 
-        # If PDB exists, create the parameter wrappers with correct shapes
+        # Wrappers and per-atom buffers: shared with Model so the two restores cannot
+        # drift apart again. ModelFT adds only its own scattering buffers below.
         if pdb is not None:
-            from torchref.model.parameter_wrappers import (
-                CholeskyMixedTensor,
-                MixedTensor,
-                OccupancyTensor,
-                PositiveMixedTensor,
+            cls._rebuild_wrappers_from_pdb(
+                instance, pdb, state_dict, saved_dtype, device
             )
-
-            n_atoms = len(pdb)
-
-            xyz_mask = state_dict.get("xyz.refinable_mask")
-            adp_mask = state_dict.get("adp.refinable_mask")
-            u_mask = state_dict.get("u.refinable_mask")
-
-            instance.xyz = MixedTensor(
-                torch.tensor(pdb[["x", "y", "z"]].values, dtype=saved_dtype),
-                refinable_mask=xyz_mask,
-                name="xyz",
-            )
-            instance.adp = PositiveMixedTensor(
-                torch.tensor(pdb["tempfactor"].values, dtype=saved_dtype),
-                refinable_mask=adp_mask,
-                name="adp",
-            )
-            instance.u = CholeskyMixedTensor(
-                torch.tensor(
-                    pdb[["u11", "u22", "u33", "u12", "u13", "u23"]].values,
-                    dtype=saved_dtype,
-                ),
-                refinable_mask=u_mask,
-                name="aniso_U",
-            )
-
-            initial_occ = torch.tensor(pdb["occupancy"].values, dtype=saved_dtype)
-            sharing_groups, altloc_groups, refinable_mask = (
-                instance._create_occupancy_groups(pdb, initial_occ)
-            )
-
-            saved_occ_mask = state_dict.get("occupancy.refinable_mask")
-            if saved_occ_mask is not None:
-                if saved_occ_mask.device != sharing_groups.device:
-                    saved_occ_mask = saved_occ_mask.to(sharing_groups.device)
-                refinable_mask = saved_occ_mask[sharing_groups]
-
-            instance.occupancy = OccupancyTensor(
-                initial_values=initial_occ,
-                sharing_groups=sharing_groups,
-                altloc_groups=altloc_groups,
-                refinable_mask=refinable_mask,
-                dtype=saved_dtype,
-                device=device,
-                name="occupancy",
-            )
-
-            if "aniso_flag" not in instance._buffers or instance.aniso_flag is None:
-                instance.register_buffer(
-                    "aniso_flag",
-                    torch.tensor(pdb["anisou_flag"].values, dtype=torch.bool),
-                )
-
-            # Register mask buffers
-            instance.register_buffer(
-                "xyz_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-            instance.register_buffer(
-                "adp_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-            instance.register_buffer(
-                "u_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-            instance.register_buffer(
-                "occupancy_mask", torch.ones(n_atoms, dtype=torch.bool, device=device)
-            )
-
-            # Register vdw_radii if present
-            if "vdw_radii" in state_dict and state_dict["vdw_radii"] is not None:
-                instance.register_buffer(
-                    "vdw_radii",
-                    torch.zeros_like(state_dict["vdw_radii"], device=device),
-                )
 
             # Scattering buffers: accept both old-style (A, B) and new (_A, _B).
             a_key = "_A" if "_A" in state_dict else "A" if "A" in state_dict else None

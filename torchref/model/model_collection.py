@@ -120,9 +120,12 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
     def dtype_float(self):
         return self._base_models[0].dtype_float
 
-    @property
     def real_space_grid(self):
-        return self._base_models[0].real_space_grid
+        return self._base_models[0].real_space_grid()
+
+    @property
+    def grid_shape(self):
+        return self._base_models[0].grid_shape
 
     @property
     def fft(self):
@@ -147,9 +150,6 @@ class _SharedMixedModel(DeviceMovementMixin, nn.Module):
     def setup_grid(self, max_res=None, gridsize=None):
         for model in self._base_models:
             model.setup_grid(max_res=max_res, gridsize=gridsize)
-
-    def get_radius(self, min_radius_Angstrom: float = 4.0) -> int:
-        return self._base_models[0].get_radius(min_radius_Angstrom)
 
     def build_complete_map(self) -> torch.Tensor:
         """Mixed electron density: sum_i w_i * density_i."""
