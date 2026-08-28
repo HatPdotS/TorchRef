@@ -4,6 +4,7 @@ Changelog
 
 Version 0.6.4
 ----------
+- ``torchref.validate-ded`` records ``mask_source`` in its results JSON; it changes the correlation and was not recoverable from the output
 - Fixed the ``--two-moment`` corrected DED coefficients using a phase-blind amplitude difference instead of the phase-aware one the uncorrected coefficients use
 - Added ``paper/make_ded_maps.py``, which writes CCP4 maps from a difference-refine results MTZ
 - ``CollectionScaler.refine_lbfgs_joint`` builds a row of ``XRAY_TARGETS`` instead of its own Rice likelihood, and takes ``scale_target`` (default ``ls``)

@@ -638,6 +638,14 @@ def run_validation(args):
             "light_model": str(args.light_model),
             "fraction": args.fraction,
             "selection": args.selection,
+            # Recorded because it CHANGES THE ANSWER and is easy to leave at a
+            # different value between runs. On the figure-4 ligand, "light" masks 1535
+            # voxels and scores CC 0.869, while "both" masks 1948 and scores 0.851 --
+            # the union adds the volume the ligand vacated, where the density is
+            # negative and the model has to get a depletion right. Two runs differing
+            # only in this looked like a real improvement until the parameter was
+            # recovered by re-running, which is exactly what storing it prevents.
+            "mask_source": args.mask_source,
             "mask_radius": args.mask_radius,
             "dmin": d_min,
         },
