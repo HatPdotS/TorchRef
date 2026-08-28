@@ -2,47 +2,15 @@ Changelog
 =========
 
 
-Unreleased
+Version 0.7.0
 ----------
-- Added ``Symmetry``, a crystallography-free symmetry group carrying the operations and every verb derived from them; ``SpaceGroup`` now specialises it
-- ``Symmetry`` exposes the transform primitives ``apply_rotations`` / ``apply_translations`` / ``phase_factors`` and a cached ``reciprocal`` stack, replacing seven separate spellings of ``R^T h``
-- Moved the centric, systematic-absence and epsilon predicates onto ``Symmetry``; ``is_centric_from_hkl`` and ``get_centric_acentric_masks`` are gone
-- Moved the HKL asymmetric-unit verbs onto ``SpaceGroup`` as ``expand_hkl`` / ``reduce_hkl`` / ``complete_hkl`` / ``canonicalize_hkl``; the module-level functions are gone
-- Moved the grid-size helpers onto ``Symmetry``; removed ``torchref.symmetry.grid_utils`` and the duplicate ``spacegroup`` module-level functions
-- Map symmetrization is now ``Symmetry.symmetrize_map``, caching one operator for the most recent grid shape; ``MapSymmetry`` and ``MapSymmetryDirect`` are private
-- Symmetry classes are dataclasses over ``DeviceMixin`` instead of ``nn.Module``, so assigning a ``SpaceGroup`` to a model attribute is no longer intercepted by ``nn.Module.__setattr__``
-- Removed ``ReciprocalSymmetryGrid``, ``ReciprocalSymmetry``, ``expand_reciprocal_grid``, ``expand_reflections`` and ``extract_structure_factors_with_symmetry``
-- Removed the unused ``Cell`` gradient plumbing (``requires_grad`` argument and property, ``detach``) and the ``CellTensor`` alias
-- Removed the ``Symmetry`` alias for ``SpaceGroup``; the name is now a distinct class
-- Added ``ModelContext``, holding a model's unit cell, space group, atom table, link records and provenance; ``Model.cell`` / ``.spacegroup`` / ``.pdb`` still work and now read through it
-- Moved ``Model``'s configuration and provenance onto the context: ``strip_H``, ``verbose``, ``links``, ``altloc_pairs``, ``initialized``, ``exclude_H_from_sf`` and the input paths are reached as ``model.ctx.*``
-- ``Model.copy`` and ``ModelFT.copy`` now copy the context in one step, cloning the space group instead of sharing it
-- Removed ``Model.symmetry``; use ``Model.spacegroup``
-- ``HydrogenTopology`` is a dataclass with optional fields instead of an ``nn.Module`` whose buffers were attached after construction
-- Added ``torchref.topology``: a ``Topology`` of a ``ResidueGraph`` over an ``AtomGraph``, holding the model's connectivity as typed edge blocks with a bond adjacency that answers ``neighbors(i)``
-- Topology residues are identified by ``(chain, resseq, icode)``, so a residue with an insertion code is no longer merged with the one it was inserted after
-- Added ``AtomGraph.exclusions_12_13_14``, deriving non-bonded exclusions from bond connectivity rather than from which angles and torsions the monomer library happens to restrain
-- ``Restraints.restraints`` is now a plain nested dict of tensors instead of an accessor object rebuilt on every read; the per-origin indices are views into the topology's contiguous edge blocks
-- Restraint groups are laid out in a fixed order, so a rebuild produces the same row order in any process; previously the origins were concatenated in Python ``set`` iteration order
-- Fixed ``cat_dict`` doubling every bond, angle and torsion restraint when called more than once
-- Geometry restraints are built from the topology, retiring the intra-residue builder calls, the peptide/disulfide/LINK build methods and the ``TensorDict`` restraint storage
-- Hydrogen generation is now template instantiation over the topology: ``Model.hydrogenate`` aligns each residue's monomer template onto the heavy atoms present and reads its hydrogens off, and the bond graph sets how many hydrogens a parent may carry
-- Fixed hydrogen placement fitting the template over two bond shells, which spans rotatable torsions the model does not share and left 12% of side-chain hydrogens further than 1.5 A from their parent, where they were discarded
-- Hydrogens on a centre whose template omits a real substituent -- a peptide-linked backbone nitrogen -- are now built from the bonded neighbours instead of the template frame
-- Hydrogens with a free torsion (hydroxyl, thiol, amine, methyl) are identified from bond connectivity and their dihedral is scanned, rather than taken from whatever the library deposited
-- Removed ``Model.generate_hydrogens``; ``Model.hydrogenate`` is the single path and no longer takes ``lbfgs_steps`` or ``max_iter``
-- Hydrogens are now present by default: ``strip_H`` defaults to False, and hydrogens a file does not carry are generated on load. New ``add_hydrogens`` argument turns generation off while still keeping any the file has
-- Generation is decided per parent, so a partially hydrogenated structure is topped up rather than left as deposited
-- Fixed the lazily-cached per-atom buffers (``vdw_radii``, ``Z``, the ITC92 coefficients) surviving a load that changes the atom count, which left them sized for the previous atom set
-- Riding hydrogens are no longer placed when the model carries real ones, where they acted as phantom atoms in the non-bonded term
-- Fixed the hydrogen valence cap counting only heavy neighbours, so a parent that already carried a hydrogen still had budget for another; generation was not idempotent and a save/reload added a spurious second amide hydrogen to every linked residue
-- Moved the riding-hydrogen map from ``torchref.restraints.hydrogen_topology`` to ``torchref.topology.riding``, alongside the generation path it is the heavy-atom-only alternative to
-- Added ``Topology.subset`` and ``copy``, plus the same on ``EdgeBlock``, ``ResidueGraph`` and ``AtomGraph``: a subset reindexes the surviving edges rather than re-reading the CIFs and re-matching the templates. An edge is dropped as soon as any of its atoms is, and a residue left with no atoms goes along with its links
-- Fixed residues distinguished only by an insertion code losing their restraints: the builders group on ``(chain, resseq)``, so 100 and 100A merge into one residue whose atom names collide and only the first keeps any intra-residue geometry
-- Moved the restraint orchestrator from ``torchref.restraints.restraints`` to ``torchref.topology.restraints`` and renamed ``RestraintsNew`` to ``Restraints``
-- ``_lookup_link_atom`` moved to ``torchref.topology.build``, which was importing it back out of the restraints module
-- Removed ``torchref.restraints``. Its seven modules moved into ``torchref.topology``, where every one of their importers already lived: the monomer library, CIF reading and ``chem_mod`` patches to ``topology.monomer``, the template matchers to ``topology.builders`` and ``topology.builders_numba``, the non-bonded spatial search to ``topology.nonbonded``, and the Ramachandran surfaces to ``topology.ramachandran``
-- Fixed ``neighbor_search`` annotating locals with ``List`` without importing it
+- Separated model configuration and provenance into ``ModelContext``. It now holds the unit cell, space group, atom table, link records, hydrogen settings, and input paths.
+- Refactored ``Symmetry`` as a crystallography-free class with transform primitives, and made ``SpaceGroup`` a specialised subclass.
+- Moved geometry predicates, HKL verbs, and grid-size helpers onto these classes as methods.
+- Rebuilt geometry restraints from the topology instead of intra-residue builders. ``torchref.restraints`` was removed, restraint dictionaries are now plain nested dicts, and residues are identified by ``(chain, resseq, icode)`` to fix insertion-code merging.
+- Reworked hydrogen generation as template instantiation over the topology. ``Model.hydrogenate`` now aligns monomer templates onto heavy atoms present, generation is the default, and ``AtomGraph.exclusions_12_13_14`` derives non-bonded exclusions from bond connectivity.
+- Added ``Topology`` as a ``ResidueGraph`` over an ``AtomGraph`` with typed edge blocks and ``subset`` / ``copy`` operations that reindex surviving edges.
+- Made ``HydrogenTopology`` a dataclass, changed ``Symmetry`` classes to dataclasses over ``DeviceMixin`` instead of ``nn.Module``, and removed unused ``Cell`` gradient plumbing and the ``ReciprocalSymmetryGrid`` / module-level expansion functions.
 
 
 Version 0.6.4
