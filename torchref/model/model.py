@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 
 from torchref.base import math_torch
-from torchref.config import get_float_dtype, normalize_device
+from torchref.config import canonical_device, get_float_dtype, normalize_device
 from torchref.io import cif, pdb
 from torchref.model.context import ModelContext
 from torchref.model.parameter_wrappers import (
@@ -2254,7 +2254,10 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         state_dict : dict
             State dictionary from torch.save(model.state_dict(), ...).
         device : torch.device, optional
-            Device to place tensors on. Defaults to the configured device.current.
+            Move the restored model here once it is built. The restore itself always
+            runs on CPU, and ``None`` leaves it there rather than resolving to
+            ``device.current`` -- loading a file is not a reason to claim an
+            accelerator. Move it yourself, or pass one here.
         verbose : int, optional
             Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional
@@ -2271,9 +2274,12 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, matching
         :meth:`load`, so the positive-definite parametrization round-trips.
         """
-        # Resolve dtype/device at call time so the fallbacks below use the
-        # current config, not the import-time default.
-        device = normalize_device(device)
+        # Build on CPU throughout, then move once at the end if the caller named a
+        # device. One device for the whole model is the invariant that matters: the
+        # wrappers are built from the atom table and land on CPU whatever is asked for,
+        # so resolving an accelerator up front splits the model rather than placing it.
+        target_device = canonical_device(device) if device is not None else None
+        device = torch.device("cpu")
         if dtype_float is None:
             dtype_float = get_float_dtype()
         pdb = state_dict.pop("pdb", None)
@@ -2281,7 +2287,7 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
         spacegroup = state_dict.pop("spacegroup", None)
         initialized = state_dict.pop("initialized", False)
         saved_dtype = state_dict.pop("dtype_float", dtype_float)
-        saved_device = state_dict.pop("device", device)
+        state_dict.pop("device", None)  # popped so it never reaches load_state_dict
         strip_H = state_dict.pop("strip_H", True)
         altloc_pairs = state_dict.pop("altloc_pairs", [])
 
@@ -2312,6 +2318,9 @@ class Model(DeviceMovementMixin, DebugMixin, nn.Module):
             if not (torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] == 0)
         }
         instance.load_state_dict(state_dict, strict=False)
+
+        if target_device is not None:
+            instance.to(target_device)
 
         if verbose > 0:
             n_atoms = len(instance.pdb) if instance.pdb is not None else 0

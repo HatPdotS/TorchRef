@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from torchref.base.fourier import fft, ifft
-from torchref.config import dtypes, get_float_dtype, normalize_device
+from torchref.config import canonical_device, dtypes, get_float_dtype
 from torchref.model.model import Model
 from torchref.model.sf_fft import SfFFT
 from torchref.symmetry import SpaceGroup
@@ -924,7 +924,9 @@ class ModelFT(CachedForwardMixin, Model):
         state_dict : dict
             State dictionary from torch.save(model.state_dict(), ...).
         device : torch.device, optional
-            Device to place tensors on. Defaults to the configured device.current.
+            Move the restored model here once it is built. The restore itself always
+            runs on CPU, and ``None`` leaves it there; see
+            :meth:`Model.create_from_state_dict`.
         verbose : int, optional
             Verbosity level. Default is 1.
         dtype_float : torch.dtype, optional
@@ -942,9 +944,11 @@ class ModelFT(CachedForwardMixin, Model):
         The anisotropic ``u`` is rebuilt as a :class:`CholeskyMixedTensor`, as in
         :meth:`load`, so the positive-definite parametrization round-trips.
         """
-        # Resolve dtype/device at call time so the fallback below uses the
-        # current config rather than an import-time default.
-        device = normalize_device(device)
+        # Build on CPU throughout and move once at the end, as Model does; the grid
+        # setup below otherwise sizes an accelerator allocation for a model the caller
+        # has not asked to put there.
+        target_device = canonical_device(device) if device is not None else None
+        device = torch.device("cpu")
         if dtype_float is None:
             dtype_float = get_float_dtype()
 
@@ -1029,6 +1033,9 @@ class ModelFT(CachedForwardMixin, Model):
                     filtered_state_dict[k] = v
 
         instance.load_state_dict(filtered_state_dict, strict=False)
+
+        if target_device is not None:
+            instance.to(target_device)
 
         instance.reset_cache()
 
