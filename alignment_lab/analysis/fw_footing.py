@@ -42,8 +42,9 @@ def main() -> int:
         french_wilson_preprocess,
     )
     from torchref.experimental.alignment.frf.preprocessing import (
-        build_lerf1_intensity, wilson_normalise,
+        build_lerf1_intensity,
     )
+    from lab.reference_normalisers import wilson_normalise
 
     for pdb in ("1DAW", "3K7M", "2DQ6"):
         model, data = load_case(pdb)

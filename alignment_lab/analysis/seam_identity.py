@@ -50,8 +50,9 @@ def main() -> int:
         french_wilson_preprocess,
     )
     from torchref.experimental.alignment.frf.preprocessing import (
-        build_lerf1_intensity, wilson_normalise,
+        build_lerf1_intensity,
     )
+    from lab.reference_normalisers import wilson_normalise
     from torchref.experimental.alignment.sh import (
         assign_shells, equal_count_shell_edges,
     )

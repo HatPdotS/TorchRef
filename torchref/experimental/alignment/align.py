@@ -322,7 +322,7 @@ def align_model_to_data(
     `MolecularReplacementPipeline` is the implementation of record; this
     function returns its single best solution.
     """
-    if not model.initialized:
+    if not model.ctx.initialized:
         raise RuntimeError(
             "Cannot fit an uninitialized ModelFT. Load PDB data first."
         )

@@ -194,7 +194,7 @@ def attribute_obs_terms(terms_csv: Path, pdb: str) -> dict:
         / (float(np.abs(Esqr).max()) or 1.0))
 
     # Our normalised E^2 for the same Miller indices.
-    from torchref.experimental.alignment.frf.preprocessing import wilson_normalise
+    from lab.reference_normalisers import wilson_normalise
     model, data = load_case(pdb)
     B = data.cell.reciprocal_basis_matrix.to(torch.float64).cpu()
     our_hkl = data.hkl.to(torch.long).cpu()

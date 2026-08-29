@@ -13,6 +13,9 @@ Unreleased
 - The rotation function and the ML rescore take their E-value convention as a class, so the observed and calculated sides are normalised by one rule rather than by nine private converters
 - The ML rescore now receives the observation sigmas, which the rotation function computed the French-Wilson posterior from and then discarded
 - Removed the rescore's ``scat_mode``, a second knob for the decision the E convention already makes
+- The Sim rescore and the three translation-search sites take their E values from the convention too, so the alignment package has one normaliser rather than nine
+- Removed ``wilson_normalise`` and ``wilson_normalise_epsilon``, which the convention replaced
+- Fixed the rotation search, placement pipeline and ``align`` reading ``model.initialized``, which moved to ``model.ctx``; the tests covering it are slow-marked, so the break was invisible to a default test run
 - Replaced the fast rotation function's keyword surface with ``rotation_search(model, data, model_error_A)``; the caller's coordinate error is now used rather than overwritten by an estimate from the atom count
 - Removed the rotation function's dead modules, engine variants, debug environment switches and unreachable knobs
 - ``Model``'s iso/aniso partition is now derived on access instead of being rebuilt eagerly, so a copy cannot inherit a stale one

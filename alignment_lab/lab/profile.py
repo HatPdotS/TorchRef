@@ -42,7 +42,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 #: this wrong left 85% of the runtime unattributed.
 FRF_STAGES: Tuple[Tuple[str, str], ...] = (
     ("torchref.experimental.alignment.frf.dense_calc", "dense_calc_via_box"),
-    ("torchref.experimental.alignment.frf.api", "french_wilson_preprocess"),
+    # Patched on its DEFINING module, not on `api`: it is reached through
+    # `FrenchWilsonE._compute`, which imports it inside the method body, so the
+    # lookup happens at call time and `api` never holds a reference at all.
+    ("torchref.experimental.alignment.frf.french_wilson",
+     "french_wilson_preprocess"),
     ("torchref.experimental.alignment.frf.api", "bessel_sh_expand"),
     ("torchref.experimental.alignment.frf.api", "cross_correlate_xi"),
     ("torchref.experimental.alignment.frf.api", "evaluate_rotation_function"),
@@ -60,7 +64,10 @@ FRF_STAGES: Tuple[Tuple[str, str], ...] = (
     # imports `apply_overall_anisotropy` from `sh` at module top, and
     # `fit_relative_wilson_b` is imported inside `search_peaks` so it has to be
     # patched on the defining module.
-    ("torchref.experimental.alignment.frf.api", "wilson_normalise"),
+    # No `wilson_normalise` row any more. The observed-side normalisation now
+    # arrives as the `e_convention` CLASS and is called through a parameter, so
+    # there is no module attribute to patch -- and a row that registers zero
+    # calls is worse than no row, because it reads as "that stage is free".
     ("torchref.experimental.alignment.frf.api", "eterm_sigma_a"),
     ("torchref.experimental.alignment.frf.api", "build_lerf1_intensity"),
     ("torchref.experimental.alignment.frf.api", "apply_shell_variance_weights"),

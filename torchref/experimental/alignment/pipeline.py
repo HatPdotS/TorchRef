@@ -341,7 +341,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             Sorted by ``r_factor`` (ascending). The first element is the best
             placement; its ``r_factor`` is the solvent-aware Scaler R-work.
         """
-        if not self.model.initialized:
+        if not self.model.ctx.initialized:
             raise RuntimeError(
                 "Cannot fit an uninitialized ModelFT. Load PDB data first."
             )
@@ -784,7 +784,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         )
         llg_tf = llg_translation_rescore(
             F_obs=F_obs_amp, hkl=hkl_keep, centric=centric_keep_tf,
-            shell_idx=tf_shell_idx, n_shells=tf_n_shells,
+            s_mag=s_mag_keep_tf, shell_idx=tf_shell_idx, n_shells=tf_n_shells,
             G=G_pre, h_R=h_R_pre, t_candidates=t_cands,
             sigma_a=sigma_a_tf, interp_var=None,
         )

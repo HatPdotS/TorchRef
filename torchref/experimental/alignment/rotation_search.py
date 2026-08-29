@@ -466,7 +466,7 @@ def rotation_search(
     ValueError
         If the data carry too few reflections to bin.
     """
-    if not model.initialized:
+    if not model.ctx.initialized:
         raise RuntimeError("model has no coordinates; load a PDB first.")
     d_max_fit, d_min_fit = ANISO_FIT_WINDOW_A
     U_aniso = fit_anisotropy(data, d_min=d_min_fit, d_max=d_max_fit)

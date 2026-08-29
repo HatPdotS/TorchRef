@@ -123,21 +123,26 @@ def test_french_wilson_refuses_to_run_without_sigmas():
         FrenchWilsonE(F, s, centric, n_shells=20)
 
 
-def test_the_frf_calc_path_is_bit_identical_to_wilson_normalise():
-    """The seam must be inert while the default convention is in place.
+def test_wilson_shell_e_is_its_defining_formula():
+    """``E = F / sqrt(<F**2>_shell)``, asserted against the definition itself.
 
-    Everything downstream of ``E_calc`` is untouched, so bit-identity here is
-    what makes the peak list unchanged rather than merely similar.
+    Not against a reference implementation: the one this replaced now lives in
+    `alignment_lab/lab/reference_normalisers.py` as a frozen oracle for
+    comparing future conventions, and a unit test should not reach into the lab
+    to find its expectation. Restating the formula here is the specification,
+    not a second copy of the code.
     """
-    from torchref.experimental.alignment.frf.preprocessing import (
-        wilson_normalise,
-    )
-
     F, s, centric, _ = _wilson_data()
-    old, _ = wilson_normalise(F, s, 20)
-    new = WilsonShellE(F, s, centric, n_shells=20).E
-    assert torch.equal(new, old), (
-        f"max deviation {float((new - old).abs().max()):.3e}"
+    conv = WilsonShellE(F, s, centric, n_shells=20)
+
+    total = torch.zeros(20, dtype=F.dtype)
+    total.scatter_add_(0, conv.shell_idx, F * F)
+    count = torch.bincount(conv.shell_idx, minlength=20).to(F.dtype).clamp(min=1.0)
+    expected = F / (total / count).clamp(min=1e-30).index_select(
+        0, conv.shell_idx).sqrt()
+
+    assert torch.equal(conv.E, expected), (
+        f"max deviation {float((conv.E - expected).abs().max()):.3e}"
     )
 
 

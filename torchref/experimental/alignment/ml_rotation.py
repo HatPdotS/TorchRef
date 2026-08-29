@@ -25,7 +25,7 @@ from typing import Callable, List, Optional
 
 import torch
 
-from .e_values import (CalcShellE, WilsonShellEpsE,
+from .e_values import (CalcShellE, WilsonShellE, WilsonShellEpsE,
                        convention_for_calc, convention_uses_sigma_f)
 from .frf.rotation_utils import (
     axis_angle_to_matrix,
@@ -65,28 +65,6 @@ def _equal_count_shell_idx(s_mag: torch.Tensor, n_shells: int) -> torch.Tensor:
     shell_idx = torch.empty(n, dtype=torch.int64, device=s_mag.device)
     shell_idx[order] = sorted_labels
     return shell_idx
-
-
-def _normalize_to_e(F: torch.Tensor, shell_idx: torch.Tensor,
-                    n_shells: int) -> torch.Tensor:
-    """E = F / sqrt(<F²> per shell). Vectorised across shells via scatter."""
-    return F / _per_shell_sqrt_mean(F, shell_idx, n_shells)
-
-
-def _per_shell_sqrt_mean(F: torch.Tensor, shell_idx: torch.Tensor,
-                         n_shells: int) -> torch.Tensor:
-    """Per-reflection ``sqrt(<F²>_shell)``. Wilson-normalisation denominator.
-
-    Use this when you need to normalise *another* tensor by the same per-shell
-    statistic computed from F — e.g. converting rotated |F_calc| to E_calc
-    using the reference |F_calc|'s shell means (rotation-invariant).
-    """
-    F2 = F ** 2
-    sum_per_shell = torch.zeros(n_shells, dtype=F2.dtype, device=F.device)
-    sum_per_shell.scatter_add_(0, shell_idx, F2)
-    count_per_shell = torch.bincount(shell_idx, minlength=n_shells).to(F2.dtype)
-    mean_per_shell = (sum_per_shell / count_per_shell.clamp(min=1.0)).clamp(min=1e-30)
-    return mean_per_shell.sqrt().index_select(0, shell_idx)
 
 
 def _shell_ll(
@@ -451,7 +429,13 @@ def sim_mlrf_rescore(
     tail = peaks[n_refine:]
 
     shell_idx = _equal_count_shell_idx(s_mag, n_shells)
-    E_obs = _normalize_to_e(F_obs, shell_idx, n_shells)
+    # The caller's own shell assignment is passed in rather than letting the
+    # convention derive one: `_equal_count_shell_idx` is rank-based and the
+    # shared `assign_shells` is value-based, so they disagree on reflections
+    # sitting on a boundary. Keeping this one makes the migration exact.
+    E_obs = WilsonShellE(
+        F_obs, s_mag, shell_idx=shell_idx, n_shells=n_shells,
+    ).E
 
     if shell_weights is None and auto_variance_weights:
         from .sh import compute_patterson_shell_variance
@@ -808,7 +792,9 @@ def _build_sim_llg_context(
 ) -> _SimLLGContext:
     """Build the rotation-independent context for the Sim-LLG surface."""
     shell_idx = _equal_count_shell_idx(s_mag, n_shells)
-    E_obs = _normalize_to_e(F_obs, shell_idx, n_shells)
+    E_obs = WilsonShellE(
+        F_obs, s_mag, shell_idx=shell_idx, n_shells=n_shells,
+    ).E
     shell_weights = None
     if auto_variance_weights:
         from .sh import compute_patterson_shell_variance

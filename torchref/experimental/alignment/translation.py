@@ -10,6 +10,8 @@ optimal translation to position a model after rotation has been determined.
 
 import numpy as np
 import torch
+
+from .e_values import WilsonShellE
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -341,12 +343,13 @@ def amplitude_translation_search(
             a = k * chunk
             b = (k + 1) * chunk if k < n_shells - 1 else s_mag.numel()
             shell_idx[order[a:b]] = k
-        shell_norm_obs = torch.zeros(n_shells, dtype=real_dtype, device=device)
-        for k in range(n_shells):
-            m = shell_idx == k
-            if m.any():
-                shell_norm_obs[k] = (F_obs_t[m] ** 2).mean().clamp(min=1e-30).sqrt()
-        E_obs = F_obs_t / shell_norm_obs[shell_idx]
+        # The caller's own shell assignment is handed to the convention rather
+        # than letting it derive one: this binning is rank-based and the shared
+        # `assign_shells` is value-based, and the sigma_a fit downstream is tied
+        # to whichever one was used here.
+        E_obs = WilsonShellE(
+            F_obs_t, s_mag, shell_idx=shell_idx, n_shells=n_shells,
+        ).E
         F_obs2 = E_obs * E_obs
     else:
         shell_idx = None
@@ -428,6 +431,7 @@ def llg_translation_rescore(
     F_obs: torch.Tensor,
     hkl: torch.Tensor,
     centric: torch.Tensor,
+    s_mag: torch.Tensor,
     shell_idx: torch.Tensor,
     n_shells: int,
     G: torch.Tensor,
@@ -457,6 +461,9 @@ def llg_translation_rescore(
     hkl   : (N, 3) — unused here but kept for symmetry with the rest of the
             module (and future extension to per-h variance models).
     centric : (N,) bool
+    s_mag : (N,) — |s| the shells were built from. Not used to derive a binning
+        here (``shell_idx`` is given) but passed rather than fabricated, so a
+        convention that fits a curve in ``|s|`` gets the real abscissa.
     shell_idx : (N,) int64 — same binning as used to fit sigma_a / interp_var.
     n_shells : int
     G : (S, N) complex — per-sym F_p1 contributions × per-sym translation phase
@@ -499,10 +506,10 @@ def llg_translation_rescore(
     E_calc = F_calc / norm_per_refl                                 # (K, N)
 
     F_obs_t = F_obs.to(device).to(real_dtype)
-    sum_F_obs2 = torch.zeros(n_shells, dtype=real_dtype, device=device)
-    sum_F_obs2.scatter_add_(0, shell_idx_l, F_obs_t * F_obs_t)
-    mean_F_obs2 = (sum_F_obs2 / cnt.clamp(min=1.0)).clamp(min=1e-30)
-    E_obs = F_obs_t / mean_F_obs2.sqrt().index_select(0, shell_idx_l)
+    E_obs = WilsonShellE(
+        F_obs_t, s_mag.to(device).to(real_dtype),
+        shell_idx=shell_idx_l, n_shells=n_shells,
+    ).E
 
     sigma_a_d = sigma_a.to(device).to(real_dtype)                  # (n_shells,)
     D_per_refl = sigma_a_d.index_select(0, shell_idx_l)            # (N,)
@@ -820,12 +827,9 @@ def local_rotation_translation_refine(
         a = k * chunk
         b = (k + 1) * chunk if k < n_shells - 1 else s_mag.numel()
         shell_idx[order[a:b]] = k
-    shell_sigma_obs = torch.zeros(n_shells, dtype=real_dtype, device=device)
-    for k in range(n_shells):
-        m = shell_idx == k
-        if m.any():
-            shell_sigma_obs[k] = (F_obs_t[m] ** 2).mean().clamp(min=1e-30).sqrt()
-    E_obs = F_obs_t / shell_sigma_obs[shell_idx]
+    E_obs = WilsonShellE(
+        F_obs_t, s_mag, shell_idx=shell_idx, n_shells=n_shells,
+    ).E
 
     # Rotation perturbation grid.
     # We parametrise (Δα, Δβ, Δγ) ∈ [-r, r]³ via the small-angle rotation

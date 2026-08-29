@@ -26,41 +26,6 @@ from ..sh import (
 )
 
 
-def wilson_normalise(
-    F: torch.Tensor,
-    s_mag: torch.Tensor,
-    n_shells: int = 20,
-):
-    """Per-shell Wilson normalisation of amplitudes.
-
-    Source: Phaser's ``Feff[r] / SIGMAN.sqrt_epsnSN[r]`` (``DataMR.cc:925``)
-    minus French-Wilson + explicit ε (``F`` is assumed anisotropy-corrected
-    by the caller).
-
-        E_h = F_h / sqrt(<F²>_p)    where p = shell containing h.
-
-    Returns ``(E_h, sqrt_mean_F2_per_h)``.
-    """
-    edges, _ = equal_count_shell_edges(s_mag, n_shells)
-    shell_idx = assign_shells(s_mag, edges)
-    valid = shell_idx >= 0
-    F_dtype = F.dtype
-    F2 = F * F
-    count = torch.zeros(n_shells, dtype=torch.int64, device=F.device)
-    sumF2 = torch.zeros(n_shells, dtype=F_dtype, device=F.device)
-    F2_v = F2[valid]
-    idx_v = shell_idx[valid]
-    count.index_add_(0, idx_v, torch.ones_like(idx_v))
-    sumF2.index_add_(0, idx_v, F2_v)
-    mean_F2 = sumF2 / count.clamp(min=1).to(F_dtype)
-    mean_F2 = mean_F2.clamp(min=1e-12)
-    sqrt_mean = mean_F2.sqrt()
-    per_h = torch.ones_like(F)
-    per_h[valid] = sqrt_mean[idx_v]
-    E = F / per_h
-    return E, per_h
-
-
 def eterm_sigma_a(s_mag: torch.Tensor, delta_vrms_A: float) -> torch.Tensor:
     """Phaser's σA Eterm, literal port of ``Ensemble.cc:42``:
 
@@ -74,8 +39,6 @@ def eterm_sigma_a(s_mag: torch.Tensor, delta_vrms_A: float) -> torch.Tensor:
     return torch.exp(-(2.0 / 3.0) * (math.pi ** 2) * s2 * (delta_vrms_A ** 2))
 
 __all__ = [
-    "wilson_normalise",
-    "wilson_normalise_epsilon",
     "eterm_sigma_a",
     "french_wilson_preprocess",
     "get_high_order_axis",
@@ -158,38 +121,6 @@ def epsilon_aware_unroll(
     asu_idx, op_idx = keep_mask.nonzero(as_tuple=True)
     unrolled_hkl = orbits[asu_idx, op_idx]
     return unrolled_hkl, asu_idx
-
-
-def wilson_normalise_epsilon(
-    F: torch.Tensor,
-    s_mag: torch.Tensor,
-    epsilon: torch.Tensor,
-    n_shells: int = 20,
-):
-    """Epsilon-corrected per-shell Wilson normalisation.
-
-    Standard crystallographic normalisation with the multiplicity factor:
-
-        Σ_shell = ⟨I_h / ε_h⟩_shell
-        E²_h    = (I_h / ε_h) / Σ_shell
-
-    so axial reflections (large ε) are not over-counted. Returns
-    ``(E, sqrt_mean_eps_corrected)`` mirroring ``wilson_normalise``.
-    """
-    edges, _ = equal_count_shell_edges(s_mag, n_shells)
-    shell_idx = assign_shells(s_mag, edges)
-    valid = shell_idx >= 0
-    I_corr = (F * F) / epsilon.clamp(min=1.0)
-    count = torch.zeros(n_shells, dtype=torch.int64, device=F.device)
-    sumI = torch.zeros(n_shells, dtype=F.dtype, device=F.device)
-    idx_v = shell_idx[valid]
-    count.index_add_(0, idx_v, torch.ones_like(idx_v))
-    sumI.index_add_(0, idx_v, I_corr[valid])
-    mean_I = (sumI / count.clamp(min=1).to(F.dtype)).clamp(min=1e-12)
-    per_h = torch.ones_like(F)
-    per_h[valid] = mean_I[idx_v]
-    E = (I_corr / per_h).clamp(min=0.0).sqrt()
-    return E, per_h.sqrt()
 
 
 def build_lerf1_intensity(

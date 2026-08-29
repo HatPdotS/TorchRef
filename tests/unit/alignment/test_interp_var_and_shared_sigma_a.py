@@ -16,7 +16,6 @@ import torch
 
 from torchref.experimental.alignment.ml_rotation import (
     _equal_count_shell_idx,
-    _normalize_to_e,
     _optimize_D_in_shell,
     _shell_ll,
     fit_sigma_a_per_shell,
