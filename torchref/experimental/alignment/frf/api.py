@@ -21,7 +21,7 @@ from typing import List, Optional, Tuple
 
 import torch
 
-from ..e_values import (FrenchWilsonE, convention_for_calc,
+from ..e_values import (SmoothSigmaE, convention_for_calc,
                         convention_uses_sigma_f)
 from .data_mr import bessel_sh_expand, cross_correlate_xi
 from .peak_finder import find_rotation_peaks
@@ -139,7 +139,7 @@ class FastRotationFunction:
         grid_sampling_deg: float = 2.0,
         asu_idx: Optional[torch.Tensor] = None,
         s_mag_asu: Optional[torch.Tensor] = None,
-        e_convention: type = FrenchWilsonE,
+        e_convention: type = SmoothSigmaE,
     ):
         self.device = s_obs.device
 

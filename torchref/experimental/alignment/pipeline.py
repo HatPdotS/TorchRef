@@ -45,7 +45,7 @@ from .align import (
     _external_rwork,
     _prepare_frf_inputs,
 )
-from .e_values import WilsonShellEpsE
+from .e_values import SmoothSigmaE
 from .frf.rotation_utils import (
     axis_angle_to_matrix,
     edmonds_euler_from_rotation_matrix,
@@ -234,7 +234,7 @@ class MolecularReplacementPipeline(DeviceMixin):
         model_error_A: Optional[float] = None,
         # --- rescore ---
         rescore_engine: str = "m_letf1",
-        rescore_e_convention: type = WilsonShellEpsE,
+        rescore_e_convention: type = SmoothSigmaE,
         auto_variance_weights: bool = True,
         use_interp_var: bool = False,
         subpeak_refine: bool = False,

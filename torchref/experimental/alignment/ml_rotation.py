@@ -25,8 +25,9 @@ from typing import Callable, List, Optional
 
 import torch
 
-from .e_values import (CalcShellE, WilsonShellE, WilsonShellEpsE,
-                       convention_for_calc, convention_uses_sigma_f)
+from .e_values import (CalcShellE, SmoothSigmaE, WilsonShellE,
+                       WilsonShellEpsE, convention_for_calc,
+                       convention_uses_sigma_f)
 from .frf.rotation_utils import (
     axis_angle_to_matrix,
     edmonds_euler_from_rotation_matrix,
@@ -558,7 +559,7 @@ def _build_llg_context(
     apply_wilson_b: bool = False,
     wilson_b_value: Optional[float] = None,
     sig_F_obs: Optional[torch.Tensor] = None,
-    e_convention: type = WilsonShellEpsE,
+    e_convention: type = SmoothSigmaE,
 ) -> _LLGContext:
     """Build the rotation-independent m_LETF1 LLG context (DataMR.cc:1326-1429).
 
@@ -1067,7 +1068,7 @@ def m_letf1_rescore(
     apply_wilson_b: bool = False,
     wilson_b_value: Optional[float] = None,  # if None and apply_wilson_b=True, fitted from data
     sig_F_obs: Optional[torch.Tensor] = None,
-    e_convention: type = WilsonShellEpsE,
+    e_convention: type = SmoothSigmaE,
 ) -> List[RotationPeak]:
     """Phaser-faithful ``m_LETF1`` rescore (DataMR.cc:1326-1429).
 

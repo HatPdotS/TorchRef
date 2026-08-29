@@ -9,6 +9,8 @@ Unreleased
 - Fixed the overall-anisotropy fit, which regressed log intensities with no constant term and so absorbed the ``-gamma`` offset into the tensor
 - Fixed molecular-replacement rotation candidates being composed onto each other instead of onto the search model
 - Fixed assigning a ``SpaceGroup`` object to ``Model.spacegroup`` being a silent no-op that then made the correct name assignment raise
+- The rotation function, ML rescore and translation search now normalise through the shared Wilson normaliser by default, replacing the French-Wilson posterior on the observed side. Rank-neutral over 10 structures x 10 seeds; the rotation function is about twice as fast, since the posterior and its D-factor iteration are no longer on the default path
+- The observed-side ``DFAC`` weighting went with it. Weighting is a separate concern from scaling and is being rebuilt as its own object; until then the rotation function applies no measurement-error weight
 - Added ``torchref.scaling.WilsonNormaliser``: an absolute normaliser that fits ``Sigma(s)`` as a Gamma GLM with a log link and divides it out, so ``<E^2> = 1`` holds as an identity of the fit rather than as a separate normalisation step
 - Extracted the Chebyshev resolution basis into ``torchref.scaling.basis``, shared with the isotropic scale, and gave it an explicit range so a curve fitted on one reflection set can be evaluated on another
 - Moved epsilon onto ``SpaceGroup.epsilon(hkl, friedel=)``; the alignment package's own copy disagreed with it in trigonal and hexagonal groups and dropped the centring coset. The default keeps the Friedel-folded count sigma_A is calibrated against, and the molecular-replacement likelihood asks for the conventional one

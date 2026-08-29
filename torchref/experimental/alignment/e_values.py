@@ -323,106 +323,48 @@ class CalcGlobalE(EConvention):
 
 
 class SmoothSigmaE(EConvention):
-    """``Sigma(s)`` as a smooth curve rather than a step function over shells.
+    """Adapter over the shared :class:`~torchref.scaling.WilsonNormaliser`.
 
-    Per-shell ``Sigma`` is a noisy non-parametric estimate with edges, and the
-    edges are not free: two consumers binning the same ``|s|`` independently
-    disagreed about 7 of 55078 reflections on 3K7M. A smooth curve has no edges,
-    is the same function whichever subset it is evaluated on, and is what the
-    scaler already uses for the closely-related isotropic scale.
+    The fit itself does not live here, because "what is the mean intensity at
+    this resolution" is not an alignment question -- at least five private
+    answers to it grew across the repo, and consumers that disagree about it
+    cannot be compared with each other. What stays here is the ``EConvention``
+    protocol that this package's consumers and its conformance harness are
+    written against.
 
-    Basis follows ``scaling/scaler_base.py::_build_iso_design`` -- Chebyshev in
-    ``sin(theta)/lambda`` mapped onto ``[-1, 1]``, evaluated per reflection, in
-    log space. That abscissa rather than ``s**2`` because the modulation is
-    gentle through the bulk of the range and has real structure in the first few
-    percent of ``s**2``.
+    ``weight`` is ones, and that is the point of the split rather than an
+    omission: this class answers *what* we compare. How much each reflection
+    counts is a weight, built from ``sigI`` and model error, and belongs
+    elsewhere. Returning both from one object is what made the previous
+    conventions impossible to interpret -- sweeping one moved a gauge quantity
+    and a real one at the same time.
 
-    Fitted as a **Gamma GLM with a log link**, which is the right likelihood
-    rather than a convenience: acentric ``F**2`` is exponentially distributed
-    with mean ``Sigma``, i.e. Gamma with unit shape, and centric ``F**2`` is
-    Gamma with shape 1/2. Fitting the *mean* this way avoids the trap that a
-    regression on ``log F**2`` walks into -- the ``E[log chi**2]`` offset has to
-    go somewhere, and with no intercept it is absorbed into the shape of the
-    curve. That is precisely how the overall-anisotropy fit was biased.
-
-    Coefficients are clamped in log space for the reason the scaler clamps: a
-    polynomial is unbounded at the ends of its interval, and the low-resolution
-    end is where a mis-specified normaliser does its damage.
+    Pass ``s_lo``/``s_hi`` whenever obs and calc are fitted separately and their
+    curves will be compared: the basis saturates at the ends, so a curve
+    evaluated beyond its own fitted range is frozen flat rather than
+    extrapolated.
     """
 
-    #: Chebyshev terms. Six is the scaler's default and spans a Wilson plot's
-    #: curvature without chasing shell-to-shell noise.
+    #: Chebyshev terms. Provisional -- the order has never been screened against
+    #: a metric sensitive to it.
     DEFAULT_N_COEFF = 6
 
-    #: Log-space clamp on the fitted curve, as a factor either side of the
-    #: global mean intensity. Wide enough never to bind on real data; present so
-    #: an extrapolating polynomial cannot produce an arbitrary scale.
-    LOG_CLAMP = 10.0
-
     def __init__(self, *args, n_coeff: int = DEFAULT_N_COEFF,
-                 n_iter: int = 8, **kwargs) -> None:
+                 s_lo=None, s_hi=None, **kwargs) -> None:
         self.n_coeff = int(n_coeff)
-        self.n_iter = int(n_iter)
+        self.s_lo = s_lo
+        self.s_hi = s_hi
         super().__init__(*args, **kwargs)
 
-    def _design(self) -> torch.Tensor:
-        """``(N, n_coeff)`` Chebyshev design in sin(theta)/lambda."""
-        x = (self.s_mag * 0.5).clamp(min=0.0)
-        lo, hi = x.min(), x.max()
-        u = (2 * (x - lo) / (hi - lo).clamp(min=1e-12) - 1).clamp(-1.0, 1.0)
-        cols = [torch.ones_like(u), u]
-        for _ in range(2, self.n_coeff):
-            cols.append(2 * u * cols[-1] - cols[-2])
-        return torch.stack(cols[: self.n_coeff], dim=1)
-
-    def _fit_log_sigma(self) -> torch.Tensor:
-        """IRLS for a Gamma GLM with log link; returns log Sigma per reflection."""
-        X = self._design().to(torch.float64)
-        y = self._intensity().to(torch.float64).clamp(min=1e-30)
-        # Gamma shape: 1 acentric (exponential), 1/2 centric. Used as the IRLS
-        # weight, so better-determined reflections pull harder.
-        w = torch.where(self.centric, 0.5, 1.0).to(torch.float64)
-
-        # Seed at the global mean, i.e. the constant curve a single Wilson
-        # scale would give. Every later iteration only adds shape.
-        beta = torch.zeros(self.n_coeff, dtype=torch.float64, device=X.device)
-        beta[0] = torch.log(y.mean().clamp(min=1e-30))
-        for _ in range(self.n_iter):
-            eta = (X @ beta).clamp(-self.LOG_CLAMP + float(beta[0]),
-                                   self.LOG_CLAMP + float(beta[0]))
-            mu = torch.exp(eta)
-            # Log link with Gamma variance: the working response is
-            # eta + (y - mu)/mu and the IRLS weight is constant in mu.
-            z = eta + (y - mu) / mu.clamp(min=1e-30)
-            XtW = X.transpose(0, 1) * w.unsqueeze(0)
-            A = XtW @ X
-            A = A + torch.eye(
-                self.n_coeff, dtype=A.dtype, device=A.device,
-            ) * 1e-10 * float(torch.diagonal(A).abs().max().clamp(min=1e-30))
-            beta_new = torch.linalg.solve(A, XtW @ z)
-            if torch.allclose(beta_new, beta, rtol=1e-10, atol=1e-12):
-                beta = beta_new
-                break
-            beta = beta_new
-        return (X @ beta).clamp(
-            -self.LOG_CLAMP + float(beta[0]), self.LOG_CLAMP + float(beta[0]),
-        )
-
     def _compute(self):
-        shell_sigma = self.sigma                       # the per-shell fallback
-        log_sigma = self._fit_log_sigma()
-        sigma = torch.exp(log_sigma).to(self.F.dtype).clamp(min=1e-30)
-        # Sanity: a fitted Sigma(s) must reproduce the data's own mean intensity.
-        # A Gamma GLM on a Chebyshev basis can diverge when the calc amplitudes
-        # span a huge dynamic range with near-zeros, and it did -- two of four
-        # calc sets came back with <E^2> ~ 0, i.e. Sigma inflated by orders of
-        # magnitude. Detect that against the quantity the fit is estimating and
-        # fall back to the per-shell estimate rather than returning nonsense.
-        mean_I = self._intensity().mean().clamp(min=1e-30)
-        ratio = float((sigma.mean() / mean_I).clamp(min=1e-30))
-        self.converged = 0.2 < ratio < 5.0
-        if not self.converged:
-            sigma = shell_sigma
-        self.sigma = sigma
-        E = (self._intensity() / self.sigma).clamp(min=0.0).sqrt()
-        return E, self._ones()
+        from torchref.scaling import WilsonNormaliser
+
+        # `_intensity()` has already divided by eps -- `uses_epsilon` is True
+        # here -- so the normaliser gets a reduced intensity and no eps of its
+        # own. Applying it in both places would count multiplicity twice.
+        fit = WilsonNormaliser(
+            self._intensity(), self.s_mag, centric=self.centric,
+            n_coeff=self.n_coeff, s_lo=self.s_lo, s_hi=self.s_hi,
+        )
+        self.sigma = fit.sigma_wilson
+        return fit.E, self._ones()

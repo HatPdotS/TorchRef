@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 
-from .e_values import FrenchWilsonE
+from .e_values import SmoothSigmaE
 from .sh import (
     apply_overall_anisotropy,
     assign_shells,
@@ -221,7 +221,7 @@ def search_peaks(
     n_peaks: int,
     verbose: int = 0,
     device: Optional[torch.device] = None,
-    e_convention: type = FrenchWilsonE,
+    e_convention: type = SmoothSigmaE,
 ) -> Tuple[List["RotationPeak"], int, float]:
     """Run the rotation function, returning the engine's own peak list.
 
@@ -417,7 +417,7 @@ def rotation_search(
     n_peaks: int = 500,
     verbose: int = 0,
     device: Optional[torch.device] = None,
-    e_convention: type = FrenchWilsonE,
+    e_convention: type = SmoothSigmaE,
 ) -> RotationSolutions:
     """Find the orientations of ``model`` consistent with ``data``.
 
@@ -451,8 +451,10 @@ def rotation_search(
         instance: a fitted ``Sigma(s)`` cannot exist before the reflections do,
         so the engine constructs it -- once for the observations and once for
         the model, which is what puts the two on a common footing. The default
-        pairs the French-Wilson posterior on obs (it reads ``sigF``) with plain
-        per-shell Wilson on calc. ``functools.partial`` configures one.
+        fits a smooth ``Sigma(s)`` -- a Gamma GLM on a Chebyshev basis in
+        sin(theta)/lambda -- independently for each side, so ``<E**2> = 1``
+        holds on both as an identity of the fit. ``functools.partial``
+        configures one.
 
     Returns
     -------

@@ -24,7 +24,7 @@ from typing import Optional, TYPE_CHECKING
 import torch
 
 from .lattman_love import LattmanLoveInterpolator
-from .e_values import WilsonShellEpsE
+from .e_values import SmoothSigmaE
 from .sh import (
     apply_overall_anisotropy,
     assign_shells,
@@ -306,7 +306,7 @@ def align_model_to_data(
     sigma_b: float = 0.0,
     model_error_A: Optional[float] = None,
     rescore_engine: str = "m_letf1",
-    rescore_e_convention: type = WilsonShellEpsE,
+    rescore_e_convention: type = SmoothSigmaE,
     subpeak_refine: bool = False,
     subpeak_refine_k: int = -1,
     subpeak_refine_step_deg: float = 1.5,

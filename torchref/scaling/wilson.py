@@ -290,13 +290,20 @@ class WilsonNormaliser:
                 # No downhill direction left: already at the optimum.
                 return beta, it
 
-            improvement = abs(L - L_try) / (abs(L) + 1e-30)
+            # Per-reflection, NOT relative to |L|. Under I -> cI the optimum is
+            # just beta[0] -> beta[0] + log c, so the fit is exactly scale
+            # invariant -- but L picks up an additive `log c * sum(k)`, which
+            # makes a |dL|/|L| threshold mean something different at every
+            # scale. The difference itself is free of that term, so dividing by
+            # sum(k) leaves a criterion that is not.
+            improvement = abs(L - L_try) / float(w.sum())
             L, eta, mu = L_try, eta_try, mu_try
             if improvement <= tol:
                 return beta, it
         raise RuntimeError(
             f"Wilson fit did not converge in {max_iter} IRLS iterations "
-            f"(objective still moving by {improvement:.2e} relative). Raising "
+            f"(objective still moving by {improvement:.2e} per reflection). "
+            f"Raising "
             f"rather than falling back to a coarser estimate: a normaliser that "
             f"silently becomes a different normaliser on hard cases is two "
             f"normalisers wearing one name."
