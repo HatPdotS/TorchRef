@@ -54,22 +54,24 @@ from lab import (BENCH_PDBS, FRFConfig, orbit_rank, rotated_case,  # noqa: E402
 #: anywhere it matters here. `no_sigmas` is the control for that: it withholds
 #: the sigmas the rescore has only just started receiving.
 def _arms():
-    from torchref.experimental.alignment.e_values import (
-        CalcGlobalE, CalcShellE, FrenchWilsonE, SmoothSigmaE, WilsonShellE,
-        WilsonShellEpsE,
-    )
-    import functools
-    return {
-        "fw_sigmas":     {"e_convention": FrenchWilsonE},
-        "no_sigmas":     {"sig_F_obs": None},
-        "wilson":        {"e_convention": WilsonShellE},
-        "calc_shell":    {"e_convention": CalcShellE},
-        "calc_global":   {"e_convention": CalcGlobalE},
-        "smooth6":       {"e_convention": functools.partial(SmoothSigmaE,
-                                                            n_coeff=6)},
-        "eps_wilson":    {"e_convention": WilsonShellEpsE},
-    }
+    """The target question: does a Rice buy anything over weighted least squares?
 
+    The Rice exists to handle an AMPLITUDE -- non-negative, phase unknown, so the
+    likelihood marginalises over the phase and is biased upward for weak
+    reflections. `E**2` is an intensity, which is unbiased and near Gaussian, and
+    the job here is to rank orientations rather than to report calibrated
+    probabilities. Both sides are already normalised to unit mean square, so the
+    shrinkage the Rice contributes is being applied to something whose scale is
+    fixed by construction.
+
+    `wls` scores `-sum_h w_h (E_obs**2 - eImove)**2` with `w` the same combined
+    inverse variance the rotation function uses, so both stages agree about what
+    a reflection is worth as well as about what it is compared to.
+    """
+    return {
+        "wls":        {"target": "wls"},
+        "wls_nosig":  {"target": "wls", "sig_F_obs": None},
+    }
 
 ARMS = {
     "none":            None,                      # control: FRF order

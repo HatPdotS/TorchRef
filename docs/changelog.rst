@@ -9,6 +9,7 @@ Unreleased
 - Fixed the overall-anisotropy fit, which regressed log intensities with no constant term and so absorbed the ``-gamma`` offset into the tensor
 - Fixed molecular-replacement rotation candidates being composed onto each other instead of onto the search model
 - Fixed assigning a ``SpaceGroup`` object to ``Model.spacegroup`` being a silent no-op that then made the correct name assignment raise
+- The ML rescore can score orientations by weighted least squares on E-space intensities (``target='wls'``) instead of the Rice/Woolfson likelihood. Measured indistinguishable from the Rice over 10 structures x 10 seeds; both remain worse than not rescoring at all
 - The rotation function estimates ``sigma_A`` from the data instead of assuming it. Total scattering per shell is rotation-invariant, so ``Sigma_obs(s)/Sigma_calc(s)`` measures the model's resolution-dependent deficiency before placement; it replaces the Luzzati falloff from an estimated coordinate error and the Babinet bulk-solvent term with its two universal constants
 - Removed the relative Wilson-B match from the rotation search. It multiplied ``F_calc`` by a smooth function of ``|s|`` that the normalisation then divided straight back out
 - Added ``torchref.scaling.weighting``: measurement and model error combined as one inverse-variance weight per reflection, restoring the observed-side weighting that left with the French-Wilson posterior

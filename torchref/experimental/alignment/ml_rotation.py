@@ -25,6 +25,9 @@ from typing import Callable, List, Optional
 
 import torch
 
+from torchref.scaling.weighting import (inverse_variance_weight,
+                                        normalise_weight,
+                                        snr_from_amplitude)
 from .e_values import (CalcShellE, SmoothSigmaE, WilsonShellE,
                        WilsonShellEpsE, convention_for_calc,
                        convention_uses_sigma_f)
@@ -535,6 +538,8 @@ class _LLGContext:
     dw_per_m: Optional[torch.Tensor]  # (M,) or None — Wilson-B Debye-Waller
     dtype: torch.dtype
     batch_size: int
+    target: str = "rice"         # "rice" | "wls"
+    w_b: Optional[torch.Tensor] = None   # (1, N) weights for "wls"
 
 
 def _build_llg_context(
@@ -560,6 +565,7 @@ def _build_llg_context(
     wilson_b_value: Optional[float] = None,
     sig_F_obs: Optional[torch.Tensor] = None,
     e_convention: type = SmoothSigmaE,
+    target: str = "rice",
 ) -> _LLGContext:
     """Build the rotation-independent m_LETF1 LLG context (DataMR.cc:1326-1429).
 
@@ -698,12 +704,27 @@ def _build_llg_context(
     sqrt_mean_per_m = calc_norm_per_h[asu_idx]                    # (M,)
     dw_per_m = dw[asu_idx] if dw is not None else None
 
+    # Weights for the least-squares target: the same combined inverse variance
+    # the rotation function uses, so the two stages agree about how much a
+    # reflection is worth as well as about what it is being compared to.
+    w_b = None
+    if target == "wls":
+        if sig_F_obs is not None:
+            w = inverse_variance_weight(
+                snr_from_amplitude(F_obs, sig_F_obs), sigma_a.to(F_obs.dtype),
+                eps=eps_factor.to(F_obs.dtype),
+            )
+        else:
+            w = torch.ones_like(F_obs)
+        w_b = normalise_weight(w).to(dtype).to(device).view(1, -1)
+
     return _LLGContext(
         interpolator=interpolator, real_cell=real_cell,
         unrolled_hkl=unrolled_hkl, asu_idx=asu_idx, N=N,
         E_obs_b=E_obs_b, V_b=V_b, eImove_prefac=eImove_prefac,
         sqrt_mean_per_m=sqrt_mean_per_m, centric_b=centric_b,
         dw_per_m=dw_per_m, dtype=dtype, batch_size=batch_size,
+        target=target, w_b=w_b,
     )
 
 
@@ -743,11 +764,31 @@ def _llg_for_orientations(
         idx = ctx.asu_idx.unsqueeze(0).expand(B, -1)            # (B, M)
         sum_per_h.scatter_add_(1, idx, Esq_m)                   # (B, N)
         eImove = ctx.eImove_prefac * sum_per_h                  # (B, N)
-        sqrt_eImove = eImove.clamp(min=1e-30).sqrt()
-        ll_acen = phaser_log_rel_rice(ctx.E_obs_b, sqrt_eImove, ctx.V_b)
-        ll_cen = phaser_log_rel_woolfson(ctx.E_obs_b, sqrt_eImove, ctx.V_b)
-        ll = torch.where(ctx.centric_b, ll_cen, ll_acen)        # (B, N)
-        chunks.append(ll.sum(dim=-1))                           # (B,)
+        if ctx.target == "wls":
+            # Weighted least squares on INTENSITIES, which is what E**2 is.
+            #
+            # The Rice exists to handle an amplitude: |F_obs| is non-negative
+            # and its phase is unknown, so the likelihood marginalises over the
+            # phase and the result is biased upward for weak reflections. None
+            # of that applies to an intensity, which is unbiased and near
+            # Gaussian wherever it is measured at all -- the same reason the
+            # scaler works on intensities rather than amplitudes.
+            #
+            # And the job here is to RANK orientations, not to report calibrated
+            # probabilities. Both sides are already normalised to <E^2> = 1, so
+            # the distributional shrinkage the Rice contributes is being applied
+            # to a quantity that has had its scale fixed by construction.
+            #
+            # Sign: a residual is a cost, so negate it to keep "larger is
+            # better" for every target the caller can pick.
+            resid = ctx.E_obs_b * ctx.E_obs_b - eImove          # (B, N)
+            chunks.append(-(ctx.w_b * resid * resid).sum(dim=-1))
+        else:
+            sqrt_eImove = eImove.clamp(min=1e-30).sqrt()
+            ll_acen = phaser_log_rel_rice(ctx.E_obs_b, sqrt_eImove, ctx.V_b)
+            ll_cen = phaser_log_rel_woolfson(ctx.E_obs_b, sqrt_eImove, ctx.V_b)
+            ll = torch.where(ctx.centric_b, ll_cen, ll_acen)    # (B, N)
+            chunks.append(ll.sum(dim=-1))                       # (B,)
     return torch.cat(chunks)
 
 
@@ -1069,6 +1110,7 @@ def m_letf1_rescore(
     wilson_b_value: Optional[float] = None,  # if None and apply_wilson_b=True, fitted from data
     sig_F_obs: Optional[torch.Tensor] = None,
     e_convention: type = SmoothSigmaE,
+    target: str = "rice",
 ) -> List[RotationPeak]:
     """Phaser-faithful ``m_LETF1`` rescore (DataMR.cc:1326-1429).
 
@@ -1137,7 +1179,7 @@ def m_letf1_rescore(
         vrms_strategy=vrms_strategy, vrms_n_residues=vrms_n_residues,
         vrms_identity=vrms_identity, apply_wilson_b=apply_wilson_b,
         wilson_b_value=wilson_b_value, sig_F_obs=sig_F_obs,
-        e_convention=e_convention,
+        e_convention=e_convention, target=target,
     )
 
     alpha_t = torch.tensor([p.alpha for p in head], dtype=torch.float64)
