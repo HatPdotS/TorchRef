@@ -366,5 +366,14 @@ class SmoothSigmaE(EConvention):
             self._intensity(), self.s_mag, centric=self.centric,
             n_coeff=self.n_coeff, s_lo=self.s_lo, s_hi=self.s_hi,
         )
+        # Kept, not discarded: the fitted CURVE is the thing anything comparing
+        # two normalisations needs. Sigma_obs/Sigma_calc is how model error is
+        # measured rather than assumed, and it can only be formed from the fits
+        # themselves, not from the per-reflection values they produced.
+        self.fit = fit
         self.sigma = fit.sigma_wilson
         return fit.E, self._ones()
+
+    def evaluate(self, s_mag: torch.Tensor) -> torch.Tensor:
+        """``Sigma(s)`` at arbitrary ``|s|``, on this fit's own abscissa."""
+        return self.fit.evaluate(s_mag)

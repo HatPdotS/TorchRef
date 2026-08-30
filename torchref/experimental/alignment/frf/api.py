@@ -22,8 +22,9 @@ from typing import List, Optional, Tuple
 import torch
 
 from torchref.scaling.weighting import (
-    DEFAULT_SNR_CAP, DEFAULT_TRUST_CAP, information_weight,
-    inverse_variance_weight, normalise_weight, snr_from_amplitude,
+    DEFAULT_SNR_CAP, DEFAULT_TRUST_CAP, empirical_sigma_a,
+    information_weight, inverse_variance_weight, normalise_weight,
+    snr_from_amplitude,
 )
 from ..e_values import (SmoothSigmaE, convention_for_calc,
                         convention_uses_sigma_f)
@@ -258,9 +259,19 @@ class FastRotationFunction:
         obs_cls = e_convention
         if sig_F_obs is None and convention_uses_sigma_f(obs_cls):
             obs_cls = convention_for_calc(obs_cls)
+        # One resolution window for both sides, taken from the bandwidth
+        # coupling rather than from whichever reflections each side happens to
+        # contain. Two fits on their own extremes span the same polynomial
+        # space, so they agree where their data overlap -- but the basis
+        # saturates at the ends, so each is frozen flat outside its own range
+        # and the two curves stop being usable against each other. Everything
+        # that reads Sigma_obs/Sigma_calc needs them on one abscissa.
+        self._s_lo = 1.0 / float(d_max) if d_max else float(smag_src.min())
+        self._s_hi = 1.0 / float(d_min)
         conv_obs = obs_cls(
             F_obs, smag_src, centric_obs, sig_F=sig_F_obs,
             shell_idx=obs_shell_idx, n_shells=n_wilson_shells,
+            **self._range_kw(obs_cls),
         )
         self._conv_obs = conv_obs
 
@@ -317,6 +328,23 @@ class FastRotationFunction:
         )
 
 
+    def _range_kw(self, cls) -> dict:
+        """``s_lo``/``s_hi`` for conventions that fit a curve, empty otherwise.
+
+        Only the smooth normaliser has an abscissa to pin; the per-shell
+        conventions bin whatever they are given and would reject the argument.
+        """
+        import inspect
+
+        target = getattr(cls, "func", cls)
+        try:
+            params = inspect.signature(target.__init__).parameters
+        except (TypeError, ValueError):                # pragma: no cover
+            return {}
+        if "s_lo" not in params:
+            return {}
+        return {"s_lo": self._s_lo, "s_hi": self._s_hi}
+
     def score_model(
         self,
         s_calc: torch.Tensor,
@@ -324,6 +352,7 @@ class FastRotationFunction:
         *,
         n_peaks: int = 500,
         sigma_threshold: float = -5.0,
+        sigma_a_source: str = "empirical",
         apply_bulk_solvent: bool = False,
         solvent_fsol: float = 0.95,
         solvent_bsol: float = 300.0,
@@ -339,10 +368,29 @@ class FastRotationFunction:
         # measured to drop 0 of 339040 reflections on 3K7M and 0 of 271630 on
         # 1DAW. So take `s_calc` as given and only derive |s| from it.
         smag_calc = s_calc.norm(dim=-1)
-        E_calc = convention_for_calc(self.e_convention)(
+        calc_cls = convention_for_calc(self.e_convention)
+        self._conv_calc = calc_cls(
             F_calc, smag_calc, n_shells=self.n_wilson_shells,
-        ).E
-        eterm = eterm_sigma_a(smag_calc, self.delta_vrms_A)
+            **self._range_kw(calc_cls),
+        )
+        E_calc = self._conv_calc.E
+        if sigma_a_source == "empirical":
+            # Measured, not assumed. Both curves were fitted on one abscissa
+            # (see `_range_kw`), which is what makes evaluating them at the same
+            # |s| meaningful. Subsumes the Babinet term: the low-resolution
+            # solvent deficit is simply what the ratio measures, per structure,
+            # instead of two universal constants.
+            eterm = empirical_sigma_a(
+                self._conv_obs.evaluate(smag_calc).to(torch.float64),
+                self._conv_calc.evaluate(smag_calc).to(torch.float64),
+            ).to(F_calc.dtype)
+        elif sigma_a_source == "luzzati":
+            eterm = eterm_sigma_a(smag_calc, self.delta_vrms_A)
+        else:
+            raise ValueError(
+                f"sigma_a_source={sigma_a_source!r}; expected 'luzzati' or "
+                f"'empirical'."
+            )
         # Optional Babinet bulk-solvent factor: Phaser folds it into σ_A as
         # `σ_A_eff = solTerm(s²) · Luzzati(s², vrms)` (EnsemblePDB.cc:96-100).
         # Default OFF; flip after v25 validates.

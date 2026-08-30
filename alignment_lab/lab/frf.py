@@ -57,6 +57,8 @@ class FRFConfig:
     #: and whether the per-shell reweight runs -- and a panel that moves all
     #: three cannot say which one did anything.
     obs_weight: Optional[str] = None
+    sigma_a_source: Optional[str] = None
+    apply_bulk_solvent: Optional[bool] = None
     shell_variance_weights: Optional[bool] = None
     snr_cap: Optional[float] = None
     trust_cap: Optional[float] = None
@@ -246,8 +248,8 @@ def run_frf(
         "e_convention": cfg.e_convention}
     # Engine knobs are omitted when unset so the production default applies,
     # rather than being passed as None and overriding it with nothing.
-    for _name in ("obs_weight", "shell_variance_weights",
-                  "snr_cap", "trust_cap"):
+    for _name in ("obs_weight", "shell_variance_weights", "snr_cap",
+                  "trust_cap", "sigma_a_source", "apply_bulk_solvent"):
         _v = getattr(cfg, _name)
         if _v is not None:
             conv_kw[_name] = _v

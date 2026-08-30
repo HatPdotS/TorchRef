@@ -44,6 +44,7 @@ __all__ = [
     "inverse_variance_weight",
     "snr_from_amplitude",
     "normalise_weight",
+    "empirical_sigma_a",
 ]
 
 #: ``I/sigma_I`` at which measurement error stops being the limiting term.
@@ -162,3 +163,55 @@ def normalise_weight(w: torch.Tensor) -> torch.Tensor:
     weighting rather than one entangled with whatever scale the inputs had.
     """
     return w / w.mean().clamp(min=1e-30)
+
+
+def empirical_sigma_a(
+    sigma_obs: torch.Tensor,
+    sigma_calc: torch.Tensor,
+    *,
+    floor: float = 1e-3,
+) -> torch.Tensor:
+    """Model reliability measured, rather than assumed, from two Wilson curves.
+
+    ``sigma_A`` in a rotation search is normally a *prior*: a Luzzati falloff
+    from a coordinate error guessed off the residue count, patched at low
+    resolution by Babinet's two universal constants. It never sees a residual.
+
+    It does not have to. Total scattering per shell is **rotation-invariant**,
+    so the resolution-dependent disagreement between model and data is
+    measurable before the molecule is placed, even though the per-reflection
+    disagreement is not. Normalise both sides to ``<E^2> = 1`` and their fitted
+    curves' ratio is exactly that disagreement:
+
+        R(s) = Sigma_obs(s) / Sigma_calc(s)
+
+    ``R < 1`` means the model predicts more scattering than is there, which at
+    low resolution is the bulk solvent it does not have; ``R > 1`` means it
+    predicts less. Either way the shared fraction is bounded by
+    ``min(R, 1/R)``, and ``sigma_A`` is its square root because ``sigma_A^2`` is
+    the fraction of intensity the model accounts for.
+
+    **This is safe to estimate from the data being scored**, which normally it
+    would not be: the quantity is identical for every candidate orientation, so
+    it shifts all scores together and cannot bias the ranking toward any of
+    them.
+
+    What it conflates -- solvent, an overall B mismatch, missing atoms, genuine
+    coordinate error -- it conflates deliberately. For deciding how far to trust
+    a resolution range the cause does not matter, only the size. What it cannot
+    see is *completeness*: forcing both sides to unit mean absorbs a uniform
+    factor, so a model that is half the asymmetric unit looks like a model that
+    is all of it, and only the tilt survives.
+
+    Parameters
+    ----------
+    sigma_obs, sigma_calc : torch.Tensor
+        ``(N,)`` fitted Wilson curves evaluated at the same ``|s|``. They must
+        come from fits sharing an abscissa, or each is frozen flat outside its
+        own range and the ratio is meaningless there.
+    floor : float, optional
+        Lower bound on the returned ``sigma_A``.
+    """
+    r = (sigma_obs / sigma_calc.clamp(min=1e-30)).clamp(min=1e-30)
+    shared = torch.minimum(r, 1.0 / r).clamp(min=0.0, max=1.0)
+    return shared.sqrt().clamp(min=float(floor), max=1.0 - 1e-6)

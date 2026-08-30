@@ -1,23 +1,21 @@
-"""What is the observed-side weight worth, and which part of it?
+"""Does the measured model-error curve replace the assumed one?
 
-The scaler split scaling from weighting and showed the scaling half is gauge for
-a correlation. This is the half that is not.
+The two-part system -- one scaler, one weight -- was meant to subsume seven
+separate knobs. Four went with the scaler and the weight. These arms test the
+last of them: `sigma_A` itself, which is currently a *prior* (a Luzzati falloff
+from a coordinate error guessed off the residue count) patched at low resolution
+by Babinet's two universal constants.
 
-Arms deviate one thing at a time from `none_shellvar`, which is what the engine
-did before any of this. Moving several at once and reading one number is what
-made the E-convention panel uninterpretable.
+It does not have to be assumed. Total scattering per shell is rotation-
+invariant, so `Sigma_obs(s)/Sigma_calc(s)` measures the model's resolution-
+dependent deficiency before the molecule is placed -- and it is safe to take
+from the data being scored, because a quantity identical for every candidate
+orientation cannot bias the ranking between them.
 
-Three things are being asked:
-
-* is a measurement-error weight worth anything at all (`none` vs `information`);
-* is folding model error into the same denominator worth more than the
-  measurement term alone (`information` vs `inverse_var`) -- they do not
-  factorise, so this is the only way to separate them;
-* is `apply_shell_variance_weights` doing anything, given it is a per-shell
-  weight and per-shell weights are absorbed (`*_shellvar` pairs).
-
-The caps are screened rather than assumed. `trust_cap` is supposed to be a
-backstop that never binds, so if it moves the result, sigma_A is wrong.
+Ranking is expected to be flat: it has been flat across every configuration of
+scaling and weighting tried so far. That is not the question. The question is
+whether the measured curve can stand in for the assumed one, so that two
+declared objects replace seven knobs rather than four of them.
 """
 
 from __future__ import annotations
@@ -37,22 +35,18 @@ from lab import (BENCH_PDBS, FRFConfig, orbit_rank, rotated_case,  # noqa: E402
 
 #: Each arm is one deviation from `control`, which is what ships today.
 ARMS = {
-    # What shipped before any of this: unit observed weight (DFAC left with the
-    # French-Wilson posterior when the scaler landed) and the per-shell reweight
-    # on. The load-bearing control -- without it, "the weight helps" cannot be
-    # told apart from "any weight helps".
-    "none_shellvar":  {"obs_weight": "none", "shell_variance_weights": True},
-    "none":           {"obs_weight": "none"},
-    "information":    {"obs_weight": "information"},
-    "inverse_var":    {"obs_weight": "inverse_variance"},
-    "invvar_shellvar": {"obs_weight": "inverse_variance",
-                        "shell_variance_weights": True},
-    # Cap screens. The SNR cap sets where measurement error stops limiting; the
-    # trust cap is meant to be a backstop, so if these move the result it is
-    # binding and sigma_A is wrong.
-    "snr_cap_2":      {"obs_weight": "information", "snr_cap": 2.0},
-    "snr_cap_10":     {"obs_weight": "information", "snr_cap": 10.0},
-    "trust_cap_10":   {"obs_weight": "inverse_variance", "trust_cap": 10.0},
+    # What the engine did before this line of work.
+    "luzzati_babinet": {"sigma_a_source": "luzzati", "apply_bulk_solvent": True},
+    # Luzzati without the two universal Babinet constants: how much of the
+    # low-resolution correction was the solvent term doing?
+    "luzzati_only":    {"sigma_a_source": "luzzati", "apply_bulk_solvent": False},
+    # sigma_A measured from Sigma_obs/Sigma_calc instead of assumed from an
+    # estimated coordinate error. Subsumes Babinet -- the solvent deficit is
+    # what the ratio measures -- so the solvent flag is irrelevant here.
+    "empirical":       {"sigma_a_source": "empirical"},
+    # And the same with no observed-side weight, to check the two halves of the
+    # system are still independent of each other.
+    "empirical_now":   {"sigma_a_source": "empirical", "obs_weight": "none"},
 }
 
 

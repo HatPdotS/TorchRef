@@ -9,6 +9,8 @@ Unreleased
 - Fixed the overall-anisotropy fit, which regressed log intensities with no constant term and so absorbed the ``-gamma`` offset into the tensor
 - Fixed molecular-replacement rotation candidates being composed onto each other instead of onto the search model
 - Fixed assigning a ``SpaceGroup`` object to ``Model.spacegroup`` being a silent no-op that then made the correct name assignment raise
+- The rotation function estimates ``sigma_A`` from the data instead of assuming it. Total scattering per shell is rotation-invariant, so ``Sigma_obs(s)/Sigma_calc(s)`` measures the model's resolution-dependent deficiency before placement; it replaces the Luzzati falloff from an estimated coordinate error and the Babinet bulk-solvent term with its two universal constants
+- Removed the relative Wilson-B match from the rotation search. It multiplied ``F_calc`` by a smooth function of ``|s|`` that the normalisation then divided straight back out
 - Added ``torchref.scaling.weighting``: measurement and model error combined as one inverse-variance weight per reflection, restoring the observed-side weighting that left with the French-Wilson posterior
 - ``apply_shell_variance_weights`` is off by default in the rotation function. It is a per-shell weight, and per-shell weights are absorbed by the correlation; switching it on moves nothing
 - The rotation function, ML rescore and translation search now normalise through the shared Wilson normaliser by default, replacing the French-Wilson posterior on the observed side. Rank-neutral over 10 structures x 10 seeds; the rotation function is about twice as fast, since the posterior and its D-factor iteration are no longer on the default path

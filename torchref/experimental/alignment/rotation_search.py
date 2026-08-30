@@ -225,6 +225,8 @@ def search_peaks(
     device: Optional[torch.device] = None,
     e_convention: type = SmoothSigmaE,
     obs_weight: str = "inverse_variance",
+    sigma_a_source: str = "empirical",
+    apply_bulk_solvent: bool = False,
     shell_variance_weights: bool = False,
     snr_cap: float = DEFAULT_SNR_CAP,
     trust_cap: float = DEFAULT_TRUST_CAP,
@@ -240,7 +242,6 @@ def search_peaks(
     from ...utils import resolve_device
     from .frf.api import FastRotationFunction, phaser_lmax_resolution
     from .frf.dense_calc import dense_calc_via_box
-    from .frf.preprocessing import fit_relative_wilson_b
 
     # One device for both inputs, rather than whichever one this function
     # happened to read first: `resolve_device` moves them into agreement (with a
@@ -351,22 +352,17 @@ def search_peaks(
         s_calc = s_calc.to(device)
         F_calc = F_calc.to(device)
 
-        # Put the model's amplitudes on the observations' overall B scale
-        # (EnsemblePDB.cc:793-851), so the radial fall-off does not by itself
-        # discriminate between orientations.
-        s_calc_mag = s_calc.norm(dim=-1)
-        # Fitted on the unique set. The unroll replicates every reflection
-        # exactly n_ops times, so the per-shell means are identical to the
-        # unrolled fit while the sort and the binning are n_ops times smaller.
-        B_rel = fit_relative_wilson_b(
-            F_obs.to(torch.float64), F_calc.to(torch.float64),
-            s_mag_asu.to(torch.float64), n_shells=N_WILSON_SHELLS,
-            s_mag_calc=s_calc_mag.to(torch.float64),
-        )
-        if abs(B_rel) > 1e-6:
-            F_calc = F_calc * torch.exp(-B_rel * (s_calc_mag * s_calc_mag) / 4.0)
-            if verbose > 0:
-                print(f"  relative Wilson B = {B_rel:+.2f} A^2", flush=True)
+        # No relative Wilson-B match here any more. It multiplied `F_calc` by
+        # exp(-B s^2/4) -- a smooth function of |s| -- and the engine's very next
+        # step divides out exactly such a function when it normalises. Measured:
+        # a relative B of +-30 A^2 moves E by at most 1.3e-7, the fit's own
+        # convergence tolerance. It was computing a number and having it undone.
+        #
+        # Not the same as the earlier finding that knocking it out was
+        # rank-neutral; that was a measurement about whether it mattered, this is
+        # that it is arithmetically cancelled. `fit_relative_wilson_b` stays for
+        # the rescore, where the calc normalisation is taken from the unmodified
+        # reference amplitudes and the Debye-Waller term therefore survives.
 
         engine = FastRotationFunction(
             s_obs, F_obs, centric, sg_mats,
@@ -384,7 +380,8 @@ def search_peaks(
         _arf, peaks = engine.score_model(
             s_calc, F_calc, n_peaks=n_peaks,
             sigma_threshold=SIGMA_THRESHOLD,
-            apply_bulk_solvent=True,
+            sigma_a_source=sigma_a_source,
+            apply_bulk_solvent=apply_bulk_solvent,
             solvent_fsol=SOLVENT_FSOL, solvent_bsol=SOLVENT_BSOL,
         )
 
