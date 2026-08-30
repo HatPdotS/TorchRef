@@ -51,6 +51,15 @@ class FRFConfig:
     #: knobs this is a real production parameter, so the lab passes it through
     #: rather than patching a constant.
     e_convention: Optional[type] = None
+    #: Weighting, the other half of the split. ``None`` leaves the production
+    #: default. These are separate arms on purpose: the design changes three
+    #: things at once -- the observed-side weight, the calculated-side weight
+    #: and whether the per-shell reweight runs -- and a panel that moves all
+    #: three cannot say which one did anything.
+    obs_weight: Optional[str] = None
+    shell_variance_weights: Optional[bool] = None
+    snr_cap: Optional[float] = None
+    trust_cap: Optional[float] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def as_row(self) -> Dict[str, Any]:
@@ -235,6 +244,13 @@ def run_frf(
     # production default from the signature instead of overriding it with one.
     conv_kw = {} if cfg.e_convention is None else {
         "e_convention": cfg.e_convention}
+    # Engine knobs are omitted when unset so the production default applies,
+    # rather than being passed as None and overriding it with nothing.
+    for _name in ("obs_weight", "shell_variance_weights",
+                  "snr_cap", "trust_cap"):
+        _v = getattr(cfg, _name)
+        if _v is not None:
+            conv_kw[_name] = _v
 
     t0 = time.time()
     with patched(_rs, "LMAX_CAP", int(cfg.lmax_cap)), \

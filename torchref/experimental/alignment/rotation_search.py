@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 
+from torchref.scaling.weighting import (DEFAULT_SNR_CAP,
+                                        DEFAULT_TRUST_CAP)
 from .e_values import SmoothSigmaE
 from .sh import (
     apply_overall_anisotropy,
@@ -222,6 +224,10 @@ def search_peaks(
     verbose: int = 0,
     device: Optional[torch.device] = None,
     e_convention: type = SmoothSigmaE,
+    obs_weight: str = "inverse_variance",
+    shell_variance_weights: bool = False,
+    snr_cap: float = DEFAULT_SNR_CAP,
+    trust_cap: float = DEFAULT_TRUST_CAP,
 ) -> Tuple[List["RotationPeak"], int, float]:
     """Run the rotation function, returning the engine's own peak list.
 
@@ -372,6 +378,8 @@ def search_peaks(
             asu_idx=asu_idx,
             s_mag_asu=s_mag_asu,
             e_convention=e_convention,
+            obs_weight=obs_weight, snr_cap=snr_cap, trust_cap=trust_cap,
+            shell_variance_weights=shell_variance_weights,
         )
         _arf, peaks = engine.score_model(
             s_calc, F_calc, n_peaks=n_peaks,

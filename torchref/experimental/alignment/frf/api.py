@@ -21,6 +21,10 @@ from typing import List, Optional, Tuple
 
 import torch
 
+from torchref.scaling.weighting import (
+    DEFAULT_SNR_CAP, DEFAULT_TRUST_CAP, information_weight,
+    inverse_variance_weight, normalise_weight, snr_from_amplitude,
+)
 from ..e_values import (SmoothSigmaE, convention_for_calc,
                         convention_uses_sigma_f)
 from .data_mr import bessel_sh_expand, cross_correlate_xi
@@ -140,6 +144,10 @@ class FastRotationFunction:
         asu_idx: Optional[torch.Tensor] = None,
         s_mag_asu: Optional[torch.Tensor] = None,
         e_convention: type = SmoothSigmaE,
+        obs_weight: str = "inverse_variance",
+        snr_cap: float = DEFAULT_SNR_CAP,
+        trust_cap: float = DEFAULT_TRUST_CAP,
+        shell_variance_weights: bool = False,
     ):
         self.device = s_obs.device
 
@@ -154,6 +162,20 @@ class FastRotationFunction:
         self.delta_vrms_A = delta_vrms_A
         self.n_wilson_shells = n_wilson_shells
         self.grid_sampling_deg = grid_sampling_deg
+        # How much each observation counts. Separate from the convention above,
+        # which decides only what is compared -- see torchref.scaling.weighting.
+        # "information" is the saturating I/sigma weight; "none" is unit weight,
+        # which is the control that says what the weighting is worth at all.
+        self.obs_weight = obs_weight
+        self.snr_cap = float(snr_cap)
+        self.trust_cap = float(trust_cap)
+        # Off by default. It is a PER-SHELL weight, and per-shell weights are
+        # absorbed: it renormalises whatever scale the convention produced, which
+        # is precisely why every E convention measured as gauge. With the
+        # resolution weighting now declared on the calc side, this is a second
+        # mechanism for a job that already has one.
+        self.shell_variance_weights = bool(shell_variance_weights)
+
         # The class, not an instance: a fitted Sigma(s) cannot exist before the
         # reflections do, so the convention is constructed here -- twice, once
         # per side. That the same class has to normalise both is the point;
@@ -242,15 +264,40 @@ class FastRotationFunction:
         )
         self._conv_obs = conv_obs
 
-        # 4. LERF1 obs intensity, and the per-shell variance reweight.
+        # 4. LERF1 obs intensity, with the measurement-information weight.
+        if obs_weight == "none" or sig_F_obs is None:
+            w_obs = torch.ones_like(conv_obs.E)
+        elif obs_weight == "information":
+            # Measurement error only. The control that says what folding the
+            # model error in is actually worth.
+            w_obs = normalise_weight(information_weight(
+                snr_from_amplitude(F_obs, sig_F_obs), cap=self.snr_cap,
+            ))
+        elif obs_weight == "inverse_variance":
+            # Both error sources in one denominator. sigma_A is the same
+            # Luzzati falloff the calculated side uses for its expected signal;
+            # evaluated here at the OBSERVED reflections, because that is the
+            # side carrying sigmas and the weight has to be per reflection to
+            # be worth anything -- a weight constant within a shell is absorbed.
+            sigma_a_obs = eterm_sigma_a(smag_src, self.delta_vrms_A)
+            w_obs = normalise_weight(inverse_variance_weight(
+                snr_from_amplitude(F_obs, sig_F_obs), sigma_a_obs,
+                cap=self.trust_cap,
+            ))
+        else:
+            raise ValueError(
+                f"obs_weight={obs_weight!r}; expected 'inverse_variance', "
+                f"'information' or 'none'."
+            )
+        self._w_obs = w_obs
         intensity_obs = build_lerf1_intensity(
-            conv_obs.E, centric_obs, weight=conv_obs.weight,
-            use_centric_weight=True,
+            conv_obs.E, centric_obs, weight=w_obs, use_centric_weight=True,
         )
-        intensity_obs = apply_shell_variance_weights(
-            intensity_obs, smag_src, n_var_shells=n_wilson_shells,
-            shell_idx=obs_shell_idx,
-        )
+        if self.shell_variance_weights:
+            intensity_obs = apply_shell_variance_weights(
+                intensity_obs, smag_src, n_var_shells=n_wilson_shells,
+                shell_idx=obs_shell_idx,
+            )
         if asu_idx is not None:
             # One value per unique reflection -> one per unrolled reflection.
             intensity_obs = intensity_obs[asu_idx]
@@ -305,7 +352,13 @@ class FastRotationFunction:
                 smag_calc, fsol=solvent_fsol, bsol=solvent_bsol,
             ).to(eterm.dtype)
             eterm = eterm * sol
-        intensity_calc = (eterm * eterm) * (E_calc * E_calc - 1.0)
+        # sigma_A**2 here is the expected moving-model intensity, i.e. part of
+        # the SIGNAL, not a weight -- which is why it stays on this side and the
+        # inverse-variance weight goes on the observations. Weighting the model
+        # by its own reliability and then also weighting the data by it would
+        # count the same thing twice.
+        w_calc = eterm * eterm
+        intensity_calc = w_calc * (E_calc * E_calc - 1.0)
 
         # Bessel-SH expand calc. The calc is NEVER m-filtered (zsymm=1): the
         # model carries no crystal symmetry, and projecting it onto the obs's
