@@ -32,6 +32,7 @@ from typing import Optional, Tuple
 
 import torch
 
+from torchref.config import get_float_dtype
 from torchref.scaling.basis import chebyshev_design
 
 __all__ = ["WilsonNormaliser"]
@@ -51,6 +52,26 @@ LOG_CLAMP = 10.0
 
 #: Step halvings allowed per IRLS iteration before the step is abandoned.
 MAX_HALVINGS = 30
+
+#: IRLS iterations allowed before the fit is declared failed. Generous, because
+#: it should never bind: at :data:`DEFAULT_RTOL` the fit converges in single
+#: digits. It is a runaway guard, not a budget.
+DEFAULT_MAX_ITER = 100
+
+#: Floor on the fitted mean, to keep ``y/mu`` finite if a step overshoots.
+#: Must be representable in the working dtype -- ``1e-300`` is a float64
+#: constant and flushes to zero in float32, which turns the guard into the
+#: division by zero it exists to prevent.
+_MU_FLOOR = 1e-30
+
+#: Relative convergence tolerance -- see :meth:`WilsonNormaliser._irls` for why
+#: it is relative to the improvement so far rather than to the objective.
+#:
+#: This is a normalisation curve, not a refined parameter. The quantity it
+#: decides is ``E = F / sqrt(Sigma)``, which is then compared against a model
+#: that is wrong by tens of percent, so four digits is already far past what
+#: anything downstream can use.
+DEFAULT_RTOL = 1e-4
 
 
 class WilsonNormaliser:
@@ -140,8 +161,8 @@ class WilsonNormaliser:
         s_lo: Optional[float] = None,
         s_hi: Optional[float] = None,
         fit_mask: Optional[torch.Tensor] = None,
-        max_iter: int = 100,
-        tol: float = 1e-10,
+        max_iter: int = DEFAULT_MAX_ITER,
+        rtol: float = DEFAULT_RTOL,
     ) -> None:
         if I.ndim != 1:
             raise ValueError(f"I must be 1-D, got {tuple(I.shape)}")
@@ -157,19 +178,24 @@ class WilsonNormaliser:
         self.s_lo = float(s_mag.min()) if s_lo is None else float(s_lo)
         self.s_hi = float(s_mag.max()) if s_hi is None else float(s_hi)
 
-        eps64 = (
-            torch.ones_like(I, dtype=torch.float64) if eps is None
-            else eps.to(torch.float64).clamp(min=1.0)
+        # The configured float dtype, not float64. This is a six-coefficient
+        # fit of a smooth curve whose answer is compared against a model wrong
+        # by tens of percent; it does not need double, and hardcoding it here
+        # would be the only double-precision path in the scaling package.
+        work = get_float_dtype()
+        eps_w = (
+            torch.ones_like(I, dtype=work) if eps is None
+            else eps.to(work).clamp(min=1.0)
         )
         # Shape 1 acentric (exponential), 1/2 centric. Enters as the IRLS weight
         # because for a Gamma with shape k the variance is mu^2/k, so the
         # log-link working weight is k itself.
         k = (
-            torch.ones_like(I, dtype=torch.float64) if centric is None
-            else torch.where(centric.to(torch.bool), 0.5, 1.0).to(torch.float64)
+            torch.ones_like(I, dtype=work) if centric is None
+            else torch.where(centric.to(torch.bool), 0.5, 1.0).to(work)
         )
 
-        I_reduced = I.to(torch.float64) / eps64
+        I_reduced = I.to(work) / eps_w
         # The Gamma likelihood has no support at or below zero. Absences and
         # negative measurements are held out of the fit and given a Sigma from
         # the curve like everything else -- excluding them from the *estimate*
@@ -185,17 +211,17 @@ class WilsonNormaliser:
         self.n_fitted = int(usable.sum())
 
         design = chebyshev_design(
-            (s_mag * 0.5).to(torch.float64), self.n_coeff,
+            (s_mag * 0.5).to(work), self.n_coeff,
             lo=self.s_lo * 0.5, hi=self.s_hi * 0.5,
         )
         self.coefficients, self.n_iter = self._irls(
-            design[usable], I_reduced[usable], k[usable], max_iter, tol,
+            design[usable], I_reduced[usable], k[usable], max_iter, rtol,
         )
 
         log_sigma = self._eval_log_sigma(design)
         self.sigma_wilson = torch.exp(log_sigma).to(self.dtype)
         self.mean_intensity = (
-            torch.exp(log_sigma) * eps64
+            torch.exp(log_sigma) * eps_w
         ).clamp(min=1e-30).to(self.dtype)
         self.E_squared = I / self.mean_intensity
         self.E = self.E_squared.clamp(min=0.0).sqrt()
@@ -208,13 +234,47 @@ class WilsonNormaliser:
             min=-LOG_CLAMP + float(c[0]), max=LOG_CLAMP + float(c[0]),
         )
 
+    @staticmethod
+    def _solve_intercept(
+        beta: torch.Tensor, X: torch.Tensor, y: torch.Tensor, w: torch.Tensor,
+    ) -> torch.Tensor:
+        """Put the intercept exactly on its score equation, closed form.
+
+        The intercept's stationarity condition is ``sum_h k_h (I_h/mu_h - 1) =
+        0``, which is ``<E^2> = 1`` -- the identity this class exists to
+        provide. Shifting ``beta[0]`` by ``d`` scales every ``mu`` by ``e^d``,
+        so the ``d`` that satisfies it is available in one line:
+
+            e^d = sum_h k_h (I_h/mu_h) / sum_h k_h
+
+        Doing this explicitly decouples the identity from how tightly the SHAPE
+        converged. Without it ``<E^2> = 1`` is only as good as the overall fit
+        tolerance -- at ``rtol = 1e-4`` it came out at 1 - 1e-5 -- and the
+        identity is not the kind of claim that should degrade with a stopping
+        rule. The remaining coefficients are untouched, so this changes the
+        curve's level and not its shape.
+
+        In the working dtype like everything else here. The point is to make the
+        identity independent of the *stopping rule*, not to chase digits: it
+        lands within about 1e-6 of one, which is two orders inside anything that
+        reads it.
+        """
+        eta = X @ beta
+        mu = torch.exp(eta.clamp(min=-LOG_CLAMP + float(beta[0]),
+                                 max=LOG_CLAMP + float(beta[0]))).clamp(min=_MU_FLOOR)
+        ratio = ((w * (y / mu)).sum() / w.sum()).clamp(min=_MU_FLOOR)
+        out = beta.clone()
+        out[0] = out[0] + torch.log(ratio)
+        return out
+
+
     def _irls(
         self,
         X: torch.Tensor,
         y: torch.Tensor,
         w: torch.Tensor,
         max_iter: int,
-        tol: float,
+        rtol: float,
     ) -> Tuple[torch.Tensor, int]:
         """Gamma GLM with a log link, by iteratively reweighted least squares.
 
@@ -249,28 +309,39 @@ class WilsonNormaliser:
         """
         # Seed at the constant curve, which is the exact MLE when Sigma has no
         # resolution dependence. Every later iteration only adds shape.
-        beta = torch.zeros(self.n_coeff, dtype=torch.float64, device=X.device)
+        beta = torch.zeros(self.n_coeff, dtype=X.dtype, device=X.device)
         beta[0] = torch.log(((w * y).sum() / w.sum()).clamp(min=1e-30))
 
         def objective(b):
             eta = (X @ b).clamp(
                 min=-LOG_CLAMP + float(b[0]), max=LOG_CLAMP + float(b[0]),
             )
-            mu = torch.exp(eta).clamp(min=1e-300)
+            mu = torch.exp(eta).clamp(min=_MU_FLOOR)
             return float((w * (y / mu + eta)).sum()), eta, mu
 
         L, eta, mu = objective(beta)
+        L0 = L                       # the constant-curve seed, for the ratio below
+
+        # Built and factorised ONCE. For a Gamma with a log link the IRLS
+        # working weight is the shape k, which does not depend on mu -- so
+        # `X^T W X` is the same matrix at every iteration and only the working
+        # response changes. Rebuilding it per iteration costs an O(N n^2) pass
+        # over every reflection for an answer that cannot have changed.
+        XtW = X.transpose(0, 1) * w.unsqueeze(0)
+        A = XtW @ X
+        # Ridge proportional to the matrix's own scale: the high-order
+        # Chebyshev columns go near-singular when the data cover only part
+        # of the basis range.
+        A = A + torch.eye(self.n_coeff, dtype=A.dtype, device=A.device) * (
+            1e-10 * float(torch.diagonal(A).abs().max().clamp(min=1e-30))
+        )
+        lu = torch.linalg.lu_factor(A)
+
         for it in range(1, max_iter + 1):
             z = eta + (y - mu) / mu                      # working response
-            XtW = X.transpose(0, 1) * w.unsqueeze(0)
-            A = XtW @ X
-            # Ridge proportional to the matrix's own scale: the high-order
-            # Chebyshev columns go near-singular when the data cover only part
-            # of the basis range.
-            A = A + torch.eye(self.n_coeff, dtype=A.dtype, device=A.device) * (
-                1e-10 * float(torch.diagonal(A).abs().max().clamp(min=1e-30))
-            )
-            step = torch.linalg.solve(A, XtW @ z) - beta
+            step = torch.linalg.lu_solve(
+                *lu, (XtW @ z).unsqueeze(-1),
+            ).squeeze(-1) - beta
             if not torch.isfinite(step).all():
                 raise RuntimeError(
                     f"Wilson fit diverged at iteration {it}: the IRLS solve "
@@ -288,25 +359,34 @@ class WilsonNormaliser:
                 step = step * 0.5
             if not accepted:
                 # No downhill direction left: already at the optimum.
-                return beta, it
+                return self._solve_intercept(beta, X, y, w), it
 
-            # Per-reflection, NOT relative to |L|. Under I -> cI the optimum is
-            # just beta[0] -> beta[0] + log c, so the fit is exactly scale
-            # invariant -- but L picks up an additive `log c * sum(k)`, which
-            # makes a |dL|/|L| threshold mean something different at every
-            # scale. The difference itself is free of that term, so dividing by
-            # sum(k) leaves a criterion that is not.
-            improvement = abs(L - L_try) / float(w.sum())
+            # Relative to the improvement achieved so far, not to |L|.
+            #
+            # |dL|/|L| is not usable here: under I -> cI the optimum is just
+            # beta[0] -> beta[0] + log c, so the fit is exactly scale invariant,
+            # but L picks up an additive `log c * sum(k)` and the ratio would
+            # mean something different at every scale. That additive term
+            # cancels in any DIFFERENCE, so a ratio of two differences is both
+            # relative and scale invariant -- which is what this is.
+            #
+            # The denominator is the total distance travelled from the constant
+            # seed, so the test reads "the last step moved us less than rtol of
+            # the way we have come". It is bounded below so a fit that starts at
+            # its own optimum (Sigma genuinely flat) terminates rather than
+            # dividing by zero.
+            step_gain = abs(L - L_try)
+            total_gain = max(abs(L0 - L_try), 1e-30)
             L, eta, mu = L_try, eta_try, mu_try
-            if improvement <= tol:
-                return beta, it
+            if step_gain <= rtol * total_gain:
+                return self._solve_intercept(beta, X, y, w), it
         raise RuntimeError(
             f"Wilson fit did not converge in {max_iter} IRLS iterations "
-            f"(objective still moving by {improvement:.2e} per reflection). "
-            f"Raising "
-            f"rather than falling back to a coarser estimate: a normaliser that "
-            f"silently becomes a different normaliser on hard cases is two "
-            f"normalisers wearing one name."
+            f"(last step still worth {step_gain / total_gain:.2e} of the total "
+            f"improvement, against rtol={rtol:.0e}). Raising rather than "
+            f"falling back to a coarser estimate: a normaliser that silently "
+            f"becomes a different normaliser on hard cases is two normalisers "
+            f"wearing one name."
         )
 
     # -- evaluation elsewhere ---------------------------------------------
@@ -321,7 +401,7 @@ class WilsonNormaliser:
         endpoint value, flat, rather than an extrapolation.
         """
         design = chebyshev_design(
-            (s_mag * 0.5).to(torch.float64), self.n_coeff,
+            (s_mag * 0.5).to(self.coefficients.dtype), self.n_coeff,
             lo=self.s_lo * 0.5, hi=self.s_hi * 0.5,
         )
         return torch.exp(self._eval_log_sigma(design)).to(self.dtype)
@@ -350,13 +430,13 @@ class WilsonNormaliser:
         centricity -- which enters here as the Gamma shape, separately. The two
         branches feed two different parameters of the same likelihood.
         """
+        work = get_float_dtype()
         hkl_l = hkl.to(torch.long)
         # The cell may carry the configured default device while the reflections
         # are somewhere else; the caller should not have to reconcile them.
-        rec = cell.reciprocal_basis_matrix.to(device=hkl_l.device,
-                                              dtype=torch.float64)
-        s_mag = (hkl_l.to(torch.float64) @ rec).norm(dim=-1).to(I.dtype)
-        eps = spacegroup.epsilon(hkl_l, friedel=False).to(torch.float64)
+        rec = cell.reciprocal_basis_matrix.to(device=hkl_l.device, dtype=work)
+        s_mag = (hkl_l.to(work) @ rec).norm(dim=-1).to(I.dtype)
+        eps = spacegroup.epsilon(hkl_l, friedel=False).to(work)
         centric = spacegroup.is_centric(hkl_l).to(torch.bool)
         # Systematically absent reflections are zero by symmetry, not by
         # measurement, so they carry no information about Sigma and would drag

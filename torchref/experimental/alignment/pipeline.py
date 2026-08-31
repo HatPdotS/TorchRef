@@ -56,6 +56,7 @@ from .translation import (
     fit_sigma_a_per_shell,
     llg_translation_rescore,
     local_translation_refine,
+    normalise_calc,
     precompute_G_for_rotation,
 )
 
@@ -710,13 +711,7 @@ class MolecularReplacementPipeline(DeviceMixin):
             ).to(G_pre.dtype),
         )
         Fc_top = (G_pre * phase_top).sum(dim=0).abs().to(torch.float64)
-        cnt_tf = torch.bincount(
-            obs.shell_idx, minlength=obs.n_shells,
-        ).to(torch.float64)
-        sum_Fc2 = torch.zeros(obs.n_shells, dtype=torch.float64, device=device)
-        sum_Fc2.scatter_add_(0, obs.shell_idx, Fc_top * Fc_top)
-        mean_Fc2 = (sum_Fc2 / cnt_tf.clamp(min=1.0)).clamp(min=1e-30)
-        E_calc_top = Fc_top / mean_Fc2.sqrt().index_select(0, obs.shell_idx)
+        E_calc_top = normalise_calc(Fc_top, obs)
         sigma_a_tf = fit_sigma_a_per_shell(
             obs.E_obs, E_calc_top, obs.centric,
             obs.shell_idx, obs.n_shells, n_grid=81,

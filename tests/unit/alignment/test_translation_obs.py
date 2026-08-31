@@ -78,16 +78,17 @@ def test_e_obs_is_invariant_to_the_amplitude_scale():
     """Rescaling every amplitude must not change E. It is an ABSOLUTE normaliser.
 
     Exact in the model -- a common factor lands entirely in Sigma's intercept --
-    but the fit is IRLS, so the tolerance is its convergence floor rather than
-    machine epsilon. Measured spread is ~2e-8 over 4000 reflections; 1e-6 catches
-    a genuine scale dependence without chasing the solver.
+    but the fit is IRLS in the configured float dtype and stops at a relative
+    tolerance, so the bar is that tolerance rather than machine epsilon.
+    Measured 1.2e-4 worst case over 4000 reflections at a 7.5x rescale; 1e-3
+    catches a genuine scale dependence without chasing the solver.
     """
     F, sig_F, hkl, sg, cell, _ = _case()
     base = TranslationObs.build(F, hkl, sg, cell, sig_F=sig_F)
     scaled = TranslationObs.build(7.5 * F, hkl, sg, cell, sig_F=7.5 * sig_F)
-    torch.testing.assert_close(base.E_obs, scaled.E_obs, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(base.E_obs, scaled.E_obs, rtol=1e-3, atol=1e-3)
     # F/sigma is unchanged by a common factor, so the weight must be too.
-    torch.testing.assert_close(base.weight, scaled.weight, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(base.weight, scaled.weight, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.unit

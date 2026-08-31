@@ -424,6 +424,40 @@ def amplitude_translation_search(
     return corr_map_np, best, peaks
 
 
+def normalise_calc(F_calc: torch.Tensor, obs: TranslationObs) -> torch.Tensor:
+    """``E_calc`` for one or many candidate translations, through the shared fit.
+
+    Accepts ``(N,)`` or ``(K, N)`` and returns the same shape. Each candidate is
+    fitted separately, because the resolution envelope of ``|F_calc(h, t)|`` is a
+    property of that placement -- but by the *same* estimator the observed side
+    uses, on the same abscissa, so the two sides of the likelihood are normalised
+    by one rule rather than two.
+
+    This used to be a per-shell mean, written out twice: once here for the K
+    candidates and once in the pipeline for the top peak that ``sigma_A`` is
+    fitted against. Two copies of one calculation is how they drift, and neither
+    was the estimator anything else in the package used. The difference is not
+    cosmetic -- the median per-reflection change is 2-4%.
+
+    The fit converges in single-digit iterations, so the cost is a few
+    milliseconds per candidate against a placement of order a second, and it is
+    only paid when the likelihood rescore is on.
+    """
+    single = F_calc.ndim == 1
+    F = F_calc.reshape(1, -1) if single else F_calc
+    s_lo, s_hi = float(obs.s_mag.min()), float(obs.s_mag.max())
+    out = torch.empty_like(F)
+    for k in range(F.shape[0]):
+        # No eps and nothing centric: a single molecular transform sampled at
+        # these indices carries no crystal multiplicity, and the observed side
+        # gets its own from `obs`.
+        out[k] = WilsonNormaliser(
+            F[k] * F[k], obs.s_mag, n_coeff=WILSON_N_COEFF,
+            s_lo=s_lo, s_hi=s_hi,
+        ).E.to(F.dtype)
+    return out[0] if single else out
+
+
 def fit_sigma_a_per_shell(
     E_obs: torch.Tensor,
     E_calc: torch.Tensor,
@@ -489,7 +523,7 @@ def llg_translation_rescore(
     For each candidate t::
 
         F_calc(h, t) = sum_i G_i(h) exp(2 pi i (h R_i).t)
-        E_calc(h, t) = |F_calc(h, t)| / sqrt(<F^2>_shell)
+        E_calc(h, t) = |F_calc(h, t)| / sqrt(Sigma_calc(s; t))
         LLG(t)       = sum_h [LL(E_obs, D E_calc, var) - LL_Wilson(E_obs)]
 
     with ``var = (1 - D^2) + interp_var``. The Rice branch is used for acentric
@@ -502,10 +536,11 @@ def llg_translation_rescore(
     recovery (28/30 against 27/30 the other way, one discordant cell), which is
     why ``use_llg_tf`` defaults off.
 
-    ``E_calc`` is normalised per shell **per candidate**, and that is not a
-    fourth answer to what the observations' normalisation is: it is a per-``t``
-    scale, and forcing it to unit shell variance for every candidate is what
-    makes the K likelihoods comparable. What discriminates is the pattern across
+    ``E_calc`` is normalised **per candidate**, by :func:`normalise_calc` and so
+    by the same Wilson fit as the observed side. Per-candidate rather than once is
+    deliberate: the resolution envelope of ``|F_calc(h, t)|`` belongs to that
+    placement, and normalising every candidate to ``<E^2> = 1`` is what makes
+    the K likelihoods comparable. What discriminates is the pattern across
     reflections, not the scale.
 
     Parameters
@@ -534,7 +569,6 @@ def llg_translation_rescore(
     complex_dtype = G.dtype
 
     shell_idx = obs.shell_idx
-    n_shells = obs.n_shells
     centric = obs.centric
 
     K = t_candidates.shape[0]
@@ -548,16 +582,8 @@ def llg_translation_rescore(
     Fc_complex = (G.view(1, S, N) * phase).sum(dim=1)             # (K, N)
     F_calc = Fc_complex.abs().to(real_dtype)                       # (K, N)
 
-    # Per-shell E normalisation of F_calc across the K-batch.
     shell_idx_l = shell_idx.to(device).long()
-    cnt = torch.bincount(shell_idx_l, minlength=n_shells).to(real_dtype)
-    shell_idx_k = shell_idx_l.view(1, -1).expand(K, N)
-    F2 = F_calc * F_calc
-    sum_per_shell = torch.zeros((K, n_shells), dtype=real_dtype, device=device)
-    sum_per_shell.scatter_add_(1, shell_idx_k, F2)
-    mean_per_shell = (sum_per_shell / cnt.clamp(min=1.0).unsqueeze(0)).clamp(min=1e-30)
-    norm_per_refl = mean_per_shell.sqrt().gather(1, shell_idx_k)  # (K, N)
-    E_calc = F_calc / norm_per_refl                                 # (K, N)
+    E_calc = normalise_calc(F_calc, obs)                            # (K, N)
 
     E_obs = obs.E_obs.to(device).to(real_dtype)
 
